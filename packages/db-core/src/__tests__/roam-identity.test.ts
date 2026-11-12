@@ -1,9 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { promisify } from "node:util";
 import { openDb } from "../db";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "../schema";
 import { DESCRIPTORS } from "@spider/db-core/roam/descriptors";
@@ -94,17 +93,45 @@ describe("roaming identities", () => {
     expect(readFileSync(join(root, "roam", "machine.json"), "utf8")).toContain(firstMachineId);
   }, 5000);
 
-  it("publishes one identity to concurrent processes", async () => {
-    const root = fixtureRoot();
+  it.each(["linux", "win32"] as const)("publishes one identity to concurrent %s processes", async platform => {
+    const root = fixtureRoot(), start = join(root, "start");
     const moduleUrl = new URL("../roam/machine.ts", import.meta.url).href;
-    const command = "const {loadMachineIdentity} = await import(process.argv[1]); console.log(loadMachineIdentity(process.argv[2]));";
-    const run = promisify(execFile);
-    const results = await Promise.allSettled(Array.from({ length: 8 }, () =>
-      run(process.execPath, ["--input-type=module", "-e", command, moduleUrl, root])));
-    expect(results.every(result => result.status === "fulfilled")).toBe(true);
-    const identities = results.flatMap(result => result.status === "fulfilled" ? [result.value.stdout.trim()] : []);
-    expect(new Set(identities).size).toBe(1);
-    expect(identities[0]).toBe(loadMachineIdentity(root));
+    const command = `
+      import fs from 'node:fs';
+      import { syncBuiltinESMExports } from 'node:module';
+      const open = fs.openSync;
+      fs.openSync = (path, flags, mode) => {
+        const fd = open(path, flags, mode);
+        if (typeof flags === 'number' && (flags & fs.constants.O_EXCL)) {
+          process.stdout.write('ready\\n');
+          while (!fs.existsSync(process.argv[4])) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+        }
+        return fd;
+      };
+      syncBuiltinESMExports();
+      const {loadMachineIdentity} = await import(process.argv[1]);
+      console.log(loadMachineIdentity(process.argv[2], {platform:process.argv[3]}));
+    `;
+    const children = Array.from({ length: 8 }, () => {
+      const child = spawn(process.execPath, ["--input-type=module", "-e", command, moduleUrl, root, platform, start], { stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      child.stdout.on("data", chunk => { output += chunk.toString(); });
+      const exited = once(child, "exit");
+      const ready = Promise.race([once(child.stdout, "data"), exited.then(() => { throw new Error("creator exited before ready"); })]);
+      return { child, exited, ready, output: () => output };
+    });
+    try {
+      await Promise.all(children.map(child => child.ready));
+      writeFileSync(start, "go");
+      const results = await Promise.all(children.map(child => child.exited));
+      expect(results.every(([code]) => code === 0)).toBe(true);
+      const identities = children.map(child => child.output().trim().split("\n")[1]);
+      expect(new Set(identities).size).toBe(1);
+      expect(identities[0]).toBe(loadMachineIdentity(root, { platform }));
+    } finally {
+      for (const { child } of children) child.kill();
+      await Promise.all(children.map(child => child.exited));
+    }
   }, 5000);
 
   it("refuses unsafe or malformed machine identity files", () => {
@@ -184,6 +211,12 @@ describe("roaming identities", () => {
     try {
       const isolated = await import("../roam/machine");
       expect(() => isolated.loadMachineIdentity(root, { platform: "linux", uid: lstatSync(root).uid })).toThrow(/foreign-owned/i);
+      try {
+        isolated.loadMachineIdentity(root, { platform: "linux", uid: lstatSync(root).uid });
+      } catch (error) {
+        expect(String(error)).toContain(target);
+        expect(String(error)).toMatch(/fix.*ownership/i);
+      }
       expect(lstatSync(target).mode & 0o777).toBe(wider);
     } finally {
       vi.doUnmock("node:fs");
@@ -213,26 +246,13 @@ describe("roaming identities", () => {
     expect(() => readMachineIdentity(root, { platform: "linux" })).toThrow();
   }, 5000);
 
-  it.each(["load", "read"] as const)("waits for a concurrently created Windows identity before %s", async action => {
+  it.each(["load", "read"] as const)("refuses an incomplete Windows identity before %s without replacing it", action => {
     const root = fixtureRoot(), roam = join(root, "roam"), file = join(roam, "machine.json");
     mkdirSync(roam);
-    const id = "11111111-1111-4111-8111-111111111111";
-    const writer = spawn(process.execPath, ["-e", `
-      const fs = require('node:fs');
-      const fd = fs.openSync(process.argv[1], 'wx');
-      process.stdout.write('ready');
-      setTimeout(() => { fs.writeFileSync(fd, JSON.stringify({ machineId: process.argv[2] })); fs.closeSync(fd); }, 100);
-    `, file, id], { stdio: ["ignore", "pipe", "pipe"] });
-    const exited = once(writer, "exit");
-    await once(writer.stdout, "data");
-    try {
-      const read = action === "load" ? loadMachineIdentity : readMachineIdentity;
-      expect(read(root, { platform: "win32" })).toBe(id);
-    } finally {
-      const [code] = await exited;
-      expect(code).toBe(0);
-    }
-    expect(readFileSync(file, "utf8")).toContain(id);
+    writeFileSync(file, "");
+    const read = action === "load" ? loadMachineIdentity : readMachineIdentity;
+    expect(() => read(root, { platform: "win32" })).toThrow(/invalid machine identity/i);
+    expect(readFileSync(file, "utf8")).toBe("");
   }, 5000);
 
   it("does not replace a persistently malformed Windows identity", () => {
@@ -242,15 +262,15 @@ describe("roaming identities", () => {
     expect(readFileSync(file, "utf8")).toBe("not-json");
   }, 5000);
 
-  it("closes a failed Windows identity creation before removing the partial file", async () => {
+  it("closes a failed Windows identity creation before removing the temporary file", async () => {
     const root = fixtureRoot(), file = join(root, "roam", "machine.json");
     const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
-    let writer = -1, closed = false;
+    let writer = -1, closed = false, temporary = "";
     vi.doMock("node:fs", () => ({
       ...actual,
       openSync: (path: string, flags: string | number, mode?: number) => {
         const fd = actual.openSync(path, flags, mode);
-        if (path === file && typeof flags === "number" && (flags & actual.constants.O_EXCL)) writer = fd;
+        if (typeof flags === "number" && (flags & actual.constants.O_EXCL)) { writer = fd; temporary = path; }
         return fd;
       },
       closeSync: (fd: number) => { actual.closeSync(fd); if (fd === writer) closed = true; },
@@ -259,7 +279,7 @@ describe("roaming identities", () => {
         return actual.writeFileSync(...args);
       },
       unlinkSync: (path: string) => {
-        if (path === file && !closed) throw new Error("cannot unlink open file");
+        if (path === temporary && !closed) throw new Error("cannot unlink open file");
         actual.unlinkSync(path);
       },
     }));
@@ -269,6 +289,7 @@ describe("roaming identities", () => {
       expect(() => isolated.loadMachineIdentity(root, { platform: "win32" })).toThrow("write failed");
       expect(closed).toBe(true);
       expect(() => lstatSync(file)).toThrow();
+      expect(() => lstatSync(temporary)).toThrow();
     } finally { vi.doUnmock("node:fs"); vi.resetModules(); }
   }, 5000);
 

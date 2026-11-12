@@ -1,25 +1,25 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, statSync, type Dirent } from "node:fs";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { assertTestDbPath, openDb, openDbReadOnly, type Db } from "../db";
 import { migrate, SCHEMA_VERSION } from "../migrate";
 import { gitCommonDir, repoRoot } from "../paths";
 import { mappingRedirect, openRoamStoreReadOnly } from "./reads";
 import { localEntries, readLocal, writeLocal } from "./local-state";
 import { commandEnv } from "../command-env";
-import { applyMappingBatch, CursorMismatchError, FENCE_MACHINE, FENCE_STREAM, fenceReplicaForMapping } from "./apply";
+import { applyMappingBatch, CursorMismatchError, FENCE_MACHINE, FENCE_STREAM, FENCE_TARGET, fenceReplicaForMapping, type MappingFenceTarget } from "./apply";
 import { validateRoamLayout } from "./layout";
 import { compareHlc } from "./hlc";
 import { catalogReplica, replicaPath } from "./catalog";
-import { validateBatch } from "./codec";
+import { storeScope, validateBatch } from "./codec";
 import { createReplicaEffects } from "./effects";
 import { createExportPolicy } from "./event-policy";
 import { exportBatch } from "./export";
 import { canonicalOrigin, repoIdentity } from "./identity";
 import type { Home, Scope, StoreKey } from "./types";
 
-interface Intent { kind: string; identity: string; target_path: string; store_key: StoreKey; command_json: string | null }
+interface Intent { kind: string; identity: string; target_path: string; store_key: StoreKey; command_json: string | null; attempt_id?: string }
 interface Version { entity: string; row_key: string; change_id: string; hlc_ms: number; hlc_count: number; origin_machine: string; origin_stream: string; deleted: number }
 
 const intentKey = (kind: string, identity: string) => JSON.stringify([kind, identity]);
@@ -95,27 +95,43 @@ function preflightTarget(globalDb: Db, file: string, scope: Scope, key: StoreKey
   finally { target.close(); }
 }
 
-/** A short attached transaction keeps mapping metadata and its target identity together. */
-function withAttachedStore<T>(globalDb: Db, file: string, action: (attached: boolean) => T): T {
-  if (!exists(file)) return action(false);
-  checkExistingStore(file);
-  globalDb.prepare("ATTACH DATABASE ? AS mapping_target").run(file);
-  try { return action(true); }
-  finally { globalDb.exec("DETACH DATABASE mapping_target"); }
+function requirePending(globalDb: Db, expected: Intent, targetFile: string): boolean {
+  const pending = readLocal<Intent>(globalDb, "mapping-intent", intentKey(expected.kind, expected.identity));
+  if (!pending) {
+    if (mappingRedirect(globalDb, expected.store_key) === targetFile && mappingPublished(globalDb, expected.store_key)) return false;
+    throw new Error("Pending mapping disappeared or changed");
+  }
+  if (pending.target_path !== expected.target_path || pending.store_key !== expected.store_key || pending.command_json !== expected.command_json ||
+      pending.attempt_id !== expected.attempt_id) throw new Error("Pending mapping disappeared or changed");
+  return true;
 }
 
-async function merge(globalDb: Db, key: StoreKey, destination: string, scope: Scope): Promise<void> {
+async function merge(globalDb: Db, key: StoreKey, destination: string, scope: Scope, intent: Intent): Promise<boolean> {
   const sourceFile = replicaPath(globalDb, key);
-  try { lstatSync(sourceFile); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
+  if (!exists(sourceFile)) {
+    if (!exists(destination)) return false;
+    const snapshot = openDbReadOnly(destination)!;
+    let assigned: boolean;
+    try { assigned = (snapshot.prepare("SELECT store_key FROM roam_meta WHERE id=1").get() as { store_key: string | null }).store_key !== null; }
+    finally { snapshot.close(); }
+    if (assigned) return false;
+    // An empty replica carries the fence locator when a target needs an identity.
+    const empty = openTarget(globalDb, sourceFile, scope, key, true);
+    empty.close();
   }
   const source = openTarget(globalDb, sourceFile, scope, key, true);
   let target: Db | undefined;
   try {
     target = openTarget(globalDb, destination, scope, key);
     validateTarget(target, globalDb, scope, key);
-    fenceReplicaForMapping(source, key);
+    const pending = globalDb.raw.transaction(() => {
+      if (!requirePending(globalDb, intent, destination)) return false;
+      const meta = target!.prepare("SELECT store_key FROM roam_meta WHERE id=1").get() as { store_key: string | null };
+      const targetStat = statSync(destination, { bigint: true });
+      fenceReplicaForMapping(source, key, { file: destination, device: String(targetStat.dev), inode: String(targetStat.ino), clearOnCancel: meta.store_key === null });
+      return true;
+    }).immediate();
+    if (!pending) return false;
     const meta = source.prepare("SELECT machine_id,stream_id FROM roam_meta WHERE id = 1").get() as { machine_id: string; stream_id: string };
     const hubMachine = (globalDb.prepare("SELECT machine_id FROM roam_meta WHERE id = 1").get() as { machine_id: string }).machine_id;
     const effects = createReplicaEffects(() => {});
@@ -144,6 +160,7 @@ async function merge(globalDb: Db, key: StoreKey, destination: string, scope: Sc
         throw new Error(`Replica version not contained for ${version.entity}/${version.row_key}`);
       }
     }
+    return true;
   } finally { target?.close(); source.close(); }
 }
 
@@ -226,6 +243,29 @@ export function discoverRepository(globalDb: Db, repoKey: string, roots: readonl
   return matches.values().next().value ?? null;
 }
 
+function stampTarget(globalDb: Db, intent: Intent, file: string, scope: Scope): void {
+  // Hold the global writer lock only to serialize cancellation with this target commit.
+  globalDb.raw.transaction(() => {
+    if (!requirePending(globalDb, intent, file)) return;
+    checkExistingStore(file);
+    const source = openDbReadOnly(replicaPath(globalDb, intent.store_key));
+    if (!source) throw new Error("Mapping fence replica disappeared");
+    try {
+      const hint = readLocal<MappingFenceTarget>(source, FENCE_TARGET, intent.store_key);
+      const stat = statSync(file, { bigint: true });
+      if (!hint || hint.file !== file || hint.device !== String(stat.dev) || hint.inode !== String(stat.ino))
+        throw new Error("Changed mapping fence target");
+    } finally { source.close(); }
+    const target = openDb(file, { fileMustExist: true, maxCoreSchemaVersion: SCHEMA_VERSION });
+    try {
+      target.raw.transaction(() => {
+        validateTarget(target, globalDb, scope, intent.store_key);
+        target.prepare("UPDATE roam_meta SET store_key=? WHERE id=1 AND store_key IS NULL").run(intent.store_key);
+      }).immediate();
+    } finally { target.close(); }
+  }).immediate();
+}
+
 function catalogMapped(globalDb: Db, key: StoreKey): void {
   if (!key.startsWith("worktree:")) return;
   const db = openRoamStoreReadOnly(globalDb, key);
@@ -238,6 +278,8 @@ async function map(globalDb: Db, input: { kind: "repo" | "workspace"; identity: 
   const path = realpathSync(input.path);
   const scope = input.kind === "workspace" ? "worktree" : "repo";
   const targetFile = input.kind === "workspace" ? join(path, ".spider", "project.db") : join(repoRoot(path) ?? join(path, ".spider"), "repo.db");
+  const requested: Intent = { kind: input.kind, identity: input.identity, target_path: path, store_key: input.key, command_json: input.command, attempt_id: randomUUID() };
+  cleanupOrphanForKey(globalDb, input.key);
   const current = globalDb.raw.transaction(() => {
     const pending = readLocal<Intent>(globalDb, "mapping-intent", intentKey(input.kind, input.identity));
     if (pending && (pending.target_path !== path || pending.store_key !== input.key || pending.command_json !== input.command)) {
@@ -252,7 +294,7 @@ async function map(globalDb: Db, input: { kind: "repo" | "workspace"; identity: 
           .run(input.facts?.rootKey ?? null, input.facts?.fingerprint ?? null, input.command, input.repoKey, input.facts?.rootKey ?? null, input.facts?.fingerprint ?? null, input.command);
         if (input.facts) writeLocal(globalDb, "repository-cache", input.facts.common, input.facts);
       }
-      return true;
+      return { complete: true } as const;
     }
     if (existing && existing.path !== path) throw new Error("Mapping already exists at another path");
     const occupying = input.kind === "workspace"
@@ -264,15 +306,17 @@ async function map(globalDb: Db, input: { kind: "repo" | "workspace"; identity: 
     // Check an existing target, or prepare a new one if there is a replica to merge,
     // before recording the intent or installing the durable source fence.
     preflightTarget(globalDb, targetFile, scope, input.key, exists(replicaPath(globalDb, input.key)));
-    if (!pending) writeLocal<Intent>(globalDb, "mapping-intent", intentKey(input.kind, input.identity), {
-      kind: input.kind, identity: input.identity, target_path: path, store_key: input.key, command_json: input.command,
-    });
-    return false;
+    if (pending?.attempt_id !== undefined && (typeof pending.attempt_id !== "string" || !pending.attempt_id)) throw new Error("Invalid pending mapping attempt");
+    const intent = pending ? { ...pending, attempt_id: pending.attempt_id ?? randomUUID() } : requested;
+    if (!pending || pending.attempt_id === undefined) writeLocal(globalDb, "mapping-intent", intentKey(input.kind, input.identity), intent);
+    return { complete: false, intent } as const;
   }).immediate();
-  if (current) { catalogMapped(globalDb, input.key); return; }
-  await merge(globalDb, input.key, targetFile, scope);
+  if (current.complete) { catalogMapped(globalDb, input.key); return; }
+  const intent = current.intent;
+  const merged = await merge(globalDb, input.key, targetFile, scope, intent);
+  if (merged) stampTarget(globalDb, intent, targetFile, scope);
   preflightTarget(globalDb, targetFile, scope, input.key, false);
-  withAttachedStore(globalDb, targetFile, attached => globalDb.raw.transaction(() => {
+  globalDb.raw.transaction(() => {
     const pending = readLocal<Intent>(globalDb, "mapping-intent", intentKey(input.kind, input.identity));
     if (!pending) {
       const existing = input.kind === "repo"
@@ -282,15 +326,8 @@ async function map(globalDb: Db, input: { kind: "repo" | "workspace"; identity: 
       if (existing?.path === path && redirect === targetFile) return;
       throw new Error("Pending mapping disappeared before publication");
     }
-    if (pending.target_path !== path || pending.store_key !== input.key || pending.command_json !== input.command) throw new Error("Conflicting pending mapping");
-    if (attached) {
-      const target = globalDb.prepare("SELECT machine_id,store_key,roamable,problem,importing FROM mapping_target.roam_meta WHERE id=1").get() as
-        { machine_id: string; store_key: string | null; roamable: number; problem: string | null; importing: number } | undefined;
-      const machine = (globalDb.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id: string }).machine_id;
-      if (!target || target.machine_id !== machine || target.roamable !== 1 || target.problem !== null || target.importing !== 0 ||
-          target.store_key !== null && target.store_key !== input.key) throw new Error("Mapping destination store is not ready for publication");
-      if (target.store_key === null) globalDb.prepare("UPDATE mapping_target.roam_meta SET store_key=? WHERE id=1").run(input.key);
-    }
+    if (pending.target_path !== path || pending.store_key !== input.key || pending.command_json !== input.command || pending.attempt_id !== intent.attempt_id)
+      throw new Error("Conflicting pending mapping");
     if (input.kind === "repo") {
       globalDb.prepare("INSERT INTO roam_repo_maps(repo_key,path,worktree_command_json,root_fingerprint,origin_fingerprint) VALUES (?, ?, ?, ?, ?)")
         .run(input.repoKey, path, input.command, input.facts?.rootKey ?? null, input.facts?.fingerprint ?? null);
@@ -301,7 +338,7 @@ async function map(globalDb: Db, input: { kind: "repo" | "workspace"; identity: 
     writeLocal(globalDb, "mapping-redirect", input.key, targetFile);
     writeLocal(globalDb, "mapping-intent", intentKey(input.kind, input.identity), undefined);
     writeLocal(globalDb, "mapping-failure", intentKey(input.kind, input.identity), undefined);
-  }).immediate());
+  }).immediate();
   catalogMapped(globalDb, input.key);
 }
 
@@ -316,25 +353,83 @@ export function mapWorkspace(globalDb: Db, input: { repoKey: string; workspaceId
     path: input.path, command: null, repoKey: input.repoKey, workspaceId: input.workspaceId });
 }
 
+function mappingPublished(globalDb: Db, key: StoreKey): boolean {
+  if (mappingRedirect(globalDb, key) !== null) return true;
+  if (key.startsWith("repo:")) return Boolean(globalDb.prepare("SELECT 1 FROM roam_repo_maps WHERE repo_key=?").get(key.slice(5)));
+  if (key.startsWith("worktree:")) {
+    const separator = key.lastIndexOf(":");
+    return Boolean(globalDb.prepare("SELECT 1 FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?")
+      .get(key.slice("worktree:".length, separator), key.slice(separator + 1)));
+  }
+  return false;
+}
+
+/** A locator is part of the fence, not a second journal; retain it until cleanup finishes. */
+function cleanupOrphanForKey(globalDb: Db, key: StoreKey): void {
+  const file = replicaPath(globalDb, key);
+  if (!exists(file)) return;
+  globalDb.raw.transaction(() => {
+    if (mappingPublished(globalDb, key) || localEntries<Intent>(globalDb, "mapping-intent").some(row => row.value?.store_key === key)) return;
+    checkExistingStore(file);
+    const snapshot = openDbReadOnly(file)!;
+    let fenced: unknown, targetHint: unknown;
+    try {
+      if (!snapshot.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_cursors'").get()) return;
+      fenced = snapshot.prepare("SELECT 1 FROM roam_cursors WHERE peer_machine=? AND peer_stream=?").get(FENCE_MACHINE, FENCE_STREAM);
+      targetHint = readLocal<unknown>(snapshot, FENCE_TARGET, key);
+      if (!fenced && targetHint === undefined) return;
+      const meta = snapshot.prepare("SELECT store_key FROM roam_meta WHERE id=1").get() as { store_key: string | null } | undefined;
+      if (!meta || meta.store_key !== key) throw new Error("Mapping fence store does not match the replica");
+    } finally { snapshot.close(); }
+    if (targetHint !== undefined) {
+      if (!targetHint || typeof targetHint !== "object" || Array.isArray(targetHint)) throw new Error("Invalid mapping fence target");
+      const hint = targetHint as Partial<MappingFenceTarget>, scope = storeScope(key);
+      if (typeof hint.file !== "string" || !isAbsolute(hint.file) || typeof hint.device !== "string" || typeof hint.inode !== "string" ||
+          typeof hint.clearOnCancel !== "boolean" ||
+          scope === "global" || scope === "worktree" && (basename(hint.file) !== "project.db" || basename(dirname(hint.file)) !== ".spider") ||
+          scope === "repo" && (basename(hint.file) !== "repo.db" || !["spider", ".spider"].includes(basename(dirname(hint.file)))))
+        throw new Error("Invalid mapping fence target");
+      if (hint.clearOnCancel && exists(hint.file)) {
+        checkExistingStore(hint.file);
+        const targetStat = statSync(hint.file, { bigint: true });
+        if (String(targetStat.dev) !== hint.device || String(targetStat.ino) !== hint.inode) throw new Error("Changed mapping fence target");
+        for (const other of [file, globalDb.raw.name]) {
+          const stat = statSync(other, { bigint: true });
+          if (stat.dev === targetStat.dev && stat.ino === targetStat.ino) throw new Error("Invalid mapping fence target");
+        }
+        const target = openDb(hint.file, { fileMustExist: true, maxCoreSchemaVersion: SCHEMA_VERSION });
+        try {
+          target.raw.transaction(() => {
+            const machine = (globalDb.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id: string }).machine_id;
+            // A local session that has enabled capture has independently claimed its identity.
+            target.prepare("UPDATE roam_meta SET store_key=NULL WHERE id=1 AND machine_id=? AND store_key=? AND capture_enabled=0").run(machine, key);
+          }).immediate();
+        } finally { target.close(); }
+      }
+    }
+    const source = openDb(file, { fileMustExist: true, maxCoreSchemaVersion: SCHEMA_VERSION });
+    try {
+      source.raw.transaction(() => {
+        const meta = source.prepare("SELECT store_key FROM roam_meta WHERE id=1").get() as { store_key: string | null } | undefined;
+        if (!meta || meta.store_key !== key) throw new Error("Mapping fence store does not match the replica");
+        writeLocal(source, FENCE_TARGET, key, undefined);
+        source.prepare("DELETE FROM roam_cursors WHERE peer_machine=? AND peer_stream=?").run(FENCE_MACHINE, FENCE_STREAM);
+      }).immediate();
+    } finally { source.close(); }
+  }).immediate();
+}
+
 /** Cancel only an unpublished mapping; a committed redirect must keep its fence. */
 export function cancelMapping(globalDb: Db, key: StoreKey): void {
-  const source = replicaPath(globalDb, key);
-  withAttachedStore(globalDb, source, attached => globalDb.raw.transaction(() => {
-    if (mappingRedirect(globalDb, key) !== null) throw new Error("Cannot cancel a published mapping redirect");
+  globalDb.raw.transaction(() => {
+    if (mappingPublished(globalDb, key)) throw new Error("Cannot cancel a published mapping redirect");
     const pending = localEntries<Intent>(globalDb, "mapping-intent").filter(row => row.value?.store_key === key);
     for (const row of pending) {
       writeLocal(globalDb, "mapping-intent", row.key, undefined);
       writeLocal(globalDb, "mapping-failure", row.key, undefined);
     }
-    if (attached && globalDb.prepare("SELECT 1 FROM mapping_target.sqlite_master WHERE type='table' AND name='roam_cursors'").get()) {
-      const fenced = globalDb.prepare("SELECT 1 FROM mapping_target.roam_cursors WHERE peer_machine=? AND peer_stream=?").get(FENCE_MACHINE, FENCE_STREAM);
-      if (fenced) {
-        const meta = globalDb.prepare("SELECT store_key FROM mapping_target.roam_meta WHERE id=1").get() as { store_key: string | null } | undefined;
-        if (!meta || meta.store_key !== key) throw new Error("Mapping fence store does not match the replica");
-        globalDb.prepare("DELETE FROM mapping_target.roam_cursors WHERE peer_machine=? AND peer_stream=?").run(FENCE_MACHINE, FENCE_STREAM);
-      }
-    }
-  }).immediate());
+  }).immediate();
+  cleanupOrphanForKey(globalDb, key);
 }
 
 function recordResumeFailure(globalDb: Db, key: string, storeKey: unknown, error: unknown): void {
@@ -348,7 +443,36 @@ function recordResumeFailure(globalDb: Db, key: string, storeKey: unknown, error
   }
 }
 
+function cleanupOrphanedMappings(globalDb: Db): void {
+  const directory = dirname(replicaPath(globalDb, "global"));
+  let entries: Dirent[];
+  try { entries = readdirSync(directory, { withFileTypes: true }); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") recordResumeFailure(globalDb, "orphan-scan", null, error);
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^[0-9a-f]{64}\.db$/.test(entry.name)) continue;
+    const file = join(directory, entry.name);
+    let key: StoreKey | undefined;
+    try {
+      checkExistingStore(file);
+      const snapshot = openDbReadOnly(file)!;
+      try {
+        if (!snapshot.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_meta'").get()) continue;
+        key = (snapshot.prepare("SELECT store_key FROM roam_meta WHERE id=1").get() as { store_key: StoreKey | null } | undefined)?.store_key ?? undefined;
+      } finally { snapshot.close(); }
+      if (!key || storeScope(key) === "global" || replicaPath(globalDb, key) !== file) continue;
+      cleanupOrphanForKey(globalDb, key);
+      const failureKey = `orphan:${key}`;
+      if (readLocal(globalDb, "mapping-failure", failureKey) !== undefined)
+        globalDb.raw.transaction(() => writeLocal(globalDb, "mapping-failure", failureKey, undefined)).immediate();
+    } catch (error) { recordResumeFailure(globalDb, `orphan:${key ?? entry.name}`, key, error); }
+  }
+}
+
 export async function resumePendingMappings(globalDb: Db): Promise<void> {
+  cleanupOrphanedMappings(globalDb);
   let pending: ReturnType<typeof localEntries<Intent>>;
   try { pending = localEntries<Intent>(globalDb, "mapping-intent"); }
   catch (error) { recordResumeFailure(globalDb, "invalid-intents", null, error); return; }

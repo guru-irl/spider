@@ -1,11 +1,16 @@
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import { openDb } from "../db";
+import { applyBatch } from "@spider/db-core/roam/apply";
 import { exportBatch } from "@spider/db-core/roam/export";
 import { seedSession } from "@spider/db-core/roam/seed";
-import type { BatchArtifact, Change } from "@spider/db-core/roam/types";
+import type { ApplyReceipt, BatchArtifact, Change } from "@spider/db-core/roam/types";
 import {
-  A, B, SESSION, apply, artifact, assigned, batch, clock, deleted, effects, replica, rows, session, todo, validate,
+  A, B, NOW, SESSION, apply, artifact, assigned, batch, clock, deleted, effects, replica, rows, session, todo, validate,
 } from "./roam-apply-fixture";
 
 const HARD_LIMIT = 16 * 1024 * 1024;
@@ -39,11 +44,63 @@ describe("roaming replay and conflicts", () => {
     const before = state(root);
     const replay = apply(root, value, handlers);
     expect(replay).toMatchObject({ batchId: first.batchId, stream: first.stream, through: first.through, sha256: first.sha256 });
+    expect(replay.applyMs).toBeNull();
     expect(first.applyMs).toBeGreaterThanOrEqual(0);
     expect(state(root)).toBe(before);
     expect(handlers.notices).toEqual([root.storeKey]);
     expect(rows(root, "roam_changes")).toHaveLength(1);
     expect(rows(root, "roam_receipts")).toHaveLength(1);
+  }, 5000);
+
+  it("replayed receipt after crash has null apply time and identical digest fields", async () => {
+    expectTypeOf<ApplyReceipt["applyMs"]>().toEqualTypeOf<number | null>();
+    const root = replica();
+    const value = await batch(root, [todo("todo-1", 1, "first")]);
+    const script = `
+      import { registerHooks } from "node:module";
+      import { readFileSync, writeFileSync } from "node:fs";
+      import { pathToFileURL } from "node:url";
+      registerHooks({ resolve(specifier, context, next) {
+        if (context.parentURL?.endsWith(".ts") && (specifier.startsWith("./") || specifier.startsWith("../")) && !specifier.endsWith(".ts") && !specifier.endsWith(".js")) {
+          return next(specifier + ".ts", context);
+        }
+        return next(specifier, context);
+      } });
+      const input = JSON.parse(readFileSync(0, "utf8"));
+      const { openDb } = await import(pathToFileURL(input.dbModule).href);
+      const { applyBatch } = await import(pathToFileURL(input.applyModule).href);
+      const db = openDb(input.store);
+      const receipt = applyBatch(db, input.batch, { hubMachine: input.hub, now: input.now,
+        effects: { winning() {}, committed() {} }, sessionHome() { return null; } });
+      writeFileSync(1, JSON.stringify(receipt));
+      process.kill(process.pid, "SIGKILL");
+    `;
+    const child = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], {
+      input: JSON.stringify({
+        dbModule: fileURLToPath(new URL("../db.ts", import.meta.url)),
+        applyModule: fileURLToPath(new URL("../roam/apply.ts", import.meta.url)),
+        store: join(root.root, "store.db"), batch: value, hub: A, now: NOW,
+      }), encoding: "utf8", timeout: 4000, env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    });
+    expect(child.stderr).toBe("");
+    expect(child.signal).toBe("SIGKILL");
+    const first = JSON.parse(child.stdout) as ApplyReceipt;
+    expect(typeof first.applyMs).toBe("number");
+    expect(first.applyMs).toBeGreaterThanOrEqual(0);
+    expect(root.db.prepare("SELECT batch_id, peer_stream, through_seq, sha256 FROM roam_receipts").get()).toEqual({
+      batch_id: value.header.batchId, peer_stream: value.header.senderStream, through_seq: value.header.through, sha256: value.sha256,
+    });
+    const before = state(root);
+    const resumedEffects = effects();
+    const db = openDb(join(root.root, "store.db"));
+    try {
+      const replay = applyBatch(db, value, { hubMachine: A, effects: resumedEffects.effects, now: NOW, sessionHome: () => null });
+      expect(replay).toEqual({ batchId: first.batchId, stream: first.stream, through: first.through, sha256: first.sha256, applyMs: null });
+      expect(replay).toMatchObject({ batchId: value.header.batchId, stream: value.header.senderStream, through: value.header.through, sha256: value.sha256 });
+      expect(state(root)).toBe(before);
+      expect(resumedEffects.notices).toEqual([]);
+      expect(resumedEffects.calls).toEqual([]);
+    } finally { db.close(); }
   }, 5000);
 
   it("a reused batch ID with a different digest is refused", async () => {
@@ -98,6 +155,19 @@ describe("roaming replay and conflicts", () => {
       expect(() => apply(root, value, handlers)).toThrow(/change|clock|corrupt|envelope/i);
       expect(state(root)).toBe(before);
     }
+  }, 5000);
+
+  it("a newly accepted batch of duplicate changes still has an apply time", async () => {
+    const root = replica();
+    const handlers = effects();
+    const change = todo("todo-1", 1, "first");
+    apply(root, await batch(root, [change]), handlers);
+    const forwarded = apply(root, await batch(root, [change], { after: 1, id: "forwarded" }), handlers);
+    expect(typeof forwarded.applyMs).toBe("number");
+    expect(forwarded.applyMs).toBeGreaterThanOrEqual(0);
+    expect(root.db.prepare("SELECT last_seq FROM roam_cursors").get()).toEqual({ last_seq: 2 });
+    expect(rows(root, "roam_changes")).toHaveLength(1);
+    expect(handlers.notices).toEqual([root.storeKey]);
   }, 5000);
 
   it("a forwarded duplicate matches the cached portable body", async () => {

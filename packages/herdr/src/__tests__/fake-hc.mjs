@@ -93,7 +93,7 @@ if (config.rawReplyBase64 !== undefined) {
     const bytes = readFileSync(`${root}/events.jsonl`);
     process.stdout.write(bytes.subarray(offset)); offset = bytes.length;
   });
-  console.log(JSON.stringify({ channel: null, seq: 0, terminals: config.terminals }));
+  console.log(JSON.stringify({ channel: null, seq: config.seq || 0, terminals: config.terminals }));
   process.on('SIGTERM', () => { unwatchFile(`${root}/events.jsonl`); process.exit(0); });
  } else if (argv[0] === 'run') {
   const end = argv.indexOf('--'), flags = end < 0 ? argv : argv.slice(0, end);
@@ -102,14 +102,21 @@ if (config.rawReplyBase64 !== undefined) {
     console.error(JSON.stringify({ error: { kind: 'machine_not_found', message: 'No such machine' } })); process.exit(3);
   }
   restartCore(on, 'run', 'before');
-  const address = (on ? on + '/' : '') + 't2';
-  const t = { address, name: suppliedName ?? null, parent: process.env.HC_TERMINAL_ID || null, labels: {}, state: 'live', status: null, exit_code: null, reason: null, signal: null, finished_ms: null };
-  config.terminals.push(t); restartCore(on, 'run', 'during'); saveCore(config); console.log(JSON.stringify({ address, state: 'live', agent: argv[argv.indexOf('--') + 1] || 'node', cwd: root, parent: t.parent, turn: 0 }));
+  const prefix = on ? on + '/' : '';
+  let number = config.nextTerminal ?? 2;
+  while (config.terminals.some(t => t.address === `${prefix}t${number}`)) number++;
+  const address = `${prefix}t${number}`; config.nextTerminal = number + 1;
+  const labels = {};
+  flags.forEach((value, i) => { if (value === '--label') { const entry = flags[i + 1], at = entry.indexOf('='); labels[entry.slice(0, at)] = entry.slice(at + 1); } });
+  const t = { address, name: suppliedName ?? null, parent: flags.includes('--no-parent') ? null : process.env.HC_TERMINAL_ID || null, labels, state: 'live', status: null, exit_code: null, reason: null, signal: null, finished_ms: null };
+  config.terminals.push(t); restartCore(on, 'run', 'during'); config.seq = (config.seq || 0) + 1; saveCore(config);
+  appendFileSync(`${root}/events.jsonl`, JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'created', seq: config.seq, terminal: t.address, data: t } }) + '\n');
+  console.log(JSON.stringify({ address, state: 'live', agent: argv[argv.indexOf('--') + 1] || 'node', cwd: root, parent: t.parent, turn: 0 }));
 } else if (argv[0] === 'kill' || argv[0] === 'rm') {
   const t = config.terminals.find(t => t.address === argv[1]);
   if (!t) { console.error(JSON.stringify({ error: { kind: 'not_found', message: 'No such terminal' } })); process.exit(3); }
   if (argv[0] === 'kill') { t.state = 'finished'; t.exit_code = null; t.signal = 1; t.reason = 'killed'; t.finished_ms = Date.now(); }
-  else config.terminals = config.terminals.filter(t => t !== t);
+  else config.terminals = config.terminals.filter(row => row !== t);
   saveCore(config); console.log('{}');
 } else if (argv[0] === 'label' || argv[0] === 'keep') {
   const t = config.terminals.find(t => t.address === argv[1]);

@@ -216,16 +216,19 @@ describe("roaming SQL capture", () => {
         "UPDATE sessions SET name = 'blocked' WHERE id = 'session-a'",
         "DELETE FROM sessions WHERE id = 'session-a'",
         "INSERT INTO todos(session_id, seq, text, created_at) VALUES ('session-a', 2, 'blocked', 2)",
+        "INSERT INTO todos(uuid, session_id, seq, text, created_at) VALUES ('todo-explicit', 'session-a', 3, 'blocked', 2)",
         "UPDATE todos SET text = 'blocked' WHERE session_id = 'session-a'",
         "DELETE FROM todos WHERE session_id = 'session-a'",
         "INSERT INTO runs(id, session_id, agent, status) VALUES ('run-b', 'session-a', 'worker', 'queued')",
+        `INSERT INTO runs(id, session_id, agent, status, origin_machine) VALUES ('run-c', 'session-a', 'worker', 'queued', '${MACHINE}')`,
         "UPDATE runs SET pid = 123 WHERE id = 'run-a'",
         "DELETE FROM runs WHERE id = 'run-a'",
         "INSERT INTO run_events(session_id, ts, type) VALUES ('session-a', 2, 'blocked')",
+        "INSERT INTO run_events(uuid, session_id, ts, type) VALUES ('event-explicit', 'session-a', 2, 'blocked')",
         "UPDATE run_events SET summary = 'blocked' WHERE session_id = 'session-a'",
         "DELETE FROM run_events WHERE session_id = 'session-a'",
       ];
-      const frozenError = writer === "cli" ? /:\s+session is frozen(?:\s|\()/ : /^session is frozen$/;
+      const frozenError = writer === "cli" ? /:\s+session is frozen(?: \(19\))?\s*$/ : /^session is frozen$/;
       for (const sql of frozenWrites) expect(() => writerExec(fixture, writer, recursive, sql), sql).toThrow(frozenError);
       expect(changes(fixture)).toEqual(logBefore);
       expect(() => writerExec(fixture, writer, recursive, "INSERT INTO todos(session_id, seq, text, created_at) VALUES ('other', 1, 'allowed', 1)")).not.toThrow();

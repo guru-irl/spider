@@ -15,6 +15,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { openDb, migrate, bus, type Db } from "@spider/db-core";
 import { scratchDbPath, cleanupScratch } from "@spider/db-core/testutil";
 import { RunEventTailer } from "../event-tailer";
+import { RunStore } from "../run-store";
 
 const opened: Db[] = [];
 afterAll(() => { for (const d of opened) d.close(); opened.length = 0; cleanupScratch(); });
@@ -22,12 +23,12 @@ afterAll(() => { for (const d of opened) d.close(); opened.length = 0; cleanupSc
 describe("cross-process WAL run_events bridge", () => {
   it("bridges a run_events row written by a SEPARATE OS process to the parent bus", () => {
     const dbPath = scratchDbPath("e2e-wal");
-    const runId = "run-xproc-1";
     const sessionId = "sess-xproc";
 
     // Parent connection: open + migrate, then construct the tailer so its cursor
     // (MAX(run_events.id)) is captured BEFORE the child writes anything.
     const parentDb = openDb(dbPath); opened.push(parentDb); migrate(parentDb, "project");
+    const { id: runId } = new RunStore(parentDb).create({ sessionId, agent: "worker" });
     const tailer = new RunEventTailer(parentDb);
     tailer.track(runId); // poll() only emits for tracked run ids
 

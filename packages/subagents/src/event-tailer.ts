@@ -1,5 +1,6 @@
 import { bus } from "@spider/db-core";
 import type { Db } from "@spider/db-core";
+import { isLocalRun } from "./roam-origin";
 
 export class RunEventTailer {
   private tracked = new Set<string>();
@@ -28,7 +29,7 @@ export class RunEventTailer {
     const rows = this.db.prepare(`SELECT * FROM run_events WHERE id > ? ORDER BY id`).all(this.lastId) as any[];
     for (const r of rows) {
       this.lastId = Math.max(this.lastId, r.id);
-      if (!r.run_id || !this.tracked.has(r.run_id)) continue;
+      if (!r.run_id || !this.tracked.has(r.run_id) || !isLocalRun(this.db, r.run_id)) continue;
       bus.emit({ runId: r.run_id, sessionId: r.session_id, ts: r.ts, type: r.type, tool: r.tool ?? undefined, summary: r.summary ?? undefined, payload: r.payload ? JSON.parse(r.payload) : undefined });
     }
   }

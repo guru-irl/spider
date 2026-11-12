@@ -3,6 +3,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { accessSync, constants, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { RunStore } from "../run-store";
+import { hasOwnership, isLocalRun } from "../roam-origin";
 import { runUsageSummary, sumUsage, safelyReportUsage } from "../usage";
 import { RunEventTailer } from "../event-tailer";
 import { Runner, type Spawner } from "../runner";
@@ -29,13 +30,21 @@ function formatCompactionCount(compactionCount?: number): string {
  *  learns a background subagent finished) + a human toast. Best-effort; never throws. */
 export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { provider?: string; cost: number }[]) => string; [key: string]: any }): (run: any, status: string, result?: string, steps?: any[]) => void {
   return (run, status, result, steps) => {
+    const local = (row: any): boolean => {
+      if (row && hasOwnership(row)) return true;
+      try { return !!row && !!ctx.db && isLocalRun(ctx.db, row.id); } catch { return false; }
+    };
+    if (!local(run) || (steps && steps.some(step => !local(step)))) return;
     // The caller's own kill result already reported this cancellation.
     const completion = result ?? run.result ?? "";
     if (status === "cancelled" && completion.startsWith("killed by spider kill from this session") && !/\d+ steer\(s\) (?:accepted but not confirmed|no reply yet, delivery unknown)\./.test(completion)) return;
     // Written by shutdownReason() (quit and reload kinds): the pi may be going away, so no model turn.
     const shutdown = status === "cancelled" && isShutdownReason(result ?? run.result ?? "");
     try {
-      let output = status === "cancelled" ? result ?? run.result : latestRunOutput(ctx.db, run.id, result);
+      let output = result ?? run.result;
+      if (status !== "cancelled") {
+        try { output = latestRunOutput(ctx.db, run.id, result); } catch { /* use the saved result when the optional DB is closed */ }
+      }
       // Compatibility notes are notification metadata, never stage deliverables.
       // Unknown versions stay in events/tool details only to avoid noisy completions.
       const notes = new Set<string>();
@@ -307,7 +316,7 @@ function reportAdoptionFailures(ctx: any, result: AdoptResult): void {
       const runDb: Db = entry.dbPath === (ctx.runDbPath ?? ctx.project?.dbPath ?? ctx.db.raw.name) ? ctx.db : openDb(entry.dbPath, { fileMustExist: true });
       db = runDb;
       // A deleted row is not a run history. Never leave orphan diagnostics in any DB.
-      if (!new RunStore(runDb).get(runId)) continue;
+      if (!isLocalRun(runDb, runId)) continue;
       appendRunEvent(runDb, { runId, sessionId: entry.sessionId, ts: Date.now(), type: "warning", summary: message, payload: { type: "warning", message, adoptionFailed: true } });
     } catch { /* missing or inaccessible run DB: the UI warning above is still visible */ }
     finally { try { if (db !== ctx.db) db?.close(); } catch { /* best-effort */ } }

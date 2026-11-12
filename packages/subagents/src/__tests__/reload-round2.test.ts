@@ -171,16 +171,21 @@ describe("I4: a chain step killed by a reload starts no model turn in the old pi
   it("the cancellation reason and the notifier agree for every shutdown kind", async () => {
     const { shutdownReason, isShutdownReason, SHUTDOWN_KINDS } = await import("../shutdown-reason");
     const { makeAsyncNotifier } = await import("../actions/run");
+    const { RunStore } = await import("../run-store");
     expect(SHUTDOWN_KINDS.length).toBeGreaterThanOrEqual(2);
     for (const kind of SHUTDOWN_KINDS) {
       const reason = shutdownReason(kind);
       expect(isShutdownReason(reason)).toBe(true);
       const pi = { sendMessage: vi.fn() };
-      makeAsyncNotifier({ pi, ui: { notify: vi.fn() }, db: freshDb() })({ id: "r", agent: "worker" }, "cancelled", reason);
+      const db = freshDb();
+      const { id } = new RunStore(db).create({ sessionId: "s", agent: "worker" });
+      makeAsyncNotifier({ pi, ui: { notify: vi.fn() }, db })({ id, agent: "worker" }, "cancelled", reason);
       expect(pi.sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: false, deliverAs: "nextTurn" });
     }
     const pi = { sendMessage: vi.fn() };
-    makeAsyncNotifier({ pi, ui: { notify: vi.fn() }, db: freshDb() })({ id: "r", agent: "worker" }, "cancelled", "killed by somebody else");
+    const db = freshDb();
+    const { id } = new RunStore(db).create({ sessionId: "s", agent: "worker" });
+    makeAsyncNotifier({ pi, ui: { notify: vi.fn() }, db })({ id, agent: "worker" }, "cancelled", "killed by somebody else");
     expect(pi.sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: true });
   });
 });

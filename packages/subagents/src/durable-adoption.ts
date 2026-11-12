@@ -31,7 +31,7 @@ export function discoverDurableChildren(ctx: DurableContext & { sessionId: strin
     if (!db) continue; // Removed worktrees can leave old routing records.
     try {
       const rows = db.prepare(`SELECT r.id,r.child_mode,e.payload FROM runs r JOIN run_events e ON e.run_id=r.id AND e.type='child_supervisor'
-        WHERE r.session_id=? AND r.status!='cancelled'
+        WHERE r.session_id=? AND r.status!='cancelled' AND r.origin_machine=(SELECT machine_id FROM roam_meta WHERE id=1) AND r.origin_machine!=''
         AND NOT EXISTS (SELECT 1 FROM run_events delivered WHERE delivered.run_id=r.id AND delivered.type='completion_delivered')
         ORDER BY e.id`).all(ctx.sessionId) as Array<{ id: string; child_mode: 'rpc' | 'print'; payload: string }>;
       for (const row of rows) {
@@ -59,7 +59,7 @@ export function diagnoseDurableChildren(ctx: DurableContext): DurableDiagnostic[
     if (!db) continue;
     try {
       const rows = db.prepare(`SELECT r.id,r.status,e.payload FROM runs r JOIN run_events e ON e.run_id=r.id AND e.type='child_supervisor'
-        ${ctx.sessionId ? 'WHERE r.session_id=?' : ''} ORDER BY e.id`).all(...(ctx.sessionId ? [ctx.sessionId] : [])) as Array<{ id: string; status: string; payload: string }>;
+        WHERE r.origin_machine=(SELECT machine_id FROM roam_meta WHERE id=1) AND r.origin_machine!='' ${ctx.sessionId ? 'AND r.session_id=?' : ''} ORDER BY e.id`).all(...(ctx.sessionId ? [ctx.sessionId] : [])) as Array<{ id: string; status: string; payload: string }>;
       for (const row of rows) {
         const pathToSupervisor = directory(row.payload), state = pathToSupervisor ? readSupervisorState(pathToSupervisor) : undefined;
         const supervisorAlive = Boolean(state && supervisorIsAlive(state));

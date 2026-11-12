@@ -5,6 +5,7 @@ export const EVENT_POLICIES: Readonly<Record<string, "inert" | "supervisor" | "t
   escalation: "inert", message: "inert", log: "inert", warning: "inert", steer: "inert",
   extension_error: "inert", queue_update: "inert", steer_delivery: "inert",
   spider_usage: "inert", spider_compaction: "inert",
+  completion_delivered: "inert", spider_usage_reported: "inert",
   child_supervisor: "supervisor", child_transcript: "transcript", chain_steps: "chain",
 };
 

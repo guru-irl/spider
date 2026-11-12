@@ -2,6 +2,8 @@ import type { ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
 import { sumUsage, TOOL_USAGE_BUCKET } from "./usage";
+import { PERSISTED_EVENT_TYPES } from "./schemas";
+export { PERSISTED_EVENT_TYPES } from "./schemas";
 
 /** Accept pi 1.x dispositions and legacy pi 0.87 replies without the field. */
 interface RpcInputResponse {
@@ -45,8 +47,6 @@ export function attachRpcReader(stream: NodeJS.ReadableStream, onEvent: (event: 
   stream.on("end", () => { buffer += decoder.end(); if (buffer) line(buffer); });
 }
 
-/** Event types a sink persists (see Runner.rpcSink). Losing one is a loss of run history. */
-export const PERSISTED_EVENT_TYPES: readonly string[] = ["warning", "extension_error", "queue_update", "steer_delivery", "spider_usage", "spider_compaction"];
 // JSON child records cannot carry a symbol key. Symbol.for keeps the key stable across a /reload,
 // where a new module instance reads events from the old gate.
 const HANDLED_PROMPT = Symbol.for("spider.handledPrompt.v1");

@@ -55,9 +55,15 @@ it("pi's real message method queues shutdown for nextTurn instead of invoking it
   // This is the pre-fix shutdown option while the old runner is still valid.
   await dispatch({customType:"probe",content:"old shutdown",display:false}, {triggerTurn:true});
   expect(modelTurnRequests).toBe(1);
+  const db = freshDb(); dbs.push(db);
+  const sessionId = "no-db-owner";
+  const ctx = { db, sessionId, cwd: testScratchPath("cwd"), runDbPath: db.raw.name };
+  const action = makeRunHandler({ spawner: () => ({ wait: () => new Promise(() => {}), kill() {}, detach() {} }) });
+  const run = (await action({ agent: "worker", task: "work" }, ctx)).details.run;
+  unregisterChild(sessionId, run.id); releaseShared(run.id);
   const deliveries: Promise<void>[] = [];
   makeAsyncNotifier({pi:{sendMessage:(message:any,options:any)=>deliveries.push(dispatch(message,options))}})(
-    {id:"fixture",agent:"worker"}, "cancelled", "Session shutdown cancelled this run.");
+    run, "cancelled", "Session shutdown cancelled this run.");
   await Promise.all(deliveries);
   expect(modelTurnRequests).toBe(1);
   expect(boundary._pendingNextTurnMessages).toHaveLength(1);

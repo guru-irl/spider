@@ -98,7 +98,7 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
       const limits = options.readConfig(owner).limits;
       const cutoff = options.clock() - limits.completedHours * 3600000;
       const retained = "session_id = ? AND status IN ('done', 'failed', 'cancelled') AND ended_at >= ?";
-      const values = db.transaction(() => {
+      const values = db.raw.transaction(() => {
         const active = new RunStore(db).listActive(owner.sessionId);
         const completed = db.prepare(`SELECT * FROM runs WHERE ${retained} ORDER BY ended_at DESC, id LIMIT ?`).all(owner.sessionId, cutoff, limits.completedRows) as RunRow[];
         const count = db.prepare(`SELECT COUNT(*) AS total FROM runs WHERE ${retained}`).get(owner.sessionId, cutoff) as { total: number };

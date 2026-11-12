@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { bus, getBinding, openGlobalReadOnly, type Db } from '@spider/db-core';
+import { isRoamUuid } from '@spider/db-core/roam/codec';
 import { RunStore, type RunRow } from '../../../subagents/src/run-store.js';
 import { getChild } from '../../../subagents/src/coordinators.js';
-import { openSessionRunDb, resolveSessionRunProject } from '../session-run-db.js';
+import { openSessionHistoryDb } from '../session-run-db.js';
 import { createHash } from 'node:crypto';
 import { openSync, readSync, closeSync, fstatSync, realpathSync, readdirSync, constants } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
@@ -142,16 +143,21 @@ function transcriptFile(roots: readonly string[], runId: RunId): TranscriptFile 
     return found;
   } catch (cause) { if (found) closeSync(found.fd); throw cause; }
 }
-function recordedTranscriptRoots(db: Db, sessionId: string, runId: RunId): readonly string[] | null {
+type RecordedTranscript = { roots: readonly string[] } | { origin: string };
+function recordedTranscriptRoots(db: Db, sessionId: string, runId: RunId): RecordedTranscript | null {
   const row = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1").get(runId, sessionId) as { payload: string | null } | undefined;
   if (!row) return null;
   let location: unknown;
   try { location = JSON.parse(row.payload ?? 'null'); } catch { throw error('unsafe-transcript-path'); }
+  if (location && typeof location === 'object' && 'version' in location && location.version === 1 && 'history' in location
+    && location.history && typeof location.history === 'object' && 'machineId' in location.history && isRoamUuid(location.history.machineId)) {
+    return { origin: location.history.machineId };
+  }
   if (!location || typeof location !== 'object' || !('version' in location) || location.version !== 1
     || !('directory' in location) || typeof location.directory !== 'string' || location.directory.includes('\0')
     || !isAbsolute(location.directory) || resolve(location.directory) !== location.directory
     || basename(location.directory) !== runId || basename(dirname(location.directory)) !== 'subagent-sessions') throw error('unsafe-transcript-path');
-  return [dirname(dirname(location.directory))];
+  return { roots: [dirname(dirname(location.directory))] };
 }
 export function createRunTranscriptSource(options: RunTranscriptSourceOptions): RunTranscriptSource {
   const subscriptions = new Set<() => void>(); let disposed = false;
@@ -183,7 +189,7 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(runId)) throw error('run-not-owned');
       const liveOwner = options.owner(); if (!liveOwner) throw error('owner-unavailable');
       const owner = { ...liveOwner }; // Freeze the activation identity, not its mutable caller object.
-      const opened = options.resolveDb?.(owner) ?? openSessionRunDb(owner.cwd, owner.sessionId);
+      const opened = options.resolveDb?.(owner) ?? openSessionHistoryDb(owner.cwd, owner.sessionId);
       const { db, dbPath } = opened;
       let roots: readonly string[]; let bindingDb: Db | undefined; let boundRoot: string | undefined;
       const store = new RunStore(db);
@@ -197,7 +203,7 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
         bindingDb = options.openBindingDb ? options.openBindingDb() : !options.resolveDb ? openGlobalReadOnly() : undefined;
         boundRoot = bindingDb && getBinding(bindingDb, owner.sessionId);
       } catch (cause) { bindingDb?.close(); db.close(); throw cause; }
-      let recordedRoots: readonly string[] | null = null;
+      let recordedRoots: RecordedTranscript | null = null;
       let checkedAt = Date.now();
       const binding = hash(resolve(dbPath));
       const initial = (): Position => ({ version: 1, session: owner.sessionId, generation: owner.generation, run: runId, binding,
@@ -230,7 +236,11 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
               const refreshed = options.resolveDb(owner);
               try { changedBinding = hash(resolve(refreshed.dbPath)) !== binding; }
               finally { if (refreshed.db !== db) refreshed.db.close(); }
-            } else changedBinding = hash(resolve(resolveSessionRunProject(owner.cwd, owner.sessionId).dbPath)) !== binding;
+            } else {
+              const refreshed = openSessionHistoryDb(owner.cwd, owner.sessionId);
+              try { changedBinding = hash(resolve(refreshed.dbPath)) !== binding; }
+              finally { refreshed.db.close(); }
+            }
           }
           if (!current || current.sessionId !== owner.sessionId || current.generation !== owner.generation || changedBinding) {
             send({ runId, cursor: encode(position!), kind: 'end', data: { reason: 'wrong-generation' } }); cancel(); return;
@@ -239,7 +249,11 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
           const row = store.get(runId);
           if (!row || row.session_id !== owner.sessionId) { send({ runId, cursor: encode(position!), kind: 'end', data: { reason: 'run-not-owned' } }); cancel(); return; }
           recordedRoots ??= recordedTranscriptRoots(db, owner.sessionId, runId);
-          file = transcriptFile(recordedRoots ?? roots, runId);
+          const localMachine = (db.prepare('SELECT machine_id FROM roam_meta WHERE id = 1').get() as { machine_id: string } | undefined)?.machine_id;
+          const foreignOrigin = recordedRoots && 'origin' in recordedRoots ? recordedRoots.origin
+            : !recordedRoots && row.origin_machine && row.origin_machine !== localMachine ? row.origin_machine : null;
+          if (foreignOrigin) problem(`Transcript unavailable on this machine. Origin machine: ${foreignOrigin}`);
+          else file = transcriptFile(recordedRoots && 'roots' in recordedRoots ? recordedRoots.roots : roots, runId);
           const p = position!;
           if (p.file && (!file || file.identity !== p.file || file.size < p.offset)) invalid = true;
           if (file && p.anchor && validatedStamp !== file.stamp) {
@@ -247,7 +261,7 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
               || rangeHash(file.fd, p.anchor.offset, p.anchor.length) !== p.anchor.digest) invalid = true;
           }
           validatedStamp = file?.stamp ?? null;
-          if (!file && row.status === 'running' && !invalid) problem('transcript-missing');
+          if (!file && !foreignOrigin && row.status === 'running' && !invalid) problem('transcript-missing');
           else if (file) lastProblem = null;
           if (invalid) {
             // A gap never silently replays the transcript from byte zero.

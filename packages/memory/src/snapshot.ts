@@ -8,6 +8,7 @@ export interface SnapshotOpts {
   /** Optional limit on the snapshot body, excluding the surrounding context fence. */
   charCap?: number;
   scopes?: MemoryScope[];
+  machineId?: string;
 }
 
 export type SnapshotCounts = Record<MemoryScope, { active: number; injected: number }>;
@@ -39,7 +40,8 @@ export function assembleSnapshotFromRecords(
     tableFor(tier);
     const tierRecords = active[tier] ?? [];
     counts[tier].active += tierRecords.length;
-    records.push(...tierRecords.map(record => ({ ...record, tier })));
+    records.push(...tierRecords.filter(record => !record.machineId || record.machineId === opts?.machineId)
+      .map(record => ({ ...record, tier })) );
   }
   if (!records.length) return { text: "", counts };
 

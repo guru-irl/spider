@@ -16,6 +16,7 @@ export function readInjectionSnapshot(cwd: string, sessionId?: string): Injectio
   const errors: InjectionSnapshot["errors"] = {};
   let target = cwd;
   let globalDb: Db | undefined;
+  let machineId: string | undefined;
   const active: Parameters<typeof assembleSnapshotFromRecords>[0] = {};
   try {
     globalDb = openGlobalReadOnly();
@@ -23,6 +24,9 @@ export function readInjectionSnapshot(cwd: string, sessionId?: string): Injectio
       if (sessionId) {
         try { target = getBinding(globalDb, sessionId) ?? cwd; }
         catch { /* An older global DB may have memory but no session_bindings table. */ }
+      }
+      if (globalDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'roam_meta'").get()) {
+        machineId = (globalDb.prepare("SELECT machine_id FROM roam_meta WHERE id = 1").get() as { machine_id: string } | undefined)?.machine_id;
       }
       active.global = listActive(globalDb, "global");
     }
@@ -54,5 +58,5 @@ export function readInjectionSnapshot(cwd: string, sessionId?: string): Injectio
   } catch (e) {
     errors.config = `memory.snapshotCharCap unreadable: ${errorMessage(e)}`;
   }
-  return { ...assembleSnapshotFromRecords(active, { charCap: cap }), errors, capped: cap !== undefined };
+  return { ...assembleSnapshotFromRecords(active, { charCap: cap, machineId }), errors, capped: cap !== undefined };
 }

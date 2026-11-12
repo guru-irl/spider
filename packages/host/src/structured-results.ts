@@ -8,7 +8,7 @@ export const STRUCTURED_TOOL_NAMES: ReadonlySet<string> = new Set(ADAPTER_ACTION
 
 const MAX_BYTES = 10_000;
 const hitSchema = Type.Object({
-  id: Type.String(), kind: Type.Union([Type.Literal("memory"), Type.Literal("content"), Type.Literal("session"), Type.Literal("todo")]),
+  id: Type.String(), kind: Type.Union([Type.Literal("memory"), Type.Literal("content"), Type.Literal("session"), Type.Literal("todo"), Type.Literal("run")]),
   source: Type.String(), title: Type.String(), snippet: Type.String(),
 }, { additionalProperties: false });
 const hitOutput = Type.Object({
@@ -28,9 +28,9 @@ export interface AdapterTool {
   exposure?: "codemode";
   execute(id: string, args: SpiderArgs, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<unknown>;
 }
-interface Hit { id: string; kind: "memory" | "content" | "session" | "todo"; source: string; title: string; snippet: string }
+interface Hit { id: string; kind: "memory" | "content" | "session" | "todo" | "run"; source: string; title: string; snippet: string }
 const execOutcomes = new Set(["exited", "signal", "spawn-error", "aborted", "timeout", "unknown"]);
-const kinds = new Set(["memory", "content", "session", "todo"]);
+const kinds = new Set(["memory", "content", "session", "todo", "run"]);
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 
 function hitsFor(action: "search" | "recall", details: unknown, args: SpiderArgs, config: SafetyConfig): Hit[] | undefined {
@@ -93,7 +93,7 @@ export function registerStructuredTools(
 ): void {
   const properties = (spider.parameters as { properties: Record<string, unknown> }).properties;
   for (const action of ADAPTER_ACTIONS) {
-    const keys = action === "search" ? ["query", "limit", "kinds", "cwd"]
+    const keys = action === "search" ? ["query", "limit", "kinds", "session", "cwd"]
       : action === "recall" ? ["query", "category", "scope", "limit", "cwd"]
       : ["language", "code", "timeout", "background", "cwd"];
     pi.registerTool({

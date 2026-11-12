@@ -28,6 +28,12 @@ describe("portable run-event history", () => {
     expect(JSON.stringify(encoded)).not.toContain("remaining");
   }, 5000);
 
+  it.each(["completion_delivered", "spider_usage_reported"])("exports %s as inert history", type => {
+    const body = event(type, { marker: true });
+    expect(EVENT_POLICIES[type]).toBe("inert");
+    expect(policy.encode("run_events", body, A)).toEqual(body);
+  }, 5000);
+
   it("unknown types and versions remain inert unchanged", () => {
     for (const body of [event("unknown", { version: 1, value: "keep" }), event("child_supervisor", { version: 2, directory: "/future/dir" }), event("chain_steps", { version: 9, remaining: ["future"] })]) {
       expect(policy.encode("run_events", body, A)).toEqual(body);

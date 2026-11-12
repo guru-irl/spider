@@ -31,7 +31,7 @@ export async function reapOrphanRuns(deps: ReapDeps): Promise<{ reaped: string[]
   let rows: RunRow[];
   try {
     rows = deps.db
-      .prepare(`SELECT * FROM runs WHERE status IN ('queued','running','paused') AND host_pid IS NOT NULL`)
+      .prepare(`SELECT * FROM runs WHERE status IN ('queued','running','paused') AND host_pid IS NOT NULL AND origin_machine=(SELECT machine_id FROM roam_meta WHERE id=1) AND origin_machine!=''`)
       .all() as RunRow[];
   } catch (err) {
     return { reaped, error: String((err as Error)?.message ?? err) };

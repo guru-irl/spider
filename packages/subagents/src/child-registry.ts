@@ -20,6 +20,7 @@
 // expiry timer) keep running after a newer build adopts it, so their behaviour is part of the
 // contract too, not only the shape of the data.
 import { appendRunEvent, commandEnv, openDb, type Db } from "@spider/db-core";
+import { isLocalRun } from "./roam-origin";
 import { execFileSync } from "node:child_process";
 import { PERSISTED_EVENT_TYPES, type SteerAck } from "./rpc-child";
 import { recordRunUsage, warnUsage } from "./usage";
@@ -211,7 +212,7 @@ function finalizeRowByPath(entry: SharedChildEntry, cancelReason: string, finish
     db = openDb(entry.dbPath, { fileMustExist: true });
     const store = new RunStore(db);
     const row = store.get(entry.runId);
-    if (!row) return;
+    if (!row || !isLocalRun(db, entry.runId)) return;
     const notes = bufferedLossNotes(db, entry);
     if (!ACTIVE.includes(row.status)) return;
     if (finished && entry.exit) {
@@ -286,6 +287,7 @@ function recordChainInterruption(entry: SharedChildEntry, closed: boolean): void
   let db: Db | undefined;
   try {
     db = openDb(entry.dbPath, { fileMustExist: true });
+    if (!isLocalRun(db, entry.runId)) return;
     const event = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='chain_steps' ORDER BY id DESC LIMIT 1").get(entry.runId) as { payload: string } | undefined;
     if (!event) return;
     const remaining = JSON.parse(event.payload).remaining;

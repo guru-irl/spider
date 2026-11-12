@@ -3,6 +3,7 @@ import { RunStore, type RunRow } from "./run-store";
 import { killProcessGroup, isProcessAlive, isProcessOrGroupAlive, type KillOpts } from "./kill-process";
 import { getChild, unregisterChild } from "./coordinators";
 import { checkProcessIdentity } from "./process-identity";
+import { isLocalRun } from "./roam-origin";
 import { HERDR_NOTICES } from '@spider/herdr/notices';
 
 export interface KillResult {
@@ -82,6 +83,7 @@ export function lastActivityOf(db: Db, runId: string): string | undefined {
  */
 export async function killRun(deps: KillDeps, sessionId: string, run: RunRow): Promise<KillResult> {
   const name = run.name ?? run.agent;
+  if (!isLocalRun(deps.db, run.id)) return { runId: run.id, name, outcome: "failed", via: "none", error: "Run is not local to this machine." };
   if (TERMINAL.has(run.status)) {
     return { runId: run.id, name, outcome: "already-finished", via: "none" };
   }

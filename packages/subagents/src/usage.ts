@@ -1,5 +1,6 @@
 import { appendRunEvent, type Db } from "@spider/db-core";
 import type { RunRow } from "./run-store";
+import { isLocalRun } from "./roam-origin";
 
 /** The pi usage shape, kept local because subagents does not declare a pi-ai dependency. */
 export interface UsageLike {
@@ -51,7 +52,7 @@ export function runUsage(db: Db, runId: string): ModelUsage[] {
 
 /** A refused synchronous sink leaves usage retryable, including on an older host. */
 export function reportRunUsage(db: Db, run: RunRow, sink: (run: RunRow, usage: ModelUsage[]) => boolean): boolean {
-  if (!["done", "failed", "cancelled"].includes(run.status)) return false;
+  if (!isLocalRun(db, run.id) || !["done", "failed", "cancelled"].includes(run.status)) return false;
   const refused = Symbol("refused usage sink");
   try {
     return db.transaction(() => {
@@ -71,6 +72,7 @@ export function reportRunUsage(db: Db, run: RunRow, sink: (run: RunRow, usage: M
   } catch (error) { if (error === refused) return false; throw error; }
 }
 export function recordRunUsage(db: Db, runId: string, record: ModelUsage, purpose?: string, compactionCount?: number): void {
+  if (!isLocalRun(db, runId)) return;
   db.transaction(() => {
     // Write first so a concurrent child reporter cannot turn a read lock into a failed upgrade.
     const { totalTokens, input, output, cacheRead, cacheWrite } = record.usage;
@@ -91,5 +93,5 @@ export function warnUsage(db: Db, run: Pick<RunRow, "id" | "session_id">, error:
 
 /** Optional accounting must never block finalization, notification or adoption. */
 export function safelyReportUsage(db: Db, run: RunRow, report?: (run: RunRow) => void): void {
-  try { report?.(run); } catch (error) { warnUsage(db, run, error); }
+  try { if (isLocalRun(db, run.id)) report?.(run); } catch (error) { warnUsage(db, run, error); }
 }

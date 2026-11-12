@@ -11,6 +11,7 @@ import { decideOutcome, NO_DELIVERABLE_RESULT, summarizeCompletionEvents } from 
 import { isHandledPrompt, PERSISTED_EVENT_TYPES } from "./rpc-child";
 import { publishLiveRunEvent } from "./live-events";
 import { recordRunUsage, safelyReportUsage, warnUsage } from "./usage";
+import { isLocalRun, rememberOwnedRun } from "./roam-origin";
 
 export { NO_DELIVERABLE_RESULT };
 
@@ -404,6 +405,8 @@ export class Runner {
    * the child already exited, the registry delivers that exit to the sink right after this returns.
    */
   adopt(entry: SharedChildEntry): void {
+    if (!isLocalRun(this.db, entry.runId)) throw new Error(`run ${entry.runId} is not local`);
+    rememberOwnedRun(this.db, entry.runId);
     const run = this.deps.store.get(entry.runId);
     if (!run) throw new Error(`run ${entry.runId} has no row in this session's DB`);
     const raw = entry.handle;

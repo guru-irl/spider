@@ -13,20 +13,21 @@ afterEach(() => { teardownAll(); resetSharedRegistryForTests(); });
 describe("reload details", () => {
   it("a tailer resumed from a saved cursor replays events written in the gap", () => {
     const db = freshDb();
+    const { id } = new RunStore(db).create({ sessionId: "s", agent: "worker" });
     const first = new RunEventTailer(db);
-    first.track("r1");
+    first.track(id);
     const cursor = first.cursor;
-    db.prepare(`INSERT INTO run_events (run_id, session_id, ts, type, summary) VALUES ('r1','s',1,'escalation','needs help')`).run();
+    db.prepare(`INSERT INTO run_events (run_id, session_id, ts, type, summary) VALUES (?,'s',1,'escalation','needs help')`).run(id);
     const seen: any[] = [];
     const off = bus.on(e => seen.push(e));
     const second = new RunEventTailer(db, { sinceId: cursor });
-    second.track("r1");
+    second.track(id);
     second.poll();
     off();
     expect(seen.map(e => e.summary)).toEqual(["needs help"]);
     // Without the cursor the gap event would be skipped.
     const fresh = new RunEventTailer(db);
-    fresh.track("r1");
+    fresh.track(id);
     const seen2: any[] = [];
     const off2 = bus.on(e => seen2.push(e));
     fresh.poll(); off2();

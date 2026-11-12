@@ -1,6 +1,7 @@
 import { openDbAt, type Db } from "@spider/db-core";
 import { processStartTime } from "./process-identity";
 import { RunStore, type RunRow } from "./run-store";
+import { isLocalRun } from "./roam-origin";
 import { emitIntent, emitToolResult, emitStatus, emitMessage, emitEscalation } from "./run-events";
 import { thinkingFromModel, stripThinkingSuffix } from "./pi-args";
 import { genuineCompletion, NO_DELIVERABLE_RESULT } from "./completion-output";
@@ -86,8 +87,9 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
   const store = new RunStore(db);
   // Claim legacy NULL-pid rows atomically before any event can be written.
   // A grandchild with inherited env cannot replace its parent's existing pid.
-  let disabled = false;
+  let disabled = !isLocalRun(db, ctx.runId);
   try {
+    if (disabled) throw new Error("Run is not local");
     const hasStart = (db.prepare("PRAGMA table_info(runs)").all() as Array<{ name: string }>).some(c => c.name === "pid_start_time");
     const claim = hasStart
       ? db.prepare("UPDATE runs SET pid=?, pid_start_time=COALESCE(?,pid_start_time) WHERE id=? AND (pid IS NULL OR pid=?)")
@@ -97,7 +99,7 @@ export function makeChildReporter(db: Db, ctx: { runId: string; sessionId: strin
     disabled = claim.changes === 0;
   } catch { disabled = true; }
   function isForeignRow(row: RunRow | undefined): boolean {
-    if (!row || row.pid !== process.pid) disabled = true;
+    if (!row || row.pid !== process.pid || !isLocalRun(db, ctx.runId)) disabled = true;
     return disabled;
   }
   return {

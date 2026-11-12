@@ -74,6 +74,13 @@ export class PipelineCoordinator {
     emitHandoff(this.deps.db, { runId: finished.id, sessionId: this.deps.sessionId, toRunId: next.id, phase: nextStage.phase, summary: `${finished.role ?? finished.agent}\u2192${nextStage.role ?? nextStage.agent}` });
   }
 
+  pending(): { pipelineId: string; sessionId: string } | undefined {
+    if (!this.off || !this.lastRun || this.stageIndex + 1 >= this.stages.length) return undefined;
+    const status = this.deps.store.get(this.lastRun.id)?.status;
+    if (status !== "done" && status !== "failed") return undefined;
+    return { pipelineId: this.pipelineId, sessionId: this.deps.sessionId };
+  }
+
   dispose(): void { this.off?.(); this.off = null; }
 
   /** Reload ends coordination (the coordinator is activation-local). The in-flight stage child

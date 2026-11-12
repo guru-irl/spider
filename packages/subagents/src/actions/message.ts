@@ -2,6 +2,7 @@ import { appendRunEvent, openDbAt, type Db } from "@spider/db-core";
 import { existsSync } from "node:fs";
 import { sendIntercom } from "../intercom";
 import { getChild } from "../coordinators";
+import { isLocalRun } from "../roam-origin";
 
 interface TargetRun { id: string; name: string | null; status: string; session_id: string; child_mode: string; intercom_session: string | null; }
 function childTarget(db: Db | undefined, target: string, sessionId: string): TargetRun[] {
@@ -50,6 +51,7 @@ export function makeMessageHandler(): (args: any, ctx: any) => Promise<{ content
       let run: TargetRun | undefined;
       if (matches.length > 0) {
         run = matches[0];
+        if (!isLocalRun(eventDb, run.id)) return refuse(`Subagent ${run.id} is history from another machine.`, run.id);
         if (matches.length > 1) return refuse(`Target '${to}' matches multiple subagent runs. Use a full run ID.`, run.id);
         if (["done", "failed", "cancelled"].includes(run.status)) return refuse(`Subagent ${run.id} is ${run.status}. Messaging cannot resume it. Start a fresh run with the corrected brief.`, run.id);
         if (run.status !== "running") return refuse(`Subagent ${run.id} is ${run.status}, not running. It cannot accept a steer.`, run.id);

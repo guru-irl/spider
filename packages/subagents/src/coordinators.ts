@@ -116,6 +116,13 @@ export function hasRunningChildren(sessionId: string): boolean {
   return false;
 }
 
+export function listPendingPipelines(sessionId: string): readonly { pipelineId: string; sessionId: string }[] {
+  return (registry.get(sessionId)?.pipelines ?? []).flatMap(pipeline => {
+    const pending = pipeline.pending();
+    return pending ? [pending] : [];
+  });
+}
+
 export function listChildSessions(): string[] {
   return [...registry.keys()];
 }

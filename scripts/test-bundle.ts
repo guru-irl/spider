@@ -17,12 +17,15 @@ export async function buildFixture(options: {
   const virtualId = resolve(options.stdin?.resolveDir ?? process.cwd(), options.stdin?.sourcefile ?? "fixture.ts");
   const entry = options.stdin ? virtualId : options.entryPoints![0];
   const aliases = options.alias ?? {};
+  const exactAliases = Object.entries(aliases).map(([name, replacement]) => ({
+    find: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`), replacement,
+  }));
   const inputs = new Set<string>();
   const external = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`), ...options.external ?? []]);
   const result = await build({
     configFile: false,
     logLevel: "silent",
-    resolve: { alias: aliases },
+    resolve: { alias: exactAliases },
     plugins: [{
       name: "fixture-bundle",
       enforce: "pre",

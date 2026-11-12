@@ -23,7 +23,7 @@ function fixture() {
       effects: { winning() {}, committed() {} }, policy: { encode: (_: unknown, body: import("@spider/db-core/roam/types").JsonObject) => body } }; } };
   return { global, worktree, ports };
 }
-it("keyless inventory discovers a registered store and an agent-created unmapped store", async () => {
+it.each(["stores", "inventory"])("keyless %s discovers a registered store and an agent-created unmapped store", async kind => {
   const { global, worktree, ports } = fixture();
   const foreign = createReplica("repo", BOX); fixtures.push(foreign);
   const file = replicaPath(global.db, foreign.storeKey);
@@ -31,7 +31,7 @@ it("keyless inventory discovers a registered store and an agent-created unmapped
   await foreign.db.raw.backup(file);
   chmodSync(file, 0o600);
   const before = global.db.prepare("SELECT count(*) AS n FROM roam_changes").get();
-  const operation = { id: "discover", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} };
+  const operation = { id: "discover", machineId: BOX, expectedEpoch: null, kind, args: {} };
   const result = await handleAgentOperation(operation, ports);
   expect(result).toMatchObject({ code: 0, value: { protocol: 1, schema: 14, machineId: BOX,
     stores: ["global", foreign.storeKey, worktree.storeKey] } });

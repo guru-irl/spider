@@ -11,6 +11,7 @@ import type { AgentPorts, ArtifactManifest, Limits, Operation, Outcome } from ".
 import { createManifestPages, handleArtifactRequest, stageArtifact } from "./artifacts";
 import { isMachineId } from "./machine-id";
 import { listStoreKeys } from "./store-inventory";
+import { removeOutgoing } from "./stores";
 import { acquireTransferLease, artifactId, defaultStagingRoot, hash, manifestDigest, openOutgoingStaging, openStaging, readPrivate, sourceChunk, StagingFullError } from "./staging";
 import type { StagingStore } from "./staging";
 
@@ -18,7 +19,7 @@ type ImportRequest = { kind: "import"; key: StoreKey; sourceMachine: string; tra
   artifact: string; sha256: string; header: BatchHeader };
 type ExportRequest = { kind: "export"; key: StoreKey; after: number; targetBytes: number; batchId: string };
 type AssembleRequest = { kind: "assemble"; sourceMachine: string; transferId: string; artifact: string; sha256: string };
-type Request = { kind: "stores" } | { kind: "inventory"; key: StoreKey } | { kind: "enable-capture"; key: StoreKey } | ImportRequest | ExportRequest | AssembleRequest
+type Request = { kind: "release-export"; exportId: string; sha256: string } | { kind: "stores" } | { kind: "inventory"; key: StoreKey } | { kind: "enable-capture"; key: StoreKey } | ImportRequest | ExportRequest | AssembleRequest
   | { kind: "split"; artifact: string; digest: string; head: string; pageBytes: number; index: number }
   | { kind: "cursor"; key: StoreKey; sourceMachine: string; stream: string }
   | { kind: "receipt"; key: StoreKey; sourceMachine: string; batchId: string };
@@ -51,7 +52,12 @@ function parseRequest(operation: Operation, ports: AgentPorts): Request {
   }
   artifactId(operation.id);
   const args = operation.args;
-  if (operation.kind === "stores") { fields(args, []); return { kind: "stores" }; }
+  if (operation.kind === "release-export") {
+    fields(args, ["exportId", "sha256"]);
+    if (typeof args.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(args.sha256)) throw new Error("Invalid export acknowledgment");
+    return { kind: "release-export", exportId: artifactId(args.exportId), sha256: args.sha256 };
+  }
+  if (operation.kind === "stores" || operation.kind === "inventory" && Object.keys(args).length === 0) { fields(args, []); return { kind: "stores" }; }
   if (operation.kind === "inventory" || operation.kind === "enable-capture") {
     fields(args, ["storeKey"]);
     const key = storeKey(args.storeKey);
@@ -511,6 +517,16 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
   try {
     if (request.kind === "import") return await importBatch(operation, request, ports);
     let value: JsonObject;
+    if (request.kind === "release-export") {
+      const saved = ports.journal.read(request.exportId).find(row => row.action === "done");
+      const value = saved?.result.value;
+      const descriptor = value && typeof value === "object" && !Array.isArray(value) ? value.artifact : null;
+      if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor) || descriptor.id !== request.exportId || descriptor.sha256 !== request.sha256)
+        throw new Error("Export acknowledgment does not match");
+      removeOutgoing(ports.root, request.exportId, ports.config, () => true);
+      ports.journal.record(id, "done", { value: { released: request.exportId, sha256: request.sha256 } });
+      return outcome(0, "complete", id, { released: request.exportId, sha256: request.sha256 });
+    }
     if (request.kind === "stores") value = { protocol: 1, schema: 14, machineId: ports.config.machineId,
       stores: listStoreKeys(openStore(ports, "global").db) };
     else if (request.kind === "inventory") value = inventory(ports, request.key);

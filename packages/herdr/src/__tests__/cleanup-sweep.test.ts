@@ -185,18 +185,29 @@ it('records transient cleanup failures without UI warnings and clears them after
 });
 
 it('keeps repeated cleanup failures quiet across long delays and reload', async () => {
-  const f = await backlog(3); vi.spyOn(f.hc, 'get').mockRejectedValue(new HerdrError('machine-unavailable', 'Machine is offline'));
+  const f = await backlog(3), started = Array.from({ length: 10 }, () => deferred<void>()), calls = new Map<TerminalAddress, number>();
+  vi.spyOn(f.hc, 'get').mockImplementation(async address => {
+    const count = (calls.get(address) ?? 0) + 1; calls.set(address, count);
+    if (f.handles.every(handle => (calls.get(handle.address) ?? 0) >= count)) started[count - 1]?.resolve();
+    throw new HerdrError('machine-unavailable', 'Machine is offline');
+  });
   let now = 1000; const jobs = f.monitor({ clock: () => now }); await jobs.activate(f.owner);
+  const waitForAttempt = async (monitor: typeof jobs, attempt: number) => {
+    await started[attempt - 1].promise;
+    // Journal writes can be visible before the sweep schedules the retry.
+    await monitor.finishCleanup();
+    expect((await f.store.read()).jobs.map(job => job.cleanupFailure?.attempts)).toEqual([attempt, attempt, attempt]);
+  };
   for (let attempt = 1; attempt <= 8; attempt++) {
-    await vi.waitFor(async () => expect((await f.store.read()).jobs.every(job => job.cleanupFailure?.attempts === attempt)).toBe(true));
+    await waitForAttempt(jobs, attempt);
     if (attempt < 8) { expect(f.errors).toEqual([]); now += 4 * 3600000; await jobs.reconcile(); }
   }
   expect(f.errors).toEqual([]);
   now += 4 * 3600000; await jobs.reconcile();
-  await vi.waitFor(async () => expect((await f.store.read()).jobs.every(job => job.cleanupFailure?.attempts === 9)).toBe(true));
+  await waitForAttempt(jobs, 9); expect(f.errors).toEqual([]);
   await jobs.shutdown('reload'); f.errors.length = 0;
   const resumed = f.monitor({ clock: () => now + 4 * 3600000 }); await resumed.activate(f.owner);
-  await vi.waitFor(async () => expect((await f.store.read()).jobs.every(job => job.cleanupFailure?.attempts === 10)).toBe(true));
+  await waitForAttempt(resumed, 10);
   expect(f.errors).toEqual([]);
 });
 

@@ -11,7 +11,11 @@ import { loadPeerState, receiptMatches, savePeerState, sizedBytes, type PeerStat
 import { defaultStagingRoot } from "./staging";
 import { removeOutgoing, type StoreAdapter } from "./stores";
 
-interface Ports { config: RoamConfig; globalDb: Db; transport: Transport; journal: Journal; clock: Clock; stores: StorePort }
+interface Ports {
+  config: RoamConfig; globalDb: Db; transport: Transport; journal: Journal; clock: Clock; stores: StorePort;
+  onPeerSync?(peer: Peer, results: readonly Outcome<ApplyReceipt>[]): void | Promise<void>;
+}
+export interface SyncAdapter extends SyncService { drain(): Promise<void> }
 class SyncFailure extends Error {
   readonly code: 1 | 2 | 3;
   readonly operationId: string | null;
@@ -22,7 +26,7 @@ function outcome(code: 0 | 1 | 2 | 3, reason: string, operationId: string, value
   return { code, reason, operationId, home: null, epoch: null, repairCommand: null, value };
 }
 function discard(file: string): void { if (existsSync(file)) unlinkSync(file); }
-export function createSync(ports: Ports): SyncService {
+export function createSync(ports: Ports): SyncAdapter {
   const { config, stores, globalDb, transport, journal, clock } = ports;
   let running = false, active = 0;
   const inFlight = new Map<string, Promise<readonly Outcome<ApplyReceipt>[]>>();
@@ -222,20 +226,24 @@ export function createSync(ports: Ports): SyncService {
   }
   function schedule(peer: Peer, ms: number) {
     timers.get(peer.machineId)?.();
-    timers.set(peer.machineId, clock.later(ms, () => { timers.delete(peer.machineId); void run(peer); }));
+    timers.set(peer.machineId, clock.later(ms, () => { timers.delete(peer.machineId); void run(peer).catch(() => {}); }));
   }
   function run(peer: Peer): Promise<readonly Outcome<ApplyReceipt>[]> {
     const existing = inFlight.get(peer.machineId); if (existing) return existing;
-    const task = slot(() => peerSync(peer)).finally(() => {
+    const task = slot(() => peerSync(peer)).then(async results => {
+      await ports.onPeerSync?.(peer, results);
+      return results;
+    }).finally(() => {
       inFlight.delete(peer.machineId);
       if (running) { const state = loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes);
         schedule(peer, state.failures ? [30_000, 60_000, 120_000][Math.min(2, state.failures - 1)] : config.syncMs); }
     });
     inFlight.set(peer.machineId, task); return task;
   }
-  const service: SyncService = {
+  const service: SyncAdapter = {
     start() { if (running || !config.enabled || config.role !== "hub") return; running = true; for (const peer of config.peers) schedule(peer, 0); },
     stop() { running = false; for (const cancel of timers.values()) cancel(); timers.clear(); },
+    async drain() { while (inFlight.size) await Promise.allSettled([...inFlight.values()]); },
     async sync(machine) {
       if (!config.enabled || config.role !== "hub") return [outcome(1, "Hub synchronization is disabled", "")];
       const peers = machine ? config.peers.filter(peer => peer.machineId === machine) : config.peers;

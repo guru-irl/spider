@@ -76,6 +76,45 @@ it("startup catalog recovery finds committed unmapped sessions", async () => {
   stores.recoverCatalog(); stores.recoverCatalog();
   expect(global.db.prepare("SELECT session_id,stores_json FROM roam_locations").all()).toEqual([{ session_id: "session-a", stores_json: JSON.stringify([source.storeKey]) }]);
 }, 5000);
+it("startup catalog recovery never catalogs a retained replica when the mapped target is unavailable", async () => {
+  const { global, source, stores } = fixture();
+  const batch = await exportBatch(source.db, { after: 0, targetBytes: 4096, batchId: "catalog-fenced" }, policy);
+  await stores.accept(source.storeKey, batch);
+  global.db.prepare("DELETE FROM roam_locations").run();
+  global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(join(global.root, "missing-checkout"));
+  writeLocal(global.db, "mapping-redirect", source.storeKey, join(global.root, "missing.db"));
+  stores.recoverCatalog();
+  expect(global.db.prepare("SELECT session_id FROM roam_locations").all()).toEqual([]);
+}, 5000);
+
+it("startup catalog recovery reads the mapped target instead of a retained replica", async () => {
+  const { global, source, stores } = fixture();
+  const batch = await exportBatch(source.db, { after: 0, targetBytes: 4096, batchId: "catalog-target" }, policy);
+  await stores.accept(source.storeKey, batch);
+  const target = createReplica("worktree", HUB); fixtures.push(target);
+  target.db.prepare("INSERT INTO sessions(id,name,started_at) VALUES ('session-target','mapped',1)").run();
+  global.db.prepare("DELETE FROM roam_locations").run();
+  global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(target.root);
+  writeLocal(global.db, "mapping-redirect", source.storeKey, target.db.raw.name);
+  stores.recoverCatalog();
+  expect(global.db.prepare("SELECT session_id FROM roam_locations ORDER BY session_id").all()).toEqual([{ session_id: "session-target" }]);
+}, 5000);
+
+it("catalog recovery skips a future mapped schema without changing it", async () => {
+  const { global, source, stores } = fixture();
+  const batch = await exportBatch(source.db, { after: 0, targetBytes: 4096, batchId: "future-target" }, policy);
+  await stores.accept(source.storeKey, batch);
+  const target = createReplica("worktree", HUB); fixtures.push(target);
+  target.db.prepare("INSERT INTO sessions(id,name,started_at) VALUES ('future-session','future',1)").run();
+  target.db.pragma("user_version=15");
+  global.db.prepare("DELETE FROM roam_locations").run();
+  global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(target.root);
+  writeLocal(global.db, "mapping-redirect", source.storeKey, target.db.raw.name);
+  stores.recoverCatalog();
+  expect(global.db.prepare("SELECT session_id FROM roam_locations").all()).toEqual([]);
+  expect(Number(target.db.pragma("user_version"))).toBe(15);
+}, 5000);
+
 it("mapping fences re-resolve placement before retrying the same batch", async () => {
   const { global, source, stores } = fixture();
   const old = stores.openStore(source.storeKey).db;

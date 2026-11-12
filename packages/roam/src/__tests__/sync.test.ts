@@ -39,6 +39,35 @@ it("startup pulls before pushing merged changes", async () => {
   await sync.sync();
   expect(f.stores.openStore(f.remotes.get(BOX)!.worktree.storeKey).db.prepare("SELECT count(*) AS n FROM roam_changes").get()).toEqual(before);
 }, 5000);
+it("publishes a peer observation only after that peer's sync has committed", async () => {
+  const f = fixture(); f.seed();
+  const observations: Array<{ machine: string; homes: unknown; codes: number[] }> = [];
+  const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores,
+    onPeerSync(peer, outcomes) { observations.push({ machine: peer.machineId, homes: f.global.db.prepare("SELECT machine_id FROM session_homes").all(), codes: outcomes.map(row => row.code) }); } });
+  await sync.sync(BOX);
+  expect(observations).toHaveLength(1);
+  expect(observations[0]).toMatchObject({ machine: BOX, homes: [{ machine_id: BOX }] });
+  expect(observations[0].codes.every(code => code === 0)).toBe(true);
+}, 5000);
+
+it("stopping waits for active peer work before stores may be closed", async () => {
+  const f = fixture();
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.hook(async (_peer, op) => { if (op.kind === "stores") { entered(); await gate; } });
+  const sync = service(f); sync.start();
+  const inFlight = sync.sync(BOX); await started;
+  sync.stop();
+  let drained = false;
+  const idle = sync.drain().then(() => { drained = true; });
+  await Promise.resolve();
+  expect(drained).toBe(false);
+  release(); await Promise.all([idle, inFlight]);
+  expect(drained).toBe(true);
+  expect(f.timers.filter(timer => !timer.cancelled)).toEqual([]);
+}, 5000);
+
 it("one unavailable peer does not stall another", async () => {
   const f = fixture([BOX, BOX2]); f.seed(BOX2); f.unavailable.add(BOX);
   const result = await service(f).sync();

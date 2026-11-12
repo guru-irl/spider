@@ -2,6 +2,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { buildFixture } from "../../../../scripts/test-bundle";
 import * as dbCore from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { build } from "vite";
@@ -194,6 +196,21 @@ it("the journal workspace subpath bundles without pi or inlined SQLite", async (
   expect(bundle).toContain('"better-sqlite3"');
   expect(bundle).not.toContain("node_modules/better-sqlite3/");
   expect(() => assertRoamBundle(root)).not.toThrow();
+}, 5000);
+
+it("the standalone hub subpath bundles without pi in the roaming and fixture builders", async () => {
+  const root = fixture(), entry = join(root, "entry.ts"), outDir = join(root, "dist/roam");
+  writeFileSync(entry, 'export { runStandaloneHub } from "@spider/roam/hub";\n');
+  const factory = (await import(new URL("../../../../vite.roam.config.mjs", import.meta.url).href)).default as
+    (env: { mode: string; command: string }) => import("vite").UserConfig;
+  const settings = factory({ mode: "cli", command: "build" });
+  await build({ ...settings, configFile: false, logLevel: "silent", build: { ...settings.build, ssr: entry, outDir, emptyOutDir: true } });
+  writeFileSync(join(outDir, "supervisor.mjs"), "#!/usr/bin/env node\nexport {};\n");
+  expect(() => assertRoamBundle(root)).not.toThrow();
+  const fixtureBundle = join(root, "fixture-hub.mjs");
+  const result = await buildFixture({ entryPoints: [entry], outfile: fixtureBundle, external: ["better-sqlite3", "sqlite-vec"] });
+  expect(Object.keys(result.metafile.inputs).some(path => path.endsWith("packages/roam/src/hub.ts"))).toBe(true);
+  expect(typeof (await import(pathToFileURL(fixtureBundle).href)).runStandaloneHub).toBe("function");
 }, 5000);
 
 it("workspace dependencies and lock metadata resolve the roaming package", () => {

@@ -17,6 +17,7 @@ export type UsageRuntimeOptions = {
   workerFactory?: (entry: URL, options: WorkerOptions) => UsageWorker;
   onSnapshot?: (snapshot: UsageRuntimeSnapshot) => void;
   supportsWorkers?: () => boolean;
+  admitted?: () => boolean;
 };
 
 /** Capability, not binary names/install locations, mirrors the embedding adapter. */
@@ -60,12 +61,12 @@ export class UsageRuntime {
   constructor(private readonly options: UsageRuntimeOptions) {}
 
   start(poll: boolean, calibration?: "auto" | "off"): void {
-    if (this.started || this.stopped || this.options.child) return;
+    if (this.started || this.stopped || this.options.child || this.options.admitted?.() === false) return;
     this.started = true; this.poll = !this.options.dashboardMode && poll; this.calibrationMode = calibration;
     // A macrotask, not an awaited session_start hook or a microtask inside it.
     this.startup = setTimeout(() => {
       this.startup = undefined;
-      if (this.stopped) return;
+      if (this.stopped || this.options.admitted?.() === false) return;
       if (!(this.options.supportsWorkers ?? supportsUsageWorkers)()) { this.fail("usage-worker-unavailable"); return; }
       try {
         const entry = new URL(this.options.bundleUrl);

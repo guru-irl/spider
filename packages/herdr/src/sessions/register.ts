@@ -3,7 +3,7 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Disposable, Owner, ProcessPresence, SessionId, TerminalIdentity } from '../contracts.js';
 import { processContainsCaller } from '../client/hc.js';
-import type { ProcessPresenceStore } from './presence.js';
+import type { PresenceMetadata, ProcessPresenceStore } from './presence.js';
 import { canonicalSessionFile, type LaunchEnvironment, type TerminalRegistry } from './registry.js';
 import type { ProcessIdentity, ProcessInventoryPorts, SessionLease, SessionLeases } from './lease.js';
 import { herdrErrorNotice } from '../notices.js';
@@ -12,7 +12,7 @@ export interface SessionRegistrationPorts extends ProcessInventoryPorts {
   currentSession(ctx: ExtensionContext): ProcessPresence; owner(): Owner | null;
   registry: TerminalRegistry; presence: ProcessPresenceStore; leases: SessionLeases;
   processIdentity: ProcessIdentity; launchEnvironment: LaunchEnvironment;
-  active?(): boolean; warn?(message: string): void;
+  active?(): boolean; admitted?(): boolean; warn?(message: string): void; metadata?(): PresenceMetadata;
   coreStartedAt(): number; env?: Readonly<NodeJS.ProcessEnv>;
 }
 export async function hasLiveMappedAncestor(terminal: TerminalIdentity, ports: Pick<SessionRegistrationPorts, 'registry' | 'presence' | 'probe' | 'processIdentity' | 'env'>): Promise<boolean> {
@@ -57,7 +57,8 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
   async function activation(ctx: ExtensionContext): Promise<void> {
     if (disposed) return;
     const current = ports.currentSession(ctx);
-    await ports.presence.record({ ...current, sessionId: ctx.sessionManager.getSessionId() as SessionId, mode: ctx.mode, extensionArguments: ports.launchEnvironment.extensionArguments }); // Unconditional: HC, enablement, and child status do not participate.
+    await ports.presence.record({ ...current, ...ports.metadata?.(), sessionId: ctx.sessionManager.getSessionId() as SessionId, mode: ctx.mode, extensionArguments: ports.launchEnvironment.extensionArguments }); // Presence does not depend on HC, enablement, or child status.
+    if (ports.admitted?.() === false) return;
     if (current.sessionFile !== null && current.kind === 'top-level') await reserve(current.sessionFile, ctx.sessionManager.getSessionId() as SessionId);
     const owner = ports.owner(); if (!owner || ctx.mode !== 'tui' && ctx.mode !== 'rpc' || current.kind !== 'top-level') return;
     if (await hasLiveMappedAncestor(owner.terminal, ports)) return;
@@ -72,7 +73,7 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
   const unsubscribe = [
     pi.on('session_start', async (_event, ctx) => activation(ctx)),
     pi.on('session_info_changed', async (_event, ctx) => activation(ctx)),
-    pi.on('session_before_switch', async event => { if (!event.targetSessionFile) return; try { await reserve(event.targetSessionFile); } catch (error) { if (!active()) return; warn(herdrErrorNotice(error)); return { cancel: true }; } }),
+    pi.on('session_before_switch', async event => { if (ports.admitted?.() === false || !event.targetSessionFile) return; try { await reserve(event.targetSessionFile); } catch (error) { if (!active()) return; warn(herdrErrorNotice(error)); return { cancel: true }; } }),
     pi.on('session_shutdown', async (event, ctx) => cleanup(event.reason === 'reload' ? ctx.sessionManager?.getSessionFile?.() : event.reason === 'resume' || event.reason === 'new' ? event.targetSessionFile : undefined)),
   ];
   return { async dispose() { if (disposed) return; disposed = true; for (const off of unsubscribe) off(); await cleanup(); } };

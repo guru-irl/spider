@@ -2,7 +2,7 @@ import { expect, vi } from 'vitest';
 import { resolve, join } from 'node:path';
 import { configFixtureCwd } from './herdr-config-fixture.js';
 
-export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode = 'tui', hasUI = true, child = false, hcOwner = true, launches = false, requested: boolean | 'auto' = true, deadSocket = false, failShortcutRegistration = false, coreAvailable = true, killAction?: (ctx: any, id: string) => Promise<unknown>, options: { automaticSubagentPanes?: boolean } = {}): Promise<{
+export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode = 'tui', hasUI = true, child = false, hcOwner = true, launches = false, requested: boolean | 'auto' = true, deadSocket = false, failShortcutRegistration = false, coreAvailable = true, killAction?: (ctx: any, id: string) => Promise<unknown>, options: { automaticSubagentPanes?: boolean; admitted?: () => boolean; allowMissingFeed?: boolean } = {}): Promise<{
     h: import("@spider/herdr/__tests__/isolated").HerdrHarness;
     pi: {
         getSessionName: () => undefined;
@@ -120,7 +120,8 @@ export async function mountedFixture(mode: 'fake' | 'hc' = 'fake', sessionMode =
   const ctx = { cwd: h.directories.local, mode: sessionMode, hasUI, isIdle: () => true, ui: { notify(message: string) { notices.push(message); }, setStatus(key: string, text: string | undefined) { statusValues.set(key, text); if (key === 'spider-herdr' && text !== undefined) statusMessages.push(text); }, setWidget(name: string, factory: unknown) { if (name === 'spider-herdr-status' && typeof factory === 'function') captured.push(name); if (typeof factory === 'function') factory({ terminal }); } }, sessionManager: { getSessionId: () => h.owner!.sessionId, getSessionFile: () => undefined, getEntries: () => [], getBranch: () => [] } };
   const registrations = { tools: [] as string[], shortcuts: [] as string[] };
   const pi = { getSessionName: () => undefined, registerTool(tool: { name: string }) { registrations.tools.push(tool.name); }, registerShortcut(key: string) { registrations.shortcuts.push(key); if (failShortcutRegistration) throw new Error('No shortcut API in this embedding'); }, on(name: string, handler: Function) { if (!hooks.has(name)) hooks.set(name, new Set()); hooks.get(name)!.add(handler); return () => hooks.get(name)!.delete(handler); }, sendMessage(message: unknown) { notices.push(message); } };
-  const config = { ...options, enabled: requested, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: ['managed.example.invalid'], runtime: { cwd: null, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
+  const { admitted, allowMissingFeed, ...configOptions } = options;
+  const config = { ...configOptions, enabled: requested, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: ['managed.example.invalid'], runtime: { cwd: null, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
 
   const callLog = join(h.root, 'host-hc-calls.jsonl'); await writeFile(callLog, '');
     const { chmod } = await import('node:fs/promises'); const { fileURLToPath } = await import('node:url');
@@ -150,7 +151,7 @@ for (const signal of ['SIGINT','SIGTERM','SIGHUP']) process.once(signal, () => c
       else await writeFile(join(h.root, 'dist/herdr/viewer.mjs'), await readFile(join(h.root, 'dist/herdr/viewer-main.mjs')));
     }
   }
-  const mount = mountHerdr(pi as never, { packageRoot: h.root, ...(killAction ? { killAction } : {}), readConfig: async () => config as never, actionContext: () => ({ db, globalDb, sessionId: h.owner!.sessionId, pi }), reportError: error => errors.push(error),
+  const mount = mountHerdr(pi as never, { packageRoot: h.root, admitted, ...(killAction ? { killAction } : {}), readConfig: async () => config as never, actionContext: () => ({ db, globalDb, sessionId: h.owner!.sessionId, pi }), reportError: error => errors.push(error),
     views: { agents: { open: async () => { opened.push('agents'); } }, todos: { handler: async () => { opened.push('todos'); } }, usage: { handler: async () => { opened.push('usage'); } }, memory: async () => { opened.push('memory'); }, loop: { handler: async () => { opened.push('triggers'); } } },
     dataSource: { resolveRunDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), openApprovalDbs: () => ({ global: openDbAt(globalPath, 'global'), repo: null }), readUsage: async () => ({ snapshots: [], budget: undefined, correctedMonth: null, correctedWindow: null, updatedAt: null }), scheduler: { listTriggers: () => [], subscribe: () => () => {} } },
   });
@@ -160,7 +161,10 @@ for (const signal of ['SIGINT','SIGTERM','SIGHUP']) process.once(signal, () => c
   const descriptor = mount.execution().environmentPolicy(process.env).SPIDER_HERDR_SSH_DESCRIPTOR;
   const shimDirectory: string | undefined = descriptor ? JSON.parse(descriptor).shimDirectory : undefined;
   const feedPath = join(config.globalRoot, 'herdr/sessions', h.owner!.sessionId, 'session.json');
-  const feed = owner && !child ? JSON.parse(await readFile(feedPath, 'utf8')) : null;
+  const feed = owner && !child ? JSON.parse(await readFile(feedPath, 'utf8').catch(error => {
+    if (allowMissingFeed && error.code === 'ENOENT') return 'null';
+    throw error;
+  })) : null;
   const ipc = feed ? createSessionIpcClient({ version: 1, sessionId: feed.sessionId, generation: feed.generation, ...feed.ipc }) : null;
   return { h, pi, hooks, mount, store, db, globalDb, owner, ctx, errors, opened, notices, shimDirectory, captured, terminal, config, feed, ipc, emit, feedPath, registrations, statusMessages, statusValues,
     calls: async () => (await readFile(callLog, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line) as { argv: string[] }),

@@ -32,18 +32,18 @@ export class HostEmbeddingRuntime {
   constructor(
     private readonly getContext: () => unknown,
     private readonly getEmbedder: () => Promise<Embedder | null> = resolveEmbedder,
-    private readonly opts: { intervalMs?: number; timeoutMs?: number; enabled?: (project: ProjectInfo) => boolean } = {},
+    private readonly opts: { intervalMs?: number; timeoutMs?: number; enabled?: (project: ProjectInfo) => boolean; admitted?: () => boolean } = {},
   ) {}
 
   start(): void {
-    if (this.#stopped || this.#project || process.env.PI_SUBAGENT_CHILD === "1") return;
+    if (this.#stopped || this.#project || this.opts.admitted?.() === false || process.env.PI_SUBAGENT_CHILD === "1") return;
     const ctx = this.getContext();
     this.#sessionId = sessionIdOf(ctx) || "embedding-runtime";
     this.#project = resolveProject(cwdOf(ctx) ?? process.cwd(), { sessionId: sessionIdOf(ctx) || undefined, explicitCwd: false });
     this.#paths = [embeddingRepoPath(this.#project), this.#project.dbPath];
     this.#idleMs = this.opts.intervalMs ?? 5000;
     this.#unsubscribe = onEmbedEnqueued(path => {
-      if (!this.#paths.includes(path) || this.#stopped) return;
+      if (!this.#paths.includes(path) || this.#stopped || this.opts.admitted?.() === false) return;
       this.#idleMs = this.opts.intervalMs ?? 5000;
       if (this.#task) this.#wakePending = true;
       else this.#schedule(0);
@@ -56,7 +56,7 @@ export class HostEmbeddingRuntime {
     this.#schedule(this.#idleMs);
   }
   #repairLegacyGlobal(): void {
-    if (this.opts.enabled?.(this.#project!) === false) return;
+    if (this.opts.admitted?.() === false || this.opts.enabled?.(this.#project!) === false) return;
     let snapshot: Db | undefined, writer: Db | undefined;
     try {
       snapshot = openGlobalReadOnly();
@@ -69,7 +69,7 @@ export class HostEmbeddingRuntime {
     } finally { snapshot?.close(); writer?.close(); }
   }
   #schedule(delay: number): void {
-    if (this.#stopped) return;
+    if (this.#stopped || this.opts.admitted?.() === false) return;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = setTimeout(() => { this.#timer = undefined; this.#tick(); }, delay);
     this.#timer.unref();
@@ -83,7 +83,7 @@ export class HostEmbeddingRuntime {
     await this.#task;
   }
   #log(message: string): void {
-    if (this.#stopped || !this.#project) return;
+    if (this.#stopped || !this.#project || this.opts.admitted?.() === false) return;
     let db: Db | undefined;
     try {
       db = openDb(this.#project.dbPath, { fileMustExist: true, busyTimeoutMs: 250, checkpointOnClose: false });
@@ -92,7 +92,7 @@ export class HostEmbeddingRuntime {
     finally { db?.close(); }
   }
   #tick(): void {
-    if (this.#task || this.#stopped || process.env.PI_SUBAGENT_CHILD === "1") return;
+    if (this.#task || this.#stopped || this.opts.admitted?.() === false || process.env.PI_SUBAGENT_CHILD === "1") return;
     const controller = new AbortController(); this.#controller = controller;
     this.#task = this.#drain(controller.signal).catch(error => {
       if (controller.signal.aborted || isEmbeddingBusy(error)) return;
@@ -114,11 +114,12 @@ export class HostEmbeddingRuntime {
     } finally { clearTimeout(timer); }
   }
   async #drain(signal: AbortSignal): Promise<void> {
+    if (this.opts.admitted?.() === false) return;
     if (this.opts.enabled?.(this.#project!) === false) { this.#idleMs = Math.min(this.#idleMs * 2, 300000); return; }
     let activity = false, inferred = false;
     const offset = this.#cursor++ % this.#paths.length;
     for (let i = 0; i < this.#paths.length; i++) {
-      if (signal.aborted) break;
+      if (signal.aborted || this.opts.admitted?.() === false) break;
       const path = this.#paths[(offset + i) % this.#paths.length];
       let db: Db | undefined;
       try {
@@ -126,7 +127,7 @@ export class HostEmbeddingRuntime {
         if (!snapshot) continue;
         let work: boolean;
         try { work = hasEmbeddingWork(snapshot, this.#missingScans); } finally { snapshot.close(); }
-        if (!work || signal.aborted) continue;
+        if (!work || signal.aborted || this.opts.admitted?.() === false) continue;
         activity = true;
         db = openDb(path, { fileMustExist: true, busyTimeoutMs: 250, checkpointOnClose: false });
         const queued = hasEmbeddingTable(db, "embed_queue") && !!db.prepare("SELECT 1 FROM embed_queue WHERE COALESCE(tries, 0) < 5 LIMIT 1").get();
@@ -137,10 +138,10 @@ export class HostEmbeddingRuntime {
           inferred = true;
         }
         // Shutdown must fence repair as well as inference and late commits.
-        if (signal.aborted) break;
+        if (signal.aborted || this.opts.admitted?.() === false) break;
         if (await drainEmbedQueue(db, embedder, 8, { signal, missingScans: this.#missingScans })) runtimeErrors.lastDrainAt = Date.now();
       } catch (error) {
-        if (!signal.aborted && !isEmbeddingBusy(error)) {
+        if (!signal.aborted && this.opts.admitted?.() !== false && !isEmbeddingBusy(error)) {
           if (db) recordEmbedDrainError(db, error);
           else throw error;
         }

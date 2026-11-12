@@ -21,6 +21,7 @@ export interface RoutingDeps {
   getCwd: () => string;
   config: RoutingConfig;
   indexLargeOutput?: (text: string, source: string) => void;
+  admitted?: () => boolean;
 }
 
 export const DEFAULT_ROUTING_CONFIG: RoutingConfig = {
@@ -41,6 +42,7 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
   registerEditWriteOverrides(pi as unknown as { registerTool: Function }, deps);
 
   const routeToolCall = (event: any, ctx: ExtensionContext) => {
+    if (deps.admitted?.() === false) return { block: true, reason: "Session ownership is not available; run spider roam doctor." };
     const tool = event?.toolName;
     if (isExempt(tool)) {
       return guardForegroundSleep(event.input, sessionIdFromCtx(ctx) || deps.getSessionId(), tool);
@@ -53,11 +55,13 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
   pi.on("tool_call", routeToolCall);
 
   pi.on("message_end", (event) => {
+    if (deps.admitted?.() === false) return undefined;
     const message = packExecMessage(event.message);
     return message ? { message } : undefined;
   });
 
   pi.on("tool_result", (event: any) => {
+    if (deps.admitted?.() === false) return;
     const tool = event?.toolName;
     if (!tool) return;
     const text = textOf(event.content);

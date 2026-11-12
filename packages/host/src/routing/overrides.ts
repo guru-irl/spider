@@ -34,6 +34,7 @@ export interface OverrideDeps {
   getCwd: () => string;
   makeEditDelegate?: (cwd: string) => { execute: Function };
   makeWriteDelegate?: (cwd: string) => { execute: Function };
+  admitted?: () => boolean;
 }
 
 export function registerEditWriteOverrides(pi: { registerTool: Function }, deps: OverrideDeps): void {
@@ -49,6 +50,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
       edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() })),
     }),
     async execute(toolCallId: string, params: any, signal: unknown, onUpdate: unknown, ctx: any) {
+      if (deps.admitted?.() === false) return errorResult("Session ownership is not available; run spider roam doctor.");
       const err = validateDescription(params?.description);
       if (err) return errorResult(err);
       const { description, ...rest } = params;
@@ -59,7 +61,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
       } catch (error) {
         rethrowWithMessage(error, "edit delegate");
       }
-      if (!result?.isError) {
+      if (!result?.isError && deps.admitted?.() !== false) {
         const { added, removed } = countPatchLines(result?.details?.patch ?? "");
         recordResult(deps.db, { sessionId: deps.getSessionId(), tool: "edit", toolCallId, description, added, removed });
       }
@@ -76,6 +78,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
       content: Type.String({ description: "Full file content." }),
     }),
     async execute(toolCallId: string, params: any, signal: unknown, onUpdate: unknown, ctx: any) {
+      if (deps.admitted?.() === false) return errorResult("Session ownership is not available; run spider roam doctor.");
       const err = validateDescription(params?.description);
       if (err) return errorResult(err);
       const { description, ...rest } = params;
@@ -93,7 +96,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
       } catch (error) {
         rethrowWithMessage(error, "write delegate");
       }
-      if (!result?.isError) recordResult(deps.db, { sessionId: deps.getSessionId(), tool: "write", toolCallId, description, added, removed });
+      if (!result?.isError && deps.admitted?.() !== false) recordResult(deps.db, { sessionId: deps.getSessionId(), tool: "write", toolCallId, description, added, removed });
       return ensureNonEmptyToolContent(result);
     },
   });

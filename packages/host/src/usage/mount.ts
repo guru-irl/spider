@@ -44,7 +44,7 @@ function guarded(callback: () => void, source: string, warn: (message: string) =
 }
 
 /** Owns only the terminal footer, never the independent spider agents widget. */
-export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: UsageRuntime, config: UsageConfig): { refresh(): void; configure(config: UsageConfig): void; dispose(): void } {
+export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: UsageRuntime, config: UsageConfig, admitted: () => boolean = () => true): { refresh(): void; configure(config: UsageConfig): void; dispose(): void } {
   let current = ctx;
   let settings = config;
   let disposed = false, ownsFooter = false;
@@ -58,7 +58,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
   // herdr.enabled is read once per folder, not on every refresh tick.
   let herdrPane: { cwd: string; inPane: boolean } | undefined;
   const child = process.env.PI_SUBAGENT_CHILD === "1";
-  const eligible = () => !child && current.mode === "tui";
+  const eligible = () => admitted() && !child && current.mode === "tui";
 
   function releaseFooter(): void {
     component?.dispose(); component = undefined;
@@ -140,7 +140,7 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
 }
 
 /** Registration is inert. The parent session lifecycle owns the worker and config watcher. */
-export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { reload(): void; snapshot(): ReturnType<UsageRuntime["snapshot"]> | undefined; readPanel(now: number, sessionId: string, budget?: number): ReturnType<UsageRuntime['readPanel']>; doctor(): Promise<ReturnType<typeof usageDoctorLines>> } {
+export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL, admitted: () => boolean = () => true): { reload(): void; snapshot(): ReturnType<UsageRuntime["snapshot"]> | undefined; readPanel(now: number, sessionId: string, budget?: number): ReturnType<UsageRuntime['readPanel']>; doctor(): Promise<ReturnType<typeof usageDoctorLines>> } {
   let current: ExtensionContext | undefined;
   let runtime: UsageRuntime | undefined;
   let mounted: ReturnType<typeof mountUsage> | undefined;
@@ -159,11 +159,13 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL): { relo
     if (process.env.PI_SUBAGENT_CHILD === "1") return;
     await stop();
     current = ctx;
+    if (!admitted()) return;
     config = readUsageConfig(controlConfig("get", ctx.cwd) as Record<string, unknown>, {}).value;
-    runtime = new UsageRuntime({ bundleUrl, child: false, sessionId: ctx.sessionManager?.getSessionId?.() ?? null, roots: resolveUsageRoots(), onSnapshot: () => mounted?.refresh() });
+    runtime = new UsageRuntime({ bundleUrl, child: false, admitted, sessionId: ctx.sessionManager?.getSessionId?.() ?? null, roots: resolveUsageRoots(), onSnapshot: () => { if (admitted()) mounted?.refresh(); } });
     runtime.start(config.counterPoll, config.calibration);
-    mounted = mountUsage(pi, ctx, runtime, config);
+    mounted = mountUsage(pi, ctx, runtime, config, admitted);
     reloader = makeConfigReloader(ctx.cwd, merged => {
+      if (!admitted()) return;
       config = readUsageConfig(merged as Record<string, unknown>, {}).value;
       if (ctx.mode === "tui") mounted?.configure(config);
       else runtime?.configure(config.counterPoll, config.calibration);

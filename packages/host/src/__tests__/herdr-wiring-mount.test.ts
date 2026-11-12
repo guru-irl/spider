@@ -1,7 +1,8 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import spiderExtension from '../extension.js';
 import { clearActions, getAction, type SpiderArgs } from '../dispatch.js';
-import { paths } from '@spider/db-core';
+import { paths, SCHEMA_VERSION } from '@spider/db-core';
+import { LOADED_BUILD } from '../build-id.js';
 import { globalConfigForTest } from '../../../db-core/src/__tests__/global-config.testutil.js';
 import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { configFixtureCwd } from './herdr-config-fixture.js';
@@ -163,6 +164,7 @@ it.each([
     expect(await f.presence.list()).toEqual([{ version: 1, pid: process.pid, startIdentity: processStartTime(process.pid),
       sessionId: f.h.owner!.sessionId, sessionFile: null, sessionName: null, kind: child ? 'child' : 'top-level', mode,
       extensionArguments: [], hcAddress: f.owner?.terminal.address ?? null,
+      ...(child ? {} : { build: LOADED_BUILD, capabilities: { roamSchema: SCHEMA_VERSION } }),
     }]);
     if (child) expect(await f.calls()).toEqual([]);
   }

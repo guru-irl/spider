@@ -51,6 +51,7 @@ import { createHerdrDataSource } from './data-source.js';
 import { createRunTranscriptSource } from './run-transcript.js';
 import { createHerdrViews } from './views.js';
 import { openSessionHistoryDb } from '../session-run-db.js';
+import { loadedBuildPresence } from '../roam/build-presence.js';
 import { controlConfig, configValues, modelDefaultLayers } from '../control.js';
 import { mountChildHerdr } from './child.js';
 import { coreStartedAt, disabledHerdrEnvironment, verifiedHerdrFile, readAppLayout, createHostHerdrPorts, createProcessInventory, explicitExtensionArguments, readJobJournal, type HostHerdrOptions, type HostHerdrPorts } from './ports.js';
@@ -289,10 +290,10 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   // Track each write, so one that succeeds ends the outage even when a write queued behind it then fails.
   const writeFeed = coalesceFeedWrites(() => trackAvailability({ key: 'feed' }, async () => {
     const current = owner, currentSource = source;
-    if (!current || !currentSource || stopped) return;
+    if (!current || !currentSource || stopped || options.admitted?.() === false) return;
     // Keep the published text and its content hash on the same owner name during a rename.
     const feed = await currentSource.snapshot({ ...current });
-    if (owner === current && !stopped) await publishSessionFeed(join(need(config).globalRoot, 'herdr'), feed);
+    if (owner === current && !stopped && options.admitted?.() !== false) await publishSessionFeed(join(need(config).globalRoot, 'herdr'), feed);
   }, context ? availabilityReporter(context) : undefined));
   const publish = () => { publishing = feedResult(writeFeed()); return publishing; };
   const closeFeed = async (final = false, handoff: 'disposed' | 'wrong-generation' = 'disposed') => {
@@ -301,11 +302,11 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     stopped = true; unsubscribe?.(); unsubscribe = undefined;
     clearInterval(heartbeatTimer); heartbeatTimer = undefined;
     await publishing.catch(report); await heartbeatPending.catch(report);
-    if (final && currentSource && current && currentConfig) {
+    if (final && currentSource && current && currentConfig && options.admitted?.() !== false) {
       try {
         const feed = await currentSource.snapshot(current, 'closed');
         let backoff = 50;
-        while (lifecycle === generation && owner === current && source === currentSource) {
+        while (lifecycle === generation && owner === current && source === currentSource && options.admitted?.() !== false) {
           try {
             await publishSessionFeed(join(currentConfig.globalRoot, 'herdr'), feed);
             feedBusySince = undefined; feedBusyNotified = false;
@@ -441,6 +442,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     // recovery watcher, then join it before installing another activation.
     await coreProbe?.catch(report);
     await closeFeed(); await closeResources(); context = ctx; config = null; coreLost = false; remoteUnavailableReason = undefined;
+    if (options.admitted?.() === false) return;
     let activationMode: unknown = 'auto', expected = Boolean(process.env.HC_TERMINAL_ID);
     const disabled = (reason: InactiveReason, error?: unknown) => {
       if (error !== undefined) remoteUnavailableReason = remoteUnavailableNotice(reason === 'config-problem' ? new HerdrError('invalid-config', '') : error, 'session', 'activation');
@@ -582,7 +584,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     catch (error) { if (observerViews.get(id) === promise) observerViews.delete(id); throw error; }
   };
   const runtimePath = (on: string) => { const path = runtimePaths.get(on); if (!path) throw new HerdrError('runtime-target-unavailable', 'Destination runtime has not been resolved'); return path; };
-  const sessions = registerHerdrSessions(registrationPi, { ...inventory, registry, processIdentity,
+  const sessions = registerHerdrSessions(registrationPi, { ...inventory, registry, processIdentity, metadata: loadedBuildPresence, admitted: options.admitted,
     currentSession: ctx => ({ ...processIdentity, sessionFile: (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.() ?? null, sessionName: pi.getSessionName?.() ?? null, kind: 'top-level', hcAddress: owner?.terminal.address ?? null }), owner: () => owner,
     coreStartedAt: () => epoch,
     launchEnvironment: { agentDirectory: resolve(getAgentDir()), extensionArguments: explicitExtensionArguments(process.argv) }, env: process.env,
@@ -677,7 +679,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     });
     const startingSource = source, feedRoot = join(need(config).globalRoot, 'herdr');
     heartbeatTimer = setInterval(() => {
-      if (stopped || owner !== current || source !== startingSource || sessionFeedWritePending(feedRoot, current)) return;
+      if (stopped || options.admitted?.() === false || owner !== current || source !== startingSource || sessionFeedWritePending(feedRoot, current)) return;
       heartbeatPending = feedResult(publishSessionHeartbeat(feedRoot, current, Date.now()));
       void heartbeatPending.catch(report);
     }, 2000);

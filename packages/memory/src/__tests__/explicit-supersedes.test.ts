@@ -5,6 +5,7 @@ import { reviewedWrite } from "../reviewed-write";
 import { approvePending, forgetMemory, stageWrite } from "../staging";
 import { getMemory, searchMemoryFts } from "../store";
 import { activeCharTotal, listActive } from "../internal";
+import type { Db } from "@spider/db-core";
 
 let repo: ReturnType<typeof makeMemDb>;
 let global: ReturnType<typeof makeGlobalMemDb>;
@@ -12,6 +13,15 @@ afterEach(() => { vi.useRealTimers(); repo?.cleanup(); global?.cleanup(); });
 const fact = { category: "convention" as const, content: "Use reproducible build flags", source: "user" as const };
 const justification = "Build flags remain useful next month; other agents reuse them; this is repo-specific.";
 function setup() { repo = makeMemDb(); global = makeGlobalMemDb(); return { repo: repo.db, global: global.db }; }
+function insertWithUuid(db: Db, uuid: string, content: string) {
+  db.prepare("INSERT INTO memory (uuid, category, content, status, source, created_at) VALUES (?, ?, ?, 'active', 'user', ?)")
+    .run(uuid, fact.category, content, 1);
+  db.prepare("INSERT INTO memory_fts (uuid, category, content, link) VALUES (?, ?, ?, NULL)")
+    .run(uuid, fact.category, content);
+  db.prepare("INSERT INTO embed_queue (owner_kind, owner_id, text, enqueued_at, tries) VALUES ('memory', ?, ?, ?, 0)")
+    .run(uuid, content, 1);
+  return { status: "active" as const, uuid };
+}
 
 describe("explicit remember supersedes", () => {
   it.each(["new", "timeout", "disabled"] as const)("replaces 470 with 537 global chars at 7,465/8,000 when review is %s", async mode => {
@@ -37,13 +47,12 @@ describe("explicit remember supersedes", () => {
 
   it.each(["unknown", "ambiguous", "inactive", "cross-scope", "malformed"] as const)("rejects %s explicit targets before review without writing or archiving", async kind => {
     const dbs = setup();
-    const old = stageWrite(dbs.repo, "repo", fact);
-    const second = stageWrite(dbs.repo, "repo", { ...fact, content: "Use deterministic test flags" });
+    const old = kind === "ambiguous" ? insertWithUuid(dbs.repo, "ambiguous-one", fact.content) : stageWrite(dbs.repo, "repo", fact);
+    const second = kind === "ambiguous" ? insertWithUuid(dbs.repo, "ambiguous-two", "Use deterministic test flags")
+      : stageWrite(dbs.repo, "repo", { ...fact, content: "Use deterministic test flags" });
     const cross = stageWrite(dbs.global, "global", fact);
     let target = "unknown-id";
     if (kind === "ambiguous") {
-      dbs.repo.prepare("UPDATE memory SET uuid = ? WHERE uuid = ?").run("ambiguous-one", old.uuid);
-      dbs.repo.prepare("UPDATE memory SET uuid = ? WHERE uuid = ?").run("ambiguous-two", second.uuid);
       target = "ambiguous";
     } else if (kind === "inactive") { forgetMemory(dbs.repo, "repo", old.uuid!); target = old.uuid!; }
     else if (kind === "cross-scope") target = cross.uuid!;
@@ -62,11 +71,9 @@ describe("explicit remember supersedes", () => {
 
   it("lists UUIDs and statuses when an inactive entry makes a prefix ambiguous", async () => {
     const dbs = setup();
-    const old = stageWrite(dbs.repo, "repo", fact);
-    const other = stageWrite(dbs.repo, "repo", { ...fact, content: "Use deterministic test flags" });
-    forgetMemory(dbs.repo, "repo", other.uuid!);
-    dbs.repo.prepare("UPDATE memory SET uuid = ? WHERE uuid = ?").run("abcdef01-active", old.uuid);
-    dbs.repo.prepare("UPDATE memory SET uuid = ? WHERE uuid = ?").run("abcdef02-archived", other.uuid);
+    insertWithUuid(dbs.repo, "abcdef01-active", fact.content);
+    const other = insertWithUuid(dbs.repo, "abcdef02-archived", "Use deterministic test flags");
+    forgetMemory(dbs.repo, "repo", other.uuid);
     const result = await reviewedWrite(dbs, "repo", { ...fact, content: "Use updated flags" }, justification, { supersedes: ["abcdef0"] });
     expect(result.status).toBe("rejected");
     expect(result.message).toContain("ambiguous UUID prefix");
@@ -77,8 +84,7 @@ describe("explicit remember supersedes", () => {
 
   it("resolves uppercase UUID prefixes and tells the reviewer which entries the caller replaces", async () => {
     const dbs = setup();
-    const old = stageWrite(dbs.repo, "repo", fact);
-    dbs.repo.prepare("UPDATE memory SET uuid = ? WHERE uuid = ?").run("abcdef01-target", old.uuid);
+    insertWithUuid(dbs.repo, "abcdef01-target", fact.content);
     const result = await reviewedWrite(dbs, "repo", { ...fact, content: "Use revised reproducible build flags" }, justification, {
       supersedes: ["ABCDEF01"], reviewer: async candidate => {
         // Missing resolved targets must prevent the revised fact from being accepted.

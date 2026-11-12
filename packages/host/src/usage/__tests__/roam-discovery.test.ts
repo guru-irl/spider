@@ -6,6 +6,7 @@ import { createReplica, type ReplicaFixture } from "@spider/db-core/testutil";
 import { discoverUsageSources, type UsageRoots } from "../discovery.js";
 import { ingestOnce } from "../ingest.js";
 import { openUsageLedger, type UsageLedger } from "../ledger.js";
+import { createLegacyReplica } from "../../__tests__/roam-legacy-fixture.js";
 
 const A = "00000000-0000-4000-8000-00000000000a";
 const B = "00000000-0000-4000-8000-00000000000b";
@@ -27,8 +28,21 @@ function write(path: string, entries: unknown[]) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, entries.map(item => JSON.stringify(item)).join("\n") + "\n");
 }
+function useLegacyRun() {
+  replica.close();
+  replica = createLegacyReplica(B, db => {
+    db.prepare("INSERT INTO runs(id,session_id,agent,status,ended_at,pid) VALUES ('legacy-run','owner','worker','done',9,42)").run();
+  });
+  project = join(replica.root, "project"); scratch = join(project, ".spider", "scratch");
+  mkdirSync(join(scratch, "subagent-sessions"), { recursive: true });
+  registry.prepare("UPDATE projects SET project_key=?,real_path=?,db_path=?,scratch_root=?").run(project, project, replica.db.raw.name, scratch);
+  expect(replica.db.prepare("SELECT origin_machine FROM runs WHERE id='legacy-run'").get()).toEqual({ origin_machine: B });
+}
 function addRun(id: string, origin: string) {
   replica.db.prepare("INSERT INTO runs(id,session_id,agent,status,ended_at,origin_machine,pid) VALUES (?, 'owner', 'worker', 'done', 9, ?, 42)").run(id, origin);
+  return addRunHistory(id);
+}
+function addRunHistory(id: string) {
   const payload = JSON.stringify({ provider: "fixture", model: id, purpose: "learner", usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 } });
   replica.db.prepare("INSERT INTO run_events(run_id,session_id,ts,type,payload) VALUES (?, 'owner', 8, 'spider_usage', ?)").run(id, payload);
   replica.db.prepare("INSERT INTO run_events(run_id,session_id,ts,type) VALUES (?, 'owner', 9, 'spider_usage_reported')").run(id);
@@ -42,8 +56,9 @@ function addParticipant(origin: string) {
 
 // A foreign run can reuse a local-looking PID and path without becoming local work.
 it("native discovery ignores foreign run files usage and reported sentinels", async () => {
+  useLegacyRun();
   addParticipant(A);
-  const localFile = addRun("local-run", B), legacyFile = addRun("legacy-run", ""), foreignFile = addRun("foreign-run", A);
+  const localFile = addRun("local-run", B), legacyFile = addRunHistory("legacy-run"), foreignFile = addRun("foreign-run", A);
   const invalidFile = addRun("whitespace-run", " ");
   const found = await discoverUsageSources(roots);
   expect(found.runs.map(run => run.id)).toEqual(["legacy-run", "local-run"]);
@@ -56,7 +71,8 @@ it("native discovery ignores foreign run files usage and reported sentinels", as
 }, 5000);
 
 it("native discovery excludes foreign runs without session participation", async () => {
-  const legacyFile = addRun("legacy-run", ""), localFile = addRun("local-run", B), foreignFile = addRun("foreign-run", A);
+  useLegacyRun();
+  const legacyFile = addRunHistory("legacy-run"), localFile = addRun("local-run", B), foreignFile = addRun("foreign-run", A);
   const found = await discoverUsageSources(roots);
   expect(found.runs.map(run => run.id)).toEqual(["legacy-run", "local-run"]);
   expect(found.sources.map(source => source.path)).toEqual([legacyFile, localFile]);
@@ -126,9 +142,9 @@ it("a large session header still identifies a participating transcript", async (
   finally { db.close(); }
 }, 5000);
 
-// A participant with neither an origin nor a marker has no safe initial owner.
-it("unmarked participants without an origin do not charge", async () => {
-  addParticipant("");
+// Imported membership can arrive before its session row and has no known origin.
+it("unmarked participants without a session row do not charge", async () => {
+  replica.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES ('owner',2,'retired')").run();
   const file = join(roots.sessionsDir, "group", "session.jsonl");
   write(file, [{ type: "session", id: "owner", cwd: project }, { type: "message", id: "unknown", timestamp: "2026-01-02T03:04:05Z",
     message: { role: "assistant", provider: "fixture", model: "fixture", usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 } } }]);

@@ -6,7 +6,7 @@ import {
   type AgentSession, type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { fauxAssistantMessage, fauxProvider, InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
-import { protectAdmissionApi, registerAdmission, type AdmissionGate } from "../roam/admission";
+import { AdmissionClosedError, protectAdmissionApi, registerAdmission, type AdmissionGate } from "../roam/admission";
 
 const root = resolve(`.spider/scratch/roam-pi-contract-${process.pid}`);
 const sessions: AgentSession[] = [];
@@ -85,7 +85,7 @@ it("nonowner slash commands and notices cannot start ordinary work", async () =>
   const f = await setup("foreign");
   const leaf = f.context.sessionManager.getLeafId();
   await f.session.prompt("/ordinary-fixture");
-  f.notice();
+  expect(f.notice).toThrow(AdmissionClosedError);
   await f.session.waitForIdle();
   expect(f.effects()).toBe(0);
   expect(f.provider.state.callCount).toBe(0);

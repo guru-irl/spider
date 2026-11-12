@@ -73,7 +73,7 @@ import {
   type SkillActionArgs,
   type DrainReport,
 } from "@spider/organism";
-import { runUpstreamWatch, markReviewed, registerSuperpowers } from "@spider/superpowers";
+import { runUpstreamWatch, markReviewed, prepareManagedGuidance, registerSuperpowers } from "@spider/superpowers";
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import * as path from "node:path";
@@ -863,6 +863,9 @@ async function dispatchWithDoctorSnapshot(
 export default function spiderExtension(hostPi: PiToolAPI): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
   const admission = registerAdmission(hostPi as unknown as ExtensionAPI, createAdmissionPorts());
+  // Pi reads context files after extension factories but before session_start.
+  // This machine-level configuration is independent of the session admission gate.
+  prepareManagedGuidance({ skipAgentsMd: process.env.VITEST === "true" });
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
   const pi = protectAdmissionApi(hostPi as unknown as ExtensionAPI, admission) as unknown as PiToolAPI;
   const setForHost = <T>(map: WeakMap<object, T>, value: T) => { map.set(hostPi, value); map.set(pi, value); };
@@ -1248,9 +1251,8 @@ export default function spiderExtension(hostPi: PiToolAPI): void {
   const usageService = registerUsage(pi as unknown as ExtensionAPI, loadedBundle.url, ordinaryWorkAllowed);
   setForHost(usageServices, usageService);
 
-  // Register @spider/superpowers: writes the spider-managed AGENTS.md block once
-  // per process (skipped under vitest so tests never mutate the real ~/.pi file),
-  // and its skillPaths provider backs hooks.ts's resources_discover contribution.
+  // Register session-gated superpowers after admission. The machine-level AGENTS.md
+  // block was prepared before Pi loaded context; skill discovery is provided by hooks.ts.
   // Best-effort — never break extension load.
   pi.on("session_start", () => {
     if (!ordinaryWorkAllowed()) return;

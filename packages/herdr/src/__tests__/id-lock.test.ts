@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { build } from 'vite';
-import { claimIdLock as claim } from '../sessions/id-lock.js';
+import { claimIdLock as claim, localBootId } from '../sessions/id-lock.js';
 import type { ProcessIdentity, ProcessProbe } from '../sessions/lease.js';
 import { hash } from '../sessions/registry.js';
 
@@ -26,7 +26,7 @@ beforeEach(async () => {
   root = await mkdtemp(join(base, 'case-'));
   processes = new Map([[101, { kind: 'live', startIdentity: firstIdentity.startIdentity }], [102, { kind: 'live', startIdentity: nextIdentity.startIdentity }]]);
 });
-afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
 
 async function record() {
   const dir = join(root, 'id-locks');
@@ -35,6 +35,39 @@ async function record() {
   const file = join(dir, files[0]);
   return { file, identity: JSON.parse(await readFile(file, 'utf8')).identity as ProcessIdentity };
 }
+
+it('reads the stable macOS boot UUID and the Linux boot-id file', async () => {
+  const uuid = '183D4A76-002E-4C05-AC6A-19BCEF1818F9';
+  const sysctl = vi.fn(async (_key: string) => ` ${uuid}\n`);
+  vi.stubEnv('TZ', 'Pacific/Honolulu');
+  const first = await localBootId({ platform: 'darwin', readSysctl: sysctl });
+  vi.stubEnv('TZ', 'Asia/Kolkata');
+  const second = await localBootId({ platform: 'darwin', readSysctl: sysctl });
+  expect(first).toBe(uuid); expect(second).toBe(first);
+  expect(sysctl.mock.calls).toEqual([['kern.bootsessionuuid'], ['kern.bootsessionuuid']]);
+  expect(await localBootId({ platform: 'linux', readLinuxBootId: async () => ' linux-boot-id\n' })).toBe('linux-boot-id');
+}, 5000);
+
+it.skipIf(process.platform !== 'darwin')('real macOS boot identity is independent of TZ', async () => {
+  vi.stubEnv('TZ', 'Pacific/Honolulu');
+  const first = await localBootId();
+  vi.stubEnv('TZ', 'Asia/Kolkata');
+  const second = await localBootId();
+  expect(first).toMatch(/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i);
+  expect(second).toBe(first);
+}, 5000);
+
+it('does not steal a live lock when upgrading an old macOS boottime record', async () => {
+  const legacy = { bootId: async () => '{ sec = 1690000000, usec = 0 } Tue Jul 22 00:00:00 2025' };
+  const stable = { bootId: async () => '183D4A76-002E-4C05-AC6A-19BCEF1818F9' };
+  const first = await claimIdLock(root, 'session-1', firstIdentity, probe, legacy);
+  const saved = await record(), before = await readFile(saved.file, 'utf8');
+  await expect(claimIdLock(root, 'session-1', nextIdentity, probe, stable)).rejects.toThrow(/owner/i);
+  expect(await readFile(saved.file, 'utf8')).toBe(before);
+  const reopened = await claimIdLock(root, 'session-1', firstIdentity, probe, stable);
+  expect(JSON.parse(await readFile(saved.file, 'utf8')).bootId).toBe(await stable.bootId());
+  await reopened.release(); await first.release();
+}, 5000);
 
 it('same ID different file still has one owner', async () => {
   const files = [join(root, 'one.jsonl'), join(root, 'two.jsonl')];

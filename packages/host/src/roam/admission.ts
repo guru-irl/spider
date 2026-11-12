@@ -27,7 +27,13 @@ export interface AdmissionPorts {
   setContext?(ctx: ExtensionContext): void;
 }
 
-const VERIFY = "Cannot verify this session's home. Retry or run spider roam doctor.";
+const VERIFY = "Cannot verify this session's home. Retry or run /doctor for details.";
+
+/** A blocked send must be distinguishable from a delivered message. */
+export class AdmissionClosedError extends Error {
+  readonly code = "SPIDER_ADMISSION_CLOSED";
+  constructor(message: string) { super(message); this.name = "AdmissionClosedError"; }
+}
 
 export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): AdmissionGate {
   if (process.env.PI_SUBAGENT_CHILD === "1") {
@@ -95,7 +101,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       observed.add(id);
       const home = state.home;
       epoch = home?.epoch ?? state.states[0]?.epoch ?? null;
-      if (state.initialConflict) { publish("blocked", home, "This session has conflicting initial homes. Run spider roam doctor."); return; }
+      if (state.initialConflict) { publish("blocked", home, "This session has conflicting initial homes. Run /doctor for details."); return; }
       const frozenState = state.states.find(row => row.state === "frozen");
       if (frozenState?.moveId) freeze ??= { moveId: frozenState.moveId, epoch: frozenState.epoch };
       if (!reopening && (freeze || state.unfinishedFreeze || frozenState)) {
@@ -183,7 +189,11 @@ export function protectAdmissionApi<T extends ExtensionAPI>(pi: T, gate: Admissi
     });
     if (key === "exec") return (...args: unknown[]) => ordinaryWorkAllowed()
       ? value.apply(target, args) : Promise.reject(new Error(gate.inspect().blockers[0]?.detail ?? VERIFY));
-    if (key === "sendMessage" || key === "sendUserMessage" || key === "appendEntry") return (...args: unknown[]) =>
+    if (key === "sendMessage") return (...args: unknown[]) => {
+      if (!ordinaryWorkAllowed()) throw new AdmissionClosedError(gate.inspect().blockers[0]?.detail ?? VERIFY);
+      return value.apply(target, args);
+    };
+    if (key === "sendUserMessage" || key === "appendEntry") return (...args: unknown[]) =>
       ordinaryWorkAllowed() ? value.apply(target, args) : undefined;
     return value.bind(target);
   } });

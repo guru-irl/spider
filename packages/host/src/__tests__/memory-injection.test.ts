@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { mkdirSync, rmSync, existsSync, statSync, writeFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
@@ -265,7 +266,7 @@ describe("production memory injection", () => {
     repo.close();
     expect((a.inject("doctor-bound")).sections.spider_memory).toContain("BOUND-DOCTOR-FACT");
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const result = await tool.execute("bound-doc", { action: "control", command: "doctor" }, undefined, undefined,
       { cwd: a.cwd, sessionManager: { getSessionId: () => "doctor-bound" } });
     expect((result.details as { lines: string[] }).lines.join("\n")).toContain("memory repo: active=1 injected=1");
@@ -283,7 +284,7 @@ describe("production memory injection", () => {
     controlConfig("set", b.cwd, "memory.snapshotCharCap", 100);
     expect((a.inject("cap-bound"))?.sections.spider_memory ?? "").not.toContain("BBBB");
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const result = await tool.execute("bound-cap", { action: "control", command: "doctor" }, undefined, undefined,
       { cwd: a.cwd, sessionManager: { getSessionId: () => "cap-bound" } });
     const lines = (result.details as { lines: string[] }).lines.join("\n");
@@ -301,7 +302,7 @@ describe("production memory injection", () => {
     openDb(f.repoPath).close();
     expect((f.inject()).sections.spider_memory).toContain("GLOBAL-FACT");
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const result = await tool.execute("broken", { action: "control", command: "doctor", cwd: f.cwd }, {});
     const report = result.details as { lines: string[]; ok: boolean };
     expect(report.lines.join("\n")).toMatch(/memory global: active=1 injected=1/);
@@ -317,7 +318,7 @@ describe("production memory injection", () => {
     writeFileSync(f.repoPath, "not sqlite data");
     expect((f.inject()).sections.spider_memory).toContain("CORRUPT-FALLBACK");
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const result = await tool.execute("corrupt", { action: "control", command: "doctor", cwd: f.cwd }, {});
     const report = result.details as { lines: string[]; ok: boolean };
     expect(report.lines.join("\n")).toMatch(/memory global: active=1 injected=1/);
@@ -331,8 +332,8 @@ describe("production memory injection", () => {
     writeFileSync(f.repoPath, "not sqlite data");
     const commands: Record<string, any> = {};
     const messages: any[] = [];
-    spiderExtension({ registerTool() {}, on() {}, registerCommand(name: string, command: any) { commands[name] = command; },
-      sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool() {}, on() {}, registerCommand(name: string, command: any) { commands[name] = command; },
+      sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {} } as any), hostUnitPorts);
     await commands.doctor.handler("", { cwd: f.cwd, sessionManager: { getSessionId: () => "slash-corrupt" } });
     const report = messages.at(-1).details.result as { lines: string[]; ok: boolean }; 
     expect(report.lines.join("\n")).toMatch(/memory repo: unreadable: .*not a database/);
@@ -348,9 +349,9 @@ describe("production memory injection", () => {
       let tool: any;
       const commands: Record<string, any> = {};
       const messages: any[] = [];
-      spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {},
+      spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {},
         registerCommand(name: string, command: any) { commands[name] = command; },
-        sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {} } as any);
+        sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {} } as any), hostUnitPorts);
       const report = entry === "tool"
         ? (await tool.execute("partial", { action: "control", command: "doctor" }, undefined, undefined,
             { cwd: f.cwd, sessionManager: { getSessionId: () => "partial-session" } })).details as { lines: string[]; ok: boolean }
@@ -371,7 +372,7 @@ describe("production memory injection", () => {
     mkdirSync(join(f.cwd, ".git", "spider"), { recursive: true });
     writeFileSync(f.repoPath, "not sqlite data");
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const result = await tool.execute("context-doc", { action: "control", command: "doctor" }, undefined, undefined,
       { cwd: f.cwd, sessionManager: { getSessionId: () => "corrupt-context-session" } });
     const report = result.details as { lines: string[]; ok: boolean };
@@ -392,7 +393,7 @@ describe("production memory injection", () => {
     try {
       expect((f.inject()).sections.spider_memory).toContain("GLOBAL-DIR-FACT");
       let tool: any;
-      spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+      spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
       const result = await tool.execute("readonly", { action: "control", command: "doctor", cwd: f.cwd }, {});
       const report = result.details as { lines: string[]; ok: boolean };
       expect(report.lines.join("\n")).toMatch(/memory repo: unreadable: .*readonly database/);
@@ -414,12 +415,12 @@ describe("production memory injection", () => {
       const commands: Record<string, any> = {};
       const messages: any[] = [];
       let toolCallRegistrations = 0;
-      spiderExtension({
+      spiderExtension(withPiEvents({
         registerTool(t: any) { if (t.name === "spider") tool = t; },
         on(name: string) { if (name === "tool_call" && ++toolCallRegistrations === 3) throw new Error("routing registration failed"); },
         registerCommand(name: string, command: any) { commands[name] = command; },
         sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
-      } as any);
+      } as any), hostUnitPorts);
       const context = { cwd: f.cwd, sessionManager: { getSessionId: () => "absent-routing-session" } };
       const report = entry === "tool"
         ? (await tool.execute("absent-routing", { action: "control", command: "doctor" }, undefined, undefined, context)).details as { lines: string[]; ok: boolean }
@@ -438,14 +439,14 @@ describe("production memory injection", () => {
       const commands: Record<string, any> = {};
       const messages: any[] = [];
       let compactRegistrations = 0;
-      spiderExtension({
+      spiderExtension(withPiEvents({
         registerTool(t: any) { if (t.name === "spider") tool = t; },
         on(name: string) {
           if (name === "session_before_compact" && ++compactRegistrations === 3) throw new Error("organism registration failed");
         },
         registerCommand(name: string, command: any) { commands[name] = command; },
         sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
-      } as any);
+      } as any), hostUnitPorts);
       const context = { cwd: f.cwd, sessionManager: { getSessionId: () => "absent-organism-session" } };
       const report = entry === "tool"
         ? (await tool.execute("absent-organism", { action: "control", command: "doctor" }, undefined, undefined, context)).details as { lines: string[]; ok: boolean }
@@ -461,12 +462,12 @@ describe("production memory injection", () => {
       const commands: Record<string, any> = {};
       const messages: any[] = [];
       const handlers: Array<(...args: any[]) => unknown> = [];
-      spiderExtension({
+      spiderExtension(withPiEvents({
         registerTool(t: any) { if (t.name === "spider") tool = t; },
         on(name: string, handler: (...args: any[]) => unknown) { if (name === "session_before_compact") handlers.push(handler); },
         registerCommand(name: string, command: any) { commands[name] = command; },
         sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
-      } as any);
+      } as any), hostUnitPorts);
       expect(handlers).toHaveLength(4);
       const badContext = { cwd: f.cwd, sessionManager: { getSessionId: () => "setup-session", getBranch() { throw new Error("capture failed"); } } };
       for (const handler of handlers) { try { await handler({}, badContext); } catch { /* hooks are independent */ } }
@@ -519,7 +520,7 @@ describe("production memory injection", () => {
       } finally { unchanged.close(); }
     }
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const result = await tool.execute("legacy-doc", { action: "control", command: "doctor" }, undefined, undefined,
       { cwd: f.cwd, sessionManager: { getSessionId: () => "legacy-session" } });
     const lines = (result.details as { lines: string[] }).lines.join("\n");
@@ -537,7 +538,7 @@ describe("production memory injection", () => {
     db.prepare("INSERT INTO memory (uuid, category, content, status, source, created_at) VALUES ('older-staged', 'insight', 'pending review', 'staged', 'auto', 1)").run();
     db.close();
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const result = await tool.execute("old-schema", { action: "control", command: "doctor" }, undefined, undefined,
       { cwd: f.cwd, sessionManager: { getSessionId: () => "old-schema-session" } });
     const report = result.details as { lines: string[]; ok: boolean };
@@ -559,7 +560,7 @@ describe("production memory injection", () => {
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION - 1}`);
     db.close();
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const context = { cwd: f.cwd, sessionManager: { getSessionId: () => "migrate-session" } };
     const dry = await tool.execute("dry", { action: "control", command: "migrate" }, undefined, undefined, context);
     expect(dry.details.message).toContain(`v${SCHEMA_VERSION - 1} to v${SCHEMA_VERSION}`);
@@ -581,9 +582,9 @@ describe("production memory injection", () => {
       let tool: any;
       const commands: Record<string, any> = {};
       const messages: any[] = [];
-      spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {},
+      spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {},
         registerCommand(name: string, command: any) { commands[name] = command; },
-        sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {} } as any);
+        sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {} } as any), hostUnitPorts);
       const context = { cwd: f.cwd, sessionManager: { getSessionId: () => "newer-session" } };
       const report = entry === "tool"
         ? (await tool.execute("newer", { action: "control", command: "doctor" }, undefined, undefined, context)).details as { lines: string[]; ok: boolean }
@@ -599,7 +600,7 @@ describe("production memory injection", () => {
   it("doctor reports an absent repo as empty without creating or migrating it", async () => {
     const f = fixture("doctor-absent-repo");
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const result = await tool.execute("absent-doctor", { action: "control", command: "doctor" }, undefined, undefined,
       { cwd: f.cwd, sessionManager: { getSessionId: () => "absent-session" } });
     const report = result.details as { lines: string[]; ok: boolean };
@@ -619,7 +620,7 @@ describe("production memory injection", () => {
     repo.close();
     controlConfig("set", f.cwd, "memory.snapshotCharCap", 100);
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const result = await tool.execute("doc", { action: "control", command: "doctor", cwd: f.cwd }, {});
     expect(result.details).toBeDefined();
     const report = result.details as { lines: string[]; ok: boolean };
@@ -637,7 +638,7 @@ describe("production memory injection", () => {
     repo.close();
     controlConfig("set", f.cwd, "memory.snapshotCharCap", 100);
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     const result = await tool.execute("warn", { action: "control", command: "doctor", cwd: f.cwd }, undefined, undefined,
       { cwd: f.cwd, sessionManager: { getSessionId: () => "warning-session" } });
     const report = result.details as { lines: string[]; ok: boolean };
@@ -651,7 +652,7 @@ describe("production memory injection", () => {
     repo.prepare("INSERT INTO memory (uuid, category, content, status, source, created_at) VALUES ('large', 'insight', ?, 'active', 'user', 1)").run("L".repeat(600));
     repo.close();
     let tool: any;
-    spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any);
+    spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, on() {}, registerCommand() {}, registerMessageRenderer() {} } as any), hostUnitPorts);
     controlConfig("set", f.cwd, "memory.snapshotCharCap", "100");
     expect((f.inject()).sections.spider_memory).not.toContain("LLLL");
     const capped = await tool.execute("string", { action: "control", command: "doctor", cwd: f.cwd }, {});

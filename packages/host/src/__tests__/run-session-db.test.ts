@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -42,7 +43,7 @@ function fixture() {
     on: (name: string, handler: Function) => { (hooks[name] ??= []).push(handler); },
     registerTool: () => {}, registerCommand: () => {},
   };
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   const specs: ChildSpawnSpec[] = [];
   const kills: Array<ReturnType<typeof vi.fn>> = [];
   // Only the external process is faked; dispatch, RunStore, Runner, pipeline and DBs are real.

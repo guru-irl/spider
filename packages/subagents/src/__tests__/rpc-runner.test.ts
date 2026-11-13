@@ -142,7 +142,7 @@ it("persists later non-delivery without rewriting the successful steer tool resu
 it.each(["rpc", "print"] as const)("persists actual %s launch and intercom capability before spawning", async childMode => {
   const db = freshDb(); dbs.push(db); const store = new RunStore(db); let spec: any;
   const globalDb = openDbAt(testScratchPath(`rpc-global-${childMode}.db`), "global"); dbs.push(globalDb);
-  const runner = new Runner(db, "owner", testScratchPath("cwd"), { store, tailer: new RunEventTailer(db), scratchRoot: testScratchPath("rpc-runner"), dbPath: testScratchPath("fixture.db"), childMode, globalDb, intercomExtensions: ["intercom.ts"], spawn: (s: import("../pi-args").ChildSpawnSpec) => {
+  const runner = new Runner(db, "owner", testScratchPath("cwd"), { store, tailer: new RunEventTailer(db), scratchRoot: testScratchPath("rpc-runner"), dbPath: testScratchPath("fixture.db"), childMode, globalDb, spawn: (s: import("../pi-args").ChildSpawnSpec) => {
     spec = s;
     const runId = s.env.PI_SUBAGENT_RUN_ID;
     expect(globalDb.prepare("SELECT session_id,db_path FROM run_routes WHERE run_id=?").get(runId)).toEqual({ session_id: "owner", db_path: testScratchPath("fixture.db") });
@@ -192,13 +192,6 @@ it.each(["chain", "pipeline"])("shutdown cancels the live %s child, stops later 
   expect(new RunStore(db).listActive(mode)).toHaveLength(0);
 });
 
-it("continues launch with a run-detail warning when optional intercom resolution fails", async () => {
-  const db = freshDb(); dbs.push(db); const globalDb = openDbAt(testScratchPath("resolver-failure.db"), "global"); dbs.push(globalDb);
-  const handler = makeRunHandler({ resolveIntercom: async () => { throw new Error("ELOCKED fixture settings"); }, spawner: () => ({ wait: async () => ({ exitCode: 0, result: "report" }), kill() {}, detach() {} }) });
-  const result = await handler({ agent: "worker", task: "work" }, { db, globalDb, sessionId: "resolver", cwd: testScratchPath("cwd"), runDbPath: testScratchPath("fixture.db") });
-  expect(result.details.warning).toMatch(/cross-session steering unavailable/i);
-  expect(result.details.run.child_mode).toBe("rpc");
-});
 
 it.each(["foreground", "background"])("a %s launch-time pid write failure kills the spawned child and finalizes failed", async mode => {
   const db = freshDb(); dbs.push(db); const store = new RunStore(db); let killed = false;

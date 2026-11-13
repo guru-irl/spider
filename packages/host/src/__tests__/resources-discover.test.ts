@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 // Task 16 regression: booting the host extension must wire resources_discover to
 // contribute the superpowers baseline skills dir (replacing the Phase-0 no-op).
 // It MUST fail if the placeholder still returns undefined. VITEST is set, so the
@@ -43,7 +44,7 @@ afterAll(() => {
 describe("resources_discover", () => {
   it("contributes both bundled skill collections", async () => {
     const { pi, handlers } = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
 
     const discover = handlers.get("resources_discover");
     expect(discover, "a resources_discover handler is registered").toBeTruthy();

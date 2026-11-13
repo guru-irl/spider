@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, describe, expect, it } from "vitest";
 import { paths } from "@spider/db-core";
 import { join } from "node:path";
@@ -34,7 +35,7 @@ function toolFixture() {
   paths.globalRoot = join(cwd, "global");
   let tool: any;
   const pi: any = { registerTool: (t: any) => { if (t.name === "spider") tool = t; }, registerCommand: () => {}, registerMessageRenderer: () => {}, registerRenderer: () => {}, registerShortcut: () => {}, on: () => pi, sendMessage: () => {}, addMessage: () => {} };
-  spiderExtension(pi);
+  spiderExtension(withPiEvents(pi), hostUnitPorts);
   return { tool, pi };
 }
 

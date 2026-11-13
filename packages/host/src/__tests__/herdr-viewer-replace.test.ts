@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
@@ -63,7 +64,7 @@ async function fixture() {
   const ctx = { cwd: h.directories.local, mode: 'tui', hasUI: true, isIdle: () => true, getContextUsage: () => undefined,
     ui: { notify() {}, setWidget(name: string, factory: unknown) { if (name === 'spider-herdr-status' && typeof factory === 'function') factory({ terminal }); }, setFooter() {}, setStatus() {} }, sessionManager: manager };
   const mounting = vi.spyOn(mountModule, 'mountHerdr').mockImplementation((api, options) => realMount(api, { ...options, packageRoot: h.root }));
-  try { spiderExtension(pi as never); } finally { mounting.mockRestore(); }
+  try { spiderExtension(withPiEvents(pi as never), hostUnitPorts); } finally { mounting.mockRestore(); }
   const emit = async (name: string, event = {}) => { for (const handler of [...hooks.get(name) ?? []]) await handler(event, ctx); };
   await emit('session_start');
   const feed = JSON.parse(await readFile(join(h.directories.global, 'herdr/sessions', h.owner!.sessionId, 'session.json'), 'utf8'));

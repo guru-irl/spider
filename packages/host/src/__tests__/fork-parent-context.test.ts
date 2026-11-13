@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -22,7 +23,7 @@ function fixture() {
   setGlobalDbPathForTests(join(root, "global.db"));
   const tools: any[] = [];
   const pi = { on() {}, registerTool: (tool: any) => tools.push(tool), registerCommand() {}, sendMessage() {} };
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   const specs: ChildSpawnSpec[] = [];
   vi.spyOn(spawning, "defaultSpawner").mockImplementation(spec => {
     specs.push(spec);

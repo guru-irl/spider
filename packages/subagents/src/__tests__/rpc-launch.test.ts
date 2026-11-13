@@ -1,9 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { buildChildSpawnSpec } from "../pi-args";
 import { looksLikeSubagent } from "../process-identity";
 
+it('bundled RPC children have a stable intercom identity without settings lookup', () => {
+  const s = spec();
+  expect(s.argv.filter(value => value === '--extension')).toHaveLength(1);
+  expect(s.argv).toContain('--no-extensions');
+  expect(s.env.PI_INTERCOM_STABLE_ID).toBe('spider-abcdef12-1234-4000-8000-000000000000');
+  expect(s.env.PI_SUBAGENT_INTERCOM_SESSION_NAME).toBe('fix-it-abcdef12');
+}, 5000);
+it('explicit legacy child extension paths are refused before spawn', () => {
+  expect(() => buildChildSpawnSpec({ runId: 'fixture', sessionId: 'parent', agent: 'worker', task: 'work', context: 'fresh', parentSessionId: 'parent', childIndex: 0,
+    scratchRoot: resolve('.spider/scratch/rpc-legacy'), dbPath: 'fixture.db', subagentOnlyExtensions: ['/fixture/pi-intercom/index.ts'] })).toThrow('Legacy intercom extension');
+}, 5000);
+it('renamed legacy package directories are refused before spawn', () => {
+  const scratch = resolve('.spider/scratch/rpc-legacy-directory'); mkdirSync(scratch, { recursive: true });
+  const directory = mkdtempSync(join(scratch, 'renamed-')); roots.push(directory);
+  writeFileSync(join(directory, 'package.json'), JSON.stringify({ name: 'pi-intercom' }));
+  writeFileSync(join(directory, 'index.ts'), 'export default function() {}');
+  expect(() => buildChildSpawnSpec({ runId: 'fixture', sessionId: 'parent', agent: 'worker', task: 'work', context: 'fresh', parentSessionId: 'parent', childIndex: 0,
+    scratchRoot: directory, dbPath: 'fixture.db', subagentOnlyExtensions: [directory] })).toThrow('Legacy intercom extension');
+}, 5000);
 const roots: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function spec(mode?: "rpc" | "print") {

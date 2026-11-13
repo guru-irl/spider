@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 // packages/host/src/__tests__/doctor-organism-error-redaction.test.ts
 //
 // A-M4 (branch-review A-architecture.md): `extension.ts`'s two organism-diagnostics
@@ -80,7 +81,7 @@ describe("doctor's organism-diagnostics fallback lines redact credentials (A-M4)
     assertPostOpenIsolation(probe, EXPECTED, { requireRepoKey: true });
 
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools["spider"] as { execute(id: string, args: unknown, signal?: AbortSignal, onUpdate?: unknown, ctx?: unknown): Promise<unknown> };
     const res = await tool.execute("c-am4", args, undefined, undefined,
       { cwd: dir, sessionManager: { getSessionId: () => "redact-session" } }) as { details: { ok?: boolean; lines?: string[] } };

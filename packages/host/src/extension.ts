@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { registerIntercomOnce, intercomConflict, type IntercomBrokerPort } from "@spider/intercom";
 import { stripVTControlCharacters } from "node:util";
 import { isMainThread, parentPort, workerData } from "node:worker_threads";
 import { bootUsageWorker } from "./usage/worker-entry.js";
@@ -391,6 +392,7 @@ async function handleControl(args: SpiderArgs, ctx?: DoctorActionCtx, doctorSnap
     case "doctor": {
       const report = controlDoctor(cwd, ctx?.sessionId ?? doctorSessionId, loadedBundle, await (usageService ?? (ctx ? usageServices.get(ctx.pi as object) : undefined))?.doctor());
       report.lines.push(...piSettingsDoctorLines((ctx?.pi ?? doctorPi) as ExtensionAPI, ctx?.parentModel));
+      if (intercomConflict((ctx?.pi ?? doctorPi) as ExtensionAPI)) { report.ok = false; report.lines.push("- intercom-extension-conflict"); }
       if (ctx) {
         // Routing setup failures remain visible independently of organism diagnostics.
         const routingError = routingSetupErrors.get(ctx.pi as object);
@@ -868,7 +870,7 @@ async function dispatchWithDoctorSnapshot(
   }
 }
 
-export default function spiderExtension(hostPi: PiToolAPI): void {
+export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
   const admission = registerAdmission(hostPi as unknown as ExtensionAPI, createAdmissionPorts());
   // Pi reads context files after extension factories but before session_start.
@@ -876,6 +878,7 @@ export default function spiderExtension(hostPi: PiToolAPI): void {
   prepareManagedGuidance({ skipAgentsMd: process.env.VITEST === "true" });
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
   const pi = protectAdmissionApi(hostPi as unknown as ExtensionAPI, admission) as unknown as PiToolAPI;
+  registerIntercomOnce(pi as unknown as ExtensionAPI, ports.intercomBroker);
   const setForHost = <T>(map: WeakMap<object, T>, value: T) => { map.set(hostPi, value); map.set(pi, value); };
   const clearForHost = <T>(map: WeakMap<object, T>, value: T) => { for (const key of [hostPi, pi]) if (map.get(key) === value) map.delete(key); };
   const loopCommand = registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath(), ordinaryWorkAllowed);

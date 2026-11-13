@@ -78,7 +78,7 @@ export function makeMessageHandler(): (args: any, ctx: any) => Promise<{ content
           return { content: `Message to child ${run.id}: ${delivery}.${delivery === "consumed by an extension, not delivered" ? " The input was consumed in the child, not delivered to the model." : ""}${queuedGuidance}${delivery === "no reply yet, delivery unknown" ? ack.error ? " The steer was not delivered and the run has ended. Start a fresh run if the instruction still matters." : " The steer was written and may still be delivered; do not resend." : ""}${ack.transformed ? " Child input transformed the text." : ""}${ack.error ? ` ${ack.error}` : ""}`, isError: false,
             details: { ...ack, runId: run.id, accepted: delivery !== "no reply yet, delivery unknown", delivered: ack.delivered === true, queued: ack.queued === true && !ack.error, delivery, recipientAcknowledged: false, ...(warning ? { warning } : {}) } };
         }
-        if (!run.intercom_session) return refuse(`This run is owned by session ${run.session_id}; steer it from there, or install pi-intercom before launching a new run.`, run.id);
+        if (!run.intercom_session) return refuse(`This run is owned by session ${run.session_id}; steer it from there, or check bundled intercom readiness and launch a new run.`, run.id);
         destination = run.intercom_session;
       }
       const res = await sendIntercom(ctx.pi, ctx.globalDb, {

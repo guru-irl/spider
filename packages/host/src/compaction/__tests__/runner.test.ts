@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from '../../__tests__/fixtures/pi-events';
 import { test, expect, vi } from 'vitest';
 import { setup, pi, summaryCalls } from './harness.js';
 import spiderExtension from '../../extension.js';
@@ -23,7 +24,7 @@ for (const child of [false, true]) test(`host mounts compaction in ${child ? 'ch
   const f = setup(child); const ext = extension();
   const api: any = { on: (name: string, fn: any) => ext.handlers.set(name, [...(ext.handlers.get(name) ?? []), fn]),
     registerTool: () => {}, registerCommand: () => {}, getThinkingLevel: () => 'low' };
-  spiderExtension(api);
+  spiderExtension(withPiEvents(api), hostUnitPorts);
   if (child) { expect(ext.handlers.get('turn_end') ?? []).toHaveLength(1); expect(summaryCalls).toHaveLength(0); }
   else {
     const handlers = ext.handlers.get('session_before_compact'); expect(handlers).toHaveLength(4);

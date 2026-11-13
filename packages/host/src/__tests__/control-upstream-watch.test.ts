@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 // Task 15 regression: `control upstream-watch` must route through handleControl to
 // @spider/superpowers (runUpstreamWatch / markReviewed), NOT fall through to the
 // "not yet implemented" default. Uses a scratch global DB + a real temp git repo
@@ -43,7 +44,7 @@ beforeAll(() => {
   setGlobalDbPathForTests(join(scratch, "global.db"));
   const pi: unknown = { on: () => undefined, registerTool: (t: typeof tool & { name: string }) => { if (t.name === "spider") tool = t; }, registerCommand: () => undefined, registerMessageRenderer: () => undefined };
   testPi = pi as Record<PropertyKey, unknown>;
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   const proj = join(scratch, "proj");
   mkdirSync(proj, { recursive: true });
   ctx = buildActionCtx(pi as never, { action: "control", cwd: proj } as SpiderArgs, "s-uw", proj);

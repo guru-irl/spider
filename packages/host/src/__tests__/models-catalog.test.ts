@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { describe, it, expect, afterEach } from "vitest";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -78,7 +79,7 @@ describe("control models is wired through the real tool", () => {
       registerCommand: () => {}, registerMessageRenderer: () => {}, registerRenderer: () => {},
       registerShortcut: () => {}, on: () => pi, sendMessage: () => {}, addMessage: () => {},
     };
-    spiderExtension(pi);
+    spiderExtension(withPiEvents(pi), hostUnitPorts);
     const r: any = await tool.execute("m2", { action: "control", command: "models" }, undefined, undefined, {
       cwd, sessionId: "s-model-sources", modelRegistry: mkRegistry([model("github-copilot", "claude-sonnet-5")]),
     });
@@ -105,7 +106,7 @@ describe("control models is wired through the real tool", () => {
       controlConfig("set", cwd, "models.defaults", { worker: "prov/global" }, "global");
       let tool: any;
       const pi: any = { registerTool: (t: any) => { if (t?.name === "spider") tool = t; }, registerCommand: () => {}, registerMessageRenderer: () => {}, registerRenderer: () => {}, registerShortcut: () => {}, on: () => pi, sendMessage: () => {}, addMessage: () => {} };
-      spiderExtension(pi);
+      spiderExtension(withPiEvents(pi), hostUnitPorts);
       const r: any = await tool.execute("m-clear", { action: "control", command: "models", op: "clear", key: "worker" }, undefined, undefined, { cwd, sessionId: "s-clear", modelRegistry: mkRegistry([]) });
       expect(r.details).toMatchObject({ ok: true, cleared: true, role: "worker" });
       expect(controlConfig("get", cwd, "models.defaults")).toEqual({ worker: "prov/global", reviewer: "prov/reviewer" });
@@ -119,7 +120,7 @@ describe("control models is wired through the real tool", () => {
       registerCommand: () => {}, registerMessageRenderer: () => {}, registerRenderer: () => {},
       registerShortcut: () => {}, on: () => pi, sendMessage: () => {}, addMessage: () => {},
     };
-    spiderExtension(pi);
+    spiderExtension(withPiEvents(pi), hostUnitPorts);
     const r: any = await tool.execute("m1", { action: "control", command: "models" }, undefined, undefined, {
       cwd: fixtureCwd,
       sessionId: "s-models",

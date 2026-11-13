@@ -205,7 +205,7 @@ describe("steerable child message routing", () => {
   it("truthfully refuses foreign RPC runs without intercom", async () => {
     const f = fixture();
     const result = await makeMessageHandler()({ to: f.id, message: "correction" }, { ...f, sessionId: "peer" });
-    expect(result.isError).toBe(true); expect(result.content).toMatch(/owned by session owner/i); expect(result.content).toContain("pi-intercom");
+    expect(result.isError).toBe(true); expect(result.content).toMatch(/owned by session owner/i); expect(result.content).toContain("bundled intercom readiness");
     expect(f.routed).toHaveLength(0);
   });
   it.each(["done", "failed", "cancelled", "paused", "queued", "print"])("refuses %s runs without writing a steer", async status => {

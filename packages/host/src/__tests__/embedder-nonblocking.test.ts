@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -48,9 +49,9 @@ beforeEach(() => {
   worktree = openDbAt(join(paths.globalRoot, `search-worktree-${randomUUID()}.db`), "worktree");
   dbs.push(repo, global, worktree);
   vi.stubEnv("PI_SUBAGENT_CHILD", "1"); // No background organism or model calls.
-  spiderExtension({ registerTool() {}, registerCommand() {}, registerMessageRenderer() {},
+  spiderExtension(withPiEvents({ registerTool() {}, registerCommand() {}, registerMessageRenderer() {},
     on(name: string, fn: (event: { reason: 'quit' }) => Promise<unknown>) { if (name === "session_shutdown") shutdown.push(fn); },
-  } as never);
+  } as never), hostUnitPorts);
 });
 afterEach(async () => {
   for (const hook of shutdown) await hook({ reason: 'quit' });

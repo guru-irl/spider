@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 // packages/host/src/__tests__/c1-memory-routing.test.ts
 // C1 critical defect: memory routing must go to repo tier, not worktree tier.
 // These tests verify the fix by driving through the REAL action path to catch
@@ -68,7 +69,7 @@ describe("C1: memory routing to repo tier", () => {
     mkdirSync(repoDir, { recursive: true });
     execSync("git init", { cwd: repoDir, stdio: "ignore" });
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools.spider as { execute(id: string, args: unknown, ctx: unknown): Promise<any> };
     await tool.execute("guard-write", { action: "remember", content: "no network routing fact", category: "convention", justification: "A durable repo rule for future agents.", cwd: repoDir }, {});
     const result = await tool.execute("guard-read", { action: "recall", query: "network routing", cwd: repoDir }, {});
@@ -88,7 +89,7 @@ describe("C1: memory routing to repo tier", () => {
     execSync("git config user.name test", { cwd: repoDir, stdio: "ignore" });
     
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools["spider"] as {
       execute(id: string, args: unknown, ctx: unknown): Promise<unknown>;
     };
@@ -156,7 +157,7 @@ describe("C1: memory routing to repo tier", () => {
     execSync(`git worktree add ${wtB}`, { cwd: wtA, stdio: "ignore" });
     
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools["spider"] as {
       execute(id: string, args: unknown, ctx: unknown): Promise<unknown>;
     };
@@ -203,7 +204,7 @@ describe("C1: memory routing to repo tier", () => {
     mkdirSync(dir, { recursive: true });
     execSync("git init", { cwd: dir, stdio: "ignore" });
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<any> };
     for (const args of [
       { action: "remember", justification: "Useful to other agents in future sessions; repo-specific unless global.", category: "insight", content: "removed scope fact" },
@@ -227,7 +228,7 @@ describe("C1: memory routing to repo tier", () => {
     try {
     expect(resolveProject(nonGitDir).repoKey).toBeUndefined();
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools["spider"] as {
       execute(id: string, args: unknown, ctx: unknown): Promise<unknown>;
     };
@@ -262,7 +263,7 @@ describe("C1: memory routing to repo tier", () => {
     mkdirSync(dir, { recursive: true });
     execSync("git init", { cwd: dir, stdio: "ignore" });
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<any> };
     const result = await tool.execute("g1", { action: "remember", justification: "Useful to other agents in future sessions; repo-specific unless global.", category: "preference", content: "global fact", scope: "global", cwd: dir }, {});
     expect(result.details.status).toBe("active");
@@ -280,7 +281,7 @@ describe("C1: memory routing to repo tier", () => {
     execSync("git config user.name test", { cwd: repoDir, stdio: "ignore" });
     
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools["spider"] as {
       execute(id: string, args: unknown, ctx: unknown): Promise<unknown>;
     };

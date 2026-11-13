@@ -28,7 +28,7 @@ describe('runner boundary and report', () => {
     expect(parseOptions(['--tier', 'headless', '--story', 'R02'], {}).ids).toEqual(['R02']);
     expect(profileIds.headless).toContain('R01'); expect(profileIds.headless).toContain('R02'); expect(profileIds.app).not.toContain('R02');
     expect(profileIds.ci).not.toContain('R01'); expect(profileIds.ci).not.toContain('R02');
-    expect(parseOptions(['--tier', 'headless', '--task', 'roam'], {}).ids).toEqual(['R01', 'R02']);
+    expect(parseOptions(['--tier', 'headless', '--task', 'roam'], {}).ids).toEqual(['R01', 'R02', 'R14']);
     expect(() => parseOptions(['--tier', 'app', '--task', 'roam'], { SPIDER_HERDR_APP_TESTS: '1', SPIDER_HERDR_TEST_DISPLAY_UUID: 'fixture' })).toThrow(/no stories/);
     expect(() => parseOptions(['--tier', 'ci', '--task', 'roam'], {})).toThrow(/no stories/);
     const matrix = buildMatrix('ci', profileIds.ci, []);
@@ -129,7 +129,8 @@ describe('runner boundary and report', () => {
       { id: 'S54', tier: 'ci', result: 'blocked', evidence: 'S54.json', reason: 'native-input' },
       { id: 'S55', tier: 'ci', result: 'failed', evidence: 'S55.json', reason: 'cleanup failed' },
     ]);
-    expect(matrix).toHaveLength(58);
+    expect(matrix).toHaveLength(59);
+    expect(matrix.find((x: { id: string }) => x.id === 'R14').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S01').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S56').result).toBe('failed');
     expect(complete(matrix, ['S52'])).toBe(true);

@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
@@ -28,11 +29,12 @@ function host(enabled?: boolean) {
   if (enabled !== undefined) controlConfig("set", root, "tools.structured", enabled, "global");
   const tools = new Map<string, any>(); const hooks = new Map<string, Function[]>();
   const pi = { tools, hooks, registerTool: (t: any) => tools.set(t.name, t), registerCommand() {}, on: (name: string, fn: Function) => hooks.set(name, [...hooks.get(name) ?? [], fn]) };
-  spiderExtension(pi as never); hosts.push(pi);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts); hosts.push(pi);
   for (const fn of hooks.get("session_start") ?? []) fn({ type: "session_start", reason: "startup" }, ctx());
   return pi;
 }
-const ctx = () => ({ cwd: root });
+const ctx = () => ({ cwd: root, sessionManager: { getSessionId: () => 'structured-fixture' }, model: undefined,
+  hasUI: false, isIdle: () => true, ui: { notify() {}, setStatus() {} } });
 const call = (pi: ReturnType<typeof host>, name: string, args: any) => {
   expect(pi.tools.has(name), `${name} must be registered`).toBe(true);
   return pi.tools.get(name).execute("direct", args, undefined, undefined, ctx());
@@ -47,7 +49,7 @@ function check(pi: ReturnType<typeof host>, name: string, result: any) {
 
 it("is off by default, registers no adapters, and leaves the spider declaration unchanged", () => {
   const off = host(); const explicit = host(false);
-  expect([...off.tools.keys()].sort()).toEqual(["edit", "spider", "write"]);
+  expect([...off.tools.keys()].sort()).toEqual(["edit", "intercom", "spider", "write"]);
   expect([...explicit.tools.keys()]).toEqual([...off.tools.keys()]);
   expect(explicit.tools.get("spider").description).toBe(off.tools.get("spider").description);
   expect(off.tools.get("spider").outputSchema).toBeUndefined();

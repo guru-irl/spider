@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -26,7 +27,7 @@ function host() {
     on: (name: string, handler: Function) => { hooks.set(name, [...(hooks.get(name) ?? []), handler]); },
     sendUserMessage: (prompt: string, options: unknown) => { messages.push({ prompt, options }); },
   };
-  spiderExtension(pi);
+  spiderExtension(withPiEvents(pi), hostUnitPorts);
   const ctx = { cwd: scratch, mode: "tui", isIdle: () => true, ui: { notify() {} }, sessionManager: { getEntries: () => entries, getSessionId: () => "host-test-session" } };
   return {
     ctx, messages, commands, entries,

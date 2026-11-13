@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -15,7 +16,7 @@ const event = (action: "warm" | "stop"): CacheWarmingDecisionEvent => ({
 
 function load() {
   const hooks = new Map<string, Handler>();
-  spiderExtension({ registerTool() {}, registerCommand() {}, on(name: string, handler: Handler) { hooks.set(name, handler); } } as never);
+  spiderExtension(withPiEvents({ registerTool() {}, registerCommand() {}, on(name: string, handler: Handler) { hooks.set(name, handler); } } as never), hostUnitPorts);
   return hooks.get("cache_warming_decision");
 }
 

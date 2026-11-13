@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 // packages/host/src/__tests__/extension.test.ts
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import { mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
@@ -107,7 +108,7 @@ describe("control config scoped edits", () => {
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, JSON.stringify(config));
     }
-    const pi = fakePi(); spiderExtension(pi as never);
+    const pi = fakePi(); spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools.spider as { execute: (...args: any[]) => Promise<any> };
     run = (args) => {
       const params = { action: "control", command: "config", cwd: scratch, ...args } as SpiderArgs;
@@ -260,7 +261,7 @@ describe("spider extension entry", () => {
       const bad = '{"ui.footer": true, }';
       writeFileSync(file, bad);
       try {
-        const pi = fakePi(); spiderExtension(pi as never);
+        const pi = fakePi(); spiderExtension(withPiEvents(pi as never), hostUnitPorts);
         const tool = pi._tools.spider as { execute: (...args: any[]) => Promise<any> };
         const run = (args: object) => tool.execute("bad-config", { ...args, cwd }, undefined, undefined, { cwd });
         const todo = await run({ action: "todo", op: "list" });
@@ -293,7 +294,7 @@ describe("spider extension entry", () => {
       const file = join(paths.globalRoot, "config.json");
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, '{"models.defaults": []}');
-      const pi = fakePi(); spiderExtension(pi as never);
+      const pi = fakePi(); spiderExtension(withPiEvents(pi as never), hostUnitPorts);
       const tool = pi._tools.spider as { execute: (...args: any[]) => Promise<any> };
       const run = (command: string) => tool.execute("invalid-defaults", { action: "control", command, op: "get", cwd: scratch }, undefined, undefined, { cwd: scratch });
       const config = await run("config");
@@ -315,7 +316,7 @@ describe("spider extension entry", () => {
       writeFileSync(file, '{"exec.enforce": false, }');
       const messages: string[] = [];
       const pi = { ...fakePi(), sendMessage: (message: { content: string }) => messages.push(message.content) };
-      spiderExtension(pi as never);
+      spiderExtension(withPiEvents(pi as never), hostUnitPorts);
       const command = pi._commands["exec-enforce"] as { handler: (arg: string, ctx: unknown) => Promise<void> };
       await command.handler("off", { cwd: scratch });
       await command.handler("", { cwd: scratch });
@@ -339,7 +340,7 @@ describe("spider extension entry", () => {
       mkdirSync(file, { recursive: true });
       const messages: string[] = [];
       const pi = { ...fakePi(), sendMessage: (message: { content: string }) => messages.push(message.content) };
-      spiderExtension(pi as never);
+      spiderExtension(withPiEvents(pi as never), hostUnitPorts);
       const command = pi._commands["exec-enforce"] as { handler: (arg: string, ctx: unknown) => Promise<void> };
       await command.handler("", { cwd: scratch });
       expect(messages[0]).toContain("ON");
@@ -360,7 +361,7 @@ describe("spider extension entry", () => {
         writeFileSync(file, JSON.stringify({ "exec.enforce": false, "models.defaults": invalid }));
         const messages: string[] = [];
         const pi = { ...fakePi(), sendMessage: (message: { content: string }) => messages.push(message.content) };
-        spiderExtension(pi as never);
+        spiderExtension(withPiEvents(pi as never), hostUnitPorts);
         const tool = pi._tools.spider as { execute: (...args: any[]) => Promise<any> };
         const run = (command: string) => tool.execute("invalid-defaults", { action: "control", command, op: "get", cwd: scratch }, undefined, undefined, { cwd: scratch });
         for (const text of [(await run("config")).details.errors.join(" "), (await run("models")).details.errors.join(" "), (await run("doctor")).details.lines.join(" ")]) {
@@ -390,7 +391,7 @@ describe("spider extension entry", () => {
       writeFileSync(file, '{"exec.enforce": "false"}');
       const messages: string[] = [];
       const pi = { ...fakePi(), sendMessage: (message: { content: string }) => messages.push(message.content) };
-      spiderExtension(pi as never);
+      spiderExtension(withPiEvents(pi as never), hostUnitPorts);
       const command = pi._commands["exec-enforce"] as { handler: (arg: string, ctx: unknown) => Promise<void> };
       await command.handler("", { cwd: scratch });
       expect(messages).toHaveLength(1);
@@ -405,7 +406,7 @@ describe("spider extension entry", () => {
 
   it("advertises run/query params in the tool schema so the model passes them (regression: empty tasks/0 tool calls)", () => {
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const props = (pi._tools.spider as { parameters: { properties: Record<string, any> } }).parameters.properties;
     for (const k of ["agent", "task", "tasks", "chain", "query", "content"]) {
       expect(props[k], `schema must advertise '${k}'`).toBeTruthy();
@@ -417,7 +418,7 @@ describe("spider extension entry", () => {
 
   it("advertises accepted thinking levels in the registered spider run schema for every mode", () => {
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const props = (pi._tools.spider as { parameters: { properties: Record<string, any> } }).parameters.properties;
     const levels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
     for (const thinking of [props.thinking, props.tasks.items.properties.thinking, props.chain.items.properties.thinking, props.pipeline.items.properties.thinking]) {
@@ -429,7 +430,7 @@ describe("spider extension entry", () => {
 
   it("describes top-level run overrides as single-only and every multi-run item as per-item", () => {
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const props = (pi._tools.spider as { parameters: { properties: Record<string, any> } }).parameters.properties;
     for (const key of ["model", "thinking"]) {
       expect(props[key].description).toMatch(/SINGLE/i);
@@ -442,7 +443,7 @@ describe("spider extension entry", () => {
 
   it("registers the 'spider' tool (with the 🕸 description) alongside the edit/write overrides", () => {
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     // Routing wires edit/write overrides at load, so there are now three tools.
     expect(new Set(Object.keys(pi._tools))).toEqual(new Set(["spider", "edit", "write"]));
     const spider = pi._tools["spider"] as { description: string };
@@ -451,7 +452,7 @@ describe("spider extension entry", () => {
 
   it("registers a handler for every contract hook", () => {
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     // tool_call is now in HOOK_NAMES for exec enforcement.
     // tool_result remains routing-only.
     expect(HOOK_NAMES).toContain("tool_call");
@@ -461,7 +462,7 @@ describe("spider extension entry", () => {
 
   it("wires routing at load: tool_call/tool_result hooks + edit/write tool overrides", () => {
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     expect(pi._hooks["tool_call"]).toBeTypeOf("function");
     expect(pi._hooks["tool_result"]).toBeTypeOf("function");
     expect(pi._tools["edit"]).toBeTruthy();
@@ -478,7 +479,7 @@ describe("spider extension entry", () => {
     // ctx object passed to tool.execute two lines down.
     assertPreActionIsolation({ action: "control", command: "doctor", cwd: dir } as SpiderArgs, "", undefined);
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools["spider"] as {
       execute(id: string, args: unknown, ctx: unknown): Promise<unknown>;
     };
@@ -508,7 +509,7 @@ describe("spider extension entry", () => {
       if (t.name === "edit") throw new Error("boom: edit tool registration failed");
       return base.registerTool(t);
     } };
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
 
     // Extension load itself must not throw, and the spider tool must still be usable.
     expect(pi._tools["spider"]).toBeTruthy();
@@ -529,7 +530,7 @@ describe("spider extension entry", () => {
     // that (sessionId="" for the bare `{}` ctx tool.execute receives below).
     assertPreActionIsolation({ action: "control", command: "migrate", cwd: dir } as SpiderArgs, "", undefined);
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools["spider"] as { execute(id: string, args: unknown, ctx: unknown): Promise<unknown> };
     const res = await tool.execute("cm", { action: "control", command: "migrate", cwd: dir }, {}) as { content: { text: string }[]; details: { dryRun?: boolean; applied?: boolean } };
     // Should return dry-run result by default
@@ -564,7 +565,7 @@ describe("spider extension entry", () => {
     setGlobalDbPathForTests(join(scratch, `g-ctx-${Date.now()}.db`));
     const dir = join(scratch, "proj-ctx"); mkdirSync(dir, { recursive: true });
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const ctx = buildActionCtx(pi as never, { action: "recall", cwd: dir }, "s-1");
     // Track BEFORE asserting so a thrown assertion still leaves all three handles
     // registered for afterEach cleanup, then verify this real ctx's projectKey/repoKey
@@ -595,7 +596,7 @@ describe("spider extension entry", () => {
     setGlobalDbPathForTests(join(scratch, `g-cwd-${Date.now()}.db`));
     const dirA = join(scratch, "cwd-a"); mkdirSync(dirA, { recursive: true });
     const dirB = join(scratch, "cwd-b"); mkdirSync(dirB, { recursive: true });
-    const pi = fakePi(); spiderExtension(pi as never);
+    const pi = fakePi(); spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const c1 = buildActionCtx(pi as never, { action: "recall", cwd: dirA }, "s", dirB);
     probeHandles.push(c1.db, c1.repoDb, c1.globalDb);
     assertPostOpenIsolation(c1, EXPECTED, { requireRepoKey: true });
@@ -610,7 +611,7 @@ describe("spider extension entry", () => {
     gitInitScratch();
     setGlobalDbPathForTests(join(scratch, `g-todo-${Date.now()}.db`));
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const todo = getAction("todo");
     expect(todo).toBeTypeOf("function");
     const dbPath = join(scratch, `todo-${Date.now()}.db`);
@@ -633,7 +634,7 @@ describe("spider extension entry", () => {
     // path the action follows, not an explicit-cwd shortcut that would bypass it.
     assertPreActionIsolation({ action: "todo" } as SpiderArgs, "s-fresh", dir);
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const cmd = pi._commands["todos"] as { description: string; handler: (a: string, c: unknown) => Promise<void> };
     expect(cmd).toBeTruthy();
     expect(cmd.description).toBeTypeOf("string");
@@ -649,7 +650,7 @@ describe("spider extension entry", () => {
     const dir = join(scratch, "proj-skill"); mkdirSync(dir, { recursive: true });
     assertFixtureIsolation(dir);
     const pi = fakePi();
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const tool = pi._tools["spider"] as {
       execute(id: string, args: unknown, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<unknown>;
     };

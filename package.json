@@ -33,6 +33,11 @@
   "files": [
     "dist",
     "scripts/postinstall.mjs",
+    "scripts/link.mjs",
+    "scripts/dev-link.mjs",
+    "scripts/link-roam.mjs",
+    "scripts/extension-shim.mjs",
+    "scripts/pi-agent-dir.mjs",
     "packages/superpowers/skills",
     "packages/pstack/skills",
     "packages/pstack/LICENSE",

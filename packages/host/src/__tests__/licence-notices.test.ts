@@ -132,6 +132,8 @@ SOFTWARE.`;
     const requiredLicences = ["LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE"];
     const files = [
       "dist/extension.js", "dist/dashboard/index.html", "README.md",
+      "dist/roam/cli.mjs", "dist/roam/supervisor.mjs",
+      "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs",
       "dist/dashboard/assets/index-12345678.js", "dist/dashboard/assets/index-12345678.css",
       ...requiredLicences, ...skillFiles,
     ];

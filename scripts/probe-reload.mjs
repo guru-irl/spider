@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import vm from "node:vm";
 import { syncBuiltinESMExports } from "node:module";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -35,6 +35,12 @@ vm.runInThisContext = function(source, options) {
 };
 syncBuiltinESMExports();
 try {
+  const packEnv = { ...process.env, npm_config_cache: join(fixture, "npm-cache"), npm_config_logs_dir: join(fixture, "npm-logs"), npm_config_update_notifier: "false" };
+  const [pack] = JSON.parse(execFileSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", fixture], { cwd: root, env: packEnv, encoding: "utf8" }));
+  const unpacked = join(fixture, "unpacked");
+  mkdirSync(unpacked);
+  execFileSync("tar", ["-xzf", join(fixture, pack.filename), "-C", unpacked]);
+  const packagedScripts = join(unpacked, "package", "scripts");
   for (const [loaderName, pi] of loaders) {
     for (const variant of ["stable", "dev"]) {
       const install = join(fixture, loaderName, variant, "install");
@@ -44,9 +50,8 @@ try {
       mkdirSync(join(install, "scripts"), { recursive: true });
       mkdirSync(join(install, "dist"), { recursive: true });
       mkdirSync(cwd, { recursive: true });
-      for (const script of ["link.mjs", "dev-link.mjs", "extension-shim.mjs", "pi-agent-dir.mjs"]) {
-        const source = join(root, "scripts", script);
-        if (existsSync(source)) copyFileSync(source, join(install, "scripts", script));
+      for (const script of readdirSync(packagedScripts).filter(name => name.endsWith(".mjs"))) {
+        copyFileSync(join(packagedScripts, script), join(install, "scripts", script));
       }
       execFileSync(process.execPath, [join(install, "scripts", variant === "stable" ? "link.mjs" : "dev-link.mjs")], {
         cwd, env: { ...process.env, HOME: home, USERPROFILE: home, PI_CODING_AGENT_DIR: agent }, stdio: "pipe",

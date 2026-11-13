@@ -1,16 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Db } from "@spider/db-core";
+import { CursorMismatchError } from "@spider/db-core/roam/apply";
 import { assertBatchHeader, isRoamUuid, parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
 import type { ApplyReceipt, JsonObject, StoreKey } from "@spider/db-core/roam/types";
 import { pullArtifact, readManifestPages, stageArtifact, transferArtifact } from "./artifacts";
 import { barrierWatermarks } from "./barriers";
 import type { Clock, Journal, Operation, Outcome, Peer, RoamConfig, StorePort, SyncService, Transport } from "./contracts";
 import { assignInitialHome, markInitialConflict } from "./homes";
-import { readOnlyOperation, releaseJournalArtifact } from "./journal";
+import { readOnlyOperation, releaseJournalArtifact, type ArtifactJournal } from "./journal";
 import { isPeerFailureReason, peerFailureReason } from "./peer-errors";
 import { loadPeerState, receiptMatches, savePeerState, sizedBytes, type PeerState, type PendingBatch } from "./peer-state";
-import { defaultStagingRoot } from "./staging";
+import { acquireTransferLease, defaultStagingRoot, openOutgoingStaging, openStaging } from "./staging";
 import { removeOutgoing, type StoreAdapter } from "./stores";
 
 interface Ports {
@@ -83,6 +84,7 @@ export function createSync(ports: Ports): SyncAdapter {
     }
     if (!object(decoded) || ![0, 1, 2, 3].includes(decoded.code as number) || decoded.operationId !== id) throw new SyncFailure(1, "Invalid peer outcome");
     if (decoded.code !== 0) {
+      if (kind === "receipt" && decoded.code === 3 && decoded.reason === "Receipt is pending") return { pending: true };
       const reason = typeof decoded.reason === "string" && /^(?:Roaming todo collision between |Roaming row |Mapping fenced replica |Staging full \(quota\) at )/.test(decoded.reason)
         ? decoded.reason : `Peer ${kind} refused`;
       throw new SyncFailure(decoded.code as 1 | 2 | 3, reason, id);
@@ -128,6 +130,31 @@ export function createSync(ports: Ports): SyncAdapter {
     if (receipt) state.targetBytes = sizedBytes(state.targetBytes, receipt.applyMs, config.limits.applyTargetMs, config.limits.targetBatchBytes);
     delete state.pending[`${direction}:${key}`]; savePeerState(globalDb, peer.machineId, state);
   }
+  function discardPending(peer: Peer, pending: PendingBatch): void {
+    const root = defaultStagingRoot();
+    const release = acquireTransferLease(root, peer.machineId, config.limits.peerConcurrency);
+    if (!release) throw new SyncFailure(3, "Superseded artifact cleanup is waiting for a peer slot", pending.id);
+    try {
+      if (existsSync(`${root}/incoming/${peer.machineId}/quota.db`)) {
+        const staging = openStaging(root, peer.machineId, config.limits);
+        try { staging.discard(pending.id, () => true); } finally { staging.close(); }
+      }
+      if (existsSync(`${root}/outgoing/quota.db`)) {
+        const staging = openOutgoingStaging(root, config.limits, false);
+        try { staging.remove(pending.id); } finally { staging.close(); }
+      }
+      if (pending.batch) discard(pending.batch.file);
+      const artifactJournal = journal as Partial<ArtifactJournal>;
+      for (const id of [pending.id, `accept-${pending.id}`, `pull-${pending.id}`, `send-${pending.id}`, `import-${pending.id}`]) artifactJournal.cancel?.(id);
+      releaseJournalArtifact(journal, pending.id);
+    } finally { release(); }
+  }
+  async function supersededPull(peer: Peer, key: StoreKey, state: PeerState, pending: PendingBatch, value: JsonObject): Promise<void> {
+    const descriptor = value.artifact;
+    if (object(descriptor) && typeof descriptor.sha256 === "string")
+      await remote(peer, "release-export", { exportId: pending.id, sha256: descriptor.sha256 }, `release-${pending.id}`);
+    discardPending(peer, pending); complete(state, peer, "pull", key);
+  }
   async function pull(peer: Peer, key: StoreKey, state: PeerState, results: Outcome<ApplyReceipt>[]) {
     const info = await remote(peer, "inventory", { storeKey: key }); handshake(info, peer);
     if (info.storeKey !== key || !isRoamUuid(info.stream) || info.roamable !== true) throw new SyncFailure(1, "Peer store is quarantined or invalid");
@@ -139,6 +166,11 @@ export function createSync(ports: Ports): SyncAdapter {
       const header = value.header;
       if (header.storeKey !== key || header.senderMachine !== peer.machineId || header.senderStream !== info.stream || header.after !== pending.after || header.batchId !== pending.id) throw new SyncFailure(1, "Conflicting export header");
       pending.exported = value; savePeerState(globalDb, peer.machineId, state);
+      const candidate = { header, file: "", sha256: object(value.artifact) ? value.artifact.sha256 as string : "", byteLength: object(value.artifact) ? value.artifact.byteLength as number : 0 };
+      const currentReceipt = () => (stores as Partial<StoreAdapter>).receipt?.(key, candidate) ?? null;
+      if (stores.cursor(key, peer.machineId, header.senderStream) !== pending.after && !currentReceipt()) {
+        await supersededPull(peer, key, state, pending, value); continue;
+      }
       if (header.count === 0) { if (value.artifact !== null) throw new SyncFailure(1, "Invalid empty export"); releaseJournalArtifact(journal, pending.id); complete(state, peer, "pull", key); break; }
       const artifact = await manifest(peer, value, pending);
       const receiptId = `accept-${pending.id}`;
@@ -155,7 +187,11 @@ export function createSync(ports: Ports): SyncAdapter {
           file = pulled.value.file;
           record(receiptId, "staged", { file });
         }
-        receipt = await stores.accept(key, { header, file, sha256: artifact.sha256, byteLength: artifact.byteLength });
+        try { receipt = await stores.accept(key, { header, file, sha256: artifact.sha256, byteLength: artifact.byteLength }); }
+        catch (error) {
+          if (!(error instanceof CursorMismatchError) || stores.cursor(key, peer.machineId, header.senderStream) === pending.after || currentReceipt()) throw error;
+          await supersededPull(peer, key, state, pending, value); continue;
+        }
         if (!receiptMatches({ ...receipt }, header, artifact.sha256)) throw new SyncFailure(1, "Invalid committed local receipt");
         record(receiptId, "done", { value: { ...receipt } });
       }
@@ -177,8 +213,15 @@ export function createSync(ports: Ports): SyncAdapter {
       const batch = pending.batch ?? await stores.export(key, pending.after, pending.targetBytes, pending.id);
       if (batch.header.senderMachine !== config.machineId || batch.header.storeKey !== key || batch.header.senderStream !== (pending.batch?.header.senderStream ?? stream)) throw new SyncFailure(1, "Local store identity does not match");
       pending.batch = batch; savePeerState(globalDb, peer.machineId, state);
-      if (batch.header.count === 0) { discard(batch.file); complete(state, peer, "push", key); break; }
       const prior = journal.read(`import-${pending.id}`).find(row => row.action === "done")?.result.value;
+      if (cursor !== pending.after && !(object(prior) && receiptMatches(prior, batch.header, batch.sha256))) {
+        const committed = await remote(peer, "receipt", { storeKey: key, sourceMachine: config.machineId, batchId: pending.id });
+        if (committed.pending === true) {
+          discardPending(peer, pending); complete(state, peer, "push", key); continue;
+        }
+        if (!receiptMatches(committed, batch.header, batch.sha256)) throw new SyncFailure(1, "Conflicting peer apply receipt");
+      }
+      if (batch.header.count === 0) { discard(batch.file); complete(state, peer, "push", key); break; }
       if (object(prior) && receiptMatches(prior, batch.header, batch.sha256)) {
         removeOutgoing(defaultStagingRoot(), pending.id, config, () => true);
         releaseJournalArtifact(journal, pending.id);

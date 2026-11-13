@@ -482,6 +482,7 @@ export interface StagingStore {
   /** Replace the reconstructed file with the verified validation copy and release its reservation. */
   promoteValidationCopy(manifest: ArtifactManifest, attemptId: string, file: string): string;
   release(id: string, operationId: string): void;
+  discard(id: string, inactive: () => boolean): void;
   sweep(now: number, hasJournalReference?: (artifactId: string) => boolean): string[];
   removeAfterReceipt(manifest: ArtifactManifest, receipt: ArtifactReceipt, verifyReceipt: (receipt: ArtifactReceipt) => boolean): void;
   close(): void;
@@ -917,6 +918,15 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
       db.raw.transaction(() => {
         const changed = db.prepare("UPDATE staging_claims SET referenced = 0 WHERE artifact = ? AND operation_id = ? AND referenced = 1").run(id, operationId);
         if (changed.changes) touch(id);
+      }).immediate();
+    },
+    discard(id, inactive) {
+      artifactId(id);
+      if (inactive() !== true) throw new Error("Artifact is still active");
+      db.raw.transaction(() => {
+        discardFiles(id);
+        db.prepare("DELETE FROM staging_versions WHERE artifact=?").run(id);
+        db.prepare("DELETE FROM staging_artifacts WHERE id=?").run(id);
       }).immediate();
     },
     sweep(now, hasJournalReference) {

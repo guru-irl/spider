@@ -105,6 +105,18 @@ it("bounded incoming sweeps advance past retained claims after reopening", () =>
   try { expect(store.sweep(now, id => id !== "zz-orphan")).toEqual(["zz-orphan"]); }
   finally { store.close(); }
 }, 5000);
+it("explicit cancellation discards only the inactive incoming artifact", () => {
+  const root = fixture(), store = openStaging(root, peer, DEFAULT_LIMITS), manifest = makeManifest("cancelled", Buffer.from("abcd"));
+  try {
+    store.declare(manifest, "cancelled-transfer"); store.receive(manifest, 0, Buffer.from("abcd"));
+    const file = store.assemble(manifest); store.declare(makeManifest("held", Buffer.alloc(0)), "held-transfer");
+    expect(() => store.discard(manifest.id, () => false)).toThrow(/active/i);
+    expect(existsSync(file)).toBe(true);
+    store.discard(manifest.id, () => true);
+    expect(existsSync(file)).toBe(false);
+    expect(store.manifestFor("held-transfer").id).toBe("held");
+  } finally { store.close(); }
+}, 5000);
 it("a proved inactive abandoned incoming claim can be swept", () => {
   const root = fixture(), bytes = Buffer.from("abcd"), manifest = makeManifest("abandoned", bytes);
   const limits = { ...DEFAULT_LIMITS, retentionMs: 1000 }, store = openStaging(root, peer, limits);

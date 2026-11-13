@@ -132,6 +132,7 @@ export interface ArtifactJournal extends Journal {
   hasArtifactReference(value: string): boolean;
   referenceCheck(): (value: string) => boolean;
   releaseArtifact(value: string): void;
+  cancel(id: string): void;
   prune(now: number, retentionMs: number, retained?: (value: string) => boolean): string[];
 }
 type ReferenceRow = { operation_id: string; kind: string; result_json: string | null; references_json: string | null; released: number; completed_at: number | null };
@@ -233,6 +234,15 @@ export function openJournal(file: string): ArtifactJournal {
       withDatabase(file, db => db.raw.transaction(() => {
         for (const row of db.prepare("SELECT * FROM roam_operations WHERE result_json IS NOT NULL AND released=0").all() as ReferenceRow[])
           if (terms.some(term => rowReferences(db, row).has(term))) db.prepare("UPDATE roam_operations SET released=1 WHERE operation_id=?").run(row.operation_id);
+      }).immediate());
+    },
+    cancel(id) {
+      withDatabase(file, db => db.raw.transaction(() => {
+        const row = db.prepare("SELECT result_json FROM roam_operations WHERE operation_id=?").get(id) as { result_json: string | null } | undefined;
+        if (!row || row.result_json !== null) return;
+        const result = objectJson({ cancelled: true });
+        db.prepare("INSERT INTO roam_operation_actions(operation_id,action,result_json) VALUES (?,'done',?)").run(id, result);
+        db.prepare("UPDATE roam_operations SET result_json=?,completed_at=?,released=1 WHERE operation_id=?").run(result, Date.now(), id);
       }).immediate());
     },
     prune(now, retentionMs, retained = () => false) {

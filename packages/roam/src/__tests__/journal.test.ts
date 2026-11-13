@@ -96,6 +96,16 @@ it("retention prunes released operations and actions but preserves pending recov
   expect(journal.read(operation.id)).toEqual([]);
   expect(journal.begin({ ...operation, id: "pending", args: { artifactId: "pending-artifact" } }).kind).toBe("pending");
 }, 5000);
+it("cancelling a superseded operation releases pending evidence but never replaces a committed result", () => {
+  const { file } = fixture(), journal = openJournal(file);
+  journal.begin(operation); journal.record(operation.id, "staged", { artifactId: "artifact-1" });
+  journal.cancel(operation.id);
+  expect(journal.begin(operation)).toMatchObject({ kind: "done", result: { cancelled: true } });
+  expect(journal.hasArtifactReference("artifact-1")).toBe(false);
+  const committed = { ...operation, id: "committed" };
+  journal.begin(committed); journal.record(committed.id, "done", { through: 4 }); journal.cancel(committed.id);
+  expect(journal.begin(committed)).toMatchObject({ kind: "done", result: { through: 4 } });
+}, 5000);
 it("journal pruning is bounded and respects retained sync references", () => {
   const { file } = fixture(), journal = openJournal(file);
   for (let i = 0; i < 260; i++) { const id = `read-${i}`; journal.begin({ ...operation, id, kind: "cursor", args: {} }); journal.record(id, "done", { value: { lastSeq: 0 } }); }

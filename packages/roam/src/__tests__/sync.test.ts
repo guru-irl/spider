@@ -218,6 +218,58 @@ it("restart after source deletion reconciles the committed import", async () => 
   expect(result.every(row => row.code === 0)).toBe(true);
   expect(f.calls.filter(call => call.operation.kind === "import")).toHaveLength(importsBefore);
 }, 5000);
+it.each(["pending", "split", "accept"] as const)("a pull resumes without lost or repeated changes when mapping publishes at %s", async point => {
+  const f = fixture(); f.seed();
+  expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
+  f.seed(BOX, "session-b", "second");
+  const remote = f.remotes.get(BOX)!, key = remote.worktree.storeKey;
+  const checkout = join(f.global.root, "mapped-pull"); mkdirSync(checkout, { mode: 0o700 });
+  const map = () => mapWorkspace(f.global.db, { repoKey: "fixture-repo", workspaceId: "workspace-0", path: checkout });
+  let changed = false;
+  const accept = f.stores.accept.bind(f.stores);
+  if (point !== "split") vi.spyOn(f.stores, "accept").mockImplementation(async (store, batch) => {
+    if (store === key && !changed) {
+      changed = true;
+      if (point === "pending") throw Object.assign(new Error("apply busy"), { retryable: true });
+      await map();
+    }
+    return accept(store, batch);
+  });
+  if (point === "split") {
+    let armed = false;
+    f.hook(async (_peer, operation) => {
+      if (operation.kind === "export" && operation.args.storeKey === key) armed = true;
+      if (operation.kind === "split" && armed && !changed) { changed = true; await map(); }
+    });
+  }
+  await service(f).sync();
+  if (point === "pending") await map();
+  expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
+  const db = f.stores.openStore(key).db;
+  expect(db.prepare("SELECT uuid,text FROM todos ORDER BY uuid").all()).toEqual([
+    { uuid: "todo-session-a", text: "portable" }, { uuid: "todo-session-b", text: "second" },
+  ]);
+  expect(db.prepare("SELECT count(*) AS n,count(DISTINCT change_id) AS unique_count FROM roam_changes").get()).toEqual({ n: 4, unique_count: 4 });
+  expect(peerState.loadPeerState(f.global.db, BOX, 4096).pending).toEqual({});
+}, 5000);
+it("a pending push resumes from a replaced peer store's cursor without duplicate changes", async () => {
+  const f = fixture(); f.seed(); await service(f).sync(); f.seed(BOX, "session-b", "second");
+  const remote = f.remotes.get(BOX)!, key = remote.worktree.storeKey;
+  let failed = false;
+  f.hook((_peer, operation) => { if (operation.kind === "import" && operation.args.storeKey === key && !failed) { failed = true; throw new Error("import not delivered"); } });
+  expect((await service(f).sync()).some(row => row.code === 3)).toBe(true);
+  const replacement = createReplica("worktree", BOX);
+  try {
+    replacement.db.prepare("UPDATE roam_meta SET store_key=?").run(key);
+    remote.global.db.prepare("UPDATE projects SET db_path=?,real_path=? WHERE project_key='p0'").run(replacement.db.raw.name, replacement.root);
+    expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
+    expect(remote.stores.openStore(key).db.prepare("SELECT uuid FROM todos ORDER BY uuid").all()).toEqual([
+      { uuid: "todo-session-a" }, { uuid: "todo-session-b" },
+    ]);
+    expect(remote.stores.openStore(key).db.prepare("SELECT count(*) AS n FROM roam_receipts").get()).toEqual({ n: 1 });
+    expect(peerState.loadPeerState(f.global.db, BOX, 4096).pending).toEqual({});
+  } finally { replacement.close(); }
+}, 5000);
 it("mapping during an uncertain push finishes the old import before resending the mapped stream", async () => {
   const f = fixture(); f.seed(); let lost = false;
   f.replyHook((_peer, op, bytes) => { if (op.kind === "import" && typeof op.args.storeKey === "string" && op.args.storeKey.startsWith("worktree:") && !lost) {

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { existsSync, statSync } from 'node:fs';
 import net from 'node:net';
-import { readFile, writeFile, chmod, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, chmod, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { HERDR_LABELS } from '../contracts.js';
 import type { TerminalAddress, MachineName } from '../contracts.js';
 import { afterEach, test, expect, vi } from 'vitest';
@@ -255,5 +255,7 @@ test('seeds the fenced window bounds and required display without launching an a
 test.skipIf(process.platform !== 'darwin')('window seeding requires an explicit display and refuses a foreign app home', async () => {
   const h = await createClientFixture(); fixtures.push(h);
   await expect(seedAppWindow(h.root)).rejects.toMatchObject({ code: 'app-display-required' }); expect(existsSync(h.root + '/window.json')).toBe(false);
-  await expect(seedAppWindow(join(homedir(), '.config/herdr-app'), '00000000-0000-0000-0000-000000000001')).rejects.toMatchObject({ code: 'isolation-unproved' });
+  const foreign = await mkdtemp(join(homedir(), 'foreign-app-'));
+  try { await expect(seedAppWindow(foreign, '00000000-0000-0000-0000-000000000001')).rejects.toMatchObject({ code: 'isolation-unproved' }); }
+  finally { await rm(foreign, { recursive: true, force: true }); }
 });

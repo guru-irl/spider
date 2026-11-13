@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
 import { privateDirectory } from "./staging";
@@ -57,15 +57,40 @@ function definition(node: string, cli: string, root: string, out: string, err: s
 <key>Umask</key><integer>63</integer>
 </dict></plist>\n`;
 }
-function writeDefinition(file: string, contents: string): void {
-  existingFile(file);
+type ManagedDefinition = { text: string; device: number | bigint; inode: number | bigint };
+function managedDefinition(file: string, root: string): ManagedDefinition | null {
+  let fd: number;
+  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error("Unsafe service definition symlink");
+    throw error;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 128 * 1024 || typeof process.getuid === "function" && stat.uid !== process.getuid())
+      throw new Error("Unsafe service definition");
+    const text = readFileSync(fd, "utf8");
+    const args = /<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/.exec(text)?.[1];
+    const values = [...(args ?? "").matchAll(/<string>([\s\S]*?)<\/string>/g)].map(match => match[1]);
+    if (!text.includes(`<key>Label</key><string>${LABEL}</string>`) ||
+        !text.includes(`<key>SPIDER_GLOBAL_ROOT</key><string>${xml(root)}</string>`) ||
+        values.length !== 4 || values[2] !== "roam" || values[3] !== "hub") throw new Error("Unrelated service definition");
+    return { text, device: stat.dev, inode: stat.ino };
+  } finally { closeSync(fd); }
+}
+function unchanged(before: ManagedDefinition | null, after: ManagedDefinition | null): boolean {
+  return before === null ? after === null : after !== null && before.text === after.text && before.device === after.device && before.inode === after.inode;
+}
+function writeDefinition(file: string, contents: string, root: string, previous: ManagedDefinition | null): void {
   const temporary = `${file}.${randomBytes(12).toString("hex")}.new`;
   let created = false;
   try {
     const fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     created = true;
     try { writeFileSync(fd, contents); fsyncSync(fd); } finally { closeSync(fd); }
-    existingFile(file); renameSync(temporary, file);
+    if (!unchanged(previous, managedDefinition(file, root))) throw new Error("Service definition changed during installation");
+    renameSync(temporary, file);
   } finally {
     if (created) try { unlinkSync(temporary); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
@@ -82,11 +107,25 @@ export async function installHubService(input: { node: string; cli: string; glob
   const uid = process.getuid?.();
   if (uid === undefined) throw new Error("Launchd user domain is unavailable");
   privateDirectory(directory); privateDirectory(root); privateDirectory(join(root, "roam")); privateDirectory(logDirectory);
-  existingFile(file);
+  const previous = managedDefinition(file, root);
   openLog(out); openLog(err);
-  writeDefinition(file, definition(node, cli, root, out, err));
+  writeDefinition(file, definition(node, cli, root, out, err), root, previous);
   const domain = `gui/${uid}`;
   try { await ports.launchctl(["bootout", domain, file]); }
   catch (error) { if ((error as { code?: unknown } | null)?.code !== "service-not-loaded") throw error; }
   await ports.launchctl(["bootstrap", domain, file]);
+}
+
+/** A service with another definition or root is not ours to remove. */
+export async function removeHubService(input: { globalRoot: string }, ports: LaunchdPorts): Promise<void> {
+  const root = absolute(input.globalRoot), file = join(absolute(ports.plistDir), `${LABEL}.plist`);
+  assertTestConfigPath(file);
+  const before = managedDefinition(file, root);
+  if (!before) return;
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("Launchd user domain is unavailable");
+  try { await ports.launchctl(["bootout", `gui/${uid}`, file]); }
+  catch (error) { if ((error as { code?: unknown } | null)?.code !== "service-not-loaded") throw error; }
+  if (!unchanged(before, managedDefinition(file, root))) throw new Error("Service definition changed during removal");
+  unlinkSync(file);
 }

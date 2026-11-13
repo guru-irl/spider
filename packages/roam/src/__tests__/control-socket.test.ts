@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join, resolve } from "node:path";
 import { requestHubControl, startHubControl } from "../control-socket";
@@ -40,6 +40,19 @@ it("rejects malformed, oversized, and multiple requests before dispatch", async 
   expect(await send(file, '{"op":"status","extra":true}\n')).toMatchObject({ code: 2 });
   expect(await send(file, '{"op":"status"}\n{"op":"status"}\n')).toMatchObject({ code: 2 });
   expect(await send(file, `${"x".repeat(32_769)}\n`)).toMatchObject({ code: 2 });
+  expect(observed).toEqual([]);
+}, 5000);
+
+it("refuses symlinked and nonprivate control destinations without dispatch", async () => {
+  const { root, file } = fixture(), target = join(root, "actual.sock");
+  const observed: string[] = [];
+  const endpoint = await startHubControl(target, async request => { observed.push(request.op); return { code: 0, reason: "ok", value: null }; });
+  endpoints.push(endpoint);
+  symlinkSync(target, file);
+  await expect(requestHubControl(file, { op: "disable" })).rejects.toThrow(/unsafe|symlink/i);
+  chmodSync(target, 0o666);
+  await expect(requestHubControl(target, { op: "disable" })).rejects.toThrow(/unsafe|private/i);
+  chmodSync(target, 0o600);
   expect(observed).toEqual([]);
 }, 5000);
 

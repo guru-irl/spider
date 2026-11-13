@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
-import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment } from '../../../../scripts/herdr-e2e.mjs';
+import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers } from '../../../../scripts/herdr-e2e.mjs';
+import { storyId } from '../harness/scenario.js';
 
 vi.mock('../harness/scenario.js', async importOriginal => ({
   ...await importOriginal<typeof import('../harness/scenario.js')>(), registerScenarios: () => {},
@@ -15,6 +16,32 @@ describe('runner boundary and report', () => {
       expect(() => selectScenarios(definitions, { tier, ids })).not.toThrow();
     }
     expect(profileIds.remote).toContain('H-tier2-smoke');
+    const r01 = definitions.find((definition: { id: string }) => definition.id === 'R01');
+    const r02 = definitions.find((definition: { id: string }) => definition.id === 'R02');
+    expect(r01).toMatchObject({ tiers: ['headless'] });
+    expect(r02).toMatchObject({ tiers: ['app'] });
+    expect(r02.title).toMatch(/placement adapter only.*synthetic readiness/i);
+  });
+  it('selects R01 and R02 in their own tiers and reports them unexercised in CI', () => {
+    expect(storyId('R01')).toBe('R01'); expect(storyId('R02')).toBe('R02');
+    expect(parseOptions(['--tier', 'headless', '--story', 'R01'], {}).ids).toEqual(['R01']);
+    expect(parseOptions(['--tier', 'app', '--story', 'R02'], { SPIDER_HERDR_APP_TESTS: '1', SPIDER_HERDR_TEST_DISPLAY_UUID: 'fixture' }).ids).toEqual(['R02']);
+    expect(profileIds.headless).toContain('R01'); expect(profileIds.app).toContain('R02');
+    expect(profileIds.ci).not.toContain('R01'); expect(profileIds.ci).not.toContain('R02');
+    expect(parseOptions(['--tier', 'headless', '--task', 'roam'], {}).ids).toEqual(['R01']);
+    expect(parseOptions(['--tier', 'app', '--task', 'roam'], { SPIDER_HERDR_APP_TESTS: '1', SPIDER_HERDR_TEST_DISPLAY_UUID: 'fixture' }).ids).toEqual(['R02']);
+    expect(() => parseOptions(['--tier', 'ci', '--task', 'roam'], {})).toThrow(/no stories/);
+    const matrix = buildMatrix('ci', profileIds.ci, []);
+    expect(matrix.find((row: { id: string }) => row.id === 'R01').result).toBe('not exercised');
+    expect(matrix.find((row: { id: string }) => row.id === 'R02').result).toBe('not exercised');
+    expect(storyWorkers({ tier: 'headless', ids: ['S01', 'R01'] })).toBe(1);
+    expect(storyWorkers({ tier: 'headless', ids: ['S01'] })).toBe(2);
+    expect(storyWorkers({ tier: 'app', ids: ['R02'] })).toBe(1);
+    const passed = buildMatrix('app', ['R02'], [{ id: 'R02', tier: 'app', result: 'passed', evidence: 'R02.json' }]);
+    const r02 = passed.find((row: { id: string }) => row.id === 'R02');
+    expect(r02.reason).toMatch(/adapter only/i);
+    expect(r02.reason).toMatch(/packaged observer.*3\.4/i);
+    expect(renderMatrix(passed)).toContain(r02.reason);
   });
   it('budgets every selected story at its full deadline plus bounded startup and teardown', () => {
     const ids = Array.from({ length: 55 }, (_, index) => `S${String(index + 1).padStart(2, '0')}`);
@@ -100,7 +127,7 @@ describe('runner boundary and report', () => {
       { id: 'S54', tier: 'ci', result: 'blocked', evidence: 'S54.json', reason: 'native-input' },
       { id: 'S55', tier: 'ci', result: 'failed', evidence: 'S55.json', reason: 'cleanup failed' },
     ]);
-    expect(matrix).toHaveLength(56);
+    expect(matrix).toHaveLength(58);
     expect(matrix.find((x: { id: string }) => x.id === 'S01').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S56').result).toBe('failed');
     expect(complete(matrix, ['S52'])).toBe(true);

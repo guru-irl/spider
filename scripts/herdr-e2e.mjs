@@ -6,18 +6,20 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const storyIds = Array.from({ length: 56 }, (_, i) => `S${String(i + 1).padStart(2, '0')}`);
-const validStoryId = id => typeof id === 'string' && (storyIds.includes(id) || /^H-[a-z0-9-]+$/.test(id));
+export const roamStoryIds = ['R01', 'R02'];
+const allStoryIds = [...storyIds, ...roamStoryIds];
+const validStoryId = id => typeof id === 'string' && (allStoryIds.includes(id) || /^H-[a-z0-9-]+$/.test(id));
 export const profileIds = {
-  headless: storyIds.filter(id => id !== 'S53'),
+  headless: [...storyIds.filter(id => id !== 'S53'), 'R01'],
   ci: ['S03', 'S04', 'S14', 'S27', 'S45', 'S46', 'S47', 'S48', 'S49', 'S51', 'S55', 'S56'],
   remote: ['H-tier2-smoke', 'S05', 'S07', ...storyIds.slice(14, 26), 'S28', 'S36', 'S45', 'S48'],
-  app: [...storyIds.slice(0, 3), ...storyIds.slice(4, 13), ...storyIds.slice(14, 23), 'S25', ...storyIds.slice(25, 44).filter(id => id !== 'S27'), 'S50', 'S51', ...storyIds.slice(51, 54)],
+  app: [...storyIds.slice(0, 3), ...storyIds.slice(4, 13), ...storyIds.slice(14, 23), 'S25', ...storyIds.slice(25, 44).filter(id => id !== 'S27'), 'S50', 'S51', ...storyIds.slice(51, 54), 'R02'],
 };
 const taskIds = {
   setup: ['S04', ...storyIds.slice(4, 12), 'S14'],
   remote: storyIds.slice(14, 25), subagents: storyIds.slice(25, 33),
   status: storyIds.slice(0, 3), lifecycle: [...storyIds.slice(0, 3), 'S13', ...storyIds.slice(48, 51)],
-  panels: storyIds.slice(33, 44), ssh: storyIds.slice(44, 48), runner: storyIds.slice(51), look: ['S52', 'S53'], shortcuts: ['S54'],
+  panels: storyIds.slice(33, 44), ssh: storyIds.slice(44, 48), runner: storyIds.slice(51), look: ['S52', 'S53'], shortcuts: ['S54'], roam: roamStoryIds,
 };
 export function parseOptions(argv, env = process.env) {
   const options = { tier: 'headless', ids: [], shuffle: false, seed: 'fixture', build: true, harness: false };
@@ -103,9 +105,14 @@ export function buildMatrix(tier, selected, reports) {
     seen.add(report.id);
   }
   const harnessIds = [...new Set([...selected, ...reports.map(x => x.id)].filter(id => id.startsWith('H-')))].sort();
-  return [...storyIds, ...harnessIds].map(id => reports.find(x => x.id === id) ?? {
-    id, tier, result: selected.includes(id) ? 'failed' : 'not exercised', evidence: 'invocation.json',
-    reason: selected.includes(id) ? 'selected story produced no result (worker failed or interrupted)' : 'outside selected profile or no discovered implementation',
+  return [...allStoryIds, ...harnessIds].map(id => {
+    const report = reports.find(x => x.id === id) ?? {
+      id, tier, result: selected.includes(id) ? 'failed' : 'not exercised', evidence: 'invocation.json',
+      reason: selected.includes(id) ? 'selected story produced no result (worker failed or interrupted)' : 'outside selected profile or no discovered implementation',
+    };
+    if (id !== 'R02' || report.result !== 'passed') return report;
+    const limit = 'Placement adapter only with synthetic readiness; packaged observer-to-placement path deferred to Task 3.4';
+    return { ...report, reason: [report.reason, limit].filter(Boolean).join('; ') };
   });
 }
 export function complete(matrix, selected) {
@@ -139,6 +146,9 @@ function ownedDirectory(checkout, candidate) {
 export function storyWorkerEnvironment(fenced, caller, tier) {
   return { ...fenced, ...(tier === 'remote' && caller.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: caller.SSH_AUTH_SOCK } : {}), ...(caller.SPIDER_HERDR_E2E_HC ? { SPIDER_HERDR_E2E_HC: caller.SPIDER_HERDR_E2E_HC } : {}) };
 }
+export function storyWorkers(options) {
+  return options.tier === 'app' || options.ids.some(id => roamStoryIds.includes(id)) ? 1 : 2;
+}
 export function storyTimeoutMs(id) {
   // S08 compares two fresh thirteen-session installations, not one cutover.
   return id === 'S08' ? 600_000 : 300_000;
@@ -165,14 +175,14 @@ export async function packEntryDigests(checkout, root, pack) {
   if (result.code !== 0) throw new Error('pack failed');
   // npm 10 may rebuild dist during pack even with --ignore-scripts. Snapshot
   // the checkout as packed, including the new build id, not its pre-pack state.
-  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs'];
+  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/supervisor.mjs'];
   const digests = Object.fromEntries(entries.map(entry => [entry, createHash('sha256').update(readFileSync(path.join(checkout, 'dist', entry))).digest('hex')]));
   writeFileSync(path.join(root, 'entries.json'), JSON.stringify(digests, null, 2));
   return { entries, digests };
 }
 export async function main(argv = process.argv.slice(2)) {
   const options = parseOptions(argv);
-  if (options.help) { console.log('herdr-e2e --tier headless|ci|remote|app [--story S52,S54] [--task setup|remote|subagents|lifecycle|panels|ssh|runner] [--shuffle --seed value] [--built] [--harness]'); return 0; }
+  if (options.help) { console.log('herdr-e2e --tier headless|ci|remote|app [--story S52,R01] [--task setup|remote|subagents|lifecycle|panels|ssh|runner|roam] [--shuffle --seed value] [--built] [--harness]'); return 0; }
   if (!options.ids.length) options.ids = profileIds[options.tier];
   const checkout = realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
   const root = path.join(checkout, '.spider/scratch/e2', randomBytes(3).toString('hex'));
@@ -232,7 +242,7 @@ export async function main(argv = process.argv.slice(2)) {
     env.SPIDER_HERDR_E2E_PACKED_ROOT = packedRoot;
     env.SPIDER_HERDR_E2E_TIER = options.tier;
     env.SPIDER_HERDR_E2E_STORIES = options.ids.join(',');
-    const run = await command(process.execPath, [path.join(checkout, 'node_modules/vitest/vitest.mjs'), 'run', '--config', 'packages/herdr/e2e/vitest.config.ts', '--maxWorkers', options.tier === 'app' ? '1' : '2'], checkout, storyWorkerEnvironment(env, process.env, options.tier), path.join(root, 'vitest.log'), false, supervisor, storyRunBudgetMs(options));
+    const run = await command(process.execPath, [path.join(checkout, 'node_modules/vitest/vitest.mjs'), 'run', '--config', 'packages/herdr/e2e/vitest.config.ts', '--maxWorkers', String(storyWorkers(options))], checkout, storyWorkerEnvironment(env, process.env, options.tier), path.join(root, 'vitest.log'), false, supervisor, storyRunBudgetMs(options));
     const selectionPath = path.join(root, 'selection.json');
     if (existsSync(selectionPath)) selected = JSON.parse(readFileSync(selectionPath, 'utf8'));
     runSucceeded = run.code === 0;

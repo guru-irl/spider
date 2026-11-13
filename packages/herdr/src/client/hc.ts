@@ -29,7 +29,9 @@ function guardTestSocket(options: HcClientOptions): void {
   const root = physicalPath(join(checkout, '.spider/scratch'));
   const inside = (path: string) => { const suffix = relative(root, physicalPath(path)); return !isAbsolute(suffix) && suffix !== '..' && !suffix.startsWith(`..${sep}`); };
   const socket = selectedSocket(options.env);
-  if (!inside(socket) || (options.env.HC_TERMINAL_SOCKET && !inside(options.env.HC_TERMINAL_SOCKET))) throw new HerdrError('isolation-unproved', 'Tests must use a socket inside their owned scratch root');
+  if ((!options.env.HC_SOCKET && (!options.env.HC_SESSION || options.env.HC_SESSION === 'default')) ||
+      !inside(socket) || (options.env.HC_TERMINAL_SOCKET && !inside(options.env.HC_TERMINAL_SOCKET)))
+    throw new HerdrError('isolation-unproved', 'Tests must use a socket inside their owned scratch root with an explicit fixture identity');
   const proof = options.isolationProof;
   if (proof && (!proof.sockets.includes(socket) || proof.sessionNamespace !== (options.env.HC_SESSION || 'default') || physicalPath(proof.checkout) !== physicalPath(checkout) || proof.coreIds.length !== proof.sockets.length || proof.coreIds.length === 0 || proof.sockets.some(path => !inside(path)))) throw new HerdrError('isolation-unproved', 'Isolation proof does not match the selected core');
 }
@@ -55,8 +57,8 @@ export async function processContainsCaller(pid: unknown, env: Readonly<NodeJS.P
   return false;
 }
 export function createHcClient(options: HcClientOptions, available?: (key: string) => void): HcClient & Disposable {
+  guardTestSocket(options);
   const env = Object.freeze({ ...options.env, HC_SOCKET: selectedSocket(options.env) });
-  guardTestSocket({ ...options, env });
   const call = (argv: readonly string[], input?: Buffer, callOptions?: HcCallOptions) => {
     const separator = argv.indexOf('--'), flags = separator < 0 ? argv : argv.slice(0, separator);
     const on = flags.indexOf('--on');

@@ -1,7 +1,5 @@
 import { sanitizeQuery, type Db } from "@spider/db-core";
 import { randomUUID } from "node:crypto";
-import { isRoamUuid } from "@spider/db-core/roam/codec";
-import type { MachineId } from "@spider/db-core/roam/types";
 import type { MemoryCategory, MemoryScope, MemoryStatus, MemoryRecord, AddMemoryInput } from "./types";
 import { assertWithinCap, DEFAULT_MEMORY_CHAR_CAP, memoryCharLength } from "./overflow";
 import { mapRow, tableFor } from "./internal";
@@ -10,14 +8,7 @@ import { deleteOwnerVectors } from "./embeddings/vectors";
 
 export { activeCharTotal, listActive } from "./internal";
 
-export function tagMemory(db: Db, uuid: string, machineId: MachineId | null): void {
-  if (machineId !== null && !isRoamUuid(machineId)) throw new Error("Invalid machine identity");
-  const global = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'global_memory'").get();
-  const table = global ? "global_memory" : "memory";
-  if (db.prepare(`UPDATE ${table} SET machine_id = ? WHERE uuid = ?`).run(machineId, uuid).changes !== 1) {
-    throw new Error("Memory entry not found");
-  }
-}
+export { tagMemory } from "./tags";
 
 export function addMemory(db: Db, scope: MemoryScope, input: AddMemoryInput, cap: number = DEFAULT_MEMORY_CHAR_CAP): MemoryRecord {
   // Serialize admission with supersessions; a waiting writer must check the latest total.

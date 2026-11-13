@@ -23,6 +23,12 @@ function snapshotCall(options: CallOptions): CallOptions {
   return { timeoutMs: options.timeoutMs, maxBytes: options.maxBytes,
     ...(options.stdin === undefined ? {} : { stdin: Buffer.from(options.stdin) }) };
 }
+function privateProtocol(argv: readonly string[]): boolean {
+  return argv[0] === 'roam' && (argv[1] === 'agent' || argv[1] === 'observe' || argv[1] === 'artifact' && argv[2] === 'receive');
+}
+function remoteArgs(peer: Peer, argv: readonly string[]): string[] {
+  return [peer.node, peer.cli, ...(privateProtocol(argv) ? ['--global-root', peer.globalRoot] : []), ...argv];
+}
 function deadline(value: number): void {
   if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647) {
     throw new HerdrError('invalid-cli-deadline', 'A finite positive deadline is required');
@@ -31,9 +37,9 @@ function deadline(value: number): void {
 
 export function createTransport(options: { binary: string; env: Readonly<NodeJS.ProcessEnv>; enrolled: readonly Peer[] }): Transport {
   const binary = options.binary;
+  const client = createArgvClient({ binary, env: options.env });
   const env = Object.freeze({ ...options.env, HC_SOCKET: selectedSocket(options.env) });
   const enrolled = options.enrolled;
-  const client = createArgvClient({ binary, env });
   const current = new Map<string, Resolved>();
   const handles = new WeakMap<Peer, Resolved>();
 
@@ -127,17 +133,17 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
     },
     async exec(peer, argv, options: CallOptions) {
       const state = resolved(peer);
-      const args = [state.peer.node, state.peer.cli, ...argv];
+      const args = remoteArgs(state.peer, argv);
       const call = snapshotCall(options);
       return (await bracket(state.peer, state, call.timeoutMs, signal =>
-        client.exec(state.peer.alias, args, { ...call, signal }))).value;
+        client.exec(state.peer.alias, args, { ...call, signal, acceptedExitCodes: privateProtocol(argv) ? [1, 2, 3] : undefined }))).value;
     },
     async run(peer, argv, operationId) {
       if (!operationId || /[\u0000-\u001f\u007f]/.test(operationId)) {
         throw new HerdrError('invalid-operation', 'A valid operation ID is required for a background launch');
       }
       const state = resolved(peer);
-      const args = [state.peer.node, state.peer.cli, ...argv];
+      const args = remoteArgs(state.peer, argv);
       return (await bracket(state.peer, state, DEFAULT_LIMITS.launchMs, signal =>
         client.run(state.peer.alias, args, { 'spider.operation': operationId, 'spider.machine': state.peer.machineId }, { signal }))).value;
     },

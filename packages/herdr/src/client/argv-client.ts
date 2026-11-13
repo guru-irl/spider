@@ -25,7 +25,8 @@ export function createArgvClient(options: HcClientOptions): HcArgvClient {
   return {
     async exec(on, argv, call) {
       const target = destination(on);
-      const request = { ...call, stdin: call.stdin === undefined ? undefined : Buffer.from(call.stdin) };
+      const request = { ...call, stdin: call.stdin === undefined ? undefined : Buffer.from(call.stdin),
+        acceptedExitCodes: call.acceptedExitCodes === undefined ? undefined : [...call.acceptedExitCodes] };
       if (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs <= 0 || request.timeoutMs > DIRECT_MAX_MS) {
         throw new HerdrError('invalid-cli-deadline', 'Direct execution requires a deadline of at most 600 seconds');
       }

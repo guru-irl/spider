@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { scratchDbPath } from "@spider/db-core/testutil";
-import { installHubService } from "../launchd";
+import { installHubService, removeHubService } from "../launchd";
 
 const failures = vi.hoisted(() => ({ sync: false }));
 vi.mock("node:fs", async importOriginal => {
@@ -97,6 +97,27 @@ it("refuses unsafe destinations or executables before calling launchctl", async 
   await expect(installHubService(f, f.ports)).rejects.toThrow(/unsafe|symlink/i);
   expect(readFileSync(target, "utf8")).toBe("untouched");
   expect(f.calls).toEqual([]);
+}, 5000);
+
+it("enable refuses to replace an unrelated service definition", async () => {
+  const f = fixture(); mkdirSync(f.plistDir);
+  writeFileSync(plistAt(f.plistDir), "unrelated service", { mode: 0o600 });
+  await expect(installHubService(f, f.ports)).rejects.toThrow(/unrelated|unsafe/i);
+  expect(readFileSync(plistAt(f.plistDir), "utf8")).toBe("unrelated service");
+  expect(f.calls).toEqual([]);
+}, 5000);
+
+it("disable boots out its own service and never removes an unrelated definition", async () => {
+  const f = fixture(); await installHubService(f, f.ports);
+  await removeHubService({ globalRoot: f.globalRoot }, f.ports);
+  expect(existsSync(plistAt(f.plistDir))).toBe(false);
+  expect(f.calls.map(call => call[0])).toEqual(["bootout", "bootstrap", "bootout"]);
+  await removeHubService({ globalRoot: f.globalRoot }, f.ports);
+  expect(f.calls).toHaveLength(3);
+  writeFileSync(plistAt(f.plistDir), "unrelated service", { mode: 0o600 });
+  await expect(removeHubService({ globalRoot: f.globalRoot }, f.ports)).rejects.toThrow(/unrelated|unsafe/i);
+  expect(readFileSync(plistAt(f.plistDir), "utf8")).toBe("unrelated service");
+  expect(f.calls).toHaveLength(3);
 }, 5000);
 
 it("rejects control characters in resolved executable paths", async () => {

@@ -8,7 +8,7 @@ import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { isRoamUuid, storeScope } from "@spider/db-core/roam/codec";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import type { Scope, StoreKey } from "@spider/db-core/roam/types";
-import { createProcessPresence, type PresenceBuild } from "@spider/herdr/sessions/presence";
+import { createProcessPresence, type PresenceBuild, type PresenceRecord } from "@spider/herdr/sessions/presence";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { loadConfig } from "./config";
@@ -37,13 +37,23 @@ function readTargetBuild(url: URL): PresenceBuild | null {
   finally { if (fd !== undefined) closeSync(fd); }
 }
 
+function assertUsageStable(directory: string): void {
+  // The launcher publishes intent before its guard and removes startup state only after the lock is ready.
+  for (const name of ["lock.json.guard", "startup.json", "replace-intent.json", "replace-intent.json.guard"]) {
+    try { lstatSync(join(directory, name)); }
+    catch (error) { if (missing(error)) continue; throw error; }
+    throw new Error("usage worker startup or replacement is in progress");
+  }
+}
+
 /** Read only the identity and build fields from the existing usage server lock. */
 function readUsageWorker(root: string): UsageWorker | null {
   const directory = join(root, "usage-server"), file = join(directory, "lock.json");
-  let fd: number | undefined;
+  let fd: number | undefined, directoryPresent = false;
   try {
     const parent = lstatSync(directory);
     if (!parent.isDirectory() || parent.isSymbolicLink() || !own(parent) || (process.platform !== "win32" && (parent.mode & 0o777) !== 0o700)) throw new Error("unsafe usage directory");
+    directoryPresent = true; assertUsageStable(directory);
     fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1 || !own(stat) || stat.size > 16_384 ||
@@ -56,10 +66,13 @@ function readUsageWorker(root: string): UsageWorker | null {
     if (row.version !== 1 || !Number.isSafeInteger(row.pid) || (row.pid as number) <= 0 ||
         !(row.processIdentity === undefined || typeof row.processIdentity === "string") ||
         !(row.serverBuild === undefined || typeof row.serverBuild === "string")) throw new Error("invalid usage lock");
+    assertUsageStable(directory);
     return { pid: row.pid as number, processIdentity: typeof row.processIdentity === "string" ? row.processIdentity : null,
       serverBuild: typeof row.serverBuild === "string" ? row.serverBuild : null };
-  } catch (error) { if (missing(error)) return null; throw error; }
-  finally { if (fd !== undefined) closeSync(fd); }
+  } catch (error) {
+    if (missing(error)) { if (directoryPresent) assertUsageStable(directory); return null; }
+    throw error;
+  } finally { if (fd !== undefined) closeSync(fd); }
 }
 
 function probeLocal(pid: number, usage: boolean): ProcessProbe {
@@ -129,6 +142,26 @@ export function createLocalDiagnosticPorts(root: string, stores: readonly Diagno
     },
     async stores() { return stores; },
   };
+}
+
+export interface ConsumerSnapshot {
+  presence: Array<{ record: PresenceRecord; probe: ProcessProbe }>;
+  worker: { record: UsageWorker; probe: ProcessProbe } | null;
+  bundled: string; cli: string | null;
+  executables: Array<{ label: string; file: string; available: boolean }>;
+}
+export async function inspectLocalConsumers(root: string, machineId: string, bundleUrl?: URL): Promise<ConsumerSnapshot> {
+  const ports = createLocalDiagnosticPorts(root, [], bundleUrl);
+  const machine = { machineId, label: "local machine", peer: null };
+  const records = await ports.listPresence(machine);
+  const presence = await Promise.all(records.map(async record => ({ record, probe: await ports.probeProcess(machine, record.pid) })));
+  const record = await ports.usageWorker(machine);
+  const worker = record === null ? null : { record, probe: await ports.probeUsage(machine, record.pid) };
+  const bundled = await ports.bundledSqlite(machine), cli = await ports.sqliteCli(machine);
+  const executables = await Promise.all((await ports.listExecutables(machine)).map(async item => ({
+    ...item, available: await ports.executable(machine, item.file),
+  })));
+  return { presence, worker, bundled, cli, executables };
 }
 
 function disabledConfig(): RoamConfig {

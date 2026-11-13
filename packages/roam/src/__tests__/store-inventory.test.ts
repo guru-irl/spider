@@ -1,12 +1,13 @@
 import { afterEach, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, symlinkSync } from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { replicaPath } from "@spider/db-core/roam/catalog";
 import { createReplica } from "@spider/db-core/testutil";
 import { handleAgentOperation } from "../agent";
 import { DEFAULT_LIMITS } from "../contracts";
 import { openJournal } from "../journal";
+import { listStoreKeys } from "../store-inventory";
 
 const BOX = "00000000-0000-4000-8000-000000000002";
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -40,6 +41,22 @@ it.each(["stores", "inventory"])("keyless %s discovers a registered store and an
   expect(await handleAgentOperation(operation, ports)).toEqual(result);
   expect(ports.journal.read(operation.id).filter(row => row.action === "done")).toHaveLength(1);
 }, 5000);
+it("marks a registered store incomplete if it disappears before the read-only open", () => {
+  const { global, worktree } = fixture(), incomplete: string[] = [];
+  const keys = listStoreKeys(global.db, { open: () => undefined, onIncomplete: entry => incomplete.push(entry) });
+  expect(keys).toEqual(["global"]);
+  expect(incomplete).toEqual([worktree.db.raw.name]);
+}, 5000);
+
+it("inventory refuses an unreadable owned replica instead of claiming completeness", async () => {
+  const { global, ports } = fixture();
+  const directory = join(global.root, "roam", "stores"); mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(directory, `${"a".repeat(64)}.db`), "not a database", { mode: 0o600 });
+  const result = await handleAgentOperation({ id: "unreadable", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, ports);
+  expect(result.code).toBe(1);
+  expect(result.value).toBeNull();
+}, 5000);
+
 it("inventory ignores mismatched hashes and never follows replica symlinks", async () => {
   const { global, worktree, ports } = fixture();
   const directory = join(global.root, "roam", "stores"); mkdirSync(directory, { recursive: true, mode: 0o700 });

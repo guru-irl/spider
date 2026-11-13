@@ -21,7 +21,7 @@ export type ScenarioStatus = 'passed' | 'failed' | 'blocked' | 'not exercised';
 export interface ScenarioResult { id: StoryId; tier: Tier; status: ScenarioStatus; error?: string; code?: string; root?: string; cleanup?: unknown; startedAt: string; finishedAt: string }
 
 export function storyId(value: string): StoryId {
-  if (!/^[SH]\d{2}[a-z0-9-]*$|^H-[a-z0-9-]+$/.test(value)) throw new HarnessError('invalid-story-id', value);
+  if (!/^[SHR]\d{2}[a-z0-9-]*$|^H-[a-z0-9-]+$/.test(value)) throw new HarnessError('invalid-story-id', value);
   return value as StoryId;
 }
 

@@ -32,10 +32,10 @@ export interface StoreAdapter extends StorePort {
   batchDirectories(): string[];
   close(): void;
 }
-export function createStorePort(config: RoamConfig, globalDb: Db): StoreAdapter {
+export function createStorePort(config: RoamConfig, globalDb: Db, options: { allowUnassignedGlobal?: boolean } = {}): StoreAdapter {
   if (Number(globalDb.pragma("user_version")) !== 14) throw new Error("Unsupported global store schema");
   const identity = globalDb.prepare("SELECT machine_id,store_key FROM roam_meta WHERE id=1").get() as { machine_id: string; store_key: string | null };
-  if (identity.machine_id !== config.machineId || identity.store_key !== "global")
+  if (identity.machine_id !== config.machineId || !(identity.store_key === "global" || options.allowUnassignedGlobal && identity.store_key === null))
     throw new Error("Global store identity does not match configuration");
   const handles = new Map<string, Db>();
   const effects = createReplicaEffects(key => catalogReplica(globalDb, key, openStore(key).db));

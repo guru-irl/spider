@@ -967,15 +967,19 @@ it("transfer expiry is durable pending and reuses the operation", async () => {
   const ports = { transport: remote.transport, journal: remote.localJournal, limits, root: staging, operationId: "transfer-3" };
   vi.useFakeTimers();
   vi.setSystemTime(1000);
-  remote.afterBegin(() => vi.setSystemTime(1002));
+  let monotonic = 0;
+  const clock = vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+  remote.afterBegin(() => { vi.setSystemTime(1002); monotonic = 2; });
   try {
     const expired = await transferArtifact(remote.peer, manifest, ports);
     expect(expired.code).toBe(3);
     expect(expired.operationId).toBe("transfer-3");
+    expect(remote.calls).toContain("begin");
     expect(remote.localJournal.read("transfer-3").some(item => item.action === "done")).toBe(false);
     remote.afterBegin(() => {});
-    expect((await transferArtifact(remote.peer, manifest, { ...ports, limits: { ...limits, transferMs: 100 } })).code).toBe(0);
-  } finally { remote.close(); }
+    const resumed = await transferArtifact(remote.peer, manifest, { ...ports, limits: { ...limits, transferMs: 100 } });
+    expect(resumed.code, resumed.reason).toBe(0);
+  } finally { clock.mockRestore(); remote.close(); }
 }, 5000);
 
 it("restages a growing session only when its original prefix is unchanged", async () => {

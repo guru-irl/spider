@@ -9,6 +9,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { extensionShim } from "./extension-shim.mjs";
 import { piAgentDir } from "./pi-agent-dir.mjs";
+import { linkRoamCommand } from "./link-roam.mjs";
 
 const repoRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const bundle = join(repoRoot, "dist", "extension.js");
@@ -16,9 +17,11 @@ const extDir = join(piAgentDir(), "extensions");
 const shim = join(extDir, "spider-dev.ts");
 
 if (process.argv.includes("--unlink")) {
+  linkRoamCommand(repoRoot, true);
   if (existsSync(shim)) { rmSync(shim); console.log(`dev:unlink — removed ${shim}`); }
   else console.log(`dev:unlink — nothing to remove (${shim} absent)`);
 } else {
+  linkRoamCommand(repoRoot);
   mkdirSync(extDir, { recursive: true });
   // A stable shim + a dev shim would double-load spider; drop the stable one.
   const stableShim = join(extDir, "spider.ts");

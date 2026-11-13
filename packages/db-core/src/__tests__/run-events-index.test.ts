@@ -91,6 +91,19 @@ describe("run event query index", () => {
     } finally { chmodSync(file, 0o600); }
   });
 
+  it("reports a repeated index failure for the same database once per process", () => {
+    const file = join(root(), "readonly-twice.db");
+    const original = openDbAt(file, "worktree");
+    original.exec("DROP INDEX idx_run_events_run_id");
+    original.close();
+    chmodSync(file, 0o444);
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (let i = 0; i < 3; i++) openDbAt(file, "worktree").close();
+      expect(diagnostic.mock.calls.filter(call => String(call[0]).includes("run events index"))).toHaveLength(1);
+    } finally { diagnostic.mockRestore(); chmodSync(file, 0o600); }
+  });
+
   it("opens promptly under a write lock, restores the timeout and retries next open", () => {
     const dir = root(), file = join(dir, "locked.db");
     const initial = openDbAt(file, "worktree");

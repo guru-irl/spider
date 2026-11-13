@@ -166,6 +166,9 @@ const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
   6: [], // Version bump only for project scope
 };
 
+// A read-only or busy store retries on every open; report each database once per process.
+const reportedIndexFailures = new Set<string>();
+
 function ensureQueryIndexes(db: Db, scope: "global" | "repo" | "worktree"): void {
   if (scope !== "worktree") return;
   try {
@@ -182,6 +185,9 @@ function ensureQueryIndexes(db: Db, scope: "global" | "repo" | "worktree"): void
       }
     }
   } catch (error) {
+    const key = db.raw.name;
+    if (reportedIndexFailures.has(key)) return;
+    reportedIndexFailures.add(key);
     try { console.error(`Could not create run events index: ${String(error).replace(/[\r\n]+/g, " ")}`); } catch { /* diagnostic is best effort */ }
   }
 }

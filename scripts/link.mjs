@@ -22,10 +22,10 @@ if (process.argv.includes("--unlink")) {
   if (existsSync(shim)) { rmSync(shim); console.log(`unlink — removed ${shim}`); }
   else console.log(`unlink — nothing to remove (${shim} absent)`);
 } else {
-  linkRoamCommand(repoRoot);
   mkdirSync(extDir, { recursive: true });
   // A dev shim + a stable shim would double-load spider; drop the dev one.
   if (existsSync(devShim)) { rmSync(devShim); console.log(`link — removed stale dev shim ${devShim}`); }
   writeFileSync(shim, extensionShim(bundle));
   console.log(`link — wrote ${shim}\n  → ${bundle}\nNext: \`/reload\` in an interactive pi, or relaunch.`);
+  linkRoamCommand(repoRoot);
 }

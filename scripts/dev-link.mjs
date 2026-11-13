@@ -21,11 +21,11 @@ if (process.argv.includes("--unlink")) {
   if (existsSync(shim)) { rmSync(shim); console.log(`dev:unlink — removed ${shim}`); }
   else console.log(`dev:unlink — nothing to remove (${shim} absent)`);
 } else {
-  linkRoamCommand(repoRoot);
   mkdirSync(extDir, { recursive: true });
   // A stable shim + a dev shim would double-load spider; drop the stable one.
   const stableShim = join(extDir, "spider.ts");
   if (existsSync(stableShim)) { rmSync(stableShim); console.log(`dev:link — removed stable shim ${stableShim}`); }
   writeFileSync(shim, extensionShim(bundle, true));
   console.log(`dev:link — wrote ${shim}\n  → ${bundle}\nNext: run \`npm run dev\` (rebuild-on-save), then \`/reload\` in an interactive pi.`);
+  linkRoamCommand(repoRoot);
 }

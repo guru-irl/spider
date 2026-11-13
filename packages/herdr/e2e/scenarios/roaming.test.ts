@@ -75,12 +75,17 @@ async function twoCoreSync(suite: Suite): Promise<void> {
     } finally { db.close(); }
     const sync = await suite.invoke(process.execPath, [cli, 'roam', 'sync', cores.machine], env);
     expect(sync.exitCode, sync.stderr + sync.stdout).toBe(0);
-    const peerDb = openDb(join(box, 'spider.db'));
+    const hubDb = openDb(join(hub, 'spider.db'));
     try {
-      expect(peerDb.prepare('SELECT capture_enabled FROM roam_meta').get()).toEqual({ capture_enabled: 1 });
-      expect(peerDb.prepare('SELECT machine_id,epoch FROM session_homes WHERE session_id=?').get('session-r01'))
-        .toEqual({ machine_id: HUB, epoch: 1 });
-    } finally { peerDb.close(); }
+      const peerDb = openDb(join(box, 'spider.db'));
+      try {
+        const hubHome = hubDb.prepare('SELECT machine_id,epoch FROM session_homes WHERE session_id=?').get('session-r01');
+        const boxHome = peerDb.prepare('SELECT machine_id,epoch FROM session_homes WHERE session_id=?').get('session-r01');
+        expect(hubHome).toEqual({ machine_id: HUB, epoch: 1 });
+        expect(peerDb.prepare('SELECT capture_enabled FROM roam_meta').get()).toEqual({ capture_enabled: 1 });
+        expect(boxHome).toEqual(hubHome);
+      } finally { peerDb.close(); }
+    } finally { hubDb.close(); }
     await suite.evidence('R01-sync.json', { boundary: 'packed CLI and two isolated fixture cores',
       releaseIdentity: 'synthetic fixture', enabled: enabled.stdout, sync: sync.stdout });
   } finally { await service.stop(); }

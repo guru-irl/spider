@@ -147,7 +147,7 @@ export function storyWorkerEnvironment(fenced, caller, tier) {
   return { ...fenced, ...(tier === 'remote' && caller.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: caller.SSH_AUTH_SOCK } : {}), ...(caller.SPIDER_HERDR_E2E_HC ? { SPIDER_HERDR_E2E_HC: caller.SPIDER_HERDR_E2E_HC } : {}) };
 }
 export function storyWorkers(options) {
-  return options.tier === 'app' || options.ids.some(id => roamStoryIds.includes(id)) ? 1 : 2;
+  return options.tier === 'app' ? 1 : 2;
 }
 export function storyTimeoutMs(id) {
   // S08 compares two fresh thirteen-session installations, not one cutover.

@@ -34,9 +34,11 @@ describe('runner boundary and report', () => {
     const matrix = buildMatrix('ci', profileIds.ci, []);
     expect(matrix.find((row: { id: string }) => row.id === 'R01').result).toBe('not exercised');
     expect(matrix.find((row: { id: string }) => row.id === 'R02').result).toBe('not exercised');
-    expect(storyWorkers({ tier: 'headless', ids: ['S01', 'R01'] })).toBe(1);
+    expect(storyWorkers({ tier: 'headless', ids: profileIds.headless })).toBe(2);
+    expect(storyWorkers({ tier: 'headless', ids: ['S01', 'R01'] })).toBe(2);
     expect(storyWorkers({ tier: 'headless', ids: ['S01'] })).toBe(2);
-    expect(storyWorkers({ tier: 'headless', ids: ['R02'] })).toBe(1);
+    expect(storyWorkers({ tier: 'headless', ids: ['R02'] })).toBe(2);
+    expect(storyWorkers({ tier: 'app', ids: ['S01'] })).toBe(1);
     const passed = buildMatrix('headless', ['R02'], [{ id: 'R02', tier: 'headless', result: 'passed', evidence: 'R02.json' }]);
     const r02 = passed.find((row: { id: string }) => row.id === 'R02');
     expect(r02.reason).toMatch(/adapter only/i);

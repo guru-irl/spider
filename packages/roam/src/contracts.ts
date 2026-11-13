@@ -3,10 +3,12 @@ import type {
   ApplyReceipt, BatchArtifact, ExportPolicy, Home, JsonObject, MachineId, Probe, ProcessIdentity,
   Readiness, ReplicaEffects, StoreBarrier, StoreKey,
 } from "@spider/db-core/roam/types";
+import type { BootstrapOptions, Inventory } from "./provision-contracts";
 
 export interface Peer {
   machineId: MachineId; alias: string; node: string; pi: string; cli: string; core: string; globalRoot: string;
 }
+export type BootstrapPeer = Pick<Peer, "alias" | "node" | "pi" | "cli" | "globalRoot">;
 export interface Limits {
   chunkBytes: number; replyBytes: number; manifestBytes: number; targetBatchBytes: number; hardBatchBytes: number;
   applyTargetMs: number; workspaceBytes: number; sessionBytes: number; agentBytes: number; stagingBytes: number;
@@ -50,6 +52,7 @@ export interface Outcome<T> {
 export interface CallOptions { timeoutMs: number; maxBytes: number; stdin?: Buffer }
 export interface Transport {
   resolve(peer: Peer): Promise<Peer>;
+  bootstrapProbe(peer: BootstrapPeer, kind: "inventory", options?: BootstrapOptions): Promise<Inventory>;
   exec(peer: Peer, argv: readonly string[], options: CallOptions): Promise<Buffer>;
   run(peer: Peer, argv: readonly string[], operationId: string): Promise<{ terminal: string }>;
   read(peer: Peer, path: string, options: CallOptions): Promise<Buffer>;

@@ -4,10 +4,13 @@ import { invokeCli, machineAliases } from '@spider/herdr/client/hc';
 import type { CliRequestOptions } from '@spider/herdr/client/cli-transport';
 import { HerdrError, object, parseCore, selectedSocket, text } from '@spider/herdr/client/parse';
 import { DEFAULT_LIMITS } from './contracts';
-import type { CallOptions, Peer, Transport } from './contracts';
+import { BOOTSTRAP_SCRIPT } from './bootstrap-script';
+import { normalizeConfiguredClis, normalizeCoreUnit, parseBootstrapInventory, sanitizeBootstrapError } from './bootstrap-reply';
+import type { BootstrapPeer, CallOptions, Peer, Transport } from './contracts';
 
 interface CoreObservation { local: string; remote: string }
 interface Resolved { peer: Peer; core: CoreObservation; invalidated?: 'core-changed' | 'peer-invalidated' }
+type Route = { kind: 'enrolled'; peer: Peer } | { kind: 'bootstrap'; peer: BootstrapPeer };
 
 function coreChanged(): HerdrError & { retryable: true } {
   return Object.assign(new HerdrError('core-changed', 'Herdr core identity changed; resolve the peer again'), { retryable: true as const });
@@ -36,6 +39,14 @@ function privateProtocol(argv: readonly string[]): boolean {
 }
 function remoteArgs(peer: Peer, argv: readonly string[]): string[] {
   return [peer.node, peer.cli, ...(privateProtocol(argv) ? ['--global-root', peer.globalRoot] : []), ...argv];
+}
+function bootstrapTarget(value: BootstrapPeer): BootstrapPeer {
+  const invalid = () => { throw new HerdrError('invalid-bootstrap-request', 'Invalid bootstrap probe request'); };
+  if (!value || typeof value !== 'object') return invalid();
+  const { alias, node, pi, cli, globalRoot } = value;
+  if (typeof alias !== 'string' || !alias || alias.length > 255 || alias.trim() !== alias || /[\u0000-\u001f\u007f]/.test(alias) ||
+      [node, pi, cli, globalRoot].some(file => typeof file !== 'string' || file.length > 4096 || !posix.isAbsolute(file) || /[\u0000-\u001f\u007f]/.test(file))) return invalid();
+  return Object.freeze({ alias, node, pi, cli, globalRoot });
 }
 function deadline(value: number): void {
   if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647) {
@@ -87,12 +98,13 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
     return state;
   }
 
-  async function bracket<T>(peer: Peer, expected: Resolved | undefined, timeoutMs: number,
+  async function bracket<T>(route: Route, expected: Resolved | undefined, timeoutMs: number,
     call: (signal: AbortSignal, remainingMs: number) => Promise<T>): Promise<{ value: T; core: CoreObservation }> {
-    const alias = peer.alias;
+    const alias = route.peer.alias;
     const observed = expected ?? current.get(alias);
     const requireEnrollment = () => {
-      try { enrollment(peer); }
+      if (route.kind === 'bootstrap') return;
+      try { enrollment(route.peer); }
       catch (error) { invalidate(alias, observed); throw error; }
     };
     deadline(timeoutMs);
@@ -143,7 +155,7 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       const configured = Object.freeze({ ...enrollment(peer) });
       const previous = current.get(configured.alias);
       const file = posix.join(configured.globalRoot, 'roam', 'machine.json');
-      const observation = await bracket(configured, undefined, DEFAULT_LIMITS.fileMs, (signal, remainingMs) =>
+      const observation = await bracket({ kind: 'enrolled', peer: configured }, undefined, DEFAULT_LIMITS.fileMs, (signal, remainingMs) =>
         client.exec(configured.alias, ['cat', '--', file], { timeoutMs: remainingMs, maxBytes: DEFAULT_LIMITS.replyBytes, signal }))
         .catch(error => { invalidate(configured.alias, previous); throw error; });
       let machineId: unknown;
@@ -161,11 +173,30 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       handles.set(handle, state);
       return handle;
     },
+    async bootstrapProbe(peer, kind, options) {
+      if (kind !== 'inventory') throw new HerdrError('invalid-bootstrap-kind', 'Unsupported bootstrap probe');
+      const target = bootstrapTarget(peer);
+      const timeoutMs = options?.timeoutMs ?? DEFAULT_LIMITS.controlMs;
+      const maxBytes = options?.maxBytes ?? 64 * 1024;
+      deadline(timeoutMs);
+      if (timeoutMs > DEFAULT_LIMITS.directMs) throw new HerdrError('invalid-cli-deadline', 'Direct execution requires a deadline of at most 600 seconds');
+      if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new HerdrError('invalid-byte-limit', 'A positive bootstrap reply limit is required');
+      const checks = normalizeConfiguredClis(options?.configuredClis);
+      const coreUnit = normalizeCoreUnit(options?.coreUnit);
+      const stdin = Buffer.from(JSON.stringify({ pi: target.pi, cli: target.cli, globalRoot: target.globalRoot, coreUnit,
+        checks: checks.map(({ executable, authFile }) => ({ executable, authFile })) }));
+      if (stdin.length > 300_000) throw new HerdrError('invalid-bootstrap-request', 'Invalid bootstrap probe request');
+      const result = await bracket({ kind: 'bootstrap', peer: target }, undefined, timeoutMs, (signal, remainingMs) =>
+        client.exec(target.alias, [target.node, '-e', BOOTSTRAP_SCRIPT],
+          { timeoutMs: remainingMs, maxBytes: Math.min(maxBytes, 64 * 1024), stdin, signal }))
+        .catch(error => { throw sanitizeBootstrapError(error); });
+      return parseBootstrapInventory(result.value, target, checks.length, coreUnit);
+    },
     async exec(peer, argv, options: CallOptions) {
       const state = resolved(peer);
       const args = remoteArgs(state.peer, argv);
       const call = snapshotCall(options);
-      return (await bracket(state.peer, state, call.timeoutMs, (signal, remainingMs) =>
+      return (await bracket({ kind: 'enrolled', peer: state.peer }, state, call.timeoutMs, (signal, remainingMs) =>
         client.exec(state.peer.alias, args, { ...call, timeoutMs: remainingMs, signal }))).value;
     },
     async run(peer, argv, operationId) {
@@ -174,20 +205,20 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       }
       const state = resolved(peer);
       const args = remoteArgs(state.peer, argv);
-      return (await bracket(state.peer, state, DEFAULT_LIMITS.launchMs, signal =>
+      return (await bracket({ kind: 'enrolled', peer: state.peer }, state, DEFAULT_LIMITS.launchMs, signal =>
         client.run(state.peer.alias, args, { 'spider.operation': operationId, 'spider.machine': state.peer.machineId }, { signal }))).value;
     },
     async read(peer, path, options: CallOptions) {
       const state = resolved(peer);
       const call = snapshotCall(options);
-      return (await bracket(state.peer, state, call.timeoutMs, (signal, remainingMs) =>
+      return (await bracket({ kind: 'enrolled', peer: state.peer }, state, call.timeoutMs, (signal, remainingMs) =>
         client.exec(state.peer.alias, ['cat', '--', path], { ...call, timeoutMs: remainingMs, signal }))).value;
     },
     async write(peer, path, bytes, timeoutMs) {
       const state = resolved(peer);
       const target = state.peer.alias.startsWith('-') ? [`--on=${state.peer.alias}`] : ['--on', state.peer.alias];
       const input = Buffer.from(bytes);
-      await bracket(state.peer, state, timeoutMs, async (signal, remainingMs) => {
+      await bracket({ kind: 'enrolled', peer: state.peer }, state, timeoutMs, async (signal, remainingMs) => {
         const call = { timeoutMs: remainingMs, signal, strictInput: true } satisfies CliRequestOptions;
         try { return await invokeCli(binary, ['file', 'write', '--json', ...target, '--', path], env, DEFAULT_LIMITS.replyBytes, input, call); }
         catch (error) {

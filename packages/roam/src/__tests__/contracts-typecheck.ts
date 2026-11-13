@@ -1,11 +1,12 @@
 import type { Db } from "@spider/db-core";
 import type { ApplyReceipt, BatchArtifact, ExportPolicy, Home, JsonObject, MachineId, Probe, ProcessIdentity, Readiness, ReplicaEffects, StoreBarrier, StoreKey } from "@spider/db-core/roam/types";
 import type {
-  AgentPorts, ArtifactManifest, CallOptions, Clock, DestinationObservation, Diagnostic, FreezeAck, GitPorts,
+  AgentPorts, ArtifactManifest, BootstrapPeer, CallOptions, Clock, DestinationObservation, Diagnostic, FreezeAck, GitPorts,
   HostIntent, HubPorts, Journal, Limits, MoveCheck, MovePorts, MoveRequest, MoveResult, Operation, Outcome,
   Peer, PlacementPort, PreparedMove, PreparedWorkspace, RecoveryPort, RoamConfig, SessionManifest,
   StorePort, SyncService, Transport, WorkspaceSnapshot,
 } from "@spider/roam/contracts";
+import type { BootstrapOptions, Inventory } from "@spider/roam/provision-contracts";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Assert<T extends true> = T;
@@ -29,6 +30,7 @@ type _Outcome = Assert<Equal<Outcome<{ ok: boolean }>, {
 type _CallOptions = Assert<Equal<CallOptions, { timeoutMs: number; maxBytes: number; stdin?: Buffer }>>;
 type _Transport = Assert<Equal<Transport, {
   resolve(peer: Peer): Promise<Peer>;
+  bootstrapProbe(peer: BootstrapPeer, kind: "inventory", options?: BootstrapOptions): Promise<Inventory>;
   exec(peer: Peer, argv: readonly string[], options: CallOptions): Promise<Buffer>;
   run(peer: Peer, argv: readonly string[], operationId: string): Promise<{ terminal: string }>;
   read(peer: Peer, path: string, options: CallOptions): Promise<Buffer>;

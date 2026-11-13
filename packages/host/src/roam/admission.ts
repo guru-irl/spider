@@ -9,9 +9,10 @@ import { join, resolve } from "node:path";
 import { lockParticipant, type ParticipantLockOptions } from "../herdr/ports.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./activation.js";
 
-export interface Admission { kind: "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[] }
+export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[] }
 export interface AdmissionGate {
   inspect(): Admission;
+  whenSettled(): Promise<Admission>;
   close(): Promise<void>;
   freeze(moveId: string, epoch: number): Promise<void>;
   unfreeze(moveId: string, epoch: number): Promise<void>;
@@ -40,7 +41,7 @@ export class AdmissionClosedError extends Error {
 export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): AdmissionGate {
   if (process.env.PI_SUBAGENT_CHILD === "1") {
     const child: Admission = { kind: "ordinary", home: null, blockers: [] };
-    return { inspect: () => child, close: async () => {}, freeze: async () => { throw new Error(VERIFY); }, unfreeze: async () => { throw new Error(VERIFY); } };
+    return { inspect: () => child, whenSettled: async () => child, close: async () => {}, freeze: async () => { throw new Error(VERIFY); }, unfreeze: async () => { throw new Error(VERIFY); } };
   }
   let admission: Admission = { kind: "ordinary", home: null, blockers: [] };
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission);
@@ -75,7 +76,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
     const id = ctx?.sessionManager?.getSessionId?.() ?? "";
     const file = ctx?.sessionManager?.getSessionFile?.() ?? "";
     const ticket = ++generation;
-    publish("blocked", admission.home, VERIFY);
+    publish("pending", null);
     await sequence(async () => {
       if (ticket !== generation) return;
       if (ctx) { lastContext = ctx; ports.setContext?.(ctx); }
@@ -157,6 +158,13 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
 
   return {
     inspect: () => admission,
+    async whenSettled() {
+      for (;;) {
+        const current = transition;
+        await current;
+        if (current === transition) return admission;
+      }
+    },
     async close() { ++generation; publish("blocked", admission.home, VERIFY); await sequence(release); },
     async freeze(moveId, expectedEpoch) {
       const sameFreeze = freeze?.moveId === moveId && freeze.epoch === expectedEpoch && admission.kind === "control-only";

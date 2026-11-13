@@ -135,12 +135,30 @@ it("redelivers a supervised completion exactly once after a closed gate reopens"
   } finally { teardownAll(); releaseShared(id); worktree.close(); global.close(); }
 }, 5000);
 
+it.each(["resume", "reload"])("%s reports pending while ownership is loading without admitting work", async reason => {
+  const ordinary = snapshot({ home: null, states: [], origin: null, participating: false });
+  const f = fixture(ordinary);
+  let finish!: (value: Snapshot) => void, entered!: () => void;
+  const loading = new Promise<void>(resolve => { entered = resolve; });
+  f.ports.load = () => new Promise(resolve => { finish = resolve; entered(); });
+  const starting = f.emit("session_start", { reason });
+  await loading;
+  const during = f.gate.inspect().kind;
+  const input = await f.emit("input", { text: "continue" });
+  finish(ordinary);
+  await starting;
+  expect(during).toBe("pending");
+  expect(input).toEqual({ action: "handled" });
+  expect(f.gate.inspect().kind).toBe("ordinary");
+  expect(f.calls.lock).toBe(0);
+}, 5000);
+
 it("discovery blocks ordinary work until the owning gate is verified", async () => {
   const f = fixture();
   let finish!: (value: Snapshot) => void;
   f.ports.load = () => new Promise(resolve => { finish = resolve; });
   const starting = f.emit("session_start", { reason: "resume" });
-  expect(f.gate.inspect().kind).toBe("blocked");
+  expect(f.gate.inspect().kind).toBe("pending");
   expect(await f.emit("input", { text: "continue" })).toEqual({ action: "handled" });
   finish(snapshot());
   await starting;
@@ -157,6 +175,35 @@ it("only the admitted lock holder can freeze, and the same freeze is idempotent"
   await owner.gate.freeze("move-1", 3);
   await expect(owner.gate.freeze("move-1", 3)).resolves.toBeUndefined();
   expect(owner.gate.inspect().kind).toBe("control-only");
+}, 5000);
+
+it("waiting for admission follows a superseding reload", async () => {
+  const ordinary = snapshot({ home: null, states: [], origin: null, participating: false });
+  const f = fixture(ordinary);
+  let firstFinish!: (value: Snapshot) => void, secondFinish!: (value: Snapshot) => void;
+  let firstEntered!: () => void, secondEntered!: () => void, calls = 0;
+  const firstLoading = new Promise<void>(resolve => { firstEntered = resolve; });
+  const secondLoading = new Promise<void>(resolve => { secondEntered = resolve; });
+  f.ports.load = () => new Promise(resolve => {
+    calls++;
+    if (calls === 1) { firstFinish = resolve; firstEntered(); }
+    else { secondFinish = resolve; secondEntered(); }
+  });
+  const first = f.emit("session_start", { reason: "resume" });
+  await firstLoading;
+  let settled = false;
+  const waiting = f.gate.whenSettled().then(value => { settled = true; return value; });
+  const second = f.emit("session_start", { reason: "reload" });
+  firstFinish(ordinary);
+  await secondLoading;
+  await Promise.resolve();
+  const settledDuringReload = settled;
+  secondFinish(snapshot({ home: { ...home, machineId: "destination.invalid" } }));
+  await Promise.all([first, second]);
+  const result = await waiting;
+  expect(settledDuringReload).toBe(false);
+  expect(result.kind).toBe("blocked");
+  expect(result.home?.machineId).toBe("destination.invalid");
 }, 5000);
 
 it("a superseded pending claim releases before its replacement claims", async () => {
@@ -218,7 +265,7 @@ it("a replacement waits for the previous ownership release before claiming", asy
   try {
     await Promise.resolve(); await Promise.resolve();
     expect(claims).toBe(1);
-    expect(f.gate.inspect().kind).toBe("blocked");
+    expect(f.gate.inspect().kind).toBe("pending");
   } finally { finishRelease(); await Promise.all([stale, replacement]); }
   expect(claims).toBe(2);
   expect(f.gate.inspect().kind).toBe("ordinary");

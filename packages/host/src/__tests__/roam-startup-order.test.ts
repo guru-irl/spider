@@ -144,6 +144,55 @@ it("roaming doctor leaves pi's event loop responsive during inspection", async (
   expect(existsSync(join(globalRoot, "spider.db"))).toBe(false);
 }, 5000);
 
+it.each(["resume", "reload"])("host shows the normal doctor after admission loads during %s", async reason => {
+  const base = resolve(".spider/scratch/roam-startup-order");
+  mkdirSync(base, { recursive: true }); root = mkdtempSync(join(base, "doctor-pending-"));
+  const cwd = join(root, "workspace"), globalRoot = join(root, "global");
+  mkdirSync(cwd, { recursive: true }); mkdirSync(globalRoot, { recursive: true, mode: 0o700 });
+  execFileSync("git", ["init", "-q", cwd]);
+  vi.stubEnv("GIT_CEILING_DIRECTORIES", root); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  vi.stubEnv("HOME", root); vi.stubEnv("SPIDER_GLOBAL_ROOT", globalRoot);
+  paths.globalRoot = globalRoot; setGlobalDbPathForTests(join(globalRoot, "spider.db"));
+  const global = openDbAt(join(globalRoot, "spider.db"), "global");
+  const worktree = openDbAt(join(cwd, ".spider", "project.db"), "worktree");
+  const hooks = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+  const commands = new Map<string, { handler(args: string, ctx: unknown): unknown }>(), sent: any[] = [], notices: string[] = [];
+  const pi = {
+    on(name: string, handler: (event: any, ctx: any) => unknown) { hooks.set(name, [...hooks.get(name) ?? [], handler]); return () => {}; },
+    registerTool() {}, registerShortcut() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
+    registerCommand(name: string, command: { handler(args: string, ctx: unknown): unknown }) { commands.set(name, command); },
+    sendMessage(message: unknown) { sent.push(message); }, sendUserMessage() {}, appendEntry() {},
+  };
+  let finish!: () => void, entered!: () => void, delayed = false;
+  const loading = new Promise<void>(resolve => { entered = resolve; });
+  const pause = new Promise<void>(resolve => { finish = resolve; });
+  const createPorts = admission.createAdmissionPorts;
+  vi.spyOn(admission, "createAdmissionPorts").mockImplementation(options => {
+    const ports = createPorts(options), load = ports.load;
+    ports.load = async id => { if (delayed) { entered(); await pause; } return load(id); };
+    return ports;
+  });
+  spiderExtension(pi as never);
+  const ctx = { cwd, mode: "tui", hasUI: true, ui: { notify(text: string) { notices.push(text); } }, abort() {}, isIdle: () => true,
+    sessionManager: { getSessionId: () => "ordinary-session", getSessionFile: () => join(root, "session.jsonl"), getSessionName: () => null,
+      getEntries: () => [], getBranch: () => [], getLeafId: () => null } };
+  const start = hooks.get("session_start")![0];
+  try {
+    if (reason === "reload") await start({ reason: "resume" }, ctx);
+    delayed = true;
+    const starting = Promise.resolve(start({ reason }, ctx));
+    await loading;
+    const doctor = Promise.resolve(commands.get("doctor")!.handler("", ctx));
+    finish();
+    await Promise.all([starting, doctor]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ customType: "spider.command", details: { args: { action: "control", command: "doctor" } } });
+    expect(sent[0].content).toContain("spider doctor");
+    expect(sent[0].content).toContain("better-sqlite3");
+    expect(notices).toEqual([]);
+  } finally { finish(); global.close(); worktree.close(); }
+}, 5000);
+
 it("a second host session cannot reopen or close another session's gate", async () => {
   const base = resolve(".spider/scratch/roam-startup-order");
   mkdirSync(base, { recursive: true }); root = mkdtempSync(join(base, "case-"));

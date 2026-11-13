@@ -45,8 +45,9 @@ function session(changes: Partial<Awaited<ReturnType<AdmissionPorts["load"]>>> =
     sessionManager: { getSessionId: () => "session-1", getSessionFile: () => "/fixture/session.jsonl" } };
   registerSlashCommands(protectedApi as never, {
     alreadyRegistered: new Set(),
-    async run(args: unknown) { dispatches.push(args); return { content: "unexpected" }; },
+    async run(args: unknown) { dispatches.push(args); return { content: "normal doctor report" }; },
     ordinaryWorkAllowed: () => gate.inspect().kind === "ordinary",
+    waitForAdmission: () => gate.whenSettled(),
     async roamDoctor(args: readonly string[]) {
       const output: string[] = [], errors: string[] = [];
       const code = await main(args, { out: text => output.push(text), err: text => errors.push(text) });
@@ -54,7 +55,7 @@ function session(changes: Partial<Awaited<ReturnType<AdmissionPorts["load"]>>> =
     },
   } as never);
   return { gate, ports, commands, ctx, sent, notices, dispatches,
-    async start() { for (const handler of events.get("session_start") ?? []) await handler({}, ctx); } };
+    async start(reason = "resume") { for (const handler of events.get("session_start") ?? []) await handler({ reason }, ctx); } };
 }
 function root(): string {
   const result = mkdtempSync(join(dirname(scratchDbPath("roam-slash")), "roam-slash-"));
@@ -64,6 +65,47 @@ function root(): string {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   return result;
 }
+
+it.each(["resume", "reload"])("normal doctor waits for disabled roaming admission during %s", async reason => {
+  root();
+  const ordinary = { home: null, states: [], origin: null, participating: false, captureSafe: true, unfinishedFreeze: false, initialConflict: false };
+  const f = session(ordinary);
+  f.ports.knownParticipant = () => false;
+  if (reason === "reload") await f.start();
+  let finish!: (value: typeof ordinary) => void, entered!: () => void;
+  const loading = new Promise<void>(resolve => { entered = resolve; });
+  f.ports.load = () => new Promise(resolve => { finish = resolve; entered(); });
+  const starting = f.start(reason);
+  await loading;
+  const doctor = Promise.resolve(f.commands.get("doctor")!("", f.ctx));
+  await Promise.resolve();
+  const earlyDispatches = [...f.dispatches], earlyMessages = [...f.sent];
+  finish(ordinary);
+  await Promise.all([starting, doctor]);
+  expect(earlyDispatches).toEqual([]);
+  expect(earlyMessages).toEqual([]);
+  expect(f.gate.inspect().kind).toBe("ordinary");
+  expect(f.dispatches).toEqual([{ action: "control", command: "doctor" }]);
+  expect(f.sent).toEqual([expect.objectContaining({ customType: "spider.command", content: "normal doctor report", display: true })]);
+  expect(f.notices).toEqual([]);
+}, 5000);
+
+it("doctor requested while loading still protects a blocked participant", async () => {
+  root();
+  const f = session();
+  let finish!: (value: Awaited<ReturnType<AdmissionPorts["load"]>>) => void, entered!: () => void;
+  const loading = new Promise<void>(resolve => { entered = resolve; });
+  f.ports.load = () => new Promise(resolve => { finish = resolve; entered(); });
+  const starting = f.start();
+  await loading;
+  const doctor = Promise.resolve(f.commands.get("doctor")!("", f.ctx));
+  finish({ home, states: [active], origin: "local.invalid", participating: true, captureSafe: true, unfinishedFreeze: false, initialConflict: false });
+  await Promise.all([starting, doctor]);
+  expect(f.gate.inspect().kind).toBe("blocked");
+  expect(f.dispatches).toEqual([]);
+  expect(f.sent).toEqual([]);
+  expect(f.notices.join("\n")).toMatch(/roam.*disabled/i);
+}, 5000);
 
 it("read-only doctor runs inside a blocked pi session without transcript writes", async () => {
   root();

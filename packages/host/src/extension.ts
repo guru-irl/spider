@@ -1033,6 +1033,7 @@ export default function spiderExtension(hostPi: PiToolAPI): void {
       }>,
     alreadyRegistered: new Set(["todos", "agents"]),
     ordinaryWorkAllowed,
+    waitForAdmission: () => admission.whenSettled(),
     async roamDoctor(args) {
       const bundle = fileURLToPath(loadedBundle.url);
       const directory = loadedBundle.url.includes("/packages/host/src/")

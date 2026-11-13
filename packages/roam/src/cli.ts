@@ -118,11 +118,11 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
     } catch { io.err("Invalid agent request.\n"); return 2; }
     try {
       const runtime = openLocalRuntime(root);
-      try {
-        const result = await handleAgentOperation(operation as Operation, runtime.agent);
-        io.out(`${JSON.stringify(result)}\n`);
-        return 0;
-      } finally { runtime.close(); }
+      let result: Awaited<ReturnType<typeof handleAgentOperation>>;
+      try { result = await handleAgentOperation(operation as Operation, runtime.agent); }
+      finally { runtime.close(); }
+      io.out(`${JSON.stringify(result)}\n`);
+      return 0;
     } catch { io.err("Local roaming agent is unavailable.\n"); return 1; }
   }
   if (argv[0] === "roam" && argv[1] === "artifact" && argv[2] === "receive" && argv.length === 4) {
@@ -134,6 +134,7 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
     } catch { io.err("Invalid artifact request.\n"); return 2; }
     try {
       const runtime = openLocalRuntime(root);
+      let reply: Buffer;
       try {
         // Phase 2 boxes have exactly one enrolled source: their configured hub.
         if (runtime.config.role !== "box") return 1;
@@ -143,11 +144,12 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
           if (action === "page" || action === "chunk") stdin = await readArtifactInput(
             action === "page" ? runtime.config.limits.manifestBytes : runtime.config.limits.chunkBytes, options?.stdin);
         } catch { io.err("Invalid artifact bytes.\n"); return 2; }
-        const reply = await dispatchArtifactCommand(argv, stdin, runtime.config.hubMachineId, runtime.agent);
-        if (!reply) return 2;
-        io.out(reply.toString("utf8"));
-        return 0;
+        const outcome = await dispatchArtifactCommand(argv, stdin, runtime.config.hubMachineId, runtime.agent);
+        if (!outcome) return 2;
+        reply = outcome;
       } finally { runtime.close(); }
+      io.out(reply.toString("utf8"));
+      return 0;
     } catch { io.err("Local roaming agent is unavailable.\n"); return 1; }
   }
   const parsed = normalize(argv);

@@ -10,11 +10,20 @@ import { hash, privateDirectory, readPrivateJson, withProcessLock, writePrivateJ
 
 type Slot = Pick<OwnerPlacement, 'space' | 'tab'>;
 type Readiness = { operationId: string; sessionId: string; epoch: number; cwd: string; file: string; core: string; terminal: string };
-type Attempt = { session: string; remote: string; core: string; proxy: string | null; closed: boolean; localOwners: string[] };
+type LaunchFailure = { attempts: number; retryable: boolean };
+type Attempt = { session: string; remote: string; core: string; proxy: string | null; closed: boolean; localOwners: string[]; failure?: LaunchFailure };
 type State = { version: 1; slots: { session: string; space: string; tab: string }[]; attempts: Attempt[] };
+const MAX_LAUNCH_ATTEMPTS = 2;
 type Options = { app: AppClient | null; hc: HcClient; registry: TerminalRegistry; hcBinary: string; stateRoot: string };
 const stateFile = (root: string) => join(root, 'roam-placement.json');
 const errorCode = (error: unknown) => error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+function launchNotStarted(error: unknown): boolean {
+  if (!(error instanceof HerdrError)) return false;
+  if (['core-unavailable', 'core-mismatch'].includes(error.code) && error.details === undefined) return true;
+  const details = error.details;
+  return ['missing-hc', 'spawn-error'].includes(error.code) && !!details && typeof details === 'object' &&
+    Object.hasOwn(details, 'pid') && (details as { pid?: unknown }).pid === undefined;
+}
 const appUnavailable = (error: unknown) => ['owner-unplaced', 'app-disconnected', 'cli-exit', 'missing-app', 'pane-timeout'].includes(String(errorCode(error)));
 const localSlot = (slot: { space: string; tab: string }) => !!slot.space && !!slot.tab && !slot.space.includes('/') && !slot.tab.includes('/');
 const ownerKey = (owner: Owner) => hash(JSON.stringify([owner.terminal.coreId, owner.terminal.terminalId, owner.terminal.socket, owner.terminal.sessionNamespace]));
@@ -33,16 +42,31 @@ async function prepareRoot(root: string): Promise<void> {
     catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
   }
 }
-async function load(root: string): Promise<State> {
-  await prepareRoot(root);
+async function load(root: string, create = true): Promise<State> {
+  if (create) await prepareRoot(root);
+  else {
+    if (!isAbsolute(root)) throw new HerdrError('unsafe-state-path', 'Placement state root must be absolute');
+    try { await checkPrivate(root, true); }
+    catch (error) { if (errorCode(error) === 'ENOENT') return { version: 1, slots: [], attempts: [] }; throw error; }
+  }
   const path = stateFile(root);
   try { await checkPrivate(path, false); } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
   const value = await readPrivateJson(path);
   if (value === null) return { version: 1, slots: [], attempts: [] };
   const state = value as State;
-  if (!state || state.version !== 1 || !Array.isArray(state.slots) || !Array.isArray(state.attempts) || state.slots.some(s => !s || typeof s.session !== 'string' || typeof s.space !== 'string' || typeof s.tab !== 'string' || !localSlot(s)) || state.attempts.some(a => !a || typeof a.session !== 'string' || typeof a.remote !== 'string' || typeof a.core !== 'string' || !(a.proxy === null || typeof a.proxy === 'string') || typeof a.closed !== 'boolean' || !Array.isArray(a.localOwners) || a.localOwners.some(key => typeof key !== 'string')))
+  if (!state || state.version !== 1 || !Array.isArray(state.slots) || !Array.isArray(state.attempts) || state.slots.some(s => !s || typeof s.session !== 'string' || typeof s.space !== 'string' || typeof s.tab !== 'string' || !localSlot(s)) || state.attempts.some(a => !a || typeof a.session !== 'string' || typeof a.remote !== 'string' || typeof a.core !== 'string' || !(a.proxy === null || typeof a.proxy === 'string') || typeof a.closed !== 'boolean' || !Array.isArray(a.localOwners) || a.localOwners.some(key => typeof key !== 'string') ||
+    a.failure !== undefined && (!a.failure || !Number.isSafeInteger(a.failure.attempts) || a.failure.attempts < 1 || a.failure.attempts > MAX_LAUNCH_ATTEMPTS || typeof a.failure.retryable !== 'boolean')))
     throw new HerdrError('invalid-placement-state', 'Invalid roaming placement state');
   return state;
+}
+
+/** Inspect placement failures without creating the directory or acquiring a write lock. */
+export async function inspectRoamPlacement(root: string): Promise<Array<{ session: string; remote: string; status: 'retryable' | 'exhausted' | 'uncertain' }>> {
+  const state = await load(root, false);
+  return state.attempts.filter(attempt => !attempt.proxy && !attempt.closed).map(attempt => ({
+    session: attempt.session, remote: attempt.remote,
+    status: !attempt.failure?.retryable ? 'uncertain' : attempt.failure.attempts < MAX_LAUNCH_ATTEMPTS ? 'retryable' : 'exhausted',
+  }));
 }
 function setSlot(state: State, session: string, slot: Slot): void {
   if (!session || !localSlot(slot)) throw new HerdrError('invalid-placement-slot', 'Placement requires a local space and tab');
@@ -84,7 +108,7 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
           for (const terminal of await snapshot(hc)) {
             if (terminal.address.includes('/') || terminal.labels[HERDR_LABELS.kind] !== 'roam-proxy') continue;
             const attempt = state.attempts.find(a => !a.proxy && !a.closed && a.session === terminal.labels[HERDR_LABELS.session] && a.remote === terminal.labels[HERDR_LABELS.ownerTerminal] && a.core === terminal.labels[HERDR_LABELS.ownerCore]);
-            if (attempt) attempt.proxy = terminal.address;
+            if (attempt) { attempt.proxy = terminal.address; delete attempt.failure; }
           }
         }
         const records = (await registry.list()).sort((a, b) => a.recordedAt - b.recordedAt);
@@ -124,24 +148,37 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
           }
           if (!remote || remote.startsWith('/') || remote.endsWith('/') || remote.split('/').length !== 2) { pending.push(row.terminal); continue; }
           const terminalId = remote.slice(remote.indexOf('/') + 1);
-          const prior = state.attempts.find(a => a.core === row.core && a.remote.slice(a.remote.indexOf('/') + 1) === terminalId);
-          if (prior) {
-            if (prior.session !== row.sessionId || !prior.proxy && !prior.closed) pending.push(row.terminal);
-            continue;
+          let attempt = state.attempts.find(a => a.core === row.core && a.remote.slice(a.remote.indexOf('/') + 1) === terminalId);
+          if (attempt) {
+            if (attempt.session !== row.sessionId) { pending.push(row.terminal); continue; }
+            if (attempt.proxy || attempt.closed) continue;
+            if (!attempt.failure?.retryable || attempt.failure.attempts >= MAX_LAUNCH_ATTEMPTS) { pending.push(row.terminal); continue; }
           }
           const slot = getSlot(state, row.sessionId);
           if (!slot) { pending.push(row.terminal); continue; }
           const localOwners = records.filter(record => record.owner.sessionId === row.sessionId && record.owner.terminal.coreId === identity.coreId && !record.owner.terminal.address.includes('/')).map(record => ownerKey(record.owner));
-          const attempt: Attempt = { session: row.sessionId, core: row.core, remote, proxy: null, closed: false, localOwners };
-          // Claim before launch. A lost reply is recovered from labels, never retried blindly.
-          state.attempts.push(attempt);
+          if (!attempt) {
+            attempt = { session: row.sessionId, core: row.core, remote, proxy: null, closed: false, localOwners };
+            state.attempts.push(attempt);
+          } else { attempt.remote = remote; attempt.localOwners = localOwners; }
+          // A crash or lost reply leaves an uncertain claim, not permission to relaunch.
+          attempt.failure = { attempts: (attempt.failure?.attempts ?? 0) + 1, retryable: false };
           await save(stateRoot, state);
-          const launched = await hc.run({ argv: [hcBinary, 'attach', '--history', '100', ...(remote.startsWith('-') ? ['--'] : []), remote], cwd: null, labels: {
-            [HERDR_LABELS.kind]: 'roam-proxy', [HERDR_LABELS.session]: row.sessionId, [HERDR_LABELS.ownerTerminal]: remote, [HERDR_LABELS.ownerCore]: row.core,
-            [HERDR_LABELS.space]: slot.space, [HERDR_LABELS.tab]: slot.tab,
-          }, parent: null, outliveParent: true, background: true, noNotify: true });
-          if (launched.address.includes('/') || launched.coreId !== identity.coreId) throw new HerdrError('invalid-proxy', 'Proxy terminal must belong to the local core');
+          let launched;
+          try {
+            launched = await hc.run({ argv: [hcBinary, 'attach', '--history', '100', ...(remote.startsWith('-') ? ['--'] : []), remote], cwd: null, labels: {
+              [HERDR_LABELS.kind]: 'roam-proxy', [HERDR_LABELS.session]: row.sessionId, [HERDR_LABELS.ownerTerminal]: remote, [HERDR_LABELS.ownerCore]: row.core,
+              [HERDR_LABELS.space]: slot.space, [HERDR_LABELS.tab]: slot.tab,
+            }, parent: null, outliveParent: true, background: true, noNotify: true });
+            if (launched.address.includes('/') || launched.coreId !== identity.coreId) throw new HerdrError('invalid-proxy', 'Proxy terminal must belong to the local core');
+          } catch (error) {
+            // These transport errors prove the hc run process did not start.
+            attempt.failure.retryable = launchNotStarted(error);
+            await save(stateRoot, state);
+            throw error;
+          }
           attempt.proxy = launched.address;
+          delete attempt.failure;
           await save(stateRoot, state);
           if (app) {
             // Label adoption uses the space and tab. The helper does not use the anchor pane.

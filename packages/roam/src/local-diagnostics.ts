@@ -9,6 +9,7 @@ import { isRoamUuid, storeScope } from "@spider/db-core/roam/codec";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import type { Scope, StoreKey } from "@spider/db-core/roam/types";
 import { createProcessPresence, type PresenceBuild, type PresenceRecord } from "@spider/herdr/sessions/presence";
+import { inspectRoamPlacement } from "@spider/herdr/roam-placement";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { loadConfig } from "./config";
@@ -394,6 +395,15 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL }): 
       }
     } finally { catalog.close(); }
   }
+  try {
+    for (const failure of await inspectRoamPlacement(join(root, "roam", "placement"))) {
+      const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
+      const detail = failure.status === "uncertain" ? "has an uncertain launch outcome; inspect the local terminals before taking action"
+        : failure.status === "retryable" ? "could not start; it will retry on the next reconciliation"
+        : "could not start; automatic retries stopped";
+      inventory.push({ severity: "warning", reason: `Session ${safe(failure.session)}: proxy ${safe(failure.remote)} ${detail}.`, repairCommand: null });
+    }
+  } catch { inventory.push({ severity: "warning", reason: "Cannot inspect proxy placement state.", repairCommand: null }); }
   const ports = createLocalDiagnosticPorts(root, [], input.bundleUrl);
   return { enabled: config.enabled, diagnostics: [...await doctorLocal(config, ports, consumers), ...storeDiagnostics, ...inventory, ...peerFailures], consumers };
 }

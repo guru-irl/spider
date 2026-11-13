@@ -13,12 +13,13 @@ import type { RunCursor, RunViewFrame, RunViewEvent, RunViewInfo } from '../../.
 import { RUN_VIEW_PROTOCOL } from '../../../herdr/src/contracts.js';
 import { subscribeLiveRunEvents } from '../../../subagents/src/live-events.js';
 
-export const TRANSCRIPT_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1";
-export const EVENT_MAX_ID_QUERY = 'SELECT COALESCE(MAX(id), 0) AS id FROM run_events WHERE run_id=? AND session_id=?';
-export const PREVIOUS_MESSAGES_QUERY = "SELECT summary,payload FROM run_events WHERE run_id=? AND session_id=? AND type='message' AND id<=? ORDER BY id";
-export const PENDING_MESSAGE_QUERY = "SELECT summary,payload FROM run_events WHERE run_id=? AND session_id=? AND type='message' AND id=?";
-export const FOLLOW_EVENTS_QUERY = 'SELECT id,type,tool,summary,payload FROM run_events WHERE run_id=? AND session_id=? AND id>? ORDER BY id LIMIT 128';
-export const UNREAD_EVENTS_QUERY = 'SELECT id FROM run_events WHERE run_id=? AND session_id=? AND id>? LIMIT 1';
+// Keep the session ownership filter without letting its index mask the per-run index.
+export const TRANSCRIPT_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND +session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1";
+export const EVENT_MAX_ID_QUERY = 'SELECT COALESCE(MAX(id), 0) AS id FROM run_events WHERE run_id=? AND +session_id=?';
+export const PREVIOUS_MESSAGES_QUERY = "SELECT summary,payload FROM run_events WHERE run_id=? AND +session_id=? AND type='message' AND id<=? ORDER BY id";
+export const PENDING_MESSAGE_QUERY = "SELECT summary,payload FROM run_events WHERE run_id=? AND +session_id=? AND type='message' AND id=?";
+export const FOLLOW_EVENTS_QUERY = 'SELECT id,type,tool,summary,payload FROM run_events WHERE run_id=? AND +session_id=? AND id>? ORDER BY id LIMIT 128';
+export const UNREAD_EVENTS_QUERY = 'SELECT id FROM run_events WHERE run_id=? AND +session_id=? AND id>? LIMIT 1';
 
 /** A live frame is a preview: anything larger waits for the transcript instead. */
 const LIVE_FRAME_BYTES = 192 * 1024;

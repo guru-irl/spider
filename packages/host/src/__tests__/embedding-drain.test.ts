@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -43,7 +44,7 @@ function host() {
   const pi = { registerTool() {}, registerCommand() {}, registerMessageRenderer() {},
     on(name: string, fn: (...args: any[]) => unknown) { hooks.set(name, [...hooks.get(name) ?? [], fn]); },
     async emit(name: string, ctx?: unknown) { for (const fn of hooks.get(name) ?? []) await fn(name === 'session_shutdown' ? { reason: 'quit' } : {}, ctx); } };
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   return pi;
 }
 let root: string;

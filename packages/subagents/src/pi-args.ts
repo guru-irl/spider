@@ -301,7 +301,6 @@ export interface BuildChildSpawnSpecInput {
 	childMode?: "rpc" | "print";
 	/** User-global reviewer profile, never taken from run arguments. */
 	reviewerExcludeTools?: readonly string[];
-	intercomExtensions?: string[];
 	subagentOnlyExtensions?: string[];
 	task: string;
 	model?: string;
@@ -350,7 +349,7 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 
 	const isFork = input.context === "fork";
 	// Disable extension discovery. Load the spider reporter plus only explicitly
-	// resolved, enabled intercom resources for RPC children.
+	// configured non-intercom resources. Intercom comes from the spider bundle.
 	const spiderExtension = input.childExtensionPath ?? fileURLToPath(import.meta.url);
 	// Pi rejects --fork with --session. Forks select their own ID and directory;
 	// pi writes a timestamped filename there. Fresh children retain the fixed path.
@@ -360,6 +359,9 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 	const launchWarning = compatibility?.warning;
 	const childMode = compatibility?.fallback ? "print" : input.childMode ?? "rpc";
 	const extensionWarnings: string[] = [];
+	for (const extension of input.subagentOnlyExtensions ?? []) {
+		if (isLegacyIntercomExtension(extension)) throw new Error("Legacy intercom extension cannot load in a child. Intercom is bundled with spider.");
+	}
 	const subagentOnlyExtensions = uniqueExtensions(input.subagentOnlyExtensions ?? []).filter(extPath => {
 		try {
 			if (fs.statSync(extPath).isFile()) return true;
@@ -392,7 +394,7 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		childIndex: input.childIndex,
 		scratchRoot: input.scratchRoot,
 		dbPath: input.dbPath,
-		extensions: [spiderExtension, ...(childMode === "rpc" ? input.intercomExtensions ?? [] : [])],
+		extensions: [spiderExtension],
 		subagentOnlyExtensions,
 		intercomSessionName: input.intercomSessionName,
 		orchestratorIntercomTarget: childMode === "rpc" ? input.orchestratorTarget : undefined,
@@ -422,14 +424,31 @@ export function buildChildSpawnSpec(input: BuildChildSpawnSpecInput): ChildSpawn
 		env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = input.intercomSessionName;
 	}
 
-	if (childMode === "rpc" && input.intercomExtensions?.length) {
+	if (childMode === "rpc") {
 		env.PI_INTERCOM_STABLE_ID = `spider-${input.runId}`;
 		env.PI_INTERCOM_SESSION_ID = `spider-${input.runId}`;
 		env.PI_SUBAGENT_SUPERVISOR_CHANNEL_DIR = "";
 		env.PI_SUBAGENT_ORCHESTRATOR_SESSION_ID = input.orchestratorTarget ?? input.sessionId;
 		env[SUBAGENT_ORCHESTRATOR_TARGET_ENV] = input.orchestratorTarget ?? input.sessionId;
-		env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = sessionName;
+		env[SUBAGENT_INTERCOM_SESSION_NAME_ENV] = input.intercomSessionName ?? sessionName;
 	}
 	const finalEnv = finalChildEnvironment(process.env, env, input.executionEnvironmentPolicy);
 	return { argv, env: Object.fromEntries(Object.entries(finalEnv).filter((entry): entry is [string, string] => entry[1] !== undefined)), cwd, sessionDir, ...(!isFork ? { sessionFile } : {}), childMode, model: stripThinkingSuffix(input.model), ...(extensionWarnings.length ? { extensionWarnings } : {}), ...(launchWarning ? { launchWarning } : {}), ...(childMode === "rpc" ? { prompt: `Task: ${task}` } : {}) };
+}
+
+/** Reject legacy resources even when installed under a renamed directory. */
+function isLegacyIntercomExtension(file: string): boolean {
+  if (/(?:^|[\\/])pi-intercom(?:[\\/]|$)/.test(file)) return true;
+  let directory = path.resolve(file);
+  if (!fs.existsSync(path.join(directory, 'package.json'))) directory = path.dirname(directory);
+  for (;;) {
+    const manifest = path.join(directory, "package.json");
+    if (fs.existsSync(manifest)) {
+      try { if (JSON.parse(fs.readFileSync(manifest, "utf8")).name === "pi-intercom") return true; }
+      catch { /* Pi reports invalid extension packages separately. */ }
+    }
+    const parent = path.dirname(directory);
+    if (parent === directory) return false;
+    directory = parent;
+  }
 }

@@ -93,13 +93,16 @@ function setup(name) {
   mkdirSync(dirname(bundleCopy), { recursive: true });
   copyFileSync(bundle, bundleCopy);
   writeFileSync(join(agent, "extensions", "spider.ts"), extensionShim(bundleCopy));
-  // The child loads only the spider bundle and extensions from a package named pi-intercom, so the
-  // fixture (fake provider + wait tool + reload command) ships as that package for host AND child.
+  // Both generations use the same compiled broker. The offline provider is an
+  // explicit child extension, independent of user or project package lookup.
+  mkdirSync(join(dirname(bundleCopy), "intercom"), { recursive: true });
+  copyFileSync(join(root, "dist/intercom/broker.mjs"), join(dirname(bundleCopy), "intercom/broker.mjs"));
   const pkg = join(dir, "pkg");
   mkdirSync(pkg, { recursive: true });
-  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "pi-intercom", version: "0.0.0", pi: { extensions: ["./index.ts"] } }));
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "probe-provider-fixture", version: "0.0.0", pi: { extensions: ["./index.ts"] } }));
   writeFileSync(join(pkg, "index.ts"), probeExtension);
   writeFileSync(join(agent, "settings.json"), JSON.stringify({ packages: [pkg] }));
+  writeFileSync(join(dir, "global/config.json"), JSON.stringify({ "subagents.extensions": [join(pkg, "index.ts")] }));
   return { dir, app, probe, env, bundleCopy };
 }
 

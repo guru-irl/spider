@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from '../../__tests__/fixtures/pi-events';
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -21,7 +22,7 @@ beforeEach(() => {
   let tool: any;
   const handlers: Record<string, (args: string, ctx: unknown) => Promise<any>> = {};
   messages = [];
-  spiderExtension({ registerTool: (t: any) => { if (t.name === "spider") tool = t; }, registerCommand: (name: string, opts: any) => { handlers[name] = opts.handler; }, sendMessage: (m: any) => messages.push(m), on() {} } as never);
+  spiderExtension(withPiEvents({ registerTool: (t: any) => { if (t.name === "spider") tool = t; }, registerCommand: (name: string, opts: any) => { handlers[name] = opts.handler; }, sendMessage: (m: any) => messages.push(m), on() {} } as never), hostUnitPorts);
   slash = args => handlers.spider(args, { cwd: root, ui: {} });
   doctorSlash = () => handlers.doctor("", { cwd: root, ui: {} });
   run = args => tool.execute("usage-config", { action: "control", command: "config", cwd: root, ...args }, undefined, undefined, { cwd: root });

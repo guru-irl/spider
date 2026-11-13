@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { describe, it, expect } from "vitest";
 import spiderExtension from "../extension";
 import { isolatedCwd } from "./isolated-cwd";
@@ -15,7 +16,7 @@ function mountAndGetTool() {
     registerCommand: () => {}, registerMessageRenderer: () => {}, registerRenderer: () => {},
     registerShortcut: () => {}, on: () => pi, sendMessage: () => {}, addMessage: () => {},
   };
-  spiderExtension(pi);
+  spiderExtension(withPiEvents(pi), hostUnitPorts);
   return tool;
 }
 

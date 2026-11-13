@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -95,7 +96,7 @@ it("blocked startup calls no reaper usage trigger feed or organism", async () =>
     ports.load = async id => { trace.startupCalls.push("admission"); return load(id); };
     return ports;
   });
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   for (const handler of hooks.get("session_start") ?? []) await handler({ reason: "resume" }, ctx);
   const files = [global.raw.name, worktree.raw.name].flatMap(file => [file, `${file}-wal`, `${file}-shm`]);
   const fingerprint = () => files.map(file => existsSync(file) ? createHash("sha256").update(readFileSync(file)).digest("hex") : null);
@@ -132,7 +133,7 @@ it("roaming doctor leaves pi's event loop responsive during inspection", async (
     while (Date.now() < until) { /* Model a slow synchronous inspection. */ }
     io.out("Roaming is disabled.\n"); return 0;
   });
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   const ctx = { cwd: root, mode: "tui", hasUI: true, ui: { notify(text: string) { notices.push(text); } },
     sessionManager: { getSessionId: () => "session-1", getSessionFile: () => null } };
   let done = false;
@@ -172,7 +173,7 @@ it.each(["resume", "reload"])("host shows the normal doctor after admission load
     ports.load = async id => { if (delayed) { entered(); await pause; } return load(id); };
     return ports;
   });
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   const ctx = { cwd, mode: "tui", hasUI: true, ui: { notify(text: string) { notices.push(text); } }, abort() {}, isIdle: () => true,
     sessionManager: { getSessionId: () => "ordinary-session", getSessionFile: () => join(root, "session.jsonl"), getSessionName: () => null,
       getEntries: () => [], getBranch: () => [], getLeafId: () => null } };
@@ -218,7 +219,7 @@ it("a second host session cannot reopen or close another session's gate", async 
     };
     const ctx = { cwd, mode: "tui", hasUI: false, ui: { notify() {} }, abort() {}, isIdle: () => true,
       sessionManager: { getSessionId: () => id, getSessionFile: () => file, getSessionName: () => null, getEntries: () => [], getBranch: () => [], getLeafId: () => null } };
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     return { async emit(name: string, event: object = {}) {
       let result: unknown;
       for (const handler of hooks.get(name) ?? []) { const next = await handler(event, ctx); if (next !== undefined) result = next; }
@@ -270,7 +271,7 @@ it("nonparticipating sessions keep existing startup without ID lock", async () =
     return ports;
   });
   vi.spyOn(HostEmbeddingRuntime.prototype, "start").mockImplementation(() => { trace.startupCalls.push("embedding"); });
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   for (const handler of hooks.get("session_start") ?? []) await handler({ reason: "resume" }, ctx);
   expect(trace.startupCalls[0]).toBe("admission");
   expect(trace.startupCalls).toEqual(expect.arrayContaining(["reaper", "messages", "usage", "embedding", "adoption", "organism", "feed"]));

@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -68,7 +69,7 @@ afterEach(async () => {
   vi.restoreAllMocks();
   rmSync(scratch, { recursive: true, force: true });
 });
-const host = () => { const pi = fakePi(); hosts.push(pi); spiderExtension(pi as never); return pi; };
+const host = () => { const pi = fakePi(); hosts.push(pi); spiderExtension(withPiEvents(pi as never), hostUnitPorts); return pi; };
 const toolCtx = (id: string) => ({ cwd: scratch, sessionManager: { getSessionId: () => `${scratch}:${id}` } });
 
 it("registers every command, shortcut, tool, renderer and handler on both factory calls in the same module", async () => {

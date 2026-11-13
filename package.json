@@ -27,7 +27,8 @@
     ],
     "skills": [
       "./packages/superpowers/skills",
-      "./packages/pstack/skills"
+      "./packages/pstack/skills",
+      "./packages/intercom/skills"
     ]
   },
   "files": [
@@ -81,10 +82,14 @@
     "packages/herdr/assets/themes/dracula-plus-glass.json",
     "packages/herdr/assets/themes/spider-glass.json",
     "licenses/herdr-apache-2.0.txt",
-    "packages/herdr/assets/look/NOTICE"
+    "packages/herdr/assets/look/NOTICE",
+    "packages/intercom/LICENSE",
+    "packages/intercom/ORIGIN.md",
+    "packages/intercom/skills",
+    "scripts/intercom-switchover.mjs"
   ],
   "scripts": {
-    "build": "vite build && npm run build:dashboard && npm run build:herdr && npm run build:roam && node scripts/assert-bundle.mjs",
+    "build": "vite build && npm run build:dashboard && npm run build:herdr && npm run build:roam && npm run build:intercom && node scripts/assert-bundle.mjs",
     "build:dashboard": "vite build --config vite.dashboard.config.mjs",
     "dev:dashboard": "vite --config vite.dashboard.config.mjs",
     "test:e2e": "node scripts/usage-dashboard-playwright.mjs",
@@ -108,7 +113,8 @@
     "postinstall": "node scripts/postinstall.mjs",
     "sync:models": "node scripts/sync-copilot-models.mjs",
     "build:herdr": "node scripts/build-herdr.mjs",
-    "build:roam": "node scripts/build-roam.mjs"
+    "build:roam": "node scripts/build-roam.mjs",
+    "build:intercom": "node scripts/build-intercom.mjs"
   },
   "overrides": {
     "sharp": "^0.35.4",

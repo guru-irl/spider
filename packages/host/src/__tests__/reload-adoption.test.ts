@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -58,7 +59,7 @@ it("session_start adopts a detached child despite invalid childMode config and n
 
   // New activation, built after the old one detached.
   const pi = fakePi(); hosts.push(pi);
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   vi.stubEnv("PI_SUBAGENT_CHILD", "0"); // session_start reads the identity at call time
   await pi.emit("session_start", { type: "session_start", reason: "reload" }, ctx);
   await tick();
@@ -72,7 +73,7 @@ it("session_start adopts a detached child despite invalid childMode config and n
 
 it("session_start does nothing when no child is waiting", async () => {
   const pi = fakePi(); hosts.push(pi);
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   await pi.emit("session_start", { type: "session_start", reason: "startup" }, { cwd: scratch, ui: { notify() {} }, sessionManager: { getSessionId: () => "none", getEntries: () => [] } });
   expect(pi.sendMessage).not.toHaveBeenCalled();
@@ -89,7 +90,7 @@ it("an adoption that fails is reported to the user instead of failing silently, 
   await detachShared(sessionId, { ttlMs: 60_000 });
 
   const pi = fakePi(); hosts.push(pi);
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   await pi.emit("session_start", { type: "session_start", reason: "reload" }, ctx);
 

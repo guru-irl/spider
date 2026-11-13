@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 // packages/host/src/__tests__/organism-wiring.test.ts
 //
 // Regression guard for the Phase 6 whole-branch review gap: the organism MANUAL
@@ -99,7 +100,7 @@ function setup(sub: string): { pi: ReturnType<typeof fakePi>; ctx: ActionCtx; di
   assertPreflightIsolation(dir, dir);
 
   const pi = fakePi();
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   const ctx = buildActionCtx(pi as never, { action: "control", cwd: dir } as SpiderArgs, "s-org", dir);
   const fixture = { pi, ctx, dir };
   // Track BEFORE the post-open assertion so a thrown assertion still leaves every

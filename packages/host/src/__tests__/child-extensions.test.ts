@@ -201,7 +201,6 @@ for (const childMode of ["rpc", "print"] as const) {
     ctx.pi = { sendMessage() { if (++notices === shape.notices) completed(); } };
     const launches: string[][] = [];
     const handler = makeRunHandler({
-      resolveIntercom: async () => [intercom],
       spawner: spec => {
         launches.push(spec.argv.flatMap((arg, index) => arg === "--extension" ? [spec.argv[index + 1]] : []));
         // Skip warnings must already be in the real run DB before launching.
@@ -218,7 +217,7 @@ for (const childMode of ["rpc", "print"] as const) {
     await handler(shape.args, ctx);
     await completion;
     expect(launches).toHaveLength(shape.children);
-    for (const loaded of launches) expect(loaded).toEqual([spider, ...(childMode === "rpc" ? [intercom] : []), first, second]);
+    for (const loaded of launches) expect(loaded).toEqual([spider, first, ...(childMode === "rpc" ? [intercom] : []), second]);
     const runs = ctx.db.prepare("SELECT status FROM runs WHERE session_id=?").all(ctx.sessionId) as { status: string }[];
     expect(runs).toHaveLength(shape.children);
     expect(runs.every(run => run.status === "done")).toBe(true);

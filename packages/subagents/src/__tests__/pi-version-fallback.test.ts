@@ -38,7 +38,7 @@ const cases: Array<[string, "print" | "rpc"]> = [
   ["0.85.1", "rpc"], ["0.85.1+build.7", "rpc"], ["0.85.2-rc.1", "rpc"],
   ["0.86.0-alpha", "rpc"], ["0.87.0", "rpc"], ["1.0.0-rc.1", "rpc"], ["10.0.0", "rpc"],
 ];
-const input = () => ({ runId: randomUUID(), sessionId: "owner", parentSessionId: "owner", childIndex: 0, agent: "worker", task: "work", context: "fresh" as const, dbPath: "fixture.db", scratchRoot: testScratchPath("version-cache"), intercomExtensions: ["intercom.ts"], orchestratorTarget: "parent" });
+const input = () => ({ runId: randomUUID(), sessionId: "owner", parentSessionId: "owner", childIndex: 0, agent: "worker", task: "work", context: "fresh" as const, dbPath: "fixture.db", scratchRoot: testScratchPath("version-cache"), orchestratorTarget: "parent" });
 
 it.each(cases)("uses %s metadata from the launched binary to choose %s", async (version, mode) => {
   vi.stubEnv("PI_SUBAGENT_PI_BINARY", binary(version).entry);
@@ -46,7 +46,7 @@ it.each(cases)("uses %s metadata from the launched binary to choose %s", async (
   const db = freshDb();
   try {
     const store = new RunStore(db); let spec: any;
-    const runner = new Runner(db, "version", process.cwd(), { store, tailer: new RunEventTailer(db), scratchRoot: testScratchPath("version"), dbPath: "fixture.db", intercomExtensions: ["intercom.ts"], orchestratorTarget: "parent", spawn: s => {
+    const runner = new Runner(db, "version", process.cwd(), { store, tailer: new RunEventTailer(db), scratchRoot: testScratchPath("version"), dbPath: "fixture.db", orchestratorTarget: "parent", spawn: s => {
       spec = s; return { wait: async () => ({ exitCode: 0, result: "report" }), kill() {}, detach() {} };
     } });
     const run = await runner.runForeground({ agent: "worker", task: "work", context: "fresh" });

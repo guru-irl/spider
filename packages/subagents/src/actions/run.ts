@@ -16,7 +16,6 @@ import { thinkingFromModel, stripThinkingSuffix } from "../pi-args";
 import { qualifyModelProvider, listPiModels, resolveRoleModel, resolveModelThinking } from "../model-resolve";
 import { defaultSpawner } from "../spawn-default";
 import { latestRunOutput } from "../completion-output";
-import { resolveChildIntercom } from "../child-intercom";
 import { adoptShared, adoptableFor, getShared, sharedRegistry, type AdoptResult } from "../child-registry";
 import { isShutdownReason } from "../shutdown-reason";
 import { discoverDurableChildren } from '../durable-adoption';
@@ -120,7 +119,6 @@ interface RunDeps {
   makeRunner?: (db: any, sessionId: string, cwd: string, deps: any) => any;
   makePipeline?: (deps: any) => any;
   spawner?: Spawner;
-  resolveIntercom?: (cwd: string) => Promise<string[]>;
   getCoordinators?: (ctx: any) => SessionCoordinators;
 }
 
@@ -171,18 +169,14 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     const dbPath = ctx.runDbPath ?? ctx.project?.dbPath ?? "";
     const onComplete = makeAsyncNotifier(ctx);
     const childMode = ctx.childMode ?? "rpc";
-    let intercomExtensions: string[] = [], warning: string | undefined;
-    if (childMode === "rpc" && ((!overrides.spawner && !overrides.makeRunner) || overrides.resolveIntercom)) {
-      try { intercomExtensions = await (overrides.resolveIntercom ?? resolveChildIntercom)(ctx.cwd); }
-      catch (error) { warning = `Cross-session steering unavailable: ${String((error as Error)?.message ?? error)}`; }
-    }
+    let warning: string | undefined;
     const thinkingDiagnostics: Array<{ model?: string; requested?: string; effective?: string; notice?: string; step?: number }> = [];
     const withWarning = (details: any) => ({ ...details, ...(warning ? { warning } : {}), ...(thinkingDiagnostics.length ? { thinkingDiagnostics } : {}) });
     const orchestratorTarget = childMode === "rpc" ? process.env.PI_INTERCOM_SESSION_ID ?? ctx.sessionId : undefined;
     const runnerDeps = { supervise: overrides.supervise ?? (!overrides.spawner && !overrides.makeRunner), supervisorHcBinary: ctx.supervisorHcBinary, environmentPolicy: ctx.environmentPolicy, parentSessionFile: ctx.parentSessionFile, modelRegistry: ctx.modelRegistry ?? {}, globalDb: ctx.globalDb, store, tailer, spawn: (spec: Parameters<Spawner>[0]) => {
       if (spec.launchWarning) warning = [...new Set([warning, spec.launchWarning].filter(Boolean))].join("\n");
       return spawn(spec);
-    }, scratchRoot, dbPath, onComplete, reportUsage: (run: import("../run-store").RunRow) => safelyReportUsage(ctx.db, run, row => ctx.reportUsage?.(ctx.db, row)), childMode, reviewerExcludeTools: ctx.reviewerExcludeTools, subagentOnlyExtensions: ctx.subagentOnlyExtensions, intercomExtensions, orchestratorTarget };
+    }, scratchRoot, dbPath, onComplete, reportUsage: (run: import("../run-store").RunRow) => safelyReportUsage(ctx.db, run, row => ctx.reportUsage?.(ctx.db, row)), childMode, reviewerExcludeTools: ctx.reviewerExcludeTools, subagentOnlyExtensions: ctx.subagentOnlyExtensions, orchestratorTarget };
     const runner = overrides.makeRunner
       ? overrides.makeRunner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps)
       : new Runner(ctx.db, ctx.sessionId, ctx.cwd, runnerDeps);

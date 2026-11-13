@@ -65,7 +65,7 @@ export class Runner {
     private db: Db,
     private sessionId: string,
     private cwd: string,
-    private deps: { supervise?: boolean; supervisorHcBinary?: string; environmentPolicy?: ExecutionEnvironmentPolicy; parentSessionFile?: string; modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; reviewerExcludeTools?: readonly string[]; subagentOnlyExtensions?: string[]; intercomExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
+    private deps: { supervise?: boolean; supervisorHcBinary?: string; environmentPolicy?: ExecutionEnvironmentPolicy; parentSessionFile?: string; modelRegistry?: unknown; globalDb?: Db; store: RunStore; tailer: RunEventTailer; spawn: Spawner; scratchRoot: string; dbPath: string; childMode?: "rpc" | "print"; reviewerExcludeTools?: readonly string[]; subagentOnlyExtensions?: string[]; orchestratorTarget?: string; reportUsage?: (run: RunRow) => void; onComplete?: (run: RunRow, status: RunStatus, result?: string) => void }
   ) {}
 
   private makeRun(opts: RunOpts): RunRow {
@@ -101,7 +101,6 @@ export class Runner {
       childMode: this.deps.childMode,
       reviewerExcludeTools: this.deps.reviewerExcludeTools,
       subagentOnlyExtensions: this.deps.subagentOnlyExtensions,
-      intercomExtensions: this.deps.intercomExtensions,
       task: opts.task,
       model: opts.model,
       // The run row holds only the verified level. Unknown models pass the request to pi.
@@ -114,10 +113,10 @@ export class Runner {
       dbPath: this.deps.dbPath,
       scratchRoot: this.deps.scratchRoot,
       orchestratorTarget: opts.orchestratorTarget ?? this.deps.orchestratorTarget,
-      intercomSessionName: opts.intercomSessionName ?? run.name ?? undefined,
+      intercomSessionName: opts.intercomSessionName,
       cwd: this.cwd,
     });
-    const intercomSession = spec.childMode === "rpc" && this.deps.intercomExtensions?.length
+    const intercomSession = spec.childMode === "rpc"
       ? spec.env.PI_SUBAGENT_INTERCOM_SESSION_NAME : undefined;
     this.deps.store.setLaunch(run.id, { childMode: spec.childMode ?? "print", intercomSession });
     // Keep this locator with the run after its live route is removed. Existing

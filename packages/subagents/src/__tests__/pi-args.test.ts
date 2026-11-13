@@ -163,8 +163,8 @@ it.each([false, true])("canonicalizes aliases in buildPiArgs with explicit exten
 
 it.each(["rpc", "print"] as const)("does not load spider path aliases twice in %s spawn specs", childMode => {
   const { spider, intercom, first, aliases } = extensionAliases();
-  const spec = buildChildSpawnSpec({ ...base, scratchRoot, childMode, childExtensionPath: spider, intercomExtensions: [intercom],
-    subagentOnlyExtensions: [...aliases.slice(0, 3), ...(childMode === "rpc" ? [aliases[3]] : []), first, `${scratchRoot}/./first.js`] });
+  const spec = buildChildSpawnSpec({ ...base, scratchRoot, childMode, childExtensionPath: spider,
+    subagentOnlyExtensions: [...aliases.slice(0, 3), ...(childMode === "rpc" ? [intercom, aliases[3]] : []), first, `${scratchRoot}/./first.js`] });
   expect(spec.argv.flatMap((arg, i) => arg === "--extension" ? [spec.argv[i + 1]] : []))
     .toEqual([spider, ...(childMode === "rpc" ? [intercom] : []), first]);
 });

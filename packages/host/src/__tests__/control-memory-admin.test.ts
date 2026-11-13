@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 // packages/host/src/__tests__/control-memory-admin.test.ts
 //
 // Defect 1: `control memory consolidate` returned `{ entries: listActive(...), usage:
@@ -65,7 +66,7 @@ function fakePi() {
 
 function makeTool() {
   const pi = fakePi();
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   return (pi as unknown as { _tools: Record<string, unknown> })._tools["spider"] as {
     execute(id: string, args: unknown, ctx?: unknown): Promise<{ content: { text: string }[]; details: unknown }>;
   };

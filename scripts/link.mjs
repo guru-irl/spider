@@ -28,4 +28,5 @@ if (process.argv.includes("--unlink")) {
   writeFileSync(shim, extensionShim(bundle));
   console.log(`link — wrote ${shim}\n  → ${bundle}\nNext: \`/reload\` in an interactive pi, or relaunch.`);
   linkRoamCommand(repoRoot);
+  console.log("Intercom is bundled. Remove legacy pi-intercom declarations from selected pi settings during release activation, retain its files and live broker, then /reload.");
 }

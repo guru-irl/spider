@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -51,7 +52,7 @@ it("records the actual loaded build for a non-HC top-level session", async () =>
   const ctx = { cwd, mode: "tui", hasUI: false, ui: { notify() {} }, abort() {}, isIdle: () => true,
     sessionManager: { getSessionId: () => "local-session", getSessionFile: () => file, getSessionName: () => null, getEntries: () => [], getBranch: () => [] } };
   vi.spyOn(HostEmbeddingRuntime.prototype, "start").mockImplementation(() => {});
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   for (const handler of hooks.get("session_start") ?? []) await handler({ reason: "resume" }, ctx);
   const entries = await createProcessPresence(join(globalRoot, "herdr")).list();
   const own = entries.find(entry => entry.pid === process.pid && entry.sessionId === "local-session");
@@ -79,7 +80,7 @@ it("a refused non-HC session advertises its build but does not reserve the file"
   const ctx = { cwd, mode: "tui", hasUI: false, ui: { notify() {} }, abort() {}, isIdle: () => true,
     sessionManager: { getSessionId: () => "foreign-session", getSessionFile: () => file, getSessionName: () => null, getEntries: () => [], getBranch: () => [] } };
   vi.spyOn(HostEmbeddingRuntime.prototype, "start").mockImplementation(() => {});
-  spiderExtension(pi as never);
+  spiderExtension(withPiEvents(pi as never), hostUnitPorts);
   for (const handler of hooks.get("session_start") ?? []) await handler({ reason: "resume" }, ctx);
   const presence = await createProcessPresence(join(globalRoot, "herdr")).list();
   const lease = await createSessionLeases(join(globalRoot, "herdr")).get(file);

@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -32,7 +33,7 @@ it("session search finds the caller's unroamed history without registration writ
     db.prepare("INSERT INTO sessions_fts(id,name,content) VALUES ('other','needle unrelated','needle private')").run();
     const before = global.db.prepare("SELECT * FROM projects").all();
     const tools = new Map<string, any>();
-    spiderExtension({ registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, on() {} } as never);
+    spiderExtension(withPiEvents({ registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, on() {} } as never), hostUnitPorts);
     const ctx = { cwd: local, sessionManager: { getSessionId: () => "caller" } };
     const result = await tools.get("spider").execute("test", { action: "search", query: "needle", session: "caller" }, undefined, undefined, ctx);
     const text = JSON.stringify(result);
@@ -70,7 +71,7 @@ it("session search through spider reads history without registration writes", as
     const before = global.db.prepare("SELECT * FROM projects").all();
     const tools = new Map<string, any>();
     const pi = { registerTool: (tool: any) => tools.set(tool.name, tool), registerCommand() {}, on() {} };
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     const result = await tools.get("spider").execute("test", { action: "search", query: "orchid", session: "remote-session" }, undefined, undefined, { cwd: local });
     expect(JSON.stringify(result)).toContain("orchid history");
     expect(global.db.prepare("SELECT * FROM projects").all()).toEqual(before);

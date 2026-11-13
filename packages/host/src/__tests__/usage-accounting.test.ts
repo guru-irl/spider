@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -36,8 +37,8 @@ function setup(cwd: string, fallback = false, response?: () => Promise<any>, pri
   const ctx: any = { cwd, hasUI: false, sessionManager: fallback ? { getSessionId: () => session.getSessionId(), getSessionFile: () => session.getSessionFile(), getEntries: () => session.getEntries(), getBranch: () => session.getBranch() } : session,
     modelRegistry: { find: () => ({ reasoning: false }), streamSimple: (_model: any, context: any) => ({ result: response ?? (async () => ({ role: "assistant", provider: "fixture", model: "requested", responseModel: "actual", api: "openai-responses", timestamp: 1, stopReason: "stop", usage,
       content: [{ type: "text", text: context.systemPrompt.startsWith("Review a skill candidate.") ? '{"verdict":"new","reason":"reusable"}' : '{"verdict":"new","reason":"durable"}' }] })) }) } };
-  spiderExtension({ registerTool(t: any) { if (t.name === "spider") tool = t; }, registerCommand() {},
-    on(name: string, fn: any) { const list = handlers.get(name) ?? []; list.push(fn); handlers.set(name, list); return () => {}; }, appendEntry() {}, sendMessage() {} } as any);
+  spiderExtension(withPiEvents({ registerTool(t: any) { if (t.name === "spider") tool = t; }, registerCommand() {},
+    on(name: string, fn: any) { const list = handlers.get(name) ?? []; list.push(fn); handlers.set(name, list); return () => {}; }, appendEntry() {}, sendMessage() {} } as any), hostUnitPorts);
   const emit = async (name: string, event: any = {}) => { for (const fn of handlers.get(name) ?? []) await fn(event, ctx); };
   let stopped = false; const stop = async (reason = "quit") => { if (!stopped) { stopped = true; await emit("session_shutdown", { reason }); } }; stops.push(stop);
   return { session, ctx, emit, stop, execute: (args: any) => tool.execute("fixture", args, undefined, undefined, ctx) };

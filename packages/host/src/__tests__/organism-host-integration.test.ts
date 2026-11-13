@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { finalSkillBody } from "../../../organism/src/__tests__/helpers/skill.js";
 import { SkillStore } from "@spider/organism";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -110,7 +111,7 @@ async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?:
     cwd, agentDir: join(root, "agent"), settingsManager: SettingsManager.inMemory({}),
     noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
     extensionFactories: [
-      { name: "spider-contract", factory: pi => { piApi = pi; spiderExtension(pi as never); } },
+      { name: "spider-contract", factory: pi => { piApi = pi; spiderExtension(withPiEvents(pi as never), hostUnitPorts); } },
       { name: "cleanup-observer", factory: pi => { pi.on("session_shutdown", () => { shutDown = true; }); } },
     ],
   });
@@ -121,6 +122,7 @@ async function setup(opts?: { noParentModel?: boolean; child?: boolean; noLuna?:
   runner.bindCore({
     ...loaded.runtime,
     getThinkingLevel: () => "low",
+    getAllTools: () => runner.getAllRegisteredTools().map(({ definition, sourceInfo }) => ({ ...definition, sourceInfo, exposure: definition.exposure ?? 'direct' })),
     sendMessage: () => {},
     appendEntry: (type, data) => { session.appendCustomEntry(type, data); },
     getSessionName: () => session.getSessionName(),
@@ -588,7 +590,7 @@ async function freshHost(root: string, cwd: string, sessionSeed: string) {
     cwd, agentDir: join(root, "agent"), settingsManager: SettingsManager.inMemory({}),
     noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
     extensionFactories: [
-      { name: "spider-fresh", factory: pi => { piApi = pi; spiderExtension(pi as never); } },
+      { name: "spider-fresh", factory: pi => { piApi = pi; spiderExtension(withPiEvents(pi as never), hostUnitPorts); } },
       { name: "fresh-observer", factory: pi => { pi.on("session_shutdown", () => { shutDown = true; }); } },
     ],
   });
@@ -598,6 +600,7 @@ async function freshHost(root: string, cwd: string, sessionSeed: string) {
   const runner = new ExtensionRunner(loaded.extensions, loaded.runtime, cwd, session, registry);
   runner.bindCore({
     ...loaded.runtime, getThinkingLevel: () => "low", sendMessage: () => {},
+    getAllTools: () => runner.getAllRegisteredTools().map(({ definition, sourceInfo }) => ({ ...definition, sourceInfo, exposure: definition.exposure ?? 'direct' })),
     appendEntry: (type, data) => { session.appendCustomEntry(type, data); },
     getSessionName: () => session.getSessionName(),
     setSessionName: name => { session.appendSessionInfo(name); },

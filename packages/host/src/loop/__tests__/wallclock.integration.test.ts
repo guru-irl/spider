@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from '../../__tests__/fixtures/pi-events';
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync } from "node:fs";
@@ -183,7 +184,7 @@ describe("real wall-clock triggers", () => {
     };
     const cwd = resolve(".spider/scratch/wallclock-integration/real-host");
     const ctx = { cwd, mode: "rpc", isIdle: () => true, ui: { notify() {} }, sessionManager: { getSessionId: () => "real-host", getEntries: () => entries } };
-    spiderExtension(pi);
+    spiderExtension(withPiEvents(pi), hostUnitPorts);
     const run = (args: unknown) => tools.get("spider").execute("real", args, undefined, undefined, ctx);
     await run({ action: "loop", name: "morning", cron: "0 8 * * *", tz: "Asia/Kolkata", prompt: "real daily" });
     await run({ action: "schedule", name: "once", at: "2026-10-26T08:01+05:30", prompt: "real once" });

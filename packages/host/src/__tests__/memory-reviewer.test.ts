@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -43,7 +44,7 @@ function fixture(git = true) {
 }
 function tool(getCommands?: () => any[]) {
   const tools: Record<string, any> = {};
-  spiderExtension({ registerTool: (t: any) => { tools[t.name] = t; }, on() {}, registerCommand() {}, getCommands } as never);
+  spiderExtension(withPiEvents({ registerTool: (t: any) => { tools[t.name] = t; }, on() {}, registerCommand() {}, getCommands } as never), hostUnitPorts);
   return tools.spider as { description: string; execute: (...args: any[]) => Promise<any> };
 }
 // Fake only the network boundary; preserve the authenticated simple-stream contract.

@@ -4,12 +4,12 @@ let input = '';
 process.stdin.on('data', chunk => { input += chunk; }).on('end', () => {
   const [pack] = JSON.parse(input);
   const files = pack.files.map(file => file.path);
-  const skillDirs = ['packages/superpowers/skills', 'packages/pstack/skills'];
+  const skillDirs = ['packages/superpowers/skills', 'packages/pstack/skills', 'packages/intercom/skills'];
   const skills = skillDirs.flatMap(dir => fs.readdirSync(dir, { recursive: true })
     .filter(file => file === 'SKILL.md' || file.endsWith('/SKILL.md')).map(file => `${dir}/${file}`));
-  const required = ['dist/extension.js', 'dist/dashboard/index.html', 'dist/roam/cli.mjs', 'dist/roam/supervisor.mjs',
+  const required = ['dist/extension.js', 'dist/intercom/broker.mjs', 'dist/dashboard/index.html', 'dist/roam/cli.mjs', 'dist/roam/supervisor.mjs',
     'scripts/link.mjs', 'scripts/dev-link.mjs', 'scripts/link-roam.mjs', 'scripts/extension-shim.mjs', 'scripts/pi-agent-dir.mjs',
-    'README.md', 'LICENSE', 'NOTICE.md', 'packages/context/LICENSE', 'packages/pstack/LICENSE', ...skills];
+    'README.md', 'LICENSE', 'NOTICE.md', 'packages/context/LICENSE', 'packages/pstack/LICENSE', 'packages/intercom/LICENSE', 'packages/intercom/ORIGIN.md', 'scripts/intercom-switchover.mjs', ...skills];
   if (!files.some(file => /^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.js$/.test(file)) || !files.some(file => /^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.css$/.test(file))) throw new Error('dashboard JS/CSS missing');
   if (files.some(file => file.startsWith('dist/') && (file.endsWith('.map') || file.includes('states')))) throw new Error('development dashboard files in tarball');
   const missing = required.filter(file => !files.includes(file));

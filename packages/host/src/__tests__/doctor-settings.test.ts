@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
@@ -11,7 +12,7 @@ async function doctor(getSettings: () => unknown, model?: { provider: string; id
   mkdirSync(root, { recursive: true }); execFileSync("git", ["init", "-q", root]);
   setGlobalDbPathForTests(join(root, "global.db")); vi.stubEnv("PI_SUBAGENT_CHILD", "1");
   const tools = new Map<string, any>(); const shutdown: Function[] = [];
-  spiderExtension({ registerTool: (t: any) => tools.set(t.name, t), registerCommand() {}, getSettings, on(name: string, fn: Function) { if (name === "session_shutdown") shutdown.push(fn); } } as never);
+  spiderExtension(withPiEvents({ registerTool: (t: any) => tools.set(t.name, t), registerCommand() {}, getSettings, on(name: string, fn: Function) { if (name === "session_shutdown") shutdown.push(fn); } } as never), hostUnitPorts);
   try { return await tools.get("spider").execute("doctor", { action: "control", command: "doctor" }, undefined, undefined, { cwd: root, model }); }
   finally { for (const fn of shutdown) await fn({ reason: "exit" }); }
 }

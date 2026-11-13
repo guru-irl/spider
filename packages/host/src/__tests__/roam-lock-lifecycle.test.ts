@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -61,7 +62,7 @@ it("retains both locks through reload and releases them on quit", async () => {
       registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
       getSessionName: () => null, sendMessage() {}, sendUserMessage() {}, appendEntry() {},
     };
-    spiderExtension(pi as never);
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
     for (const handler of hooks.get("session_start") ?? []) await handler({ reason }, ctx);
     return async (reason: "reload" | "quit") => { for (const handler of hooks.get("session_shutdown") ?? []) await handler({ reason }, ctx); };
   };

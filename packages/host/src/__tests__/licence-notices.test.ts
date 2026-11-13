@@ -58,6 +58,7 @@ describe("distributed licence notices", () => {
     ["superpowers", "Copyright (c) 2025 Jesse Vincent"],
     ["pi-hermes-memory", "Copyright (c) 2025 Chandra Teja"],
     ["pi-subagents", "Copyright (c) 2026 Nico Bailon"],
+    ["pi-intercom", "Copyright (c) 2026 Nico Bailon"],
     ["pi-todo-sqlite", "Copyright (c) 2026 guru-irl"],
   ])("includes the copyright and full MIT permission text in the %s entry", (upstream, copyright) => {
     const notice = readFileSync(join(root, "NOTICE.md"), "utf8");
@@ -126,13 +127,13 @@ SOFTWARE.`;
     const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
     const verifier = workflow.match(/npm pack --json --ignore-scripts \| node -e "([\s\S]*?)"\s*$/m)?.[1];
     expect(verifier, "Release package verifier must be executable").toBeTruthy();
-    const skillFiles = ["packages/superpowers/skills", "packages/pstack/skills"].flatMap(dir =>
+    const skillFiles = ["packages/superpowers/skills", "packages/pstack/skills", "packages/intercom/skills"].flatMap(dir =>
       readdirSync(join(root, dir), { recursive: true, encoding: "utf8" })
         .filter(file => file === "SKILL.md" || file.endsWith("/SKILL.md")).map(file => `${dir}/${file}`));
-    const requiredLicences = ["LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE"];
+    const requiredLicences = ["LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md"];
     const files = [
       "dist/extension.js", "dist/dashboard/index.html", "README.md",
-      "dist/roam/cli.mjs", "dist/roam/supervisor.mjs",
+      "dist/roam/cli.mjs", "dist/roam/supervisor.mjs", "dist/intercom/broker.mjs", "scripts/intercom-switchover.mjs",
       "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs",
       "dist/dashboard/assets/index-12345678.js", "dist/dashboard/assets/index-12345678.css",
       ...requiredLicences, ...skillFiles,

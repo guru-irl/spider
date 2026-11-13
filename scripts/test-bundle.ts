@@ -24,6 +24,7 @@ export async function buildFixture(options: {
   const external = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`), ...options.external ?? []]);
   const result = await build({
     configFile: false,
+    define: { "import.meta.spiderIntercomBrokerRelative": JSON.stringify(resolve("dist/intercom/broker.mjs")) },
     logLevel: "silent",
     resolve: { alias: exactAliases },
     plugins: [{

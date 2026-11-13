@@ -45,7 +45,7 @@ const isExternal = (id) =>
   EXTERNAL.some((e) => id === e || id.startsWith(`${e}/`));
 
 export default defineConfig({
-  define: { __SPIDER_BUILD__: "__SPIDER_BUILD_ID_PLACEHOLDER__", 'import.meta.spiderHerdrRuntimeEntry': 'false' },
+  define: { __SPIDER_BUILD__: "__SPIDER_BUILD_ID_PLACEHOLDER__", 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderIntercomBrokerRelative': JSON.stringify('./intercom/broker.mjs') },
   plugins: [buildIdPlugin()],
   // SSR build: bundle every dep EXCEPT our explicit externals, using node conditions.
   ssr: {

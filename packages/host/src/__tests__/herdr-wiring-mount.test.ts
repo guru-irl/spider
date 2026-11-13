@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, expect, it, vi } from 'vitest';
 import spiderExtension from '../extension.js';
 import { clearActions, getAction, type SpiderArgs } from '../dispatch.js';
@@ -16,7 +17,7 @@ it.each(['argument', 'effective', 'default'] as const)('prints a shell-safe setu
   const commands = new Map<string, { handler(args: string, ctx: unknown): Promise<void> }>();
   const messages: unknown[] = [];
   const pi = { registerTool() {}, registerCommand(name: string, command: unknown) { commands.set(name, command as never); }, on() {}, sendMessage(message: unknown) { messages.push(message); } };
-  spiderExtension(pi);
+  spiderExtension(withPiEvents(pi), hostUnitPorts);
   expect(commands.has('herdr-setup')).toBe(true);
   const { mkdir, mkdtemp, writeFile, rm } = await import('node:fs/promises'); const { join } = await import('node:path');
   const { execFileSync } = await import('node:child_process');
@@ -41,7 +42,7 @@ it.each(['argument', 'effective', 'default'] as const)('prints a shell-safe setu
 
 it.each(['exec', 'exec_file', 'batch'])('unavailable child %s uses the disabled-owner diagnostic before execution', async action => {
   vi.stubEnv('PI_SUBAGENT_CHILD', '1');
-  spiderExtension({ registerTool() {}, registerCommand() {}, on() {}, sendMessage() {} } as never);
+  spiderExtension(withPiEvents({ registerTool() {}, registerCommand() {}, on() {}, sendMessage() {} } as never), hostUnitPorts);
   const handler = getAction(action); expect(handler).toBeDefined();
   await expect(Promise.resolve().then(() => handler!({ action, on: 'remote.invalid', language: 'shell', code: 'printf forbidden' } as SpiderArgs, {} as never))).rejects.toThrow("Spider couldn't run this command on another machine because Herdr is off in this session. Local commands still work. Check that Herdr is running and enabled, then run /reload or open a new session in Herdr.");
 });
@@ -99,7 +100,7 @@ it.each(['explicit', 'standard'] as const)('starts the production session feed f
   const pi = { getSessionName: () => undefined, registerTool() {}, registerCommand() {}, registerShortcut(key: string, command: { handler(ctx: unknown): Promise<void> }) { shortcuts.set(key, command); }, on(name: string, callback: Function) { hooks.set(name, [...hooks.get(name) ?? [], callback]); return () => {}; }, sendMessage, steer, followUp };
   const ctx = { cwd: h.directories.local, mode: 'tui', hasUI: true, getContextUsage: () => undefined, isIdle: () => true, ui: { notify(_message: string) {}, setWidget() {}, setFooter() {}, setStatus() {} }, sessionManager: { getSessionId: () => h.owner!.sessionId, getEntries: () => [], getBranch: () => [], getSessionFile: () => undefined, getSessionName: () => undefined } };
   try {
-    mountedExtension(pi);
+    mountedExtension(withPiEvents(pi), hostUnitPorts);
     for (const callback of hooks.get('session_start') ?? []) await callback({ reason: 'startup' }, ctx);
     const feedPath = join(config.globalRoot, 'herdr/sessions', h.owner!.sessionId, 'session.json');
     expect(existsSync(feedPath)).toBe(true);
@@ -305,7 +306,7 @@ it('the composed extension checks SSH once per tool call and still refuses a man
   const guard = vi.spyOn(f.mount, 'guard'); const mount = vi.spyOn(module, 'mountHerdr').mockReturnValue(f.mount);
   Reflect.set(f.pi, 'registerCommand', () => {});
   try {
-    const { default: extension } = await import('../extension.js'); extension(f.pi as never);
+    const { default: extension } = await import('../extension.js'); extension(withPiEvents(f.pi as never), hostUnitPorts);
     const path = join(f.h.directories.remote, 'guard-script.sh');
     for (const [code, blocked] of [['printf harmless', false], ['ssh managed.invalid', true]] as const) {
       await f.h.hc.fileWrite('remote.invalid' as never, path, Buffer.from(code));

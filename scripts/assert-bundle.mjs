@@ -66,10 +66,10 @@ if (!existsSync(OUT)) {
 // dashboard, but never extension chunks. Assert the invariant directly
 // instead of assuming it from codeSplitting's presence in the config.
 const distEntries = readdirSync("dist").sort();
-if (distEntries.join() !== "dashboard,extension.js,herdr,roam") {
+if (distEntries.join() !== "dashboard,extension.js,herdr,intercom,roam") {
   const found = distEntries.join(", ") || "(empty)";
   console.error(
-    `assert-bundle: expected dist/ to contain exactly dashboard/, extension.js, herdr/ and roam/, found: ${found}. ` +
+    `assert-bundle: expected dist/ to contain exactly dashboard/, extension.js, herdr/, intercom/ and roam/, found: ${found}. ` +
     "If a local dynamic import was added, either inline it or update this assertion and the release/CI packaging gates to account for the extra chunk."
   );
   process.exit(1);
@@ -101,6 +101,23 @@ try {
   console.error(`assert-bundle: dashboard missing or invalid (${error instanceof Error ? error.message : "invalid"})`);
   process.exit(1);
 }
+
+const intercomFiles = ['dist/intercom/broker.mjs', 'packages/intercom/LICENSE', 'packages/intercom/ORIGIN.md', 'packages/intercom/skills/pi-intercom/SKILL.md', 'scripts/intercom-switchover.mjs'];
+for (const file of intercomFiles) {
+  const info = lstatSync(file);
+  if (!info.isFile() || info.isSymbolicLink() || !info.size) throw new Error(`Intercom artifact missing or invalid: ${file}`);
+}
+if (readdirSync('dist/intercom').join() !== 'broker.mjs') throw new Error('Unexpected intercom runtime chunk');
+const intercomLicense = readFileSync('packages/intercom/LICENSE', 'utf8');
+if (createHash('sha256').update(intercomLicense).digest('hex') !== '2d20dfacd9742706e564470dc77438608a1e54b0ed46959f080709389209093c' || !readFileSync('NOTICE.md', 'utf8').includes(intercomLicense.trim())) throw new Error('Intercom MIT notice missing');
+const intercomManifest = JSON.parse(readFileSync('package.json', 'utf8'));
+if (intercomManifest.pi.extensions.join() !== './dist/extension.js' || intercomManifest.pi.skills.filter(path => path === './packages/intercom/skills').length !== 1) throw new Error('Intercom must load through spider with one skill directory');
+if (readdirSync('packages/intercom/skills', { recursive: true }).filter(file => String(file).endsWith('SKILL.md')).join() !== 'pi-intercom/SKILL.md') throw new Error('Intercom skill missing or duplicated');
+const brokerCode = readFileSync('dist/intercom/broker.mjs', 'utf8');
+const brokerTree = ts.createSourceFile('broker.mjs', brokerCode, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+if (brokerTree.parseDiagnostics.length) throw new Error('Invalid compiled broker');
+const brokerBuiltins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]));
+for (const node of brokerTree.statements) if (ts.isImportDeclaration(node) && (!ts.isStringLiteral(node.moduleSpecifier) || !brokerBuiltins.has(node.moduleSpecifier.text))) throw new Error('Broker requires a non-builtin runtime dependency');
 
 const src = readFileSync(OUT, "utf-8");
 const buildId = parseBuildId(src.slice(0, 16 * 1024));

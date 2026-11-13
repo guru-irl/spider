@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { describe, it, expect, vi } from "vitest";
 import spiderExtension from "../extension";
 import * as context from "@spider/context";
@@ -16,7 +17,7 @@ function mountAndGetTool() {
     registerCommand: () => {}, registerMessageRenderer: () => {}, registerRenderer: () => {},
     registerShortcut: () => {}, on: () => pi, sendMessage: () => {}, addMessage: () => {},
   };
-  spiderExtension(pi);
+  spiderExtension(withPiEvents(pi), hostUnitPorts);
   return tool;
 }
 
@@ -30,7 +31,7 @@ describe("exec streaming is wired into the real tool", () => {
         return () => {};
       },
     };
-    spiderExtension(pi);
+    spiderExtension(withPiEvents(pi), hostUnitPorts);
     expect(contextHandler).toBeTypeOf("function");
     const bad = { role: "toolResult", toolName: "bash", toolCallId: "old",
       content: [{ type: "text", text: "" }], isError: true, timestamp: 1 };
@@ -49,7 +50,7 @@ describe("exec streaming is wired into the real tool", () => {
         return () => {};
       },
     };
-    spiderExtension(pi);
+    spiderExtension(withPiEvents(pi), hostUnitPorts);
     expect(contextHandler).toBeTypeOf("function");
     const malformed = { get messages(): never { throw new Error("unreadable event"); } };
     expect(() => contextHandler!(malformed)).not.toThrow();

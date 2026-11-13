@@ -9,7 +9,11 @@ export function createFixtureHerdr(checkout: string): void {
     const remote = entry === "remote-runtime", supervisor = entry === "subagent-supervisor";
     writeFileSync(join(entries, `${entry}.mjs`), `// SPIDER_HERDR_RUNTIME_ENTRY=${remote}\n${remote ? "// A runtime request file is required\n" : ""}${supervisor ? "// A subagent supervisor request file is required.\n" : ""}export {};\n`);
   }
-  for (const file of ["LICENSE", "NOTICE.md", "licenses/herdr-apache-2.0.txt", "packages/herdr/LICENSE"]) {
+  const intercom = join(checkout, "dist/intercom");
+  mkdirSync(intercom, { recursive: true });
+  writeFileSync(join(intercom, "broker.mjs"), "export {};\n");
+  cpSync(resolve("packages/intercom/skills"), join(checkout, "packages/intercom/skills"), { recursive: true });
+  for (const file of ["LICENSE", "NOTICE.md", "licenses/herdr-apache-2.0.txt", "packages/herdr/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "package.json"]) {
     const destination = join(checkout, file);
     mkdirSync(dirname(destination), { recursive: true });
     cpSync(resolve(file), destination);

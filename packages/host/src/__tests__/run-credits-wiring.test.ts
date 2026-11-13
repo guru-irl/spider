@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -27,7 +28,7 @@ function fixture() {
   const tools: any[] = [], hooks = new Map<string, Function[]>(), commands = new Map<string, any>();
   const pi = { on: (name: string, callback: Function) => { const list = hooks.get(name) ?? []; list.push(callback); hooks.set(name, list); },
     registerTool: (tool: any) => tools.push(tool), registerCommand: (name: string, def: any) => commands.set(name, def) };
-  vi.stubEnv("PI_SUBAGENT_CHILD", "1"); spiderExtension(pi); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  vi.stubEnv("PI_SUBAGENT_CHILD", "1"); spiderExtension(withPiEvents(pi), hostUnitPorts); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const ctx = buildActionCtx(pi, { action: "run" }, "owner", root); handles.push(ctx.db, ctx.repoDb, ctx.globalDb);
   assertPostOpenIsolation(ctx, { worktree: root, repo: root, global: root });
   const runs = new RunStore(ctx.db), { id } = runs.create({ sessionId: "owner", agent: "worker" });

@@ -1,3 +1,4 @@
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -31,7 +32,7 @@ it('imports from the session directory pi selected and falls back when context i
   const fallback = SessionManager.create(fallbackProject);
   fallback.appendMessage({ role: 'user', content: 'fallback session', timestamp: Date.now() });
   const tools: Record<string, any> = {};
-  spiderExtension({ registerTool: (tool: { name: string }) => { tools[tool.name] = tool; }, registerCommand: () => {}, on: () => {} } as never);
+  spiderExtension(withPiEvents({ registerTool: (tool: { name: string }) => { tools[tool.name] = tool; }, registerCommand: () => {}, on: () => {} } as never), hostUnitPorts);
   const invoke = (cwd: string, context: unknown) => tools.spider.execute('call', { action: 'import', cwd, select: {} }, undefined, undefined, context);
   const result = await invoke(project, { cwd: project, sessionManager: selected });
   expect(result.isError).toBe(false);

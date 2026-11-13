@@ -34,6 +34,14 @@ it('rejects a changed assertion even when the assertion count is unchanged', () 
   expect(result.stderr).toMatch(/assertion.*broker\/spawn\.test\.ts/i);
 }, 5000);
 
+it('still rejects changed path expectations after fixture normalization', () => {
+  const root = fixture();
+  mutate(root, 'broker/paths.test.ts', 'join("/home/fixture", ".pi/agent")', 'join("/home/other", ".pi/agent")');
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/assertion.*broker\/paths\.test\.ts/i);
+}, 5000);
+
 it('rejects a removed upstream assertion', () => {
   const root = fixture();
   mutate(root, 'broker/spawn.test.ts', 'assert.equal(spec.command, "node");', '');

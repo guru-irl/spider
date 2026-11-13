@@ -23,6 +23,10 @@
       "reason": "Vitest runs the same tests without using user state."
     },
     {
+      "change": "fixture path normalisation",
+      "reason": "Synthetic home paths replace upstream personal paths while preserving the relationships under test."
+    },
+    {
       "change": "escaped em dash in test literals",
       "reason": "The public source avoids non-ASCII punctuation without changing values."
     }
@@ -542,23 +546,23 @@
       "assertions": [
         {
           "case": "getAgentDirPath defaults to the pi agent directory under home",
-          "text": "assert.equal(getAgentDirPath({}, \"/home/rcroh\"), join(\"/home/rcroh\", \".pi/agent\"))",
-          "sha256": "b814263aaa6bbe8128c10910395878070093d3891d5393c76090e2b2629a77b4"
+          "text": "assert.equal(getAgentDirPath({}, \"/home/fixture\"), join(\"/home/fixture\", \".pi/agent\"))",
+          "sha256": "a4878f49f5ba96ab42fb8cee42a797cc868e6f645e2d24d397c9fdc1b6e085b2"
         },
         {
           "case": "getAgentDirPath honors PI_CODING_AGENT_DIR",
-          "text": "assert.equal(getAgentDirPath({ PI_CODING_AGENT_DIR: \"/tmp/pi-agent\" }, \"/home/rcroh\"), \"/tmp/pi-agent\")",
-          "sha256": "bd23691fb4590905de17f3af29c7b306e9de65b490cb80ed3c11c12e8c2cfc6b"
+          "text": "assert.equal(getAgentDirPath({ PI_CODING_AGENT_DIR: \"/home/fixture/pi-agent\" }, \"/home/fixture\"), \"/home/fixture/pi-agent\")",
+          "sha256": "ea14cbe05418eaaef5617e35a50e10704d0d354b5774989fb86e4d74c85420b4"
         },
         {
           "case": "getAgentDirPath resolves relative PI_CODING_AGENT_DIR values from the caller cwd",
-          "text": "assert.equal(getAgentDirPath({ PI_CODING_AGENT_DIR: \"relative-agent\" }, \"/home/rcroh\", cwd), join(cwd, \"relative-agent\"))",
-          "sha256": "f475b0af0fb8a647952383aba5fa23584c3c76d83b2550c7dc2c2af89122346d"
+          "text": "assert.equal(getAgentDirPath({ PI_CODING_AGENT_DIR: \"relative-agent\" }, \"/home/fixture\", cwd), join(cwd, \"relative-agent\"))",
+          "sha256": "e0a2c80bfc7488f30ad41b11941aa4b4cf35ab08ad30489d086d87ca9a9c9482"
         },
         {
           "case": "getIntercomDirPath points at the intercom runtime directory under the agent dir",
-          "text": "assert.equal(getIntercomDirPath(\"/tmp/pi-agent\"), join(\"/tmp/pi-agent\", \"intercom\"))",
-          "sha256": "8e03d884eaea24aac959e56ee72c831a4a16923792f1c01c952d748fbe305398"
+          "text": "assert.equal(getIntercomDirPath(\"/home/fixture/pi-agent\"), join(\"/home/fixture/pi-agent\", \"intercom\"))",
+          "sha256": "1360c029d3e59a6c326d22aa20cc5006e61bd2ca9ad12f4bc90caf7409bc200c"
         },
         {
           "case": "getBrokerSocketPath uses named pipe on Windows",
@@ -572,8 +576,8 @@
         },
         {
           "case": "getBrokerSocketPath uses broker.sock under PI_CODING_AGENT_DIR on non-Windows",
-          "text": "assert.equal(socketPath, join(\"/tmp/pi-agent\", \"intercom\", \"broker.sock\"))",
-          "sha256": "5f456ca2d7c263397b3212cbdd7cfc2bbccd78fcc846b8b7cab47155c83281cc"
+          "text": "assert.equal(socketPath, join(\"/home/fixture/pi-agent\", \"intercom\", \"broker.sock\"))",
+          "sha256": "9aad6e08f22b5da45d669dfdf551accd1e1f6ecdffdb85c6ec7b67377dcbad55"
         },
         {
           "case": "Windows TCP transport is opt-in",

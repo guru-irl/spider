@@ -18,6 +18,7 @@ const allowedChanges = [
   { change: 'compiled broker and removal of tsx arguments', reason: 'The distributed broker is executable JavaScript.' },
   { change: 'default-forwarding broker connection port', reason: 'Host tests can fence broker startup without changing production connections.' },
   { change: 'test runner and isolated temporary directories', reason: 'Vitest runs the same tests without using user state.' },
+  { change: 'fixture path normalisation', reason: 'Synthetic home paths replace upstream personal paths while preserving the relationships under test.' },
   { change: 'escaped em dash in test literals', reason: 'The public source avoids non-ASCII punctuation without changing values.' },
 ];
 const sha256 = value => createHash('sha256').update(value).digest('hex');
@@ -41,6 +42,9 @@ function originHashes() {
 
 function normalAssertion(text, name, upstream) {
   let value = text.replaceAll('\u2014', '\\u2014');
+  if (upstream && name === 'broker/paths.test.ts') {
+    value = value.replaceAll('/home/rcroh', '/home/fixture').replaceAll('/tmp/pi-agent', '/home/fixture/pi-agent');
+  }
   if (upstream && name === 'broker/spawn.test.ts') {
     value = value.replaceAll('"${expectedTsxPath}" ', '')
       .replaceAll('"${getTsxCliPath("C:/repo")}" ', '')

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { expect, test } from 'vitest';
 import { createAppClient } from '../client/app.js';
 import { createHcClient } from '../client/hc.js';
+import { HerdrError } from '../client/parse.js';
 import { createTerminalRegistry } from '../sessions/registry.js';
 import { createRoamPlacement, rememberRoamSlot } from '../roam-placement.js';
 import { createClientFixture } from './testutil.js';
@@ -248,6 +249,66 @@ test('lost replies remain recoverable after the event stream is already open', a
   } finally { await h.close(); }
 }, 5000);
 
+
+test('a known pre-launch failure retries on the next reconcile without reopening a closed proxy', async () => {
+  const h = await fixture();
+  try {
+    await rememberRoamSlot(h.stateRoot, 'session-1', slot);
+    let calls = 0;
+    const hc: HcClient = { ...h.hc, run: async request => {
+      calls++;
+      if (calls === 1) throw new HerdrError('missing-hc', 'fixture launch did not start', { pid: undefined });
+      return h.hc.run(request);
+    } };
+    const p = createRoamPlacement({ hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot });
+    const row = ready('box-1.invalid/t5');
+    await expect(p.reconcile([row])).rejects.toMatchObject({ code: 'missing-hc' });
+    expect(await p.reconcile([row])).toEqual({ pending: [] });
+    expect(calls).toBe(2);
+    expect(await h.runs()).toHaveLength(1);
+    await h.hc.rm(h.f.address('t2'));
+    expect(await p.reconcile([row])).toEqual({ pending: [] });
+    expect(calls).toBe(2);
+    expect(await h.runs()).toHaveLength(1);
+  } finally { await h.close(); }
+}, 5000);
+
+test('known launch failures stop after one retry even across placement instances', async () => {
+  const h = await fixture();
+  try {
+    await rememberRoamSlot(h.stateRoot, 'session-1', slot);
+    let calls = 0;
+    const hc: HcClient = { ...h.hc, run: async () => { calls++; throw new HerdrError('spawn-error', 'fixture launch did not start', { pid: undefined }); } };
+    const create = () => createRoamPlacement({ hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot });
+    const row = ready('box-1.invalid/t5');
+    await expect(create().reconcile([row])).rejects.toMatchObject({ code: 'spawn-error' });
+    await expect(create().reconcile([row])).rejects.toMatchObject({ code: 'spawn-error' });
+    expect(await create().reconcile([row])).toEqual({ pending: [row.terminal] });
+    expect(await create().reconcile([row])).toEqual({ pending: [row.terminal] });
+    expect(calls).toBe(2);
+    expect(await h.runs()).toEqual([]);
+  } finally { await h.close(); }
+}, 5000);
+
+test('a lost reply after proxy closure cannot be mistaken for a safe spawn failure', async () => {
+  const h = await fixture();
+  try {
+    await rememberRoamSlot(h.stateRoot, 'session-1', slot);
+    let calls = 0;
+    const hc: HcClient = { ...h.hc, run: async request => {
+      calls++;
+      const proxy = await h.hc.run(request);
+      await h.hc.rm(proxy.address);
+      throw new HerdrError('spawn-error', 'fixture reply was lost', { exitCode: 1 });
+    } };
+    const p = createRoamPlacement({ hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot });
+    const row = ready('box-1.invalid/t5');
+    await expect(p.reconcile([row])).rejects.toMatchObject({ code: 'spawn-error' });
+    expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
+    expect(calls).toBe(1);
+    expect(await h.runs()).toHaveLength(1);
+  } finally { await h.close(); }
+}, 5000);
 
 test('an uncertain launch with no observable proxy remains pending without retrying', async () => {
   const h = await fixture();

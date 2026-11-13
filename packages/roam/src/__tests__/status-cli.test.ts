@@ -6,6 +6,10 @@ import { migrate, openDb } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import { enableMemoryCapture, seedSession } from "@spider/db-core/roam/seed";
+import { HerdrError } from "@spider/herdr/client/parse";
+import type { HcClient } from "@spider/herdr/contracts";
+import { createRoamPlacement, rememberRoamSlot } from "@spider/herdr/roam-placement";
+import type { TerminalRegistry } from "@spider/herdr/sessions/registry";
 import { main } from "../cli";
 import { openJournal } from "../journal";
 
@@ -207,6 +211,56 @@ it("reports incomplete operations as unknown when the journal cannot be read", a
     expect(JSON.parse(out.join(""))).toMatchObject({ complete: false, incompleteOperations: null });
     expect(err).toEqual([]); expect(snapshot(root)).toEqual(before);
   } finally { global.close(); }
+}, 5000);
+
+it("doctor shows an actual failed proxy launch and clears it after a successful retry", async () => {
+  const path = process.env.PATH, root = fixture(), directory = join(root, "roam", "placement");
+  vi.stubEnv("PATH", path);
+  await rememberRoamSlot(directory, "session-a", { space: "s1", tab: "tb1" } as Parameters<typeof rememberRoamSlot>[2]);
+  let calls = 0;
+  const hc = {
+    async identity() { return { coreId: "local-core" }; },
+    async run() {
+      calls++;
+      if (calls === 1) throw new HerdrError("missing-hc", "fixture launch did not start", { pid: undefined });
+      return { address: "proxy-1", coreId: "local-core" };
+    },
+    events() { return { ready: Promise.resolve(), subscribe(callback: (event: unknown) => void) {
+      queueMicrotask(() => callback({ type: "snapshot", terminals: [] })); return () => {};
+    } }; },
+  } as unknown as HcClient;
+  const registry = { async list() { return []; } } as unknown as TerminalRegistry;
+  const placement = createRoamPlacement({ hc, app: null, registry, hcBinary: join(root, "fixture-hc"), stateRoot: directory });
+  const row = { operationId: "op-1", sessionId: "session-a", epoch: 1, cwd: "/fixture", file: "/fixture/session.jsonl", core: "remote-core", terminal: "box-1.invalid/t1" };
+  await expect(placement.reconcile([row])).rejects.toMatchObject({ code: "missing-hc" });
+  const before = snapshot(root), output: string[] = [];
+  expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(0);
+  expect(output.join("")).toMatch(/session-a.*proxy.*retry/i);
+  expect(snapshot(root)).toEqual(before);
+  expect(await placement.reconcile([row])).toEqual({ pending: [] });
+  expect(calls).toBe(2);
+  output.length = 0;
+  expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(0);
+  expect(output.join("")).not.toMatch(/session-a.*proxy/i);
+}, 5000);
+
+it("doctor reports failed and uncertain proxy placement without changing its state", async () => {
+  const root = fixture(), directory = join(root, "roam", "placement");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const attempt = (session: string, remote: string, failure: { attempts: number; retryable: boolean }) =>
+    ({ session, remote, core: "remote-core", proxy: null, closed: false, localOwners: [], failure });
+  writeFileSync(join(directory, "roam-placement.json"), JSON.stringify({ version: 1, slots: [], attempts: [
+    attempt("retry-session", "box-1.invalid/t1", { attempts: 1, retryable: true }),
+    attempt("exhausted-session", "box-1.invalid/t2", { attempts: 2, retryable: true }),
+    attempt("unknown-session", "box-1.invalid/t3", { attempts: 1, retryable: false }),
+  ] }), { mode: 0o600 });
+  const before = snapshot(root), out: string[] = [], err: string[] = [];
+  expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+  expect(out.join("")).toMatch(/retry-session.*proxy.*retry/i);
+  expect(out.join("")).toMatch(/exhausted-session.*proxy.*retries.*stopped/i);
+  expect(out.join("")).toMatch(/unknown-session.*proxy.*uncertain/i);
+  expect(err).toEqual([]);
+  expect(snapshot(root)).toEqual(before);
 }, 5000);
 
 it("shows disabled, unavailable cached state without creating files", async () => {

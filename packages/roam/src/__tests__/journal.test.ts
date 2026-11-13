@@ -114,6 +114,19 @@ it("journal pruning is bounded and respects retained sync references", () => {
   expect(journal.prune(old, 1000, id => id === "read-0")).toHaveLength(4);
   expect(journal.read("read-0")).toHaveLength(1);
 }, 5000);
+it("bounded journal sweeps advance past retained artifacts after reopening", () => {
+  const { file } = fixture(), journal = openJournal(file);
+  for (let i = 0; i < 256; i++) {
+    const id = `held-${String(i).padStart(3, "0")}`;
+    journal.begin({ ...operation, id }); journal.record(id, "done", { artifactId: "retained-artifact" });
+  }
+  journal.begin({ ...operation, id: "completed-control", kind: "enable-capture", args: { storeKey: "global" } });
+  journal.record("completed-control", "done", { value: { enabled: true } });
+  const old = Date.now() + 2000;
+  expect(journal.prune(old, 1000)).toEqual([]);
+  expect(openJournal(file).prune(old, 1000)).toEqual(["completed-control"]);
+  expect(journal.read("held-000")).toHaveLength(1);
+}, 5000);
 it("changed arguments under one ID refuse before effect", () => {
   const { file } = fixture();
   const journal = openJournal(file);

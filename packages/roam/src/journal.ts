@@ -166,6 +166,9 @@ export function openJournal(file: string): ArtifactJournal {
         result_json TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS roam_operation_actions_id ON roam_operation_actions(operation_id, seq);
+      CREATE TABLE IF NOT EXISTS roam_journal_sweep (
+        id INTEGER PRIMARY KEY CHECK(id=1), completed_at INTEGER NOT NULL, operation_id TEXT NOT NULL
+      );
     `)).immediate();
     db.raw.transaction(() => {
       const columns = new Set((db.raw.pragma("table_info(roam_operations)") as { name: string }[]).map(row => row.name));
@@ -173,6 +176,7 @@ export function openJournal(file: string): ArtifactJournal {
         if (!columns.has(name)) db.exec(`ALTER TABLE roam_operations ADD COLUMN ${name} ${ddl}`);
       db.prepare("UPDATE roam_operations SET completed_at=? WHERE result_json IS NOT NULL AND completed_at IS NULL").run(Date.now());
       db.exec("CREATE INDEX IF NOT EXISTS roam_operations_completed ON roam_operations(completed_at)");
+      db.exec("CREATE INDEX IF NOT EXISTS roam_operations_retention ON roam_operations(completed_at,operation_id)");
     }).immediate();
   });
   const referenceCheck = (): ((value: string) => boolean) => withDatabase(file, db => {
@@ -249,8 +253,15 @@ export function openJournal(file: string): ArtifactJournal {
       if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(retentionMs) || retentionMs < 1) throw new Error("Invalid journal retention");
       return withDatabase(file, db => db.raw.transaction(() => {
         const removed: string[] = [];
-        const rows = db.prepare("SELECT * FROM roam_operations WHERE completed_at <= ? ORDER BY completed_at,operation_id LIMIT 256")
-          .all(now - retentionMs) as ReferenceRow[];
+        const cutoff = now - retentionMs;
+        const progress = db.prepare("SELECT completed_at,operation_id FROM roam_journal_sweep WHERE id=1").get() as
+          { completed_at: number; operation_id: string } | undefined;
+        let rows = progress ? db.prepare("SELECT * FROM roam_operations WHERE completed_at <= ? AND (completed_at,operation_id) > (?,?) ORDER BY completed_at,operation_id LIMIT 256")
+          .all(cutoff, progress.completed_at, progress.operation_id) as ReferenceRow[] : [];
+        if (!rows.length) rows = db.prepare("SELECT * FROM roam_operations WHERE completed_at <= ? ORDER BY completed_at,operation_id LIMIT 256").all(cutoff) as ReferenceRow[];
+        const last = rows.at(-1);
+        if (last) db.prepare("INSERT INTO roam_journal_sweep VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET completed_at=excluded.completed_at,operation_id=excluded.operation_id")
+          .run(last.completed_at, last.operation_id);
         for (const row of rows) {
           const refs = rowReferences(db, row);
           if (artifactKinds.has(row.kind) && !row.released && refs.size) continue;

@@ -235,7 +235,7 @@ async function twoNodeFixture(capture = true) {
     hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
   writeFileSync(join(f.root, "bin", "sqlite3"), `#!${process.execPath}\nconsole.log('3.45.0');\n`, { mode: 0o700 });
   f.env.PATH = join(f.root, "bin");
-  writeFileSync(join(f.root, "hc"), `#!${process.execPath}\nimport {appendFileSync,readFileSync} from 'node:fs'; import {spawnSync} from 'node:child_process';\nconst a=process.argv.slice(2); appendFileSync(${JSON.stringify(calls)},JSON.stringify(a)+'\\n');\nif(a[0]==='server') console.log(JSON.stringify({core:{id:'local-core'},version:'0.1.16'}));\nelse if(a[0]==='machine') console.log(JSON.stringify({machines:[{name:${JSON.stringify(alias)},id:'remote-core',state:'connected'}]}));\nelse if(a[0]==='exec' && a.includes(${JSON.stringify(`--on=${alias}`)})) { const cmd=a.slice(a.indexOf('--')+1); if(cmd[0]==='cat' && cmd.at(-1)===${JSON.stringify(join(box, "roam", "machine.json"))}) process.stdout.write(readFileSync(cmd.at(-1))); else if(cmd[0]===${JSON.stringify(process.execPath)} && cmd[1]===${JSON.stringify(f.cli)} && cmd[2]==='--global-root' && cmd[3]===${JSON.stringify(box)}) { const result=spawnSync(cmd[0],cmd.slice(1),{env:{...process.env,HOME:${JSON.stringify(box)}},input:a.includes('--stdin')?readFileSync(0):undefined}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status??1; } else process.exitCode=2; }\nelse process.exitCode=1;\n`, { mode: 0o700 });
+  writeFileSync(join(f.root, "hc"), `#!${process.execPath}\nimport {appendFileSync,readFileSync} from 'node:fs'; import {spawnSync} from 'node:child_process';\nconst a=process.argv.slice(2); appendFileSync(${JSON.stringify(calls)},JSON.stringify(a)+'\\n');\nif(process.env.SPIDER_TEST_HC_OFFLINE==='1') process.exit(1);\nif(a[0]==='server') console.log(JSON.stringify({core:{id:'local-core'},version:'0.1.16'}));\nelse if(a[0]==='machine') console.log(JSON.stringify({machines:[{name:${JSON.stringify(alias)},id:'remote-core',state:'connected'}]}));\nelse if(a[0]==='exec' && a.includes(${JSON.stringify(`--on=${alias}`)})) { const cmd=a.slice(a.indexOf('--')+1); if(cmd[0]==='cat' && cmd.at(-1)===${JSON.stringify(join(box, "roam", "machine.json"))}) process.stdout.write(readFileSync(cmd.at(-1))); else if(cmd[0]===${JSON.stringify(process.execPath)} && cmd[1]===${JSON.stringify(f.cli)} && cmd[2]==='--global-root' && cmd[3]===${JSON.stringify(box)}) { const result=spawnSync(cmd[0],cmd.slice(1),{env:{...process.env,HOME:${JSON.stringify(box)}},input:a.includes('--stdin')?readFileSync(0):undefined}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status??1; } else process.exitCode=2; }\nelse process.exitCode=1;\n`, { mode: 0o700 });
   const server = createServer(socket => socket.end()); await new Promise<void>(done => server.listen(f.env.HC_SOCKET, done));
   return { f, alias, box, calls, peer, server };
 }
@@ -355,18 +355,34 @@ it("the packaged hub synchronizes a captured home to the enrolled peer without a
     enableMemoryCapture(remote, "global");
     local.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES ('session-sync',?,1,NULL,1)").run(HUB);
   } finally { local.close(); remote.close(); }
-  const child = start(f);
+  let child = start(f);
   try {
     await ready(f.socket, child);
     const result = await requestHubControl(f.socket, { op: "sync", machine: BOX });
     expect(result.code, result.reason + JSON.stringify(result.value)).toBe(0);
     const hubDb = openDb(join(f.root, "spider.db")), boxDb = openDb(join(box, "spider.db"));
+    let stream: string, committedThrough: number;
     try {
       const home = hubDb.prepare("SELECT machine_id,epoch FROM session_homes WHERE session_id='session-sync'").get();
       expect(boxDb.prepare("SELECT machine_id,epoch FROM session_homes WHERE session_id='session-sync'").get()).toEqual(home);
       expect(boxDb.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 1 });
+      const receipt = boxDb.prepare("SELECT through_seq FROM roam_receipts WHERE peer_machine=?").get(HUB) as { through_seq: number };
+      expect(receipt.through_seq).toBeGreaterThan(0);
+      committedThrough = receipt.through_seq;
+      stream = (hubDb.prepare("SELECT stream_id FROM roam_meta WHERE id=1").get() as { stream_id: string }).stream_id;
+      const cursor = boxDb.prepare("SELECT last_seq FROM roam_cursors WHERE peer_machine=? AND peer_stream=?").get(HUB, stream) as { last_seq: number };
+      expect(cursor.last_seq).toBe(committedThrough);
       expect(boxDb.prepare("SELECT count(*) AS n FROM roam_receipts").get()).toEqual({ n: 1 });
     } finally { hubDb.close(); boxDb.close(); }
+    child.kill("SIGTERM"); expect(await exit(child)).toEqual({ code: 0, signal: null });
+    f.env.SPIDER_TEST_HC_OFFLINE = "1";
+    child = start(f); await ready(f.socket, child);
+    const restarted = openDb(join(box, "spider.db"));
+    try {
+      const cursor = restarted.prepare("SELECT last_seq FROM roam_cursors WHERE peer_machine=? AND peer_stream=?").get(HUB, stream) as { last_seq: number };
+      const cursorAfterRestart = cursor.last_seq;
+      expect(cursorAfterRestart).toBe(committedThrough);
+    } finally { restarted.close(); }
     const entries = readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
     expect(entries.some(args => args[0] === "exec" && args.includes("artifact") && args.includes("receive"))).toBe(true);
     expect(entries.filter(args => args[0] === "exec").every(args => args.includes(`--on=${alias}`))).toBe(true);

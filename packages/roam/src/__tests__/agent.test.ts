@@ -17,6 +17,7 @@ import { DEFAULT_LIMITS } from "../contracts";
 import type { AgentPorts, ArtifactManifest, Operation, Peer, Transport } from "../contracts";
 import { openJournal } from "../journal";
 import { createManifestPages, pullArtifact, readManifestPages, stageArtifact, transferArtifact } from "../artifacts";
+import * as artifactApi from "../artifacts";
 import { acquireTransferLease, defaultStagingRoot, hash, manifestDigest, openOutgoingStaging, openStaging, readPrivate, sourceChunk } from "../staging";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -726,6 +727,13 @@ it("snapshots operation identity and arguments before asynchronous work", async 
   expect(ports.journal.read("changed-after-dispatch")).toEqual([]);
 }, 5000);
 
+it("box exports share the enrolled hub's transfer lease", async () => {
+  const { ports, storeKey } = fixture(), release = acquireTransferLease(ports.root, HUB, ports.config.limits.peerConcurrency)!;
+  const request = operation("requester-export", "export", { storeKey, after: 0, targetBytes: 4096, batchId: "requester" });
+  try { expect((await handleAgentOperation(request, ports)).code).toBe(3); }
+  finally { release(); }
+  expect((await handleAgentOperation(request, ports)).code).toBe(0);
+}, 5000);
 it("an overlapping export waits for the peer lease and leaves no unrecorded snapshots", async () => {
   const { db, ports, storeKey } = fixture();
   await handleAgentOperation(operation("enable-overlap", "enable-capture", { storeKey }), ports);
@@ -740,6 +748,28 @@ it("an overlapping export waits for the peer lease and leaves no unrecorded snap
   expect(retry.code).toBe(3); expect(completed.code).toBe(0);
   expect(await handleAgentOperation(request, ports)).toEqual(completed);
   expect(readdirSync(join(dirname(db.raw.name), ".roam-batches")).filter(name => name.endsWith(".ndjson"))).toEqual([]);
+}, 5000);
+it("a delayed export cannot recreate an artifact after release-export", async () => {
+  const { db, ports, storeKey, root } = fixture();
+  await handleAgentOperation(operation("enable-delayed", "enable-capture", { storeKey }), ports);
+  db.prepare("INSERT INTO memory(uuid,category,content,created_at) VALUES ('memory-a','insight','portable',1)").run();
+  let entered!: () => void, release!: () => void;
+  const paused = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const stageActual = artifactApi.stageArtifact, held = join(root, "held-stage.ndjson");
+  vi.spyOn(artifactApi, "stageArtifact").mockImplementationOnce(async (file, kind, limits, options) => {
+    writeFileSync(held, readFileSync(file), { mode: 0o600 }); entered(); await gate;
+    return stageActual(held, kind, limits, options);
+  });
+  const request = operation("delayed-export", "export", { storeKey, after: 0, targetBytes: 4096, batchId: "delayed" });
+  const stale = handleAgentOperation(request, ports); await paused;
+  const duplicate = await handleAgentOperation(request, ports);
+  const sha256 = ports.journal.read(request.id).find(row => row.action === "export-snapshot")!.result.sha256;
+  const acknowledge = operation("release-delayed", "release-export", { exportId: request.id, sha256 });
+  const early = await handleAgentOperation(acknowledge, ports); release(); const completed = await stale;
+  const released = await handleAgentOperation(acknowledge, ports), replay = await handleAgentOperation(request, ports);
+  expect(duplicate.code).toBe(3); expect(early.code).toBe(3); expect(completed.code).toBe(0);
+  expect(released.code).toBe(0); expect(replay.code).toBe(3);
+  expect(existsSync(join(ports.root, "outgoing", request.id))).toBe(false);
 }, 5000);
 it("a stale export deletes its own snapshot when another result is already committed", async () => {
   const { db, ports, storeKey } = fixture(), journal = ports.journal;

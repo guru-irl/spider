@@ -260,18 +260,19 @@ it("workspace dependencies and lock metadata resolve the roaming package", () =>
 }, 5000);
 
 it("the package gate refuses a missing roaming executable or link script", () => {
-  const skills = ["packages/superpowers/skills", "packages/pstack/skills"].flatMap(dir =>
+  const skills = ["packages/superpowers/skills", "packages/pstack/skills", "packages/intercom/skills"].flatMap(dir =>
     readdirSync(dir, { recursive: true, encoding: "utf8" }).filter(file => file === "SKILL.md" || file.endsWith("/SKILL.md")).map(file => `${dir}/${file}`));
-  const files = ["dist/extension.js", "dist/dashboard/index.html", "dist/dashboard/assets/app-aaaaaaaa.js", "dist/dashboard/assets/app-aaaaaaaa.css",
-    "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", ...skills,
-    "dist/roam/cli.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs",
+  const files = ["dist/extension.js", "dist/intercom/broker.mjs", "dist/dashboard/index.html", "dist/dashboard/assets/app-aaaaaaaa.js", "dist/dashboard/assets/app-aaaaaaaa.css",
+    "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", ...skills,
+    "dist/roam/cli.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/intercom-switchover.mjs",
     "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs"];
   const gate = (present: string[]) => spawnSync(process.execPath, ["scripts/check-package-files.cjs"], {
     input: JSON.stringify([{ files: present.map(path => ({ path })) }]), encoding: "utf8", timeout: 2000,
   });
   expect(gate(files).status).toBe(0);
   for (const missing of ["dist/roam/cli.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs",
-    "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs"]) {
+    "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs", "dist/intercom/broker.mjs",
+    "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "packages/intercom/skills/pi-intercom/SKILL.md"]) {
     const result = gate(files.filter(file => file !== missing));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(missing);

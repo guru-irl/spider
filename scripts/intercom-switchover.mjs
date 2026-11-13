@@ -7,8 +7,9 @@ function legacyDeclaration(value, roots, directory) {
   if (typeof source !== 'string') return false;
   const path = source.replace(/^!/, '');
   const normalized = isAbsolute(path) || directory ? resolve(directory ?? '', path) : path;
+  const gitSource = path.replace(/^git:/, '').replace(/^git\+/, '');
   return /^(?:npm:)?pi-intercom(?:@[^/]+)?$/.test(path)
-    || /^https:\/\/github\.com\/nicobailon\/pi-intercom(?:[\/#@]|$)/.test(path)
+    || /^(?:(?:https?|ssh):\/\/(?:git@)?github\.com\/|git@github\.com:|github\.com\/)nicobailon\/pi-intercom(?:\.git)?(?:[\/?#@]|$)/i.test(gitSource)
     || roots.some(root => normalized === resolve(root) || normalized.startsWith(resolve(root) + '/') || normalized.startsWith(resolve(root) + '\\'));
 }
 

@@ -8,6 +8,7 @@ import { createReplica } from "@spider/db-core/testutil";
 import { exportBatch } from "@spider/db-core/roam/export";
 import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
 import { replicaPath } from "@spider/db-core/roam/catalog";
+import * as catalogApi from "@spider/db-core/roam/catalog";
 import * as applyApi from "@spider/db-core/roam/apply";
 import { validateBatch } from "@spider/db-core/roam/codec";
 import { localEntries, writeLocal } from "@spider/db-core/roam/local-state";
@@ -220,6 +221,39 @@ it("an incoming staging-open failure releases its peer lease", async () => {
   await expect(stores.accept(source.storeKey, { ...batch, file: join(directory, "artifacts", "staging-failure", "complete", "f".repeat(64)) })).rejects.toThrow();
   const lease = stagingApi.acquireTransferLease(root, BOX, config.limits.peerConcurrency);
   expect(typeof lease).toBe("function"); lease?.();
+}, 5000);
+it("receipt replay cleans staging after a post-commit cleanup failure", async () => {
+  const { global, source, stores, config } = fixture();
+  const root = join(global.root, "roam", "staging"); vi.spyOn(stagingApi, "defaultStagingRoot").mockReturnValue(root);
+  const batch = await exportBatch(source.db, { after: 0, targetBytes: 4096, batchId: "cleanup-replay" }, policy);
+  const manifest = await stageArtifact(batch.file, "batch", config.limits, { root, artifactId: batch.header.batchId });
+  const incoming = stagingApi.openStaging(root, BOX, config.limits);
+  incoming.declare(manifest, `pull-${batch.header.batchId}`);
+  for (const chunk of manifest.chunks) incoming.receive(manifest, chunk.index,
+    stagingApi.readPrivate(stagingApi.sourceChunk(root, manifest.id, chunk.index, chunk.sha256), chunk.rawLength));
+  const file = incoming.assemble(manifest); incoming.close();
+  const open = stagingApi.openStaging; let fail = true;
+  vi.spyOn(stagingApi, "openStaging").mockImplementation((...args) => {
+    const store = open(...args), remove = store.removeAfterReceipt.bind(store);
+    store.removeAfterReceipt = (...input) => { if (fail) { fail = false; throw new Error("cleanup unavailable"); } remove(...input); };
+    return store;
+  });
+  expect((await stores.accept(source.storeKey, { ...batch, file })).through).toBe(2);
+  expect(existsSync(file)).toBe(true);
+  expect((await stores.accept(source.storeKey, { ...batch, file })).through).toBe(2);
+  expect(existsSync(file)).toBe(false);
+  const quota = openDb(join(root, "incoming", BOX, "quota.db"));
+  try { expect(quota.prepare("SELECT count(*) AS n FROM staging_allocations").get()).toEqual({ n: 0 }); }
+  finally { quota.close(); }
+  expect(stores.openStore(source.storeKey).db.prepare("SELECT count(*) AS n FROM roam_receipts").get()).toEqual({ n: 1 });
+}, 5000);
+it("catalog failures after apply cannot refuse a committed import or its replay", async () => {
+  const { source, stores } = fixture();
+  const batch = await exportBatch(source.db, { after: 0, targetBytes: 4096, batchId: "catalog-busy" }, policy);
+  vi.spyOn(catalogApi, "catalogReplica").mockImplementation(() => { throw new Error("catalog busy"); });
+  expect((await stores.accept(source.storeKey, batch)).through).toBe(2);
+  expect((await stores.accept(source.storeKey, batch)).through).toBe(2);
+  expect(stores.cursor(source.storeKey, BOX, batch.header.senderStream)).toBe(2);
 }, 5000);
 it("empty exports allocate no receipt and remove their private file", async () => {
   const { global, stores } = fixture();

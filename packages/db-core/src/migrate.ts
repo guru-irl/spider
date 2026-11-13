@@ -167,7 +167,23 @@ const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
 };
 
 function ensureQueryIndexes(db: Db, scope: "global" | "repo" | "worktree"): void {
-  if (scope === "worktree") db.exec("CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, id)");
+  if (scope !== "worktree") return;
+  try {
+    const create = () => db.exec("CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, id)");
+    if (db.raw.inTransaction) {
+      db.raw.transaction(create)();
+    } else {
+      const timeout = Number(db.raw.pragma("busy_timeout", { simple: true }));
+      try {
+        db.raw.pragma("busy_timeout = 100");
+        create();
+      } finally {
+        db.raw.pragma(`busy_timeout = ${timeout}`);
+      }
+    }
+  } catch (error) {
+    try { console.error(`Could not create run events index: ${String(error).replace(/[\r\n]+/g, " ")}`); } catch { /* diagnostic is best effort */ }
+  }
 }
 
 export function migrate(
@@ -181,15 +197,20 @@ export function migrate(
   const observed = Number(db.pragma("user_version"));
   if (observed > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${observed}`);
   if (observed === SCHEMA_VERSION) {
-    const needsWrite = db.withRetry(() => db.raw.transaction(() => {
+    const inspection = db.withRetry(() => db.raw.transaction(() => {
       const current = Number(db.raw.pragma("user_version", { simple: true }));
       if (current > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${current}`);
       if (current !== SCHEMA_VERSION) throw new Error("Core schema changed before its backup");
       const layout = validateRoamLayout(db, actualScope, "inspect");
-      return layout.needsWrite || (actualScope === "worktree" &&
-        !indexPresent(db, "run_events", "idx_run_events_run_id"));
+      return {
+        needsWrite: layout.needsWrite,
+        missingIndex: actualScope === "worktree" && !indexPresent(db, "run_events", "idx_run_events_run_id"),
+      };
     }).deferred());
-    if (!needsWrite) return;
+    if (!inspection.needsWrite) {
+      if (inspection.missingIndex) ensureQueryIndexes(db, actualScope);
+      return;
+    }
   }
   const globalRoot = options?.globalRoot ?? paths.globalRoot;
   const machineId = observed < SCHEMA_VERSION ? options?.machineId ?? loadMachineIdentity(globalRoot) : undefined;

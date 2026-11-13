@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { openDb, type Db } from "../db";
@@ -74,6 +74,86 @@ describe("run event query index", () => {
       expect(db.pragma("user_version")).toBe(SCHEMA_VERSION);
       expect(backups()).toEqual(before);
     } finally { db?.close(); writer.exec("ROLLBACK"); writer.close(); }
+  });
+
+  it("opens a read-only current project without the index", () => {
+    const file = join(root(), "readonly.db");
+    const original = openDbAt(file, "worktree");
+    original.exec("DROP INDEX idx_run_events_run_id");
+    original.close();
+    chmodSync(file, 0o444);
+    try {
+      const reopened = openDbAt(file, "worktree");
+      try {
+        expect(reopened.prepare("SELECT COUNT(*) AS n FROM run_events").get()).toEqual({ n: 0 });
+        expect(indexShape(reopened).columns).toEqual([]);
+      } finally { reopened.close(); }
+    } finally { chmodSync(file, 0o600); }
+  });
+
+  it("opens promptly under a write lock, restores the timeout and retries next open", () => {
+    const dir = root(), file = join(dir, "locked.db");
+    const initial = openDbAt(file, "worktree");
+    initial.exec("DROP INDEX idx_run_events_run_id");
+    initial.close();
+    const writer = new Database(file);
+    writer.exec("BEGIN IMMEDIATE");
+    const db = openDb(file, { busyTimeoutMs: 25, checkpointOnClose: false });
+    try {
+      const start = Date.now();
+      expect(() => migrate(db, "worktree", { machineId: "11111111-1111-4111-8111-111111111111", globalRoot: dir })).not.toThrow();
+      expect(Date.now() - start).toBeLessThan(1500);
+      expect(db.pragma("busy_timeout")).toBe(25);
+      expect(indexShape(db).columns).toEqual([]);
+    } finally { db.close(); writer.exec("ROLLBACK"); writer.close(); }
+    const reopened = openDbAt(file, "worktree");
+    try { expect(indexShape(reopened).columns).toEqual(["run_id", "id"]); }
+    finally { reopened.close(); }
+  });
+
+  it("opens and reports a deterministic index failure, then retries later", () => {
+    const file = join(root(), "conflict.db");
+    const initial = openDbAt(file, "worktree");
+    initial.exec("DROP INDEX idx_run_events_run_id; CREATE VIEW idx_run_events_run_id AS SELECT 1");
+    initial.close();
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const reopened = openDbAt(file, "worktree");
+      try {
+        expect(reopened.prepare("SELECT COUNT(*) AS n FROM run_events").get()).toEqual({ n: 0 });
+        expect(indexShape(reopened).columns).toEqual([]);
+        expect(diagnostic).toHaveBeenCalledTimes(1);
+        expect(diagnostic.mock.calls[0]).toEqual([expect.stringMatching(/^Could not create run events index: [^\r\n]+$/)]);
+        reopened.exec("DROP VIEW idx_run_events_run_id");
+      } finally { reopened.close(); }
+      const retried = openDbAt(file, "worktree");
+      try { expect(indexShape(retried).columns).toEqual(["run_id", "id"]); }
+      finally { retried.close(); }
+    } finally { diagnostic.mockRestore(); }
+  });
+
+  it.each([0, 13])("rolls back a failed index build without aborting schema version %s", version => {
+    const dir = root(), file = join(dir, `failure-${version}.db`);
+    const db = openDb(file);
+    if (version === 13) { db.exec(V13.worktree); db.raw.pragma("user_version = 13"); }
+    const failing = new Proxy(db, { get(target, key) {
+      if (key === "exec") return (sql: string) => {
+        if (sql.startsWith("CREATE INDEX IF NOT EXISTS idx_run_events_run_id")) {
+          target.raw.exec("CREATE TABLE index_failure_probe (id INTEGER)");
+          throw new Error("injected index failure");
+        }
+        return target.exec(sql);
+      };
+      return Reflect.get(target, key);
+    } });
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      expect(() => migrate(failing, "worktree", { machineId: "11111111-1111-4111-8111-111111111111", globalRoot: dir })).not.toThrow();
+      expect(db.pragma("user_version")).toBe(SCHEMA_VERSION);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name='index_failure_probe'").get()).toBeUndefined();
+      expect(db.prepare("SELECT COUNT(*) AS n FROM run_events").get()).toEqual({ n: 0 });
+      expect(diagnostic).toHaveBeenCalledTimes(1);
+    } finally { diagnostic.mockRestore(); db.close(); }
   });
 
   it("adds the index when migrating a v13 project", () => {

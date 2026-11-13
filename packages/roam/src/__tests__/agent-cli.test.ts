@@ -1,3 +1,4 @@
+import { unexpectedBootstrapProbe } from "./transport-fixture";
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -83,6 +84,7 @@ it("the packaged agent receives verified raw artifact chunks from the hub", asyn
     const peer: Peer = { machineId: BOX, alias: "-box-1.invalid", node: process.execPath, pi: process.execPath,
       cli: join(built, "roam", "cli.mjs"), core: process.execPath, globalRoot: f.root };
     const transport: Transport = {
+      bootstrapProbe: unexpectedBootstrapProbe,
       async resolve(value) { return value; },
       async exec(_peer, argv, options) {
         const result = f.invoke(["--global-root", f.root, ...argv], options.stdin, { SPIDER_GLOBAL_ROOT: join(f.root, "wrong") });

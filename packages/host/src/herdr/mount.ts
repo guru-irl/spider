@@ -56,7 +56,7 @@ import { controlConfig, configValues, modelDefaultLayers } from '../control.js';
 import { mountChildHerdr } from './child.js';
 import { coreStartedAt, disabledHerdrEnvironment, verifiedHerdrFile, readAppLayout, createHostHerdrPorts, createProcessInventory, explicitExtensionArguments, readJobJournal, type HostHerdrOptions, type HostHerdrPorts } from './ports.js';
 
-export const RECORDED_TRANSCRIPT_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1";
+export const RECORDED_TRANSCRIPT_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND +session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1";
 
 export type { HostHerdrOptions } from './ports.js';
 

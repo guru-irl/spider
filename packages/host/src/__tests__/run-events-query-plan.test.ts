@@ -18,6 +18,13 @@ import { TRANSCRIPT_QUERY, EVENT_MAX_ID_QUERY, PREVIOUS_MESSAGES_QUERY, PENDING_
 const OTHER_QUERIES = [WARNINGS_QUERY, SUPERVISED_QUERY, CLAIM_COMPLETION_QUERY, CHAIN_STEPS_QUERY,
   CHAIN_WARNINGS_QUERY, UNDELIVERED_RUN_QUERY, CLAIM_USAGE_QUERY, RECORDED_TRANSCRIPT_QUERY,
   TRANSCRIPT_QUERY, EVENT_MAX_ID_QUERY, PREVIOUS_MESSAGES_QUERY, PENDING_MESSAGE_QUERY, FOLLOW_EVENTS_QUERY, UNREAD_EVENTS_QUERY];
+// An exact event ID can use the primary key; run-range queries must use the run index.
+const EXACT_EVENT_QUERIES = [PENDING_MESSAGE_QUERY];
+
+function usesRunIndex(details: string, count = 1): boolean {
+  const lookups = details.match(/SEARCH run_events(?: EXISTS)? USING (?:COVERING )?INDEX idx_run_events_run_id \(run_id=\?/g) ?? [];
+  return lookups.length === count && !/SCAN run_events\b/.test(details);
+}
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -78,10 +85,13 @@ describe("per-run event query plans", () => {
         return { sql, details };
       });
       const unindexed = [
-        ...plans.filter(({ details }) => !/SEARCH run_events USING (?:COVERING )?INDEX idx_run_events_run_id \(run_id=\?\)/.test(details)),
+        ...plans.filter(({ details }) => !usesRunIndex(details)),
         ...otherPlans.filter(({ sql, details }) => {
-          const indexed = details.match(/SEARCH run_events(?: EXISTS)? USING (?:COVERING )?(?:INDEX |INTEGER PRIMARY KEY)/g) ?? [];
-          return indexed.length !== (sql === UNDELIVERED_RUN_QUERY ? 2 : 1) || /SCAN run_events/.test(details);
+          if (EXACT_EVENT_QUERIES.includes(sql)) {
+            return !/\bid\s*=\s*\?/.test(sql) ||
+              (!usesRunIndex(details) && !/SEARCH run_events USING INTEGER PRIMARY KEY/.test(details)) || /SCAN run_events\b/.test(details);
+          }
+          return !usesRunIndex(details, sql === UNDELIVERED_RUN_QUERY ? 2 : 1);
         }),
       ];
       const correlated = observedCorrelatedQueries(db);
@@ -93,6 +103,19 @@ describe("per-run event query plans", () => {
       });
       const indexedLookups = correlatedPlans.map(({ details }) => (details.match(/SEARCH (?:e|delivered) USING INDEX idx_run_events_run_id \(run_id=\?\)/g) ?? []).length);
       expect({ unindexed, indexedLookups }).toEqual({ unindexed: [], indexedLookups: [2, 2, 1] });
+      expect(correlatedPlans.filter(({ details }) => /SCAN (?:run_events|e|delivered)\b/.test(details))).toEqual([]);
+      db.exec("DROP INDEX idx_run_events_run_id");
+      const withoutIndex = [...queries, ...OTHER_QUERIES.filter(sql => !EXACT_EVENT_QUERIES.includes(sql))];
+      for (const sql of withoutIndex) {
+        const bindings = Array.from({ length: (sql.match(/\?/g) ?? []).length }, () => "run");
+        const details = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings) as { detail: string }[]).map(row => row.detail).join(" | ");
+        expect(usesRunIndex(details, sql === UNDELIVERED_RUN_QUERY ? 2 : 1)).toBe(false);
+      }
+      for (const sql of correlated) {
+        const bindings = Array.from({ length: (sql.match(/\?/g) ?? []).length }, () => "session");
+        const details = (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...bindings) as { detail: string }[]).map(row => row.detail).join(" | ");
+        expect(details).not.toContain("idx_run_events_run_id");
+      }
     } finally { db.close(); }
   });
 });

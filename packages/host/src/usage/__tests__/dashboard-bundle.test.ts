@@ -196,10 +196,10 @@ it("packaged slice works without source checkout", async () => {
       "connect-src 'self'", "img-src 'self'", "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-src 'none'", "frame-ancestors 'none'",
     ].join("; "));
     const status = await until(async () => {
-      const reply = await localUsageRequest(lock.port, "/api/status", headers); const dto = JSON.parse(reply.body).data;
-      return reply.status === 200 && dto.lastIngestAt !== null ? dto : undefined;
+      const reply = await localUsageRequest(lock.port, "/api/status", headers); const envelope = JSON.parse(reply.body), dto = envelope.data;
+      return reply.status === 200 && dto.lastIngestAt !== null && !envelope.revision.endsWith(":unavailable") ? dto : undefined;
     });
-    expect(status.latestCounterAt).toBeNull(); expect(status.collector).toBe("none");
+    expect(status.latestCounterAt).toBeNull(); expect(status.collector).toBe("dashboard-server");
     const ingested = new Database(join(f.root, "usage.db"), { readonly: true });
     try {
       expect(ingested.prepare("SELECT calls FROM ledger_totals WHERE singleton=1").get()).toEqual({ calls: 1 });

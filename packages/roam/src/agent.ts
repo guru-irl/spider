@@ -223,7 +223,15 @@ async function exportValue(operation: Operation, request: ExportRequest, ports: 
     try {
       ports.journal.record(operation.id, "export-snapshot", { file: batch.file, byteLength: batch.byteLength,
         sha256: batch.sha256, header: { ...batch.header } });
-    } catch { throw new PendingOperation("Export snapshot is pending reconciliation"); }
+    } catch {
+      try {
+        if (!ports.journal.read(operation.id).some(action => action.action === "export-snapshot" && action.result.file === batch.file)) {
+          const bytes = readPrivate(batch.file, batch.byteLength);
+          if (bytes.length === batch.byteLength && hash(bytes) === batch.sha256) unlinkSync(batch.file);
+        }
+      } catch { /* Unknown ownership remains fail-closed for the later sweep. */ }
+      throw new PendingOperation("Export snapshot is pending reconciliation");
+    }
     saved = ports.journal.read(operation.id).find(action => action.action === "export-snapshot");
   }
   if (!saved) throw new Error("Export snapshot was not recorded");
@@ -346,7 +354,7 @@ async function importBatch(operation: Operation, request: ImportRequest, ports: 
   const prior = receipt(store.db, request);
   if (prior) {
     const result = commitImport(operation, ports, prior);
-    if (result.code === 0) retryCleanup(ports, request);
+    retryCleanup(ports, request);
     return result;
   }
   const release = acquireTransferLease(ports.root, request.sourceMachine, ports.config.limits.peerConcurrency);
@@ -355,12 +363,10 @@ async function importBatch(operation: Operation, request: ImportRequest, ports: 
     let committed = receipt(store.db, request);
     if (committed) {
       const result = commitImport(operation, ports, committed);
-      if (result.code === 0) {
-        try {
-          const staging = openStaging(ports.root, request.sourceMachine, ports.config.limits);
-          try { cleanReceipt(staging, request, store, ports); } finally { staging.close(); }
-        } catch { /* Retain evidence when cleanup is unavailable. */ }
-      }
+      try {
+        const staging = openStaging(ports.root, request.sourceMachine, ports.config.limits);
+        try { cleanReceipt(staging, request, store, ports); } finally { staging.close(); }
+      } catch { /* Retain evidence when cleanup is unavailable. */ }
       return result;
     }
     const staging = openStaging(ports.root, request.sourceMachine, ports.config.limits);
@@ -394,10 +400,8 @@ async function importBatch(operation: Operation, request: ImportRequest, ports: 
         throw error;
       }
       const result = commitImport(operation, ports, committed);
-      if (result.code === 0) {
-        try { cleanReceipt(staging, request, store, ports); }
-        catch { /* The receipt is durable. Retain anything that cannot be verified or released. */ }
-      }
+      try { cleanReceipt(staging, request, store, ports); }
+      catch { /* The receipt is durable. Retain anything that cannot be verified or released. */ }
       return result;
     } finally { staging.close(); }
   } finally { release(); }
@@ -485,6 +489,15 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
     id = artifactId(operation.id);
     request = parseRequest(operation, ports);
   } catch { return outcome(2, "Invalid agent operation", id); }
+  if (!["export", "release-export", "split"].includes(request.kind)) return dispatchParsedOperation(operation, request, ports, id);
+  let release: (() => void) | null;
+  try { release = acquireTransferLease(ports.root, operation.machineId, ports.config.limits.peerConcurrency); }
+  catch { return outcome(3, "Artifact lease is unavailable", id); }
+  if (!release) return outcome(3, "Artifact operation is waiting for a peer slot", id);
+  try { return await dispatchParsedOperation(operation, request, ports, id); }
+  finally { release(); }
+}
+async function dispatchParsedOperation(operation: Operation, request: Request, ports: AgentPorts, id: string): Promise<Outcome<JsonObject>> {
   let entry: ReturnType<AgentPorts["journal"]["begin"]>;
   try { entry = readOnlyOperation(request.kind) ? { kind: "new", result: null } : ports.journal.begin(operation); }
   catch (error) {

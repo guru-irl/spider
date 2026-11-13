@@ -128,6 +128,28 @@ it("includes mapped worktrees through the original catalog path", async () => {
   } finally { project.close(); global.close(); }
 }, 5000);
 
+it("doctor inspects a redirected mapped store and reports a cached peer failure", async () => {
+  const root = fixture(); configure(root);
+  const global = openDb(join(root, "spider.db")), project = openDb(join(root, "relocated.db"));
+  try {
+    migrate(global, "global", { machineId: HUB, globalRoot: root });
+    migrate(project, "worktree", { machineId: HUB, globalRoot: root });
+    global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(join(root, "checkout"));
+    writeLocal(global, "mapping-redirect", key, project.raw.name);
+    writeLocal(global, "sync-peer", BOX, { observation: { machineId: BOX, observedAt: Date.now() - 10,
+      connected: null, lastSyncAt: null, cursors: [], failure: "Peer command failed (spawn_failed)" } });
+    project.prepare("INSERT INTO sessions(id,started_at) VALUES ('session-a',1)").run();
+    expect(seedSession(project, "session-a", 1, key, 4_194_304).complete).toBe(true);
+    project.exec("DROP TRIGGER roam_sessions_capture_ai");
+    const before = snapshot(root), out: string[] = [], err: string[] = [];
+    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
+    expect(out.join("")).toContain("roam_sessions_capture_ai");
+    expect(out.join("")).toContain("spawn_failed");
+    expect(err).toEqual([]);
+    expect(snapshot(root)).toEqual(before);
+  } finally { project.close(); global.close(); }
+}, 5000);
+
 it("does not hide an unverifiable replica from status or doctor", async () => {
   const root = fixture(), directory = join(root, "roam", "stores"), replicaKey = "repo:fixture-repo";
   mkdirSync(directory, { recursive: true, mode: 0o700 });

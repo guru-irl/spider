@@ -2,7 +2,10 @@ import { afterEach, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { migrate, openDb } from "@spider/db-core";
 import { replicaPath } from "@spider/db-core/roam/catalog";
+import { enableMemoryCapture } from "@spider/db-core/roam/seed";
+import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { createReplica } from "@spider/db-core/testutil";
 import { handleAgentOperation } from "../agent";
 import { DEFAULT_LIMITS } from "../contracts";
@@ -41,6 +44,42 @@ it.each(["stores", "inventory"])("keyless %s discovers a registered store and an
   expect(await handleAgentOperation(operation, ports)).toEqual(result);
   expect(ports.journal.read(operation.id).filter(row => row.action === "done")).toHaveLength(0);
 }, 5000);
+it("reads registered, mapped and replica stores from a detached catalog", () => {
+  const { global, worktree } = fixture();
+  const repo = createReplica("repo", BOX); fixtures.push(repo);
+  const replicaKey = "repo:other-repo" as const;
+  const directory = join(global.root, "roam", "stores"); mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const replica = openDb(replicaPath(global.db, replicaKey));
+  try { migrate(replica, "repo", { machineId: BOX, globalRoot: global.root }); enableMemoryCapture(replica, replicaKey); }
+  finally { replica.close(); }
+  const catalog = {
+    globalPath: global.db.raw.name, machine: BOX,
+    projects: [{ db_path: worktree.db.raw.name, git_common_dir: null }],
+    repos: [{ repo_key: "fixture-repo", path: join(global.root, "checkout") }],
+    worktrees: [{ repo_key: "fixture-repo", workspace_id: "fixture-workspace", path: join(global.root, "checkout") }],
+    redirects: [repo, worktree].map(store => ({ peer_stream: `spider-local:mapping-redirect:${JSON.stringify([store.storeKey, store.db.raw.name])}` })),
+  };
+  expect(listStoreKeys(catalog)).toEqual(["global", replicaKey, repo.storeKey, worktree.storeKey].sort());
+  for (const key of [repo.storeKey, worktree.storeKey, replicaKey]) {
+    const db = openRoamStoreReadOnly(catalog, key);
+    try { expect(db?.prepare("SELECT store_key FROM roam_meta WHERE id=1").get()).toEqual({ store_key: key }); }
+    finally { db?.close(); }
+  }
+}, 5000);
+
+it("rejects malformed or duplicate detached mapping redirects", () => {
+  const { global } = fixture();
+  const key = "repo:fixture-repo" as const;
+  const catalog = { globalPath: global.db.raw.name, machine: BOX, projects: [],
+    repos: [{ repo_key: "fixture-repo", path: join(global.root, "missing-checkout") }], worktrees: [],
+    redirects: [{ peer_stream: "spider-local:mapping-redirect:not-json" }] };
+  expect(() => openRoamStoreReadOnly(catalog, key)).toThrow();
+  catalog.redirects = ["a", "b"].map(name => ({ peer_stream: `spider-local:mapping-redirect:${JSON.stringify([key, join(global.root, `${name}.db`)])}` }));
+  expect(() => openRoamStoreReadOnly(catalog, key)).toThrow(/duplicate/i);
+  catalog.redirects = [{ peer_stream: `spider-local:mapping-redirect:${JSON.stringify([key, null])}` }];
+  expect(() => openRoamStoreReadOnly(catalog, key)).toThrow(/invalid mapping redirect/i);
+}, 5000);
+
 it("marks a registered store incomplete if it disappears before the read-only open", () => {
   const { global, worktree } = fixture(), incomplete: string[] = [];
   const keys = listStoreKeys(global.db, { open: () => undefined, onIncomplete: entry => incomplete.push(entry) });

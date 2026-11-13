@@ -11,6 +11,7 @@ import { DEFAULT_LIMITS } from "../contracts";
 import type { CallOptions, Journal, Limits, Operation, Peer, Transport } from "../contracts";
 import { openJournal } from "../journal";
 import { defaultStagingRoot, openStaging, sourceChunk } from "../staging";
+import * as stagingApi from "../staging";
 import { createManifestPages, handleArtifactRequest, pullArtifact, readManifestPages, stageArtifact, transferArtifact } from "../artifacts";
 
 const roots: string[] = [];
@@ -193,6 +194,70 @@ function link(root: string, limits: Limits, inMemory = false, targetId = boxId):
   };
 }
 
+it("a pending transfer keeps its manifest page layout when limits change", async () => {
+  const { root, source, staging } = fixture(); writeFileSync(source, Buffer.alloc(24, 7));
+  const limits = { ...DEFAULT_LIMITS, chunkBytes: 1, manifestBytes: 512, retryDelaysMs: [] };
+  const manifest = await stageArtifact(source, "agent", limits, { root: staging });
+  const remote = link(root, limits), ports = { transport: remote.transport, journal: remote.localJournal, limits, root: staging, operationId: "pending-page-layout" };
+  try {
+    const offline = { ...remote.transport, async resolve() { throw new Error("offline"); } };
+    expect((await transferArtifact(remote.peer, manifest, { ...ports, transport: offline })).code).toBe(3);
+    const resumed = await transferArtifact(remote.peer, manifest, { ...ports, limits: { ...limits, manifestBytes: 1024 } });
+    expect(resumed.code).toBe(0); expect(resumed.operationId).toBe(ports.operationId);
+    expect(readFileSync(resumed.value!.file)).toEqual(readFileSync(source));
+  } finally { remote.close(); }
+}, 5000);
+it("an existing transfer digest keeps its arguments while acquiring a pinned layout", async () => {
+  const { root, source, staging } = fixture(); writeFileSync(source, Buffer.alloc(24, 7));
+  const limits = { ...DEFAULT_LIMITS, chunkBytes: 1, manifestBytes: 512, retryDelaysMs: [] };
+  const manifest = await stageArtifact(source, "agent", limits, { root: staging }), pages = createManifestPages(manifest, limits);
+  const remote = link(root, limits), id = "legacy-page-layout";
+  remote.localJournal.begin({ id, machineId: remote.peer.machineId, expectedEpoch: null, kind: "artifact-transfer", args: {
+    artifactId: manifest.id, kind: manifest.kind, byteLength: manifest.byteLength, sha256: manifest.sha256,
+    manifestDigest: stagingApi.manifestDigest(manifest), head: pages.head, pageCount: pages.pages.length,
+  } });
+  const ports = { transport: remote.transport, journal: remote.localJournal, limits, root: staging, operationId: id };
+  try {
+    const offline = { ...remote.transport, async resolve() { throw new Error("offline"); } };
+    expect((await transferArtifact(remote.peer, manifest, { ...ports, transport: offline })).code).toBe(3);
+    const resumed = await transferArtifact(remote.peer, manifest, { ...ports, limits: { ...limits, manifestBytes: 1024 } });
+    expect(resumed.code).toBe(0); expect(readFileSync(resumed.value!.file)).toEqual(readFileSync(source));
+  } finally { remote.close(); }
+}, 5000);
+it.each([2, 8])("committed staging keeps its original chunk layout when chunkBytes becomes %i", async chunkBytes => {
+  const { source, staging } = fixture(); writeFileSync(source, "abcdefghij");
+  const limits = { ...DEFAULT_LIMITS, chunkBytes: 4 }, options = { root: staging, artifactId: "pinned-stage" };
+  const original = await stageArtifact(source, "agent", limits, options);
+  expect(await stageArtifact(source, "agent", { ...limits, chunkBytes }, options)).toEqual(original);
+  writeFileSync(source, "0123456789");
+  await expect(stageArtifact(source, "agent", { ...limits, chunkBytes }, options)).rejects.toThrow(/conflict|changed/i);
+}, 5000);
+it("interrupted staging keeps its prepared chunk layout after a limit change", async () => {
+  const { source, staging } = fixture(); writeFileSync(source, "abcdefghij");
+  const limits = { ...DEFAULT_LIMITS, chunkBytes: 4 }, options = { root: staging, artifactId: "prepared-stage" };
+  const open = stagingApi.openOutgoingStaging;
+  vi.spyOn(stagingApi, "openOutgoingStaging").mockImplementationOnce((...args) => {
+    const store = open(...args); return { ...store, writeChunk() { throw new Error("interrupted write"); } };
+  });
+  await expect(stageArtifact(source, "agent", limits, options)).rejects.toThrow("interrupted write");
+  const result = await stageArtifact(source, "agent", { ...limits, chunkBytes: 2 }, options);
+  expect(result.chunks.map(chunk => chunk.rawLength)).toEqual([4, 4, 2]);
+  expect(result.sha256).toBe(digest(readFileSync(source)));
+}, 5000);
+it("a pending transfer resumes after sender and receiver lower their layout limits", async () => {
+  const { root, source, staging } = fixture(); writeFileSync(source, Buffer.alloc(64, 7));
+  const limits = { ...DEFAULT_LIMITS, chunkBytes: 4, manifestBytes: 1024, retryDelaysMs: [] };
+  const manifest = await stageArtifact(source, "agent", limits, { root: staging });
+  const remote = link(root, limits), ports = { transport: remote.transport, journal: remote.localJournal, limits, root: staging, operationId: "pending-chunk-layout" };
+  try {
+    remote.setFailure(1); expect((await transferArtifact(remote.peer, manifest, ports)).code).toBe(3);
+    const next = { ...limits, chunkBytes: 2, manifestBytes: 512 }; remote.restart(next); remote.setFailure(null); remote.sent.length = 0;
+    const resumed = await transferArtifact(remote.peer, manifest, { ...ports, limits: next });
+    expect(resumed.reason).toBe("complete"); expect(resumed.code).toBe(0);
+    expect(readFileSync(resumed.value!.file)).toEqual(readFileSync(source));
+    expect(remote.sent).not.toContain(0);
+  } finally { remote.close(); }
+}, 5000);
 it.each(["agent", "session"] as const)("streams a binary and session artifact above 64 MiB (%s)", async kind => {
   const { root, source, staging } = fixture();
   const out = openSync(source, "w", 0o600);

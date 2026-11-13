@@ -8,6 +8,7 @@ import { basename, dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { openDb, paths, withRetry } from "@spider/db-core";
 import { isMachineId } from "./machine-id";
 import type { ArtifactManifest, Limits } from "./contracts";
+import { artifactLayout, parseArtifactLayout, storedManifestLimits, withArtifactLayout } from "./artifact-layout";
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const HASH = /^[a-f0-9]{64}$/;
@@ -362,7 +363,7 @@ export function openOutgoingStaging(root: string, limits: Limits, create = true)
     const row = versionRow(id, version);
     if (!row) throw new Error("Corrupt outgoing manifest history");
     const manifest = JSON.parse(row.manifest) as ArtifactManifest;
-    validateManifest(manifest, limits);
+    validateManifest(manifest, storedManifestLimits(manifest, limits));
     if (manifest.id !== id || manifestDigest(manifest) !== version) throw new Error("Corrupt outgoing manifest history");
     return manifest;
   };
@@ -373,7 +374,9 @@ export function openOutgoingStaging(root: string, limits: Limits, create = true)
       return { current: row?.current ? readVersion(id, row.current) : null, pending: row?.pending ? readVersion(id, row.pending) : null };
     },
     prepare(manifest, expectedCurrent) {
-      validateManifest(manifest, limits);
+      const prior = artifactRow(manifest.id), pinned = prior?.current ?? prior?.pending;
+      const validationLimits = pinned ? storedManifestLimits(readVersion(manifest.id, pinned), limits) : limits;
+      validateManifest(manifest, validationLimits);
       const version = manifestDigest(manifest), encoded = canonicalManifest(manifest);
       db.raw.transaction(() => {
         const existing = artifactRow(manifest.id);
@@ -467,6 +470,7 @@ export interface StagingHeader {
 }
 export interface StagingStore {
   beginPages(header: StagingHeader, operationId: string): void;
+  layoutLimits(operationId: string): Limits;
   writePage(operationId: string, index: number, bytes: Buffer): void;
   readPage(operationId: string, index: number): Buffer;
   manifestFor(operationId: string): ArtifactManifest;
@@ -493,7 +497,7 @@ type VersionRow = { manifest: string; parent: string | null; complete: number; r
 type ClaimRow = { artifact: string; version: string };
 
 type AllocationRow = { bytes: number };
-type PagesRow = { artifact: string; version: string; header: string; page_count: number };
+type PagesRow = { artifact: string; version: string; header: string; page_count: number; layout_json: string | null };
 
 export function validateStagingHeader(header: StagingHeader, limits: Limits): void {
   if (!header || typeof header !== "object" || !header.artifact) throw new Error("Invalid artifact header");
@@ -566,18 +570,20 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
         operation_id TEXT PRIMARY KEY, artifact TEXT NOT NULL, version TEXT NOT NULL, referenced INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS staging_pages (
-        operation_id TEXT PRIMARY KEY, artifact TEXT NOT NULL, version TEXT NOT NULL, header TEXT NOT NULL, page_count INTEGER NOT NULL
+        operation_id TEXT PRIMARY KEY, artifact TEXT NOT NULL, version TEXT NOT NULL, header TEXT NOT NULL, page_count INTEGER NOT NULL, layout_json TEXT
       );
       CREATE TABLE IF NOT EXISTS staging_allocations (
         path TEXT PRIMARY KEY, artifact TEXT NOT NULL, bytes INTEGER NOT NULL
       );
     `);
+    if (!(db.prepare("PRAGMA table_info(staging_pages)").all() as { name: string }[]).some(row => row.name === "layout_json"))
+      db.exec("ALTER TABLE staging_pages ADD COLUMN layout_json TEXT");
   } catch (error) { db.close(); throw error; }
   const versionRow = (id: string, version: string): VersionRow | undefined => db.prepare(
     "SELECT manifest, parent, complete, receipted, cleaned FROM staging_versions WHERE artifact = ? AND version = ?",
   ).get(id, version) as VersionRow | undefined;
   const requireVersion = (manifest: ArtifactManifest): { version: string; row: VersionRow } => {
-    validateManifest(manifest, limits);
+    validateManifest(manifest, storedManifestLimits(manifest, limits));
     const version = manifestDigest(manifest);
     const row = versionRow(manifest.id, version);
     if (!row || row.cleaned) throw new Error("Artifact manifest has not been declared");
@@ -608,9 +614,13 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
   };
   const pageRow = (operationId: string): PagesRow => {
     artifactId(operationId);
-    const row = db.prepare("SELECT artifact, version, header, page_count FROM staging_pages WHERE operation_id = ?").get(operationId) as PagesRow | undefined;
+    const row = db.prepare("SELECT artifact, version, header, page_count, layout_json FROM staging_pages WHERE operation_id = ?").get(operationId) as PagesRow | undefined;
     if (!row) throw new Error("Artifact page transfer has not begun");
     return row;
+  };
+  const layoutLimits = (operationId: string): Limits => {
+    const row = pageRow(operationId);
+    return row.layout_json === null ? limits : withArtifactLayout(limits, parseArtifactLayout(JSON.parse(row.layout_json)));
   };
   const pagePath = (operationId: string, index: number): string => {
     const row = pageRow(operationId);
@@ -621,7 +631,7 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
     return join(parent, String(index));
   };
   const chunkPath = (manifest: ArtifactManifest, index: number): string => {
-    validateManifest(manifest, limits);
+    validateManifest(manifest, storedManifestLimits(manifest, limits));
     if (!Number.isSafeInteger(index) || index < 0 || index >= manifest.chunks.length) throw new Error("Invalid artifact chunk index");
     const chunk = manifest.chunks[index];
     const parent = join(privateIncomingArtifact(root, peer, manifest.id), "chunks");
@@ -657,6 +667,7 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
     db.prepare("UPDATE staging_versions SET cleaned = 1, complete = 0 WHERE artifact = ?").run(id);
   };
   return {
+    layoutLimits,
     beginPages(header, operationId) {
       secure(); artifactId(operationId); validateStagingHeader(header, limits);
       const encoded = JSON.stringify(header);
@@ -679,8 +690,8 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
         }
         db.prepare("INSERT OR IGNORE INTO staging_artifacts(id, kind, current, updated) VALUES (?, ?, '', ?)")
           .run(header.artifact.id, header.artifact.kind, Date.now());
-        db.prepare("INSERT OR IGNORE INTO staging_pages(operation_id, artifact, version, header, page_count) VALUES (?, ?, ?, ?, ?)")
-          .run(operationId, header.artifact.id, header.manifestDigest, encoded, header.pageCount);
+        db.prepare("INSERT OR IGNORE INTO staging_pages(operation_id, artifact, version, header, page_count, layout_json) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(operationId, header.artifact.id, header.manifestDigest, encoded, header.pageCount, JSON.stringify(artifactLayout(limits)));
         db.prepare(`INSERT INTO staging_claims(operation_id, artifact, version, referenced) VALUES (?, ?, ?, 1)
           ON CONFLICT(operation_id) DO UPDATE SET referenced = 1`).run(operationId, header.artifact.id, header.manifestDigest);
         touch(header.artifact.id);
@@ -689,14 +700,14 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
     writePage(operationId, index, bytes) {
       secure();
       const row = pageRow(operationId);
-      if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > Math.min(limits.manifestBytes, limits.replyBytes)) throw new Error("Invalid manifest page size");
+      if (!Buffer.isBuffer(bytes) || !bytes.length || bytes.length > layoutLimits(operationId).manifestBytes) throw new Error("Invalid manifest page size");
       const path = pagePath(operationId, index);
       reserve(row.artifact, path, bytes.length);
       writeReserved(row.artifact, path, bytes);
     },
     readPage(operationId, index) {
       secure();
-      return readPrivate(pagePath(operationId, index), Math.min(limits.manifestBytes, limits.replyBytes));
+      return readPrivate(pagePath(operationId, index), layoutLimits(operationId).manifestBytes);
     },
     manifestFor(operationId) {
       secure(); artifactId(operationId);
@@ -705,13 +716,13 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
       const row = versionRow(claim.artifact, claim.version);
       if (!row || row.cleaned) throw new Error("Artifact manifest has not been declared");
       const manifest = JSON.parse(row.manifest) as ArtifactManifest;
-      validateManifest(manifest, limits);
+      validateManifest(manifest, storedManifestLimits(manifest, limits));
       return manifest;
     },
     declare(manifest, operationId) {
-      secure();
-      validateManifest(manifest, limits);
-      artifactId(operationId);
+      secure(); artifactId(operationId);
+      const pages = db.prepare("SELECT 1 FROM staging_pages WHERE operation_id=?").get(operationId);
+      validateManifest(manifest, pages ? layoutLimits(operationId) : limits);
       const version = manifestDigest(manifest);
       const encoded = canonicalManifest(manifest);
       db.raw.transaction(() => {

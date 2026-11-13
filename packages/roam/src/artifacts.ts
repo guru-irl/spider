@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { ArtifactManifest, Journal, Limits, Operation, Outcome, Peer, Transport } from "./contracts";
 import { isMachineId } from "./machine-id";
+import { artifactLayout, parseArtifactLayout, storedManifestLimits, withArtifactLayout } from "./artifact-layout";
 import { peerFailureReason } from "./peer-errors";
 import type { StagingHeader, StagingStore } from "./staging";
 import {
@@ -136,14 +137,16 @@ export async function stageArtifact(
     if (!before.isFile() || !Number.isSafeInteger(before.size) || before.size > cap) throw new Error("Artifact exceeds size limit or is not a regular file");
     const store = openOutgoingStaging(root, limits);
     try {
-      const { current: previous } = store.inspect(id);
+      const { current: previous, pending } = store.inspect(id);
+      const pinned = previous ?? pending;
+      const chunkBytes = pinned?.chunks.reduce((maximum, chunk) => Math.max(maximum, chunk.rawLength), 0) || limits.chunkBytes;
       if (previous && (previous.kind !== kind || before.size < previous.byteLength ||
           kind !== "session" && before.size !== previous.byteLength)) throw new Error("Conflicting artifact ID");
       const chunks: { index: number; rawLength: number; sha256: string }[] = [];
       const whole = createHash("sha256"), prefix = createHash("sha256");
       let prefixRemaining = previous?.byteLength ?? 0;
       for (let offset = 0, index = 0; offset < before.size; index++) {
-        const bytes = readExact(source, Math.min(limits.chunkBytes, before.size - offset), offset);
+        const bytes = readExact(source, Math.min(chunkBytes, before.size - offset), offset);
         whole.update(bytes);
         const prefixBytes = Math.min(prefixRemaining, bytes.length);
         if (prefixBytes) prefix.update(bytes.subarray(0, prefixBytes));
@@ -157,7 +160,7 @@ export async function stageArtifact(
         throw new Error("Source artifact changed while staging");
       }
       const manifest: ArtifactManifest = { id, kind, byteLength: before.size, sha256: whole.digest("hex"), chunks };
-      validateManifest(manifest, limits);
+      validateManifest(manifest, pinned ? storedManifestLimits(pinned, limits) : limits);
       store.prepare(manifest, previous ? manifestDigest(previous) : null);
       const version = manifestDigest(manifest);
       let offset = 0;
@@ -253,7 +256,7 @@ export async function handleArtifactRequest(input: unknown, stdin: Buffer | unde
     if (request.action === "page") {
       const index = requestIndex(request.index);
       const bytes = stdin!;
-      if (index >= header.pageCount || bytes.length > Math.min(ports.limits.manifestBytes, ports.limits.replyBytes)) throw new Error("Invalid manifest page size or index");
+      if (index >= header.pageCount || bytes.length > ports.store.layoutLimits(operation.id).manifestBytes) throw new Error("Invalid manifest page size or index");
       let expected: string | null = header.head;
       if (index) {
         const previous = JSON.parse(ports.store.readPage(operation.id, index - 1).toString("utf8")) as ManifestPage;
@@ -274,7 +277,7 @@ export async function handleArtifactRequest(input: unknown, stdin: Buffer | unde
       function* pages(): Iterable<Buffer> {
         for (let index = 0; index < header.pageCount; index++) yield ports.store.readPage(operation.id, index);
       }
-      const manifest = readManifestPages(header.head, pages(), ports.limits);
+      const manifest = readManifestPages(header.head, pages(), ports.store.layoutLimits(operation.id));
       if (manifestDigest(manifest) !== header.manifestDigest) throw new Error("Conflicting manifest digest");
       ports.store.declare(manifest, operation.id);
       return wireReply({ code: 0, reason: "manifest stored", state: "pending" }, ports.limits);
@@ -396,7 +399,7 @@ export async function transferArtifact(peer: Peer, manifest: ArtifactManifest, p
   const inFlight = inFlightCalls();
   let phase: "input" | "source" | "remote" = "input";
   try {
-    validateManifest(manifest, ports.limits);
+    validateManifest(manifest, storedManifestLimits(manifest, ports.limits));
     if (!isMachineId(peer.machineId) || !isAbsolute(peer.globalRoot) || !isAbsolute(ports.root) ||
         [ports.limits.transferMs, ports.limits.fileMs, ports.limits.controlMs, ports.limits.directMs, ports.limits.importMs, ports.limits.peerConcurrency]
           .some(value => !Number.isSafeInteger(value) || value <= 0) ||
@@ -410,21 +413,32 @@ export async function transferArtifact(peer: Peer, manifest: ArtifactManifest, p
       if (!Number.isSafeInteger(ms) || ms <= 0) throw new TransferPending("Artifact transfer deadline expired");
       return ms;
     };
-    const pages = createManifestPages(manifest, ports.limits);
     const digest = manifestDigest(manifest);
     id = artifactId(ports.operationId ?? `transfer-${hash(Buffer.from(`${peer.machineId}:${digest}`)).slice(0, 48)}`);
+    const savedLayout = ports.journal.read(id).find(row => row.action === "layout")?.result;
+    const layout = savedLayout ? parseArtifactLayout(savedLayout) : artifactLayout(storedManifestLimits(manifest, ports.limits));
+    const pages = createManifestPages(manifest, withArtifactLayout(ports.limits, layout));
     const header: StagingHeader = {
       artifact: { id: manifest.id, kind: manifest.kind, byteLength: manifest.byteLength, sha256: manifest.sha256 },
       manifestDigest: digest, head: pages.head, pageCount: pages.pages.length,
     };
+    let legacyArgs = savedLayout?.legacyArgs === true;
+    const wireArgs = { artifactId: manifest.id, kind: manifest.kind, byteLength: manifest.byteLength, sha256: manifest.sha256,
+      manifestDigest: digest, head: pages.head, pageCount: pages.pages.length };
     const operation: Operation = {
       id, machineId: peer.machineId, expectedEpoch: null, kind: "artifact-transfer",
-      args: { artifactId: manifest.id, kind: manifest.kind, byteLength: manifest.byteLength, sha256: manifest.sha256,
-        manifestDigest: digest, head: pages.head, pageCount: pages.pages.length },
+      args: { artifactId: manifest.id, kind: manifest.kind, byteLength: manifest.byteLength, sha256: manifest.sha256, manifestDigest: digest },
     };
+    if (legacyArgs) operation.args = wireArgs;
     let entry: ReturnType<Journal["begin"]>;
     try { entry = ports.journal.begin(operation); }
-    catch (error) { return journalFailure(error, id); }
+    catch (error) {
+      if (savedLayout || journalFailure(error, id).code !== 2) return journalFailure(error, id);
+      operation.args = wireArgs;
+      try { entry = ports.journal.begin(operation); legacyArgs = true; }
+      catch (error) { return journalFailure(error, id); }
+    }
+    const wireOperation: Operation = { ...operation, args: wireArgs };
     if (entry.kind === "done") {
       const reply = doneReply(entry.result ?? {}, header);
       return outcome(0, "complete", id, returnedFile(reply, header, peer));
@@ -438,6 +452,15 @@ export async function transferArtifact(peer: Peer, manifest: ArtifactManifest, p
     if (!releaseLease) return outcome(3, "Artifact transfer is waiting for a peer slot", id);
     addActivePeer(rootKey, peer.machineId);
     acquired = true;
+    if (!savedLayout) {
+      const current = ports.journal.read(id).find(row => row.action === "layout")?.result;
+      if (current && JSON.stringify(parseArtifactLayout(current)) !== JSON.stringify(layout))
+        throw new TransferPending("Artifact layout changed before its lease was acquired");
+      if (!current) {
+        try { ports.journal.record(id, "layout", { ...layout, ...(legacyArgs ? { legacyArgs: true } : {}) }); }
+        catch { return outcome(3, "Artifact layout is pending reconciliation", id); }
+      }
+    }
     const source = openOutgoingStaging(ports.root, ports.limits, false);
     let staged: ArtifactManifest | null;
     try { staged = source.get(manifest.id, digest); } finally { source.close(); }
@@ -454,7 +477,7 @@ export async function transferArtifact(peer: Peer, manifest: ArtifactManifest, p
       throw new TransferRefused("Resolved peer identity changed", 1);
     }
     const send = async (action: ArtifactAction, fields: { index?: number; from?: number; count?: number } = {}, stdin?: Buffer): Promise<WireReply> => {
-      const request: ArtifactRequest = { operation, action, ...fields };
+      const request: ArtifactRequest = { operation: wireOperation, action, ...fields };
       const duration = action === "chunk" || action === "page" ? ports.limits.fileMs
         : action === "assemble" ? Math.min(ports.limits.importMs, ports.limits.directMs) : ports.limits.controlMs;
       const timeoutMs = Math.min(duration, remaining());
@@ -537,7 +560,7 @@ export async function pullArtifact(peer: Peer, manifest: ArtifactManifest, ports
   const inFlight = inFlightCalls();
   let store: StagingStore | undefined;
   try {
-    validateManifest(manifest, ports.limits);
+    validateManifest(manifest, storedManifestLimits(manifest, ports.limits));
     if (!isMachineId(peer.machineId) || !isAbsolute(peer.globalRoot) || !isAbsolute(ports.root) ||
         !Number.isSafeInteger(ports.limits.fileMs) || ports.limits.fileMs <= 0 ||
         !Number.isSafeInteger(ports.limits.transferMs) || ports.limits.transferMs <= 0 ||
@@ -581,7 +604,7 @@ export async function pullArtifact(peer: Peer, manifest: ArtifactManifest, ports
       throw new TransferRefused("Peer identity changed or is unavailable", 1);
     }
     phase = "local";
-    store = openStaging(ports.root, peer.machineId, ports.limits);
+    store = openStaging(ports.root, peer.machineId, storedManifestLimits(manifest, ports.limits));
     store.declare(manifest, id);
     for (const index of store.missing(manifest)) {
       const chunk = manifest.chunks[index];

@@ -62,6 +62,25 @@ function fixture(initial = snapshot(), id = sessionId) {
   };
 }
 
+it.each(["untracked", "read-error", "missing-id"] as const)("an exact handoff cannot fall back to ordinary admission: %s", async mode => {
+  vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE", "/fixture/handoff.json");
+  const f = fixture(snapshot({ home: null, states: [], origin: null, participating: false }), mode === "missing-id" ? "" : sessionId);
+  if (mode === "read-error") f.failRead(new Error("unavailable"), false);
+  await f.emit("session_start", { reason: "startup" });
+  expect(f.gate.inspect().kind).toBe("blocked");
+  expect(await f.emit("input", { text: "continue" })).toEqual({ action: "handled" });
+  expect(f.calls.lock).toBe(0);
+}, 5000);
+
+it("an inherited subagent flag cannot bypass exact handoff admission", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+  vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE", "/fixture/handoff.json");
+  const f = fixture();
+  await f.emit("session_start", { reason: "startup" });
+  expect(f.calls.lock).toBe(1);
+  expect(f.gate.inspect().kind).toBe("ordinary");
+}, 5000);
+
 it("admission finishes before first session upsert", async () => {
   const f = fixture(snapshot({ home: { ...home, machineId: "destination.invalid" } }));
   const startupCalls: string[] = [];

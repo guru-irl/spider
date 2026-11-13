@@ -39,7 +39,8 @@ export class AdmissionClosedError extends Error {
 }
 
 export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): AdmissionGate {
-  if (process.env.PI_SUBAGENT_CHILD === "1") {
+  let handoffRequired = process.env.SPIDER_HERDR_HANDOFF_FILE !== undefined;
+  if (process.env.PI_SUBAGENT_CHILD === "1" && !handoffRequired) {
     const child: Admission = { kind: "ordinary", home: null, blockers: [] };
     return { inspect: () => child, whenSettled: async () => child, close: async () => {}, freeze: async () => { throw new Error(VERIFY); }, unfreeze: async () => { throw new Error(VERIFY); } };
   }
@@ -84,20 +85,20 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       catch { if (ticket === generation) { sessionId = id; publish("blocked", null, VERIFY); } return; }
       if (ticket !== generation) return;
       sessionId = id; sessionFile = file; epoch = null; participating = false;
-      if (!id || process.env.PI_SUBAGENT_CHILD === "1") { publish("ordinary", null); return; }
+      if (!id) { publish(handoffRequired ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : undefined); return; }
       let state: Awaited<ReturnType<AdmissionPorts["load"]>>;
       try {
         state = await ports.load(id);
       } catch {
         if (ticket !== generation) return;
-        if (observed.has(id) || ports.knownParticipant(id)) publish("blocked", null, VERIFY);
+        if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publish("blocked", null, VERIFY);
         else { ports.warnOnce(id, VERIFY); publish("ordinary", null); }
         return;
       }
       if (ticket !== generation) return;
       participating = state.participating;
       if (!state.participating) {
-        if (observed.has(id) || ports.knownParticipant(id)) publish("blocked", null, VERIFY);
+        if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publish("blocked", null, VERIFY);
         else { freeze = undefined; publish("ordinary", null); }
         return;
       }
@@ -125,6 +126,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         if (!held) {
           const unlock = await ports.lock(id, file);
           held = { sessionId: id, file, release: unlock, valid: true };
+          handoffRequired = false;
           if (ticket !== generation) { await release(); return; }
         }
         if (reopening) freeze = undefined;

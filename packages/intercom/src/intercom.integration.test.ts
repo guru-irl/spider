@@ -1,5 +1,5 @@
 import { afterAll } from "vitest";
-import test, { testTmpDir } from "./test-support.js";
+import test, { testTmpDir, waitForSocketClose } from "./test-support.js";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -992,7 +992,7 @@ test("broker disconnects a connection that exceeds the local rate limit", { conc
 
   try {
     raw.socket.on("error", () => undefined);
-    const closed = once(raw.socket, "close");
+    const closed = waitForSocketClose(raw.socket);
     for (let i = 0; i < 300; i += 1) {
       raw.writeMessage(raw.socket, { type: "list", requestId: `flood-${i}` });
     }

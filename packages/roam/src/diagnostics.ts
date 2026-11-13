@@ -196,7 +196,7 @@ export async function doctorLocal(config: RoamConfig, ports: DiagnosticPorts, co
 
 export interface PeerObservation {
   machineId: string; observedAt: number; connected: boolean | null; lastSyncAt: number | null;
-  cursors: readonly { storeKey: string; stream: string; through: number }[];
+  cursors: readonly { storeKey: string; stream: string; through: number }[]; failure?: string | null;
 }
 export interface StatusPorts {
   globalDb: Db | null; stores: readonly DiagnosticStore[]; journalDb: Db | null;
@@ -207,7 +207,7 @@ export interface RoamStatus {
   stores: Array<{ key: string; stream: string; head: number; changes: number; logBytes: number | null; versionBytes: number | null; tombstones: number;
     cursors: Array<{ machineId: string; stream: string; through: number }> }>;
   peers: Array<{ machineId: string; alias: string; connected: boolean | null; lastSyncAt: number | null;
-    observationAgeMs: number | null; backlog: number | null }>;
+    observationAgeMs: number | null; backlog: number | null; failure: string | null }>;
   warnings: Array<{ machineId: string; kind: string }>;
   suspensions: Array<{ machineId: string; sessionId: string; epoch: number }>;
   incompleteOperations: Array<{ id: string; machineId: string; kind: string; expectedEpoch: number | null }> | null;
@@ -249,7 +249,7 @@ export function readStatus(config: RoamConfig, ports: StatusPorts): RoamStatus {
     const observationAgeMs = observation && Number.isSafeInteger(observation.observedAt) && observation.observedAt <= ports.now
       ? ports.now - observation.observedAt : null;
     return { machineId: peer.machineId, alias: peer.alias, connected: observation?.connected ?? null,
-      lastSyncAt: observation?.lastSyncAt ?? null, observationAgeMs, backlog };
+      lastSyncAt: observation?.lastSyncAt ?? null, observationAgeMs, backlog, failure: observation?.failure ?? null };
   });
   let incompleteOperations: RoamStatus["incompleteOperations"] = ports.journalAvailable === false ? null : [];
   if (ports.journalDb) try {

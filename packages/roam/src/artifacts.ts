@@ -4,6 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { performance } from "node:perf_hooks";
 import type { ArtifactManifest, Journal, Limits, Operation, Outcome, Peer, Transport } from "./contracts";
 import { isMachineId } from "./machine-id";
+import { peerFailureReason } from "./peer-errors";
 import type { StagingHeader, StagingStore } from "./staging";
 import {
   acquireTransferLease, artifactId, defaultStagingRoot, hash, kindLimit, manifestDigest, openOutgoingStaging, openStaging,
@@ -499,7 +500,7 @@ export async function transferArtifact(peer: Peer, manifest: ArtifactManifest, p
         for (let attempt = 0;; attempt++) {
           try { reply = await send("chunk", { index }, bytes); break; }
           catch (error) {
-            if (error instanceof TransferRefused || inFlight.busy() || attempt >= ports.limits.retryDelaysMs.length) throw error;
+            if (error instanceof TransferRefused || peerFailureReason(error) || inFlight.busy() || attempt >= ports.limits.retryDelaysMs.length) throw error;
             const delay = ports.limits.retryDelaysMs[attempt];
             if (!Number.isSafeInteger(delay) || delay < 0 || delay >= remaining()) throw new TransferPending("Artifact transfer deadline expired");
             await bounded(new Promise<void>(resolve => setTimeout(resolve, delay)), remaining());
@@ -517,6 +518,8 @@ export async function transferArtifact(peer: Peer, manifest: ArtifactManifest, p
   } catch (error) {
     if (error instanceof TransferRefused) return outcome(error.code, error.message, id);
     if (error instanceof TransferPending) return outcome(3, error.message, id);
+    const peerFailure = phase === "remote" ? peerFailureReason(error) : null;
+    if (peerFailure) return outcome(1, peerFailure, id);
     return outcome(phase === "input" ? 2 : phase === "source" ? 1 : 3,
       error instanceof Error ? error.message : "Artifact transfer failed", id);
   } finally {
@@ -593,7 +596,7 @@ export async function pullArtifact(peer: Peer, manifest: ArtifactManifest, ports
             Math.min(remaining, ports.limits.fileMs));
           break;
         } catch (error) {
-          if (inFlight.busy() || attempt === ports.limits.retryDelaysMs.length) throw error;
+          if (peerFailureReason(error) || inFlight.busy() || attempt === ports.limits.retryDelaysMs.length) throw error;
           const delay = ports.limits.retryDelaysMs[attempt];
           if (deadline - performance.now() <= delay) throw new TransferPending("Artifact transfer deadline expired");
           await bounded(new Promise<void>(resolve => setTimeout(resolve, delay)), deadline - performance.now());
@@ -614,6 +617,8 @@ export async function pullArtifact(peer: Peer, manifest: ArtifactManifest, ports
   } catch (error) {
     if (error instanceof TransferRefused) return outcome(error.code, error.message, id);
     if (error instanceof TransferPending) return outcome(3, error.message, id);
+    const peerFailure = phase === "remote" ? peerFailureReason(error) : null;
+    if (peerFailure) return outcome(1, peerFailure, id);
     return outcome(phase === "input" ? 2 : phase === "local" ? 1 : 3,
       error instanceof Error ? error.message : "Artifact pull failed", id);
   } finally {

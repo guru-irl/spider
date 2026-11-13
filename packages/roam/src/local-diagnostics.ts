@@ -16,6 +16,7 @@ import { DEFAULT_LIMITS, type Diagnostic, type RoamConfig } from "./contracts";
 import { doctorLocal, readStatus, type DiagnosticMachine, type DiagnosticPorts, type DiagnosticStore, type LoadedConsumer, type PeerObservation, type RoamStatus, type UsageWorker } from "./diagnostics";
 import { listStoreKeys } from "./store-inventory";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
+import { isPeerFailureReason } from "./peer-errors";
 
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 function snapshotProblem(error: unknown): string {
@@ -252,7 +253,14 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL }): 
   const local = openLocalInventory(input), consumers: LoadedConsumer[] = [];
   try {
     const ports = createLocalDiagnosticPorts(local.root, local.stores, input.bundleUrl);
-    return { enabled: local.config.enabled, diagnostics: [...await doctorLocal(local.config, ports, consumers), ...local.inventory], consumers };
+    const diagnostics = [...await doctorLocal(local.config, ports, consumers), ...local.inventory];
+    const global = local.stores.find(store => store.scope === "global")?.db;
+    if (global) for (const peer of local.config.peers) try {
+      const failure = cachedObservation(global, peer.machineId, Date.now())?.failure;
+      if (failure) diagnostics.push({ severity: local.config.enabled ? "block" : "warning",
+        reason: `${peer.alias.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 160)}: ${failure}`, repairCommand: null });
+    } catch { /* Invalid cached observations are reported by status. */ }
+    return { enabled: local.config.enabled, diagnostics, consumers };
   } finally { local.close(); }
 }
 
@@ -267,6 +275,7 @@ function cachedObservation(db: Db, machineId: string, now: number): PeerObservat
   if (row.machineId !== machineId || !Number.isSafeInteger(row.observedAt) || (row.observedAt as number) < 0 || (row.observedAt as number) > now ||
       !(row.connected === null || typeof row.connected === "boolean") ||
       !(row.lastSyncAt === null || Number.isSafeInteger(row.lastSyncAt) && (row.lastSyncAt as number) >= 0 && (row.lastSyncAt as number) <= now) ||
+      !(row.failure === undefined || row.failure === null || isPeerFailureReason(row.failure)) ||
       !Array.isArray(row.cursors)) throw new Error("Invalid cached observation");
   const seen = new Set<string>();
   const cursors = row.cursors.map((item: unknown) => {
@@ -281,7 +290,7 @@ function cachedObservation(db: Db, machineId: string, now: number): PeerObservat
     return { storeKey: cursor.storeKey, stream: cursor.stream, through: cursor.through as number };
   });
   return { machineId, observedAt: row.observedAt as number, connected: row.connected as boolean | null,
-    lastSyncAt: row.lastSyncAt as number | null, cursors };
+    lastSyncAt: row.lastSyncAt as number | null, cursors, failure: typeof row.failure === "string" ? row.failure : null };
 }
 
 /** Read only local, previously observed state; never contact or start a peer. */

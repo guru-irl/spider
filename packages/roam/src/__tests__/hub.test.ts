@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { openDb } from "@spider/db-core";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { exportBatch } from "@spider/db-core/roam/export";
+import { catalogReplica } from "@spider/db-core/roam/catalog";
 import { handleAgentOperation } from "../agent";
 import { stageArtifact } from "../artifacts";
 import { assignInitialHome } from "../homes";
@@ -275,6 +276,70 @@ it("real placement never relaunches an unknown proxy after hub restart", async (
   await h.request("sync");
   expect(launches).toBe(1);
   expect((await h.request("status")).value).toMatchObject({ pending: [{ terminal: ready.terminal }] });
+}, 5000);
+
+it("prunes a removed session from durable placement state and retains existing and unknown sessions", async () => {
+  const h = fixture();
+  const key = h.f.remotes.get(BOX)!.worktree.storeKey;
+  const worktree = h.f.stores.openStore(key).db;
+  worktree.prepare("INSERT INTO sessions(id,name,started_at) VALUES (?,?,1)").run("removed-session", "removed");
+  worktree.prepare("INSERT INTO sessions(id,name,started_at) VALUES (?,?,1)").run("kept-session", "kept");
+  worktree.prepare("INSERT INTO sessions(id,name,started_at) VALUES (?,?,1)").run("homed-session", "homed");
+  h.f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES ('homed-session',?,1,NULL,1)").run(BOX);
+  catalogReplica(h.f.global.db, key, worktree);
+  worktree.prepare("DELETE FROM sessions WHERE id IN ('removed-session','homed-session')").run();
+  catalogReplica(h.f.global.db, key, worktree);
+  const stateRoot = join(h.f.global.root, "roam", "placement");
+  const slot = { space: "s1", tab: "tb1" } as Parameters<typeof rememberRoamSlot>[2];
+  for (const session of ["removed-session", "kept-session", "homed-session", "unknown-session"]) await rememberRoamSlot(stateRoot, session, slot);
+  const hc = { async identity() { return { coreId: "local-core" }; } } as unknown as HcClient;
+  const registry = { async list() { return []; } } as unknown as TerminalRegistry;
+  const placement = { app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot };
+  const hub = await runStandaloneHub({ ...h.ports, placement }); handles.push(hub);
+  await h.request("sync");
+  const state = JSON.parse(readFileSync(join(stateRoot, "roam-placement.json"), "utf8")) as { slots: Array<{ session: string }> };
+  expect(state.slots.map(slot => slot.session).sort()).toEqual(["homed-session", "kept-session", "unknown-session"]);
+  expect(existsSync(join(h.f.global.root, "roam", "placement", "roam-placement.json"))).toBe(true);
+}, 5000);
+
+it("keeps a recreated session even when its catalog still says the store is empty", async () => {
+  const h = fixture();
+  const key = h.f.remotes.get(BOX)!.worktree.storeKey;
+  const worktree = h.f.stores.openStore(key).db;
+  worktree.prepare("INSERT INTO sessions(id,name,started_at) VALUES ('recreated','before',1)").run();
+  catalogReplica(h.f.global.db, key, worktree);
+  worktree.prepare("DELETE FROM sessions WHERE id='recreated'").run();
+  catalogReplica(h.f.global.db, key, worktree);
+  const stateRoot = join(h.f.global.root, "roam", "placement");
+  await rememberRoamSlot(stateRoot, "recreated", { space: "s1", tab: "tb1" } as Parameters<typeof rememberRoamSlot>[2]);
+  const hc = { async identity() { return { coreId: "local-core" }; } } as unknown as HcClient;
+  const registry = { async list() { return []; } } as unknown as TerminalRegistry;
+  const hub = await runStandaloneHub({ ...h.ports, placement: { app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot } }); handles.push(hub);
+  worktree.prepare("INSERT INTO sessions(id,name,started_at) VALUES ('recreated','after',2)").run();
+  expect(h.f.global.db.prepare("SELECT stores_json FROM roam_locations WHERE session_id='recreated'").get()).toEqual({ stores_json: "[]" });
+  await h.request("sync");
+  const state = JSON.parse(readFileSync(join(stateRoot, "roam-placement.json"), "utf8")) as { slots: Array<{ session: string }> };
+  expect(state.slots.map(slot => slot.session)).toEqual(["recreated"]);
+}, 5000);
+
+it("retains a deleted-session slot while a mapped store is unavailable", async () => {
+  const h = fixture();
+  const key = h.f.remotes.get(BOX)!.worktree.storeKey;
+  const worktree = h.f.stores.openStore(key).db;
+  worktree.prepare("INSERT INTO sessions(id,name,started_at) VALUES ('possibly-removed','before',1)").run();
+  catalogReplica(h.f.global.db, key, worktree);
+  worktree.prepare("DELETE FROM sessions WHERE id='possibly-removed'").run();
+  catalogReplica(h.f.global.db, key, worktree);
+  h.f.global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)")
+    .run("unavailable-repo", "workspace", join(h.runtimeRoot, "missing-checkout"));
+  const stateRoot = join(h.f.global.root, "roam", "placement");
+  await rememberRoamSlot(stateRoot, "possibly-removed", { space: "s1", tab: "tb1" } as Parameters<typeof rememberRoamSlot>[2]);
+  const hc = { async identity() { return { coreId: "local-core" }; } } as unknown as HcClient;
+  const registry = { async list() { return []; } } as unknown as TerminalRegistry;
+  const hub = await runStandaloneHub({ ...h.ports, placement: { app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot } }); handles.push(hub);
+  await h.request("sync");
+  const state = JSON.parse(readFileSync(join(stateRoot, "roam-placement.json"), "utf8")) as { slots: Array<{ session: string }> };
+  expect(state.slots.map(slot => slot.session)).toEqual(["possibly-removed"]);
 }, 5000);
 
 it("suspension emits one durable notice and clears it on a confirmed recovery", async () => {

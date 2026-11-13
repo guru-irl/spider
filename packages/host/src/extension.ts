@@ -28,6 +28,7 @@ import { makeRunCostFormatter } from "./run-credits.js";
 import { registerUsageDashboardCommand } from "./usage/dashboard-command.js";
 import { dispatch, registerAction as registerGlobalAction, clearActions, type ActionHandler, type ActionCtx, type SpiderArgs } from "./dispatch";
 import { registerSlashCommands } from "./slash";
+import { main as roamCliMain } from "@spider/roam/cli";
 import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
 import { registerCompaction } from "./compaction/index.js";
@@ -1032,6 +1033,13 @@ export default function spiderExtension(hostPi: PiToolAPI): void {
         details?: unknown;
       }>,
     alreadyRegistered: new Set(["todos", "agents"]),
+    ordinaryWorkAllowed,
+    async roamDoctor(args) {
+      const output: string[] = [];
+      const code = await roamCliMain(args, { out: text => output.push(text), err: text => output.push(text) },
+        { bundleUrl: new URL(loadedBundle.url) });
+      return { text: output.join(""), code };
+    },
   });
 
   // User-only /exec-enforce command (bypasses model-facing guard)

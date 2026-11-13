@@ -157,11 +157,14 @@ export function createSync(ports: Ports): SyncAdapter {
       complete(state, peer, "pull", key, receipt);
     }
   }
-  async function push(peer: Peer, key: StoreKey, state: PeerState, results: Outcome<ApplyReceipt>[]) {
+  async function push(peer: Peer, key: StoreKey, state: PeerState, results: Outcome<ApplyReceipt>[],
+    observe: (key: StoreKey, stream: string, through: number) => void) {
     const probe = await stores.export(key, 0, 1, randomUUID());
     const stream = probe.header.senderStream; discard(probe.file);
     for (;;) {
-      const pending = attempt(state, peer, "push", key, await remoteCursor(peer, key, stream));
+      const cursor = await remoteCursor(peer, key, stream);
+      observe(key, stream, cursor);
+      const pending = attempt(state, peer, "push", key, cursor);
       const batch = pending.batch ?? await stores.export(key, pending.after, pending.targetBytes, pending.id);
       if (batch.header.senderMachine !== config.machineId || batch.header.storeKey !== key || batch.header.senderStream !== (pending.batch?.header.senderStream ?? stream)) throw new SyncFailure(1, "Local store identity does not match");
       pending.batch = batch; savePeerState(globalDb, peer.machineId, state);
@@ -197,8 +200,15 @@ export function createSync(ports: Ports): SyncAdapter {
   async function peerSync(peer: Peer): Promise<readonly Outcome<ApplyReceipt>[]> {
     const results: Outcome<ApplyReceipt>[] = [];
     const state = loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes);
+    const observedAt = clock.now(), cursors: Array<{ storeKey: StoreKey; stream: string; through: number }> = [];
+    const previousSync = state.observation?.lastSyncAt;
+    let connected: boolean | null = null, completed = false;
+    const observe = (storeKey: StoreKey, stream: string, through: number) => {
+      const index = cursors.findIndex(row => row.storeKey === storeKey && row.stream === stream);
+      if (index >= 0) cursors[index] = { storeKey, stream, through }; else cursors.push({ storeKey, stream, through });
+    };
     try {
-      const discovery = await remote(peer, "stores", {}); handshake(discovery, peer);
+      const discovery = await remote(peer, "stores", {}); handshake(discovery, peer); connected = true;
       if (!Array.isArray(discovery.stores)) throw new SyncFailure(1, "Invalid peer store list");
       const keys = [...new Set(discovery.stores.map(key => { storeScope(key); return key as StoreKey; }))].sort();
       if (!keys.includes("global")) throw new SyncFailure(1, "Peer global store is missing");
@@ -212,11 +222,16 @@ export function createSync(ports: Ports): SyncAdapter {
       assignHomes();
       for (const key of keys) {
         if (!globalReady) break;
-        try { await push(peer, key, state, results); }
+        try { await push(peer, key, state, results, observe); }
         catch (error) { results.push(failure(error, peer.machineId)); if (key === "global") break; }
       }
+      completed = pulled && globalReady && results.every(result => result.code === 0);
     } catch (error) { results.push(failure(error, peer.machineId)); }
-    state.failures = results.some(result => result.code === 3) ? state.failures + 1 : 0;
+    const uncertain = results.some(result => result.code === 3);
+    state.failures = uncertain ? state.failures + 1 : 0;
+    state.observation = { machineId: peer.machineId, observedAt, connected: uncertain ? null : connected,
+      lastSyncAt: completed ? clock.now() : Number.isSafeInteger(previousSync) && previousSync! >= 0 ? previousSync! : null,
+      cursors: uncertain ? [] : cursors };
     savePeerState(globalDb, peer.machineId, state);
     return results;
   }

@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { openDbAt, paths, setGlobalDbPathForTests } from "@spider/db-core";
 import spiderExtension from "../extension";
@@ -62,6 +63,7 @@ it("blocked startup calls no reaper usage trigger feed or organism", async () =>
   execFileSync("git", ["init", "-q", cwd]);
   vi.stubEnv("GIT_CEILING_DIRECTORIES", root);
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  vi.stubEnv("HOME", root);
   paths.globalRoot = globalRoot;
   vi.stubEnv("SPIDER_GLOBAL_ROOT", globalRoot);
   setGlobalDbPathForTests(join(globalRoot, "spider.db"));
@@ -76,12 +78,14 @@ it("blocked startup calls no reaper usage trigger feed or organism", async () =>
   const globalVersion = global.raw.pragma("data_version", { simple: true }) as number;
   const worktreeVersion = worktree.raw.pragma("data_version", { simple: true }) as number;
   const hooks = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+  const commands = new Map<string, { handler(args: string, ctx: unknown): unknown }>(), notices: string[] = [], sent: unknown[] = [];
   const pi = {
     on(name: string, handler: (event: any, ctx: any) => unknown) { hooks.set(name, [...hooks.get(name) ?? [], handler]); return () => {}; },
-    registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
-    sendMessage() {}, sendUserMessage() {}, appendEntry() { trace.startupCalls.push("trigger"); },
+    registerTool() {}, registerCommand(name: string, command: { handler(args: string, ctx: unknown): unknown }) { commands.set(name, command); },
+    registerShortcut() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
+    sendMessage(message: unknown) { sent.push(message); }, sendUserMessage() {}, appendEntry() { trace.startupCalls.push("trigger"); },
   };
-  const ctx = { cwd, mode: "tui", hasUI: false, ui: { notify() {} }, abort() {}, isIdle: () => true,
+  const ctx = { cwd, mode: "tui", hasUI: true, ui: { notify(text: string) { notices.push(text); } }, abort() {}, isIdle: () => true,
     sessionManager: { getSessionId: () => "session-1", getSessionFile: () => file, getSessionName: () => null, getEntries: () => [], getBranch: () => [], getLeafId: () => null } };
   vi.spyOn(HostEmbeddingRuntime.prototype, "start").mockImplementation(() => { trace.startupCalls.push("embedding"); });
   const createPorts = admission.createAdmissionPorts;
@@ -92,6 +96,16 @@ it("blocked startup calls no reaper usage trigger feed or organism", async () =>
   });
   spiderExtension(pi as never);
   for (const handler of hooks.get("session_start") ?? []) await handler({ reason: "resume" }, ctx);
+  const files = [global.raw.name, worktree.raw.name].flatMap(file => [file, `${file}-wal`, `${file}-shm`]);
+  const fingerprint = () => files.map(file => existsSync(file) ? createHash("sha256").update(readFileSync(file)).digest("hex") : null);
+  const beforeDoctor = fingerprint();
+  await commands.get("spider")!.handler("roam doctor", ctx);
+  expect(notices.join("\n")).toMatch(/roam.*disabled/i);
+  notices.length = 0;
+  await commands.get("doctor")!.handler("", ctx);
+  expect(notices.join("\n")).toMatch(/roam.*disabled/i);
+  expect(sent).toEqual([]);
+  expect(fingerprint()).toEqual(beforeDoctor);
   const session = worktree.prepare("SELECT reason FROM sessions WHERE id = ?").get("session-1") as { reason: string };
   const dbWritesAfterBlock = (global.raw.pragma("data_version", { simple: true }) as number) - globalVersion +
     (worktree.raw.pragma("data_version", { simple: true }) as number) - worktreeVersion;

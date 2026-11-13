@@ -28,6 +28,8 @@ export interface AdmissionPorts {
 }
 
 const VERIFY = "Cannot verify this session's home. Retry or run /doctor for details.";
+const FROZEN = "This session is frozen for a move. Run /doctor for details.";
+const homeMessage = (machine: string) => `This session is at ${machine}. Run /doctor for details.`;
 
 /** A blocked send must be distinguishable from a delivered message. */
 export class AdmissionClosedError extends Error {
@@ -54,7 +56,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   }
   function reason(): string {
     const detail = admission.blockers[0]?.detail;
-    return detail ?? (admission.home ? `This session is at ${admission.home.machineId}.` : VERIFY);
+    return detail ?? (admission.home ? homeMessage(admission.home.machineId) : VERIFY);
   }
   // A later activation must not adopt a lock while an earlier release is still in flight.
   function sequence(work: () => Promise<void>): Promise<void> {
@@ -105,9 +107,9 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       const frozenState = state.states.find(row => row.state === "frozen");
       if (frozenState?.moveId) freeze ??= { moveId: frozenState.moveId, epoch: frozenState.epoch };
       if (!reopening && (freeze || state.unfinishedFreeze || frozenState)) {
-        publish("control-only", home, "This session is frozen for a move."); return;
+        publish("control-only", home, FROZEN); return;
       }
-      if (state.unfinishedFreeze || frozenState) { publish("control-only", home, "This session is frozen for a move."); return; }
+      if (state.unfinishedFreeze || frozenState) { publish("control-only", home, FROZEN); return; }
       if (!state.captureSafe || !state.states.length || state.states.some(row => row.sessionId !== id || row.state !== "active" || row.epoch !== epoch) ||
         epoch === null || ports.expectedEpoch !== null && ports.expectedEpoch !== epoch) {
         publish("blocked", home, VERIFY); return;
@@ -116,7 +118,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         const machine = await ports.localMachine();
         if (ticket !== generation) return;
         if (!machine || (home ? home.sessionId !== id || home.machineId !== machine : state.origin !== machine || epoch !== 1)) {
-          publish("blocked", home, home?.machineId ? `This session is at ${home.machineId}.` : VERIFY); return;
+          publish("blocked", home, home?.machineId ? homeMessage(home.machineId) : VERIFY); return;
         }
         if (!file) { publish("blocked", home, VERIFY); return; }
         if (!held) {
@@ -160,7 +162,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       const sameFreeze = freeze?.moveId === moveId && freeze.epoch === expectedEpoch && admission.kind === "control-only";
       if (!participating || !held?.valid || !moveId || epoch !== expectedEpoch || (!ordinaryWorkAllowed() && !sameFreeze) ||
           freeze && (freeze.moveId !== moveId || freeze.epoch !== expectedEpoch)) throw new Error(VERIFY);
-      ++generation; freeze = { moveId, epoch: expectedEpoch }; publish("control-only", admission.home, "This session is frozen for a move.");
+      ++generation; freeze = { moveId, epoch: expectedEpoch }; publish("control-only", admission.home, FROZEN);
       await sequence(async () => {});
     },
     async unfreeze(moveId, expectedEpoch) {
@@ -180,7 +182,9 @@ export function protectAdmissionApi<T extends ExtensionAPI>(pi: T, gate: Admissi
     if (typeof value !== "function") return value;
     if (key === "registerCommand" || key === "registerShortcut") return (name: string, command: { handler: (...args: unknown[]) => unknown }) => value.call(target, name, {
       ...command, handler: (...args: unknown[]) => {
-        if (ordinaryWorkAllowed()) return command.handler(...args);
+        const arg = typeof args[0] === "string" ? args[0].trim() : "";
+        const readOnlyDoctor = key === "registerCommand" && (name === "doctor" && arg === "" || name === "spider" && arg === "roam doctor");
+        if (ordinaryWorkAllowed() || readOnlyDoctor) return command.handler(...args);
         const detail = gate.inspect().blockers[0]?.detail ?? VERIFY;
         const ctx = args[key === "registerCommand" ? 1 : 0] as ExtensionContext | undefined;
         if (ctx?.hasUI) ctx.ui.notify(detail, "warning"); else process.stderr.write(detail + "\n");

@@ -42,6 +42,8 @@ const DESC: Record<SlashCommandName, string> = {
 export interface SlashDeps {
 	run: (args: Record<string, unknown>, ctx: unknown) => Promise<{ content?: unknown; display?: unknown; details?: unknown; lines?: unknown; text?: unknown; error?: unknown; ok?: unknown }>;
 	alreadyRegistered: Set<string>;
+	ordinaryWorkAllowed?: () => boolean;
+	roamDoctor?: (args: readonly string[]) => Promise<{ text: string; code: number }>;
 }
 
 export interface PiLike {
@@ -146,6 +148,14 @@ export function registerSlashCommands(pi: PiLike, deps: SlashDeps): void {
 			description: DESC[name],
 			handler: async (args: string, ctx: unknown) => {
 				const arg = typeof args === "string" ? args.trim() : "";
+				const words = arg.split(/\s+/), roamingDoctor = name === "spider" && words[0] === "roam" && words[1] === "doctor";
+				if (roamingDoctor || name === "doctor" && !arg && deps.ordinaryWorkAllowed?.() === false) {
+					const result = deps.roamDoctor ? await deps.roamDoctor(roamingDoctor ? words : ["roam", "doctor"]) : { text: "Roaming doctor is unavailable.", code: 1 };
+					const notify = (ctx as { hasUI?: boolean } | undefined)?.hasUI ? notifyOf(ctx) : undefined;
+					if (notify) notify(result.text, result.code === 0 ? "info" : "warning");
+					else process.stderr.write(result.text.endsWith("\n") ? result.text : result.text + "\n");
+					return;
+				}
 				if (name === "learn") {
 					await handleLearn(pi, deps, arg, ctx);
 					return;

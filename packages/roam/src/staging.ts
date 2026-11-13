@@ -244,28 +244,44 @@ function canonicalManifest(manifest: ArtifactManifest): string {
 
 export function manifestDigest(manifest: ArtifactManifest): string { return hash(Buffer.from(canonicalManifest(manifest))); }
 
+function lockTransferDatabase(directory: string, name: string): ReturnType<typeof openDb> | null {
+  const path = join(directory, `${name}.db`);
+  privateSqliteFiles(path, true);
+  let db: ReturnType<typeof openDb> | undefined;
+  try {
+    db = openDb(path, { fileMustExist: true, busyTimeoutMs: 0, checkpointOnClose: false });
+    privateSqliteFiles(path, false); db.exec("BEGIN IMMEDIATE"); return db;
+  } catch (error) {
+    db?.close();
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code?.startsWith("SQLITE_BUSY") || code?.startsWith("SQLITE_LOCKED")) return null;
+    throw error;
+  }
+}
+function releaseTransferDatabase(db: ReturnType<typeof openDb>): void { try { db.exec("ROLLBACK"); } finally { db.close(); } }
+export function acquireSweepLease(root: string, maximum: number): (() => void) | null {
+  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new Error("Invalid sweep lease");
+  const directory = transferLockRoot(root); privateDirectory(root); privateDirectory(directory);
+  const names = new Set(Array.from({ length: maximum }, (_, index) => `slot-${index}`));
+  for (const file of readdirSync(directory)) if (/^slot-[0-9]+\.db$/.test(file)) names.add(file.slice(0, -3));
+  const held: ReturnType<typeof openDb>[] = [];
+  const release = () => { for (const db of held.splice(0).reverse()) releaseTransferDatabase(db); };
+  try {
+    for (const name of [...names].sort()) {
+      const db = lockTransferDatabase(directory, name);
+      if (!db) { release(); return null; }
+      held.push(db);
+    }
+    return release;
+  } catch (error) { release(); throw error; }
+}
 /** Hold a peer and one global slot until the transfer is no longer in flight. */
 export function acquireTransferLease(root: string, peer: string, maximum: number): (() => void) | null {
   if (!isMachineId(peer) || !Number.isSafeInteger(maximum) || maximum <= 0) throw new Error("Invalid transfer lease");
   const directory = transferLockRoot(root);
   privateDirectory(root); privateDirectory(directory);
-  const lock = (name: string): ReturnType<typeof openDb> | null => {
-    const path = join(directory, `${name}.db`);
-    privateSqliteFiles(path, true);
-    let db: ReturnType<typeof openDb> | undefined;
-    try {
-      db = openDb(path, { fileMustExist: true, busyTimeoutMs: 0, checkpointOnClose: false });
-      privateSqliteFiles(path, false);
-      db.exec("BEGIN IMMEDIATE");
-      return db;
-    } catch (error) {
-      db?.close();
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code?.startsWith("SQLITE_BUSY") || code?.startsWith("SQLITE_LOCKED")) return null;
-      throw error;
-    }
-  };
-  const release = (db: ReturnType<typeof openDb>) => { try { db.exec("ROLLBACK"); } finally { db.close(); } };
+  const lock = (name: string) => lockTransferDatabase(directory, name);
+  const release = releaseTransferDatabase;
   const peerLock = lock(`peer-${peer}`);
   if (!peerLock) return null;
   let slot: ReturnType<typeof openDb> | null = null;

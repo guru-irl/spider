@@ -2,6 +2,8 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, rea
 import { isAbsolute, join, resolve } from "node:path";
 import { assertTestConfigPath, openDb, type Db } from "@spider/db-core";
 import { readMachineIdentity } from "@spider/db-core/roam/machine";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { sweepStoreArtifacts } from "./cleanup";
 import { createAgentPorts } from "./agent";
 import { loadConfig } from "./config";
 import type { AgentPorts, RoamConfig } from "./contracts";
@@ -66,6 +68,19 @@ export function openLocalRuntime(root: string): LocalRuntime {
     const stores = createStorePort(core.config, core.db, { allowUnassignedGlobal: true });
     try {
       const journal = openJournal(join(root, "roam", "journal.db"));
+      if (core.config.enabled && core.config.role === "box") {
+        const now = Date.now(), last = readLocal<number>(core.db, "artifact-sweep", "last");
+        if (last === undefined || now - last >= core.config.syncMs) {
+          try {
+            const referenced = journal.referenceCheck();
+            sweepStoreArtifacts(stores, core.config, { now, root: join(root, "roam", "staging"), referenced, active: () => false,
+              onProblem: (entry, error) => writeLocal(core.db, "artifact-sweep-problem", entry,
+                { reason: error instanceof Error ? error.message : "Artifact sweep failed" }) });
+            journal.prune(now, core.config.limits.retentionMs);
+            writeLocal(core.db, "artifact-sweep", "last", now);
+          } catch (error) { writeLocal(core.db, "artifact-sweep-problem", root, { reason: error instanceof Error ? error.message : "Artifact sweep unavailable" }); }
+        }
+      }
       const agent = createAgentPorts({ config: core.config, journal, openStore: stores.openStore, root: join(root, "roam", "staging") });
       return { ...core, journal, stores, agent, close() { stores.close(); core.close(); } };
     } catch (error) { stores.close(); throw error; }

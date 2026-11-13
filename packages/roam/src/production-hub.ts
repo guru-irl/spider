@@ -14,6 +14,14 @@ import { loadPeerState } from "./peer-state";
 import { openLocalCore } from "./runtime";
 import { createTransport } from "./transport";
 import type { Clock, Peer } from "./contracts";
+import type { ProcessProbe } from "@spider/herdr/sessions/lease";
+export function createHubProcessProbe(probe: (pid: number) => Promise<ProcessProbe>, alive: (pid: number) => void = pid => { process.kill(pid, 0); }) {
+  return async (pid: number): Promise<ProcessProbe> => {
+    try { alive(pid); }
+    catch (error) { return ["ESRCH", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "") ? { kind: "absent" } : { kind: "unknown" }; }
+    return probe(pid);
+  };
+}
 
 function readOwnedJson(file: string): unknown {
   assertTestConfigPath(file);
@@ -96,7 +104,7 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
     const transport = createTransport({ binary: herdr.core.binary, env, enrolled: core.config.peers });
     const local = { machineId: core.config.machineId, label: "local machine", peer: null };
     const processPorts = createLocalDiagnosticPorts(root, []);
-    const probe = (pid: number) => processPorts.probeProcess(local, pid);
+    const probe = createHubProcessProbe(pid => processPorts.probeProcess(local, pid));
     const self = await probe(process.pid);
     if (self.kind !== "live") throw new Error("Cannot verify the hub process identity");
     const clock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
@@ -125,8 +133,8 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
       identity: { pid: process.pid, startIdentity: self.startIdentity }, probe, observe,
       notices: { publish: notice => nativeNotice("publish", notice.id, noticeText(notice)), clear: id => nativeNotice("clear", id) },
       async homeChangeInProgress() { return homeChangeInProgress(journalFile); },
-      // A worker's absence is not yet provable across restarts. Retain its artifacts.
-      artifactActive() { return null; },
+      // Startup holds the hub lock. The sweep also holds shared transfer slots.
+      artifactActive() { return false; },
     });
     let stopped: Promise<void> | undefined;
     return { stop() { return stopped ??= (async () => { try { await hub.stop(); } finally { await client.dispose(); core.close(); } })(); } };

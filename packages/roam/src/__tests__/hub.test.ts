@@ -495,12 +495,12 @@ it("startup keeps outgoing artifacts named by pending sync and sweeps unreferenc
   } finally { pool.close(); }
 }, 5000);
 
-it("startup retains evidence while a journal operation has unknown references", async () => {
+it("startup retains evidence named by a pending journal operation", async () => {
   const h = fixture(); const now = Date.now(); h.setNow(now);
   const directory = h.f.stores.batchDirectories()[0]; mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = join(directory, "44444444-4444-4444-8444-444444444444.ndjson");
   writeFileSync(file, "fixture", { mode: 0o600 }); const old = new Date(now - h.f.config.limits.retentionMs - 1000); utimesSync(file, old, old);
-  h.f.journal.begin({ id: "unknown-operation", kind: "move", machineId: HUB, expectedEpoch: null, args: {} });
+  h.f.journal.begin({ id: "pending-export", kind: "export", machineId: HUB, expectedEpoch: null, args: { file } });
   await h.start();
   expect(existsSync(file)).toBe(true);
 }, 5000);
@@ -518,6 +518,26 @@ it("startup retains old evidence when journal references are corrupt", async () 
   expect(existsSync(file)).toBe(true);
 }, 5000);
 
+it("one corrupt peer staging database is reported without blocking hub startup", async () => {
+  const h = fixture(), directory = join(h.f.root, "incoming", BOX); mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(directory, "quota.db"), "not sqlite", { mode: 0o600 });
+  await h.start();
+  expect((await h.request("status")).code).toBe(0);
+  expect(readLocal(h.f.global.db, "artifact-sweep-problem", directory)).toBeDefined();
+}, 5000);
+it("startup sweeps snapshots inside a registered checkout before opening its store", async () => {
+  const h = fixture(), local = h.f.remotes.get(BOX)!.worktree;
+  const checkout = join(h.f.global.root, "checkout"); mkdirSync(checkout, { mode: 0o700 });
+  h.f.stores.openStore(local.storeKey);
+  await mappingApi.mapWorkspace(h.f.global.db, { repoKey: "fixture-repo", workspaceId: "workspace-0", path: checkout });
+  const directory = join(checkout, ".spider", ".roam-batches"); mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const file = join(directory, "88888888-8888-4888-8888-888888888888.ndjson");
+  writeFileSync(file, "orphan", { mode: 0o600 }); utimesSync(file, 1, 1); h.setNow(Date.now());
+  await h.start();
+  expect(existsSync(file)).toBe(false);
+  expect((await h.request("status")).code).toBe(0);
+  expect(h.f.stores.openStore(local.storeKey).db.prepare("SELECT count(*) AS n FROM roam_changes").get()).toEqual({ n: 0 });
+}, 5000);
 it("unknown artifact activity retains old evidence", async () => {
   const h = fixture(); const now = Date.now(); h.setNow(now); h.setActive(null);
   const directory = h.f.stores.batchDirectories()[0]; mkdirSync(directory, { recursive: true, mode: 0o700 });

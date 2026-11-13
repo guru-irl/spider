@@ -15,6 +15,7 @@ import { defaultStagingRoot, privateDirectory } from "./staging";
 import { createStorePort, type StoreAdapter } from "./stores";
 import { createSync, type SyncAdapter } from "./sync";
 import { removedPlacementSessions } from "./placement-inventory";
+import type { ArtifactJournal } from "./journal";
 
 const UNREACHABLE_MS = 10 * 60_000;
 const LOCK = "roam-hub";
@@ -221,7 +222,9 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
       return [...(state.unreachable ? [{ machineId: peer.machineId, kind: "unreachable" }] : []),
         ...state.suspensions.map(alert => ({ machineId: peer.machineId, kind: "suspended", sessionId: alert.sessionId }))];
     });
-    return json({ enabled: !disabled, pending, warnings });
+    const storageProblems = ["store-problem", "artifact-sweep-problem"].flatMap(kind =>
+      localEntries(db, kind).map(row => ({ entry: row.key, problem: row.value })));
+    return json({ enabled: !disabled, pending, warnings, storageProblems });
   }
   async function control(request: HubControlRequest): Promise<HubControlReply> {
     if (request.op === "status") return { code: 0, reason: "ok", value: status() };
@@ -284,8 +287,9 @@ function pendingReference(db: Db, value: string): boolean {
       if (!row.value || !row.value.pending || typeof row.value.pending !== "object" || Array.isArray(row.value.pending)) return true;
       for (const item of Object.values(row.value.pending)) {
         if (!item || typeof item !== "object" || Array.isArray(item) || typeof (item as { id?: unknown }).id !== "string") return true;
-        const id = (item as { id: string }).id, encoded = JSON.stringify(item);
-        if (terms.some(term => encoded.includes(term) || term.includes(id))) return true;
+        const matches = (data: unknown): boolean => typeof data === "string" ? terms.includes(data)
+          : !!data && typeof data === "object" && Object.values(data).some(matches);
+        if (matches(item)) return true;
       }
     }
     return false;
@@ -318,10 +322,18 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
       await resumePendingMappings(ports.globalDb);
       stores = createStorePort(ports.config, ports.globalDb);
       stores.recoverCatalog();
+      const journal = ports.journal as Partial<ArtifactJournal>;
+      let journalReference: (value: string) => boolean;
+      try { journalReference = journal.referenceCheck?.() ?? (value => artifactReferenced(ports.globalDb, ports.journal, value)); }
+      catch { journalReference = () => true; }
       sweepStoreArtifacts(stores, ports.config, { now: ports.clock.now(),
-        referenced: value => artifactReferenced(ports.globalDb, ports.journal, value),
+        referenced: value => pendingReference(ports.globalDb, value) || journalReference(value),
         active: value => { try { return ports.artifactActive(value) !== false; } catch { return true; } },
+        onProblem: (entry, error) => writeLocal(ports.globalDb, "artifact-sweep-problem", entry,
+          { reason: error instanceof Error ? error.message : "Artifact sweep failed" }),
       });
+      try { journal.prune?.(ports.clock.now(), ports.config.limits.retentionMs, value => pendingReference(ports.globalDb, value)); }
+      catch (error) { writeLocal(ports.globalDb, "artifact-sweep-problem", "journal", { reason: error instanceof Error ? error.message : "Journal sweep failed" }); }
       sync = createSync({ config: ports.config, globalDb: ports.globalDb, transport: ports.transport,
         journal: ports.journal, clock: ports.clock, stores, onPeerSync });
     },

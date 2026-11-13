@@ -15,6 +15,9 @@ import { createLocalDiagnosticPorts } from "../local-diagnostics";
 import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
 import { requestHubControl } from "../control-socket";
 import { openJournal } from "../journal";
+import { DEFAULT_LIMITS } from "../contracts";
+import { utimesSync } from "node:fs";
+import { acquireTransferLease } from "../staging";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
 const BOX = "00000000-0000-4000-8000-000000000002";
@@ -75,6 +78,29 @@ async function ready(socket: string, child: ChildProcess) {
   throw new Error(`hub did not become ready; exit ${child.exitCode}`);
 }
 
+function orphanSnapshot(root: string): string {
+  const directory = join(root, ".roam-batches"); mkdirSync(directory, { mode: 0o700 });
+  const file = join(directory, "99999999-9999-4999-8999-999999999999.ndjson");
+  writeFileSync(file, "orphan", { mode: 0o600 }); utimesSync(file, 1, 1); return file;
+}
+it("the packaged production hub reclaims inactive orphan snapshots at startup", async () => {
+  const f = fixture(), file = orphanSnapshot(f.root), hub = start(f);
+  try { await ready(f.socket, hub); expect(existsSync(file)).toBe(false); expect(existsSync(f.marker)).toBe(false); }
+  finally { hub.kill("SIGTERM"); await exit(hub); }
+}, 5000);
+it("box agent startup sweeps crash leftovers but not snapshots held by a live peer lease", async () => {
+  const f = fixture(), file = orphanSnapshot(f.root);
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "box", machineId: HUB,
+    hubMachineId: BOX, peers: [], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
+  const operation = { id: "box-inventory", machineId: HUB, expectedEpoch: null, kind: "stores", args: {} };
+  const release = acquireTransferLease(join(f.root, "roam", "staging"), BOX, DEFAULT_LIMITS.peerConcurrency)!;
+  try { expect((await command(f, ["roam", "agent", JSON.stringify(operation)])).code).toBe(0); expect(existsSync(file)).toBe(true); }
+  finally { release(); }
+  const db = openDb(join(f.root, "spider.db"));
+  try { writeLocal(db, "artifact-sweep", "last", undefined); } finally { db.close(); }
+  expect((await command(f, ["roam", "agent", JSON.stringify(operation)])).code).toBe(0);
+  expect(existsSync(file)).toBe(false);
+}, 5000);
 it("packaged enable checks live consumers before seeding and installing the isolated service", async () => {
   const f = fixture(false), bin = join(f.root, "bin"), calls = join(f.root, "launchctl-calls"), pidFile = join(f.root, "hub-pid"), failFile = join(f.root, "fail-bootout");
   mkdirSync(bin);

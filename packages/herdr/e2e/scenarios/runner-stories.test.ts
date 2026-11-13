@@ -31,7 +31,14 @@ function record(id: string, result: string, reason: string | undefined, startedA
 
 describe(`Herdr ${options.tier} stories`, () => {
   if (!selected.length) it('requires at least one discovered story', () => { throw new Error('no stories selected'); });
-  for (const story of selected) it(`${story.id} ${story.title}`, async () => {
+  for (const story of selected) {
+    const reason = story.notExercised?.(process.env);
+    if (reason) {
+      record(story.id, 'not exercised', reason, Date.now(), undefined, undefined);
+      it.skip(`${story.id} ${story.title} [not exercised: ${reason}]`, () => {});
+      continue;
+    }
+    it(`${story.id} ${story.title}`, async () => {
     const startedAt = Date.now();
     let suite: Suite | undefined;
     let failure: unknown, cleanup: unknown;
@@ -51,5 +58,6 @@ describe(`Herdr ${options.tier} stories`, () => {
       throw failure;
     }
     record(story.id, 'passed', undefined, startedAt, suite, cleanup);
-  }, storyTimeoutMs(story.id));
+    }, storyTimeoutMs(story.id));
+  }
 });

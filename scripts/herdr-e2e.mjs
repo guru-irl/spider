@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const storyIds = Array.from({ length: 56 }, (_, i) => `S${String(i + 1).padStart(2, '0')}`);
-export const roamStoryIds = ['R01', 'R02', 'R14'];
+export const roamStoryIds = ['R01', 'R02', 'R14', 'R14local'];
 const allStoryIds = [...storyIds, ...roamStoryIds];
 const validStoryId = id => typeof id === 'string' && (allStoryIds.includes(id) || /^H-[a-z0-9-]+$/.test(id));
 export const profileIds = {
@@ -116,7 +116,10 @@ export function buildMatrix(tier, selected, reports) {
   });
 }
 export function complete(matrix, selected) {
-  return selected.length > 0 && selected.every(id => matrix.find(x => x.id === id)?.result === 'passed');
+  return selected.length > 0 && selected.every(id => {
+    const report = matrix.find(x => x.id === id);
+    return report?.result === 'passed' || (id === 'R14local' && report?.result === 'not exercised' && report.reason === 'Set both R14 fixture environment variables');
+  });
 }
 export function renderMatrix(matrix) {
   const cell = value => String(value ?? '').replaceAll('|', '\\|').replace(/[\r\n]/g, ' ');
@@ -144,10 +147,13 @@ function ownedDirectory(checkout, candidate) {
   if (realpathSync(candidate) !== candidate || lstatSync(candidate).uid !== process.getuid?.()) throw new Error('unowned runner root');
 }
 export function storyWorkerEnvironment(fenced, caller, tier) {
-  return { ...fenced, ...(tier === 'remote' && caller.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: caller.SSH_AUTH_SOCK } : {}), ...(caller.SPIDER_HERDR_E2E_HC ? { SPIDER_HERDR_E2E_HC: caller.SPIDER_HERDR_E2E_HC } : {}) };
+  const base = caller.SPIDER_HERDR_E2E_R14_BASE, upstream = caller.SPIDER_HERDR_E2E_R14_UPSTREAM;
+  return { ...fenced, ...(tier === 'remote' && caller.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: caller.SSH_AUTH_SOCK } : {}),
+    ...(caller.SPIDER_HERDR_E2E_HC ? { SPIDER_HERDR_E2E_HC: caller.SPIDER_HERDR_E2E_HC } : {}),
+    ...(tier === 'headless' && base && upstream ? { SPIDER_HERDR_E2E_R14_BASE: base, SPIDER_HERDR_E2E_R14_UPSTREAM: upstream } : {}) };
 }
 export function storyWorkers(options) {
-  if (options.ids?.length === 1 && options.ids[0] === "R14") return 1;
+  if (options.ids?.length === 1 && ['R14', 'R14local'].includes(options.ids[0])) return 1;
   return options.tier === 'app' ? 1 : 2;
 }
 export function storyTimeoutMs(id) {

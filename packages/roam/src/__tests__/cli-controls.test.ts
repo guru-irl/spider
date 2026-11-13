@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 import { main } from "../cli";
 import { startHubControl, type HubControlReply, type HubControlRequest } from "../control-socket";
 import * as productionHub from "../production-hub";
+import * as localRuntime from "../runtime";
+import * as agent from "../agent";
 import { createClientFixture } from "../../../herdr/src/__tests__/testutil";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -32,6 +34,21 @@ async function fixture(identity = HUB, reply?: HubControlReply) {
   const out: string[] = [], err: string[] = [];
   return { calls, out, err, invoke: (args: string[]) => main(args, { out: text => out.push(text), err: text => err.push(text) }) };
 }
+
+it.each([
+  ["agent", ["roam", "agent", "{}"]],
+  ["artifact receiver", ["roam", "artifact", "receive", "{}"]],
+])("the private %s never writes an outcome when cleanup fails", async (_kind, argv) => {
+  const f = await fixture();
+  vi.spyOn(localRuntime, "openLocalRuntime").mockReturnValue({
+    agent: {}, config: { role: "box", hubMachineId: HUB, limits: {} }, close() { throw new Error("cleanup failed"); },
+  } as never);
+  vi.spyOn(agent, "handleAgentOperation").mockResolvedValue({ code: 0, reason: "complete" } as never);
+  vi.spyOn(agent, "dispatchArtifactCommand").mockResolvedValue(Buffer.from('{"code":0}'));
+  expect(await f.invoke(argv)).toBe(1);
+  expect(f.out).toEqual([]);
+  expect(f.err.join("")).toContain("Local roaming agent is unavailable");
+}, 5000);
 
 it("sync prints a named peer process failure from the hub outcome", async () => {
   const f = await fixture(HUB, { code: 1, reason: "Synchronization needs attention", value: {

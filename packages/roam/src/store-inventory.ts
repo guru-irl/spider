@@ -24,7 +24,7 @@ function keyAt(file: string, machine: string, open: (file: string) => Db | undef
   };
   try {
     // An untrusted symlink is not a replica. A registered path is a known store.
-    if (!owned(dirname(file), true) || !owned(file, false)) { problem(undefined, !replica); return null; }
+    if (!owned(dirname(file), true) || !owned(file, false)) { problem(undefined, false); return null; }
     db = open(file);
     if (!db) { problem(); return null; }
     if (Number(db.pragma("user_version")) !== 14) { if (replica) problem(); return null; }
@@ -35,7 +35,7 @@ function keyAt(file: string, machine: string, open: (file: string) => Db | undef
     }
     storeScope(row.store_key);
     return row.store_key;
-  } catch (error) { problem(error); return null; }
+  } catch (error) { problem(error, replica); return null; }
   finally { db?.close(); }
 }
 

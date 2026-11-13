@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { createSync } from "../sync";
@@ -170,6 +170,27 @@ it("a core restart after a lost import reply retries the same operation across r
   expect(imports[0].operation.id).toBe(imports[1].operation.id);
   expect(imports[0].operation.args).toEqual(imports[1].operation.args);
   expect(f.remotes.get(BOX)!.global.db.prepare("SELECT count(*) AS n FROM roam_receipts").get()).toEqual({ n: 1 });
+}, 5000);
+it("a quarantined store blocks only its session homes, not healthy sessions on other peers", async () => {
+  const f = fixture([BOX, BOX2]); f.seed(BOX, "session-a", "quarantined"); f.seed(BOX2, "session-b", "healthy"); f.seed(BOX2, "session-a", "unknown copy");
+  f.remotes.get(BOX)!.worktree.db.prepare("UPDATE roam_meta SET roamable=0,problem='quarantined'").run();
+  const result = await service(f).sync();
+  expect(result.some(row => row.code === 1)).toBe(true);
+  expect(f.global.db.prepare("SELECT session_id,machine_id,epoch FROM session_homes ORDER BY session_id").all()).toEqual([
+    { session_id: "session-b", machine_id: BOX2, epoch: 1 },
+  ]);
+  expect(f.remotes.get(BOX2)!.global.db.prepare("SELECT session_id FROM session_homes").all()).toEqual([{ session_id: "session-b" }]);
+}, 5000);
+it("an unsafe unrelated box registration is skipped and reported without blocking discovery", async () => {
+  const f = fixture(); f.seed(); const remote = f.remotes.get(BOX)!;
+  const link = join(remote.global.root, "linked.db"); symlinkSync(remote.worktree.db.raw.name, link);
+  let problems: unknown[] = [];
+  f.replyHook((_peer, operation, bytes) => { if (operation.kind === "stores") problems = JSON.parse(bytes.toString()).value.problems; return bytes; });
+  remote.global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('unsafe',?,?,1,1)").run(remote.global.root, link);
+  expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
+  expect(f.global.db.prepare("SELECT session_id FROM session_homes").all()).toEqual([{ session_id: "session-a" }]);
+  expect(f.calls.some(call => call.operation.kind === "export")).toBe(true);
+  expect(problems).toContainEqual({ entry: link, reason: "Unsafe or unreadable store skipped" });
 }, 5000);
 it("a quarantined store does not block a healthy store or trim a singleton row", async () => {
   const f = fixture([BOX, BOX2]); f.seed(BOX); f.seed(BOX2, "session-b", "x".repeat(16_384));

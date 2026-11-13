@@ -6,7 +6,10 @@ export interface PendingBatch {
   id: string; key: StoreKey; after: number; targetBytes: number;
   batch: BatchArtifact | null; exported: JsonObject | null;
 }
-export interface PeerState { failures: number; pulled: boolean; targetBytes: number; pending: Record<string, PendingBatch>; observation?: PeerObservation }
+export interface PeerState {
+  failures: number; pulled: boolean; targetBytes: number; pending: Record<string, PendingBatch>; observation?: PeerObservation;
+  gathered?: Record<string, boolean>; unknownSessions?: Record<string, string[]>;
+}
 export function loadPeerState(db: Db, machine: string, initialBytes: number): PeerState {
   return readLocal<PeerState>(db, "sync-peer", machine) ?? { failures: 0, pulled: false, targetBytes: initialBytes, pending: {} };
 }

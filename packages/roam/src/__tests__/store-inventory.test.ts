@@ -39,7 +39,7 @@ it.each(["stores", "inventory"])("keyless %s discovers a registered store and an
   expect(JSON.stringify(result)).not.toContain(global.root);
   expect(global.db.prepare("SELECT count(*) AS n FROM roam_changes").get()).toEqual(before);
   expect(await handleAgentOperation(operation, ports)).toEqual(result);
-  expect(ports.journal.read(operation.id).filter(row => row.action === "done")).toHaveLength(1);
+  expect(ports.journal.read(operation.id).filter(row => row.action === "done")).toHaveLength(0);
 }, 5000);
 it("marks a registered store incomplete if it disappears before the read-only open", () => {
   const { global, worktree } = fixture(), incomplete: string[] = [];

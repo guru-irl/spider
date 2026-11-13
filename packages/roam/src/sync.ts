@@ -24,6 +24,9 @@ class SyncFailure extends Error {
   readonly operationId: string | null;
   constructor(code: 1 | 2 | 3, message: string, operationId: string | null = null) { super(message); this.code = code; this.operationId = operationId; }
 }
+class QuarantinedStore extends SyncFailure {
+  constructor(readonly sessions: string[]) { super(1, "Peer store is quarantined"); }
+}
 function object(value: unknown): value is JsonObject { return !!value && typeof value === "object" && !Array.isArray(value); }
 function outcome(code: 0 | 1 | 2 | 3, reason: string, operationId: string, value: ApplyReceipt | null = null): Outcome<ApplyReceipt> {
   return { code, reason, operationId, home: null, epoch: null, repairCommand: null, value };
@@ -157,7 +160,10 @@ export function createSync(ports: Ports): SyncAdapter {
   }
   async function pull(peer: Peer, key: StoreKey, state: PeerState, results: Outcome<ApplyReceipt>[]) {
     const info = await remote(peer, "inventory", { storeKey: key }); handshake(info, peer);
-    if (info.storeKey !== key || !isRoamUuid(info.stream) || info.roamable !== true) throw new SyncFailure(1, "Peer store is quarantined or invalid");
+    if (info.storeKey !== key || !isRoamUuid(info.stream)) throw new SyncFailure(1, "Peer store is quarantined or invalid");
+    if (info.roamable === false && key.startsWith("worktree:") && Array.isArray(info.sessions) && info.sessions.every(id => typeof id === "string" && id.length > 0))
+      throw new QuarantinedStore(info.sessions as string[]);
+    if (info.roamable !== true) throw new SyncFailure(1, "Peer store is quarantined or invalid");
     for (;;) {
       const pending = attempt(state, peer, "pull", key, stores.cursor(key, peer.machineId, info.stream));
       const value = pending.exported ?? await remote(peer, "export", { storeKey: key, after: pending.after,
@@ -244,12 +250,14 @@ export function createSync(ports: Ports): SyncAdapter {
     }
   }
   function assignHomes() {
-    const gathered = config.peers.every(peer => loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes).pulled);
+    const states = config.peers.map(peer => loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes));
+    const gathered = states.every(state => state.pulled);
+    const unknown = new Set(states.flatMap(state => Object.values(state.unknownSessions ?? {}).flat()));
     const adapter = stores as Partial<StoreAdapter>;
     if (!adapter.origins) return;
     for (const [id, origins] of adapter.origins()) {
       if (origins.size > 1) markInitialConflict(globalDb, id, config.hubMachineId);
-      else if (gathered && origins.size === 1) assignInitialHome(globalDb, id, [...origins][0], config.hubMachineId);
+      else if (gathered && origins.size === 1 && !unknown.has(id)) assignInitialHome(globalDb, id, [...origins][0], config.hubMachineId);
     }
   }
   async function peerSync(peer: Peer): Promise<readonly Outcome<ApplyReceipt>[]> {
@@ -268,12 +276,20 @@ export function createSync(ports: Ports): SyncAdapter {
       const keys = [...new Set(discovery.stores.map(key => { storeScope(key); return key as StoreKey; }))].sort();
       if (!keys.includes("global")) throw new SyncFailure(1, "Peer global store is missing");
       let globalReady = false, pulled = true;
+      state.gathered ??= {}; state.unknownSessions ??= {};
       for (const key of keys) {
         if (key !== "global" && !globalReady) { pulled = false; continue; }
-        try { await pull(peer, key, state, results); if (key === "global") globalReady = true; }
-        catch (error) { pulled = false; results.push(failure(error, peer.machineId)); }
+        try {
+          await pull(peer, key, state, results); state.gathered[key] = true; delete state.unknownSessions[key];
+          if (key === "global") globalReady = true;
+        } catch (error) {
+          if (error instanceof QuarantinedStore) { state.gathered[key] = true; state.unknownSessions[key] = error.sessions; }
+          else pulled = false;
+          results.push(failure(error, peer.machineId));
+        }
       }
-      if (pulled) { state.pulled = true; savePeerState(globalDb, peer.machineId, state); }
+      state.pulled = keys.every(key => state.gathered![key] === true);
+      savePeerState(globalDb, peer.machineId, state);
       assignHomes();
       for (const key of keys) {
         if (!globalReady) break;

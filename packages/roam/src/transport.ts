@@ -136,7 +136,7 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       const args = remoteArgs(state.peer, argv);
       const call = snapshotCall(options);
       return (await bracket(state.peer, state, call.timeoutMs, signal =>
-        client.exec(state.peer.alias, args, { ...call, signal, acceptedExitCodes: privateProtocol(argv) ? [1, 2, 3] : undefined }))).value;
+        client.exec(state.peer.alias, args, { ...call, signal }))).value;
     },
     async run(peer, argv, operationId) {
       if (!operationId || /[\u0000-\u001f\u007f]/.test(operationId)) {

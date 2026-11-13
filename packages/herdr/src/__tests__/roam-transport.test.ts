@@ -74,12 +74,51 @@ test('raw stdin failure is not reported as a successful byte transfer', async ()
   }
 }, 5000);
 
+test.each([
+  [1, ['roam', 'agent', '{}']],
+  [2, ['roam', 'observe', 'doctor']],
+  [3, ['roam', 'artifact', 'receive', '{}']],
+])('private command rejects exit %s even with a complete-looking reply', async (exitCode, argv) => {
+  const fixture = await createClientFixture();
+  try {
+    const reply = Buffer.from(JSON.stringify({ code: 0, reason: 'complete' }));
+    await fixture.configure({ machines: [machine], roamFixture: { execReplyBase64: reply.toString('base64'), execExitCode: exitCode } });
+    await fixture.writeRoamFile(peer.alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
+    const resolved = await transport.resolve(peer);
+    await expect(transport.exec(resolved, argv, { timeoutMs: 1000, maxBytes: 1024 }))
+      .rejects.toMatchObject({ code: 'cli-exit', details: { exitCode } });
+  } finally { await fixture.close(); }
+}, 5000);
+
+test.each(['needs_login', 'spawn_failed'])('raw hc failure preserves its %s kind without exposing its message', async kind => {
+  const fixture = await createClientFixture();
+  try {
+    const stderr = JSON.stringify({ error: { kind, message: 'private fixture value' } });
+    const script = `process.stdout.write('{"code":0}'); process.stderr.write(${JSON.stringify(stderr)}); process.exitCode = 3;`;
+    const error = await invokeBytes(process.execPath, ['-e', script], fixture.localEnv, { timeoutMs: 1000, maxBytes: 128 }).catch(value => value);
+    expect(error).toMatchObject({ code: kind, details: { exitCode: 3 } });
+    expect(JSON.stringify(error)).not.toContain('private fixture value');
+  } finally { await fixture.close(); }
+}, 5000);
+
+test('raw program failure keeps bounded stderr and never accepts its stdout', async () => {
+  const fixture = await createClientFixture();
+  try {
+    const script = `process.stdout.write('{"code":0}'); process.stderr.write('missing bundle: ' + 'x'.repeat(5000)); process.exitCode = 1;`;
+    const error = await invokeBytes(process.execPath, ['-e', script], fixture.localEnv, { timeoutMs: 1000, maxBytes: 128 }).catch(value => value);
+    expect(error).toMatchObject({ code: 'cli-exit', details: { exitCode: 1, stderr: expect.stringContaining('missing bundle: ') } });
+    expect(Buffer.byteLength(error.details.stderr)).toBeLessThanOrEqual(4096);
+    expect(JSON.stringify(error)).not.toContain('{\\"code\\":0}');
+  } finally { await fixture.close(); }
+}, 5000);
+
 test('raw errors do not expose output or consume the reply budget', async () => {
   const fixture = await createClientFixture();
   try {
     await fixture.configure({ failure: { kind: 'blocked', message: 'private fixture value' }, failureExitCode: 7 });
     const error = await invokeBytes(fixture.hcBinary, ['fixture-bytes'], fixture.localEnv, { timeoutMs: 1000, maxBytes: 0 }).catch(value => value);
-    expect(error).toMatchObject({ code: 'cli-exit', details: { exitCode: 7 } });
+    expect(error).toMatchObject({ code: 'blocked', details: { exitCode: 7 } });
     expect(JSON.stringify(error)).not.toContain('private fixture value');
   } finally {
     await fixture.close();
@@ -161,7 +200,7 @@ test('remote argv cannot fall back locally', async () => {
     const script = join(fixture.root, 'payload.mjs');
     await writeFile(script, "import { writeFileSync } from 'node:fs'; writeFileSync(process.argv[2], 'executed');\n");
     const client = createArgvClient({ binary: fixture.hcBinary, env: fixture.localEnv });
-    await expect(client.exec('unknown.invalid', [process.execPath, script, marker], { timeoutMs: 1000, maxBytes: 1024 })).rejects.toMatchObject({ code: 'cli-exit' });
+    await expect(client.exec('unknown.invalid', [process.execPath, script, marker], { timeoutMs: 1000, maxBytes: 1024 })).rejects.toMatchObject({ code: 'machine_not_found' });
     expect(existsSync(marker)).toBe(false);
     const calls = (await fixture.calls()).filter(call => call.argv[0] === 'exec');
     expect(calls).toHaveLength(1);
@@ -312,11 +351,11 @@ test('resolves one machine identity per transfer', async () => {
   }
 }, 5000);
 
-test('agent refusal retains its bounded JSON reply and the enrolled root without treating other failures as success', async () => {
+test('agent refusal retains its bounded JSON reply on exit zero and uses the enrolled root', async () => {
   const fixture = await createClientFixture();
   try {
     const reply = Buffer.from(JSON.stringify({ code: 1, operationId: 'refused', reason: 'unsafe' }));
-    await fixture.configure({ machines: [machine], roamFixture: { execReplyBase64: reply.toString('base64'), execExitCode: 1 } });
+    await fixture.configure({ machines: [machine], roamFixture: { execReplyBase64: reply.toString('base64') } });
     await fixture.writeRoamFile(peer.alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
     const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
     const resolved = await transport.resolve(peer);
@@ -324,6 +363,7 @@ test('agent refusal retains its bounded JSON reply and the enrolled root without
     const call = (await fixture.calls()).find(entry => entry.argv.includes('agent'));
     expect(call?.argv).toEqual(['exec', '--on', peer.alias, '--timeout', '1', '--', peer.node, peer.cli,
       '--global-root', peer.globalRoot, 'roam', 'agent', '{}']);
+    await fixture.configure({ roamFixture: { execReplyBase64: reply.toString('base64'), execExitCode: 1 } });
     await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 1000, maxBytes: 1024 })).rejects.toMatchObject({ code: 'cli-exit' });
   } finally { await fixture.close(); }
 }, 5000);

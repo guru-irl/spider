@@ -5,15 +5,12 @@ import { spawn } from 'node:child_process';
 import { HerdrError, parseJson, object, text } from './parse.js';
 import { cliReplyByteLimit, SINGLE_REPLY_BYTES } from './limits.js';
 
-export interface CliRequestOptions { timeoutMs?: number; signal?: AbortSignal; raw?: boolean; strictInput?: boolean; acceptedExitCodes?: readonly number[] }
+export interface CliRequestOptions { timeoutMs?: number; signal?: AbortSignal; raw?: boolean; strictInput?: boolean }
 
 export async function invokeCli(binary: string, argv: readonly string[], env: Readonly<NodeJS.ProcessEnv>, maxBytes: number = cliReplyByteLimit(argv), input?: Buffer, options: CliRequestOptions = {}): Promise<unknown> {
   const timeoutMs = options.timeoutMs ?? 15_000;
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647) throw new HerdrError('invalid-cli-deadline', 'CLI deadline must be a finite nonnegative timer duration');
   if (options.signal?.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted');
-  const acceptedExitCodes = new Set(options.raw ? options.acceptedExitCodes ?? [] : []);
-  if ([...acceptedExitCodes].some(code => !Number.isSafeInteger(code) || code < 1 || code > 255))
-    throw new HerdrError('invalid-exit-code', 'Accepted exit codes must be positive bytes');
   return new Promise((resolve, reject) => {
     const child = spawn(binary, [...argv], { env: { ...env }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
     const stdout: Buffer[] = []; const stderr: Buffer[] = []; let size = 0; let errorSize = 0; let failure: HerdrError | null = null;
@@ -45,8 +42,18 @@ export async function invokeCli(binary: string, argv: readonly string[], env: Re
       if (finished) return;
       finished = true; cleanup();
       if (failure) { reject(failure); return; }
-      if (code !== 0 && !(code !== null && acceptedExitCodes.has(code))) {
-        if (options.raw) { reject(new HerdrError('cli-exit', `CLI exited with ${code ?? signal}`, { exitCode: code, signal })); return; }
+      if (code !== 0) {
+        if (options.raw) {
+          const bytes = Buffer.concat(stderr);
+          try {
+            const kind = text(object(object(parseJson(bytes)).error).kind);
+            if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/.test(kind)) throw new Error('Invalid error kind');
+            reject(new HerdrError(kind, `Remote execution failed (${kind})`, { exitCode: code, signal }));
+          } catch {
+            reject(new HerdrError('cli-exit', `CLI exited with ${code ?? signal}`, { exitCode: code, signal, stderr: bytes.subarray(0, 4096).toString('utf8') }));
+          }
+          return;
+        }
         try {
           const error = object(object(parseJson(Buffer.concat(stderr))).error);
           reject(new HerdrError(text(error.kind), text(error.message), { exitCode: code, signal, hint: error.hint }));

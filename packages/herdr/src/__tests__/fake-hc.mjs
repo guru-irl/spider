@@ -26,6 +26,16 @@ async function withDimensions(terminal) {
   return { cols: Math.floor(320 * (bounds?.width ?? 1)) - (bounds && bounds.width < 1 ? 1 : 0), rows: Math.floor(80 * (bounds?.height ?? 1)) - (bounds && bounds.height < 1 ? 2 : 0), ...terminal };
 }
 const config = JSON.parse(readFileSync(`${root}/core.json`, 'utf8'));
+function roamMachine(on) {
+  const exact = config.machines.filter(machine => machine.name === on);
+  if (exact.length) return exact.length === 1;
+  const key = value => String(value ?? '').toLowerCase().replace(/\.$/, '');
+  const matches = config.machines.filter(machine => {
+    const target = machine.via && (typeof machine.target !== 'string' || !/^(?:[\w.-]+@)?[\w.-]+$/.test(machine.target)) ? '' : machine.target;
+    return [machine.name, machine.host, target?.replace(/^.*@/, '')].some(alias => alias && key(alias) === key(on));
+  });
+  return matches.length === 1;
+}
 const roamFile = (on, path) => `${root}/roam-files/${Buffer.from(on).toString('hex')}/${Buffer.from(path).toString('hex')}`;
 function restartCore(on, command, when) {
   const restart = config.roamFixture?.restart;
@@ -64,7 +74,7 @@ if (config.rawReplyBase64 !== undefined) {
   const end = argv.indexOf('--');
   const flags = end < 0 ? argv : argv.slice(0, end);
   const on = flags.includes('--on') ? flags[flags.indexOf('--on') + 1] : flags.find(arg => arg.startsWith('--on='))?.slice(5);
-  if (!on || !config.machines.some(machine => machine.name === on)) {
+  if (!on || !roamMachine(on)) {
     console.error(JSON.stringify({ error: { kind: 'machine_not_found', message: 'No such machine' } })); process.exit(3);
   }
   const restart = config.roamFixture.restart?.command === 'exec' ? config.roamFixture.restart : null;
@@ -99,7 +109,7 @@ if (config.rawReplyBase64 !== undefined) {
  } else if (argv[0] === 'run') {
   const end = argv.indexOf('--'), flags = end < 0 ? argv : argv.slice(0, end);
   const on = flags.includes('--on') ? flags[flags.indexOf('--on') + 1] : flags.find(arg => arg.startsWith('--on='))?.slice(5) ?? null;
-  if (config.roamFixture && (!on || !config.machines.some(machine => machine.name === on))) {
+  if (config.roamFixture && (!on || !roamMachine(on))) {
     console.error(JSON.stringify({ error: { kind: 'machine_not_found', message: 'No such machine' } })); process.exit(3);
   }
   restartCore(on, 'run', 'before');
@@ -135,7 +145,7 @@ if (config.rawReplyBase64 !== undefined) {
   console.log(JSON.stringify(t));
 } else if (argv[0] === 'file' && config.roamFixture) {
   const on = argv.includes('--on') ? argv[argv.indexOf('--on') + 1] : argv.find(arg => arg.startsWith('--on='))?.slice(5);
-  if (!on || !config.machines.some(machine => machine.name === on) || argv[1] !== 'write') {
+  if (!on || !roamMachine(on) || argv[1] !== 'write') {
     console.error(JSON.stringify({ error: { kind: 'machine_not_found', message: 'No such machine or operation' } })); process.exit(3);
   }
   restartCore(on, 'file', 'before');

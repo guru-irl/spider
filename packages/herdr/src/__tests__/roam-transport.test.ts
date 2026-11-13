@@ -344,6 +344,100 @@ test('daemon-backed fake exec forwards binary stdin without executing the payloa
   }
 }, 5000);
 
+test.each([
+  ['host', 'HOST.EXAMPLE.INVALID.'],
+  ['target', 'TARGET.EXAMPLE.INVALID.'],
+])('resolves an hc %s alias using the machine-list normalization rules', async (_kind, alias) => {
+  const fixture = await createClientFixture();
+  try {
+    const configured = { ...machine, name: 'configured.invalid', host: 'Host.Example.Invalid.', target: 'user@Target.Example.Invalid', via: true };
+    const enrolled = { ...peer, alias };
+    await fixture.configure({ machines: [configured], roamFixture: { execReplyBase64: 'AQ==' } });
+    await fixture.writeRoamFile(alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [enrolled] });
+    const resolved = await transport.resolve(enrolled);
+    expect(await transport.exec(resolved, ['inspect'], { timeoutMs: 30_000, maxBytes: 16 })).toEqual(Buffer.from([1]));
+    expect((await fixture.calls()).find(call => call.argv.includes('inspect'))?.argv).toContain(alias);
+  } finally { await fixture.close(); }
+}, 5000);
+
+test('an opaque via target is not accepted as a machine alias', async () => {
+  const fixture = await createClientFixture();
+  try {
+    const alias = 'target.example.invalid:22';
+    const enrolled = { ...peer, alias };
+    await fixture.configure({ machines: [{ ...machine, name: 'configured.invalid', host: 'host.invalid', target: `user@${alias}`, via: true }], roamFixture: {} });
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [enrolled] });
+    await expect(transport.resolve(enrolled)).rejects.toMatchObject({ code: 'machine-not-found' });
+    expect((await fixture.calls()).some(call => call.argv[0] === 'exec')).toBe(false);
+  } finally { await fixture.close(); }
+}, 5000);
+
+test('an unknown enrolled alias reports machine-not-found before executing a payload', async () => {
+  const fixture = await createClientFixture();
+  try {
+    await fixture.configure({ machines: [], roamFixture: {} });
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
+    await expect(transport.resolve(peer)).rejects.toMatchObject({ code: 'machine-not-found', retryable: true });
+    expect((await fixture.calls()).some(call => call.argv[0] === 'exec')).toBe(false);
+  } finally { await fixture.close(); }
+}, 5000);
+
+test('an exact machine name wins over another machine host alias', async () => {
+  const fixture = await createClientFixture();
+  try {
+    const named = { ...machine, id: 'named-core', host: 'named.invalid', target: 'named.invalid' };
+    const other = { ...machine, id: 'other-core', name: 'other.invalid', host: peer.alias, target: 'other.invalid' };
+    await fixture.configure({ machines: [other, named], roamFixture: { execReplyBase64: 'AQ==' } });
+    await fixture.writeRoamFile(peer.alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
+    const resolved = await transport.resolve(peer);
+    await fixture.configure({ machines: [{ ...other, id: 'replaced-other-core' }, named] });
+    expect(await transport.exec(resolved, ['inspect'], { timeoutMs: 30_000, maxBytes: 16 })).toEqual(Buffer.from([1]));
+    await fixture.configure({ machines: [other, { ...named, id: 'replaced-named-core' }] });
+    await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 30_000, maxBytes: 16 })).rejects.toMatchObject({ code: 'core-changed' });
+  } finally { await fixture.close(); }
+}, 5000);
+
+test('an ambiguous host alias refuses before executing a payload', async () => {
+  const fixture = await createClientFixture();
+  try {
+    const entries = [{ ...machine, name: 'first.invalid', host: peer.alias }, { ...machine, id: 'other-core', name: 'second.invalid', host: peer.alias }];
+    await fixture.configure({ machines: entries, roamFixture: {} });
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
+    await expect(transport.resolve(peer)).rejects.toMatchObject({ code: 'machine-ambiguous' });
+    expect((await fixture.calls()).some(call => call.argv[0] === 'exec')).toBe(false);
+  } finally { await fixture.close(); }
+}, 5000);
+
+test('a stopped core reports core-unavailable and invalidates the old handle without calling hc', async () => {
+  const fixture = await createClientFixture();
+  try {
+    await fixture.configure({ machines: [machine], roamFixture: {} });
+    await fixture.writeRoamFile(peer.alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
+    const resolved = await transport.resolve(peer);
+    const before = (await fixture.calls()).length;
+    await fixture.stopCore();
+    await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 30_000, maxBytes: 16 }))
+      .rejects.toMatchObject({ code: 'core-unavailable', retryable: true });
+    await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 30_000, maxBytes: 16 }))
+      .rejects.toMatchObject({ code: 'peer-invalidated', retryable: true });
+    expect((await fixture.calls()).length).toBe(before);
+  } finally { await fixture.close(); }
+}, 5000);
+
+test('a foreign terminal socket stays core-mismatch instead of core-changed', async () => {
+  const fixture = await createClientFixture();
+  try {
+    await fixture.configure({ machines: [machine], roamFixture: {} });
+    const env = { ...fixture.localEnv, HC_TERMINAL_SOCKET: fixture.foreignSocket };
+    const transport = createTransport({ binary: fixture.hcBinary, env, enrolled: [peer] });
+    await expect(transport.resolve(peer)).rejects.toMatchObject({ code: 'core-mismatch' });
+    expect(await fixture.calls()).toEqual([]);
+  } finally { await fixture.close(); }
+}, 5000);
+
 test('resolves one machine identity per transfer', async () => {
   const fixture = await createClientFixture();
   try {
@@ -489,7 +583,7 @@ test.each(['read', 'write', 'run'] as const)('core restart during %s leaves its 
   }
 }, 5000);
 
-test('an unavailable post-call core observation makes the result retryable', async () => {
+test('a removed machine after a call reports machine-not-found and discards the result', async () => {
   const fixture = await createClientFixture();
   try {
     await fixture.configure({ machines: [machine], roamFixture: {} });
@@ -498,7 +592,7 @@ test('an unavailable post-call core observation makes the result retryable', asy
     const resolved = await transport.resolve(peer);
     await fixture.configure({ roamFixture: { execReplyBase64: 'AQ==', restart: { when: 'during', command: 'exec', remove: true } } });
     await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 }))
-      .rejects.toMatchObject({ code: 'core-changed', retryable: true });
+      .rejects.toMatchObject({ code: 'machine-not-found', retryable: true });
     const state = JSON.parse(await readFile(join(fixture.root, 'core.json'), 'utf8'));
     expect(state.machines).toEqual([]);
   } finally {
@@ -598,7 +692,7 @@ test('an unreadable identity invalidates an earlier handle', async () => {
     await fixture.removeRoamFile(peer.alias, identityPath);
     await expect(transport.resolve(peer)).rejects.toMatchObject({ code: 'cli-exit' });
     const calls = (await fixture.calls()).length;
-    await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).rejects.toMatchObject({ code: 'core-changed' });
+    await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).rejects.toMatchObject({ code: 'peer-invalidated', retryable: true });
     expect((await fixture.calls()).length).toBe(calls);
   } finally {
     await fixture.close();
@@ -709,7 +803,7 @@ test('re-enrollment replaces old paths even when the core has not changed', asyn
     const second = await transport.resolve(updated);
     expect(await transport.exec(second, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).toEqual(Buffer.from([1]));
     expect((await fixture.calls()).some(call => call.argv.includes(updated.node) && call.argv.includes(updated.cli))).toBe(true);
-    await expect(transport.exec(first, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).rejects.toMatchObject({ code: 'core-changed' });
+    await expect(transport.exec(first, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).rejects.toMatchObject({ code: 'peer-invalidated', retryable: true });
   } finally {
     await fixture.close();
   }

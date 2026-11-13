@@ -1,16 +1,24 @@
 import { posix } from 'node:path';
 import { createArgvClient } from '@spider/herdr/client/argv-client';
-import { invokeCli } from '@spider/herdr/client/hc';
+import { invokeCli, machineAliases } from '@spider/herdr/client/hc';
 import type { CliRequestOptions } from '@spider/herdr/client/cli-transport';
 import { HerdrError, object, parseCore, selectedSocket, text } from '@spider/herdr/client/parse';
 import { DEFAULT_LIMITS } from './contracts';
 import type { CallOptions, Peer, Transport } from './contracts';
 
 interface CoreObservation { local: string; remote: string }
-interface Resolved { peer: Peer; core: CoreObservation }
+interface Resolved { peer: Peer; core: CoreObservation; invalidated?: 'core-changed' | 'peer-invalidated' }
 
 function coreChanged(): HerdrError & { retryable: true } {
-  return Object.assign(new HerdrError('core-changed', 'Herdr core changed or could not be observed; retry the operation'), { retryable: true as const });
+  return Object.assign(new HerdrError('core-changed', 'Herdr core identity changed; resolve the peer again'), { retryable: true as const });
+}
+function invalidHandle(state: Resolved): HerdrError & { retryable: true } {
+  return state.invalidated === 'core-changed' ? coreChanged()
+    : Object.assign(new HerdrError('peer-invalidated', 'The peer handle is no longer valid; resolve it again'), { retryable: true as const });
+}
+function observationFailure(error: unknown): unknown {
+  return error instanceof HerdrError && (error.code === 'core-unavailable' || error.code === 'machine-not-found')
+    ? Object.assign(error, { retryable: true as const }) : error;
 }
 function sameCore(a: CoreObservation, b: CoreObservation): boolean {
   return a.local === b.local && a.remote === b.remote;
@@ -48,13 +56,20 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
     const local = parseCore(await invokeCli(binary, ['server', 'status', '--json'], env, DEFAULT_LIMITS.replyBytes, undefined, call), env).coreId;
     const reply = object(await invokeCli(binary, ['machine', 'ls', '--json'], env, DEFAULT_LIMITS.replyBytes, undefined, call));
     if (!Array.isArray(reply.machines)) throw new HerdrError('invalid-reply', 'Expected a machine list');
-    const matches = reply.machines.map(object).filter(machine => machine.name === alias);
-    if (matches.length !== 1) throw new HerdrError('machine-not-found', 'The enrolled machine is unavailable');
+    const rows = reply.machines.map(object);
+    const exact = rows.filter(machine => machine.name === alias);
+    const normalized = alias.toLowerCase().replace(/\.$/, '');
+    const matches = exact.length ? exact : rows.filter(machine => machineAliases(machine).includes(normalized));
+    if (!matches.length) throw new HerdrError('machine-not-found', 'The enrolled machine is unavailable');
+    if (matches.length !== 1) throw new HerdrError('machine-ambiguous', 'The enrolled machine alias is ambiguous');
     return { local, remote: text(matches[0].id) };
   }
 
-  function invalidate(alias: string, expected: Resolved | undefined): void {
-    if (current.get(alias) === expected) current.delete(alias);
+  function invalidate(alias: string, expected: Resolved | undefined, reason: Resolved['invalidated'] = 'peer-invalidated'): void {
+    if (current.get(alias) === expected) {
+      current.delete(alias);
+      if (expected) expected.invalidated = reason;
+    }
   }
   function enrollment(peer: Peer): Peer {
     const matches = enrolled.filter(candidate => candidate.alias === peer.alias);
@@ -66,7 +81,7 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
   function resolved(peer: Peer): Resolved {
     const state = handles.get(peer);
     if (!state) throw new HerdrError('unresolved-peer', 'Resolve the enrolled machine before using it');
-    if (current.get(state.peer.alias) !== state) throw coreChanged();
+    if (current.get(state.peer.alias) !== state) throw invalidHandle(state);
     try { enrollment(state.peer); }
     catch (error) { invalidate(state.peer.alias, state); throw error; }
     return state;
@@ -95,9 +110,10 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       requireEnrollment();
       let before: CoreObservation;
       try { before = await observe(alias, aborter.signal); }
-      catch { invalidate(alias, observed); throw coreChanged(); }
-      if (expected && (current.get(alias) !== expected || !sameCore(before, expected.core))) {
-        invalidate(alias, expected); throw coreChanged();
+      catch (error) { invalidate(alias, observed); throw observationFailure(error); }
+      if (expected && current.get(alias) !== expected) throw invalidHandle(expected);
+      if (expected && !sameCore(before, expected.core)) {
+        invalidate(alias, expected, 'core-changed'); throw coreChanged();
       }
       requireEnrollment();
       let value: T | undefined;
@@ -107,10 +123,11 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       catch (error) { failed = true; failure = error; }
       let after: CoreObservation;
       try { after = await observe(alias, aborter.signal); }
-      catch { invalidate(alias, observed); throw coreChanged(); }
-      if (!sameCore(before, after) || expected && current.get(alias) !== expected) {
-        invalidate(alias, observed); throw coreChanged();
+      catch (error) { invalidate(alias, observed); throw observationFailure(error); }
+      if (!sameCore(before, after)) {
+        invalidate(alias, observed, 'core-changed'); throw coreChanged();
       }
+      if (expected && current.get(alias) !== expected) throw invalidHandle(expected);
       requireEnrollment();
       remaining();
       if (failed) throw failure;
@@ -139,6 +156,7 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       const handle = Object.freeze({ ...configured });
       const state = existing && sameCore(existing.core, observation.core) && samePeer(existing.peer, configured)
         ? existing : { peer: handle, core: observation.core };
+      if (existing && state !== existing) existing.invalidated = sameCore(existing.core, observation.core) ? 'peer-invalidated' : 'core-changed';
       current.set(configured.alias, state);
       handles.set(handle, state);
       return handle;

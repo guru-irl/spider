@@ -35,6 +35,13 @@ function guardTestSocket(options: HcClientOptions): void {
   const proof = options.isolationProof;
   if (proof && (!proof.sockets.includes(socket) || proof.sessionNamespace !== (options.env.HC_SESSION || 'default') || physicalPath(proof.checkout) !== physicalPath(checkout) || proof.coreIds.length !== proof.sockets.length || proof.coreIds.length === 0 || proof.sockets.some(path => !inside(path)))) throw new HerdrError('isolation-unproved', 'Isolation proof does not match the selected core');
 }
+export function machineAliases(m: Record<string, unknown>): string[] {
+  const name = text(m.name);
+  const target = m.via ? (typeof m.target === 'string' && /^(?:[\w.-]+@)?[\w.-]+$/.test(m.target) ? m.target : '') : text(m.target);
+  const aliases = [name, text(m.host), ...(target ? [target.replace(/^.*@/, '')] : [])].map(v => v.toLowerCase().replace(/\.$/, ''));
+  return [...new Set(aliases)];
+}
+
 export async function processContainsCaller(pid: unknown, env: Readonly<NodeJS.ProcessEnv>, callerPid: number = process.pid): Promise<boolean> {
   if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return false;
   if (pid === callerPid) return true;
@@ -84,9 +91,7 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
     if (!Array.isArray(rows)) throw new HerdrError('invalid-reply', 'Expected machine list');
     return rows.map(value => {
       const m = object(value); const name = text(m.name);
-      const target = m.via ? (typeof m.target === 'string' && /^(?:[\w.-]+@)?[\w.-]+$/.test(m.target) ? m.target : '') : text(m.target);
-      const aliases = [name, text(m.host), ...(target ? [target.replace(/^.*@/, '')] : [])].map(v => v.toLowerCase().replace(/\.$/, ''));
-      return { id: text(m.id) as CoreId, name: name as MachineName, aliases: [...new Set(aliases)], state: m.state === 'connected' ? 'connected' : 'disconnected', sessionNamespace: m.session === null || m.session === undefined ? 'default' : text(m.session), runtime: null } satisfies MachineSummary;
+      return { id: text(m.id) as CoreId, name: name as MachineName, aliases: machineAliases(m), state: m.state === 'connected' ? 'connected' : 'disconnected', sessionNamespace: m.session === null || m.session === undefined ? 'default' : text(m.session), runtime: null } satisfies MachineSummary;
     });
   };
   const machineValidations = new Map<MachineName, { promise: Promise<MachineSummary>; expiresAt: number | null }>();

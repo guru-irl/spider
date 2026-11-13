@@ -31,6 +31,10 @@ import { shutdownReason } from "./shutdown-reason";
 import { checkProcessIdentity } from "./process-identity";
 import { HERDR_NOTICES } from '@spider/herdr/notices';
 
+export const CHAIN_STEPS_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND type='chain_steps' ORDER BY id DESC LIMIT 1";
+export const CHAIN_WARNINGS_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND type='warning'";
+
+
 export const CHILD_REGISTRY_VERSION = 1;
 const KEY_PREFIX = "spider.childRegistry.v";
 export const CHILD_REGISTRY_KEY: symbol = Symbol.for(`${KEY_PREFIX}${CHILD_REGISTRY_VERSION}`);
@@ -288,11 +292,11 @@ function recordChainInterruption(entry: SharedChildEntry, closed: boolean): void
   try {
     db = openDb(entry.dbPath, { fileMustExist: true });
     if (!isLocalRun(db, entry.runId)) return;
-    const event = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='chain_steps' ORDER BY id DESC LIMIT 1").get(entry.runId) as { payload: string } | undefined;
+    const event = db.prepare(CHAIN_STEPS_QUERY).get(entry.runId) as { payload: string } | undefined;
     if (!event) return;
     const remaining = JSON.parse(event.payload).remaining;
     if (!Array.isArray(remaining) || !remaining.length || !remaining.every(step => typeof step === 'string')) return;
-    const warnings = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='warning'").all(entry.runId) as Array<{ payload: string }>;
+    const warnings = db.prepare(CHAIN_WARNINGS_QUERY).all(entry.runId) as Array<{ payload: string }>;
     if (warnings.some(warning => { try { return JSON.parse(warning.payload).chainInterrupted === true; } catch { return false; } })) return;
     const message = (closed ? HERDR_NOTICES.chainClosed : HERDR_NOTICES.chainReloaded).text.replace('<steps>', remaining.join('. '));
     appendRunEvent(db, { runId: entry.runId, sessionId: entry.sessionId, ts: Date.now(), type: 'warning', summary: message, payload: { reload: true, chainInterrupted: true, message } });

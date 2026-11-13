@@ -55,6 +55,9 @@ import { loadedBuildPresence } from '../roam/build-presence.js';
 import { controlConfig, configValues, modelDefaultLayers } from '../control.js';
 import { mountChildHerdr } from './child.js';
 import { coreStartedAt, disabledHerdrEnvironment, verifiedHerdrFile, readAppLayout, createHostHerdrPorts, createProcessInventory, explicitExtensionArguments, readJobJournal, type HostHerdrOptions, type HostHerdrPorts } from './ports.js';
+
+export const RECORDED_TRANSCRIPT_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1";
+
 export type { HostHerdrOptions } from './ports.js';
 
 const INACTIVE_NOTICE = Symbol.for('spider.herdr.inactive-notices.v1');
@@ -257,7 +260,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         const store = new RunStore(db), run = store.get(id), parent = run?.parent_run_id ? store.get(run.parent_run_id) : undefined;
         const activeName = owner?.sessionId === o.sessionId && owner.generation === o.generation ? owner.name : o.name;
         const parentName = parent?.session_id === o.sessionId ? parent.name || parent.id : activeName || 'Agent';
-        const recorded = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1").get(id, o.sessionId) as { payload: string | null } | undefined;
+        const recorded = db.prepare(RECORDED_TRANSCRIPT_QUERY).get(id, o.sessionId) as { payload: string | null } | undefined;
         let directory: string | undefined;
         if (!recorded) directory = join(paths.scratch('project', o.cwd), 'subagent-sessions', id);
         else {

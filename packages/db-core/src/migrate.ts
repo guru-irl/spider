@@ -2,7 +2,7 @@ import { backupBeforeMigration, type Db } from "./db";
 import { paths } from "./paths";
 import { GLOBAL_SCHEMA, REPO_SCHEMA, WORKTREE_SCHEMA } from "./schema";
 import { loadMachineIdentity } from "./roam/machine";
-import { validateRoamLayout } from "./roam/layout";
+import { indexPresent, validateRoamLayout } from "./roam/layout";
 import { GENERATED_TRIGGERS } from "./roam/generated";
 import { addRoamSchema } from "./roam/schema";
 import type { MachineId } from "./roam/types";
@@ -166,6 +166,10 @@ const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
   6: [], // Version bump only for project scope
 };
 
+function ensureQueryIndexes(db: Db, scope: "global" | "repo" | "worktree"): void {
+  if (scope === "worktree") db.exec("CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, id)");
+}
+
 export function migrate(
   db: Db,
   scope: "global" | "repo" | "worktree" | "project",
@@ -181,7 +185,9 @@ export function migrate(
       const current = Number(db.raw.pragma("user_version", { simple: true }));
       if (current > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${current}`);
       if (current !== SCHEMA_VERSION) throw new Error("Core schema changed before its backup");
-      return validateRoamLayout(db, actualScope, "inspect").needsWrite;
+      const layout = validateRoamLayout(db, actualScope, "inspect");
+      return layout.needsWrite || (actualScope === "worktree" &&
+        !indexPresent(db, "run_events", "idx_run_events_run_id"));
     }).deferred());
     if (!needsWrite) return;
   }
@@ -197,6 +203,7 @@ export function migrate(
       if (current > SCHEMA_VERSION) throw new Error(`Cannot open future core schema ${current}`);
       if (current === SCHEMA_VERSION) {
         validateRoamLayout(db, actualScope);
+        ensureQueryIndexes(db, actualScope);
         return;
       }
       if (current !== observed || machineId === undefined) throw new Error("Core schema changed before its backup");
@@ -260,6 +267,7 @@ export function migrate(
         }
       }
       validateRoamLayout(db, actualScope);
+      ensureQueryIndexes(db, actualScope);
       db.raw.pragma(`user_version = ${SCHEMA_VERSION}`);
     });
     run.immediate();

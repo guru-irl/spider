@@ -7,6 +7,7 @@ import { openDbAt, paths, setGlobalDbPathForTests } from "@spider/db-core";
 import spiderExtension from "../extension";
 import { HostEmbeddingRuntime } from "../embedding-runtime";
 import * as admission from "../roam/admission";
+import * as roamCli from "@spider/roam/cli";
 
 const trace = vi.hoisted(() => ({ startupCalls: [] as string[] }));
 vi.mock("../usage/mount.js", () => ({
@@ -114,6 +115,33 @@ it("blocked startup calls no reaper usage trigger feed or organism", async () =>
   expect(session.reason).toBe("unchanged");
   expect(dbWritesAfterBlock).toBe(0);
   expect(trace.startupCalls).toEqual(["admission"]);
+}, 5000);
+
+it("roaming doctor leaves pi's event loop responsive during inspection", async () => {
+  const base = resolve(".spider/scratch/roam-startup-order");
+  mkdirSync(base, { recursive: true }); root = mkdtempSync(join(base, "responsive-"));
+  const globalRoot = join(root, "global"); mkdirSync(globalRoot, { recursive: true });
+  vi.stubEnv("HOME", root); vi.stubEnv("SPIDER_GLOBAL_ROOT", globalRoot); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  paths.globalRoot = globalRoot; setGlobalDbPathForTests(join(globalRoot, "spider.db"));
+  const commands = new Map<string, { handler(args: string, ctx: unknown): unknown }>(), notices: string[] = [];
+  const pi = { on() {}, registerTool() {}, registerShortcut() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
+    registerCommand(name: string, command: { handler(args: string, ctx: unknown): unknown }) { commands.set(name, command); },
+    sendMessage() {}, sendUserMessage() {}, appendEntry() {} };
+  vi.spyOn(roamCli, "main").mockImplementation(async (_args, io) => {
+    const until = Date.now() + 150;
+    while (Date.now() < until) { /* Model a slow synchronous inspection. */ }
+    io.out("Roaming is disabled.\n"); return 0;
+  });
+  spiderExtension(pi as never);
+  const ctx = { cwd: root, mode: "tui", hasUI: true, ui: { notify(text: string) { notices.push(text); } },
+    sessionManager: { getSessionId: () => "session-1", getSessionFile: () => null } };
+  let done = false;
+  const result = Promise.resolve(commands.get("spider")!.handler("roam doctor", ctx)).then(() => { done = true; });
+  const finishedBeforeTick = await new Promise<boolean>(resolve => setImmediate(() => resolve(done)));
+  await result;
+  expect(finishedBeforeTick).toBe(false);
+  expect(notices.join("\n")).toMatch(/roam.*disabled/i);
+  expect(existsSync(join(globalRoot, "spider.db"))).toBe(false);
 }, 5000);
 
 it("a second host session cannot reopen or close another session's gate", async () => {

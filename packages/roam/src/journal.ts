@@ -112,7 +112,39 @@ function parseResult(text: string): JsonObject {
 
 type OperationRow = { digest: string; result_json: string | null };
 
-export interface ArtifactJournal extends Journal { hasArtifactReference(value: string): boolean }
+const artifactKinds = new Set(["export", "artifact-transfer", "artifact-pull", "sync-accept", "import", "move", "session-start"]);
+export function readOnlyOperation(kind: string): boolean { return ["stores", "inventory", "cursor", "receipt", "split"].includes(kind); }
+function referenceTerms(value: string): string[] { return [value, basename(value).replace(/\.ndjson$/, "")]; }
+function referenceHash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
+function resultReferences(value: unknown): string[] {
+  const refs = new Set<string>();
+  function visit(item: unknown): void {
+    if (!item || typeof item !== "object") return;
+    for (const [key, child] of Object.entries(item)) {
+      if (["artifact", "artifactId", "id", "file", "batchId", "exportId"].includes(key) && typeof child === "string")
+        for (const term of referenceTerms(child)) refs.add(term);
+      else visit(child);
+    }
+  }
+  visit(value); return [...refs];
+}
+export interface ArtifactJournal extends Journal {
+  hasArtifactReference(value: string): boolean;
+  referenceCheck(): (value: string) => boolean;
+  releaseArtifact(value: string): void;
+  prune(now: number, retentionMs: number, retained?: (value: string) => boolean): string[];
+}
+type ReferenceRow = { operation_id: string; kind: string; result_json: string | null; references_json: string | null; released: number; completed_at: number | null };
+function rowReferences(db: Db, row: ReferenceRow): Set<string> {
+  const refs = new Set<string>(row.references_json === null ? [] : JSON.parse(row.references_json) as string[]);
+  for (const action of db.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=?").all(row.operation_id) as { result_json: string }[])
+    for (const value of resultReferences(parseResult(action.result_json))) refs.add(referenceHash(value));
+  if (row.result_json !== null) for (const value of resultReferences(parseResult(row.result_json))) refs.add(referenceHash(value));
+  return refs;
+}
+export function releaseJournalArtifact(journal: Journal, value: string): void {
+  (journal as Partial<ArtifactJournal>).releaseArtifact?.(value);
+}
 
 /** A local operation journal. Each call closes its SQLite handle after commit. */
 export function openJournal(file: string): ArtifactJournal {
@@ -134,6 +166,24 @@ export function openJournal(file: string): ArtifactJournal {
       );
       CREATE INDEX IF NOT EXISTS roam_operation_actions_id ON roam_operation_actions(operation_id, seq);
     `)).immediate();
+    db.raw.transaction(() => {
+      const columns = new Set((db.raw.pragma("table_info(roam_operations)") as { name: string }[]).map(row => row.name));
+      for (const [name, ddl] of [["references_json", "TEXT"], ["released", "INTEGER NOT NULL DEFAULT 0"], ["completed_at", "INTEGER"]])
+        if (!columns.has(name)) db.exec(`ALTER TABLE roam_operations ADD COLUMN ${name} ${ddl}`);
+      db.prepare("UPDATE roam_operations SET completed_at=? WHERE result_json IS NOT NULL AND completed_at IS NULL").run(Date.now());
+      db.exec("CREATE INDEX IF NOT EXISTS roam_operations_completed ON roam_operations(completed_at)");
+    }).immediate();
+  });
+  const referenceCheck = (): ((value: string) => boolean) => withDatabase(file, db => {
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='freeze_journal'").get() &&
+        db.prepare("SELECT 1 FROM freeze_journal WHERE state IS NULL OR state NOT IN ('complete','aborted') LIMIT 1").get()) return () => true;
+    const references = new Set<string>();
+    for (const row of db.prepare("SELECT * FROM roam_operations WHERE released=0").all() as ReferenceRow[]) {
+      if (!artifactKinds.has(row.kind)) continue;
+      if (row.result_json === null && row.references_json === null) return () => true;
+      for (const ref of rowReferences(db, row)) references.add(ref);
+    }
+    return value => referenceTerms(value).some(term => references.has(referenceHash(term)));
   });
   return {
     begin(operation) {
@@ -146,8 +196,10 @@ export function openJournal(file: string): ArtifactJournal {
             ? { kind: "pending" as const, result: null }
             : { kind: "done" as const, result: parseResult(row.result_json) };
         }
-        db.prepare("INSERT INTO roam_operations(operation_id, machine_id, expected_epoch, kind, digest) VALUES (?, ?, ?, ?, ?)")
-          .run(operation.id, operation.machineId, operation.expectedEpoch, operation.kind, argumentsDigest);
+        const refs = resultReferences(operation.args);
+        if (operation.kind === "export") refs.push(operation.id);
+        db.prepare("INSERT INTO roam_operations(operation_id, machine_id, expected_epoch, kind, digest, references_json) VALUES (?, ?, ?, ?, ?, ?)")
+          .run(operation.id, operation.machineId, operation.expectedEpoch, operation.kind, argumentsDigest, JSON.stringify([...new Set(refs.map(referenceHash))]));
         return { kind: "new" as const, result: null };
       }).immediate());
     },
@@ -162,7 +214,7 @@ export function openJournal(file: string): ArtifactJournal {
           throw new Error("Operation already completed");
         }
         db.prepare("INSERT INTO roam_operation_actions(operation_id, action, result_json) VALUES (?, ?, ?)").run(id, action, encoded);
-        if (action === "done") db.prepare("UPDATE roam_operations SET result_json = ? WHERE operation_id = ?").run(encoded, id);
+        if (action === "done") db.prepare("UPDATE roam_operations SET result_json = ?, completed_at=? WHERE operation_id = ?").run(encoded, Date.now(), id);
       }).immediate());
     },
     read(id) {
@@ -171,21 +223,34 @@ export function openJournal(file: string): ArtifactJournal {
         return rows.map(row => ({ action: row.action, result: parseResult(row.result_json) }));
       });
     },
+    referenceCheck,
     hasArtifactReference(value) {
       if (typeof value !== "string" || !value) throw new Error("Invalid artifact reference");
-      return withDatabase(file, db => {
-        // Arguments are only digested. An unfinished operation can reference any artifact.
-        if (db.prepare("SELECT 1 FROM roam_operations WHERE result_json IS NULL LIMIT 1").get()) return true;
-        if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='freeze_journal'").get() &&
-            db.prepare("SELECT 1 FROM freeze_journal WHERE state IS NULL OR state NOT IN ('complete','aborted') LIMIT 1").get()) return true;
-        const name = basename(value).replace(/\.ndjson$/, "");
-        const terms = [...new Set([value, name])].filter(Boolean);
-        const operations = db.prepare("SELECT operation_id,result_json FROM roam_operations").all() as { operation_id: string; result_json: string }[];
-        const actions = db.prepare("SELECT result_json FROM roam_operation_actions").all() as { result_json: string }[];
-        for (const row of [...operations, ...actions]) parseResult(row.result_json);
-        return operations.some(row => terms.some(term => row.operation_id.includes(term) || row.result_json.includes(term))) ||
-          actions.some(row => terms.some(term => row.result_json.includes(term)));
-      });
+      return referenceCheck()(value);
+    },
+    releaseArtifact(value) {
+      const terms = referenceTerms(value).map(referenceHash);
+      withDatabase(file, db => db.raw.transaction(() => {
+        for (const row of db.prepare("SELECT * FROM roam_operations WHERE result_json IS NOT NULL AND released=0").all() as ReferenceRow[])
+          if (terms.some(term => rowReferences(db, row).has(term))) db.prepare("UPDATE roam_operations SET released=1 WHERE operation_id=?").run(row.operation_id);
+      }).immediate());
+    },
+    prune(now, retentionMs, retained = () => false) {
+      if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(retentionMs) || retentionMs < 1) throw new Error("Invalid journal retention");
+      return withDatabase(file, db => db.raw.transaction(() => {
+        const removed: string[] = [];
+        const rows = db.prepare("SELECT * FROM roam_operations WHERE completed_at <= ? ORDER BY completed_at,operation_id LIMIT 256")
+          .all(now - retentionMs) as ReferenceRow[];
+        for (const row of rows) {
+          const refs = rowReferences(db, row);
+          if (artifactKinds.has(row.kind) && !row.released && refs.size) continue;
+          const values = [row.operation_id, ...(row.result_json ? resultReferences(parseResult(row.result_json)) : [])];
+          if (values.some(retained)) continue;
+          db.prepare("DELETE FROM roam_operation_actions WHERE operation_id=?").run(row.operation_id);
+          db.prepare("DELETE FROM roam_operations WHERE operation_id=?").run(row.operation_id); removed.push(row.operation_id);
+        }
+        return removed;
+      }).immediate());
     },
   };
 }

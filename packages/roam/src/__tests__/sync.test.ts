@@ -9,8 +9,10 @@ import * as storeApi from "../stores";
 import { sweepStoreArtifacts } from "../cleanup";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { createReplica } from "@spider/db-core/testutil";
+import { openDb } from "@spider/db-core";
 import { exportBatch } from "@spider/db-core/roam/export";
 import { assignInitialHome } from "../homes";
+import type { ArtifactJournal } from "../journal";
 import { addTodo } from "../../../todo/src/store";
 import * as staging from "../staging";
 import { HerdrError } from "../../../herdr/src/client/parse";
@@ -271,6 +273,24 @@ it("global batches apply before worktree batches consult the current home", asyn
     expect(result.every(row => row.code === 0)).toBe(true);
     expect(target.prepare("SELECT uuid,text FROM todos").all()).toEqual([{ uuid: "todo-session-a", text: "portable" }]);
   } finally { homeSource.close(); }
+}, 5000);
+it("receipted transfers release artifact journal references on both machines", async () => {
+  const f = fixture(); f.seed(); await service(f).sync();
+  const exported = f.calls.find(call => call.operation.kind === "export" && call.operation.args.storeKey === f.remotes.get(BOX)!.worktree.storeKey)!;
+  expect((f.journal as ArtifactJournal).hasArtifactReference(exported.operation.id)).toBe(false);
+  expect((f.remotes.get(BOX)!.ports.journal as ArtifactJournal).hasArtifactReference(exported.operation.id)).toBe(false);
+  const imported = f.calls.find(call => call.operation.kind === "import")!;
+  expect((f.journal as ArtifactJournal).hasArtifactReference(imported.operation.args.artifactId as string)).toBe(false);
+  expect((f.remotes.get(BOX)!.ports.journal as ArtifactJournal).hasArtifactReference(imported.operation.args.artifactId as string)).toBe(false);
+}, 5000);
+it("read-only remote calls never accumulate journal operations after failures", async () => {
+  const f = fixture(); f.seed(); const sync = service(f);
+  await sync.sync(); f.unavailable.add(BOX); await sync.sync(); f.unavailable.delete(BOX); await sync.sync();
+  for (const root of [f.global.root, f.remotes.get(BOX)!.global.root]) {
+    const db = openDb(join(root, "roam", "journal.db"));
+    try { expect(db.prepare("SELECT kind FROM roam_operations WHERE kind IN ('stores','inventory','cursor','receipt','split')").all()).toEqual([]); }
+    finally { db.close(); }
+  }
 }, 5000);
 it("count-zero batches produce no import or receipt", async () => {
   const f = fixture(); const result = await service(f).sync();

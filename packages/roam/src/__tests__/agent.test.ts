@@ -131,10 +131,10 @@ it("a cached result never exceeds a lowered reply limit", async () => {
 
 it("same operation returns committed evidence", async () => {
   const { db, ports, storeKey } = fixture();
-  const request = operation("inventory-replay", "inventory", { storeKey });
+  const request = operation("capture-replay", "enable-capture", { storeKey });
   const first = await handleAgentOperation(request, ports);
   expect(first.code).toBe(0);
-  db.prepare("UPDATE roam_meta SET capture_enabled = 1").run();
+  db.prepare("UPDATE roam_meta SET capture_enabled = 0").run();
   const replay = await handleAgentOperation(request, ports);
   expect(replay).toEqual(first);
   expect(ports.journal.read(request.id).filter(row => row.action === "done")).toHaveLength(1);
@@ -142,7 +142,7 @@ it("same operation returns committed evidence", async () => {
 
 it("changed arguments refuse before effects", async () => {
   const { ports, opened, storeKey } = fixture();
-  const request = operation("changed-args", "inventory", { storeKey });
+  const request = operation("changed-args", "enable-capture", { storeKey });
   expect((await handleAgentOperation(request, ports)).code).toBe(0);
   const before = [...opened];
   const changed = await handleAgentOperation({ ...request, args: { storeKey: "repo:other" } }, ports);

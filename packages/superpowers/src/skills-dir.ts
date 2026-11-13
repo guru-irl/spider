@@ -41,6 +41,23 @@ export function pstackSkillsDir(): string {
   return candidates[0];
 }
 
+/** Resolve intercom's bundled skill beside superpowers in source checkouts and npm bundles. */
+export function intercomSkillsDir(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    path.resolve(here, "..", "..", "intercom", "skills"),
+    path.resolve(here, "..", "packages", "intercom", "skills"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if (fs.statSync(path.join(candidate, "pi-intercom", "SKILL.md")).isFile()) return candidate;
+    } catch {
+      /* try next candidate */
+    }
+  }
+  return candidates[0];
+}
+
 export interface BundledSkillCollection {
   source: "bundled superpowers" | "bundled pstack";
   directory: string;
@@ -78,9 +95,9 @@ export function projectSkillsDir(cwd: string): string {
 export function contributeSkillPaths(cwd: string): string[] {
   const out: string[] = [];
   // Only contribute a tier that actually exists on disk (avoids emitting a bad
-  // baseline path from an unexpected bundle layout — pi also loads the baseline
-  // via the package `pi.skills` manifest entry regardless).
-  for (const baseline of [baselineSkillsDir(), pstackSkillsDir()]) {
+  // path from an unexpected bundle layout). Spider usually loads as an extension
+  // file, so pi never reads the package manifest's skills list.
+  for (const baseline of [baselineSkillsDir(), pstackSkillsDir(), intercomSkillsDir()]) {
     try {
       if (fs.statSync(baseline).isDirectory()) out.push(baseline);
     } catch {

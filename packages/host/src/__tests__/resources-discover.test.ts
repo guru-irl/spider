@@ -42,7 +42,7 @@ afterAll(() => {
 });
 
 describe("resources_discover", () => {
-  it("contributes both bundled skill collections", async () => {
+  it("contributes every bundled skill collection", async () => {
     const { pi, handlers } = fakePi();
     spiderExtension(withPiEvents(pi as never), hostUnitPorts);
 
@@ -60,5 +60,8 @@ describe("resources_discover", () => {
     }
     expect(paths).toContain(baselineSkillsDir());
     expect(paths).toContain(resolve("packages/pstack/skills"));
+    // Spider loads through an extension file, not as a pi package, so pi never reads the
+    // package manifest's skills list. The intercom skill must come from this hook.
+    expect(paths).toContain(resolve("packages/intercom/skills"));
   });
 });

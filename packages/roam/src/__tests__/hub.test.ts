@@ -518,6 +518,16 @@ it("startup retains old evidence when journal references are corrupt", async () 
   expect(existsSync(file)).toBe(true);
 }, 5000);
 
+it("an unsafe incoming root is reported locally without blocking hub startup", async () => {
+  const f = fixture(), outside = join(f.f.root, "outside"), incoming = join(f.f.root, "incoming");
+  mkdirSync(outside, { recursive: true, mode: 0o700 }); writeFileSync(join(outside, "sentinel"), "untouched", { mode: 0o600 });
+  symlinkSync(outside, incoming);
+  await f.start();
+  expect(await f.request("status")).toMatchObject({ code: 0, value: { storageProblems: [
+    { entry: incoming, problem: { reason: expect.stringMatching(/private directory|unsafe/i) } },
+  ] } });
+  expect(readFileSync(join(outside, "sentinel"), "utf8")).toBe("untouched");
+}, 5000);
 it("one corrupt peer staging database is reported without blocking hub startup", async () => {
   const h = fixture(), directory = join(h.f.root, "incoming", BOX); mkdirSync(directory, { recursive: true, mode: 0o700 });
   writeFileSync(join(directory, "quota.db"), "not sqlite", { mode: 0o600 });

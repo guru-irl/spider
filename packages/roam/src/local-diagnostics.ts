@@ -10,6 +10,7 @@ import { readLocal } from "@spider/db-core/roam/local-state";
 import type { Scope, StoreKey } from "@spider/db-core/roam/types";
 import { createProcessPresence, type PresenceBuild, type PresenceRecord } from "@spider/herdr/sessions/presence";
 import { inspectRoamPlacement } from "@spider/herdr/roam-placement";
+import { listPendingIdLocks } from "@spider/herdr/sessions/id-lock";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { loadConfig } from "./config";
@@ -18,6 +19,8 @@ import { doctorLocal, inspectStore, readStatus, type DiagnosticMachine, type Dia
 import { listStoreKeys } from "./store-inventory";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { isPeerFailureReason } from "./peer-errors";
+import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
+import { inspectIntentReservations } from "./intent";
 
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 function snapshotProblem(error: unknown): string {
@@ -266,7 +269,7 @@ function readDoctorCatalog(db: Db, projects: DoctorProject[], globalPath: string
 }
 
 /** Inspect registered local stores without modifying them. */
-export async function runLocalDoctor(input: { root: string; bundleUrl?: URL }): Promise<{ enabled: boolean; diagnostics: readonly Diagnostic[]; consumers: LoadedConsumer[] }> {
+export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null> }): Promise<{ enabled: boolean; diagnostics: readonly Diagnostic[]; consumers: LoadedConsumer[] }> {
   if (!isAbsolute(input.root)) throw new Error("The roaming root must be absolute");
   let root = resolve(input.root);
   try { root = realpathSync(root); } catch (error) { if (!missing(error)) throw error; }
@@ -274,6 +277,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL }): 
   const config = existsSync(configFile) ? loadConfig(configFile) : disabledConfig();
   const severity = config.enabled ? "block" : "warning";
   const inventory: Diagnostic[] = [], storeDiagnostics: Diagnostic[] = [], peerFailures: Diagnostic[] = [], consumers: LoadedConsumer[] = [];
+  if (config.role === "box") inventory.push({ severity, reason: `${RUNNING_INTENT_SOURCE_UNAVAILABLE}: Hosting is fenced until participant intent is available.`, repairCommand: null });
   const origins = new WeakMap<Db, string>(), seen = new Set<string>(), problems = new Set<string>();
   const open = (file: string): Db | undefined => {
     const source = resolve(file), db = openOwned(source);
@@ -365,6 +369,27 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL }): 
       inventory.push({ severity: "warning", reason: `Session ${safe(failure.session)}: proxy ${safe(failure.remote)} ${detail}.`, repairCommand: null });
     }
   } catch { inventory.push({ severity: "warning", reason: "Cannot inspect proxy placement state.", repairCommand: null }); }
+  const reportedHandoffs = new Set<string>();
+  try {
+    const pending = await listPendingIdLocks(join(root, "herdr"));
+    let core: string | null = null;
+    if (pending.length && input.currentCore) { try { core = await input.currentCore(); } catch { /* An unavailable core is not proof. */ } }
+    for (const handoff of pending) {
+      const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
+      const detail = !core || !handoff.coreId ? "core identity is unavailable"
+        : core !== handoff.coreId ? "destination core changed"
+        : "awaiting reconciliation";
+      reportedHandoffs.add(`${handoff.sessionId}\0${handoff.operationId}`);
+      inventory.push({ severity, reason: `Session ${safe(handoff.sessionId)}: exact launch ${safe(handoff.operationId)} is pending; ${detail}.`, repairCommand: null });
+    }
+  } catch { inventory.push({ severity, reason: "Cannot inspect pending exact-launch handoffs.", repairCommand: null }); }
+  try {
+    for (const reservation of await inspectIntentReservations(root)) {
+      if (reportedHandoffs.has(`${reservation.sessionId}\0${reservation.operationId}`)) continue;
+      const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
+      inventory.push({ severity, reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} is pending; handoff and core evidence are unavailable.`, repairCommand: null });
+    }
+  } catch { inventory.push({ severity, reason: "Cannot inspect pending launch reservations.", repairCommand: null }); }
   const ports = createLocalDiagnosticPorts(root, [], input.bundleUrl);
   return { enabled: config.enabled, diagnostics: [...await doctorLocal(config, ports, consumers), ...storeDiagnostics, ...inventory, ...peerFailures], consumers };
 }

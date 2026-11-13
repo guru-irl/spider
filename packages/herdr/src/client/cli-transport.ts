@@ -5,7 +5,10 @@ import { spawn } from 'node:child_process';
 import { HerdrError, parseJson, object, text } from './parse.js';
 import { cliReplyByteLimit, SINGLE_REPLY_BYTES } from './limits.js';
 
-export interface CliRequestOptions { timeoutMs?: number; signal?: AbortSignal; raw?: boolean; strictInput?: boolean }
+export interface CliRequestOptions {
+  timeoutMs?: number; signal?: AbortSignal; raw?: boolean; strictInput?: boolean;
+  processObserver?: { started(pid: number): void; exited(pid: number): void };
+}
 
 export async function invokeCli(binary: string, argv: readonly string[], env: Readonly<NodeJS.ProcessEnv>, maxBytes: number = cliReplyByteLimit(argv), input?: Buffer, options: CliRequestOptions = {}): Promise<unknown> {
   const timeoutMs = options.timeoutMs ?? 15_000;
@@ -13,6 +16,7 @@ export async function invokeCli(binary: string, argv: readonly string[], env: Re
   if (options.signal?.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted');
   return new Promise((resolve, reject) => {
     const child = spawn(binary, [...argv], { env: { ...env }, stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+    if (child.pid !== undefined) { try { options.processObserver?.started(child.pid); } catch { /* Observation must not change transport cleanup. */ } }
     const stdout: Buffer[] = []; const stderr: Buffer[] = []; let size = 0; let errorSize = 0; let failure: HerdrError | null = null;
     let finished = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined, reapTimer: ReturnType<typeof setTimeout> | undefined;
@@ -40,6 +44,7 @@ export async function invokeCli(binary: string, argv: readonly string[], env: Re
     child.once('error', error => stop(new HerdrError((error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing-hc' : 'spawn-error', error.message, { pid: child.pid })));
     child.once('close', (code, signal) => {
       if (finished) return;
+      if (child.pid !== undefined) { try { options.processObserver?.exited(child.pid); } catch { /* Missing evidence stays unknown. */ } }
       finished = true; cleanup();
       if (failure) { reject(failure); return; }
       if (code !== 0) {

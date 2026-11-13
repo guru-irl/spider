@@ -1,16 +1,17 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
 
 export async function main(argv: readonly string[], io: { out(text: string): void; err(text: string): void }): Promise<number> {
   if (argv.length === 1 && ["--help", "-h", "help"].includes(argv[0])) {
-    io.out("Usage: spider-roam-supervisor [--help]\nHosting is unavailable in this build.\n");
+    io.out("Usage: spider-roam-supervisor [--help]\nHosting is fenced until participant intent is available.\n");
     return 0;
   }
   if (argv.length > 0) {
     io.err("Invalid arguments. Run with --help for usage.\n");
     return 2;
   }
-  io.err("Hosting is unavailable in this build.\n");
+  io.err(`Hosting is unavailable (${RUNNING_INTENT_SOURCE_UNAVAILABLE}). Run spider roam doctor.\n`);
   return 1;
 }
 

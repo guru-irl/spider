@@ -7,7 +7,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { HerdrError } from '../client/parse.js';
 import type { ProcessIdentity, ProcessProbe } from './lease.js';
-import { hash, privateDirectory, readPrivateJson, withProcessLock, writePrivateJson } from './registry.js';
+import { hash, jsonFiles, privateDirectory, readPrivateJson, withProcessLock, writePrivateJson } from './registry.js';
 
 export interface IdLockHandoff { operationId: string; nonce: string; file?: string; coreId?: string }
 export interface IdLockObservation {
@@ -91,6 +91,24 @@ export async function inspectIdLock(root: string, sessionId: string): Promise<Id
   const record = parseRecord(value, sessionId);
   return { identity: { ...record.identity }, bootId: record.bootId, pendingOperationId: record.handoff?.operationId ?? null,
     pendingFile: record.handoff?.file ?? null, pendingCoreId: record.handoff?.coreId ?? null, operationId: record.operationId ?? null };
+}
+
+/** Inspect pending handoffs without returning their nonce, token, or file contents. */
+export async function listPendingIdLocks(root: string): Promise<Array<{ sessionId: string; operationId: string; coreId: string | null }>> {
+  const stateRoot = resolve(root), directory = join(stateRoot, 'id-locks');
+  try { await checkPrivate(stateRoot, true); await checkPrivate(directory, true); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+  const pending: Array<{ sessionId: string; operationId: string; coreId: string | null }> = [];
+  for (const file of await jsonFiles(directory)) {
+    await checkPrivate(file, false);
+    const value = await readPrivateJson(file) as { sessionId?: unknown } | null;
+    if (!value || typeof value.sessionId !== 'string' || !value.sessionId || value.sessionId.includes('\0') || file !== join(directory, `${hash(value.sessionId)}.json`)) {
+      throw new HerdrError('invalid-session-id-lock', 'Session ID ownership record is invalid');
+    }
+    const record = parseRecord(value, value.sessionId);
+    if (record.handoff) pending.push({ sessionId: record.sessionId, operationId: record.handoff.operationId, coreId: record.handoff.coreId ?? null });
+  }
+  return pending;
 }
 
 export async function claimIdLock(root: string, sessionId: string, identity: ProcessIdentity, probe: (pid: number) => Promise<ProcessProbe>, options: { bootId?: () => Promise<string>; handoff?: IdLockHandoff; exclusive?: boolean; recoverPending?: string } = {}): Promise<IdLockHandle> {

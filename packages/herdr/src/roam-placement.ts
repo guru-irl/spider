@@ -18,7 +18,7 @@ type Options = { app: AppClient | null; hc: HcClient; registry: TerminalRegistry
   removedSessions?: (sessions: readonly string[]) => Promise<ReadonlySet<string>> };
 const stateFile = (root: string) => join(root, 'roam-placement.json');
 const errorCode = (error: unknown) => error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-function launchNotStarted(error: unknown): boolean {
+export function launchNotStarted(error: unknown): boolean {
   if (!(error instanceof HerdrError)) return false;
   if (['core-unavailable', 'core-mismatch'].includes(error.code) && error.details === undefined) return true;
   const details = error.details;

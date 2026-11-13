@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { readFileSync, appendFileSync, watchFile, unwatchFile, writeFileSync, mkdirSync, existsSync, renameSync, openSync, closeSync, unlinkSync } from 'node:fs';
+import { readFileSync, appendFileSync, watchFile, unwatchFile, writeFileSync, mkdirSync, existsSync, renameSync, openSync, closeSync, unlinkSync, realpathSync } from 'node:fs';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn } from 'node:child_process';
 import { createServer, connect } from 'node:net';
@@ -28,22 +28,49 @@ async function withDimensions(terminal) {
 const config = JSON.parse(readFileSync(`${root}/core.json`, 'utf8'));
 function roamMachine(on) {
   const exact = config.machines.filter(machine => machine.name === on);
-  if (exact.length) return exact.length === 1;
+  if (exact.length) return exact.length === 1 ? exact[0] : null;
   const key = value => String(value ?? '').toLowerCase().replace(/\.$/, '');
   const matches = config.machines.filter(machine => {
     const target = machine.via && (typeof machine.target !== 'string' || !/^(?:[\w.-]+@)?[\w.-]+$/.test(machine.target)) ? '' : machine.target;
     return [machine.name, machine.host, target?.replace(/^.*@/, '')].some(alias => alias && key(alias) === key(on));
   });
-  return matches.length === 1;
+  return matches.length === 1 ? matches[0] : null;
 }
 const roamFile = (on, path) => `${root}/roam-files/${Buffer.from(on).toString('hex')}/${Buffer.from(path).toString('hex')}`;
 function restartCore(on, command, when) {
   const restart = config.roamFixture?.restart;
-  if (!restart || restart.command !== command || restart.when !== when) return;
-  if (restart.target === 'local') config.coreId = restart.nextCore;
-  else if (restart.remove) config.machines = config.machines.filter(machine => machine.name !== on);
-  else config.machines.find(machine => machine.name === on).id = restart.nextCore;
+  if (!restart || restart.command !== command || restart.when !== when) return false;
+  const target = restart.target === 'local' ? 'local' : 'remote';
+  if (target === 'local') { config.fixtureCorePid = (config.fixtureCorePid ?? 1000) + 1; config.fixtureCoreUptimeMs = 0; }
+  config.roamRestarts = [...(config.roamRestarts ?? []), { target, on }];
   delete config.roamFixture.restart; saveCore(config);
+  return true;
+}
+function changeIdentity(on, command, when) {
+  const change = config.roamFixture?.identityChange;
+  if (!change || change.command !== command || change.when !== when) return;
+  if (change.target === 'local') config.coreId = change.nextCore;
+  else if (change.remove) config.machines = config.machines.filter(machine => machine !== roamMachine(on));
+  else roamMachine(on).id = change.nextCore;
+  delete config.roamFixture.identityChange; saveCore(config);
+}
+function interrupted() {
+  console.error(JSON.stringify({ error: { kind: 'server_stopped', message: 'Fixture core restarted' } }));
+  process.exitCode = 3;
+}
+async function executeAgentFixture(command, input) {
+  const inside = path => realpathSync(path).startsWith(realpathSync(root) + '/');
+  if (command[0] !== process.execPath || !inside(command[1]) || command[2] !== '--global-root' || !inside(command[3]) || command[4] !== 'roam' || command[5] !== 'agent') {
+    throw new Error('Unfenced fixture agent');
+  }
+  return new Promise((resolve, reject) => {
+    const child = spawn(command[0], command.slice(1), { cwd: root, env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: command[3] }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const stdout = [], stderr = [];
+    child.stdout.on('data', bytes => stdout.push(bytes)); child.stderr.on('data', bytes => stderr.push(bytes));
+    child.once('error', reject);
+    child.once('close', code => resolve({ code, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) }));
+    child.stdin.on('error', reject); child.stdin.end(input);
+  });
 }
 const argv = process.argv.slice(2);
 appendFileSync(`${root}/calls.jsonl`, JSON.stringify({ argv, pid: process.pid, parentPid: process.ppid, env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('HC_') || ['PI_SUBAGENT_CHILD', 'PI_SUBAGENT_RUN_ID'].includes(k))) }) + '\n');
@@ -77,21 +104,36 @@ if (config.rawReplyBase64 !== undefined) {
   if (!on || !roamMachine(on)) {
     console.error(JSON.stringify({ error: { kind: 'machine_not_found', message: 'No such machine' } })); process.exit(3);
   }
-  const restart = config.roamFixture.restart?.command === 'exec' ? config.roamFixture.restart : null;
-  restartCore(on, 'exec', 'before');
-  const command = end < 0 ? [] : argv.slice(end + 1);
-  let output;
-  if (command[0] === 'cat') output = readFileSync(roamFile(on, command.at(-1)));
-  else if (config.roamFixture.execEchoStdin) {
-    const chunks = [];
-    if (flags.includes('--stdin')) for await (const chunk of process.stdin) chunks.push(chunk);
-    output = Buffer.concat(chunks);
-  } else output = Buffer.from(config.roamFixture.execReplyBase64 ?? '', 'base64');
-  if (restart?.when === 'during') { process.stdout.write(output.subarray(0, 1)); restartCore(on, 'exec', 'during'); process.stdout.write(output.subarray(1)); }
-  else process.stdout.write(output);
-  if (command[0] !== 'cat' && config.roamFixture.execExitCode) process.exitCode = config.roamFixture.execExitCode;
+  changeIdentity(on, 'exec', 'before');
+  if (restartCore(on, 'exec', 'before')) interrupted();
+  else {
+    const command = end < 0 ? [] : argv.slice(end + 1);
+    let output, programFailed = false;
+    if (command[0] === 'cat') output = readFileSync(roamFile(on, command.at(-1)));
+    else if (config.roamFixture.executeAgentFixture) {
+      const chunks = [];
+      if (flags.includes('--stdin')) for await (const chunk of process.stdin) chunks.push(chunk);
+      const result = await executeAgentFixture(command, Buffer.concat(chunks));
+      output = result.stdout;
+      if (result.code !== 0) { process.stdout.write(output); process.stderr.write(result.stderr); process.exitCode = result.code ?? 1; programFailed = true; }
+    } else if (config.roamFixture.execEchoStdin) {
+      const chunks = [];
+      if (flags.includes('--stdin')) for await (const chunk of process.stdin) chunks.push(chunk);
+      output = Buffer.concat(chunks);
+    } else output = Buffer.from(config.roamFixture.execReplyBase64 ?? '', 'base64');
+    if (!programFailed) {
+      changeIdentity(on, 'exec', 'during');
+      if (restartCore(on, 'exec', 'during')) { process.stdout.write(output.subarray(0, 1)); interrupted(); }
+      else {
+        process.stdout.write(output);
+        if (command[0] !== 'cat' && config.roamFixture.execExitCode) process.exitCode = config.roamFixture.execExitCode;
+      }
+    }
+  }
 } else if (argv[0] === 'server' && argv[1] === 'status') {
-  console.log(JSON.stringify({ core: { id: config.coreId, name: 'fixture' }, version: '0.1.16', pid: process.pid }));
+  console.log(JSON.stringify({ core: { id: config.coreId, name: 'fixture' }, version: '0.1.16',
+    pid: config.roamFixture ? config.fixtureCorePid ?? 1000 : process.pid,
+    ...(config.roamFixture ? { uptime_ms: config.fixtureCoreUptimeMs ?? 1000 } : {}) }));
 } else if (argv[0] === 'get') {
   const terminal = config.terminals.find(t => t.address === argv[1]);
   if (!terminal) { console.error(JSON.stringify({ error: { kind: 'not_found', message: 'No such terminal' } })); process.exit(3); }
@@ -112,17 +154,22 @@ if (config.rawReplyBase64 !== undefined) {
   if (config.roamFixture && (!on || !roamMachine(on))) {
     console.error(JSON.stringify({ error: { kind: 'machine_not_found', message: 'No such machine' } })); process.exit(3);
   }
-  restartCore(on, 'run', 'before');
-  const prefix = on ? on + '/' : '';
-  let number = config.nextTerminal ?? 2;
-  while (config.terminals.some(t => t.address === `${prefix}t${number}`)) number++;
-  const address = `${prefix}t${number}`; config.nextTerminal = number + 1;
-  const labels = {};
-  flags.forEach((value, i) => { if (value === '--label') { const entry = flags[i + 1], at = entry.indexOf('='); labels[entry.slice(0, at)] = entry.slice(at + 1); } });
-  const t = { address, name: suppliedName ?? null, parent: flags.includes('--no-parent') ? null : process.env.HC_TERMINAL_ID || null, labels, state: 'live', status: null, exit_code: null, reason: null, signal: null, finished_ms: null };
-  config.terminals.push(t); restartCore(on, 'run', 'during'); config.seq = (config.seq || 0) + 1; saveCore(config);
-  appendFileSync(`${root}/events.jsonl`, JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'created', seq: config.seq, terminal: t.address, data: t } }) + '\n');
-  console.log(JSON.stringify({ address, state: 'live', agent: argv[argv.indexOf('--') + 1] || 'node', cwd: root, parent: t.parent, turn: 0 }));
+  changeIdentity(on, 'run', 'before');
+  if (restartCore(on, 'run', 'before')) interrupted();
+  else {
+    const prefix = on ? on + '/' : '';
+    let number = config.nextTerminal ?? 2;
+    while (config.terminals.some(t => t.address === `${prefix}t${number}`)) number++;
+    const address = `${prefix}t${number}`; config.nextTerminal = number + 1;
+    const labels = {};
+    flags.forEach((value, i) => { if (value === '--label') { const entry = flags[i + 1], at = entry.indexOf('='); labels[entry.slice(0, at)] = entry.slice(at + 1); } });
+    const t = { address, name: suppliedName ?? null, parent: flags.includes('--no-parent') ? null : process.env.HC_TERMINAL_ID || null, labels, state: 'live', status: null, exit_code: null, reason: null, signal: null, finished_ms: null };
+    config.terminals.push(t); changeIdentity(on, 'run', 'during');
+    const restarted = restartCore(on, 'run', 'during'); config.seq = (config.seq || 0) + 1; saveCore(config);
+    appendFileSync(`${root}/events.jsonl`, JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'created', seq: config.seq, terminal: t.address, data: t } }) + '\n');
+    if (restarted) interrupted();
+    else console.log(JSON.stringify({ address, state: 'live', agent: argv[argv.indexOf('--') + 1] || 'node', cwd: root, parent: t.parent, turn: 0 }));
+  }
 } else if (argv[0] === 'kill' || argv[0] === 'rm') {
   const t = config.terminals.find(t => t.address === argv[1]);
   if (!t) { console.error(JSON.stringify({ error: { kind: 'not_found', message: 'No such terminal' } })); process.exit(3); }
@@ -148,15 +195,19 @@ if (config.rawReplyBase64 !== undefined) {
   if (!on || !roamMachine(on) || argv[1] !== 'write') {
     console.error(JSON.stringify({ error: { kind: 'machine_not_found', message: 'No such machine or operation' } })); process.exit(3);
   }
-  restartCore(on, 'file', 'before');
-  if (config.roamFixture.fileEarlySuccess) { console.log('{}'); process.exit(0); }
-  if (config.roamFixture.fileFailure) {
-    process.stderr.write(JSON.stringify({ error: config.roamFixture.fileFailure })); process.exit(7);
+  changeIdentity(on, 'file', 'before');
+  if (restartCore(on, 'file', 'before')) interrupted();
+  else {
+    if (config.roamFixture.fileEarlySuccess) { console.log('{}'); process.exit(0); }
+    if (config.roamFixture.fileFailure) {
+      process.stderr.write(JSON.stringify({ error: config.roamFixture.fileFailure })); process.exit(7);
+    }
+    const file = roamFile(on, argv.at(-1));
+    const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk);
+    mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, Buffer.concat(chunks));
+    changeIdentity(on, 'file', 'during');
+    if (restartCore(on, 'file', 'during')) interrupted(); else console.log('{}');
   }
-  const file = roamFile(on, argv.at(-1));
-  const chunks = []; for await (const chunk of process.stdin) chunks.push(chunk);
-  mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, Buffer.concat(chunks));
-  restartCore(on, 'file', 'during'); console.log('{}');
 } else if (argv[0] === 'file') {
   const machine = argv[argv.indexOf('--on') + 1];
   const path = argv.at(-1);

@@ -3,7 +3,7 @@ import localIntercom, { type IntercomBrokerPort } from './local.js';
 import { INTERCOM_EXTENSION_REGISTRY_READY_EVENT } from './extension-api.js';
 
 export const INTERCOM_CONFLICT_MESSAGE = 'Another intercom extension is loaded. Remove its package or extension entry and run /reload.';
-const instances = new WeakMap<object, { foreign: boolean; conflict: boolean; started: boolean }>();
+const instances = new WeakMap<object, { foreign: boolean; duplicate: boolean; conflict: boolean; started: boolean }>();
 const forkSignal = Symbol('spider-intercom');
 
 export function intercomConflict(pi: Pick<ExtensionAPI, 'events'>): 'intercom-extension-conflict' | undefined {
@@ -12,14 +12,16 @@ export function intercomConflict(pi: Pick<ExtensionAPI, 'events'>): 'intercom-ex
 
 export function registerIntercomOnce(pi: ExtensionAPI, brokerPort?: IntercomBrokerPort): void {
   if (instances.has(pi.events)) return;
-  const state = { foreign: false, conflict: false, started: false };
+  const state = { foreign: false, duplicate: false, conflict: false, started: false };
   instances.set(pi.events, state);
   const stopProbe = pi.events.on(INTERCOM_EXTENSION_REGISTRY_READY_EVENT, payload => {
-    if (!(payload && typeof payload === 'object' && forkSignal in payload)) state.foreign = true;
+    if (payload && typeof payload === 'object' && forkSignal in payload) state.duplicate = true;
+    else state.foreign = true;
   });
   pi.on('session_shutdown', () => { stopProbe(); instances.delete(pi.events); });
   pi.on('session_start', async (event, ctx) => {
-    if (state.started || state.conflict) return;
+    if (process.env.PI_SUBAGENT_CHILD === '1' && ctx.mode !== 'rpc') return;
+    if (state.started || state.conflict || (state.duplicate && !state.foreign)) return;
     if (state.foreign || pi.getAllTools().some(tool => tool.name === 'intercom')) {
       state.conflict = true;
       ctx.ui.notify(INTERCOM_CONFLICT_MESSAGE, 'error');
@@ -50,9 +52,5 @@ export function registerIntercomOnce(pi: ExtensionAPI, brokerPort?: IntercomBrok
     } });
     localIntercom(proxy, brokerPort);
     for (const start of starts) await start(event, ctx);
-    // Session replacement must retain the upstream startup behavior.
-    pi.on('session_start', async (nextEvent, nextContext) => {
-      for (const start of starts) await start(nextEvent, nextContext);
-    });
   });
 }

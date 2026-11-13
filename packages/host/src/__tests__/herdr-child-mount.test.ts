@@ -5,8 +5,26 @@ import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { createClientFixture } from '../../../herdr/src/__tests__/testutil.js';
 import * as herdr from '../herdr/mount.js';
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+
+it.each(['missing', 'throws'])('an intercom event bus that is %s cannot prevent spider startup', async failure => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '1');
+  const hooks = new Map<string, Function[]>(), tools: { name: string }[] = [], notices: string[] = [];
+  const pi = { on(name: string, fn: Function) { hooks.set(name, [...hooks.get(name) ?? [], fn]); return () => {}; },
+    registerCommand() {}, registerShortcut() {}, registerTool(tool: { name: string }) { tools.push(tool); }, sendMessage() {},
+    ...(failure === 'throws' ? { events: { on() { throw new Error('fixture bus failed'); }, emit() {} } } : {}) };
+  const ctx = { cwd: process.cwd(), mode: 'rpc', hasUI: true, ui: { notify(message: string) { notices.push(message); } },
+    sessionManager: { getSessionId: () => 'fixture', getSessionFile: () => undefined, getBranch: () => [] } };
+  const { default: extension } = await import('../extension.js');
+  expect(() => extension(pi as never)).not.toThrow();
+  expect(tools.map(tool => tool.name)).toContain('spider');
+  expect(tools.map(tool => tool.name)).not.toContain('intercom');
+  await hooks.get('session_start')![0]({}, ctx);
+  expect(notices).toEqual([expect.stringMatching(/intercom.*(?:unavailable|could not|couldn't)/i)]);
+  for (const fn of hooks.get('session_shutdown') ?? []) await fn({ reason: 'quit' }, ctx);
+}, 5000);
 
 it.each([true, false])('Herdr mount failure cannot take down spider (child=%s)', async child => {
   const f = await createClientFixture();
@@ -23,7 +41,7 @@ it.each([true, false])('Herdr mount failure cannot take down spider (child=%s)',
   const ctx = { cwd: f.root, mode: 'rpc', hasUI: true, ui: { notify(message: string) { notices.push(message); } }, sessionManager: { getSessionId: () => 'mount-session', getSessionFile: () => undefined, getBranch: () => [] } };
   try {
     const { default: extension } = await import('../extension.js');
-    expect(() => extension(pi as never)).not.toThrow();
+    expect(() => extension(withPiEvents(pi as never), hostUnitPorts)).not.toThrow();
     expect(tools.length).toBeGreaterThan(0);
     for (const event of [{ reason: 'startup' }, { reason: 'reload' }]) {
       for (const fn of hooks.get('session_start') ?? []) if (!previousStarts.has(fn)) await fn(event, ctx);

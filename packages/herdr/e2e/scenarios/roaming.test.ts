@@ -119,10 +119,20 @@ async function closedAppPlacement(suite: Suite): Promise<void> {
     expect(observed.labels).toMatchObject({ [HERDR_LABELS.kind]: 'roam-proxy', [HERDR_LABELS.session]: readiness.sessionId,
       [HERDR_LABELS.ownerTerminal]: address, [HERDR_LABELS.ownerCore]: cores.dest.coreId,
       [HERDR_LABELS.space]: 'fixture-space', [HERDR_LABELS.tab]: 'fixture-tab' });
+    const marker = 'r02-live-attach-proof';
+    const sent = await suite.hc(['send', '--json', '--force', terminal, marker], 'dest');
+    expect(sent.exitCode, sent.stderr).toBe(0);
+    const screen = await waitFor('live proxy receives remote output after placement', async () => {
+      const current = await hc.get(proxy);
+      if (current.state !== 'live') throw new Error('Proxy attach exited before receiving remote output');
+      return hc.read(proxy, { lines: 100 });
+    }, text => text.includes(marker), deadline(5000), { reconcileMs: 50 });
+    expect(screen).toContain(marker);
+    expect((await hc.get(proxy)).state).toBe('live');
     expect(await placement.reconcile([readiness])).toEqual({ pending: [] });
     expect(JSON.parse(await readFile(join(root, 'roam-placement.json'), 'utf8')).attempts).toHaveLength(1);
     await suite.evidence('R02-scope.json', { boundary: 'placement adapter only', input: 'synthetic readiness',
-      excluded: 'packaged observer-to-placement path and native pane', deferred: 'Task 3.4', proxy, labels: observed.labels });
+      excluded: 'packaged observer-to-placement path and native pane', deferred: 'Task 3.4', proxy, labels: observed.labels, marker, screen });
   } finally { await hc.dispose(); }
 }
 

@@ -3,9 +3,10 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readd
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { endianness } from "node:os";
-import { openDb, openDbReadOnly } from "@spider/db-core";
+import { migrate, openDb, openDbReadOnly } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { openDiagnosticSnapshot } from "../diagnostic-snapshot";
+import { runLocalDoctor } from "../local-diagnostics";
 
 const hooks = vi.hoisted(() => ({ afterRead: null as null | (() => void) }));
 vi.mock("node:fs", async importOriginal => {
@@ -134,6 +135,42 @@ it("refuses a source that changes during every snapshot and removes partial copi
   expect(() => openDiagnosticSnapshot(file)).toThrow(/changed/i);
   hooks.afterRead = null;
   expect(readdirSync(temp)).toEqual([]);
+}, 5000);
+
+it("doctor keeps at most one store snapshot while inspecting every registered store", async () => {
+  const { root, temp } = fixture();
+  vi.stubEnv("HOME", root); vi.stubEnv("SPIDER_GLOBAL_ROOT", root); vi.stubEnv("PATH", root);
+  const machine = "00000000-0000-4000-8000-000000000001";
+  const globalFile = join(root, "spider.db"), files = [globalFile];
+  const global = openDb(globalFile);
+  migrate(global, "global", { machineId: machine, globalRoot: root });
+  global.exec("CREATE TABLE fixture_payload(bytes BLOB); INSERT INTO fixture_payload VALUES (zeroblob(262144))");
+  for (let i = 0; i < 2; i++) {
+    const file = join(root, `project-${i}.db`), project = openDb(file);
+    migrate(project, "worktree", { machineId: machine, globalRoot: root });
+    project.exec("CREATE TABLE fixture_payload(bytes BLOB); INSERT INTO fixture_payload VALUES (zeroblob(262144)); DROP TRIGGER roam_sessions_capture_ai");
+    project.close(); files.push(file);
+    global.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES (?,?,?,1,1)")
+      .run(`project-${i}`, root, file);
+  }
+  global.close();
+  const before = files.map(file => createHash("sha256").update(readFileSync(file)).digest("hex"));
+  const maxStoreBytes = Math.max(...files.map(file => statSync(file).size));
+  let peak = 0, peakBytes = 0;
+  hooks.afterRead = () => {
+    const directories = readdirSync(temp).filter(name => name.startsWith("spider-roam-inspect-"));
+    peak = Math.max(peak, directories.length);
+    const bytes = directories.flatMap(name => readdirSync(join(temp, name)).map(file => statSync(join(temp, name, file)).size))
+      .reduce((sum, size) => sum + size, 0);
+    peakBytes = Math.max(peakBytes, bytes);
+  };
+  const report = await runLocalDoctor({ root });
+  hooks.afterRead = null;
+  expect(report.diagnostics.filter(item => item.reason.includes("roam_sessions_capture_ai"))).toHaveLength(2);
+  expect(peakBytes).toBeLessThanOrEqual(maxStoreBytes + 65_536);
+  expect(peak).toBe(1);
+  expect(readdirSync(temp)).toEqual([]);
+  expect(files.map(file => createHash("sha256").update(readFileSync(file)).digest("hex"))).toEqual(before);
 }, 5000);
 
 it("rejects symlinked source files", () => {

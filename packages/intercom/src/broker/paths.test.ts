@@ -19,23 +19,23 @@ import {
 } from "./paths.js";
 
 test("getAgentDirPath defaults to the pi agent directory under home", () => {
-  assert.equal(getAgentDirPath({}, "/home/rcroh"), join("/home/rcroh", ".pi/agent"));
+  assert.equal(getAgentDirPath({}, "/home/fixture"), join("/home/fixture", ".pi/agent"));
 });
 
 test("getAgentDirPath honors PI_CODING_AGENT_DIR", () => {
-  assert.equal(getAgentDirPath({ PI_CODING_AGENT_DIR: "/tmp/pi-agent" }, "/home/rcroh"), "/tmp/pi-agent");
+  assert.equal(getAgentDirPath({ PI_CODING_AGENT_DIR: "/home/fixture/pi-agent" }, "/home/fixture"), "/home/fixture/pi-agent");
 });
 
 test("getAgentDirPath resolves relative PI_CODING_AGENT_DIR values from the caller cwd", () => {
   const cwd = join(testTmpDir(), "workspace", "project");
   assert.equal(
-    getAgentDirPath({ PI_CODING_AGENT_DIR: "relative-agent" }, "/home/rcroh", cwd),
+    getAgentDirPath({ PI_CODING_AGENT_DIR: "relative-agent" }, "/home/fixture", cwd),
     join(cwd, "relative-agent"),
   );
 });
 
 test("getIntercomDirPath points at the intercom runtime directory under the agent dir", () => {
-  assert.equal(getIntercomDirPath("/tmp/pi-agent"), join("/tmp/pi-agent", "intercom"));
+  assert.equal(getIntercomDirPath("/home/fixture/pi-agent"), join("/home/fixture/pi-agent", "intercom"));
 });
 
 test("getBrokerSocketPath uses named pipe on Windows", () => {
@@ -45,8 +45,8 @@ test("getBrokerSocketPath uses named pipe on Windows", () => {
 });
 
 test("getBrokerSocketPath uses broker.sock under PI_CODING_AGENT_DIR on non-Windows", () => {
-  const socketPath = getBrokerSocketPath("linux", "/tmp/pi-agent");
-  assert.equal(socketPath, join("/tmp/pi-agent", "intercom", "broker.sock"));
+  const socketPath = getBrokerSocketPath("linux", "/home/fixture/pi-agent");
+  assert.equal(socketPath, join("/home/fixture/pi-agent", "intercom", "broker.sock"));
 });
 
 test("Windows TCP transport is opt-in", () => {

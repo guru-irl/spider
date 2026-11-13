@@ -6,8 +6,11 @@ import { createArgvClient } from '../client/argv-client.js';
 import { invokeCli as invokeHc } from '../client/hc.js';
 import { createTransport } from '../../../roam/src/transport.js';
 import { posix, join } from 'node:path';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { migrate, openDb } from '@spider/db-core';
+import { buildRoamEntries } from '../../../../scripts/build-roam.mjs';
+import { openJournal } from '../../../roam/src/journal.js';
 import { createByteDaemonFixture, createClientFixture } from './testutil.js';
 
 const machine = { id: 'remote-core-1', name: 'box-1.invalid', host: 'box-1.invalid', target: 'box-1.invalid', session: 'remote', via: false };
@@ -541,26 +544,25 @@ test.each(['', 'operation\n7'])('background launch refuses invalid operation ID 
   }
 }, 5000);
 
-test.each(['before', 'during'] as const)('core restart %s a call discards the result as retryable', async when => {
+test.each(['before', 'during'] as const)('a remote restart %s execution fails the call and keeps core identity', async when => {
   const fixture = await createClientFixture();
   try {
     await fixture.configure({ machines: [machine], roamFixture: { execReplyBase64: 'AQID' } });
     await fixture.writeRoamFile(peer.alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
     const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
     const resolved = await transport.resolve(peer);
-    await fixture.configure({ roamFixture: { execReplyBase64: 'AQID', restart: { when, command: 'exec', nextCore: 'remote-core-2' } } });
+    await fixture.configure({ roamFixture: { execReplyBase64: 'AQID', restart: { when, command: 'exec', target: 'remote' } } });
     await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 }))
-      .rejects.toMatchObject({ code: 'core-changed', retryable: true });
-    const calls = await fixture.calls();
-    expect(calls.some(call => call.argv[0] === 'exec' && call.argv.includes('inspect'))).toBe(true);
+      .rejects.toMatchObject({ code: 'server_stopped', details: { exitCode: 3 } });
     const state = JSON.parse(await readFile(join(fixture.root, 'core.json'), 'utf8'));
-    expect(state.machines[0].id).toBe('remote-core-2');
-  } finally {
-    await fixture.close();
-  }
+    expect(state.coreId).toBe('local-core');
+    expect(state.machines[0].id).toBe(machine.id);
+    expect(state.roamRestarts).toEqual([{ target: 'remote', on: peer.alias }]);
+    expect(await transport.exec(resolved, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).toEqual(Buffer.from([1, 2, 3]));
+  } finally { await fixture.close(); }
 }, 5000);
 
-test.each(['read', 'write', 'run'] as const)('core restart during %s leaves its result untrusted', async kind => {
+test.each(['read', 'write', 'run'] as const)('a restart during %s fails the call without rotating IDs', async kind => {
   const fixture = await createClientFixture();
   try {
     await fixture.configure({ machines: [machine], roamFixture: {} });
@@ -569,18 +571,25 @@ test.each(['read', 'write', 'run'] as const)('core restart during %s leaves its 
     const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
     const resolved = await transport.resolve(peer);
     const command = kind === 'read' ? 'exec' : kind === 'write' ? 'file' : 'run';
-    await fixture.configure({ roamFixture: { restart: { when: 'during', command, nextCore: 'remote-core-2' } } });
+    const target = kind === 'run' ? 'local' : 'remote';
+    await fixture.configure({ roamFixture: { restart: { when: 'during', command, target } } });
     const result = kind === 'read' ? transport.read(resolved, '/fixture/artifact', { timeoutMs: 30_000, maxBytes: 16 })
       : kind === 'write' ? transport.write(resolved, '/fixture/written', Buffer.from([0, 255]), 30_000)
       : transport.run(resolved, ['import'], 'operation-7');
-    await expect(result).rejects.toMatchObject({ code: 'core-changed', retryable: true });
+    await expect(result).rejects.toMatchObject({ code: 'server_stopped' });
     const state = JSON.parse(await readFile(join(fixture.root, 'core.json'), 'utf8'));
-    expect(state.machines[0].id).toBe('remote-core-2');
-    if (kind === 'write') expect(await fixture.readRoamFile(peer.alias, '/fixture/written')).toEqual(Buffer.from([0, 255]));
-    if (kind === 'run') expect(state.terminals.find((terminal: { address: string }) => terminal.address === 'box-1.invalid/t2')?.state).toBe('live');
-  } finally {
-    await fixture.close();
-  }
+    expect(state.coreId).toBe('local-core');
+    expect(state.machines[0].id).toBe(machine.id);
+    expect(state.roamRestarts).toEqual([{ target, on: peer.alias }]);
+    if (kind === 'read') expect(await transport.read(resolved, '/fixture/artifact', { timeoutMs: 30_000, maxBytes: 16 })).toEqual(Buffer.from([1, 2, 3]));
+    if (kind === 'write') {
+      expect(await fixture.readRoamFile(peer.alias, '/fixture/written')).toEqual(Buffer.from([0, 255]));
+      await transport.write(resolved, '/fixture/written', Buffer.from([0, 255]), 30_000);
+      expect(await fixture.readRoamFile(peer.alias, '/fixture/written')).toEqual(Buffer.from([0, 255]));
+    }
+    if (kind === 'run') expect(state.terminals.find((terminal: { address: string }) => terminal.address === 'box-1.invalid/t2'))
+      .toMatchObject({ state: 'live', labels: { 'spider.operation': 'operation-7' } });
+  } finally { await fixture.close(); }
 }, 5000);
 
 test('a removed machine after a call reports machine-not-found and discards the result', async () => {
@@ -590,7 +599,7 @@ test('a removed machine after a call reports machine-not-found and discards the 
     await fixture.writeRoamFile(peer.alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
     const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
     const resolved = await transport.resolve(peer);
-    await fixture.configure({ roamFixture: { execReplyBase64: 'AQ==', restart: { when: 'during', command: 'exec', remove: true } } });
+    await fixture.configure({ roamFixture: { execReplyBase64: 'AQ==', identityChange: { when: 'during', command: 'exec', remove: true } } });
     await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 }))
       .rejects.toMatchObject({ code: 'machine-not-found', retryable: true });
     const state = JSON.parse(await readFile(join(fixture.root, 'core.json'), 'utf8'));
@@ -600,23 +609,97 @@ test('a removed machine after a call reports machine-not-found and discards the 
   }
 }, 5000);
 
-test('a local core restart also invalidates a remote result', async () => {
+test('a local core restart fails the call but leaves its permanent identity intact', async () => {
   const fixture = await createClientFixture();
   try {
     await fixture.configure({ machines: [machine], roamFixture: {} });
     await fixture.writeRoamFile(peer.alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
     const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
     const resolved = await transport.resolve(peer);
-    await fixture.configure({ roamFixture: { execReplyBase64: 'AQ==', restart: { when: 'during', command: 'exec', target: 'local', nextCore: 'local-core-2' } } });
+    const before = await invokeHc(fixture.hcBinary, ['server', 'status', '--json'], fixture.localEnv) as { core: { id: string }; pid: number };
+    await fixture.configure({ roamFixture: { execReplyBase64: 'AQ==', restart: { when: 'during', command: 'exec', target: 'local' } } });
+    await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).rejects.toMatchObject({ code: 'server_stopped' });
+    const after = await invokeHc(fixture.hcBinary, ['server', 'status', '--json'], fixture.localEnv) as { core: { id: string }; pid: number; uptime_ms: number };
+    expect(after.core.id).toBe(before.core.id);
+    expect(after.pid).not.toBe(before.pid);
+    expect(after.uptime_ms).toBe(0);
+    expect(await transport.exec(resolved, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).toEqual(Buffer.from([1]));
+  } finally { await fixture.close(); }
+}, 5000);
+
+test.each([
+  ['local core state wipe', 'local'],
+  ['remote machine re-add', 'remote'],
+] as const)('a %s during a call discards its result', async (_scenario, target) => {
+  const fixture = await createClientFixture();
+  try {
+    await fixture.configure({ machines: [machine], roamFixture: {} });
+    await fixture.writeRoamFile(peer.alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
+    const resolved = await transport.resolve(peer);
+    await fixture.configure({ roamFixture: { execReplyBase64: 'AQ==', identityChange: { when: 'during', command: 'exec', target, nextCore: 'replacement-core' } } });
     await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 }))
       .rejects.toMatchObject({ code: 'core-changed', retryable: true });
     const state = JSON.parse(await readFile(join(fixture.root, 'core.json'), 'utf8'));
-    expect(state.coreId).toBe('local-core-2');
+    expect(target === 'local' ? state.coreId : state.machines[0].id).toBe('replacement-core');
+    const before = (await fixture.calls()).length;
+    await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).rejects.toMatchObject({ code: 'core-changed' });
+    expect((await fixture.calls()).length).toBe(before);
     const renewed = await transport.resolve(peer);
-    expect(renewed.machineId).toBe(peer.machineId);
-  } finally {
-    await fixture.close();
-  }
+    expect(await transport.exec(renewed, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).toEqual(Buffer.from([1]));
+  } finally { await fixture.close(); }
+}, 5000);
+
+test.each([
+  ['before dispatch', 'before'],
+  ['after a committed result is lost', 'during'],
+] as const)('a restart %s retries the journalled operation without repeating its effect', async (_phase, when) => {
+  const fixture = await createClientFixture();
+  let db: ReturnType<typeof openDb> | undefined;
+  try {
+    const remoteRoot = join(fixture.root, 'remote');
+    const bundle = join(fixture.root, 'agent-dist');
+    await mkdir(join(remoteRoot, 'roam'), { recursive: true });
+    await buildRoamEntries(bundle);
+    const remotePeer = { ...peer, node: process.execPath, cli: join(bundle, 'cli.mjs'), globalRoot: remoteRoot };
+    const identity = JSON.stringify({ machineId: peer.machineId });
+    await writeFile(join(remoteRoot, 'roam', 'machine.json'), identity);
+    await writeFile(join(remoteRoot, 'roam', 'config.json'), JSON.stringify({ enabled: false, role: 'box', machineId: peer.machineId,
+      hubMachineId: '00000000-0000-4000-8000-000000000002', peers: [], discoveryRoots: [], coreUnit: 'fixture' }));
+    db = openDb(join(remoteRoot, 'spider.db'));
+    migrate(db, 'global', { machineId: peer.machineId, globalRoot: remoteRoot });
+    db.prepare("UPDATE roam_meta SET store_key='global'").run();
+    db.prepare("INSERT INTO global_memory(uuid,category,content,created_at) VALUES ('memory-a','insight','portable',1)").run();
+    await fixture.configure({ machines: [machine], roamFixture: { executeAgentFixture: true } });
+    await fixture.writeRoamFile(peer.alias, posix.join(remoteRoot, 'roam', 'machine.json'), Buffer.from(identity));
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [remotePeer] });
+    const resolved = await transport.resolve(remotePeer);
+    const operation = { id: 'restart-operation', machineId: peer.machineId, expectedEpoch: null, kind: 'enable-capture', args: { storeKey: 'global' } };
+    const argv = ['roam', 'agent', JSON.stringify(operation)];
+    await fixture.configure({ roamFixture: { executeAgentFixture: true, restart: { when, command: 'exec', target: 'local' } } });
+    await expect(transport.exec(resolved, argv, { timeoutMs: 30_000, maxBytes: 4096 })).rejects.toMatchObject({ code: 'server_stopped' });
+    const journalPath = join(remoteRoot, 'roam', 'journal.db');
+    if (when === 'before') {
+      expect(existsSync(journalPath)).toBe(false);
+      expect(db.prepare('SELECT capture_enabled FROM roam_meta').get()).toEqual({ capture_enabled: 0 });
+      expect(db.prepare('SELECT count(*) AS count FROM roam_changes').get()).toEqual({ count: 0 });
+    } else {
+      const committed = openJournal(journalPath).read(operation.id).filter(row => row.action === 'done');
+      expect(committed).toHaveLength(1);
+      expect(committed[0].result.value).toEqual({ storeKey: 'global', enabled: true });
+      expect(db.prepare('SELECT capture_enabled FROM roam_meta').get()).toEqual({ capture_enabled: 1 });
+      expect(db.prepare('SELECT count(*) AS count FROM roam_changes').get()).toEqual({ count: 1 });
+      db.exec("CREATE TRIGGER capture_once BEFORE UPDATE OF capture_enabled ON roam_meta BEGIN SELECT RAISE(FAIL,'capture repeated'); END");
+    }
+    const reply = JSON.parse((await transport.exec(resolved, argv, { timeoutMs: 30_000, maxBytes: 4096 })).toString('utf8'));
+    expect(reply).toMatchObject({ code: 0, operationId: operation.id, value: { storeKey: 'global', enabled: true } });
+    expect(openJournal(journalPath).read(operation.id).filter(row => row.action === 'done')).toHaveLength(1);
+    expect(db.prepare('SELECT count(*) AS count FROM roam_changes').get()).toEqual({ count: 1 });
+    expect((await fixture.calls()).filter(call => call.argv.includes('agent'))).toHaveLength(2);
+    const state = JSON.parse(await readFile(join(fixture.root, 'core.json'), 'utf8'));
+    expect(state.coreId).toBe('local-core');
+    expect(state.machines[0].id).toBe(machine.id);
+  } finally { db?.close(); await fixture.close(); }
 }, 5000);
 
 test('file write refuses a success reply when stdin closes early', async () => {
@@ -773,21 +856,23 @@ test('revocation during the first core observation prevents payload launch', asy
   }
 }, 5000);
 
-test('an uncertain re-resolution invalidates earlier handles without another hc call', async () => {
+test('a restart during re-resolution invalidates earlier handles without another hc call', async () => {
   const fixture = await createClientFixture();
   try {
     await fixture.configure({ machines: [machine], roamFixture: {} });
     await fixture.writeRoamFile(peer.alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
     const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
     const first = await transport.resolve(peer);
-    await fixture.configure({ roamFixture: { restart: { when: 'during', command: 'exec', nextCore: 'remote-core-2' } } });
-    await expect(transport.resolve(peer)).rejects.toMatchObject({ code: 'core-changed', retryable: true });
+    await fixture.configure({ roamFixture: { restart: { when: 'during', command: 'exec', target: 'remote' } } });
+    await expect(transport.resolve(peer)).rejects.toMatchObject({ code: 'server_stopped' });
     const before = (await fixture.calls()).length;
-    await expect(transport.exec(first, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 })).rejects.toMatchObject({ code: 'core-changed' });
+    await expect(transport.exec(first, ['inspect'], { timeoutMs: 60_000, maxBytes: 16 }))
+      .rejects.toMatchObject({ code: 'peer-invalidated', retryable: true });
     expect((await fixture.calls()).length).toBe(before);
-  } finally {
-    await fixture.close();
-  }
+    const state = JSON.parse(await readFile(join(fixture.root, 'core.json'), 'utf8'));
+    expect(state.machines[0].id).toBe(machine.id);
+    expect((await transport.resolve(peer)).machineId).toBe(peer.machineId);
+  } finally { await fixture.close(); }
 }, 5000);
 
 test('re-enrollment replaces old paths even when the core has not changed', async () => {

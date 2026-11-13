@@ -68,3 +68,15 @@ These URLs were fetched as text without conversion. The package and licence matc
 ## Adoption changes
 
 `index.ts` becomes `src/local.ts`; the guarded factory is `src/index.ts`. Only loading, duplicate protection, broker build/spawn plumbing and test-runner adaptation change. The protocol, client, broker routing, configuration and persisted state remain local 0.13.0 behavior. Tests retain upstream assertions, use Vitest and isolated fixtures, and start compiled brokers without tsx. The skill ships once. The optional broker connection port forwards the original spawn/connect action by default. Host unit fixtures inject a no-connection port. No federation or new receipt semantics are included.
+
+## Parity snapshot
+
+`upstream-assertions.json` records normalized assertion text and hashes for all 15 upstream test files. It also records normalized implementation hashes, including `broker/spawn.ts`. Seven test files come from the installed payload. The remaining eight come from the public source inputs above. The snapshot lists the permitted adaptations and their reasons.
+
+The repository test runs `node scripts/check-intercom-parity.mjs --manifest`. To regenerate the snapshot, provide a source directory containing the files above and an installed payload directory:
+
+```sh
+node scripts/check-intercom-parity.mjs --generate <source-directory> <installed-directory>
+```
+
+The generator checks the input hashes against this document before writing the snapshot. It reads, but does not modify, the installed payload.

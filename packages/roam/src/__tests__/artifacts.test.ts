@@ -1,3 +1,4 @@
+import { unexpectedBootstrapProbe } from "./transport-fixture";
 import { afterEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -149,6 +150,7 @@ function link(root: string, limits: Limits, inMemory = false, targetId = boxId):
   let beginPause: { enter(): void; wait: Promise<void> } | undefined;
   const sent: number[] = [], payloads: string[] = [], calls: string[] = [];
   const transport: Transport = {
+    bootstrapProbe: unexpectedBootstrapProbe,
     async resolve(value) { resolutionCount++; return { ...value }; },
     async exec(_peer, argv, options: CallOptions) {
       const request = JSON.parse(argv[argv.length - 1]) as { action: string; index?: number };
@@ -703,6 +705,7 @@ it("peer exclusion and concurrency survive separate hub processes", async () => 
       const started = new Promise<void>(resolve => { ready = resolve; });
       const pending = new Promise<Buffer>((_resolve, reject) => { stop = () => reject(new Error("offline")); });
       const transport: Transport = {
+        bootstrapProbe: unexpectedBootstrapProbe,
         async resolve(value) { return value; }, async exec() { ready(); return pending; },
         async read() { throw new Error("unexpected read"); }, async run() { throw new Error("unexpected run"); },
         async write() { throw new Error("unexpected write"); },
@@ -766,6 +769,7 @@ it("pulls byte-exact chunks into private local staging", async () => {
   const paths: string[] = [];
   let resolved = 0;
   const transport: Transport = {
+    bootstrapProbe: unexpectedBootstrapProbe,
     async resolve(value) { resolved++; return { ...value }; },
     async read(_peer, file, options) {
       paths.push(file);
@@ -800,6 +804,7 @@ it("a disconnected pull resumes without reading verified chunks again", async ()
   const reads: string[] = [];
   let disconnect = true;
   const transport: Transport = {
+    bootstrapProbe: unexpectedBootstrapProbe,
     async resolve(value) { return value; },
     async read(_peer, file) {
       reads.push(file);
@@ -838,6 +843,7 @@ it("corrupt inbound bytes cannot install or advance a replica cursor", async () 
   const peer: Peer = { machineId: boxId, alias: "box-1.invalid", node: "/node", pi: "/pi", cli: "/cli", core: "/core", globalRoot: peerRoot };
   let corrupt = true;
   const transport: Transport = {
+    bootstrapProbe: unexpectedBootstrapProbe,
     async resolve(value) { return value; },
     async read(_peer, file) { const data = readFileSync(file); if (corrupt) data[0] ^= 1; return data; },
     async exec() { throw new Error("unexpected command"); },

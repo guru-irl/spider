@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { replicaPath } from "@spider/db-core/roam/catalog";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { createSync } from "../sync";
 import { sizedBytes } from "../peer-state";
@@ -279,17 +280,17 @@ it("a pending push resumes from a replaced peer store's cursor without duplicate
   let failed = false;
   f.hook((_peer, operation) => { if (operation.kind === "import" && operation.args.storeKey === key && !failed) { failed = true; throw new Error("import not delivered"); } });
   expect((await service(f).sync()).some(row => row.code === 3)).toBe(true);
-  const replacement = createReplica("worktree", BOX);
-  try {
-    replacement.db.prepare("UPDATE roam_meta SET store_key=?").run(key);
-    remote.global.db.prepare("UPDATE projects SET db_path=?,real_path=? WHERE project_key='p0'").run(replacement.db.raw.name, replacement.root);
-    expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
-    expect(remote.stores.openStore(key).db.prepare("SELECT uuid FROM todos ORDER BY uuid").all()).toEqual([
-      { uuid: "todo-session-a" }, { uuid: "todo-session-b" },
-    ]);
-    expect(remote.stores.openStore(key).db.prepare("SELECT count(*) AS n FROM roam_receipts").get()).toEqual({ n: 1 });
-    expect(peerState.loadPeerState(f.global.db, BOX, 4096).pending).toEqual({});
-  } finally { replacement.close(); }
+  const replica = replicaPath(remote.global.db, key);
+  mkdirSync(dirname(replica), { recursive: true, mode: 0o700 });
+  await remote.worktree.db.raw.backup(replica); chmodSync(replica, 0o600);
+  const checkout = join(remote.global.root, "replacement"); mkdirSync(checkout, { mode: 0o700 });
+  await mapWorkspace(remote.global.db, { repoKey: "fixture-repo", workspaceId: "workspace-0", path: checkout });
+  expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
+  expect(remote.stores.openStore(key).db.prepare("SELECT uuid FROM todos ORDER BY uuid").all()).toEqual([
+    { uuid: "todo-session-a" }, { uuid: "todo-session-b" },
+  ]);
+  expect(remote.stores.openStore(key).db.prepare("SELECT count(*) AS n FROM roam_receipts WHERE peer_machine=?").get(HUB)).toEqual({ n: 1 });
+  expect(peerState.loadPeerState(f.global.db, BOX, 4096).pending).toEqual({});
 }, 5000);
 it("mapping during an uncertain push finishes the old import before resending the mapped stream", async () => {
   const f = fixture(); f.seed(); let lost = false;

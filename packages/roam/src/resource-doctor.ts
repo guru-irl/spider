@@ -1,7 +1,7 @@
 import type { BootstrapPeer, Diagnostic } from "./contracts";
 import { InventoryError, inventory, prerequisiteDiagnostics } from "./inventory";
 import { normalizeConfiguredClis } from "./bootstrap-reply";
-import type { ConfiguredCli, FileLimit, FileStatus, Inventory, ProvisionPorts } from "./provision-contracts";
+import type { ConfiguredCli, DoctorPorts, FileLimit, FileStatus, Inventory, ProvisionVerification } from "./provision-contracts";
 
 function fileReady(file: FileStatus): boolean { return file.present && file.readable && file.modeSafe; }
 function low(value: FileLimit, floor: number): boolean { return typeof value === "number" && value < floor; }
@@ -12,7 +12,7 @@ function failure(error: unknown): Diagnostic {
 }
 
 /** Report suggested repairs without invoking a service manager or modifying limits. */
-export async function doctorPeer(peer: BootstrapPeer, ports: ProvisionPorts): Promise<readonly Diagnostic[]> {
+export async function doctorPeer(peer: BootstrapPeer, ports: DoctorPorts): Promise<readonly Diagnostic[]> {
   let value: Inventory;
   let configuredClis: ConfiguredCli[] = [];
   try {
@@ -26,6 +26,13 @@ export async function doctorPeer(peer: BootstrapPeer, ports: ProvisionPorts): Pr
   const diagnostics = prerequisiteDiagnostics(value, ports.coreUnit);
   const warning = (reason: string, repairCommand: string | null = null) => diagnostics.push({ reason, severity: "warning", repairCommand });
   const block = (reason: string) => diagnostics.push({ reason, severity: "block", repairCommand: null });
+  const keys: readonly (keyof ProvisionVerification)[] = ["piSignedIn", "nativeSqlite", "extensionLoaded", "exactSession", "privateModes",
+    "bundledIntercom", "intercomUnique", "legacyDrained", "federation"];
+  let verified: ProvisionVerification | null = null;
+  if (ports.verifyPeer) try {
+    const result = await ports.verifyPeer();
+    if (result && typeof result === "object" && Object.keys(result).length === keys.length && keys.every(key => typeof result[key] === "boolean")) verified = result;
+  } catch { /* An unavailable verification is not readiness. */ }
 
   if (value.linger === false) warning("User lingering is disabled and may require administrative permission.", "loginctl enable-linger");
   if (value.linger === null) warning("User lingering could not be verified.");
@@ -47,7 +54,17 @@ export async function doctorPeer(peer: BootstrapPeer, ports: ProvisionPorts): Pr
   if (!value.spider.installed) block("The spider release is not installed on the box.");
   else if (!value.spider.nativeModuleReady) block("The spider native SQLite module is unavailable.");
   if (!fileReady(value.auth.pi)) block("The pi auth file is missing, unreadable, or has unsafe ownership or mode.");
-  else block("Pi sign-in is unverified. Auth-file metadata alone does not establish a signed-in provider.");
+  else if (!verified?.piSignedIn) block("Pi sign-in is unverified. Auth-file metadata alone does not establish a signed-in provider.");
+  if (!verified) block("Extension, exact-session, and intercom readiness are unverified.");
+  else {
+    if (!verified.nativeSqlite) block("The installed native SQLite module failed its readiness check.");
+    if (!verified.extensionLoaded) block("The spider extension did not load.");
+    if (!verified.exactSession) block("Exact-session launch was not verified.");
+    if (!verified.privateModes) block("Installed file ownership or modes are unsafe.");
+    if (!verified.bundledIntercom || !verified.intercomUnique) block("The bundled intercom is missing or duplicated.");
+    if (!verified.legacyDrained) block("The legacy intercom broker has not drained.");
+    if (!verified.federation) block("Intercom federation is not ready.");
+  }
   if (!value.cli.gitIdentity) warning("Git identity is not configured on the box.");
   if (!value.cli.gh) warning("The gh CLI is unavailable on the box.");
   else if (!fileReady(value.auth.gh) || value.auth.ghSignedIn !== true) warning("The gh CLI authentication is missing or could not be verified.");

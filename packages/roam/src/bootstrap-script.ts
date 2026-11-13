@@ -1,3 +1,5 @@
+import machineIdentitySource from "../../db-core/src/roam/machine.ts?raw";
+
 // The program receives only selected paths on stdin. Its text never varies by peer.
 export const BOOTSTRAP_SCRIPT: string = String.raw`
 'use strict';
@@ -249,4 +251,106 @@ try {
     auth: { pi: fixedFileStatus(path.join(home, '.pi/agent/auth.json')), gh: fixedFileStatus(path.join(home, '.config/gh/hosts.yml')), ghSignedIn },
   });
 } catch { fail('bootstrap-probe-failed'); }
+`;
+
+// The reply contains only the directory classification, never environment values.
+export const BOOTSTRAP_AGENT_DIRECTORY_SCRIPT: string = String.raw`
+'use strict';
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { fileURLToPath } = require('node:url');
+const { spawnSync } = require('node:child_process');
+const reply = value => process.stdout.write(JSON.stringify({ version: 1, kind: 'agent-directory', value }) + '\n');
+try {
+  const request = fs.readFileSync(0, 'utf8');
+  if (request.length > 16384) throw new Error('request');
+  const input = JSON.parse(request);
+  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).join(',') !== 'home' ||
+      typeof input.home !== 'string' || input.home.length > 4096 || !path.isAbsolute(input.home) ||
+      path.resolve(input.home) !== input.home || /[\x00-\x1f\x7f]/.test(input.home)) throw new Error('request');
+  const home = fs.realpathSync(os.homedir()), expected = path.join(home, '.pi/agent');
+  function isDefault(value, cwd) {
+    if (!value) return true;
+    if (typeof value !== 'string' || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value)) return false;
+    try {
+      let expanded = value;
+      if (value === '~') expanded = home;
+      else if (value.startsWith('~/')) expanded = path.join(home, value.slice(2));
+      else if (value.startsWith('file://')) expanded = fileURLToPath(value);
+      return path.resolve(cwd, expanded) === expected;
+    } catch { return false; }
+  }
+  if (input.home !== home || !isDefault(process.env.PI_CODING_AGENT_DIR, process.cwd())) reply('custom');
+  else {
+    const manager = spawnSync('systemctl', ['--user', 'show-environment'],
+      { encoding: 'utf8', timeout: 1500, maxBuffer: 65536, stdio: ['ignore', 'pipe', 'ignore'] });
+    if (manager.status !== 0 || typeof manager.stdout !== 'string') reply('unknown');
+    else {
+      const entries = manager.stdout.split('\n').filter(line => line.startsWith('PI_CODING_AGENT_DIR='));
+      if (entries.length > 1) reply('unknown');
+      else reply(isDefault(entries.length ? entries[0].slice('PI_CODING_AGENT_DIR='.length) : '', home) ? 'default' : 'custom');
+    }
+  }
+} catch { process.stdout.write(JSON.stringify({ version: 1, kind: 'agent-directory', error: 'agent-directory-probe-failed' }) + '\n'); }
+`;
+
+// Execute the same identity publication code used by local admission. The appended
+// program accepts only the enrollment request on stdin, never executable input.
+export const BOOTSTRAP_IDENTITY_SCRIPT: string = machineIdentitySource + String.raw`
+import { readSync } from 'node:fs';
+import { homedir as bootstrapHome } from 'node:os';
+import { isAbsolute as bootstrapAbsolute, relative as bootstrapRelative, resolve as bootstrapResolve, sep as bootstrapSep } from 'node:path';
+import { spawnSync as bootstrapSpawn } from 'node:child_process';
+
+const bootstrapReply = value => process.stdout.write(JSON.stringify({ version: 1, kind: 'identity', ...value }) + '\n');
+try {
+  const request = Buffer.alloc(16385); let count = 0;
+  while (count < request.length) { const size = readSync(0, request, count, request.length - count, null); if (!size) break; count += size; }
+  if (count > 16384) throw new Error('invalid-request');
+  const input = JSON.parse(request.subarray(0, count).toString('utf8'));
+  const valid = value => typeof value === 'string' && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value);
+  if (!input || typeof input !== 'object' || Array.isArray(input) ||
+      Object.keys(input).sort().join(',') !== 'core,coreId,globalRoot,machineId,operationId' ||
+      typeof input.operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(input.operationId) ||
+      !valid(input.core) || !bootstrapAbsolute(input.core) || !valid(input.coreId) || !valid(input.globalRoot) ||
+      !bootstrapAbsolute(input.globalRoot) || bootstrapResolve(input.globalRoot) !== input.globalRoot ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.machineId)) throw new Error('invalid-request');
+  const result = bootstrapSpawn(input.core, ['server', 'status', '--json'],
+    { encoding: 'utf8', timeout: 1500, maxBuffer: 16384, stdio: ['ignore', 'pipe', 'ignore'] });
+  if (result.status !== 0 || typeof result.stdout !== 'string') throw new Error('core-unavailable');
+  let core;
+  try { core = JSON.parse(result.stdout).core.id; } catch { throw new Error('core-unavailable'); }
+  if (core !== input.coreId) throw new Error('core-changed');
+  const home = realpathSync(bootstrapHome()), root = input.globalRoot, uid = process.getuid();
+  if (root !== home && !root.startsWith(home + bootstrapSep)) throw new Error('unsafe-identity');
+  let cursor = home, missing = false;
+  for (const part of bootstrapRelative(home, root).split(bootstrapSep).filter(Boolean)) {
+    cursor = join(cursor, part);
+    if (missing) continue;
+    try {
+      const stat = lstatSync(cursor);
+      if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o022) !== 0 ||
+          cursor === root && (stat.mode & 0o7777) !== 0o700) throw new Error('unsafe-identity');
+    } catch (error) { if (error && error.code === 'ENOENT') missing = true; else throw error; }
+  }
+  if (!missing) {
+    const directory = join(root, 'roam'), file = join(directory, 'machine.json');
+    try {
+      const dir = lstatSync(directory);
+      if (!dir.isDirectory() || dir.isSymbolicLink() || dir.uid !== uid || (dir.mode & 0o7777) !== 0o700) throw new Error('unsafe-identity');
+      try {
+        const stat = lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== uid || stat.nlink !== 1 ||
+            (stat.mode & 0o7777) !== 0o600 || stat.size > 4096) throw new Error('unsafe-identity');
+      } catch (error) { if (!error || error.code !== 'ENOENT') throw error; }
+    } catch (error) { if (!error || error.code !== 'ENOENT') throw error; }
+  }
+  const machineId = claimMachineIdentity(root, input.machineId);
+  bootstrapReply({ coreId: input.coreId, machineId });
+} catch (error) {
+  const named = error && error.code === 'machine-mismatch' ? 'machine-mismatch' : error && error.message;
+  const allowed = ['invalid-request', 'core-unavailable', 'core-changed', 'unsafe-identity', 'machine-mismatch'];
+  bootstrapReply({ error: allowed.includes(named) ? named : 'identity-bootstrap-failed' });
+}
 `;

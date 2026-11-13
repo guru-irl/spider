@@ -75,11 +75,8 @@ function readPeer(value: unknown): Peer {
   };
 }
 
-/** Read untrusted configuration without including its values in diagnostics. */
-export function loadConfig(file: string): RoamConfig {
-  let input: unknown;
-  try { input = JSON.parse(readFileSync(file, "utf8")); }
-  catch { throw new Error("Cannot read or parse roaming config"); }
+/** Parse untrusted configuration without including its values in diagnostics. */
+export function parseConfig(input: unknown): RoamConfig {
   const value = object(input, "expected an object");
   keys(value, ["enabled", "role", "machineId", "hubMachineId", "peers", "discoveryRoots", "coreUnit", "syncMs", "limits"], "config");
   const enabled = value.enabled === undefined ? false : value.enabled;
@@ -108,4 +105,12 @@ export function loadConfig(file: string): RoamConfig {
     syncMs: value.syncMs === undefined ? 120_000 : positiveInteger(value.syncMs, "sync period"),
     limits: readLimits(value.limits),
   };
+}
+
+/** Read untrusted configuration without including its values in diagnostics. */
+export function loadConfig(file: string): RoamConfig {
+  let input: unknown;
+  try { input = JSON.parse(readFileSync(file, "utf8")); }
+  catch { throw new Error("Cannot read or parse roaming config"); }
+  return parseConfig(input);
 }

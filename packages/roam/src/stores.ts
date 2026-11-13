@@ -107,6 +107,27 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
     }
     return { db, effects, policy };
   }
+  function cleanReceipt(artifact: BatchArtifact, staging: ReturnType<typeof openStaging>): void {
+    const manifest = staging.manifestFor(`pull-${artifact.header.batchId}`);
+    staging.release(manifest.id, `pull-${artifact.header.batchId}`);
+    staging.removeAfterReceipt(manifest, { artifactId: manifest.id, sha256: manifest.sha256 },
+      () => batchReceipt(openStore(artifact.header.storeKey).db, artifact) !== null);
+  }
+  function catalogCommitted(key: StoreKey, db: Db): void {
+    try { catalogReplica(globalDb, key, db); }
+    catch { /* Catalog recovery retries this committed store. */ }
+  }
+  function retryCleanup(artifact: BatchArtifact, root: string): void {
+    let release: (() => void) | null = null;
+    try {
+      if (!existsSync(join(root, "incoming", artifact.header.senderMachine, "quota.db"))) return;
+      release = acquireTransferLease(root, artifact.header.senderMachine, config.limits.peerConcurrency);
+      if (!release) return;
+      const staging = openStaging(root, artifact.header.senderMachine, config.limits);
+      try { cleanReceipt(artifact, staging); } finally { staging.close(); }
+    } catch { /* Cleanup cannot change a committed receipt. */ }
+    finally { try { release?.(); } catch { /* Retain cleanup evidence for the next retry. */ } }
+  }
   const adapter: StoreAdapter = {
     openStore,
     list() {
@@ -122,11 +143,15 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
     },
     async accept(key, artifact) {
       if (artifact.header.storeKey !== key || artifact.header.count === 0) throw new Error("Invalid nonempty import");
-      const already = batchReceipt(openStore(key).db, artifact);
-      if (already) { catalogReplica(globalDb, key, openStore(key).db); return already; }
       const root = defaultStagingRoot();
+      const already = batchReceipt(openStore(key).db, artifact);
       const staged = relative(join(root, "incoming", artifact.header.senderMachine, "artifacts"), artifact.file);
       const isStaged = !staged.startsWith(`..${sep}`) && !staged.startsWith("/") && staged.split(sep).length === 3;
+      if (already) {
+        catalogCommitted(key, openStore(key).db);
+        if (isStaged) retryCleanup(artifact, root);
+        return already;
+      }
       const release = isStaged ? acquireTransferLease(root, artifact.header.senderMachine, config.limits.peerConcurrency) : null;
       if (isStaged && !release) throw Object.assign(new Error("Peer import is busy"), { retryable: true });
       let staging: ReturnType<typeof openStaging> | null = null;
@@ -168,10 +193,10 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
             }
           } catch (error) { if (reserved && staging && manifest) staging.cancelValidationCopy(manifest, attempt, () => true); throw error; }
         }
-        catalogReplica(globalDb, key, db);
+        catalogCommitted(key, db);
         if (staging && manifest) {
-          staging.release(manifest.id, `pull-${artifact.header.batchId}`);
-          staging.removeAfterReceipt(manifest, { artifactId: manifest.id, sha256: manifest.sha256 }, () => batchReceipt(openStore(key).db, artifact) !== null);
+          try { cleanReceipt(artifact, staging); }
+          catch { /* The apply is committed. Retry cleanup on receipt replay. */ }
         }
         return committed;
       } finally {

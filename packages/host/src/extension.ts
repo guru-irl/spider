@@ -28,7 +28,6 @@ import { makeRunCostFormatter } from "./run-credits.js";
 import { registerUsageDashboardCommand } from "./usage/dashboard-command.js";
 import { dispatch, registerAction as registerGlobalAction, clearActions, type ActionHandler, type ActionCtx, type SpiderArgs } from "./dispatch";
 import { registerSlashCommands } from "./slash";
-import { main as roamCliMain } from "@spider/roam/cli";
 import { removeLegacyTools } from "./legacy-removal";
 import { registerHooks } from "./hooks";
 import { registerCompaction } from "./compaction/index.js";
@@ -1035,10 +1034,15 @@ export default function spiderExtension(hostPi: PiToolAPI): void {
     alreadyRegistered: new Set(["todos", "agents"]),
     ordinaryWorkAllowed,
     async roamDoctor(args) {
-      const output: string[] = [];
-      const code = await roamCliMain(args, { out: text => output.push(text), err: text => output.push(text) },
-        { bundleUrl: new URL(loadedBundle.url) });
-      return { text: output.join(""), code };
+      const bundle = fileURLToPath(loadedBundle.url);
+      const directory = loadedBundle.url.includes("/packages/host/src/")
+        ? path.resolve(path.dirname(bundle), "../../../dist") : path.dirname(bundle);
+      const cli = path.join(directory, "roam", "cli.mjs");
+      return new Promise(resolve => execFile(process.execPath, [cli, ...args], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 },
+        (error, stdout, stderr) => resolve({
+          text: stdout + stderr || "Roaming doctor is unavailable. No data was changed.\n",
+          code: error ? typeof error.code === "number" ? error.code : 1 : 0,
+        })));
     },
   });
 

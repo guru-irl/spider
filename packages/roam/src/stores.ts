@@ -245,7 +245,21 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
       }
       return result;
     },
-    batchDirectories() { return [...new Set([dirname(globalDb.raw.name), dirname(replicaPath(globalDb, "global")), ...[...handles.keys()].map(dirname)])].map(dir => join(dir, ".roam-batches")); },
+    batchDirectories() {
+      const directories = new Set([dirname(globalDb.raw.name), dirname(replicaPath(globalDb, "global")), ...[...handles.keys()].map(dirname)]);
+      for (const key of listStoreKeys(globalDb)) {
+        if (key === "global") continue;
+        let mapped: Db | undefined;
+        try {
+          const registered = registeredStore(key);
+          if (registered) directories.add(dirname(registered));
+          mapped = openRoamStoreReadOnly(globalDb, key);
+          if (mapped) directories.add(dirname(mapped.raw.name));
+        } catch (error) { writeLocal(globalDb, "store-problem", key, { reason: error instanceof Error ? error.message : "Unreadable snapshot directory" }); }
+        finally { mapped?.close(); }
+      }
+      return [...directories].map(dir => join(dir, ".roam-batches"));
+    },
     close() { for (const db of handles.values()) db.close(); handles.clear(); },
   };
   return adapter;

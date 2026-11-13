@@ -65,7 +65,7 @@ it("the packaged agent enables global capture and replays its durable result", (
     expect(repeated.status, repeated.stderr).toBe(0);
     expect(JSON.parse(repeated.stdout)).toEqual(JSON.parse(first.stdout));
     expect(f.db.prepare("SELECT count(*) AS count FROM roam_changes").get()).toEqual({ count: 1 });
-    const changed = f.invoke(["roam", "agent", JSON.stringify({ ...operation, kind: "stores", args: {} })]);
+    const changed = f.invoke(["roam", "agent", JSON.stringify({ ...operation, args: { storeKey: "repo:fixture-repo" } })]);
     expect(changed.status).toBe(0);
     expect(JSON.parse(changed.stdout)).toMatchObject({ code: 2, operationId: "enable-1" });
     expect(f.db.prepare("SELECT count(*) AS count FROM roam_changes").get()).toEqual({ count: 1 });

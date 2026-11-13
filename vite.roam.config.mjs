@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import { builtinModules } from "node:module";
 
 const entries = {
-  cli: "packages/roam/src/cli.ts",
+  cli: "packages/roam/src/cli-entry.ts",
   supervisor: "packages/roam/src/supervisor-main.ts",
 };
 const builtins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]));

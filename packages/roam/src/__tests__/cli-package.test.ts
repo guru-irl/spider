@@ -1,7 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { createHash } from "node:crypto";
+import { createProcessPresence } from "@spider/herdr/sessions/presence";
+import { processStartTime } from "../../../subagents/src/process-identity";
 import { pathToFileURL } from "node:url";
 import { buildFixture } from "../../../../scripts/test-bundle";
 import * as dbCore from "@spider/db-core";
@@ -87,7 +90,7 @@ it("invalid arguments exit two", async () => {
 }, 5000);
 
 it("future commands refuse without attempting work", async () => {
-  for (const args of [["roam", "status", "--json"], ["roam", "sync"], ["move", "session-1", "box-1.invalid"]]) {
+  for (const args of [["roam", "sync"], ["move", "session-1", "box-1.invalid"]]) {
     const output = capture();
     expect(await main(args, output.io)).toBe(1);
     expect(output.err.join("")).toMatch(/unavailable/i);
@@ -213,6 +216,33 @@ it("the standalone hub subpath bundles without pi in the roaming and fixture bui
   expect(typeof (await import(pathToFileURL(fixtureBundle).href)).runStandaloneHub).toBe("function");
 }, 5000);
 
+it("importing the CLI in a directly executed host bundle does not run the CLI", async () => {
+  const root = fixture(), entry = join(root, "host.ts"), bundle = join(root, "host.mjs");
+  writeFileSync(entry, 'import { main } from "@spider/roam/cli"; console.log(typeof main === "function" ? "host ready" : "missing");\n');
+  await buildFixture({ entryPoints: [entry], outfile: bundle, external: ["better-sqlite3", "sqlite-vec"] });
+  const result = spawnSync(process.execPath, [bundle, "--spider-usage-server"], {
+    cwd: root, env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: join(root, "global") }, encoding: "utf8", timeout: 2000,
+  });
+  expect(result.status).toBe(0);
+  expect(result.stdout.trim()).toBe("host ready");
+  expect(result.stderr).toBe("");
+  expect(existsSync(join(root, "global"))).toBe(false);
+}, 5000);
+
+it("the roaming CLI subpath bundles and runs through the fixture builder", async () => {
+  const root = fixture(), entry = join(root, "entry.ts"), bundle = join(root, "fixture-cli.mjs"), globalRoot = join(root, "global");
+  writeFileSync(entry, 'export { main } from "@spider/roam/cli";\n');
+  const result = await buildFixture({ entryPoints: [entry], outfile: bundle, external: ["better-sqlite3", "sqlite-vec"] });
+  expect(Object.keys(result.metafile.inputs).some(path => path.endsWith("packages/roam/src/cli.ts"))).toBe(true);
+  vi.stubEnv("HOME", root); vi.stubEnv("SPIDER_GLOBAL_ROOT", globalRoot);
+  const packaged = await import(pathToFileURL(bundle).href) as { main: typeof main };
+  const output = capture();
+  expect(await packaged.main(["roam", "doctor"], output.io)).toBe(0);
+  expect(output.out.join("")).toMatch(/roam.*disabled/i);
+  expect(output.err).toEqual([]);
+  expect(existsSync(globalRoot)).toBe(false);
+}, 5000);
+
 it("workspace dependencies and lock metadata resolve the roaming package", () => {
   const workspace = JSON.parse(readFileSync("packages/roam/package.json", "utf8"));
   const host = JSON.parse(readFileSync("packages/host/package.json", "utf8"));
@@ -240,6 +270,61 @@ it("the package gate refuses a missing roaming executable", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(missing);
   }
+}, 5000);
+
+it("the packaged roaming doctor reads actual loaded builds and leaves stores unchanged", async () => {
+  const root = fixture(), globalRoot = join(root, "global"), bundleRoot = join(root, "built"), bin = join(root, "bin");
+  mkdirSync(globalRoot, { recursive: true });
+  mkdirSync(bin);
+  const db = dbCore.openDb(join(globalRoot, "spider.db"));
+  try {
+    dbCore.migrate(db, "global", { machineId: hubId, globalRoot });
+    db.exec("DROP TRIGGER roam_global_memory_capture_ai");
+  } finally { db.close(); }
+  const startIdentity = processStartTime(process.pid);
+  expect(startIdentity).not.toBeNull();
+  const presence = createProcessPresence(join(globalRoot, "herdr"));
+  const live = { pid: process.pid, startIdentity: startIdentity!, sessionFile: null, sessionName: null,
+    kind: "top-level" as const, hcAddress: null, capabilities: { roamSchema: 14 } };
+  await presence.record({ ...live, build: { sha: "1234567", builtAt: "2026-01-02T03:04:05.000Z", version: "1.0.0", dirty: false } });
+  writeFileSync(join(bin, "sqlite3"), "#!/bin/sh\nprintf '3.37.9\\n'\n", { mode: 0o700 });
+  await buildRoamEntries(join(bundleRoot, "roam"));
+  writeFileSync(join(bundleRoot, "extension.js"), "// SPIDER_BUILD_ID=abcdef1@2026-01-02T03:04:05.000Z v1.0.0\n");
+  const snapshot = (directory: string): Array<[string, string]> => readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const path = join(directory, entry.name);
+    return entry.isDirectory() ? snapshot(path) : [[relative(globalRoot, path), createHash("sha256").update(readFileSync(path)).digest("hex")] as [string, string]];
+  }).sort((a, b) => a[0].localeCompare(b[0]));
+  const before = snapshot(globalRoot);
+  const result = spawnSync(process.execPath, [join(bundleRoot, "roam", "cli.mjs"), "roam", "doctor"], {
+    cwd: root, env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: globalRoot, PATH: `${bin}:${process.env.PATH ?? ""}` },
+    encoding: "utf8", timeout: 3000,
+  });
+  expect(result.status).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stdout).toContain("roam_global_memory_capture_ai");
+  expect(result.stdout).toMatch(/capture.*disabled/i);
+  expect(result.stdout).toMatch(/sqlite3.*3\.38.*migrated/i);
+  expect(result.stdout).toMatch(/loaded build 1234567/);
+  expect(snapshot(globalRoot)).toEqual(before);
+  const status = spawnSync(process.execPath, [join(bundleRoot, "roam", "cli.mjs"), "roam", "status", "--json"], {
+    cwd: root, env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: globalRoot, PATH: `${bin}:${process.env.PATH ?? ""}` },
+    encoding: "utf8", timeout: 3000,
+  });
+  expect(status.status).toBe(0);
+  expect(status.stderr).toBe("");
+  expect(JSON.parse(status.stdout)).toMatchObject({ enabled: false, cached: true, available: true, stores: [expect.objectContaining({ key: "global" })] });
+  expect(snapshot(globalRoot)).toEqual(before);
+  await presence.record({ ...live, build: { sha: "abcdef1", builtAt: "2026-01-02T03:04:05.000Z", version: "1.0.0", dirty: false } });
+  const compatibleBefore = snapshot(globalRoot);
+  const compatible = spawnSync(process.execPath, [join(bundleRoot, "roam", "cli.mjs"), "roam", "doctor"], {
+    cwd: root, env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: globalRoot, PATH: `${bin}:${process.env.PATH ?? ""}` },
+    encoding: "utf8", timeout: 3000,
+  });
+  expect(compatible.status).toBe(0);
+  expect(compatible.stderr).toBe("");
+  expect(compatible.stdout).toMatch(/loaded build abcdef1@2026-01-02T03:04:05\.000Z v1\.0\.0, roaming schema 14/);
+  expect(compatible.stdout).not.toMatch(/without the required release/);
+  expect(snapshot(globalRoot)).toEqual(compatibleBefore);
 }, 5000);
 
 it("packed entries have no pi imports", async () => {

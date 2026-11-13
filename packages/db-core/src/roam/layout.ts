@@ -109,8 +109,8 @@ type LayoutStatus = { captureSafe: boolean; diagnostic: string | null };
 
 /** Validate replicated data on open without repairing indexes or triggers. */
 export function validateRoamLayout(db: Db, scope: Scope): LayoutStatus;
-export function validateRoamLayout(db: Db, scope: Scope, mode: "inspect"): LayoutStatus & { needsWrite: boolean };
-export function validateRoamLayout(db: Db, scope: Scope, mode?: "inspect"): LayoutStatus & { needsWrite?: boolean } {
+export function validateRoamLayout(db: Db, scope: Scope, mode: "inspect"): LayoutStatus & { needsWrite: boolean; triggerDrift: readonly string[] };
+export function validateRoamLayout(db: Db, scope: Scope, mode?: "inspect"): LayoutStatus & { needsWrite?: boolean; triggerDrift?: readonly string[] } {
   for (const [table, required] of Object.entries(COMMON_COLUMNS)) columns(db, table, required);
   for (const [table, required] of Object.entries(LOCAL_COLUMNS[scope])) columns(db, table, required);
   for (const descriptor of Object.values(DESCRIPTORS)) {
@@ -166,7 +166,7 @@ export function validateRoamLayout(db: Db, scope: Scope, mode?: "inspect"): Layo
     }
   }
   const status = { captureSafe: meta.roamable === 1 && !diagnostic, diagnostic };
-  return mode === "inspect" ? { ...status, needsWrite } : status;
+  return mode === "inspect" ? { ...status, needsWrite, triggerDrift: [...drift].sort() } : status;
 }
 
 /** Called explicitly after duplicate todo sequences have been repaired. */

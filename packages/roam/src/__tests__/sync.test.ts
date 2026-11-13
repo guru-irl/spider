@@ -7,7 +7,7 @@ import { sizedBytes } from "../peer-state";
 import * as peerState from "../peer-state";
 import * as storeApi from "../stores";
 import { sweepStoreArtifacts } from "../cleanup";
-import { writeLocal } from "@spider/db-core/roam/local-state";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { createReplica } from "@spider/db-core/testutil";
 import { exportBatch } from "@spider/db-core/roam/export";
 import { assignInitialHome } from "../homes";
@@ -48,6 +48,24 @@ it("publishes a peer observation only after that peer's sync has committed", asy
   expect(observations).toHaveLength(1);
   expect(observations[0]).toMatchObject({ machine: BOX, homes: [{ machine_id: BOX }] });
   expect(observations[0].codes.every(code => code === 0)).toBe(true);
+}, 5000);
+
+it("caches observed peer cursors and last sync without inventing connectivity after failure", async () => {
+  const f = fixture(); f.seed();
+  const sync = service(f);
+  expect((await sync.sync(BOX)).every(row => row.code === 0)).toBe(true);
+  type Cached = { observation?: { machineId: string; observedAt: number; connected: boolean | null; lastSyncAt: number | null;
+    cursors: Array<{ storeKey: string; stream: string; through: number }> } };
+  const state = readLocal<Cached>(f.global.db, "sync-peer", BOX);
+  expect(state?.observation).toMatchObject({ machineId: BOX, observedAt: f.clock.now(), connected: true, lastSyncAt: f.clock.now() });
+  const global = f.stores.openStore("global").db;
+  const stream = (global.prepare("SELECT stream_id FROM roam_meta").get() as { stream_id: string }).stream_id;
+  const head = (global.prepare("SELECT coalesce(max(seq),0) AS head FROM roam_changes").get() as { head: number }).head;
+  expect(state?.observation?.cursors).toContainEqual({ storeKey: "global", stream, through: head });
+  f.unavailable.add(BOX);
+  expect((await sync.sync(BOX)).some(row => row.code === 3)).toBe(true);
+  const failed = readLocal<Cached>(f.global.db, "sync-peer", BOX)?.observation;
+  expect(failed).toMatchObject({ connected: null, lastSyncAt: f.clock.now(), cursors: [] });
 }, 5000);
 
 it("stopping waits for active peer work before stores may be closed", async () => {

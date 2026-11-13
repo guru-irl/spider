@@ -7,6 +7,7 @@ import { pullArtifact, readManifestPages, stageArtifact, transferArtifact } from
 import { barrierWatermarks } from "./barriers";
 import type { Clock, Journal, Operation, Outcome, Peer, RoamConfig, StorePort, SyncService, Transport } from "./contracts";
 import { assignInitialHome, markInitialConflict } from "./homes";
+import { readOnlyOperation, releaseJournalArtifact } from "./journal";
 import { isPeerFailureReason, peerFailureReason } from "./peer-errors";
 import { loadPeerState, receiptMatches, savePeerState, sizedBytes, type PeerState, type PendingBatch } from "./peer-state";
 import { defaultStagingRoot } from "./staging";
@@ -45,7 +46,7 @@ export function createSync(ports: Ports): SyncAdapter {
   }
   async function remote(peer: Peer, kind: string, args: JsonObject, id: string = randomUUID()): Promise<JsonObject> {
     const operation: Operation = { id, machineId: peer.machineId, expectedEpoch: null, kind, args };
-    const saved = journal.begin(operation);
+    const saved = readOnlyOperation(kind) ? { kind: "new", result: null } as const : journal.begin(operation);
     if (saved.kind === "done") {
       if (kind === "split" && typeof saved.result?.wire === "string") {
         const replay = JSON.parse(saved.result.wire) as { value: JsonObject };
@@ -87,7 +88,7 @@ export function createSync(ports: Ports): SyncAdapter {
       throw new SyncFailure(decoded.code as 1 | 2 | 3, reason, id);
     }
     if (!object(decoded.value)) throw new SyncFailure(1, "Invalid peer value");
-    record(id, "done", { value: decoded.value, ...(kind === "split" ? { wire } : {}) });
+    if (!readOnlyOperation(kind)) record(id, "done", { value: decoded.value, ...(kind === "split" ? { wire } : {}) });
     return decoded.value;
   }
   function handshake(value: JsonObject, peer: Peer): void {
@@ -138,7 +139,7 @@ export function createSync(ports: Ports): SyncAdapter {
       const header = value.header;
       if (header.storeKey !== key || header.senderMachine !== peer.machineId || header.senderStream !== info.stream || header.after !== pending.after || header.batchId !== pending.id) throw new SyncFailure(1, "Conflicting export header");
       pending.exported = value; savePeerState(globalDb, peer.machineId, state);
-      if (header.count === 0) { if (value.artifact !== null) throw new SyncFailure(1, "Invalid empty export"); complete(state, peer, "pull", key); break; }
+      if (header.count === 0) { if (value.artifact !== null) throw new SyncFailure(1, "Invalid empty export"); releaseJournalArtifact(journal, pending.id); complete(state, peer, "pull", key); break; }
       const artifact = await manifest(peer, value, pending);
       const receiptId = `accept-${pending.id}`;
       const operation: Operation = { id: receiptId, machineId: config.machineId, expectedEpoch: null, kind: "sync-accept", args: { header: JSON.parse(JSON.stringify(header)) as JsonObject, sha256: artifact.sha256 } };
@@ -161,6 +162,7 @@ export function createSync(ports: Ports): SyncAdapter {
       results.push(outcome(0, "pulled", receiptId, receipt));
       // A receipt on this hub is the authorization to release the peer's export.
       await remote(peer, "release-export", { exportId: pending.id, sha256: artifact.sha256 }, `release-${pending.id}`);
+      releaseJournalArtifact(journal, pending.id);
       complete(state, peer, "pull", key, receipt);
     }
   }
@@ -179,6 +181,7 @@ export function createSync(ports: Ports): SyncAdapter {
       const prior = journal.read(`import-${pending.id}`).find(row => row.action === "done")?.result.value;
       if (object(prior) && receiptMatches(prior, batch.header, batch.sha256)) {
         removeOutgoing(defaultStagingRoot(), pending.id, config, () => true);
+        releaseJournalArtifact(journal, pending.id);
         discard(batch.file);
         complete(state, peer, "push", key, prior as unknown as ApplyReceipt);
         continue;
@@ -193,6 +196,7 @@ export function createSync(ports: Ports): SyncAdapter {
       const receipt = value as unknown as ApplyReceipt;
       results.push(outcome(0, "pushed", `import-${pending.id}`, receipt));
       removeOutgoing(defaultStagingRoot(), manifest.id, config, () => journal.read(`import-${pending.id}`).some(row => row.action === "done" && object(row.result.value) && receiptMatches(row.result.value, batch.header, manifest.sha256)));
+      releaseJournalArtifact(journal, manifest.id);
       discard(batch.file); complete(state, peer, "push", key, receipt);
     }
   }

@@ -10,6 +10,7 @@ import type { ApplyReceipt, BatchArtifact, BatchHeader, Home, JsonObject, StoreK
 import type { AgentPorts, ArtifactManifest, Limits, Operation, Outcome } from "./contracts";
 import { createManifestPages, handleArtifactRequest, stageArtifact } from "./artifacts";
 import { isMachineId } from "./machine-id";
+import { readOnlyOperation, releaseJournalArtifact } from "./journal";
 import { listStoreKeys } from "./store-inventory";
 import { recheckWorktree } from "./recheck";
 import { removeOutgoing } from "./stores";
@@ -312,7 +313,7 @@ function assembleValue(ports: AgentPorts, request: AssembleRequest): JsonObject 
     } finally { staging.close(); }
   } finally { release(); }
 }
-function cleanReceipt(staging: StagingStore, request: ImportRequest, store: Store): void {
+function cleanReceipt(staging: StagingStore, request: ImportRequest, store: Store, ports: AgentPorts): void {
   const manifest = staging.manifestFor(request.transferId);
   if (manifest.id !== request.artifact || manifest.sha256 !== request.sha256 || manifest.kind !== "batch") {
     throw new Error("Conflicting staged artifact");
@@ -320,6 +321,7 @@ function cleanReceipt(staging: StagingStore, request: ImportRequest, store: Stor
   if (!receipt(store.db, request)) throw new Error("Durable receipt is missing");
   staging.release(manifest.id, request.transferId);
   staging.removeAfterReceipt(manifest, { artifactId: manifest.id, sha256: manifest.sha256 }, () => receipt(store.db, request) !== null);
+  releaseJournalArtifact(ports.journal, manifest.id);
 }
 function retryCleanup(ports: AgentPorts, request: ImportRequest): void {
   let release: (() => void) | null = null;
@@ -328,7 +330,7 @@ function retryCleanup(ports: AgentPorts, request: ImportRequest): void {
     release = acquireTransferLease(ports.root, request.sourceMachine, ports.config.limits.peerConcurrency);
     if (!release) return;
     const staging = openStaging(ports.root, request.sourceMachine, ports.config.limits);
-    try { cleanReceipt(staging, request, openStore(ports, request.key)); } finally { staging.close(); }
+    try { cleanReceipt(staging, request, openStore(ports, request.key), ports); } finally { staging.close(); }
   } catch { /* Retain evidence if cleanup or receipt verification fails. */ }
   finally { try { release?.(); } catch { /* Cleanup cannot change a committed result. */ } }
 }
@@ -355,7 +357,7 @@ async function importBatch(operation: Operation, request: ImportRequest, ports: 
       if (result.code === 0) {
         try {
           const staging = openStaging(ports.root, request.sourceMachine, ports.config.limits);
-          try { cleanReceipt(staging, request, store); } finally { staging.close(); }
+          try { cleanReceipt(staging, request, store, ports); } finally { staging.close(); }
         } catch { /* Retain evidence when cleanup is unavailable. */ }
       }
       return result;
@@ -392,7 +394,7 @@ async function importBatch(operation: Operation, request: ImportRequest, ports: 
       }
       const result = commitImport(operation, ports, committed);
       if (result.code === 0) {
-        try { cleanReceipt(staging, request, store); }
+        try { cleanReceipt(staging, request, store, ports); }
         catch { /* The receipt is durable. Retain anything that cannot be verified or released. */ }
       }
       return result;
@@ -483,7 +485,7 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
     request = parseRequest(operation, ports);
   } catch { return outcome(2, "Invalid agent operation", id); }
   let entry: ReturnType<AgentPorts["journal"]["begin"]>;
-  try { entry = ports.journal.begin(operation); }
+  try { entry = readOnlyOperation(request.kind) ? { kind: "new", result: null } : ports.journal.begin(operation); }
   catch (error) {
     const invalid = error instanceof Error && /invalid operation|different arguments/i.test(error.message);
     return outcome(invalid ? 2 : 1, invalid ? "Invalid or conflicting operation arguments" : "Operation journal unavailable", id);
@@ -527,6 +529,7 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
       if (!descriptor || typeof descriptor !== "object" || Array.isArray(descriptor) || descriptor.id !== request.exportId || descriptor.sha256 !== request.sha256)
         throw new Error("Export acknowledgment does not match");
       removeOutgoing(ports.root, request.exportId, ports.config, () => true);
+      releaseJournalArtifact(ports.journal, request.exportId);
       ports.journal.record(id, "done", { value: { released: request.exportId, sha256: request.sha256 } });
       return outcome(0, "complete", id, { released: request.exportId, sha256: request.sha256 });
     }
@@ -562,9 +565,12 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
     if (Buffer.byteLength(JSON.stringify(outcome(0, "complete", id, value))) > ports.config.limits.replyBytes) {
       throw new Error("Agent reply exceeds its limit");
     }
-    try { ports.journal.record(id, "done", { value }); }
+    try { if (!readOnlyOperation(request.kind)) ports.journal.record(id, "done", { value }); }
     catch { return outcome(3, "Operation result is pending reconciliation", id); }
-    if (request.kind === "export") cleanupSnapshot(operation, request, ports);
+    if (request.kind === "export") {
+      cleanupSnapshot(operation, request, ports);
+      if (value.artifact === null) releaseJournalArtifact(ports.journal, operation.id);
+    }
     return outcome(0, "complete", id, value);
   } catch (error) {
     if (error instanceof PendingOperation) return outcome(3, error.message, id);

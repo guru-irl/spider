@@ -57,13 +57,13 @@ it("stores the operation identity and expected epoch without raw arguments", () 
   } finally { db.close(); }
 }, 5000);
 
-it("artifact reference checks retain unknown pending work and recorded evidence", () => {
+it("artifact reference checks retain exact pending work and recorded evidence", () => {
   const { file } = fixture();
   const journal = openJournal(file);
   expect(journal.hasArtifactReference("unrelated")).toBe(false);
   journal.begin(operation);
-  // Argument digests do not disclose the artifact, so any unfinished operation is uncertain.
-  expect(journal.hasArtifactReference("unrelated")).toBe(true);
+  expect(journal.hasArtifactReference("unrelated")).toBe(false);
+  expect(journal.hasArtifactReference("artifact-1")).toBe(true);
   journal.record(operation.id, "staged", { file: "/fixture/private-snapshot.ndjson", artifactId: "artifact-1" });
   journal.record(operation.id, "done", { committed: true });
   expect(journal.hasArtifactReference("artifact-1")).toBe(true);
@@ -71,6 +71,39 @@ it("artifact reference checks retain unknown pending work and recorded evidence"
   expect(journal.hasArtifactReference("unrelated")).toBe(false);
 }, 5000);
 
+it("failed read-only calls cannot retain unrelated artifacts", () => {
+  const { file } = fixture(), journal = openJournal(file);
+  for (const kind of ["stores", "inventory", "cursor"]) journal.begin({ ...operation, id: kind, kind, args: {} });
+  expect(journal.hasArtifactReference("orphan")).toBe(false);
+}, 5000);
+it("artifact references match exact parsed identifiers rather than substrings", () => {
+  const { file } = fixture(), journal = openJournal(file);
+  journal.begin({ ...operation, id: "pull-artifact-extra", args: { artifactId: "artifact-extra" } });
+  journal.record("pull-artifact-extra", "staged", { artifactId: "artifact-extra", file: "/fixture/artifact-extra.ndjson" });
+  expect(journal.hasArtifactReference("artifact")).toBe(false);
+  expect(journal.hasArtifactReference("artifact-extra")).toBe(true);
+  expect(journal.hasArtifactReference("/fixture/artifact-extra.ndjson")).toBe(true);
+}, 5000);
+it("retention prunes released operations and actions but preserves pending recovery", () => {
+  const { file } = fixture(), journal = openJournal(file);
+  journal.begin(operation); journal.record(operation.id, "staged", { artifactId: "artifact-1" });
+  journal.record(operation.id, "done", { artifactId: "artifact-1" });
+  journal.begin({ ...operation, id: "pending", args: { artifactId: "pending-artifact" } });
+  expect(journal.prune(Date.now() + 2000, 1000)).toEqual([]);
+  journal.releaseArtifact("artifact-1");
+  expect(journal.hasArtifactReference("artifact-1")).toBe(false);
+  expect(journal.prune(Date.now() + 2000, 1000)).toEqual([operation.id]);
+  expect(journal.read(operation.id)).toEqual([]);
+  expect(journal.begin({ ...operation, id: "pending", args: { artifactId: "pending-artifact" } }).kind).toBe("pending");
+}, 5000);
+it("journal pruning is bounded and respects retained sync references", () => {
+  const { file } = fixture(), journal = openJournal(file);
+  for (let i = 0; i < 260; i++) { const id = `read-${i}`; journal.begin({ ...operation, id, kind: "cursor", args: {} }); journal.record(id, "done", { value: { lastSeq: 0 } }); }
+  const old = Date.now() + 2000;
+  expect(journal.prune(old, 1000, id => id === "read-0")).toHaveLength(255);
+  expect(journal.prune(old, 1000, id => id === "read-0")).toHaveLength(4);
+  expect(journal.read("read-0")).toHaveLength(1);
+}, 5000);
 it("changed arguments under one ID refuse before effect", () => {
   const { file } = fixture();
   const journal = openJournal(file);

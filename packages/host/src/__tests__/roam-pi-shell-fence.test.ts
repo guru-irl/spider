@@ -9,6 +9,7 @@ import {
 import { fauxAssistantMessage, fauxProvider, InMemoryCredentialStore, InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { openDbAt, paths, setGlobalDbPathForTests, type Db } from "@spider/db-core";
 import spiderExtension from "../extension";
+import { hostUnitPorts } from "./fixtures/pi-events";
 
 const root = resolve(`.spider/scratch/roam-pi-shell-fence-${process.pid}`);
 const originalGlobalRoot = paths.globalRoot;
@@ -53,7 +54,7 @@ it("refused shell on a frozen copy writes no db rows and runs nothing", async ()
     cwd, agentDir: process.env.PI_CODING_AGENT_DIR!, settingsManager: settings,
     noExtensions: true, noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true,
     systemPromptOverride: () => "A local admission test.",
-    extensionFactories: [pi => spiderExtension(pi as unknown as Parameters<typeof spiderExtension>[0])],
+    extensionFactories: [pi => spiderExtension(pi as unknown as Parameters<typeof spiderExtension>[0], hostUnitPorts)],
   });
   await loader.reload();
   ({ session } = await createAgentSession({ cwd, agentDir: process.env.PI_CODING_AGENT_DIR!, resourceLoader: loader,

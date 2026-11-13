@@ -12,6 +12,7 @@ import { configFixtureCwd } from './herdr-config-fixture.js';
 import { createHerdrHarness, type HerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import { globalConfigForTest } from '../../../db-core/src/__tests__/global-config.testutil.js';
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -90,7 +91,7 @@ else console.log('{"spaces":[]}');\n`);
       const ctx = { cwd: h.directories.local, mode: 'rpc', hasUI: false, isIdle: () => true, ui: { notify() {}, setWidget() {}, setFooter() {}, setStatus() {} }, sessionManager: { getSessionId: () => h.owner!.sessionId, getEntries: () => [], getBranch: () => [], getSessionFile: () => undefined, getSessionName: () => undefined } };
       const sourceUrl = loadedBundle.url;
       loadedBundle.url = pathToFileURL(resolve('dist/extension.js')).href;
-      try { extension(pi as never); } finally { loadedBundle.url = sourceUrl; }
+      try { extension(withPiEvents(pi as never), hostUnitPorts); } finally { loadedBundle.url = sourceUrl; }
       try {
         for (const handler of hooks.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);
         return await vi.waitFor(async () => {

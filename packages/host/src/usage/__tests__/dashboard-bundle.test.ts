@@ -55,7 +55,10 @@ function fixture() {
   const registry = new Database(join(root, "spider.db")); registry.exec("CREATE TABLE projects(project_key TEXT, db_path TEXT)"); registry.close();
   const shim = join(root, "shim.mjs"); writeFileSync(shim, ts.transpile(extensionShim(bundle), { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }));
   const launcher = join(root, "launcher.mjs");
+  const helper = readFileSync(resolve('packages/host/src/__tests__/fixtures/pi-events.ts'), 'utf8');
+  writeFileSync(join(root, 'pi-events.mjs'), ts.transpile(helper, { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext }));
   writeFileSync(launcher, `
+    import { withPiEvents } from './pi-events.mjs';
     import { pathToFileURL, fileURLToPath } from 'node:url';
     import { registerHooks } from 'node:module';
     import { relative, isAbsolute } from 'node:path';
@@ -73,8 +76,8 @@ function fixture() {
       on(name, fn) { const list = events.get(name) || []; list.push(fn); events.set(name, list); return () => {}; },
       async exec(command, args) { opened.push(args[0]); return { code: 0, stdout: '', stderr: '', killed: false }; } };
     const ctx = { cwd: process.cwd(), hasUI: true, mode: 'tui', ui: { notify() {}, setWidget() {} } };
-    if (mode === 'shim') await (await import(pathToFileURL(shim).href)).default(pi);
-    else (await import(pathToFileURL(bundle).href)).default(pi);
+    if (mode === 'shim') await (await import(pathToFileURL(shim).href)).default(withPiEvents(pi));
+    else (await import(pathToFileURL(bundle).href)).default(withPiEvents(pi));
     if (opened.length) throw new Error('fixture-import-launched-browser');
     if (!commands.has('usage')) throw new Error('fixture-usage-command-missing');
     await commands.get('usage').handler('', ctx);

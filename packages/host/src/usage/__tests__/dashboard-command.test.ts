@@ -1,4 +1,5 @@
 import { createFixtureDashboard, cleanupFixtureDashboards } from "./fixtures/dashboard-assets.js";
+import { withPiEvents, hostUnitPorts } from "../../__tests__/fixtures/pi-events.js";
 import { afterEach, expect, it, vi } from "vitest";
 afterEach(cleanupFixtureDashboards);
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -93,7 +94,7 @@ it("reuse command mints a new nonce", async () => {
   const bundleUrl = new URL(`file://${join(paths.globalRoot, "extension.js")}`);
   createFixtureDashboard(undefined, join(paths.globalRoot, "dashboard"));
   extension.loadedBundle.url = bundleUrl.href;
-  try { extension.default(h.pi as never); } finally { extension.loadedBundle.url = sourceUrl; }
+  try { extension.default(withPiEvents(h.pi as never), hostUnitPorts); } finally { extension.loadedBundle.url = sourceUrl; }
   expect(h.commands.has("usage"), "extension registers the dashboard command").toBe(true);
   const real = await vi.importActual<typeof import("../server-runtime.js")>("../server-runtime.js");
   launch.mockImplementation(real.ensureUsageServer);

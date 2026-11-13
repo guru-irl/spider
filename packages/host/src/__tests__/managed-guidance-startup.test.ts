@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join, resolve } from "node:path";
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import spiderExtension from "../extension";
+import { hostUnitPorts } from "./fixtures/pi-events";
 
 let root = "";
 afterEach(() => {
@@ -22,7 +23,7 @@ it("refreshes managed guidance before Pi reads context files", async () => {
   vi.stubEnv("SPIDER_GLOBAL_ROOT", join(root, "global"));
   vi.stubEnv("VITEST", "false"); // Exercise the real guidance write, confined to agentDir.
   const loader = new DefaultResourceLoader({
-    cwd, agentDir, extensionFactories: [pi => spiderExtension(pi as never)],
+    cwd, agentDir, extensionFactories: [pi => spiderExtension(pi as never, hostUnitPorts)],
     disabledBuiltinExtensions: ["mcp", "codemode", "tool-search", "llama.cpp"],
     noSkills: true, noPromptTemplates: true, noThemes: true,
   });

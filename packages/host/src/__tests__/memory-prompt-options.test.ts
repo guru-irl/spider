@@ -15,6 +15,7 @@ import {
 import { bindSession, openDbAt, openGlobal, setGlobalDbPathForTests, unbindSession, type Db } from "@spider/db-core";
 import { addMemory } from "@spider/memory";
 import spiderExtension from "../extension";
+import { hostUnitPorts } from "./fixtures/pi-events";
 import { registerHooks } from "../hooks";
 import * as injectionSnapshot from "../injection-snapshot";
 import { openSessionRunDb } from "../session-run-db";
@@ -355,7 +356,7 @@ describe("named frozen memory through the real pi SDK", () => {
     f.add("Child section fact");
     vi.stubEnv("PI_SUBAGENT_CHILD", "1");
     vi.stubEnv("PI_SPIDER_DB_PATH", join(root, "child-runs.db"));
-    const child = await sdk(f.cwd, { extensions: [pi => spiderExtension(pi as unknown as Parameters<typeof spiderExtension>[0])] });
+    const child = await sdk(f.cwd, { extensions: [pi => spiderExtension(pi as unknown as Parameters<typeof spiderExtension>[0], hostUnitPorts)] });
     await wake(child.host);
     f.add("After child section fact");
     await child.host.session.prompt("Child turn");

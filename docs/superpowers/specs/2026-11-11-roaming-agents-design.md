@@ -4,7 +4,7 @@
 
 A top-level pi session can live on a remote Linux machine and keep working while the Mac is off. Moving an idle session between the Mac and a box takes one action. Spider's portable database rows merge when the machines reconnect.
 
-The Mac is the hub. It reaches boxes through Herdr. Boxes cannot reach the Mac or each other. Sync and moves require an awake Mac, but an active home continues without it. The hub runs as a launchd user service, independently of pi, with one process lock and a default sync period of two minutes per peer.
+The Mac is the database and move hub. Sync and moves require an awake Mac, but active homes continue without it. The hub runs as a launchd user service independently of pi, with one process lock and a two-minute default sync period per peer. Live intercom uses separate bridges. Approved peer mode delivers box-to-box messages with the Mac off. Hub-only fallback does not.
 
 Version 1 includes replication, provisioning, restart, and idle moves. Children stay with their parent. Moves refuse unsettled work. Acceptance gates both directions first.
 
@@ -23,14 +23,15 @@ After home commit, the hub calls `session start` at epoch `e + 1`. Persist readi
 | Owner | Responsibility |
 | --- | --- |
 | `@spider/db-core` | Portable keys, schema migration, generated SQL capture, HLC comparison, export, apply, and read-only replica resolution. |
-| New `@spider/roam` | Hub, supervisor, provisioning, operation journals, sync orchestration, and move transitions through injected transport and process ports. No pi imports. |
+| New `@spider/roam` | Hub, supervisor, provisioning, operation journals, sync orchestration, move transitions, bridge storage, exchange scheduling, and enrollment through injected ports. No pi imports. |
+| New `@spider/intercom` | Forked tool, client, broker, federation protocol, receipts, and skill. |
 | `@spider/herdr` | Generic argv execution, chunk transfer, exact-file terminal launch, and Mac-only placement. It does not import roaming. |
-| `@spider/host` | First-registered admission handler, per-session control socket, lifecycle guards, `/move`, readiness, and usage adapters. |
-| `@spider/subagents` | Local-origin checks for operational run consumers and a read-only blocker inventory. |
+| `@spider/host` | First-registered admission handler, fork loading, identity and admission integration, per-session control socket, lifecycle guards, `/move`, readiness, and usage adapters. |
+| `@spider/subagents` | Local-origin checks for operational run consumers, a read-only blocker inventory, and remote-aware dispatch that bypasses mirror bodies and replay. |
 
 Publish `dist/roam/cli.mjs` and `dist/roam/supervisor.mjs`, add root `bin.spider`, and install the Mac shell command. The root has no `bin` (`package.json:1-151`). `/move` is primary. Help opens no DB or Herdr connection.
 
-Configuration holds role, hub, peers and executable paths, discovery roots, core unit, sync period, and limits. Boxes have no outbound peers. Validate CLI, configuration, SQL, file, and hc boundaries.
+Configuration holds role, hub, replication peers and executable paths, discovery roots, core unit, sync period, limits, and separate intercom mode and routes. Boxes have no outbound replication peers. Only the Mac changes homes. Peer intercom access is separately approved. Validate CLI, configuration, SQL, file, and hc boundaries.
 
 ## Checked starting point
 
@@ -243,7 +244,7 @@ Cross-session todo edits get one admission check in the todo store. Mutating a p
 
 ### Batches and convergence
 
-A handshake checks enrolled machine identity, current core identity, protocol 1, and core schema 14. Reject mismatches before mutation and identify the machine needing repair. A core restart invalidates in-flight observations, not the enrolled machine UUID. There is no downgrade projection or local fallback for a failed remote command.
+A handshake checks enrolled machine identity, current core identity, protocol 1, and core schema 14. Reject mismatches before mutation and identify the machine needing repair. A core identity change invalidates handles. Restart fails in-flight calls, and journalled retries make that safe. There is no downgrade projection or local fallback after remote failure.
 
 Export emits immutable UTF-8 NDJSON from a SQLite snapshot. The header has protocol, schema, batch ID, sender machine and stream, store key, exclusive `after`, inclusive `through`, and record count. Each record has sender sequence, change ID, entity, row key, operation, original HLC, writer session and epoch, schema, and body. A separate manifest has byte length and SHA-256. Export never holds a writer transaction across transport.
 
@@ -283,7 +284,7 @@ Registry placement, bindings, routes, leases, message delivery, usage DBs, skill
 
 ## Herdr transport and measured limits
 
-Invoke the pinned remote CLI by argv through `hc exec --on`. Long operations use labelled `hc run --bg --no-notify --outlive-parent --no-parent` with receipts. Add no listener or SSH route. Commands check operation ID, machine, and expected epoch. Private socket modes remain, but same-user capability files are unnecessary.
+Invoke the pinned remote CLI by argv through `hc exec --on`. Long operations use labelled `hc run --bg --no-notify --outlive-parent --no-parent` with receipts. Add no routable listener. Additional private loopback routes are limited to approved intercom enrollment. Commands check operation ID, machine, and expected epoch. Private socket modes remain, but same-user capability files are unnecessary.
 
 Commands cover inventory, export, import, cursor and receipt inspection, artifact split and assembly, and session inspect, freeze, start, retire, and unfreeze. Journal argument digests before effects. Repeated IDs reconcile. Changed arguments under one ID fail.
 
@@ -322,13 +323,144 @@ Chunks carry artifact ID, index, raw length, and SHA-256. Resolve the machine on
 
 Committed transfer artifacts can be removed after receipt verification. Incomplete staging survives service restart and expires after seven days only when no live move or unapplied batch references it. Quota errors name the directory and stop transfers. They never delete source workspaces, database logs, or tombstones. Lower limits locally. Raising limits requires explicit configuration, never automatic fallback.
 
+## Cross-machine intercom
+
+Intercom ships inside spider as `@spider/intercom`, a clean fork of pi-intercom 0.13.0 under its MIT licence. Spider owns and develops the fork. No separate intercom package installation, version pin, upstream release, or tracking process is required. Preserve Nico Bailon's copyright and the complete licence in the package and distributed notices.
+
+An admitted session can list, send to, ask, and reply to sessions on enrolled machines by name through the existing `intercom` tool. Lists and incoming headers show the machine. Local messages retain the local broker. Remote messages use a live bridge channel, never database sync or replicated message rows.
+
+### Fork adoption and rolling deployment
+
+First ship the fork without messaging behavior changes. Preserve the tool name, local broker protocol and framing, socket discovery, scope, configuration, stable IDs, pending-ask files, and existing state under the configured pi agent directory's `intercom` directory. Bring in the complete 0.13.0 source test inventory and port it to the repository's test runner. Record public source provenance once. Ship the intercom skill once through spider.
+
+Spider's extension loads the fork directly in parent sessions and RPC children, including `PI_SUBAGENT_CHILD=1`. Children retain `--no-extensions` and explicitly load the spider bundle, never resolve `pi-intercom` through user or project settings. Remove the separate child extension lookup and migrate its callers, child identity environment, and launch records to bundled-fork availability. User and project `pi-intercom` declarations therefore cannot load alongside the fork in a child. Reject legacy intercom paths in forwarded child extension lists before spawn. An unexpected child conflict triggers the guard and fails child readiness, not a fallback to the legacy copy. Parent conflicts retain the behavior below.
+
+Bundle a separate compiled broker entry and spawn it with `process.execPath`, without requiring tsx or package-manager execution at runtime. Resolve packaged entries from the running release, not cwd.
+
+The fork checks for another intercom before registering functional handlers, the tool, or a broker connection. During factory loading, collect foreign intercom registry-ready signals. At `session_start`, after pi binds the runtime, inspect `pi.getAllTools()` before registering. That API is unavailable during factory loading. A conflict disables the fork, leaves the existing intercom alone, and reports `Another intercom extension is loaded. Remove its package or extension entry and run /reload.` Doctor reports `intercom-extension-conflict`. Cover both load orders, repeated fork loads, project declarations, and explicit extension paths.
+
+The deploy transaction ships the fork and removes the separately installed `pi-intercom` declarations from pi settings together. Include string and object package declarations and explicit extension and skill paths in each selected settings scope. Do not silently edit unrelated projects. An unresolved project or manual duplicate blocks readiness through the runtime guard. Back up changed settings and make retries and rollback safe.
+
+Old and new clients interoperate through the same socket and broker protocol during staggered `/reload`s. Keep the old package files until no old client can reconnect or respawn its broker. Do not uninstall its files merely because its settings declaration was removed. Do not force-stop a legacy broker with connected clients, ask edges, or queued mail. A legacy broker without a quiescence query is not proof of an empty mailbox. Report migration pending until clients drain and the broker exits naturally, or an explicit supported metadata query proves quiescence. Federation remains unavailable on that broker. Never unlink a live socket to force takeover.
+
+### Broker federation and topology
+
+The Mac hub and each box supervisor own one machine-local bridge, independently of pi and the app. Extend `HubRuntimePorts`, not `HubPorts`. The bridge has one writer, a process lock, and a private queue database. It continues with no session clients.
+
+The bridge connects to the local broker as one privileged federation client. Negotiate broker feature `federation-v1` alongside existing features. Only one bridge can register for the configured pi agent directory. Helpers request exchanges through this private broker connection but do not register as additional bridges. The bridge requires the correct agent directory and compatible broker before advertising remote readiness. Its connection prevents the broker's no-session idle exit. Account for one steady broker process even when no pi session is connected.
+
+The broker adds remote roster entries and routes remote sends, receipts, and controls to the bridge. It derives the real local sender. It never queues remote mail in its in-memory mailbox. Remote entries carry portable identity, scope, machine, endpoint, and `remote: true`. They cannot shadow a local ID or carry local PID, trust, or process-control handles. Clients preserve existing confirmation, attachment handling, inbound-trigger policy, reply inference, self-target refusal, and one outbound ask. Local behavior remains unchanged. Legacy clients retain local compatibility and are not offered unsupported remote entries.
+
+Use the existing private broker socket for federation and helper exchanges. Its directory has mode 0700 and socket mode 0600. Reject overlong paths before bind and never fall back to TCP. The separate admission socket still accepts only `inspect`, `freeze`, `unfreeze`, and `shutdown`.
+
+Configuration separates intercom routes from replication peers. Boxes have no outbound replication peers and cannot assign homes. Intercom has `hub-only` and `peers` modes, disabled until acceptance.
+
+In `peers` mode, each box pair has one bidirectional enrolled edge. The lower persistent machine UUID initiates it. The Mac initiates its existing box edges. Box-to-box delivery continues with the Mac off. Do not elect relays, discover additional machines, or silently switch modes.
+
+In `hub-only` mode, the Mac relays box traffic over the specified two-edge path. With the Mac off, ordinary sends queue at their source and asks report `link-down`. This fallback does not pass peer-mode acceptance.
+
+### Enrollment and revocation
+
+Box-to-box enrollment is approved separately from pi-auth transfer. Provisioning shows the selected persistent machine identities, directed access graph, and this consent text before transport effects:
+
+> Enrolling this pair lets the initiating box execute commands as your user on its peer. A compromised initiating box can access every peer enrolled to it. This approval is separate from copying pi authentication. Revoke the pair by removing its dedicated authorized key and hc machine route.
+
+Notify the machine owner or coordinating operator before any box contact. Do not disturb running hc jobs. Provisioning can install the approved loopback connector, ask the user to complete device-code sign-in on each initiating box, authorize a dedicated key per pair, and run argv-based hc enrollment. Use `from="127.0.0.1",restrict` on each authorized key. Reuse an existing key-only loopback SSH service and add no routable listener. Credentials and private keys remain machine-local, never replicated or logged.
+
+Approval records bind exact machine UUIDs and the access graph. Repeated setup installs no duplicate key, route, or service. A missing connector or interactive sign-in leaves the pair pending, not implicitly enrolled. Read-only doctor never performs installation or login.
+
+Revocation first withdraws the intercom edge and closes its active bridge exchanges. Remove only that pair's authorized key and hc machine route. Reconcile active transport access so key removal does not leave an authenticated connection usable. If shared hc jobs prevent safe closure, report revocation incomplete and require the operator to drain them. Never claim completed revocation from a settings edit alone. Other pair keys and replication routes remain unchanged.
+
+### Bounded transport and liveness
+
+Use argv-based `hc exec --on` with stdin and a packaged slim `roam intercom exchange` helper. Include `--global-root` from enrolled peer configuration and resolve the configured pi agent directory, never a cwd-derived or guessed broker root. The helper loads no SQLite, contacts only its local broker and bridge, and never reads conversation files or executes message text. Complete outcome envelopes require exit zero. Nonzero, missing, truncated, or identity-mismatched replies supply no trusted acknowledgement. Reuse permanent machine and core identity checks. Restart fails an in-flight call. An actual identity change invalidates the handle. Never execute locally after a remote failure.
+
+Each edge permits one inbound long-poll and one concurrent outbound call. A poll holds for at most 25 seconds and wakes within 25 ms of a frame, receipt, or acknowledgement. A short outbound call sends one batch without a poll hold. New outbound frames join the next batch when a call is already active. Encoded requests and replies each fit 512 KiB.
+
+Use remote timeouts up to 30 seconds for a poll and 10 seconds for outbound. Total local deadlines, including identity brackets, are 45 and 20 seconds. Reserve five seconds for the post-call bracket on polls and background pushes. At spawn, round the remaining remote budget down, cap it at the operation's remote timeout, and refuse to spawn when less than one second remains after the reserve. Shorten the poll hold to leave five seconds inside its remote timeout. Abort locally at the total deadline.
+
+Measured hc behavior supports concurrent calls and stops remote programs within three seconds after a local stop. Keep per-edge persistent generations despite that result. A newer poll makes its predecessor return empty within 100 ms. A stale-generation result cannot advance a cursor, apply a control, or release a frame. Cumulative acknowledgement application is idempotent. Frames remain replayable until durable inbox acceptance, and the source payload remains until consumption evidence or expiry.
+
+Reuse connected-line evidence from the bracket's existing machine-list observations. A route is live while a bounded poll has that evidence, or a valid exchange succeeded within 35 seconds. A transient failure marks the route recovering and its cached status stale. Preserve active ask waits through the first retry, after one second, using a bounded ten-second probe. Retry success keeps those waits. Retry failure marks the route down and ends them with `link-down`. Identity mismatch or proved endpoint exit ends affected waits immediately. No retry extends an ask deadline. The bounded poll lease cannot outlive its 45-second local deadline. No extra one-second liveness polling is required. After the first retry, continue reconnect backoff at 2, 4, 8, 15, then 30 seconds, with repeated failures at 30 seconds. Success restores normal long-poll cadence.
+
+Retain known peer identities, names, and mailbox addresses during an outage. Mark cached endpoint status stale and reachability down, rather than deleting peers or reporting old status as live. Ten-minute tunnel drops and much longer machine outages are normal. Ordinary sends queue quietly. Produce one persistent metadata-only diagnostic per continuous outage, update its reason without repeating warnings, and clear it after a valid identity and endpoint reconciliation. Retries do not generate notifications. Coalesce the general hosting status with this outage item instead of issuing a second link-only warning at ten minutes.
+
+A tunnel authentication failure does not prove that the remote core or session stopped. Distinguish `link-down`, missing sign-in, core unavailability, identity change, and proved endpoint exit. A confirmed host restart withdraws old activation endpoints. If the link is unavailable, endpoint state remains unknown until reconciliation. In peer mode, loss of a Mac edge does not disable healthy box edges.
+
+### Identity and target resolution
+
+The portable address is the persistent pi session ID plus intercom scope. Map configured broker stable IDs to that address. Origin-qualified runtime-only identities do not move. Machine alias, name, cwd, model, PID, and cached status are never routing authority.
+
+A bare name resolves only when unique across local and remote entries in the same scope. Otherwise require `box-1.invalid/name`, `box-2.invalid/name`, or the portable ID. Encode qualifier separators. Two same-name sessions on one machine still require the ID. Ambiguous resolution has no send effect. Unqualified cwd-only targeting remains local. Explicit remote targeting can use destination cwd as a guard. Remote discovery does not open a pane.
+
+Presence carries machine identity, portable address, home epoch when assigned, activation endpoint, name, and status. A settled move preserves the name and portable address and changes the machine qualifier. Stale home or activation epochs cannot receive a message. Route withdrawal and destination readiness are live observations, not permission to assign a home or launch pi.
+
+### Acceptance, consumption, and uncertainty
+
+Persist message ID, immutable content digest, sender, logical recipient, and sender-recipient sequence before transfer. Transact inbox acceptance before link acknowledgement. A reused ID with changed authored content or recipient fails. Link acknowledgement does not release the source copy.
+
+Retain the existing delivery vocabulary and distinguish acceptance from consumption:
+
+- `queued` reports `delivered:true`, `delivery:"queued"`, and the durable queue location. It is accepted, not consumed.
+- `socket_delivered` reports the recipient socket dispatch, not transcript injection.
+- `failed` reports a proved refusal with `delivered:false`.
+- `unknown` has `outcomeKnown:false`. Report whether durable acceptance is known and return the original message ID. Do not label uncertainty as a proved refusal.
+
+Consumption evidence is `injected` only after the owning recipient observes the appended `intercom_message` session entry carrying that immutable message ID. `pi.sendMessage` returns `void` and can queue a steer while busy. Its return, queue admission, and queue removal are not injection evidence. Register pending IDs before sending. Use `message_end` as an observation trigger and verify the corresponding physical session entry, not a rendered or compacted projection. `matched_waiter` requires the reply to be durably recorded and handed to its matching waiter. Neither receipt means the agent acted on the content.
+
+Reuse spider's owned RPC delivery pattern in `packages/subagents/src/rpc-child.ts`, consumed by `packages/subagents/src/actions/message.ts`. Extract its pi-free acceptance, observation, and settlement tracker into `@spider/intercom/protocol` for both RPC and fork consumers. Keep RPC's serialized text correlation in its adapter. The fork correlates immutable message IDs and authoritative entry metadata. Do not add a second delivery-confirmation mechanism or change existing owned RPC result vocabulary.
+
+Early `receiver_received` or `acknowledged` receipts do not qualify. On `session_shutdown`, abort, or next `session_start`, settle pending IDs from observed entries. A message absent when its session generation ends produces `not_injected` and retains the source payload. If absence or generation exclusion cannot be proved, retain `unknown`. Busy headless refusal also produces `not_injected`. After proved non-injection and exclusion or clearing of any old queued copy, return the payload to undispatched state and clear that receipt blocker. Retry on the recipient's next idle or `session_start`, with the same ID and only once per readiness transition. Undelivered asks still obey their original dispatch duration. Never retry a settled ask, including one settled by a recorded busy-refusal reply. Its uninjected question expires visibly at the original deadline. Suppressed duplicates return prior evidence, never invented success, and must allow this proved same-ID retry. Delete source payload only after qualifying evidence or visible expiry.
+
+`spider message`, subagent relays, and outbox sends use broker resolution and preserve the same immutable ID across retries. Use the bridge instead of a `message_mirror` body only when the target resolved to a remote machine or to a session with a roaming home record at send time. Record that send-time routing provenance in machine-local intercom metadata. A portable session ID alone does not select the bridge. Local offline targets without a roaming home retain legacy mailbox replay.
+
+`pollPendingMessages` skips bridge-routed rows even after the recipient moves to the sender's machine. Apply the same predicate to historical rows using recorded send-time route or home evidence, never address shape. Missing historical evidence remains unresolved without replay or payload deletion. Proved local offline rows still replay. Remote admission is not followed by a second local mailbox delivery after a move.
+
+Preserve pair dispatch order across ordinary reconnects. Cancellation and expiry write sequence tombstones. An uncertain dispatch is settled for ordering, so later messages advance, but its evidence remains unresolved. A recovered uncertain message can arrive after later messages and retains its original ID.
+
+On `session_start`, the owning fork reads only its own restored session-entry metadata for `intercom_message` IDs and waiter receipt records. Inspect complete physical entries, not a compacted model-context projection. Injection evidence yields a receipt. Proven absence requires a complete authoritative restored file and exclusion of the old activation generation. Only that proof permits same-ID redelivery. An incomplete file, missing owner, or competing generation remains `unknown`. Helpers and bridges never read transcripts. Do not promise exactly-once injection across process death without this evidence.
+
+### Asks and normal recovery paths
+
+Install the waiter before dispatch. Preserve the ten-minute default and `PI_INTERCOM_ASK_TIMEOUT_MS`, one outbound ask, scope, exact sender-recipient reply matching, and self-target and mutual-wait refusal. Resolve machine-qualified names and ID targets to the authoritative sender address before installing the waiter. Match the reply's sender address and original ask ID, never the display name or raw target string. Broker metadata queries expose inbound and outbound ask edges and pending delivery IDs for move blockers.
+
+The source owns the original deadline. Wire frames carry remaining duration, not an absolute timestamp from another machine. Every hop decreases the duration. Before transferring an undelivered ask, subtract that hop's full bounded call budget and a five-second safety allowance. The destination expires against its own elapsed clock. A relay or retry never refreshes the duration. If no safe duration remains, expire the ask early instead of risking injection after its source deadline. Source restart never extends a persisted deadline. Clock rollback without an elapsed-time proof expires the undelivered ask conservatively.
+
+An ask not injected within its dispatch duration receives an `expired` tombstone and is never injected later. Ordinary messages can remain queued for 24 hours, but undelivered asks cannot. Timeout ends the source wait and prevents later question injection. It does not cancel a question already delivered.
+
+A new ask to a known-down link fails immediately with `link-down` and the unavailable edge. Report `Link down to box-1.invalid. This ask is no longer waiting for a reply.`, using the affected machine's display name. A fresh outbound probe is required when reachability is uncertain. Each attempt has a ten-second total local budget, remote timeout up to five seconds, and a two-second post-bracket reserve. Allow one retry after one second for a transient failure, at most 21 seconds for both attempts. Stop sooner at the original ask deadline. Round each timeout down from its remaining budget after the reserve. The failed retry reports `link-down`, not a ten-minute wait. Identity mismatch or proved endpoint exit has no retry. The longer 20-second background send budget does not govern probes. New asks to a recovering route fail promptly as unavailable rather than creating additional probes.
+
+Queued or unknown dispatch alone retains the waiter while the route remains live or its first transient-failure retry is pending. An observed route failure ends an active wait with `link-down` only after that retry fails, except for identity mismatch or proved endpoint exit. Preserve the original ask ID, durable question state, and any later answer. Broker reconnect alone does not reset or reject a surviving runtime's remote waiter. `/reload` interrupts the old await stack with `session-reloaded`, but retains the thread. Session exit reports interruption. No await stack is reconstructed or moved.
+
+Deliver late, timed-out, or orphaned replies as ordinary threaded messages carrying the original ask ID. Tell the replier `Delivered; the asker was no longer waiting.` Explicit cancellation is distinct from expiry and travels through both bridges. Reply retention uses the ordinary mail TTL, not the expired question's dispatch deadline.
+
+### Queue limits and move fencing
+
+Cap each encoded message, including attachments, at 256 KiB. Cap queued payloads at 256 messages and 64 MiB per destination, including relay queues. Ordinary payloads expire after 24 hours. Refuse before acceptance rather than evict accepted mail. Retain deduplication and tombstone metadata for at least 24 hours after expiry and keep evidence referenced by an unresolved ask or delivery. Queue expiry and quota refusal are sender-visible without echoing content.
+
+Close bridge dispatch intake atomically with admission before freeze. Drain started dispatches and recheck inbound and outbound asks, pending dispatch IDs, unknown outcomes, and unobserved receipts. Return exact blockers without cancellation. Include the closure generation in freeze acknowledgement and reinspection.
+
+While frozen or moving, reject asks and retain ordinary mail by portable recipient without injection. After committed home change and admitted readiness, rebind only mail proved undispatched at the old endpoint, preserving its ID and authored recipient. Unknown old dispatch blocks the move. Matching abort or current destination readiness reopens the gate. Live route hints cannot mutate database homes.
+
+### Privacy, cost, and acceptance
+
+Use private machine-local queues, SQLite `secure_delete=ON`, and WAL checkpoint and truncation after payload settlement or expiry. Do not claim forensic erasure of backups or filesystem snapshots. Queue databases, journals containing payloads, credentials, and keys never enter replication. Bridge logs contain IDs, byte counts, and outcome codes only, never bodies, attachments, or credential-bearing stderr. Intentional recipient rendering is separate.
+
+Verify with a synthetic sentinel that the actual core does not log `machine.exec` stdin before enablement. The helper and bridge do not launch pi, provision machines, change homes, or interpret text as commands.
+
+Measure helper cold start, four bracket calls, end-to-end consumption-receipt latency, and idle CPU, process counts, and transient process-seconds for the hub, supervisor, broker, hc, helpers, connectors, and SSH. Ten 25-second idle polls imply about 0.4 remote helper starts and two local hc starts per second, before retries or outbound traffic. These are scheduling estimates, not measurements.
+
+Intercom and database transfers share a multiplexed SSH line. Keep transfer chunks at the existing 384 KiB cap. The latency budget includes chunk bytes divided by measured link throughput, brackets, cold start, and both relay hops. Before task 4.7, the maintainer attributes the measured transport tail to line re-establishment, exec, or one of the four local bracket calls. Use synthetic calls and record each component, including failures. Confirm the one-retry probe policy and its budgets against those observations. The p95 targets remain at most two seconds direct and five seconds relayed, excluding agent thinking, both idle and under representative transfer contention, pending that qualification. A successful tail call remains a latency sample. If the measurements cannot meet these targets or probe budgets, keep peer mode disabled and obtain an explicit revised decision before 4.7, then update the spec and plan together. Do not silently relax the gate. Failed calls are not latency samples.
+
+Require isolated behavioral acceptance, fork switchover soak, and a maintainer-run two-box Mac-off test before peer enablement. Use only synthetic sessions and disposable resources. An unavailable box or missing observation is blocked, not passed. Routine link-only outages must preserve mail and names without duplicate injection or repeated warnings. A proved host restart must withdraw old endpoints.
+
 ## Provisioning and hosting
 
 ### Installation and readiness
 
-`spider roam provision box-1.invalid` shows the box inventory and selected destinations. Require Linux, Git, systemd user services, an existing hc core, and Node >=22.19.0. Pin pi 1.2.0, intercom 0.13.0, spider tarball hashes, and the tested Node range. Install under a home-directory npm prefix, with Linux native SQLite modules. Set `SPIDER_GLOBAL_ROOT` for the install command as well as for pi, because spider's install script creates the global database. Never copy Mac binaries or silently install prerequisites with sudo.
+`spider roam provision box-1.invalid` shows the box inventory and selected destinations. Require Linux, Git, systemd user services, an existing hc core, and Node >=22.19.0. Pin pi 1.2.0, spider tarball hashes, and the tested Node range. Intercom ships inside spider, forked from pi-intercom 0.13.0 under its MIT licence. Provisioning removes a separately installed pi-intercom settings entry as it ships the fork. Retain old files during rolling reloads. Doctor fails remote readiness on duplicate intercom instances, an undrained legacy broker, or missing federation support. Install under a home-directory npm prefix, with Linux native SQLite modules. Set `SPIDER_GLOBAL_ROOT` for the install command as well as for pi, because spider's install script creates the global database. Never copy Mac binaries or silently install prerequisites with sudo.
 
-Copy allowlisted settings, model definitions, keybindings, themes, AGENTS.md, and selected skills with supporting files. Extensions, prompts, MCP configuration, and system-prompt files need explicit selection. Refuse Mac-absolute paths or unsupported credential commands and list affected files. Generate box paths and configuration. Exclude trust decisions, sessions, broker state, and caches.
+Copy allowlisted settings, model definitions, keybindings, themes, AGENTS.md, and selected skills with supporting files. Extensions, prompts, MCP configuration, and system-prompt files need explicit selection. Refuse Mac-absolute paths or unsupported credential commands and list affected files. Generate box paths and configuration. Exclude trust decisions, sessions, broker state, and caches. Preserving existing broker state during an on-machine switchover does not authorize copying it to another machine.
 
 Back up overwritten files once. Re-provisioning replaces only selected files and creates no duplicate service or agent. Hand-edited selected files may need re-editing. No ownership manifest or override adaptation is needed.
 
@@ -356,7 +488,7 @@ Restart crashes after 5, 15, 60, and 300 seconds. Five failures in ten minutes s
 
 WSL updates restart it within seconds, but terminals die, so the supervisor recreates exact-session terminals. Windows reboot leaves WSL down until desktop sign-in.
 
-Every sync reconciles live session terminals into their machine's Mac app space, including new IDs after restart. Never launch pi for placement. Closed apps defer it. Ten minutes unreachable with homed sessions, or session suspension, produces one Mac notification and Herdr status item. Clear status on recovery. Retain pending status while the app or core is unavailable, without starting either.
+Every sync reconciles local proxy panes in the session's remembered Mac space and tab, including new remote terminal IDs after restart. Never launch pi for placement. Preserve proxy creation, uncertain-launch, and user-close rules. A box session's proxy header shows one machine pill in the existing header pill style. Local sessions show none. Retain pending placement while the app or core is unavailable without starting either. Ten minutes unreachable with homed sessions, or session suspension, produces one status item. Confirmed hosting failure or suspension also produces the existing single Mac notification. Link-only outages produce no hosting notification. Coalesce their intercom diagnostic into the status item without repeated warnings or claims of endpoint death. Clear the item on verified recovery.
 
 ## Moving a session
 
@@ -366,9 +498,9 @@ Every sync reconciles live session terminals into their machine's Mac app space,
 
 Serialize moves per session. Repeat IDs return results. A second destination conflicts. Same-home moves are verified no-ops. Require reachable, compatible machines, a guard-capable live source or dormant control, and ready destination installation, auth, workspace, and binding maps.
 
-Require a settled session with no request, retry, compaction, queued prompt, editor draft, direct shell command, or pending intercom ask. Block queued, running, or paused children, detached durable children, pending pipeline stages, local background jobs, unsettled remote receipts, and unobserved completions. Inspect the owning run DB, local routes, and top-level and child job journals. Return exact blocker IDs without stopping them.
+Require no request, retry, compaction, queued prompt, editor draft, direct shell, outbound intercom ask, or unresolved inbound ask. Block pending or uncertain dispatches and unobserved receipts. Retain child, pipeline, job, and completion checks. Inspect owning stores, run and job journals, the bridge, and the live forked broker and runtime. Return exact blocker IDs without stopping work.
 
-Show tool-readiness warnings and list the live intercom peers the session will lose. Intercom 0.13.0 uses a machine-local broker socket (`intercom/broker/paths.ts:65-74`). Here `intercom/` names the installed package. Pending asks block rather than disappear. The completed move result repeats the lost-peer list.
+Report tool-readiness and actual intercom route warnings. Require compatible source and destination bridges before preparation. Moves preserve names and portable IDs. Pending asks block instead of migrating. Success names the new machine-qualified intercom address and repeats applicable warnings, without a blanket lost-peer list.
 
 Hold a Mac power assertion through preparation, move, and recovery until completion, abort, or rollback. Print `Keep the Mac awake until the move finishes.` Pre-stage the workspace bundle and a complete transcript prefix while the source is active. Freeze then transfers only final changes. A freeze does not expire if the Mac nevertheless sleeps or loses power.
 
@@ -461,7 +593,7 @@ Recheck at `input`, `before_agent_start`, `turn_start`, `tool_call`, `user_bash`
 
 Mac controls use a mode-0600 same-user socket. Doctor, local status, and repo mapping can run on a box. Other box commands point to the Mac. No model-callable operation provisions credentials or changes homes directly. Exit codes are 0 for verified completion or no-op, 1 for refusal or failure, 2 for invalid arguments, and 3 for durable pending or unknown outcome. JSON includes a stable reason, operation ID, current home, epoch, and repair command.
 
-Refusals name the home, exact blockers, or missing evidence. For an unknown destination, say `The source is paused to avoid running two copies.` Success names the destination and terminal and repeats intercom-loss and tool-readiness warnings. Never print secrets, transcript bodies, or uncommitted contents.
+Refusals name the home, exact blockers, or missing evidence. For an unknown destination, say `The source is paused to avoid running two copies.` Success names the destination, terminal, and intercom address and repeats applicable warnings. Never print secrets, conversation bodies, uncommitted contents, or message bodies in diagnostics.
 
 ## Security and known limits
 
@@ -477,8 +609,8 @@ Trust enrolled machines and authenticated Herdr transport, not hostile same-user
 - `spider roam uninstall` is deferred. Move homes away, disable peer sync, stop and remove the supervisor, then remove selected files manually while retaining data and credentials unless separately requested.
 - Box-side `/move` request rows are deferred. Run moves from the Mac, including while a box session is active.
 - Per-target store allowlists and secret-field scanning beyond auth consent are deferred. Review selected data before provisioning.
-- Box-to-box acceptance follows the two gated directions, using the same hub path.
-- Intercom relay is deferred to message rows synced through the hub, with about two minutes of online latency.
+- Box-to-box move acceptance follows the two gated directions, using the same hub path.
+- Intercom uses the spider-owned fork and approved live bridges. Peer mode requires verified enrollment and Mac-off acceptance. Hub-only mode waits for the Mac and can exceed the 24-hour mail TTL. Reload and link failure interrupt live ask waits, but preserve threaded questions and replies. Moves do not transfer await stacks.
 - Cross-machine usage views, richer remote sidebar rows, and sidebar move controls are deferred.
 - Ongoing skills sync is deferred. Provisioned skill snapshots do not update through replication.
 - Imported-session search excerpts, completed child transcripts, indexed content, and saved output remain on their origin.
@@ -508,9 +640,11 @@ Use disposable SQLite files, independent machine roots, actual migrations, and g
 | A11 | A trigger fires once without the Mac. Reconnection converges rows. Subsystem or core restart restores one exact-file owner and triggers, then new-terminal placement on sync. Repeated crashes suspend. Deliberate stop stays stopped. Reboot remains unavailable until sign-in. |
 | A12 | Move both directions with unpushed commits, staged and unstaged binary edits, deletion, exec-bit change, staged-only content, and untracked files. HEAD, trees, cwd, and branch handling match. A round trip reuses the mapped checkout and refuses divergence. Cover sparse cone mode and a partial-clone or alternate-backed fixture, including configured worktree creation. Missing prerequisites, oversized bundles, dirty unrelated checkouts, submodules, or escaping symlinks cannot cause full-history fallback or unrelated writes. |
 | A13 | Move an older selected leaf with a sentinel at the old cwd. Verify mapped cwd, branch, ID, compaction, and triggers. Empty or missing exact files refuse launch. A round trip after both machines accrue usage and parser resets bills only local entries once, without rekeying. |
-| A14 | Requests, drafts, prompts, children, pipelines, jobs, receipts, and asks return exact blockers. Moves report lost intercom peers and warn without blocking for missing tool auth. Preparation holds a power assertion and pre-stages before freeze. |
+| A14 | Requests, drafts, prompts, children, pipelines, jobs, receipts, outbound asks, and unresolved inbound asks return exact blockers. Moves preserve intercom identity and report actual unavailable routes. Missing tool auth warns without blocking. Preparation holds a power assertion and pre-stages before freeze. |
 | A15 | Fail at every transition and after effects before replies, then restart services. Exercise live and dormant control, suspended sources, and multi-store admission. Recover, prove higher-epoch rollback, or pause explicitly. Disconnect and lost readiness never permit unsafe rollback. Retired source mappings prevent reboot resume. Normal moves never run two copies. Forget restores mirrors at a higher epoch and refuses revoked sync, including after hub restart. |
 | A16 | Copies of participating session files on machines with replicated membership, and reloads, reject nonowner input, timers, messages, tools, and shell calls before requests or writes. A nonparticipating Mac file copied to a fresh box can appear new. Offline active homes continue. Frozen and retired copies stay blocked. Interrupted multi-store seeding reconciles once. Conflicting origins require claim. |
+| A17 | All intercom actions work by name across machines. Collisions have no effects. Fork switchover and a move to the sender's machine never inject a message twice. Consumption evidence, original reply IDs, unknown reconciliation, ordering, deadline expiry, and fencing are observed. Routine ten-minute link drops preserve queues and known peers quietly, emit one diagnostic per outage, and fail live asks with `link-down` after the first retry fails. A busy recipient reloads before its steer drains, retains the source payload, and receives a proved same-ID redelivery. Local offline mailbox replay remains intact. Direct box delivery continues with the Mac off. Hub-only fallback reports its limitation. |
+| A18 | A box session's local proxy retains its remembered space and tab and shows one machine pill in the existing header style. Local sessions show none. |
 
 ### Five delivery phases
 
@@ -519,7 +653,7 @@ Use disposable SQLite files, independent machine roots, actual migrations, and g
 | 0. Spike | One box's transfer rates set the measured-limits table. pi 1.2.0 and spider install with prebuilt Linux native modules and no compiler. Spider activates without a Herdr environment, not yet in a core-spawned terminal. Export and import timing remain for phase 2, core-only in-terminal load for phase 3, and two-hour no-client terminal survival for phase 4. |
 | 1. Local replication | Add identity, schema, SQL capture, HLC, merge, derived data, origin filters, usage migration, and admission fixtures. A2 through A7 pass on disposable roots. Foreign runs cannot reach an unguarded consumer. No remote hosting is enabled. |
 | 2. Transport and hub | Add chunking, durable operation receipts, launchd, sync, unmapped reads, diagnostics, and placement reconciliation. A8 and A9 pass through fake hc and isolated cores. Independent peers converge without pi being open on the Mac. |
-| 3. Box hosting | Add pinned provisioning, consent, core-only mode, launcher limits, and supervisor recovery. A10 and A11 pass under isolated roots. Verify core-only extension activation inside a core-spawned terminal with no app configuration. Opt-in synthetic hosting continues without the Mac. Existing core units remain unchanged. |
-| 4. Moves and real-box acceptance | Add Git snapshots, file markers, barriers, home CAS, rollback, forget, commands, and fault injection. A12 through A16 pass. Repeat applicable A8 through A16 on a real box with a disposable repo and synthetic session. Privately check the real URL pair and which worktree creation path works for the real virtualized or sparse checkout. Complete A1's two-hour no-Mac terminal check before enablement. |
+| 3. Box hosting | Begin with behavior-preserving fork adoption and rolling switchover. Add pinned provisioning, consent, core-only mode, launcher limits, supervisor recovery, federation, bridge storage and runtime, approved enrollment, and isolated A17 acceptance before the phase gate. A10 and A11 pass under isolated roots. Verify core-only extension activation inside a core-spawned terminal with no app configuration. Opt-in synthetic hosting continues without the Mac. Existing core units remain unchanged. |
+| 4. Moves and real-box acceptance | Add bridge fence ports before move consumers and the machine pill before placement acceptance. Add Git snapshots, file markers, barriers, home CAS, rollback, forget, commands, and fault injection. A12 through A18 pass. Repeat applicable scenarios on real boxes with disposable repositories and synthetic sessions. Privately check the real URL pair and worktree creation path. Task 4.7 includes real intercom checks in its existing two-hour no-Mac window and enablement decision, with no later acceptance dependency. Keep peer mode disabled while a required observation is blocked or failed. Explicit hub-only selection acknowledges its limitation and is not a peer-mode pass. |
 
 Gate release on typecheck, tests, build, packaged CLI, isolated Herdr acceptance, and private real-box receipts. Inspect session IDs, cwd, homes, leases, trees, ledgers, placement, and unchanged unrelated roots. Keep the feature off until phase 4 passes. Before enabling replication, deploy compatible schemas and reload all consumers, including detached usage workers. Enable mechanically refuses older live top-level builds using Herdr process-presence records. Detached usage workers must reload too. Baseline SQL replay proves actual writers, not just function-free connections. Old usage openers refuse v7 without writes. New ingest later catches up from transcripts. Interrupted rollout keeps hosting disabled or retains all admission and origin filters.

@@ -98,7 +98,7 @@ export function getWindowsBrokerCommandLine(
   brokerArgs: string[] = ["--no-install", "tsx"],
 ): string {
   if (usesDefaultBrokerCommand(brokerCommand, brokerArgs)) {
-    return [quoteWindowsArg(nodePath), quoteWindowsArg(brokerPath)].join(" ");
+    return [quoteWindowsArg(getNodeCommand(nodePath)), quoteWindowsArg(brokerPath)].join(" ");
   }
 
   return [quoteWindowsArg(brokerCommand), ...brokerArgs.map(quoteWindowsArg), quoteWindowsArg(brokerPath)].join(" ");
@@ -161,7 +161,7 @@ export function getBrokerLaunchSpec(
   if (usesDefaultBrokerCommand(brokerCommand, brokerArgs)) {
     return {
       kind: "direct",
-      command: nodePath,
+      command: getNodeCommand(nodePath),
       args: [brokerPath],
       captureStartupStderr: true,
     };

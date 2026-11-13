@@ -136,7 +136,7 @@ test("getBrokerLaunchSpec falls back to PATH node for a standalone Pi executable
       "C:/Program Files/Pi/pi.exe",
     );
     assert.equal(spec.kind, "windows-launcher");
-    assert.equal(spec.launcherCommandLine, `"C:/Program Files/Pi/pi.exe" "C:/repo/broker.ts"`);
+    assert.equal(spec.launcherCommandLine, `"node" "C:/repo/broker.ts"`);
   } finally {
     rmSync(intercomDir, { recursive: true, force: true });
   }
@@ -176,7 +176,7 @@ test("getBrokerLaunchSpec falls back to PATH node for a standalone Pi executable
     "/tmp/intercom",
     "/Applications/Pi.app/Contents/MacOS/pi",
   );
-  assert.equal(spec.command, "/Applications/Pi.app/Contents/MacOS/pi");
+  assert.equal(spec.command, "node");
   assert.deepEqual(spec.args, [
     "/repo/broker.ts",
   ]);

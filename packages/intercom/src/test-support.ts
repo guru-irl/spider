@@ -1,4 +1,5 @@
 import { afterAll, it } from 'vitest';
+import type { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 const scratch = resolve('.spider/scratch/i');
@@ -12,6 +13,9 @@ afterAll(() => {
   rmSync(agent, { recursive: true, force: true });
 });
 export function testTmpDir(): string { return scratch; }
+export function waitForSocketClose(socket: EventEmitter): Promise<void> {
+  return new Promise(resolve => socket.once('close', () => resolve()));
+}
 export default function test(name: string, optionsOrBody: { concurrency?: boolean; timeout?: number; skip?: boolean } | (() => unknown), body?: () => unknown): void {
   const run = typeof optionsOrBody === "object" && optionsOrBody.skip ? it.skip : it;
   run(name, body ?? optionsOrBody as () => unknown, 5000);

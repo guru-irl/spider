@@ -70,6 +70,70 @@ test('placement reconciles each new terminal once', async () => {
   } finally { await h.close(); }
 }, 5000);
 
+test('prunes only proven-removed slots and retains active or unknown sessions', async () => {
+  const h = await fixture();
+  try {
+    await rememberRoamSlot(h.stateRoot, 'session-1', slot);
+    await rememberRoamSlot(h.stateRoot, 'removed-session', slot);
+    await rememberRoamSlot(h.stateRoot, 'unknown-session', slot);
+    await rememberRoamSlot(h.stateRoot, 'pending-session', slot);
+    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot,
+      removedSessions: async sessions => new Set(sessions.filter(session => session !== 'unknown-session')) });
+    expect(await p.reconcile([{ ...ready('unresolved'), sessionId: 'pending-session' }])).toEqual({ pending: ['unresolved'] });
+    const state = JSON.parse(await readFile(join(h.stateRoot, 'roam-placement.json'), 'utf8')) as { slots: Array<{ session: string }> };
+    expect(state.slots.map(entry => entry.session).sort()).toEqual(['pending-session', 'session-1', 'unknown-session']);
+    expect(await h.runs()).toEqual([]);
+  } finally { await h.close(); }
+}, 5000);
+
+test('prunes a proven-removed slot with a stale terminal association', async () => {
+  const h = await fixture();
+  try {
+    await rememberRoamSlot(h.stateRoot, 'session-1', slot);
+    await h.hc.rm(h.f.address('t1'));
+    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot,
+      removedSessions: async sessions => new Set(sessions) });
+    expect(await p.reconcile([])).toEqual({ pending: [] });
+    const state = JSON.parse(await readFile(join(h.stateRoot, 'roam-placement.json'), 'utf8')) as { slots: Array<{ session: string }> };
+    expect(state.slots).toEqual([]);
+    expect(await h.registry.list()).toHaveLength(1);
+    expect(await h.runs()).toEqual([]);
+  } finally { await h.close(); }
+}, 5000);
+
+test('retains a slot when its associated terminal cannot be observed', async () => {
+  const h = await fixture();
+  try {
+    await rememberRoamSlot(h.stateRoot, 'session-1', slot);
+    const hc: HcClient = { ...h.hc, async get() { throw new HerdrError('core-unavailable', 'fixture unavailable'); } };
+    const p = createRoamPlacement({ hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot,
+      removedSessions: async sessions => new Set(sessions) });
+    expect(await p.reconcile([])).toEqual({ pending: [] });
+    const state = JSON.parse(await readFile(join(h.stateRoot, 'roam-placement.json'), 'utf8')) as { slots: Array<{ session: string }> };
+    expect(state.slots.map(entry => entry.session)).toEqual(['session-1']);
+    expect(await h.runs()).toEqual([]);
+  } finally { await h.close(); }
+}, 5000);
+
+test('pruning a removed slot preserves the closed proxy claim for that terminal', async () => {
+  const h = await fixture();
+  try {
+    await rememberRoamSlot(h.stateRoot, 'removed-session', slot);
+    const row = { ...ready('box-1.invalid/t5'), sessionId: 'removed-session' };
+    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot,
+      removedSessions: async sessions => new Set(sessions) });
+    expect(await p.reconcile([row])).toEqual({ pending: [] });
+    await h.hc.rm(h.f.address('t2'));
+    expect(await p.reconcile([row])).toEqual({ pending: [] });
+    expect(await p.reconcile([])).toEqual({ pending: [] });
+    const state = JSON.parse(await readFile(join(h.stateRoot, 'roam-placement.json'), 'utf8')) as { slots: Array<{ session: string }> };
+    expect(state.slots.some(entry => entry.session === 'removed-session')).toBe(false);
+    await rememberRoamSlot(h.stateRoot, 'removed-session', slot);
+    expect(await p.reconcile([row])).toEqual({ pending: [] });
+    expect(await h.runs()).toHaveLength(1);
+  } finally { await h.close(); }
+}, 5000);
+
 test('pending placement survives app closure', async () => {
   const h = await fixture();
   try {

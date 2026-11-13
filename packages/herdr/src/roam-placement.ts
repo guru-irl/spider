@@ -14,7 +14,8 @@ type LaunchFailure = { attempts: number; retryable: boolean };
 type Attempt = { session: string; remote: string; core: string; proxy: string | null; closed: boolean; localOwners: string[]; failure?: LaunchFailure };
 type State = { version: 1; slots: { session: string; space: string; tab: string }[]; attempts: Attempt[] };
 const MAX_LAUNCH_ATTEMPTS = 2;
-type Options = { app: AppClient | null; hc: HcClient; registry: TerminalRegistry; hcBinary: string; stateRoot: string };
+type Options = { app: AppClient | null; hc: HcClient; registry: TerminalRegistry; hcBinary: string; stateRoot: string;
+  removedSessions?: (sessions: readonly string[]) => Promise<ReadonlySet<string>> };
 const stateFile = (root: string) => join(root, 'roam-placement.json');
 const errorCode = (error: unknown) => error && typeof error === 'object' && 'code' in error ? error.code : undefined;
 function launchNotStarted(error: unknown): boolean {
@@ -135,6 +136,23 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
           if (app) {
             try { const observed = await app.ownerPlacement(address); if (localSlot(observed)) setSlot(state, attempt.session, observed); }
             catch (error) { if (!appUnavailable(error)) throw error; }
+          }
+        }
+        if (options.removedSessions) {
+          const active = new Set([...rows.map(row => row.sessionId),
+            ...state.attempts.filter(attempt => attempt.proxy && !attempt.closed).map(attempt => attempt.session)]);
+          const candidates = [...new Set(state.slots.map(slot => slot.session).filter(session => !active.has(session)))];
+          if (candidates.length) {
+            try {
+              const removed = await options.removedSessions(candidates);
+              for (const { owner } of records) {
+                if (!removed.has(owner.sessionId) || active.has(owner.sessionId)) continue;
+                if (owner.terminal.coreId !== identity.coreId || owner.terminal.address.includes('/')) { active.add(owner.sessionId); continue; }
+                try { if ((await hc.get(owner.terminal.address)).state === 'live') active.add(owner.sessionId); }
+                catch (error) { if (errorCode(error) !== 'not_found') active.add(owner.sessionId); }
+              }
+              state.slots = state.slots.filter(slot => active.has(slot.session) || !removed.has(slot.session));
+            } catch { /* An incomplete session inventory cannot prove a slot is removable. */ }
           }
         }
         await save(stateRoot, state);

@@ -14,6 +14,7 @@ import type { AgentPorts, Clock, HubPorts, Journal, Outcome, Peer, PlacementPort
 import { defaultStagingRoot, privateDirectory } from "./staging";
 import { createStorePort, type StoreAdapter } from "./stores";
 import { createSync, type SyncAdapter } from "./sync";
+import { removedPlacementSessions } from "./placement-inventory";
 
 const UNREACHABLE_MS = 10 * 60_000;
 const LOCK = "roam-hub";
@@ -50,7 +51,7 @@ export interface HubRuntimePorts extends HubPorts {
 }
 export interface StandaloneHubPorts {
   config: RoamConfig; globalDb: Db; journal: Journal; transport: Transport; clock: Clock;
-  placement: PlacementPort | Parameters<typeof createRoamPlacement>[0];
+  placement: PlacementPort | Omit<Parameters<typeof createRoamPlacement>[0], "removedSessions">;
   runtimeRoot: string; socketPath: string; identity: ProcessIdentity;
   probe(pid: number): Promise<ProcessProbe>;
   observe(peer: Peer, results: PeerResult): Promise<HubObservation>;
@@ -302,7 +303,9 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
     sync(machine) { if (!sync) throw new Error("Hub synchronization is not prepared"); return sync.sync(machine); },
     barriers(machine, required) { if (!sync) throw new Error("Hub synchronization is not prepared"); return sync.barriers(machine, required); },
   };
-  const placement = "reconcile" in ports.placement ? ports.placement : createRoamPlacement(ports.placement);
+  const placement = "reconcile" in ports.placement ? ports.placement : createRoamPlacement({ ...ports.placement,
+    async removedSessions(sessions) { return removedPlacementSessions(ports.globalDb, sessions); },
+  });
   const hub = await runHub({ ...ports, placement, sync: delegated,
     async prepare(onPeerSync) {
       await resumePendingMappings(ports.globalDb);

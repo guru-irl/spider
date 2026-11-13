@@ -9,6 +9,14 @@ it('declares the intercom workspace dependency consistently', () => {
   expect(host.dependencies['@spider/intercom']).toBe('0.0.0');
   expect(lock.packages['packages/host'].dependencies['@spider/intercom']).toBe('0.0.0');
   expect(lock.packages['node_modules/@spider/intercom']).toEqual({ resolved: 'packages/intercom', link: true });
+  // npm ci links a workspace only when its version satisfies the declared range; otherwise it fetches from the registry.
+  for (const [name, range] of Object.entries(host.dependencies as Record<string, string>)) {
+    if (!name.startsWith('@spider/')) continue;
+    const dir = lock.packages[`node_modules/${name}`]?.resolved as string;
+    const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8'));
+    expect({ name, version: pkg.version }).toEqual({ name, version: range });
+    expect(lock.packages[dir].version).toBe(range);
+  }
 });
 const upstream = ['broker/client-liveness.test.ts', 'broker/client.test.ts', 'broker/extension.test.ts',
   'broker/framing.test.ts', 'broker/paths.test.ts', 'broker/runtime-claim.test.ts', 'broker/spawn.test.ts',

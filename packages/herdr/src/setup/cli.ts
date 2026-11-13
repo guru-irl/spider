@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { isAbsolute } from 'node:path';
-import { setupHerdr, rollbackHerdr, assertPlainShell, type SetupParts, type SetupRequest } from './installer.js';
+import { setupHerdr, rollbackHerdr, assertPlainShell, CoreOnlySetupError, type SetupParts, type SetupRequest } from './installer.js';
 import { readJournal } from './backup.js';
 import { doctorHerdr, type DoctorParts, type DoctorFailure } from './doctor.js';
-import type { IpcDescriptor, SessionIpcRequest, SessionIpcReply } from '../contracts.js';
+import type { HerdrConfig, IpcDescriptor, SessionIpcRequest, SessionIpcReply } from '../contracts.js';
 import { parsePanelIpcArgv } from '../../assets/shared/feed.js';
 import { HerdrError } from '../client/parse.js';
-import { changedSetupFilesNotice } from '../notices.js';
+import { changedSetupFilesNotice, VIEW_ON_MAC_MESSAGE } from '../notices.js';
 import { ipcFailureReply } from '../feed/ipc-client.js';
 import { runAdminCli, ADMIN_USAGE } from '../ssh/admin-cli.js';
 export interface MemoryReviewTarget { scope: 'global' | 'repo'; repoKey: string | null; uuid: string }
@@ -23,12 +23,16 @@ export interface HerdrCliPorts {
     list(repoKeys: readonly string[]): MemoryReviewReply;
     decide(op: 'approve' | 'reject', target: MemoryReviewTarget): MemoryReviewReply;
   };
-  resumeOffer?(request: SetupRequest): Promise<string>;
-  resume?(request: SetupRequest, selection: { file: string; sessionId: string; cwd: string; cutover?: boolean }): Promise<void>;
+  resumeOffer?(request: SetupRequest<HerdrConfig>): Promise<string>;
+  resume?(request: SetupRequest<HerdrConfig>, selection: { file: string; sessionId: string; cwd: string; cutover?: boolean }): Promise<void>;
   sshShim?(argv: readonly string[]): Promise<number>;
   remoteObserver?(argv: readonly string[]): Promise<number>;
   stdout(text: string): void;
   stderr(text: string): void;
+}
+async function readCoreRequest(ports: HerdrCliPorts, path?: string): Promise<SetupRequest<HerdrConfig>> {
+  try { return await ports.request(path); }
+  catch (error) { if (error instanceof CoreOnlySetupError) return error.request; throw error; }
 }
 const USAGE = 'usage: node <installed-package>/dist/herdr/cli.mjs <command>\nCommands:\n  setup [--dry-run] [--replace-changed] [--config <absolute-user-file>] [--overwrite-unowned-keys] [--allow-staging-app] [--adopt-existing-space <name>]\n  doctor [--config <absolute-user-file>]\n  rollback [--config <absolute-user-file>]\n  resume-offer --config <absolute-user-file>\n  resume --config <absolute-user-file> --file <absolute-session-file> --session-id <id> --cwd <absolute-directory>\n  ipc --descriptor <json> --request <json>\n  memory pending [--repo <absolute-repo-key>]...\n  memory approve|reject --scope global|repo [--repo <absolute-repo-key>] --uuid <uuid>\n  --ssh-shim <ssh-arguments>\n  --remote-observer --observe <address> --hc <absolute-binary> --nonce <nonce> --exit-file <absolute-file>\n  --help, -h' + `\n  ${ADMIN_USAGE}\n    Approve {path, sha256} in admin.wrappers. Reason: nonblank, at most 2048 characters, no controls.\n    Wrapper argv: destination first, then argv after --. Stdio and exit code pass through.\n    Audit: <globalRoot>/herdr/admin/audit.jsonl before launch. Children may use PI_SPIDER_SESSION_ID.\nSetup/doctor/rollback exit codes: 0 success; 1 failure; 2 usage error; 3 incomplete rollback.`;
 function verificationFailures(details: unknown): readonly DoctorFailure[] {
@@ -63,7 +67,7 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
   try {
     if (argv[0] === 'admin') return await runAdminCli(argv.slice(1), process.env, async () => {
       if (!ports) throw new HerdrError('setup-composition-unavailable', 'Administration requires the host-resolved user policy');
-      return (await ports.request()).config;
+      return (await readCoreRequest(ports)).config;
     });
     if (argv[0] === '--ssh-shim') {
       if (!ports?.sshShim) throw new HerdrError('setup-composition-unavailable', 'SSH shim composition is required');
@@ -142,8 +146,8 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
     // Require explicit runtime composition rather than implicit live configuration defaults.
     if (!ports)
       throw new HerdrError('setup-composition-unavailable', 'Installer composition is required; refusing implicit live configuration defaults');
-    const request = { ...await ports.request(configPath), dryRun, replaceChanged, overwriteUnownedKeys: overwrite, allowStagingApp: allowStaging, adoptExistingSpaces };
-    if (command === 'setup' || command === 'rollback') await ports.assertAgentDirectory?.(request);
+    const loaded = command === 'resume-offer' || command === 'resume' ? await readCoreRequest(ports, configPath) : await ports.request(configPath);
+    const request = { ...loaded, dryRun, replaceChanged, overwriteUnownedKeys: overwrite, allowStagingApp: allowStaging, adoptExistingSpaces };
     if (command === 'resume-offer') {
       if (!ports.resumeOffer) throw new HerdrError('setup-composition-unavailable', 'Resume offer composition is required');
       stdout(await ports.resumeOffer(request)); return 0;
@@ -152,8 +156,11 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
       if (!ports.resume) throw new HerdrError('setup-composition-unavailable', 'Leased resume composition is required');
       await ports.resume(request, { file: sessionFile!, sessionId: sessionId!, cwd: cwd!, ...(cutover ? { cutover: true } : {}) }); return 0;
     }
+    if (request.config.mode === 'core-only') throw new HerdrError('view-on-mac', VIEW_ON_MAC_MESSAGE);
+    const fullRequest: SetupRequest = { ...request, config: request.config };
+    if (command === 'setup' || command === 'rollback') await ports.assertAgentDirectory?.(fullRequest);
     if (command === 'doctor') {
-      const report = await doctorHerdr(request, await ports.doctorParts(request));
+      const report = await doctorHerdr(fullRequest, await ports.doctorParts(fullRequest));
       for (const note of report.information ?? []) stdout(`${note.code}: ${note.message}\n`);
       for (const issue of [...report.failures, ...report.warnings])
         stdout(`${issue.code}: ${issue.message}\nRepair: ${issue.repair}\n`);
@@ -163,14 +170,14 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
       } else if (!report.failures.length) stdout('Doctor checks passed\n');
       return report.failures.length ? 1 : 0;
     }
-    const parts = await ports.setupParts(request);
+    const parts = await ports.setupParts(fullRequest);
     if (command === 'rollback') {
-      const restored = await rollbackHerdr(request, parts);
+      const restored = await rollbackHerdr(fullRequest, parts);
       stdout(`Rollback restored ${restored.length} matching files\n`);
       // Only owned parts that could not be restored remain in the journal.
       return (await readJournal(request.journalRoot)).entries.length ? 3 : 0;
     }
-    const result = await setupHerdr(request, parts);
+    const result = await setupHerdr(fullRequest, parts);
     if (result.plan) {
       for (const file of result.plan.files) stdout(`${file.action} ${file.path}${file.refusal ? ' (needs --replace-changed)' : ''}\n`);
       for (const action of result.plan.cutover) stdout(`cutover ${action}\n`);

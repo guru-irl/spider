@@ -6,6 +6,8 @@ import { startHubControl, type HubControlReply, type HubControlRequest } from ".
 import * as productionHub from "../production-hub";
 import * as localRuntime from "../runtime";
 import * as agent from "../agent";
+import * as appModule from "@spider/herdr/client/app";
+import * as hcModule from "@spider/herdr/client/hc";
 import { createClientFixture } from "../../../herdr/src/__tests__/testutil";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -32,7 +34,7 @@ async function fixture(identity = HUB, reply?: HubControlReply) {
   });
   sockets.push(socket);
   const out: string[] = [], err: string[] = [];
-  return { calls, out, err, invoke: (args: string[]) => main(args, { out: text => out.push(text), err: text => err.push(text) }) };
+  return { root, calls, out, err, invoke: (args: string[]) => main(args, { out: text => out.push(text), err: text => err.push(text) }) };
 }
 
 it.each([
@@ -71,6 +73,18 @@ it("remote doctor reports a failed peer process rather than a generic unavailabl
     expect(await f.invoke(["roam", "doctor", "--", alias])).toBe(1);
     expect(f.err.join("")).toContain("Peer command failed (exit 1)");
   } finally { await hc.close(); }
+}, 5000);
+
+it("the Mac hub refuses core-only mode before starting placement", async () => {
+  const f = await fixture(), close = vi.fn(), app = vi.spyOn(appModule, "createAppClient");
+  const hc = vi.spyOn(hcModule, "createHcClient").mockImplementation(() => { throw new Error("core started before mode check"); });
+  mkdirSync(join(f.root, "herdr"), { recursive: true });
+  writeFileSync(join(f.root, "herdr", "config.json"), JSON.stringify({ mode: "core-only", core: { binary: "/fixture/hc", config: "/fixture/core" }, agentDirectory: "/fixture/agent", globalRoot: f.root, shellRc: "/fixture/rc", machines: [] }));
+  vi.spyOn(localRuntime, "openLocalCore").mockReturnValue({ config: { enabled: true, role: "hub" }, close } as never);
+  await expect(productionHub.startProductionHub(f.root)).rejects.toThrow("This view is available on the Mac.");
+  expect(app.mock.calls.length).toBe(0);
+  expect(hc.mock.calls.length).toBe(0);
+  expect(close).toHaveBeenCalledOnce();
 }, 5000);
 
 it("sync accepts a leading-dash alias after the end-of-options marker", async () => {

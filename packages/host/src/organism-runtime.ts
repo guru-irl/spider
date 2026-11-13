@@ -154,7 +154,7 @@ export class HostOrganismRuntime {
   }
 
   resolve(context: RuntimeContext): OrganismActionDeps {
-    if (!this.admitted()) throw new Error("Session ownership is not available; run spider roam doctor.");
+    if (!this.admitted()) throw new Error("Session ownership is not available; run /spider roam doctor.");
     if (process.env.PI_SUBAGENT_CHILD === "1") throw new Error("organism is disabled in subagent sessions");
     if (this.#disposed) throw new Error("Organism runtime has shut down; reload the session before using it.");
     if (!context.sessionId) throw new Error("Organism needs an active pi session.");

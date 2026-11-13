@@ -50,7 +50,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
       edits: Type.Array(Type.Object({ oldText: Type.String(), newText: Type.String() })),
     }),
     async execute(toolCallId: string, params: any, signal: unknown, onUpdate: unknown, ctx: any) {
-      if (deps.admitted?.() === false) return errorResult("Session ownership is not available; run spider roam doctor.");
+      if (deps.admitted?.() === false) return errorResult("Session ownership is not available; run /spider roam doctor.");
       const err = validateDescription(params?.description);
       if (err) return errorResult(err);
       const { description, ...rest } = params;
@@ -78,7 +78,7 @@ export function registerEditWriteOverrides(pi: { registerTool: Function }, deps:
       content: Type.String({ description: "Full file content." }),
     }),
     async execute(toolCallId: string, params: any, signal: unknown, onUpdate: unknown, ctx: any) {
-      if (deps.admitted?.() === false) return errorResult("Session ownership is not available; run spider roam doctor.");
+      if (deps.admitted?.() === false) return errorResult("Session ownership is not available; run /spider roam doctor.");
       const err = validateDescription(params?.description);
       if (err) return errorResult(err);
       const { description, ...rest } = params;

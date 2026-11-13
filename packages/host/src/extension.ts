@@ -888,7 +888,7 @@ export default function spiderExtension(hostPi: PiToolAPI): void {
     // Context packages reuse module-level functions. Wrap even those handlers so
     // registry identity always identifies one activation, not a shared function.
     const invoke: ActionHandler = (args, ctx) => {
-      if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run spider roam doctor.");
+      if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run /spider roam doctor.");
       if (args.on !== undefined && !herdr?.enabled()) throw Object.assign(new Error(herdr?.execution().remoteUnavailableReason ?? HERDR_NOTICES.remoteDisabled.text), { code: 'herdr-unavailable' });
       return handler(args, { ...ctx, ...herdr?.execution() });
     };
@@ -1161,7 +1161,7 @@ export default function spiderExtension(hostPi: PiToolAPI): void {
     renderResult: (result: any, options: any, theme: any, context: any) => renderSpiderResult(result, options, theme,
       { ...context, formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()) }),
     async execute(toolCallId, args, signal, onUpdate, ctx) {
-      if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run spider roam doctor.");
+      if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run /spider roam doctor.");
       // Stream partial output the way pi's built-in bash tool does. The FIRST call is an
       // empty update fired before any output exists: it materialises the result section
       // immediately, so a long command shows a live (and ctrl+o-expandable) result instead
@@ -1319,7 +1319,7 @@ export default function spiderExtension(hostPi: PiToolAPI): void {
         admitted: ordinaryWorkAllowed,
         formatRunCost: makeRunCostFormatter(() => usageServices.get(pi)?.snapshot()),
         dispatch: (action, args) => {
-          if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run spider roam doctor.");
+          if (!ordinaryWorkAllowed()) throw new Error("Session ownership is not available; run /spider roam doctor.");
           return dispatch({ action, ...args } as SpiderArgs, buildActionCtx(pi, { action, ...args } as SpiderArgs, sessionId, cwd, undefined, ctx.modelRegistry, undefined, parentModelOf(ctx)), ownedActions);
         },
       });

@@ -275,7 +275,7 @@ export class SessionScheduler {
   }
 
   async loop(args: LoopArgs, ctx: ExtensionContext): Promise<Result> {
-    if (!this.admitted()) throw new Error("Session ownership is not available; run spider roam doctor.");
+    if (!this.admitted()) throw new Error("Session ownership is not available; run /spider roam doctor.");
     assertPersistentSession("loop", ctx); this.context(ctx);
     if (args.prompt !== undefined) assertModelPrompt(args.prompt);
     if (args.at !== undefined) throw new Error("spider loop does not accept at; use spider schedule");
@@ -303,7 +303,7 @@ export class SessionScheduler {
     return { text: (warning ? `Warning: ${warning} ` : "") + (trigger.kind === "self-paced" ? `Self-paced loop started. Re-arm with spider schedule; stop it with spider loop name:${JSON.stringify(name)} stop:true.` : `Loop ${name} scheduled.`), details: { ...this.status().details, ...(warning ? { warning } : {}) } };
   }
   async schedule(args: ScheduleArgs, ctx: ExtensionContext): Promise<Result> {
-    if (!this.admitted()) throw new Error("Session ownership is not available; run spider roam doctor.");
+    if (!this.admitted()) throw new Error("Session ownership is not available; run /spider roam doctor.");
     assertPersistentSession("schedule", ctx); this.context(ctx);
     const name = validName(args.name ?? "wakeup");
     if (!args.stop && this.seals.has(name)) {
@@ -337,7 +337,7 @@ export class SessionScheduler {
     return { text: `Wakeup scheduled${seconds === undefined ? "" : ` in ${seconds}s`}, at ${new Date(nextAt).toISOString()}.${replaced ? ` It replaced the trigger named ${name}.` : ""}${warning ? ` Warning: ${warning}` : ""}`, details: { ...(seconds === undefined ? {} : { delaySeconds: seconds }), fireAt: new Date(nextAt).toISOString(), noop: args.noop === true, ...(warning ? { warning } : {}) } };
   }
   async command(cmd: LoopCommand, ctx: ExtensionContext, origin: PromptOrigin = "user"): Promise<Result> {
-    if (!this.admitted()) throw new Error("Session ownership is not available; run spider roam doctor.");
+    if (!this.admitted()) throw new Error("Session ownership is not available; run /spider roam doctor.");
     assertPersistentSession("loop", ctx); this.context(ctx);
     const usage = "Usage: /loop [interval like 5m or 1h] <prompt>, /loop stop [name|all], or /loop to list triggers";
     if (cmd.kind === "list") {

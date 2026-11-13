@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { scratchDbPath } from "@spider/db-core/testutil";
@@ -123,6 +123,24 @@ it("read-only doctor runs inside a blocked pi session without transcript writes"
   expect(f.sent).toEqual([]);
 }, 5000);
 
+it("uses pi command wording for doctor diagnostics while the shell CLI keeps shell wording", async () => {
+  const directory = root();
+  mkdirSync(join(directory, "usage-server"), { mode: 0o700 });
+  writeFileSync(join(directory, "usage-server", "lock.json"), "not JSON", { mode: 0o600 });
+  const output: string[] = [];
+  expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(0);
+  expect(output.join("")).toContain("Cannot inspect the usage worker. Run spider roam doctor.");
+  const f = session();
+  await f.start();
+  await f.commands.get("spider")!("roam doctor", f.ctx);
+  expect(f.notices.join("\n")).toContain("Cannot inspect the usage worker. Run /spider roam doctor.");
+  expect(f.notices.join("\n")).not.toContain("Run spider roam doctor.");
+  f.notices.length = 0;
+  await f.commands.get("doctor")!("", f.ctx);
+  expect(f.notices.join("\n")).toContain("Cannot inspect the usage worker. Run /spider roam doctor.");
+  expect(f.sent).toEqual([]);
+}, 5000);
+
 it("shows the blocked-session doctor through RPC and no-UI output", async () => {
   root();
   const f = session(); await f.start();
@@ -180,8 +198,9 @@ it("every admission guard message names a command available in the build", async
   for (const f of variants) {
     await f.start();
     const message = f.gate.inspect().blockers[0]?.detail ?? "";
-    expect(message).toMatch(/\/doctor|spider roam doctor/i);
+    expect(message).toContain("/spider roam doctor");
     expect(f.commands.has("doctor")).toBe(true);
+    expect(f.commands.has("spider")).toBe(true);
     await f.commands.get("doctor")!("", f.ctx);
     expect(f.notices.join("\n")).toMatch(/roam.*disabled/i);
     expect(f.sent).toEqual([]);
@@ -195,9 +214,15 @@ it("every admission guard message names a command available in the build", async
     [...readFileSync(file, "utf8").matchAll(/Session ownership is not available; run ([^\."\n]+)\./g)].map(match => match[1]));
   expect(references.length).toBeGreaterThan(0);
   for (const command of new Set(references)) {
-    expect(command).toBe("spider roam doctor");
+    expect(command).toBe("/spider roam doctor");
     const output: string[] = [];
     expect(await main(command.split(" ").slice(1), { out: text => output.push(text), err: text => output.push(text) })).toBe(0);
     expect(output.join(" ")).toMatch(/roam.*disabled/i);
+    const f = variants[0];
+    f.notices.length = 0;
+    const [name, ...args] = command.slice(1).split(" ");
+    expect(f.commands.has(name)).toBe(true);
+    await f.commands.get(name)!(args.join(" "), f.ctx);
+    expect(f.notices.join("\n")).toMatch(/roam.*disabled/i);
   }
 }, 5000);

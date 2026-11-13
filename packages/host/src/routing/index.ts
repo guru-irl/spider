@@ -42,7 +42,7 @@ export function registerRouting(pi: ExtensionAPI, deps: RoutingDeps): void {
   registerEditWriteOverrides(pi as unknown as { registerTool: Function }, deps);
 
   const routeToolCall = (event: any, ctx: ExtensionContext) => {
-    if (deps.admitted?.() === false) return { block: true, reason: "Session ownership is not available; run spider roam doctor." };
+    if (deps.admitted?.() === false) return { block: true, reason: "Session ownership is not available; run /spider roam doctor." };
     const tool = event?.toolName;
     if (isExempt(tool)) {
       return guardForegroundSleep(event.input, sessionIdFromCtx(ctx) || deps.getSessionId(), tool);

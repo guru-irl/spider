@@ -153,9 +153,10 @@ export function registerSlashCommands(pi: PiLike, deps: SlashDeps): void {
 				if (name === "doctor" && !arg && deps.waitForAdmission) await deps.waitForAdmission();
 				if (roamingDoctor || name === "doctor" && !arg && deps.ordinaryWorkAllowed?.() === false) {
 					const result = deps.roamDoctor ? await deps.roamDoctor(roamingDoctor ? words : ["roam", "doctor"]) : { text: "Roaming doctor is unavailable.", code: 1 };
+					const text = result.text.replace(/(?<![\w/])spider roam doctor\b/g, "/spider roam doctor");
 					const notify = (ctx as { hasUI?: boolean } | undefined)?.hasUI ? notifyOf(ctx) : undefined;
-					if (notify) notify(result.text, result.code === 0 ? "info" : "warning");
-					else process.stderr.write(result.text.endsWith("\n") ? result.text : result.text + "\n");
+					if (notify) notify(text, result.code === 0 ? "info" : "warning");
+					else process.stderr.write(text.endsWith("\n") ? text : text + "\n");
 					return;
 				}
 				if (name === "learn") {

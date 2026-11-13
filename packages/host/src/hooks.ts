@@ -187,7 +187,7 @@ export function registerHooks(pi: PiLikeAPI, herdrGuard?: HerdrToolGuard, admitt
       // Mechanically enforce spider exec over bash. Unknown enforcement state
       // must block bash, not silently permit it.
       pi.on(name, (event: any) => {
-        if (!admitted()) return { block: true, reason: "Session ownership is not available; run spider roam doctor." };
+        if (!admitted()) return { block: true, reason: "Session ownership is not available; run /spider roam doctor." };
         const enforce = () => {
         try {
           const tool = event?.toolName;

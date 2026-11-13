@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createSync } from "../sync";
+import { barrierWatermarks } from "../barriers";
 import * as staging from "../staging";
 import { network, BOX, HUB } from "./sync-fixture";
 const fixtures: ReturnType<typeof network>[] = [];
@@ -18,6 +19,18 @@ it("move barriers wait for every store", async () => {
   expect(await sync.barriers(peerId, [{ ...required[0] }, { ...required[1], through: 2 }])).toBe(true);
   f.unavailable.add(BOX);
   expect(await sync.barriers(peerId, required.slice(0, 1))).toBe(false);
+}, 5000);
+it("barrier watermarks read the store head without writing snapshot batches", async () => {
+  const f = fixture(); f.seed();
+  const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores });
+  await sync.sync(); const key = f.remotes.get(BOX)!.worktree.storeKey;
+  const sourceStream = (f.remotes.get(BOX)!.worktree.db.prepare("SELECT stream_id FROM roam_meta").get() as { stream_id: string }).stream_id;
+  const hubStream = (f.stores.openStore(key).db.prepare("SELECT stream_id FROM roam_meta").get() as { stream_id: string }).stream_id;
+  vi.spyOn(f.stores, "export").mockImplementation(() => { throw new Error("snapshot writes are unavailable"); });
+  expect(await barrierWatermarks(f.stores, f.config, [{ storeKey: key, stream: sourceStream, through: 2 }])).toEqual([
+    { storeKey: key, stream: hubStream, through: 2 },
+  ]);
+  expect(await barrierWatermarks(f.stores, f.config, [{ storeKey: key, stream: sourceStream, through: 3 }])).toBeNull();
 }, 5000);
 it("relayed barriers prove the source cursor before sending a hub watermark", async () => {
   const f = fixture(); f.seed();

@@ -3,13 +3,13 @@ import { dirname, join, relative, sep } from "node:path";
 import { migrate, openDb, openDbReadOnly, type Db } from "@spider/db-core";
 import { MappingFenceError, applyBatch } from "@spider/db-core/roam/apply";
 import { catalogReplica, replicaPath } from "@spider/db-core/roam/catalog";
-import { storeScope, validateBatch } from "@spider/db-core/roam/codec";
+import { isRoamUuid, storeScope, validateBatch } from "@spider/db-core/roam/codec";
 import { createReplicaEffects } from "@spider/db-core/roam/effects";
 import { createExportPolicy } from "@spider/db-core/roam/event-policy";
 import { exportBatch } from "@spider/db-core/roam/export";
 import { localEntries, writeLocal } from "@spider/db-core/roam/local-state";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
-import type { ApplyReceipt, BatchArtifact, StoreKey } from "@spider/db-core/roam/types";
+import type { ApplyReceipt, BatchArtifact, StoreBarrier, StoreKey } from "@spider/db-core/roam/types";
 import type { AgentPorts, RoamConfig, StorePort } from "./contracts";
 import { sessionHome } from "./homes";
 import { listStoreKeys } from "./store-inventory";
@@ -28,6 +28,7 @@ export function batchReceipt(db: Db, batch: BatchArtifact): ApplyReceipt | null 
 export interface StoreAdapter extends StorePort {
   openStore: AgentPorts["openStore"];
   receipt(key: StoreKey, artifact: BatchArtifact): ApplyReceipt | null;
+  head(key: StoreKey): StoreBarrier;
   recoverCatalog(): void;
   origins(): ReadonlyMap<string, ReadonlySet<string>>;
   batchDirectories(): string[];
@@ -132,6 +133,12 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
   const adapter: StoreAdapter = {
     openStore,
     receipt(key, artifact) { return batchReceipt(openStore(key).db, artifact); },
+    head(key) {
+      const row = openStore(key).db.prepare("SELECT stream_id AS stream,(SELECT coalesce(max(seq),0) FROM roam_changes) AS through FROM roam_meta WHERE id=1")
+        .get() as { stream: string; through: number };
+      if (!isRoamUuid(row.stream) || !Number.isSafeInteger(row.through) || row.through < 0) throw new Error("Invalid store head");
+      return { storeKey: key, ...row };
+    },
     list() {
       registryFingerprint = undefined;
       return listStoreKeys(globalDb, { onProblem: (file, error) => writeLocal(globalDb, "store-problem", file,

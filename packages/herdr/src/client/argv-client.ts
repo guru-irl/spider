@@ -30,16 +30,19 @@ export function createArgvClient(options: HcClientOptions): HcArgvClient {
         throw new HerdrError('invalid-cli-deadline', 'Direct execution requires a deadline of at most 600 seconds');
       }
       if (!argv.length || !argv[0]) throw new HerdrError('invalid-argv', 'A remote program is required');
-      const args = ['exec', ...target, '--timeout', String(Math.ceil(request.timeoutMs / 1000))];
-      if (request.stdin !== undefined) args.push('--stdin');
-      args.push('--', ...argv);
+      const expiresAt = performance.now() + request.timeoutMs;
       if (request.signal?.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted');
       try { await requireCoreAvailable(env, request.signal); }
       catch (error) {
         if (request.signal?.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted');
         throw error;
       }
-      return invokeBytes(binary, args, env, request);
+      const remainingMs = Math.floor(expiresAt - performance.now());
+      if (remainingMs <= 0) throw new HerdrError('cli-timeout', 'CLI request deadline expired', { timeoutMs: request.timeoutMs });
+      const args = ['exec', ...target, '--timeout', String(Math.max(1, Math.floor(remainingMs / 1000)))];
+      if (request.stdin !== undefined) args.push('--stdin');
+      args.push('--', ...argv);
+      return invokeBytes(binary, args, env, { ...request, timeoutMs: remainingMs });
     },
     async run(on, argv, labels, call) {
       const target = destination(on);

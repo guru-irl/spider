@@ -73,7 +73,7 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
   }
 
   async function bracket<T>(peer: Peer, expected: Resolved | undefined, timeoutMs: number,
-    call: (signal: AbortSignal) => Promise<T>): Promise<{ value: T; core: CoreObservation }> {
+    call: (signal: AbortSignal, remainingMs: number) => Promise<T>): Promise<{ value: T; core: CoreObservation }> {
     const alias = peer.alias;
     const observed = expected ?? current.get(alias);
     const requireEnrollment = () => {
@@ -82,7 +82,15 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
     };
     deadline(timeoutMs);
     const aborter = new AbortController();
-    const timer = setTimeout(() => aborter.abort(), timeoutMs);
+    const expiresAt = performance.now() + timeoutMs;
+    let timedOut = false;
+    const timeout = () => Object.assign(new HerdrError('cli-timeout', `Herdr request exceeded ${timeoutMs} ms`, { timeoutMs }), { retryable: true as const });
+    const remaining = () => {
+      const ms = Math.floor(expiresAt - performance.now());
+      if (ms <= 0) { timedOut = true; aborter.abort(); throw timeout(); }
+      return ms;
+    };
+    const timer = setTimeout(() => { timedOut = true; aborter.abort(); }, timeoutMs);
     try {
       requireEnrollment();
       let before: CoreObservation;
@@ -95,7 +103,7 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       let value: T | undefined;
       let failure: unknown;
       let failed = false;
-      try { value = await call(aborter.signal); }
+      try { value = await call(aborter.signal, remaining()); }
       catch (error) { failed = true; failure = error; }
       let after: CoreObservation;
       try { after = await observe(alias, aborter.signal); }
@@ -104,8 +112,12 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
         invalidate(alias, observed); throw coreChanged();
       }
       requireEnrollment();
+      remaining();
       if (failed) throw failure;
       return { value: value as T, core: before };
+    } catch (error) {
+      if (timedOut || performance.now() >= expiresAt) { invalidate(alias, observed); throw timeout(); }
+      throw error;
     } finally { clearTimeout(timer); }
   }
 
@@ -114,8 +126,8 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       const configured = Object.freeze({ ...enrollment(peer) });
       const previous = current.get(configured.alias);
       const file = posix.join(configured.globalRoot, 'roam', 'machine.json');
-      const observation = await bracket(configured, undefined, DEFAULT_LIMITS.fileMs, signal =>
-        client.exec(configured.alias, ['cat', '--', file], { timeoutMs: DEFAULT_LIMITS.fileMs, maxBytes: DEFAULT_LIMITS.replyBytes, signal }))
+      const observation = await bracket(configured, undefined, DEFAULT_LIMITS.fileMs, (signal, remainingMs) =>
+        client.exec(configured.alias, ['cat', '--', file], { timeoutMs: remainingMs, maxBytes: DEFAULT_LIMITS.replyBytes, signal }))
         .catch(error => { invalidate(configured.alias, previous); throw error; });
       let machineId: unknown;
       try { machineId = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(observation.value))).machineId; }
@@ -135,8 +147,8 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       const state = resolved(peer);
       const args = remoteArgs(state.peer, argv);
       const call = snapshotCall(options);
-      return (await bracket(state.peer, state, call.timeoutMs, signal =>
-        client.exec(state.peer.alias, args, { ...call, signal }))).value;
+      return (await bracket(state.peer, state, call.timeoutMs, (signal, remainingMs) =>
+        client.exec(state.peer.alias, args, { ...call, timeoutMs: remainingMs, signal }))).value;
     },
     async run(peer, argv, operationId) {
       if (!operationId || /[\u0000-\u001f\u007f]/.test(operationId)) {
@@ -150,15 +162,15 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
     async read(peer, path, options: CallOptions) {
       const state = resolved(peer);
       const call = snapshotCall(options);
-      return (await bracket(state.peer, state, call.timeoutMs, signal =>
-        client.exec(state.peer.alias, ['cat', '--', path], { ...call, signal }))).value;
+      return (await bracket(state.peer, state, call.timeoutMs, (signal, remainingMs) =>
+        client.exec(state.peer.alias, ['cat', '--', path], { ...call, timeoutMs: remainingMs, signal }))).value;
     },
     async write(peer, path, bytes, timeoutMs) {
       const state = resolved(peer);
       const target = state.peer.alias.startsWith('-') ? [`--on=${state.peer.alias}`] : ['--on', state.peer.alias];
       const input = Buffer.from(bytes);
-      await bracket(state.peer, state, timeoutMs, async signal => {
-        const call = { timeoutMs, signal, strictInput: true } satisfies CliRequestOptions;
+      await bracket(state.peer, state, timeoutMs, async (signal, remainingMs) => {
+        const call = { timeoutMs: remainingMs, signal, strictInput: true } satisfies CliRequestOptions;
         try { return await invokeCli(binary, ['file', 'write', '--json', ...target, '--', path], env, DEFAULT_LIMITS.replyBytes, input, call); }
         catch (error) {
           throw new HerdrError(error instanceof HerdrError ? error.code : 'cli-error', 'Remote file write failed');

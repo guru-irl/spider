@@ -135,7 +135,8 @@ function inventory(ports: AgentPorts, key: StoreKey): JsonObject {
   const through = (db.prepare("SELECT coalesce(max(seq), 0) AS seq FROM roam_changes").get() as { seq: number }).seq;
   if (!isMachineId(meta.stream_id) || !Number.isSafeInteger(through) || through < 0) throw new Error("Invalid store inventory");
   return { protocol: 1, schema: 14, machineId: meta.machine_id, storeKey: key, stream: meta.stream_id,
-    through, captureEnabled: meta.capture_enabled === 1, roamable: meta.roamable === 1 };
+    through, captureEnabled: meta.capture_enabled === 1, roamable: meta.roamable === 1,
+    ...(key.startsWith("worktree:") ? { sessions: (db.prepare("SELECT id FROM sessions ORDER BY id").all() as { id: string }[]).map(row => row.id) } : {}) };
 }
 function receiptRow(db: Store["db"], machine: string, batchId: string): ReceiptRow | undefined {
   const row = db.prepare("SELECT peer_stream, after_seq, through_seq, sha256 FROM roam_receipts WHERE peer_machine = ? AND batch_id = ?")
@@ -535,9 +536,11 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
     }
     if (request.kind === "stores") {
       let incomplete = false;
-      const stores = listStoreKeys(openStore(ports, "global", true).db, { onIncomplete: () => { incomplete = true; } });
+      const problems: JsonObject[] = [];
+      const stores = listStoreKeys(openStore(ports, "global", true).db, { onIncomplete: () => { incomplete = true; },
+        onProblem: entry => { problems.push({ entry, reason: "Unsafe or unreadable store skipped" }); } });
       if (incomplete) throw new Error("Store inventory is incomplete");
-      value = { protocol: 1, schema: 14, machineId: ports.config.machineId, stores };
+      value = { protocol: 1, schema: 14, machineId: ports.config.machineId, stores, problems };
     } else if (request.kind === "inventory") value = inventory(ports, request.key);
     else if (request.kind === "enable-capture") {
       enableMemoryCapture(openStore(ports, request.key, true).db, request.key);

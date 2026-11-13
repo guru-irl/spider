@@ -2,6 +2,11 @@ import { appendRunEvent, type Db } from "@spider/db-core";
 import type { RunRow } from "./run-store";
 import { isLocalRun } from "./roam-origin";
 
+export const CLAIM_USAGE_QUERY = `INSERT INTO run_events (run_id, session_id, ts, type)
+        SELECT ?, ?, ?, 'spider_usage_reported'
+        WHERE NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=? AND type='spider_usage_reported')`;
+
+
 /** The pi usage shape, kept local because subagents does not declare a pi-ai dependency. */
 export interface UsageLike {
   input: number; output: number; cacheRead: number; cacheWrite: number; totalTokens: number;
@@ -61,9 +66,7 @@ export function reportRunUsage(db: Db, run: RunRow, sink: (run: RunRow, usage: M
       // cannot share this transaction: a crash after append is recovered by the host's
       // durable note/provider/model dedup. Tool-result fallback is at-most-once: its
       // marker commits before pi persists the result, so a crash in that gap can lose it.
-      const marked = db.withRetry(() => db.prepare(`INSERT INTO run_events (run_id, session_id, ts, type)
-        SELECT ?, ?, ?, 'spider_usage_reported'
-        WHERE NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=? AND type='spider_usage_reported')`)
+      const marked = db.withRetry(() => db.prepare(CLAIM_USAGE_QUERY)
         .run(run.id, run.session_id, Date.now(), run.id).changes);
       if (!marked) return false;
       if (!sink(run, runUsage(db, run.id))) throw refused;

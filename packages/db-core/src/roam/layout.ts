@@ -86,10 +86,11 @@ function indexesFor(db: Db, table: string): Index[] {
   return db.prepare("SELECT name, \"unique\", partial FROM pragma_index_list(?)").all(table) as Index[];
 }
 
-function indexPresent(db: Db, table: string, name: string, expected: readonly string[]): boolean {
+export function indexPresent(db: Db, table: string, name: string, expected?: readonly string[]): boolean {
   const index = indexesFor(db, table).find(item => item.name === name);
   if (!index) return false;
-  if (index.unique !== 1 || index.partial !== 0 || !indexColumnsMatch(db, name, expected)) {
+  // An optional performance index must not prevent a store from opening.
+  if (expected && (index.unique !== 1 || index.partial !== 0 || !indexColumnsMatch(db, name, expected))) {
     throw new Error(`Invalid core index ${name}`);
   }
   return true;

@@ -12,6 +12,14 @@ import type { Owner, RunId, Disposable, RunSummary } from '../../../herdr/src/co
 import type { RunCursor, RunViewFrame, RunViewEvent, RunViewInfo } from '../../../herdr/src/contracts.js';
 import { RUN_VIEW_PROTOCOL } from '../../../herdr/src/contracts.js';
 import { subscribeLiveRunEvents } from '../../../subagents/src/live-events.js';
+
+export const TRANSCRIPT_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1";
+export const EVENT_MAX_ID_QUERY = 'SELECT COALESCE(MAX(id), 0) AS id FROM run_events WHERE run_id=? AND session_id=?';
+export const PREVIOUS_MESSAGES_QUERY = "SELECT summary,payload FROM run_events WHERE run_id=? AND session_id=? AND type='message' AND id<=? ORDER BY id";
+export const PENDING_MESSAGE_QUERY = "SELECT summary,payload FROM run_events WHERE run_id=? AND session_id=? AND type='message' AND id=?";
+export const FOLLOW_EVENTS_QUERY = 'SELECT id,type,tool,summary,payload FROM run_events WHERE run_id=? AND session_id=? AND id>? ORDER BY id LIMIT 128';
+export const UNREAD_EVENTS_QUERY = 'SELECT id FROM run_events WHERE run_id=? AND session_id=? AND id>? LIMIT 1';
+
 /** A live frame is a preview: anything larger waits for the transcript instead. */
 const LIVE_FRAME_BYTES = 192 * 1024;
 const LIVE_UPDATE_MS = 100;
@@ -145,7 +153,7 @@ function transcriptFile(roots: readonly string[], runId: RunId): TranscriptFile 
 }
 type RecordedTranscript = { roots: readonly string[] } | { origin: string };
 function recordedTranscriptRoots(db: Db, sessionId: string, runId: RunId): RecordedTranscript | null {
-  const row = db.prepare("SELECT payload FROM run_events WHERE run_id=? AND session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1").get(runId, sessionId) as { payload: string | null } | undefined;
+  const row = db.prepare(TRANSCRIPT_QUERY).get(runId, sessionId) as { payload: string | null } | undefined;
   if (!row) return null;
   let location: unknown;
   try { location = JSON.parse(row.payload ?? 'null'); } catch { throw error('unsafe-transcript-path'); }
@@ -268,7 +276,7 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
             recordCache = null; transcriptCounts.clear(); messageCounts.clear(); streamedMessages.clear(); fallbackMessages.clear(); completedMessages.clear();
             indexedOffset = 0; historyIndexed = false; resumeShown = false;
             p.offset = file?.size ?? 0; p.textOffset = 0; delete p.suppressProse; delete p.pendingMessage; p.file = file?.identity ?? null; p.anchor = null;
-            p.event = (db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM run_events WHERE run_id=? AND session_id=?').get(runId, owner.sessionId) as { id: number }).id;
+            p.event = (db.prepare(EVENT_MAX_ID_QUERY).get(runId, owner.sessionId) as { id: number }).id;
             send({ runId, cursor: encode(p), kind: 'gap', data: { reason: 'cursor-invalidated' } }); invalid = false;
           }
           if (subscribeOptions?.view === RUN_VIEW_PROTOCOL) {
@@ -290,10 +298,10 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
             }
           }
           if (!historyIndexed) {
-            const previous = db.prepare("SELECT summary,payload FROM run_events WHERE run_id=? AND session_id=? AND type='message' AND id<=? ORDER BY id").all(runId, owner.sessionId, p.event) as { summary: string | null; payload: string | null }[];
+            const previous = db.prepare(PREVIOUS_MESSAGES_QUERY).all(runId, owner.sessionId, p.event) as { summary: string | null; payload: string | null }[];
             for (const event of previous) completedMessages.add(occurrence(messageCounts, completionKey(event)));
             if (p.pendingMessage) {
-              const pending = db.prepare("SELECT summary,payload FROM run_events WHERE run_id=? AND session_id=? AND type='message' AND id=?").get(runId, owner.sessionId, p.pendingMessage.id) as { summary: string | null; payload: string | null } | undefined;
+              const pending = db.prepare(PENDING_MESSAGE_QUERY).get(runId, owner.sessionId, p.pendingMessage.id) as { summary: string | null; payload: string | null } | undefined;
               if (pending) { const key = completionKey(pending); completedMessages.add(`${key}:${(messageCounts.get(key) ?? 0) + 1}`); }
             }
             // A resumed byte cursor proves the prefix was supplied. Index it once
@@ -363,7 +371,7 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
           const textAdvanced = beforeText !== `${p.offset}:${p.textOffset}`;
           if (text || textAdvanced) send({ runId, cursor: encode(p), kind: 'event', data: { text, events: [] } });
           const events: RunViewEvent[] = [];
-          const records = db.prepare('SELECT id,type,tool,summary,payload FROM run_events WHERE run_id=? AND session_id=? AND id>? ORDER BY id LIMIT 128').all(runId, owner.sessionId, p.event) as { id: number; type: string; tool: string | null; summary: string | null; payload: string | null }[];
+          const records = db.prepare(FOLLOW_EVENTS_QUERY).all(runId, owner.sessionId, p.event) as { id: number; type: string; tool: string | null; summary: string | null; payload: string | null }[];
           let eventBytes = 0; let fallbackAdvanced = false;
           for (const record of records) {
             const key = record.type === 'message' ? completionKey(record) : null;
@@ -397,7 +405,7 @@ export function createRunTranscriptSource(options: RunTranscriptSourceOptions): 
           }
           if (events.length) send({ runId, cursor: encode(p), kind: 'event', data: { text: '', events } });
           const unreadText = file && p.offset < file.size;
-          const unreadEvents = Boolean(db.prepare('SELECT id FROM run_events WHERE run_id=? AND session_id=? AND id>? LIMIT 1').get(runId, owner.sessionId, p.event));
+          const unreadEvents = Boolean(db.prepare(UNREAD_EVENTS_QUERY).get(runId, owner.sessionId, p.event));
           drainMore = Boolean((textAdvanced || fallbackAdvanced || events.length) && (unreadText || unreadEvents));
           if (['done', 'failed', 'cancelled'].includes(row.status) && !unreadText && !unreadEvents) {
             send({ runId, cursor: encode(p), kind: 'end', data: { reason: 'finished' } }); cancel();

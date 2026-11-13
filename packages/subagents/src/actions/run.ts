@@ -20,6 +20,13 @@ import { adoptShared, adoptableFor, getShared, sharedRegistry, type AdoptResult 
 import { isShutdownReason } from "../shutdown-reason";
 import { discoverDurableChildren } from '../durable-adoption';
 
+export const WARNINGS_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND type='warning'";
+export const SUPERVISED_QUERY = "SELECT 1 FROM run_events WHERE run_id=? AND type='child_supervisor' LIMIT 1";
+export const CLAIM_COMPLETION_QUERY = `INSERT INTO run_events (run_id,session_id,ts,type)
+            SELECT id,session_id,?,'completion_delivered' FROM runs WHERE id=?
+            AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=? AND type='completion_delivered')`;
+
+
 // Kept local to avoid a subagents -> UI dependency. Host parity tests cover both formatters.
 function formatCompactionCount(compactionCount?: number): string {
   return (compactionCount ?? 0) > 0 ? ` · ${compactionCount} compaction${compactionCount === 1 ? "" : "s"}` : "";
@@ -49,7 +56,7 @@ export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { prov
       const notes = new Set<string>();
       for (const [index, step] of (steps ?? [run]).entries()) {
         let warnings: Array<{ payload: string }> = [];
-        try { warnings = ctx.db.prepare("SELECT payload FROM run_events WHERE run_id=? AND type='warning'").all(step.id); }
+        try { warnings = ctx.db.prepare(WARNINGS_QUERY).all(step.id); }
         catch { /* optional diagnostics cannot suppress the cancellation cause */ }
         for (const warning of warnings) {
           try {
@@ -91,13 +98,11 @@ export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { prov
         shutdown ? { triggerTurn: false, deliverAs: "nextTurn" } : { triggerTurn: true },
       );
       let supervised = false;
-      try { supervised = Boolean(ctx.db?.prepare("SELECT 1 FROM run_events WHERE run_id=? AND type='child_supervisor' LIMIT 1").get(run.id)); } catch { /* A closed optional DB cannot suppress a legacy shutdown notice. */ }
+      try { supervised = Boolean(ctx.db?.prepare(SUPERVISED_QUERY).get(run.id)); } catch { /* A closed optional DB cannot suppress a legacy shutdown notice. */ }
       if (supervised) {
         const delivered = ctx.db.transaction(() => {
           // Start with a write, not a read-then-write, so competing parents cannot both claim this notification.
-          const claim = ctx.db.prepare(`INSERT INTO run_events (run_id,session_id,ts,type)
-            SELECT id,session_id,?,'completion_delivered' FROM runs WHERE id=?
-            AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=? AND type='completion_delivered')`);
+          const claim = ctx.db.prepare(CLAIM_COMPLETION_QUERY);
           if (!claim.run(Date.now(), run.id, run.id).changes) return false;
           for (const step of completed) if (step.id !== run.id) claim.run(Date.now(), step.id, step.id);
           deliver(); // A synchronous delivery failure rolls the claims back for the next resume.

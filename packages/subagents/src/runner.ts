@@ -13,6 +13,11 @@ import { publishLiveRunEvent } from "./live-events";
 import { recordRunUsage, safelyReportUsage, warnUsage } from "./usage";
 import { isLocalRun, rememberOwnedRun } from "./roam-origin";
 
+export const UNDELIVERED_RUN_QUERY = `SELECT 1 FROM runs r WHERE r.id=? AND r.status!='cancelled'
+        AND EXISTS (SELECT 1 FROM run_events WHERE run_id=r.id AND type='child_supervisor')
+        AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=r.id AND type='completion_delivered')`;
+
+
 export { NO_DELIVERABLE_RESULT };
 
 export interface ChildHandle {
@@ -231,9 +236,7 @@ export class Runner {
 
   private removeRoute(runId: string): void {
     try {
-      const undelivered = this.db.prepare(`SELECT 1 FROM runs r WHERE r.id=? AND r.status!='cancelled'
-        AND EXISTS (SELECT 1 FROM run_events WHERE run_id=r.id AND type='child_supervisor')
-        AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=r.id AND type='completion_delivered')`).get(runId);
+      const undelivered = this.db.prepare(UNDELIVERED_RUN_QUERY).get(runId);
       if (!undelivered) this.deps.globalDb?.prepare("DELETE FROM run_routes WHERE run_id=?").run(runId);
     } catch { /* cleanup cannot mask the run outcome */ }
   }

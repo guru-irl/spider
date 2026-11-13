@@ -6,6 +6,7 @@ import { paths } from '@spider/db-core';
 import { claimFeedWriter } from './writer.js';
 import { HerdrError } from '../client/parse.js';
 import { trackAvailability } from '../client/availability.js';
+import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
 import { sweepSessionIpc } from './cleanup.js';
 import { join } from 'node:path';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
@@ -214,6 +215,7 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
       try {
         await trackAvailability({ key: `ipc:${request.op}` }, dispatch, ports.available);
       } catch (error) {
+        if (error instanceof HerdrError && error.code === 'view-on-mac') return fail('refused', VIEW_ON_MAC_MESSAGE);
         if (live() && !openAbort.signal.aborted) ports.reportError?.(error);
         if ((error as { code?: string } | null)?.code === 'run-not-owned') return fail('not-found');
         const code = (error as { code?: IpcErrorCode } | null)?.code;

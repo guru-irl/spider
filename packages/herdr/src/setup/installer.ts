@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import type { HcClient, HcRunRequest, HerdrConfig, MachineName, TerminalAddress, CoreIdentity } from '../contracts.js';
+import type { HcClient, HcRunRequest, CoreOnlyHerdrConfig, FullHerdrConfig, HerdrConfig, MachineName, TerminalAddress, CoreIdentity } from '../contracts.js';
 import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:path';
 import { HerdrLabelContract } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
+import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
 import { digest, snapshot, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles, rejectSymlinks, mergeTheme, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, type ManagedPart, type FileAction } from './backup.js';
 import { probeLaunch, type DoctorReport } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
@@ -34,8 +35,13 @@ export function standardHerdrConfigPath(globalRoot: string): string {
 export function runtimeInstallPath(runtimeDirectory: string, runtimeBytes: Buffer): string {
   return join(dirname(runtimeDirectory), `spider-remote-runtime-${digest(runtimeBytes).slice(0, 16)}.mjs`);
 }
-export interface SetupRequest {
-  config: HerdrConfig;
+export class CoreOnlySetupError extends HerdrError {
+  #request: SetupRequest<CoreOnlyHerdrConfig>;
+  constructor(request: SetupRequest<CoreOnlyHerdrConfig>) { super('view-on-mac', VIEW_ON_MAC_MESSAGE); this.#request = request; }
+  get request(): SetupRequest<CoreOnlyHerdrConfig> { return this.#request; }
+}
+export interface SetupRequest<T extends HerdrConfig = FullHerdrConfig> {
+  config: T;
   configPath: string;
   packageRoot: string;
   journalRoot: string;

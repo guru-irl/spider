@@ -13,7 +13,7 @@ import { identityAlive, processStart } from '../harness/resources.js';
 import { writeScript } from '../harness/pi.js';
 import type { Suite, AppDriver } from '../harness/suite.js';
 import type { PackedBuild } from '../harness/pack.js';
-import type { HerdrConfig } from '../../src/contracts.js';
+import type { FullHerdrConfig, HerdrConfig } from '../../src/contracts.js';
 import { parseHerdrConfig } from '../../src/config.js';
 import { remoteInstallOptions, validateRemoteInstallInputs } from './remote-install-inputs.js';
 import type { ScriptFile } from './scripted-provider.js';
@@ -26,9 +26,9 @@ export interface InstallOptions {
   machines?: HerdrConfig['machines'];
   roles?: Readonly<Record<string, string>>;
 }
-export interface InstallInputs { suite: Suite; config: HerdrConfig & Record<string, unknown>; app: AppDriver }
+export interface InstallInputs { suite: Suite; config: FullHerdrConfig & Record<string, unknown>; app: AppDriver }
 export interface FreshInstallation extends InstallInputs { result: SetupResult; installed: Installed }
-export function installationConfig(suite: Suite, appBinary: string): HerdrConfig & Record<string, unknown> {
+export function installationConfig(suite: Suite, appBinary: string): FullHerdrConfig & Record<string, unknown> {
   if (!suite.cores) throw new HarnessError('missing-prerequisite', 'installation needs real isolated cores');
   return { ...parseHerdrConfig({
     enabled: true, app: { binary: appBinary, home: suite.directories.HERDR_APP_HOME },
@@ -102,7 +102,7 @@ export async function brokenPackedCopy(suite: Suite, kind: 'runtime' | 'helper')
   return { ...suite.packed, root, extension: join(root, 'dist/extension.js') as PackedBuild['extension'], cli: join(root, 'dist/herdr/cli.mjs') as PackedBuild['cli'], viewer: join(root, 'dist/herdr/viewer.mjs') as PackedBuild['viewer'], remoteRuntime: join(root, 'dist/herdr/remote-runtime.mjs') as PackedBuild['remoteRuntime'] };
 }
 export interface RunningSetup { process: OwnedProcess; configPath: string; stdout: string; stderr: string }
-export async function startPlainSetup(suite: Suite, config: HerdrConfig): Promise<RunningSetup> {
+export async function startPlainSetup(suite: Suite, config: FullHerdrConfig): Promise<RunningSetup> {
   const configPath = suite.ownPath(join(config.globalRoot, 'herdr/config.json'));
   await mkdir(join(config.globalRoot, 'herdr'), { recursive: true, mode: 0o700 });
   await writeFile(configPath, JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
@@ -142,7 +142,7 @@ export async function stopCreatedOwners(suite: Suite, sessionIds: readonly strin
   }
 }
 export interface FileFingerprint { path: string; sha256: string | null; mtimeMs: number | null; symlink?: string }
-export async function fingerprintInstallation(suite: Suite, config: HerdrConfig): Promise<FileFingerprint[]> {
+export async function fingerprintInstallation(suite: Suite, config: FullHerdrConfig): Promise<FileFingerprint[]> {
   const result: FileFingerprint[] = [];
   const roots = [join(config.app.home, 'mods'), join(config.app.home, 'layouts'), join(config.app.home, 'themes'), join(config.app.home, 'fonts'), join(config.app.home, 'settings.json'), join(config.app.home, 'keys.json'), join(config.agentDirectory, 'themes'), join(config.agentDirectory, 'settings.json'), join(config.globalRoot, 'herdr/setup'), join(config.globalRoot, 'herdr/instructions'), join(config.globalRoot, 'herdr/resume.sh'), join(config.globalRoot, 'herdr/spaces'), join(config.globalRoot, 'config.json'), join(config.globalRoot, 'herdr/config.json'), join(config.globalRoot, 'herdr/spaces'), config.shellRc, config.core.config, join(config.core.config, '../templates')];
   const directoryRoots = new Set<string>([join(config.app.home, 'mods'), join(config.app.home, 'layouts'), join(config.app.home, 'themes'), join(config.app.home, 'fonts'), join(config.agentDirectory, 'themes'), join(config.globalRoot, 'herdr/setup'), join(config.globalRoot, 'herdr/instructions'), join(config.globalRoot, 'herdr/spaces'), join(config.core.config, '../templates')].map(path => suite.ownPath(path)));

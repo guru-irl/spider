@@ -28,7 +28,7 @@ import { doctorHerdr, checkNodeVersion, probeLaunch, type DoctorParts, type Doct
 import { feedWriterLiveness } from '@spider/herdr/feed/writer';
 import { sessionFeedIsFresh } from '@spider/herdr/feed/freshness';
 import { snapshot, digest, managedProjection, rootNotesValue, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles } from '@spider/herdr/setup/backup';
-import { runtimeInstallPath, standardHerdrConfigPath, type SetupRequest, type SetupParts, type SetupContext, type InstallFile, type RuntimeFile, type RuntimeRootObservation } from '@spider/herdr/setup/installer';
+import { CoreOnlySetupError, runtimeInstallPath, standardHerdrConfigPath, type SetupRequest, type SetupParts, type SetupContext, type InstallFile, type RuntimeFile, type RuntimeRootObservation } from '@spider/herdr/setup/installer';
 import type { HerdrCliPorts } from '@spider/herdr/setup/cli';
 import type { CoreIdentity, TerminalIdentity, TerminalAddress, MachineName, HcRunRequest } from '@spider/herdr';
 import { parseFeed } from '../../../herdr/assets/shared/feed.js';
@@ -349,7 +349,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   const globalRoot = env.SPIDER_GLOBAL_ROOT ?? paths.globalRoot;
   const warnedConfig = new Set<string>();
   const clients = new Map<string, ReturnType<typeof createHcClient>>();
-  const client = (request: SetupRequest) => {
+  const client = (request: SetupRequest<HerdrConfig>) => {
     const key = request.config.core.binary;
     let hc = clients.get(key); if (!hc) { hc = createHcClient({ binary: key, env }); clients.set(key, hc); } return hc;
   };
@@ -677,6 +677,22 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       return { failures: [], warnings: [{ item, code: 'inspection-unavailable', message: `No live ${item} evidence is available`, repair: 'Start a configured owner and rerun doctor.' }] };
     },
   });
+  const readRequest = async (configPath?: string): Promise<SetupRequest<HerdrConfig>> => {
+    const settings = configValues(process.cwd(), undefined, globalRoot);
+    for (const warning of settings.warnings.filter(message => /^herdr\.(config|enabled) /.test(message))) {
+      if (!warnedConfig.has(warning)) { warnedConfig.add(warning); process.stderr.write((warning.startsWith('herdr.config ') ? HERDR_NOTICES.repoConfig.text : HERDR_NOTICES.repoEnabled.text) + '\n'); }
+    }
+    let path = configPath;
+    if (!path) {
+      const layer = readLayer(join(globalRoot, 'config.json'));
+      if (layer.error) throw new HerdrError('invalid-config', layer.error);
+      const configured = settings.config['herdr.config'];
+      if (configured !== undefined && typeof configured !== 'string') throw new HerdrError('invalid-config', 'Global herdr.config must be a path string');
+      path = configured ? resolve(globalRoot, configured) : standardHerdrConfigPath(globalRoot);
+    }
+    const config = parseHerdrConfig({ ...JSON.parse(await readFile(path, 'utf8')), enabled: settings.config['herdr.enabled'] } as unknown);
+    return { config, configPath: resolve(path), packageRoot, journalRoot: join(config.globalRoot, 'herdr/setup') };
+  };
   return {
     spacePorts,
     assertAgentDirectory: async request => {
@@ -690,20 +706,9 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         throw new HerdrError('agent-directory-mismatch', `Configured agentDirectory ${configured} differs from pi's effective agent directory ${effective}. Change agentDirectory in ${request.configPath} to ${effective}, or set PI_CODING_AGENT_DIR to ${configured}.`);
     },
     request: async configPath => {
-      const settings = configValues(process.cwd(), undefined, globalRoot);
-      for (const warning of settings.warnings.filter(message => /^herdr\.(config|enabled) /.test(message))) {
-        if (!warnedConfig.has(warning)) { warnedConfig.add(warning); process.stderr.write((warning.startsWith('herdr.config ') ? HERDR_NOTICES.repoConfig.text : HERDR_NOTICES.repoEnabled.text) + '\n'); }
-      }
-      let path = configPath;
-      if (!path) {
-        const layer = readLayer(join(globalRoot, 'config.json'));
-        if (layer.error) throw new HerdrError('invalid-config', layer.error);
-        const configured = settings.config['herdr.config'];
-        if (configured !== undefined && typeof configured !== 'string') throw new HerdrError('invalid-config', 'Global herdr.config must be a path string');
-        path = configured ? resolve(globalRoot, configured) : standardHerdrConfigPath(globalRoot);
-      }
-      const config = parseHerdrConfig({ ...JSON.parse(await readFile(path, 'utf8')), enabled: settings.config['herdr.enabled'] });
-      return { config, configPath: resolve(path), packageRoot, journalRoot: join(config.globalRoot, 'herdr/setup') };
+      const request = await readRequest(configPath);
+      if (request.config.mode === 'core-only') throw new CoreOnlySetupError({ ...request, config: request.config });
+      return { ...request, config: request.config };
     },
     async setupParts(request) {
       let preparedSpaces: SpaceSetupPorts | undefined;

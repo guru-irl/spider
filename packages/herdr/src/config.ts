@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import type { HerdrConfig, MachineName, MachineRuntime } from './contracts.js';
+import type { FullHerdrConfig, HerdrConfig, HerdrConfigBase, MachineName, MachineRuntime } from './contracts.js';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { HerdrError, object, text, absolutePath } from './client/parse.js';
@@ -26,13 +26,18 @@ function wrapperIdentity(value: unknown): HerdrConfig['admin']['wrappers'][numbe
     throw new HerdrError('invalid-config', 'Wrapper sha256 must be 64 lowercase hexadecimal characters');
   return { path, sha256: wrapper.sha256 };
 }
+export function parseHerdrConfig<T extends { app: unknown; mode?: 'full' }>(value: T): FullHerdrConfig;
+export function parseHerdrConfig(value: unknown): HerdrConfig;
 export function parseHerdrConfig(value: unknown): HerdrConfig {
-  const c = object(value); const app = object(c.app), core = object(c.core);
+  const c = object(value);
+  const mode = c.mode === undefined ? 'full' : c.mode;
+  if (mode !== 'full' && mode !== 'core-only') throw new HerdrError('invalid-config', 'mode must be full or core-only');
+  const app = mode === 'full' ? object(c.app) : null, core = object(c.core);
   const limits = object(c.limits ?? {}), retention = object(c.retention ?? {}), admin = object(c.admin ?? {}), look = object(c.look ?? {});
   if (look.autoHideTabs !== undefined && typeof look.autoHideTabs !== 'boolean') throw new HerdrError('invalid-config', 'look.autoHideTabs must be boolean');
   if (c.enabled !== undefined && c.enabled !== 'auto' && typeof c.enabled !== 'boolean') throw new HerdrError('invalid-config', 'enabled must be auto or boolean');
   if (c.automaticSubagentPanes !== undefined && typeof c.automaticSubagentPanes !== 'boolean') throw new HerdrError('invalid-config', 'automaticSubagentPanes must be boolean');
-  const spaces = list(c.spaces).map(value => {
+  const spaces = (c.spaces === undefined && mode === 'core-only' ? [] : list(c.spaces)).map(value => {
     const s = object(value); return { name: text(s.name), ...(s.layout === undefined ? {} : { layout: layout(s.layout) }), sessions: list(s.sessions).map(value => {
       const selector = object(value);
       if (selector.file !== undefined) return { file: absolutePath(selector.file) };
@@ -53,9 +58,10 @@ export function parseHerdrConfig(value: unknown): HerdrConfig {
       const font = object(f[kind]); fonts[kind] = { path: absolutePath(font.path), license: absolutePath(font.license) };
     }
   }
-  return { look: { autoHideTabs: look.autoHideTabs !== false }, automaticSubagentPanes: c.automaticSubagentPanes === true, layout: c.layout === undefined ? 'panes' : layout(c.layout), enabled: c.enabled === undefined ? 'auto' : c.enabled as 'auto' | boolean,
-    app: { binary: absolutePath(app.binary), home: absolutePath(app.home) }, core: { binary: absolutePath(core.binary), config: absolutePath(core.config) },
+  const shared: HerdrConfigBase = { look: { autoHideTabs: look.autoHideTabs !== false }, automaticSubagentPanes: c.automaticSubagentPanes === true, layout: c.layout === undefined ? 'panes' : layout(c.layout), enabled: c.enabled === undefined ? 'auto' : c.enabled as 'auto' | boolean,
+    core: { binary: absolutePath(core.binary), config: absolutePath(core.config) },
     agentDirectory: absolutePath(c.agentDirectory), globalRoot: absolutePath(c.globalRoot), shellRc: absolutePath(c.shellRc), spaces, machines,
     ...(fonts ? { fonts } : {}), limits: { auxiliaryPanes: limit(limits.auxiliaryPanes, 2, 1, 6), completedRows: limit(limits.completedRows, 50, 1, 10000), completedHours: limit(limits.completedHours, 24, 1, 8760) },
     retention: { foregroundDays: limit(retention.foregroundDays, 7, 1, 3650) }, admin: { wrappers: list(admin.wrappers ?? []).map(wrapperIdentity) } };
+  return app ? { ...shared, mode: 'full', app: { binary: absolutePath(app.binary), home: absolutePath(app.home) } } : { ...shared, mode: 'core-only' };
 }

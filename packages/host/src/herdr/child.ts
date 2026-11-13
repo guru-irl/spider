@@ -141,7 +141,7 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
           const enabled = controlConfig('get', ctx.cwd, 'herdr.enabled'); activationMode = enabled;
           if (enabled === false) environment = disabledHerdrEnvironment;
           const file = effectiveHerdrConfigPath(ctx.cwd, ctx); expectedHerdr ||= Boolean(file && existsSync(file));
-          if (enabled !== false && file) config = parseHerdrConfig(JSON.parse(await readFile(file, 'utf8')));
+          if (enabled !== false && file) config = parseHerdrConfig(JSON.parse(await readFile(file, 'utf8')) as unknown);
           if (config && (enabled === true || enabled === 'auto')) config = { ...config, enabled };
         }
       } catch (error) { inactiveReason = 'config-problem'; notice(inactiveReason, error); return; }

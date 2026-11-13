@@ -5,6 +5,7 @@ import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { createAppClient } from "@spider/herdr/client/app";
 import { createHcClient, invokeCli } from "@spider/herdr/client/hc";
 import { parseHerdrConfig } from "@spider/herdr/config";
+import { VIEW_ON_MAC_MESSAGE } from "@spider/herdr/notices";
 import type { HerdrConfig } from "@spider/herdr/contracts";
 import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
 import { runStandaloneHub, type HubNotice, type HubObservation } from "./hub";
@@ -99,6 +100,7 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
   try {
     if (!core.config.enabled || core.config.role !== "hub") throw new Error("Hub synchronization is disabled");
     const herdr = loadHerdrConfig(root), env = Object.freeze({ ...process.env });
+    if (herdr.mode === "core-only") throw new Error(VIEW_ON_MAC_MESSAGE);
     hc = createHcClient({ binary: herdr.core.binary, env });
     const client = hc;
     const transport = createTransport({ binary: herdr.core.binary, env, enrolled: core.config.peers });

@@ -106,7 +106,7 @@ spider todo op:"remove" id:"2"
 - Worktree state and shared repository memory live in different database tiers. See [Data model](../architecture/data-model.md).
 - `/bind <path>` turns a session started outside git into a worktree session. It does not automatically switch a session that already has a conflicting git context.
 - Spider bundles intercom for messaging between sessions. Owned RPC steering and pipeline handoff do not need a broker.
-- When switching from the separate `pi-intercom` package, remove it from user and project settings before publishing the new bundle. Reload sessions with running subagents first. Until a session reloads, its owner can steer its children, but other sessions may be unable to steer them.
+- When switching from the separate `pi-intercom` package, remove it from user and project settings before publishing the new bundle. Reload sessions with running subagents first. Until a session reloads, its owner can steer its children. Children already running with upstream intercom remain reachable through the shared broker; children launched after migration by an unreloaded session have no cross-session route. Broker acceptance alone does not confirm delivery.
 - Set the flat dotted keys as described in [Configuration](configuration.md). To diagnose a mismatch in the loaded bundle, use [Runtime lifecycle](../architecture/runtime-lifecycle.md).
 
 ## See also

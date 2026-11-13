@@ -237,6 +237,9 @@ export default function(pi) { pi.on('session_start',()=>appendFileSync(${JSON.st
     'fork-ready': [{ steps: [{ tool: { id: 'fork-roster', name: 'intercom', arguments: { action: 'list' } } }] }, ...parentTurns(text('fork ready'))],
     'fork-send': parentTurns(tool('fork-to-upstream', { action: 'message', to: 'upstream-013', message: 'R14 fork to installed' })),
     'upstream-send': [{ steps: [{ tool: { id: 'upstream-to-fork', name: 'intercom', arguments: { action: 'send', to: 'fork-peer', message: 'R14 installed to fork' } } }] }, ...parentTurns(text('sent'))],
+    'before-owner': parentTurns(runChild('before-spawn', 'before-child', 'before-child')),
+    'before-owner-steer': parentTurns(tool('before-owner-steer', { action: 'message', to: 'before-child', message: 'R14 before owner steer' })),
+    'before-child': [held('before-initial', 'working before switch'), held('before-final', 'before result'), text('before completed')],
     'legacy-owner': parentTurns(runChild('legacy-spawn', 'legacy-child', 'legacy-child')),
     'legacy-steer': parentTurns(tool('legacy-owner-steer', { action: 'message', to: 'legacy-child', message: 'R14 owner steer' })),
     'legacy-child': [held('legacy-initial', 'working'), held('legacy-final', 'legacy result'), text('legacy completed')],
@@ -267,6 +270,17 @@ export default function(pi) { pi.on('session_start',()=>appendFileSync(${JSON.st
       args: [...commonArgs, '--extension', baseBundle, '--extension', join(upstream, 'index.ts'), '--name', 'legacy-owner'],
       extraEnv: { PI_INTERCOM_STABLE_ID: 'legacy-owner' } }) as RpcDriver;
     await owner.waitEvent('session_start', () => true, deadline(30_000));
+    await owner.prompt(mark('before-owner'));
+    const beforeSpawn = await owner.toolResult('before-spawn', deadline(30_000));
+    const beforeRun = (beforeSpawn.result as { details: { run: { id: string; status: string; intercom_session: string | null } } }).details.run;
+    expect(beforeRun.status, JSON.stringify(beforeSpawn.result)).toBe('running');
+    expect(beforeRun.intercom_session).toBe(`before-child-${beforeRun.id.slice(0, 8)}`);
+    const beforeReady = await gates.ready('before-initial', deadline(60_000));
+    const beforeProbe = (await readFile(probeLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.pid === beforeReady.pid);
+    expect(beforeProbe).toBeDefined();
+    const beforeExtension = beforeProbe.argv.find((arg: string) => arg.endsWith('/pi-intercom/index.ts'));
+    expect(beforeExtension).toBeTypeOf('string');
+    expect(await realpath(beforeExtension)).toBe(await realpath(join(upstream, 'index.ts')));
     const active = join(cwd, 'active-release.json');
     await writeFile(active, JSON.stringify(baseRelease));
     const switchover = await applyIntercomSwitchover({ operationId: 'rolling-installed', release: suite.packed.root,
@@ -287,10 +301,32 @@ export default function(pi) { pi.on('session_start',()=>appendFileSync(${JSON.st
     expect((await upstreamClient.toolResult('upstream-to-fork', deadline(30_000))).result).toMatchObject({ details: { delivered: true } });
     const receivedFork = await fork.waitEvent('message_end', e => e.customType === 'intercom_message' && JSON.stringify(e.content).includes('R14 installed to fork'), deadline(30_000));
     expect(Number((await readFile(pidFile, 'utf8')).trim())).toBe(brokerPid);
+    const beforeScript = JSON.parse(await readFile(suite.pi.scriptPath, 'utf8'));
+    beforeScript.scripts['before-peer'] = parentTurns(tool('before-peer-steer', { action: 'message', to: beforeRun.id, message: 'R14 pre-migration peer steer' }));
+    await writeFile(suite.pi.scriptPath, JSON.stringify(beforeScript));
+    await fork.prompt(mark('before-peer'));
+    const beforePeer = await fork.toolResult('before-peer-steer', deadline(30_000));
+    expect(beforePeer.isError).toBe(false);
+    expect(beforePeer.result).toMatchObject({ details: { accepted: true, delivered: false, delivery: 'broker-accepted', recipientAcknowledged: false } });
+    gates.release('before-initial');
+    const beforeReceived = await childEvent(suite, beforeReady.pid, 'message_end', e => e.customType === 'intercom_message' && JSON.stringify(e.content).includes('R14 pre-migration peer steer'), deadline(30_000));
+    await gates.ready('before-final', deadline(60_000));
+    const beforeTranscript = await childTranscript(suite, beforeReady.pid);
+    expect(beforeTranscript.entries.filter(entry => entry.type === 'custom_message' && JSON.stringify(entry).includes('R14 pre-migration peer steer'))).toHaveLength(1);
+    const beforeSteering = owner.prompt(mark('before-owner-steer'));
+    await waitFor('base owner begins steering its pre-migration child', () => owner!.events(), events => events.some(e => e.type === 'tool_execution_start' && e.toolCallId === 'before-owner-steer'), deadline(30_000));
+    gates.release('before-final');
+    await beforeSteering;
+    const beforeOwner = await owner.toolResult('before-owner-steer', deadline(30_000));
+    expect(beforeOwner.result).toMatchObject({ details: { delivered: true, delivery: 'delivered' } });
+    const beforeFinalTranscript = await childTranscript(suite, beforeReady.pid);
+    expect(beforeFinalTranscript.entries.filter(entry => entry.type === 'message' && JSON.stringify(entry).includes('R14 before owner steer'))).toHaveLength(1);
+    await owner.waitEvent('message_end', e => e.customType === 'spider.subagent_done' && JSON.stringify(e.content).includes('before completed'), deadline(60_000));
     await owner.prompt(mark('legacy-owner'));
     const spawn = await owner.toolResult('legacy-spawn', deadline(30_000));
-    const run = (spawn.result as { details: { run: { id: string; status: string } } }).details.run;
+    const run = (spawn.result as { details: { run: { id: string; status: string; intercom_session: string | null } } }).details.run;
     expect(run.status, JSON.stringify(spawn.result)).toBe('running');
+    expect(run.intercom_session).toBeNull();
     const ready = await gates.ready('legacy-initial', deadline(60_000));
     const childProbe = (await readFile(probeLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.pid === ready.pid);
     expect(childProbe).toBeDefined();
@@ -322,7 +358,9 @@ export default function(pi) { pi.on('session_start',()=>appendFileSync(${JSON.st
     expect(Number((await readFile(pidFile, 'utf8')).trim())).toBe(brokerPid);
     expect(() => process.kill(brokerPid, 0)).not.toThrow();
     await suite.evidence('R14-installed-upstream.json', { base: { sha256: digest(baseBytes), build: '2327c021' }, installed: { version: '0.13.0', hashes: installedHashes },
-      brokerPid, brokerCommand, switchover, run, childProbe, receivedUpstream, receivedFork, refused, delivered });
+      brokerPid, brokerCommand, switchover, receivedUpstream, receivedFork,
+      before: { run: beforeRun, childProbe: beforeProbe, peer: beforePeer, received: beforeReceived, owner: beforeOwner },
+      after: { run, childProbe, peer: refused, owner: delivered } });
   } finally {
     await fork?.close(); await owner?.close(); await upstreamClient.close();
     if (!brokerTracked) {

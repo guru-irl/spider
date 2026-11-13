@@ -29,6 +29,33 @@ it.each(["link", "dev-link"])("Mac %s installs the actual shell executable", scr
   expect(shellResolvedEntry).toBe(packedCliEntry);
 }, 5000);
 
+it("the published tarball runs both link commands with their shipped imports", () => {
+  const f = fixture();
+  const env = { ...f.env, npm_config_cache: join(f.root, "npm-cache"), npm_config_logs_dir: join(f.root, "npm-logs"), npm_config_update_notifier: "false" };
+  const packed = spawnSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", f.root], {
+    cwd: resolve("."), env, encoding: "utf8", timeout: 4000,
+  });
+  expect(packed.status, packed.stderr).toBe(0);
+  const [packageInfo] = JSON.parse(packed.stdout) as Array<{ filename: string; files: Array<{ path: string }> }>;
+  const scripts = ["link.mjs", "dev-link.mjs", "link-roam.mjs", "extension-shim.mjs", "pi-agent-dir.mjs"].map(name => `scripts/${name}`);
+  const listed = new Set(packageInfo.files.map(file => file.path));
+  expect(scripts.filter(file => !listed.has(file))).toEqual([]);
+  const archive = join(f.root, packageInfo.filename);
+  const listing = spawnSync("tar", ["-tzf", archive], { env, encoding: "utf8", timeout: 2000 });
+  expect(listing.status, listing.stderr).toBe(0);
+  const archiveEntries = new Set(listing.stdout.split("\n"));
+  expect(scripts.filter(file => !archiveEntries.has(`package/${file}`))).toEqual([]);
+  const extracted = spawnSync("tar", ["-xzf", archive, "-C", f.root], { env, encoding: "utf8", timeout: 2000 });
+  expect(extracted.status, extracted.stderr).toBe(0);
+  const installed = join(f.root, "package");
+  for (const [command, shim] of [["link", "spider.ts"], ["dev:link", "spider-dev.ts"]]) {
+    const result = spawnSync("npm", ["run", command], { cwd: installed, env, encoding: "utf8", timeout: 3000 });
+    expect(result.status, result.stderr).toBe(0);
+    expect(existsSync(join(f.agent, "extensions", shim))).toBe(true);
+    expect(realpathSync(f.executable)).toBe(realpathSync(join(installed, "dist/roam/cli.mjs")));
+  }
+}, 5000);
+
 it("installed spider help is side-effect free", () => {
   const f = fixture();
   expect(f.link("link").status).toBe(0);

@@ -426,15 +426,60 @@ it.each(["fallback", "restore"] as const)("ignores a NULL run_id marker during %
   expect(db.prepare("SELECT run_id FROM run_events WHERE type='spider_usage_reported' AND run_id IS NOT NULL").all()).toEqual([{ run_id: id }]);
 });
 
-it("uses a non-correlated query to find unreported terminal runs", () => {
+it("classifies mixed terminal runs and marks only eligible legacy rows", () => {
+  const cwd = root(), db = openDbAt(join(cwd, "mixed-classification.db"), "project"); dbs.push(db);
+  const accounting = new UsageAccounting();
+  const run = db.prepare("INSERT INTO runs (id, session_id, status, name, agent, origin_machine) VALUES (?, ?, ?, ?, 'worker', ?)");
+  for (const [id, session, status, origin] of [
+    ["priced", "owner", "done", ""], ["malformed", "owner", "failed", ""],
+    ["legacy", "owner", "cancelled", ""], ["marked", "owner", "done", ""],
+    ["running", "owner", "running", ""], ["foreign-session", "other", "done", ""],
+    ["foreign-origin", "owner", "done", "00000000-0000-4000-8000-00000000000b"],
+  ]) run.run(id, session, status, id, origin);
+  const event = db.prepare("INSERT INTO run_events (run_id, session_id, ts, type, payload) VALUES (?, ?, 1, ?, ?)");
+  event.run("priced", "other", "spider_usage", JSON.stringify({ provider: "fixture", model: "priced", usage }));
+  event.run("malformed", "owner", "spider_usage", "not json");
+  event.run("legacy", "owner", "warning", null);
+  event.run("marked", "owner", "spider_usage", "not json");
+  event.run("marked", "owner", "spider_usage_reported", null);
+  event.run("running", "owner", "spider_usage", "not json");
+  event.run("foreign-session", "other", "spider_usage", "not json");
+  event.run(null, "owner", "spider_usage_reported", null);
+  const classify = (accounting as unknown as { unreportedRuns(db: Db, sessionId: string): Array<{ id: string; session_id: string; status: string; name: string; agent: string; has_usage: number }> }).unreportedRuns.bind(accounting);
+  const markers = () => db.prepare("SELECT run_id FROM run_events WHERE type='spider_usage_reported' ORDER BY run_id").all();
+  expect(markers()).toEqual([{ run_id: null }, { run_id: "marked" }]);
+  expect(classify(db, "owner").sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+    { id: "malformed", session_id: "owner", status: "failed", name: "malformed", agent: "worker", has_usage: 1 },
+    { id: "priced", session_id: "owner", status: "done", name: "priced", agent: "worker", has_usage: 1 },
+  ]);
+  expect(markers()).toEqual([{ run_id: null }, { run_id: "legacy" }, { run_id: "marked" }]);
+  expect(classify(db, "owner").map(row => row.id).sort()).toEqual(["malformed", "priced"]);
+  expect(markers()).toEqual([{ run_id: null }, { run_id: "legacy" }, { run_id: "marked" }]);
+});
+
+it("uses per-run index lookups for classification and legacy marking", () => {
   const cwd = root(), db = openDbAt(join(cwd, "plan.db"), "project"); dbs.push(db);
-  const session = SessionManager.inMemory(cwd), accounting = new UsageAccounting(); accounting.activate({ sessionManager: session });
-  const prepare = db.prepare.bind(db); let query = "";
-  vi.spyOn(db, "prepare").mockImplementation(sql => { if (sql.includes("SELECT id, session_id, status, name, agent")) query = sql; return prepare(sql); });
-  accounting.takeFallback(db, session.getSessionId());
-  expect(query).not.toBe("");
-  const plan = db.raw.prepare("EXPLAIN QUERY PLAN " + query).all(session.getSessionId()) as Array<{ detail: string }>;
-  expect(plan.map(row => row.detail).join(" | ")).not.toContain("CORRELATED");
+  const session = SessionManager.inMemory(cwd), sessionId = session.getSessionId(), accounting = new UsageAccounting();
+  accounting.activate({ sessionManager: session });
+  const store = new RunStore(db), row = store.create({ sessionId, agent: "worker" });
+  store.finish(row.id, { status: "done" });
+  const prepare = db.prepare.bind(db); let query = "", insert = "";
+  vi.spyOn(db, "prepare").mockImplementation(sql => {
+    if (sql.includes("SELECT id, session_id, status, name, agent")) query = sql;
+    if (sql.includes("json_each(?)")) insert = sql;
+    return prepare(sql);
+  });
+  accounting.takeFallback(db, sessionId);
+  expect(query).not.toBe(""); expect(insert).not.toBe("");
+  const plan = (sql: string, ...bindings: unknown[]) =>
+    (db.raw.prepare("EXPLAIN QUERY PLAN " + sql).all(...bindings) as Array<{ detail: string }>).map(row => row.detail).join(" | ");
+  const plans = [plan(query, sessionId), plan(insert, Date.now(), JSON.stringify([row.id]))];
+  expect(plans.map(detail => ({ scan: /SCAN run_events\b/.test(detail), lookups: (detail.match(/SEARCH run_events USING (?:COVERING )?INDEX idx_run_events_run_id \(run_id=\?\)/g) ?? []).length })))
+    .toEqual([{ scan: false, lookups: 2 }, { scan: false, lookups: 1 }]);
+  expect(plans[0]).toContain("SEARCH r USING INDEX idx_runs_session_id");
+  db.exec("DROP INDEX idx_run_events_run_id");
+  expect(plan(query, sessionId)).not.toContain("idx_run_events_run_id");
+  expect(plan(insert, Date.now(), JSON.stringify([row.id]))).not.toContain("idx_run_events_run_id");
 });
 
 it.each(["todo", "run"])("resolves the project only once per %s call after session activation", async action => {

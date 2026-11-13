@@ -15,6 +15,8 @@ export interface ScenarioDefinition {
   /** Optional scripted-provider turns for this story. */
   script?: Omit<ScriptFile, 'story'>;
   coreEnvironment?: Readonly<Record<string, string>>;
+  /** Optional local-only inputs may make a story inapplicable without failing the run. */
+  notExercised?(env: Readonly<NodeJS.ProcessEnv>): string | undefined;
   run(suite: Suite): Promise<void>;
 }
 export type ScenarioStatus = 'passed' | 'failed' | 'blocked' | 'not exercised';
@@ -52,6 +54,13 @@ export function resultsDirectory(): string { return join(scratchRoot(), 'e2', '_
 /** Creates the suite, runs the story, always closes, and writes a result record outside the fixture root. */
 export async function runScenario(definition: ScenarioDefinition, tier: Tier): Promise<ScenarioResult> {
   const startedAt = new Date().toISOString();
+  const reason = definition.notExercised?.(process.env);
+  if (reason) {
+    const result: ScenarioResult = { id: definition.id, tier, status: 'not exercised', error: reason, startedAt, finishedAt: new Date().toISOString() };
+    mkdirSync(resultsDirectory(), { recursive: true });
+    writeFileSync(join(resultsDirectory(), `${definition.id}.${tier}.json`), JSON.stringify(result, null, 2));
+    return result;
+  }
   let suite: Suite | undefined; let failure: unknown; let cleanup: unknown;
   try { suite = await createSuite(suiteOptions(definition, tier)); await definition.run(suite); }
   catch (error) { failure = error; }
@@ -76,6 +85,8 @@ export function registerScenarios(scenarios: readonly ScenarioDefinition[], time
   describe(`herdr e2e (${tier})`, () => {
     for (const definition of scenarios) {
       if (!selected.includes(definition)) { it.skip(`${definition.id} ${definition.title} [not exercised in ${tier}]`, () => {}); continue; }
+      const reason = definition.notExercised?.(process.env);
+      if (reason) { it.skip(`${definition.id} ${definition.title} [not exercised: ${reason}]`, () => {}); continue; }
       it(`${definition.id} ${definition.title}`, async () => { await runScenario(definition, tier); }, timeoutMs);
     }
   });

@@ -45,6 +45,27 @@ describe('runner boundary and report', () => {
     expect(r02.reason).toMatch(/packaged observer.*3\.4/i);
     expect(renderMatrix(passed)).toContain(r02.reason);
   });
+  it('opts into the installed-upstream R14 variant only with both local inputs', async () => {
+    // @ts-ignore Vite provides import.meta.glob during test transformation.
+    const definitions = await discoverScenarios(import.meta.glob('./*.test.ts'));
+    const local = definitions.find((definition: { id: string }) => definition.id === 'R14local');
+    expect(local).toMatchObject({ tiers: ['headless'] });
+    expect(parseOptions(['--story', 'R14local'], {}).ids).toEqual(['R14local']);
+    expect(profileIds.headless).not.toContain('R14local');
+    expect(buildMatrix('ci', profileIds.ci, []).find((row: { id: string }) => row.id === 'R14local').result).toBe('not exercised');
+    const fenced = { HOME: '/owned/home' };
+    const base = { SPIDER_HERDR_E2E_R14_BASE: '/fixture/base.js' };
+    const both = { ...base, SPIDER_HERDR_E2E_R14_UPSTREAM: '/fixture/package' };
+    expect(storyWorkerEnvironment(fenced, base, 'headless')).toEqual(fenced);
+    expect(storyWorkerEnvironment(fenced, both, 'ci')).toEqual(fenced);
+    expect(storyWorkerEnvironment(fenced, both, 'headless')).toEqual({ ...fenced, ...both });
+    const reason = local.notExercised({});
+    expect(reason).toMatch(/both.*R14/i);
+    expect(local.notExercised(both)).toBeUndefined();
+    const skipped = buildMatrix('headless', ['R14local'], [{ id: 'R14local', tier: 'headless', result: 'not exercised', evidence: 'local.json', reason }]);
+    expect(complete(skipped, ['R14local'])).toBe(true);
+    expect(complete(buildMatrix('headless', ['R14local'], []), ['R14local'])).toBe(false);
+  });
   it('budgets every selected story at its full deadline plus bounded startup and teardown', () => {
     const ids = Array.from({ length: 55 }, (_, index) => `S${String(index + 1).padStart(2, '0')}`);
     expect(storyRunBudgetMs({ ids, harness: false })).toBe(54 * 300_000 + 600_000 + 60_000);
@@ -129,7 +150,7 @@ describe('runner boundary and report', () => {
       { id: 'S54', tier: 'ci', result: 'blocked', evidence: 'S54.json', reason: 'native-input' },
       { id: 'S55', tier: 'ci', result: 'failed', evidence: 'S55.json', reason: 'cleanup failed' },
     ]);
-    expect(matrix).toHaveLength(59);
+    expect(matrix).toHaveLength(60);
     expect(matrix.find((x: { id: string }) => x.id === 'R14').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S01').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S56').result).toBe('failed');

@@ -1,5 +1,7 @@
-import { mkdir, readFile, writeFile, appendFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { mkdir, readFile, writeFile, appendFile, copyFile, realpath, symlink } from 'node:fs/promises';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { expect } from 'vitest';
 import { buildFixture } from '../../../../scripts/test-bundle.js';
 import { buildPiArgs } from '../../../subagents/src/pi-args.js';
@@ -8,6 +10,7 @@ import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/
 import type { Suite } from '../harness/suite.js';
 import { readObserved, type RpcDriver } from '../harness/pi.js';
 import { deadline, waitFor } from '../harness/wait.js';
+import { identityOf } from '../harness/resources.js';
 import { scripts, tool, runChild, parentTurns, held, text, mark, childEvent, childTranscript } from '../fixtures/child-scripts.js';
 
 function extensionArgs(args: string[]): string[] {
@@ -187,6 +190,153 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
   await suite.evidence('R14-fork-adoption.json', { boundary: 'packed spider and real offline RPC sessions', evidence });
 }
 
-export const scenarios: readonly ScenarioDefinition[] = [{ id: storyId('R14'),
-  title: 'RPC child steered across switchover with an unwrapped fork fixture', tiers: ['headless'], run: adoption }];
+async function installedRollingReload(suite: Suite): Promise<void> {
+  const baseInput = process.env.SPIDER_HERDR_E2E_R14_BASE!;
+  const upstreamInput = process.env.SPIDER_HERDR_E2E_R14_UPSTREAM!;
+  expect(isAbsolute(baseInput) && isAbsolute(upstreamInput)).toBe(true);
+  const base = await realpath(baseInput), upstream = await realpath(upstreamInput);
+  const scratch = await realpath(resolve('.spider/scratch'));
+  expect(base.startsWith(scratch + '/')).toBe(true);
+  const baseBytes = await readFile(base);
+  expect(baseBytes.subarray(0, 100).toString()).toMatch(/^\/\/ SPIDER_BUILD_ID=2327c021@/);
+  const digest = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
+  const origin = await readFile(resolve('packages/intercom/ORIGIN.md'), 'utf8');
+  const section = origin.split('## Installed npm payload\n')[1]?.split('\n## Public source inputs')[0] ?? '';
+  const recorded = [...section.matchAll(/^\| `([^`]+)` \| `([0-9a-f]{64})` \|$/gm)].map(match => [match[1], match[2]]);
+  expect(recorded.length).toBeGreaterThan(20);
+  const inputs = recorded.map(([file]) => file);
+  expect(inputs.every(file => !isAbsolute(file) && !file.split('/').includes('..'))).toBe(true);
+  const installedHashes = Object.fromEntries(await Promise.all(inputs.map(async file => [file, digest(await readFile(join(upstream, file)))])));
+  expect(JSON.parse(await readFile(join(upstream, 'package.json'), 'utf8')).version).toBe('0.13.0');
+  expect(installedHashes).toEqual(Object.fromEntries(recorded));
+  const baseRelease = suite.ownPath(join(suite.root, 'base'));
+  await mkdir(join(baseRelease, 'dist'), { recursive: true });
+  const baseBundle = join(baseRelease, 'dist/extension.js');
+  await copyFile(base, baseBundle);
+  const supervisor = join(dirname(base), 'herdr/subagent-supervisor.mjs');
+  await mkdir(join(baseRelease, 'dist/herdr'));
+  await copyFile(supervisor, join(baseRelease, 'dist/herdr/subagent-supervisor.mjs'));
+  const cwd = await suite.project('rolling');
+  const agent = suite.directories.PI_CODING_AGENT_DIR;
+  const settings = join(agent, 'settings.json');
+  const originalSettings = JSON.parse(await readFile(settings, 'utf8'));
+  await writeFile(settings, JSON.stringify({ ...originalSettings, packages: [...originalSettings.packages, 'npm:pi-intercom'] }));
+  const packageDir = join(agent, 'npm/node_modules');
+  await mkdir(packageDir, { recursive: true });
+  await symlink(upstream, join(packageDir, 'pi-intercom'), 'dir');
+  const probe = suite.ownPath(join(suite.root, 'child-probe.mjs'));
+  const probeLog = suite.ownPath(join(suite.root, 'child-probe.jsonl'));
+  await writeFile(probe, `import {appendFileSync} from 'node:fs';
+export default function(pi) { pi.on('session_start',()=>appendFileSync(${JSON.stringify(probeLog)},JSON.stringify({pid:process.pid,argv:process.argv,tools:pi.getAllTools().map(t=>t.name)})+'\\n')); }
+`);
+  const configFile = join(suite.directories.SPIDER_GLOBAL_ROOT, 'config.json');
+  const config = JSON.parse(await readFile(configFile, 'utf8'));
+  await writeFile(configFile, JSON.stringify({ ...config, 'subagents.childMode': 'rpc', 'subagents.extensions': [...config['subagents.extensions'], probe] }));
+  const gates = await scripts(suite, {
+    'upstream-ready': [{ steps: [{ tool: { id: 'upstream-roster', name: 'intercom', arguments: { action: 'list' } } }] }, ...parentTurns(text('upstream ready'))],
+    'fork-ready': [{ steps: [{ tool: { id: 'fork-roster', name: 'intercom', arguments: { action: 'list' } } }] }, ...parentTurns(text('fork ready'))],
+    'fork-send': parentTurns(tool('fork-to-upstream', { action: 'message', to: 'upstream-013', message: 'R14 fork to installed' })),
+    'upstream-send': [{ steps: [{ tool: { id: 'upstream-to-fork', name: 'intercom', arguments: { action: 'send', to: 'fork-peer', message: 'R14 installed to fork' } } }] }, ...parentTurns(text('sent'))],
+    'legacy-owner': parentTurns(runChild('legacy-spawn', 'legacy-child', 'legacy-child')),
+    'legacy-steer': parentTurns(tool('legacy-owner-steer', { action: 'message', to: 'legacy-child', message: 'R14 owner steer' })),
+    'legacy-child': [held('legacy-initial', 'working'), held('legacy-final', 'legacy result'), text('legacy completed')],
+  });
+  const commonArgs = ['--no-extensions', '--extension', suite.pi.providerPath, '--extension', suite.pi.observerPath];
+  const upstreamClient = await suite.launchPi({ mode: 'rpc', cwd, label: 'installed-upstream',
+    args: [...commonArgs, '--extension', join(upstream, 'index.ts'), '--name', 'upstream-013'],
+    extraEnv: { PI_INTERCOM_STABLE_ID: 'upstream-013' } }) as RpcDriver;
+  let owner: RpcDriver | undefined, fork: RpcDriver | undefined, brokerTracked = false;
+  const pidFile = join(agent, 'intercom/broker.pid');
+  const trackBroker = async () => {
+    const brokerPid = Number((await readFile(pidFile, 'utf8')).trim());
+    expect(Number.isInteger(brokerPid) && brokerPid > 0).toBe(true);
+    const brokerCommand = execFileSync('ps', ['-p', String(brokerPid), '-o', 'command='], { encoding: 'utf8' });
+    expect(brokerCommand).toContain(join(upstream, 'broker/broker.ts'));
+    suite.ledger.update(ledger => { ledger.processes.push({ ...identityOf(brokerPid), label: 'fixture-intercom-broker', group: false }); });
+    brokerTracked = true;
+    return { brokerPid, brokerCommand };
+  };
+  try {
+    await waitFor('installed client creates its fixture broker', () => readFile(pidFile, 'utf8').catch(error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw error;
+    }), value => /^\d+$/.test(value.trim()), deadline(30_000));
+    const { brokerPid, brokerCommand } = await trackBroker();
+    await upstreamClient.prompt(mark('upstream-ready'));
+    expect((await upstreamClient.toolResult('upstream-roster', deadline(30_000))).isError).toBe(false);
+    owner = await suite.launchPi({ mode: 'rpc', cwd, label: 'base-owner',
+      args: [...commonArgs, '--extension', baseBundle, '--extension', join(upstream, 'index.ts'), '--name', 'legacy-owner'],
+      extraEnv: { PI_INTERCOM_STABLE_ID: 'legacy-owner' } }) as RpcDriver;
+    await owner.waitEvent('session_start', () => true, deadline(30_000));
+    const active = join(cwd, 'active-release.json');
+    await writeFile(active, JSON.stringify(baseRelease));
+    const switchover = await applyIntercomSwitchover({ operationId: 'rolling-installed', release: suite.packed.root,
+      settingsFiles: [settings], legacyRoots: [upstream], journalFile: join(cwd, 'switch.json') }, filesystemSwitchoverPorts(active));
+    expect(switchover.status).toBe('migration-pending');
+    expect(JSON.parse(await readFile(settings, 'utf8')).packages).not.toContain('npm:pi-intercom');
+    fork = await suite.launchPi({ mode: 'rpc', cwd, label: 'fork-peer',
+      args: [...commonArgs, '--extension', suite.packed.extension, '--name', 'fork-peer'],
+      extraEnv: { PI_INTERCOM_STABLE_ID: 'fork-peer' } }) as RpcDriver;
+    await fork.prompt(mark('fork-ready'));
+    const roster = await fork.toolResult('fork-roster', deadline(30_000));
+    expect(roster.isError).toBe(false);
+    expect(JSON.stringify(roster.result)).toContain('upstream-013');
+    await fork.prompt(mark('fork-send'));
+    expect((await fork.toolResult('fork-to-upstream', deadline(30_000))).result).toMatchObject({ details: { delivered: true } });
+    const receivedUpstream = await upstreamClient.waitEvent('message_end', e => e.customType === 'intercom_message' && JSON.stringify(e.content).includes('R14 fork to installed'), deadline(30_000));
+    await upstreamClient.prompt(mark('upstream-send'));
+    expect((await upstreamClient.toolResult('upstream-to-fork', deadline(30_000))).result).toMatchObject({ details: { delivered: true } });
+    const receivedFork = await fork.waitEvent('message_end', e => e.customType === 'intercom_message' && JSON.stringify(e.content).includes('R14 installed to fork'), deadline(30_000));
+    expect(Number((await readFile(pidFile, 'utf8')).trim())).toBe(brokerPid);
+    await owner.prompt(mark('legacy-owner'));
+    const spawn = await owner.toolResult('legacy-spawn', deadline(30_000));
+    const run = (spawn.result as { details: { run: { id: string; status: string } } }).details.run;
+    expect(run.status, JSON.stringify(spawn.result)).toBe('running');
+    const ready = await gates.ready('legacy-initial', deadline(60_000));
+    const childProbe = (await readFile(probeLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.pid === ready.pid);
+    expect(childProbe).toBeDefined();
+    expect(childProbe.argv).toContain(baseBundle);
+    expect(childProbe.argv.join(' ')).not.toContain(upstream);
+    expect(childProbe.tools).not.toContain('intercom');
+    const script = JSON.parse(await readFile(suite.pi.scriptPath, 'utf8'));
+    script.scripts['fork-refuse'] = parentTurns(tool('legacy-peer-steer', { action: 'message', to: run.id, message: 'R14 forbidden peer steer' }));
+    await writeFile(suite.pi.scriptPath, JSON.stringify(script));
+    await fork.prompt(mark('fork-refuse'));
+    const refused = await fork.toolResult('legacy-peer-steer', deadline(30_000));
+    expect(refused.isError).toBe(true);
+    expect(refused.result).toMatchObject({ details: { accepted: false, delivered: false, delivery: 'refused' } });
+    expect(JSON.stringify(refused.result)).toMatch(/owned by session.*steer it from there/i);
+    const steering = owner.prompt(mark('legacy-steer'));
+    await waitFor('base owner begins steering its running child', () => owner!.events(), events => events.some(e => e.type === 'tool_execution_start' && e.toolCallId === 'legacy-owner-steer'), deadline(30_000));
+    gates.release('legacy-initial');
+    await steering;
+    const delivered = await owner.toolResult('legacy-owner-steer', deadline(30_000));
+    expect(delivered.result).toMatchObject({ details: { delivered: true, delivery: 'delivered' } });
+    await gates.ready('legacy-final', deadline(60_000));
+    const transcript = await childTranscript(suite, ready.pid);
+    expect(transcript.entries.filter(entry => entry.type === 'message' && JSON.stringify(entry).includes('R14 owner steer'))).toHaveLength(1);
+    expect(transcript.raw).not.toContain('R14 forbidden peer steer');
+    gates.release('legacy-final');
+    await owner.waitEvent('message_end', e => e.customType === 'spider.subagent_done' && JSON.stringify(e.content).includes('legacy result'), deadline(60_000));
+    const afterHashes = Object.fromEntries(await Promise.all(inputs.map(async file => [file, digest(await readFile(join(upstream, file)))])));
+    expect(afterHashes).toEqual(installedHashes);
+    expect(Number((await readFile(pidFile, 'utf8')).trim())).toBe(brokerPid);
+    expect(() => process.kill(brokerPid, 0)).not.toThrow();
+    await suite.evidence('R14-installed-upstream.json', { base: { sha256: digest(baseBytes), build: '2327c021' }, installed: { version: '0.13.0', hashes: installedHashes },
+      brokerPid, brokerCommand, switchover, run, childProbe, receivedUpstream, receivedFork, refused, delivered });
+  } finally {
+    await fork?.close(); await owner?.close(); await upstreamClient.close();
+    if (!brokerTracked) {
+      const remaining = await readFile(pidFile, 'utf8').catch(error => {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw error;
+      });
+      if (/^\d+$/.test(remaining.trim())) await trackBroker();
+    }
+  }
+}
+
+export const scenarios: readonly ScenarioDefinition[] = [
+  { id: storyId('R14'), title: 'RPC child steered across switchover with an unwrapped fork fixture', tiers: ['headless'], run: adoption },
+  { id: storyId('R14local'), title: 'rolling reload with the installed upstream client', tiers: ['headless'],
+    notExercised: env => env.SPIDER_HERDR_E2E_R14_BASE && env.SPIDER_HERDR_E2E_R14_UPSTREAM ? undefined : 'Set both R14 fixture environment variables', run: installedRollingReload },
+];
 registerScenarios(scenarios);

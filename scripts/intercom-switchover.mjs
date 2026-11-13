@@ -1,3 +1,6 @@
+// Remove pi-intercom declarations from settings before publishing the new bundle.
+// Reload sessions with running subagents first. Until reloaded, their owners can
+// steer existing children, but cross-session steering may be unavailable.
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readFile, rename, rmdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';

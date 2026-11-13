@@ -140,11 +140,11 @@ The supervisor saves the terminal result before it exits and closes its listener
 - When the run settles, spider marks unanswered writes as unknown, refuses steers that were never written, and closes stdin. If no reply came before the run settled, exited or stopped, only an entry with exactly the sent text counts as delivered.
 - Spider never downgrades an observed delivery. Completion reports the counts of delivered, accepted-unconfirmed, extension-consumed, unknown and refused steers. Refused means rejected or never written.
 
-## Peer sessions and optional intercom
+## Peer sessions and intercom
 
-- If the `pi-intercom` package is installed and enabled, RPC children register as named peers, `<run-name>-<short-id>`.
+- RPC children register as named peers through spider's bundled intercom.
 - Another session can target a run ID through its saved route and intercom target. Without intercom, steer from the dispatching session.
-- If optional intercom fails to resolve, the launch still goes ahead, and the dispatch details report whether intercom is available.
+- If intercom is unavailable, the dispatching session can still steer its own RPC child.
 - Peer messages are saved durably before the broker delivers them. Unconfirmed messages stay queued and are retried when the target session starts.
 - Broker acceptance does not prove that the recipient acknowledged the message or that it entered the conversation, so spider reports it as unconfirmed.
 - Unlike peer messages, run steers are not saved, and spider does not retry them.

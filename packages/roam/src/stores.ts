@@ -38,6 +38,35 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
   if (identity.machine_id !== config.machineId || !(identity.store_key === "global" || options.allowUnassignedGlobal && identity.store_key === null))
     throw new Error("Global store identity does not match configuration");
   const handles = new Map<string, Db>();
+  let registryFingerprint: string | undefined;
+  const registeredStores = new Map<StoreKey, string>();
+  function registeredStore(key: StoreKey): string | undefined {
+    const registered = globalDb.prepare("SELECT db_path,git_common_dir FROM projects ORDER BY project_key").all() as { db_path: string; git_common_dir: string | null }[];
+    const fingerprint = JSON.stringify(registered);
+    if (fingerprint !== registryFingerprint) {
+      registeredStores.clear();
+      for (const row of registered) for (const file of [row.db_path, ...(row.git_common_dir ? [join(row.git_common_dir, "spider", "repo.db")] : [])]) {
+        if (!existsSync(file)) continue;
+        let candidate: Db | undefined;
+        try {
+          const stat = lstatSync(file), parent = lstatSync(dirname(file));
+          if (!stat.isFile() || stat.isSymbolicLink() || !parent.isDirectory() || parent.isSymbolicLink() || realpathSync(file) !== file ||
+              typeof process.getuid === "function" && (stat.uid !== process.getuid() || parent.uid !== process.getuid())) throw new Error("Unsafe registered store");
+          candidate = openDbReadOnly(file);
+          if (!candidate || Number(candidate.pragma("user_version")) !== 14) continue;
+          const meta = candidate.prepare("SELECT store_key,machine_id FROM roam_meta WHERE id=1").get() as { store_key: StoreKey | null; machine_id: string };
+          if (meta.store_key !== null && meta.machine_id === config.machineId) {
+            storeScope(meta.store_key); registeredStores.set(meta.store_key, file);
+          }
+          writeLocal(globalDb, "store-problem", file, undefined);
+        } catch (error) {
+          writeLocal(globalDb, "store-problem", file, { reason: error instanceof Error ? error.message : "Unreadable registered store" });
+        } finally { candidate?.close(); }
+      }
+      registryFingerprint = fingerprint;
+    }
+    return registeredStores.get(key);
+  }
   const effects = createReplicaEffects(key => catalogReplica(globalDb, key, openStore(key).db));
   const policy = createExportPolicy((_file, machineId) => ({ machineId, reference: "unavailable" }));
   function openStore(key: StoreKey) {
@@ -46,23 +75,7 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
     let file: string | undefined;
     const mapped = openRoamStoreReadOnly(globalDb, key);
     if (mapped) { file = mapped.raw.name; mapped.close(); }
-    if (!file) {
-      const registered = globalDb.prepare("SELECT db_path,git_common_dir FROM projects").all() as { db_path: string; git_common_dir: string | null }[];
-      const files = registered.flatMap(row => [row.db_path, ...(row.git_common_dir ? [join(row.git_common_dir, "spider", "repo.db")] : [])]);
-      for (const registeredFile of files) {
-        if (!existsSync(registeredFile)) continue;
-        const stat = lstatSync(registeredFile), parent = lstatSync(dirname(registeredFile));
-        if (!stat.isFile() || stat.isSymbolicLink() || !parent.isDirectory() || parent.isSymbolicLink() || realpathSync(registeredFile) !== registeredFile ||
-            typeof process.getuid === "function" && (stat.uid !== process.getuid() || parent.uid !== process.getuid())) throw new Error("Unsafe registered store");
-        const candidate = openDbReadOnly(registeredFile);
-        if (!candidate) continue;
-        try {
-          if (Number(candidate.pragma("user_version")) !== 14) continue;
-          const meta = candidate.prepare("SELECT store_key FROM roam_meta WHERE id=1").get() as { store_key: string | null };
-          if (meta.store_key === key) { file = registeredFile; break; }
-        } finally { candidate.close(); }
-      }
-    }
+    if (!file) file = registeredStore(key);
     if (!file) {
       if (config.role !== "hub") throw new Error("Store has no local mapping");
       file = replicaPath(globalDb, key);
@@ -96,7 +109,11 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
   }
   const adapter: StoreAdapter = {
     openStore,
-    list() { return listStoreKeys(globalDb); },
+    list() {
+      registryFingerprint = undefined;
+      return listStoreKeys(globalDb, { onProblem: (file, error) => writeLocal(globalDb, "store-problem", file,
+        { reason: error instanceof Error ? error.message : "Unsafe or unreadable registered store" }) });
+    },
     cursor(key, machine, stream) {
       if (!machine) return 0;
       const row = openStore(key).db.prepare("SELECT last_seq FROM roam_cursors WHERE peer_machine=? AND peer_stream=?").get(machine, stream) as { last_seq: number } | undefined;

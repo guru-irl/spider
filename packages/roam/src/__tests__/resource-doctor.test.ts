@@ -2,13 +2,13 @@ import { expect, it } from "vitest";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { DEFAULT_LIMITS } from "../contracts";
 import type { Journal, Peer, Transport } from "../contracts";
-import type { Inventory, ProvisionPorts } from "../provision-contracts";
+import type { DoctorPorts, Inventory } from "../provision-contracts";
 import * as inventoryModule from "../inventory";
 import * as doctorModule from "../resource-doctor";
 import { bootstrapPeer, healthyInventory } from "./bootstrap-fixture";
 
 type InventoryFn = (peer: Peer, transport: Transport) => Promise<Inventory>;
-type DoctorFn = (peer: Peer, ports: ProvisionPorts) => Promise<readonly import("../contracts").Diagnostic[]>;
+type DoctorFn = (peer: Peer, ports: DoctorPorts) => Promise<readonly import("../contracts").Diagnostic[]>;
 
 function fixture(value: Inventory = healthyInventory()) {
   const adminRepairCalls: readonly string[][] = [], probeCalls: string[] = [], probeOptions: unknown[] = [];
@@ -23,7 +23,7 @@ function fixture(value: Inventory = healthyInventory()) {
   const journal: Journal = {
     begin() { throw new Error("unexpected journal"); }, record() { throw new Error("unexpected journal"); }, read() { throw new Error("unexpected journal"); },
   };
-  const ports: ProvisionPorts = {
+  const ports: DoctorPorts = {
     transport, journal, limits: DEFAULT_LIMITS,
     async confirm() { throw new Error("unexpected confirmation"); },
     systemd: { unitDir: "/fixture/units", async systemctl(argv) { (adminRepairCalls as string[][]).push([...argv]); } },

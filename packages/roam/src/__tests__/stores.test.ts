@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openDb, WORKTREE_SCHEMA } from "@spider/db-core";
+import * as dbApi from "@spider/db-core";
 import { addTodo } from "../../../todo/src/store";
 import { createReplica } from "@spider/db-core/testutil";
 import { exportBatch } from "@spider/db-core/roam/export";
@@ -9,7 +10,7 @@ import { seedSession, enableMemoryCapture } from "@spider/db-core/roam/seed";
 import { replicaPath } from "@spider/db-core/roam/catalog";
 import * as applyApi from "@spider/db-core/roam/apply";
 import { validateBatch } from "@spider/db-core/roam/codec";
-import { writeLocal } from "@spider/db-core/roam/local-state";
+import { localEntries, writeLocal } from "@spider/db-core/roam/local-state";
 import { DEFAULT_LIMITS } from "../contracts";
 import { createStorePort, sweepBatchFiles } from "../stores";
 import { sweepStoreArtifacts } from "../cleanup";
@@ -157,6 +158,27 @@ it("unrelated older registered checkouts do not block healthy replica placement"
     expect(old.prepare("SELECT name FROM sqlite_master WHERE name='roam_meta'").all()).toEqual([]);
   } finally { old.close(); }
 }, 5000);
+it("unsafe and corrupt unrelated registrations are reported without blocking a new store", () => {
+  const { global, source, stores } = fixture();
+  const link = join(global.root, "linked.db"); symlinkSync(source.db.raw.name, link);
+  const corrupt = join(global.root, "corrupt.db"); writeFileSync(corrupt, "not sqlite", { mode: 0o600 });
+  for (const [id, file] of [["linked", link], ["corrupt", corrupt]]) global.db.prepare(
+    "INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES (?,?,?,1,1)",
+  ).run(id, global.root, file);
+  expect(stores.openStore("worktree:healthy:workspace").db.prepare("SELECT store_key FROM roam_meta").get()).toEqual({ store_key: "worktree:healthy:workspace" });
+  expect(localEntries(global.db, "store-problem").map(row => row.key).sort()).toEqual([corrupt, link]);
+}, 5000);
+it("registered store discovery is cached until the registry changes", () => {
+  const { global, stores } = fixture();
+  const local = createReplica("repo", HUB); fixtures.push(local);
+  global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('local',?,?,1,1)").run(local.root, local.db.raw.name);
+  const open = vi.spyOn(dbApi, "openDbReadOnly");
+  stores.openStore(local.storeKey); stores.openStore(local.storeKey); stores.openStore(local.storeKey);
+  expect(open.mock.calls.filter(([file]) => file === local.db.raw.name)).toHaveLength(1);
+  const added = createReplica("worktree", HUB); fixtures.push(added);
+  global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('added',?,?,1,1)").run(added.root, added.db.raw.name);
+  expect(stores.openStore(added.storeKey).db.raw.name).toBe(added.db.raw.name);
+}, 5000);
 it("registered repository memory resolves to its existing store", async () => {
   const { global, source, stores } = fixture(); const repo = createReplica("repo", HUB); fixtures.push(repo);
   repo.db.prepare("INSERT INTO memory(uuid,category,content,created_at) VALUES ('memory-a','convention','portable',1)").run();
@@ -206,14 +228,14 @@ it("empty exports allocate no receipt and remove their private file", async () =
   expect(existsSync(batch.file)).toBe(false);
   expect(global.db.prepare("SELECT * FROM roam_receipts").all()).toEqual([]);
 }, 5000);
-it("new hub replicas are private and registered symlinks are refused", () => {
+it("new hub replicas are private and unrelated registered symlinks are skipped", () => {
   const { global, source, stores } = fixture();
   const file = stores.openStore(source.storeKey).db.raw.name;
   expect(lstatSync(file).mode & 0o777).toBe(0o600);
   expect(lstatSync(dirname(file)).mode & 0o777).toBe(0o700);
   const link = join(global.root, "linked.db"); symlinkSync(source.db.raw.name, link);
   global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('symlink',?,?,1,1)").run(global.root, link);
-  expect(() => stores.openStore("worktree:other:workspace")).toThrow(/unsafe/i);
+  expect(stores.openStore("worktree:other:workspace").db.raw.name).toBe(replicaPath(global.db, "worktree:other:workspace"));
 }, 5000);
 it("startup sweeps reclaim orphan staging but retain journal references", async () => {
   const { global, stores, config } = fixture();

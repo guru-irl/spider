@@ -120,7 +120,7 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
       try {
         const result = await handleAgentOperation(operation as Operation, runtime.agent);
         io.out(`${JSON.stringify(result)}\n`);
-        return result.code;
+        return 0;
       } finally { runtime.close(); }
     } catch { io.err("Local roaming agent is unavailable.\n"); return 1; }
   }
@@ -144,9 +144,8 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
         } catch { io.err("Invalid artifact bytes.\n"); return 2; }
         const reply = await dispatchArtifactCommand(argv, stdin, runtime.config.hubMachineId, runtime.agent);
         if (!reply) return 2;
-        const outcome = JSON.parse(reply.toString("utf8")) as { code: 0 | 1 | 2 | 3 };
         io.out(reply.toString("utf8"));
-        return outcome.code;
+        return 0;
       } finally { runtime.close(); }
     } catch { io.err("Local roaming agent is unavailable.\n"); return 1; }
   }

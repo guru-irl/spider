@@ -279,6 +279,6 @@ export function sweepBatchFiles(directories: readonly string[], options: { now: 
 export function removeOutgoing(root: string, id: string, config: RoamConfig, verified: () => boolean): void {
   if (!verified()) throw new Error("Durable receipt is missing");
   const outgoing = openOutgoingStaging(root, config.limits, false);
-  try { outgoing.sweep(Date.now() + config.limits.retentionMs + 1, candidate => candidate !== id); }
+  try { outgoing.remove(id); }
   finally { outgoing.close(); }
 }

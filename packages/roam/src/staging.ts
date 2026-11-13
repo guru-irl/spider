@@ -22,7 +22,7 @@ export function transferLockRoot(root: string): string {
 }
 
 export function artifactId(value: unknown): string {
-  if (typeof value !== "string" || !ID.test(value)) throw new Error("Invalid artifact ID");
+  if (typeof value !== "string" || !ID.test(value) || /^quota\.db(?:-wal|-shm)?$/i.test(value)) throw new Error("Invalid artifact ID");
   return value;
 }
 
@@ -78,13 +78,25 @@ export function privateIncomingArtifact(root: string, peer: string, id: string):
   return artifact;
 }
 
+function existingDirectory(directory: string): void {
+  if (!isAbsolute(directory) || resolve(directory) !== directory) throw new Error("Unsafe staging path");
+  const root = parse(directory).root;
+  let current = root;
+  for (const part of directory.slice(root.length).split(/[\\/]+/).filter(Boolean)) {
+    current = join(current, part);
+    const stat = lstatSync(current);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error("Unsafe staging path or symlink");
+  }
+  checkOwned(lstatSync(directory), true);
+}
 function openPrivate(file: string, flags: number): number {
-  privateDirectory(dirname(file));
+  if (flags & constants.O_CREAT) privateDirectory(dirname(file));
+  else existingDirectory(dirname(file));
   const fd = openSync(file, flags | constants.O_NOFOLLOW, 0o600);
   try {
     const stat = fstatSync(fd);
     checkOwned(stat, false);
-    if (process.platform !== "win32" && (stat.mode & 0o7777) !== 0o600) fchmodSync(fd, 0o600);
+    if (flags & constants.O_CREAT && process.platform !== "win32" && (stat.mode & 0o7777) !== 0o600) fchmodSync(fd, 0o600);
     return fd;
   } catch (error) { closeSync(fd); throw error; }
 }
@@ -277,11 +289,20 @@ export interface OutgoingStore {
   commit(manifest: ArtifactManifest): void;
   get(id: string, version: string): ArtifactManifest | null;
   sweep(now: number, hasJournalOperation: (artifactId: string) => boolean): string[];
+  remove(id: string): void;
   close(): void;
 }
 
 type OutgoingArtifactRow = { kind: string; current: string | null; pending: string | null };
 type OutgoingVersionRow = { manifest: string; committed: number };
+function sweepCandidates(db: ReturnType<typeof openDb>, table: "outgoing_artifacts" | "staging_artifacts", cutoff: number): { id: string }[] {
+  db.exec("CREATE TABLE IF NOT EXISTS sweep_progress(id INTEGER PRIMARY KEY CHECK(id=1),after_id TEXT NOT NULL)");
+  const after = (db.prepare("SELECT after_id FROM sweep_progress WHERE id=1").get() as { after_id: string } | undefined)?.after_id ?? "";
+  let rows = db.prepare(`SELECT id FROM ${table} WHERE updated <= ? AND id > ? ORDER BY id LIMIT 256`).all(cutoff, after) as { id: string }[];
+  if (!rows.length && after) rows = db.prepare(`SELECT id FROM ${table} WHERE updated <= ? ORDER BY id LIMIT 256`).all(cutoff) as { id: string }[];
+  db.prepare("INSERT INTO sweep_progress VALUES(1,?) ON CONFLICT(id) DO UPDATE SET after_id=excluded.after_id").run(rows.at(-1)?.id ?? "");
+  return rows;
+}
 
 /** Reserve each outgoing chunk before writing it, in a pool local to this staging root. */
 export function openOutgoingStaging(root: string, limits: Limits, create = true): OutgoingStore {
@@ -314,6 +335,13 @@ export function openOutgoingStaging(root: string, limits: Limits, create = true)
   const versionRow = (id: string, version: string): OutgoingVersionRow | undefined => db.prepare(
     "SELECT manifest, committed FROM outgoing_versions WHERE artifact = ? AND version = ?",
   ).get(id, version) as OutgoingVersionRow | undefined;
+  const discard = (id: string): void => {
+    const path = join(directory, artifactId(id));
+    if (present(path)) { verifyTree(path); rmSync(path, { recursive: true }); }
+    db.prepare("DELETE FROM outgoing_allocations WHERE artifact = ?").run(id);
+    db.prepare("DELETE FROM outgoing_versions WHERE artifact = ?").run(id);
+    db.prepare("DELETE FROM outgoing_artifacts WHERE id = ?").run(id);
+  };
   const readVersion = (id: string, version: string): ArtifactManifest => {
     const row = versionRow(id, version);
     if (!row) throw new Error("Corrupt outgoing manifest history");
@@ -394,11 +422,13 @@ export function openOutgoingStaging(root: string, limits: Limits, create = true)
       const row = versionRow(id, version);
       return row?.committed ? readVersion(id, version) : null;
     },
+    remove(id) {
+      db.raw.transaction(() => { discard(id); syncStagingDirectory(directory); }).immediate();
+    },
     sweep(now, hasJournalOperation) {
       if (!Number.isSafeInteger(now) || now < 0 || typeof hasJournalOperation !== "function") throw new Error("Invalid outgoing staging sweep");
       return db.raw.transaction(() => {
-        const candidates = db.prepare("SELECT id FROM outgoing_artifacts WHERE updated <= ? ORDER BY id")
-          .all(now - limits.retentionMs) as { id: string }[];
+        const candidates = sweepCandidates(db, "outgoing_artifacts", now - limits.retentionMs);
         const orphans: string[] = [];
         for (const candidate of candidates) {
           const referenced = hasJournalOperation(candidate.id);
@@ -406,13 +436,7 @@ export function openOutgoingStaging(root: string, limits: Limits, create = true)
           if (!referenced) orphans.push(candidate.id);
         }
         privateDirectory(root); privateDirectory(directory);
-        for (const id of orphans) {
-          const path = join(directory, artifactId(id));
-          if (present(path)) { verifyTree(path); rmSync(path, { recursive: true }); }
-          db.prepare("DELETE FROM outgoing_allocations WHERE artifact = ?").run(id);
-          db.prepare("DELETE FROM outgoing_versions WHERE artifact = ?").run(id);
-          db.prepare("DELETE FROM outgoing_artifacts WHERE id = ?").run(id);
-        }
+        for (const id of orphans) discard(id);
         if (orphans.length) syncStagingDirectory(directory);
         return orphans;
       }).immediate();
@@ -611,6 +635,8 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
     if (present(parent)) privateDirectory(parent);
     if (present(path)) { verifyTree(path); rmSync(path, { recursive: true }); syncStagingDirectory(parent); }
     db.prepare("DELETE FROM staging_allocations WHERE artifact = ?").run(id);
+    db.prepare("DELETE FROM staging_claims WHERE artifact = ?").run(id);
+    db.prepare("DELETE FROM staging_pages WHERE artifact = ?").run(id);
     db.prepare("UPDATE staging_versions SET cleaned = 1, complete = 0 WHERE artifact = ?").run(id);
   };
   return {
@@ -881,20 +907,21 @@ export function openStaging(root: string, peer: string, limits: Limits): Staging
       secure();
       if (!Number.isSafeInteger(now) || now < 0) throw new Error("Invalid staging cleanup time");
       return db.raw.transaction(() => {
-        const rows = db.prepare(`SELECT id FROM staging_artifacts a
-          WHERE updated <= ?
-          AND NOT EXISTS (SELECT 1 FROM staging_claims c WHERE c.artifact = a.id AND c.referenced = 1)
-          AND NOT EXISTS (SELECT 1 FROM staging_versions v WHERE v.artifact = a.id AND v.complete = 1 AND v.receipted = 0)
-          AND (EXISTS (SELECT 1 FROM staging_versions v WHERE v.artifact = a.id AND v.cleaned = 0)
-            OR EXISTS (SELECT 1 FROM staging_allocations x WHERE x.artifact = a.id))
-          ORDER BY id`).all(now - limits.retentionMs) as { id: string }[];
+        const rows = sweepCandidates(db, "staging_artifacts", now - limits.retentionMs);
         const orphans = rows.filter(row => {
-          if (!hasJournalReference) return true;
-          const referenced = hasJournalReference(row.id);
-          if (typeof referenced !== "boolean") throw new Error("Incoming journal references are unavailable");
-          return !referenced;
+          if (hasJournalReference) {
+            const referenced = hasJournalReference(row.id);
+            if (typeof referenced !== "boolean") throw new Error("Incoming journal references are unavailable");
+            return !referenced;
+          }
+          return !db.prepare("SELECT 1 FROM staging_claims WHERE artifact=? AND referenced=1 LIMIT 1").get(row.id) &&
+            !db.prepare("SELECT 1 FROM staging_versions WHERE artifact=? AND complete=1 AND receipted=0 LIMIT 1").get(row.id);
         });
-        for (const row of orphans) discardFiles(row.id);
+        for (const row of orphans) {
+          discardFiles(row.id);
+          db.prepare("DELETE FROM staging_versions WHERE artifact=?").run(row.id);
+          db.prepare("DELETE FROM staging_artifacts WHERE id=?").run(row.id);
+        }
         return orphans.map(row => row.id);
       }).immediate();
     },

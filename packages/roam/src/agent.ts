@@ -491,7 +491,7 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
   } catch { return outcome(2, "Invalid agent operation", id); }
   if (!["export", "release-export", "split"].includes(request.kind)) return dispatchParsedOperation(operation, request, ports, id);
   let release: (() => void) | null;
-  try { release = acquireTransferLease(ports.root, operation.machineId, ports.config.limits.peerConcurrency); }
+  try { release = acquireTransferLease(ports.root, ports.config.hubMachineId, ports.config.limits.peerConcurrency); }
   catch { return outcome(3, "Artifact lease is unavailable", id); }
   if (!release) return outcome(3, "Artifact operation is waiting for a peer slot", id);
   try { return await dispatchParsedOperation(operation, request, ports, id); }

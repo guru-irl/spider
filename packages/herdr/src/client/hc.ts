@@ -6,14 +6,16 @@ import childProcess from 'node:child_process';
 import { requireCoreAvailable } from './liveness.js';
 import { realpathSync, existsSync } from 'node:fs';
 import { resolve, relative, dirname, basename, join, isAbsolute, sep } from 'node:path';
-import type { HcClient, HcClientOptions, HcCallOptions, TerminalId, HcEventStream, Disposable, MachineName, MachineSummary, CoreId } from '../contracts.js';
+import type { HcClient, HcClientOptions, HcCallOptions, TerminalId, HcEventStream, Disposable, MachineName, MachineSummary, CoreId, CoreIdentity } from '../contracts.js';
 import { HERDR_LABELS } from '../contracts.js';
 import { createHcEventStream } from './events.js';
 import { HerdrError, parseCore, parseTerminal, object, text, selectedSocket } from './parse.js';
 
 export async function invokeCli(binary: string, argv: readonly string[], env: Readonly<NodeJS.ProcessEnv>, maxBytes?: number, input?: Buffer, callOptions: HcCallOptions = {}): Promise<unknown> {
   const environment = Object.freeze({ ...env, HC_SOCKET: selectedSocket(env) });
-  await requireCoreAvailable(environment, callOptions.signal);
+  if (callOptions.signal?.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted');
+  try { await requireCoreAvailable(environment, callOptions.signal); }
+  catch (error) { if (callOptions.signal?.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted'); throw error; }
   // hc has no no-autostart mode. Keep the unavoidable check-then-call race to
   // this immediate spawn; a core exiting in that gap can still be auto-started.
   return invokeTransport(binary, argv, environment, maxBytes, input, callOptions);
@@ -34,6 +36,10 @@ function guardTestSocket(options: HcClientOptions): void {
     throw new HerdrError('isolation-unproved', 'Tests must use a socket inside their owned scratch root with an explicit fixture identity');
   const proof = options.isolationProof;
   if (proof && (!proof.sockets.includes(socket) || proof.sessionNamespace !== (options.env.HC_SESSION || 'default') || physicalPath(proof.checkout) !== physicalPath(checkout) || proof.coreIds.length !== proof.sockets.length || proof.coreIds.length === 0 || proof.sockets.some(path => !inside(path)))) throw new HerdrError('isolation-unproved', 'Isolation proof does not match the selected core');
+}
+export async function observeCoreIdentity(binary: string, env: Readonly<NodeJS.ProcessEnv>, options: HcCallOptions = {}): Promise<CoreIdentity> {
+  guardTestSocket({ binary, env });
+  return parseCore(await invokeCli(binary, ['server', 'status', '--json'], env, undefined, undefined, options), env);
 }
 export function machineAliases(m: Record<string, unknown>): string[] {
   const name = text(m.name);

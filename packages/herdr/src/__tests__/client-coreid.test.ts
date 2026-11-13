@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { createHerdrHarness, createClientFixture, terminal } from './testutil.js';
-import { createHcClient } from '../client/hc.js';
+import { createHcClient, observeCoreIdentity } from '../client/hc.js';
 import { isCoreAvailable } from '../client/liveness.js';
 
 const realHc = process.env.SPIDER_HERDR_E2E === '1' && await access(process.env.SPIDER_HERDR_HC_BINARY ?? join(process.env.HOME!, '.local/bin/hc')).then(() => true, () => false);
@@ -87,3 +87,11 @@ test.each([undefined, null, 2147483647])('caller cannot claim a terminal without
     await expect(client.caller(h.localEnv)).rejects.toMatchObject({ code: 'terminal-core-mismatch' });
   } finally { await client.dispose(); await h.close(); }
 });
+
+test('an aborted core-identity query does not invoke hc', async () => {
+  const h = await createClientFixture();
+  const client = createHcClient({ binary: h.hcBinary, env: h.localEnv });
+  const abort = new AbortController(); abort.abort();
+  try { await expect(observeCoreIdentity(h.hcBinary, h.localEnv, { signal: abort.signal })).rejects.toMatchObject({ code: 'cli-aborted' }); }
+  finally { await client.dispose(); await h.close(); }
+}, 5000);

@@ -56,7 +56,7 @@ export async function launchSession(request: SessionLaunchRequest, ports: Sessio
 }
 
 export interface ExactSessionLaunchRequest {
-  sessionId: string; file: string; cwd: string; sha256: string; epoch: number; moveId: string | null; pi: string;
+  sessionId: string; file: string; cwd: string; sha256: string; epoch: number; moveId: string | null; pi: string; operationId?: string;
 }
 export type LaunchNoStartProof =
   | ({ kind: 'prelaunch-error'; operationId: string; beforeLaunch: true } &
@@ -99,7 +99,7 @@ export interface ExactSessionLaunchPorts extends SessionLaunchPorts {
   machineId: string; core: { session: string; socket: string; coreId: string };
   /** Reconcile the same operation against its receipt, labelled terminal and authoritative proof. */
   reconcileLaunch(operationId: string, options: { signal: AbortSignal }): Promise<LaunchEvidence>;
-  sessionBytes?: number; launchMs?: number; reconcileMs?: number; now?(): number; wait?(ms: number): Promise<void>;
+  sessionBytes?: number; launchMs?: number; reconcileMs?: number; retainProvedHandoff?: boolean; now?(): number; wait?(ms: number): Promise<void>;
 }
 
 async function launchEvidence(ports: ExactSessionLaunchPorts, operationId: string): Promise<LaunchEvidence> {
@@ -158,7 +158,7 @@ export async function launchExactSession(request: ExactSessionLaunchRequest, por
   const text = (value: unknown) => typeof value === 'string' && value.length > 0 && value.length <= 256 && !/[\x00-\x1f\x7f]/.test(value);
   if (!text(request.sessionId) || !isAbsolute(request.file) || !isAbsolute(request.cwd) || !isAbsolute(request.pi) ||
       !/^[a-f0-9]{64}$/.test(request.sha256) || !Number.isSafeInteger(request.epoch) || request.epoch < 1 ||
-      !(request.moveId === null || text(request.moveId)) || !isAbsolute(ports.shell) || !globalRoot || !isAbsolute(globalRoot) ||
+      !(request.moveId === null || text(request.moveId)) || request.operationId !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(request.operationId) || !isAbsolute(ports.shell) || !globalRoot || !isAbsolute(globalRoot) ||
       !agentDirectory || !isAbsolute(agentDirectory) || !text(ports.machineId) || !text(ports.core.session) || !text(ports.core.coreId) || !isAbsolute(ports.core.socket)) {
     throw new HerdrError('launch-environment-invalid', 'Exact session launch arguments are invalid');
   }
@@ -173,6 +173,7 @@ export async function launchExactSession(request: ExactSessionLaunchRequest, por
     const file = resolve(request.file), previous = await inspectIdLock(root, request.sessionId);
     let recoverPending: string | undefined;
     if (previous?.pendingOperationId) {
+      if (request.operationId !== undefined && previous.pendingOperationId !== request.operationId) throw new HerdrError('launch-pending', 'A different exact launch is pending');
       const evidence = await launchEvidence(ports, previous.pendingOperationId);
       if (!provedNoStart(evidence, previous.pendingOperationId, ports.core.coreId) ||
           evidence.proof?.kind !== 'prelaunch-error' && previous.pendingCoreId !== ports.core.coreId || !previous.pendingFile ||
@@ -203,7 +204,7 @@ export async function launchExactSession(request: ExactSessionLaunchRequest, por
       lease = await ports.leases.claim(file, ports.processIdentity, ports.processInventory, { mode: 'cutover', bootId: boot });
       let limits: Awaited<ReturnType<ExactSessionLaunchPorts['limits']>>;
       try { limits = await ports.limits(); } catch { throw new HerdrError('launch-limits-unavailable', 'Cannot verify the local file limits'); }
-      operationId = randomUUID();
+      operationId = request.operationId ?? randomUUID();
       const handoff = await id.prepareHandoff(operationId, file, ports.core.coreId);
       handoffFile = await writeLaunchHandoff(root, { version: 1, operationId, sessionId: request.sessionId,
         sessionFile: file, nonce: handoff.nonce, leaseToken: lease.token });
@@ -246,6 +247,9 @@ export async function launchExactSession(request: ExactSessionLaunchRequest, por
       const evidence = await launchEvidence(ports, operationId);
       const result = await adopted();
       if (result) return result;
+      if (provedNoStart(evidence, operationId, ports.core.coreId) && ports.retainProvedHandoff) {
+        throw new HerdrError('launch-pending', 'Proved no-start handoff awaits reconciliation');
+      }
       if (provedNoStart(evidence, operationId, ports.core.coreId) && await id.cancelHandoff(operationId)) {
         try { await removeLaunchHandoff(root, operationId); }
         finally { await ports.leases.release(file, lease.token, { mode: 'cutover' }); }

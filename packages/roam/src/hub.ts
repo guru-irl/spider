@@ -265,7 +265,14 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
       await Promise.allSettled([...queues.values()]);
       await ports.closeStores();
     }
-  }, { identity: ports.identity, probe: ports.probe, timeoutMs: 100 });
+  }, { identity: ports.identity, async probe(pid, owner) {
+    const observed = await ports.probe(pid);
+    if (owner && observed.kind === "live" && observed.startIdentity !== owner.startIdentity) {
+      const format = /^(posix|linux):/.exec(owner.startIdentity)?.[0];
+      if (format && observed.startIdentity.startsWith(format)) return { kind: "absent" };
+    }
+    return observed;
+  }, timeoutMs: 100 });
   void completion.catch(rejectReady);
   return started;
 }

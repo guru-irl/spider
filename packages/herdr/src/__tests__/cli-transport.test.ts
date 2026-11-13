@@ -120,6 +120,19 @@ describe('CLI request deadlines', () => {
   });
 });
 
+it('reports the local process start and observed exit in order', async () => {
+  const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), pid: 4321, kill: () => true });
+  vi.mocked(spawn).mockReturnValueOnce(child as unknown as ReturnType<typeof spawn>);
+  const observations: string[] = [];
+  const result = invokeCli('fixture-cli', [], {}, undefined, undefined, { processObserver: {
+    started(pid: number) { observations.push(`started:${pid}`); }, exited(pid: number) { observations.push(`exited:${pid}`); },
+  } });
+  child.stdout.write(Buffer.from('{"address":"terminal-1"}'));
+  child.emit('close', 0, null);
+  expect(await result).toEqual({ address: 'terminal-1' });
+  expect(observations).toEqual(['started:4321', 'exited:4321']);
+}, 5000);
+
 it('core calls honor cleanup deadlines and reap the CLI instead of leaving it running', async () => {
   const core = await createClientFixture(), f = fixture('slow');
   try {

@@ -6,9 +6,10 @@ import spiderExtension from "../extension";
 import { setGlobalDbPathForTests } from "@spider/db-core";
 import { testScratchPath } from "./testutil.js";
 import { registerSubagentActions } from "@spider/subagents";
+import { withPiEvents, hostUnitPorts } from "./fixtures/pi-events";
 
 function fakePi(): any {
-  return { registerTool: vi.fn(), registerCommand: vi.fn(), on: vi.fn(), events: { on: vi.fn(), emit: vi.fn() }, getSessionName: () => "s1" };
+  return withPiEvents({ registerTool: vi.fn(), registerCommand: vi.fn(), on: vi.fn(), getSessionName: () => "s1" });
 }
 
 describe("host wires subagent actions", () => {
@@ -19,7 +20,7 @@ describe("host wires subagent actions", () => {
       const scratch = testScratchPath(".spider-test-global");
       mkdirSync(scratch, { recursive: true });
       setGlobalDbPathForTests(join(scratch, `g-sub-${Date.now()}.db`));
-      spiderExtension(fakePi());
+      spiderExtension(fakePi(), hostUnitPorts);
       expect(getAction("run")).toBeTypeOf("function");
       expect(getAction("wait")).toBeUndefined();
       expect(getAction("message")).toBeTypeOf("function");

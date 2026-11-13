@@ -6,6 +6,7 @@ import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, InMemoryCredentialStore, InMemoryModelsStore, getCurrentTools, getCurrentSystemPrompt, Type, type JsonObject } from "@earendil-works/pi-ai";
 import { setGlobalDbPathForTests } from "@spider/db-core";
 import spiderExtension from "../extension";
+import { hostUnitPorts } from "./fixtures/pi-events";
 import { controlConfig } from "../control";
 
 const root = join(process.cwd(), ".spider", "scratch", `native-results-${process.pid}`);
@@ -36,7 +37,7 @@ async function runCalls(calls: Array<{ id: string; args: JsonObject; tool?: stri
   const loader = new DefaultResourceLoader({
     cwd: root, agentDir: process.env.PI_CODING_AGENT_DIR!, settingsManager: settings,
     noExtensions: true, noSkills: true, noContextFiles: true, noThemes: true, noPromptTemplates: true,
-    extensionFactories: [pi => { spiderExtension(pi as never); options.extend?.(pi); }],
+    extensionFactories: [pi => { spiderExtension(pi as never, hostUnitPorts); options.extend?.(pi); }],
   });
   await loader.reload();
   const { session } = await createAgentSession({ cwd: root, agentDir: process.env.PI_CODING_AGENT_DIR!, resourceLoader: loader, modelRuntime: runtime, model: faux.getModel(), settingsManager: settings, sessionManager: SessionManager.inMemory(root), tools: options.structured ? undefined : ["spider", ...calls.flatMap(c => c.tool ? [c.tool] : [])], noTools: options.structured ? "builtin" : undefined });

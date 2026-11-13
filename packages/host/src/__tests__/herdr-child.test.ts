@@ -12,6 +12,7 @@ import { runExec, runExecFile, runBatch } from '../../../context/src/actions/exe
 import { execFileSync } from 'node:child_process';
 import { setupHerdr, runtimeInstallPath, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 
 afterEach(() => vi.unstubAllEnvs());
 async function childFixture(location: 'standard' | 'relative' = 'standard') {
@@ -160,7 +161,7 @@ it('production child mount receives a bounded stderr error reporter', async () =
   const writes = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   Reflect.set(f.pi, 'registerCommand', () => {});
   try {
-    const { default: extension } = await import('../extension.js'); extension(f.pi as never);
+    const { default: extension } = await import('../extension.js'); extension(withPiEvents(f.pi as never), hostUnitPorts);
     const reporter = mount.mock.calls.at(-1)![1].reportError;
     expect(reporter).toBeTypeOf('function');
     reporter!(new Error('activation failed\n' + 'x'.repeat(5000)));

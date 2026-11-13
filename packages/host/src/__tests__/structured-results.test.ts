@@ -33,7 +33,7 @@ function host(enabled?: boolean) {
   for (const fn of hooks.get("session_start") ?? []) fn({ type: "session_start", reason: "startup" }, ctx());
   return pi;
 }
-const ctx = () => ({ cwd: root, sessionManager: { getSessionId: () => 'structured-fixture' }, model: undefined,
+const ctx = () => ({ cwd: root, mode: 'rpc', sessionManager: { getSessionId: () => 'structured-fixture' }, model: undefined,
   hasUI: false, isIdle: () => true, ui: { notify() {}, setStatus() {} } });
 const call = (pi: ReturnType<typeof host>, name: string, args: any) => {
   expect(pi.tools.has(name), `${name} must be registered`).toBe(true);

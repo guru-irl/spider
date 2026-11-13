@@ -7,6 +7,7 @@ import { paths } from '@spider/db-core';
 import * as mountModule from '../herdr/mount.js';
 import { RemoteRuntimeError } from '../../../herdr/src/remote/runtime.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
+import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 
 const previousRoot = paths.globalRoot;
 afterEach(() => { paths.globalRoot = previousRoot; vi.restoreAllMocks(); vi.unstubAllEnvs(); });
@@ -29,7 +30,7 @@ test('remote errors preserve actionable details while removing secrets and termi
     on: (name: string, handler: Function) => { hooks.set(name, [...hooks.get(name) ?? [], handler]); return () => {}; } };
   const ctx = { cwd: root, mode: 'rpc', hasUI: false, sessionManager: { getSessionId: () => 'planner', getSessionFile: () => undefined } };
   try {
-    const { default: extension } = await import('../extension.js'); extension(pi as never);
+    const { default: extension } = await import('../extension.js'); extension(withPiEvents(pi as never), hostUnitPorts);
     const tool = tools.find(value => value.name === 'spider')!;
     await expect(tool.execute('call', { action: 'exec', on: 'planner.invalid', language: 'shell', code: 'true' }, undefined, undefined, ctx))
       .rejects.toMatchObject({ code: 'runtime-not-installed', message: "Spider couldn't start the remote command because Herdr isn't set up on that machine. Your session and local commands still work. Use Run doctor in the spider panel, or run /herdr-setup to print the doctor command for this machine. Details: Remote runtime on planner.invalid is missing; rerun spider herdr setup" });

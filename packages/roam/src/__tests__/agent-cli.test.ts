@@ -40,6 +40,18 @@ function fixture(identity = BOX, assigned = true, role: "hub" | "box" = "box") {
   return { root, db, invoke };
 }
 
+it.each([
+  ["agent", ["roam", "agent", "{}"]],
+  ["artifact receiver", ["roam", "artifact", "receive", "{}"]],
+])("the private %s exits successfully after writing a refusal envelope", (_name, argv) => {
+  const f = fixture();
+  try {
+    const result = f.invoke(argv);
+    expect(JSON.parse(result.stdout)).toMatchObject({ code: 2 });
+    expect(result.status, result.stderr).toBe(0);
+  } finally { f.db.close(); }
+}, 5000);
+
 it("the packaged agent enables global capture and replays its durable result", () => {
   const f = fixture();
   try {
@@ -54,7 +66,7 @@ it("the packaged agent enables global capture and replays its durable result", (
     expect(JSON.parse(repeated.stdout)).toEqual(JSON.parse(first.stdout));
     expect(f.db.prepare("SELECT count(*) AS count FROM roam_changes").get()).toEqual({ count: 1 });
     const changed = f.invoke(["roam", "agent", JSON.stringify({ ...operation, kind: "stores", args: {} })]);
-    expect(changed.status).toBe(2);
+    expect(changed.status).toBe(0);
     expect(JSON.parse(changed.stdout)).toMatchObject({ code: 2, operationId: "enable-1" });
     expect(f.db.prepare("SELECT count(*) AS count FROM roam_changes").get()).toEqual({ count: 1 });
   } finally { f.db.close(); }
@@ -105,7 +117,8 @@ it("the packaged agent rechecks diagnosed duplicate todos before clearing roamab
       .run("fixture", directory, file, 1, 1);
     const operation = { id: "recheck-1", machineId: BOX, expectedEpoch: null, kind: "recheck-store", args: { storeKey: key } };
     const refused = f.invoke(["roam", "agent", JSON.stringify(operation)]);
-    expect(refused.status).toBe(1);
+    expect(refused.status).toBe(0);
+    expect(JSON.parse(refused.stdout)).toMatchObject({ code: 1, operationId: "recheck-1" });
     expect(worktree.prepare("SELECT roamable FROM roam_meta").get()).toEqual({ roamable: 0 });
     worktree.exec("DELETE FROM todos WHERE id=2");
     const accepted = f.invoke(["roam", "agent", JSON.stringify({ ...operation, id: "recheck-2" })]);
@@ -121,7 +134,7 @@ it("the packaged agent refuses an incomplete mapped-store inventory", () => {
     f.db.prepare("INSERT INTO roam_repo_maps(repo_key,path) VALUES (?,?)").run("missing-repo", join(f.root, "missing-checkout"));
     const operation = { id: "stores-1", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} };
     const result = f.invoke(["roam", "agent", JSON.stringify(operation)]);
-    expect(result.status).toBe(1);
+    expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toMatchObject({ code: 1, operationId: "stores-1" });
     expect(f.db.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 0 });
   } finally { f.db.close(); }

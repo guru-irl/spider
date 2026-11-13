@@ -88,6 +88,20 @@ test.each(['herdr.config', 'herdr.enabled'])('%s is global-only on writes and re
   expect(applyConfigEdit(cwd, key, String(value), 'global')).toMatchObject({ ok: false, error: expect.stringContaining('protected') });
 });
 
+test('setup metadata does not access a core before an operation needs it', async () => {
+  await installedConfig();
+  vi.stubEnv('SPIDER_TEST_FIXTURE_CHECKOUT', fileURLToPath(new URL('../../../../', import.meta.url)));
+  const env = { ...process.env };
+  delete env.HC_SOCKET; delete env.HC_SESSION; delete env.HC_TERMINAL_SOCKET;
+  const ports = createProductionHerdrCliPorts(root, env);
+  try {
+    const request = await ports.request();
+    const parts = await ports.setupParts(request);
+    expect(parts.globalRoot).toBe(globalRoot);
+    expect(() => parts.hc).toThrow(/Tests must use a socket/);
+  } finally { await ports.dispose(); }
+}, 5000);
+
 test('commands share the session global root without SPIDER_GLOBAL_ROOT even with a custom pi directory', async () => {
   const home = join(root, 'home'), expected = join(home, '.pi/agent/spider');
   await mkdir(join(expected, 'herdr'), { recursive: true });

@@ -706,15 +706,17 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       return { config, configPath: resolve(path), packageRoot, journalRoot: join(config.globalRoot, 'herdr/setup') };
     },
     async setupParts(request) {
-      const hc = client(request), spaces = spacePorts(request);
+      let preparedSpaces: SpaceSetupPorts | undefined;
+      const getSpaces = () => preparedSpaces ??= spacePorts(request);
       let runtimes: readonly RuntimeFile[] = [];
       // Root probes made during this setup run. Verification reuses them instead of launching another per machine.
       const rootProbes = new Map<string, string>(), rootKey = (launch: HcRunRequest) => JSON.stringify([launch.on, launch.argv]);
       const probeRoot = async (launch: HcRunRequest) => { const output = await probe(request, launch); rootProbes.set(rootKey(launch), output); return output; };
       const selectApp = async () => {
-        for (const [name, args] of [['layout.switch', { name: 'spider-glass' }], ['app.theme', { name: 'spider-glass' }]] as const) { const reply = await spaces.app.command(name, args); if (reply.error) throw new HerdrError(reply.error.code, reply.error.message); }
+        for (const [name, args] of [['layout.switch', { name: 'spider-glass' }], ['app.theme', { name: 'spider-glass' }]] as const) { const reply = await getSpaces().app.command(name, args); if (reply.error) throw new HerdrError(reply.error.code, reply.error.message); }
       };
       const runSpaces = async (request: SetupRequest, context: SetupContext, selectLook: boolean) => {
+        const spaces = getSpaces();
         const aborter = new AbortController(), abort = () => aborter.abort();
         process.once('SIGINT', abort); process.once('SIGTERM', abort);
         let result;
@@ -728,9 +730,10 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         if (result.conflicts?.length) throw new HerdrError('duplicate-live-session', result.conflicts.map(conflict => duplicateSessionNotice(conflict.sessionId, conflict.terminals)).join('\n'));
         return cutover;
       };
-      return { globalRoot, hc,
-        validateSelections: async () => { await discoverSessions(request.config, spaces); },
+      return { globalRoot, get hc() { return client(request); },
+        validateSelections: async () => { await discoverSessions(request.config, getSpaces()); },
         preflight: async () => {
+          const spaces = getSpaces(), hc = client(request);
           rootProbes.clear();
           // This exported G check is before any backup or asset/config staging.
           await preflightSpaces(request.config, spaces, { adoptExistingSpaces: request.adoptExistingSpaces });
@@ -814,12 +817,13 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         cutover: (request, context) => runSpaces(request, context, true),
         reconcileCutover: (request, context) => runSpaces(request, context, false),
         persistCutover: async request => {
-          const result = await reconcileSpaceJournal(request.config, spaces);
+          const result = await reconcileSpaceJournal(request.config, getSpaces());
           if (!result) throw new HerdrError('cutover-reconciliation-required', 'No confirmed session owners remain');
           return { terminals: result.tabs.map(tab => tab.terminal), identities: Object.fromEntries(result.launched.map(owner => [owner.sessionId, owner.startIdentity])) };
         },
         verify: async request => doctorHerdr(request, { ...await doctorParts(request), probeRuntimeRoot: async (_target, launch) => rootProbes.get(rootKey(launch)) ?? probe(request, launch), cachedNodeObservations: async () => (await readJournal(request.journalRoot)).probes }),
         rollback: async result => {
+          const spaces = getSpaces();
           const recovery = await readCutoverRecovery(spaces.journalRoot, await spaces.layoutSnapshot());
           if (result.terminals.length !== recovery.createdTabs.length || result.terminals.some(address => !recovery.createdTabs.some(tab => tab.terminal === address)) || recovery.entries.some(entry => entry.result && result.identities[entry.target.sessionId] !== entry.result.startIdentity)) throw new HerdrError('cutover-owner-conflict', 'Rollback does not match G-created tab identities');
           const snapshot = await spaces.layoutSnapshot();

@@ -12,6 +12,22 @@ const machine = {
   runtime: { cwd: null, directory: '/runtime', commands: { javascript: ['node'] } },
 };
 
+test('full remains the default', () => {
+  const base = { ...config, machines: [] };
+  expect(parseHerdrConfig(base).mode).toBe('full');
+  expect(parseHerdrConfig({ ...base, mode: 'full' }).app).toEqual(config.app);
+  for (const app of [undefined, null, {}, { binary: 'relative', home: '/app' }]) {
+    expect(() => parseHerdrConfig({ ...base, mode: 'full', app })).toThrow();
+  }
+  expect(() => parseHerdrConfig({ ...base, app: undefined })).toThrow();
+}, 5000);
+
+test('invalid Herdr modes are rejected instead of changing activation mode', () => {
+  for (const mode of ['core', 'FULL', '', null, true]) {
+    expect(() => parseHerdrConfig({ ...config, machines: [], mode })).toThrow();
+  }
+}, 5000);
+
 test('the tab look setting defaults on and accepts a boolean opt-out', () => {
   const base = { ...config, machines: [] };
   expect(parseHerdrConfig(base)).toMatchObject({ look: { autoHideTabs: true } });

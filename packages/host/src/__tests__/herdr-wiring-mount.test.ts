@@ -6,8 +6,10 @@ import { paths, SCHEMA_VERSION } from '@spider/db-core';
 import { LOADED_BUILD } from '../build-id.js';
 import { globalConfigForTest } from '../../../db-core/src/__tests__/global-config.testutil.js';
 import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
+import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { configFixtureCwd } from './herdr-config-fixture.js';
 import { resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { mountedFixture, heldObserverScenario, assertNoNativeNotes, launchScenario, installFixtureRuntime, closePaneScenario } from './herdr-wiring-fixture.js';
 
 afterEach(() => { clearActions(); vi.unstubAllEnvs(); vi.resetModules(); });
@@ -49,8 +51,11 @@ it.each(['exec', 'exec_file', 'batch'])('unavailable child %s uses the disabled-
 
 it('forwards repeated explicit space adoption before the setup preflight', async () => {
   let request: unknown;
+  const root = join(tmpdir(), 'adoption-fixture');
+  const config = parseHerdrConfig({ app: { binary: join(root, 'app'), home: join(root, 'app-home') }, core: { binary: join(root, 'hc'), config: join(root, 'core.toml') },
+    agentDirectory: join(root, 'agent'), globalRoot: root, shellRc: join(root, 'rc'), spaces: [], machines: [] });
   const code = await runHerdrCli(['setup', '--config', resolve('config.json'), '--adopt-existing-space', 'work', '--adopt-existing-space', 'review'], {
-    request: async () => ({}) as never,
+    request: async () => ({ config, configPath: join(root, 'config.json'), packageRoot: root, journalRoot: join(root, 'journal') }),
     setupParts: async value => { request = value; throw new Error('Stop before writes'); },
     doctorParts: async () => { throw new Error('Not doctor'); }, stdout() {}, stderr() {},
   });

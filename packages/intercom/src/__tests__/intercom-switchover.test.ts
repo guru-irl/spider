@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { applyIntercomSwitchover, filesystemSwitchoverPorts } from '../../../../scripts/intercom-switchover.mjs';
+import { applyIntercomSwitchover, filesystemSwitchoverPorts, migrateIntercomSettings } from '../../../../scripts/intercom-switchover.mjs';
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
@@ -66,6 +66,16 @@ it('relative legacy resources are removed in their selected settings scope', asy
   expect(JSON.parse(readFileSync(f.settings, 'utf8'))).toEqual({ packages: [], extensions: [f.old + '/../other/index.ts'], skills: ['./other-skills'] });
   expect(JSON.parse(readFileSync(f.project, 'utf8'))).toEqual({ packages: ['npm:pi-intercom'] });
 }, 5000);
+it('removes git and SSH declarations for the legacy package but keeps lookalikes', () => {
+  const legacy = ['git:github.com/nicobailon/pi-intercom@v0.13.0', 'git:https://github.com/nicobailon/pi-intercom.git',
+    'https://github.com/nicobailon/pi-intercom.git#v0.13.0', 'git@github.com:nicobailon/pi-intercom.git',
+    'git:git@github.com:nicobailon/pi-intercom.git@v0.13.0', 'ssh://git@github.com/nicobailon/pi-intercom.git',
+    'git+ssh://git@github.com/nicobailon/pi-intercom.git'];
+  const other = ['git:github.com/nicobailon/pi-intercom-other', 'git@github.com:nicobailon/pi-intercom-fork.git',
+    'https://github.com/example/pi-intercom.git'];
+  const result = JSON.parse(migrateIntercomSettings(JSON.stringify({ packages: [...legacy, { source: legacy[0] }, ...other] }), []));
+  expect(result.packages).toEqual(other);
+});
 it('old package files remain reconnectable', async () => {
   const f = fixture(); await applyIntercomSwitchover(f.input, f.ports);
   expect(readFileSync(join(f.old, 'index.ts'), 'utf8')).toBe('legacy reconnect fixture');

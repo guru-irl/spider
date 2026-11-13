@@ -27,6 +27,7 @@ export function batchReceipt(db: Db, batch: BatchArtifact): ApplyReceipt | null 
 }
 export interface StoreAdapter extends StorePort {
   openStore: AgentPorts["openStore"];
+  receipt(key: StoreKey, artifact: BatchArtifact): ApplyReceipt | null;
   recoverCatalog(): void;
   origins(): ReadonlyMap<string, ReadonlySet<string>>;
   batchDirectories(): string[];
@@ -130,6 +131,7 @@ export function createStorePort(config: RoamConfig, globalDb: Db, options: { all
   }
   const adapter: StoreAdapter = {
     openStore,
+    receipt(key, artifact) { return batchReceipt(openStore(key).db, artifact); },
     list() {
       registryFingerprint = undefined;
       return listStoreKeys(globalDb, { onProblem: (file, error) => writeLocal(globalDb, "store-problem", file,

@@ -108,7 +108,7 @@ export function createTerminalRegistry(root: string): TerminalRegistry {
 }
 
 interface LockTicket extends ProcessIdentity { version: 1; number: number | null }
-export interface ProcessLockOptions { signal?: AbortSignal; identity?: ProcessIdentity; probe?(pid: number): Promise<ProcessProbe>; timeoutMs?: number }
+export interface ProcessLockOptions { signal?: AbortSignal; identity?: ProcessIdentity; probe?(pid: number, owner?: ProcessIdentity): Promise<ProcessProbe>; timeoutMs?: number }
 const localLocks = new Map<string, Promise<void>>();
 /** Local contenders queue before entering the cross-process bakery lock. */
 export async function withProcessLock<T>(root: string, key: string, operation: () => Promise<T>, options: ProcessLockOptions = {}): Promise<T> {
@@ -147,8 +147,8 @@ async function acquireProcessLock<T>(root: string, key: string, operation: () =>
   const identity = options.identity ?? { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' };
   if (!identity.startIdentity) throw new HerdrError('process-identity-unavailable', 'Cannot acquire a lock without a process start identity');
   const verified = new Map<string, string>();
-  const probe = async (pid: number, file: string): Promise<ProcessProbe> => {
-    if (options.probe) return options.probe(pid);
+  const probe = async (pid: number, file: string, owner: ProcessIdentity): Promise<ProcessProbe> => {
+    if (options.probe) return options.probe(pid, owner);
     try { process.kill(pid, 0); }
     catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? { kind: 'absent' } : { kind: 'unknown' }; }
     // New ticket names always get a fresh foreign identity, even after PID reuse.
@@ -163,7 +163,7 @@ async function acquireProcessLock<T>(root: string, key: string, operation: () =>
     for (const file of await jsonFiles(directory)) {
       const raw = await readPrivateJson(file); if (raw === null) continue; const ticket = raw as LockTicket;
       if (ticket.version !== 1 || !Number.isInteger(ticket.pid) || ticket.pid <= 0 || typeof ticket.startIdentity !== 'string' || !ticket.startIdentity || !(ticket.number === null || Number.isSafeInteger(ticket.number) && ticket.number > 0)) throw new HerdrError('invalid-lock-ticket', 'Lock ticket is malformed');
-      const observed = await probe(ticket.pid, file);
+      const observed = await probe(ticket.pid, file, ticket);
       if (observed.kind === 'absent') {
         // Ticket names are never reused, so reclaiming this absent actor cannot remove a new contender's file.
         await unlink(file).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });

@@ -123,6 +123,26 @@ it("uncertain lock ownership blocks startup and proved absence permits recovery"
   expect((await h.request("status")).code).toBe(0);
 }, 5000);
 
+it("a stale hub ticket with a reused PID is reclaimed without taking over a live owner", async () => {
+  const h = fixture();
+  const directory = join(h.runtimeRoot, "locks", hash("roam-hub")); mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const stale = join(directory, "crashed.json");
+  writeFileSync(stale, JSON.stringify({ version: 1, pid: 67890, startIdentity: "posix:Mon Nov 10 09:00:00 2026", number: 1 }), { mode: 0o600 });
+  const probe = async (pid: number) => ({ kind: "live" as const, startIdentity: pid === 12345 ? "fixture-process" : "posix:Tue Nov 11 08:00:00 2026" });
+  const hub = await runStandaloneHub({ ...h.ports, probe }); handles.push(hub);
+  expect(existsSync(stale)).toBe(false);
+  expect((await h.request("status")).code).toBe(0);
+  await expect(runStandaloneHub({ ...h.ports, probe })).rejects.toThrow(/lock/i);
+}, 5000);
+it("different process identity formats do not prove a hub owner absent", async () => {
+  const h = fixture();
+  const directory = join(h.runtimeRoot, "locks", hash("roam-hub")); mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const stale = join(directory, "uncertain.json");
+  writeFileSync(stale, JSON.stringify({ version: 1, pid: 67890, startIdentity: "posix:old", number: 1 }), { mode: 0o600 });
+  const probe = async (pid: number) => ({ kind: "live" as const, startIdentity: pid === 12345 ? "fixture-process" : "linux:123" });
+  await expect(runStandaloneHub({ ...h.ports, probe })).rejects.toThrow(/uncertain|lock/i);
+  expect(existsSync(stale)).toBe(true);
+}, 5000);
 it("failed socket startup releases the lock and leaves a symlink target untouched", async () => {
   const h = fixture(); const target = join(h.runtimeRoot, "target");
   writeFileSync(target, "untouched"); symlinkSync(target, h.socketPath);

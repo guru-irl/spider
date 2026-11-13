@@ -15,6 +15,8 @@ describe('packed build staging', () => {
   it('stages the npm-packed package under scratch with every entry and digest', () => {
     expect(staged.root.startsWith(join(checkoutRoot(), '.spider/scratch/e2/_pack/'))).toBe(true);
     for (const entry of PACKED_ENTRIES) { expect(existsSync(join(staged.root, entry))).toBe(true); expect(staged.digests[entry]).toMatch(/^[0-9a-f]{64}$/); }
+    expect(staged.roamCli).toBe(join(staged.root, 'dist/roam/cli.mjs'));
+    expect(staged.roamSupervisor).toBe(join(staged.root, 'dist/roam/supervisor.mjs'));
     expect(existsSync(join(staged.root, 'node_modules', '@spider'))).toBe(false);
     expect(existsSync(join(staged.root, 'packages/herdr/src'))).toBe(false);
     // Dependencies resolve through the private clone, never through workspace links.

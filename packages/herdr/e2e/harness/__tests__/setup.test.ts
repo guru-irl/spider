@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile, rm, symlink, readFile, utimes, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createFixtureRoot, ownedPath, fencedDirectories } from '../environment.js';
@@ -26,7 +27,8 @@ async function fixture() {
     root, directories, env, story: id, options: { tier: 'ci', story: id },
     ledger: openLedger(join(root, 'ledgers'), root), cores: null,
     packed: { root: packedRoot, cli: own(join(packedRoot, 'dist/herdr/cli.mjs')), extension: own(join(packedRoot, 'dist/extension.js')), viewer: own(join(packedRoot, 'dist/herdr/viewer.mjs')), remoteRuntime: own(join(packedRoot, 'dist/herdr/remote-runtime.mjs')),
-      digests: { 'dist/extension.js': '0'.repeat(64), 'dist/herdr/cli.mjs': '0'.repeat(64), 'dist/herdr/viewer.mjs': '0'.repeat(64), 'dist/herdr/remote-runtime.mjs': '0'.repeat(64), 'dist/herdr/viewer-pi.mjs': '0'.repeat(64) } },
+      roamCli: own(join(packedRoot, 'dist/roam/cli.mjs')), roamSupervisor: own(join(packedRoot, 'dist/roam/supervisor.mjs')),
+      digests: { 'dist/extension.js': '0'.repeat(64), 'dist/herdr/cli.mjs': '0'.repeat(64), 'dist/herdr/viewer.mjs': '0'.repeat(64), 'dist/herdr/remote-runtime.mjs': '0'.repeat(64), 'dist/herdr/viewer-pi.mjs': '0'.repeat(64), 'dist/roam/cli.mjs': '0'.repeat(64), 'dist/roam/supervisor.mjs': '0'.repeat(64) } },
     pi: { root, bin: own(join(root, 'bin')), launcher: own(join(root, 'bin/pi')), observerDir: own(join(root, 'observer')), scriptPath: own(join(root, 'script.json')), gateSocket: own(join(root, 'gate.sock')), providerPath: join(root, 'provider.mjs'), observerPath: join(root, 'observer.mjs'), env, story: id },
     evidenceDirectory: join(root, 'evidence'), cleanupProofPath: join(root, 'cleanup.json'),
     evidence: unexpected, keepEvidence: unexpected, hc: unexpected, launchPi: unexpected, project: unexpected, gates: unexpected, app: unexpected, close: unexpected,
@@ -44,6 +46,31 @@ async function fixture() {
   return { root, suite, cores, config, calls };
 }
 describe('setup helper boundary', () => {
+  it('binds scenario imports to a private per-run global root instead of an inherited one', async () => {
+    const { root } = await fixture();
+    const setup = new URL('../../setup.ts', import.meta.url).href;
+    const program = `await import(${JSON.stringify(setup)}); console.log(JSON.stringify({root:process.env.SPIDER_GLOBAL_ROOT}));`;
+    for (const inherited of [undefined, join(root, 'inherited')]) {
+      const env: NodeJS.ProcessEnv = { ...process.env, VITEST: '1', SPIDER_HERDR_E2E_RUN_ROOT: root };
+      if (inherited) env.SPIDER_GLOBAL_ROOT = inherited;
+      else delete env.SPIDER_GLOBAL_ROOT;
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e', program],
+        { cwd: process.cwd(), encoding: 'utf8', env, timeout: 3000 });
+      expect(child.status, child.stderr).toBe(0);
+      expect(JSON.parse(child.stdout)).toEqual({ root: join(root, 'vitest-global') });
+    }
+    expect(await readdir(join(root, 'vitest-global'))).toEqual([]);
+  });
+  it('refuses a symlinked per-run global root before scenario imports', async () => {
+    const { root } = await fixture(), target = join(root, 'target');
+    await mkdir(target); await symlink(target, join(root, 'vitest-global'));
+    const setup = new URL('../../setup.ts', import.meta.url).href;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(setup)});`],
+      { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, VITEST: '1', SPIDER_HERDR_E2E_RUN_ROOT: root }, timeout: 3000 });
+    expect(child.status).not.toBe(0);
+    expect(child.stderr).toMatch(/global root/);
+    expect(await readdir(target)).toEqual([]);
+  });
   it('does not signal a PID from a presence artifact without its actual fixture-domain registration', async () => {
     const { suite, root, config } = await fixture();
     const identity = identityOf(process.pid), signals: unknown[] = [], originalKill = process.kill.bind(process);

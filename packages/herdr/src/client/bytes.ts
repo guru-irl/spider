@@ -7,11 +7,12 @@ export async function invokeBytes(
   binary: string,
   argv: readonly string[],
   env: Readonly<NodeJS.ProcessEnv>,
-  options: { timeoutMs: number; maxBytes: number; stdin?: Buffer; signal?: AbortSignal },
+  options: { timeoutMs: number; maxBytes: number; stdin?: Buffer; signal?: AbortSignal; acceptedExitCodes?: readonly number[] },
 ): Promise<Buffer> {
   if (!Number.isSafeInteger(options.maxBytes) || options.maxBytes < 0) {
     throw new HerdrError('invalid-byte-limit', 'Byte limit must be a nonnegative safe integer');
   }
   const input = options.stdin === undefined ? undefined : Buffer.from(options.stdin);
-  return await invokeCli(binary, argv, env, options.maxBytes, input, { timeoutMs: options.timeoutMs, signal: options.signal, raw: true }) as Buffer;
+  return await invokeCli(binary, argv, env, options.maxBytes, input, { timeoutMs: options.timeoutMs, signal: options.signal, raw: true,
+    acceptedExitCodes: options.acceptedExitCodes }) as Buffer;
 }

@@ -11,6 +11,7 @@ import type { AgentPorts, ArtifactManifest, Limits, Operation, Outcome } from ".
 import { createManifestPages, handleArtifactRequest, stageArtifact } from "./artifacts";
 import { isMachineId } from "./machine-id";
 import { listStoreKeys } from "./store-inventory";
+import { recheckWorktree } from "./recheck";
 import { removeOutgoing } from "./stores";
 import { acquireTransferLease, artifactId, defaultStagingRoot, hash, manifestDigest, openOutgoingStaging, openStaging, readPrivate, sourceChunk, StagingFullError } from "./staging";
 import type { StagingStore } from "./staging";
@@ -19,7 +20,7 @@ type ImportRequest = { kind: "import"; key: StoreKey; sourceMachine: string; tra
   artifact: string; sha256: string; header: BatchHeader };
 type ExportRequest = { kind: "export"; key: StoreKey; after: number; targetBytes: number; batchId: string };
 type AssembleRequest = { kind: "assemble"; sourceMachine: string; transferId: string; artifact: string; sha256: string };
-type Request = { kind: "release-export"; exportId: string; sha256: string } | { kind: "stores" } | { kind: "inventory"; key: StoreKey } | { kind: "enable-capture"; key: StoreKey } | ImportRequest | ExportRequest | AssembleRequest
+type Request = { kind: "release-export"; exportId: string; sha256: string } | { kind: "stores" } | { kind: "inventory"; key: StoreKey } | { kind: "enable-capture"; key: StoreKey } | { kind: "recheck-store"; key: StoreKey } | ImportRequest | ExportRequest | AssembleRequest
   | { kind: "split"; artifact: string; digest: string; head: string; pageBytes: number; index: number }
   | { kind: "cursor"; key: StoreKey; sourceMachine: string; stream: string }
   | { kind: "receipt"; key: StoreKey; sourceMachine: string; batchId: string };
@@ -58,10 +59,11 @@ function parseRequest(operation: Operation, ports: AgentPorts): Request {
     return { kind: "release-export", exportId: artifactId(args.exportId), sha256: args.sha256 };
   }
   if (operation.kind === "stores" || operation.kind === "inventory" && Object.keys(args).length === 0) { fields(args, []); return { kind: "stores" }; }
-  if (operation.kind === "inventory" || operation.kind === "enable-capture") {
+  if (operation.kind === "inventory" || operation.kind === "enable-capture" || operation.kind === "recheck-store") {
     fields(args, ["storeKey"]);
     const key = storeKey(args.storeKey);
-    if (operation.kind === "enable-capture" && storeScope(key) === "worktree") throw new Error("Invalid memory store");
+    if (operation.kind === "enable-capture" && storeScope(key) === "worktree" ||
+        operation.kind === "recheck-store" && storeScope(key) !== "worktree") throw new Error("Invalid store scope");
     return { kind: operation.kind, key };
   }
   if (operation.kind === "export") {
@@ -159,6 +161,7 @@ function receiptValue(value: ApplyReceipt): JsonObject {
 }
 function successBound(operation: Operation, request: Request, ports: AgentPorts): JsonObject | null {
   if (request.kind === "enable-capture") return { storeKey: request.key, enabled: true };
+  if (request.kind === "recheck-store") return { storeKey: request.key, valid: true };
   if (request.kind === "assemble") return { artifactId: request.artifact, sha256: request.sha256, byteLength: Number.MAX_SAFE_INTEGER };
   if (request.kind === "import") return { batchId: request.header.batchId, stream: request.header.senderStream,
     through: request.header.through, sha256: request.sha256, applyMs: Number.MAX_VALUE };
@@ -398,8 +401,8 @@ async function importBatch(operation: Operation, request: ImportRequest, ports: 
 }
 
 /** Production callers share the default staging root. Tests may inject an isolated root. */
-export function createAgentPorts(ports: Omit<AgentPorts, "root">): AgentPorts {
-  return { ...ports, root: defaultStagingRoot() };
+export function createAgentPorts(ports: Omit<AgentPorts, "root"> & { root?: string }): AgentPorts {
+  return { ...ports, root: ports.root ?? defaultStagingRoot() };
 }
 
 function artifactFailure(ports: AgentPorts, code: 1 | 2 | 3, reason: string): Buffer {
@@ -527,12 +530,18 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
       ports.journal.record(id, "done", { value: { released: request.exportId, sha256: request.sha256 } });
       return outcome(0, "complete", id, { released: request.exportId, sha256: request.sha256 });
     }
-    if (request.kind === "stores") value = { protocol: 1, schema: 14, machineId: ports.config.machineId,
-      stores: listStoreKeys(openStore(ports, "global").db) };
-    else if (request.kind === "inventory") value = inventory(ports, request.key);
+    if (request.kind === "stores") {
+      let incomplete = false;
+      const stores = listStoreKeys(openStore(ports, "global", true).db, { onIncomplete: () => { incomplete = true; } });
+      if (incomplete) throw new Error("Store inventory is incomplete");
+      value = { protocol: 1, schema: 14, machineId: ports.config.machineId, stores };
+    } else if (request.kind === "inventory") value = inventory(ports, request.key);
     else if (request.kind === "enable-capture") {
       enableMemoryCapture(openStore(ports, request.key, true).db, request.key);
       value = { storeKey: request.key, enabled: true };
+    } else if (request.kind === "recheck-store") {
+      recheckWorktree(openStore(ports, request.key).db);
+      value = { storeKey: request.key, valid: true };
     } else if (request.kind === "export") value = await exportValue(operation, request, ports);
     else if (request.kind === "split") value = splitValue(ports, request);
     else if (request.kind === "assemble") {

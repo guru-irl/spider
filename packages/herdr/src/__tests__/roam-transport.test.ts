@@ -25,6 +25,16 @@ test('workspace transport subpaths resolve in bundled fixtures', async () => {
   expect(inputs.some(path => path.endsWith('/packages/herdr/src/client/argv-client.ts'))).toBe(true);
 }, 5000);
 
+test('roaming transport refuses an implicit default core before any invocation', async () => {
+  const fixture = await createClientFixture();
+  try {
+    const env = { ...fixture.localEnv };
+    delete env.HC_SOCKET; delete env.HC_TERMINAL_SOCKET; delete env.HC_SESSION; delete env.XDG_STATE_HOME; delete env.XDG_RUNTIME_DIR;
+    expect(() => createTransport({ binary: fixture.hcBinary, env, enrolled: [peer] })).toThrow(/Tests must use a socket/);
+    expect(await fixture.calls()).toEqual([]);
+  } finally { await fixture.close(); }
+}, 5000);
+
 test('binary read never passes through JSON or UTF8', async () => {
   const fixture = await createClientFixture();
   try {
@@ -300,6 +310,22 @@ test('resolves one machine identity per transfer', async () => {
   } finally {
     await fixture.close();
   }
+}, 5000);
+
+test('agent refusal retains its bounded JSON reply and the enrolled root without treating other failures as success', async () => {
+  const fixture = await createClientFixture();
+  try {
+    const reply = Buffer.from(JSON.stringify({ code: 1, operationId: 'refused', reason: 'unsafe' }));
+    await fixture.configure({ machines: [machine], roamFixture: { execReplyBase64: reply.toString('base64'), execExitCode: 1 } });
+    await fixture.writeRoamFile(peer.alias, identityPath, Buffer.from(JSON.stringify({ machineId: peer.machineId })));
+    const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
+    const resolved = await transport.resolve(peer);
+    expect(await transport.exec(resolved, ['roam', 'agent', '{}'], { timeoutMs: 1000, maxBytes: 1024 })).toEqual(reply);
+    const call = (await fixture.calls()).find(entry => entry.argv.includes('agent'));
+    expect(call?.argv).toEqual(['exec', '--on', peer.alias, '--timeout', '1', '--', peer.node, peer.cli,
+      '--global-root', peer.globalRoot, 'roam', 'agent', '{}']);
+    await expect(transport.exec(resolved, ['inspect'], { timeoutMs: 1000, maxBytes: 1024 })).rejects.toMatchObject({ code: 'cli-exit' });
+  } finally { await fixture.close(); }
 }, 5000);
 
 test('file control export and import use their distinct native deadlines', async () => {

@@ -62,6 +62,10 @@ it("help opens no DB and makes no hc call", async () => {
   expect(openedDbs).toBe(0);
   expect(hcCalls).toEqual([]);
   expect(output.out.join("")).toMatch(/usage:/i);
+  expect(output.out.join("")).toMatch(/0.*complete/i);
+  expect(output.out.join("")).toMatch(/1.*refus/i);
+  expect(output.out.join("")).toMatch(/2.*invalid/i);
+  expect(output.out.join("")).toMatch(/3.*durable pending/i);
   expect(output.err).toEqual([]);
   expect(existsSync(join(root, "global"))).toBe(false);
 }, 5000);
@@ -247,7 +251,7 @@ it("workspace dependencies and lock metadata resolve the roaming package", () =>
   const workspace = JSON.parse(readFileSync("packages/roam/package.json", "utf8"));
   const host = JSON.parse(readFileSync("packages/host/package.json", "utf8"));
   const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
-  expect(workspace.dependencies).toEqual({ "@spider/db-core": "0.0.0", "@spider/herdr": "0.0.0" });
+  expect(workspace.dependencies).toEqual({ "@spider/db-core": "0.0.0", "@spider/herdr": "0.0.0", "@spider/memory": "0.0.0" });
   expect(host.dependencies["@spider/roam"]).toBe("0.0.0");
   expect(lock.packages["node_modules/@spider/roam"]).toEqual({ resolved: "packages/roam", link: true });
   expect(lock.packages["packages/roam"]).toMatchObject({ name: "@spider/roam", version: "0.0.0", dependencies: workspace.dependencies });

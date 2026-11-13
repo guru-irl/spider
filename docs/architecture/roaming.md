@@ -1,8 +1,8 @@
 # Roaming replication
 
-Roaming is disabled by default. Phase 1 provides local replication and safety
-checks, not a sync service, remote scheduling, or remote hosting. Production
-replication and hosting stay disabled until phase 4 acceptance succeeds.
+Roaming is disabled by default. Phase 2 packages the hub and sync transport for
+isolated testing; remote hosting is not yet available. Production replication
+and hosting stay disabled until phase 4 acceptance succeeds.
 
 ## Portable and local state
 
@@ -36,9 +36,26 @@ refuses migration if the backup fails.
 
 Deploy schema and guard-compatible consumers with roaming disabled. Before
 replication is enabled, reload every consumer, including detached usage workers.
-The planned enable check must refuse older or unmarked live top-level builds.
-Keep hosting disabled until the full phase 4 acceptance gate passes. Interrupted
+The enable check refuses older or unmarked live top-level builds. Keep hosting
+disabled until the full phase 4 acceptance gate passes. Interrupted
 rollout must retain the admission and origin guards.
+
+## Shell command
+
+The installed `spider roam` command provides status, doctor, sync, enable,
+disable, repository mapping, and memory tagging. For a machine alias starting
+with a dash, use `spider roam sync -- <alias>` or
+`spider roam sync --machine <alias>`; doctor supports the same forms. On a box,
+only local status, doctor, and repository mapping run locally. Other public
+controls direct the user to the Mac. Future hosting and move commands remain
+unavailable.
+
+Enable refuses while a usage worker is starting or being replaced; retry after
+it settles. If the hub socket is unavailable, disable requires the hub lock and
+a journal proving no home change is pending. A missing journal is unknown.
+
+Exit code `0` means complete, `1` means refused, `2` means invalid arguments,
+and `3` means durable pending work or reconciliation is needed.
 
 ## Diagnosed duplicate todos
 

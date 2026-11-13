@@ -79,6 +79,7 @@ if (config.rawReplyBase64 !== undefined) {
   } else output = Buffer.from(config.roamFixture.execReplyBase64 ?? '', 'base64');
   if (restart?.when === 'during') { process.stdout.write(output.subarray(0, 1)); restartCore(on, 'exec', 'during'); process.stdout.write(output.subarray(1)); }
   else process.stdout.write(output);
+  if (command[0] !== 'cat' && config.roamFixture.execExitCode) process.exitCode = config.roamFixture.execExitCode;
 } else if (argv[0] === 'server' && argv[1] === 'status') {
   console.log(JSON.stringify({ core: { id: config.coreId, name: 'fixture' }, version: '0.1.16', pid: process.pid }));
 } else if (argv[0] === 'get') {

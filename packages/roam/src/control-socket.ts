@@ -1,4 +1,4 @@
-import { chmodSync, lstatSync, unlinkSync } from "node:fs";
+import { chmodSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
@@ -87,13 +87,20 @@ export async function startHubControl(file: string, handler: (request: HubContro
   } };
 }
 
-export async function requestHubControl(file: string, request: HubControlRequest): Promise<HubControlReply> {
+export async function requestHubControl(file: string, request: HubControlRequest, options: { timeoutMs?: number } = {}): Promise<HubControlReply> {
+  const timeoutMs = options.timeoutMs ?? DEADLINE;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > DEADLINE) throw new Error("Invalid control deadline");
   const path = socketPath(file), encoded = Buffer.from(JSON.stringify(request) + "\n");
   if (encoded.length > MAX_REQUEST || !parseRequest(encoded.subarray(0, -1))) throw new Error("Invalid control request");
+  const parent = lstatSync(dirname(path)), socket = lstatSync(path), uid = process.getuid?.();
+  if (!parent.isDirectory() || parent.isSymbolicLink() || realpathSync(dirname(path)) !== dirname(path) ||
+      !socket.isSocket() || socket.isSymbolicLink() || uid !== undefined && (parent.uid !== uid || socket.uid !== uid) ||
+      process.platform !== "win32" && ((parent.mode & 0o7777) !== 0o700 || (socket.mode & 0o7777) !== 0o600))
+    throw new Error("Unsafe or nonprivate control socket");
   return new Promise((done, reject) => {
     const socket = createConnection(path); let input = Buffer.alloc(0), finished = false;
     const fail = (error: Error) => { if (!finished) { finished = true; socket.destroy(); reject(error); } };
-    socket.setTimeout(DEADLINE, () => fail(new Error("Hub control timed out")));
+    socket.setTimeout(timeoutMs, () => fail(new Error("Hub control timed out")));
     socket.on("error", fail);
     socket.on("connect", () => socket.write(encoded));
     socket.on("data", bytes => { input = Buffer.concat([input, bytes]); if (input.length > MAX_REPLY) fail(new Error("Hub control reply is too large")); });

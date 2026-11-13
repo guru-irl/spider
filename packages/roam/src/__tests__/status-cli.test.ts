@@ -163,6 +163,25 @@ it("does not report a complete inventory when a mapped store is unavailable", as
   } finally { global.close(); }
 }, 5000);
 
+it("status and doctor show the cached broken peer without contacting it", async () => {
+  const root = fixture(); configure(root); const global = openDb(join(root, "spider.db"));
+  try {
+    migrate(global, "global", { machineId: HUB, globalRoot: root });
+    writeLocal(global, "sync-peer", BOX, { observation: { machineId: BOX, observedAt: Date.now() - 10,
+      connected: null, lastSyncAt: null, cursors: [], failure: "Peer command failed (spawn_failed)" } });
+    const out: string[] = [], err: string[] = [], io = { out: (text: string) => out.push(text), err: (text: string) => err.push(text) };
+    expect(await main(["roam", "status", "--json"], io)).toBe(0);
+    expect(JSON.parse(out.join("")).peers[0]).toMatchObject({ failure: "Peer command failed (spawn_failed)" });
+    out.length = 0;
+    expect(await main(["roam", "status"], io)).toBe(0);
+    expect(out.join("")).toContain("spawn_failed");
+    out.length = 0;
+    expect(await main(["roam", "doctor"], io)).toBe(1);
+    expect(out.join("")).toContain("spawn_failed");
+    expect(err).toEqual([]);
+  } finally { global.close(); }
+}, 5000);
+
 it("does not present malformed cached observations as a healthy connection", async () => {
   const root = fixture(); configure(root); const global = openDb(join(root, "spider.db"));
   try {

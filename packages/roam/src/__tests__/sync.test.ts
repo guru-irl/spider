@@ -13,6 +13,7 @@ import { exportBatch } from "@spider/db-core/roam/export";
 import { assignInitialHome } from "../homes";
 import { addTodo } from "../../../todo/src/store";
 import * as staging from "../staging";
+import { HerdrError } from "../../../herdr/src/client/parse";
 import { network, HUB, BOX, BOX2, BOX3 } from "./sync-fixture";
 const fixtures: ReturnType<typeof network>[] = [];
 afterEach(() => { vi.restoreAllMocks(); for (const f of fixtures.splice(0)) f.close(); });
@@ -66,6 +67,38 @@ it("caches observed peer cursors and last sync without inventing connectivity af
   expect((await sync.sync(BOX)).some(row => row.code === 3)).toBe(true);
   const failed = readLocal<Cached>(f.global.db, "sync-peer", BOX)?.observation;
   expect(failed).toMatchObject({ connected: null, lastSyncAt: f.clock.now(), cursors: [] });
+}, 5000);
+
+it.each([
+  ["spawn_failed", "Peer command failed (spawn_failed)"],
+  ["cli-exit", "Peer command failed (exit 1)"],
+])("sync reports a broken peer %s and clears it after recovery", async (kind, reason) => {
+  const f = fixture();
+  f.hook(() => { throw new HerdrError(kind, "private fixture value", { exitCode: 1, stderr: "private fixture value" }); });
+  const sync = service(f);
+  expect(await sync.sync(BOX)).toMatchObject([{ code: 1, reason }]);
+  expect(peerState.loadPeerState(f.global.db, BOX, f.config.limits.targetBatchBytes).observation).toMatchObject({ failure: reason });
+  f.hook(null);
+  expect((await sync.sync(BOX)).every(row => row.code === 0)).toBe(true);
+  expect(peerState.loadPeerState(f.global.db, BOX, f.config.limits.targetBatchBytes).observation).toMatchObject({ failure: null });
+}, 5000);
+
+it.each(["push", "pull"] as const)("sync retains a broken peer diagnosis during artifact %s", async direction => {
+  const f = fixture();
+  if (direction === "push") {
+    f.global.db.prepare("INSERT INTO global_memory(uuid,category,content,created_at) VALUES ('memory-a','insight','portable',1)").run();
+    const exec = f.transport.exec.bind(f.transport);
+    vi.spyOn(f.transport, "exec").mockImplementation(async (peer, argv, options) => {
+      if (argv[1] === "artifact") throw new HerdrError("spawn_failed", "private", { exitCode: 3 });
+      return exec(peer, argv, options);
+    });
+  } else {
+    f.seed();
+    vi.spyOn(f.transport, "read").mockRejectedValue(new HerdrError("spawn_failed", "private", { exitCode: 3 }));
+  }
+  const reason = "Peer command failed (spawn_failed)";
+  expect(await service(f).sync(BOX)).toContainEqual(expect.objectContaining({ code: 1, reason }));
+  expect(peerState.loadPeerState(f.global.db, BOX, f.config.limits.targetBatchBytes).observation).toMatchObject({ failure: reason });
 }, 5000);
 
 it("stopping waits for active peer work before stores may be closed", async () => {

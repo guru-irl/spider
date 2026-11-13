@@ -14,6 +14,7 @@ import { listStoreKeys } from "./store-inventory";
 import { createStorePort } from "./stores";
 import { loadHerdrConfig, startProductionHub } from "./production-hub";
 import { createTransport } from "./transport";
+import { isPeerFailureReason, peerFailureReason } from "./peer-errors";
 import { remoteDoctor } from "./remote-observations";
 import { disableRoaming, enableRoaming } from "./production-controls";
 
@@ -204,7 +205,10 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
     if (argv[2] !== undefined && !peer) { io.err("Machine is not enrolled.\n"); return 2; }
     try {
       const reply = await requestHubControl(join(root, "roam", "hub.sock"), peer ? { op: "sync", machine: peer.machineId } : { op: "sync" });
-      (reply.code === 0 ? io.out : io.err)(`${clean(reply.reason)}\n`);
+      const outcomes = Array.isArray(reply.value?.outcomes) ? reply.value.outcomes : [];
+      const failure = outcomes.map(value => value && typeof value === "object" && !Array.isArray(value) && value.code === 1 &&
+        isPeerFailureReason(value.reason) ? value.reason : null).find(Boolean);
+      (reply.code === 0 ? io.out : io.err)(`${clean(failure ? `${reply.reason}. ${failure}` : reply.reason)}\n`);
       return reply.code;
     } catch { io.err("The roaming hub is unavailable.\n"); return 1; }
   }
@@ -218,7 +222,7 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
         io.out(`Roaming is ${status.enabled ? "enabled" : "disabled"}. Status is cached${status.complete ? "" : " and incomplete or unavailable"}.\n`);
         for (const home of status.homes) io.out(`Home ${clean(home.sessionId)}: ${clean(home.machineId)} (epoch ${home.epoch}).\n`);
         for (const session of status.homeConflicts) io.out(`Home conflict: ${clean(session)}.\n`);
-        for (const peer of status.peers) io.out(`Peer ${clean(peer.alias)}: ${peer.connected === null ? "connection unknown" : peer.connected ? "connected" : "disconnected"}; last sync ${timestamp(peer.lastSyncAt)}; observation age ${number(peer.observationAgeMs)} ms; backlog ${number(peer.backlog)}.\n`);
+        for (const peer of status.peers) io.out(`Peer ${clean(peer.alias)}: ${peer.connected === null ? "connection unknown" : peer.connected ? "connected" : "disconnected"}; last sync ${timestamp(peer.lastSyncAt)}; observation age ${number(peer.observationAgeMs)} ms; backlog ${number(peer.backlog)}${peer.failure ? `; ${clean(peer.failure)}` : ""}.\n`);
         for (const store of status.stores) {
           io.out(`Store ${clean(store.key)}: head ${store.head}, ${store.changes} changes, log ${number(store.logBytes)} bytes, versions ${number(store.versionBytes)} bytes, ${store.tombstones} tombstones.\n`);
           for (const cursor of store.cursors) io.out(`  Cursor ${clean(cursor.machineId)} / ${clean(cursor.stream)}: ${cursor.through}.\n`);
@@ -252,8 +256,9 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
       for (const consumer of report.consumers) io.out(`${clean(consumer.machine)}: ${consumer.kind} PID ${consumer.pid} loaded build ${clean(consumer.build)}${consumer.roamSchema === null ? "" : `, roaming schema ${consumer.roamSchema}`}.\n`);
       for (const diagnostic of report.diagnostics) io.out(`${clean(diagnostic.reason)}\n`);
       return report.diagnostics.some(diagnostic => diagnostic.severity === "block") ? 1 : 0;
-    } catch {
-      io.err(argv.length > 2 ? "Remote doctor is unavailable. No data was changed.\n" : "Cannot inspect local roaming state. No data was changed.\n");
+    } catch (error) {
+      const failure = argv.length > 2 ? peerFailureReason(error) : null;
+      io.err(failure ? `${failure}. No data was changed.\n` : argv.length > 2 ? "Remote doctor is unavailable. No data was changed.\n" : "Cannot inspect local roaming state. No data was changed.\n");
       return 1;
     }
   }

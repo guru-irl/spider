@@ -110,7 +110,11 @@ export function readMachineIdentity(globalRoot: string, options: MachineIdentity
   return readIdentity(join(directory, "machine.json"), options);
 }
 
-export function loadMachineIdentity(globalRoot: string, options: MachineIdentityOptions = {}): MachineId {
+function ensureMachineIdentity(globalRoot: string, options: MachineIdentityOptions, requested: MachineId | null): MachineId {
+  const match = (id: MachineId): MachineId => {
+    if (requested !== null && id !== requested) throw Object.assign(new Error("The existing machine identity differs from enrollment"), { code: "machine-mismatch" });
+    return id;
+  };
   try { mkdirSync(globalRoot, { recursive: true, mode: 0o700 }); }
   catch (error) { throwPathError(globalRoot, error); }
   const root = resolveRoot(globalRoot);
@@ -123,7 +127,7 @@ export function loadMachineIdentity(globalRoot: string, options: MachineIdentity
   syncDirectory(root, options);
   const file = join(directory, "machine.json");
   try {
-    const id = readIdentity(file, options);
+    const id = match(readIdentity(file, options));
     cleanStaleTemps(directory, options);
     return id;
   } catch (error) {
@@ -141,7 +145,7 @@ export function loadMachineIdentity(globalRoot: string, options: MachineIdentity
       checkOwner(temporary, stat, options);
       if (!stat.isFile()) throw refuse(temporary, "Unsafe machine identity file", "Fix the file type");
       if (!isWindows(options) && (stat.mode & 0o7777) !== 0o600) fchmodSync(fd, 0o600);
-      writeFileSync(fd, `${JSON.stringify({ machineId: randomUUID() })}\n`);
+      writeFileSync(fd, `${JSON.stringify({ machineId: requested ?? randomUUID() })}\n`);
       fsyncSync(fd);
     } finally { closeSync(fd); }
     try { linkSync(temporary, file); } catch (error) {
@@ -154,10 +158,22 @@ export function loadMachineIdentity(globalRoot: string, options: MachineIdentity
       } else if ((error as NodeJS.ErrnoException).code !== "EEXIST") throwPathError(file, error);
     }
     syncDirectory(directory, options);
-    const id = readIdentity(file, options);
+    const id = match(readIdentity(file, options));
     cleanStaleTemps(directory, options);
     return id;
   } finally {
     try { unlinkSync(temporary); } catch { /* cleanup is best effort */ }
   }
+}
+
+export function loadMachineIdentity(globalRoot: string, options: MachineIdentityOptions = {}): MachineId {
+  return ensureMachineIdentity(globalRoot, options, null);
+}
+
+/** Publish an enrolled identity without replacing a different identity. */
+export function claimMachineIdentity(globalRoot: string, machineId: MachineId, options: MachineIdentityOptions = {}): MachineId {
+  if (typeof machineId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(machineId)) {
+    throw new Error("Invalid requested machine identity");
+  }
+  return ensureMachineIdentity(globalRoot, options, machineId);
 }

@@ -4,11 +4,14 @@ import { invokeCli, machineAliases } from '@spider/herdr/client/hc';
 import type { CliRequestOptions } from '@spider/herdr/client/cli-transport';
 import { HerdrError, object, parseCore, selectedSocket, text } from '@spider/herdr/client/parse';
 import { DEFAULT_LIMITS } from './contracts';
-import { BOOTSTRAP_SCRIPT } from './bootstrap-script';
+import { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_IDENTITY_SCRIPT, BOOTSTRAP_SCRIPT } from './bootstrap-script';
+import { PROVISION_REMOTE_SCRIPT } from './provision-remote-script';
+import { isMachineId } from './machine-id';
 import { normalizeConfiguredClis, normalizeCoreUnit, parseBootstrapInventory, sanitizeBootstrapError } from './bootstrap-reply';
-import type { BootstrapPeer, CallOptions, Peer, Transport } from './contracts';
+import type { BootstrapPeer, CallOptions, Journal, Peer, Transport } from './contracts';
+import type { AgentDirectoryProbe, CoreFence } from './provision-contracts';
 
-interface CoreObservation { local: string; remote: string }
+type CoreObservation = CoreFence;
 interface Resolved { peer: Peer; core: CoreObservation; invalidated?: 'core-changed' | 'peer-invalidated' }
 type Route = { kind: 'enrolled'; peer: Peer } | { kind: 'bootstrap'; peer: BootstrapPeer };
 
@@ -25,6 +28,12 @@ function observationFailure(error: unknown): unknown {
 }
 function sameCore(a: CoreObservation, b: CoreObservation): boolean {
   return a.local === b.local && a.remote === b.remote;
+}
+function validCore(value: unknown): value is CoreObservation {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const core = value as Record<string, unknown>;
+  return Object.keys(core).length === 2 && ['local', 'remote'].every(key => typeof core[key] === 'string' &&
+    (core[key] as string).length > 0 && (core[key] as string).length <= 4096 && !/[\u0000-\u001f\u007f]/.test(core[key] as string));
 }
 function samePeer(a: Peer, b: Peer): boolean {
   return a.machineId === b.machineId && a.alias === b.alias && a.node === b.node && a.pi === b.pi &&
@@ -54,13 +63,23 @@ function deadline(value: number): void {
   }
 }
 
-export function createTransport(options: { binary: string; env: Readonly<NodeJS.ProcessEnv>; enrolled: readonly Peer[] }): Transport {
+interface TransportOptions { binary: string; env: Readonly<NodeJS.ProcessEnv>; enrolled: readonly Peer[] }
+export interface ProvisionTransport {
+  transport: Transport;
+  probeAgentDirectory(peer: Peer, home: string): Promise<AgentDirectoryProbe>;
+  claimIdentity(peer: Peer, operationId: string, core: CoreFence): Promise<{ machineId: string; coreId: string }>;
+  executeProvision(peer: Peer, request: Record<string, unknown>): Promise<unknown>;
+  launchRelease(peer: Peer, operationId: string, requestFile: string): Promise<{ terminal: string }>;
+}
+
+function transportPorts(options: TransportOptions, journal?: Journal): ProvisionTransport {
   const binary = options.binary;
   const client = createArgvClient({ binary, env: options.env });
   const env = Object.freeze({ ...options.env, HC_SOCKET: selectedSocket(options.env) });
   const enrolled = options.enrolled;
   const current = new Map<string, Resolved>();
   const handles = new WeakMap<Peer, Resolved>();
+  const provisionCores = new Map<string, CoreObservation>();
 
   async function observe(alias: string, signal: AbortSignal): Promise<CoreObservation> {
     const call = { timeoutMs: DEFAULT_LIMITS.controlMs, signal };
@@ -99,7 +118,7 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
   }
 
   async function bracket<T>(route: Route, expected: Resolved | undefined, timeoutMs: number,
-    call: (signal: AbortSignal, remainingMs: number) => Promise<T>): Promise<{ value: T; core: CoreObservation }> {
+    call: (signal: AbortSignal, remainingMs: number, core: CoreObservation) => Promise<T>): Promise<{ value: T; core: CoreObservation }> {
     const alias = route.peer.alias;
     const observed = expected ?? current.get(alias);
     const requireEnrollment = () => {
@@ -131,7 +150,7 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       let value: T | undefined;
       let failure: unknown;
       let failed = false;
-      try { value = await call(aborter.signal, remaining()); }
+      try { value = await call(aborter.signal, remaining(), before); }
       catch (error) { failed = true; failure = error; }
       let after: CoreObservation;
       try { after = await observe(alias, aborter.signal); }
@@ -150,13 +169,16 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
     } finally { clearTimeout(timer); }
   }
 
-  return {
+  const transport: Transport = {
     async resolve(peer) {
       const configured = Object.freeze({ ...enrollment(peer) });
       const previous = current.get(configured.alias);
       const file = posix.join(configured.globalRoot, 'roam', 'machine.json');
-      const observation = await bracket({ kind: 'enrolled', peer: configured }, undefined, DEFAULT_LIMITS.fileMs, (signal, remainingMs) =>
-        client.exec(configured.alias, ['cat', '--', file], { timeoutMs: remainingMs, maxBytes: DEFAULT_LIMITS.replyBytes, signal }))
+      const pinned = provisionCores.get(configured.alias);
+      const observation = await bracket({ kind: 'enrolled', peer: configured }, undefined, DEFAULT_LIMITS.fileMs, (signal, remainingMs, core) => {
+        if (pinned && !sameCore(core, pinned)) throw coreChanged();
+        return client.exec(configured.alias, ['cat', '--', file], { timeoutMs: remainingMs, maxBytes: DEFAULT_LIMITS.replyBytes, signal });
+      })
         .catch(error => { invalidate(configured.alias, previous); throw error; });
       let machineId: unknown;
       try { machineId = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(observation.value))).machineId; }
@@ -183,12 +205,18 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new HerdrError('invalid-byte-limit', 'A positive bootstrap reply limit is required');
       const checks = normalizeConfiguredClis(options?.configuredClis);
       const coreUnit = normalizeCoreUnit(options?.coreUnit);
+      if (options?.expectedCore !== undefined && !validCore(options.expectedCore)) throw new HerdrError('invalid-bootstrap-request', 'Invalid bootstrap probe request');
+      const pinned = provisionCores.get(target.alias);
+      if (pinned && options?.expectedCore && !sameCore(pinned, options.expectedCore)) throw coreChanged();
+      const expectedCore = options?.expectedCore ? { ...options.expectedCore } : pinned;
       const stdin = Buffer.from(JSON.stringify({ pi: target.pi, cli: target.cli, globalRoot: target.globalRoot, coreUnit,
         checks: checks.map(({ executable, authFile }) => ({ executable, authFile })) }));
       if (stdin.length > 300_000) throw new HerdrError('invalid-bootstrap-request', 'Invalid bootstrap probe request');
-      const result = await bracket({ kind: 'bootstrap', peer: target }, undefined, timeoutMs, (signal, remainingMs) =>
-        client.exec(target.alias, [target.node, '-e', BOOTSTRAP_SCRIPT],
-          { timeoutMs: remainingMs, maxBytes: Math.min(maxBytes, 64 * 1024), stdin, signal }))
+      const result = await bracket({ kind: 'bootstrap', peer: target }, undefined, timeoutMs, (signal, remainingMs, core) => {
+        if (expectedCore && !sameCore(core, expectedCore)) throw coreChanged();
+        return client.exec(target.alias, [target.node, '-e', BOOTSTRAP_SCRIPT],
+          { timeoutMs: remainingMs, maxBytes: Math.min(maxBytes, 64 * 1024), stdin, signal });
+      })
         .catch(error => { throw sanitizeBootstrapError(error); });
       return parseBootstrapInventory(result.value, target, checks.length, coreUnit);
     },
@@ -227,4 +255,203 @@ export function createTransport(options: { binary: string; env: Readonly<NodeJS.
       });
     },
   };
+
+  return {
+    transport,
+    async launchRelease(peer, operationId, requestFile) {
+      const state = resolved(peer);
+      if (typeof operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operationId) ||
+          requestFile !== posix.join(state.peer.globalRoot, 'roam', 'provision', operationId, 'release-request')) {
+        throw new HerdrError('invalid-provision-request', 'Invalid provisioning request');
+      }
+      const approved = journal?.read(operationId).some(({ action, result }) => action === 'provision-consent' && result.approved === true &&
+        result.target === state.peer.alias && result.machineId === state.peer.machineId);
+      if (!approved) throw new HerdrError('consent-required', 'Provisioning consent must be recorded before installation');
+      try {
+        return (await bracket({ kind: 'enrolled', peer: state.peer }, state, DEFAULT_LIMITS.launchMs, signal =>
+          client.run(state.peer.alias, [state.peer.node, '--input-type=module-typescript', '-e', PROVISION_REMOTE_SCRIPT, requestFile],
+            { 'spider.operation': operationId, 'spider.machine': state.peer.machineId }, { signal }))).value;
+      } catch (error) {
+        const allowed = new Set(['core-changed', 'core-unavailable', 'machine-not-found', 'machine-ambiguous', 'machine-not-enrolled',
+          'peer-invalidated', 'cli-timeout', 'cli-aborted', 'cli-exit', 'missing-hc', 'spawn-error', 'reply-too-large']);
+        const candidate = error instanceof HerdrError ? error.code : '';
+        const safe = new HerdrError(allowed.has(candidate) ? candidate : 'release-launch-uncertain', 'Release launch needs reconciliation');
+        if (error && typeof error === 'object' && 'retryable' in error && error.retryable === true) Object.assign(safe, { retryable: true });
+        throw safe;
+      }
+    },
+    async executeProvision(peer, request) {
+      const state = resolved(peer);
+      const actions = new Set(['prepare', 'secret-chunk', 'cleanup', 'install-files', 'auth-install', 'release-prepare', 'release-observe', 'unit-write', 'systemctl', 'switchover', 'verify', 'clear-secrets']);
+      if (!request || typeof request !== 'object' || typeof request.action !== 'string' || !actions.has(request.action) ||
+          typeof request.operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(request.operationId) ||
+          request.machineId !== state.peer.machineId || request.globalRoot !== state.peer.globalRoot || request.node !== state.peer.node ||
+          request.pi !== state.peer.pi || request.cli !== state.peer.cli) throw new HerdrError('invalid-provision-request', 'Invalid provisioning request');
+      const consent = journal?.read(request.operationId).find(({ action, result }) => action === 'provision-consent' &&
+        result.approved === true && result.target === state.peer.alias && result.machineId === state.peer.machineId);
+      if (!consent) throw new HerdrError('consent-required', 'Provisioning consent must be recorded before installation');
+      if (request.action === 'auth-install' && (!Array.isArray(request.providers) || !Array.isArray(consent.result.providers) ||
+          request.providers.some(provider => typeof provider !== 'string' || !(consent.result.providers as unknown[]).includes(provider)))) {
+        throw new HerdrError('consent-required', 'Authentication providers must be confirmed before installation');
+      }
+      const timeout = DEFAULT_LIMITS.controlMs;
+      let result: { value: Buffer; core: CoreObservation };
+      try {
+        result = await bracket({ kind: 'enrolled', peer: state.peer }, state, timeout, async (signal, remainingMs, core) => {
+          let stdin: Buffer;
+          try { stdin = Buffer.from(JSON.stringify({ ...request, core: state.peer.core, coreId: core.remote })); }
+          catch { throw new HerdrError('invalid-provision-request', 'Invalid provisioning request'); }
+          try {
+            if (stdin.length > 2 * 1024 * 1024) throw new HerdrError('invalid-provision-request', 'Provisioning request is too large');
+            return await client.exec(state.peer.alias, [state.peer.node, '--input-type=module-typescript', '-e', PROVISION_REMOTE_SCRIPT],
+              { timeoutMs: remainingMs, maxBytes: 64 * 1024, stdin, signal });
+          } finally { stdin.fill(0); }
+        });
+      } catch (error) {
+        const allowed = new Set(['core-changed', 'core-unavailable', 'machine-not-found', 'machine-ambiguous', 'machine-not-enrolled',
+          'peer-invalidated', 'cli-timeout', 'cli-aborted', 'cli-exit', 'stdin-error', 'missing-hc', 'spawn-error', 'reply-too-large', 'invalid-provision-request']);
+        const candidate = error instanceof HerdrError ? error.code : '';
+        const safe = new HerdrError(allowed.has(candidate) ? candidate : 'provision-transport-failed', 'Provisioning transport failed');
+        if (error && typeof error === 'object' && 'retryable' in error && error.retryable === true) Object.assign(safe, { retryable: true });
+        throw safe;
+      }
+      let reply: Record<string, unknown>;
+      try { reply = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(result.value))); }
+      catch { throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply'); }
+      if (reply.kind !== 'provision' || reply.version !== 1 || Object.keys(reply).length !== 3) {
+        throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+      }
+      if (Object.hasOwn(reply, 'error')) {
+        const allowed = new Set(['invalid-request', 'invalid-staging-name', 'unsafe-path', 'unsafe-staging', 'invalid-chunk', 'invalid-chunks',
+          'chunk-mismatch', 'too-large', 'command-failed', 'unsafe-context', 'machine-mismatch', 'invalid-limits', 'invalid-file',
+          'invalid-release', 'release-hash-mismatch', 'incomplete-release', 'pi-version-mismatch', 'invalid-unit', 'invalid-systemctl',
+          'unsafe-release', 'invalid-switchover-journal', 'missing-switchover-backup', 'unknown-provision-action', 'provision-failed',
+          'selection-not-allowed', 'unsafe-destination', 'invalid-providers', 'invalid-auth', 'unsafe-auth', 'provider-unavailable',
+          'unsupported-credential-command', 'invalid-release-request', 'invalid-release-receipt', 'release-arguments-changed',
+          'release-evidence-unavailable', 'release-in-progress', 'process-identity-unavailable', 'operation-arguments-changed', 'short-write-pending', 'core-unavailable', 'core-changed']);
+        if (typeof reply.error !== 'string' || !allowed.has(reply.error)) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+        if (reply.error === 'core-changed') { invalidate(state.peer.alias, state, 'core-changed'); throw coreChanged(); }
+        throw new HerdrError(reply.error, 'Provisioning operation failed');
+      }
+      if (!Object.hasOwn(reply, 'value')) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+      if (request.action === 'release-observe') {
+        const value = object(reply.value);
+        if (value.state === 'absent') {
+          if (Object.keys(value).length !== 2 || typeof value.prepared !== 'boolean') throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+        } else if (value.state === 'started') {
+          if (Object.keys(value).length !== 1) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+        } else if (value.state === 'failed') {
+          if (Object.keys(value).length !== 2 || !['installer-interrupted', 'release-install-failed', 'command-failed', 'release-hash-mismatch',
+            'incomplete-release', 'pi-version-mismatch'].includes(String(value.reason))) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+        } else if (value.state === 'finished') {
+          const installed = object(value.value);
+          if (Object.keys(value).length !== 2 || Object.keys(installed).length !== 3 || installed.pi !== state.peer.pi ||
+            installed.cli !== state.peer.cli || installed.supervisor !== request.supervisor) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+        } else throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+      } else if (request.action === 'switchover') {
+        const value = object(reply.value);
+        if (Object.keys(value).length !== 1 || !['applied', 'already', 'migration-pending'].includes(String(value.status))) {
+          throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+        }
+      } else if (request.action === 'verify') {
+        const value = object(reply.value), keys = ['piSignedIn', 'nativeSqlite', 'extensionLoaded', 'exactSession', 'privateModes',
+          'bundledIntercom', 'intercomUnique', 'legacyDrained', 'federation'];
+        if (Object.keys(value).length !== keys.length || keys.some(key => typeof value[key] !== 'boolean')) {
+          throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+        }
+      } else if (reply.value !== true) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+      return reply.value;
+    },
+    async probeAgentDirectory(peer, home) {
+      const target = bootstrapTarget(peer);
+      if (typeof home !== 'string' || home.length > 4096 || home === '/' || !posix.isAbsolute(home) ||
+          posix.normalize(home) !== home || /[\u0000-\u001f\u007f]/.test(home)) {
+        throw new HerdrError('invalid-bootstrap-request', 'Invalid agent directory probe request');
+      }
+      try {
+        const result = await bracket({ kind: 'bootstrap', peer: target }, undefined, DEFAULT_LIMITS.controlMs, async (signal, remainingMs) => {
+          const stdin = Buffer.from(JSON.stringify({ home }));
+          let bytes: Buffer;
+          try { bytes = await client.exec(target.alias, [target.node, '-e', BOOTSTRAP_AGENT_DIRECTORY_SCRIPT],
+            { timeoutMs: remainingMs, maxBytes: 1024, stdin, signal }); }
+          finally { stdin.fill(0); }
+          let reply: Record<string, unknown>;
+          try { reply = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))); }
+          catch { throw new HerdrError('invalid-bootstrap-reply', 'Invalid agent directory reply'); }
+          if (reply.version !== 1 || reply.kind !== 'agent-directory' || Object.keys(reply).length !== 3) {
+            throw new HerdrError('invalid-bootstrap-reply', 'Invalid agent directory reply');
+          }
+          if (reply.error === 'agent-directory-probe-failed') throw new HerdrError('agent-directory-probe-failed', 'Agent directory probe failed');
+          if (reply.value !== 'default' && reply.value !== 'custom' && reply.value !== 'unknown') {
+            throw new HerdrError('invalid-bootstrap-reply', 'Invalid agent directory reply');
+          }
+          return reply.value;
+        });
+        if (!validCore(result.core)) throw new HerdrError('invalid-bootstrap-reply', 'Invalid core identity');
+        return { status: result.value, core: { ...result.core } };
+      } catch (error) {
+        const allowed = new Set(['core-changed', 'core-unavailable', 'machine-not-found', 'machine-ambiguous', 'cli-timeout',
+          'cli-aborted', 'cli-exit', 'spawn-error', 'missing-hc', 'reply-too-large', 'invalid-bootstrap-reply', 'agent-directory-probe-failed']);
+        const code = error instanceof HerdrError && allowed.has(error.code) ? error.code : 'agent-directory-probe-failed';
+        const safe = new HerdrError(code, 'Agent directory probe failed');
+        if (error && typeof error === 'object' && 'retryable' in error && error.retryable === true) Object.assign(safe, { retryable: true });
+        throw safe;
+      }
+    },
+    async claimIdentity(peer, operationId, requestedCore) {
+      const target = bootstrapTarget(peer);
+      if (!validCore(requestedCore)) throw new HerdrError('invalid-bootstrap-request', 'Invalid identity bootstrap request');
+      const expectedCore = { ...requestedCore }, prior = provisionCores.get(target.alias);
+      if (prior && !sameCore(prior, expectedCore)) throw coreChanged();
+      if (!isMachineId(peer.machineId) || typeof peer.core !== 'string' || !posix.isAbsolute(peer.core) ||
+          peer.core.length > 4096 || /[\u0000-\u001f\u007f]/.test(peer.core) ||
+          typeof operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operationId)) {
+        throw new HerdrError('invalid-bootstrap-request', 'Invalid identity bootstrap request');
+      }
+      const approved = journal?.read(operationId).some(({ action, result }) => action === 'provision-consent' &&
+        result.approved === true && result.target === target.alias && result.machineId === peer.machineId);
+      if (!approved) throw new HerdrError('consent-required', 'Provisioning consent must be recorded before identity creation');
+      try {
+        const result = await bracket({ kind: 'bootstrap', peer: target }, undefined, DEFAULT_LIMITS.controlMs, async (signal, remainingMs, core) => {
+          if (!sameCore(core, expectedCore)) throw coreChanged();
+          const stdin = Buffer.from(JSON.stringify({ globalRoot: target.globalRoot, machineId: peer.machineId, core: peer.core, coreId: core.remote, operationId }));
+          const bytes = await client.exec(target.alias, [target.node, '--input-type=module-typescript', '-e', BOOTSTRAP_IDENTITY_SCRIPT],
+            { timeoutMs: remainingMs, maxBytes: 16 * 1024, stdin, signal });
+          let reply: Record<string, unknown>;
+          try { reply = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))); }
+          catch { throw new HerdrError('invalid-bootstrap-reply', 'Invalid identity bootstrap reply'); }
+          if (reply.version !== 1 || reply.kind !== 'identity') throw new HerdrError('invalid-bootstrap-reply', 'Invalid identity bootstrap reply');
+          if (Object.hasOwn(reply, 'error')) {
+            if (Object.keys(reply).length !== 3 || typeof reply.error !== 'string' ||
+                !['invalid-request', 'core-unavailable', 'core-changed', 'unsafe-identity', 'machine-mismatch', 'identity-bootstrap-failed'].includes(reply.error)) {
+              throw new HerdrError('invalid-bootstrap-reply', 'Invalid identity bootstrap reply');
+            }
+            if (reply.error === 'core-changed') throw coreChanged();
+            throw new HerdrError(reply.error, 'Identity bootstrap failed');
+          }
+          if (Object.keys(reply).length !== 4 || !Object.hasOwn(reply, 'coreId') || !Object.hasOwn(reply, 'machineId')) {
+            throw new HerdrError('invalid-bootstrap-reply', 'Invalid identity bootstrap reply');
+          }
+          if (reply.coreId !== core.remote) throw coreChanged();
+          if (reply.machineId !== peer.machineId) throw new HerdrError('machine-mismatch', 'The remote machine identity does not match enrollment');
+          return { machineId: peer.machineId, coreId: core.remote };
+        });
+        provisionCores.set(target.alias, expectedCore);
+        return result.value;
+      } catch (error) {
+        const safe = sanitizeBootstrapError(error);
+        safe.message = 'Identity bootstrap failed';
+        throw safe;
+      }
+    },
+  };
+}
+
+export function createTransport(options: TransportOptions): Transport {
+  return transportPorts(options).transport;
+}
+
+/** A narrow pre-enrollment identity operation, separate from ordinary transport. */
+export function createProvisionTransport(options: TransportOptions, journal: Journal): ProvisionTransport {
+  return transportPorts(options, journal);
 }

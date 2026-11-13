@@ -24,7 +24,7 @@ test("sameCwd collapses a symlink to its real target", () => {
     const link = join(base, "link");
     mkdirSync(real);
     symlinkSync(real, link);
-    // Reached via the symlink vs its canonical path . must compare equal.
+    // The symlink and its canonical path must compare equal.
     assert.equal(sameCwd(link, real), true);
     // And normalizeCwd resolves the link to the real path.
     assert.equal(normalizeCwd(link), realpathSync(real));

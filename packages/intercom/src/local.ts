@@ -510,9 +510,9 @@ function resolveConfiguredIntercomSessionId(piSessionId: string, config: Interco
   return process.env[STABLE_INTERCOM_SESSION_ID_ENV]?.trim() || config.stableId || piSessionId;
 }
 // The tmux pane id (e.g. "%212") the session was launched in. $TMUX_PANE is
-// inherited at process start and immutable for the lifetime . moving the pane
-// between windows keeps its id . so it is a stable join key a peer can use to
-// live-resolve the current window via tmux. Absent outside tmux.
+// inherited at process start and immutable for the lifetime. Moving the pane
+// between windows keeps its id, so a peer can use it to find the current
+// window via tmux. Absent outside tmux.
 function currentTmuxPane(): string | undefined {
   const pane = process.env.TMUX_PANE?.trim();
   return pane ? pane : undefined;

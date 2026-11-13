@@ -6,8 +6,8 @@ import { realpathSync } from "node:fs";
 // trailing slash, a "."/".." segment, or a symlink (e.g. macOS /tmp <->
 // /private/tmp). resolve() collapses the lexical variants; realpathSync()
 // collapses symlinks (best-effort: falls back to the resolved path if the
-// directory no longer exists). Memoized . the set of distinct cwd strings is
-// small and stable, so repeat comparisons are free after warmup.
+// directory no longer exists). The result is memoized because the set of cwd
+// strings is small and stable, so repeat comparisons are free after warmup.
 const normalizeCache = new Map<string, string>();
 
 export function normalizeCwd(cwd: string): string {

@@ -92,7 +92,7 @@ async function registeredClientAgainstFakeSocket(): Promise<{
     resolveReady({
       serverSide,
       closeServerSideAbruptly() {
-        // Destroy WITHOUT a clean FIN . simulates a SIGKILL'd broker peer.
+        // Destroy WITHOUT a clean FIN to simulate a SIGKILL'd broker peer.
         serverSide.destroy();
       },
       stopResponding() {
@@ -153,7 +153,7 @@ test("client liveness heartbeat detects a half-open socket within a bounded wind
     const disconnected = once(client, "disconnected");
     // Simulate a half-open socket: the peer stops replying but does NOT close
     // the connection. No "close"/"error" event reaches the client, so passive
-    // detection cannot fire . only the liveness heartbeat can notice.
+    // detection cannot fire. Only the liveness heartbeat can notice.
     stopResponding();
 
     // The heartbeat (interval ~100ms, timeout ~200ms) must notice and tear down.

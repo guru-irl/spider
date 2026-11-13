@@ -127,7 +127,7 @@ it('does not write settings while the pi lock is held', async () => {
   expect(JSON.parse(readFileSync(f.settings, 'utf8')).packages).toEqual(['npm:other']);
 }, 5000);
 
-it('old package files remain reconnectable', async () => {
+it('retains the old package files and settings backup', async () => {
   const f = fixture(); await applyIntercomSwitchover(f.input, f.ports);
   expect(readFileSync(join(f.old, 'index.ts'), 'utf8')).toBe('legacy reconnect fixture');
   expect(existsSync(f.settings + '.intercom-fixture-switch.bak')).toBe(true);

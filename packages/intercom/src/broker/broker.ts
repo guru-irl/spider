@@ -918,7 +918,7 @@ class IntercomBroker {
             }
           }
           // Context-usage fields: a number updates, an explicit null CLEARS (the
-          // value is unknown right after a compaction . delete rather than carry
+          // value is unknown right after a compaction, so delete rather than carry
           // the stale-high value forward), undefined leaves the field untouched.
           if (clientMessage.contextPct !== undefined) {
             if (clientMessage.contextPct === null) {

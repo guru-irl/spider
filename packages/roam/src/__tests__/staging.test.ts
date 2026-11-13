@@ -7,7 +7,7 @@ import { openDb } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { DEFAULT_LIMITS } from "../contracts";
 import type { ArtifactManifest } from "../contracts";
-import { manifestDigest, openOutgoingStaging, openStaging, sourceChunk } from "../staging";
+import { manifestDigest, openOutgoingStaging, openStaging, readPrivate, sourceChunk } from "../staging";
 import { createManifestPages, stageArtifact } from "../artifacts";
 
 const fault = vi.hoisted(() => ({ active: false, writes: 0, directory: null as string | null, descriptors: new Map<number, string>() }));
@@ -63,6 +63,59 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(dirname(root), { recursive: true, force: true });
 });
 
+it.each(["quota.db", "quota.db-wal", "quota.db-shm"])("reserved quota file name %s cannot become an artifact", async id => {
+  const root = fixture(), file = join(dirname(root), "empty"); writeFileSync(file, "", { mode: 0o600 });
+  await expect(stageArtifact(file, "session", DEFAULT_LIMITS, { root, artifactId: id })).rejects.toThrow(/artifact ID/i);
+  expect(existsSync(join(root, "outgoing", "quota.db"))).toBe(false);
+}, 5000);
+it("reading a removed artifact does not recreate its parent directories", () => {
+  const root = fixture();
+  const file = sourceChunk(root, "removed", 0, "a".repeat(64));
+  expect(() => readPrivate(file, 4)).toThrow();
+  expect(existsSync(join(root, "outgoing"))).toBe(false);
+}, 5000);
+it("discarded files remove claim and page rows and retention removes cleaned history", () => {
+  const root = fixture(), bytes = Buffer.from("abcdefgh"), manifest = makeManifest("cleaned", bytes);
+  const limits = { ...DEFAULT_LIMITS, retentionMs: 1000 }, store = openStaging(root, peer, limits);
+  const pages = createManifestPages(manifest, limits);
+  store.beginPages({ artifact: { id: manifest.id, kind: manifest.kind, byteLength: 8, sha256: manifest.sha256 },
+    manifestDigest: manifestDigest(manifest), head: pages.head, pageCount: pages.pages.length }, "transfer-cleaned");
+  store.writePage("transfer-cleaned", 0, pages.pages[0]); store.declare(manifest, "transfer-cleaned");
+  for (const chunk of manifest.chunks) store.receive(manifest, chunk.index, bytes.subarray(chunk.index * 4, chunk.index * 4 + 4));
+  store.assemble(manifest); store.release(manifest.id, "transfer-cleaned");
+  store.removeAfterReceipt(manifest, { artifactId: manifest.id, sha256: manifest.sha256 }, () => true);
+  const db = openDb(join(root, "incoming", peer, "quota.db"));
+  try {
+    expect(db.prepare("SELECT count(*) AS n FROM staging_claims").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT count(*) AS n FROM staging_pages").get()).toEqual({ n: 0 });
+    store.sweep(Date.now() + 2000, () => false);
+    expect(db.prepare("SELECT count(*) AS n FROM staging_versions").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT count(*) AS n FROM staging_artifacts").get()).toEqual({ n: 0 });
+  } finally { db.close(); store.close(); }
+}, 5000);
+it("bounded incoming sweeps advance past retained claims after reopening", () => {
+  const root = fixture(), limits = { ...DEFAULT_LIMITS, retentionMs: 1000 };
+  let store = openStaging(root, peer, limits);
+  const empty = Buffer.alloc(0);
+  for (let i = 0; i < 260; i++) store.declare(makeManifest(`held-${i}`, empty), `op-${i}`);
+  store.declare(makeManifest("zz-orphan", empty), "orphan-op");
+  const now = Date.now() + 2000;
+  expect(store.sweep(now, id => id !== "zz-orphan")).toEqual([]); store.close();
+  store = openStaging(root, peer, limits);
+  try { expect(store.sweep(now, id => id !== "zz-orphan")).toEqual(["zz-orphan"]); }
+  finally { store.close(); }
+}, 5000);
+it("a proved inactive abandoned incoming claim can be swept", () => {
+  const root = fixture(), bytes = Buffer.from("abcd"), manifest = makeManifest("abandoned", bytes);
+  const limits = { ...DEFAULT_LIMITS, retentionMs: 1000 }, store = openStaging(root, peer, limits);
+  try {
+    store.declare(manifest, "abandoned-transfer"); store.receive(manifest, 0, bytes);
+    const file = store.assemble(manifest);
+    expect(store.sweep(Date.now() + 2000, () => true)).toEqual([]);
+    expect(store.sweep(Date.now() + 2000, () => false)).toEqual([manifest.id]);
+    expect(existsSync(file)).toBe(false);
+  } finally { store.close(); }
+}, 5000);
 it.each(["missing", "truncated", "misindexed", "corrupt"] as const)("missing truncated misindexed or corrupt chunks cannot install (%s)", mode => {
   const root = fixture();
   const bytes = Buffer.from("abcdefgh");

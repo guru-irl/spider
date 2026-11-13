@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { applyIntercomSwitchover, filesystemSwitchoverPorts } from '../intercom-switchover.mjs';
+import { applyIntercomSwitchover, filesystemSwitchoverPorts } from '../../../../scripts/intercom-switchover.mjs';
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {

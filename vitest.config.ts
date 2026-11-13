@@ -15,7 +15,7 @@ export default defineConfig({
   test: {
     setupFiles: ["./vitest.setup.ts"],
     globalSetup: ["./vitest.herdr-global-setup.ts"],
-    include: ["packages/**/src/**/*.test.ts", "scripts/__tests__/intercom-switchover.test.ts"],
+    include: ["packages/**/src/**/*.test.ts"],
     testTimeout: 30_000,
     hookTimeout: 30_000,
     pool: "forks",

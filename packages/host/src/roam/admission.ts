@@ -28,9 +28,9 @@ export interface AdmissionPorts {
   setContext?(ctx: ExtensionContext): void;
 }
 
-const VERIFY = "Cannot verify this session's home. Retry or run /doctor for details.";
-const FROZEN = "This session is frozen for a move. Run /doctor for details.";
-const homeMessage = (machine: string) => `This session is at ${machine}. Run /doctor for details.`;
+const VERIFY = "Cannot verify this session's home. Retry or run /spider roam doctor for details.";
+const FROZEN = "This session is frozen for a move. Run /spider roam doctor for details.";
+const homeMessage = (machine: string) => `This session is at ${machine}. Run /spider roam doctor for details.`;
 
 /** A blocked send must be distinguishable from a delivered message. */
 export class AdmissionClosedError extends Error {
@@ -104,7 +104,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       observed.add(id);
       const home = state.home;
       epoch = home?.epoch ?? state.states[0]?.epoch ?? null;
-      if (state.initialConflict) { publish("blocked", home, "This session has conflicting initial homes. Run /doctor for details."); return; }
+      if (state.initialConflict) { publish("blocked", home, "This session has conflicting initial homes. Run /spider roam doctor for details."); return; }
       const frozenState = state.states.find(row => row.state === "frozen");
       if (frozenState?.moveId) freeze ??= { moveId: frozenState.moveId, epoch: frozenState.epoch };
       if (!reopening && (freeze || state.unfinishedFreeze || frozenState)) {

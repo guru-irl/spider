@@ -40,7 +40,7 @@ export function mountAgentsUI(
   if (opts.admitted?.() === false) return () => {};
   const { db, sessionId } = opts;
   const dispatch = opts.dispatch && (async (action: string, args: Record<string, unknown>) => {
-    if (opts.admitted?.() === false) throw new Error("Session ownership is not available; run spider roam doctor.");
+    if (opts.admitted?.() === false) throw new Error("Session ownership is not available; run /spider roam doctor.");
     return opts.dispatch!(action, args);
   });
 

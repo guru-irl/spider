@@ -396,7 +396,7 @@ it("admission read failure on a nonparticipating session admits and logs once", 
   expect(f.gate.inspect().kind).toBe("ordinary");
   expect(f.calls.lock).toBe(0);
   expect(f.calls.local).toBe(0);
-  expect(f.warnings).toEqual(["Cannot verify this session's home. Retry or run /doctor for details."]);
+  expect(f.warnings).toEqual(["Cannot verify this session's home. Retry or run /spider roam doctor for details."]);
 }, 5000);
 
 it.each(["read", "identity", "lock"] as const)("known participant %s failure blocks plainly", async failure => {
@@ -407,7 +407,7 @@ it.each(["read", "identity", "lock"] as const)("known participant %s failure blo
   await f.emit("session_start", { reason: "resume" });
   expect(f.gate.inspect().kind).toBe("blocked");
   await f.emit("input", { text: "work" });
-  expect(f.messages.join(" ")).toContain("Cannot verify this session's home. Retry or run /doctor for details.");
+  expect(f.messages.join(" ")).toContain("Cannot verify this session's home. Retry or run /spider roam doctor for details.");
   expect(f.gate.inspect().kind === "ordinary").toBe(false);
 }, 5000);
 
@@ -442,7 +442,7 @@ it("a conflicting initial home and incompatible epoch never admit", async () => 
   const f = fixture(snapshot({ initialConflict: true }));
   await f.emit("session_start", { reason: "resume" });
   expect(f.gate.inspect().kind).toBe("blocked");
-  expect(f.gate.inspect().blockers[0]?.detail).toBe("This session has conflicting initial homes. Run /doctor for details.");
+  expect(f.gate.inspect().blockers[0]?.detail).toBe("This session has conflicting initial homes. Run /spider roam doctor for details.");
   f.setSnapshot(snapshot({ states: [{ ...active, epoch: 2 }] }));
   await f.emit("session_start", { reason: "reload" });
   expect(f.gate.inspect().kind).toBe("blocked");

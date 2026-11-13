@@ -878,7 +878,16 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   prepareManagedGuidance({ skipAgentsMd: process.env.VITEST === "true" });
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
   const pi = protectAdmissionApi(hostPi as unknown as ExtensionAPI, admission) as unknown as PiToolAPI;
-  registerIntercomOnce(pi as unknown as ExtensionAPI, ports.intercomBroker);
+  try {
+    registerIntercomOnce(hostPi as unknown as ExtensionAPI, ports.intercomBroker);
+  } catch {
+    hostPi.on("session_start", (_event, ctx) => {
+      const message = "Intercom is unavailable in this session. Spider's other features still work.";
+      const context = ctx as ExtensionContext;
+      if (context.hasUI) context.ui.notify(message, "error");
+      else process.stderr.write(message + "\n");
+    });
+  }
   const setForHost = <T>(map: WeakMap<object, T>, value: T) => { map.set(hostPi, value); map.set(pi, value); };
   const clearForHost = <T>(map: WeakMap<object, T>, value: T) => { for (const key of [hostPi, pi]) if (map.get(key) === value) map.delete(key); };
   const loopCommand = registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath(), ordinaryWorkAllowed);

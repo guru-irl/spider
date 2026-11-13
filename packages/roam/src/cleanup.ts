@@ -41,8 +41,10 @@ export function sweepStoreArtifacts(stores: StoreAdapter, config: RoamConfig, re
   finally { releaseSweep?.(); }
   const incoming = join(root, "incoming");
   if (!existsSync(incoming)) return;
-  privateDirectory(incoming);
-  for (const peer of readdirSync(incoming)) {
+  let peers: string[];
+  try { privateDirectory(incoming); peers = readdirSync(incoming); }
+  catch (error) { problem(incoming, error); return; }
+  for (const peer of peers) {
     if (!isMachineId(peer)) continue;
     const directory = join(incoming, peer);
     let release: (() => void) | null = null;

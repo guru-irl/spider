@@ -3,7 +3,7 @@ import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openDbReadOnly, type Db } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
-import { openRoamStoreReadOnly, type ReadStoreOptions } from "@spider/db-core/roam/reads";
+import { catalogPath, openRoamStoreReadOnly, type ReadStoreOptions, type RoamCatalogSource } from "@spider/db-core/roam/reads";
 import type { StoreKey } from "@spider/db-core/roam/types";
 
 function owned(file: string, directory: boolean): boolean {
@@ -40,33 +40,38 @@ function keyAt(file: string, machine: string, open: (file: string) => Db | undef
 }
 
 /** Only local registrations and verified replica identities supply paths. */
-export function listStoreKeys(globalDb: Db, options: InventoryOptions = {}): StoreKey[] {
+export function listStoreKeys(source: RoamCatalogSource, options: InventoryOptions = {}): StoreKey[] {
   const open = options.open ?? openDbReadOnly;
-  const machine = (globalDb.prepare("SELECT machine_id FROM roam_meta WHERE id = 1").get() as { machine_id: string }).machine_id;
+  const machine = "raw" in source
+    ? (source.prepare("SELECT machine_id FROM roam_meta WHERE id = 1").get() as { machine_id: string }).machine_id
+    : source.machine;
   const keys = new Set<StoreKey>(["global"]);
-  const registered = globalDb.prepare("SELECT db_path, git_common_dir FROM projects").all() as { db_path: string; git_common_dir: string | null }[];
+  const registered = "raw" in source
+    ? source.prepare("SELECT db_path, git_common_dir FROM projects").all() as { db_path: string; git_common_dir: string | null }[]
+    : source.projects;
   for (const row of registered) {
     for (const file of [row.db_path, ...(row.git_common_dir ? [join(row.git_common_dir, "spider", "repo.db")] : [])]) {
       const key = keyAt(file, machine, open, options);
       if (key) keys.add(key);
     }
   }
+  const repos = "raw" in source ? source.prepare("SELECT repo_key FROM roam_repo_maps").all() as { repo_key: string }[] : source.repos;
+  const worktrees = "raw" in source ? source.prepare("SELECT repo_key,workspace_id FROM roam_workspace_maps").all() as { repo_key: string; workspace_id: string }[] : source.worktrees;
   const mapped = [
-    ...(globalDb.prepare("SELECT repo_key FROM roam_repo_maps").all() as { repo_key: string }[]).map(row => `repo:${row.repo_key}` as StoreKey),
-    ...(globalDb.prepare("SELECT repo_key,workspace_id FROM roam_workspace_maps").all() as { repo_key: string; workspace_id: string }[])
-      .map(row => `worktree:${row.repo_key}:${row.workspace_id}` as StoreKey),
+    ...repos.map(row => `repo:${row.repo_key}` as StoreKey),
+    ...worktrees.map(row => `worktree:${row.repo_key}:${row.workspace_id}` as StoreKey),
   ];
   for (const key of mapped) {
     let db: Db | undefined;
     try {
-      db = openRoamStoreReadOnly(globalDb, key, options);
+      db = openRoamStoreReadOnly(source, key, options);
       const row = db?.prepare("SELECT store_key,machine_id FROM roam_meta WHERE id=1").get() as { store_key: string; machine_id: string } | undefined;
       if (row?.store_key === key && row.machine_id === machine) keys.add(key);
       else { options.onProblem?.(key); options.onIncomplete?.(key); }
     } catch (error) { options.onProblem?.(key, error); options.onIncomplete?.(key, error); /* An unavailable mapping is not a present store. */ }
     finally { db?.close(); }
   }
-  const directory = join(dirname(options.globalPath ?? globalDb.raw.name), "roam", "stores");
+  const directory = join(dirname(options.globalPath ?? catalogPath(source)), "roam", "stores");
   try {
     if (!owned(directory, true)) { options.onProblem?.(directory); options.onIncomplete?.(directory); }
     else for (const name of readdirSync(directory)) {

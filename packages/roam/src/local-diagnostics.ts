@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@spider/db-core";
-import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
+import { openRoamStoreReadOnly, type RoamCatalog } from "@spider/db-core/roam/reads";
 import { isRoamUuid, storeScope } from "@spider/db-core/roam/codec";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import type { Scope, StoreKey } from "@spider/db-core/roam/types";
@@ -250,54 +250,18 @@ function openLocalInventory(input: { root: string }) {
 }
 
 interface DoctorProject { project_key: string; db_path: string; git_common_dir: string | null }
-interface DoctorCatalog {
-  machine: string;
-  projects: DoctorProject[];
-  repos: Array<{ repo_key: string; path: string }>;
-  worktrees: Array<{ repo_key: string; workspace_id: string; path: string }>;
-  redirects: Array<{ peer_stream: string }>;
-}
+type DoctorCatalog = RoamCatalog;
 
-function readDoctorCatalog(db: Db, projects: DoctorProject[]): DoctorCatalog {
+function readDoctorCatalog(db: Db, projects: DoctorProject[], globalPath: string): DoctorCatalog {
   const meta = db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id: string } | undefined;
   if (!meta) throw new Error("Missing store inventory identity");
   const prefix = "spider-local:mapping-redirect:";
   return {
-    machine: meta.machine_id, projects,
+    globalPath, machine: meta.machine_id, projects,
     repos: db.prepare("SELECT repo_key,path FROM roam_repo_maps").all() as DoctorCatalog["repos"],
     worktrees: db.prepare("SELECT repo_key,workspace_id,path FROM roam_workspace_maps").all() as DoctorCatalog["worktrees"],
     redirects: db.prepare("SELECT peer_stream FROM roam_cursors WHERE peer_machine = '' AND substr(peer_stream,1,?) = ?")
       .all(prefix.length, prefix) as DoctorCatalog["redirects"],
-  };
-}
-
-// The catalog holds only paths and identities, not a second store snapshot.
-async function openDoctorCatalog(data: DoctorCatalog): Promise<Db> {
-  const { default: Database } = await import("better-sqlite3");
-  const raw = new Database(":memory:");
-  try {
-    raw.exec(`CREATE TABLE roam_meta(id INTEGER, machine_id TEXT);
-      CREATE TABLE projects(project_key TEXT, db_path TEXT, git_common_dir TEXT);
-      CREATE TABLE roam_repo_maps(repo_key TEXT, path TEXT);
-      CREATE TABLE roam_workspace_maps(repo_key TEXT, workspace_id TEXT, path TEXT);
-      CREATE TABLE roam_cursors(peer_machine TEXT, peer_stream TEXT);`);
-    raw.transaction(() => {
-      raw.prepare("INSERT INTO roam_meta VALUES (1,?)").run(data.machine);
-      const project = raw.prepare("INSERT INTO projects VALUES (?,?,?)");
-      for (const row of data.projects) project.run(row.project_key, row.db_path, row.git_common_dir);
-      const repo = raw.prepare("INSERT INTO roam_repo_maps VALUES (?,?)");
-      for (const row of data.repos) repo.run(row.repo_key, row.path);
-      const worktree = raw.prepare("INSERT INTO roam_workspace_maps VALUES (?,?,?)");
-      for (const row of data.worktrees) worktree.run(row.repo_key, row.workspace_id, row.path);
-      const redirect = raw.prepare("INSERT INTO roam_cursors VALUES ('',?)");
-      for (const row of data.redirects) redirect.run(row.peer_stream);
-    })();
-  } catch (error) { raw.close(); throw error; }
-  const readonly = () => { throw new Error("read-only doctor catalog"); };
-  return {
-    raw, prepare: sql => raw.prepare(sql), exec: readonly, transaction: readonly,
-    afterCommit: fn => fn(), pragma: sql => raw.pragma(sql, { simple: true }),
-    loadVec: readonly, withRetry: fn => fn(), close: () => raw.close(),
   };
 }
 
@@ -358,7 +322,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL }): 
     } catch (error) { inventory.push({ severity, reason: `global: cannot inspect the registered store.${snapshotProblem(error)}`, repairCommand: null }); }
     if (version !== undefined && version <= 14) {
       projects = global.prepare("SELECT project_key,db_path,git_common_dir FROM projects ORDER BY project_key").all() as DoctorProject[];
-      if (version === 14) catalogData = readDoctorCatalog(global, projects);
+      if (version === 14) catalogData = readDoctorCatalog(global, projects, globalPath);
     }
     for (const peer of config.peers) try {
       const failure = cachedObservation(global, peer.machineId, Date.now())?.failure;
@@ -372,28 +336,25 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL }): 
     if (project.git_common_dir) add(join(project.git_common_dir, "spider", "repo.db"), "repo", `repository ${project.project_key}`);
   }
   if (catalogData) {
-    const catalog = await openDoctorCatalog(catalogData);
     const readOptions = { globalPath, open, onProblem(entry: string, error?: unknown) {
       if (problems.has(entry)) return;
       problems.add(entry);
       const label = /^(?:repo:|worktree:)/.test(entry) ? entry.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512) : "a registered or replica";
       inventory.push({ severity, reason: `Cannot inspect ${label} store.${snapshotProblem(error)}`, repairCommand: null });
     } };
-    try {
-      for (const key of listStoreKeys(catalog, readOptions)) {
-        if (key === "global") continue;
-        let db: Db | undefined;
-        try {
-          db = openRoamStoreReadOnly(catalog, key as StoreKey, { ...readOptions, open(file) {
-            return seen.has(resolve(file)) ? undefined : open(file);
-          } });
-          if (!db) continue;
-          seen.add(origins.get(db)!);
-          inspect({ key, scope: key.startsWith("repo:") ? "repo" : "worktree", db });
-        } catch (error) { inventory.push({ severity, reason: `${key}: cannot inspect the mapped store.${snapshotProblem(error)}`, repairCommand: null }); }
-        finally { db?.close(); }
-      }
-    } finally { catalog.close(); }
+    for (const key of listStoreKeys(catalogData, readOptions)) {
+      if (key === "global") continue;
+      let db: Db | undefined;
+      try {
+        db = openRoamStoreReadOnly(catalogData, key as StoreKey, { ...readOptions, open(file) {
+          return seen.has(resolve(file)) ? undefined : open(file);
+        } });
+        if (!db) continue;
+        seen.add(origins.get(db)!);
+        inspect({ key, scope: key.startsWith("repo:") ? "repo" : "worktree", db });
+      } catch (error) { inventory.push({ severity, reason: `${key}: cannot inspect the mapped store.${snapshotProblem(error)}`, repairCommand: null }); }
+      finally { db?.close(); }
+    }
   }
   try {
     for (const failure of await inspectRoamPlacement(join(root, "roam", "placement"))) {

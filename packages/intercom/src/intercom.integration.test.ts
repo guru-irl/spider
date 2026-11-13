@@ -4015,7 +4015,7 @@ test("an intentional unrelated public notification during a sole pending ask is 
 
     const intercomTool = harness.tools.find((tool) => tool.name === "intercom")!;
     const replyReceived = waitForReply(planner, askId);
-    // Unrelated to the ask's content . proves the accepted trade-off: any public
+    // Unrelated to the ask's content. This proves the accepted trade-off: any public
     // send to the sole pending asker is reclassified as its answer.
     const result = await intercomTool.execute("notify-during-ask", {
       action: "send",

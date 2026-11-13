@@ -217,7 +217,10 @@ for (const childMode of ["rpc", "print"] as const) {
     await handler(shape.args, ctx);
     await completion;
     expect(launches).toHaveLength(shape.children);
-    for (const loaded of launches) expect(loaded).toEqual([spider, first, ...(childMode === "rpc" ? [intercom] : []), second]);
+    for (const loaded of launches) {
+      expect(loaded.filter(file => file === intercom)).toHaveLength(childMode === "rpc" ? 1 : 0);
+      expect(loaded).toEqual([spider, first, ...(childMode === "rpc" ? [intercom] : []), second]);
+    }
     const runs = ctx.db.prepare("SELECT status FROM runs WHERE session_id=?").all(ctx.sessionId) as { status: string }[];
     expect(runs).toHaveLength(shape.children);
     expect(runs.every(run => run.status === "done")).toBe(true);

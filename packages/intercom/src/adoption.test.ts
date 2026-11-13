@@ -32,8 +32,8 @@ it('compiled broker needs no tsx', () => {
   expect(launch.args.join(' ')).not.toContain('tsx');
   expect(broker.exitCode).toBeNull();
 }, 5000);
-it('mixed old and fork clients share original paths', async () => {
-  // Both generations retain the audited 0.13.0 client wire implementation.
+it('two fork clients share the original paths and exchange messages', async () => {
+  // Both clients use the forked 0.13.0 wire implementation.
   expect(getBrokerSocketPath()).toMatch(/intercom[/\\]broker\.sock$/);
   const received = once(fork, 'message');
   const sent = await legacy.send('fork-stable', { text: 'fixture ask', expectsReply: true,

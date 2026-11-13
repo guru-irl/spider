@@ -17,13 +17,13 @@ function withoutExclusions(args: string[]): string[] {
   return args.filter((arg, i) => arg !== '--exclude-tools' && args[i - 1] !== '--exclude-tools');
 }
 async function adoption(suite: Suite): Promise<void> {
-  const legacy = suite.ownPath(join(suite.root, 'legacy'));
-  await mkdir(legacy);
-  // The unguarded local factory is the audited 0.13.0 implementation. Its
-  // protocol and state code are byte-equivalent after TypeScript transpilation.
+  const unwrapped = suite.ownPath(join(suite.root, 'unwrapped'));
+  await mkdir(unwrapped);
+  // The unguarded local factory is a fork-derived fixture, not an installed
+  // upstream package. Its protocol and state match the recorded 0.13.0 source.
   await buildFixture({ stdin: { contents: "export {default} from '@spider/intercom/local';", resolveDir: resolve('.') },
-    outfile: join(legacy, 'index.mjs'), external: ['@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', 'typebox'] });
-  await writeFile(join(legacy, 'package.json'), JSON.stringify({ name: 'pi-intercom', type: 'module', pi: { extensions: ['./index.mjs'] } }));
+    outfile: join(unwrapped, 'index.mjs'), external: ['@earendil-works/pi-ai', '@earendil-works/pi-coding-agent', '@earendil-works/pi-tui', 'typebox'] });
+  await writeFile(join(unwrapped, 'package.json'), JSON.stringify({ name: 'pi-intercom', type: 'module', pi: { extensions: ['./index.mjs'] } }));
   const probe = suite.ownPath(join(suite.root, 'fork-probe.mjs'));
   const probeLog = suite.ownPath(join(suite.root, 'fork-probe.jsonl'));
   await writeFile(probe, `import {appendFileSync} from 'node:fs';
@@ -49,7 +49,7 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
   const config = JSON.parse(await readFile(spiderConfig, 'utf8'));
   await writeFile(spiderConfig, JSON.stringify({ ...config, 'subagents.childMode': 'rpc', 'subagents.extensions': [...config['subagents.extensions'], probe] }));
   const gates = await scripts(suite, {
-    'legacy-ready': [{ steps: [{ tool: { id: 'legacy-roster', name: 'intercom', arguments: { action: 'list' } } }] }, text('legacy ready')],
+    'unwrapped-ready': [{ steps: [{ tool: { id: 'unwrapped-roster', name: 'intercom', arguments: { action: 'list' } } }] }, text('unwrapped ready')],
     spawn: parentTurns(runChild('spawn-old', 'old-child', 'old-child')),
     before: parentTurns(tool('steer-before', { action: 'message', to: 'old-child', message: 'R14 before switch' })),
     after: parentTurns(tool('steer-after', { action: 'message', to: 'old-child', message: 'R14 after switch' })),
@@ -64,8 +64,8 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
     await mkdir(join(cwd, '.pi'));
     const projectSettings = join(cwd, '.pi/settings.json');
     await writeFile(globalSettings, JSON.stringify({ ...base, defaultProjectTrust: 'always',
-      packages: [...base.packages, ...(scope === 'project' ? [] : [{ source: legacy }])], extensions: [probe] }));
-    await writeFile(projectSettings, JSON.stringify({ packages: scope === 'user' ? [] : [legacy] }));
+      packages: [...base.packages, ...(scope === 'project' ? [] : [{ source: unwrapped }])], extensions: [probe] }));
+    await writeFile(projectSettings, JSON.stringify({ packages: scope === 'user' ? [] : [unwrapped] }));
     const owner = await suite.launchPi({ mode: 'rpc', cwd, args: ['--name', `owner-${scope}`], extraEnv: { PI_SUBAGENT_PI_BINARY: childLauncher } }) as RpcDriver;
     let peer: RpcDriver | undefined;
     try {
@@ -73,9 +73,9 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
       const ready = await gates.ready('old-initial', deadline(60_000));
       const spawn = await owner.toolResult('spawn-old', deadline(30_000));
       const oldRun = (spawn.result as { details: { run: { id: string; pid: number } } }).details.run;
-      peer = await suite.launchPi({ mode: 'rpc', cwd, args: ['--name', `peer-${scope}`], extraEnv: { PI_INTERCOM_STABLE_ID: `legacy-peer-${scope}` } }) as RpcDriver;
-      await peer.prompt(mark('legacy-ready'));
-      expect((await peer.toolResult('legacy-roster', deadline(30_000))).isError).toBe(false);
+      peer = await suite.launchPi({ mode: 'rpc', cwd, args: ['--name', `peer-${scope}`], extraEnv: { PI_INTERCOM_STABLE_ID: `unwrapped-peer-${scope}` } }) as RpcDriver;
+      await peer.prompt(mark('unwrapped-ready'));
+      expect((await peer.toolResult('unwrapped-roster', deadline(30_000))).isError).toBe(false);
       const oldPid = ready.pid;
       const initialProbes = (await readFile(probeLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
       expect(initialProbes.find(row => row.pid === oldPid)?.runId).toBe(oldRun.id);
@@ -87,11 +87,11 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
       expect((await owner.toolResult('steer-before', deadline(30_000))).result).toMatchObject({ details: { delivered: true, delivery: 'delivered' } });
       const brokerPidFile = join(suite.directories.PI_CODING_AGENT_DIR, 'intercom/broker.pid');
       const brokerPid = Number((await readFile(brokerPidFile, 'utf8')).trim());
-      const legacyBytes = await readFile(join(legacy, 'index.mjs'));
+      const unwrappedBytes = await readFile(join(unwrapped, 'index.mjs'));
       const activeFile = join(cwd, 'active-release.json');
       await writeFile(activeFile, JSON.stringify(suite.packed.root));
       const switchover = await applyIntercomSwitchover({ operationId: `fork-${scope}`, release: suite.packed.root,
-        settingsFiles: [globalSettings, projectSettings], legacyRoots: [legacy], journalFile: join(cwd, 'switch.json') }, filesystemSwitchoverPorts(activeFile));
+        settingsFiles: [globalSettings, projectSettings], legacyRoots: [unwrapped], journalFile: join(cwd, 'switch.json') }, filesystemSwitchoverPorts(activeFile));
       expect(switchover.status).toBe('migration-pending');
       await owner.prompt('/reload');
       const after = owner.prompt(mark('after'));
@@ -119,14 +119,14 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
       expect((await childTranscript(suite, newReady.pid)).entries.filter(entry => entry.type === 'custom_message' && JSON.stringify(entry).includes('R14 cross-session broker steer'))).toHaveLength(0);
       expect((await owner.events()).filter(e => e.type === 'message_end' && e.customType === 'intercom_message' && JSON.stringify(e.content).includes('R14 supervisor contact'))).toHaveLength(1);
       await peer.close();
-      scriptFile.scripts.peer = parentTurns(tool('peer-reconnect', { action: 'message', to: `owner-${scope}`, message: 'R14 legacy reconnect' }));
+      scriptFile.scripts.peer = parentTurns(tool('peer-reconnect', { action: 'message', to: `owner-${scope}`, message: 'R14 unwrapped reconnect' }));
       await writeFile(suite.pi.scriptPath, JSON.stringify(scriptFile));
-      peer = await suite.launchPi({ mode: 'rpc', cwd, args: ['--name', `peer-${scope}`, '--extension', join(legacy, 'index.mjs')],
-        extraEnv: { PI_INTERCOM_STABLE_ID: `legacy-peer-${scope}` } }) as RpcDriver;
+      peer = await suite.launchPi({ mode: 'rpc', cwd, args: ['--name', `peer-${scope}`, '--extension', join(unwrapped, 'index.mjs')],
+        extraEnv: { PI_INTERCOM_STABLE_ID: `unwrapped-peer-${scope}` } }) as RpcDriver;
       await peer.prompt(mark('peer'));
       expect((await peer.toolResult('peer-reconnect', deadline(30_000))).result).toMatchObject({ details: { delivered: true, delivery: 'broker-accepted' } });
-      await owner.waitEvent('message_end', e => e.customType === 'intercom_message' && JSON.stringify(e.content).includes('R14 legacy reconnect'), deadline(30_000));
-      expect((await owner.events()).filter(e => e.type === 'message_end' && e.customType === 'intercom_message' && JSON.stringify(e.content).includes('R14 legacy reconnect'))).toHaveLength(1);
+      await owner.waitEvent('message_end', e => e.customType === 'intercom_message' && JSON.stringify(e.content).includes('R14 unwrapped reconnect'), deadline(30_000));
+      expect((await owner.events()).filter(e => e.type === 'message_end' && e.customType === 'intercom_message' && JSON.stringify(e.content).includes('R14 unwrapped reconnect'))).toHaveLength(1);
       gates.release('new-final'); gates.release('old-final');
       await childEvent(suite, newReady.pid, 'message_end', e => e.customType === 'intercom_message' && JSON.stringify(e.content).includes('R14 cross-session broker steer'));
       const steeredTranscript = await waitFor('broker steer is persisted in the child conversation', () => childTranscript(suite, newReady.pid),
@@ -148,11 +148,11 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
         const starts = probes.filter(row => row.pid === pid);
         expect(starts).toHaveLength(1);
         expect(starts[0].tools.filter((name: string) => name === 'intercom')).toHaveLength(1);
-        expect(starts[0].argv.join(' ')).not.toContain(legacy);
+        expect(starts[0].argv.join(' ')).not.toContain(unwrapped);
         expect(starts[0].argv).toContain('--no-extensions');
         expect(starts[0].argv.slice(2)).toEqual(launches.find(launch => launch.runId === starts[0].runId).filtered);
       }
-      expect(await readFile(join(legacy, 'index.mjs'))).toEqual(legacyBytes);
+      expect(await readFile(join(unwrapped, 'index.mjs'))).toEqual(unwrappedBytes);
       expect(Number((await readFile(brokerPidFile, 'utf8')).trim())).toBe(brokerPid);
       expect(() => process.kill(brokerPid, 0)).not.toThrow();
       evidence.push({ scope, oldRun, oldPid, newPid: newReady.pid, switchover, probes, launches, brokerPid });
@@ -188,5 +188,5 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
 }
 
 export const scenarios: readonly ScenarioDefinition[] = [{ id: storyId('R14'),
-  title: 'RPC child steered across switchover loads only fork', tiers: ['headless'], run: adoption }];
+  title: 'RPC child steered across switchover with an unwrapped fork fixture', tiers: ['headless'], run: adoption }];
 registerScenarios(scenarios);

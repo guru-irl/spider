@@ -3,6 +3,13 @@ import { globSync, lstatSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { configDefaults } from 'vitest/config';
 import { loadConfigFromFile } from 'vite';
+it('declares the intercom workspace dependency consistently', () => {
+  const host = JSON.parse(readFileSync(resolve('packages/host/package.json'), 'utf8'));
+  const lock = JSON.parse(readFileSync(resolve('package-lock.json'), 'utf8'));
+  expect(host.dependencies['@spider/intercom']).toBe('0.0.0');
+  expect(lock.packages['packages/host'].dependencies['@spider/intercom']).toBe('0.0.0');
+  expect(lock.packages['node_modules/@spider/intercom']).toEqual({ resolved: 'packages/intercom', link: true });
+});
 const upstream = ['broker/client-liveness.test.ts', 'broker/client.test.ts', 'broker/extension.test.ts',
   'broker/framing.test.ts', 'broker/paths.test.ts', 'broker/runtime-claim.test.ts', 'broker/spawn.test.ts',
   'config.test.ts', 'cwd.test.ts', 'format-context.test.ts', 'project-agent.test.ts', 'reply-tracker.test.ts',

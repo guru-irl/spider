@@ -14,6 +14,16 @@ const machine = { id: 'remote-core-1', name: 'box-1.invalid', host: 'box-1.inval
 const peer = { machineId: '00000000-0000-4000-8000-000000000001', alias: machine.name, node: '/fixture/node', pi: '/fixture/pi', cli: '/fixture/cli', core: '/fixture/hc', globalRoot: '/fixture/global' };
 const identityPath = posix.join(peer.globalRoot, 'roam', 'machine.json');
 
+function nativeDeadline(argv: readonly string[], budgetMs: number, elapsedMs: number): string {
+  const index = argv.indexOf('--timeout');
+  expect(index).toBeGreaterThanOrEqual(0);
+  const value = argv[index + 1];
+  expect(value).toMatch(/^[1-9][0-9]*$/);
+  expect(Number(value)).toBeLessThanOrEqual(Math.max(1, Math.floor(budgetMs / 1000)));
+  expect(Number(value)).toBeGreaterThanOrEqual(Math.max(1, Math.floor((budgetMs - elapsedMs) / 1000)));
+  return value;
+}
+
 test('workspace transport subpaths resolve in bundled fixtures', async () => {
   const { buildFixture } = await import('../../../../scripts/test-bundle.js');
   const bundle = await buildFixture({
@@ -125,18 +135,20 @@ test('raw errors do not expose output or consume the reply budget', async () => 
   }
 }, 5000);
 
-test('remote exec sends its rounded deadline before the payload without stdin', async () => {
+test('remote exec sends its remaining deadline before the payload without stdin', async () => {
   const fixture = await createClientFixture();
   try {
     await fixture.configure({ machines: [machine], roamFixture: { execReplyBase64: 'AP8KgA==' } });
     const client = createArgvClient({ binary: fixture.hcBinary, env: fixture.localEnv });
     const remoteArgs = ['/fixture/node', '/fixture/cli', 'inspect', "x'; literal"];
+    const started = performance.now();
     const reply = await client.exec(machine.name, remoteArgs, { timeoutMs: 120_001, maxBytes: 4 });
+    const elapsed = performance.now() - started;
     expect(reply).toEqual(Buffer.from([0, 255, 10, 128]));
     const calls = await fixture.calls();
-    expect(calls.find(call => call.argv[0] === 'exec')?.argv).toEqual([
-      'exec', '--on', machine.name, '--timeout', '121', '--', ...remoteArgs,
-    ]);
+    const argv = calls.find(call => call.argv[0] === 'exec')?.argv ?? [];
+    const seconds = nativeDeadline(argv, 120_001, elapsed);
+    expect(argv).toEqual(['exec', '--on', machine.name, '--timeout', seconds, '--', ...remoteArgs]);
   } finally {
     await fixture.close();
   }
@@ -148,14 +160,16 @@ test('remote exec forwards binary stdin only with the native stdin flag', async 
     await fixture.configure({ machines: [machine], roamFixture: { execEchoStdin: true } });
     const client = createArgvClient({ binary: fixture.hcBinary, env: fixture.localEnv });
     const input = Buffer.from([255, 0, 128, 10]);
+    const started = performance.now();
     const reply = await client.exec(machine.name, ['/fixture/node', '/fixture/cli', 'import'], {
       timeoutMs: 600_000, maxBytes: 4, stdin: input,
     });
+    const elapsed = performance.now() - started;
     expect(reply).toEqual(input);
     const calls = await fixture.calls();
-    expect(calls.find(call => call.argv[0] === 'exec')?.argv).toEqual([
-      'exec', '--on', machine.name, '--timeout', '600', '--stdin', '--', '/fixture/node', '/fixture/cli', 'import',
-    ]);
+    const argv = calls.find(call => call.argv[0] === 'exec')?.argv ?? [];
+    const seconds = nativeDeadline(argv, 600_000, elapsed);
+    expect(argv).toEqual(['exec', '--on', machine.name, '--timeout', seconds, '--stdin', '--', '/fixture/node', '/fixture/cli', 'import']);
   } finally {
     await fixture.close();
   }
@@ -168,10 +182,12 @@ test('the argv client snapshots per-call limits and stdin before probing the cor
     const client = createArgvClient({ binary: fixture.hcBinary, env: fixture.localEnv });
     const input = Buffer.from([255, 0, 128, 10]);
     const options = { timeoutMs: 120_001, maxBytes: 4, stdin: input };
+    const started = performance.now();
     const pending = client.exec(machine.name, ['/fixture/node'], options);
     input.fill(0); options.timeoutMs = 1; options.maxBytes = 1;
     expect(await pending).toEqual(Buffer.from([255, 0, 128, 10]));
-    expect((await fixture.calls()).find(call => call.argv[0] === 'exec')?.argv).toContain('121');
+    const elapsed = performance.now() - started;
+    nativeDeadline((await fixture.calls()).find(call => call.argv[0] === 'exec')?.argv ?? [], 120_001, elapsed);
   } finally {
     await fixture.close();
   }
@@ -340,12 +356,14 @@ test('resolves one machine identity per transfer', async () => {
     const input = Buffer.from([0, 255, 10, 128]);
     await transport.write(resolved, '/fixture/artifact', input, 30_000);
     expect(await transport.read(resolved, '/fixture/artifact', { timeoutMs: 30_000, maxBytes: 4 })).toEqual(input);
+    const started = performance.now();
     expect(await transport.exec(resolved, ['inspect', "x'; literal"], { timeoutMs: 60_000, maxBytes: 3 })).toEqual(Buffer.from([1, 2, 3]));
+    const elapsed = performance.now() - started;
     const calls = await fixture.calls();
     expect(calls.filter(call => call.argv[0] === 'exec' && call.argv.includes(identityPath))).toHaveLength(1);
-    expect(calls.find(call => call.argv.includes('inspect'))?.argv).toEqual([
-      'exec', '--on', peer.alias, '--timeout', '60', '--', peer.node, peer.cli, 'inspect', "x'; literal",
-    ]);
+    const argv = calls.find(call => call.argv.includes('inspect'))?.argv ?? [];
+    const seconds = nativeDeadline(argv, 60_000, elapsed);
+    expect(argv).toEqual(['exec', '--on', peer.alias, '--timeout', seconds, '--', peer.node, peer.cli, 'inspect', "x'; literal"]);
   } finally {
     await fixture.close();
   }
@@ -376,13 +394,18 @@ test('file control export and import use their distinct native deadlines', async
     await fixture.writeRoamFile(peer.alias, '/fixture/artifact', Buffer.from([1]));
     const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
     const resolved = await transport.resolve(peer);
-    await transport.read(resolved, '/fixture/artifact', { timeoutMs: 30_000, maxBytes: 16 });
-    await transport.exec(resolved, ['control'], { timeoutMs: 60_000, maxBytes: 16 });
-    await transport.exec(resolved, ['export'], { timeoutMs: 120_000, maxBytes: 16 });
-    await transport.exec(resolved, ['import'], { timeoutMs: 600_000, maxBytes: 16 });
+    const elapsed: number[] = [];
+    const measure = async (call: () => Promise<Buffer>) => { const started = performance.now(); await call(); elapsed.push(performance.now() - started); };
+    await measure(() => transport.read(resolved, '/fixture/artifact', { timeoutMs: 30_000, maxBytes: 16 }));
+    await measure(() => transport.exec(resolved, ['control'], { timeoutMs: 60_000, maxBytes: 16 }));
+    await measure(() => transport.exec(resolved, ['export'], { timeoutMs: 120_000, maxBytes: 16 }));
+    await measure(() => transport.exec(resolved, ['import'], { timeoutMs: 600_000, maxBytes: 16 }));
     const calls = (await fixture.calls()).filter(call => call.argv[0] === 'exec' && !call.argv.includes(identityPath));
-    const deadlines = calls.map(call => Number(call.argv[call.argv.indexOf('--timeout') + 1]) * 1000);
-    expect(deadlines).toEqual([30_000, 60_000, 120_000, 600_000]);
+    expect(calls).toHaveLength(4);
+    const deadlines = calls.map((call, index) => Number(nativeDeadline(call.argv, [30_000, 60_000, 120_000, 600_000][index], elapsed[index])));
+    expect(deadlines[0]).toBeLessThan(deadlines[1]);
+    expect(deadlines[1]).toBeLessThan(deadlines[2]);
+    expect(deadlines[2]).toBeLessThan(deadlines[3]);
   } finally {
     await fixture.close();
   }
@@ -397,12 +420,14 @@ test.each(['exec', 'read'] as const)('snapshots %s call limits before waiting fo
     const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [peer] });
     const resolved = await transport.resolve(peer);
     const options = { timeoutMs: 30_000, maxBytes: 4 };
+    const started = performance.now();
     const pending = kind === 'exec' ? transport.exec(resolved, ['inspect'], options) : transport.read(resolved, '/fixture/artifact', options);
     options.maxBytes = 1;
     options.timeoutMs = 1;
     expect(await pending).toEqual(Buffer.from([1, 2, 3, 4]));
+    const elapsed = performance.now() - started;
     const call = (await fixture.calls()).find(entry => entry.argv.includes(kind === 'exec' ? 'inspect' : '/fixture/artifact'));
-    expect(call?.argv).toContain('30');
+    nativeDeadline(call?.argv ?? [], 30_000, elapsed);
   } finally {
     await fixture.close();
   }

@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { afterEach, expect, it } from 'vitest';
 import { applyIntercomSwitchover, filesystemSwitchoverPorts, migrateIntercomSettings } from '../../../../scripts/intercom-switchover.mjs';
 const roots: string[] = [];
@@ -39,9 +40,10 @@ it('a prepared journal survives failed rollback and recovers on retry', async ()
   const f = fixture(), original = readFileSync(f.settings, 'utf8');
   f.input.settingsFiles.push(f.project);
   let changed = false;
-  const ports = { ...f.ports, async writeAtomic(file: string, value: string) {
+  const ports = { ...f.ports, async compareAndSwap(file: string, before: string, after: string) {
     if (file === f.project || file === f.settings && changed) throw new Error('fixture interrupted');
-    await f.ports.writeAtomic(file, value); if (file === f.settings) changed = true;
+    const result = await f.ports.compareAndSwap(file, before, after); if (file === f.settings && result) changed = true;
+    return result;
   } };
   await expect(applyIntercomSwitchover(f.input, ports)).rejects.toThrow('Switchover rollback pending');
   expect(JSON.parse(readFileSync(f.input.journalFile, 'utf8')).state).toBe('prepared');
@@ -56,6 +58,14 @@ it('an incomplete backup is never trusted', async () => {
   await expect(applyIntercomSwitchover(f.input, f.ports)).rejects.toThrow('Backup does not match original settings');
   expect(readFileSync(f.settings, 'utf8')).toBe(original);
   expect(await f.ports.activeRelease()).toBe('previous-release');
+}, 5000);
+it('refuses a backup changed after a rolled-back attempt', async () => {
+  const f = fixture(), original = readFileSync(f.settings, 'utf8');
+  const ports = { ...f.ports, async activate() { throw new Error('fixture activation failed'); } };
+  await expect(applyIntercomSwitchover(f.input, ports)).rejects.toThrow('fixture activation failed');
+  writeFileSync(f.settings + '.intercom-fixture-switch.bak', 'changed backup');
+  await expect(applyIntercomSwitchover(f.input, f.ports)).rejects.toThrow('Backup does not match original settings');
+  expect(readFileSync(f.settings, 'utf8')).toBe(original);
 }, 5000);
 it('relative legacy resources are removed in their selected settings scope', async () => {
   const f = fixture();
@@ -76,6 +86,47 @@ it('removes git and SSH declarations for the legacy package but keeps lookalikes
   const result = JSON.parse(migrateIntercomSettings(JSON.stringify({ packages: [...legacy, { source: legacy[0] }, ...other] }), []));
   expect(result.packages).toEqual(other);
 });
+it('refuses a concurrent settings edit and retries from the new contents', async () => {
+  const f = fixture();
+  const edited = { ...JSON.parse(readFileSync(f.settings, 'utf8')), theme: 'concurrent-theme', retained: true };
+  let injected = false;
+  const ports = { ...f.ports, async backup(file: string, value: string) {
+    await f.ports.backup(file, value);
+    if (!injected) { injected = true; writeFileSync(f.settings, JSON.stringify(edited)); }
+  } };
+  await expect(applyIntercomSwitchover(f.input, ports)).rejects.toThrow(/settings changed.*retry/i);
+  expect(JSON.parse(readFileSync(f.settings, 'utf8'))).toEqual(edited);
+  expect(await f.ports.activeRelease()).toBe('previous-release');
+  await applyIntercomSwitchover(f.input, f.ports);
+  expect(JSON.parse(readFileSync(f.settings, 'utf8'))).toMatchObject({ theme: 'concurrent-theme', retained: true, packages: ['npm:other'] });
+}, 5000);
+
+it('refuses to roll back settings changed after the switchover write', async () => {
+  const f = fixture();
+  const ports = { ...f.ports, async activate(release: string) {
+    if (release === f.release) {
+      const edited = JSON.parse(readFileSync(f.settings, 'utf8')); edited.theme = 'edited-after-write';
+      writeFileSync(f.settings, JSON.stringify(edited)); throw new Error('activation failed');
+    }
+    await f.ports.activate(release);
+  } };
+  await expect(applyIntercomSwitchover(f.input, ports)).rejects.toThrow(/rollback pending/i);
+  expect(JSON.parse(readFileSync(f.settings, 'utf8'))).toMatchObject({ theme: 'edited-after-write', packages: ['npm:other'] });
+  expect(await f.ports.activeRelease()).toBe('previous-release');
+  expect(JSON.parse(readFileSync(f.input.journalFile, 'utf8')).state).toBe('prepared');
+}, 5000);
+
+it('does not write settings while the pi lock is held', async () => {
+  const f = fixture(), before = readFileSync(f.settings, 'utf8');
+  const piRequire = createRequire(import.meta.resolve('@earendil-works/pi-coding-agent'));
+  const release = piRequire('proper-lockfile').lockSync(f.settings, { realpath: false });
+  try { await expect(applyIntercomSwitchover(f.input, f.ports)).rejects.toThrow(/lock.*retry/i); }
+  finally { release(); }
+  expect(readFileSync(f.settings, 'utf8')).toBe(before);
+  await applyIntercomSwitchover(f.input, f.ports);
+  expect(JSON.parse(readFileSync(f.settings, 'utf8')).packages).toEqual(['npm:other']);
+}, 5000);
+
 it('old package files remain reconnectable', async () => {
   const f = fixture(); await applyIntercomSwitchover(f.input, f.ports);
   expect(readFileSync(join(f.old, 'index.ts'), 'utf8')).toBe('legacy reconnect fixture');
@@ -85,7 +136,7 @@ it('a crash between settings writes is rolled back before retry', async () => {
   const f = fixture(), first = readFileSync(f.settings, 'utf8'), second = readFileSync(f.project, 'utf8');
   f.input.settingsFiles.push(f.project);
   let writes = 0;
-  const ports = { ...f.ports, async writeAtomic(file: string, value: string) { if (file === f.project && ++writes === 1) throw new Error('fixture crash'); return f.ports.writeAtomic(file, value); } };
+  const ports = { ...f.ports, async compareAndSwap(file: string, before: string, after: string) { if (file === f.project && ++writes === 1) throw new Error('fixture crash'); return f.ports.compareAndSwap(file, before, after); } };
   await expect(applyIntercomSwitchover(f.input, ports)).rejects.toThrow('fixture crash');
   expect(readFileSync(f.settings, 'utf8')).toBe(first);
   expect(readFileSync(f.project, 'utf8')).toBe(second);

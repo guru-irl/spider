@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readFile, rename } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, rmdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 function legacyDeclaration(value, roots, directory) {
@@ -37,13 +37,31 @@ export async function applyIntercomSwitchover(input, ports) {
   let journal = pending === null ? null : JSON.parse(pending);
   if (journal && journal.digest !== digest) throw new Error('Operation ID was reused with different inputs');
   if (journal?.state === 'done') return journal.result;
-  const rollback = async () => {
-    for (const change of journal.changes) await ports.writeAtomic(change.file, change.before);
-    await ports.activate(journal.previousRelease);
+  if (journal) {
+    for (const change of journal.changes) {
+      const backup = change.backup ?? change.file + `.intercom-${input.operationId}.bak`;
+      if (await ports.read(backup) !== change.before) throw new Error('Backup does not match original settings');
+    }
+  }
+  const rollback = async (attempted = journal.changes) => {
+    const restore = [];
+    for (const change of attempted) {
+      const current = await ports.read(change.file);
+      if (current === change.before) continue;
+      if (current !== change.after) throw new Error(`Settings changed after switchover; rollback refused: ${change.file}`);
+      restore.push(change);
+    }
+    const active = await ports.activeRelease();
+    if (active !== journal.previousRelease && active !== input.release) throw new Error('Active release changed; rollback refused');
+    for (const change of restore) {
+      if (!await ports.compareAndSwap(change.file, change.after, change.before)) throw new Error(`Settings changed during rollback; retry: ${change.file}`);
+    }
+    if (active !== journal.previousRelease) await ports.activate(journal.previousRelease);
     journal.state = 'rolled-back';
     await ports.writeAtomic(input.journalFile, JSON.stringify(journal));
   };
   if (journal?.state === 'prepared') await rollback();
+  const retrying = journal?.state === 'rolled-back';
   await ports.validateRelease(input.release);
   const changes = [];
   for (const file of input.settingsFiles) {
@@ -54,10 +72,24 @@ export async function applyIntercomSwitchover(input, ports) {
   }
   journal = { version: 1, digest, state: 'prepared', previousRelease: await ports.activeRelease(), changes };
   // Exclusive backup writes never replace the original bytes on retry.
-  for (const change of changes) await ports.backup(change.file + `.intercom-${input.operationId}.bak`, change.before);
+  for (const change of changes) {
+    const original = change.file + `.intercom-${input.operationId}.bak`;
+    const existing = retrying ? await ports.read(original) : null;
+    const backup = existing !== null && existing !== change.before
+      ? change.file + `.intercom-${input.operationId}.${createHash('sha256').update(change.before).digest('hex').slice(0, 16)}.bak` : original;
+    await ports.backup(backup, change.before);
+    change.backup = backup;
+  }
   await ports.writeAtomic(input.journalFile, JSON.stringify(journal));
+  const attempted = [];
   try {
-    for (const change of changes) await ports.writeAtomic(change.file, change.after);
+    for (const change of changes) {
+      attempted.push(change);
+      if (!await ports.compareAndSwap(change.file, change.before, change.after)) {
+        attempted.pop();
+        throw new Error(`Settings changed since read; retry switchover: ${change.file}`);
+      }
+    }
     await ports.activate(input.release);
     const result = { status: 'migration-pending', reason: 'legacy-broker-quiescence-unproved', release: input.release,
       settingsFiles: changes.map(change => change.file), retainedLegacyRoots: [...input.legacyRoots] };
@@ -65,8 +97,8 @@ export async function applyIntercomSwitchover(input, ports) {
     await ports.writeAtomic(input.journalFile, JSON.stringify(journal));
     return result;
   } catch (error) {
-    try { await rollback(); }
-    catch (rollbackError) { throw new AggregateError([error, rollbackError], 'Switchover rollback pending'); }
+    try { await rollback(attempted); }
+    catch (rollbackError) { throw new AggregateError([error, rollbackError], `Switchover rollback pending: ${rollbackError.message}`); }
     throw error;
   }
 }
@@ -93,6 +125,21 @@ async function writeAtomic(file, text) {
 export function filesystemSwitchoverPorts(activeFile) {
   const read = async file => await regularOwned(file) ? readFile(file, 'utf8') : null;
   return { read, writeAtomic,
+    async compareAndSwap(file, expected, next) {
+      // Pi's file settings storage uses proper-lockfile with realpath:false.
+      // Its lock is the exclusive directory beside the settings file.
+      const lock = file + '.lock';
+      try { await mkdir(lock, { mode: 0o700 }); }
+      catch (error) {
+        if (error.code === 'EEXIST') throw new Error(`Settings lock held; retry switchover: ${file}`);
+        throw error;
+      }
+      try {
+        if (await read(file) !== expected) return false;
+        await writeAtomic(file, next);
+        return true;
+      } finally { await rmdir(lock); }
+    },
     async backup(file, text) {
       if (await regularOwned(file)) {
         if (await readFile(file, 'utf8') !== text) throw new Error('Backup does not match original settings');

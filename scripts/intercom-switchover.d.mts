@@ -7,6 +7,7 @@ export interface SwitchoverResult {
 export interface SwitchoverPorts {
   read(file: string): Promise<string | null>;
   writeAtomic(file: string, text: string): Promise<void>;
+  compareAndSwap(file: string, expected: string, next: string): Promise<boolean>;
   backup(file: string, text: string): Promise<void>;
   validateRelease(release: string): Promise<void>;
   activeRelease(): Promise<string | null>;

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { buildFixture } from "../../../../scripts/test-bundle";
@@ -187,7 +187,7 @@ it("lost import result reconciles exact receipt", async () => {
     },
   };
   expect((await handleAgentOperation(request, destination.ports)).code).toBe(3);
-  expect(existsSync(installedFile)).toBe(true);
+  expect(existsSync(installedFile)).toBe(false);
   destination.ports.journal = openJournal(join(destination.root, "operations", "journal.db"));
   const replay = await handleAgentOperation(request, destination.ports);
   expect(replay.code).toBe(0);
@@ -214,7 +214,7 @@ it("replayed receipt after crash has null apply time and identical digest fields
   expect((await handleAgentOperation(request, destination.ports)).code).toBe(3);
   expect(firstReceipt).toMatchObject({ batchId: "batch-a", stream: batch.header.senderStream,
     through: batch.header.through, sha256: batch.sha256, applyMs: expect.any(Number) });
-  expect(existsSync(installedFile)).toBe(true);
+  expect(existsSync(installedFile)).toBe(false);
   const before = {
     todos: destination.db.prepare("SELECT id, uuid, text FROM todos").all(),
     events: destination.db.prepare("SELECT id, uuid FROM run_events").all(),
@@ -726,6 +726,45 @@ it("snapshots operation identity and arguments before asynchronous work", async 
   expect(ports.journal.read("changed-after-dispatch")).toEqual([]);
 }, 5000);
 
+it("an overlapping export waits for the peer lease and leaves no unrecorded snapshots", async () => {
+  const { db, ports, storeKey } = fixture();
+  await handleAgentOperation(operation("enable-overlap", "enable-capture", { storeKey }), ports);
+  db.prepare("INSERT INTO memory(uuid,category,content,created_at) VALUES ('memory-a','insight','portable',1)").run();
+  let entered!: () => void, release!: () => void;
+  const paused = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const exportActual = exportApi.exportBatch;
+  vi.spyOn(exportApi, "exportBatch").mockImplementationOnce(async (...args) => { const batch = await exportActual(...args); entered(); await gate; return batch; });
+  const request = operation("export-overlap", "export", { storeKey, after: 0, targetBytes: 4096, batchId: "overlap" });
+  const stale = handleAgentOperation(request, ports); await paused;
+  const retry = await handleAgentOperation(request, ports); release(); const completed = await stale;
+  expect(retry.code).toBe(3); expect(completed.code).toBe(0);
+  expect(await handleAgentOperation(request, ports)).toEqual(completed);
+  expect(readdirSync(join(dirname(db.raw.name), ".roam-batches")).filter(name => name.endsWith(".ndjson"))).toEqual([]);
+}, 5000);
+it("a stale export deletes its own snapshot when another result is already committed", async () => {
+  const { db, ports, storeKey } = fixture(), journal = ports.journal;
+  ports.journal = { ...journal, record(id, action, result) {
+    if (action === "export-snapshot") { journal.record(id, "done", { value: { header: result.header, artifact: null } }); throw new Error("another export completed"); }
+    journal.record(id, action, result);
+  } };
+  const request = operation("stale-snapshot", "export", { storeKey, after: 0, targetBytes: 4096, batchId: "stale" });
+  expect((await handleAgentOperation(request, ports)).code).toBe(3);
+  expect(readdirSync(join(dirname(db.raw.name), ".roam-batches")).filter(name => name.endsWith(".ndjson"))).toEqual([]);
+  expect((await handleAgentOperation(request, ports)).code).toBe(0);
+}, 5000);
+it("a stale import cleans receipted staging even when it loses the journal result race", async () => {
+  const { destination, installedFile, request } = await stagedImport(), journal = destination.ports.journal;
+  destination.ports.journal = { ...journal, record(id, action, result) {
+    if (action === "done") journal.record(id, action, { value: { ...(result.value as JsonObject), applyMs: null } });
+    journal.record(id, action, result);
+  } };
+  expect((await handleAgentOperation(request, destination.ports)).code).toBe(3);
+  expect(existsSync(installedFile)).toBe(false);
+  expect(destination.db.prepare("SELECT count(*) AS n FROM roam_receipts").get()).toEqual({ n: 1 });
+  destination.ports.journal = journal;
+  expect((await handleAgentOperation(request, destination.ports)).code).toBe(0);
+  expect(destination.db.prepare("SELECT count(*) AS n FROM roam_receipts").get()).toEqual({ n: 1 });
+}, 5000);
 it("concurrent exports reuse one committed result and clean every recorded snapshot", async () => {
   const { db, ports, storeKey } = fixture();
   expect((await handleAgentOperation(operation("enable-concurrent", "enable-capture", { storeKey }), ports)).code).toBe(0);
@@ -733,7 +772,8 @@ it("concurrent exports reuse one committed result and clean every recorded snaps
   const request = operation("concurrent-export", "export", { storeKey, after: 0, targetBytes: 4096, batchId: "batch-concurrent" });
   const replies = await Promise.all([handleAgentOperation(request, ports), handleAgentOperation(request, ports)]);
   expect(replies[0].code).toBe(0);
-  expect(replies[1]).toEqual(replies[0]);
+  expect(replies[1].code).toBe(3);
+  expect(await handleAgentOperation(request, ports)).toEqual(replies[0]);
   const snapshots = ports.journal.read(request.id).filter(row => row.action === "export-snapshot");
   expect(snapshots.length).toBeGreaterThan(0);
   for (const saved of snapshots) expect(existsSync(saved.result.file as string)).toBe(false);

@@ -10,10 +10,10 @@ export const roamStoryIds = ['R01', 'R02'];
 const allStoryIds = [...storyIds, ...roamStoryIds];
 const validStoryId = id => typeof id === 'string' && (allStoryIds.includes(id) || /^H-[a-z0-9-]+$/.test(id));
 export const profileIds = {
-  headless: [...storyIds.filter(id => id !== 'S53'), 'R01'],
+  headless: [...storyIds.filter(id => id !== 'S53'), 'R01', 'R02'],
   ci: ['S03', 'S04', 'S14', 'S27', 'S45', 'S46', 'S47', 'S48', 'S49', 'S51', 'S55', 'S56'],
   remote: ['H-tier2-smoke', 'S05', 'S07', ...storyIds.slice(14, 26), 'S28', 'S36', 'S45', 'S48'],
-  app: [...storyIds.slice(0, 3), ...storyIds.slice(4, 13), ...storyIds.slice(14, 23), 'S25', ...storyIds.slice(25, 44).filter(id => id !== 'S27'), 'S50', 'S51', ...storyIds.slice(51, 54), 'R02'],
+  app: [...storyIds.slice(0, 3), ...storyIds.slice(4, 13), ...storyIds.slice(14, 23), 'S25', ...storyIds.slice(25, 44).filter(id => id !== 'S27'), 'S50', 'S51', ...storyIds.slice(51, 54)],
 };
 const taskIds = {
   setup: ['S04', ...storyIds.slice(4, 12), 'S14'],

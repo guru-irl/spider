@@ -128,6 +128,6 @@ async function closedAppPlacement(suite: Suite): Promise<void> {
 
 export const scenarios: readonly ScenarioDefinition[] = [
   { id: storyId('R01'), title: 'two isolated cores sync capture and session home through the packed CLI', tiers: ['headless'], run: twoCoreSync },
-  { id: storyId('R02'), title: 'closed-app placement adapter only with synthetic readiness (packaged observer path deferred to Task 3.4)', tiers: ['app'], run: closedAppPlacement },
+  { id: storyId('R02'), title: 'closed-app placement adapter only with synthetic readiness (packaged observer path deferred to Task 3.4)', tiers: ['headless'], run: closedAppPlacement },
 ];
 registerScenarios(scenarios);

@@ -29,7 +29,7 @@ Use `StoryId` as required by the foundation's type declarations. `scenario` and 
 
 Selection is dynamic by tier and ID. `--story S52,S54` and `--task setup|remote|subagents|lifecycle|panels|ssh|runner|roam` select stories; a missing requested ID, duplicate ID, wrong-tier selection, or malformed export fails. `--shuffle --seed fixture` changes execution order reproducibly. `--harness` also runs foundation, native utility, confidence, and `fixtures/**/*.test.ts` tests. Configuration fails with the filename if a harness test falls outside those include patterns.
 
-R01 exercises sync through the packed CLI and two isolated cores in the headless tier. R02 exercises the placement adapter directly with synthetic readiness and a closed app in the app tier. It does not cover the packaged observer-to-placement path, which is deferred to Task 3.4. Both stories run serially and are not exercised in CI.
+R01 exercises sync through the packed CLI and two isolated cores in the headless tier. R02 exercises the placement adapter directly with synthetic readiness and a closed app, also in the headless tier, because it never starts the native app. It does not cover the packaged observer-to-placement path, which is deferred to Task 3.4. Both stories run serially and are not exercised in CI.
 
 ## Results
 

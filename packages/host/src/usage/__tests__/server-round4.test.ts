@@ -25,6 +25,32 @@ async function launched(f: any, overrides?: any) {
   expect(result.code, result.stderr).toBe(0);
   const row = JSON.parse(result.stdout); f.pids.add(row.pid); return row;
 }
+async function launchCohort(f: any, h: any, expected: string, start: (launch: (options?: any) => void) => Promise<void>) {
+  const guard = `${f.options.lockFile}.guard`, id = "b".repeat(32);
+  const processIdentity = await runtime.usageProcessIdentity(process.pid);
+  expect(processIdentity).toBeTypeOf("string");
+  await lock.writeServerRecord(guard, { version: 1, instanceId: id, pid: process.pid, processIdentity, createdAt: Date.now() }, true);
+  const pending: Promise<any>[] = [];
+  const launch = (options?: any) => {
+    const result = launched(f, options);
+    // A launcher can fail while the stagger or intent wait is still in progress.
+    void result.catch(() => {});
+    pending.push(result);
+  };
+  let failure: { error: unknown } | undefined;
+  try {
+    await start(launch);
+    // Spawning a process does not guarantee that it has advertised yet.
+    await h.waitFor(async () => JSON.parse(await readFile(join(f.privateDir, "replace-intent.json"), "utf8").catch(() => "null"))?.serverBuild === expected);
+  } catch (error) { failure = { error }; }
+  finally { await lock.removeServerRecord(guard, id); }
+  const rows = (await Promise.allSettled(pending)).map(result => {
+    if (result.status === "rejected") throw result.reason;
+    return result.value;
+  });
+  if (failure) throw failure.error;
+  return rows;
+}
 async function marker(f: any, build: string) {
   const file = join(f.privateDir, "replace-intent.json");
   await lock.writeServerRecord(file, { version: 1, instanceId: "a".repeat(32), serverBuild: build,
@@ -39,18 +65,22 @@ for (const kind of ["cold mixed builds", "two newer builds", "staggered newer bu
       const newUrl = await fixtures.buildBundle(h.NEW_BUILD), newestUrl = await fixtures.buildBundle(NEWEST);
       if (kind !== "cold mixed builds") await launched(f);
       const n1 = { bundleUrl: newUrl, serverBuild: h.NEW_BUILD }, n2 = { bundleUrl: newestUrl, serverBuild: NEWEST };
-      let rows: any[];
-      if (kind === "staggered newer builds") {
-        const a = launched(f, n1);
-        await new Promise(resolve => setTimeout(resolve, round * 30));
-        rows = await Promise.all([a, launched(f, n2)]);
-      } else {
-        const order = kind === "cold mixed builds" ? [undefined, n1, undefined, n1, undefined, undefined] : [n1, undefined, n2, undefined, n1, n2, undefined, undefined];
-        rows = await Promise.all(order.map(o => launched(f, o)));
-      }
       const expected = kind === "cold mixed builds" ? h.NEW_BUILD : NEWEST;
-      expect(JSON.parse(await readFile(f.options.lockFile, "utf8")).serverBuild).toBe(expected);
+      const rows = await launchCohort(f, h, expected, async launch => {
+        if (kind === "staggered newer builds") {
+          launch(n1);
+          // This is the stagger being tested, not a readiness wait.
+          await new Promise(resolve => setTimeout(resolve, round * 30));
+          launch(n2);
+        } else {
+          const order = kind === "cold mixed builds" ? [undefined, n1, undefined, n1, undefined, undefined] : [n1, undefined, n2, undefined, n1, n2, undefined, undefined];
+          for (const options of order) launch(options);
+        }
+      });
+      const owner = JSON.parse(await readFile(f.options.lockFile, "utf8"));
+      expect(owner.serverBuild).toBe(expected);
       expect(new Set(rows.map(r => r.pid)).size, `round ${round}`).toBe(1);
+      expect(owner.pid, `round ${round}`).toBe(rows[0].pid);
       for (const row of rows) {
         const u = new URL(row.bootstrapUrl);
         expect((await h.reply(row.port, u.pathname + u.search)).status, `round ${round}`).toBe(303);

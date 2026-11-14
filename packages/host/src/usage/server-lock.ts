@@ -137,7 +137,9 @@ export async function sweepServerRecordTemps(dir: string): Promise<void> {
   for (const name of readdirSync(dir)) {
     if (!/^(?:lock\.json|startup\.json|replace-intent\.json|crash\.log)\.[a-f0-9]{32}$/.test(name)) continue;
     const file = `${dir}/${name}`;
-    if (Date.now() - lstatSync(file).mtimeMs < SERVER_RECORD_GRACE_MS) continue;
+    // A publisher may move a temporary record after the directory listing.
+    try { if (Date.now() - lstatSync(file).mtimeMs < SERVER_RECORD_GRACE_MS) continue; }
+    catch (error) { if (missing(error)) { assertPrivateServerDir(dir); continue; } throw error; }
     if (name.startsWith("replace-intent.json.")) {
       let record: Record<string, unknown> | undefined;
       try { record = readRecord(file); } catch { /* Unsafe temp: quarantine without following it. */ }

@@ -25,7 +25,14 @@ it("starts the server when a listed temporary intent disappears", async () => {
   await writeFile(disappearing, "temporary", { mode: 0o600 });
   await writeFile(stale, "temporary", { mode: 0o600 });
   await utimes(stale, new Date(0), new Date(0));
-  const lstat = fs.lstatSync as any;
+  const lstat = fs.lstatSync as any, readdir = fs.readdirSync as any;
+  // List the vanishing record first, so the stale record proves the sweep keeps going.
+  vi.spyOn(fs, "readdirSync").mockImplementation(((dir: fs.PathLike, options?: any) => {
+    const names = readdir(dir, options);
+    if (dir !== f.privateDir || options !== undefined) return names;
+    const first = `replace-intent.json.${"a".repeat(32)}`;
+    return [...names].sort((a: string, b: string) => Number(b === first) - Number(a === first));
+  }) as typeof fs.readdirSync);
   vi.spyOn(fs, "lstatSync").mockImplementation(((file: fs.PathLike, options?: any) => {
     if (file === disappearing) unlinkSync(disappearing);
     return lstat(file, options);

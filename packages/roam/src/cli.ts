@@ -28,7 +28,7 @@ const HELP = `Usage: spider <command>
   spider roam sync [machine]
   spider roam enable|disable
   spider roam doctor [machine]
-  spider roam provision <machine> [--release <tarball>] [--yes --consent copilot-auth] [--operation-id <id>]
+  spider roam provision <machine> [--release <tarball>] [--skill <name>]... [--yes --consent copilot-auth] [--consent-provider <name>]... [--operation-id <id>]
   spider roam stop|resume <session>
   spider roam repo map <repo-key> <path>
   spider roam memory tag <store-key> <uuid> <machine|all>
@@ -160,19 +160,22 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
   if (argv[0] === "roam" && argv[1] === "provision") {
     if (!positional(argv[2], false)) { io.err("Invalid provisioning target.\n"); return 2; }
     let release: string | undefined, operationId: string | undefined, yes = false, consent: string | null = null;
-    const seen = new Set<string>();
+    const seen = new Set<string>(), skills: string[] = [], consentedProviders: string[] = [];
     for (let index = 3; index < argv.length; index++) {
       const flag = argv[index];
-      if (seen.has(flag) || !["--release", "--yes", "--consent", "--operation-id"].includes(flag)) { io.err("Invalid provisioning arguments.\n"); return 2; }
+      if (flag !== "--skill" && flag !== "--consent-provider" && seen.has(flag) ||
+          !["--release", "--yes", "--consent", "--operation-id", "--skill", "--consent-provider"].includes(flag)) { io.err("Invalid provisioning arguments.\n"); return 2; }
       seen.add(flag);
       if (flag === "--yes") { yes = true; continue; }
       const value = argv[++index];
       if (!positional(value, false)) { io.err("Invalid provisioning arguments.\n"); return 2; }
       if (flag === "--release") { if (!isAbsolute(value)) { io.err("The release must be an absolute path.\n"); return 2; } release = value; }
       else if (flag === "--consent") consent = value;
+      else if (flag === "--skill") skills.push(value);
+      else if (flag === "--consent-provider") consentedProviders.push(value);
       else operationId = value;
     }
-    return runProvisionCli({ root, target: argv[2], release, yes, consent, operationId }, io, { bundleUrl: options?.bundleUrl });
+    return runProvisionCli({ root, target: argv[2], release, yes, consent, operationId, skills, consentedProviders }, io, { bundleUrl: options?.bundleUrl });
   }
   const parsed = normalize(argv);
   argv = parsed.args;

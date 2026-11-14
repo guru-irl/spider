@@ -3,6 +3,8 @@ import { builtinModules } from "node:module";
 
 const entries = {
   cli: "packages/roam/src/cli-entry.ts",
+  "cli-main": "packages/roam/src/cli.ts",
+  "intercom-helper": "packages/roam/src/intercom-helper.ts",
   supervisor: "packages/roam/src/supervisor-main.ts",
 };
 const builtins = new Set(builtinModules.flatMap(name => [name, `node:${name}`]));
@@ -24,7 +26,8 @@ export default defineConfig(({ mode }) => {
       target: "node22", outDir: "dist/roam", emptyOutDir: mode === "cli",
       minify: false, sourcemap: false, ssr: entry,
       rollupOptions: {
-        external: id => builtins.has(id) || native.some(name => id === name || id.startsWith(`${name}/`)),
+        external: id => builtins.has(id) || native.some(name => id === name || id.startsWith(`${name}/`)) ||
+          mode === "cli" && (id === "./cli-main.mjs" || id === "./intercom-helper.mjs"),
         output: {
           format: "es", entryFileNames: `${mode}.mjs`, codeSplitting: false,
           banner: "#!/usr/bin/env node",

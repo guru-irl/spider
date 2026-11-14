@@ -58,6 +58,22 @@ function interrupted() {
   console.error(JSON.stringify({ error: { kind: 'server_stopped', message: 'Fixture core restarted' } }));
   process.exitCode = 3;
 }
+async function executeIntercomFixture(command, input) {
+  const inside = path => realpathSync(path).startsWith(realpathSync(root) + '/');
+  if (command.length !== 7 || command[0] !== process.execPath || !inside(command[1]) || command[2] !== '--global-root' || !inside(command[3]) ||
+      command[4] !== 'roam' || command[5] !== 'intercom' || command[6] !== 'exchange') throw new Error('Unfenced fixture intercom helper');
+  return new Promise((resolve, reject) => {
+    const child = spawn(command[0], command.slice(1), { cwd: process.cwd(), env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: command[3] }, stdio: ['pipe', 'pipe', 'pipe'] });
+    appendFileSync(`${root}/helper-pids.jsonl`, JSON.stringify({ pid: child.pid, parentPid: process.pid }) + '\n');
+    const stdout = [], stderr = [];
+    const terminate = () => { child.kill('SIGTERM'); process.exitCode = 143; };
+    process.once('SIGTERM', terminate);
+    child.stdout.on('data', bytes => stdout.push(bytes)); child.stderr.on('data', bytes => stderr.push(bytes));
+    child.once('error', error => { process.off('SIGTERM', terminate); reject(error); });
+    child.once('close', code => { process.off('SIGTERM', terminate); resolve({ code, stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr) }); });
+    child.stdin.on('error', reject); child.stdin.end(input);
+  });
+}
 async function executeAgentFixture(command, input) {
   const inside = path => realpathSync(path).startsWith(realpathSync(root) + '/');
   if (command[0] !== process.execPath || !inside(command[1]) || command[2] !== '--global-root' || !inside(command[3]) || command[4] !== 'roam' || command[5] !== 'agent') {
@@ -110,7 +126,17 @@ if (config.rawReplyBase64 !== undefined) {
     const command = end < 0 ? [] : argv.slice(end + 1);
     let output, programFailed = false;
     if (command[0] === 'cat') output = readFileSync(roamFile(on, command.at(-1)));
-    else if (config.roamFixture.executeAgentFixture) {
+    else if (Number.isSafeInteger(config.roamFixture.execHoldMs) && config.roamFixture.execHoldMs > 0 && config.roamFixture.execHoldMs <= 60_000) {
+      if (flags.includes('--stdin')) for await (const _chunk of process.stdin) { /* Drain only the fixture pipe. */ }
+      await delay(config.roamFixture.execHoldMs); output = Buffer.alloc(0);
+    }
+    else if (config.roamFixture.executeIntercomFixture) {
+      const chunks = [];
+      if (flags.includes('--stdin')) for await (const chunk of process.stdin) chunks.push(chunk);
+      const result = await executeIntercomFixture(command, Buffer.concat(chunks));
+      output = result.stdout;
+      if (result.code !== 0) { process.stdout.write(output); process.stderr.write(result.stderr); process.exitCode = result.code ?? 1; programFailed = true; }
+    } else if (config.roamFixture.executeAgentFixture) {
       const chunks = [];
       if (flags.includes('--stdin')) for await (const chunk of process.stdin) chunks.push(chunk);
       const result = await executeAgentFixture(command, Buffer.concat(chunks));

@@ -6,6 +6,11 @@ export { createDeliveryObserver, createIntercomDeliveryObserver } from "./delive
 export type { DeliveryObservation, GenerationExclusion, IntercomObservationPorts } from "./delivery-observation.js";
 
 export const FEDERATION_FEATURE = "federation-v1";
+export const HELPER_EXCHANGE_FEATURE = "intercom-exchange-v1";
+export const HELPER_EXCHANGE_ERRORS: readonly string[] = ["machine-not-enrolled", "machine-mismatch", "stale-generation", "invalid-request",
+  "invalid-presence", "invalid-refusal", "invalid-receipt", "invalid-reply", "unsupported-broker", "helper-unauthorized",
+  "cli-aborted", "bridge-unavailable", "exchange-too-large", "endpoint-exited"];
+export const isHelperExchangeError = (value: unknown): value is string => typeof value === "string" && HELPER_EXCHANGE_ERRORS.includes(value);
 
 /** Logical identity. Machine aliases and endpoint generations are replaceable routes. */
 export interface SessionAddress { sessionId: string; scopeId: string | null }
@@ -70,6 +75,8 @@ export type FederationClientMessage =
   | { type: "federation_deliver"; requestId: string; from: RemoteSessionInfo; to: SessionEndpoint; message: Message }
   | { type: "federation_deliver_receipt"; from: RemoteSessionInfo; to: SessionAddress; receipt: MessageReceipt }
   | { type: "federation_deliver_control"; from: RemoteSessionInfo; to: SessionAddress; control: MessageControl }
+  | { type: "helper_authorize"; requestId: string; token: string }
+  | { type: "federation_helper_result"; requestId: string; output?: unknown; error?: string }
   | { type: "inspect_blockers"; requestId: string; address: SessionAddress };
 export type FederationBrokerMessage =
   | { type: "federation_registered"; features: string[] }
@@ -78,6 +85,9 @@ export type FederationBrokerMessage =
   | { type: "federation_receipt"; from: SessionAddress; receipt: MessageReceipt }
   | { type: "federation_control"; from: SessionAddress; to: SessionAddress; control: MessageControl }
   | { type: "federation_delivery_result"; requestId: string; result: FederationDispatchResult }
+  | { type: "helper_authorized"; requestId: string }
+  | { type: "federation_helper_exchange"; requestId: string; input: unknown; deadlineMs: number }
+  | { type: "federation_helper_cancel"; requestId: string }
   | { type: "blockers"; requestId: string; blockers: FederationBlockers };
 
 /** Validate the receipt after authenticating its route and immutable message identity. */

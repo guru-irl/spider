@@ -145,13 +145,16 @@ function validReceipt(value: unknown): boolean {
   return true;
 }
 function validExchange(value: unknown): value is IntercomExchange {
-  if (!record(value) || !keys(value, ["protocol", "senderMachine", "recipientMachine", "generation", "frames", "acknowledgements", "receipts", "controls", "presence", "resumptions"])
+  if (!record(value) || !keys(value, ["protocol", "senderMachine", "recipientMachine", "generation", "frames", "acknowledgements", "refusals", "receipts", "receiptAcknowledgements", "controls", "presence", "resumptions"])
       || value.protocol !== 1 || !isMachineId(value.senderMachine) || !isMachineId(value.recipientMachine)
       || value.senderMachine === value.recipientMachine || !validGeneration(value.generation)) return false;
   if (!Array.isArray(value.frames) || !value.frames.every(item => validFrame(item) && encode(item, INTERCOM_MESSAGE_BYTES).byteLength <= INTERCOM_MESSAGE_BYTES)) return false;
   if (!Array.isArray(value.acknowledgements) || !value.acknowledgements.every(item => record(item) && keys(item, ["identity", "kind"])
       && validIdentity(item.identity) && (item.kind === "message" || item.kind === "tombstone"))) return false;
+  if (value.refusals !== undefined && (!Array.isArray(value.refusals) || !value.refusals.every(item => record(item) && keys(item, ["identity", "reason"]) &&
+      validIdentity(item.identity) && (item.reason === "queue-full" || item.reason === "message-too-large" || item.reason === "machine-not-enrolled" || item.reason === "link-down")))) return false;
   if (!Array.isArray(value.receipts) || !value.receipts.every(validReceipt)) return false;
+  if (value.receiptAcknowledgements !== undefined && (!Array.isArray(value.receiptAcknowledgements) || !value.receiptAcknowledgements.every(validReceipt))) return false;
   if (!Array.isArray(value.controls) || !value.controls.every(item => record(item) && keys(item, ["from", "to", "control"])
       && isSessionAddress(item.from) && isSessionAddress(item.to) && item.from.scopeId === item.to.scopeId
       && isMessageControl(item.control) && record(item.control) && keys(item.control, ["messageId", "action", "timestamp", "supersededBy", "detail"])

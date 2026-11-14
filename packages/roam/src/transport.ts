@@ -41,10 +41,16 @@ function samePeer(a: Peer, b: Peer): boolean {
 }
 function snapshotCall(options: CallOptions): CallOptions {
   return { timeoutMs: options.timeoutMs, maxBytes: options.maxBytes,
-    ...(options.stdin === undefined ? {} : { stdin: Buffer.from(options.stdin) }) };
+    ...(options.stdin === undefined ? {} : { stdin: Buffer.from(options.stdin) }),
+    ...(options.remoteTimeoutMs === undefined ? {} : { remoteTimeoutMs: options.remoteTimeoutMs }),
+    ...(options.postReserveMs === undefined ? {} : { postReserveMs: options.postReserveMs }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.stdinForTimeout === undefined ? {} : { stdinForTimeout: options.stdinForTimeout }),
+    ...(options.onConnected === undefined ? {} : { onConnected: options.onConnected }) };
 }
 function privateProtocol(argv: readonly string[]): boolean {
-  return argv[0] === 'roam' && (argv[1] === 'agent' || argv[1] === 'observe' || argv[1] === 'artifact' && argv[2] === 'receive');
+  return argv[0] === 'roam' && (argv[1] === 'agent' || argv[1] === 'observe' || argv[1] === 'artifact' && argv[2] === 'receive' ||
+    argv[1] === 'intercom' && argv[2] === 'exchange');
 }
 function remoteArgs(peer: Peer, argv: readonly string[]): string[] {
   return [peer.node, peer.cli, ...(privateProtocol(argv) ? ['--global-root', peer.globalRoot] : []), ...argv];
@@ -81,7 +87,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
   const handles = new WeakMap<Peer, Resolved>();
   const provisionCores = new Map<string, CoreObservation>();
 
-  async function observe(alias: string, signal: AbortSignal): Promise<CoreObservation> {
+  async function observe(alias: string, signal: AbortSignal): Promise<{ core: CoreObservation; connected: boolean }> {
     const call = { timeoutMs: DEFAULT_LIMITS.controlMs, signal };
     const local = parseCore(await invokeCli(binary, ['server', 'status', '--json'], env, DEFAULT_LIMITS.replyBytes, undefined, call), env).coreId;
     const reply = object(await invokeCli(binary, ['machine', 'ls', '--json'], env, DEFAULT_LIMITS.replyBytes, undefined, call));
@@ -92,7 +98,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
     const matches = exact.length ? exact : rows.filter(machine => machineAliases(machine).includes(normalized));
     if (!matches.length) throw new HerdrError('machine-not-found', 'The enrolled machine is unavailable');
     if (matches.length !== 1) throw new HerdrError('machine-ambiguous', 'The enrolled machine alias is ambiguous');
-    return { local, remote: text(matches[0].id) };
+    return { core: { local, remote: text(matches[0].id) }, connected: matches[0].state === 'connected' };
   }
 
   function invalidate(alias: string, expected: Resolved | undefined, reason: Resolved['invalidated'] = 'peer-invalidated'): void {
@@ -118,7 +124,8 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
   }
 
   async function bracket<T>(route: Route, expected: Resolved | undefined, timeoutMs: number,
-    call: (signal: AbortSignal, remainingMs: number, core: CoreObservation) => Promise<T>): Promise<{ value: T; core: CoreObservation }> {
+    call: (signal: AbortSignal, remainingMs: number, core: CoreObservation) => Promise<T>,
+    options?: { signal?: AbortSignal; onConnected?: (connected: boolean) => void }): Promise<{ value: T; core: CoreObservation }> {
     const alias = route.peer.alias;
     const observed = expected ?? current.get(alias);
     const requireEnrollment = () => {
@@ -128,6 +135,9 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
     };
     deadline(timeoutMs);
     const aborter = new AbortController();
+    const aborted = () => aborter.abort();
+    if (options?.signal?.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted');
+    options?.signal?.addEventListener('abort', aborted, { once: true });
     const expiresAt = performance.now() + timeoutMs;
     let timedOut = false;
     const timeout = () => Object.assign(new HerdrError('cli-timeout', `Herdr request exceeded ${timeoutMs} ms`, { timeoutMs }), { retryable: true as const });
@@ -139,46 +149,49 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
     const timer = setTimeout(() => { timedOut = true; aborter.abort(); }, timeoutMs);
     try {
       requireEnrollment();
-      let before: CoreObservation;
+      let before: Awaited<ReturnType<typeof observe>>;
       try { before = await observe(alias, aborter.signal); }
       catch (error) { invalidate(alias, observed); throw observationFailure(error); }
       if (expected && current.get(alias) !== expected) throw invalidHandle(expected);
-      if (expected && !sameCore(before, expected.core)) {
+      if (expected && !sameCore(before.core, expected.core)) {
         invalidate(alias, expected, 'core-changed'); throw coreChanged();
       }
       requireEnrollment();
+      options?.onConnected?.(before.connected);
       let value: T | undefined;
       let failure: unknown;
       let failed = false;
-      try { value = await call(aborter.signal, remaining(), before); }
+      try { value = await call(aborter.signal, remaining(), before.core); }
       catch (error) { failed = true; failure = error; }
-      let after: CoreObservation;
+      if (aborter.signal.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted');
+      let after: Awaited<ReturnType<typeof observe>>;
       try { after = await observe(alias, aborter.signal); }
       catch (error) { invalidate(alias, observed); throw observationFailure(error); }
-      if (!sameCore(before, after)) {
+      if (!sameCore(before.core, after.core)) {
         invalidate(alias, observed, 'core-changed'); throw coreChanged();
       }
       if (expected && current.get(alias) !== expected) throw invalidHandle(expected);
       requireEnrollment();
       remaining();
       if (failed) throw failure;
-      return { value: value as T, core: before };
+      return { value: value as T, core: before.core };
     } catch (error) {
       if (timedOut || performance.now() >= expiresAt) { invalidate(alias, observed); throw timeout(); }
+      if (options?.signal?.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted');
       throw error;
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); options?.signal?.removeEventListener('abort', aborted); }
   }
 
   const transport: Transport = {
-    async resolve(peer) {
+    async resolve(peer, options) {
       const configured = Object.freeze({ ...enrollment(peer) });
       const previous = current.get(configured.alias);
       const file = posix.join(configured.globalRoot, 'roam', 'machine.json');
       const pinned = provisionCores.get(configured.alias);
-      const observation = await bracket({ kind: 'enrolled', peer: configured }, undefined, DEFAULT_LIMITS.fileMs, (signal, remainingMs, core) => {
+      const observation = await bracket({ kind: 'enrolled', peer: configured }, undefined, options?.timeoutMs ?? DEFAULT_LIMITS.fileMs, (signal, remainingMs, core) => {
         if (pinned && !sameCore(core, pinned)) throw coreChanged();
         return client.exec(configured.alias, ['cat', '--', file], { timeoutMs: remainingMs, maxBytes: DEFAULT_LIMITS.replyBytes, signal });
-      })
+      }, { signal: options?.signal })
         .catch(error => { invalidate(configured.alias, previous); throw error; });
       let machineId: unknown;
       try { machineId = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(observation.value))).machineId; }
@@ -225,7 +238,8 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       const args = remoteArgs(state.peer, argv);
       const call = snapshotCall(options);
       return (await bracket({ kind: 'enrolled', peer: state.peer }, state, call.timeoutMs, (signal, remainingMs) =>
-        client.exec(state.peer.alias, args, { ...call, timeoutMs: remainingMs, signal }))).value;
+        client.exec(state.peer.alias, args, { ...call, timeoutMs: remainingMs, signal }),
+      { signal: call.signal, onConnected: call.onConnected })).value;
     },
     async run(peer, argv, operationId) {
       if (!operationId || /[\u0000-\u001f\u007f]/.test(operationId)) {

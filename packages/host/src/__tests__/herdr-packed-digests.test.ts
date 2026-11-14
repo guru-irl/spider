@@ -6,7 +6,7 @@ import { expect, it } from 'vitest';
 // @ts-ignore Runtime-tested JavaScript runner boundary.
 import { packEntryDigests } from '../../../../scripts/herdr-e2e.mjs';
 
-const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs'];
+const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/cli-main.mjs', 'roam/intercom-helper.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs'];
 
 it('hashes the checkout after pack has rebuilt dist, matching the bytes in the tarball', async () => {
   const root = mkdtempSync(join(process.cwd(), '.spider/scratch/packed-digests-'));

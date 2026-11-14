@@ -5,7 +5,7 @@ import { build } from "vite";
 
 export async function buildRoamEntries(outDir = resolve("dist/roam")) {
   const configFile = fileURLToPath(new URL("../vite.roam.config.mjs", import.meta.url));
-  for (const mode of ["cli", "supervisor"]) {
+  for (const mode of ["cli", "cli-main", "intercom-helper", "supervisor"]) {
     await build({ configFile, mode, build: { outDir } });
     chmodSync(join(outDir, `${mode}.mjs`), 0o700);
   }

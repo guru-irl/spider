@@ -131,6 +131,14 @@ export function parseFederationBrokerMessage(value: unknown): import("../protoco
       return isSessionAddress(value.from) && isSessionAddress(value.to) && isMessageControl(value.control) ? { type: value.type, from: value.from, to: value.to, control: value.control } : null;
     case "federation_delivery_result":
       return nonempty(value.requestId) && isFederationDispatchResult(value.result) ? { type: value.type, requestId: value.requestId, result: value.result } : null;
+    case "helper_authorized":
+      return nonempty(value.requestId) ? { type: value.type, requestId: value.requestId } : null;
+    case "federation_helper_exchange":
+      return nonempty(value.requestId) && Object.hasOwn(value, "input") && Number.isSafeInteger(value.deadlineMs) &&
+        Number(value.deadlineMs) > 0 && Number(value.deadlineMs) <= 30_000
+        ? { type: value.type, requestId: value.requestId, input: value.input, deadlineMs: Number(value.deadlineMs) } : null;
+    case "federation_helper_cancel":
+      return nonempty(value.requestId) ? { type: value.type, requestId: value.requestId } : null;
     case "blockers":
       return nonempty(value.requestId) && isBlockers(value.blockers) ? { type: value.type, requestId: value.requestId, blockers: value.blockers } : null;
     default: return null;

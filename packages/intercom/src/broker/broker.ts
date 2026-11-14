@@ -1,10 +1,10 @@
 import { createFederation } from "./federation.js";
-import { FEDERATION_FEATURE, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
+import { FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
 import { isRemoteSessionInfo, isSessionAddress, isSessionEndpoint, isFederationDispatchResult, isMessageControl, isConsumptionReceipt } from "./protocol.js";
 import net from "net";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "fs";
 import { join } from "path";
-import { createHash, randomUUID } from "crypto";
+import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { isMessage, isMessageReceipt, isSessionId, isSessionRegistration } from "./protocol.js";
 import {
@@ -42,6 +42,8 @@ const PRESENCE_HEARTBEAT_MS = 1000;
 const MAX_EXTENSIONS_PER_SESSION = 32;
 const MAX_EXTENSION_MESSAGE_BYTES = 16 * 1024;
 const MAX_EXTENSION_STATE_BYTES = 64 * 1024;
+const MAX_HELPER_EXCHANGE_BYTES = 512 * 1024;
+const MAX_HELPER_DEADLINE_MS = 30_000;
 const MESSAGE_RECEIPT_ROUTE_RETENTION_MS = 60 * 60 * 1000;
 const DISCONNECTED_SESSION_RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAILBOX_MESSAGE_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -210,6 +212,10 @@ class IntercomBroker {
   private bridgeMachineId: string | null = null;
   private detachBridge: (() => void) | null = null;
   private bridgePending = new Map<string, { resolve(value: FederationDispatchResult): void; timer: NodeJS.Timeout }>();
+  private helperToken: string | null = null;
+  private helperNegotiated = new Set<net.Socket>();
+  private helpers = new Set<net.Socket>();
+  private helperPending = new Map<string, { socket: net.Socket; requestId: string; timer: NodeJS.Timeout }>();
   private remoteRoutes = new Map<string, { from: SessionAddress; to: RemoteSessionInfo }>();
   private inboundRemoteRoutes = new Map<string, { from: RemoteSessionInfo; to: SessionAddress }>();
   private unobservedLocalReceipts = new Map<string, { from: SessionAddress; to: SessionAddress; activationEpoch: string; unknown: boolean }>();
@@ -331,8 +337,17 @@ class IntercomBroker {
     socket.on("close", () => {
       clearRegistrationTimeout();
       this.connections.delete(socket);
+      this.helperNegotiated.delete(socket);
+      this.helpers.delete(socket);
+      for (const [id, pending] of this.helperPending) {
+        if (pending.socket === socket) { clearTimeout(pending.timer); this.helperPending.delete(id); this.writeBridge({ type: "federation_helper_cancel", requestId: id }); }
+      }
       if (this.bridgeSocket === socket) {
-        this.detachBridge?.(); this.detachBridge = null; this.bridgeSocket = null; this.bridgeMachineId = null;
+        this.detachBridge?.(); this.detachBridge = null; this.bridgeSocket = null; this.bridgeMachineId = null; this.helperToken = null;
+        for (const { socket: helper, requestId, timer } of this.helperPending.values()) {
+          clearTimeout(timer); if (!helper.destroyed) writeMessage(helper, { type: "helper_error", requestId, reason: "bridge-unavailable" });
+        }
+        this.helperPending.clear(); this.helpers.clear();
         for (const { resolve, timer } of this.bridgePending.values()) { clearTimeout(timer); resolve(this.unknownBridgeResult()); }
         this.bridgePending.clear(); this.scheduleShutdownCheck();
       }
@@ -385,6 +400,27 @@ class IntercomBroker {
   }
   private handleBridgeMessage(socket: net.Socket, message: Record<string, unknown>): void {
     switch (message.type) {
+      case "helper_authorize": {
+        if (typeof message.requestId !== "string" || !message.requestId || typeof message.token !== "string" || !/^[0-9a-f]{64}$/.test(message.token)) throw new Error("invalid-helper-authorization");
+        this.helperToken = message.token;
+        for (const helper of this.helpers) helper.destroy();
+        this.helpers.clear();
+        writeMessage(socket, { type: "helper_authorized", requestId: message.requestId });
+        return;
+      }
+      case "federation_helper_result": {
+        if (typeof message.requestId !== "string") throw new Error("invalid-helper-result");
+        const pending = this.helperPending.get(message.requestId);
+        if (!pending) return;
+        clearTimeout(pending.timer); this.helperPending.delete(message.requestId);
+        if (pending.socket.destroyed) return;
+        const result = message.error === undefined ? { type: "helper_result", requestId: pending.requestId, output: message.output }
+          : { type: "helper_error", requestId: pending.requestId, reason: isHelperExchangeError(message.error) ? message.error : "bridge-exchange-failed" };
+        const size = serializedPayloadSize(result);
+        if (size === null || size > MAX_HELPER_EXCHANGE_BYTES) writeMessage(pending.socket, { type: "helper_error", requestId: pending.requestId, reason: "exchange-too-large" });
+        else writeMessage(pending.socket, result);
+        return;
+      }
       case "federation_presence": {
         if (!Array.isArray(message.sessions) || !message.sessions.every(isRemoteSessionInfo)) throw new Error("invalid-remote-presence");
         this.federation.publishPresence(message.sessions);
@@ -511,11 +547,13 @@ class IntercomBroker {
       if (requiresEndpointAuth && !hasEndpointAuth) {
         throw new Error("Invalid intercom TCP endpoint credentials");
       }
+      if (typeof LISTEN_TARGET === "string") this.helperNegotiated.add(socket);
       writeMessage(socket, {
         type: "health_ok",
         requestId: clientMessage.requestId,
         protocol: INTERCOM_PROTOCOL_NAME,
         version: INTERCOM_PROTOCOL_VERSION,
+        ...(typeof LISTEN_TARGET === "string" ? { features: [HELPER_EXCHANGE_FEATURE] } : {}),
       });
       return;
     }
@@ -540,11 +578,36 @@ class IntercomBroker {
       this.bridgeSocket = socket; this.bridgeMachineId = clientMessage.machineId;
       setKey("federation-bridge");
       if (this.shutdownTimer) { clearTimeout(this.shutdownTimer); this.shutdownTimer = null; }
-      this.writeBridge({ type: "federation_registered", features: [FEDERATION_FEATURE] });
+      this.writeBridge({ type: "federation_registered", features: [FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE] });
       this.publishLocalPresence();
       return;
     }
     if (this.bridgeSocket === socket) { this.handleBridgeMessage(socket, clientMessage); return; }
+    if (clientMessage.type === "helper_register" || clientMessage.type === "helper_exchange" || clientMessage.type === "helper_authorize") {
+      const requestId = typeof clientMessage.requestId === "string" && clientMessage.requestId.length <= 128 ? clientMessage.requestId : "";
+      const refuse = (reason: string) => writeMessage(socket, { type: "helper_error", requestId, reason });
+      if (clientMessage.type === "helper_register") {
+        const token = clientMessage.token;
+        if (currentKey || !this.helperNegotiated.has(socket) || !this.bridgeSocket || !this.helperToken || typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token) ||
+            !timingSafeEqual(Buffer.from(token), Buffer.from(this.helperToken))) { refuse("helper-unauthorized"); return; }
+        this.helpers.add(socket); setKey("federation-helper");
+        writeMessage(socket, { type: "helper_registered", requestId });
+        return;
+      }
+      if (clientMessage.type !== "helper_exchange" || !this.helpers.has(socket) || !this.bridgeSocket) { refuse("helper-unauthorized"); return; }
+      const size = serializedPayloadSize(clientMessage);
+      if (!requestId || !Number.isSafeInteger(clientMessage.deadlineMs) || Number(clientMessage.deadlineMs) <= 0 || Number(clientMessage.deadlineMs) > MAX_HELPER_DEADLINE_MS) { refuse("invalid-exchange"); return; }
+      if (size === null || size > MAX_HELPER_EXCHANGE_BYTES) { refuse("exchange-too-large"); return; }
+      if ([...this.helperPending.values()].some(pending => pending.socket === socket)) { refuse("helper-busy"); return; }
+      const id = randomUUID(), deadlineMs = Number(clientMessage.deadlineMs);
+      const timer = setTimeout(() => {
+        this.helperPending.delete(id); this.writeBridge({ type: "federation_helper_cancel", requestId: id });
+        if (!socket.destroyed) refuse("helper-timeout");
+      }, deadlineMs);
+      timer.unref(); this.helperPending.set(id, { socket, requestId, timer });
+      this.writeBridge({ type: "federation_helper_exchange", requestId: id, input: clientMessage.input, deadlineMs });
+      return;
+    }
     if (clientMessage.type.startsWith("federation_")) throw new Error("privileged-bridge-required");
 
     if (currentKey === null && clientMessage.type !== "register") {

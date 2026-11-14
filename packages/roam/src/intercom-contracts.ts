@@ -41,6 +41,7 @@ export type IntercomFrame = IntercomMessageFrame | IntercomTombstoneFrame;
 
 /** A link acknowledgement proves durable inbox acceptance, not consumption. */
 export interface IntercomLinkAck { identity: IntercomIdentity; kind: IntercomFrame["kind"] }
+export interface IntercomRefusal { identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "link-down" }
 export interface IntercomReceiptInput {
   from: SessionEndpoint;
   to: SessionAddress;
@@ -58,7 +59,9 @@ export interface IntercomExchange {
   generation: ExchangeGeneration;
   frames: IntercomFrame[];
   acknowledgements: IntercomLinkAck[];
+  refusals?: IntercomRefusal[];
   receipts: IntercomReceiptFrame[];
+  receiptAcknowledgements?: IntercomReceiptFrame[];
   controls: IntercomControlFrame[];
   presence: RemoteSessionInfo[];
   resumptions?: IntercomPairResume[];
@@ -82,6 +85,7 @@ export type IntercomState = "queued" | "unknown" | "not_injected" | "injected" |
 export interface RetainedIntercom {
   identity: IntercomIdentity;
   endpoint: SessionEndpoint;
+  peer: MachineId;
   state: IntercomState;
   payloadRetained: boolean;
   linkAcknowledged: boolean;
@@ -104,15 +108,30 @@ export interface IntercomPairResume {
   endpoint: SessionEndpoint;
   proof: RebindProof;
 }
+export interface IntercomEdgeState {
+  peer: MachineId;
+  edgeEpoch: string;
+  outbound: { poll: number; push: number };
+  inbound: { poll: number; push: number };
+  status: "unknown" | "live" | "recovering" | "down";
+  outageSince: number | null;
+  reason: string | null;
+  lastSuccess: number | null;
+  failures: number;
+  roster: RemoteSessionInfo[];
+}
+
 export interface IntercomStore {
+  edgeState(peer: MachineId, edgeEpoch: string): IntercomEdgeState;
+  updateEdgeState(peer: MachineId, edgeEpoch: string, change: (state: IntercomEdgeState) => IntercomEdgeState): IntercomEdgeState;
   acceptOutbound(input: OutboundMessage): IntercomAcceptance;
   /** The transport authenticates the peer. Resume owners come from the local authoritative home lookup, not the wire. */
   acceptInbound(input: { peer: MachineId; frame: IntercomFrame; resume?: { cursor: IntercomPairResume; owner: Home | null } }): IntercomAcceptance;
   outboundResumptions(peer: MachineId): readonly IntercomPairResume[];
   /** maxBytes includes each encoded frame and one separator, after reserving the rest of the exchange. */
-  pending(input: { kind: "outbound"; peer: MachineId; hopBudgetMs: number; maxBytes?: number }): readonly IntercomFrame[];
+  pending(input: { kind: "outbound"; peer: MachineId; hopBudgetMs: number; maxBytes?: number; skipIds?: readonly string[] }): readonly IntercomFrame[];
   pending(input: { kind: "inbound"; address: SessionAddress }): readonly IntercomIdentity[];
-  pending(input: { kind: "receipts"; peer: MachineId }): readonly IntercomReceiptFrame[];
+  pending(input: { kind: "receipts"; peer: MachineId; maxBytes?: number }): readonly IntercomReceiptFrame[];
   acknowledge(input: { peer: MachineId; identity: IntercomIdentity; kind: IntercomFrame["kind"] }): void;
   acknowledgeReceipt(input: { peer: MachineId; frame: IntercomReceiptFrame }): void;
   beginDispatch(input: { id: string; endpoint: SessionEndpoint; readiness: string }): IntercomMessageFrame;
@@ -120,7 +139,11 @@ export interface IntercomStore {
   resolveUnknown(input: { queue: IntercomQueue; id: string; digest: string; proof: IntercomReceiptInput }): void;
   cancel(input: { queue: IntercomQueue; id: string; from: SessionAddress; to: SessionAddress }): void;
   expire(): readonly { queue: IntercomQueue; id: string }[];
+  nextExpiry(): number | null;
   inspectBlockers(address: SessionAddress): FederationBlockers;
+  openAsks(peer: MachineId): readonly RetainedIntercom[];
+  expiredOutbounds(peer: MachineId): readonly { identity: IntercomIdentity; outcomeKnown: boolean }[];
+  hasPending(peer: MachineId): boolean;
   rebindUndispatched(address: SessionAddress, endpoint: SessionEndpoint, proof: RebindProof): number;
   retained(queue: IntercomQueue, id: string): RetainedIntercom | null;
   close(): void;

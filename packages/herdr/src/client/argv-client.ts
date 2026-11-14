@@ -26,10 +26,13 @@ export function createArgvClient(options: HcClientOptions): HcArgvClient {
     async exec(on, argv, call) {
       const target = destination(on);
       const request = { ...call, stdin: call.stdin === undefined ? undefined : Buffer.from(call.stdin) };
-      if (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs <= 0 || request.timeoutMs > DIRECT_MAX_MS) {
-        throw new HerdrError('invalid-cli-deadline', 'Direct execution requires a deadline of at most 600 seconds');
+      if (!Number.isSafeInteger(request.timeoutMs) || request.timeoutMs <= 0 || request.timeoutMs > DIRECT_MAX_MS ||
+          request.remoteTimeoutMs !== undefined && (!Number.isSafeInteger(request.remoteTimeoutMs) || request.remoteTimeoutMs < 1000 || request.remoteTimeoutMs > DIRECT_MAX_MS) ||
+          request.postReserveMs !== undefined && (!Number.isSafeInteger(request.postReserveMs) || request.postReserveMs < 0)) {
+        throw new HerdrError('invalid-cli-deadline', 'Direct execution requires a valid bounded deadline');
       }
       if (!argv.length || !argv[0]) throw new HerdrError('invalid-argv', 'A remote program is required');
+      if (request.stdin !== undefined && request.stdinForTimeout !== undefined) throw new HerdrError('invalid-stdin', 'Only one request input is allowed');
       const expiresAt = performance.now() + request.timeoutMs;
       if (request.signal?.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted');
       try { await requireCoreAvailable(env, request.signal); }
@@ -38,11 +41,17 @@ export function createArgvClient(options: HcClientOptions): HcArgvClient {
         throw error;
       }
       const remainingMs = Math.floor(expiresAt - performance.now());
-      if (remainingMs <= 0) throw new HerdrError('cli-timeout', 'CLI request deadline expired', { timeoutMs: request.timeoutMs });
-      const args = ['exec', ...target, '--timeout', String(Math.max(1, Math.floor(remainingMs / 1000)))];
-      if (request.stdin !== undefined) args.push('--stdin');
+      const availableMs = remainingMs - (request.postReserveMs ?? 0);
+      if (availableMs <= 0 || request.postReserveMs !== undefined && availableMs < 1000) {
+        throw new HerdrError('cli-timeout', 'CLI request deadline expired', { timeoutMs: request.timeoutMs });
+      }
+      const remoteMs = Math.min(availableMs, request.remoteTimeoutMs ?? availableMs);
+      const remoteSeconds = Math.max(1, Math.floor(remoteMs / 1000));
+      const stdin = request.stdinForTimeout === undefined ? request.stdin : Buffer.from(request.stdinForTimeout(remoteSeconds * 1000));
+      const args = ['exec', ...target, '--timeout', String(remoteSeconds)];
+      if (stdin !== undefined) args.push('--stdin');
       args.push('--', ...argv);
-      return invokeBytes(binary, args, env, { ...request, timeoutMs: remainingMs });
+      return invokeBytes(binary, args, env, { ...request, stdin, timeoutMs: availableMs });
     },
     async run(on, argv, labels, call) {
       const target = destination(on);

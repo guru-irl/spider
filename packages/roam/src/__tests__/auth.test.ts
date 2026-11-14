@@ -7,7 +7,7 @@ import { bootstrapPeer } from "./bootstrap-fixture";
 
 type Stage = { file: string };
 type Ports = { stage(bytes: Buffer): Promise<Stage>; install(stage: Stage, providers: readonly string[]): Promise<void>; remove(stage: Stage): Promise<void> };
-type Copy = (input: { sourceRoot: string; peer: Peer; operationId: string; providers: readonly string[]; journal: Journal; maxBytes: number }, ports: Ports) => Promise<void>;
+type Copy = (input: { sourceRoot: string; peer: Peer; operationId: string; providers: readonly string[]; journal: Journal; maxBytes: number; expectedBytes?: number }, ports: Ports) => Promise<void>;
 type Install = (input: { destinationRoot: string; stagingRoot: string; stagedFile: string; providers: readonly string[] }) => void;
 const copy = (auth as { copyPiAuth?: Copy }).copyPiAuth;
 const install = (auth as { installPiAuth?: Install }).installPiAuth;
@@ -67,6 +67,13 @@ it("copies only approved providers with private mode and removes staging", async
   expect(existsSync(f.file)).toBe(false);
   expect(f.events).toEqual(["stage", "install", "remove"]);
   expect(readFileSync(join(f.destinationRoot, "auth.json.spider-roam.bak"), "utf8")).toContain("local-secret");
+}, 5000);
+
+it("refuses changed selected auth size before staging", async () => {
+  const f = fixture(); f.approve();
+  writeFileSync(join(f.sourceRoot, "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth", access: "changed-fixture" } }), { mode: 0o600 });
+  await expect(copy!({ ...f.input, expectedBytes: 1 }, f.ports)).rejects.toMatchObject({ code: "auth-preview-changed" });
+  expect(f.events).toEqual([]); expect(existsSync(f.file)).toBe(false);
 }, 5000);
 
 it("cleans secret staging when installation fails", async () => {

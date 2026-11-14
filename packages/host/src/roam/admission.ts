@@ -2,12 +2,16 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import type { Blocker, Home, MachineId, SessionState, StoreKey } from "@spider/db-core/roam/types";
 import { getBinding, openDbReadOnlyAt, openGlobalReadOnly, paths, type Db } from "@spider/db-core";
 import { readMachineIdentity } from "@spider/db-core/roam/machine";
+import { readLocal } from "@spider/db-core/roam/local-state";
+import { readLocalIdentity } from "@spider/roam/runtime";
+import { assertBoxEnrollment, participantCaptureInitialized } from "@spider/roam/session-control";
 import { validateRoamLayout } from "@spider/db-core/roam/layout";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { readSessionState } from "@spider/db-core/roam/state";
 import { join, resolve } from "node:path";
 import { lockParticipant, type ParticipantLockOptions } from "../herdr/ports.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./activation.js";
+import { productionParticipantAdmission } from "./readiness.js";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[] }
 export interface AdmissionGate {
@@ -26,11 +30,16 @@ export interface AdmissionPorts {
     participating: boolean; captureSafe: boolean; unfinishedFreeze: boolean; initialConflict: boolean }>;
   lock(sessionId: string, file: string): Promise<() => Promise<void>>;
   setContext?(ctx: ExtensionContext): void;
+  prepare?(sessionId: string, file: string): Promise<void>;
+  ready?(sessionId: string, file: string, epoch: number, home: Home | null): Promise<void>;
+  stopped?(sessionId: string): Promise<void>;
 }
 
 const VERIFY = "Cannot verify this session's home. Retry or run /spider roam doctor for details.";
 const FROZEN = "This session is frozen for a move. Run /spider roam doctor for details.";
 const homeMessage = (machine: string) => `This session is at ${machine}. Run /spider roam doctor for details.`;
+const admissionFailure = (error: unknown) => error instanceof Error && ["participant-config-unavailable", "participant-not-box", "participant-capture-uninitialized"].includes(error.message)
+  ? `${error.message}. Run /spider roam doctor for details.` : VERIFY;
 
 /** A blocked send must be distinguishable from a delivered message. */
 export class AdmissionClosedError extends Error {
@@ -86,12 +95,14 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       if (ticket !== generation) return;
       sessionId = id; sessionFile = file; epoch = null; participating = false;
       if (!id) { publish(handoffRequired ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : undefined); return; }
+      try { await ports.prepare?.(id, file); }
+      catch (error) { if (ticket === generation) publish("blocked", null, admissionFailure(error)); return; }
       let state: Awaited<ReturnType<AdmissionPorts["load"]>>;
       try {
         state = await ports.load(id);
-      } catch {
+      } catch (error) {
         if (ticket !== generation) return;
-        if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publish("blocked", null, VERIFY);
+        if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publish("blocked", null, admissionFailure(error));
         else { ports.warnOnce(id, VERIFY); publish("ordinary", null); }
         return;
       }
@@ -129,6 +140,8 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           handoffRequired = false;
           if (ticket !== generation) { await release(); return; }
         }
+        await ports.ready?.(id, file, epoch, home);
+        if (ticket !== generation) return;
         if (reopening) freeze = undefined;
         publish("ordinary", home);
       } catch {
@@ -143,6 +156,9 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   };
 
   pi.on("session_start", async (_event, ctx) => start(ctx));
+  pi.on("session_shutdown", async event => {
+    if (event.reason !== "reload" && participating && ordinaryWorkAllowed()) await ports.stopped?.(sessionId);
+  });
   pi.on("input", (_event, ctx) => {
     if (ordinaryWorkAllowed()) return undefined;
     notify(ctx); return { action: "handled" };
@@ -233,6 +249,7 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
   let machineIds: string[] = [];
   const cache = () => participantCache(paths.globalRoot);
   return {
+    ...productionParticipantAdmission(() => context?.cwd),
     expectedEpoch: null,
     setContext(ctx) { context = ctx; },
     knownParticipant(id) { return cache().known.has(id); },
@@ -307,6 +324,13 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
         let captureSafe = true, unfinishedFreeze = false;
         machineIds = [];
         if (participating) {
+          if (global && hasTable(global, "roam_cursors") && global.withRetry(() =>
+            readLocal(global, "participant-origin", id) !== undefined || readLocal(global, "participant-intent", id) !== undefined)) {
+            let config;
+            try { config = readLocalIdentity(paths.globalRoot); } catch { throw new Error("participant-config-unavailable"); }
+            assertBoxEnrollment(config);
+            if (!participantCaptureInitialized(global, config.machineId, "global")) throw new Error("participant-capture-uninitialized");
+          }
           captureSafe = Boolean(global) && missing === 0 && states.length === opened.size;
           for (const db of opened.values()) {
             const meta = db.withRetry(() => db.prepare("SELECT machine_id, store_key, capture_enabled, importing, roamable, problem FROM roam_meta WHERE id = 1").get()) as

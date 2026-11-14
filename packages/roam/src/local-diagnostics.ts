@@ -15,11 +15,12 @@ import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { loadConfig } from "./config";
 import { DEFAULT_LIMITS, type Diagnostic, type RoamConfig } from "./contracts";
-import { doctorLocal, inspectStore, readStatus, type DiagnosticMachine, type DiagnosticPorts, type DiagnosticStore, type LoadedConsumer, type PeerObservation, type RoamStatus, type UsageWorker } from "./diagnostics";
+import { doctorLocal, inspectStore, localCaptureRequired, readStatus, type DiagnosticMachine, type DiagnosticPorts, type DiagnosticStore, type LoadedConsumer, type PeerObservation, type RoamStatus, type UsageWorker } from "./diagnostics";
 import { listStoreKeys } from "./store-inventory";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { isPeerFailureReason } from "./peer-errors";
 import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
+import { createRunningIntentAuthority } from "./session-control";
 import { inspectIntentReservations } from "./intent";
 
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
@@ -197,7 +198,7 @@ function openLocalInventory(input: { root: string }) {
     if (db) origins.set(db, source);
     return db;
   };
-  const severity = config.enabled ? "block" : "warning", problems = new Set<string>();
+  const severity = localCaptureRequired(config) ? "block" : "warning", problems = new Set<string>();
   const readOptions = { globalPath: join(root, "spider.db"), open, onProblem(entry: string, error?: unknown) {
     if (problems.has(entry)) return;
     problems.add(entry);
@@ -275,9 +276,15 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   try { root = realpathSync(root); } catch (error) { if (!missing(error)) throw error; }
   const configFile = join(root, "roam", "config.json");
   const config = existsSync(configFile) ? loadConfig(configFile) : disabledConfig();
-  const severity = config.enabled ? "block" : "warning";
+  const required = localCaptureRequired(config), severity = required ? "block" : "warning";
   const inventory: Diagnostic[] = [], storeDiagnostics: Diagnostic[] = [], peerFailures: Diagnostic[] = [], consumers: LoadedConsumer[] = [];
-  if (config.role === "box") inventory.push({ severity, reason: `${RUNNING_INTENT_SOURCE_UNAVAILABLE}: Hosting is fenced until participant intent is available.`, repairCommand: null });
+  if (config.role === "box") {
+    try {
+      const source = openOwned(join(root, "spider.db"));
+      if (!source) throw new Error("Participant authority unavailable");
+      try { await createRunningIntentAuthority(source).list(); } finally { source.close(); }
+    } catch { inventory.push({ severity, reason: `${RUNNING_INTENT_SOURCE_UNAVAILABLE}: Participant intent cannot be read.`, repairCommand: null }); }
+  }
   const origins = new WeakMap<Db, string>(), seen = new Set<string>(), problems = new Set<string>();
   const open = (file: string): Db | undefined => {
     const source = resolve(file), db = openOwned(source);
@@ -285,7 +292,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     return db;
   };
   const inspect = (store: DiagnosticStore): void => {
-    try { storeDiagnostics.push(...inspectStore(store, config.enabled)); }
+    try { storeDiagnostics.push(...inspectStore(store, required)); }
     catch {
       const label = store.key.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512);
       storeDiagnostics.push({ severity, reason: `${label}: cannot inspect the store layout.`, repairCommand: null });
@@ -428,7 +435,7 @@ export function runLocalStatus(input: { root: string; now?: number }): RoamStatu
   const local = openLocalInventory(input), now = input.now ?? Date.now();
   let journal: Db | undefined;
   try {
-    const severity = local.config.enabled ? "block" : "warning";
+    const severity = localCaptureRequired(local.config) ? "block" : "warning";
     const global = local.stores.find(store => store.scope === "global")?.db;
     const usable = local.stores.filter(store => {
       if (Number(store.db.pragma("user_version")) === 14) return true;

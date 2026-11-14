@@ -173,6 +173,18 @@ it("doctor keeps at most one store snapshot while inspecting every registered st
   expect(files.map(file => createHash("sha256").update(readFileSync(file)).digest("hex"))).toEqual(before);
 }, 5000);
 
+it("box doctor treats a non-roamable store as blocking when hub scheduling is disabled", async () => {
+  const { root } = fixture(), machineId = "00000000-0000-4000-8000-000000000002", hubMachineId = "00000000-0000-4000-8000-000000000001";
+  vi.stubEnv("HOME", root); vi.stubEnv("SPIDER_GLOBAL_ROOT", root); vi.stubEnv("PATH", root);
+  mkdirSync(join(root, "roam"), { mode: 0o700 });
+  writeFileSync(join(root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "box", machineId, hubMachineId, peers: [], coreUnit: "fixture.service" }), { mode: 0o600 });
+  const db = openDb(join(root, "spider.db"));
+  migrate(db, "global", { machineId, globalRoot: root });
+  db.prepare("UPDATE roam_meta SET store_key='global',capture_enabled=1,roamable=0,problem='fixture problem'").run(); db.close();
+  const report = await runLocalDoctor({ root });
+  expect(report.diagnostics.find(item => /not roamable/i.test(item.reason))).toMatchObject({ severity: "block" });
+}, 5000);
+
 it("rejects symlinked source files", () => {
   const { root, file, temp } = fixture(), writer = openDb(file);
   writer.exec("CREATE TABLE fixture(value TEXT)"); writer.close();

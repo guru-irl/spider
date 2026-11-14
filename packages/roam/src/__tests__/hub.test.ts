@@ -34,7 +34,7 @@ afterEach(async () => {
 });
 
 type Notice = { id: string; kind: "unreachable" | "suspended"; machineId: string; sessionId?: string };
-const ready = { operationId: "op-1", sessionId: "session-1", epoch: 1, cwd: "/fixture/work", file: "/fixture/session.jsonl", core: "remote-core", terminal: "box-1.invalid/t1" };
+const ready = { origin: "hub-operation" as const, opId: "op-1", sessionId: "session-1", epoch: 1, cwd: "/fixture/work", file: "/fixture/session.jsonl", core: "remote-core", terminal: "box-1.invalid/t1" };
 function fixture() {
   const f = network(); fixtures.push(f);
   vi.spyOn(staging, "defaultStagingRoot").mockReturnValue(f.root);

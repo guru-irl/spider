@@ -111,7 +111,7 @@ export function buildMatrix(tier, selected, reports) {
       reason: selected.includes(id) ? 'selected story produced no result (worker failed or interrupted)' : 'outside selected profile or no discovered implementation',
     };
     if (id !== 'R02' || report.result !== 'passed') return report;
-    const limit = 'Placement adapter only with synthetic readiness; packaged observer-to-placement path deferred to Task 3.4';
+    const limit = 'Packaged observer-to-placement uses a fixture owner; native app and pi owner not exercised';
     return { ...report, reason: [report.reason, limit].filter(Boolean).join('; ') };
   });
 }

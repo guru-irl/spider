@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { Home, MachineId, Probe, Readiness, SessionState } from "@spider/db-core/roam/types";
+import type { Home, MachineId, Probe, HubOperationReadiness, SessionState } from "@spider/db-core/roam/types";
 import type { Clock, Diagnostic, HostIntent, Journal, Outcome } from "./contracts";
 import type { IntentState, IntentStore, VersionedIntent } from "./intent";
 
@@ -34,7 +34,7 @@ export interface SupervisorPorts {
   runningIntents: RunningIntentSource;
   events: { subscribe(listener: () => void): () => void };
   inspect(sessionId: string): Promise<SupervisorObservation>;
-  launch(request: SupervisorLaunch): Promise<Outcome<Readiness>>;
+  launch(request: SupervisorLaunch): Promise<Outcome<HubOperationReadiness>>;
   stop(sessionId: string): Promise<Probe>;
   notify(sessionId: string, reason: string): Promise<void>;
 }
@@ -50,10 +50,10 @@ function sameAuthority(a: HostIntent, b: HostIntent): boolean {
 export function createDurableLaunchPort(input: {
   intents: IntentStore;
   authorize(intent: HostIntent): Promise<boolean>;
-  invoke(request: { intent: HostIntent; mode: "initial" | "reconcile"; reservation: LaunchReservation }): Promise<Outcome<Readiness>>;
+  invoke(request: { intent: HostIntent; mode: "initial" | "reconcile"; reservation: LaunchReservation }): Promise<Outcome<HubOperationReadiness>>;
   operationId?: () => string;
 }): SupervisorPorts["launch"] {
-  const result = (intent: HostIntent, reason: string, operationId = ""): Outcome<Readiness> =>
+  const result = (intent: HostIntent, reason: string, operationId = ""): Outcome<HubOperationReadiness> =>
     ({ code: 2, reason, operationId, home: null, epoch: intent.epoch, repairCommand: null, value: null });
   return async request => {
     const { intent } = request;
@@ -199,7 +199,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
         await suspend(id, latest, "Hosting prerequisites need review"); return;
       }
       if (outcome.code === 0 && outcome.value && outcome.operationId === latest.value.supervision.operationId &&
-          outcome.value.operationId === latest.value.supervision.operationId && outcome.value.sessionId === id && outcome.value.epoch === state.intent.epoch &&
+          outcome.value.opId === latest.value.supervision.operationId && outcome.value.sessionId === id && outcome.value.epoch === state.intent.epoch &&
           outcome.value.file === state.intent.file && outcome.value.cwd === state.intent.cwd) {
         const after = await ports.inspect(id);
         const authorityAfter = await ports.runningIntents.get(id);

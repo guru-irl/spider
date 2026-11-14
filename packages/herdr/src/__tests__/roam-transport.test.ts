@@ -659,13 +659,13 @@ test.each([
   try {
     const remoteRoot = join(fixture.root, 'remote');
     const bundle = join(fixture.root, 'agent-dist');
-    await mkdir(join(remoteRoot, 'roam'), { recursive: true });
+    await mkdir(join(remoteRoot, 'roam'), { recursive: true, mode: 0o700 });
     await buildRoamEntries(bundle);
     const remotePeer = { ...peer, node: process.execPath, cli: join(bundle, 'cli.mjs'), globalRoot: remoteRoot };
     const identity = JSON.stringify({ machineId: peer.machineId });
-    await writeFile(join(remoteRoot, 'roam', 'machine.json'), identity);
+    await writeFile(join(remoteRoot, 'roam', 'machine.json'), identity, { mode: 0o600 });
     await writeFile(join(remoteRoot, 'roam', 'config.json'), JSON.stringify({ enabled: false, role: 'box', machineId: peer.machineId,
-      hubMachineId: '00000000-0000-4000-8000-000000000002', peers: [], discoveryRoots: [], coreUnit: 'fixture' }));
+      hubMachineId: '00000000-0000-4000-8000-000000000002', peers: [], discoveryRoots: [], coreUnit: 'fixture' }), { mode: 0o600 });
     db = openDb(join(remoteRoot, 'spider.db'));
     migrate(db, 'global', { machineId: peer.machineId, globalRoot: remoteRoot });
     db.prepare("UPDATE roam_meta SET store_key='global'").run();

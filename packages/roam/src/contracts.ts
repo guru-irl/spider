@@ -1,7 +1,7 @@
 import type { Db } from "@spider/db-core";
 import type {
   ApplyReceipt, BatchArtifact, ExportPolicy, Home, JsonObject, MachineId, Probe, ProcessIdentity,
-  Readiness, ReplicaEffects, StoreBarrier, StoreKey,
+  HubOperationReadiness, Readiness, ReplicaEffects, StoreBarrier, StoreKey,
 } from "@spider/db-core/roam/types";
 import type { BootstrapOptions, Inventory } from "./provision-contracts";
 
@@ -117,7 +117,7 @@ export interface MoveCheck {
   storeKeys: readonly StoreKey[]; lostPeers: readonly string[]; warnings: readonly string[];
 }
 export interface PreparedMove { workspace: PreparedWorkspace; session: SessionManifest }
-export interface DestinationObservation { home: Home; owner: Probe; readiness: Readiness | null; launchFailure: string | null; retired: boolean }
+export interface DestinationObservation { home: Home; owner: Probe; readiness: HubOperationReadiness | null; launchFailure: string | null; retired: boolean }
 export interface MovePorts {
   config: RoamConfig; globalDb: Db; journal: Journal; clock: Clock;
   check(request: MoveRequest): Promise<MoveCheck>;
@@ -129,7 +129,7 @@ export interface MovePorts {
   verifySource(ack: FreezeAck, workspace: WorkspaceSnapshot): Promise<void>;
   barriers(machine: MachineId, required: readonly StoreBarrier[]): Promise<boolean>;
   replicateHome(home: Home): Promise<void>;
-  start(home: Home, prepared: PreparedMove, operation: Operation): Promise<Outcome<Readiness>>;
+  start(home: Home, prepared: PreparedMove, operation: Operation): Promise<Outcome<HubOperationReadiness>>;
   inspect(home: Home, operation: Operation): Promise<DestinationObservation>;
   retire(home: Home, operation: Operation): Promise<Probe>;
   unfreeze(home: Home, operation: Operation): Promise<void>;
@@ -140,6 +140,6 @@ export interface RecoveryPort {
   revocationDb: Db;
   homes(machine: MachineId): readonly Home[];
   mirror(sessionId: string, epoch: number): Promise<SessionManifest | null>;
-  restore(home: Home, mirror: SessionManifest, operation: Operation): Promise<Outcome<Readiness>>;
+  restore(home: Home, mirror: SessionManifest, operation: Operation): Promise<Outcome<HubOperationReadiness>>;
   conflicts(sessionId: string): Promise<readonly { machineId: MachineId; owner: Probe }[]>;
 }

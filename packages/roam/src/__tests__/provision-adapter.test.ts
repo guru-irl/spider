@@ -13,6 +13,7 @@ import * as adapterModule from "../provision-adapter";
 
 const roots: string[] = [];
 type Factory = (input: unknown) => {
+  enroll(peer: Peer, hubMachineId: string): Promise<void>;
   installRelease(peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }): Promise<{ pi: string; cli: string; supervisor: string }>;
   installFiles(peer: Peer, files: readonly { path: string; bytes: Buffer; mode: 0o600 | 0o700 }[]): Promise<void>;
   installCredentialFiles(peer: Peer, files: readonly { path: string; bytes: Buffer; mode: 0o600 | 0o700 }[]): Promise<void>;
@@ -91,6 +92,29 @@ function releaseNpm(f: ReturnType<typeof fixture>) {
   writeFileSync(join(f.bin, "npm"), npm, { mode: 0o700 });
   return log;
 }
+
+it("enrollment short writes converge after a lost reply and reject a changed hub", async () => {
+  const f = fixture(), adapter = create!(f.options), hub = "00000000-0000-4000-8000-000000000001";
+  const original = f.remote.executeProvision.bind(f.remote); let lost = false;
+  f.remote.executeProvision = async (peer, request) => {
+    const result = await original(peer, request);
+    if (request.action === "enrollment" && !lost) { lost = true; throw Object.assign(new Error("lost"), { code: "cli-timeout" }); }
+    return result;
+  };
+  await adapter.enroll(f.peer, hub);
+  expect(JSON.parse(readFileSync(join(f.globalRoot, "roam", "config.json"), "utf8"))).toMatchObject({ enabled: false, machineId: f.peer.machineId, hubMachineId: hub, peers: [] });
+  await adapter.enroll(f.peer, hub);
+  await expect(adapter.enroll(f.peer, "00000000-0000-4000-8000-000000000003")).rejects.toMatchObject({ code: "operation-arguments-changed" });
+  expect(f.requests.filter(row => row.action === "enrollment")).toHaveLength(4);
+}, 5000);
+
+it("remote enrollment refuses malformed matching configuration without replacing it", async () => {
+  const f = fixture(), hub = "00000000-0000-4000-8000-000000000001", file = join(f.globalRoot, "roam", "config.json");
+  const saved = Buffer.from(JSON.stringify({ enabled: "yes", role: "box", machineId: f.peer.machineId, hubMachineId: hub, peers: [], coreUnit: "herdr-core.service" }));
+  writeFileSync(file, saved, { mode: 0o600 });
+  await expect(create!(f.options).enroll(f.peer, hub)).rejects.toMatchObject({ code: "enrollment-conflict" });
+  expect(readFileSync(file)).toEqual(saved);
+}, 5000);
 
 it("reconciles a lost release-launch reply and never runs a duplicate installation", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");

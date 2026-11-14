@@ -20,6 +20,7 @@ const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).dig
 function failure(error: unknown, action: string): HerdrError {
   const safe = new Set(["core-changed", "core-unavailable", "machine-not-found", "machine-ambiguous", "machine-mismatch", "machine-not-enrolled",
     "peer-invalidated", "unresolved-peer", "cli-timeout", "cli-aborted", "cli-exit", "stdin-error", "missing-hc", "spawn-error", "reply-too-large",
+    "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",
     "consent-required", "invalid-provision-request", "invalid-provision-reply", "invalid-request", "unsafe-path", "unsafe-staging", "unsafe-context",
     "invalid-chunk", "invalid-chunks", "chunk-mismatch", "too-large", "command-failed", "invalid-file", "invalid-release", "release-hash-mismatch",
     "incomplete-release", "pi-version-mismatch", "invalid-unit", "invalid-systemctl", "unsafe-release", "invalid-switchover-journal",
@@ -144,6 +145,7 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
     },
   };
   return {
+    async enroll(target, hubMachineId) { await action(target, "enrollment", { hubMachineId, coreUnit: options.coreUnit }); },
     async cleanupSecrets(target: Peer) { await action(target, "clear-secrets"); },
     async installRelease(target: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }) {
       if (input.npmPrefix !== destination.npmPrefix || input.globalRoot !== peer.globalRoot || input.pi !== "1.2.0" ||

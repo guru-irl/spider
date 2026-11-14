@@ -25,7 +25,7 @@ it("composes target-fenced ports, peer locking and durable launcher configuratio
     async claimIdentity(_peer: unknown, _id: string, value: typeof core) { claims.push(value); return { machineId: bootstrapPeer.machineId, coreId: "fixture-core" }; },
     async executeProvision() { return true; }, async launchRelease() { return { terminal: "box-1.invalid/t1" }; } };
   const options = { identity: { pid: process.pid, startIdentity: "fixture" }, probe: async () => ({ kind: "live" as const, startIdentity: "fixture" }) };
-  const ports = create!({ root, peer: bootstrapPeer, operationId: "op-1", transport: port, journal, limits: DEFAULT_LIMITS,
+  const ports = create!({ root, hubMachineId: "00000000-0000-4000-8000-000000000001", peer: bootstrapPeer, operationId: "op-1", transport: port, journal, limits: DEFAULT_LIMITS,
     source: { agentRoot: root, releaseFile: join(root, "release.tgz"), piProviders: [] },
     destination: { home: "/home/fixture", agentDir: "/home/fixture/.pi/agent", npmPrefix: "/home/fixture/.local", supervisor: "/home/fixture/.local/supervisor.mjs" },
     unitDir: "/home/fixture/.config/systemd/user", coreUnit: "herdr-core.service", release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: "a".repeat(64), nodeRange: "22.23.4 || 26.4.0" },

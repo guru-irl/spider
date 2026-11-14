@@ -181,15 +181,20 @@ async function inspectMachine(machine: DiagnosticMachine, ports: DiagnosticPorts
   return found;
 }
 
+export function localCaptureRequired(config: Pick<RoamConfig, "enabled" | "role">): boolean {
+  return config.role === "box" || config.enabled;
+}
+
 /** Report local compatibility and store health without repairing any data. */
 export async function doctorLocal(config: RoamConfig, ports: DiagnosticPorts, consumers?: LoadedConsumer[]): Promise<readonly Diagnostic[]> {
-  const diagnostics = await inspectMachine(localMachine(config), ports, config.enabled, consumers);
+  const required = localCaptureRequired(config);
+  const diagnostics = await inspectMachine(localMachine(config), ports, required, consumers);
   let stores: readonly DiagnosticStore[];
   try { stores = await ports.stores(); }
-  catch { return [...diagnostics, { severity: config.enabled ? "block" : "warning", reason: "Cannot inspect the local store inventory.", repairCommand: null }]; }
+  catch { return [...diagnostics, { severity: required ? "block" : "warning", reason: "Cannot inspect the local store inventory.", repairCommand: null }]; }
   for (const store of stores) {
-    try { diagnostics.push(...inspectStore(store, config.enabled)); }
-    catch { diagnostics.push({ severity: config.enabled ? "block" : "warning", reason: `${safeText(store.key)}: cannot inspect the store layout.`, repairCommand: null }); }
+    try { diagnostics.push(...inspectStore(store, required)); }
+    catch { diagnostics.push({ severity: required ? "block" : "warning", reason: `${safeText(store.key)}: cannot inspect the store layout.`, repairCommand: null }); }
   }
   return diagnostics;
 }

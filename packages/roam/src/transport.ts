@@ -282,7 +282,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
     },
     async executeProvision(peer, request) {
       const state = resolved(peer);
-      const actions = new Set(['prepare', 'secret-chunk', 'cleanup', 'install-files', 'auth-install', 'release-prepare', 'release-observe', 'unit-write', 'systemctl', 'switchover', 'verify', 'clear-secrets']);
+      const actions = new Set(['enrollment', 'prepare', 'secret-chunk', 'cleanup', 'install-files', 'auth-install', 'release-prepare', 'release-observe', 'unit-write', 'systemctl', 'switchover', 'verify', 'clear-secrets']);
       if (!request || typeof request !== 'object' || typeof request.action !== 'string' || !actions.has(request.action) ||
           typeof request.operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(request.operationId) ||
           request.machineId !== state.peer.machineId || request.globalRoot !== state.peer.globalRoot || request.node !== state.peer.node ||
@@ -322,7 +322,8 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
       }
       if (Object.hasOwn(reply, 'error')) {
-        const allowed = new Set(['invalid-request', 'invalid-staging-name', 'unsafe-path', 'unsafe-staging', 'invalid-chunk', 'invalid-chunks',
+        const allowed = new Set(['invalid-enrollment', 'unsafe-enrollment', 'enrollment-identity-mismatch', 'enrollment-conflict', 'enrollment-publication-pending',
+          'invalid-request', 'invalid-staging-name', 'unsafe-path', 'unsafe-staging', 'invalid-chunk', 'invalid-chunks',
           'chunk-mismatch', 'too-large', 'command-failed', 'unsafe-context', 'machine-mismatch', 'invalid-limits', 'invalid-file',
           'invalid-release', 'release-hash-mismatch', 'incomplete-release', 'pi-version-mismatch', 'invalid-unit', 'invalid-systemctl',
           'unsafe-release', 'invalid-switchover-journal', 'missing-switchover-backup', 'unknown-provision-action', 'provision-failed',
@@ -334,7 +335,9 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         throw new HerdrError(reply.error, 'Provisioning operation failed');
       }
       if (!Object.hasOwn(reply, 'value')) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
-      if (request.action === 'release-observe') {
+      if (request.action === 'enrollment') {
+        if (reply.value !== 'enrolled' && reply.value !== 'already-enrolled') throw new HerdrError('invalid-provision-reply', 'Invalid enrollment reply');
+      } else if (request.action === 'release-observe') {
         const value = object(reply.value);
         if (value.state === 'absent') {
           if (Object.keys(value).length !== 2 || typeof value.prepared !== 'boolean') throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');

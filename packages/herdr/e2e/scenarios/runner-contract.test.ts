@@ -20,8 +20,8 @@ describe('runner boundary and report', () => {
     const r02 = definitions.find((definition: { id: string }) => definition.id === 'R02');
     expect(r01).toMatchObject({ tiers: ['headless'] });
     expect(r02).toMatchObject({ tiers: ['headless'] });
-    expect(r02.title).toMatch(/placement adapter only.*synthetic readiness/i);
-  });
+    expect(r02.title).toMatch(/admitted box readiness.*packaged hub/i);
+  }, 5000);
   it('selects R01 and R02 in their own tiers and reports them unexercised in CI', () => {
     expect(storyId('R01')).toBe('R01'); expect(storyId('R02')).toBe('R02');
     expect(parseOptions(['--tier', 'headless', '--story', 'R01'], {}).ids).toEqual(['R01']);
@@ -41,10 +41,10 @@ describe('runner boundary and report', () => {
     expect(storyWorkers({ tier: 'app', ids: ['S01'] })).toBe(1);
     const passed = buildMatrix('headless', ['R02'], [{ id: 'R02', tier: 'headless', result: 'passed', evidence: 'R02.json' }]);
     const r02 = passed.find((row: { id: string }) => row.id === 'R02');
-    expect(r02.reason).toMatch(/adapter only/i);
-    expect(r02.reason).toMatch(/packaged observer.*3\.4/i);
+    expect(r02.reason).toMatch(/native app.*not exercised/i);
+    expect(r02.reason).toMatch(/packaged observer.*placement/i);
     expect(renderMatrix(passed)).toContain(r02.reason);
-  });
+  }, 5000);
   it('opts into the installed-upstream R14 variant only with both local inputs', async () => {
     // @ts-ignore Vite provides import.meta.glob during test transformation.
     const definitions = await discoverScenarios(import.meta.glob('./*.test.ts'));

@@ -1,6 +1,6 @@
 import type { Diagnostic, Journal, Limits, Operation, Peer, Transport } from "./contracts";
 import type { AuthPorts } from "./auth";
-import type { SelectedFile } from "./selected-files";
+import type { SelectedFile, SelectedFileMetadata } from "./selected-files";
 
 export type FileLimit = number | "unlimited" | null;
 export interface FileStatus { present: boolean; readable: boolean; modeSafe: boolean }
@@ -31,6 +31,7 @@ export interface Inventory {
 
 export type ProvisionRequest = {
   operation: Operation; peer: Peer; selected: readonly string[]; includeAuth: boolean; confirmedProviders: readonly string[];
+  expectedAuthBytes?: number; expectedFiles?: readonly SelectedFileMetadata[];
 };
 export interface ProvisionVerification {
   piSignedIn: boolean; nativeSqlite: boolean; extensionLoaded: boolean; exactSession: boolean; privateModes: boolean;
@@ -52,6 +53,7 @@ export interface ProvisionPreview {
 }
 export interface ProvisionDestination { home: string; agentDir: string; npmPrefix: string; supervisor: string }
 export interface ProvisionPorts extends DoctorPorts {
+  hubMachineId: string;
   source: { agentRoot: string; releaseFile: string; piProviders: readonly string[] };
   destination: ProvisionDestination;
   withPeerLock<T>(machineId: Peer["machineId"], work: () => Promise<T>): Promise<T>;
@@ -65,6 +67,7 @@ export interface ProvisionPorts extends DoctorPorts {
   };
   systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<void> };
   transfer: {
+    enroll(peer: Peer, hubMachineId: string): Promise<void>;
     cleanupSecrets(peer: Peer): Promise<void>;
     installRelease(peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }):
       Promise<{ pi: string; cli: string; supervisor: string }>;

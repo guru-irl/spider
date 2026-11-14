@@ -32,6 +32,12 @@ it("quotes paths without expanding systemd specifiers or environment references"
   expect(unit.split("\n")).toContain('Environment="SPIDER_GLOBAL_ROOT=/home/agent/data %%h"');
 }, 5000);
 
+it("records the provisioned absolute pi executable for supervisor launches", () => {
+  const input = { node: "/home/agent/node", supervisor: "/home/agent/supervisor", coreUnit: "herdr-core.service", globalRoot: "/home/agent/data", pi: "/home/agent/.local/bin/pi" };
+  expect(renderSupervisorUnit(input).split("\n")).toContain('Environment="SPIDER_ROAM_PI=/home/agent/.local/bin/pi"');
+  expect(() => renderSupervisorUnit({ ...input, pi: "pi" })).toThrow();
+}, 5000);
+
 it("refuses relative paths and unit or line injection", () => {
   const safe = { node: "/home/agent/node", supervisor: "/home/agent/supervisor", coreUnit: "herdr-core.service", globalRoot: "/home/agent/data" };
   expect(() => renderSupervisorUnit({ ...safe, node: "node" })).toThrow();

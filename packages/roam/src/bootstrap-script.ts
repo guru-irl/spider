@@ -1,8 +1,8 @@
 import machineIdentitySource from "../../db-core/src/roam/machine.ts?raw";
-import selectedSource from "./selected-files.ts?raw";
+import { selectedRemoteSource } from "./selected-remote-source";
 
 // Settings values stay on their respective machines. The probe receives only key paths.
-export const BOOTSTRAP_SETTINGS_SCRIPT: string = selectedSource + String.raw`
+export const BOOTSTRAP_SETTINGS_SCRIPT: string = selectedRemoteSource + String.raw`
 import { readFileSync as bootstrapSettingsRead } from "node:fs";
 import { homedir as bootstrapSettingsHome } from "node:os";
 try {

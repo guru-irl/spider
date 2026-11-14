@@ -1,4 +1,4 @@
-import selectedSource from "./selected-files.ts?raw";
+import { selectedRemoteSource } from "./selected-remote-source";
 import authSource from "./auth.ts?raw";
 import receiptSource from "./release-receipt.ts?raw";
 import releaseRequestSource from "./release-request.ts?raw";
@@ -26,7 +26,7 @@ if (authForRemote === authSource || authForRemote.includes('from "./') || config
     enrollmentForRemote === enrollmentSource || enrollmentForRemote.includes('from "./')) throw new Error("Cannot assemble provisioning program");
 const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAULT_LIMITS = ${JSON.stringify(DEFAULT_LIMITS)};\nconst DEFAULT_INTERCOM_LIMITS = ${JSON.stringify(DEFAULT_INTERCOM_LIMITS)};\n${machineIdForRemote}\n${configForRemote}\nreturn parseConfig;\n})();\n`;
 
-export const PROVISION_REMOTE_SCRIPT: string = selectedSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + String.raw`
+export const PROVISION_REMOTE_SCRIPT: string = selectedRemoteSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + String.raw`
 import { readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";

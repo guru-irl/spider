@@ -4,5 +4,6 @@
     "isolatedDeclarations": true,
     "noEmit": true
   },
-  "include": ["**/*.ts", "../../intercom/src/build-meta.d.ts"]
+  "files": ["../../intercom/src/build-meta.d.ts"],
+  "include": ["**/*.ts"]
 }

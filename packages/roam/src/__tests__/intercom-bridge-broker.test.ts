@@ -24,7 +24,7 @@ let root: string, agentDir: string, broker: ChildProcess;
 beforeAll(async () => {
   root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "ibb-")); agentDir = getAgentDirPath();
   await buildIntercom(join(root, "broker")); await buildRoamEntries(join(root, "roam-build"));
-  broker = startTestBroker(process.execPath, [join(root, "broker", "broker.mjs")], { env: process.env, stdio: ["ignore", "pipe", "pipe"] }, "suite");
+  broker = startTestBroker(process.execPath, [join(root, "broker", "broker.mjs")], { env: { ...process.env, HOME: root }, stdio: ["ignore", "pipe", "pipe"] }, "suite");
   await new Promise<void>((done, reject) => {
     const timer = setTimeout(() => reject(new Error("fixture broker startup timed out")), 4000);
     broker.once("exit", code => { clearTimeout(timer); reject(new Error(`fixture broker exit ${code}`)); });
@@ -51,7 +51,7 @@ it("publishes a private capability for the configured agent directory and serves
     expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ version: 1, agentDir, token: expect.stringMatching(/^[0-9a-f]{64}$/) });
     source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "through-helper", timestamp: 1, content: { text: "synthetic" } } });
     const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
-    const exchange = { protocol: 1, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+    const exchange = { protocol: 2, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
       frames: [frame], acknowledgements: [], receipts: [], controls: [], presence: [] };
     const child = spawn(process.execPath, [join(root, "roam-build", "cli.mjs"), "--global-root", globalRoot, "roam", "intercom", "exchange"],
       { env: { ...process.env, HOME: globalRoot, SPIDER_GLOBAL_ROOT: globalRoot }, stdio: ["pipe", "pipe", "pipe"] });
@@ -70,6 +70,33 @@ it("publishes a private capability for the configured agent directory and serves
   }
 }, 5000);
 
+
+it("records one missing-origin frame through the packaged helper without blocking its successor", async () => {
+  const globalRoot = mkdtempSync(join(root, "v2-global-")), sourceRoot = mkdtempSync(join(root, "v2-source-"));
+  const source = openIntercomStore({ file: join(sourceRoot, "queue.db"), machineId: A, clock });
+  const inbox = openIntercomStore({ file: join(globalRoot, "queue", "queue.db"), machineId: B, clock });
+  const client = new IntercomFederationClient(), bridge = createIntercomBridge({ machineId: B, machineAlias: "fixture-b.invalid",
+    edges: [{ peer, edgeEpoch: "edge-1", initiator: false }], store: inbox, clock, transport: {} as any,
+    localPresence: () => [], authoritativeHome: () => null, broker: client, globalRoot, agentDir });
+  try {
+    await bridge.start();
+    for (const id of ["bad-origin", "good-origin"]) source.acceptOutbound({ from, endpoint, nextHop: B,
+      message: { id, timestamp: 1, content: { text: "synthetic" } } });
+    const [first, second] = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 });
+    const { originMachineId: _origin, ...missing } = first;
+    const exchange = { protocol: 2, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+      frames: [missing, second], acknowledgements: [], receipts: [], controls: [], presence: [] };
+    const child = spawn(process.execPath, [join(root, "roam-build", "cli.mjs"), "--global-root", globalRoot, "roam", "intercom", "exchange"],
+      { env: { ...process.env, HOME: globalRoot, SPIDER_GLOBAL_ROOT: globalRoot }, stdio: ["pipe", "pipe", "pipe"] });
+    let output = "", errors = ""; child.stdout.on("data", value => { output += value.toString(); }); child.stderr.on("data", value => { errors += value.toString(); });
+    child.stdin.end(JSON.stringify({ version: 1, exchange, holdMs: 0, deadlineMs: 4000 }));
+    const [code] = await once(child, "close"); expect(code).toBe(0); expect(errors).toBe("");
+    expect(JSON.parse(output)).toMatchObject({ ok: true, value: { exchange: { refusals: [{ reason: "missing-origin", identity: { id: "bad-origin" } }],
+      acknowledgements: [{ identity: { id: "good-origin" }, kind: "message" }] } } });
+    expect(inbox.retained("inbound", "bad-origin")).toMatchObject({ failureReason: "missing-origin", payloadRetained: false });
+    expect(inbox.pending({ kind: "inbound", address: to }).map(value => value.id)).toEqual(["good-origin"]);
+  } finally { await bridge.stop(); await client.close(); source.close(); inbox.close(); }
+}, 5000);
 
 it("exchanges durable frames through fake hc, the packaged helper, and a fixture broker", async () => {
   const fixture = await createClientFixture();
@@ -91,7 +118,7 @@ it("exchanges durable frames through fake hc, the packaged helper, and a fixture
     const handle = await transport.resolve(target);
     source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "full-trip", timestamp: 1, content: { text: "synthetic private body" } } });
     const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
-    const input = { protocol: 1 as const, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push" as const, generation: 1 },
+    const input = { protocol: 2 as const, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push" as const, generation: 1 },
       frames: [frame], acknowledgements: [], receipts: [], controls: [], presence: [] };
     source.updateEdgeState(B, "edge-1", state => ({ ...state, outbound: { ...state.outbound, push: 1 } }));
     const result = await executeExchange(handle, { exchange: input, holdMs: 0 }, { machineId: A, enrollment: { peer: target, edgeEpoch: "edge-1" }, transport, store: source, clock });
@@ -123,7 +150,7 @@ it("reconnects after a local broker restart and rotates the helper capability", 
     const file = join(globalRoot, "roam", "intercom", "helper.json"), before = JSON.parse(readFileSync(file, "utf8")).token;
     const disconnected = once(client, "disconnected"); await stopTestBroker(broker); await disconnected;
     expect(states.at(-1)).toBe(false); expect(timers.size).toBe(1);
-    broker = startTestBroker(process.execPath, [join(root, "broker", "broker.mjs")], { env: process.env, stdio: ["ignore", "pipe", "pipe"] }, "suite");
+    broker = startTestBroker(process.execPath, [join(root, "broker", "broker.mjs")], { env: { ...process.env, HOME: root }, stdio: ["ignore", "pipe", "pipe"] }, "suite");
     await new Promise<void>((done, reject) => {
       const timer = setTimeout(() => reject(new Error("fixture broker restart timed out")), 4000);
       broker.once("exit", code => { clearTimeout(timer); reject(new Error(`fixture broker exit ${code}`)); });

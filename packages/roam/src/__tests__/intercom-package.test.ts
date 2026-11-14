@@ -22,6 +22,13 @@ it("the actual helper and dispatcher are present, separate, and free of private 
   expect(dispatcher).toContain('import("./cli-main.mjs")');
   expect(dispatcher).not.toMatch(/better-sqlite3|sqlite-vec/i);
 }, 5000);
+it("machine-service bundles resolve the packaged broker from their release directory", () => {
+  for (const entry of ["cli-main.mjs", "supervisor.mjs"]) {
+    const bundle = readFileSync(join(root, "dist/roam", entry), "utf8");
+    expect(bundle).toMatch(/new URL\(["']\.\.\/intercom\/broker\.mjs["'],\s*import\.meta\.url\)/);
+    expect(bundle).not.toContain("import.meta.spiderIntercomBrokerRelative");
+  }
+}, 5000);
 it("strict package validation refuses a missing helper", () => {
   rmSync(helper);
   try { expect(strict).toThrow(/roaming|helper/i); } finally { writeFileSync(helper, original, { mode: 0o700 }); }

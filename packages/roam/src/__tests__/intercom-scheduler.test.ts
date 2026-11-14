@@ -52,10 +52,14 @@ async function fixture(options: { mode: "blocked" | "failure"; initiator?: boole
   return { bridge, clock, store, transport, calls, downs, failedAsks, expirations, rosters, setMode(value: typeof mode) { mode = value; }, setLive(value: boolean) { live = value; }, setFailureReason(value: string) { failureReason = value; } };
 }
 const execs = (calls: any[]) => calls.filter(call => call.kind === "exec");
+const establishVersion = (bridge: any) => bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000,
+  exchange: { protocol: 2, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } });
 
 it("runs one poll and one push independently, with separately persisted generations", async () => {
   const f = await fixture({ mode: "blocked" }); await f.bridge.start(); await flush();
   expect(execs(f.calls).map(call => call.input.exchange.generation.channel)).toEqual(["poll"]);
+  await establishVersion(f.bridge);
   const result = await f.bridge.dispatch({ from, to: remote, message: { id: "queued", timestamp: 1, content: { text: "synthetic" } } });
   expect(result).toMatchObject({ delivery: "queued", acceptance: { durable: true } });
   await flush();
@@ -119,9 +123,9 @@ it("does not start a second ask probe after the original deadline expires", asyn
 
 
 it("expires an ask when the full 20-second push bracket plus allowance exceeds its remaining duration", async () => {
-  const f = await fixture({ mode: "blocked" });
+  const f = await fixture({ mode: "blocked" }); await f.bridge.start(); await flush(); await establishVersion(f.bridge);
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "short-push", timestamp: 1, expectsReply: true, remainingMs: 24_000, content: { text: "synthetic" } } });
-  await f.bridge.start(); await flush();
+  f.bridge.wake(B); await flush();
   const push = execs(f.calls).find(call => call.input.exchange.generation.channel === "push");
   expect(push.input.exchange.frames[0]).toMatchObject({ kind: "tombstone", reason: "expired", identity: { id: "short-push" } });
   expect(f.store.retained("outbound", "short-push")).toMatchObject({ state: "expired", payloadRetained: false });
@@ -129,9 +133,9 @@ it("expires an ask when the full 20-second push bracket plus allowance exceeds i
 
 
 it("does not charge or send one queued ask in both concurrent channels", async () => {
-  const f = await fixture({ mode: "blocked" });
+  const f = await fixture({ mode: "blocked" }); await f.bridge.start(); await flush(); await establishVersion(f.bridge);
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "one-handoff", timestamp: 1, expectsReply: true, remainingMs: 300_000, content: { text: "synthetic" } } });
-  await f.bridge.start(); await flush();
+  f.bridge.wake(B); await flush();
   const copies = execs(f.calls).flatMap(call => call.input.exchange.frames.filter((frame: any) => frame.identity.id === "one-handoff"));
   expect(copies).toHaveLength(1);
   expect(copies[0].message.remainingMs).toBe(275_000);
@@ -141,7 +145,7 @@ it("does not charge or send one queued ask in both concurrent channels", async (
 it("does not charge a poll handoff again while starting a concurrent push", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "poll-handoff", timestamp: 1, expectsReply: true, remainingMs: 300_000, content: { text: "synthetic" } } });
-  const pull = { protocol: 1, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
+  const pull = { protocol: 2, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
   const reply = await f.bridge.exchange({ version: 1, exchange: pull, holdMs: 0, deadlineMs: 5000 });
   expect(reply.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["poll-handoff"]);
@@ -189,7 +193,7 @@ it("retains peer names, queued mail, and one diagnostic over ten minutes and ser
 it("keeps same-pair order while unrelated work uses the push channel", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "pair-1", timestamp: 1, content: { text: "synthetic" } } });
-  const pull = { protocol: 1, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
+  const pull = { protocol: 2, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
   const reply = await f.bridge.exchange({ version: 1, exchange: pull, holdMs: 0, deadlineMs: 5000 });
   expect(reply.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["pair-1"]);
@@ -294,6 +298,8 @@ it("isolates a failed Mac edge while another box edge stays live", async () => {
 it("reports source expiration during an extended outage without claiming remote non-delivery", async () => {
   const f = await fixture({ mode: "failure" });
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "expires-offline", timestamp: 1, content: { text: "synthetic private body" } } });
+  // Model an earlier uncertain handoff before the link outage.
+  expect(f.store.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })).toHaveLength(1);
   await f.bridge.start(); await flush();
   await f.clock.advance(1000); await f.clock.advance(24 * 60 * 60 * 1000);
   expect(f.expirations).toEqual([{ peer: B, id: "expires-offline", from, to, outcomeKnown: false }]);
@@ -304,7 +310,7 @@ it("reports source expiration during an extended outage without claiming remote 
 
 it("wakes a held poll before its fake-clock deadline", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
-  const input = { protocol: 1, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
+  const input = { protocol: 2, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
   let settled = false;
   const pending = f.bridge.exchange({ version: 1, exchange: input, holdMs: 200, deadlineMs: 5200 }).then((reply: any) => { settled = true; return reply; });
@@ -380,7 +386,7 @@ it("a proved identity failure fences a concurrent late success", async () => {
     finishPush(); await flush();
     expect(f.store.edgeState(B, "edge-1").status).toBe("down");
     expect(f.store.retained("outbound", "late-success")).toMatchObject({ linkAcknowledged: false, payloadRetained: true });
-    const incoming = { protocol: 1, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+    const incoming = { protocol: 2, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
       frames: [], acknowledgements: [], receipts: [], controls: [], presence: [remote] };
     await expect(f.bridge.exchange({ version: 1, exchange: incoming, holdMs: 0, deadlineMs: 5000 })).rejects.toMatchObject({ code: "machine-mismatch" });
     expect(f.store.edgeState(B, "edge-1").status).toBe("down");
@@ -409,8 +415,10 @@ it("a later proved mismatch replaces a transient reason and cancels its pending 
 
 
 it("expires queued mail and reports it even when a fatal edge never retries", async () => {
-  const f = await fixture({ mode: "failure", initiator: false }); f.setFailureReason("machine-mismatch"); await f.bridge.start();
+  const f = await fixture({ mode: "failure", initiator: false }); f.setFailureReason("machine-mismatch");
+  await f.bridge.start();
   expect(await f.bridge.dispatch({ from, to: remote, message: { id: "fatal-expiry", timestamp: 1, content: { text: "synthetic" } } })).toMatchObject({ delivery: "queued" });
+  expect(f.store.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })).toHaveLength(1);
   await flush(); expect(f.store.edgeState(B, "edge-1").status).toBe("down");
   const attempts = execs(f.calls).length; await f.bridge.stop();
   const api = await vi.importActual("../intercom-bridge") as { createIntercomBridge: (ports: any) => any };
@@ -448,7 +456,9 @@ it("retries a failed local expiry notification without retrying a fatal edge", a
     store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: () => null,
     onExpiry: (event: unknown) => { calls++; if (calls === 1) throw new Error("fixture notification failed"); notices.push(event); } });
   bridges.push(bridge); await bridge.start();
-  await bridge.dispatch({ from, to: remote, message: { id: "notice-retry", timestamp: 1, content: { text: "synthetic" } } }); await flush();
+  await bridge.dispatch({ from, to: remote, message: { id: "notice-retry", timestamp: 1, content: { text: "synthetic" } } });
+  expect(f.store.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })).toHaveLength(1);
+  await flush();
   const attempts = execs(f.calls).length;
   await f.clock.advance(24 * 60 * 60 * 1000); expect(calls).toBe(1); expect(notices).toEqual([]);
   await f.clock.advance(30_000); expect(calls).toBe(2); expect(notices).toEqual([expect.objectContaining({ id: "notice-retry", outcomeKnown: false })]);

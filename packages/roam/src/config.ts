@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
-import { DEFAULT_LIMITS } from "./contracts";
+import { DEFAULT_INTERCOM_LIMITS, DEFAULT_LIMITS } from "./contracts";
 import { isMachineId } from "./machine-id";
-import type { Limits, Peer, RoamConfig } from "./contracts";
+import type { IntercomConfig, IntercomLimits, IntercomRoute, Limits, Peer, RoamConfig } from "./contracts";
 
 type RecordValue = Record<string, unknown>;
 
@@ -75,10 +75,63 @@ function readPeer(value: unknown): Peer {
   };
 }
 
+function readIntercom(value: unknown, role: "hub" | "box", machineId: string, hubMachineId: string): IntercomConfig {
+  const input = value === undefined ? {} : object(value, "intercom");
+  keys(input, ["enabled", "mode", "machineAlias", "protocolFeature", "routes", "limits"], "intercom");
+  const enabled = input.enabled === undefined ? false : input.enabled;
+  if (typeof enabled !== "boolean") throw new Error("Invalid roaming config: intercom enabled");
+  const mode = input.mode === undefined ? "hub-only" : input.mode;
+  if (mode !== "hub-only" && mode !== "peers") throw new Error("Invalid roaming config: intercom mode");
+  const machineAlias = input.machineAlias === undefined || input.machineAlias === null ? null : nonempty(input.machineAlias, "intercom alias");
+  if (enabled && machineAlias === null) throw new Error("Invalid roaming config: intercom alias");
+  const protocolFeature = input.protocolFeature === undefined ? "federation-v1" : input.protocolFeature;
+  if (protocolFeature !== "federation-v1") throw new Error("Invalid roaming config: intercom protocol");
+  const limits: IntercomLimits = { ...DEFAULT_INTERCOM_LIMITS };
+  if (input.limits !== undefined) {
+    const source = object(input.limits, "intercom limits");
+    keys(source, ["queueMessages", "queueBytes"], "intercom limit");
+    for (const key of ["queueMessages", "queueBytes"] as const) {
+      if (key in source) limits[key] = positiveInteger(source[key], `intercom limit ${key}`);
+      if (limits[key] > DEFAULT_INTERCOM_LIMITS[key]) throw new Error("Invalid roaming config: intercom limit exceeds protocol");
+    }
+  }
+  const routeInput = input.routes === undefined ? [] : input.routes;
+  if (!Array.isArray(routeInput)) throw new Error("Invalid roaming config: intercom routes");
+  const routes: IntercomRoute[] = routeInput.map(raw => {
+    const route = object(raw, "intercom route");
+    if (route.kind === "direct") {
+      keys(route, ["kind", "peer", "edgeEpoch"], "intercom route");
+      const edgeEpoch = nonempty(route.edgeEpoch, "intercom edge epoch");
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(edgeEpoch)) throw new Error("Invalid roaming config: intercom edge epoch");
+      return { kind: "direct", peer: readPeer(route.peer), edgeEpoch };
+    }
+    if (route.kind === "relay") {
+      keys(route, ["kind", "peer", "via"], "intercom route");
+      return { kind: "relay", peer: readPeer(route.peer), via: machineIdentity(route.via) };
+    }
+    throw new Error("Invalid roaming config: intercom route kind");
+  });
+  const identities = new Set<string>(), aliases = new Set<string>(machineAlias ? [machineAlias.toLowerCase()] : []);
+  for (const route of routes) {
+    const { peer } = route, alias = peer.alias.toLowerCase();
+    if (peer.machineId === machineId || identities.has(peer.machineId) || aliases.has(alias)) throw new Error("Invalid roaming config: duplicate intercom identity or alias");
+    identities.add(peer.machineId); aliases.add(alias);
+    if (route.kind === "relay" && (mode !== "hub-only" || role !== "box" || route.via !== hubMachineId || peer.machineId === hubMachineId) ||
+        route.kind === "direct" && mode === "hub-only" && role === "box" && peer.machineId !== hubMachineId) {
+      throw new Error("Invalid roaming config: intercom graph");
+    }
+  }
+  if (routes.some(route => route.kind === "relay") && !routes.some(route => route.kind === "direct" && route.peer.machineId === hubMachineId)) {
+    throw new Error("Invalid roaming config: intercom relay lacks hub edge");
+  }
+  const settings = { mode, protocolFeature, routes, limits } as const;
+  return enabled ? { ...settings, enabled, machineAlias: machineAlias! } : { ...settings, enabled, machineAlias };
+}
+
 /** Parse untrusted configuration without including its values in diagnostics. */
 export function parseConfig(input: unknown): RoamConfig {
   const value = object(input, "expected an object");
-  keys(value, ["enabled", "role", "machineId", "hubMachineId", "peers", "discoveryRoots", "coreUnit", "syncMs", "limits"], "config");
+  keys(value, ["enabled", "role", "machineId", "hubMachineId", "peers", "discoveryRoots", "coreUnit", "syncMs", "limits", "intercom"], "config");
   const enabled = value.enabled === undefined ? false : value.enabled;
   if (typeof enabled !== "boolean") throw new Error("Invalid roaming config: enabled");
   if (value.role !== "hub" && value.role !== "box") throw new Error("Invalid roaming config: role");
@@ -104,6 +157,7 @@ export function parseConfig(input: unknown): RoamConfig {
     coreUnit: nonempty(value.coreUnit, "core unit"),
     syncMs: value.syncMs === undefined ? 120_000 : positiveInteger(value.syncMs, "sync period"),
     limits: readLimits(value.limits),
+    intercom: readIntercom(value.intercom, value.role, machineId, hubMachineId),
   };
 }
 

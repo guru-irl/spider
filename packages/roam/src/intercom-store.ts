@@ -146,8 +146,14 @@ function parseStored<T>(value: string): T {
 }
 function nonempty(value: unknown): value is string { return typeof value === "string" && value.length > 0; }
 function safeInteger(value: unknown, min = 0): value is number { return Number.isSafeInteger(value) && Number(value) >= min; }
+function readOrigin(row: IdentityRow): string | undefined {
+  const value = parseStored<IntercomIdentity & { originMachineId?: unknown }>(row.identity_json).originMachineId;
+  if (value !== undefined && !isMachineId(value)) throw new Error("Invalid intercom origin metadata");
+  return value;
+}
 function readIdentity(row: IdentityRow): IntercomIdentity {
-  const identity = parseStored<IntercomIdentity>(row.identity_json);
+  const { originMachineId: _origin, ...identity } = parseStored<IntercomIdentity & { originMachineId?: unknown }>(row.identity_json);
+  readOrigin(row);
   if (!identity || !nonempty(identity.id) || !isSessionAddress(identity.from) || !isSessionAddress(identity.to) ||
       !/^[0-9a-f]{64}$/.test(identity.digest) || !safeInteger(identity.sequence, 1) ||
       !(identity.askId === null || nonempty(identity.askId)) || identity.id !== row.id || identity.digest !== row.digest ||
@@ -192,7 +198,7 @@ function cleanEvidence(evidence: ConsumptionEvidence): ConsumptionEvidence {
 }
 function cleanReceipt(receipt: MessageReceipt): MessageReceipt {
   return { messageId: receipt.messageId, status: receipt.status, timestamp: receipt.timestamp,
-    ...(receipt.evidence ? { evidence: cleanEvidence(receipt.evidence) } : {}) };
+    ...(receipt.evidence ? { evidence: cleanEvidence(receipt.evidence) } : {}), ...(receipt.detail !== undefined ? { detail: receipt.detail } : {}) };
 }
 function cleanReceiptFrame(frame: IntercomReceiptInput): IntercomReceiptInput {
   return { from: { ...frame.from, address: { ...frame.from.address } }, to: { ...frame.to }, digest: frame.digest, receipt: cleanReceipt(frame.receipt),
@@ -200,18 +206,19 @@ function cleanReceiptFrame(frame: IntercomReceiptInput): IntercomReceiptInput {
 }
 function receiptKey(frame: IntercomReceiptInput): string {
   return createHash("sha256").update(JSON.stringify([addressKey(frame.from.address), frame.from.machineId, frame.from.homeEpoch,
-    frame.from.activationEpoch, addressKey(frame.to), frame.digest, frame.receipt.messageId, frame.receipt.status, frame.receipt.evidence ?? null, frame.attempt ?? 0])).digest("hex");
+    frame.from.activationEpoch, addressKey(frame.to), frame.digest, frame.receipt.messageId, frame.receipt.status, frame.receipt.detail ?? null, frame.receipt.evidence ?? null, frame.attempt ?? 0])).digest("hex");
 }
 function currentKind(row: CopyRow): IntercomFrame["kind"] { return row.state === "expired" || row.state === "cancelled" ? "tombstone" : "message"; }
 function frameFor(row: CopyRow, at: number): IntercomFrame {
-  const identity = readIdentity(row), endpoint = readEndpoint(row);
-  if (row.state === "expired" || row.state === "cancelled") return { kind: "tombstone", identity, endpoint, reason: row.state };
+  const identity = readIdentity(row), endpoint = readEndpoint(row), originMachineId = readOrigin(row);
+  if (!originMachineId) throw new Error("missing-origin");
+  if (row.state === "expired" || row.state === "cancelled") return { kind: "tombstone", identity, endpoint, originMachineId, reason: row.state };
   if (row.payload_json === null) throw new Error("Intercom payload is unavailable");
   const message = parseStored<Message>(row.payload_json);
   if (row.is_ask && row.remaining_ms !== null) message.remainingMs = row.remaining_ms;
   const remainingPayloadMs = row.deadline_at - at;
   if (!safeInteger(remainingPayloadMs, 1)) throw new Error("Intercom payload expired");
-  return decodeFrame(encodeFrame({ kind: "message", identity, endpoint, message, remainingPayloadMs }));
+  return decodeFrame(encodeFrame({ kind: "message", identity, endpoint, message, originMachineId, remainingPayloadMs }));
 }
 
 /** A machine-local store. The caller authenticates peers and supplies authoritative host proofs. */
@@ -359,10 +366,14 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     if (deleted) checkpointDeletion();
     return expired;
   };
-  const insertIdentity = (identity: IntercomIdentity, isAsk: boolean, tombstone?: "expired" | "cancelled"): void => {
+  const insertIdentity = (identity: IntercomIdentity, isAsk: boolean, tombstone?: "expired" | "cancelled", originMachineId?: string): void => {
     const known = identityRow(identity.id);
     if (known) {
       if (!sameIdentity(readIdentity(known), identity)) throw new Error("Intercom message ID or digest conflict");
+      const origin = readOrigin(known);
+      if (origin && originMachineId && origin !== originMachineId) throw new Error("Intercom origin conflict");
+      if (!origin && originMachineId) db.prepare("UPDATE intercom_messages SET identity_json=? WHERE id=?")
+        .run(JSON.stringify({ ...identity, originMachineId }), identity.id);
       return;
     }
     const collision = db.prepare("SELECT id FROM intercom_messages WHERE from_key=? AND to_key=? AND pair_sequence=?")
@@ -370,7 +381,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     if (collision) throw new Error("Intercom pair sequence conflict");
     db.prepare(`INSERT INTO intercom_messages(id,from_key,to_key,digest,pair_sequence,ask_id,identity_json,is_ask,ask_state)
       VALUES(?,?,?,?,?,?,?,?,?)`).run(identity.id, addressKey(identity.from), addressKey(identity.to), identity.digest, identity.sequence,
-        identity.askId, JSON.stringify(identity), isAsk ? 1 : 0, isAsk ? tombstone ?? "open" : "none");
+        identity.askId, JSON.stringify({ ...identity, ...(originMachineId ? { originMachineId } : {}) }), isAsk ? 1 : 0, isAsk ? tombstone ?? "open" : "none");
   };
   const insertCopy = (direction: IntercomQueue, frame: IntercomFrame, peer: string, at: number): void => {
     const message = frame.kind === "message" ? frame.message : null;
@@ -624,7 +635,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       let candidate: IntercomMessageFrame | IntercomFrame;
       try {
         candidate = "frame" in input ? decodeFrame(encodeFrame(input.frame))
-          : makeMessageFrame({ from: input.from, endpoint: input.endpoint, sequence: 1, message: input.message });
+          : makeMessageFrame({ from: input.from, endpoint: input.endpoint, sequence: 1, message: input.message, originMachineId: options.machineId });
         encodeFrame(candidate);
       } catch (error) {
         if (error instanceof Error && /size limit/.test(error.message)) return { kind: "refused", reason: "message-too-large" };
@@ -633,6 +644,8 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       let deleted = false;
       const result = db.raw.transaction(() => {
         const known = identityRow(candidate.identity.id);
+        const knownOrigin = known ? readOrigin(known) : undefined;
+        if (knownOrigin && candidate.originMachineId !== knownOrigin) throw new Error("Intercom origin conflict");
         if (known && !sameIdentity({ ...candidate.identity, sequence: known.pair_sequence }, readIdentity(known))) throw new Error("Intercom message ID or digest conflict");
         if (known && "frame" in input && !sameIdentity(candidate.identity, readIdentity(known))) throw new Error("Intercom message ID or sequence conflict");
         const prior = copy("outbound", candidate.identity.id);
@@ -679,11 +692,11 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         }
         const seq = "frame" in input ? candidate.identity.sequence : cursor("outbound", candidate.identity) + 1;
         if (!safeInteger(seq, 1) || seq !== cursor("outbound", candidate.identity) + 1) throw new Error("Intercom outbound sequence gap");
-        if (!("frame" in input)) candidate = makeMessageFrame({ from: input.from, endpoint: input.endpoint, sequence: seq, message: input.message });
+        if (!("frame" in input)) candidate = makeMessageFrame({ from: input.from, endpoint: input.endpoint, sequence: seq, message: input.message, originMachineId: options.machineId });
         const bytes = candidate.kind === "message" ? encodeFrame(candidate).byteLength : 0;
         if (candidate.kind === "message" && !room(candidate.identity.to, bytes)) return { kind: "refused", reason: "queue-full" } as const;
         insertIdentity(candidate.identity, candidate.kind === "message" ? candidate.message.expectsReply === true : candidate.identity.askId === candidate.identity.id,
-          candidate.kind === "tombstone" ? candidate.reason : undefined);
+          candidate.kind === "tombstone" ? candidate.reason : undefined, candidate.originMachineId);
         insertCopy("outbound", candidate, input.nextHop, at); writeCursor("outbound", candidate.identity);
         return accepted("accepted", candidate.identity);
       }).immediate();
@@ -701,6 +714,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       let deleted = false;
       const result = db.raw.transaction(() => {
         const known = identityRow(frame.identity.id);
+        if (known && readOrigin(known) && readOrigin(known) !== frame.originMachineId) throw new Error("Intercom origin conflict");
         if (known && !sameIdentity(readIdentity(known), frame.identity)) throw new Error("Intercom message ID or digest conflict");
         let prior = copy("inbound", frame.identity.id);
         if (prior) {
@@ -756,7 +770,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         const bytes = frame.kind === "message" ? encodeFrame(frame).byteLength : 0;
         if (frame.kind === "message" && !room(frame.identity.to, bytes)) return { kind: "refused", reason: "queue-full" } as const;
         insertIdentity(frame.identity, frame.kind === "message" ? frame.message.expectsReply === true : frame.identity.askId === frame.identity.id,
-          frame.kind === "tombstone" ? frame.reason : undefined);
+          frame.kind === "tombstone" ? frame.reason : undefined, frame.originMachineId);
         insertCopy("inbound", frame, input.peer, at); writeCursor("inbound", frame.identity);
         if (frame.kind === "tombstone") {
           const received = copy("inbound", frame.identity.id)!;
@@ -768,6 +782,31 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       }).immediate();
       if (deleted) checkpointDeletion();
       return result;
+    },
+    rejectMissingOrigin(input): void {
+      ensureCheckpoint();
+      const { peer, frame } = input, { identity, endpoint } = frame;
+      if (!isMachineId(peer) || !identity || !nonempty(identity.id) || !isSessionAddress(identity.from) || !isSessionAddress(identity.to) ||
+          identity.from.scopeId !== identity.to.scopeId || sameAddress(identity.from, identity.to) || !/^[0-9a-f]{64}$/.test(identity.digest) ||
+          !safeInteger(identity.sequence, 1) || !(identity.askId === null || nonempty(identity.askId)) ||
+          !isSessionEndpoint(endpoint) || !isMachineId(endpoint.machineId) || !sameAddress(endpoint.address, identity.to)) throw new Error("Invalid intercom rejection");
+      const at = now();
+      db.raw.transaction(() => {
+        const existing = copy("inbound", identity.id);
+        if (existing) {
+          if (existing.peer !== peer || !sameIdentity(readIdentity(existing), identity) || !sameEndpoint(readEndpoint(existing), endpoint)) throw new Error("Intercom rejection conflict");
+          return;
+        }
+        if (identity.sequence !== cursor("inbound", identity) + 1) throw new Error("Intercom inbound sequence gap");
+        insertIdentity(identity, identity.askId === identity.id, "cancelled");
+        const receipt: MessageReceipt = { messageId: identity.id, status: "cancelled", timestamp: at, detail: "missing-origin" };
+        db.prepare(`INSERT INTO intercom_copies(direction,id,endpoint_json,peer,payload_json,payload_bytes,state,deadline_at,remaining_ms,last_clock,receipt_json)
+          VALUES('inbound',?,?,?,?,0,'cancelled',?,NULL,?,?)`).run(identity.id, JSON.stringify(endpoint), peer, null,
+          plus(at, INTERCOM_PAYLOAD_MS), at, JSON.stringify(receipt));
+        writeCursor("inbound", identity);
+        const row = copy("inbound", identity.id)!;
+        saveReceipt(row, { from: endpoint, to: identity.from, digest: identity.digest, receipt });
+      }).immediate();
     },
     outboundResumptions(peer): readonly IntercomPairResume[] {
       ensureCheckpoint();
@@ -934,6 +973,35 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       for (const row of receipts) receiptIds.add(row.id);
       return { asks: [...asks.values()], pendingDispatch: [...pendingIds], unknownOutcomes: [...unknownIds], unobservedReceipts: [...receiptIds] };
     },
+    rebindInboundAfterAbsence(id: string, endpoint: SessionEndpoint): void {
+      ensureCheckpoint();
+      if (!nonempty(id) || !isSessionEndpoint(endpoint) || !isMachineId(endpoint.machineId)) throw new Error("Invalid intercom local rebind");
+      db.raw.transaction(() => {
+        const incoming = copy("inbound", id);
+        if (!incoming || incoming.state !== "queued" || incoming.unknown_outcome || incoming.payload_json === null) throw new Error("Intercom rebind lacks absence proof");
+        const previous = readEndpoint(incoming), receipt = incoming.reconciliation_json ? parseStored<MessageReceipt>(incoming.reconciliation_json) : null;
+        if (!sameAddress(previous.address, endpoint.address) || previous.machineId !== endpoint.machineId || previous.homeEpoch !== endpoint.homeEpoch ||
+            previous.activationEpoch === endpoint.activationEpoch || receipt?.status !== "not_injected" || receipt.evidence?.kind !== "absence" ||
+            receipt.evidence.sessionId !== previous.address.sessionId || receipt.evidence.activationEpoch !== previous.activationEpoch ||
+            receipt.evidence.excludedGeneration !== previous.activationEpoch || receipt.evidence.complete !== true) throw new Error("Intercom rebind lacks absence proof");
+        const outbound = copy("outbound", id);
+        if (endpoint.machineId !== options.machineId && (!outbound || outbound.peer === options.machineId || !sameEndpoint(readEndpoint(outbound), endpoint))) {
+          throw new Error("Intercom relay route lacks rebind proof");
+        }
+        if (outbound && outbound.peer === options.machineId) {
+          const proof = outbound.reconciliation_json ? parseStored<MessageReceipt>(outbound.reconciliation_json) : null;
+          if (outbound.state !== "queued" || outbound.unknown_outcome || !sameEndpoint(readEndpoint(outbound), previous) ||
+              proof?.status !== "not_injected" || proof.evidence?.kind !== "absence" || proof.evidence.excludedGeneration !== previous.activationEpoch) {
+            throw new Error("Intercom local source lacks absence proof");
+          }
+          db.prepare(`UPDATE intercom_copies SET endpoint_json=?,ack_kind='message',sent_kind='message',transmitted=1,readiness=NULL,
+            attempt=0,observed_attempt=0,reconciliation_json=NULL,reconciliation_attempt=NULL,pending_proof_json=NULL,pending_proof_attempt=NULL
+            WHERE direction='outbound' AND id=?`).run(JSON.stringify(endpoint), id);
+        }
+        db.prepare(`UPDATE intercom_copies SET endpoint_json=?,readiness=NULL,attempt=0,observed_attempt=0,reconciliation_json=NULL,
+          reconciliation_attempt=NULL,pending_proof_json=NULL,pending_proof_attempt=NULL WHERE direction='inbound' AND id=?`).run(JSON.stringify(endpoint), id);
+      }).immediate();
+    },
     rebindUndispatched(address: SessionAddress, endpoint: SessionEndpoint, proof: RebindProof): number {
       ensureCheckpoint();
       if (!isSessionAddress(address) || !isSessionEndpoint(endpoint) || !isMachineId(endpoint.machineId) || !sameAddress(address, endpoint.address) ||
@@ -985,8 +1053,10 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         pendingProof = { from: endpoint, to: identity.from, digest: identity.digest,
           receipt: parseStored<MessageReceipt>(row.pending_proof_json), attempt: row.pending_proof_attempt };
       }
-      return { identity, endpoint, peer: row.peer, state: row.state, payloadRetained: row.payload_json !== null,
-        linkAcknowledged: row.ack_kind === currentKind(row), latestAttempt: row.observed_attempt,
+      const originMachineId = readOrigin(row);
+      const receipt = row.receipt_json ? parseStored<MessageReceipt>(row.receipt_json) : null;
+      return { identity, endpoint, peer: row.peer, ...(originMachineId ? { originMachineId } : {}), state: row.state, payloadRetained: row.payload_json !== null,
+        ...(receipt?.detail ? { failureReason: receipt.detail } : {}), linkAcknowledged: row.ack_kind === currentKind(row), latestAttempt: row.observed_attempt,
         ...(row.reconciliation_json ? { reconciliation: parseStored<MessageReceipt>(row.reconciliation_json) } : {}),
         ...(pendingProof ? { pendingProof } : {}) };
     },

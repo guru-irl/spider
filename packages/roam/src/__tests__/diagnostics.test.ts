@@ -12,7 +12,7 @@ import type { DiagnosticStore, LoadedConsumer } from "../diagnostics";
 import type { PresenceBuild, PresenceRecord } from "@spider/herdr/sessions/presence";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import type { Diagnostic, Peer, RoamConfig } from "../contracts";
-import { DEFAULT_LIMITS } from "../contracts";
+import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import * as diagnostics from "../diagnostics";
 import { main } from "../cli";
 
@@ -21,7 +21,7 @@ const BOX = "00000000-0000-4000-8000-000000000002";
 const target: PresenceBuild = { sha: "abcdef1", builtAt: "2026-01-02T03:04:05.000Z", version: "1.0.0", dirty: false };
 const peer: Peer = { machineId: BOX, alias: "box-1.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/spider", core: "/fixture/hc", globalRoot: "/fixture/global" };
 const config = (changes: Partial<RoamConfig> = {}): RoamConfig => ({ enabled: false, role: "hub", machineId: HUB,
-  hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: DEFAULT_LIMITS, ...changes });
+  hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom(), ...changes });
 function presence(changes: Partial<PresenceRecord> = {}): PresenceRecord {
   return { version: 1, pid: 101, startIdentity: "start-101", sessionFile: null, sessionId: "session-1" as PresenceRecord["sessionId"], sessionName: null,
     kind: "top-level", mode: "interactive", hcAddress: null, extensionArguments: [], build: target, capabilities: { roamSchema: 14 }, ...changes };

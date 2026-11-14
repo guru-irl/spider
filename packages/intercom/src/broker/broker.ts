@@ -23,7 +23,7 @@ import {
 import { getAskTimeoutMs } from "../config.js";
 import { sameCwd } from "../cwd.js";
 import { EXACT_SEND_FEATURE, EXTENSION_BUS_FEATURE } from "../types.js";
-import type { DeliveryState, SessionInfo, Message, BrokerMessage, ExtensionCapability, MessageControl } from "../types.js";
+import type { DeliveryState, SessionInfo, Message, MessageReceipt, BrokerMessage, ExtensionCapability, MessageControl } from "../types.js";
 import { ExtensionStateManager } from "./extension-state.js";
 import { assertNoLiveBroker } from "./runtime-claim.js";
 
@@ -219,6 +219,7 @@ class IntercomBroker {
   private helperPending = new Map<string, { socket: net.Socket; requestId: string; timer: NodeJS.Timeout }>();
   private remoteRoutes = new Map<string, { from: SessionAddress; to: RemoteSessionInfo }>();
   private inboundRemoteRoutes = new Map<string, { from: RemoteSessionInfo; to: SessionAddress }>();
+  private restoredReceipts = new Map<string, { from: SessionAddress; receipt: MessageReceipt; at: number }>();
   private unobservedLocalReceipts = new Map<string, { from: SessionAddress; to: SessionAddress; activationEpoch: string; unknown: boolean }>();
   private federation = createFederation({ agentDir: getAgentDirPath(), locals: () => [...this.sessions.values()].map(session => sessionAddress(session.info, session.scopeId ?? null)), now: () => Date.now() });
   private askEdges = new Map<string, AskEdge>();
@@ -272,6 +273,7 @@ class IntercomBroker {
       writeFileSync(PID_PATH, String(process.pid), { mode: INTERCOM_RUNTIME_FILE_MODE });
       restrictIntercomRuntimeFile(PID_PATH);
       console.log(`Intercom broker started (pid: ${process.pid})`);
+      this.scheduleShutdownCheck();
     };
 
     if (typeof LISTEN_TARGET === "string") {
@@ -376,6 +378,14 @@ class IntercomBroker {
   }
   private writeBridge(message: FederationBrokerMessage): void {
     if (this.bridgeSocket && !this.bridgeSocket.destroyed) writeMessage(this.bridgeSocket, message);
+  }
+  private forwardLocalReceipt(from: SessionAddress, receipt: MessageReceipt): void {
+    if (this.bridgeSocket) { this.federation.receipt(from, receipt); return; }
+    if (!isConsumptionReceipt(receipt) || receipt.evidence?.sessionId !== from.sessionId) return;
+    const safe: MessageReceipt = { messageId: receipt.messageId, status: receipt.status, timestamp: receipt.timestamp, evidence: receipt.evidence };
+    const key = JSON.stringify([addressKey(from), safe.messageId, safe.status, safe.evidence?.activationEpoch]);
+    this.restoredReceipts.set(key, { from: { ...from }, receipt: safe, at: Date.now() });
+    while (this.restoredReceipts.size > MAX_DELIVERY_RECORDS) this.restoredReceipts.delete(this.restoredReceipts.keys().next().value!);
   }
   private publishLocalPresence(): void {
     this.writeBridge({ type: "federation_local_presence", sessions: [...this.sessions.values()].filter(session => session.federation).map(session => ({ address: sessionAddress(session.info, session.scopeId ?? null), startedAt: session.info.startedAt, lastActivity: session.info.lastActivity, homeEpoch: session.info.homeEpoch ?? null, activationEpoch: session.info.activationEpoch ?? session.info.endpointEpoch!, cwd: session.info.cwd, model: session.info.model, ...(session.info.name ? { name: session.info.name } : {}), ...(session.info.status ? { status: session.info.status } : {}) })) });
@@ -580,6 +590,8 @@ class IntercomBroker {
       if (this.shutdownTimer) { clearTimeout(this.shutdownTimer); this.shutdownTimer = null; }
       this.writeBridge({ type: "federation_registered", features: [FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE] });
       this.publishLocalPresence();
+      const restored = [...this.restoredReceipts.values()]; this.restoredReceipts.clear();
+      for (const item of restored) if (Date.now() - item.at <= DISCONNECTED_SESSION_RETENTION_MS) this.federation.receipt(item.from, item.receipt);
       return;
     }
     if (this.bridgeSocket === socket) { this.handleBridgeMessage(socket, clientMessage); return; }
@@ -1036,7 +1048,7 @@ class IntercomBroker {
         this.pruneMessageReceiptRoutes();
         const remoteRoute = this.inboundRemoteRoutes.get(clientMessage.receipt.messageId);
         if (remoteRoute && this.localForAddress(remoteRoute.to)?.key === currentKey && this.sessions.get(currentKey)?.socket === socket) {
-          this.federation.receipt(remoteRoute.to, clientMessage.receipt);
+          this.forwardLocalReceipt(remoteRoute.to, clientMessage.receipt);
           break;
         }
         const route = this.messageReceiptRoutes.get(clientMessage.receipt.messageId);
@@ -1053,6 +1065,9 @@ class IntercomBroker {
             from: receiver.info,
             receipt: clientMessage.receipt,
           });
+        } else if (!route && receiver?.socket === socket && receiver.federation && isConsumptionReceipt(clientMessage.receipt)) {
+          const from = sessionAddress(receiver.info, receiver.scopeId ?? null);
+          if (clientMessage.receipt.evidence?.sessionId === from.sessionId) this.forwardLocalReceipt(from, clientMessage.receipt);
         }
         break;
       }

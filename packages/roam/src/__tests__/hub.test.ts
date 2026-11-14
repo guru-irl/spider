@@ -203,6 +203,22 @@ it("unreachable home notifies once and clears on recovery", async () => {
   expect((await h.request("status")).value).toMatchObject({ warnings: [] });
 }, 5000);
 
+it("link-only outage coalesces hosting notices across retries and restart", async () => {
+  const h = fixture(); h.home(); h.unreachable();
+  let links = [{ peer: BOX, status: "down", since: 1_000_000, reason: "link-down" }];
+  const intercom = { async start() {}, async stop() {}, diagnostics() { return links; }, readiness() { return { state: "ready" as const, reason: null }; } };
+  const start = async () => { const service = await runStandaloneHub({ ...h.ports, intercom }); handles.push(service); return service; };
+  const first = await start(); await h.request("sync");
+  h.fire(600_000); await h.request("sync");
+  expect(h.notices).toEqual([]);
+  expect((await h.request("status")).value).toMatchObject({ warnings: [], intercom: { links: [{ peer: BOX, status: "down" }] } });
+  await first.stop(); await start(); await h.request("sync");
+  expect(h.notices).toEqual([]);
+  links = []; h.reachable(); await h.request("sync");
+  expect((await h.request("status")).value).toMatchObject({ warnings: [], intercom: { links: [] } });
+  expect(h.notices).toEqual([]);
+}, 5000);
+
 it("resumes the unreachable deadline after restart without alerting sessions that have no home", async () => {
   const h = fixture(); h.unreachable();
   const first = await h.start(); await h.request("sync");

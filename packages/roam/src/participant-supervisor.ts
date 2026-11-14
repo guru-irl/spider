@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { openDbReadOnly } from "@spider/db-core";
+import { openDbReadOnly, type Db } from "@spider/db-core";
 import { readSessionState } from "@spider/db-core/roam/state";
 import type { Probe, HubOperationReadiness, StoreKey } from "@spider/db-core/roam/types";
 import type { AgentPorts, Clock, Diagnostic, HostIntent, Outcome } from "./contracts";
@@ -8,6 +8,7 @@ import { createIntentStore } from "./intent";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority } from "./session-control";
 import { createDurableLaunchPort, createSupervisor, type LaunchReservation } from "./supervisor";
 import { sessionHome } from "./homes";
+import { recordSupervisorExits } from "./intercom-exclusion";
 
 export function unfinishedFreeze(root: string, id: string): boolean {
   const db = openDbReadOnly(join(root, "roam", "journal.db")); if (!db) return false;
@@ -16,12 +17,21 @@ export function unfinishedFreeze(root: string, id: string): boolean {
     return Boolean(db.prepare("SELECT 1 FROM freeze_journal WHERE session_id=? AND (state IS NULL OR state NOT IN ('complete','aborted')) LIMIT 1").get(id));
   } finally { db.close(); }
 }
+export async function stopParticipantWithExclusion(db: Db, sessionId: string, before: Probe, stop: () => Promise<Probe>,
+  confirmExit?: (identity: { pid: number; startTime: string }) => Promise<boolean>): Promise<Probe> {
+  const result = await stop();
+  if (before.kind === "live" && result.kind === "absent" && confirmExit && await confirmExit(before.identity)) {
+    recordSupervisorExits(db, sessionId, before.identity);
+  }
+  return result;
+}
 export function createParticipantSupervisor(input: {
   root: string; agent: AgentPorts; clock: Clock; identityCurrent?(): Promise<boolean>; events: { subscribe(listener: () => void): () => void };
   owner(intent: HostIntent): Promise<Probe>;
   diagnostics(intent: HostIntent): Promise<readonly Diagnostic[]>;
   launch(intent: HostIntent, operationId: string, mode: "initial" | "reconcile"): Promise<Outcome<HubOperationReadiness>>;
   stop(sessionId: string): Promise<Probe>;
+  confirmExit?(identity: { pid: number; startTime: string }): Promise<boolean>;
   notify(sessionId: string, reason: string): Promise<void>;
 }): { reconcile(): Promise<void>; start(): void; stop(): Promise<void> } {
   assertBoxEnrollment(input.agent.config);
@@ -61,5 +71,8 @@ export function createParticipantSupervisor(input: {
     operationId() { return randomUUID(); },
   });
   return createSupervisor({ clock: input.clock, journal: input.agent.journal, intents, runningIntents: trusted, events: input.events,
-    inspect, launch, stop: input.stop, notify: input.notify });
+    inspect, launch, async stop(id) {
+      const intent = await trusted.get(id), before = intent ? await input.owner(intent) : { kind: "uncertain" as const };
+      return stopParticipantWithExclusion(global, id, before, () => input.stop(id), input.confirmExit);
+    }, notify: input.notify });
 }

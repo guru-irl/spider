@@ -12,7 +12,7 @@ import * as catalogApi from "@spider/db-core/roam/catalog";
 import * as applyApi from "@spider/db-core/roam/apply";
 import { validateBatch } from "@spider/db-core/roam/codec";
 import { localEntries, writeLocal } from "@spider/db-core/roam/local-state";
-import { DEFAULT_LIMITS } from "../contracts";
+import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { createStorePort, sweepBatchFiles } from "../stores";
 import { sweepStoreArtifacts } from "../cleanup";
 import { stageArtifact } from "../artifacts";
@@ -25,7 +25,7 @@ function fixture() {
   source.db.prepare("INSERT INTO sessions(id,name,started_at) VALUES ('session-a','portable',1)").run();
   source.db.prepare("INSERT INTO todos(uuid,session_id,seq,text,created_at) VALUES ('todo-a','session-a',1,'portable',1)").run();
   seedSession(source.db, "session-a", 1, source.storeKey, 4096);
-  const config = { enabled: true, role: "hub" as const, machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: { ...DEFAULT_LIMITS } };
+  const config = { enabled: true, role: "hub" as const, machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: { ...DEFAULT_LIMITS }, intercom: disabledIntercom() };
   const stores = createStorePort(config, global.db); fixtures.push(stores);
   return { global, source, stores, config };
 }

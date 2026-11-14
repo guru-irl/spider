@@ -9,7 +9,7 @@ export type { DeliveryObservation, GenerationExclusion, IntercomObservationPorts
 export const FEDERATION_FEATURE = "federation-v1";
 export const HELPER_EXCHANGE_FEATURE = "intercom-exchange-v1";
 export const HELPER_EXCHANGE_ERRORS: readonly string[] = ["machine-not-enrolled", "machine-mismatch", "stale-generation", "invalid-request",
-  "invalid-presence", "invalid-refusal", "invalid-receipt", "invalid-reply", "unsupported-broker", "helper-unauthorized",
+  "invalid-presence", "invalid-refusal", "invalid-receipt", "invalid-reply", "peer-version-mismatch", "unsupported-broker", "helper-unauthorized",
   "cli-aborted", "bridge-unavailable", "exchange-too-large", "endpoint-exited"];
 export const isHelperExchangeError = (value: unknown): value is string => typeof value === "string" && HELPER_EXCHANGE_ERRORS.includes(value);
 

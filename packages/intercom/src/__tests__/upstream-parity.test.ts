@@ -33,6 +33,14 @@ function mutate(root: string, file: string, before: string, after: string) {
   writeFileSync(path, text.replace(before, after));
 }
 
+function pristineSpawn(root: string) {
+  const baseline = readFileSync(resolve('packages/intercom/src/__tests__/fixtures/spawn-baseline.txt'));
+  writeFileSync(join(root, 'broker/spawn.ts'), baseline);
+  const path = resolve(root, '../DIVERGENCE.json'), divergence = JSON.parse(readFileSync(path, 'utf8'));
+  divergence.files = divergence.files.filter((entry: { path: string }) => entry.path !== 'broker/spawn.ts');
+  writeFileSync(path, JSON.stringify(divergence));
+  const result = check(root); expect(result.status, result.stderr).toBe(0);
+}
 function declareDivergence(root: string, file: string, upstream: string | null = file) {
   const path = resolve(root, '../DIVERGENCE.json');
   const divergence = JSON.parse(readFileSync(path, 'utf8'));
@@ -42,7 +50,7 @@ function declareDivergence(root: string, file: string, upstream: string | null =
 }
 
 it('allows a listed runtime change tied to its upstream hash', () => {
-  const root = fixture();
+  const root = fixture(); pristineSpawn(root);
   mutate(root, 'broker/spawn.ts', 'args: [brokerPath],', 'args: [brokerPath, "fixture"],');
   declareDivergence(root, 'broker/spawn.ts');
   const result = check(root);
@@ -50,7 +58,7 @@ it('allows a listed runtime change tied to its upstream hash', () => {
 }, 5000);
 
 it('rejects a stale divergence entry', () => {
-  const root = fixture(); declareDivergence(root, 'broker/spawn.ts');
+  const root = fixture(); pristineSpawn(root); declareDivergence(root, 'broker/spawn.ts');
   const result = check(root);
   expect(result.status).not.toBe(0);
   expect(result.stderr).toMatch(/stale.*broker\/spawn\.ts/i);
@@ -260,7 +268,7 @@ it.each([
   ['non-Windows', 'command: getNodeCommand(nodePath),', 'command: nodePath,'],
   ['Windows', 'quoteWindowsArg(getNodeCommand(nodePath)), quoteWindowsArg(brokerPath)', 'quoteWindowsArg(nodePath), quoteWindowsArg(brokerPath)'],
 ])('rejects a %s broker launch regression', (_platform, before, after) => {
-  const root = fixture(); mutate(root, 'broker/spawn.ts', before, after);
+  const root = fixture(); pristineSpawn(root); mutate(root, 'broker/spawn.ts', before, after);
   const result = check(root);
   expect(result.status).not.toBe(0);
   expect(result.stderr).toMatch(/(?:runtime|implementation).*broker\/spawn\.ts/i);

@@ -1426,7 +1426,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
             notifiedOrphanReplies.add(message.receipt.messageId);
             if (runtimeContext) notifyIfLive(runtimeContext, "Delivered; the asker was no longer waiting.", "info");
           }
-          if (replyWaiter?.remote && message.receipt.messageId === replyWaiter.replyTo && sameAddress(sessionAddress(message.from, getIntercomScopeId() ?? null), replyWaiter.from) && message.receipt.detail === "link-down") rejectReplyWaiter(linkDownError());
+          if (replyWaiter?.remote && message.receipt.messageId === replyWaiter.replyTo && sameAddress(sessionAddress(message.from, getIntercomScopeId() ?? null), replyWaiter.from)) {
+            if (message.receipt.detail === "link-down") rejectReplyWaiter(linkDownError());
+            else if (message.receipt.detail === "missing-origin") rejectReplyWaiter(Object.assign(new Error("missing-origin: the peer rejected this message"), { reason: "missing-origin" }));
+          }
           latestOutboundReceipts.set(message.receipt.messageId, {
             status: message.receipt.status,
             timestamp: message.receipt.timestamp,
@@ -1781,9 +1784,31 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
         entries: () => { if (ctx.sessionManager.getSessionId() !== ownSessionId || !ctx.sessionManager.getSessionFile?.()) throw new Error("own-session-entries-unavailable"); return ctx.sessionManager.getEntries(); }, receipt: recordReceipt, now: Date.now });
       restored.register(id); restored.accept(id);
       const data = entry.type === "custom" ? entry.data as { owner?: import("./protocol.js").SessionEndpoint } | undefined : undefined;
-      restored.settle(data?.owner ? hostContext?.exclusion?.(data.owner) : undefined);
+      const owner = data?.owner, reconcile = hostContext?.reconcile, ticket = runtimeGeneration;
+      if (owner && reconcile) {
+        void reconcile(id, owner).then(receipt => {
+          if (runtimeGeneration !== ticket || currentSessionId !== ownSessionId) return;
+          const evidence = receipt.status === "not_injected" && receipt.evidence?.kind === "absence" ? receipt.evidence : undefined;
+          restored.settle(evidence ? { excludedGeneration: evidence.excludedGeneration, complete: true } : undefined);
+        }, () => { if (runtimeGeneration === ticket) restored.settle(); });
+      } else restored.settle(owner ? hostContext?.exclusion?.(owner) : undefined);
       if (!restoredDeliveries.get(id)?.snapshot(id)?.observed) restoredDeliveries.set(id, restored);
     }
+    const pendingOwn = hostContext?.pendingOwn, reconcileOwn = hostContext?.reconcile, reconciliationTicket = runtimeGeneration;
+    if (pendingOwn && reconcileOwn) void pendingOwn().then(items => {
+      if (runtimeGeneration !== reconciliationTicket || currentSessionId !== ownSessionId) return;
+      for (const item of items) {
+        if (restoredDeliveries.has(item.messageId) || !sameAddress(item.owner.address, { sessionId: ownSessionId, scopeId: getIntercomScopeId() ?? null })) continue;
+        const restored = createIntercomDeliveryObserver({ sessionId: ownSessionId, generation: item.owner.activationEpoch,
+          entries: () => { if (ctx.sessionManager.getSessionId() !== ownSessionId || !ctx.sessionManager.getSessionFile?.()) throw new Error("own-session-entries-unavailable"); return ctx.sessionManager.getEntries(); }, receipt: recordReceipt, now: Date.now });
+        restored.register(item.messageId); restored.accept(item.messageId); restoredDeliveries.set(item.messageId, restored);
+        void reconcileOwn(item.messageId, item.owner).then(receipt => {
+          if (runtimeGeneration !== reconciliationTicket || currentSessionId !== ownSessionId) return;
+          const evidence = receipt.status === "not_injected" && receipt.evidence?.kind === "absence" ? receipt.evidence : undefined;
+          restored.settle(evidence ? { excludedGeneration: evidence.excludedGeneration, complete: true } : undefined);
+        }, () => { if (runtimeGeneration === reconciliationTicket) restored.settle(); });
+      }
+    }).catch(() => {});
     for (const entry of ctx.sessionManager.getEntries?.() ?? []) {
       if (entry.type === "custom" && entry.customType === "intercom_sent") {
         const data = entry.data as { message?: { replyTo?: string } } | undefined;
@@ -2792,7 +2817,9 @@ Usage:
             }
             return {
               content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
-              details: { error: true, ...(questionId ? { messageId: questionId, deliveryState: latestDeliveryState(questionId, deliveryState) } : {}), ...((error as { reason?: string }).reason === "link-down" ? { reason: "link-down", edge: (error as { edge?: string }).edge } : {}) },
+              details: { error: true, ...(questionId ? { messageId: questionId, deliveryState: latestDeliveryState(questionId, deliveryState) } : {}),
+                ...((error as { reason?: string }).reason === "link-down" ? { reason: "link-down", edge: (error as { edge?: string }).edge }
+                  : (error as { reason?: string }).reason === "missing-origin" ? { reason: "missing-origin" } : {}) },
             };
           }
         }

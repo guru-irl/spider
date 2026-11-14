@@ -2,6 +2,7 @@ import type { Home, MachineId } from "@spider/db-core/roam/types";
 import type { AcceptanceEvidence, FederationBlockers, Message, MessageControl, MessageReceipt, RemoteSessionInfo, SessionAddress, SessionEndpoint } from "@spider/intercom/protocol";
 import type { Clock } from "./contracts";
 
+export const INTERCOM_FEDERATION_VERSION = 2 as const;
 export const INTERCOM_MESSAGE_BYTES: number = 256 * 1024;
 export const INTERCOM_EXCHANGE_BYTES: number = 512 * 1024;
 export const INTERCOM_QUEUE_MESSAGES: number = 256;
@@ -28,6 +29,8 @@ export interface IntercomMessageFrame {
   identity: IntercomIdentity;
   endpoint: SessionEndpoint;
   message: Message;
+  /** First accepting machine, fixed for the lifetime of the message. */
+  originMachineId: MachineId;
   /** Relative lifetime; receivers must never refresh it at a relay. */
   remainingPayloadMs: number;
 }
@@ -35,13 +38,17 @@ export interface IntercomTombstoneFrame {
   kind: "tombstone";
   identity: IntercomIdentity;
   endpoint: SessionEndpoint;
+  /** Preserves the same origin when the message becomes a tombstone. */
+  originMachineId: MachineId;
   reason: "expired" | "cancelled";
 }
 export type IntercomFrame = IntercomMessageFrame | IntercomTombstoneFrame;
 
 /** A link acknowledgement proves durable inbox acceptance, not consumption. */
 export interface IntercomLinkAck { identity: IntercomIdentity; kind: IntercomFrame["kind"] }
-export interface IntercomRefusal { identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "link-down" }
+export interface IntercomRefusal { identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "link-down" | "missing-origin" }
+/** Validated metadata from a rejected frame; no payload or fabricated origin is retained. */
+export interface MissingOriginFrame { index: number; identity: IntercomIdentity; endpoint: SessionEndpoint; kind: IntercomFrame["kind"] }
 export interface IntercomReceiptInput {
   from: SessionEndpoint;
   to: SessionAddress;
@@ -53,7 +60,7 @@ export interface IntercomReceiptInput {
 export interface IntercomReceiptFrame extends IntercomReceiptInput { attempt: number }
 export interface IntercomControlFrame { from: SessionAddress; to: SessionAddress; control: MessageControl }
 export interface IntercomExchange {
-  protocol: 1;
+  protocol: typeof INTERCOM_FEDERATION_VERSION;
   senderMachine: MachineId;
   recipientMachine: MachineId;
   generation: ExchangeGeneration;
@@ -86,12 +93,15 @@ export interface RetainedIntercom {
   identity: IntercomIdentity;
   endpoint: SessionEndpoint;
   peer: MachineId;
+  /** Persisted first-accepting machine, independent of the current sender roster. */
+  originMachineId?: MachineId;
   state: IntercomState;
   payloadRetained: boolean;
   linkAcknowledged: boolean;
   latestAttempt: number;
   reconciliation?: MessageReceipt;
   pendingProof?: IntercomReceiptFrame;
+  failureReason?: string;
 }
 /** The host supplies an actual exit or generation-fence observation for the old owner. */
 export interface SessionGenerationExclusion {
@@ -129,6 +139,7 @@ export interface IntercomStore {
   acceptOutbound(input: OutboundMessage): IntercomAcceptance;
   /** The transport authenticates the peer. Resume owners come from the local authoritative home lookup, not the wire. */
   acceptInbound(input: { peer: MachineId; frame: IntercomFrame; resume?: { cursor: IntercomPairResume; owner: Home | null } }): IntercomAcceptance;
+  rejectMissingOrigin(input: { peer: MachineId; frame: MissingOriginFrame }): void;
   outboundResumptions(peer: MachineId): readonly IntercomPairResume[];
   /** maxBytes includes each encoded frame and one separator, after reserving the rest of the exchange. */
   pending(input: { kind: "outbound"; peer: MachineId; hopBudgetMs: number; maxBytes?: number; skipIds?: readonly string[] }): readonly IntercomFrame[];
@@ -147,6 +158,7 @@ export interface IntercomStore {
   expiredOutbounds(peer: MachineId): readonly { identity: IntercomIdentity; outcomeKnown: boolean }[];
   hasPending(peer: MachineId): boolean;
   rebindUndispatched(address: SessionAddress, endpoint: SessionEndpoint, proof: RebindProof): number;
+  rebindInboundAfterAbsence(id: string, endpoint: SessionEndpoint): void;
   retained(queue: IntercomQueue, id: string): RetainedIntercom | null;
   close(): void;
 }

@@ -4,6 +4,7 @@ import type {
   HubOperationReadiness, Readiness, ReplicaEffects, StoreBarrier, StoreKey,
 } from "@spider/db-core/roam/types";
 import type { BootstrapOptions, Inventory } from "./provision-contracts";
+import { INTERCOM_QUEUE_BYTES, INTERCOM_QUEUE_MESSAGES } from "./intercom-contracts";
 
 export interface Peer {
   machineId: MachineId; alias: string; node: string; pi: string; cli: string; core: string; globalRoot: string;
@@ -40,9 +41,29 @@ export const DEFAULT_LIMITS: Readonly<Limits> = Object.freeze({
   retentionMs: 7 * 24 * 60 * 60_000,
 });
 
+export interface IntercomLimits { queueMessages: number; queueBytes: number }
+export const DEFAULT_INTERCOM_LIMITS: Readonly<IntercomLimits> = Object.freeze({
+  queueMessages: INTERCOM_QUEUE_MESSAGES, queueBytes: INTERCOM_QUEUE_BYTES,
+});
+export type IntercomRoute =
+  | { kind: "direct"; peer: Peer; edgeEpoch: string }
+  | { kind: "relay"; peer: Peer; via: MachineId };
+interface IntercomSettings {
+  mode: "hub-only" | "peers"; protocolFeature: "federation-v1";
+  routes: readonly IntercomRoute[]; limits: IntercomLimits;
+}
+export type IntercomConfig = IntercomSettings & (
+  | { enabled: false; machineAlias: string | null }
+  | { enabled: true; machineAlias: string }
+);
+export function disabledIntercom(): IntercomConfig {
+  return { enabled: false, mode: "hub-only", machineAlias: null, protocolFeature: "federation-v1",
+    routes: [], limits: { ...DEFAULT_INTERCOM_LIMITS } };
+}
 export interface RoamConfig {
   enabled: boolean; role: "hub" | "box"; machineId: MachineId; hubMachineId: MachineId;
   peers: readonly Peer[]; discoveryRoots: readonly string[]; coreUnit: string; syncMs: number; limits: Limits;
+  intercom: IntercomConfig;
 }
 export interface Operation { id: string; machineId: MachineId; expectedEpoch: number | null; kind: string; args: JsonObject }
 export interface Outcome<T> {
@@ -91,6 +112,13 @@ export interface SyncService {
 }
 export interface PlacementPort { reconcile(rows: readonly Readiness[]): Promise<{ pending: readonly string[] }> }
 export interface HubPorts { config: RoamConfig; sync: SyncService; journal: Journal; clock: Clock; placement: PlacementPort }
+export interface IntercomDiagnostic { peer: MachineId; status: string; since: number; reason: string }
+export interface IntercomLifecycle {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  diagnostics(): readonly IntercomDiagnostic[];
+  readiness?(): { state: "disabled" | "pending" | "ready"; reason: string | null };
+}
 export interface Diagnostic { reason: string; severity: "warning" | "block"; repairCommand: string | null; writerEpoch?: number }
 export interface HostIntent {
   sessionId: string; epoch: number; desired: "running" | "stopped"; suspended: string | null;

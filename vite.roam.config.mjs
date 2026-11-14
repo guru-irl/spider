@@ -14,6 +14,7 @@ export default defineConfig(({ mode }) => {
   const entry = entries[mode];
   if (!entry) throw new Error("Unknown roaming build entry");
   return {
+    define: { "import.meta.spiderIntercomBrokerRelative": JSON.stringify("../intercom/broker.mjs") },
     plugins: [{
       name: "roam-no-pi-imports",
       enforce: "pre",

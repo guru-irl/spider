@@ -11,7 +11,7 @@ import type { ProcessIdentity, ProcessProbe } from "@spider/herdr/sessions/lease
 import { createAgentPorts } from "./agent";
 import { sweepStoreArtifacts } from "./cleanup";
 import { startHubControl, type HubControlReply, type HubControlRequest } from "./control-socket";
-import type { AgentPorts, Clock, HubPorts, Journal, Outcome, Peer, PlacementPort, RoamConfig, SyncService, Transport } from "./contracts";
+import type { AgentPorts, Clock, HubPorts, IntercomLifecycle, Journal, Outcome, Peer, PlacementPort, RoamConfig, SyncService, Transport } from "./contracts";
 import { defaultStagingRoot, privateDirectory } from "./staging";
 import { createStorePort, type StoreAdapter } from "./stores";
 import { createSync, type SyncAdapter } from "./sync";
@@ -50,6 +50,7 @@ export interface HubRuntimePorts extends HubPorts {
   prepare: Prepare;
   drain(): Promise<void>;
   closeStores(): void | Promise<void>;
+  intercom?: IntercomLifecycle;
 }
 export interface StandaloneHubPorts {
   config: RoamConfig; globalDb: Db; journal: Journal; transport: Transport; clock: Clock;
@@ -61,6 +62,7 @@ export interface StandaloneHubPorts {
   homeChangeInProgress(): Promise<boolean | null>;
   /** Null or a failure means activity cannot be proved absent. */
   artifactActive(value: string): boolean | null;
+  intercom?: IntercomLifecycle;
 }
 
 function validAlert(value: unknown): value is Alert {
@@ -170,6 +172,12 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
     }
     const remaining = state.since + UNREACHABLE_MS - clock.now();
     if (remaining > 0) { schedule(peer, remaining); return; }
+    let linkOutage = false;
+    try { linkOutage = ports.intercom?.diagnostics().some(item => item.peer === peer.machineId) ?? false; } catch { /* An unknown link cannot suppress hosting status. */ }
+    if (linkOutage && !state.unreachable?.delivered) {
+      if (state.unreachable) { state.unreachable = null; saveStatus(db, peer.machineId, state); }
+      return;
+    }
     if (!state.unreachable) { state.unreachable = { id: randomUUID(), delivered: false, clearing: false }; saveStatus(db, peer.machineId, state); }
     await flushAlerts(peer);
   }
@@ -220,7 +228,9 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
     });
     const storageProblems = ["store-problem", "artifact-sweep-problem"].flatMap(kind =>
       localEntries(db, kind).map(row => ({ entry: row.key, problem: row.value })));
-    return json({ enabled: !disabled, pending, warnings, storageProblems });
+    const readiness = ports.intercom?.readiness?.() ?? { state: config.intercom.enabled ? "pending" : "disabled", reason: null };
+    const links = ports.intercom?.diagnostics().map(({ peer, status, since, reason }) => ({ peer, status, since, reason })) ?? [];
+    return json({ enabled: !disabled, pending, warnings, storageProblems, intercom: { ...readiness, links } });
   }
   async function control(request: HubControlRequest): Promise<HubControlReply> {
     if (request.op === "status") return { code: 0, reason: "ok", value: status() };
@@ -247,6 +257,7 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
   completion = withProcessLock(root, LOCK, async () => {
     try {
       await ports.prepare(afterSync);
+      await ports.intercom?.start();
       // Validate retained state before opening the control socket or starting sync.
       for (const peer of config.peers) {
         const state = peerStatus(db, peer.machineId); pendingRows(db, peer.machineId);
@@ -259,10 +270,13 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
     } finally {
       stopping = true; ports.sync.stop();
       for (const peer of config.peers) cancelTimer(peer.machineId);
-      await endpoint?.close();
-      await ports.drain();
-      await Promise.allSettled([...queues.values()]);
-      await ports.closeStores();
+      try {
+        await endpoint?.close();
+        await ports.drain();
+        await Promise.allSettled([...queues.values()]);
+      } finally {
+        try { await ports.intercom?.stop(); } finally { await ports.closeStores(); }
+      }
     }
   }, { identity: ports.identity, async probe(pid, owner) {
     const observed = await ports.probe(pid);

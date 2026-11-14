@@ -1,4 +1,4 @@
-import type { SessionAddress, SessionEndpoint } from "./protocol.js";
+import type { MessageReceipt, SessionAddress, SessionEndpoint } from "./protocol.js";
 
 export const INTERCOM_HOST_EVENT = "spider:intercom-host";
 export const INTERCOM_RESOLVE_EVENT = "spider:intercom-resolve";
@@ -8,6 +8,8 @@ export interface IntercomHostRequest {
   activationEpoch: string;
   endpoint?: SessionEndpoint;
   exclusion?(owner: SessionEndpoint): { excludedGeneration: string; complete: true } | undefined;
+  reconcile?(messageId: string, owner: SessionEndpoint): Promise<MessageReceipt>;
+  pendingOwn?(): Promise<readonly { messageId: string; owner: SessionEndpoint }[]>;
   home?(address: SessionAddress): { machineId: string; epoch: number } | null | "unknown";
 }
 export type IntercomRouteResolution =

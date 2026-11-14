@@ -24,8 +24,6 @@ const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
 export function getCompiledBrokerPath(): string {
   return fileURLToPath(new URL(import.meta.spiderIntercomBrokerRelative ?? "../../../../dist/intercom/broker.mjs", import.meta.url));
 }
-const BROKER_PID = join(INTERCOM_DIR, "broker.pid");
-const BROKER_SPAWN_LOCK = join(INTERCOM_DIR, "broker.spawn.lock");
 const BROKER_STARTUP_STDERR_LIMIT = 4_000;
 
 type BrokerLaunchSpec =
@@ -44,8 +42,13 @@ type BrokerLaunchSpec =
     captureStartupStderr: boolean;
   };
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error("broker-start-aborted")); return; }
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", abort); resolve(); }, ms);
+    const abort = () => { clearTimeout(timer); reject(new Error("broker-start-aborted")); };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 export function getTsxCliPath(extensionDir: string = EXTENSION_DIR): string {
@@ -199,30 +202,37 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
-export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: string[]): Promise<void> {
-  ensureIntercomRuntimeDir(INTERCOM_DIR);
+export interface BrokerSpawnOptions { agentDir?: string; env?: NodeJS.ProcessEnv; signal?: AbortSignal }
+export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: string[], options: BrokerSpawnOptions = {}): Promise<void> {
+  if (options.signal?.aborted) throw new Error("broker-start-aborted");
+  const env = { ...(options.env ?? process.env), ...(options.agentDir ? { PI_CODING_AGENT_DIR: options.agentDir } : {}) };
+  const intercomDir = getIntercomDirPath(getAgentDirPath(env));
+  const pidPath = join(intercomDir, "broker.pid"), lockPath = join(intercomDir, "broker.spawn.lock");
+  const context = { env, pidPath, signal: options.signal };
+  ensureIntercomRuntimeDir(intercomDir);
 
-  if (await isBrokerRunning()) {
+  if (await isBrokerRunning(context)) {
     return;
   }
 
-  const ownsLock = acquireSpawnLock();
+  const ownsLock = acquireSpawnLock(lockPath);
   if (!ownsLock) {
-    await waitForBroker();
+    await waitForBroker(context);
     return;
   }
 
   try {
-    if (await isBrokerRunning()) {
+    if (await isBrokerRunning(context)) {
       return;
     }
 
     const brokerPath = getCompiledBrokerPath();
-    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs);
+    if (options.signal?.aborted) throw new Error("broker-start-aborted");
+    const launch = getBrokerLaunchSpec(brokerPath, brokerCommand, brokerArgs, EXTENSION_DIR, process.platform, intercomDir);
     if (launch.kind === "windows-launcher") {
       writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
     }
-    const child = spawn(launch.command, launch.args, getBrokerSpawnOptions(EXTENSION_DIR, process.env, launch.captureStartupStderr));
+    const child = spawn(launch.command, launch.args, getBrokerSpawnOptions(EXTENSION_DIR, env, launch.captureStartupStderr));
     let brokerStderr = "";
     const rememberBrokerStderr = (chunk: Buffer | string) => {
       brokerStderr = `${brokerStderr}${chunk.toString()}`.slice(-BROKER_STARTUP_STDERR_LIMIT);
@@ -237,7 +247,10 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
     child.unref();
 
     await new Promise<void>((resolve, reject) => {
+      const waitAbort = new AbortController();
+      const signal = options.signal ? AbortSignal.any([options.signal, waitAbort.signal]) : waitAbort.signal;
       const cleanup = () => {
+        waitAbort.abort();
         child.stderr?.off("data", rememberBrokerStderr);
         child.stderr?.resume();
         child.off("error", onError);
@@ -263,7 +276,7 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
 
       child.once("error", onError);
       child.once("close", onExit);
-      waitForBroker().then(() => {
+      waitForBroker({ ...context, signal }).then(() => {
         cleanup();
         resolve();
       }, (error) => {
@@ -273,26 +286,26 @@ export async function spawnBrokerIfNeeded(brokerCommand: string, brokerArgs: str
       });
     });
   } finally {
-    releaseSpawnLock();
+    releaseSpawnLock(lockPath);
   }
 }
 
-async function isBrokerRunning(): Promise<boolean> {
-  if (await checkSocketConnectable()) {
-    return true;
+interface ProbeContext { env: NodeJS.ProcessEnv; pidPath: string; signal?: AbortSignal }
+async function isBrokerRunning(context: ProbeContext): Promise<boolean> {
+  const state = await probeSocket(context);
+  if (state === "compatible") return true;
+  if (state === "occupied") throw new Error("unsupported-broker");
+  if (!existsSync(context.pidPath)) return false;
+  let pid: number;
+  try { pid = Number(readFileSync(context.pidPath, "utf-8").trim()); }
+  catch { throw new Error("unsupported-broker"); }
+  if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error("unsupported-broker");
+  try { process.kill(pid, 0); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw new Error("unsupported-broker");
   }
-
-  if (!existsSync(BROKER_PID)) return false;
-
-  try {
-    const pid = parseInt(readFileSync(BROKER_PID, "utf-8").trim(), 10);
-    if (!Number.isFinite(pid)) return false;
-    process.kill(pid, 0);
-    return checkSocketConnectable();
-  } catch {
-    // Missing or unreadable PID state means there is no live broker to reuse.
-    return false;
-  }
+  throw new Error("unsupported-broker");
 }
 
 function connectToBrokerTarget(target: BrokerConnectTarget): net.Socket {
@@ -301,71 +314,52 @@ function connectToBrokerTarget(target: BrokerConnectTarget): net.Socket {
     : net.connect({ host: target.host, port: target.port });
 }
 
-function checkSocketConnectable(): Promise<boolean> {
-  return new Promise((resolve) => {
+function probeSocket(context: ProbeContext): Promise<"compatible" | "occupied" | "absent"> {
+  return new Promise((resolve, reject) => {
+    if (context.signal?.aborted) { reject(new Error("broker-start-aborted")); return; }
     let target: BrokerConnectTarget;
-    try {
-      target = getBrokerConnectTarget();
-    } catch {
-      resolve(false);
-      return;
-    }
-
-    const socket = connectToBrokerTarget(target);
-    const requestId = randomUUID();
+    try { target = getBrokerConnectTarget(process.platform, context.env); }
+    catch { resolve("absent"); return; }
+    const socket = connectToBrokerTarget(target), requestId = randomUUID();
     const expectedStateId = typeof target === "string" ? undefined : target.stateId;
-    let settled = false;
-    const finish = (isConnected: boolean) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      clearTimeout(timeout);
-      socket.off("connect", onConnect);
-      socket.off("error", onError);
-      socket.off("data", reader);
-      socket.destroy();
-      resolve(isConnected);
+    let settled = false, connected = false;
+    const finish = (state: "compatible" | "occupied" | "absent", aborted = false) => {
+      if (settled) return;
+      settled = true; clearTimeout(timeout); context.signal?.removeEventListener("abort", onAbort);
+      socket.off("connect", onConnect); socket.off("error", onError); socket.off("data", reader); socket.destroy();
+      if (aborted) reject(new Error("broker-start-aborted")); else resolve(state);
     };
+    const onAbort = () => finish("occupied", true);
     const onConnect = () => {
-      try {
-        writeMessage(socket, {
-          type: "health",
-          requestId,
-          ...(expectedStateId ? { stateId: expectedStateId } : {}),
-        });
-      } catch {
-        finish(false);
-      }
+      connected = true;
+      try { writeMessage(socket, { type: "health", requestId, ...(expectedStateId ? { stateId: expectedStateId } : {}) }); }
+      catch { finish("occupied"); }
     };
-    const onError = () => finish(false);
-    const reader = createMessageReader((message) => {
-      finish(isBrokerHealthOkMessage(message, requestId));
-    }, () => finish(false));
-    socket.on("connect", onConnect);
-    socket.on("error", onError);
-    socket.on("data", reader);
-    const timeout = setTimeout(() => finish(false), 1000);
+    const onError = (error: NodeJS.ErrnoException) => finish(!connected && (error.code === "ENOENT" || error.code === "ECONNREFUSED") ? "absent" : "occupied");
+    const reader = createMessageReader(message => finish(isBrokerHealthOkMessage(message, requestId) ? "compatible" : "occupied"), () => finish("occupied"));
+    const timeout = setTimeout(() => finish("occupied"), 1000);
+    context.signal?.addEventListener("abort", onAbort, { once: true });
+    socket.on("connect", onConnect); socket.on("error", onError); socket.on("data", reader);
   });
 }
 
-function acquireSpawnLock(): boolean {
+function acquireSpawnLock(lockPath: string): boolean {
   const maxRetries = 5;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      writeFileSync(BROKER_SPAWN_LOCK, `${process.pid}\n${Date.now()}\n`, {
+      writeFileSync(lockPath, `${process.pid}\n${Date.now()}\n`, {
         flag: "wx",
         mode: INTERCOM_RUNTIME_FILE_MODE,
       });
-      restrictIntercomRuntimeFile(BROKER_SPAWN_LOCK);
+      restrictIntercomRuntimeFile(lockPath);
       return true;
     } catch (error) {
       if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "EEXIST") {
         throw error;
       }
-      if (isSpawnLockStale()) {
+      if (isSpawnLockStale(lockPath)) {
         try {
-          unlinkSync(BROKER_SPAWN_LOCK);
+          unlinkSync(lockPath);
         } catch {
           // If we can't delete the stale lock, retry a few times before giving up
         }
@@ -377,48 +371,43 @@ function acquireSpawnLock(): boolean {
   return false;
 }
 
-function isSpawnLockStale(): boolean {
-  if (!existsSync(BROKER_SPAWN_LOCK)) {
+function isSpawnLockStale(lockPath: string): boolean {
+  if (!existsSync(lockPath)) {
     return false;
   }
 
   try {
-    const [pidLine = "", createdAtLine = "0"] = readFileSync(BROKER_SPAWN_LOCK, "utf-8").trim().split("\n");
+    const [pidLine = "", createdAtLine = "0"] = readFileSync(lockPath, "utf-8").trim().split("\n");
     const pid = Number.parseInt(pidLine, 10);
     const createdAt = Number.parseInt(createdAtLine, 10);
     const ageMs = Date.now() - createdAt;
 
-    if (Number.isFinite(pid)) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        // The process that created the lock is gone.
-        return true;
-      }
+    if (Number.isSafeInteger(pid) && pid > 1) {
+      try { process.kill(pid, 0); return false; }
+      catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
     }
-
-    return !Number.isFinite(createdAt) || ageMs > 10_000;
+    return Number.isFinite(createdAt) && ageMs > 10_000;
   } catch {
-    // Unreadable lock contents are treated as stale so a new broker can start.
-    return true;
+    // An unreadable owner cannot safely be displaced.
+    return false;
   }
 }
 
-function releaseSpawnLock(): void {
+function releaseSpawnLock(lockPath: string): void {
   try {
-    unlinkSync(BROKER_SPAWN_LOCK);
+    unlinkSync(lockPath);
   } catch {
     // Another cleanup path may already have removed the lock.
   }
 }
 
-async function waitForBroker(timeoutMs = 5000): Promise<void> {
+async function waitForBroker(context: ProbeContext, timeoutMs = 5000): Promise<void> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (await checkSocketConnectable()) {
-      return;
-    }
-    await sleep(100);
+    const state = await probeSocket(context);
+    if (state === "compatible") return;
+    if (state === "occupied") throw new Error("unsupported-broker");
+    await sleep(100, context.signal);
   }
   throw new Error("Broker failed to start within timeout");
 }

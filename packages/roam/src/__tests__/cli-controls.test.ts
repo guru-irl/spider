@@ -8,6 +8,9 @@ import * as localRuntime from "../runtime";
 import * as agent from "../agent";
 import * as transportModule from "../transport";
 import * as hosting from "../production-supervisor";
+import * as hubRuntime from "../hub";
+import * as intercomRuntime from "../intercom-runtime";
+import * as localDiagnostics from "../local-diagnostics";
 import * as appModule from "@spider/herdr/client/app";
 import * as hcModule from "@spider/herdr/client/hc";
 import { createClientFixture } from "../../../herdr/src/__tests__/testutil";
@@ -110,6 +113,38 @@ it("remote doctor reports a failed peer process rather than a generic unavailabl
     expect(await f.invoke(["roam", "doctor", "--", alias])).toBe(1);
     expect(f.err.join("")).toContain("Peer command failed (exit 1)");
   } finally { await hc.close(); }
+}, 5000);
+
+it("production hub composes intercom independently from replication peers", async () => {
+  const f = await fixture(), agentDir = join(f.root, "agent"); mkdirSync(agentDir, { mode: 0o700 });
+  const config = localRuntime.readLocalIdentity(f.root), other = { ...config.peers[0], machineId: "00000000-0000-4000-8000-000000000003", alias: "other.invalid" };
+  config.intercom = { enabled: true, mode: "peers", machineAlias: "hub.invalid", protocolFeature: "federation-v1",
+    routes: [{ kind: "direct", peer: other, edgeEpoch: "edge-1" }], limits: { queueMessages: 500, queueBytes: 5242880 } };
+  const order: string[] = [], bridge = { async start() { order.push("bridge-start"); }, async stop() { order.push("bridge-stop"); },
+    diagnostics() { return []; }, readiness() { return { state: "ready" as const, reason: null }; } };
+  const factory = vi.spyOn(intercomRuntime, "createMachineIntercom").mockReturnValue(bridge);
+  vi.spyOn(localRuntime, "openLocalCore").mockReturnValue({ root: f.root, config, db: {}, close() { order.push("core-close"); } } as never);
+  mkdirSync(join(f.root, "herdr"), { mode: 0o700 });
+  writeFileSync(join(f.root, "herdr", "config.json"), JSON.stringify({ mode: "full", agentDirectory: agentDir, globalRoot: f.root,
+    core: { binary: "/fixture/hc", config: "/fixture/core" }, app: { binary: "/fixture/app", home: "/fixture/home" }, shellRc: "/fixture/rc", spaces: [], machines: [] }), { mode: 0o600 });
+  vi.spyOn(localDiagnostics, "createLocalDiagnosticPorts").mockReturnValue({ async probeProcess() { return { kind: "live", startIdentity: "fixture-process" }; } } as never);
+  vi.spyOn(hcModule, "createHcClient").mockReturnValue({ async dispose() {} } as never);
+  const app = vi.spyOn(appModule, "createAppClient").mockReturnValue({} as never);
+  const transport = vi.spyOn(transportModule, "createTransport").mockReturnValue({} as never);
+  const hub = vi.spyOn(hubRuntime, "runStandaloneHub").mockImplementation(async ports => {
+    await ports.intercom?.start();
+    return { async stop() { await ports.intercom?.stop(); }, agentPorts: {} as never };
+  });
+  const service = await productionHub.startProductionHub(f.root);
+  try {
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory.mock.calls[0][0]).toMatchObject({ root: f.root, agentDir, config: { machineId: HUB } });
+    expect(transport.mock.calls.map(([input]) => input.enrolled.map(peer => peer.machineId))).toEqual([[BOX], [other.machineId]]);
+    expect(hub.mock.calls[0][0].intercom).toBe(bridge);
+    expect(app).toHaveBeenCalledOnce();
+    expect(order).toEqual(["bridge-start"]);
+  } finally { await service.stop(); }
+  expect(order).toEqual(["bridge-start", "bridge-stop", "core-close"]);
 }, 5000);
 
 it("the Mac hub refuses core-only mode before starting placement", async () => {

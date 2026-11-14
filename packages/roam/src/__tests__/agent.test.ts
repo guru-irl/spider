@@ -14,7 +14,7 @@ import { exportBatch } from "@spider/db-core/roam/export";
 import { seedSession } from "@spider/db-core/roam/seed";
 import type { JsonObject, Scope, StoreKey } from "@spider/db-core/roam/types";
 import { createAgentPorts, dispatchArtifactCommand, handleAgentArtifactRequest, handleAgentOperation } from "../agent";
-import { DEFAULT_LIMITS } from "../contracts";
+import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import type { AgentPorts, ArtifactManifest, Operation, Peer, Transport } from "../contracts";
 import { openJournal } from "../journal";
 import { createManifestPages, pullArtifact, readManifestPages, stageArtifact, transferArtifact } from "../artifacts";
@@ -38,7 +38,7 @@ function fixture(scope: Scope = "repo") {
   const ports: AgentPorts = {
     root: join(replica.root, "roam", "staging"), journal,
     config: { enabled: true, role: "box", machineId: BOX, hubMachineId: HUB, peers: [], discoveryRoots: [],
-      coreUnit: "core", syncMs: 120_000, limits: { ...DEFAULT_LIMITS } },
+      coreUnit: "core", syncMs: 120_000, limits: { ...DEFAULT_LIMITS }, intercom: disabledIntercom() },
     openStore(key) {
       opened.push(key);
       if (key !== replica.storeKey) throw new Error("unknown fixture store");

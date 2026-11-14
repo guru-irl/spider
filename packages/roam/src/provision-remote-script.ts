@@ -5,7 +5,7 @@ import releaseRequestSource from "./release-request.ts?raw";
 import enrollmentSource from "./enrollment.ts?raw";
 import configSource from "./config.ts?raw";
 import machineIdSource from "./machine-id.ts?raw";
-import { DEFAULT_LIMITS } from "./contracts";
+import { DEFAULT_INTERCOM_LIMITS, DEFAULT_LIMITS } from "./contracts";
 
 // The destination executes the same file and auth checks as the local installer. Node's
 // native TypeScript stripping needs no package install before the release exists.
@@ -16,15 +16,15 @@ const authForRemote = authSource
 const configForRemote = configSource
   .replace('import { readFileSync } from "node:fs";', "")
   .replace('import { isAbsolute } from "node:path";', "")
-  .replace('import { DEFAULT_LIMITS } from "./contracts";', "")
+  .replace('import { DEFAULT_INTERCOM_LIMITS, DEFAULT_LIMITS } from "./contracts";', "")
   .replace('import { isMachineId } from "./machine-id";', "")
-  .replace('import type { Limits, Peer, RoamConfig } from "./contracts";', "")
+  .replace('import type { IntercomConfig, IntercomLimits, IntercomRoute, Limits, Peer, RoamConfig } from "./contracts";', "")
   .replace(/^export /gm, "");
 const machineIdForRemote = machineIdSource.replace(/^export /gm, "");
 const enrollmentForRemote = enrollmentSource.replace('import { parseConfig as parseRoamConfig } from "./config";', "");
 if (authForRemote === authSource || authForRemote.includes('from "./') || configForRemote.includes("import ") ||
     enrollmentForRemote === enrollmentSource || enrollmentForRemote.includes('from "./')) throw new Error("Cannot assemble provisioning program");
-const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAULT_LIMITS = ${JSON.stringify(DEFAULT_LIMITS)};\n${machineIdForRemote}\n${configForRemote}\nreturn parseConfig;\n})();\n`;
+const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAULT_LIMITS = ${JSON.stringify(DEFAULT_LIMITS)};\nconst DEFAULT_INTERCOM_LIMITS = ${JSON.stringify(DEFAULT_INTERCOM_LIMITS)};\n${machineIdForRemote}\n${configForRemote}\nreturn parseConfig;\n})();\n`;
 
 export const PROVISION_REMOTE_SCRIPT: string = selectedSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + String.raw`
 import { readFileSync, rmSync } from "node:fs";

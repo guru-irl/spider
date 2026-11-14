@@ -6,10 +6,10 @@ import { createMessageReader, writeMessage } from "../../intercom/src/broker/fra
 import { getBrokerSocketPath } from "../../intercom/src/broker/paths.js";
 import { HELPER_EXCHANGE_ERRORS, HELPER_EXCHANGE_FEATURE, isHelperExchangeError } from "@spider/intercom/protocol";
 import { projectRoot } from "../../db-core/src/paths";
-import { decodeExchange, encodeExchange } from "./intercom-codec";
-import { INTERCOM_EXCHANGE_BYTES, type IntercomExchange } from "./intercom-contracts";
+import { decodeExchangeWithFrameErrors, encodeExchange } from "./intercom-codec";
+import { INTERCOM_EXCHANGE_BYTES, type IntercomExchange, type MissingOriginFrame } from "./intercom-contracts";
 
-export interface HelperRequest { version: 1; exchange: IntercomExchange; holdMs: number; deadlineMs: number }
+export interface HelperRequest { version: 1; exchange: IntercomExchange; holdMs: number; deadlineMs: number; missingOrigins?: MissingOriginFrame[] }
 export interface HelperReply { version: 1; exchange: IntercomExchange }
 interface HelperRoute { agentDir: string; token: string }
 const fail = (reason: string): never => { throw new Error(reason); };
@@ -64,21 +64,22 @@ export function parseHelperRequest(value: unknown): HelperRequest {
       !Number.isSafeInteger(value.deadlineMs) || Number(value.deadlineMs) < 1 || Number(value.deadlineMs) > 30_000) return fail("invalid-request");
   const encoded = JSON.stringify(value.exchange);
   if (typeof encoded !== "string") return fail("invalid-request");
-  const exchange = decodeExchange(Buffer.from(encoded));
+  const { exchange, missingOrigins } = decodeExchangeWithFrameErrors(Buffer.from(encoded));
   const holdMs = Number(value.holdMs), deadlineMs = Number(value.deadlineMs);
   if (exchange.generation.channel === "push" && holdMs !== 0 || holdMs > Math.max(0, deadlineMs - 5000)) return fail("invalid-request");
-  return { version: 1, exchange, holdMs, deadlineMs };
+  return { version: 1, exchange, holdMs, deadlineMs, ...(missingOrigins.length ? { missingOrigins } : {}) };
 }
 function reply(value: unknown, input: HelperRequest): HelperReply {
   if (!record(value) || !exact(value, ["version", "exchange"]) || value.version !== 1) return fail("invalid-reply");
-  const exchange = decodeExchange(Buffer.from(JSON.stringify(value.exchange)));
+  const { exchange } = decodeExchangeWithFrameErrors(Buffer.from(JSON.stringify(value.exchange)));
   if (exchange.senderMachine !== input.exchange.recipientMachine || exchange.recipientMachine !== input.exchange.senderMachine ||
       JSON.stringify(exchange.generation) !== JSON.stringify(input.exchange.generation)) return fail("invalid-reply");
-  return { version: 1, exchange };
+  // Preserve the wire frames: the caller records and rejects any missing-origin frame.
+  return value as unknown as HelperReply;
 }
 
 /** This client never starts a broker or uses a TCP fallback. */
-async function brokerExchange(route: HelperRoute, input: HelperRequest): Promise<HelperReply> {
+async function brokerExchange(route: HelperRoute, input: HelperRequest, original: unknown): Promise<HelperReply> {
   const target = getBrokerSocketPath(process.platform, route.agentDir), socket = net.connect(target);
   const ends = performance.now() + input.deadlineMs;
   let failure: Error | null = null;
@@ -115,7 +116,7 @@ async function brokerExchange(route: HelperRoute, input: HelperRequest): Promise
     const registered = await ask({ type: "helper_register", token: route.token });
     if (registered.type !== "helper_registered") return fail(registered.reason === "helper-unauthorized" ? "helper-unauthorized" : "broker-unavailable");
     const remaining = Math.min(input.deadlineMs, Math.max(1, Math.floor(ends - performance.now())));
-    const outcome = await ask({ type: "helper_exchange", input, deadlineMs: remaining });
+    const outcome = await ask({ type: "helper_exchange", input: original, deadlineMs: remaining });
     if (outcome.type !== "helper_result") return fail(isHelperExchangeError(outcome.reason) || outcome.reason === "helper-timeout" ||
       outcome.reason === "helper-unauthorized" || outcome.reason === "bridge-exchange-failed" ? outcome.reason : "bridge-unavailable");
     if (Buffer.byteLength(JSON.stringify(outcome)) > INTERCOM_EXCHANGE_BYTES) return fail("exchange-too-large");
@@ -136,12 +137,13 @@ async function readInput(): Promise<unknown> {
 /** Every completed private command returns one exit-zero outcome envelope. */
 export async function main(root: string): Promise<number> {
   const allowed = new Set([...HELPER_EXCHANGE_ERRORS, "unsupported-broker", "helper-unauthorized", "helper-timeout", "broker-unavailable",
-    "bridge-exchange-failed", "unsafe-helper-route", "invalid-reply"]);
+    "bridge-exchange-failed", "unsafe-helper-route", "invalid-reply", "peer-version-mismatch"]);
   try {
-    const input = parseHelperRequest(await readInput());
-    // Validate the same complete exchange that will be sent over the socket.
+    const original = await readInput();
+    const input = parseHelperRequest(original);
+    // Validate the good frames; the bridge records rejected origin-less frames.
     encodeExchange(input.exchange);
-    const value = await brokerExchange(readRoute(root), input);
+    const value = await brokerExchange(readRoute(root), input, original);
     process.stdout.write(`${JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value })}\n`);
   } catch (error) {
     const reason = error instanceof Error && allowed.has(error.message) ? error.message : "bridge-unavailable";

@@ -16,6 +16,7 @@ import { loadPeerState } from "./peer-state";
 import { openLocalCore } from "./runtime";
 import { createTransport } from "./transport";
 import { createMachineIntercom } from "./intercom-runtime";
+import { createProductionIntercomMaintenance } from "./intercom-production";
 import type { Clock, Peer } from "./contracts";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 export function createHubProcessProbe(probe: (pid: number) => Promise<ProcessProbe>, alive: (pid: number) => void = pid => { process.kill(pid, 0); }) {
@@ -115,7 +116,8 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
     const journalFile = join(root, "roam", "journal.db"), journal = openJournal(journalFile);
     const direct = core.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
     const intercom = core.config.intercom.enabled ? createMachineIntercom({ root, globalDb: core.db, config: core.config,
-      agentDir: herdr.agentDirectory, clock, env, directPeers: direct, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }) }) : undefined;
+      agentDir: herdr.agentDirectory, clock, env, directPeers: direct, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }),
+      ...createProductionIntercomMaintenance({ root, config: core.config, binary: herdr.core.binary, env }) }) : undefined;
     const observe = async (peer: Peer): Promise<HubObservation> => {
       try {
         const before = await client.identity();

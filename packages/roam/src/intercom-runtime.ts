@@ -14,7 +14,7 @@ import type { IntercomStore } from "./intercom-contracts";
 import { isMachineId } from "./machine-id";
 import { createHostIntercomDelivery, type HostIntercomDelivery } from "./intercom-delivery";
 import { hasIntercomGeneration } from "./intercom-exclusion";
-import { createIntercomRegistry } from "./intercom-registry";
+import { createIntercomRegistry, withIntercomPeerLock } from "./intercom-registry";
 import { readLocalIdentity } from "./runtime";
 import type { IntercomEnrollmentPair } from "./provision-contracts";
 
@@ -27,6 +27,7 @@ export interface MachineIntercomOptions {
   transport: Transport;
   directPeers?: Peer[];
   pairScopedHostReady?(pairId: string): Promise<boolean>;
+  recoverRevocations?(store: IntercomStore): Promise<unknown>;
   broker?: IntercomBroker;
   env?: NodeJS.ProcessEnv;
   ensureBroker?(input: { agentDir: string; signal: AbortSignal }): Promise<void>;
@@ -75,6 +76,18 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
   let delivery: HostIntercomDelivery | undefined;
   let startTask: Promise<void> | undefined, stopTask: Promise<void> | undefined, attemptTask: Promise<void> | undefined;
   let cancelRetry: (() => void) | undefined, stopped = false;
+  let recoveryTask: Promise<void> | undefined, cancelRecovery: (() => void) | undefined;
+  const recover = (): Promise<void> => {
+    if (stopped || !store || !options.recoverRevocations) return Promise.resolve();
+    if (recoveryTask) return recoveryTask;
+    cancelRecovery?.(); cancelRecovery = undefined;
+    const current = store;
+    const task = Promise.resolve().then(() => options.recoverRevocations!(current)).then(() => undefined, () => undefined).finally(() => {
+      if (recoveryTask === task) recoveryTask = undefined;
+      if (!stopped && store === current) cancelRecovery = options.clock.later(10_000, () => { void recover(); });
+    });
+    recoveryTask = task; return task;
+  };
   const abort = new AbortController();
   const broker = options.broker ?? new IntercomFederationClient();
   const transitionPrefix = randomUUID();
@@ -82,6 +95,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
   let enrollmentTail: Promise<void> = Promise.resolve();
   const locals = new Map<string, { info: RemoteSessionInfo; transition: string }>();
   const remotes = new Map<string, RemoteSessionInfo>();
+  const machineAliases = new Map<string, string>();
   const idle = (status: string | undefined) => status === "idle" || status?.startsWith("idle · ") === true;
   const knownGeneration = (session: LocalPresence) => {
     try { return (options.generationKnown ?? ((id, generation) => hasIntercomGeneration(options.globalDb, id, generation)))(session.address.sessionId, session.activationEpoch); }
@@ -108,7 +122,11 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
   const onDisconnected = () => { locals.clear(); remotes.clear(); };
   const sender = (address: SessionAddress) => locals.get(addressKey(address))?.info ?? remotes.get(addressKey(address)) ?? null;
 
+  const cancelRecoveryTimer = () => { cancelRecovery?.(); cancelRecovery = undefined; };
   const closeAttempt = async () => {
+    cancelRecoveryTimer();
+    await recoveryTask;
+    cancelRecoveryTimer();
     broker.off("presence", onPresence); broker.off("disconnected", onDisconnected);
     try { await bridge?.stop(); } finally {
       bridge = undefined;
@@ -125,10 +143,15 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
       if (stopped) return;
       store = openIntercomStore({ file: join(options.root, "roam", "intercom", "queue.db"), machineId: options.config.machineId,
         clock: options.clock, limits: settings.limits });
+      for (const record of await createIntercomRegistry(options.root).list()) {
+        const pair = record.pair;
+        if (pair.source.machineId === options.config.machineId) machineAliases.set(pair.target.machineId, pair.target.alias);
+        else if (pair.target.machineId === options.config.machineId) machineAliases.set(pair.source.machineId, pair.source.alias);
+      }
       const direct = settings.routes.filter(route => route.kind === "direct");
       const local = options.config.machineId;
       delivery = createHostIntercomDelivery({ store, broker, sender, now: options.clock.now,
-        machineAlias(machineId) { return machineId === local ? settings.machineAlias : settings.routes.find(route => route.peer.machineId === machineId)?.peer.alias ?? null; },
+        machineAlias(machineId) { return machineId === local ? settings.machineAlias : machineAliases.get(machineId) ?? settings.routes.find(route => route.peer.machineId === machineId)?.peer.alias ?? null; },
         endpoint(address) { const info = locals.get(addressKey(address))?.info;
           return info ? { address: info.address, machineId: info.machineId, homeEpoch: info.homeEpoch, activationEpoch: info.activationEpoch } : null; },
         wake(peer) { bridge?.wake(peer); },
@@ -140,7 +163,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
           return route?.kind === "direct" ? route.peer.machineId : route?.via ?? null; },
         authorizePresence(peer, entry) {
           const route = settings.routes.find(candidate => candidate.peer.machineId === entry.machineId);
-          if (!route || route.peer.alias.toLowerCase() !== entry.machineAlias.toLowerCase()) return false;
+          if (!route || (machineAliases.get(entry.machineId) ?? route.peer.alias).toLowerCase() !== entry.machineAlias.toLowerCase()) return false;
           return entry.machineId === peer || settings.mode === "hub-only" && options.config.role === "box" &&
             peer === options.config.hubMachineId && route.kind === "relay" && route.via === peer;
         },
@@ -163,19 +186,22 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
             await registry.beginRevocation(pair.pairId, request.fenceId);
             await registry.finishRevocation(pair.pairId, "intercom-revocation-unconfirmed");
           }
+          void recover();
         },
         onEnrollRequest(request) {
           const task = enrollmentTail.then(async () => {
             if (!options.pairScopedHostReady || !await options.pairScopedHostReady(request.pairId)) throw new Error("connector-not-pair-scoped");
             const record = await createIntercomRegistry(options.root).get(request.pairId), pair = record?.pair as IntercomEnrollmentPair | undefined;
             const config = readLocalIdentity(options.root), route = config.intercom.routes.find(item => item.peer.machineId === request.peer);
-            const remote = pair && (pair.source.machineId === local ? pair.target : pair.target.machineId === local ? pair.source : null);
+            const remoteIdentity = pair && (pair.source.machineId === local ? pair.target : pair.target.machineId === local ? pair.source : null);
+            const remote = remoteIdentity && pair.source.machineId === local && record?.resources ? { ...remoteIdentity, alias: record.resources.route.name } : remoteIdentity;
             if (!record || !pair || !remote || !["pending", "active"].includes(record.state) || record.operationId !== request.operationId ||
                 record.graphDigest !== request.graphDigest || !(record.fenceId === request.expectedFenceId || record.state === "active" && record.fenceId === null) || pair.edgeEpoch !== request.edgeEpoch ||
                 remote.machineId !== request.peer || config.machineId !== local || !config.intercom.enabled || config.intercom.mode !== "peers" ||
                 !route || route.kind !== "direct" || route.edgeEpoch !== request.edgeEpoch || JSON.stringify(route.peer) !== JSON.stringify(remote)) {
               throw new Error("peer-consent-required");
             }
+            if (remoteIdentity) machineAliases.set(remoteIdentity.machineId, remoteIdentity.alias);
             const priorRoutes = [...settings.routes], priorPeers = options.directPeers && [...options.directPeers];
             settings.routes = [...settings.routes.filter(item => item.peer.machineId !== request.peer), route];
             if (options.directPeers) options.directPeers.splice(0, options.directPeers.length,
@@ -214,7 +240,19 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
         },
         onBrokerState(ready) { if (!stopped) status = ready ? { state: "ready", reason: null } : { state: "pending", reason: "broker-unavailable" }; },
       });
+      const revoke = bridge.revokePair;
+      bridge.revokePair = (peer, epoch, requestedFence) => withIntercomPeerLock(options.root, local, peer, async () => {
+        const registry = createIntercomRegistry(options.root);
+        const records = (await registry.list()).filter(record => record.pair.edgeEpoch === epoch &&
+          (record.pair.source.machineId === local && record.pair.target.machineId === peer || record.pair.target.machineId === local && record.pair.source.machineId === peer));
+        const fence = requestedFence ?? records.find(record => record.state === "revoking" || record.state === "revoked")?.fenceId ?? randomUUID();
+        for (const record of records) await registry.beginRevocation(record.pair.pairId, fence);
+        const proof = await revoke(peer, epoch, fence);
+        if (proof.edgeEpoch !== epoch || proof.fenceId !== fence) throw new Error("intercom-fence-mismatch");
+        return proof;
+      });
       await bridge.start();
+      void recover();
       if (!stopped) status = { state: "ready", reason: null };
     } catch (error) {
       await closeAttempt();
@@ -242,7 +280,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
     },
     stop() {
       return stopTask ??= (async () => {
-        stopped = true; abort.abort(); cancelRetry?.(); cancelRetry = undefined;
+        stopped = true; abort.abort(); cancelRetry?.(); cancelRetry = undefined; cancelRecovery?.(); cancelRecovery = undefined;
         try { await startTask; } catch { /* startup error already reported */ }
         try { await attemptTask; } catch { /* retry error already reported */ }
         await closeAttempt();

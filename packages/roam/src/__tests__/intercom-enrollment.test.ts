@@ -34,7 +34,7 @@ function fixture() {
     connectors: new Set<string>(), loggedIn: new Set<string>(), connections: new Set<string>(), keys: new Map<string, string>(),
     authorized: new Map<string, string>(), machines: new Map<string, string[]>(), routes: new Set<string>(), registered: new Map<string, IntercomEnrollmentPair>(),
     fences: new Map<string, string>(), approvals: new Map<string, string>(), revokeOffline: null as string | null, fenceUnclosed: false, remoteFenceUnclosed: false,
-    pendingCleanup: new Map<string, string>(), revoking: new Set<string>(), revoked: new Set<string>() };
+    killMode: "control-group" as "control-group" | "unknown" | undefined, pendingCleanup: new Map<string, string>(), revoking: new Set<string>(), revoked: new Set<string>() };
   const step = (name: string, effect: () => void) => {
     state.effects.push(name); effect();
     if (state.failAfter === name) { state.failAfter = null; throw new Error("lost reply"); }
@@ -111,7 +111,7 @@ function fixture() {
     },
     async stopPairHost(pair: IntercomEnrollmentPair) { step("stop-host", () => {}); return { machineId: pair.target.machineId,
       unit: `spider-pair-${pair.pairId}-host.service`, activeState: "inactive" as const, mainPid: 123, mainStartIdentity: "fixture-start",
-      mainProcess: "exited" as const, controlGroup: "empty" as const }; },
+      mainProcess: "exited" as const, controlGroup: "empty" as const, killMode: state.killMode };  },
     async removeAuthorizedKey(pair: IntercomEnrollmentPair) { step("remove-key", () => { state.authorized.delete(pair.pairId); }); },
     async removeMachineIfIdle(pair: IntercomEnrollmentPair) {
       if (state.sharedJobs) return "shared-jobs" as const;
@@ -141,6 +141,12 @@ async function revoke(pairId: string, ports: unknown): Promise<Outcome<unknown>>
   expect(typeof fn).toBe("function");
   return fn!(pairId, ports);
 }
+
+it.each(["unknown", undefined] as const)("refuses an unproven systemd kill mode %#", async mode => {
+  const f = fixture(); f.state.allow = true; expect((await run(f.request, f.ports)).code).toBe(0); f.state.killMode = mode;
+  expect(await revoke("pair-1", f.ports)).toMatchObject({ code: 3, reason: "intercom-revocation-unconfirmed" });
+  expect(f.state.authorized.has("pair-1")).toBe(true); expect(f.state.effects).not.toContain("remove-key");
+}, 5000);
 
 it("auth consent does not approve peer execution", async () => {
   const f = fixture();
@@ -178,7 +184,7 @@ it("one restricted key exists per pair", async () => {
   expect(f.state.authorized.get("pair-1")).toBe(`from="127.0.0.1",restrict ${f.state.keys.get("pair-1")} spider-intercom:pair-1`);
   expect(f.state.authorized.get("pair-2")).toBe(`from="127.0.0.1",restrict ${f.state.keys.get("pair-2")} spider-intercom:pair-2`);
   expect(f.state.machines.get("pair-1")).toEqual(["machine", "add", "--via",
-    "/home/fixture/.pi/agent/spider/roam/intercom/pairs/pair-1/edge-1/via", "--name", "box-2.invalid", "--session", "default", "--json"]);
+    "/home/fixture/.pi/agent/spider/roam/intercom/pairs/pair-1/edge-1/via", "--name", "spider-pair-pair-1", "--session", "default", "--json"]);
   expect(f.state.effects.indexOf("notify")).toBeLessThan(f.state.effects.indexOf(`check:${FIRST}`));
   expect(f.journal.read("approval-1").filter(row => row.action === "intercom-peer-consent")).toHaveLength(1);
 }, 5000);

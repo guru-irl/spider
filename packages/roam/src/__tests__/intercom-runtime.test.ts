@@ -1,6 +1,9 @@
-import { afterEach, expect, it } from "vitest";
-import { EventEmitter } from "node:events";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterEach, expect, it, vi } from "vitest";
+import { EventEmitter, once } from "node:events";
+import { createServer, type Socket } from "node:net";
+import { createMessageReader, writeMessage } from "../../../intercom/src/broker/framing";
+import { HELPER_EXCHANGE_FEATURE } from "@spider/intercom/protocol";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { parseConfig } from "../config";
@@ -194,6 +197,24 @@ const destination = (address: SessionAddress): RemoteSessionInfo => ({ remote: t
   machineAlias: "hub.invalid", homeEpoch: null, activationEpoch: "recipient-generation", endpointEpoch: "recipient-generation",
   cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 });
 
+it("the service retries revocations periodically without overlapping sweeps and joins recovery on stop", async () => {
+  const f = machineFixture(), timers: Array<{ ms: number; fn(): void; cancelled: boolean }> = [];
+  let calls = 0, release: (() => void) | undefined, scheduled!: () => void;
+  const scheduleReady = new Promise<void>(resolve => { scheduled = resolve; });
+  const clock: Clock = { now: () => 1000, later(ms, fn) { const timer = { ms, fn, cancelled: false }; timers.push(timer); if (ms === 10_000) scheduled(); return () => { timer.cancelled = true; }; } };
+  const service = await makeMachine({ ...f.options, clock, async recoverRevocations(store) {
+    expect(store.pairFence(BOX)).toBeNull(); calls++;
+    if (calls === 2) await new Promise<void>(resolve => { release = resolve; });
+  } } as MachineIntercomOptions);
+  await service.start(); await scheduleReady;
+  expect(calls).toBe(1);
+  const timer = timers.find(row => row.ms === 10_000)!; expect(timer).toBeDefined();
+  timer.fn(); timer.fn(); await Promise.resolve(); expect(calls).toBe(2);
+  let closed = false; const stop = service.stop().then(() => { closed = true; }); await Promise.resolve(); expect(closed).toBe(false);
+  release!(); await stop; expect(closed).toBe(true); expect(timer.cancelled).toBe(true);
+  timer.fn(); await Promise.resolve(); expect(calls).toBe(2);
+}, 5000);
+
 it("runtime uses the configured agent directory and private queue", async () => {
   const f = machineFixture(), service = await makeMachine(f.options);
   await service.start();
@@ -244,6 +265,77 @@ it("activates only a registered approved edge through the live authenticated hel
   await f.broker.helper!({ version: 1, action: "revoke-pair", machineId: HUB, peer: BOX, edgeEpoch: "edge-new" }, new AbortController().signal);
   expect(await registry.get("pair-live")).toMatchObject({ state: "revoked", cleanupReason: "intercom-revocation-unconfirmed" });
   expect(f.broker.closed).toBe(0);
+}, 5000);
+
+it("private setup and authenticated revocation serialize across the machine boundary", async () => {
+  const { main } = await import("../cli"), { requestHelperRevoke } = await import("../intercom-helper");
+  const { scenario, cleanupPairScenarios } = await import("./intercom-pair-fixture");
+  const registryApi = await import("../intercom-registry"), { createIntercomRegistry } = registryApi;
+  const pair = await scenario(), f = machineFixture(BOX), local = pair.locals.get(BOX)!;
+  const clients = new Set<Socket>(), broker = new FakeBroker();
+  const config = parseConfig(JSON.parse(readFileSync(join(local.root, "roam", "config.json"), "utf8")));
+  const service = await makeMachine({ ...f.options, root: local.root, config, broker });
+  let release!: () => void, entered!: () => void, arrived!: () => void;
+  const gate = new Promise<void>(resolveGate => { release = resolveGate; }), ready = new Promise<void>(resolveReady => { entered = resolveReady; });
+  const received = new Promise<void>(resolveReceived => { arrived = resolveReceived; }), events: string[] = [];
+  const server = createServer(socket => {
+    clients.add(socket); socket.on("error", () => {}); socket.once("close", () => clients.delete(socket));
+    socket.on("data", createMessageReader(value => {
+      const message = value as Record<string, unknown>;
+      if (message.type === "health") writeMessage(socket, { type: "health_ok", requestId: message.requestId, protocol: "pi-intercom", version: 1, features: [HELPER_EXCHANGE_FEATURE] });
+      else if (message.type === "helper_register") {
+        const route = JSON.parse(readFileSync(join(local.root, "roam", "intercom", "helper.json"), "utf8"));
+        expect(message.token).toBe(route.token);
+        writeMessage(socket, { type: "helper_registered", requestId: message.requestId });
+      } else if (message.type === "helper_exchange") {
+        const task = broker.helper!(message.input, new AbortController().signal);
+        void task.then(output => { events.push("fenced"); writeMessage(socket, { type: "helper_result", requestId: message.requestId, output }); }, () => socket.destroy());
+      }
+    }, () => socket.destroy()));
+  });
+  let setup: Promise<number> | undefined, revoke: ReturnType<typeof requestHelperRevoke> | undefined;
+  let restoreLockProbe: (() => void) | undefined;
+  try {
+    expect((await provisionPair()).code).toBe(0);
+    mkdirSync(join(f.agentDir, "intercom"), { mode: 0o700 });
+    server.listen(join(f.agentDir, "intercom", "broker.sock")); await once(server, "listening"); chmodSync(join(f.agentDir, "intercom", "broker.sock"), 0o600);
+    await service.start();
+    const record = (await createIntercomRegistry(local.root).get("pair-1"))!;
+    const approval = { approved: true, actor: "fixture", at: 1000, operationId: record.operationId, graphDigest: record.graphDigest, pairs: pair.request.pairs };
+    const lock = registryApi.withIntercomPeerLock; let attempts = 0;
+    const lockProbe = vi.spyOn(registryApi, "withIntercomPeerLock").mockImplementation(<T>(root: string, first: string, second: string, work: () => Promise<T>) => {
+      const revoking = ++attempts === 2;
+      const task = lock(root, first, second, async () => { if (revoking) events.push("revocation-started"); return work(); });
+      if (revoking) arrived();
+      return task;
+    });
+    restoreLockProbe = () => lockProbe.mockRestore();
+    const run = local.run;
+    local.run = async (argv, options) => {
+      if (argv[0] === "/fixture/connector") { entered(); await gate; events.push("enrolled"); }
+      return run(argv, options);
+    };
+    let output = "";
+    setup = main(["--global-root", local.root, "roam", "intercom", "setup-local"], { out: text => { output += text; }, err: () => {} },
+      { stdin: Buffer.from(JSON.stringify({ action: "check-connector", pair: record.pair, approval })), pairPorts: local });
+    await ready;
+    revoke = requestHelperRevoke(local.root, { version: 1, action: "revoke-pair", machineId: BOX, peer: OTHER, edgeEpoch: "edge-1" });
+    await received;
+    expect(events).toEqual([]); expect(pair.queues.get(BOX)!.pairFence(OTHER)).toBeNull();
+    release(); expect(await setup).toBe(0); expect(JSON.parse(output)).toMatchObject({ ok: true });
+    expect(await revoke).toMatchObject({ edgeEpoch: "edge-1", exchanges: "closed", inFlight: 0 });
+    expect(events).toEqual(["enrolled", "revocation-started", "fenced"]);
+    expect(await createIntercomRegistry(local.root).get("pair-1")).toMatchObject({ state: "revoked", cleanupReason: "intercom-revocation-unconfirmed" });
+    output = "";
+    await main(["--global-root", local.root, "roam", "intercom", "setup-local"], { out: text => { output += text; }, err: () => {} },
+      { stdin: Buffer.from(JSON.stringify({ action: "check-connector", pair: record.pair, approval })), pairPorts: local });
+    expect(JSON.parse(output)).toMatchObject({ ok: false, reason: "revocation-pending" }); expect(events).toEqual(["enrolled", "revocation-started", "fenced"]);
+  } finally {
+    release?.(); await Promise.allSettled([setup, revoke]); restoreLockProbe?.(); await service.stop();
+    for (const socket of clients) socket.destroy(); if (server.listening) await new Promise<void>(done => server.close(() => done()));
+    cleanupPairScenarios();
+  }
+  async function provisionPair() { const { provisionIntercomEnrollment } = await import("../intercom-enrollment"); return provisionIntercomEnrollment(pair.request, pair.enrollment); }
 }, 5000);
 
 it("restart opens the same private queue after all clients disconnect", async () => {

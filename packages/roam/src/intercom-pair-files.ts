@@ -151,5 +151,18 @@ async function editAuthorization(home: string, pair: IntercomEnrollmentPair, pub
     } finally { try { unlinkSync(temp); } catch (error) { if (!missing(error)) throw error; } }
   });
 }
+/** A read-only absence check preserves unrelated authorizations and rejects unsafe files. */
+export function pairKeyAbsent(home: string, pair: IntercomEnrollmentPair, pub: string): boolean {
+  const line = authorizedLine(pair, pub), directory = join(home, ".ssh");
+  absolute(home); assertTestConfigPath(home); pathDirectories(home);
+  try {
+    pathDirectories(directory);
+    const info = lstatSync(directory); if (!own(info) || (info.mode & 0o7777) !== 0o700) throw new Error("intercom-unsafe-home");
+    const contents = privateFile(join(directory, "authorized_keys"), 0o600, 1024 * 1024).toString("utf8");
+    const rows = contents.split(/\r?\n/), marker = ` spider-intercom:${pair.pairId}`;
+    if (rows.some(row => row.endsWith(marker) && row !== line)) throw new Error("intercom-authorized-key-conflict");
+    return !rows.includes(line);
+  } catch (error) { if (missing(error)) return true; throw error; }
+}
 export async function authorizePairKey(home: string, pair: IntercomEnrollmentPair, pub: string): Promise<void> { await editAuthorization(home, pair, pub, false); }
 export async function removePairKey(home: string, pair: IntercomEnrollmentPair, pub: string): Promise<void> { await editAuthorization(home, pair, pub, true); }

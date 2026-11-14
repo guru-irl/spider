@@ -44,7 +44,8 @@ export async function persistIntercomPairRoute(root: string, pair: IntercomEnrol
         registered?.hostKey?.base64 !== pair.hostKey.base64) throw new Error("peer-consent-required");
     const previous = current.intercom.routes.find(route => route.peer.machineId === remote.machineId);
     if (previous && (previous.kind !== "direct" || previous.edgeEpoch !== pair.edgeEpoch) && !record.fenceId) throw new Error("intercom-edge-must-be-revoked");
-    const route = { kind: "direct" as const, peer: remote, edgeEpoch: pair.edgeEpoch };
+    const transportPeer = local === pair.source.machineId && record.resources ? { ...remote, alias: record.resources.route.name } : remote;
+    const route = { kind: "direct" as const, peer: transportPeer, edgeEpoch: pair.edgeEpoch };
     if (previous && JSON.stringify(previous) === JSON.stringify(route)) return;
     const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid-intercom-config");

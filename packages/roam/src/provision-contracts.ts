@@ -117,23 +117,27 @@ export type IntercomRevocationCleanupReason = "intercom-revocation-unconfirmed" 
 export interface IntercomClosureEvidence { sourceMachineId: string; targetMachineId: string; localMachineId: string;
   edgeEpoch: string; fenceId: string; fenceDurable: boolean; exchanges: "closed" | "active" | "unknown"; inFlight: number }
 export interface IntercomHostStopEvidence { machineId: string; unit: string; activeState: "inactive" | "failed" | "active" | "unknown";
-  mainPid: number; mainStartIdentity: string; mainProcess: "exited" | "live" | "unknown"; controlGroup: "empty" | "nonempty" | "unknown" }
+  mainPid: number; mainStartIdentity: string; mainProcess: "exited" | "live" | "unknown"; controlGroup: "empty" | "nonempty" | "unknown"; killMode: "control-group" }
+export interface IntercomRevocationPins { source: IntercomMachinePin | null; target: IntercomMachinePin }
 export interface IntercomRevocationPorts {
+  /** Explicit recovery targets an existing historical fence, never a replacement fence. */
+  fenceEpoch?: string;
   withLock<T>(work: () => Promise<T>): Promise<T>;
   getPair(pairId: string): Promise<{ pair: IntercomEnrollmentPair; state: "pending" | "active" | "revoking" | "revoked";
-    cleanupReason?: IntercomRevocationCleanupReason | null } | null>;
+    cleanupReason?: IntercomRevocationCleanupReason | null; revocationEpoch?: string } | null>;
   /** Persist the local fence before refusing and joining both live exchange directions. */
   fenceAndClose(pair: IntercomEnrollmentPair): Promise<IntercomClosureEvidence>;
-  fenceRemote(pair: IntercomEnrollmentPair, pins: IntercomPairPins, fenceId: string): Promise<IntercomClosureEvidence>;
+  fenceRemote(pair: IntercomEnrollmentPair, pins: IntercomRevocationPins, fenceId: string): Promise<IntercomClosureEvidence>;
   /** Missing or incomplete host/cgroup evidence must never authorize key or route removal. */
-  stopPairHost?(pair: IntercomEnrollmentPair, pins: IntercomPairPins, fenceId: string): Promise<IntercomHostStopEvidence | null>;
+  stopPairHost?(pair: IntercomEnrollmentPair, pins: IntercomRevocationPins, fenceId: string): Promise<IntercomHostStopEvidence | null>;
+  stopPairConnect?(pair: IntercomEnrollmentPair, pins: IntercomRevocationPins, fenceId: string): Promise<boolean>;
   beginRevocation(pair: IntercomEnrollmentPair, fenceId: string): Promise<void>;
   notify(peers: readonly Peer[]): Promise<void>;
   pinMachine(machine: Peer): Promise<IntercomMachinePin | null>;
-  removeAuthorizedKey(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<void>;
+  removeAuthorizedKey(pair: IntercomEnrollmentPair, pins: IntercomRevocationPins): Promise<void>;
   /** Remove a route only when its shared users are atomically known to be idle. */
-  removeMachineIfIdle(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<"removed" | "shared-jobs" | "route-mismatch" | "unknown">;
-  verifyRevocation(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<{ sourceMachineId: string; targetMachineId: string;
+  removeMachineIfIdle(pair: IntercomEnrollmentPair, pins: IntercomRevocationPins): Promise<"removed" | "shared-jobs" | "route-mismatch" | "unknown">;
+  verifyRevocation(pair: IntercomEnrollmentPair, pins: IntercomRevocationPins): Promise<{ sourceMachineId: string; targetMachineId: string;
     edgeEpoch: string; keyAbsent: boolean; routeAbsent: boolean; exchanges: "closed" | "active" | "unknown";
     authenticatedConnections: "closed" | "active" | "unknown" }>;
   /** Persist completion and any still-required remote cleanup for read-only doctor. */

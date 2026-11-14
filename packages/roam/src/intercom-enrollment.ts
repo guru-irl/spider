@@ -67,7 +67,7 @@ function sshAlias(pair: IntercomEnrollmentPlan): string {
 }
 function machineArgs(pair: IntercomEnrollmentPair): string[] {
   const via = posix.join(pair.source.globalRoot, "roam", "intercom", "pairs", pair.pairId, pair.edgeEpoch, "via");
-  return ["machine", "add", "--via", via, "--name", pair.target.alias, "--session", pair.connector.session, "--json"];
+  return ["machine", "add", "--via", via, "--name", `spider-pair-${pair.pairId}`, "--session", pair.connector.session, "--json"];
 }
 
 /** Authentication copying never grants execution access between machines. */
@@ -194,7 +194,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           record(pair.pairId, "verified");
           return null;
         } catch (error) {
-          return error instanceof Error && ["fresh-peer-consent-required", "host-key-changed"].includes(error.message) ? error.message : "intercom-enrollment-pending";
+          return error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending"].includes(error.message) ? error.message : "intercom-enrollment-pending";
         }
       };
       for (const pair of snapshot.pairs) {
@@ -208,6 +208,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
       return result;
     });
   } catch (error) {
+    if (error instanceof Error && error.message === "revocation-pending") return outcome(operationId, 3, "revocation-pending");
     const reason = error instanceof Error && error.message === "Operation ID already has different arguments"
       ? "operation-arguments-changed" : error instanceof Error && error.message === "fresh-peer-consent-required" ? error.message
       : approved ? "intercom-enrollment-pending" : "intercom-enrollment-unavailable";
@@ -227,7 +228,8 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
     return await ports.withLock(async () => {
       const record = await ports.getPair(pairId);
       if (!record) return revocationOutcome(pairId, 1, "intercom-pair-not-found");
-      const pair = structuredClone(record.pair);
+      const pair = structuredClone(record.pair), fenceEpoch = ports.fenceEpoch ?? record.revocationEpoch ?? pair.edgeEpoch;
+      if (!identifier(fenceEpoch)) return revocationOutcome(pairId, 1, "invalid-intercom-fence");
       if (!pair || pair.pairId !== pairId || !identifier(pair.edgeEpoch) || !peerValid(pair.source) || !peerValid(pair.target) ||
           pair.source.machineId >= pair.target.machineId || !["pending", "active", "revoking", "revoked"].includes(record.state)) {
         return revocationOutcome(pairId, 1, "invalid-intercom-pair");
@@ -235,36 +237,37 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
       if (record.state === "revoked" && !record.cleanupReason) return revocationOutcome(pairId, 0, "intercom-revoked", null);
       const closure = await ports.fenceAndClose(pair);
       if (!closure || closure.sourceMachineId !== pair.source.machineId || closure.targetMachineId !== pair.target.machineId ||
-          ![pair.source.machineId, pair.target.machineId].includes(closure.localMachineId) || closure.edgeEpoch !== pair.edgeEpoch ||
+          ![pair.source.machineId, pair.target.machineId].includes(closure.localMachineId) || closure.edgeEpoch !== fenceEpoch ||
           !identifier(closure.fenceId) || closure.fenceDurable !== true || closure.exchanges !== "closed" || closure.inFlight !== 0) return revocationOutcome(pairId, 3, "revocation-incomplete");
       await ports.beginRevocation(pair, closure.fenceId);
       await ports.notify([pair.source, pair.target]);
       const pin = async (machine: Peer) => { try { return await ports.pinMachine(machine); } catch { return null; } };
       const source = await pin(pair.source), target = await pin(pair.target);
       let cleanupReason: IntercomRevocationCleanupReason | null = null;
-      if (!source || !target) cleanupReason = "intercom-revocation-unconfirmed";
-      else if (source.machineId !== pair.source.machineId || target.machineId !== pair.target.machineId ||
-          typeof source.coreId !== "string" || !source.coreId || typeof target.coreId !== "string" || !target.coreId) {
+      if (!target) cleanupReason = "intercom-revocation-unconfirmed";
+      else if (target.machineId !== pair.target.machineId || typeof target.coreId !== "string" || !target.coreId ||
+          source && (source.machineId !== pair.source.machineId || typeof source.coreId !== "string" || !source.coreId)) {
         cleanupReason = "intercom-revocation-unconfirmed";
       } else {
         const pins = { source, target };
         try {
-          const remote = await ports.fenceRemote(pair, pins, closure.fenceId);
+          const remote = closure.localMachineId === pair.target.machineId && !source ? null : await ports.fenceRemote(pair, pins, closure.fenceId);
           const remoteMachine = closure.localMachineId === pair.source.machineId ? pair.target.machineId : pair.source.machineId;
-          if (!remote || remote.sourceMachineId !== pair.source.machineId || remote.targetMachineId !== pair.target.machineId ||
-              remote.localMachineId !== remoteMachine || remote.edgeEpoch !== pair.edgeEpoch || remote.fenceId !== closure.fenceId ||
-              remote.fenceDurable !== true || remote.exchanges !== "closed" || remote.inFlight !== 0) cleanupReason = "intercom-revocation-unconfirmed";
-        } catch { cleanupReason = "intercom-revocation-unconfirmed"; }
+          if (closure.localMachineId !== pair.target.machineId && (!remote || remote.sourceMachineId !== pair.source.machineId || remote.targetMachineId !== pair.target.machineId ||
+              remote.localMachineId !== remoteMachine || remote.edgeEpoch !== fenceEpoch || remote.fenceId !== closure.fenceId ||
+              remote.fenceDurable !== true || remote.exchanges !== "closed" || remote.inFlight !== 0)) cleanupReason = "intercom-revocation-unconfirmed";
+        } catch { if (closure.localMachineId !== pair.target.machineId) cleanupReason = "intercom-revocation-unconfirmed"; }
         if (!cleanupReason) try {
           const stopped = await ports.stopPairHost?.(pair, pins, closure.fenceId);
           if (!stopped || stopped.machineId !== pair.target.machineId || stopped.unit !== `spider-pair-${pair.pairId}-host.service` ||
               !["inactive", "failed"].includes(stopped.activeState) || !Number.isSafeInteger(stopped.mainPid) || stopped.mainPid < 1 ||
-              typeof stopped.mainStartIdentity !== "string" || !stopped.mainStartIdentity || stopped.mainProcess !== "exited" || stopped.controlGroup !== "empty") {
+              typeof stopped.mainStartIdentity !== "string" || !stopped.mainStartIdentity || stopped.mainProcess !== "exited" || stopped.controlGroup !== "empty" || stopped.killMode !== "control-group") {
             cleanupReason = "intercom-revocation-unconfirmed";
           }
         } catch { cleanupReason = "intercom-revocation-unconfirmed"; }
         if (!cleanupReason) try {
           await ports.removeAuthorizedKey(pair, pins);
+          if (ports.stopPairConnect && !await ports.stopPairConnect(pair, pins, closure.fenceId)) throw new Error("intercom-revocation-cleanup-pending");
           const route = await ports.removeMachineIfIdle(pair, pins);
           if (route === "shared-jobs") cleanupReason = "intercom-revocation-cleanup-pending";
           else if (route !== "removed") cleanupReason = "intercom-revocation-cleanup-pending";

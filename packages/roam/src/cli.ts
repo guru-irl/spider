@@ -21,8 +21,10 @@ import { createTransport } from "./transport";
 import { isPeerFailureReason, peerFailureReason } from "./peer-errors";
 import { remoteDoctor } from "./remote-observations";
 import { disableRoaming, enableRoaming } from "./production-controls";
-import { runForeground, runLocalPairCleanup, runLocalPairOperation, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
+import { runForeground, runLocalPairCleanup, runLocalPairOperation, hasPairConsent, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
 import { parseHelperFence, requestHelperFence } from "./intercom-helper";
+import { createIntercomRegistry } from "./intercom-registry";
+import { pairScopedRecipe, inspectPairUnit } from "./intercom-pair-resources";
 import type { IntercomCliOptions } from "./intercom-cli";
 
 const HELP = `Usage: spider <command>
@@ -84,7 +86,7 @@ async function readArtifactInput(limit: number, supplied?: Buffer): Promise<Buff
 }
 
 /** Parse before loading configuration, a database, or a transport. */
-export async function main(argv: readonly string[], io: { out(text: string): void; err(text: string): void }, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions }): Promise<number> {
+export async function main(argv: readonly string[], io: { out(text: string): void; err(text: string): void }, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"] }): Promise<number> {
   let root = process.env.SPIDER_GLOBAL_ROOT || join(homedir(), ".pi", "agent", "spider");
   if (argv[0] === "--global-root") {
     if (!argv[1] || !isAbsolute(argv[1]) || argv[2] !== "roam" || !["agent", "artifact", "observe", "intercom"].includes(argv[3])) {
@@ -109,16 +111,24 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
     return runIntercomEnrollCli({ root, graphFile, operationId }, io, options?.intercomOptions);
   }
   if (argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "revoke") {
-    if (argv.length !== 4 || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(argv[3])) { io.err("Usage: spider roam intercom revoke <pair-id>\n"); return 2; }
+    const id = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+    if (!id(argv[3] ?? "") || !(argv.length === 4 || argv.length === 6 && argv[4] === "--fence-epoch" && id(argv[5]))) {
+      io.err("Usage: spider roam intercom revoke <pair-id> [--fence-epoch <historical-epoch>]\n"); return 2;
+    }
     const { runIntercomRevokeCli } = await import("./intercom-cli");
-    return runIntercomRevokeCli({ root, pairId: argv[3] }, io, options?.intercomOptions);
+    return runIntercomRevokeCli({ root, pairId: argv[3], fenceEpoch: argv[5] }, io, options?.intercomOptions);
   }
   if (argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "observe-fence" && argv.length === 3) {
     try {
       const config = readLocalIdentity(root), bytes = await readArtifactInput(4096, options?.stdin);
-      const input = parseHelperFence(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+      const raw: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid-intercom-observation");
+      const { pairId, ...body } = raw as Record<string, unknown>;
+      if (pairId !== undefined && (typeof pairId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pairId))) throw new Error("invalid-intercom-observation");
+      const input = parseHelperFence(body);
       if (input.machineId !== config.machineId) throw new Error("machine-mismatch");
-      const value = await (options?.fencePort ?? requestHelperFence)(root, input);
+      const observed = await (options?.fencePort ?? requestHelperFence)(root, input);
+      const value = pairId === undefined ? observed : { ...observed, revocationPending: await createIntercomRegistry(root).revocationPending(pairId as string, observed.peer) };
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-fence", ok: true, value })}\n`);
     } catch { io.out(`${JSON.stringify({ version: 1, kind: "intercom-fence", ok: false, reason: "intercom-fence-unavailable" })}\n`); }
     return 0;
@@ -127,7 +137,7 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
     try {
       const config = readLocalIdentity(root), bytes = await readArtifactInput(64 * 1024, options?.stdin);
       const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as LocalPairCleanup;
-      if (input?.action === "remove-authorized") throw new Error("intercom-revocation-unconfirmed");
+
       const base = options?.pairPorts ?? { machineId: config.machineId, root, home: homedir(), node: process.execPath, ssh: "/usr/bin/ssh",
         keygen: "/usr/bin/ssh-keygen", sshd: "/usr/sbin/sshd", sshUser: userInfo().username, recipe: config.intercom.connector, run: runForeground };
       const value = await runLocalPairCleanup(input, { ...base, machineId: config.machineId, root });
@@ -140,14 +150,20 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
     try {
       const config = readLocalIdentity(root), bytes = await readArtifactInput(1024 * 1024, options?.stdin);
       const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as LocalPairOperation;
-      if (!["check-connector", "inspect-ssh", "register-pair", "host-connector", "connect-connector"].includes(input?.action)) throw new Error("connector-not-pair-scoped");
+      if (!input?.pair || !hasPairConsent(input.pair, input.approval)) throw new Error("peer-consent-required");
+      if (await createIntercomRegistry(root).revocationPending(input.pair.pairId, config.machineId === input.pair.source.machineId ? input.pair.target.machineId : input.pair.source.machineId)) throw new Error("revocation-pending");
+      if (!["check-connector", "inspect-ssh", "register-pair", "host-connector", "connect-connector"].includes(input?.action) && !pairScopedRecipe(config.intercom.connector ?? options?.pairPorts?.recipe)) throw new Error("connector-not-pair-scoped");
       const base = options?.pairPorts ?? { machineId: config.machineId, root, home: homedir(), node: process.execPath, ssh: "/usr/bin/ssh",
         keygen: "/usr/bin/ssh-keygen", sshd: "/usr/sbin/sshd", sshUser: userInfo().username, recipe: config.intercom.connector, run: runForeground };
+      if (!["check-connector", "inspect-ssh", "register-pair", "host-connector", "connect-connector"].includes(input?.action)) {
+        const side = input.pair?.source?.machineId === config.machineId ? "connect" : "host";
+        if (!await inspectPairUnit(input.pair as import("./provision-contracts").IntercomEnrollmentPair, side, { ...base, machineId: config.machineId, root })) throw new Error("connector-not-pair-scoped");
+      }
       const value = await runLocalPairOperation(input, { ...base, machineId: config.machineId, root });
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-setup", ok: true, machineId: config.machineId, value })}\n`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
-      const reason = /^(?:intercom-[a-z-]+|connector-not-pair-scoped|peer-consent-required|machine-mismatch|core-unavailable|unsafe-pair-key|host-key-changed)$/.test(message) ? message : "intercom-setup-pending";
+      const reason = /^(?:intercom-[a-z-]+|revocation-pending|fresh-peer-consent-required|connector-not-pair-scoped|peer-consent-required|machine-mismatch|core-unavailable|unsafe-pair-key|host-key-changed)$/.test(message) ? message : "intercom-setup-pending";
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-setup", ok: false, reason })}\n`);
     }
     return 0;
@@ -156,7 +172,7 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
     try {
       const config = readLocalIdentity(root);
       const value = argv[2] === "consumers" ? await inspectLocalConsumers(root, config.machineId, options?.bundleUrl)
-        : argv[2] === "hosting" ? await observeLocalHosting(root) : await runLocalDoctor({ root, bundleUrl: options?.bundleUrl });
+        : argv[2] === "hosting" ? await observeLocalHosting(root) : await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor });
       io.out(`${JSON.stringify({ version: 1, machineId: config.machineId, kind: argv[2], value })}\n`);
       return 0;
     } catch (error) { io.err(error instanceof ReadinessParseError ? `${error.reason}\n` : "Cannot inspect local roaming state. No data was changed.\n"); return 1; }
@@ -347,7 +363,7 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
   if (argv[0] === "roam" && argv[1] === "doctor") {
     try {
       let report: Awaited<ReturnType<typeof runLocalDoctor>>;
-      if (argv.length === 2) report = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true });
+      if (argv.length === 2) report = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor });
       else {
         const config = readLocalIdentity(root);
         if (config.role !== "hub") { io.err("Run remote doctor on the Mac hub.\n"); return 1; }

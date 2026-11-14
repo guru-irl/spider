@@ -1,5 +1,5 @@
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
-import { userInfo } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
 import { FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE } from "@spider/intercom/protocol";
 import { migrateIntercomSettings } from "../../../scripts/intercom-switchover.mjs";
@@ -7,6 +7,7 @@ import type { Diagnostic, RoamConfig } from "./contracts";
 import type { IntercomEnrollmentPair } from "./provision-contracts";
 import { parseConnectorRecipe } from "./config";
 import { createIntercomRegistry } from "./intercom-registry";
+import { inspectPairUnit, type PairResourcePorts } from "./intercom-pair-resources";
 import { pairPaths } from "./intercom-pair-files";
 import { compareSshHostKey, inspectServedSshIdentity } from "./intercom-ssh-observation";
 import { runForeground } from "./intercom-local-ops";
@@ -15,6 +16,7 @@ import { observeHelperFeatures, requestHelperInspect } from "./intercom-helper";
 interface DoctorOptions {
   root: string; config: RoamConfig; agentDir: string;
   run?: typeof runForeground;
+  resourcePorts?: PairResourcePorts;
   inspectSsh?(pair: IntercomEnrollmentPair): ReturnType<typeof inspectServedSshIdentity>;
   features?(): Promise<readonly string[]>;
   link?(pair: IntercomEnrollmentPair, peer: string): Promise<{ status: string; reason: string | null }>;
@@ -63,6 +65,17 @@ export async function inspectLocalIntercomDoctor(input: DoctorOptions): Promise<
     if (item.state !== "active" || !("sshUser" in item.pair)) continue;
     const pair = item.pair, localSource = pair.source.machineId === input.config.machineId, localTarget = pair.target.machineId === input.config.machineId;
     if (!localSource && !localTarget) continue;
+    const unitPorts = input.resourcePorts ?? { root: input.root, machineId: input.config.machineId, home: homedir(), recipe, run };
+    try {
+      if (!item.resources || !await inspectPairUnit(pair, localSource ? "connect" : "host", unitPorts)) diagnostics.push({ severity: "block", reason: `intercom-pair-unit-unavailable: Verify the pair unit for ${pair.pairId}.`, repairCommand: null });
+    } catch { diagnostics.push({ severity: "block", reason: `intercom-pair-unit-unavailable: The pair unit for ${pair.pairId} could not be verified.`, repairCommand: null }); }
+    if (localSource && item.resources) try {
+      const result = await run([pair.source.core, "machine", "ls", "--json"], { timeoutMs: 10_000, maxBytes: 64 * 1024 }), value: unknown = result.code === 0 ? JSON.parse(result.stdout) : null;
+      if (!record(value) || !Array.isArray(value.machines)) throw new Error("intercom-route-unavailable");
+      const route = item.resources.route, matches = value.machines.filter(row => record(row) && typeof row.name === "string" && row.name.toLowerCase().replace(/\.$/, "") === route.name);
+      if (matches.length !== 1 || !record(matches[0]) || matches[0].name !== route.name || matches[0].id !== route.targetCoreId || matches[0].target !== route.via ||
+          matches[0].via !== true || matches[0].session !== route.session || matches[0].temporary !== false) add("intercom-route-mismatch", `Verify the reserved route for ${pair.pairId}.`);
+    } catch { add("intercom-route-unavailable", `The reserved route for ${pair.pairId} could not be inspected.`); }
     if (localTarget) try {
       const observed = input.inspectSsh ? await input.inspectSsh(pair) : await inspectServedSshIdentity({ machineId: input.config.machineId,
         sshUser: userInfo().username, sshd: "/usr/sbin/sshd", run });

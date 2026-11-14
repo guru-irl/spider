@@ -401,12 +401,32 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect pending launch reservations.", repairCommand: null }); }
   try {
-    for (const record of await createIntercomRegistry(root).list()) if ((record.state === "revoked" || record.state === "revoking") && record.cleanupReason) {
-      const unconfirmed = record.cleanupReason === "intercom-revocation-unconfirmed";
+    const records = await createIntercomRegistry(root).list();
+    let snapshot: Db | undefined;
+    const localPairs = records.filter(record => [record.pair.source.machineId, record.pair.target.machineId].includes(config.machineId));
+    const fences = new Map<string, { edgeEpoch: string; fenceId: string }>();
+    try {
+      snapshot = openDiagnosticSnapshot(join(root, "roam", "intercom", "queue.db"));
+      if (snapshot) for (const row of snapshot.prepare("SELECT peer,edge_epoch,fence_id FROM intercom_pair_fences").all() as Array<{ peer: string; edge_epoch: string; fence_id: string }>) fences.set(row.peer, { edgeEpoch: row.edge_epoch, fenceId: row.fence_id });
+    } catch { inventory.push({ severity: "block", reason: "intercom-fence-unavailable: Durable pair fences could not be inspected.", repairCommand: null }); }
+    finally { snapshot?.close(); }
+    for (const record of records) {
+      const pair = record.pair, peer = pair.source.machineId === config.machineId ? pair.target.machineId : pair.target.machineId === config.machineId ? pair.source.machineId : null;
+      const fence = peer === null ? undefined : fences.get(peer);
+      const completed = !record.cleanupReason && record.fenceId === fence?.fenceId && (record.state === "revoked" && (record.revocationEpoch ?? pair.edgeEpoch) === fence?.edgeEpoch || record.state === "pending" && pair.edgeEpoch !== fence?.edgeEpoch);
+      if (fence && !completed && fence.edgeEpoch !== (record.revocationEpoch ?? pair.edgeEpoch)) {
+        const repairCommand = `spider roam intercom revoke ${pair.pairId} --fence-epoch ${fence.edgeEpoch}`;
+        inventory.push({ severity: "block", reason: `intercom-fence-mismatch: On the hub, run ${repairCommand} with both boxes reachable to stop the pair units and confirm closure of the historical fence.`, repairCommand });
+      }
+      const gap = fence !== undefined && !completed && record.state !== "revoking";
+      const reason = gap || record.state === "revoking" && !record.cleanupReason ? "intercom-revocation-unconfirmed" : record.cleanupReason;
+      if (!reason || !gap && !["revoking", "revoked"].includes(record.state)) continue;
+      const unconfirmed = reason === "intercom-revocation-unconfirmed";
       inventory.push({ severity: unconfirmed ? "block" : "warning", reason: unconfirmed
-        ? `${record.cleanupReason}: Box A may still reach box B for ${record.pair.pairId} until B is back and its pair host is stopped.`
-        : `${record.cleanupReason}: Remote cleanup is pending for ${record.pair.pairId}.`, repairCommand: null });
+        ? `${reason}: Box A may still reach box B for ${pair.pairId} until B is back and its pair host is stopped. Bring B back so revocation can finish; keep A reachable for route cleanup.`
+        : `${reason}: Remote cleanup is pending for ${pair.pairId}. Bring B back so revocation can finish; keep A reachable for route cleanup.`, repairCommand: null });
     }
+    for (const peer of fences.keys()) if (!localPairs.some(record => [record.pair.source.machineId, record.pair.target.machineId].includes(peer))) inventory.push({ severity: "block", reason: `revocation-pending: An unmatched durable fence remains for ${peer}. Bring B back so revocation can finish; restore the pair record before cleanup.`, repairCommand: null });
   } catch { inventory.push({ severity: "warning", reason: "intercom-registry-unavailable: Pair enrollment state could not be inspected.", repairCommand: null }); }
   if (input.inspectIntercomDoctor && config.intercom.enabled) try {
     const inspect = input.intercomDoctor ?? inspectLocalIntercomDoctor;

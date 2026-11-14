@@ -2,7 +2,8 @@ import { expect, it, vi } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import * as testSupport from "../test-support.js";
 import { startTestBroker, stopTestBroker, assertNoTestBrokers, testTmpDir, getTestBrokerOwnership, readTestProcessStart } from "../test-support.js";
 
 vi.mock("node:child_process", async original => {
@@ -16,11 +17,35 @@ vi.mock("node:fs", async original => {
 
 it("a broker fixture refuses outside and symlinked roots before spawn", () => {
   expect(() => startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: "/outside-fixture" } })).toThrow(/fixture/);
+  expect(() => startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: testTmpDir(), PI_CODING_AGENT_DIR: "/outside-fixture" } })).toThrow(/fixture/);
   const root = mkdtempSync(join(testTmpDir(), "owned-"));
   try {
     const target = join(root, "target"), link = join(root, "link"); mkdirSync(target); symlinkSync(target, link);
     expect(() => startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: link } })).toThrow(/symlink|fixture/);
+    expect(() => startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: testTmpDir(), PI_CODING_AGENT_DIR: link } })).toThrow(/symlink|fixture/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+}, 5000);
+
+it("runs a broker with a fixture home when the parent home is outside it", async () => {
+  const makeEnv = (testSupport as { testBrokerEnv?: () => NodeJS.ProcessEnv }).testBrokerEnv;
+  expect(makeEnv).toBeTypeOf("function");
+  const previousHome = process.env.HOME, previousProfile = process.env.USERPROFILE;
+  process.env.HOME = "/outside-fixture";
+  process.env.USERPROFILE = "/outside-fixture";
+  try {
+    const child = startTestBroker(process.execPath, ["-e", "process.stdout.write(JSON.stringify([process.env.HOME, process.env.USERPROFILE, process.env.PI_CODING_AGENT_DIR])); process.stdin.resume()"],
+      { env: makeEnv!(), stdio: ["pipe", "pipe", "pipe"] });
+    try {
+      const [data] = await once(child.stdout, "data");
+      const [home, profile, agent] = JSON.parse(String(data)) as string[];
+      expect(home.startsWith(testTmpDir() + sep)).toBe(true);
+      expect(profile).toBe(home);
+      expect(agent).toBe(process.env.PI_CODING_AGENT_DIR);
+    } finally { await stopTestBroker(child); }
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    if (previousProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = previousProfile;
+  }
 }, 5000);
 
 it("records a pid and process start identity before admitting a broker", async () => {

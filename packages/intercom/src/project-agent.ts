@@ -191,7 +191,7 @@ export function resolveTargetInCwd(input: {
   targetCwd: string;
   to?: string;
 }): ProjectTargetResolution {
-  const inCwd = input.sessions.filter((session) => sameCwd(session.cwd, input.targetCwd));
+  const inCwd = input.sessions.filter((session) => (!session.remote || input.to) && sameCwd(session.cwd, input.targetCwd));
   const target = input.to?.trim();
 
   if (!target) {
@@ -282,7 +282,7 @@ export async function waitForProjectSession(client: ListSessionsClient, input: {
     }
 
     const newInProject = sessions.filter(
-      (session) => !input.beforeSessionIds.has(session.id) && sameCwd(session.cwd, input.projectRoot),
+      (session) => !session.remote && !input.beforeSessionIds.has(session.id) && sameCwd(session.cwd, input.projectRoot),
     );
     if (newInProject.length === 1) return newInProject[0]!;
     if (newInProject.length > 1) {

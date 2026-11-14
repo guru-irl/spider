@@ -9,6 +9,7 @@ function fixture(): string {
   const scratch = resolve('.spider/scratch/intercom-parity'); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, 'case-')); roots.push(root);
   cpSync(resolve('packages/intercom/src'), join(root, 'src'), { recursive: true });
+  cpSync(resolve('packages/intercom/DIVERGENCE.json'), join(root, 'DIVERGENCE.json'));
   return join(root, 'src');
 }
 function check(fork?: string, manifest?: string) {
@@ -19,6 +20,63 @@ function mutate(root: string, file: string, before: string, after: string) {
   expect(text).toContain(before);
   writeFileSync(path, text.replace(before, after));
 }
+
+function declareDivergence(root: string, file: string, upstream: string | null = file) {
+  const path = resolve(root, '../DIVERGENCE.json');
+  const divergence = JSON.parse(readFileSync(path, 'utf8'));
+  const manifest = JSON.parse(readFileSync(resolve('packages/intercom/upstream-assertions.json'), 'utf8'));
+  divergence.files.push({ path: file, task: '3.6a', reason: 'Exercise a declared fixture change.', upstreamHash: upstream ? manifest.sources[upstream].sourceSha256 : null });
+  writeFileSync(path, JSON.stringify(divergence));
+}
+
+it('allows a listed runtime change tied to its upstream hash', () => {
+  const root = fixture();
+  mutate(root, 'broker/spawn.ts', 'args: [brokerPath],', 'args: [brokerPath, "fixture"],');
+  declareDivergence(root, 'broker/spawn.ts');
+  const result = check(root);
+  expect(result.status, result.stderr).toBe(0);
+}, 5000);
+
+it('rejects a stale divergence entry', () => {
+  const root = fixture(); declareDivergence(root, 'broker/spawn.ts');
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/stale.*broker\/spawn\.ts/i);
+}, 5000);
+
+it('rejects a new unlisted runtime file', () => {
+  const root = fixture(); writeFileSync(join(root, 'unlisted.ts'), 'export const fixture = true;');
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/unlisted.*unlisted\.ts/i);
+}, 5000);
+
+it('rejects a comment-only change to an unlisted original runtime file', () => {
+  const root = fixture(), file = join(root, 'broker/paths.ts');
+  writeFileSync(file, readFileSync(file, 'utf8') + '\n// undeclared fixture edit\n');
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/unlisted.*runtime.*broker\/paths\.ts/i);
+}, 5000);
+
+it('rejects a declaration whose divergent file is missing', () => {
+  const root = fixture(); rmSync(join(root, 'local.ts'));
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/missing.*divergent.*local\.ts/i);
+}, 5000);
+
+it('allows a listed new file and refuses a forged upstream hash', () => {
+  const root = fixture(); writeFileSync(join(root, 'new-runtime.ts'), 'export const fixture = true;');
+  declareDivergence(root, 'new-runtime.ts', null);
+  expect(check(root).status).toBe(0);
+  const file = resolve(root, '../DIVERGENCE.json'), divergence = JSON.parse(readFileSync(file, 'utf8'));
+  divergence.files.find((entry: any) => entry.path === 'local.ts').upstreamHash = '0'.repeat(64);
+  writeFileSync(file, JSON.stringify(divergence));
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/upstream.*hash|provenance/i);
+}, 5000);
 
 it('checks all upstream assertions and runtime files against the committed manifest', () => {
   const result = check();

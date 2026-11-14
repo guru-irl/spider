@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "broker/broker.ts",
+      "task": "3.6a",
+      "reason": "Route negotiated remote traffic through one broker-owned bridge and expose metadata blockers.",
+      "upstreamHash": "65d9ec1dbed5368ea952a1c7c3f978c83b44cd092e1922509085aa070f06829b"
+    },
+    {
+      "path": "broker/client.ts",
+      "task": "3.6a",
+      "reason": "Negotiate federation and expose the service-owned bridge connection.",
+      "upstreamHash": "c810c80fdc0147dc9d7b636f071b82db7a50383dee6b860a6fe6cc0946f6212d"
+    },
+    {
+      "path": "broker/federation.ts",
+      "task": "3.6a",
+      "reason": "Own remote routing and blockers without retaining remote payload queues.",
+      "upstreamHash": null
+    },
+    {
+      "path": "broker/protocol.ts",
+      "task": "3.6a",
+      "reason": "Validate portable roster entries, bridge replies, and consumption evidence.",
+      "upstreamHash": "4f97b280ff3e4abc5f622db5e039b57ecda2aba4b93425b20a1aea3f4fec2943"
+    },
+    {
+      "path": "delivery-observation.ts",
+      "task": "3.6a",
+      "reason": "Share acceptance and observed-delivery settlement with owned RPC children.",
+      "upstreamHash": null
+    },
+    {
+      "path": "index.ts",
+      "task": "3.6a",
+      "reason": "Export the public federation contracts alongside the adopted extension registration.",
+      "upstreamHash": null
+    },
+    {
+      "path": "local.ts",
+      "task": "3.6a",
+      "reason": "Observe physical message entries and record matched waiter evidence before releasing replies.",
+      "upstreamHash": "b99325cd8cb80b4ed41ac4f1427791eb1df916a303ba5ce5b35197eba8972f1c"
+    },
+    {
+      "path": "project-agent.ts",
+      "task": "3.6a",
+      "reason": "Keep unqualified cwd selection local and prevent remote discovery from selecting a local pane.",
+      "upstreamHash": "53c1ee6deff93ee3cac5b485b3a2aa3d26d17ea85fcb6cc0303a4bd17696dc90"
+    },
+    {
+      "path": "protocol.ts",
+      "task": "3.6a",
+      "reason": "Define the shared pi-free logical address and broker federation contract.",
+      "upstreamHash": null
+    },
+    {
+      "path": "reply-tracker.ts",
+      "task": "3.6a",
+      "reason": "Resolve incoming ask senders by encoded machine-qualified names.",
+      "upstreamHash": "3782886bdb143ae11bbf68c87803153078d66d321858cc4d53c4e39b9704dbc2"
+    },
+    {
+      "path": "single-instance.ts",
+      "task": "3.6-0",
+      "reason": "Fence duplicate extension registrations during rolling adoption.",
+      "upstreamHash": null
+    },
+    {
+      "path": "test-support.ts",
+      "task": "3.6a",
+      "reason": "Record each fixture child PID and native start identity, gate every signal on ownership, and stop owned brokers after failed or timed-out tests.",
+      "upstreamHash": null
+    },
+    {
+      "path": "types.ts",
+      "task": "3.6a",
+      "reason": "Separate remote identities from local process handles and distinguish acceptance from consumption.",
+      "upstreamHash": "7796cf45d8608956601c7ec14322a94fa9448a390c7239d84e24d43de1ba6d5f"
+    },
+    {
+      "path": "ui/inline-message.ts",
+      "task": "3.6a",
+      "reason": "Show the sender machine on incoming remote messages.",
+      "upstreamHash": "cffbc108038756ecda7aa5643f33d6a1169cba1c01f00b773fc336b70495d03b"
+    },
+    {
+      "path": "ui/session-list.ts",
+      "task": "3.6a",
+      "reason": "Show remote machine qualifiers without claiming local cwd affinity.",
+      "upstreamHash": "38433b22225acb18b24a3290678c6df161d03e218dc036c8023781cb41d6601a"
+    }
+  ]
+}

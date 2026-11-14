@@ -70,7 +70,8 @@
           "text": "assert.equal(client.isConnected(), false)",
           "sha256": "fce51b60cfcd57e87180864836ceacf7f0cada7ce435c4529f60580a7acb8420"
         }
-      ]
+      ],
+      "adoptedSha256": "c12ba1e65ed2e157a4c8496090a93d3eb0b9f6c621faef75750106b2259ed67a"
     },
     "broker/client.test.ts": {
       "provenance": "installed-payload",
@@ -127,7 +128,8 @@
           "text": "assert.doesNotThrow(() => client.cancelAsk(\"ask-1\"))",
           "sha256": "50ef10d7c65d84af18ddda6bf95597e79908bb00794e35b246a3497a471089d8"
         }
-      ]
+      ],
+      "adoptedSha256": "6206e81368e332999a0537ebfd10fe4890a98228e60d1d99ee3b9161e9aa3176"
     },
     "broker/extension.test.ts": {
       "provenance": "installed-payload",
@@ -439,7 +441,8 @@
           "text": "assert.deepEqual(recovered, { revision: 1, payload: { version: 1 } })",
           "sha256": "70c02bf2f0fd88b4267dd06dad03e19bd6f71202cf006506299ba6d4c96977ba"
         }
-      ]
+      ],
+      "adoptedSha256": "abee31dc1de81d3b8de3777ef3ad24572d1ca14fc205f0dccf0b8dd8731da30a"
     },
     "broker/framing.test.ts": {
       "provenance": "installed-payload",
@@ -523,7 +526,8 @@
           "text": "assert.deepEqual(messages, [{ ok: true }])",
           "sha256": "f9027b06518ca85516a65f981c6a3000c95bbc0fc4cf98e386c9ed34672acae4"
         }
-      ]
+      ],
+      "adoptedSha256": "3900785b717b914f7d3a52fb8968a26bef15c98c1c9b0a5e1dbccba272f336b2"
     },
     "broker/paths.test.ts": {
       "provenance": "installed-payload",
@@ -639,7 +643,8 @@
           "text": "assert.doesNotThrow(() => restrictIntercomRuntimeFile(filePath, \"win32\"))",
           "sha256": "b16d4e2c196cb525d7800cab8dcc2c0d0b722dc6a1af5ca352dcbb12c6e358f7"
         }
-      ]
+      ],
+      "adoptedSha256": "febbc6fd7d123f9d946f49dd11a80423f752afd39d66782f720bec65b1d3e6aa"
     },
     "broker/runtime-claim.test.ts": {
       "provenance": "installed-payload",
@@ -669,7 +674,8 @@
           "text": "assert.doesNotThrow(() => assertNoLiveBroker(pidPath))",
           "sha256": "8105679fe7a2ce2585e384161d11b3f76d36a3b64bfc3cf203f60620eb954246"
         }
-      ]
+      ],
+      "adoptedSha256": "733bc1a1aa0f0722e6e3c0a16ed155d6667515db0acbf707a463194e08b07a97"
     },
     "broker/spawn.test.ts": {
       "provenance": "installed-payload",
@@ -966,7 +972,8 @@
           "text": "assert.equal(isBrokerHealthOkMessage(\"ok\", \"req-1\"), false)",
           "sha256": "243b8a0bc30b63d810e2d9900f68cf845a290dc431a8abd4fb366b222b96ba08"
         }
-      ]
+      ],
+      "adoptedSha256": "5e1c081f58d1685169b6128da69fcefd4a1b4177b984cbf5d1e01d65cb79afda"
     },
     "config.test.ts": {
       "provenance": "immutable-public-source",
@@ -1016,7 +1023,8 @@
           "text": "assert.throws(() => loadConfig(), /Failed to load intercom config.*\"inboundTrigger\" must be \"always\", \"replies\", or \"never\"/)",
           "sha256": "44e4ef95fd7f30311ead059b94af19f2be4e9a54fc457ffbddba90d42642db3e"
         }
-      ]
+      ],
+      "adoptedSha256": "ffc2bb83650df97e987465108477eba1deb686620b20d96fca60431bc8f00d1e"
     },
     "cwd.test.ts": {
       "provenance": "immutable-public-source",
@@ -1059,7 +1067,8 @@
           "text": "assert.equal(normalizeCwd(\"/no/such/dir/../dir\"), \"/no/such/dir\")",
           "sha256": "2731ddf174a95be29364254e8453ba19a5bf872cb9842e9f454c21d95886ce59"
         }
-      ]
+      ],
+      "adoptedSha256": "df58da1478dcf6744b26ff417e0e405e711fdd53f4d8db5da33adc1fddaafdd5"
     },
     "format-context.test.ts": {
       "provenance": "immutable-public-source",
@@ -1098,12 +1107,12 @@
         },
         {
           "case": "formatContextUsage renders percent + token detail when all known",
-          "text": "assert.equal(formatContextUsage({ ...base, contextPct: 72, contextTokens: 144000, contextWindow: 200000 }), \" · 72% ctx (144k/200k)\")",
+          "text": "assert.equal(formatContextUsage({ ...base, contextPct: 72, contextTokens: 144000, contextWindow: 200000 }), \" \u00b7 72% ctx (144k/200k)\")",
           "sha256": "c18cb5c191ab8ddbcc1dc6b064ec286c7709a7b9ae0f49db18bbcf9df50381c0"
         },
         {
           "case": "formatContextUsage shows percent only when token counts are absent",
-          "text": "assert.equal(formatContextUsage({ ...base, contextPct: 30 }), \" · 30% ctx\")",
+          "text": "assert.equal(formatContextUsage({ ...base, contextPct: 30 }), \" \u00b7 30% ctx\")",
           "sha256": "d8c23d2a64d74fe94894731738fe46846ed7e2630a85702a1bdd3f2734b8169f"
         },
         {
@@ -1116,7 +1125,8 @@
           "text": "assert.equal(formatContextUsage({ ...base, contextTokens: 100, contextWindow: 200 }), \"\")",
           "sha256": "b1569fdac46c34147f6c47de309134442aefc7f831bb224cacf162f6f39e7b21"
         }
-      ]
+      ],
+      "adoptedSha256": "cc26432dfca46f047f5a2d419d3de97b475a549fc44da34cf65b19abaadfdd19"
     },
     "intercom.integration.test.ts": {
       "provenance": "immutable-public-source",
@@ -1870,17 +1880,17 @@
         },
         {
           "case": "intercom tool renders compact call and result rows",
-          "text": "assert.match(renderToText(intercomTool.renderCall({\n    action: \"ask\",\n    to: \"planner\",\n    message: \"Need a decision before I continue with this implementation.\",\n    attachments: [{ type: \"snippet\", name: \"note.ts\", content: \"const ok = true;\" }],\n}, renderTheme, {})), /intercom ask → planner \\(1 attachment\\)\\n {2}Need a decision/)",
+          "text": "assert.match(renderToText(intercomTool.renderCall({\n    action: \"ask\",\n    to: \"planner\",\n    message: \"Need a decision before I continue with this implementation.\",\n    attachments: [{ type: \"snippet\", name: \"note.ts\", content: \"const ok = true;\" }],\n}, renderTheme, {})), /intercom ask \u2192 planner \\(1 attachment\\)\\n {2}Need a decision/)",
           "sha256": "7171b7e1a07fc92fb785626a3a44e413a36acd6b33198ab6e71edb386ec1d8e1"
         },
         {
           "case": "intercom tool renders compact call and result rows",
-          "text": "assert.match(resultText, /✓ Message sent to planner \\(abcdef12\\)/)",
+          "text": "assert.match(resultText, /\u2713 Message sent to planner \\(abcdef12\\)/)",
           "sha256": "f756df9e9bab185c261d7bb76e1094d6e1d88f19593066d92565aa0735cad2ea"
         },
         {
           "case": "intercom tool renders compact call and result rows",
-          "text": "assert.match(errorText, /✗ Missing 'to' or 'message' parameter/)",
+          "text": "assert.match(errorText, /\u2717 Missing 'to' or 'message' parameter/)",
           "sha256": "75b79fd5bc85a3b6eb9071f33bace218f2c08f6cb2f83bd383696bfc2387a678"
         },
         {
@@ -1955,7 +1965,7 @@
         },
         {
           "case": "contact supervisor tool renders reason and reply state",
-          "text": "assert.match(warningText, /⚠ Reply from supervisor:\\nUse stable API/)",
+          "text": "assert.match(warningText, /\u26a0 Reply from supervisor:\\nUse stable API/)",
           "sha256": "30b786bf65cc735db183c36240b47e762c1bc75a3c34e979f9fa3927aca310fe"
         },
         {
@@ -1965,7 +1975,7 @@
         },
         {
           "case": "contact supervisor tool renders reason and reply state",
-          "text": "assert.match(failureText, /✗ Invalid reason/)",
+          "text": "assert.match(failureText, /\u2717 Invalid reason/)",
           "sha256": "cd30e7fef330886cd027567ac099d0f8aba1912a1195ed53a631cd30ba34f419"
         },
         {
@@ -3768,7 +3778,8 @@
           "text": "assert.match(pending.content[0]?.text ?? \"\", /delivery-failure-ask-1/)",
           "sha256": "a9b4a362732201b65cf469cc863616cf305148422cf7ab185253e72bda840122"
         }
-      ]
+      ],
+      "adoptedSha256": "76e9847417c9bcaa597be74aa5a3dc881e185da868d6259799e1708a1f4debca"
     },
     "project-agent.test.ts": {
       "provenance": "immutable-public-source",
@@ -3837,7 +3848,8 @@
           "text": "assert.equal(resolved.id, \"worker-id\")",
           "sha256": "82b4a496eecfeeac12e9aad60f9b8effc4f088e452b704ee175c4e82c7f877e7"
         }
-      ]
+      ],
+      "adoptedSha256": "0f142ef8df955c98ec9c9dccb76b58d6e0165fe6f1e28ef3088685d949d51ba6"
     },
     "reply-tracker.test.ts": {
       "provenance": "immutable-public-source",
@@ -4023,7 +4035,8 @@
           "text": "assert.deepEqual(tracker.listPending(1002).map((context) => context.message.id), [\"ask-1\"])",
           "sha256": "b71600682aa441ff65732b806c3fbf9637ef0ac4cb534512de0aa579a9f24456"
         }
-      ]
+      ],
+      "adoptedSha256": "8f1a4ae03419f7e30dda4685b5579af84bdc73c8df199f9ac2ba00de38f8b569"
     },
     "test/inline-message.test.ts": {
       "provenance": "immutable-public-source",
@@ -4110,12 +4123,12 @@
         },
         {
           "case": "inline message colors follow the tool-title, text, muted-border, and dim-metadata hierarchy",
-          "text": "assert.match(lines[0], /^\\u001b\\[34m╭\\u001b\\[0m\\u001b\\[32m From:/)",
+          "text": "assert.match(lines[0], /^\\u001b\\[34m\u256d\\u001b\\[0m\\u001b\\[32m From:/)",
           "sha256": "b2bc8d9dc0a0d242e323891b3ed072ea9e325334183446b7924e2231d27587f4"
         },
         {
           "case": "inline message colors follow the tool-title, text, muted-border, and dim-metadata hierarchy",
-          "text": "assert.match(rendered, /\\u001b\\[34m│\\u001b\\[0m\\u001b\\[33mBody copy\\u001b\\[0m/)",
+          "text": "assert.match(rendered, /\\u001b\\[34m\u2502\\u001b\\[0m\\u001b\\[33mBody copy\\u001b\\[0m/)",
           "sha256": "1ccb8f3f252873afa6bb93408eb52c46f81ea5cce46b5b00b9cd41afa119b11b"
         },
         {
@@ -4135,7 +4148,7 @@
         },
         {
           "case": "inline message colors follow the tool-title, text, muted-border, and dim-metadata hierarchy",
-          "text": "assert.match(lines.at(-1)!, /^\\u001b\\[34m╰─+╯\\u001b\\[0m$/)",
+          "text": "assert.match(lines.at(-1)!, /^\\u001b\\[34m\u2570\u2500+\u256f\\u001b\\[0m$/)",
           "sha256": "beb18d85bce3f49ea9b875b5cee75e0c743e005921bea7814131e03388fd0b4c"
         },
         {
@@ -4210,7 +4223,7 @@
         },
         {
           "case": "inline messages pick up mutable theme proxy changes on rerender",
-          "text": "assert.match(after, /\\u001b\\[90m╭/)",
+          "text": "assert.match(after, /\\u001b\\[90m\u256d/)",
           "sha256": "af3637d39479d339657a061724bfb19a51540452cc1cc7628784ff62665c5b58"
         },
         {
@@ -4218,7 +4231,8 @@
           "text": "assert.notEqual(before, after)",
           "sha256": "f7af7643efa12fbf3f49452477ed638a7bb1ff5495dc35a49abe39337a280e0d"
         }
-      ]
+      ],
+      "adoptedSha256": "59e30a21306ae9b83f7a65925cd4bb4e2594e70a47862130cb261d50a81508d0"
     },
     "test/overlay-width.test.ts": {
       "provenance": "immutable-public-source",
@@ -4238,85 +4252,105 @@
           "text": "assert.equal(visibleWidth(line), expectedWidth, `${label} line ${index} should match overlay width`)",
           "sha256": "acc4cef7ae1c57edae52cf5a17b54eaee9782aa6d10b815aaa4fa0fc1cbc10b3"
         }
-      ]
+      ],
+      "adoptedSha256": "618b033d911083f4052f5e747d589a47694eeb992a819712aef656cfc2f0dd60"
     }
   },
   "sources": {
     "broker/broker.ts": {
       "sourceSha256": "65d9ec1dbed5368ea952a1c7c3f978c83b44cd092e1922509085aa070f06829b",
-      "normalizedSha256": "96a1df27685bbfcf44cd65630713065f4142258a160ad8d7e030ec8181059a70"
+      "normalizedSha256": "96a1df27685bbfcf44cd65630713065f4142258a160ad8d7e030ec8181059a70",
+      "adoptedSha256": "ff5c4fe65b6779b958766b73efcb57cef453f850cddd8dd67c5c404bee92b158"
     },
     "broker/client.ts": {
       "sourceSha256": "c810c80fdc0147dc9d7b636f071b82db7a50383dee6b860a6fe6cc0946f6212d",
-      "normalizedSha256": "332e922b1a6f05ef7d77942c038693ebb02533e3ff6de17c6d782723aa089df1"
+      "normalizedSha256": "332e922b1a6f05ef7d77942c038693ebb02533e3ff6de17c6d782723aa089df1",
+      "adoptedSha256": "2108d17fd22aa969c69fc91dd5229afec998ddf2dd102cb7951075790227ba2d"
     },
     "broker/extension-state.ts": {
       "sourceSha256": "2b9856b9eb1edf375e5338f1ba4de4e8d3c873b933d2f7e1776de505585b787a",
-      "normalizedSha256": "325a850e6c7de53cad08b4571f32ac8016888e68494832be5258a2d32944f139"
+      "normalizedSha256": "325a850e6c7de53cad08b4571f32ac8016888e68494832be5258a2d32944f139",
+      "adoptedSha256": "2b9856b9eb1edf375e5338f1ba4de4e8d3c873b933d2f7e1776de505585b787a"
     },
     "broker/framing.ts": {
       "sourceSha256": "fde128944099fa0ce9a808ca571df0736f22447eea149ab08eef8711882bf0d5",
-      "normalizedSha256": "a1e57f2f07b0e02fec1197b9f7c11341d4dad2cb8bdf587e2cfb7fc5ed00debc"
+      "normalizedSha256": "a1e57f2f07b0e02fec1197b9f7c11341d4dad2cb8bdf587e2cfb7fc5ed00debc",
+      "adoptedSha256": "a86f80f95ce4c41c15d3770a6de039234639bfae270f8b1007059577d35d33eb"
     },
     "broker/paths.ts": {
       "sourceSha256": "a6d5387de9fae0d206987e2ba5041d544ba1d6c02495b6ac841215f4a618e3d2",
-      "normalizedSha256": "af24b436411372f6cd9747fd7e2c6f7da729e822d009fd92e0ef50d55c8abb98"
+      "normalizedSha256": "af24b436411372f6cd9747fd7e2c6f7da729e822d009fd92e0ef50d55c8abb98",
+      "adoptedSha256": "a6d5387de9fae0d206987e2ba5041d544ba1d6c02495b6ac841215f4a618e3d2"
     },
     "broker/protocol.ts": {
       "sourceSha256": "4f97b280ff3e4abc5f622db5e039b57ecda2aba4b93425b20a1aea3f4fec2943",
-      "normalizedSha256": "5c6a5e463b423ffdc5dd564b0f0677505e39bdf2e83c156c7facac755d14141b"
+      "normalizedSha256": "5c6a5e463b423ffdc5dd564b0f0677505e39bdf2e83c156c7facac755d14141b",
+      "adoptedSha256": "70495514e9412c10599b0d660d7cfff136976364bd89676afd992e80a5cb5619"
     },
     "broker/runtime-claim.ts": {
       "sourceSha256": "e2290bba58d88f4b0ba5310c76fc1575d62cea70139358f741ac59777aac9e51",
-      "normalizedSha256": "65f5665781d486800fd94db6a255bf95bb0e3a2f70c9ce748500157118a4b970"
+      "normalizedSha256": "65f5665781d486800fd94db6a255bf95bb0e3a2f70c9ce748500157118a4b970",
+      "adoptedSha256": "e2290bba58d88f4b0ba5310c76fc1575d62cea70139358f741ac59777aac9e51"
     },
     "broker/spawn.ts": {
       "sourceSha256": "63b22e961bf23c5ead19084be6defe4a8c63ee4e614eebf2cb79897b16bfd673",
-      "normalizedSha256": "a1fca648c2449bff92a6fe2db85f19e96ba0147c2fea971450003daf9b104a1f"
+      "normalizedSha256": "a1fca648c2449bff92a6fe2db85f19e96ba0147c2fea971450003daf9b104a1f",
+      "adoptedSha256": "126b50f6d8a21dade905d96df33a1a8d1ea7da3cc0455a533fc9c3fd1d35fc72"
     },
     "config.ts": {
       "sourceSha256": "417327a3d3c8da26f10a6516e74f397ba26664115f1323c3752ccabc19ab678f",
-      "normalizedSha256": "ba2934508743072e12dac6f1560f11348812dc70c2975368fffef68145403ca8"
+      "normalizedSha256": "ba2934508743072e12dac6f1560f11348812dc70c2975368fffef68145403ca8",
+      "adoptedSha256": "be53892b29479a9124f5b4a5e543fc69537d516aabbe5423efd93d3a201b4b12"
     },
     "cwd.ts": {
       "sourceSha256": "a33e211d0e5ad1b12297ff6c683115436e885eaf658700754928065de750cb4c",
-      "normalizedSha256": "28f90103a35c6c8022fb52cd9fe1bfed20b958764f4b6dc0ac59069cc3212f61"
+      "normalizedSha256": "28f90103a35c6c8022fb52cd9fe1bfed20b958764f4b6dc0ac59069cc3212f61",
+      "adoptedSha256": "2f2b3ac946734896940389e260839e528ca56fbe9e2475aca5535a06f4c2371b"
     },
     "extension-api.ts": {
       "sourceSha256": "2a8f8740640368e911f4ae5f020cf7428d8f85c7a173489ca3d1d9f840825235",
-      "normalizedSha256": "7be189500f0425a4f1762bed4f25bfd43cc29a9407a5717b9245a4cc9245302c"
+      "normalizedSha256": "7be189500f0425a4f1762bed4f25bfd43cc29a9407a5717b9245a4cc9245302c",
+      "adoptedSha256": "b99faaad200de7b32774e8b3b7245967309a16e9086c95d7c6f3512a268d675b"
     },
     "format-context.ts": {
       "sourceSha256": "7d5bfbaf95c2cbcd620fa5f61c6f48a6b4f926bb24eb9388532a8ffdf36de2ed",
-      "normalizedSha256": "a3ff67c827e7e3918c5f7d85b4c259eeba138eb3b1070972b231fc76381a3f38"
+      "normalizedSha256": "a3ff67c827e7e3918c5f7d85b4c259eeba138eb3b1070972b231fc76381a3f38",
+      "adoptedSha256": "98fcca316876945dad405464565a28d6cf3fe539b41eddb0650b99686282a591"
     },
     "index.ts": {
       "sourceSha256": "b99325cd8cb80b4ed41ac4f1427791eb1df916a303ba5ce5b35197eba8972f1c",
-      "normalizedSha256": "c25b7c557a7aaccabaef0fca162a99f2c98b7d66b6ede9e402800ae68bc3e226"
+      "normalizedSha256": "c25b7c557a7aaccabaef0fca162a99f2c98b7d66b6ede9e402800ae68bc3e226",
+      "adoptedSha256": "4b6cb9c6c47778901a06eedab8bd3d0073df8009013e547c4da8a1b5d942e534"
     },
     "project-agent.ts": {
       "sourceSha256": "53c1ee6deff93ee3cac5b485b3a2aa3d26d17ea85fcb6cc0303a4bd17696dc90",
-      "normalizedSha256": "862753b502105f1bd2df34056130a3976051bb455a77a11f28d20d73f2f455ef"
+      "normalizedSha256": "862753b502105f1bd2df34056130a3976051bb455a77a11f28d20d73f2f455ef",
+      "adoptedSha256": "e0581c8bbe52e33df0957eb80b0f421847e4f2454cd26f012be4b7451ded92e5"
     },
     "reply-tracker.ts": {
       "sourceSha256": "3782886bdb143ae11bbf68c87803153078d66d321858cc4d53c4e39b9704dbc2",
-      "normalizedSha256": "a96958e9b2a63ef324e3bf4f44fecf98a82ae151344dc0d7f3d59698a67a0f0b"
+      "normalizedSha256": "a96958e9b2a63ef324e3bf4f44fecf98a82ae151344dc0d7f3d59698a67a0f0b",
+      "adoptedSha256": "db29e69962b5d01d9013ca5fe0abe693b85ec72bd7cd2a1e13241084b253daa7"
     },
     "types.ts": {
       "sourceSha256": "7796cf45d8608956601c7ec14322a94fa9448a390c7239d84e24d43de1ba6d5f",
-      "normalizedSha256": "e9eb831f318c145749027ad7cd33de29f642c96b0879ed0a29fc654b4fe8d524"
+      "normalizedSha256": "e9eb831f318c145749027ad7cd33de29f642c96b0879ed0a29fc654b4fe8d524",
+      "adoptedSha256": "35767b492697e174c358839e3ce0a6cb26c646d156281abe0abf2f420f990554"
     },
     "ui/compose.ts": {
       "sourceSha256": "ab597d6d545bd527bb516c6039af9d54264c6667bc24826cc5789dd9a9178f4e",
-      "normalizedSha256": "a2d5cd4fd244b7aa7e366d485c5e75f87c3239f873eebc651c66522c288c9794"
+      "normalizedSha256": "a2d5cd4fd244b7aa7e366d485c5e75f87c3239f873eebc651c66522c288c9794",
+      "adoptedSha256": "8c37387fc0d120fd72fb0e9bdb3e139e890e8e2380425f105835028803d213a6"
     },
     "ui/inline-message.ts": {
       "sourceSha256": "cffbc108038756ecda7aa5643f33d6a1169cba1c01f00b773fc336b70495d03b",
-      "normalizedSha256": "16ebb3b838bba970e082979a03858bcc83979bac7a9237684d61545ddfc1e817"
+      "normalizedSha256": "16ebb3b838bba970e082979a03858bcc83979bac7a9237684d61545ddfc1e817",
+      "adoptedSha256": "a99bd35947409504932b535e9c138250f3a61aa6968e8edc81018e116de6b544"
     },
     "ui/session-list.ts": {
       "sourceSha256": "38433b22225acb18b24a3290678c6df161d03e218dc036c8023781cb41d6601a",
-      "normalizedSha256": "455733ee10211812a6960660c1bceb29effbfe0dd2ccc459013de95c110e4af6"
+      "normalizedSha256": "455733ee10211812a6960660c1bceb29effbfe0dd2ccc459013de95c110e4af6",
+      "adoptedSha256": "214346b4c8ad777ccf7e2b0042c4a0bb2a1fc5dc26df1b621bd5daf688dff25e"
     }
   }
 }

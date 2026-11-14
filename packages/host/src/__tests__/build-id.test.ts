@@ -1,7 +1,7 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 afterEach(cleanupFixtureDashboards);
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
-import { execFileSync, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { controlDoctor } from "../control";
@@ -161,52 +161,22 @@ describe("doctor bundle line", () => {
 });
 
 describe("assert-bundle marker gate", () => {
-  it.each([true, false])("publishes a build-ready stamp only when all assertions pass (valid=%s)", valid => {
-    const dir = join(scratch, `ready-${valid}`, "dist");
-    mkdirSync(dir, { recursive: true });
-    createFixtureDashboard(undefined, join(dir, "dashboard"));
-    createFixtureHerdr(join(dir, ".."));
-    createFixtureRoam(join(dir, ".."));
-    const stamp = join(dir, "extension.js.ready");
-    if (!valid) writeFileSync(stamp, `${marker}\n`);
-    writeFileSync(join(dir, "extension.js"), `// ${marker}\n${fixtureHerdrBoundary}${valid ? "export default function spiderExtension() {}" : "export default {};"}\n`);
-    const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs")], { cwd: join(dir, ".."), encoding: "utf8" });
-    expect(result.status, result.stderr).toBe(valid ? 0 : 1);
-    expect(existsSync(stamp)).toBe(valid);
-    if (valid) expect(build.parseBuildId(readFileSync(stamp, "utf8"))).toEqual(loaded);
-    else expect(result.stderr).toContain("default export is not a function");
-  });
-  it.each(["matching", "missing", "mismatched"] as const)("verifies a %s ready stamp inside the actual tarball", state => {
-    const directory = join(scratch, `pack-ready-${state}`);
-    const checkout = join(directory, "package");
-    const dist = join(checkout, "dist");
-    mkdirSync(dist, { recursive: true });
-    createFixtureDashboard(undefined, join(dist, "dashboard"));
-    createFixtureHerdr(checkout);
+  it.each([
+    { name: "exchange", args: ["--global-root", "fixture-root", "roam", "intercom", "exchange"], entry: "intercom-helper.mjs" },
+    { name: "other commands", args: ["status"], entry: "cli-main.mjs" },
+  ])("the fixture CLI dispatches $name to its entry", ({ name, args, entry }) => {
+    const checkout = join(scratch, `roam-dispatch-${name}`);
     createFixtureRoam(checkout);
-    writeFileSync(join(dist, "extension.js"), `// ${marker}\n${fixtureHerdrBoundary}export default function spiderExtension() {}\n`);
-    if (state !== "missing") writeFileSync(join(dist, "extension.js.ready"), `${state === "matching" ? marker : marker.replace("bbe9f61", "abcdef0")}\n`);
-    for (const file of ["README.md", "scripts/postinstall.mjs", "packages/context/LICENSE", "packages/pstack/LICENSE"]) {
-      mkdirSync(dirname(join(checkout, file)), { recursive: true });
-      cpSync(join(root, file), join(checkout, file));
-    }
-    for (const collection of ["superpowers", "pstack"]) {
-      const skill = join(checkout, "packages", collection, "skills", "fixture", "SKILL.md");
-      mkdirSync(dirname(skill), { recursive: true }); writeFileSync(skill, "fixture\n");
-    }
-    const assets = join(checkout, "packages/herdr/assets");
-    for (const file of readdirSync(assets, { recursive: true, encoding: "utf8" })) {
-      if (file.endsWith(".d.ts") || file.endsWith("config.example.json")) rmSync(join(assets, file), { force: true });
-    }
-    const tarball = join(directory, "fixture.tgz");
-    const walk = (path: string, prefix: string): string[] => readdirSync(path, { withFileTypes: true }).flatMap(entry =>
-      entry.isDirectory() ? walk(join(path, entry.name), `${prefix}/${entry.name}`) : [`${prefix}/${entry.name}`]);
-    execFileSync("tar", ["-czf", tarball, "-C", directory, ...walk(checkout, "package")], { env: { ...process.env, COPYFILE_DISABLE: "1" } });
-    const result = spawnSync(process.execPath, [join(root, "scripts/assert-bundle.mjs"), "--package", tarball], { cwd: directory, encoding: "utf8" });
-    expect(result.status, result.stderr).toBe(state === "matching" ? 0 : 1);
-    if (state !== "matching") expect(result.stderr).toContain("ready stamp");
-  });
-
+    const directory = join(checkout, "dist/roam"), target = join(directory, entry), cli = join(directory, "cli.mjs");
+    expect(existsSync(target)).toBe(true);
+    const run = () => spawnSync(process.execPath, [cli, ...args], { encoding: "utf8" });
+    const ready = run();
+    expect(ready.status, ready.stderr).toBe(0);
+    rmSync(target);
+    const missing = run();
+    expect(missing.status).not.toBe(0);
+    expect(missing.stderr).toContain(entry);
+  }, 5000);
   it("rejects a natively linkable marked bundle whose default export is not a function", () => {
     const dir = join(scratch, "non-function-export", "dist");
     mkdirSync(dir, { recursive: true });

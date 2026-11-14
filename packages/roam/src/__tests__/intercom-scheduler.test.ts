@@ -53,7 +53,7 @@ async function fixture(options: { mode: "blocked" | "failure"; initiator?: boole
 }
 const execs = (calls: any[]) => calls.filter(call => call.kind === "exec");
 const establishVersion = (bridge: any) => bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000,
-  exchange: { protocol: 2, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+  exchange: { protocol: 3, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } });
 
 it("runs one poll and one push independently, with separately persisted generations", async () => {
@@ -145,7 +145,7 @@ it("does not charge or send one queued ask in both concurrent channels", async (
 it("does not charge a poll handoff again while starting a concurrent push", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "poll-handoff", timestamp: 1, expectsReply: true, remainingMs: 300_000, content: { text: "synthetic" } } });
-  const pull = { protocol: 2, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
+  const pull = { protocol: 3, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
   const reply = await f.bridge.exchange({ version: 1, exchange: pull, holdMs: 0, deadlineMs: 5000 });
   expect(reply.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["poll-handoff"]);
@@ -193,7 +193,7 @@ it("retains peer names, queued mail, and one diagnostic over ten minutes and ser
 it("keeps same-pair order while unrelated work uses the push channel", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "pair-1", timestamp: 1, content: { text: "synthetic" } } });
-  const pull = { protocol: 2, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
+  const pull = { protocol: 3, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
   const reply = await f.bridge.exchange({ version: 1, exchange: pull, holdMs: 0, deadlineMs: 5000 });
   expect(reply.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["pair-1"]);
@@ -310,7 +310,7 @@ it("reports source expiration during an extended outage without claiming remote 
 
 it("wakes a held poll before its fake-clock deadline", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
-  const input = { protocol: 2, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
+  const input = { protocol: 3, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
   let settled = false;
   const pending = f.bridge.exchange({ version: 1, exchange: input, holdMs: 200, deadlineMs: 5200 }).then((reply: any) => { settled = true; return reply; });
@@ -386,7 +386,7 @@ it("a proved identity failure fences a concurrent late success", async () => {
     finishPush(); await flush();
     expect(f.store.edgeState(B, "edge-1").status).toBe("down");
     expect(f.store.retained("outbound", "late-success")).toMatchObject({ linkAcknowledged: false, payloadRetained: true });
-    const incoming = { protocol: 2, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+    const incoming = { protocol: 3, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
       frames: [], acknowledgements: [], receipts: [], controls: [], presence: [remote] };
     await expect(f.bridge.exchange({ version: 1, exchange: incoming, holdMs: 0, deadlineMs: 5000 })).rejects.toMatchObject({ code: "machine-mismatch" });
     expect(f.store.edgeState(B, "edge-1").status).toBe("down");

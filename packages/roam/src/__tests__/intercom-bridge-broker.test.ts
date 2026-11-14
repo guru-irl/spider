@@ -8,7 +8,8 @@ import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
 import { buildIntercom } from "../../../../scripts/build-intercom.mjs";
 import { startTestBroker, stopTestBroker } from "../../../intercom/src/test-support";
 import { getAgentDirPath } from "../../../intercom/src/broker/paths";
-import { IntercomFederationClient } from "../../../intercom/src/broker/client";
+import { IntercomClient, IntercomFederationClient } from "../../../intercom/src/broker/client";
+import { FEDERATION_FEATURE } from "@spider/intercom/protocol";
 import { createClientFixture } from "../../../herdr/src/__tests__/testutil";
 import { openIntercomStore } from "../intercom-store";
 import { createIntercomBridge } from "../intercom-bridge";
@@ -33,6 +34,26 @@ beforeAll(async () => {
 }, 5000);
 afterAll(async () => { if (broker) await stopTestBroker(broker); if (root) rmSync(root, { recursive: true, force: true }); }, 5000);
 
+it("confirms a revocation notice only after a registered session processes it", async () => {
+  const bridge = new IntercomFederationClient(), session = new IntercomClient(), address = { sessionId: "notice-origin", scopeId: null };
+  const adapter = { dispatch: async () => ({ delivery: "queued" as const, retryable: false, outcomeKnown: true,
+    acceptance: { accepted: true as const, durable: true as const, location: "source" as const } }), receipt() {}, control() {} };
+  const remote = { remote: true as const, id: "notice-peer", address: { sessionId: "notice-peer", scopeId: null }, machineId: A,
+    machineAlias: "source.invalid", homeEpoch: null, activationEpoch: "peer-generation", endpointEpoch: "peer-generation",
+    cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 };
+  const receipt = { messageId: "notice-1", status: "cancelled" as const, timestamp: 1, detail: "peer-revoked" };
+  try {
+    await bridge.connect({ feature: FEDERATION_FEATURE, agentDir, machineId: B, machineAlias: "fixture-b.invalid" }, adapter);
+    expect(await bridge.deliverRevocationNotice(remote, address, receipt)).toBe(false);
+    await session.connect({ address, cwd: "/fixture", model: "fixture", pid: process.pid, name: "origin", startedAt: 1, lastActivity: 1,
+      activationEpoch: "origin-generation" }, "notice-origin");
+    expect(await bridge.deliverRevocationNotice(remote, address, receipt)).toBe(false);
+    const received: unknown[] = []; session.onBrokerMessage(value => { if (value.type === "message_receipt") received.push(value); });
+    expect(await bridge.deliverRevocationNotice(remote, address, receipt)).toBe(true);
+    expect(received).toMatchObject([{ receipt: { messageId: "notice-1", detail: "peer-revoked" } }]);
+  } finally { await session.disconnect(); await bridge.close(); }
+}, 10_000);
+
 it("publishes a private capability for the configured agent directory and serves the packaged helper", async () => {
   const globalRoot = mkdtempSync(join(root, "global-")), sourceRoot = mkdtempSync(join(root, "source-"));
   const source = openIntercomStore({ file: join(sourceRoot, "queue.db"), machineId: A, clock });
@@ -51,7 +72,7 @@ it("publishes a private capability for the configured agent directory and serves
     expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ version: 1, agentDir, token: expect.stringMatching(/^[0-9a-f]{64}$/) });
     source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "through-helper", timestamp: 1, content: { text: "synthetic" } } });
     const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
-    const exchange = { protocol: 2, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+    const exchange = { protocol: 3, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
       frames: [frame], acknowledgements: [], receipts: [], controls: [], presence: [] };
     const child = spawn(process.execPath, [join(root, "roam-build", "cli.mjs"), "--global-root", globalRoot, "roam", "intercom", "exchange"],
       { env: { ...process.env, HOME: globalRoot, SPIDER_GLOBAL_ROOT: globalRoot }, stdio: ["pipe", "pipe", "pipe"] });
@@ -84,7 +105,7 @@ it("records one missing-origin frame through the packaged helper without blockin
       message: { id, timestamp: 1, content: { text: "synthetic" } } });
     const [first, second] = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 });
     const { originMachineId: _origin, ...missing } = first;
-    const exchange = { protocol: 2, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+    const exchange = { protocol: 3, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
       frames: [missing, second], acknowledgements: [], receipts: [], controls: [], presence: [] };
     const child = spawn(process.execPath, [join(root, "roam-build", "cli.mjs"), "--global-root", globalRoot, "roam", "intercom", "exchange"],
       { env: { ...process.env, HOME: globalRoot, SPIDER_GLOBAL_ROOT: globalRoot }, stdio: ["pipe", "pipe", "pipe"] });
@@ -118,7 +139,7 @@ it("exchanges durable frames through fake hc, the packaged helper, and a fixture
     const handle = await transport.resolve(target);
     source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "full-trip", timestamp: 1, content: { text: "synthetic private body" } } });
     const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
-    const input = { protocol: 2 as const, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push" as const, generation: 1 },
+    const input = { protocol: 3 as const, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push" as const, generation: 1 },
       frames: [frame], acknowledgements: [], receipts: [], controls: [], presence: [] };
     source.updateEdgeState(B, "edge-1", state => ({ ...state, outbound: { ...state.outbound, push: 1 } }));
     const result = await executeExchange(handle, { exchange: input, holdMs: 0 }, { machineId: A, enrollment: { peer: target, edgeEpoch: "edge-1" }, transport, store: source, clock });

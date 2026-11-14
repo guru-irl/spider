@@ -1,5 +1,5 @@
 import { createFederation } from "./federation.js";
-import { FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
+import { FEDERATION_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
 import { isRemoteSessionInfo, isSessionAddress, isSessionEndpoint, isFederationDispatchResult, isMessageControl, isConsumptionReceipt } from "./protocol.js";
 import net from "net";
 import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "fs";
@@ -213,6 +213,7 @@ class IntercomBroker {
   private bridgeMachineAlias: string | null = null;
   private detachBridge: (() => void) | null = null;
   private bridgePending = new Map<string, { resolve(value: FederationDispatchResult): void; timer: NodeJS.Timeout }>();
+  private noticePending = new Map<string, { bridge: net.Socket; receiver: net.Socket; timer: NodeJS.Timeout }>();
   private helperToken: string | null = null;
   private helperNegotiated = new Set<net.Socket>();
   private helpers = new Set<net.Socket>();
@@ -342,6 +343,11 @@ class IntercomBroker {
       this.connections.delete(socket);
       this.helperNegotiated.delete(socket);
       this.helpers.delete(socket);
+      for (const [id, pending] of this.noticePending) {
+        if (pending.bridge !== socket && pending.receiver !== socket) continue;
+        clearTimeout(pending.timer); this.noticePending.delete(id);
+        if (pending.bridge !== socket && !pending.bridge.destroyed) writeMessage(pending.bridge, { type: "federation_notice_result", requestId: id, confirmed: false });
+      }
       for (const [id, pending] of this.helperPending) {
         if (pending.socket === socket) { clearTimeout(pending.timer); this.helperPending.delete(id); this.writeBridge({ type: "federation_helper_cancel", requestId: id }); }
       }
@@ -468,6 +474,31 @@ class IntercomBroker {
         writeMessage(socket, { type: "federation_delivery_result", requestId: message.requestId, result });
         return;
       }
+      case "federation_deliver_notice": {
+        if (typeof message.requestId !== "string" || !/^[0-9a-f-]{36}$/.test(message.requestId) || !isRemoteSessionInfo(message.from) ||
+            !isSessionAddress(message.to) || !isMessageReceipt(message.receipt) || message.receipt.status !== "cancelled" ||
+            message.receipt.detail !== "peer-revoked" || message.from.address.scopeId !== message.to.scopeId || this.noticePending.has(message.requestId)) {
+          throw new Error("invalid-federation-notice");
+        }
+        const id = message.requestId, target = this.localForAddress(message.to), route = this.remoteRoutes.get(message.receipt.messageId);
+        if (route && (addressKey(route.from) !== addressKey(message.to) || addressKey(route.to.address) !== addressKey(message.from.address))) throw new Error("invalid-federation-receipt-route");
+        if (!target?.federation || target.socket.destroyed || this.noticePending.size >= 256) {
+          writeMessage(socket, { type: "federation_notice_result", requestId: id, confirmed: false }); return;
+        }
+        const timer = setTimeout(() => {
+          this.noticePending.delete(id);
+          if (!socket.destroyed) writeMessage(socket, { type: "federation_notice_result", requestId: id, confirmed: false });
+        }, 3500); timer.unref();
+        this.noticePending.set(id, { bridge: socket, receiver: target.socket, timer });
+        try {
+          this.federation.observeReceipt(message.from.address, message.receipt);
+          writeMessage(target.socket, { type: "message_receipt", from: message.from, receipt: message.receipt, noticeId: id });
+        } catch {
+          clearTimeout(timer); this.noticePending.delete(id);
+          writeMessage(socket, { type: "federation_notice_result", requestId: id, confirmed: false });
+        }
+        return;
+      }
       case "federation_deliver_receipt":
       case "federation_deliver_control": {
         if (!isRemoteSessionInfo(message.from) || !isSessionAddress(message.to)) throw new Error("invalid-federation-recipient");
@@ -563,7 +594,7 @@ class IntercomBroker {
         requestId: clientMessage.requestId,
         protocol: INTERCOM_PROTOCOL_NAME,
         version: INTERCOM_PROTOCOL_VERSION,
-        ...(typeof LISTEN_TARGET === "string" ? { features: [HELPER_EXCHANGE_FEATURE] } : {}),
+        ...(typeof LISTEN_TARGET === "string" ? { features: [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE] } : {}),
       });
       return;
     }
@@ -588,7 +619,7 @@ class IntercomBroker {
       this.bridgeSocket = socket; this.bridgeMachineId = clientMessage.machineId; this.bridgeMachineAlias = clientMessage.machineAlias;
       setKey("federation-bridge");
       if (this.shutdownTimer) { clearTimeout(this.shutdownTimer); this.shutdownTimer = null; }
-      this.writeBridge({ type: "federation_registered", features: [FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE] });
+      this.writeBridge({ type: "federation_registered", features: [FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE] });
       this.publishLocalPresence();
       const restored = [...this.restoredReceipts.values()]; this.restoredReceipts.clear();
       for (const item of restored) if (Date.now() - item.at <= DISCONNECTED_SESSION_RETENTION_MS) this.federation.receipt(item.from, item.receipt);
@@ -1038,6 +1069,16 @@ class IntercomBroker {
         break;
       }
 
+      case "notice_ack": {
+        const id = clientMessage.noticeId;
+        if (!currentKey || typeof id !== "string" || !/^[0-9a-f-]{36}$/.test(id)) throw new Error("Invalid notice acknowledgement");
+        const pending = this.noticePending.get(id);
+        if (pending && pending.receiver === socket && this.sessions.get(currentKey)?.socket === socket && pending.bridge === this.bridgeSocket) {
+          clearTimeout(pending.timer); this.noticePending.delete(id);
+          writeMessage(pending.bridge, { type: "federation_notice_result", requestId: id, confirmed: true });
+        }
+        break;
+      }
       case "message_receipt": {
         if (!currentKey) {
           throw new Error("Received message_receipt before register");

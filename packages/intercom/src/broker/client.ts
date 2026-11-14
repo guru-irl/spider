@@ -1,4 +1,4 @@
-import { FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
+import { FEDERATION_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
 import { isFederationDispatchResult, parseFederationBrokerMessage } from "./protocol.js";
 import { EventEmitter } from "events";
 import net from "net";
@@ -412,8 +412,12 @@ export class IntercomClient extends EventEmitter {
         if (!isSessionInfo(brokerMessage.from) || !isMessageReceipt(brokerMessage.receipt)) {
           throw new Error("Invalid message_receipt event");
         }
+        const noticeId = brokerMessage.noticeId;
+        if (noticeId !== undefined && (typeof noticeId !== "string" || !/^[0-9a-f-]{36}$/.test(noticeId))) throw new Error("Invalid notice acknowledgement");
+        const handled = this.listenerCount("broker_message") > 0 || this.listenerCount("message_receipt") > 0;
         this.emit("broker_message", brokerMessage as BrokerMessage);
         this.emit("message_receipt", brokerMessage.from, brokerMessage.receipt);
+        if (typeof noticeId === "string" && handled && this.isConnected()) writeMessage(this.socket!, { type: "notice_ack", noticeId });
         break;
       }
 
@@ -882,11 +886,12 @@ export class IntercomFederationClient extends EventEmitter {
     } else if (message.type === "federation_helper_cancel") {
       this.helperRequests.get(message.requestId)?.abort();
       this.helperRequests.delete(message.requestId);
-    } else if (message.type === "federation_delivery_result" || message.type === "blockers" || message.type === "helper_authorized") {
+    } else if (message.type === "federation_delivery_result" || message.type === "federation_notice_result" || message.type === "blockers" || message.type === "helper_authorized") {
       const request = this.requests.get(message.requestId);
       if (!request) return;
       clearTimeout(request.timer); this.requests.delete(message.requestId);
-      request.resolve(message.type === "blockers" ? message.blockers : message.type === "federation_delivery_result" ? message.result : undefined);
+      request.resolve(message.type === "blockers" ? message.blockers : message.type === "federation_delivery_result" ? message.result :
+        message.type === "federation_notice_result" ? message.confirmed : undefined);
     } else throw new Error("invalid-bridge-message");
   }
   private request(message: FederationClientMessage & { requestId: string }): Promise<unknown> {
@@ -908,6 +913,13 @@ export class IntercomFederationClient extends EventEmitter {
     return this.request({ type: "federation_deliver", requestId: randomUUID(), from, to, message }) as Promise<FederationDispatchResult>;
   }
   deliverReceipt(from: RemoteSessionInfo, to: SessionAddress, receipt: FederationReceipt): void { this.send({ type: "federation_deliver_receipt", from, to, receipt }); }
+  /** True only when the addressed session acknowledged processing; errors and timeouts are uncertain. */
+  async deliverRevocationNotice(from: RemoteSessionInfo, to: SessionAddress, receipt: FederationReceipt): Promise<boolean> {
+    if (!this.features.has(FEDERATION_NOTICE_ACK_FEATURE)) throw new Error("unsupported-broker");
+    const result = await this.request({ type: "federation_deliver_notice", requestId: randomUUID(), from, to, receipt });
+    if (typeof result !== "boolean") throw new Error("invalid-broker-reply");
+    return result;
+  }
   deliverControl(from: RemoteSessionInfo, to: SessionAddress, control: FederationControl): void { this.send({ type: "federation_deliver_control", from, to, control }); }
   inspectBlockers(address: SessionAddress): Promise<FederationBlockers> {
     return this.request({ type: "inspect_blockers", requestId: randomUUID(), address }) as Promise<FederationBlockers>;

@@ -148,6 +148,7 @@ export type ClientMessage =
   | { type: "list"; requestId: string }
   | { type: "send"; to: string; message: Message; targetId?: string; targetEpoch?: string }
   | { type: "message_receipt"; receipt: MessageReceipt }
+  | { type: "notice_ack"; noticeId: string }
   | { type: "cancel_message"; messageId: string }
   | { type: "cancel_ask"; messageId: string }
   | { type: "presence"; name?: string; runtimeFallbackAlias?: boolean; status?: string; model?: string; contextPct?: number | null; contextTokens?: number | null; contextWindow?: number | null }
@@ -177,7 +178,7 @@ export type BrokerMessage =
   | { type: "error"; error: string }
   | ({ type: "delivered"; messageId: string } & DeliveryDetails)
   | ({ type: "delivery_failed"; messageId: string; reason: string } & DeliveryDetails)
-  | { type: "message_receipt"; from: SessionInfo; receipt: MessageReceipt }
+  | { type: "message_receipt"; from: SessionInfo; receipt: MessageReceipt; noticeId?: string }
   | { type: "message_control"; from: SessionInfo; control: MessageControl }
   | { type: "extension_owner"; namespace: string; ownerId?: string; ownerEpoch?: string }
   | {

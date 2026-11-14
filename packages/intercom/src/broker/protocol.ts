@@ -131,6 +131,8 @@ export function parseFederationBrokerMessage(value: unknown): import("../protoco
       return isSessionAddress(value.from) && isSessionAddress(value.to) && isMessageControl(value.control) ? { type: value.type, from: value.from, to: value.to, control: value.control } : null;
     case "federation_delivery_result":
       return nonempty(value.requestId) && isFederationDispatchResult(value.result) ? { type: value.type, requestId: value.requestId, result: value.result } : null;
+    case "federation_notice_result":
+      return nonempty(value.requestId) && typeof value.confirmed === "boolean" ? { type: value.type, requestId: value.requestId, confirmed: value.confirmed } : null;
     case "helper_authorized":
       return nonempty(value.requestId) ? { type: value.type, requestId: value.requestId } : null;
     case "federation_helper_exchange":

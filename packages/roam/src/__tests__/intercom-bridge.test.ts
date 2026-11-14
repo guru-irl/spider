@@ -14,7 +14,7 @@ afterEach(async () => { for (const resource of resources.splice(0)) await resour
 const clock = { now: () => Date.now(), later: (ms: number, fn: () => void) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
 const peer = (machineId: string) => ({ machineId, alias: `fixture-${machineId.slice(-1)}.invalid`, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: "/fixture/global" });
 const batch = (senderMachine: string, recipientMachine: string, generation: number, channel: "push" | "poll" = "push"): IntercomExchange => ({
-  protocol: 2, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel, generation },
+  protocol: 3, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel, generation },
   frames: [], acknowledgements: [], receipts: [], controls: [], presence: [],
 });
 const request = (exchange: IntercomExchange, holdMs = 0) => ({ version: 1, exchange, holdMs, deadlineMs: holdMs ? holdMs + 5000 : 5000 });

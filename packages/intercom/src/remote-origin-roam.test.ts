@@ -74,6 +74,16 @@ it("ends a remote ask promptly when its frame is rejected for missing origin", a
   const outcome = await result; expect(outcome.content[0].text).toContain("missing-origin"); expect(outcome.details.reason).toBe("missing-origin");
 }, 5000);
 
+it("ends a remote ask promptly when its pair is revoked", async () => {
+  const f = await fixture(); let ask: any, settled = false;
+  f.client.on("send", (_to: string, options: any) => { ask = options; });
+  const result = f.execute({ action: "ask", to: "peer", message: "question" }).then((value: any) => { settled = true; return value; });
+  await vi.advanceTimersByTimeAsync(0);
+  f.client.emit("broker_message", { type: "message_receipt", from: remote, receipt: { messageId: ask.messageId, status: "cancelled", timestamp: 2, detail: "peer-revoked" } });
+  await vi.advanceTimersByTimeAsync(0); expect(settled).toBe(true);
+  const outcome = await result; expect(outcome.content[0].text).toContain("peer-revoked"); expect(outcome.details.reason).toBe("peer-revoked");
+}, 5000);
+
 it("replies by session ID after its sender moves to a different machine", async () => {
   const f = await fixture(), sent: any[] = []; f.client.on("send", (...args: any[]) => sent.push(args));
   f.client.emit("message", remote, { id: "original-ask", expectsReply: true, timestamp: 1, remainingMs: 10000, content: { text: "question" } });

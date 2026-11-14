@@ -5,7 +5,7 @@ import type { IntercomControlFrame, IntercomReceiptFrame, IntercomStore } from "
 export interface ReconcileProof { owner: SessionEndpoint; receipt: MessageReceipt }
 export interface HostIntercomDeliveryPorts {
   store: IntercomStore;
-  broker: Pick<IntercomFederationClient, "deliver" | "deliverReceipt" | "deliverControl">;
+  broker: Pick<IntercomFederationClient, "deliver" | "deliverReceipt" | "deliverControl"> & Partial<Pick<IntercomFederationClient, "deliverRevocationNotice">>;
   endpoint(address: SessionAddress): SessionEndpoint | null;
   sender(address: SessionAddress): RemoteSessionInfo | null;
   machineAlias?(machineId: string): string | null;
@@ -20,6 +20,7 @@ export interface HostIntercomDelivery {
   reconcile(proofs: readonly ReconcileProof[]): Promise<void>;
   onInbound(input: { id: string; to: SessionAddress }): void;
   onReceipt(frame: IntercomReceiptFrame): void;
+  onRevocationNotice(frame: IntercomReceiptFrame): Promise<boolean>;
   onControl(frame: IntercomControlFrame): void;
   onAskFailed(failure: { id: string; from: SessionAddress; to: SessionAddress; reason: "link-down" }): void;
   onExpiry(event: { id: string; from: SessionAddress; to: SessionAddress }): void;
@@ -103,6 +104,13 @@ export function createHostIntercomDelivery(ports: HostIntercomDeliveryPorts): Ho
         ? { ...frame.receipt, detail: "asker-no-longer-waiting" } : frame.receipt;
       const sender = historical(frame.from.address, frame.from.machineId, frame.from);
       ports.broker.deliverReceipt(sender, frame.to, receipt);
+    },
+    async onRevocationNotice(frame: IntercomReceiptFrame): Promise<boolean> {
+      const row = ports.store.retained("outbound", frame.receipt.messageId);
+      if (!row || !sameEndpoint(row.endpoint, frame.from) || !sameAddress(row.identity.from, frame.to) || row.identity.digest !== frame.digest ||
+          frame.receipt.status !== "cancelled" || frame.receipt.detail !== "peer-revoked") throw new Error("intercom-receipt-route-mismatch");
+      const sender = historical(frame.from.address, frame.from.machineId, frame.from);
+      return ports.broker.deliverRevocationNotice ? ports.broker.deliverRevocationNotice(sender, frame.to, frame.receipt) : false;
     },
     onControl(frame: IntercomControlFrame): void {
       const sender = ports.sender(frame.from); if (sender) ports.broker.deliverControl(sender, frame.to, frame.control);

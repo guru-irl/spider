@@ -247,7 +247,7 @@ export async function startProductionSupervisor(root: string, options: { system?
     });
     const direct = runtime.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
     const intercom = runtime.config.intercom.enabled ? createMachineIntercom({ root, globalDb: runtime.db, config: runtime.config,
-      agentDir: herdr.agentDirectory, clock, env, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }) }) : undefined;
+      agentDir: herdr.agentDirectory, clock, env, directPeers: direct, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }) }) : undefined;
     const running = await runLockedSupervisor({ root, supervisor, intercom,
       identity: { pid: process.pid, startIdentity: identity.startIdentity }, probe: pid => system.inventory.probe(pid) });
     let stopping: Promise<void> | undefined;

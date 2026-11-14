@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { basename, isAbsolute, resolve } from "node:path";
 import { DEFAULT_INTERCOM_LIMITS, DEFAULT_LIMITS } from "./contracts";
 import { isMachineId } from "./machine-id";
-import type { IntercomConfig, IntercomLimits, IntercomRoute, Limits, Peer, RoamConfig } from "./contracts";
+import type { IntercomConfig, IntercomConnectorRecipe, IntercomLimits, IntercomRoute, Limits, Peer, RoamConfig } from "./contracts";
 
 type RecordValue = Record<string, unknown>;
 
@@ -75,9 +75,24 @@ function readPeer(value: unknown): Peer {
   };
 }
 
+export function parseConnectorRecipe(value: unknown): IntercomConnectorRecipe {
+  const invalid = (): never => { throw new Error("intercom-connector-recipe-invalid"); };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return invalid();
+  const input = value as RecordValue;
+  if (Object.keys(input).length !== 4 || !["check", "host", "connect", "localPort"].every(key => Object.hasOwn(input, key))) return invalid();
+  const command = (candidate: unknown): string[] => {
+    if (!Array.isArray(candidate) || candidate.length < 1 || candidate.length > 64 || candidate.some(arg => typeof arg !== "string" ||
+        !arg || arg.length > 4096 || /[\u0000-\u001f\u007f]/.test(arg)) || !isAbsolute(candidate[0]) || resolve(candidate[0]) !== candidate[0] ||
+        /^(?:ba|da|z|k|a)?sh$/.test(basename(candidate[0])) && candidate.slice(1).some(arg => /^-[A-Za-z]*c/.test(arg))) return invalid();
+    return [...candidate] as string[];
+  };
+  if (!Number.isSafeInteger(input.localPort) || Number(input.localPort) < 1 || Number(input.localPort) > 65535) return invalid();
+  return { check: command(input.check), host: command(input.host), connect: command(input.connect), localPort: Number(input.localPort) };
+}
+
 function readIntercom(value: unknown, role: "hub" | "box", machineId: string, hubMachineId: string): IntercomConfig {
   const input = value === undefined ? {} : object(value, "intercom");
-  keys(input, ["enabled", "mode", "machineAlias", "protocolFeature", "routes", "limits"], "intercom");
+  keys(input, ["enabled", "mode", "machineAlias", "protocolFeature", "routes", "limits", "connector"], "intercom");
   const enabled = input.enabled === undefined ? false : input.enabled;
   if (typeof enabled !== "boolean") throw new Error("Invalid roaming config: intercom enabled");
   const mode = input.mode === undefined ? "hub-only" : input.mode;
@@ -124,7 +139,7 @@ function readIntercom(value: unknown, role: "hub" | "box", machineId: string, hu
   if (routes.some(route => route.kind === "relay") && !routes.some(route => route.kind === "direct" && route.peer.machineId === hubMachineId)) {
     throw new Error("Invalid roaming config: intercom relay lacks hub edge");
   }
-  const settings = { mode, protocolFeature, routes, limits } as const;
+  const settings = { mode, protocolFeature, routes, limits, ...(input.connector === undefined ? {} : { connector: parseConnectorRecipe(input.connector) }) } as const;
   return enabled ? { ...settings, enabled, machineAlias: machineAlias! } : { ...settings, enabled, machineAlias };
 }
 

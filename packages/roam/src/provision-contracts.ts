@@ -37,8 +37,18 @@ export interface ProvisionVerification {
   piSignedIn: boolean; nativeSqlite: boolean; extensionLoaded: boolean; exactSession: boolean; privateModes: boolean;
   bundledIntercom: boolean; intercomUnique: boolean; legacyDrained: boolean; federation: boolean;
 }
+export interface IntercomDoctorState {
+  connector: "ready" | "missing" | "unknown"; login: "ready" | "required" | "unknown";
+  tunnel: "hosted" | "unhosted" | "unknown"; peerPort: "reachable" | "unreachable" | "unknown"; hostKey: "match" | "changed" | "unknown";
+  key: "ready" | "missing" | "unsafe" | "unknown"; route: "ready" | "missing" | "unknown";
+  extension: "ready" | "missing" | "duplicate" | "unknown"; broker: "ready" | "legacy" | "unknown";
+  feature: "ready" | "missing" | "unknown"; link: "live" | "down" | "unknown";
+  pendingRevocations: readonly { pairId: string; reason: IntercomRevocationCleanupReason }[];
+}
 export interface DoctorPorts {
   transport: Transport; journal: Journal; limits: Limits; configuredClis?: readonly ConfiguredCli[]; coreUnit?: string;
+  /** Inspect only; never install, sign in, start, or repair. */
+  inspectIntercom?(): Promise<IntercomDoctorState>;
   confirm(target: string, providers: readonly string[]): Promise<boolean>;
   systemd: { unitDir: string; systemctl(argv: readonly string[]): Promise<void> };
   resources(): Promise<Pick<Inventory, "softNofile" | "hardNofile" | "inotifyInstances" | "inotifyWatches">>;
@@ -53,6 +63,83 @@ export interface ProvisionPreview {
   providers: readonly string[]; warnings: readonly string[];
 }
 export interface ProvisionDestination { home: string; agentDir: string; npmPrefix: string; supervisor: string }
+
+export interface IntercomEnrollmentPlan {
+  pairId: string; source: Peer; target: Peer; edgeEpoch: string;
+  connector: { tunnelId: string; remotePort: number; session: string };
+}
+export interface IntercomSshHostKey { type: string; base64: string }
+export interface IntercomEnrollmentPair extends IntercomEnrollmentPlan {
+  sshUser: string; hostKey: IntercomSshHostKey; hostKeyAlias: string;
+}
+export interface IntercomEnrollmentRequest { operation: Operation; pairs: readonly IntercomEnrollmentPlan[] }
+export interface IntercomEnrollmentPreview {
+  consent: string;
+  pairs: readonly { pairId: string; source: Pick<Peer, "machineId" | "alias">; target: Pick<Peer, "machineId" | "alias">;
+    edgeEpoch: string; connector: IntercomEnrollmentPair["connector"] }[];
+}
+export interface IntercomMachinePin { machineId: string; coreId: string }
+export interface IntercomPairPins { source: IntercomMachinePin; target: IntercomMachinePin }
+export interface IntercomEnrollmentPorts {
+  journal: Journal; actor: string; now(): number;
+  withLock<T>(work: () => Promise<T>): Promise<T>;
+  present(preview: IntercomEnrollmentPreview): Promise<void>;
+  approve(): Promise<boolean>;
+  /** Read authoritative pair fences without running connector or credential setup. */
+  readPairFences(pairs: readonly IntercomEnrollmentPlan[]): Promise<Record<string, string | null>>;
+  /** Clear only the exact fence seen before this independently recorded human approval. */
+  approvePair(pair: IntercomEnrollmentPair, consent: { operationId: string; graphDigest: string; expectedFenceId: string | null }, pins: IntercomPairPins): Promise<void>;
+  notify(peers: readonly Peer[]): Promise<void>;
+  pinMachine(machine: Peer): Promise<IntercomMachinePin>;
+  warn(machineId: string, reason: "link-down"): Promise<void>;
+  /** Each ensure operation reconciles its own effect after a lost reply. */
+  registerPair(pair: IntercomEnrollmentPlan): Promise<void>;
+  checkConnector(machine: Peer, pin: IntercomMachinePin): Promise<"ready" | "missing" | "not-signed-in" | "offline" | "invalid">;
+  /** Inspect the key actually served by sshd and the destination account through the pinned peer. */
+  inspectSshHost(pair: IntercomEnrollmentPlan, pins: IntercomPairPins): Promise<{ targetMachineId: string; sshUser: string; hostKey: IntercomSshHostKey }>;
+  bindPair(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<void>;
+  hostConnector(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<"ready" | "unhosted" | "offline" | "not-pair-scoped">;
+  connect(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<"ready" | "offline" | "peer-port-unreachable">;
+  writeKnownHost(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<void>;
+  ensureKey(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<{ publicKey: string; privateMode: number; privateOwned: boolean }>;
+  authorize(pair: IntercomEnrollmentPair, line: string, pins: IntercomPairPins): Promise<void>;
+  addMachine(pair: IntercomEnrollmentPair, argv: readonly string[], pins: IntercomPairPins): Promise<void>;
+  verifyTransport(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<{ sourceMachineId: string; targetMachineId: string;
+    connector: boolean; key: boolean; route: boolean }>;
+  publishPair(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<void>;
+  verifyPair(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<{ sourceMachineId: string; targetMachineId: string;
+    connector: boolean; key: boolean; route: boolean; federation: boolean }>;
+}
+
+export type IntercomRevocationCleanupReason = "intercom-revocation-unconfirmed" | "intercom-revocation-peer-unreachable" | "intercom-revocation-identity-mismatch" |
+  "intercom-revocation-shared-jobs" | "intercom-revocation-access-open" | "intercom-revocation-verification-pending" |
+  "intercom-revocation-remote-fence-pending" | "intercom-revocation-cleanup-pending";
+export interface IntercomClosureEvidence { sourceMachineId: string; targetMachineId: string; localMachineId: string;
+  edgeEpoch: string; fenceId: string; fenceDurable: boolean; exchanges: "closed" | "active" | "unknown"; inFlight: number }
+export interface IntercomHostStopEvidence { machineId: string; unit: string; activeState: "inactive" | "failed" | "active" | "unknown";
+  mainPid: number; mainStartIdentity: string; mainProcess: "exited" | "live" | "unknown"; controlGroup: "empty" | "nonempty" | "unknown" }
+export interface IntercomRevocationPorts {
+  withLock<T>(work: () => Promise<T>): Promise<T>;
+  getPair(pairId: string): Promise<{ pair: IntercomEnrollmentPair; state: "pending" | "active" | "revoking" | "revoked";
+    cleanupReason?: IntercomRevocationCleanupReason | null } | null>;
+  /** Persist the local fence before refusing and joining both live exchange directions. */
+  fenceAndClose(pair: IntercomEnrollmentPair): Promise<IntercomClosureEvidence>;
+  fenceRemote(pair: IntercomEnrollmentPair, pins: IntercomPairPins, fenceId: string): Promise<IntercomClosureEvidence>;
+  /** Missing or incomplete host/cgroup evidence must never authorize key or route removal. */
+  stopPairHost?(pair: IntercomEnrollmentPair, pins: IntercomPairPins, fenceId: string): Promise<IntercomHostStopEvidence | null>;
+  beginRevocation(pair: IntercomEnrollmentPair, fenceId: string): Promise<void>;
+  notify(peers: readonly Peer[]): Promise<void>;
+  pinMachine(machine: Peer): Promise<IntercomMachinePin | null>;
+  removeAuthorizedKey(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<void>;
+  /** Remove a route only when its shared users are atomically known to be idle. */
+  removeMachineIfIdle(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<"removed" | "shared-jobs" | "route-mismatch" | "unknown">;
+  verifyRevocation(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<{ sourceMachineId: string; targetMachineId: string;
+    edgeEpoch: string; keyAbsent: boolean; routeAbsent: boolean; exchanges: "closed" | "active" | "unknown";
+    authenticatedConnections: "closed" | "active" | "unknown" }>;
+  /** Persist completion and any still-required remote cleanup for read-only doctor. */
+  finishRevocation(pair: IntercomEnrollmentPair, cleanupReason: IntercomRevocationCleanupReason | null): Promise<void>;
+}
+
 export interface ProvisionPorts extends DoctorPorts {
   hubMachineId: string;
   source: { agentRoot: string; releaseFile: string; piProviders: readonly string[] };

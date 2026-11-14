@@ -3,14 +3,14 @@
   "files": [
     {
       "path": "broker/broker.ts",
-      "task": "3.6e",
-      "reason": "Route durable local mail, replay authenticated receipt metadata after reconnect, and retire an unused broker.",
+      "task": "3.6g",
+      "reason": "Route durable mail and confirm pair-revocation notices only after the addressed session acknowledges processing.",
       "upstreamHash": "65d9ec1dbed5368ea952a1c7c3f978c83b44cd092e1922509085aa070f06829b"
     },
     {
       "path": "broker/client.ts",
-      "task": "3.6c",
-      "reason": "Negotiate federation and helper capabilities on the service-owned bridge connection.",
+      "task": "3.6g",
+      "reason": "Negotiate federation, helper and receiver-confirmed notice capabilities; acknowledge notices after session handlers run.",
       "upstreamHash": "c810c80fdc0147dc9d7b636f071b82db7a50383dee6b860a6fe6cc0946f6212d"
     },
     {
@@ -21,8 +21,8 @@
     },
     {
       "path": "broker/protocol.ts",
-      "task": "3.6c",
-      "reason": "Validate portable federation traffic and bounded, authorized helper frames.",
+      "task": "3.6g",
+      "reason": "Validate federation, bounded helper frames and receiver-confirmed notice results.",
       "upstreamHash": "4f97b280ff3e4abc5f622db5e039b57ecda2aba4b93425b20a1aea3f4fec2943"
     },
     {
@@ -57,8 +57,8 @@
     },
     {
       "path": "local.ts",
-      "task": "3.6e",
-      "reason": "Integrate admitted epochs, host-owned reconciliation, reply threads and named missing-origin ask failures.",
+      "task": "3.6g",
+      "reason": "Integrate admitted epochs, host-owned reconciliation, reply threads and named missing-origin and peer-revoked ask failures.",
       "upstreamHash": "b99325cd8cb80b4ed41ac4f1427791eb1df916a303ba5ce5b35197eba8972f1c"
     },
     {
@@ -69,8 +69,8 @@
     },
     {
       "path": "protocol.ts",
-      "task": "3.6e",
-      "reason": "Export host contracts and preserve the named peer-version-mismatch helper error.",
+      "task": "3.6g",
+      "reason": "Export host contracts, named pair failures and receiver-confirmed notice protocol messages.",
       "upstreamHash": null
     },
     {
@@ -93,8 +93,8 @@
     },
     {
       "path": "types.ts",
-      "task": "3.6a",
-      "reason": "Separate remote identities from local process handles and distinguish acceptance from consumption.",
+      "task": "3.6g",
+      "reason": "Separate remote identities and acceptance from consumption; carry session notice acknowledgements.",
       "upstreamHash": "7796cf45d8608956601c7ec14322a94fa9448a390c7239d84e24d43de1ba6d5f"
     },
     {

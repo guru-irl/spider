@@ -6,7 +6,7 @@ import { assertTestConfigPath } from "@spider/db-core";
 import { IntercomFederationClient } from "@spider/intercom/broker/client";
 import { spawnBrokerIfNeeded } from "@spider/intercom/broker/spawn";
 import { addressKey, type LocalPresence, type RemoteSessionInfo, type SessionAddress } from "@spider/intercom/protocol";
-import type { Clock, IntercomLifecycle, RoamConfig, Transport } from "./contracts";
+import type { Clock, IntercomLifecycle, Peer, RoamConfig, Transport } from "./contracts";
 import { createIntercomBridge, type IntercomBridge, type IntercomBroker } from "./intercom-bridge";
 import { acquireHelperRoute, type HelperRouteLease } from "./intercom-route";
 import { openIntercomStore } from "./intercom-store";
@@ -14,6 +14,9 @@ import type { IntercomStore } from "./intercom-contracts";
 import { isMachineId } from "./machine-id";
 import { createHostIntercomDelivery, type HostIntercomDelivery } from "./intercom-delivery";
 import { hasIntercomGeneration } from "./intercom-exclusion";
+import { createIntercomRegistry } from "./intercom-registry";
+import { readLocalIdentity } from "./runtime";
+import type { IntercomEnrollmentPair } from "./provision-contracts";
 
 export interface MachineIntercomOptions {
   root: string;
@@ -22,6 +25,8 @@ export interface MachineIntercomOptions {
   agentDir: string;
   clock: Clock;
   transport: Transport;
+  directPeers?: Peer[];
+  pairScopedHostReady?(pairId: string): Promise<boolean>;
   broker?: IntercomBroker;
   env?: NodeJS.ProcessEnv;
   ensureBroker?(input: { agentDir: string; signal: AbortSignal }): Promise<void>;
@@ -74,6 +79,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
   const broker = options.broker ?? new IntercomFederationClient();
   const transitionPrefix = randomUUID();
   let transitionSerial = 0;
+  let enrollmentTail: Promise<void> = Promise.resolve();
   const locals = new Map<string, { info: RemoteSessionInfo; transition: string }>();
   const remotes = new Map<string, RemoteSessionInfo>();
   const idle = (status: string | undefined) => status === "idle" || status?.startsWith("idle · ") === true;
@@ -147,6 +153,46 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
           return settings.mode === "hub-only" && options.config.role === "hub" && peer !== entry.machineId &&
             direct.some(route => route.peer.machineId === peer) && direct.some(route => route.peer.machineId === entry.machineId);
         },
+        async onRevokeRequest(request) {
+          const registry = createIntercomRegistry(options.root), records = await registry.list();
+          for (const record of records) {
+            const pair = record.pair;
+            if (!("sshUser" in pair) || pair.edgeEpoch !== request.edgeEpoch ||
+                !((pair.source.machineId === local && pair.target.machineId === request.peer) ||
+                  (pair.target.machineId === local && pair.source.machineId === request.peer))) continue;
+            await registry.beginRevocation(pair.pairId, request.fenceId);
+            await registry.finishRevocation(pair.pairId, "intercom-revocation-unconfirmed");
+          }
+        },
+        onEnrollRequest(request) {
+          const task = enrollmentTail.then(async () => {
+            if (!options.pairScopedHostReady || !await options.pairScopedHostReady(request.pairId)) throw new Error("connector-not-pair-scoped");
+            const record = await createIntercomRegistry(options.root).get(request.pairId), pair = record?.pair as IntercomEnrollmentPair | undefined;
+            const config = readLocalIdentity(options.root), route = config.intercom.routes.find(item => item.peer.machineId === request.peer);
+            const remote = pair && (pair.source.machineId === local ? pair.target : pair.target.machineId === local ? pair.source : null);
+            if (!record || !pair || !remote || !["pending", "active"].includes(record.state) || record.operationId !== request.operationId ||
+                record.graphDigest !== request.graphDigest || !(record.fenceId === request.expectedFenceId || record.state === "active" && record.fenceId === null) || pair.edgeEpoch !== request.edgeEpoch ||
+                remote.machineId !== request.peer || config.machineId !== local || !config.intercom.enabled || config.intercom.mode !== "peers" ||
+                !route || route.kind !== "direct" || route.edgeEpoch !== request.edgeEpoch || JSON.stringify(route.peer) !== JSON.stringify(remote)) {
+              throw new Error("peer-consent-required");
+            }
+            const priorRoutes = [...settings.routes], priorPeers = options.directPeers && [...options.directPeers];
+            settings.routes = [...settings.routes.filter(item => item.peer.machineId !== request.peer), route];
+            if (options.directPeers) options.directPeers.splice(0, options.directPeers.length,
+              ...options.directPeers.filter(item => item.machineId !== request.peer), route.peer);
+            try {
+              if (!bridge) throw new Error("bridge-unavailable");
+              await bridge.enrollPair({ peer: route.peer, edgeEpoch: route.edgeEpoch, initiator: local < route.peer.machineId },
+                { operationId: request.operationId, graphDigest: request.graphDigest, expectedFenceId: request.expectedFenceId, edgeEpoch: request.edgeEpoch });
+            } catch (error) {
+              settings.routes = priorRoutes; if (options.directPeers && priorPeers) options.directPeers.splice(0, options.directPeers.length, ...priorPeers);
+              throw error;
+            }
+            return { machineId: local, peer: request.peer, edgeEpoch: request.edgeEpoch, applied: true as const };
+          });
+          enrollmentTail = task.then(() => undefined, () => undefined);
+          return task;
+        },
         localPresence: () => [], authorizeLocalPresence: knownGeneration, authoritativeHome(address) {
           const row = options.globalDb.prepare("SELECT machine_id,epoch,move_id,updated_at FROM session_homes WHERE session_id=?").get(address.sessionId) as
             { machine_id: string; epoch: number; move_id: string | null; updated_at: number } | undefined;
@@ -156,6 +202,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
         },
         publishPresence(entries) { remotes.clear(); for (const entry of entries) remotes.set(addressKey(entry.address), entry); notifyReady(); },
         onInbound(input) { delivery?.onInbound(input); }, onReceipt(frame) { delivery?.onReceipt(frame); if (frame.receipt.status === "not_injected") notifyReady(); },
+        async onRevocationNotice(frame) { return delivery ? delivery.onRevocationNotice(frame) : false; },
         onControl(frame) { delivery?.onControl(frame); }, onAskFailed(failure) { delivery?.onAskFailed(failure); },
         onExpiry(event) { delivery?.onExpiry(event); },
         store, transport: options.transport, clock: options.clock, broker, globalRoot: options.root, agentDir: options.agentDir, routeLease: lease,

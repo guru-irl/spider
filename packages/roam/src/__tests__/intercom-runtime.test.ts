@@ -149,6 +149,7 @@ class FakeBroker extends EventEmitter {
   bridge: FederationBridge | null = null;
   deliveries: Array<{ from: RemoteSessionInfo; to: unknown; message: unknown }> = [];
   receipts: Array<{ from: RemoteSessionInfo; to: SessionAddress; receipt: unknown }> = [];
+  noticeConfirmed = true;
   published: RemoteSessionInfo[][] = [];
   closed = 0;
   helper: ((input: unknown, signal: AbortSignal) => Promise<unknown>) | null = null;
@@ -164,6 +165,7 @@ class FakeBroker extends EventEmitter {
       acceptance: { accepted: true as const, durable: false as const } };
   }
   deliverReceipt(from: RemoteSessionInfo, to: SessionAddress, receipt: unknown) { this.receipts.push({ from, to, receipt }); }
+  async deliverRevocationNotice(from: RemoteSessionInfo, to: SessionAddress, receipt: unknown) { this.receipts.push({ from, to, receipt }); return this.noticeConfirmed; }
   deliverControl() {}
   async inspectBlockers() { return { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] }; }
   async close() { this.closed++; this.bridge = null; this.emit("closed"); }
@@ -206,6 +208,42 @@ it("runtime uses the configured agent directory and private queue", async () => 
   expect(service.readiness()).toEqual({ state: "ready", reason: null });
   await service.stop(); await service.stop();
   expect(f.broker.closed).toBe(1);
+}, 5000);
+
+it("does not activate a live edge without pair-scoped connector readiness", async () => {
+  const f = machineFixture(), service = await makeMachine(f.options); await service.start();
+  await expect(f.broker.helper!({ version: 1, action: "enroll-pair", machineId: HUB, peer: BOX, pairId: "pair-live", edgeEpoch: "edge-new",
+    operationId: "op-live", graphDigest: "a".repeat(64), expectedFenceId: null }, new AbortController().signal)).rejects.toThrow("connector-not-pair-scoped");
+  expect(f.broker.closed).toBe(0);
+}, 5000);
+
+it("activates only a registered approved edge through the live authenticated helper", async () => {
+  const f = machineFixture(), directory = join(f.global.root, "roam"), direct: ReturnType<typeof peer>[] = [];
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(directory, "config.json"), JSON.stringify(f.options.config), { mode: 0o600 });
+  writeFileSync(join(directory, "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  const source = { ...peer(HUB, "hub.invalid"), globalRoot: f.global.root }, target = peer(BOX, "box.invalid");
+  const key = Buffer.concat([Buffer.from([0, 0, 0, 11]), Buffer.from("ssh-ed25519"), Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, 7)]);
+  const pair = { pairId: "pair-live", source, target, connector: { tunnelId: "tunnel", remotePort: 22, session: "session" }, edgeEpoch: "edge-new", sshUser: "fixture",
+    hostKey: { type: "ssh-ed25519", base64: key.toString("base64") }, hostKeyAlias: `spider-${"a".repeat(32)}` };
+  const { createIntercomRegistry } = await import("../intercom-registry");
+  const { persistIntercomPairRoute } = await import("../provision-config");
+  const registry = createIntercomRegistry(f.global.root), digest = "a".repeat(64);
+  await registry.register(pair, "op-live", digest); await registry.bind(pair, "op-live");
+  const service = await makeMachine({ ...f.options, directPeers: direct, async pairScopedHostReady() { return true; } }); await service.start();
+  const request = { version: 1, action: "enroll-pair", machineId: HUB, peer: BOX, pairId: pair.pairId, edgeEpoch: pair.edgeEpoch,
+    operationId: "op-live", graphDigest: digest, expectedFenceId: null };
+  await expect(f.broker.helper!(request, new AbortController().signal)).rejects.toThrow();
+  await persistIntercomPairRoute(f.global.root, pair, "op-live", digest);
+  await expect(f.broker.helper!({ ...request, graphDigest: "b".repeat(64) }, new AbortController().signal)).rejects.toThrow();
+  expect(await f.broker.helper!(request, new AbortController().signal)).toEqual({ machineId: HUB, peer: BOX, edgeEpoch: "edge-new", applied: true });
+  expect(direct).toMatchObject([{ machineId: BOX }]);
+  expect(await f.broker.helper!({ version: 1, action: "inspect-pair", machineId: HUB, peer: BOX, edgeEpoch: "edge-new" }, new AbortController().signal))
+    .toMatchObject({ machineId: HUB, peer: BOX, edgeEpoch: "edge-new", status: expect.not.stringMatching(/^live$/) });
+  expect(await f.broker.helper!(request, new AbortController().signal)).toMatchObject({ applied: true });
+  await f.broker.helper!({ version: 1, action: "revoke-pair", machineId: HUB, peer: BOX, edgeEpoch: "edge-new" }, new AbortController().signal);
+  expect(await registry.get("pair-live")).toMatchObject({ state: "revoked", cleanupReason: "intercom-revocation-unconfirmed" });
+  expect(f.broker.closed).toBe(0);
 }, 5000);
 
 it("restart opens the same private queue after all clients disconnect", async () => {
@@ -321,6 +359,47 @@ it("reload alone leaves an unobserved handoff unknown and never redispatches it"
   finally { reopened.close(); }
 }, 5000);
 
+it("the service-owned helper fences one live pair without restarting or affecting another", async () => {
+  const f = machineFixture(), first = peer(BOX, "box-1.invalid"), second = peer(OTHER, "box-2.invalid");
+  const config = parseConfig({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture",
+    intercom: { enabled: true, mode: "peers", machineAlias: "hub.invalid", routes: [
+      { kind: "direct", peer: first, edgeEpoch: "edge-1" }, { kind: "direct", peer: second, edgeEpoch: "edge-2" },
+    ] } });
+  const service = await makeMachine({ ...f.options, config }); await service.start();
+  const signal = new AbortController().signal;
+  await expect(f.broker.helper!({ version: 1, action: "revoke-pair", machineId: OTHER, peer: BOX, edgeEpoch: "edge-1" }, signal)).rejects.toMatchObject({ code: "machine-mismatch" });
+  await expect(f.broker.helper!({ version: 1, action: "revoke-pair", machineId: HUB, peer: BOX, edgeEpoch: "edge-1", extra: true }, signal)).rejects.toMatchObject({ code: "invalid-request" });
+  expect(await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1), signal)).toMatchObject({ exchange: { senderMachine: HUB } });
+  const fenceId = "00000000-0000-4000-8000-000000000004";
+  const proof = await f.broker.helper!({ version: 1, action: "revoke-pair", machineId: HUB, peer: BOX, edgeEpoch: "edge-1", fenceId }, signal);
+  expect(proof).toMatchObject({ machineId: HUB, peer: BOX, edgeEpoch: "edge-1", fenceId, exchanges: "closed", inFlight: 0 });
+  expect(await f.broker.helper!({ version: 1, action: "inspect-fence", machineId: HUB, peer: BOX }, signal))
+    .toEqual({ machineId: HUB, peer: BOX, fence: { edgeEpoch: "edge-1", fenceId } });
+  expect(await f.broker.helper!({ version: 1, action: "inspect-fence", machineId: HUB, peer: OTHER }, signal))
+    .toEqual({ machineId: HUB, peer: OTHER, fence: null });
+  await expect(f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1), signal)).rejects.toMatchObject({ code: "peer-revoked" });
+  expect(await f.broker.helper!(helperRequest(OTHER, HUB, "edge-2", 1), signal)).toMatchObject({ exchange: { senderMachine: HUB } });
+  expect(service.readiness().state).toBe("ready"); expect(f.broker.closed).toBe(0);
+}, 5000);
+
+it("the runtime keeps a revocation notice queued when broker delivery is unconfirmed", async () => {
+  const f = machineFixture(), target = peer(BOX, "box.invalid"); f.broker.noticeConfirmed = false;
+  const config = parseConfig({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture",
+    intercom: { enabled: true, mode: "peers", machineAlias: "hub.invalid", routes: [{ kind: "direct", peer: target, edgeEpoch: "edge-1" }] } });
+  const service = await makeMachine({ ...f.options, config }); await service.start();
+  const address = { sessionId: "remote-recipient", scopeId: "scope" }, origin = { sessionId: "origin", scopeId: "scope" };
+  const remoteInfo = remote(BOX, "box.invalid", address), signal = new AbortController().signal;
+  await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1, [remoteInfo]), signal);
+  expect(await f.broker.bridge!.dispatch({ from: origin, to: remoteInfo, message: { id: "notice-unconfirmed", timestamp: 1, content: { text: "test" } } })).toMatchObject({ acceptance: { durable: true } });
+  await f.broker.helper!({ version: 1, action: "revoke-pair", machineId: HUB, peer: BOX, edgeEpoch: "edge-1" }, signal);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(f.broker.receipts).toMatchObject([{ receipt: { messageId: "notice-unconfirmed", detail: "peer-revoked" } }]);
+  await service.stop();
+  const reopened = openIntercomStore({ file: join(f.global.root, "roam", "intercom", "queue.db"), machineId: HUB, clock: f.clock });
+  try { expect(reopened.pendingRevocationNotices()).toMatchObject([{ receipt: { messageId: "notice-unconfirmed" } }]); }
+  finally { reopened.close(); }
+}, 5000);
+
 it("configured peer edges preserve their full enrollment and shared epoch", async () => {
   const f = machineFixture(), target = peer(BOX, "box.invalid");
   const config = parseConfig({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture",
@@ -331,14 +410,14 @@ it("configured peer edges preserve their full enrollment and shared epoch", asyn
   await service.start();
   expect(service.readiness()).toEqual({ state: "ready", reason: null });
   const signal = new AbortController().signal;
-  const reply = await f.broker.helper!({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 2, senderMachine: BOX, recipientMachine: HUB,
+  const reply = await f.broker.helper!({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 3, senderMachine: BOX, recipientMachine: HUB,
     generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } }, signal);
   expect(reply).toMatchObject({ version: 1, exchange: { senderMachine: HUB, recipientMachine: BOX } });
   expect(resolved).toEqual([BOX]);
 }, 5000);
 
 function helperRequest(from: string, to: string, edgeEpoch: string, generation: number, presence: RemoteSessionInfo[] = []) {
-  return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 2, senderMachine: from, recipientMachine: to,
+  return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 3, senderMachine: from, recipientMachine: to,
     generation: { edgeEpoch, channel: "push", generation }, frames: [], acknowledgements: [], receipts: [], controls: [], presence } };
 }
 function remote(machineId: string, alias: string, address: SessionAddress): RemoteSessionInfo {

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import * as bootstrap from "../bootstrap-script";
+import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
 import { selectedSettingsDigests } from "../selected-files";
 
 const settingsSource = (bootstrap as { BOOTSTRAP_SETTINGS_SCRIPT?: string }).BOOTSTRAP_SETTINGS_SCRIPT;
@@ -27,6 +28,25 @@ function fixture() {
   return { root, home, run };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+it.each(["settings preview", "provisioning"] as const)("%s starts without installed packages", kind => {
+  const f = fixture(), agentDir = join(f.home, ".pi", "agent"), hook = join(f.root, "builtins-only.mjs");
+  mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+  writeFileSync(hook, `import { registerHooks } from "node:module";
+registerHooks({ resolve(specifier, context, next) {
+  if (!specifier.startsWith("node:")) throw new Error("external module unavailable: " + specifier);
+  return next(specifier, context);
+} });\n`);
+  const settings = kind === "settings preview";
+  const input = settings ? { home: f.home, agentDir, paths: [["defaultThinkingLevel"]], maximum: 1024 * 1024 } : {};
+  const child = spawnSync(process.execPath, ["--import", hook, "--input-type=module-typescript", "-e", settings ? settingsSource! : PROVISION_REMOTE_SCRIPT], {
+    input: JSON.stringify(input), cwd: f.home, env: { ...process.env, HOME: f.home }, encoding: "utf8", timeout: 3000,
+  });
+  expect(child.status, child.stderr).toBe(0);
+  const reply = JSON.parse(child.stdout);
+  if (settings) expect(reply).toMatchObject({ version: 1, kind: "settings-preview", value: { digests: [null] } });
+  else expect(reply).toEqual({ version: 1, kind: "provision", error: "invalid-request" });
+}, 5000);
 
 it("probes selected box settings through a fixed read-only program", () => {
   expect(settingsSource).toBeTypeOf("string");

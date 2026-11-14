@@ -1,3 +1,4 @@
+import { unexpectedBootstrapProbe } from "./transport-fixture";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
@@ -52,6 +53,7 @@ export function network(machineIds: string[] = [BOX]): Network {
   let hook: ((peer: Peer, op: Operation) => Promise<void> | void) | null = null;
   let replyHook: ((peer: Peer, op: Operation, bytes: Buffer) => Buffer) | null = null;
   const transport: Transport = {
+    bootstrapProbe: unexpectedBootstrapProbe,
     async resolve(peer) { if (unavailable.has(peer.machineId)) throw new Error("unavailable"); const handle = Object.freeze({ ...peer }); handles.add(handle); return handle; },
     async exec(peer, argv, options) {
       if (!handles.has(peer)) throw new Error("unresolved handle");

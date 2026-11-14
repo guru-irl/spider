@@ -1,3 +1,4 @@
+import { qualifiedName } from "../protocol.js";
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
@@ -34,7 +35,7 @@ function shortSessionId(sessionId: string): string {
 }
 
 function sessionTitle(session: SessionInfo, options?: { self?: boolean; sameCwd?: boolean }): string {
-  const name = session.name || "Unnamed session";
+  const name = session.remote ? qualifiedName(session) : session.name || "Unnamed session";
   const tags = [options?.self ? "self" : undefined, options?.sameCwd ? "same cwd" : undefined]
     .filter((tag): tag is string => Boolean(tag));
   const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
@@ -138,7 +139,7 @@ export class SessionListOverlay implements Component {
       for (let index = startIndex; index < endIndex; index += 1) {
         const session = this.sessions[index];
         const isSelected = index === this.selectedIndex;
-        const sameCwd = session.cwd === this.currentSession.cwd;
+        const sameCwd = !session.remote && session.cwd === this.currentSession.cwd;
         const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
         const title = sessionTitle(session, { sameCwd });
         const pathText = `${middleTruncate(session.cwd, Math.max(8, contentWidth - 4))} • ${session.model}`;

@@ -34,7 +34,7 @@ describe("npm skill packaging", () => {
 });
 
 describe("release tarball check", () => {
-  const base = ["dist/intercom/broker.mjs", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "dist/extension.js", "dist/dashboard/index.html", "dist/dashboard/assets/index-abcdefgh.js", "dist/dashboard/assets/index-abcdefgh.css", "dist/roam/cli.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs", "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE"];
+  const base = ["dist/intercom/broker.mjs", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "dist/extension.js", "dist/dashboard/index.html", "dist/dashboard/assets/index-abcdefgh.js", "dist/dashboard/assets/index-abcdefgh.css", "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs", "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE"];
   function check(files: string[]) {
     const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
     const code = workflow.match(/npm pack --json --ignore-scripts \| node -e "([\s\S]*?)"\n/)?.[1];
@@ -47,7 +47,7 @@ describe("release tarball check", () => {
     const result = check([...base, ...skillFiles()]);
     expect(result.status, result.stderr).toBe(0);
   });
-  it.each(["dist/intercom/broker.mjs", "packages/intercom/LICENSE", "packages/intercom/skills/pi-intercom/SKILL.md", "packages/superpowers/skills/using-superpowers/SKILL.md", "packages/pstack/skills/how/SKILL.md", "packages/pstack/LICENSE", "NOTICE.md", "packages/context/LICENSE", "dist/extension.js", "dist/dashboard/assets/index-abcdefgh.css"])("rejects a tarball missing %s", missing => {
+  it.each(["dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/intercom/broker.mjs", "packages/intercom/LICENSE", "packages/intercom/skills/pi-intercom/SKILL.md", "packages/superpowers/skills/using-superpowers/SKILL.md", "packages/pstack/skills/how/SKILL.md", "packages/pstack/LICENSE", "NOTICE.md", "packages/context/LICENSE", "dist/extension.js", "dist/dashboard/assets/index-abcdefgh.css"])("rejects a tarball missing %s", missing => {
     const result = check([...base, ...skillFiles()].filter(file => file !== missing));
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(missing.endsWith(".css") ? "dashboard JS/CSS missing" : missing);

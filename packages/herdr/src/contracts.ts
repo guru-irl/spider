@@ -69,7 +69,10 @@ export interface HcClientOptions {
 	maxReplyBytes?: number;
 }
 export interface HcCallOptions { signal?: AbortSignal; timeoutMs?: number }
-export interface HcByteOptions { timeoutMs: number; maxBytes: number; stdin?: Buffer; signal?: AbortSignal }
+export interface HcByteOptions {
+  timeoutMs: number; maxBytes: number; stdin?: Buffer; signal?: AbortSignal;
+  remoteTimeoutMs?: number; postReserveMs?: number; stdinForTimeout?: (remoteTimeoutMs: number) => Buffer;
+}
 export interface HcArgvClient {
   exec(on: string, argv: readonly string[], options: HcByteOptions): Promise<Buffer>;
   run(on: string, argv: readonly string[], labels: Readonly<Record<string, string>>, options?: { signal?: AbortSignal }): Promise<{ terminal: string }>;
@@ -284,8 +287,8 @@ export interface SessionDataSource extends Disposable {
 export type ViewName = "agents" | "todos" | "usage" | "memory" | "triggers";
 export type HerdrViews = Readonly<Record<ViewName,
 	(ctx: ExtensionContext) => Promise<void>>>;
-export interface HerdrConfig {
-  enabled: 'auto' | boolean; app: { binary: string; home: string }; core: { binary: string; config: string };
+export interface HerdrConfigBase {
+  enabled: 'auto' | boolean; core: { binary: string; config: string };
   agentDirectory: string; globalRoot: string; shellRc: string;
   layout?: 'panes' | 'tabs';
   automaticSubagentPanes?: boolean;
@@ -296,6 +299,9 @@ export interface HerdrConfig {
   limits: { auxiliaryPanes: number; completedRows: number; completedHours: number };
   retention: { foregroundDays: number }; admin: { wrappers: { path: string; sha256: string }[] };
 }
+export type FullHerdrConfig = HerdrConfigBase & { mode?: 'full'; app: { binary: string; home: string } };
+export type CoreOnlyHerdrConfig = HerdrConfigBase & { mode: 'core-only'; app?: never };
+export type HerdrConfig = FullHerdrConfig | CoreOnlyHerdrConfig;
 
 const MOD_LABELS = {
   session: 'spider.session', ownerCore: 'spider.owner-core', ownerTerminal: 'spider.owner-terminal',

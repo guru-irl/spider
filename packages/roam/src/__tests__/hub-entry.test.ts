@@ -427,7 +427,7 @@ it("the packaged hub preserves pending readiness and suspension when those obser
   const db = openDb(join(f.root, "spider.db"));
   db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES ('session-a',?,1,NULL,1)").run(BOX);
   const alert = { id: "notice-1", delivered: true, clearing: false, sessionId: "session-a", epoch: 1 };
-  const row = { operationId: "op-1", sessionId: "session-a", epoch: 1, cwd: f.root, file: join(f.root, "session"), core: "remote-core", terminal: `${alias}/t1` };
+  const row = { origin: "hub-operation" as const, opId: "op-1", sessionId: "session-a", epoch: 1, cwd: f.root, file: join(f.root, "session"), core: "remote-core", terminal: `${alias}/t1` };
   writeLocal(db, "hub-peer", BOX, { since: null, unreachable: null, suspensions: [alert] });
   writeLocal(db, "hub-placement", BOX, [row]); db.close();
   const server = createServer(socket => socket.end());

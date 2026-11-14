@@ -1,3 +1,4 @@
+import type { AcceptanceEvidence, ConsumptionEvidence, SessionAddress } from "./protocol.js";
 export const EXTENSION_BUS_FEATURE = "extension-bus-v1";
 export const EXACT_SEND_FEATURE = "exact-send-v1";
 
@@ -8,9 +9,15 @@ export interface DeliveryDetails {
   code?: string;
   retryable: boolean;
   outcomeKnown: boolean;
+  acceptance?: AcceptanceEvidence;
+  consumption?: MessageReceipt;
 }
 
-export interface SessionInfo {
+export interface LocalSessionInfo {
+  remote?: false;
+  activationEpoch?: string;
+  homeEpoch?: number | null;
+  address?: SessionAddress;
   id: string;
   /** Broker-owned lifetime of this live endpoint. */
   endpointEpoch?: string;
@@ -42,6 +49,34 @@ export interface SessionInfo {
   tmuxPane?: string;
 }
 
+export interface RemoteSessionInfo {
+  remote: true;
+  pid?: never;
+  peerUid?: never;
+  trustedLocal?: never;
+  tmuxPane?: never;
+  runtimeFallbackAlias?: never;
+  contextPct?: number;
+  contextTokens?: number;
+  contextWindow?: number;
+  id: string;
+  address: SessionAddress;
+  machineId: string;
+  machineAlias: string;
+  homeEpoch: number | null;
+  activationEpoch: string;
+  endpointEpoch: string;
+  name?: string;
+  cwd: string;
+  model: string;
+  startedAt: number;
+  lastActivity: number;
+  status?: string;
+  reachability?: "live" | "recovering" | "down" | "unknown";
+  stale?: boolean;
+}
+export type SessionInfo = LocalSessionInfo | RemoteSessionInfo;
+
 export interface Message {
   id: string;
   timestamp: number;
@@ -54,6 +89,8 @@ export interface Message {
   retryOf?: string;
   replyTo?: string;
   expectsReply?: boolean;
+  /** Diminishing dispatch duration, never a remote wall-clock deadline. */
+  remainingMs?: number;
   provenance?: MessageProvenance;
   content: {
     text: string;
@@ -75,12 +112,13 @@ export interface Attachment {
   language?: string;
 }
 
-export type MessageReceiptStatus = "receiver_received" | "queued" | "injected" | "acknowledged" | "expired" | "cancelled" | "superseded" | "cancellation_requested";
+export type MessageReceiptStatus = "receiver_received" | "queued" | "injected" | "acknowledged" | "expired" | "cancelled" | "superseded" | "cancellation_requested" | "matched_waiter" | "not_injected" | "unknown";
 
 export interface MessageReceipt {
   messageId: string;
   status: MessageReceiptStatus;
   timestamp: number;
+  evidence?: ConsumptionEvidence;
   detail?: string;
 }
 
@@ -99,12 +137,12 @@ export interface ExtensionCapability {
   ownerEligible: boolean;
 }
 
-export type SessionRegistration = Omit<SessionInfo, "id" | "endpointEpoch" | "peerUid" | "trustedLocal"> & {
+export type SessionRegistration = Omit<LocalSessionInfo, "id" | "endpointEpoch" | "peerUid" | "trustedLocal"> & {
   extensions?: ExtensionCapability[];
 };
 
 export type ClientMessage =
-  | { type: "register"; session: SessionRegistration; sessionId?: string; stateId?: string; scopeId?: string }
+  | { type: "register"; session: SessionRegistration; sessionId?: string; stateId?: string; scopeId?: string; features?: string[] }
   | { type: "unregister" }
   | { type: "extension_capabilities_update"; extensions: ExtensionCapability[] }
   | { type: "list"; requestId: string }

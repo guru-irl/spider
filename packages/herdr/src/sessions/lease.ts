@@ -2,20 +2,22 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import { unlink } from 'node:fs/promises';
-import { join, isAbsolute } from 'node:path';
+import { join, isAbsolute, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { HerdrError } from '../client/parse.js';
 import { canonicalSessionFile, hash, readPrivateJson, writePrivateJson, withProcessLock } from './registry.js';
 import type { SessionId } from '../contracts.js';
 import { createProcessPresence, type ProcessPresenceStore, type PresenceRecord } from './presence.js';
+import { bootIdChanged } from './id-lock.js';
 export interface ProcessIdentity { pid: number; startIdentity: string }
 export type ProcessProbe = { kind: 'absent' } | { kind: 'unknown' } | { kind: 'live'; startIdentity: string };
 export interface PiProcess { pid: number; startIdentity: string | null; classification: 'pi' | 'uncertain' }
 export interface ProcessInventoryPorts { presence: ProcessPresenceStore; leases: SessionLeases; processes(): Promise<readonly PiProcess[]>; probe(pid: number): Promise<ProcessProbe> }
 export type SessionLiveness = { kind: 'free' } | { kind: 'live' | 'uncertain'; pids: number[] };
-export interface SessionLease extends ProcessIdentity { version: 1; file: string; token: string }
-export type SessionLeasePolicy = { mode: 'cutover' } | { mode: 'bookkeeping' } | { mode: 'switch'; sessionId?: SessionId };
+export interface SessionLease extends ProcessIdentity { version: 1; file: string; token: string; bootId?: string }
+export type SessionLeasePolicy = { mode: 'cutover'; bootId?: string } | { mode: 'bookkeeping' } | { mode: 'switch'; sessionId?: SessionId };
 export interface SessionLeases {
+  readonly root: string;
   get(file: string): Promise<SessionLease | null>;
   claim(file: string, process: ProcessIdentity, inventory: ProcessInventoryPorts, policy?: SessionLeasePolicy): Promise<SessionLease>;
   transfer(file: string, token: string, process: ProcessIdentity): Promise<void>;
@@ -25,6 +27,7 @@ export interface SessionLeases {
 function validate(value: unknown): SessionLease {
   const r = value as SessionLease;
   if (!r || r.version !== 1 || typeof r.file !== 'string' || !isAbsolute(r.file) || !Number.isInteger(r.pid) || r.pid <= 0 || typeof r.startIdentity !== 'string' || !r.startIdentity || typeof r.token !== 'string' || !/^[a-f0-9]{64}$/.test(r.token)) throw new HerdrError('invalid-session-lease', 'Session lease has an invalid shape');
+  if (r.bootId !== undefined && (typeof r.bootId !== 'string' || !r.bootId || r.bootId !== r.bootId.trim())) throw new HerdrError('invalid-session-lease', 'Session lease boot identity is invalid');
   return r;
 }
 async function presenceSnapshot(ports: ProcessInventoryPorts): Promise<{ records: PresenceRecord[]; uncertain: PresenceRecord[] }> {
@@ -47,12 +50,12 @@ export async function inventorySnapshot(ports: ProcessInventoryPorts): Promise<{
   }
   return { records, unknownPids: [...new Set(unknownPids)], uncertainPids: [...new Set(uncertainPids)] };
 }
-export async function assessSessionLiveness(file: string, ports: ProcessInventoryPorts): Promise<SessionLiveness> {
+export async function assessSessionLiveness(file: string, ports: ProcessInventoryPorts, bootId?: string): Promise<SessionLiveness> {
   const canonical = await canonicalSessionFile(file); const snapshot = await inventorySnapshot(ports);
   const uncertain = [...snapshot.unknownPids, ...snapshot.uncertainPids]; const live: number[] = [];
   for (const r of snapshot.records) if (r.sessionFile !== null && await canonicalSessionFile(r.sessionFile) === canonical) live.push(r.pid);
   const lease = await ports.leases.get(canonical);
-  if (lease) { const p = await ports.probe(lease.pid); if (p.kind === 'unknown' || p.kind === 'live' && p.startIdentity !== lease.startIdentity) uncertain.push(lease.pid); else if (p.kind === 'live') live.push(lease.pid); }
+  if (lease && !(lease.bootId && bootId && bootIdChanged(lease.bootId, bootId))) { const p = await ports.probe(lease.pid); if (p.kind === 'unknown' || p.kind === 'live' && p.startIdentity !== lease.startIdentity) uncertain.push(lease.pid); else if (p.kind === 'live') live.push(lease.pid); }
   if (uncertain.length) return { kind: 'uncertain', pids: [...new Set(uncertain)] };
   return live.length ? { kind: 'live', pids: [...new Set(live)] } : { kind: 'free' };
 }
@@ -73,6 +76,7 @@ export async function recordedSessionLiveness(file: string, ports: ProcessInvent
   return holders.length ? { kind: 'live', pids: [...new Set(holders)] } : { kind: 'free' };
 }
 export function createSessionLeases(root: string): SessionLeases {
+  root = resolve(root);
   const directory = join(root, 'leases'); const path = (file: string) => join(directory, `${hash(file)}.json`);
   async function locked<T>(file: string, operation: (canonical: string) => Promise<T>, policy?: SessionLeasePolicy, inventory?: ProcessInventoryPorts): Promise<T> {
     const canonical = await canonicalSessionFile(file);
@@ -88,14 +92,16 @@ export function createSessionLeases(root: string): SessionLeases {
     catch (error) { if (error instanceof HerdrError && (error.code === 'lock-occupied' || error.code === 'lock-owner-uncertain')) throw new HerdrError('session-may-be-live', error.message); throw error; }
   }
   const leases: SessionLeases = {
+    root,
     async get(file) { const canonical = await canonicalSessionFile(file); const r = await readPrivateJson(path(canonical)); if (r === null) return null; const lease = validate(r); if (lease.file !== canonical) throw new HerdrError('invalid-session-lease', 'Lease path mismatch'); return lease; },
     async claim(file, process, inventory, policy = { mode: 'cutover' }) {
       const write = async (canonical: string) => {
+        const bootId = policy.mode === 'cutover' ? policy.bootId : undefined;
         if (policy.mode !== 'bookkeeping') {
-          const live = policy.mode === 'switch' ? await recordedSessionLiveness(canonical, inventory, policy.sessionId) : await assessSessionLiveness(canonical, inventory);
+          const live = policy.mode === 'switch' ? await recordedSessionLiveness(canonical, inventory, policy.sessionId) : await assessSessionLiveness(canonical, inventory, bootId);
           if (live.kind !== 'free') throw new HerdrError('session-may-be-live', `Session is held by PID ${live.pids.join(', ')}. Close that session before switching or resuming it.`);
         }
-        const lease = validate({ version: 1, file: canonical, ...process, token: randomBytes(32).toString('hex') }); await writePrivateJson(path(canonical), lease); return lease;
+        const lease = validate({ version: 1, file: canonical, ...process, ...(bootId !== undefined ? { bootId } : {}), token: randomBytes(32).toString('hex') }); await writePrivateJson(path(canonical), lease); return lease;
       };
       // Inactive integration observes ownership but never competes for exclusive launch permission.
       return policy.mode === 'bookkeeping' ? write(await canonicalSessionFile(file)) : locked(file, write, policy, inventory);

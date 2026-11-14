@@ -145,7 +145,7 @@ if (leaks.length) {
   process.exit(1);
 }
 try {
-  assertRoamBundle('.');
+  assertRoamBundle('.', { requireHelper: true });
 } catch (error) {
   console.error(`assert-bundle: roaming runtime missing or invalid (${error instanceof Error ? error.message : 'invalid'})`);
   process.exit(1);

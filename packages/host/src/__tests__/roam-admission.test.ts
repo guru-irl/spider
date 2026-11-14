@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { createHostSessionFixture } from './fixtures/pi-events';
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Home, SessionState } from "@spider/db-core/roam/types";
 import { AdmissionClosedError, protectAdmissionApi, registerAdmission, type AdmissionPorts } from "../roam/admission";
@@ -25,7 +26,6 @@ const gates: Array<{ close(): Promise<void> }> = [];
 afterEach(async () => { for (const gate of gates.splice(0)) await gate.close(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 function fixture(initial = snapshot(), id = sessionId) {
-  const handlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
   const messages: string[] = [], warnings: string[] = [], warningKeys = new Set<string>();
   const calls = { admission: 0, lock: 0, local: 0, released: 0 };
   let current = initial, known = initial.participating, readError: Error | undefined;
@@ -38,14 +38,10 @@ function fixture(initial = snapshot(), id = sessionId) {
     async load() { calls.admission++; if (readError) throw readError; if (current.participating) known = true; return current; },
     async lock() { calls.lock++; if (lockError) throw lockError; return async () => { calls.released++; }; },
   };
-  const pi = { on(name: string, handler: (event: any, ctx: any) => unknown) {
-    handlers.set(name, [...handlers.get(name) ?? [], handler]);
-    return () => { handlers.set(name, (handlers.get(name) ?? []).filter(entry => entry !== handler)); };
-  } } as unknown as ExtensionAPI;
-  const ctx = { cwd: "/fixture", mode: "tui", hasUI: true, abort: vi.fn(),
-    ui: { notify: (message: string) => messages.push(message) },
-    sessionManager: { getSessionId: () => id, getSessionFile: () => "/fixture/session.jsonl" } };
-  const gate = registerAdmission(pi, ports); gates.push(gate);
+  const host = createHostSessionFixture({ cwd: "/fixture", sessionId: id, sessionFile: "/fixture/session.jsonl",
+    notify: message => messages.push(message), abort: vi.fn() });
+  const handlers = host.hooks, ctx = host.ctx;
+  const gate = registerAdmission(host.pi as unknown as ExtensionAPI, ports); gates.push(gate);
   async function emit(name: string, event: object = {}) {
     let result: unknown;
     for (const handler of handlers.get(name) ?? []) {
@@ -61,6 +57,25 @@ function fixture(initial = snapshot(), id = sessionId) {
     failLock(error: Error) { lockError = error; },
   };
 }
+
+it.each(["untracked", "read-error", "missing-id"] as const)("an exact handoff cannot fall back to ordinary admission: %s", async mode => {
+  vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE", "/fixture/handoff.json");
+  const f = fixture(snapshot({ home: null, states: [], origin: null, participating: false }), mode === "missing-id" ? "" : sessionId);
+  if (mode === "read-error") f.failRead(new Error("unavailable"), false);
+  await f.emit("session_start", { reason: "startup" });
+  expect(f.gate.inspect().kind).toBe("blocked");
+  expect(await f.emit("input", { text: "continue" })).toEqual({ action: "handled" });
+  expect(f.calls.lock).toBe(0);
+}, 5000);
+
+it("an inherited subagent flag cannot bypass exact handoff admission", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "1");
+  vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE", "/fixture/handoff.json");
+  const f = fixture();
+  await f.emit("session_start", { reason: "startup" });
+  expect(f.calls.lock).toBe(1);
+  expect(f.gate.inspect().kind).toBe("ordinary");
+}, 5000);
 
 it("admission finishes before first session upsert", async () => {
   const f = fixture(snapshot({ home: { ...home, machineId: "destination.invalid" } }));

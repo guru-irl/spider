@@ -5,7 +5,7 @@ import { readMachineIdentity } from "@spider/db-core/roam/machine";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { sweepStoreArtifacts } from "./cleanup";
 import { createAgentPorts } from "./agent";
-import { loadConfig } from "./config";
+import { parseConfig } from "./config";
 import type { AgentPorts, RoamConfig } from "./contracts";
 import { openJournal, type ArtifactJournal } from "./journal";
 import { createStorePort, type StoreAdapter } from "./stores";
@@ -30,9 +30,15 @@ export function readLocalIdentity(root: string): RoamConfig {
   if (!dir.isDirectory() || dir.isSymbolicLink() || realpathSync(directory) !== directory ||
       typeof process.getuid === "function" && dir.uid !== process.getuid() ||
       process.platform !== "win32" && (dir.mode & 0o777) !== 0o700) throw new Error("Unsafe roaming directory");
-  existingFile(configFile);
-  const config = loadConfig(configFile);
-  const fd = openSync(identityFile, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const configFd = openSync(configFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let config: RoamConfig;
+  try {
+    const stat = fstatSync(configFd);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 1024 * 1024 || typeof process.getuid === "function" && stat.uid !== process.getuid() ||
+        process.platform !== "win32" && (stat.mode & 0o7777) !== 0o600) throw new Error("Unsafe roaming configuration");
+    config = parseConfig(JSON.parse(readFileSync(configFd, "utf8")));
+  } finally { closeSync(configFd); }
+  const fd = openSync(identityFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1 || stat.size > 4096 ||
@@ -51,7 +57,7 @@ export function openLocalCore(root: string): LocalCore {
   const configFile = join(root, "roam", "config.json"), file = join(root, "spider.db");
   assertTestConfigPath(configFile); assertTestConfigPath(file);
   existingFile(configFile); existingFile(file); existingFile(`${file}-wal`, true); existingFile(`${file}-shm`, true);
-  const config = loadConfig(configFile);
+  const config = readLocalIdentity(root);
   if (readMachineIdentity(root) !== config.machineId) throw new Error("Machine identity does not match configuration");
   const db = openDb(file, { fileMustExist: true, checkpointOnClose: false, maxCoreSchemaVersion: 14 });
   try {

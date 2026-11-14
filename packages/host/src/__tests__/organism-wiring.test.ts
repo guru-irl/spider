@@ -26,30 +26,18 @@ const scratch = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".spid
 type Fixture = { pi: ReturnType<typeof fakePi>; ctx: ActionCtx; dir: string };
 const liveFixtures: Fixture[] = [];
 
-afterEach(() => {
-  // Close everything this suite opened. Also invoke every captured session_shutdown
-  // handler (subagents teardown; hooks.ts's own no-op; agents-UI dispose; organism
-  // drain+curate; organism dispose + routing-DB close — FIVE handlers, see fakePi()
-  // below) before dropping the connections, instead of just calling ctx.db.close()
-  // piecemeal. IMPORTANT: this harness calls each handler with NO (event, ctx)
-  // arguments — it exercises RESOURCE DISPOSAL only, not the full real shutdown
-  // lifecycle. The one ctx-dependent handler (organism drain+curate, which reads
-  // ctx?.sessionManager?.getSessionId?.()) early-returns argument-less and MUST stay
-  // that way here: passing a real ctx would enable a genuine drain/curate pass
-  // (aux-model + embedder calls) inside afterEach. Real lifecycle behavior —
-  // including what happens when session_shutdown actually fires with a live ctx —
-  // is covered by organism-host-integration.test.ts, not this suite. fakePi.on()
-  // below captures EVERY handler registered per event name (not just the last one),
-  // so all five registered handlers actually run here as no-ops/resource disposal,
-  // not just whichever one happened to register last.
+afterEach(async () => {
+  // Supply the real shutdown event shape but no session context. This disposes
+  // resources without running the organism drain, which has its own lifecycle test.
   for (const f of liveFixtures.splice(0)) {
-    const shutdownHandlers = (f.pi._hooks["session_shutdown"] ?? []) as Array<() => unknown>;
-    for (const shutdown of shutdownHandlers) {
-      try { shutdown(); } catch { /* best-effort teardown, mirrors a real host shutdown */ }
+    const shutdownHandlers = (f.pi._hooks["session_shutdown"] ?? []) as Array<(event: { reason: "quit" }) => unknown>;
+    try {
+      for (const shutdown of shutdownHandlers) await shutdown({ reason: "quit" });
+    } finally {
+      f.ctx.db.close();
+      f.ctx.repoDb.close();
+      f.ctx.globalDb.close();
     }
-    f.ctx.db.close();
-    f.ctx.repoDb.close();
-    f.ctx.globalDb.close();
   }
   setGlobalDbPathForTests(null);
   rmSync(scratch, { recursive: true, force: true });

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
-  "exports": { ".": "./src/index.ts", "./*": "./src/*.ts" },
+  "exports": { ".": "./src/index.ts", "./protocol": "./src/protocol.ts", "./*": "./src/*.ts" },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",

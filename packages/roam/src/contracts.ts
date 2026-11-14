@@ -1,12 +1,14 @@
 import type { Db } from "@spider/db-core";
 import type {
   ApplyReceipt, BatchArtifact, ExportPolicy, Home, JsonObject, MachineId, Probe, ProcessIdentity,
-  Readiness, ReplicaEffects, StoreBarrier, StoreKey,
+  HubOperationReadiness, Readiness, ReplicaEffects, StoreBarrier, StoreKey,
 } from "@spider/db-core/roam/types";
+import type { BootstrapOptions, Inventory } from "./provision-contracts";
 
 export interface Peer {
   machineId: MachineId; alias: string; node: string; pi: string; cli: string; core: string; globalRoot: string;
 }
+export type BootstrapPeer = Pick<Peer, "alias" | "node" | "pi" | "cli" | "globalRoot">;
 export interface Limits {
   chunkBytes: number; replyBytes: number; manifestBytes: number; targetBatchBytes: number; hardBatchBytes: number;
   applyTargetMs: number; workspaceBytes: number; sessionBytes: number; agentBytes: number; stagingBytes: number;
@@ -47,9 +49,15 @@ export interface Outcome<T> {
   code: 0 | 1 | 2 | 3; reason: string; operationId: string; home: Home | null;
   epoch: number | null; repairCommand: string | null; value: T | null;
 }
-export interface CallOptions { timeoutMs: number; maxBytes: number; stdin?: Buffer }
+export interface CallOptions {
+  timeoutMs: number; maxBytes: number; stdin?: Buffer;
+  remoteTimeoutMs?: number; postReserveMs?: number; signal?: AbortSignal;
+  stdinForTimeout?: (remoteTimeoutMs: number) => Buffer;
+  onConnected?: (connected: boolean) => void;
+}
 export interface Transport {
-  resolve(peer: Peer): Promise<Peer>;
+  resolve(peer: Peer, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Peer>;
+  bootstrapProbe(peer: BootstrapPeer, kind: "inventory", options?: BootstrapOptions): Promise<Inventory>;
   exec(peer: Peer, argv: readonly string[], options: CallOptions): Promise<Buffer>;
   run(peer: Peer, argv: readonly string[], operationId: string): Promise<{ terminal: string }>;
   read(peer: Peer, path: string, options: CallOptions): Promise<Buffer>;
@@ -114,7 +122,7 @@ export interface MoveCheck {
   storeKeys: readonly StoreKey[]; lostPeers: readonly string[]; warnings: readonly string[];
 }
 export interface PreparedMove { workspace: PreparedWorkspace; session: SessionManifest }
-export interface DestinationObservation { home: Home; owner: Probe; readiness: Readiness | null; launchFailure: string | null; retired: boolean }
+export interface DestinationObservation { home: Home; owner: Probe; readiness: HubOperationReadiness | null; launchFailure: string | null; retired: boolean }
 export interface MovePorts {
   config: RoamConfig; globalDb: Db; journal: Journal; clock: Clock;
   check(request: MoveRequest): Promise<MoveCheck>;
@@ -126,7 +134,7 @@ export interface MovePorts {
   verifySource(ack: FreezeAck, workspace: WorkspaceSnapshot): Promise<void>;
   barriers(machine: MachineId, required: readonly StoreBarrier[]): Promise<boolean>;
   replicateHome(home: Home): Promise<void>;
-  start(home: Home, prepared: PreparedMove, operation: Operation): Promise<Outcome<Readiness>>;
+  start(home: Home, prepared: PreparedMove, operation: Operation): Promise<Outcome<HubOperationReadiness>>;
   inspect(home: Home, operation: Operation): Promise<DestinationObservation>;
   retire(home: Home, operation: Operation): Promise<Probe>;
   unfreeze(home: Home, operation: Operation): Promise<void>;
@@ -137,6 +145,6 @@ export interface RecoveryPort {
   revocationDb: Db;
   homes(machine: MachineId): readonly Home[];
   mirror(sessionId: string, epoch: number): Promise<SessionManifest | null>;
-  restore(home: Home, mirror: SessionManifest, operation: Operation): Promise<Outcome<Readiness>>;
+  restore(home: Home, mirror: SessionManifest, operation: Operation): Promise<Outcome<HubOperationReadiness>>;
   conflicts(sessionId: string): Promise<readonly { machineId: MachineId; owner: Probe }[]>;
 }

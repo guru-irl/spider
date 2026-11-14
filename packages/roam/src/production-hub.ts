@@ -5,11 +5,13 @@ import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { createAppClient } from "@spider/herdr/client/app";
 import { createHcClient, invokeCli } from "@spider/herdr/client/hc";
 import { parseHerdrConfig } from "@spider/herdr/config";
+import { VIEW_ON_MAC_MESSAGE } from "@spider/herdr/notices";
 import type { HerdrConfig } from "@spider/herdr/contracts";
 import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
 import { runStandaloneHub, type HubNotice, type HubObservation } from "./hub";
 import { createLocalDiagnosticPorts } from "./local-diagnostics";
 import { openJournal } from "./journal";
+import { remoteHosting } from "./remote-observations";
 import { loadPeerState } from "./peer-state";
 import { openLocalCore } from "./runtime";
 import { createTransport } from "./transport";
@@ -99,6 +101,7 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
   try {
     if (!core.config.enabled || core.config.role !== "hub") throw new Error("Hub synchronization is disabled");
     const herdr = loadHerdrConfig(root), env = Object.freeze({ ...process.env });
+    if (herdr.mode === "core-only") throw new Error(VIEW_ON_MAC_MESSAGE);
     hc = createHcClient({ binary: herdr.core.binary, env });
     const client = hc;
     const transport = createTransport({ binary: herdr.core.binary, env, enrolled: core.config.peers });
@@ -121,9 +124,10 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
         if (matches.length !== 1) throw new Error("Unknown machine");
         const state = matches[0].state;
         const reached = loadPeerState(core.db, peer.machineId, core.config.limits.targetBatchBytes).observation?.connected === true;
-        return { reachability: state === "disconnected" ? "unreachable" : state === "connected" && reached ? "reachable" : "unknown",
-          // Phase 3 supplies these observations. Missing sources are not empty inventories.
-          readiness: null, suspensions: null };
+        const reachability = state === "disconnected" ? "unreachable" : state === "connected" && reached ? "reachable" : "unknown";
+        if (reachability !== "reachable") return { reachability, readiness: null, suspensions: null };
+        try { const hosting = await remoteHosting(transport, peer, core.config); return { reachability, ...hosting }; }
+        catch { return { reachability, readiness: null, suspensions: null }; }
       } catch { return { reachability: "unknown", readiness: null, suspensions: null }; }
     };
     const hub = await runStandaloneHub({ config: core.config, globalDb: core.db, journal, transport, clock,

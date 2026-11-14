@@ -205,6 +205,40 @@ it("the journal workspace subpath bundles without pi or inlined SQLite", async (
   expect(() => assertRoamBundle(root)).not.toThrow();
 }, 5000);
 
+it("the intercom exchange codec bundles without pi or SQLite", async () => {
+  const root = fixture(), entry = join(root, "codec.ts"), bundle = join(root, "codec.mjs");
+  writeFileSync(entry, 'export { encodeExchange, decodeExchange } from "@spider/roam/intercom-codec";\n');
+  const result = await buildFixture({ entryPoints: [entry], outfile: bundle, external: ["better-sqlite3", "sqlite-vec"] });
+  const inputs = Object.keys(result.metafile.inputs), output = readFileSync(bundle, "utf8");
+  expect(inputs.some(path => path.endsWith("packages/intercom/src/protocol.ts"))).toBe(true);
+  expect(inputs.filter(path => path.includes("/packages/db-core/src/"))).toEqual([]);
+  expect(output).not.toContain("better-sqlite3");
+  expect(output).not.toContain("@earendil-works/pi-");
+  const loaded = await import(pathToFileURL(bundle).href) as { encodeExchange: unknown; decodeExchange: unknown };
+  expect(loaded.encodeExchange).toBeTypeOf("function");
+  expect(loaded.decodeExchange).toBeTypeOf("function");
+}, 5000);
+
+it("the intercom store and codec subpaths bundle without pi or inlined SQLite", async () => {
+  const root = fixture(), entry = join(root, "entry.ts"), outDir = join(root, "dist/roam");
+  writeFileSync(entry, 'export { openIntercomStore } from "@spider/roam/intercom-store"; export { encodeFrame } from "@spider/roam/intercom-codec";\n');
+  const factory = (await import(new URL("../../../../vite.roam.config.mjs", import.meta.url).href)).default as
+    (env: { mode: string; command: string }) => import("vite").UserConfig;
+  const settings = factory({ mode: "cli", command: "build" });
+  await build({ ...settings, configFile: false, logLevel: "silent", build: { ...settings.build, ssr: entry, outDir, emptyOutDir: true } });
+  writeFileSync(join(outDir, "supervisor.mjs"), "#!/usr/bin/env node\nexport {};\n");
+  const bundle = readFileSync(join(outDir, "cli.mjs"), "utf8");
+  expect(bundle).toContain('"better-sqlite3"');
+  expect(bundle).not.toContain("node_modules/better-sqlite3/");
+  expect(() => assertRoamBundle(root)).not.toThrow();
+  const fixtureBundle = join(root, "fixture-intercom.mjs");
+  const result = await buildFixture({ entryPoints: [entry], outfile: fixtureBundle, external: ["better-sqlite3", "sqlite-vec"] });
+  expect(Object.keys(result.metafile.inputs).some(path => path.endsWith("packages/intercom/src/protocol.ts"))).toBe(true);
+  const loaded = await import(pathToFileURL(fixtureBundle).href) as { openIntercomStore: unknown; encodeFrame: unknown };
+  expect(loaded.openIntercomStore).toBeTypeOf("function");
+  expect(loaded.encodeFrame).toBeTypeOf("function");
+}, 5000);
+
 it("the standalone hub subpath bundles without pi in the roaming and fixture builders", async () => {
   const root = fixture(), entry = join(root, "entry.ts"), outDir = join(root, "dist/roam");
   writeFileSync(entry, 'export { runStandaloneHub } from "@spider/roam/hub";\n');
@@ -251,7 +285,7 @@ it("workspace dependencies and lock metadata resolve the roaming package", () =>
   const workspace = JSON.parse(readFileSync("packages/roam/package.json", "utf8"));
   const host = JSON.parse(readFileSync("packages/host/package.json", "utf8"));
   const lock = JSON.parse(readFileSync("package-lock.json", "utf8"));
-  expect(workspace.dependencies).toEqual({ "@spider/db-core": "0.0.0", "@spider/herdr": "0.0.0", "@spider/memory": "0.0.0" });
+  expect(workspace.dependencies).toEqual({ "@spider/db-core": "0.0.0", "@spider/herdr": "0.0.0", "@spider/intercom": "0.0.0", "@spider/memory": "0.0.0" });
   expect(host.dependencies["@spider/roam"]).toBe("0.0.0");
   expect(lock.packages["node_modules/@spider/roam"]).toEqual({ resolved: "packages/roam", link: true });
   expect(lock.packages["packages/roam"]).toMatchObject({ name: "@spider/roam", version: "0.0.0", dependencies: workspace.dependencies });
@@ -264,13 +298,13 @@ it("the package gate refuses a missing roaming executable or link script", () =>
     readdirSync(dir, { recursive: true, encoding: "utf8" }).filter(file => file === "SKILL.md" || file.endsWith("/SKILL.md")).map(file => `${dir}/${file}`));
   const files = ["dist/extension.js", "dist/intercom/broker.mjs", "dist/dashboard/index.html", "dist/dashboard/assets/app-aaaaaaaa.js", "dist/dashboard/assets/app-aaaaaaaa.css",
     "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", ...skills,
-    "dist/roam/cli.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/intercom-switchover.mjs",
+    "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/intercom-switchover.mjs",
     "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs"];
   const gate = (present: string[]) => spawnSync(process.execPath, ["scripts/check-package-files.cjs"], {
     input: JSON.stringify([{ files: present.map(path => ({ path })) }]), encoding: "utf8", timeout: 2000,
   });
   expect(gate(files).status).toBe(0);
-  for (const missing of ["dist/roam/cli.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs",
+  for (const missing of ["dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs",
     "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs", "dist/intercom/broker.mjs",
     "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "packages/intercom/skills/pi-intercom/SKILL.md"]) {
     const result = gate(files.filter(file => file !== missing));

@@ -6,6 +6,10 @@ import { startHubControl, type HubControlReply, type HubControlRequest } from ".
 import * as productionHub from "../production-hub";
 import * as localRuntime from "../runtime";
 import * as agent from "../agent";
+import * as transportModule from "../transport";
+import * as hosting from "../production-supervisor";
+import * as appModule from "@spider/herdr/client/app";
+import * as hcModule from "@spider/herdr/client/hc";
 import { createClientFixture } from "../../../herdr/src/__tests__/testutil";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -32,8 +36,43 @@ async function fixture(identity = HUB, reply?: HubControlReply) {
   });
   sockets.push(socket);
   const out: string[] = [], err: string[] = [];
-  return { calls, out, err, invoke: (args: string[]) => main(args, { out: text => out.push(text), err: text => err.push(text) }) };
+  return { root, calls, out, err, invoke: (args: string[]) => main(args, { out: text => out.push(text), err: text => err.push(text) }) };
 }
+
+it.each(["stop", "resume"])("%s sends a hub-issued operation to the current box home", async action => {
+  const f = await fixture();
+  const db = { prepare() { return { get() { return { machine_id: BOX, epoch: 3 }; } }; } };
+  vi.spyOn(localRuntime, "openLocalCore").mockReturnValue({ root: f.root, db, config: localRuntime.readLocalIdentity(f.root), close() {} } as never);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  const operations: any[] = [];
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: any) { return peer; }, async exec(peer: any, argv: string[]) {
+    const operation = JSON.parse(argv[2]); operations.push(operation);
+    expect(peer.machineId).toBe(BOX);
+    return Buffer.from(JSON.stringify({ code: 0, reason: "intent-updated", operationId: operation.id, home: null, epoch: 3, repairCommand: null, value: null }));
+  } } as never);
+  expect(await f.invoke(["roam", action, "s-1"])).toBe(0);
+  expect(operations).toEqual([expect.objectContaining({ kind: `session-${action}`, machineId: BOX, expectedEpoch: 3, args: { sourceMachine: HUB, sessionId: "s-1" } })]);
+}, 5000);
+
+it.each(["0", false, null])("refuses a control reply with nonnumeric code %s", async code => {
+  const f = await fixture(), db = { prepare() { return { get() { return { machine_id: BOX, epoch: 3 }; } }; } };
+  vi.spyOn(localRuntime, "openLocalCore").mockReturnValue({ root: f.root, db, config: localRuntime.readLocalIdentity(f.root), close() {} } as never);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
+    const operation = JSON.parse(argv[2]); return Buffer.from(JSON.stringify({ code, reason: "forged success", operationId: operation.id }));
+  } } as never);
+  expect(await f.invoke(["roam", "stop", "s-1"])).toBe(1);
+  expect(f.out).toEqual([]); expect(f.err.join("")).toContain("Participant control is unavailable");
+  expect(f.err.join("")).not.toContain("forged success");
+}, 5000);
+
+it("private hosting observation invokes the producer with the explicit root", async () => {
+  const f = await fixture();
+  const producer = vi.spyOn(hosting, "observeLocalHosting").mockResolvedValue({ readiness: [], suspensions: [{ sessionId: "s-1", epoch: 2 }] });
+  expect(await f.invoke(["roam", "observe", "hosting"])).toBe(0);
+  expect(producer).toHaveBeenCalledWith(f.root);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ version: 1, machineId: HUB, kind: "hosting", value: { suspensions: [{ sessionId: "s-1", epoch: 2 }] } });
+}, 5000);
 
 it.each([
   ["agent", ["roam", "agent", "{}"]],
@@ -71,6 +110,18 @@ it("remote doctor reports a failed peer process rather than a generic unavailabl
     expect(await f.invoke(["roam", "doctor", "--", alias])).toBe(1);
     expect(f.err.join("")).toContain("Peer command failed (exit 1)");
   } finally { await hc.close(); }
+}, 5000);
+
+it("the Mac hub refuses core-only mode before starting placement", async () => {
+  const f = await fixture(), close = vi.fn(), app = vi.spyOn(appModule, "createAppClient");
+  const hc = vi.spyOn(hcModule, "createHcClient").mockImplementation(() => { throw new Error("core started before mode check"); });
+  mkdirSync(join(f.root, "herdr"), { recursive: true });
+  writeFileSync(join(f.root, "herdr", "config.json"), JSON.stringify({ mode: "core-only", core: { binary: "/fixture/hc", config: "/fixture/core" }, agentDirectory: "/fixture/agent", globalRoot: f.root, shellRc: "/fixture/rc", machines: [] }));
+  vi.spyOn(localRuntime, "openLocalCore").mockReturnValue({ config: { enabled: true, role: "hub" }, close } as never);
+  await expect(productionHub.startProductionHub(f.root)).rejects.toThrow("This view is available on the Mac.");
+  expect(app.mock.calls.length).toBe(0);
+  expect(hc.mock.calls.length).toBe(0);
+  expect(close).toHaveBeenCalledOnce();
 }, 5000);
 
 it("sync accepts a leading-dash alias after the end-of-options marker", async () => {

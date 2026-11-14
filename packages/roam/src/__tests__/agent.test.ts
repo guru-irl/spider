@@ -1,3 +1,4 @@
+import { unexpectedBootstrapProbe } from "./transport-fixture";
 import { afterEach, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
@@ -912,6 +913,7 @@ it("dispatches artifact receive with raw bytes under the authenticated source", 
   const peer: Peer = { machineId: BOX, alias: "box-1.invalid", node: "/node", pi: "/pi", cli: "/cli", core: "/core", globalRoot: destination.root };
   const commands: string[][] = [];
   const transport: Transport = {
+    bootstrapProbe: unexpectedBootstrapProbe,
     async resolve(value) { return value; },
     async exec(_peer, argv, options) {
       commands.push([...argv.slice(0, 3)]);
@@ -961,6 +963,7 @@ it("two agents export transfer and import one committed batch", async () => {
   }
   const manifest = readManifestPages(artifact.head as string, pages, sourcePorts.config.limits);
   const transport: Transport = {
+    bootstrapProbe: unexpectedBootstrapProbe,
     async resolve(value) { return value; },
     async exec(_peer, argv, options) { return dispatchArtifactCommand(argv, options.stdin, HUB, destination.ports); },
     async run() { throw new Error("unexpected run"); },
@@ -1004,6 +1007,7 @@ it("a hub pulls an agent export using the served manifest pages", async () => {
   }
   const manifest = readManifestPages(artifact.head as string, pages, hubPorts.config.limits);
   const transport: Transport = {
+    bootstrapProbe: unexpectedBootstrapProbe,
     async resolve(value) { return value; },
     async read(_peer, file, options) { return readPrivate(file, options.maxBytes); },
     async exec() { throw new Error("unexpected exec"); },

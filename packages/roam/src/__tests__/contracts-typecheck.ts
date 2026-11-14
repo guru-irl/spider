@@ -1,11 +1,12 @@
 import type { Db } from "@spider/db-core";
-import type { ApplyReceipt, BatchArtifact, ExportPolicy, Home, JsonObject, MachineId, Probe, ProcessIdentity, Readiness, ReplicaEffects, StoreBarrier, StoreKey } from "@spider/db-core/roam/types";
+import type { ApplyReceipt, BatchArtifact, ExportPolicy, Home, JsonObject, MachineId, Probe, ProcessIdentity, HubOperationReadiness, Readiness, ReplicaEffects, StoreBarrier, StoreKey } from "@spider/db-core/roam/types";
 import type {
-  AgentPorts, ArtifactManifest, CallOptions, Clock, DestinationObservation, Diagnostic, FreezeAck, GitPorts,
+  AgentPorts, ArtifactManifest, BootstrapPeer, CallOptions, Clock, DestinationObservation, Diagnostic, FreezeAck, GitPorts,
   HostIntent, HubPorts, Journal, Limits, MoveCheck, MovePorts, MoveRequest, MoveResult, Operation, Outcome,
   Peer, PlacementPort, PreparedMove, PreparedWorkspace, RecoveryPort, RoamConfig, SessionManifest,
   StorePort, SyncService, Transport, WorkspaceSnapshot,
 } from "@spider/roam/contracts";
+import type { BootstrapOptions, Inventory } from "@spider/roam/provision-contracts";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Assert<T extends true> = T;
@@ -26,9 +27,11 @@ type _Outcome = Assert<Equal<Outcome<{ ok: boolean }>, {
   code: 0 | 1 | 2 | 3; reason: string; operationId: string; home: Home | null; epoch: number | null;
   repairCommand: string | null; value: { ok: boolean } | null;
 }>>;
-type _CallOptions = Assert<Equal<CallOptions, { timeoutMs: number; maxBytes: number; stdin?: Buffer }>>;
+type _CallOptions = Assert<Equal<CallOptions, { timeoutMs: number; maxBytes: number; stdin?: Buffer; remoteTimeoutMs?: number;
+  postReserveMs?: number; signal?: AbortSignal; stdinForTimeout?: (remoteTimeoutMs: number) => Buffer; onConnected?: (connected: boolean) => void }>>;
 type _Transport = Assert<Equal<Transport, {
-  resolve(peer: Peer): Promise<Peer>;
+  resolve(peer: Peer, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Peer>;
+  bootstrapProbe(peer: BootstrapPeer, kind: "inventory", options?: BootstrapOptions): Promise<Inventory>;
   exec(peer: Peer, argv: readonly string[], options: CallOptions): Promise<Buffer>;
   run(peer: Peer, argv: readonly string[], operationId: string): Promise<{ terminal: string }>;
   read(peer: Peer, path: string, options: CallOptions): Promise<Buffer>;
@@ -88,7 +91,7 @@ type _MoveCheck = Assert<Equal<MoveCheck, {
 }>>;
 type _PreparedMove = Assert<Equal<PreparedMove, { workspace: PreparedWorkspace; session: SessionManifest }>>;
 type _DestinationObservation = Assert<Equal<DestinationObservation, {
-  home: Home; owner: Probe; readiness: Readiness | null; launchFailure: string | null; retired: boolean;
+  home: Home; owner: Probe; readiness: HubOperationReadiness | null; launchFailure: string | null; retired: boolean;
 }>>;
 type _MovePorts = Assert<Equal<MovePorts, {
   config: RoamConfig; globalDb: Db; journal: Journal; clock: Clock;
@@ -98,12 +101,16 @@ type _MovePorts = Assert<Equal<MovePorts, {
   transfer(check: MoveCheck, ack: FreezeAck, operation: Operation): Promise<PreparedMove>;
   verifySource(ack: FreezeAck, workspace: WorkspaceSnapshot): Promise<void>;
   barriers(machine: MachineId, required: readonly StoreBarrier[]): Promise<boolean>; replicateHome(home: Home): Promise<void>;
-  start(home: Home, prepared: PreparedMove, operation: Operation): Promise<Outcome<Readiness>>;
+  start(home: Home, prepared: PreparedMove, operation: Operation): Promise<Outcome<HubOperationReadiness>>;
   inspect(home: Home, operation: Operation): Promise<DestinationObservation>; retire(home: Home, operation: Operation): Promise<Probe>;
   unfreeze(home: Home, operation: Operation): Promise<void>; cleanup(check: MoveCheck, operation: Operation): Promise<void>; recovery: RecoveryPort;
 }>>;
 type _RecoveryPort = Assert<Equal<RecoveryPort, {
   revocationDb: Db; homes(machine: MachineId): readonly Home[]; mirror(sessionId: string, epoch: number): Promise<SessionManifest | null>;
-  restore(home: Home, mirror: SessionManifest, operation: Operation): Promise<Outcome<Readiness>>;
+  restore(home: Home, mirror: SessionManifest, operation: Operation): Promise<Outcome<HubOperationReadiness>>;
   conflicts(sessionId: string): Promise<readonly { machineId: MachineId; owner: Probe }[]>;
 }>>;
+
+// Local provenance cannot satisfy a launch or receipt contract.
+type _LocalIsNotLaunchReadiness = Assert<Equal<Extract<Readiness, { origin: "box-local" }> extends HubOperationReadiness ? true : false, false>>;
+type _ReceiptRequiresHubReadiness = Assert<Equal<Parameters<typeof import("../session-control").recordReadiness>[1], HubOperationReadiness>>;

@@ -47,13 +47,13 @@ export async function readPrivateJson(path: string): Promise<unknown | null> {
     return JSON.parse(await handle.readFile('utf8')) as unknown;
   } finally { await handle.close(); }
 }
-export async function writePrivateJson(path: string, value: unknown): Promise<void> {
+export async function writePrivateJson(path: string, value: unknown, publish?: (source: string, destination: string) => Promise<void>): Promise<void> {
   await privateDirectory(dirname(path));
   try { const info = await lstat(path); if (!info.isFile() || info.isSymbolicLink()) throw new HerdrError('unsafe-state-path', 'Refusing a non-regular state destination'); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   const bytes = JSON.stringify(value); if (Buffer.byteLength(bytes) > 1024 * 1024) throw new HerdrError('state-too-large', 'State exceeds 1 MiB');
   const temporary = `${path}.${randomBytes(8).toString('hex')}.new`;
-  try { const handle = await open(temporary, 'wx', 0o600); try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); } await rename(temporary, path); }
+  try { const handle = await open(temporary, 'wx', 0o600); try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); } if (publish) await publish(temporary, path); else { await rename(temporary, path); } }
   finally { await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }
 }
 export async function jsonFiles(directory: string): Promise<string[]> {

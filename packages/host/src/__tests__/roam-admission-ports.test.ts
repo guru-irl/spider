@@ -1,11 +1,16 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { bindSession, openDb, openDbAt, paths, setGlobalDbPathForTests, type Db } from "@spider/db-core";
 import * as dbCore from "@spider/db-core";
-import { claimIdLock } from "@spider/herdr/sessions/id-lock";
+import { writeLocal } from "@spider/db-core/roam/local-state";
+import { createRunningIntentAuthority } from "@spider/roam/session-control";
+import { claimIdLock, inspectIdLock } from "@spider/herdr/sessions/id-lock";
+import { writeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
+import { createSessionLeases, type ProcessInventoryPorts } from "@spider/herdr/sessions/lease";
+import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { openJournal } from "@spider/roam/journal";
 import { createAdmissionPorts, registerAdmission } from "../roam/admission";
 
@@ -53,6 +58,52 @@ it("reads active membership and origin from the real migrated worktree", async (
   expect(state).toMatchObject({ participating: true, origin: f.machine, captureSafe: true, initialConflict: false, unfinishedFreeze: false });
   expect(state.states).toEqual([{ sessionId: "session-1", epoch: 1, state: "active", moveId: null, freezeSeq: null }]);
   expect(await f.ports.localMachine()).toBe(f.machine);
+}, 5000);
+
+it.each([
+  ["box-local", "missing", "participant-config-unavailable"], ["hub-intent", "missing", "participant-config-unavailable"],
+  ["box-local", "unsafe", "participant-config-unavailable"], ["hub-intent", "unsafe", "participant-config-unavailable"],
+  ["box-local", "wrong-role", "participant-not-box"], ["hub-intent", "capture-disabled", "participant-capture-uninitialized"],
+] as const)("blocks a %s participant with %s enrollment before claiming a lock", async (provenance, failure, reason) => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const f = fixture();
+  f.global.prepare("UPDATE roam_meta SET store_key='global',capture_enabled=1 WHERE id=1").run();
+  if (failure !== "missing") {
+    const config = { enabled: false, role: failure === "wrong-role" ? "hub" : "box", machineId: f.machine,
+      hubMachineId: failure === "wrong-role" ? f.machine : "00000000-0000-4000-8000-000000000001", peers: [], discoveryRoots: [], coreUnit: "fixture.service" };
+    const configFile = join(f.globalRoot, "roam", "config.json");
+    writeFileSync(configFile, JSON.stringify(config), { mode: 0o600 });
+    if (failure === "unsafe") chmodSync(configFile, 0o644);
+    if (failure === "capture-disabled") f.global.prepare("UPDATE roam_meta SET capture_enabled=0 WHERE id=1").run();
+  }
+  if (provenance === "box-local") {
+    writeLocal(f.global, "participant-origin", "session-1", { kind: "box-local", machineId: f.machine, epoch: 1,
+      file: f.file, cwd: f.cwd, pid: f.identity.pid, startIdentity: f.identity.startIdentity, stopped: false });
+  } else {
+    await createRunningIntentAuthority(f.global).set({ sessionId: "session-1", epoch: 1, file: f.file, cwd: f.cwd,
+      desired: "running", suspended: null, moveId: null }, "start-1", { machineId: f.machine, hubMachineId: "00000000-0000-4000-8000-000000000001" });
+  }
+  const hooks = new Map<string, Function>(), lock = vi.spyOn(f.ports, "lock");
+  const gate = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, f.ports);
+  await hooks.get("session_start")!({ reason: "resume" }, f.ctx);
+  expect(gate.inspect()).toMatchObject({ kind: "blocked", blockers: [{ detail: expect.stringContaining(reason) }] });
+  expect(lock).not.toHaveBeenCalled();
+  await gate.close();
+}, 5000);
+
+it("admits a nonparticipant when capture is off and enrollment is unreadable", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const f = fixture();
+  f.current.prepare("DELETE FROM roam_sessions WHERE session_id='session-1'").run();
+  f.global.prepare("UPDATE roam_meta SET capture_enabled=0 WHERE id=1").run();
+  const configFile = join(f.globalRoot, "roam", "config.json");
+  writeFileSync(configFile, "unreadable configuration", { mode: 0o600 }); chmodSync(configFile, 0o644);
+  const hooks = new Map<string, Function>(), lock = vi.spyOn(f.ports, "lock");
+  const gate = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, f.ports);
+  await hooks.get("session_start")!({ reason: "resume" }, f.ctx);
+  expect(gate.inspect()).toMatchObject({ kind: "ordinary", blockers: [] });
+  expect(lock).not.toHaveBeenCalled();
+  await gate.close();
 }, 5000);
 
 it("checks the separate bound worktree as well as the current worktree", async () => {
@@ -280,6 +331,96 @@ it("a missing machine identity is an error and is not recreated", async () => {
   unlinkSync(file);
   await expect(f.ports.localMachine()).rejects.toThrow();
   expect(() => unlinkSync(file)).toThrow();
+}, 5000);
+
+it("admission adopts both launcher-held locks before the spawn reply", async () => {
+  const f = fixture();
+  const lockRoot = join(f.globalRoot, "herdr");
+  const parent = { pid: 4241, startIdentity: "launcher-start" };
+  const probe = async (pid: number) => pid === parent.pid ? { kind: "live" as const, startIdentity: parent.startIdentity } : f.probe(pid);
+  const leases = createSessionLeases(lockRoot);
+  const inventory: ProcessInventoryPorts = { leases, presence: createProcessPresence(lockRoot), processes: async () => [], probe };
+  const launcher = await claimIdLock(lockRoot, "session-1", parent, probe, { bootId: async () => "boot-fixture" });
+  const lease = await leases.claim(f.file, parent, inventory);
+  const handoff = await launcher.prepareHandoff("launch-1", f.file);
+  const handoffFile = await writeLaunchHandoff(lockRoot, { version: 1, operationId: handoff.operationId, sessionId: "session-1",
+    sessionFile: f.file, nonce: handoff.nonce, leaseToken: lease.token });
+  vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE", handoffFile);
+  vi.stubEnv("SPIDER_HERDR_LEASE_FILE", undefined);
+  vi.stubEnv("SPIDER_HERDR_LEASE_TOKEN", undefined);
+  expect(existsSync(handoffFile)).toBe(true);
+  const ports = createAdmissionPorts({ identity: f.identity, probe, bootId: async () => "boot-fixture" });
+  const hooks = new Map<string, Function>();
+  const gate = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, ports);
+  try {
+    await hooks.get("session_start")!({ reason: "startup" }, f.ctx);
+    expect(gate.inspect().kind).toBe("ordinary");
+    expect(await leases.get(f.file)).toMatchObject(f.identity);
+    expect(existsSync(handoffFile)).toBe(false);
+    expect(process.env.SPIDER_HERDR_HANDOFF_FILE).toBeUndefined();
+    expect(process.env.SPIDER_HERDR_HANDOFF_NONCE).toBeUndefined();
+    await launcher.release();
+    const other = { pid: 4243, startIdentity: "other-start" };
+    await expect(claimIdLock(lockRoot, "session-1", other, probe, { bootId: async () => "boot-fixture" })).rejects.toThrow(/owner/i);
+    await gate.close();
+    expect(await leases.get(f.file)).toBeNull();
+    const replacement = await claimIdLock(lockRoot, "session-1", other, probe, { bootId: async () => "boot-fixture" });
+    await replacement.release();
+  } finally {
+    await gate.close();
+    await launcher.cancelHandoff(handoff.operationId);
+    await launcher.release();
+    await leases.release(f.file, lease.token);
+  }
+}, 5000);
+
+it.each(["nonprivate", "symlink", "wrong-file", "wrong-lease"] as const)("admission refuses unsafe handoff file: %s", async mode => {
+  const f = fixture(), lockRoot = join(f.globalRoot, "herdr");
+  const parent = { pid: 4241, startIdentity: "launcher-start" };
+  const probe = async (pid: number) => pid === parent.pid ? { kind: "live" as const, startIdentity: parent.startIdentity } : f.probe(pid);
+  const leases = createSessionLeases(lockRoot);
+  const inventory: ProcessInventoryPorts = { leases, presence: createProcessPresence(lockRoot), processes: async () => [], probe };
+  const launcher = await claimIdLock(lockRoot, "session-1", parent, probe, { bootId: async () => "boot-fixture" });
+  const lease = await leases.claim(f.file, parent, inventory);
+  const handoff = await launcher.prepareHandoff("launch-1", f.file);
+  const path = await writeLaunchHandoff(lockRoot, { version: 1, operationId: handoff.operationId, sessionId: "session-1",
+    sessionFile: mode === "wrong-file" ? join(root, "another.jsonl") : f.file,
+    nonce: handoff.nonce, leaseToken: mode === "wrong-lease" ? "f".repeat(64) : lease.token });
+  if (mode === "nonprivate") chmodSync(path, 0o644);
+  if (mode === "symlink") { renameSync(path, `${path}.saved`); symlinkSync(`${path}.saved`, path); }
+  const ports = createAdmissionPorts({ identity: f.identity, probe, bootId: async () => "boot-fixture", env: { SPIDER_HERDR_HANDOFF_FILE: path } });
+  try {
+    await expect(ports.lock("session-1", f.file)).rejects.toMatchObject({ code: mode === "wrong-lease" ? "lease-token-invalid" : "invalid-launch-handoff" });
+    expect(await inspectIdLock(lockRoot, "session-1")).toMatchObject({ identity: parent, pendingOperationId: "launch-1" });
+    expect(await leases.get(f.file)).toMatchObject(parent);
+    expect(existsSync(path)).toBe(true);
+  } finally { await launcher.cancelHandoff("launch-1"); await leases.release(f.file, lease.token); }
+}, 5000);
+
+it("a wrong nonce in the private file leaves the intended handoff intact", async () => {
+  const f = fixture(), lockRoot = join(f.globalRoot, "herdr");
+  const parent = { pid: 4241, startIdentity: "launcher-start" };
+  const probe = async (pid: number) => pid === parent.pid ? { kind: "live" as const, startIdentity: parent.startIdentity } : f.probe(pid);
+  const leases = createSessionLeases(lockRoot);
+  const inventory: ProcessInventoryPorts = { leases, presence: createProcessPresence(lockRoot), processes: async () => [], probe };
+  const launcher = await claimIdLock(lockRoot, "session-1", parent, probe, { bootId: async () => "boot-fixture" });
+  const lease = await leases.claim(f.file, parent, inventory);
+  const handoff = await launcher.prepareHandoff("launch-1", f.file);
+  const record = { version: 1 as const, operationId: handoff.operationId, sessionId: "session-1", sessionFile: f.file,
+    nonce: handoff.nonce, leaseToken: lease.token };
+  const path = await writeLaunchHandoff(lockRoot, { ...record, nonce: "0".repeat(64) });
+  const ports = createAdmissionPorts({ identity: f.identity, probe, bootId: async () => "boot-fixture", env: { SPIDER_HERDR_HANDOFF_FILE: path } });
+  await expect(ports.lock("session-1", f.file)).rejects.toMatchObject({ code: "session-id-owner" });
+  expect(existsSync(path)).toBe(true);
+  expect(await inspectIdLock(lockRoot, "session-1")).toMatchObject({ identity: parent, pendingOperationId: "launch-1" });
+  expect(await leases.get(f.file)).toMatchObject(parent);
+  unlinkSync(path);
+  await writeLaunchHandoff(lockRoot, record);
+  const release = await ports.lock("session-1", f.file);
+  expect(existsSync(path)).toBe(false);
+  expect(await leases.get(f.file)).toMatchObject(f.identity);
+  await release();
+  await launcher.release();
 }, 5000);
 
 it("a preclaimed ID lock is adopted by the exact process and boot identity", async () => {

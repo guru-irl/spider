@@ -201,6 +201,15 @@ it("reports the SQLite 3.38 disabled-store floor separately from the capture flo
   expect(enabled.some(d => d.severity === "block" && /sqlite3.*3\.42.*capture/i.test(d.reason))).toBe(true);
 }, 5000);
 
+it("a box with hub scheduling disabled still reports capture prerequisites as blocking", async () => {
+  const p = ports(); p.sqlite.set(BOX, { bundled: "3.41.9", cli: "3.41.9" });
+  const rows = await diagnostics.doctorLocal(config({ enabled: false, role: "box", machineId: BOX, hubMachineId: HUB, peers: [] }), p);
+  expect(rows).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/Bundled SQLite.*3\.42/) }),
+    expect.objectContaining({ severity: "block", reason: expect.stringMatching(/sqlite3 CLI.*3\.42.*capture/) }),
+  ]));
+}, 5000);
+
 it("a non-roamable store is informational while roaming is disabled", async () => {
   const root = mkdtempSync(join(dirname(scratchDbPath("roam-duplicate")), "roam-duplicate-"));
   roots.push(root);

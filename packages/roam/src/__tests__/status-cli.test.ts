@@ -253,7 +253,7 @@ it("doctor shows an actual failed proxy launch and clears it after a successful 
   } as unknown as HcClient;
   const registry = { async list() { return []; } } as unknown as TerminalRegistry;
   const placement = createRoamPlacement({ hc, app: null, registry, hcBinary: join(root, "fixture-hc"), stateRoot: directory });
-  const row = { operationId: "op-1", sessionId: "session-a", epoch: 1, cwd: "/fixture", file: "/fixture/session.jsonl", core: "remote-core", terminal: "box-1.invalid/t1" };
+  const row = { origin: "hub-operation" as const, opId: "op-1", sessionId: "session-a", epoch: 1, cwd: "/fixture", file: "/fixture/session.jsonl", core: "remote-core", terminal: "box-1.invalid/t1" };
   await expect(placement.reconcile([row])).rejects.toMatchObject({ code: "missing-hc" });
   const before = snapshot(root), output: string[] = [];
   expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(0);

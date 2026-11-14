@@ -111,7 +111,7 @@ export function buildMatrix(tier, selected, reports) {
       reason: selected.includes(id) ? 'selected story produced no result (worker failed or interrupted)' : 'outside selected profile or no discovered implementation',
     };
     if (id !== 'R02' || report.result !== 'passed') return report;
-    const limit = 'Placement adapter only with synthetic readiness; packaged observer-to-placement path deferred to Task 3.4';
+    const limit = 'Packaged observer-to-placement uses a fixture owner; native app and pi owner not exercised';
     return { ...report, reason: [report.reason, limit].filter(Boolean).join('; ') };
   });
 }
@@ -182,7 +182,7 @@ export async function packEntryDigests(checkout, root, pack) {
   if (result.code !== 0) throw new Error('pack failed');
   // npm 10 may rebuild dist during pack even with --ignore-scripts. Snapshot
   // the checkout as packed, including the new build id, not its pre-pack state.
-  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs'];
+  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/cli-main.mjs', 'roam/intercom-helper.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs'];
   const digests = Object.fromEntries(entries.map(entry => [entry, createHash('sha256').update(readFileSync(path.join(checkout, 'dist', entry))).digest('hex')]));
   writeFileSync(path.join(root, 'entries.json'), JSON.stringify(digests, null, 2));
   return { entries, digests };

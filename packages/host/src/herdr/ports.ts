@@ -28,7 +28,7 @@ import { doctorHerdr, checkNodeVersion, probeLaunch, type DoctorParts, type Doct
 import { feedWriterLiveness } from '@spider/herdr/feed/writer';
 import { sessionFeedIsFresh } from '@spider/herdr/feed/freshness';
 import { snapshot, digest, managedProjection, rootNotesValue, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles } from '@spider/herdr/setup/backup';
-import { runtimeInstallPath, standardHerdrConfigPath, type SetupRequest, type SetupParts, type SetupContext, type InstallFile, type RuntimeFile, type RuntimeRootObservation } from '@spider/herdr/setup/installer';
+import { CoreOnlySetupError, runtimeInstallPath, standardHerdrConfigPath, type SetupRequest, type SetupParts, type SetupContext, type InstallFile, type RuntimeFile, type RuntimeRootObservation } from '@spider/herdr/setup/installer';
 import type { HerdrCliPorts } from '@spider/herdr/setup/cli';
 import type { CoreIdentity, TerminalIdentity, TerminalAddress, MachineName, HcRunRequest } from '@spider/herdr';
 import { parseFeed } from '../../../herdr/assets/shared/feed.js';
@@ -42,7 +42,8 @@ import { createMemoryReviewDbs, decideMemoryReview, listMemoryReview } from './m
 import { createProcessPresence } from '@spider/herdr/sessions/presence';
 import { createSessionLeases, assessSessionLiveness, type ProcessIdentity, type ProcessInventoryPorts, type ProcessProbe } from '@spider/herdr/sessions/lease';
 import { claimIdLock } from '@spider/herdr/sessions/id-lock';
-import { createTerminalRegistry, readPrivateJson, recordedExtensionArguments } from '@spider/herdr/sessions/registry';
+import { readLaunchHandoff, removeLaunchHandoff } from '@spider/herdr/sessions/launch-handoff';
+import { canonicalSessionFile, createTerminalRegistry, readPrivateJson, recordedExtensionArguments } from '@spider/herdr/sessions/registry';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import { fixtureProcessDomain } from './fixture-process-domain.js';
 import { collectRemoteChunks, createFileLogSink, type LogSink, type RemoteLogLocation, type CollectedLogs } from '@spider/herdr/remote/transfer';
@@ -105,6 +106,7 @@ export interface ParticipantLockOptions {
   identity?: ProcessIdentity;
   probe?: (pid: number) => Promise<ProcessProbe>;
   bootId?: () => Promise<string>;
+  env?: Readonly<NodeJS.ProcessEnv>;
 }
 
 /** Hold both local ownership records until the caller releases them. */
@@ -112,7 +114,18 @@ export async function lockParticipant(root: string, sessionId: string, file: str
   const inventory = createProcessInventory(root);
   const identity = options.identity ?? { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' };
   const probe = options.probe ?? inventory.probe;
-  const id = await claimIdLock(root, sessionId, identity, probe, options.bootId ? { bootId: options.bootId } : {});
+  const env = options.env ?? process.env;
+  const canonical = await canonicalSessionFile(file), handoffPath = env.SPIDER_HERDR_HANDOFF_FILE;
+  if (handoffPath === undefined && (env.SPIDER_HERDR_HANDOFF_OPERATION_ID !== undefined || env.SPIDER_HERDR_HANDOFF_NONCE !== undefined)) {
+    throw new HerdrError('invalid-launch-handoff', 'Participant handoff requires a private file');
+  }
+  const fromFile = handoffPath === undefined ? undefined : await readLaunchHandoff(root, handoffPath, sessionId, canonical);
+  const handoff = fromFile && { operationId: fromFile.operationId, nonce: fromFile.nonce, file: canonical };
+  const leaseToken = fromFile?.leaseToken;
+  if (handoff && (!leaseToken || (await inventory.leases.get(canonical))?.token !== leaseToken)) {
+    throw new HerdrError('lease-token-invalid', 'Participant handoff requires its exact file lease');
+  }
+  const id = await claimIdLock(root, sessionId, identity, probe, { ...(options.bootId ? { bootId: options.bootId } : {}), ...(handoff ? { handoff } : {}) });
   const isSelf = (value: { pid: number; startIdentity: string | null }) => value.pid === identity.pid && value.startIdentity === identity.startIdentity;
   const others: ProcessInventoryPorts = {
     ...inventory, probe,
@@ -121,14 +134,26 @@ export async function lockParticipant(root: string, sessionId: string, file: str
     leases: { ...inventory.leases, get: async path => { const lease = await inventory.leases.get(path); return lease && isSelf(lease) ? null : lease; } },
   };
   try {
-    const existing = await inventory.leases.get(file);
-    const lease = existing && isSelf(existing) ? existing : await inventory.leases.claim(file, identity, others, { mode: 'switch', sessionId: sessionId as SessionId });
+    const existing = await inventory.leases.get(canonical);
+    const lease = handoff ? await inventory.leases.adopt(canonical, leaseToken!, identity) :
+      existing && isSelf(existing) ? existing : await inventory.leases.claim(canonical, identity, others, { mode: 'switch', sessionId: sessionId as SessionId });
+    if (handoff) {
+      await removeLaunchHandoff(root, handoff.operationId);
+      if (env === process.env) {
+        delete process.env.SPIDER_HERDR_HANDOFF_FILE;
+        delete process.env.SPIDER_HERDR_HANDOFF_OPERATION_ID;
+        delete process.env.SPIDER_HERDR_HANDOFF_NONCE;
+        process.env.SPIDER_HERDR_LEASE_FILE = canonical;
+        process.env.SPIDER_HERDR_LEASE_TOKEN = lease.token;
+      }
+    }
     return async () => {
       try { await inventory.leases.release(file, lease.token, { mode: 'switch' }); }
       finally { await id.release(); }
     };
   } catch (error) {
-    await id.release();
+    // An adopted ID stays fenced while its process is alive, even if file adoption fails.
+    if (!handoff) await id.release();
     throw error;
   }
 }
@@ -349,7 +374,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   const globalRoot = env.SPIDER_GLOBAL_ROOT ?? paths.globalRoot;
   const warnedConfig = new Set<string>();
   const clients = new Map<string, ReturnType<typeof createHcClient>>();
-  const client = (request: SetupRequest) => {
+  const client = (request: SetupRequest<HerdrConfig>) => {
     const key = request.config.core.binary;
     let hc = clients.get(key); if (!hc) { hc = createHcClient({ binary: key, env }); clients.set(key, hc); } return hc;
   };
@@ -677,6 +702,22 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       return { failures: [], warnings: [{ item, code: 'inspection-unavailable', message: `No live ${item} evidence is available`, repair: 'Start a configured owner and rerun doctor.' }] };
     },
   });
+  const readRequest = async (configPath?: string): Promise<SetupRequest<HerdrConfig>> => {
+    const settings = configValues(process.cwd(), undefined, globalRoot);
+    for (const warning of settings.warnings.filter(message => /^herdr\.(config|enabled) /.test(message))) {
+      if (!warnedConfig.has(warning)) { warnedConfig.add(warning); process.stderr.write((warning.startsWith('herdr.config ') ? HERDR_NOTICES.repoConfig.text : HERDR_NOTICES.repoEnabled.text) + '\n'); }
+    }
+    let path = configPath;
+    if (!path) {
+      const layer = readLayer(join(globalRoot, 'config.json'));
+      if (layer.error) throw new HerdrError('invalid-config', layer.error);
+      const configured = settings.config['herdr.config'];
+      if (configured !== undefined && typeof configured !== 'string') throw new HerdrError('invalid-config', 'Global herdr.config must be a path string');
+      path = configured ? resolve(globalRoot, configured) : standardHerdrConfigPath(globalRoot);
+    }
+    const config = parseHerdrConfig({ ...JSON.parse(await readFile(path, 'utf8')), enabled: settings.config['herdr.enabled'] } as unknown);
+    return { config, configPath: resolve(path), packageRoot, journalRoot: join(config.globalRoot, 'herdr/setup') };
+  };
   return {
     spacePorts,
     assertAgentDirectory: async request => {
@@ -690,20 +731,9 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         throw new HerdrError('agent-directory-mismatch', `Configured agentDirectory ${configured} differs from pi's effective agent directory ${effective}. Change agentDirectory in ${request.configPath} to ${effective}, or set PI_CODING_AGENT_DIR to ${configured}.`);
     },
     request: async configPath => {
-      const settings = configValues(process.cwd(), undefined, globalRoot);
-      for (const warning of settings.warnings.filter(message => /^herdr\.(config|enabled) /.test(message))) {
-        if (!warnedConfig.has(warning)) { warnedConfig.add(warning); process.stderr.write((warning.startsWith('herdr.config ') ? HERDR_NOTICES.repoConfig.text : HERDR_NOTICES.repoEnabled.text) + '\n'); }
-      }
-      let path = configPath;
-      if (!path) {
-        const layer = readLayer(join(globalRoot, 'config.json'));
-        if (layer.error) throw new HerdrError('invalid-config', layer.error);
-        const configured = settings.config['herdr.config'];
-        if (configured !== undefined && typeof configured !== 'string') throw new HerdrError('invalid-config', 'Global herdr.config must be a path string');
-        path = configured ? resolve(globalRoot, configured) : standardHerdrConfigPath(globalRoot);
-      }
-      const config = parseHerdrConfig({ ...JSON.parse(await readFile(path, 'utf8')), enabled: settings.config['herdr.enabled'] });
-      return { config, configPath: resolve(path), packageRoot, journalRoot: join(config.globalRoot, 'herdr/setup') };
+      const request = await readRequest(configPath);
+      if (request.config.mode === 'core-only') throw new CoreOnlySetupError({ ...request, config: request.config });
+      return { ...request, config: request.config };
     },
     async setupParts(request) {
       let preparedSpaces: SpaceSetupPorts | undefined;

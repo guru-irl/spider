@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from 'vitest';
-import { startTestBroker } from './test-support.js';
+import { startTestBroker, testBrokerEnv } from './test-support.js';
 import { type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
 import { getBrokerLaunchSpec, getCompiledBrokerPath } from './broker/spawn.js';
@@ -11,7 +11,7 @@ let broker: ChildProcess;
 const legacy = new IntercomClient(), fork = new IntercomClient();
 const launch = getBrokerLaunchSpec(getCompiledBrokerPath(), 'npx', ['--no-install', 'tsx']);
 beforeAll(async () => {
-  broker = startTestBroker(launch.command, launch.args, { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] }, 'suite');
+  broker = startTestBroker(launch.command, launch.args, { env: testBrokerEnv(), stdio: ['ignore', 'pipe', 'pipe'] }, 'suite');
   await new Promise<void>((resolve, reject) => {
     let output = '';
     const timer = setTimeout(() => reject(new Error('Compiled broker did not become ready')), 4000);

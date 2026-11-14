@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 
 import path from "node:path";
-import test, { testTmpDir, startTestBroker } from "../test-support.js";
+import test, { testTmpDir, startTestBroker, testBrokerEnv } from "../test-support.js";
 import type { BrokerMessage, SessionRegistration } from "../types.js";
 import { IntercomClient } from "./client.js";
 import { ExtensionStateManager } from "./extension-state.js";
@@ -45,7 +45,7 @@ async function startBroker(agentDir: string): Promise<ChildProcessWithoutNullStr
     [path.join(repoDir, "dist/intercom/broker.mjs")],
     {
       cwd: repoDir,
-      env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+      env: { ...testBrokerEnv(), PI_CODING_AGENT_DIR: agentDir },
       stdio: ["pipe", "pipe", "pipe"],
     },
   );

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { assertTestConfigPath, openDb, openDbReadOnly, type Db } from "@spider/db-core";
@@ -10,7 +10,7 @@ import {
 import {
   INTERCOM_EXCHANGE_BYTES, INTERCOM_HOP_ALLOWANCE_MS, INTERCOM_PAYLOAD_MS, INTERCOM_QUEUE_BYTES, INTERCOM_QUEUE_MESSAGES,
   type IntercomAcceptance, type IntercomEdgeState, type IntercomFrame, type IntercomIdentity, type IntercomMessageFrame, type IntercomQueue,
-  type IntercomPairResume, type IntercomReceiptFrame, type IntercomReceiptInput, type IntercomState, type IntercomStore, type IntercomStoreOptions, type OutboundMessage,
+  type IntercomPairFence, type IntercomPairResume, type IntercomReceiptFrame, type IntercomReceiptInput, type IntercomState, type IntercomStore, type IntercomStoreOptions, type OutboundMessage,
   type RebindProof, type RetainedIntercom,
 } from "./intercom-contracts";
 import { decodeFrame, encodeFrame, isIntercomPairResume, isRebindProof, makeMessageFrame } from "./intercom-codec";
@@ -27,22 +27,25 @@ const schemaColumns: Readonly<Record<string, readonly string[]>> = {
   intercom_receipts: ["receipt_key", "id", "peer", "frame_json", "acknowledged", "sent"],
   intercom_resumptions: ["from_key", "to_key", "peer", "resume_json"],
   intercom_edge_state: ["peer", "edge_epoch", "state_json"],
+  intercom_pair_fences: ["peer", "edge_epoch", "fence_id", "fenced_at"],
+  intercom_pair_approvals: ["peer", "edge_epoch", "operation_id", "graph_digest", "fence_id"],
+  intercom_revocation_notices: ["id", "frame_json"],
 };
 const schemaKeys: Readonly<Record<string, readonly (readonly string[])[]>> = {
   intercom_messages: [["id"], ["from_key", "to_key", "pair_sequence"]],
   intercom_copies: [["direction", "id"]], intercom_cursors: [["direction", "from_key", "to_key"]],
   intercom_receipts: [["receipt_key"]], intercom_resumptions: [["from_key", "to_key"]],
-  intercom_edge_state: [["peer", "edge_epoch"]],
+  intercom_edge_state: [["peer", "edge_epoch"]], intercom_pair_fences: [["peer"]], intercom_pair_approvals: [["peer"]], intercom_revocation_notices: [["id"]],
 };
 function validateSchema(db: Db, tables: readonly { name: string }[], version: number): void {
   const names = new Set(tables.map(row => row.name));
-  if (tables.some(row => !(row.name in schemaColumns)) || Object.keys(schemaColumns).some(name => name !== "intercom_edge_state" && !names.has(name)) ||
-      (version === 2) !== names.has("intercom_edge_state")) {
+  const introduced = (name: string) => name === "intercom_edge_state" ? 2 :
+    name === "intercom_pair_fences" || name === "intercom_pair_approvals" || name === "intercom_revocation_notices" ? 3 : 1;
+  if (tables.some(row => !(row.name in schemaColumns)) || Object.keys(schemaColumns).some(name => names.has(name) !== (version >= introduced(name)))) {
     throw new Error("Invalid or incomplete intercom store schema");
   }
   for (const [table, expected] of Object.entries(schemaColumns)) {
-    // Databases created by 3.6b acquire this additive table on their next open.
-    if (table === "intercom_edge_state" && !names.has(table)) continue;
+    if (!names.has(table)) continue;
     const columns = db.prepare("SELECT name FROM pragma_table_info(?) ORDER BY cid").all(table) as { name: string }[];
     if (JSON.stringify(columns.map(column => column.name)) !== JSON.stringify(expected)) throw new Error("Invalid or incomplete intercom store schema");
     const required = schemaKeys[table] ?? [];
@@ -52,7 +55,7 @@ function validateSchema(db: Db, tables: readonly { name: string }[], version: nu
       throw new Error("Invalid intercom store identity constraints");
     }
   }
-  for (const table of ["intercom_copies", "intercom_receipts"]) {
+  for (const table of ["intercom_copies", "intercom_receipts", ...(version >= 3 ? ["intercom_revocation_notices"] : [])]) {
     const keys = db.prepare("SELECT \"table\",\"from\",\"to\" FROM pragma_foreign_key_list(?)").all(table) as { table: string; from: string; to: string }[];
     if (!keys.some(key => key.table === "intercom_messages" && key.from === "id" && key.to === "id")) throw new Error("Invalid intercom store identity constraints");
   }
@@ -106,7 +109,7 @@ function prepareFile(file: string, machineId: string): void {
     if (tables.length) {
       const meta = probe.prepare("SELECT machine_id, version FROM intercom_meta WHERE id=1").get() as { machine_id: string; version: number } | undefined;
       if (!meta || meta.machine_id !== machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 && meta.version !== 2) throw new Error("Unsupported intercom store version");
+      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3) throw new Error("Unsupported intercom store version");
       validateSchema(probe, tables, meta.version);
     }
   } finally { probe.close(); }
@@ -283,15 +286,24 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         CREATE TABLE IF NOT EXISTS intercom_edge_state (
           peer TEXT NOT NULL, edge_epoch TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY(peer,edge_epoch)
         );
+        CREATE TABLE IF NOT EXISTS intercom_pair_fences (
+          peer TEXT PRIMARY KEY, edge_epoch TEXT NOT NULL, fence_id TEXT NOT NULL, fenced_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS intercom_pair_approvals (
+          peer TEXT PRIMARY KEY, edge_epoch TEXT NOT NULL, operation_id TEXT NOT NULL, graph_digest TEXT NOT NULL, fence_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS intercom_revocation_notices (
+          id TEXT PRIMARY KEY REFERENCES intercom_messages(id), frame_json TEXT NOT NULL
+        );
         CREATE INDEX IF NOT EXISTS intercom_copy_peer ON intercom_copies(direction,peer,state);
         CREATE INDEX IF NOT EXISTS intercom_message_pair ON intercom_messages(from_key,to_key,pair_sequence);
         CREATE INDEX IF NOT EXISTS intercom_receipt_peer ON intercom_receipts(peer,acknowledged);
       `);
-      db.prepare("INSERT OR IGNORE INTO intercom_meta(id,machine_id,version,last_clock) VALUES(1,?,2,?)").run(options.machineId, firstNow);
+      db.prepare("INSERT OR IGNORE INTO intercom_meta(id,machine_id,version,last_clock) VALUES(1,?,3,?)").run(options.machineId, firstNow);
       const meta = db.prepare("SELECT machine_id,version,last_clock FROM intercom_meta WHERE id=1").get() as MetaRow;
       if (!meta || meta.machine_id !== options.machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 && meta.version !== 2 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
-      if (meta.version === 1) db.prepare("UPDATE intercom_meta SET version=2 WHERE id=1").run();
+      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
+      if (meta.version < 3) db.prepare("UPDATE intercom_meta SET version=3 WHERE id=1").run();
     }).immediate();
     checkpoint();
   } catch (error) { db.close(); throw error; }
@@ -597,7 +609,83 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     return state;
   };
 
+  const pairFence = (peer: string): IntercomPairFence | null => {
+    edgeKey(peer, "fence");
+    const row = db.prepare("SELECT peer,edge_epoch,fence_id,fenced_at FROM intercom_pair_fences WHERE peer=?").get(peer) as
+      { peer: string; edge_epoch: string; fence_id: string; fenced_at: number } | undefined;
+    if (!row) return null;
+    edgeKey(row.peer, row.edge_epoch);
+    if (row.peer !== peer || !isMachineId(row.fence_id) || !safeInteger(row.fenced_at)) throw new Error("Invalid intercom fence metadata");
+    return { peer: row.peer, edgeEpoch: row.edge_epoch, fenceId: row.fence_id, fencedAt: row.fenced_at };
+  };
+
   const store: IntercomStore = {
+    pairFence,
+    fencePair(peer, edgeEpoch, fenceId) {
+      edgeKey(peer, edgeEpoch);
+      if (fenceId !== undefined && !isMachineId(fenceId)) throw new Error("Invalid intercom fence generation");
+      return db.raw.transaction(() => {
+        const existing = pairFence(peer);
+        if (existing) return { fence: existing, upstream: [] };
+        const fence = { peer, edgeEpoch, fenceId: fenceId ?? randomUUID(), fencedAt: now() };
+        db.prepare("INSERT INTO intercom_pair_fences(peer,edge_epoch,fence_id,fenced_at) VALUES(?,?,?,?)").run(peer, edgeEpoch, fence.fenceId, fence.fencedAt);
+        const ids = db.prepare("SELECT DISTINCT id FROM intercom_copies WHERE peer=? ORDER BY id").all(peer) as { id: string }[];
+        const upstream = new Set<string>();
+        for (const { id } of ids) {
+          const outbound = copy("outbound", id), inbound = copy("inbound", id), source = outbound ?? inbound;
+          if (!source) continue;
+          const active = [outbound, inbound].some(row => row && ["queued", "unknown", "not_injected"].includes(row.state));
+          if (!active && !(source.is_ask && source.ask_state === "open")) continue;
+          const identity = readIdentity(source), endpoint = readEndpoint(source);
+          const receipt: MessageReceipt = { messageId: id, status: "cancelled", timestamp: fence.fencedAt, detail: "peer-revoked" };
+          const frame: IntercomReceiptFrame = { from: endpoint, to: identity.from, digest: identity.digest, attempt: source.observed_attempt, receipt };
+          for (const row of [outbound, inbound]) {
+            if (!row || !["queued", "unknown", "not_injected"].includes(row.state)) continue;
+            db.prepare("UPDATE intercom_copies SET state='cancelled',unknown_outcome=?,receipt_json=? WHERE direction=? AND id=?")
+              .run(row.unknown_outcome || row.transmitted || row.state === "unknown" ? 1 : 0, JSON.stringify(receipt), row.direction, id);
+          }
+          if (source.is_ask) db.prepare("UPDATE intercom_messages SET ask_state='cancelled' WHERE id=? AND ask_state='open'").run(id);
+          if (inbound) { saveReceipt(inbound, frame); upstream.add(inbound.peer); }
+          else if (outbound) db.prepare("INSERT OR IGNORE INTO intercom_revocation_notices(id,frame_json) VALUES(?,?)").run(id, JSON.stringify(frame));
+          if (outbound && outbound.peer !== peer) upstream.add(outbound.peer);
+        }
+        return { fence, upstream: [...upstream] };
+      }).immediate();
+    },
+    approvePair(peer, approval) {
+      edgeKey(peer, approval?.edgeEpoch);
+      if (!approval || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(approval.operationId) || !/^[0-9a-f]{64}$/.test(approval.graphDigest) ||
+          !(approval.expectedFenceId === null || isMachineId(approval.expectedFenceId))) throw new Error("Invalid intercom approval");
+      db.raw.transaction(() => {
+        const fence = pairFence(peer);
+        const prior = db.prepare("SELECT edge_epoch,operation_id,graph_digest,fence_id FROM intercom_pair_approvals WHERE peer=?").get(peer) as
+          { edge_epoch: string; operation_id: string; graph_digest: string; fence_id: string | null } | undefined;
+        const identical = !!prior && prior.edge_epoch === approval.edgeEpoch && prior.operation_id === approval.operationId &&
+          prior.graph_digest === approval.graphDigest && prior.fence_id === approval.expectedFenceId;
+        if (prior?.operation_id === approval.operationId && !identical) throw new Error("fresh-peer-consent-required");
+        if (fence) {
+          if (fence.fenceId !== approval.expectedFenceId || fence.edgeEpoch === approval.edgeEpoch) throw new Error("fresh-peer-consent-required");
+          db.prepare("DELETE FROM intercom_pair_fences WHERE peer=? AND fence_id=?").run(peer, fence.fenceId);
+        } else if (approval.expectedFenceId !== null && !identical) throw new Error("fresh-peer-consent-required");
+        if (!identical) db.prepare(`INSERT INTO intercom_pair_approvals(peer,edge_epoch,operation_id,graph_digest,fence_id) VALUES(?,?,?,?,?)
+          ON CONFLICT(peer) DO UPDATE SET edge_epoch=excluded.edge_epoch,operation_id=excluded.operation_id,graph_digest=excluded.graph_digest,fence_id=excluded.fence_id`)
+          .run(peer, approval.edgeEpoch, approval.operationId, approval.graphDigest, approval.expectedFenceId);
+      }).immediate();
+    },
+    pendingRevocationNotices() {
+      const rows = db.prepare("SELECT id,frame_json FROM intercom_revocation_notices ORDER BY id").all() as { id: string; frame_json: string }[];
+      return rows.map(({ id, frame_json }) => {
+        const frame = parseStored<IntercomReceiptFrame>(frame_json), row = copy("outbound", id);
+        if (!row || frame.receipt?.detail !== "peer-revoked" || frame.receipt.status !== "cancelled") throw new Error("Invalid intercom revocation notice");
+        validReceipt(row, frame);
+        return frame;
+      });
+    },
+    acknowledgeRevocationNotice(frame) {
+      const row = db.prepare("SELECT frame_json FROM intercom_revocation_notices WHERE id=?").get(frame.receipt.messageId) as { frame_json: string } | undefined;
+      if (!row || JSON.stringify(parseStored<IntercomReceiptFrame>(row.frame_json)) !== JSON.stringify(frame)) throw new Error("Invalid intercom revocation notice acknowledgement");
+      db.prepare("DELETE FROM intercom_revocation_notices WHERE id=?").run(frame.receipt.messageId);
+    },
     edgeState,
     updateEdgeState(peer, edgeEpoch, change): IntercomEdgeState {
       edgeKey(peer, edgeEpoch);

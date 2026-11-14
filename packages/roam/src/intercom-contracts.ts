@@ -2,7 +2,7 @@ import type { Home, MachineId } from "@spider/db-core/roam/types";
 import type { AcceptanceEvidence, FederationBlockers, Message, MessageControl, MessageReceipt, RemoteSessionInfo, SessionAddress, SessionEndpoint } from "@spider/intercom/protocol";
 import type { Clock } from "./contracts";
 
-export const INTERCOM_FEDERATION_VERSION = 2 as const;
+export const INTERCOM_FEDERATION_VERSION = 3 as const;
 export const INTERCOM_MESSAGE_BYTES: number = 256 * 1024;
 export const INTERCOM_EXCHANGE_BYTES: number = 512 * 1024;
 export const INTERCOM_QUEUE_MESSAGES: number = 256;
@@ -46,7 +46,7 @@ export type IntercomFrame = IntercomMessageFrame | IntercomTombstoneFrame;
 
 /** A link acknowledgement proves durable inbox acceptance, not consumption. */
 export interface IntercomLinkAck { identity: IntercomIdentity; kind: IntercomFrame["kind"] }
-export interface IntercomRefusal { identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "link-down" | "missing-origin" }
+export interface IntercomRefusal { identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "link-down" | "missing-origin" | "peer-revoked" }
 /** Validated metadata from a rejected frame; no payload or fabricated origin is retained. */
 export interface MissingOriginFrame { index: number; identity: IntercomIdentity; endpoint: SessionEndpoint; kind: IntercomFrame["kind"] }
 export interface IntercomReceiptInput {
@@ -131,7 +131,16 @@ export interface IntercomEdgeState {
   roster: RemoteSessionInfo[];
 }
 
+export interface IntercomPairFence { peer: MachineId; edgeEpoch: string; fenceId: string; fencedAt: number }
+export interface IntercomPairApproval { expectedFenceId: string | null; operationId: string; graphDigest: string; edgeEpoch: string }
 export interface IntercomStore {
+  pairFence(peer: MachineId): IntercomPairFence | null;
+  /** Persist the fence and failure receipts atomically; it never clears an existing fence. */
+  fencePair(peer: MachineId, edgeEpoch: string, fenceId?: string): { fence: IntercomPairFence; upstream: readonly MachineId[] };
+  /** Call only with a durable human-consent record for the exact graph and fence generation. */
+  approvePair(peer: MachineId, approval: IntercomPairApproval): void;
+  pendingRevocationNotices(): readonly IntercomReceiptFrame[];
+  acknowledgeRevocationNotice(frame: IntercomReceiptFrame): void;
   edgeState(peer: MachineId, edgeEpoch: string): IntercomEdgeState;
   updateEdgeState(peer: MachineId, edgeEpoch: string, change: (state: IntercomEdgeState) => IntercomEdgeState): IntercomEdgeState;
   /** Atomic same-machine source and inbox admission, with no second broker mailbox. */

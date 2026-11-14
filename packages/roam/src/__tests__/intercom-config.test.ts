@@ -70,6 +70,27 @@ it("allows only lower queue limits and rejects unknown limit fields", () => {
   }
 }, 5000);
 
+it("parses a machine-local connector recipe as bounded argv arrays", () => {
+  const connector = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "endpoint"],
+    connect: ["/fixture/connector", "connect", "peer"], localPort: 23222 };
+  const config = parseConfig({ ...box, intercom: { enabled: false, connector } });
+  expect(config.intercom.connector).toEqual(connector);
+  expect(parseConfig(box).intercom.connector).toBeUndefined();
+}, 5000);
+
+it("refuses malformed connector recipes by name without echoing their contents", () => {
+  const connector = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 23222 };
+  const invalid = [
+    { ...connector, check: "fixture-secret" }, { ...connector, host: [] }, { ...connector, connect: ["relative", "arg"] },
+    { ...connector, check: ["/bin/sh", "-c", "fixture-secret"] }, { ...connector, localPort: 0 }, { ...connector, localPort: 65536 },
+    { check: connector.check, connect: connector.connect, localPort: 23222 }, { ...connector, extra: true },
+  ];
+  for (const recipe of invalid) {
+    try { parseConfig({ ...box, intercom: { connector: recipe } }); throw new Error("accepted"); }
+    catch (error) { expect((error as Error).message).toContain("intercom-connector-recipe-invalid"); expect(String(error)).not.toContain("fixture-secret"); }
+  }
+}, 5000);
+
 it("HubPorts stays unchanged", () => {
   expectTypeOf<keyof HubPorts>().toEqualTypeOf<"config" | "sync" | "journal" | "clock" | "placement">();
 }, 5000);

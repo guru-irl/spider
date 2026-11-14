@@ -144,6 +144,16 @@ it("refuses a core replacement between the directory probe, inventory, and ident
   expect(f.calls).toHaveLength(before);
 }, 5000);
 
+it("pins an enrolled intercom peer to its observed machine and permanent core", async () => {
+  const f = fixture(), port = create!(f.options, f.journal) as ProvisionTransport & { pinIntercomPeer?: (peer: Peer) => Promise<{ handle: Peer; machineId: string; coreId: string }> };
+  expect(port.pinIntercomPeer).toBeTypeOf("function");
+  const pin = await port.pinIntercomPeer!(bootstrapPeer);
+  expect(pin).toMatchObject({ machineId: bootstrapPeer.machineId, coreId: "remote-core" });
+  expect(pin.handle).not.toBe(bootstrapPeer);
+  f.state.remoteCore = "replacement-core";
+  await expect(port.transport.exec(pin.handle, ["roam", "observe", "doctor"], { timeoutMs: 1000, maxBytes: 4096 })).rejects.toMatchObject({ code: "core-changed" });
+}, 5000);
+
 it("does not resolve a different core after claiming an identity", async () => {
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal);
   await port.claimIdentity(bootstrapPeer, "op-1", coreFence);

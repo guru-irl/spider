@@ -115,7 +115,7 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
     const journalFile = join(root, "roam", "journal.db"), journal = openJournal(journalFile);
     const direct = core.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
     const intercom = core.config.intercom.enabled ? createMachineIntercom({ root, globalDb: core.db, config: core.config,
-      agentDir: herdr.agentDirectory, clock, env, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }) }) : undefined;
+      agentDir: herdr.agentDirectory, clock, env, directPeers: direct, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }) }) : undefined;
     const observe = async (peer: Peer): Promise<HubObservation> => {
       try {
         const before = await client.identity();

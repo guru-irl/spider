@@ -17,7 +17,7 @@ it("migrates a version-1 queue without losing payload or pair ordering", () => {
   let store = openIntercomStore({ file, machineId: A, clock });
   store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "before", timestamp: 1, content: { text: "synthetic" } } });
   store.close();
-  const db = openDb(file); db.exec("DROP TABLE intercom_edge_state; UPDATE intercom_meta SET version=1 WHERE id=1;"); db.close();
+  const db = openDb(file); db.exec("DROP TABLE intercom_revocation_notices; DROP TABLE intercom_pair_approvals; DROP TABLE intercom_pair_fences; DROP TABLE intercom_edge_state; UPDATE intercom_meta SET version=1 WHERE id=1;"); db.close();
   store = openIntercomStore({ file, machineId: A, clock });
   try {
     expect(store.retained("outbound", "before")).toMatchObject({ payloadRetained: true, identity: { sequence: 1 } });
@@ -25,5 +25,17 @@ it("migrates a version-1 queue without losing payload or pair ordering", () => {
     expect(next).toMatchObject({ kind: "accepted", identity: { sequence: 2 } });
     expect(store.edgeState(B, "edge-1")).toMatchObject({ inbound: { poll: 0, push: 0 }, outbound: { poll: 0, push: 0 } });
   } finally { store.close(); }
-  const verify = openDb(file); try { expect(verify.prepare("SELECT version FROM intercom_meta WHERE id=1").get()).toEqual({ version: 2 }); } finally { verify.close(); }
+  const verify = openDb(file); try { expect(verify.prepare("SELECT version FROM intercom_meta WHERE id=1").get()).toEqual({ version: 3 }); } finally { verify.close(); }
+});
+
+it("migrates a version-2 queue while preserving existing edge state", () => {
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "migration-v2-")); roots.push(root);
+  const file = join(root, "queue", "queue.db");
+  let store = openIntercomStore({ file, machineId: A, clock });
+  store.updateEdgeState(B, "edge-1", old => ({ ...old, outbound: { ...old.outbound, push: 7 } }));
+  store.close();
+  const db = openDb(file); db.exec("DROP TABLE intercom_revocation_notices; DROP TABLE intercom_pair_approvals; DROP TABLE intercom_pair_fences; UPDATE intercom_meta SET version=2 WHERE id=1;"); db.close();
+  store = openIntercomStore({ file, machineId: A, clock });
+  try { expect(store.edgeState(B, "edge-1").outbound.push).toBe(7); expect(store.pairFence(B)).toBeNull(); }
+  finally { store.close(); }
 });

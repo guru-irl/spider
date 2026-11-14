@@ -8,9 +8,15 @@ import { HELPER_EXCHANGE_ERRORS, HELPER_EXCHANGE_FEATURE, isHelperExchangeError 
 import { projectRoot } from "../../db-core/src/paths";
 import { decodeExchangeWithFrameErrors, encodeExchange } from "./intercom-codec";
 import { INTERCOM_EXCHANGE_BYTES, type IntercomExchange, type MissingOriginFrame } from "./intercom-contracts";
+import { isMachineId } from "./machine-id";
 
 export interface HelperRequest { version: 1; exchange: IntercomExchange; holdMs: number; deadlineMs: number; missingOrigins?: MissingOriginFrame[] }
 export interface HelperReply { version: 1; exchange: IntercomExchange }
+export interface HelperRevokeRequest { version: 1; action: "revoke-pair"; machineId: string; peer: string; edgeEpoch: string; fenceId?: string }
+export interface HelperInspectRequest { version: 1; action: "inspect-pair"; machineId: string; peer: string; edgeEpoch: string }
+export interface HelperFenceRequest { version: 1; action: "inspect-fence"; machineId: string; peer: string }
+export interface HelperEnrollRequest { version: 1; action: "enroll-pair"; machineId: string; peer: string; pairId: string; edgeEpoch: string;
+  operationId: string; graphDigest: string; expectedFenceId: string | null }
 interface HelperRoute { agentDir: string; token: string }
 const fail = (reason: string): never => { throw new Error(reason); };
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -58,6 +64,31 @@ function readRoute(root: string): HelperRoute {
   }
   return { agentDir: value.agentDir, token: value.token };
 }
+export function parseHelperRevoke(value: unknown): HelperRevokeRequest {
+  if (!record(value) || !(exact(value, ["version", "action", "machineId", "peer", "edgeEpoch"]) ||
+      exact(value, ["version", "action", "machineId", "peer", "edgeEpoch", "fenceId"])) || value.version !== 1 || value.action !== "revoke-pair" ||
+      !isMachineId(value.machineId) || !isMachineId(value.peer) || value.machineId === value.peer || typeof value.edgeEpoch !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.edgeEpoch) || value.fenceId !== undefined && !isMachineId(value.fenceId)) return fail("invalid-request");
+  return value as unknown as HelperRevokeRequest;
+}
+export function parseHelperFence(value: unknown): HelperFenceRequest {
+  if (!record(value) || !exact(value, ["version", "action", "machineId", "peer"]) || value.version !== 1 || value.action !== "inspect-fence" ||
+      !isMachineId(value.machineId) || !isMachineId(value.peer) || value.machineId === value.peer) return fail("invalid-request");
+  return value as unknown as HelperFenceRequest;
+}
+export function parseHelperInspect(value: unknown): HelperInspectRequest {
+  if (!record(value) || !exact(value, ["version", "action", "machineId", "peer", "edgeEpoch"]) || value.action !== "inspect-pair") return fail("invalid-request");
+  parseHelperRevoke({ ...value, action: "revoke-pair" });
+  return value as unknown as HelperInspectRequest;
+}
+export function parseHelperEnroll(value: unknown): HelperEnrollRequest {
+  const id = (v: unknown) => typeof v === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(v);
+  if (!record(value) || !exact(value, ["version", "action", "machineId", "peer", "pairId", "edgeEpoch", "operationId", "graphDigest", "expectedFenceId"]) ||
+      value.version !== 1 || value.action !== "enroll-pair" || !isMachineId(value.machineId) || !isMachineId(value.peer) || value.machineId === value.peer ||
+      !id(value.pairId) || !id(value.edgeEpoch) || !id(value.operationId) || typeof value.graphDigest !== "string" || !/^[a-f0-9]{64}$/.test(value.graphDigest) ||
+      !(value.expectedFenceId === null || isMachineId(value.expectedFenceId))) return fail("invalid-request");
+  return value as unknown as HelperEnrollRequest;
+}
 export function parseHelperRequest(value: unknown): HelperRequest {
   if (!record(value) || !exact(value, ["version", "exchange", "holdMs", "deadlineMs"]) || value.version !== 1 ||
       !Number.isSafeInteger(value.holdMs) || Number(value.holdMs) < 0 || Number(value.holdMs) > 25_000 ||
@@ -79,9 +110,9 @@ function reply(value: unknown, input: HelperRequest): HelperReply {
 }
 
 /** This client never starts a broker or uses a TCP fallback. */
-async function brokerExchange(route: HelperRoute, input: HelperRequest, original: unknown): Promise<HelperReply> {
+async function brokerRequest(route: HelperRoute, deadlineMs: number, original: unknown): Promise<unknown> {
   const target = getBrokerSocketPath(process.platform, route.agentDir), socket = net.connect(target);
-  const ends = performance.now() + input.deadlineMs;
+  const ends = performance.now() + deadlineMs;
   let failure: Error | null = null;
   const pending = new Map<string, { resolve(value: Record<string, unknown>): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
   const stop = (error: Error) => {
@@ -115,13 +146,57 @@ async function brokerExchange(route: HelperRoute, input: HelperRequest, original
         !Array.isArray(health.features) || !health.features.includes(HELPER_EXCHANGE_FEATURE)) return fail("unsupported-broker");
     const registered = await ask({ type: "helper_register", token: route.token });
     if (registered.type !== "helper_registered") return fail(registered.reason === "helper-unauthorized" ? "helper-unauthorized" : "broker-unavailable");
-    const remaining = Math.min(input.deadlineMs, Math.max(1, Math.floor(ends - performance.now())));
+    const remaining = Math.min(deadlineMs, Math.max(1, Math.floor(ends - performance.now())));
     const outcome = await ask({ type: "helper_exchange", input: original, deadlineMs: remaining });
     if (outcome.type !== "helper_result") return fail(isHelperExchangeError(outcome.reason) || outcome.reason === "helper-timeout" ||
       outcome.reason === "helper-unauthorized" || outcome.reason === "bridge-exchange-failed" ? outcome.reason : "bridge-unavailable");
     if (Buffer.byteLength(JSON.stringify(outcome)) > INTERCOM_EXCHANGE_BYTES) return fail("exchange-too-large");
-    return reply(outcome.output, input);
+    return outcome.output;
   } finally { socket.destroy(); }
+}
+export async function requestHelperRevoke(root: string, value: unknown): Promise<{ machineId: string; peer: string; edgeEpoch: string; fenceId: string; exchanges: "closed"; inFlight: 0 }> {
+  const input = parseHelperRevoke(value), output = await brokerRequest(readRoute(root), 30_000, input);
+  if (!record(output) || !exact(output, ["machineId", "peer", "edgeEpoch", "fenceId", "exchanges", "inFlight"]) ||
+      output.machineId !== input.machineId || output.peer !== input.peer || output.edgeEpoch !== input.edgeEpoch || !isMachineId(output.fenceId) ||
+      output.exchanges !== "closed" || output.inFlight !== 0) return fail("invalid-reply");
+  return output as unknown as { machineId: string; peer: string; edgeEpoch: string; fenceId: string; exchanges: "closed"; inFlight: 0 };
+}
+export async function requestHelperFence(root: string, value: unknown): Promise<{ machineId: string; peer: string; fence: { edgeEpoch: string; fenceId: string } | null }> {
+  const input = parseHelperFence(value), output = await brokerRequest(readRoute(root), 30_000, input);
+  if (!record(output) || !exact(output, ["machineId", "peer", "fence"]) || output.machineId !== input.machineId || output.peer !== input.peer ||
+      !(output.fence === null || record(output.fence) && exact(output.fence, ["edgeEpoch", "fenceId"]) &&
+        typeof output.fence.edgeEpoch === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(output.fence.edgeEpoch) && isMachineId(output.fence.fenceId))) return fail("invalid-reply");
+  return output as unknown as { machineId: string; peer: string; fence: { edgeEpoch: string; fenceId: string } | null };
+}
+export async function observeHelperFeatures(root: string): Promise<readonly string[]> {
+  const route = readRoute(root), socket = net.connect(getBrokerSocketPath(process.platform, route.agentDir)), id = randomUUID();
+  return new Promise((resolvePromise, reject) => {
+    let done = false;
+    const finish = (error: Error | null, value: string[] = []) => { if (done) return; done = true; clearTimeout(timer); socket.destroy(); error ? reject(error) : resolvePromise(value); };
+    const timer = setTimeout(() => finish(new Error("broker-unavailable")), 2000); timer.unref();
+    socket.on("error", () => finish(new Error("broker-unavailable")));
+    socket.on("close", () => finish(new Error("broker-unavailable")));
+    socket.on("data", createMessageReader(value => {
+      if (!record(value) || value.type !== "health_ok" || value.requestId !== id || value.protocol !== "pi-intercom" || value.version !== 1 ||
+          !Array.isArray(value.features) || !value.features.every(item => typeof item === "string" && item.length <= 128)) return finish(new Error("unsupported-broker"));
+      finish(null, value.features);
+    }, () => finish(new Error("invalid-reply"))));
+    socket.once("connect", () => { try { writeMessage(socket, { type: "health", requestId: id }); } catch { finish(new Error("broker-unavailable")); } });
+  });
+}
+export async function requestHelperInspect(root: string, value: unknown, deadlineMs = 30_000): Promise<{ machineId: string; peer: string; edgeEpoch: string; status: "unknown" | "live" | "recovering" | "down"; reason: string | null }> {
+  if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > 30_000) return fail("invalid-request");
+  const input = parseHelperInspect(value), output = await brokerRequest(readRoute(root), deadlineMs, input);
+  if (!record(output) || !exact(output, ["machineId", "peer", "edgeEpoch", "status", "reason"]) || output.machineId !== input.machineId ||
+      output.peer !== input.peer || output.edgeEpoch !== input.edgeEpoch || !["unknown", "live", "recovering", "down"].includes(String(output.status)) ||
+      !(output.reason === null || typeof output.reason === "string" && /^[a-z-]{1,80}$/.test(output.reason))) return fail("invalid-reply");
+  return output as unknown as { machineId: string; peer: string; edgeEpoch: string; status: "unknown" | "live" | "recovering" | "down"; reason: string | null };
+}
+export async function requestHelperEnroll(root: string, value: unknown): Promise<{ machineId: string; peer: string; edgeEpoch: string; applied: true }> {
+  const input = parseHelperEnroll(value), output = await brokerRequest(readRoute(root), 30_000, input);
+  if (!record(output) || !exact(output, ["machineId", "peer", "edgeEpoch", "applied"]) || output.machineId !== input.machineId ||
+      output.peer !== input.peer || output.edgeEpoch !== input.edgeEpoch || output.applied !== true) return fail("invalid-reply");
+  return output as unknown as { machineId: string; peer: string; edgeEpoch: string; applied: true };
 }
 async function readInput(): Promise<unknown> {
   const chunks: Buffer[] = []; let size = 0;
@@ -135,19 +210,24 @@ async function readInput(): Promise<unknown> {
 }
 
 /** Every completed private command returns one exit-zero outcome envelope. */
-export async function main(root: string): Promise<number> {
+export async function main(root: string, mode: "exchange" | "revoke-local" = "exchange"): Promise<number> {
   const allowed = new Set([...HELPER_EXCHANGE_ERRORS, "unsupported-broker", "helper-unauthorized", "helper-timeout", "broker-unavailable",
     "bridge-exchange-failed", "unsafe-helper-route", "invalid-reply", "peer-version-mismatch"]);
+  const kind = mode === "exchange" ? "intercom-exchange" : "intercom-revoke";
   try {
     const original = await readInput();
-    const input = parseHelperRequest(original);
-    // Validate the good frames; the bridge records rejected origin-less frames.
-    encodeExchange(input.exchange);
-    const value = await brokerExchange(readRoute(root), input, original);
-    process.stdout.write(`${JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value })}\n`);
+    let value: unknown;
+    if (mode === "revoke-local") value = await requestHelperRevoke(root, original);
+    else {
+      const input = parseHelperRequest(original);
+      // Validate the good frames; the bridge records rejected origin-less frames.
+      encodeExchange(input.exchange);
+      value = reply(await brokerRequest(readRoute(root), input.deadlineMs, original), input);
+    }
+    process.stdout.write(`${JSON.stringify({ version: 1, kind, ok: true, value })}\n`);
   } catch (error) {
     const reason = error instanceof Error && allowed.has(error.message) ? error.message : "bridge-unavailable";
-    process.stdout.write(`${JSON.stringify({ version: 1, kind: "intercom-exchange", ok: false, reason })}\n`);
+    process.stdout.write(`${JSON.stringify({ version: 1, kind, ok: false, reason })}\n`);
   }
   return 0;
 }

@@ -1,7 +1,7 @@
 import type { BootstrapPeer, Diagnostic } from "./contracts";
 import { InventoryError, inventory, prerequisiteDiagnostics } from "./inventory";
 import { normalizeConfiguredClis } from "./bootstrap-reply";
-import type { ConfiguredCli, DoctorPorts, FileLimit, FileStatus, Inventory, ProvisionVerification } from "./provision-contracts";
+import type { ConfiguredCli, DoctorPorts, FileLimit, FileStatus, IntercomDoctorState, Inventory, ProvisionVerification } from "./provision-contracts";
 
 function fileReady(file: FileStatus): boolean { return file.present && file.readable && file.modeSafe; }
 function low(value: FileLimit, floor: number): boolean { return typeof value === "number" && value < floor; }
@@ -9,6 +9,38 @@ function failure(error: unknown): Diagnostic {
   const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[A-Za-z0-9_.-]{1,80}$/.test(error.code)
     ? error.code : "bootstrap-probe-failed";
   return { reason: `Peer inventory failed (${code}).`, severity: "block", repairCommand: null };
+}
+
+const cleanupReasons = new Set(["intercom-revocation-unconfirmed", "intercom-revocation-peer-unreachable", "intercom-revocation-identity-mismatch", "intercom-revocation-shared-jobs",
+  "intercom-revocation-access-open", "intercom-revocation-verification-pending", "intercom-revocation-remote-fence-pending", "intercom-revocation-cleanup-pending"]);
+/** Convert read-only observations, including pending cleanup, to stable diagnostic reasons. */
+export function intercomDiagnostics(value: IntercomDoctorState): Diagnostic[] {
+  const allowed: Record<string, readonly string[]> = { connector: ["ready", "missing", "unknown"], login: ["ready", "required", "unknown"],
+    tunnel: ["hosted", "unhosted", "unknown"], peerPort: ["reachable", "unreachable", "unknown"], hostKey: ["match", "changed", "unknown"],
+    key: ["ready", "missing", "unsafe", "unknown"], route: ["ready", "missing", "unknown"], extension: ["ready", "missing", "duplicate", "unknown"],
+    broker: ["ready", "legacy", "unknown"], feature: ["ready", "missing", "unknown"], link: ["live", "down", "unknown"] };
+  if (!value || typeof value !== "object" || Object.entries(allowed).some(([key, choices]) => !choices.includes((value as unknown as Record<string, string>)[key])) ||
+      !Array.isArray(value.pendingRevocations) || value.pendingRevocations.some(item => !item || typeof item.pairId !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(item.pairId) || !cleanupReasons.has(item.reason))) throw new Error("intercom-diagnostics-invalid");
+  const diagnostics: Diagnostic[] = [];
+  const add = (reason: string, detail: string, severity: "warning" | "block" = "block") => diagnostics.push({ reason: `${reason}: ${detail}`, severity, repairCommand: null });
+  if (value.connector === "missing") add("intercom-connector-missing", "Install the connector yourself and retry enrollment.");
+  if (value.login === "required") add("intercom-connector-sign-in-required", "Sign in to the connector using its device-code flow and retry.");
+  if (value.tunnel === "unhosted") add("intercom-tunnel-unhosted", "Start hosting the tunnel and retry.");
+  if (value.peerPort === "unreachable") add("intercom-peer-port-unreachable", "Make the peer's SSH port reachable through the tunnel and retry.");
+  if (value.hostKey === "changed") add("host-key-changed", "Verify the peer identity and re-enroll the pair to pin the new host key.");
+  if (value.key === "missing") add("intercom-key-missing", "The pair key is unavailable.");
+  if (value.key === "unsafe") add("intercom-key-unsafe", "The pair key has unsafe ownership or mode.");
+  if (value.route === "missing") add("intercom-route-missing", "The pair route is unavailable.");
+  if (value.extension === "missing") add("intercom-extension-missing", "The bundled extension is unavailable.");
+  if (value.extension === "duplicate") add("intercom-extension-duplicate", "Multiple intercom extensions are configured.");
+  if (value.broker === "legacy") add("intercom-legacy-broker", "The old broker has not drained.");
+  if (value.feature === "missing") add("intercom-feature-missing", "The broker does not offer federation.");
+  if (value.link === "down") add("intercom-link-down", "The enrolled pair is unreachable.", "warning");
+  for (const pending of value.pendingRevocations) add(pending.reason, pending.reason === "intercom-revocation-unconfirmed"
+    ? `Box A may still reach box B for ${pending.pairId} until B is back and its pair host is stopped.` : `Remote cleanup is pending for ${pending.pairId}.`,
+    pending.reason === "intercom-revocation-unconfirmed" ? "block" : "warning");
+  return diagnostics;
 }
 
 /** Report suggested repairs without invoking a service manager or modifying limits. */
@@ -64,6 +96,10 @@ export async function doctorPeer(peer: BootstrapPeer, ports: DoctorPorts): Promi
     if (!verified.bundledIntercom || !verified.intercomUnique) block("The bundled intercom is missing or duplicated.");
     if (!verified.legacyDrained) block("The legacy intercom broker has not drained.");
     if (!verified.federation) block("Intercom federation is not ready.");
+  }
+  if (ports.inspectIntercom) {
+    try { diagnostics.push(...intercomDiagnostics(await ports.inspectIntercom())); }
+    catch { block("intercom-diagnostics-unavailable: Intercom readiness could not be inspected."); }
   }
   if (!value.cli.gitIdentity) warning("Git identity is not configured on the box.");
   if (!value.cli.gh) warning("The gh CLI is unavailable on the box.");

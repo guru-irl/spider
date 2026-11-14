@@ -22,6 +22,8 @@ import { isPeerFailureReason } from "./peer-errors";
 import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
 import { createRunningIntentAuthority } from "./session-control";
 import { inspectIntentReservations } from "./intent";
+import { createIntercomRegistry } from "./intercom-registry";
+import { inspectLocalIntercomDoctor } from "./intercom-doctor";
 
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 function snapshotProblem(error: unknown): string {
@@ -270,7 +272,8 @@ function readDoctorCatalog(db: Db, projects: DoctorProject[], globalPath: string
 }
 
 /** Inspect registered local stores without modifying them. */
-export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null> }): Promise<{ enabled: boolean; diagnostics: readonly Diagnostic[]; consumers: LoadedConsumer[] }> {
+export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
+  intercomDoctor?: (input: { root: string; config: RoamConfig; agentDir: string }) => Promise<Diagnostic[]> }): Promise<{ enabled: boolean; diagnostics: readonly Diagnostic[]; consumers: LoadedConsumer[] }> {
   if (!isAbsolute(input.root)) throw new Error("The roaming root must be absolute");
   let root = resolve(input.root);
   try { root = realpathSync(root); } catch (error) { if (!missing(error)) throw error; }
@@ -397,6 +400,18 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
       inventory.push({ severity, reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} is pending; handoff and core evidence are unavailable.`, repairCommand: null });
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect pending launch reservations.", repairCommand: null }); }
+  try {
+    for (const record of await createIntercomRegistry(root).list()) if ((record.state === "revoked" || record.state === "revoking") && record.cleanupReason) {
+      const unconfirmed = record.cleanupReason === "intercom-revocation-unconfirmed";
+      inventory.push({ severity: unconfirmed ? "block" : "warning", reason: unconfirmed
+        ? `${record.cleanupReason}: Box A may still reach box B for ${record.pair.pairId} until B is back and its pair host is stopped.`
+        : `${record.cleanupReason}: Remote cleanup is pending for ${record.pair.pairId}.`, repairCommand: null });
+    }
+  } catch { inventory.push({ severity: "warning", reason: "intercom-registry-unavailable: Pair enrollment state could not be inspected.", repairCommand: null }); }
+  if (input.inspectIntercomDoctor && config.intercom.enabled) try {
+    const inspect = input.intercomDoctor ?? inspectLocalIntercomDoctor;
+    inventory.push(...await inspect({ root, config, agentDir: process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent") }));
+  } catch { inventory.push({ severity: "warning", reason: "intercom-diagnostics-unavailable: Intercom readiness could not be inspected.", repairCommand: null }); }
   const ports = createLocalDiagnosticPorts(root, [], input.bundleUrl);
   return { enabled: config.enabled, diagnostics: [...await doctorLocal(config, ports, consumers), ...storeDiagnostics, ...inventory, ...peerFailures], consumers };
 }

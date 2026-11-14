@@ -1,11 +1,11 @@
 const argv: string[] = process.argv.slice(2);
 
 async function run(): Promise<number> {
-  if (argv.length === 5 && argv[0] === "--global-root" && argv[2] === "roam" && argv[3] === "intercom" && argv[4] === "exchange") {
+  if (argv.length === 5 && argv[0] === "--global-root" && argv[2] === "roam" && argv[3] === "intercom" && (argv[4] === "exchange" || argv[4] === "revoke-local")) {
     // These imports refer to independently built sibling entries.
     // @ts-expect-error The build creates this runtime entry.
     const helper: typeof import("./intercom-helper") = await import("./intercom-helper.mjs");
-    return helper.main(argv[1]);
+    return helper.main(argv[1], argv[4]);
   }
   // @ts-expect-error The build creates this runtime entry.
   const cli: typeof import("./cli") = await import("./cli-main.mjs");

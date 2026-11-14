@@ -52,7 +52,7 @@ function snapshotCall(options: CallOptions): CallOptions {
 }
 function privateProtocol(argv: readonly string[]): boolean {
   return argv[0] === 'roam' && (argv[1] === 'agent' || argv[1] === 'observe' || argv[1] === 'artifact' && argv[2] === 'receive' ||
-    argv[1] === 'intercom' && argv[2] === 'exchange');
+    argv[1] === 'intercom' && (argv[2] === 'exchange' || argv[2] === 'revoke-local' || argv[2] === 'setup-local' || argv[2] === 'observe-fence' || argv[2] === 'cleanup-local'));
 }
 function remoteArgs(peer: Peer, argv: readonly string[]): string[] {
   return [peer.node, peer.cli, ...(privateProtocol(argv) ? ['--global-root', peer.globalRoot] : []), ...argv];
@@ -74,6 +74,7 @@ function deadline(value: number): void {
 interface TransportOptions { binary: string; env: Readonly<NodeJS.ProcessEnv>; enrolled: readonly Peer[] }
 export interface ProvisionTransport {
   transport: Transport;
+  pinIntercomPeer(peer: Peer): Promise<{ handle: Peer; machineId: string; coreId: string }>;
   probeAgentDirectory(peer: Peer, home: string): Promise<AgentDirectoryProbe>;
   previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence): Promise<SettingsDestinationPreview>;
   claimIdentity(peer: Peer, operationId: string, core: CoreFence): Promise<{ machineId: string; coreId: string }>;
@@ -275,6 +276,10 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
 
   return {
     transport,
+    async pinIntercomPeer(peer) {
+      const handle = await transport.resolve(peer), state = resolved(handle);
+      return { handle, machineId: state.peer.machineId, coreId: state.core.remote };
+    },
     async launchRelease(peer, operationId, requestFile) {
       const state = resolved(peer);
       if (typeof operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operationId) ||

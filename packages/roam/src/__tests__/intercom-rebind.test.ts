@@ -11,7 +11,7 @@ const peer = (machineId: string) => ({ machineId, alias: `peer-${machineId.slice
 const resources: Array<{ stop(): Promise<void> }> = [], stores: Array<{ close(): void }> = [], roots: string[] = [];
 afterEach(async () => { for (const resource of resources.splice(0).reverse()) await resource.stop(); for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
 function request(senderMachine: string, recipientMachine: string, channel: "push" | "poll", generation: number) {
-  return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 2, senderMachine, recipientMachine, generation: { edgeEpoch: "edge", channel, generation },
+  return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 3, senderMachine, recipientMachine, generation: { edgeEpoch: "edge", channel, generation },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } };
 }
 it("refuses recipient rebind when no absence receipt exists", () => {

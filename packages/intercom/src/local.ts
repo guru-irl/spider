@@ -1429,6 +1429,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           if (replyWaiter?.remote && message.receipt.messageId === replyWaiter.replyTo && sameAddress(sessionAddress(message.from, getIntercomScopeId() ?? null), replyWaiter.from)) {
             if (message.receipt.detail === "link-down") rejectReplyWaiter(linkDownError());
             else if (message.receipt.detail === "missing-origin") rejectReplyWaiter(Object.assign(new Error("missing-origin: the peer rejected this message"), { reason: "missing-origin" }));
+            else if (message.receipt.detail === "peer-revoked") rejectReplyWaiter(Object.assign(new Error("peer-revoked: the peer connection was revoked"), { reason: "peer-revoked" }));
           }
           latestOutboundReceipts.set(message.receipt.messageId, {
             status: message.receipt.status,
@@ -2327,7 +2328,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           }
           return {
             content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
-            details: { error: true, ...(questionId ? { messageId: questionId, deliveryState: latestDeliveryState(questionId, deliveryState) } : {}), ...((error as { reason?: string }).reason === "link-down" ? { reason: "link-down", edge: (error as { edge?: string }).edge } : {}) },
+            details: { error: true, ...(questionId ? { messageId: questionId, deliveryState: latestDeliveryState(questionId, deliveryState) } : {}), ...((error as { reason?: string }).reason === "link-down" ? { reason: "link-down", edge: (error as { edge?: string }).edge } : (error as { reason?: string }).reason === "peer-revoked" ? { reason: "peer-revoked" } : {}) },
           };
         }
       },
@@ -2819,7 +2820,8 @@ Usage:
               content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
               details: { error: true, ...(questionId ? { messageId: questionId, deliveryState: latestDeliveryState(questionId, deliveryState) } : {}),
                 ...((error as { reason?: string }).reason === "link-down" ? { reason: "link-down", edge: (error as { edge?: string }).edge }
-                  : (error as { reason?: string }).reason === "missing-origin" ? { reason: "missing-origin" } : {}) },
+                  : (error as { reason?: string }).reason === "missing-origin" ? { reason: "missing-origin" }
+                  : (error as { reason?: string }).reason === "peer-revoked" ? { reason: "peer-revoked" } : {}) },
             };
           }
         }

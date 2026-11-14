@@ -19,7 +19,7 @@ function twoStores() {
   stores.push(source, inbox); return { root, source, inbox };
 }
 function batch(senderMachine = A, recipientMachine = B): IntercomExchange {
-  return { protocol: 2, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+  return { protocol: 3, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
 }
 function receipt(): IntercomReceiptFrame {

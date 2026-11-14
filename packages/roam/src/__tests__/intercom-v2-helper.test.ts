@@ -32,8 +32,8 @@ async function server(path: string, handler: (message: Record<string, unknown>, 
     socket.on("data", createMessageReader(value => handler(value as Record<string, unknown>, socket), () => socket.destroy())); });
   result.listen(path); await once(result, "listening"); chmodSync(path, 0o600); return { server: result, clients };
 }
-async function run(root: string, input: unknown) {
-  const child = spawn(process.execPath, [join(built, "roam", "cli.mjs"), "--global-root", root, "roam", "intercom", "exchange"],
+async function run(root: string, input: unknown, command = "exchange") {
+  const child = spawn(process.execPath, [join(built, "roam", "cli.mjs"), "--global-root", root, "roam", "intercom", command],
     { env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: root }, stdio: ["pipe", "pipe", "pipe"] });
   let out = "", err = ""; child.stdout.on("data", bytes => { out += bytes.toString(); }); child.stderr.on("data", bytes => { err += bytes.toString(); });
   child.stdin.end(JSON.stringify(input)); const [code] = await once(child, "close") as [number | null]; return { code, out, err };
@@ -43,8 +43,35 @@ async function closeServer(value: { server: Server; clients: Set<Socket> }) { fo
 it("returns a named peer-version-mismatch without contacting the local broker", async () => {
   const f = fixture(), seen: string[] = [];
   const stub = await server(f.socket, (message) => { seen.push(String(message.type)); });
-  try { const result = await run(f.root, request(1)); expect(result.code).toBe(0); expect(result.err).toBe("");
+  try { const result = await run(f.root, request(2)); expect(result.code).toBe(0); expect(result.err).toBe("");
     expect(JSON.parse(result.out)).toEqual({ version: 1, kind: "intercom-exchange", ok: false, reason: "peer-version-mismatch" }); expect(seen).toEqual([]);
+  } finally { await closeServer(stub); }
+}, 5000);
+
+it("runs a machine-bound local revoke through the existing authenticated helper", async () => {
+  const f = fixture(), seen: Record<string, unknown>[] = [];
+  const input = { version: 1, action: "revoke-pair", machineId: B, peer: A, edgeEpoch: "edge" };
+  const proof = { machineId: B, peer: A, edgeEpoch: "edge", fenceId: "00000000-0000-4000-8000-000000000003", exchanges: "closed", inFlight: 0 };
+  const stub = await server(f.socket, (message, socket) => { seen.push(message);
+    if (message.type === "health") writeMessage(socket, { type: "health_ok", requestId: message.requestId, protocol: "pi-intercom", version: 1, features: ["intercom-exchange-v1"] });
+    else if (message.type === "helper_register" && message.token === f.token) writeMessage(socket, { type: "helper_registered", requestId: message.requestId });
+    else if (message.type === "helper_exchange") writeMessage(socket, { type: "helper_result", requestId: message.requestId, output: proof });
+  });
+  try { const result = await run(f.root, input, "revoke-local"); expect(result.code).toBe(0); expect(result.err).toBe("");
+    expect(JSON.parse(result.out)).toEqual({ version: 1, kind: "intercom-revoke", ok: true, value: proof });
+    expect(seen.map(message => message.type)).toEqual(["health", "helper_register", "helper_exchange"]); expect(seen[2].input).toEqual(input);
+  } finally { await closeServer(stub); }
+}, 5000);
+
+it("returns a named peer-revoked failure through the packaged helper", async () => {
+  const f = fixture();
+  const stub = await server(f.socket, (message, socket) => {
+    if (message.type === "health") writeMessage(socket, { type: "health_ok", requestId: message.requestId, protocol: "pi-intercom", version: 1, features: ["intercom-exchange-v1"] });
+    else if (message.type === "helper_register" && message.token === f.token) writeMessage(socket, { type: "helper_registered", requestId: message.requestId });
+    else if (message.type === "helper_exchange") writeMessage(socket, { type: "helper_error", requestId: message.requestId, reason: "peer-revoked" });
+  });
+  try { const result = await run(f.root, request(3)); expect(result.code).toBe(0); expect(result.err).toBe("");
+    expect(JSON.parse(result.out)).toEqual({ version: 1, kind: "intercom-exchange", ok: false, reason: "peer-revoked" });
   } finally { await closeServer(stub); }
 }, 5000);
 
@@ -53,7 +80,7 @@ it("forwards a malformed v2 frame intact so the owning bridge can record its rej
   const from = { sessionId: "sender", scopeId: "scope" }, to = { sessionId: "recipient", scopeId: "scope" };
   const endpoint = { address: to, machineId: B, homeEpoch: null, activationEpoch: "recipient-1" };
   const full = makeMessageFrame({ from, endpoint, originMachineId: A, sequence: 1, message: { id: "bad", timestamp: 1, content: { text: "synthetic" } } });
-  const { originMachineId: _origin, ...missing } = full, input = request(2, [missing]);
+  const { originMachineId: _origin, ...missing } = full, input = request(3, [missing]);
   const resultExchange = { ...input.exchange, senderMachine: B, recipientMachine: A, frames: [], refusals: [{ identity: full.identity, reason: "missing-origin" }] };
   const stub = await server(f.socket, (message, socket) => { seen.push(message);
     if (message.type === "health") writeMessage(socket, { type: "health_ok", requestId: message.requestId, protocol: "pi-intercom", version: 1, features: ["intercom-exchange-v1"] });

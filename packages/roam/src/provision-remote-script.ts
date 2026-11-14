@@ -15,10 +15,10 @@ const authForRemote = authSource
   .replace('import { installPiAuthBytes, readPrivateBytes } from "./selected-files";', "");
 const configForRemote = configSource
   .replace('import { readFileSync } from "node:fs";', "")
-  .replace('import { isAbsolute } from "node:path";', "")
+  .replace('import { basename, isAbsolute, resolve } from "node:path";', "")
   .replace('import { DEFAULT_INTERCOM_LIMITS, DEFAULT_LIMITS } from "./contracts";', "")
   .replace('import { isMachineId } from "./machine-id";', "")
-  .replace('import type { IntercomConfig, IntercomLimits, IntercomRoute, Limits, Peer, RoamConfig } from "./contracts";', "")
+  .replace('import type { IntercomConfig, IntercomConnectorRecipe, IntercomLimits, IntercomRoute, Limits, Peer, RoamConfig } from "./contracts";', "")
   .replace(/^export /gm, "");
 const machineIdForRemote = machineIdSource.replace(/^export /gm, "");
 const enrollmentForRemote = enrollmentSource.replace('import { parseConfig as parseRoamConfig } from "./config";', "");

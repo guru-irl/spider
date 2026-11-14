@@ -155,7 +155,7 @@ function validExchange(value: unknown): value is IntercomExchange {
   if (!Array.isArray(value.acknowledgements) || !value.acknowledgements.every(item => record(item) && keys(item, ["identity", "kind"])
       && validIdentity(item.identity) && (item.kind === "message" || item.kind === "tombstone"))) return false;
   if (value.refusals !== undefined && (!Array.isArray(value.refusals) || !value.refusals.every(item => record(item) && keys(item, ["identity", "reason"]) &&
-      validIdentity(item.identity) && (item.reason === "queue-full" || item.reason === "message-too-large" || item.reason === "machine-not-enrolled" || item.reason === "link-down" || item.reason === "missing-origin")))) return false;
+      validIdentity(item.identity) && (item.reason === "queue-full" || item.reason === "message-too-large" || item.reason === "machine-not-enrolled" || item.reason === "link-down" || item.reason === "missing-origin" || item.reason === "peer-revoked")))) return false;
   if (!Array.isArray(value.receipts) || !value.receipts.every(validReceipt)) return false;
   if (value.receiptAcknowledgements !== undefined && (!Array.isArray(value.receiptAcknowledgements) || !value.receiptAcknowledgements.every(validReceipt))) return false;
   if (!Array.isArray(value.controls) || !value.controls.every(item => record(item) && keys(item, ["from", "to", "control"])

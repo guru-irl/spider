@@ -206,6 +206,25 @@ it("blocks a missing configured core unit even when another core socket exists",
   expect(test.adminRepairCalls).toEqual([]);
 }, 5000);
 
+it("doctor never installs or logs in and reports named intercom problems", async () => {
+  const test = fixture();
+  const effects: string[] = [];
+  test.ports.inspectIntercom = async () => ({
+    connector: "missing", login: "required", tunnel: "unhosted", peerPort: "unreachable", hostKey: "changed",
+    key: "unsafe", route: "missing", extension: "duplicate", broker: "legacy", feature: "missing", link: "down",
+    pendingRevocations: [{ pairId: "pair-1", reason: "intercom-revocation-peer-unreachable" }],
+  });
+  const report = await doctorModule.doctorPeer(bootstrapPeer, test.ports);
+  for (const reason of ["intercom-connector-missing", "intercom-connector-sign-in-required", "intercom-tunnel-unhosted", "intercom-peer-port-unreachable", "host-key-changed", "intercom-key-unsafe", "intercom-route-missing",
+    "intercom-extension-duplicate", "intercom-legacy-broker", "intercom-feature-missing", "intercom-link-down", "intercom-revocation-peer-unreachable"]) {
+    expect(report.some(item => item.reason.includes(reason)), reason).toBe(true);
+  }
+  expect(report.find(item => item.reason.includes("intercom-revocation-peer-unreachable"))?.reason).toContain("pair-1");
+  expect(report.find(item => item.reason.includes("host-key-changed"))?.reason).toMatch(/re.enroll/i);
+  expect(report.find(item => item.reason.includes("intercom-connector-sign-in-required"))?.reason).toMatch(/sign in/i);
+  expect(test.adminRepairCalls).toEqual([]); expect(test.probeCalls).toEqual(["inventory"]); expect(effects).toEqual([]);
+}, 5000);
+
 it("refuses an unowned core without modifying its service", async () => {
   const doctor = (doctorModule as { doctorPeer?: DoctorFn }).doctorPeer;
   expect(typeof doctor).toBe("function");

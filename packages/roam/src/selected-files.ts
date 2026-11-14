@@ -1,3 +1,4 @@
+import { isThinkingLevel } from "@spider/db-core";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync, constants, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync,
@@ -195,7 +196,7 @@ function rewriteSettings(value: Record<string, unknown>): Buffer {
       if (!rest.length) {
         if (typeof item !== type || typeof item === "number" && (!Number.isFinite(item) ||
             setting.startsWith("compaction.") && (!Number.isSafeInteger(item) || item < 0)) ||
-            setting === "defaultThinkingLevel" && !["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(item as string)) {
+            setting === "defaultThinkingLevel" && !isThinkingLevel(item)) {
           fail("invalid-configuration", ["settings.json"]);
         }
         destination[key] = item;

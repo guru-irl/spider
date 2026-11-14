@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile, chmod, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile, chmod, access, utimes } from 'node:fs/promises';
 import { resolve, join, dirname } from 'node:path';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Owner, SessionId, Generation, TerminalIdentity } from '../contracts.js';
@@ -267,18 +267,21 @@ it('inactive registration observes a reused PID without refusing ordinary pi sta
   expect(await inv.leases.get(file)).toMatchObject({ startIdentity: 'new-start' }); await registration.dispose();
 });
 
-it('a crashed lock actor is reclaimed only after absence, never after PID reuse', async () => {
+it.each(['absent', 'reused'] as const)('reclaims a crashed lock owner only on proof: %s', async proof => {
   const source = join(root, 'crash.ts');
   await writeFile(source, `import { withProcessLock } from ${JSON.stringify(fileURLToPath(new URL('../sessions/registry.ts', import.meta.url)))}; await withProcessLock(${JSON.stringify(root)},'crash',async()=>process.exit(77));`);
   await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: source, outDir: root, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'crash.mjs' } } } });
   const child = spawn(process.execPath, [join(root, 'crash.mjs')], { env: { ...process.env, HOME: root, TMPDIR: root, SPIDER_GLOBAL_ROOT: join(root, 'global') }, stdio: 'ignore' });
   const code = await new Promise<number | null>((resolveRun, reject) => { child.once('error', reject); child.once('close', resolveRun); }); expect(code).toBe(77);
   const directory = join(root, 'locks', hash('crash')); expect(await jsonFiles(directory)).toHaveLength(1);
-  await expect(withProcessLock(root, 'crash', async () => {}, { probe: async pid => pid === child.pid ? { kind: 'live', startIdentity: 'reused' } : { kind: 'live', startIdentity: processStartTime(pid)! } })).rejects.toMatchObject({ code: 'lock-owner-uncertain' });
+  const ticketPath = (await jsonFiles(directory))[0], owner = JSON.parse(await readFile(ticketPath, 'utf8')) as { startIdentity: string };
+  await utimes(ticketPath, new Date(0), new Date(0));
+  await expect(withProcessLock(root, 'crash', async () => {}, { reclaimReusedOwner: true, timeoutMs: 30, probe: async pid => ({ kind: 'live', startIdentity: pid === child.pid ? owner.startIdentity : processStartTime(pid)! }) })).rejects.toMatchObject({ code: 'lock-occupied' });
+  await expect(withProcessLock(root, 'crash', async () => {}, { reclaimReusedOwner: true, probe: async pid => pid === child.pid ? { kind: 'unknown' } : { kind: 'live', startIdentity: processStartTime(pid)! } })).rejects.toMatchObject({ code: 'lock-owner-uncertain' });
   expect(await jsonFiles(directory)).toHaveLength(1);
-  let ran = false; await withProcessLock(root, 'crash', async () => { ran = true; }); expect(ran).toBe(true);
+  let ran = false; await expect(withProcessLock(root, 'crash', async () => { ran = true; }, { reclaimReusedOwner: true, probe: async pid => pid === child.pid ? proof === 'absent' ? { kind: 'absent' } : { kind: 'live', startIdentity: 'reused' } : { kind: 'live', startIdentity: processStartTime(pid)! } })).resolves.toBeUndefined(); expect(ran).toBe(true);
   expect(await jsonFiles(directory)).toEqual([]);
-});
+}, 5000);
 
 it.each([['-e', 'relative-extension.js'], ['--no-extensions'], ['--extension=/absolute/extension.js']])('records explicit extension arguments for refusal, never replay: %j', async (...arguments_) => {
   const file = await session(); const environment = { agentDirectory: root, extensionArguments: arguments_ };

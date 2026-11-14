@@ -79,7 +79,7 @@ export function parseConnectorRecipe(value: unknown): IntercomConnectorRecipe {
   const invalid = (): never => { throw new Error("intercom-connector-recipe-invalid"); };
   if (!value || typeof value !== "object" || Array.isArray(value)) return invalid();
   const input = value as RecordValue;
-  if (Object.keys(input).length !== 4 || !["check", "host", "connect", "localPort"].every(key => Object.hasOwn(input, key))) return invalid();
+  if (Object.keys(input).some(key => !["check", "host", "connect", "localPort", "pairPorts"].includes(key)) || !["check", "host", "connect", "localPort"].every(key => Object.hasOwn(input, key))) return invalid();
   const command = (candidate: unknown): string[] => {
     if (!Array.isArray(candidate) || candidate.length < 1 || candidate.length > 64 || candidate.some(arg => typeof arg !== "string" ||
         !arg || arg.length > 4096 || /[\u0000-\u001f\u007f]/.test(arg)) || !isAbsolute(candidate[0]) || resolve(candidate[0]) !== candidate[0] ||
@@ -87,7 +87,16 @@ export function parseConnectorRecipe(value: unknown): IntercomConnectorRecipe {
     return [...candidate] as string[];
   };
   if (!Number.isSafeInteger(input.localPort) || Number(input.localPort) < 1 || Number(input.localPort) > 65535) return invalid();
-  return { check: command(input.check), host: command(input.host), connect: command(input.connect), localPort: Number(input.localPort) };
+  let pairPorts: Record<string, number> | undefined;
+  if (input.pairPorts !== undefined) {
+    if (!input.pairPorts || typeof input.pairPorts !== "object" || Array.isArray(input.pairPorts) || Object.keys(input.pairPorts).length > 64) return invalid();
+    pairPorts = Object.create(null) as Record<string, number>; const used = new Set<number>();
+    for (const [pairId, port] of Object.entries(input.pairPorts)) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(pairId) || !Number.isSafeInteger(port) || Number(port) < 1 || Number(port) > 65535 || used.has(Number(port))) return invalid();
+      pairPorts[pairId] = Number(port); used.add(Number(port));
+    }
+  }
+  return { check: command(input.check), host: command(input.host), connect: command(input.connect), localPort: Number(input.localPort), ...(pairPorts ? { pairPorts } : {}) };
 }
 
 function readIntercom(value: unknown, role: "hub" | "box", machineId: string, hubMachineId: string): IntercomConfig {

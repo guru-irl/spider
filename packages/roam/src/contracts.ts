@@ -48,7 +48,7 @@ export const DEFAULT_INTERCOM_LIMITS: Readonly<IntercomLimits> = Object.freeze({
 export type IntercomRoute =
   | { kind: "direct"; peer: Peer; edgeEpoch: string }
   | { kind: "relay"; peer: Peer; via: MachineId };
-export interface IntercomConnectorRecipe { check: readonly string[]; host: readonly string[]; connect: readonly string[]; localPort: number }
+export interface IntercomConnectorRecipe { check: readonly string[]; host: readonly string[]; connect: readonly string[]; localPort: number; pairPorts?: Readonly<Record<string, number>> }
 interface IntercomSettings {
   mode: "hub-only" | "peers"; protocolFeature: "federation-v1";
   routes: readonly IntercomRoute[]; limits: IntercomLimits; connector?: IntercomConnectorRecipe;

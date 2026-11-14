@@ -91,6 +91,15 @@ it("refuses malformed connector recipes by name without echoing their contents",
   }
 }, 5000);
 
+it("accepts explicit pair ports and refuses duplicate or unsafe port assignments", () => {
+  const connector = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "{pairId}"], connect: ["/fixture/connector", "connect", "{pairId}", "{localPort}"], localPort: 23222,
+    pairPorts: { "pair-1": 23222, "pair-2": 23223 } };
+  expect(parseConfig({ ...box, intercom: { connector } }).intercom.connector).toEqual(connector);
+  for (const pairPorts of [{ "pair-1": 23222, "pair-2": 23222 }, { "../bad": 23222 }, { "pair-1": 65536 }, []]) {
+    expect(() => parseConfig({ ...box, intercom: { connector: { ...connector, pairPorts } } })).toThrow("intercom-connector-recipe-invalid");
+  }
+}, 5000);
+
 it("HubPorts stays unchanged", () => {
   expectTypeOf<keyof HubPorts>().toEqualTypeOf<"config" | "sync" | "journal" | "clock" | "placement">();
 }, 5000);

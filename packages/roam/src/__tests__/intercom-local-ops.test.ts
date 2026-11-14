@@ -25,6 +25,10 @@ function fixture() {
   const ports = { machineId: A, root: sourceRoot, home, node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen", recipe, run };
   return { root, sourceRoot, targetRoot, home, pair, plan, proof, calls, ports };
 }
+async function registerFixture(f: ReturnType<typeof fixture>) {
+  const { createIntercomRegistry } = await import("../intercom-registry");
+  for (const root of [f.sourceRoot, f.targetRoot]) await createIntercomRegistry(root).register(f.plan, f.proof.operationId, f.proof.graphDigest);
+}
 async function api() { return await import("../intercom-local-ops").catch(() => ({})) as typeof import("../intercom-local-ops"); }
 
 it("the private CLI refuses credential setup until pair-scoped connector support exists", async () => {
@@ -60,6 +64,7 @@ it("does not run setup effects without an exact separately approved graph", asyn
 
 it("checks local UUIDs and creates the source key and strictly pinned route using fixture paths", async () => {
   const f = fixture(), mod = await api(); expect(mod.runLocalPairOperation).toBeTypeOf("function");
+  await registerFixture(f);
   await expect(mod.runLocalPairOperation({ action: "ensure-key", pair: f.pair, approval: f.proof }, { ...f.ports, machineId: B })).rejects.toThrow("machine-mismatch");
   const key = await mod.runLocalPairOperation({ action: "ensure-key", pair: f.pair, approval: f.proof }, f.ports);
   expect(key).toMatchObject({ publicKey: `ssh-ed25519 ${f.pair.hostKey.base64}`, privateMode: 0o600 });
@@ -94,6 +99,7 @@ it("publishes only the approved pair route while preserving other local configur
 
 it("forwards the approved epoch and fence generation to the local live helper", async () => {
   const f = fixture(), mod = await api(), seen: unknown[] = [];
+  await registerFixture(f);
   const ports = { ...f.ports, async enrollBridge(input: unknown) { seen.push(input); return { machineId: A, peer: B, edgeEpoch: "edge-1", applied: true }; } };
   expect(await mod.runLocalPairOperation({ action: "enroll-live", pair: f.pair, approval: f.proof, expectedFenceId: null }, ports)).toMatchObject({ applied: true });
   expect(seen).toEqual([{ version: 1, action: "enroll-pair", machineId: A, peer: B, pairId: "pair-1", edgeEpoch: "edge-1",
@@ -122,10 +128,22 @@ it("removes a pair key only after the local authoritative fence exists", async (
   const key = await mod.runLocalPairOperation({ action: "ensure-key", pair: f.pair, approval: f.proof }, source) as { publicKey: string };
   await mod.runLocalPairOperation({ action: "authorize", pair: f.pair, approval: f.proof, publicKey: key.publicKey }, target);
   const { createIntercomRegistry } = await import("../intercom-registry");
+  const { pairResources, ensurePairUnit } = await import("../intercom-pair-resources");
+  await createIntercomRegistry(f.sourceRoot).bindResources("pair-1", f.proof.operationId, pairResources(f.pair, "core-target"));
+  await createIntercomRegistry(f.targetRoot).bindResources("pair-1", f.proof.operationId, pairResources(f.pair, "core-target"));
+  let hostActive = false;
+  const unitName = "spider-pair-pair-1-host.service", unitFile = join(f.home, ".config", "systemd", "user", unitName);
+  const hostPorts = { ...target, systemctl: "/fixture/systemctl", recipe: { ...target.recipe, host: ["/fixture/connector", "host", "{pairId}"], connect: ["/fixture/connector", "connect", "{pairId}"] },
+    process: () => hostActive ? { kind: "live" as const, startIdentity: "linux:123" } : { kind: "absent" as const }, cgroup: () => hostActive ? [123] : [],
+    async run(argv: readonly string[]) {
+      if (argv[2] === "start") hostActive = true; if (argv[2] === "stop") hostActive = false;
+      return { code: 0, stdout: argv[2] === "show" ? `Id=${unitName}\nActiveState=${hostActive ? "active" : "inactive"}\nMainPID=${hostActive ? 123 : 0}\nControlGroup=/user.slice/${unitName}\nKillMode=control-group\nFragmentPath=${unitFile}\nDropInPaths=\nNeedDaemonReload=no\n` : "" };
+    } };
+  await ensurePairUnit(f.pair, "host", hostPorts);
   await createIntercomRegistry(f.sourceRoot).beginRevocation("pair-1", token);
   await createIntercomRegistry(f.targetRoot).beginRevocation("pair-1", token);
   const fence = async () => ({ machineId: A, peer: B, fence: { edgeEpoch: "edge-1", fenceId: token } });
-  const sourceCleanup = { ...source, inspectFence: fence }, targetCleanup = { ...target, inspectFence: async () => ({ machineId: B, peer: A, fence: { edgeEpoch: "edge-1", fenceId: token } }) };
+  const sourceCleanup = { ...source, inspectFence: fence }, targetCleanup = { ...hostPorts, inspectFence: async () => ({ machineId: B, peer: A, fence: { edgeEpoch: "edge-1", fenceId: token } }) };
   expect(await mod.runLocalPairCleanup({ action: "read-public", pairId: "pair-1", fenceId: token }, sourceCleanup)).toEqual({ publicKey: key.publicKey });
   writeFileSync(join(f.sourceRoot, "roam", "config.json"), JSON.stringify({ role: "hub", machineId: A, hubMachineId: A, coreUnit: "fixture.service" }), { mode: 0o600 });
   writeFileSync(join(f.sourceRoot, "roam", "machine.json"), JSON.stringify({ machineId: A }), { mode: 0o600 });
@@ -141,6 +159,7 @@ it("removes a pair key only after the local authoritative fence exists", async (
 
 it("checks the connector but refuses unscoped host and connect commands", async () => {
   const f = fixture(), mod = await api(); expect(mod.runLocalPairOperation).toBeTypeOf("function");
+  await registerFixture(f);
   const runner = async (argv: readonly string[]) => { f.calls.push([...argv]); return { code: 0, stdout: JSON.stringify({ connector: "ready", login: "ready", tunnel: "hosted", peerPort: "reachable" }) }; };
   const source = { ...f.ports, run: runner }, target = { ...source, machineId: B, root: f.targetRoot };
   expect(await mod.runLocalPairOperation({ action: "check-connector", pair: f.plan, approval: f.proof }, source)).toEqual({ status: "ready" });
@@ -152,12 +171,13 @@ it("checks the connector but refuses unscoped host and connect commands", async 
 
 it("adds only the pair-owned hc alias with argv and refuses an alias bound to another core", async () => {
   const f = fixture(), mod = await api(); expect(mod.runLocalPairOperation).toBeTypeOf("function");
+  await registerFixture(f);
   await mod.runLocalPairOperation({ action: "ensure-key", pair: f.pair, approval: f.proof }, f.ports);
   const files = await mod.runLocalPairOperation({ action: "write-route", pair: f.pair, approval: f.proof }, f.ports) as { via: string };
-  let machines: Array<{ name: string; id: string; via: boolean; target: string }> = [];
+  let machines: Array<{ name: string; id: string; via: boolean; target: string; session: string; temporary: boolean }> = [];
   const run = async (argv: readonly string[]) => { f.calls.push([...argv]);
     if (argv[1] === "machine" && argv[2] === "ls") return { code: 0, stdout: JSON.stringify({ machines }) };
-    if (argv[1] === "machine" && argv[2] === "add") { machines = [{ name: "box-2.invalid", id: "core-target", via: true, target: files.via }]; return { code: 0, stdout: "{}" }; }
+    if (argv[1] === "machine" && argv[2] === "add") { machines = [{ name: "spider-pair-pair-1", id: "core-target", via: true, target: files.via, session: "default", temporary: false }]; return { code: 0, stdout: "{}" }; }
     if (argv[1] === "exec") return { code: 0, stdout: JSON.stringify({ version: 1, kind: "doctor", machineId: B, value: {} }) };
     throw new Error("unexpected command");
   };
@@ -167,11 +187,11 @@ it("adds only the pair-owned hc alias with argv and refuses an alias bound to an
   expect(await mod.runLocalPairOperation(operation, source)).toEqual({ added: false });
   expect(await mod.runLocalPairOperation({ ...operation, action: "verify-transport" }, source)).toEqual({ sourceMachineId: A, targetMachineId: B, connector: true, key: true, route: true });
   const verify = f.calls.find(argv => argv[1] === "exec")!;
-  expect(verify).toContain("box-2.invalid"); expect(verify).toContain("--global-root"); expect(verify).toContain(f.targetRoot);
+  expect(verify).toContain("spider-pair-pair-1"); expect(verify).toContain("--global-root"); expect(verify).toContain(f.targetRoot);
   const added = f.calls.filter(argv => argv[1] === "machine" && argv[2] === "add");
   expect(added).toEqual([["/fixture/hc", "machine", "add", "--via", join(f.sourceRoot, "roam", "intercom", "pairs", "pair-1", "edge-1", "via"),
-    "--name", "box-2.invalid", "--session", "default", "--json"]]);
-  machines = [{ name: "box-2.invalid", id: "wrong-core", via: true, target: files.via }];
+    "--name", "spider-pair-pair-1", "--session", "default", "--json"]]);
+  machines = [{ name: "spider-pair-pair-1", id: "wrong-core", via: true, target: files.via, session: "default", temporary: false }];
   await expect(mod.runLocalPairOperation(operation, source)).rejects.toThrow("intercom-alias-conflict");
   expect(f.calls.filter(argv => argv[2] === "add")).toHaveLength(1);
 }, 5000);
@@ -190,6 +210,7 @@ it("reads the served SSH host key and account on the exact approved target", asy
 
 it("authorizes the target key only on the exact approved target", async () => {
   const f = fixture(), mod = await api(); expect(mod.runLocalPairOperation).toBeTypeOf("function");
+  await registerFixture(f);
   const target = { ...f.ports, machineId: B, root: f.targetRoot };
   const pub = `ssh-ed25519 ${f.pair.hostKey.base64}`;
   await mod.runLocalPairOperation({ action: "authorize", pair: f.pair, approval: f.proof, publicKey: pub }, target);

@@ -9,11 +9,11 @@ import type { Peer } from "../contracts";
 const HUB = "00000000-0000-4000-8000-000000000001", A = "00000000-0000-4000-8000-000000000002", B = "00000000-0000-4000-8000-000000000003";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
-const peer = (machineId: string, alias: string): Peer => ({ machineId, alias, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: `/fixture/${alias}` });
+const peer = (machineId: string, alias: string, root: string): Peer => ({ machineId, alias, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: join(root, alias) });
 function fixture(approved: boolean) {
   const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "icprod-")); roots.push(root); mkdirSync(join(root, "roam"), { mode: 0o700 });
   const journal = openJournal(join(root, "roam", "journal.db"));
-  const source = peer(A, "box-a.invalid"), target = peer(B, "box-b.invalid");
+  const source = peer(A, "box-a.invalid", root), target = peer(B, "box-b.invalid", root);
   const request = { operation: { id: "production-1", machineId: HUB, kind: "intercom-enrollment", expectedEpoch: null, args: {} },
     pairs: [{ pairId: "pair-1", source, target, edgeEpoch: "edge-1", connector: { tunnelId: "tunnel", remotePort: 22, session: "default" } }] };
   const keyBytes = Buffer.concat([Buffer.from([0, 0, 0, 11]), Buffer.from("ssh-ed25519"), Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, 8)]);
@@ -23,7 +23,7 @@ function fixture(approved: boolean) {
     async pinIntercomPeer(machine: Peer) { return { handle: machine, machineId: machine.machineId, coreId: `core-${machine.machineId}` }; },
     transport: { async exec(machine: Peer, argv: readonly string[], options: { stdin: Buffer }) {
       const input = JSON.parse(options.stdin.toString()), command = argv[2]; calls.push({ machine: machine.machineId, command, input });
-      if (command === "observe-fence") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-fence", ok: true, value: { machineId: machine.machineId, peer: input.peer, fence: null } }));
+      if (command === "observe-fence") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-fence", ok: true, value: { machineId: machine.machineId, peer: input.peer, fence: null, revocationPending: false } }));
       if (!journal.read(request.operation.id).some(row => row.action === "intercom-peer-consent" && row.result.approved === true)) throw new Error("setup before consent");
       let value: unknown = { ok: true };
       if (input.action === "check-connector" || input.action === "host-connector" || input.action === "connect-connector") value = { status: "ready" };

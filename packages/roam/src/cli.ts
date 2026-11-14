@@ -1,3 +1,7 @@
+import { ReadinessParseError } from "@spider/db-core/roam/readiness";
+import { randomUUID } from "node:crypto";
+import { runProvisionCli } from "./provision-cli";
+import { observeLocalHosting } from "./production-supervisor";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +28,8 @@ const HELP = `Usage: spider <command>
   spider roam sync [machine]
   spider roam enable|disable
   spider roam doctor [machine]
-  spider roam provision <machine>
+  spider roam provision <machine> [--release <tarball>] [--yes --consent copilot-auth] [--operation-id <id>]
+  spider roam stop|resume <session>
   spider roam repo map <repo-key> <path>
   spider roam memory tag <store-key> <uuid> <machine|all>
   spider move <session> <machine>
@@ -89,14 +94,14 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
     io.out(HELP);
     return 0;
   }
-  if (argv[0] === "roam" && argv[1] === "observe" && argv.length === 3 && ["consumers", "doctor"].includes(argv[2])) {
+  if (argv[0] === "roam" && argv[1] === "observe" && argv.length === 3 && ["consumers", "doctor", "hosting"].includes(argv[2])) {
     try {
       const config = readLocalIdentity(root);
       const value = argv[2] === "consumers" ? await inspectLocalConsumers(root, config.machineId, options?.bundleUrl)
-        : await runLocalDoctor({ root, bundleUrl: options?.bundleUrl });
+        : argv[2] === "hosting" ? await observeLocalHosting(root) : await runLocalDoctor({ root, bundleUrl: options?.bundleUrl });
       io.out(`${JSON.stringify({ version: 1, machineId: config.machineId, kind: argv[2], value })}\n`);
       return 0;
-    } catch { io.err("Cannot inspect local roaming state. No data was changed.\n"); return 1; }
+    } catch (error) { io.err(error instanceof ReadinessParseError ? `${error.reason}\n` : "Cannot inspect local roaming state. No data was changed.\n"); return 1; }
   }
   if (argv[0] === "roam" && argv[1] === "hub" && argv.length === 2) {
     try {
@@ -152,6 +157,23 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
       return 0;
     } catch { io.err("Local roaming agent is unavailable.\n"); return 1; }
   }
+  if (argv[0] === "roam" && argv[1] === "provision") {
+    if (!positional(argv[2], false)) { io.err("Invalid provisioning target.\n"); return 2; }
+    let release: string | undefined, operationId: string | undefined, yes = false, consent: string | null = null;
+    const seen = new Set<string>();
+    for (let index = 3; index < argv.length; index++) {
+      const flag = argv[index];
+      if (seen.has(flag) || !["--release", "--yes", "--consent", "--operation-id"].includes(flag)) { io.err("Invalid provisioning arguments.\n"); return 2; }
+      seen.add(flag);
+      if (flag === "--yes") { yes = true; continue; }
+      const value = argv[++index];
+      if (!positional(value, false)) { io.err("Invalid provisioning arguments.\n"); return 2; }
+      if (flag === "--release") { if (!isAbsolute(value)) { io.err("The release must be an absolute path.\n"); return 2; } release = value; }
+      else if (flag === "--consent") consent = value;
+      else operationId = value;
+    }
+    return runProvisionCli({ root, target: argv[2], release, yes, consent, operationId }, io, { bundleUrl: options?.bundleUrl });
+  }
   const parsed = normalize(argv);
   argv = parsed.args;
   if (!valid(argv, parsed.literalFrom)) {
@@ -196,6 +218,26 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
       } finally { core.close(); }
       io.out("Memory tag updated.\n"); return 0;
     } catch { io.err("Cannot update this memory tag. No other fields were changed.\n"); return 1; }
+  }
+  if (argv[0] === "roam" && ["stop", "resume"].includes(argv[1])) {
+    try {
+      const core = openLocalCore(root);
+      try {
+        if (core.config.role !== "hub") { io.err("Run this command on the Mac hub.\n"); return 1; }
+        const home = core.db.prepare("SELECT machine_id,epoch FROM session_homes WHERE session_id=?").get(argv[2]) as { machine_id: string; epoch: number } | undefined;
+        if (!home?.machine_id) { io.err("participant-home-unavailable\n"); return 1; }
+        const peer = core.config.peers.find(peer => peer.machineId === home.machine_id);
+        if (!peer) { io.err("participant-home-not-enrolled\n"); return 1; }
+        const herdr = loadHerdrConfig(root), transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: core.config.peers });
+        const operation: Operation = { id: randomUUID(), kind: `session-${argv[1]}`, machineId: peer.machineId, expectedEpoch: home.epoch,
+          args: { sourceMachine: core.config.machineId, sessionId: argv[2] } };
+        const handle = await transport.resolve(peer), bytes = await transport.exec(handle, ["roam", "agent", JSON.stringify(operation)],
+          { timeoutMs: core.config.limits.controlMs, maxBytes: core.config.limits.replyBytes });
+        const result = parseRoamJson(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown> | null;
+        if (!result || typeof result !== "object" || Array.isArray(result) || result.operationId !== operation.id || typeof result.code !== "number" || ![0, 1, 2, 3].includes(result.code) || typeof result.reason !== "string") throw new Error("Invalid control response");
+        (result.code === 0 ? io.out : io.err)(`${clean(result.reason)}\n`); return result.code;
+      } finally { core.close(); }
+    } catch { io.err("Participant control is unavailable. Run spider roam doctor.\n"); return 1; }
   }
   if (argv[0] === "roam" && argv[1] === "sync") {
     let config;

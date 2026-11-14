@@ -51,9 +51,15 @@ function approvedAuth(bytes: Buffer, providers: readonly string[]): Buffer {
   return Buffer.from(`${JSON.stringify(output)}\n`);
 }
 
+/** Measure the selected provider payload without retaining its bytes. */
+export function previewPiAuthBytes(bytes: Buffer, providers: readonly string[]): number {
+  const selected = approvedAuth(bytes, providerList(providers));
+  try { return selected.length; } finally { selected.fill(0); }
+}
+
 /** Read and transfer authentication only after target-and-provider consent. */
 export async function copyPiAuth(input: {
-  sourceRoot: string; peer: Peer; operationId: string; providers: readonly string[]; journal: Journal; maxBytes: number;
+  sourceRoot: string; peer: Peer; operationId: string; providers: readonly string[]; journal: Journal; maxBytes: number; expectedBytes?: number;
 }, ports: AuthPorts): Promise<void> {
   const providers = providerList(input.providers);
   if (!hasProvisionConsent(input.journal, input.operationId, input.peer, providers)) throw new AuthError("consent-required");
@@ -63,6 +69,7 @@ export async function copyPiAuth(input: {
   if (original === null) throw new AuthError("unsafe-auth");
   let bytes: Buffer;
   try { bytes = approvedAuth(original, providers); } finally { original.fill(0); }
+  if (input.expectedBytes !== undefined && bytes.length !== input.expectedBytes) { bytes.fill(0); throw new AuthError("auth-preview-changed"); }
   let stage: AuthStage | null = null, failed: string | null = null, cleanupFailed = false;
   try {
     stage = await ports.stage(bytes);

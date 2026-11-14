@@ -14,7 +14,8 @@ import * as provisionModule from "../provision";
 import { bootstrapPeer, healthyInventory } from "./bootstrap-fixture";
 
 type Provision = (input: { operation: { id: string; machineId: string; expectedEpoch: null; kind: string; args: Record<string, never> }; peer: Peer;
-  selected: readonly string[]; includeAuth: boolean; confirmedProviders: readonly string[] }, ports: unknown) => Promise<Outcome<{ hostingReady: boolean }>>;
+  selected: readonly string[]; includeAuth: boolean; confirmedProviders: readonly string[]; expectedAuthBytes?: number;
+  expectedFiles?: readonly { path: string; size: number; mode: number }[] }, ports: unknown) => Promise<Outcome<{ hostingReady: boolean }>>;
 const provision = (provisionModule as { provision?: Provision }).provision;
 const roots: string[] = [];
 
@@ -50,7 +51,7 @@ function fixture() {
     supervisor: "/home/fixture/.local/lib/spider/dist/roam/supervisor.mjs" };
   const stageFile = join(staging, "auth.stage");
   const ports = {
-    transport, journal, limits: DEFAULT_LIMITS, coreUnit: "herdr-core.service",
+    transport, journal, hubMachineId: "00000000-0000-4000-8000-000000000001", limits: DEFAULT_LIMITS, coreUnit: "herdr-core.service",
     async withPeerLock<T>(_machineId: string, work: () => Promise<T>): Promise<T> { events.push("lock"); try { return await work(); } finally { events.push("unlock"); } },
     async confirm(target: string, providers: readonly string[]) {
       events.push("confirm"); confirmations.push({ target, providers: [...providers] });
@@ -84,6 +85,7 @@ function fixture() {
       return { machineId: claimMachineIdentity(global, peer.machineId), coreId: "fixture-core" };
     } },
     transfer: {
+      async enroll(_peer: Peer, hubMachineId: string) { expect(hubMachineId).toBe("00000000-0000-4000-8000-000000000001"); events.push("enrollment"); },
       async cleanupSecrets(_peer: Peer) { events.push("cleanup-secrets"); },
       async installRelease(_peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: string; intercom: string }) {
         events.push("release");
@@ -116,6 +118,13 @@ function fixture() {
     diagnostics, systemctl, secretCollectionCalls, value, ports, request };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+it("persists box enrollment between identity claim and release launch", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  expect(await provision!(f.request("enrollment-order"), f.ports)).toMatchObject({ code: 0 });
+  expect(f.events.indexOf("enrollment")).toBeGreaterThan(f.events.indexOf("identity"));
+  expect(f.events.indexOf("enrollment")).toBeLessThan(f.events.indexOf("release"));
+}, 5000);
 
 it("refuses custom pi agent directories before consent or provisioning effects", async () => {
   expect(provision).toBeTypeOf("function");
@@ -201,6 +210,41 @@ it("refused provider consent leaves identity and auth unmodified", async () => {
   expect(f.events).not.toContain("auth-stage");
   expect(existsSync(join(f.global, "roam", "machine.json"))).toBe(false);
   expect(existsSync(join(f.destination, "auth.json"))).toBe(false);
+}, 5000);
+
+it("changed selected files after preview are refused before consent and target-side effects", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", '{"theme":"changed"}');
+  const result = await provision!({ ...f.request("files-changed"), expectedFiles: [{ path: "settings.json", size: 1, mode: 0o600 }] }, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "selected-files-changed" });
+  expect(f.events).not.toContain("confirm"); expect(f.events).not.toContain("identity"); expect(f.events).not.toContain("files");
+}, 5000);
+
+it("changed auth after preview is refused before target-side effects", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  const original = { type: "oauth", access: "first-fixture" };
+  f.write(f.source, "auth.json", JSON.stringify({ "github-copilot": original }));
+  const expectedAuthBytes = Buffer.byteLength(JSON.stringify({ "github-copilot": original }) + "\n");
+  f.ports.confirm = async () => { f.events.push("confirm"); f.write(f.source, "auth.json", JSON.stringify({ "github-copilot": { type: "oauth", access: "longer-changed-fixture" } })); return true; };
+  const result = await provision!({ ...f.request("auth-changed", true, ["github-copilot"]), expectedAuthBytes }, f.ports);
+  expect(result).toMatchObject({ code: 1, reason: "auth-preview-changed" });
+  expect(f.events).not.toContain("identity"); expect(f.events).not.toContain("release"); expect(f.events).not.toContain("auth-stage");
+  expect(JSON.stringify({ result, events: f.events })).not.toContain("longer-changed-fixture");
+}, 5000);
+
+it("auth changed during release installation is not staged", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  const original = { type: "oauth", access: "first-fixture" };
+  f.write(f.source, "auth.json", JSON.stringify({ "github-copilot": original }));
+  const expectedAuthBytes = Buffer.byteLength(JSON.stringify({ "github-copilot": original }) + "\n");
+  const install = f.ports.transfer.installRelease;
+  f.ports.transfer.installRelease = async (peer, input) => {
+    const result = await install(peer, input);
+    f.write(f.source, "auth.json", JSON.stringify({ "github-copilot": { type: "oauth", access: "longer-changed-fixture" } }));
+    return result;
+  };
+  const result = await provision!({ ...f.request("auth-changed-later", true, ["github-copilot"]), expectedAuthBytes }, f.ports);
+  expect(result).toMatchObject({ code: 3, reason: "auth-preview-changed" });
+  expect(f.events).toContain("release"); expect(f.events).not.toContain("auth-stage"); expect(f.events).not.toContain("auth-install");
 }, 5000);
 
 it("secret commands are never executed and consented auth staging is removed", async () => {

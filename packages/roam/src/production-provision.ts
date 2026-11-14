@@ -7,7 +7,7 @@ import { createProvisionLock } from "./provision-lock";
 import type { ProvisionTransport } from "./transport";
 
 export interface ProductionProvisionOptions {
-  root: string; peer: Peer; operationId: string; transport: ProvisionTransport; journal: Journal; limits: Limits;
+  root: string; hubMachineId: string; peer: Peer; operationId: string; transport: ProvisionTransport; journal: Journal; limits: Limits;
   source: ProvisionPorts["source"]; destination: ProvisionPorts["destination"]; unitDir: string; coreUnit: string;
   release: ProvisionPorts["release"]; configuredClis?: ProvisionPorts["configuredClis"];
   present: ProvisionPorts["present"]; confirm: ProvisionPorts["confirm"]; report: ProvisionPorts["report"];
@@ -24,7 +24,7 @@ export function createProductionProvisionPorts(input: ProductionProvisionOptions
     unitDir: input.unitDir, coreUnit: input.coreUnit, limits: input.limits, transport: input.transport, piProviders: input.source.piProviders });
   const lock = createProvisionLock(input.root, input.lockOptions);
   return {
-    transport: input.transport.transport, journal: input.journal, limits: input.limits, coreUnit: input.coreUnit,
+    hubMachineId: input.hubMachineId, transport: input.transport.transport, journal: input.journal, limits: input.limits, coreUnit: input.coreUnit,
     ...(input.configuredClis ? { configuredClis: input.configuredClis } : {}),
     source: input.source, destination: input.destination, release: input.release,
     confirm: input.confirm, present: input.present, report: input.report, resources: input.resources, bootId: input.bootId,

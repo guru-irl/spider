@@ -40,7 +40,10 @@ export interface Segment {
   historyMachine: MachineId; parentRef: HistoryRef | null;
 }
 export interface Blocker { kind: string; id: string; detail: string }
-export interface Readiness { operationId: string; sessionId: string; epoch: number; cwd: string; file: string; core: string; terminal: string }
+interface ReadinessOwner { sessionId: string; epoch: number; cwd: string; file: string; core: string; terminal: string }
+export interface HubOperationReadiness extends ReadinessOwner { origin: "hub-operation"; opId: string }
+export interface BoxLocalReadiness extends ReadinessOwner { origin: "box-local"; machineId: MachineId }
+export type Readiness = HubOperationReadiness | BoxLocalReadiness;
 export interface ExportPolicy { encode(entity: Entity, body: JsonObject, origin: MachineId): JsonObject }
 export interface ReplicaEffects {
   winning(db: Db, before: { rowid: number; body: JsonObject } | null, after: { rowid: number } | null, change: Change): void;

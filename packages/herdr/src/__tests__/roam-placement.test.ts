@@ -11,7 +11,7 @@ import { createRoamPlacement, rememberRoamSlot } from '../roam-placement.js';
 import { createClientFixture } from './testutil.js';
 import type { AppClient, HcClient, Owner, SpaceId, TabId } from '../contracts.js';
 
-const ready = (terminal: string) => ({ operationId: 'op', sessionId: 'session-1', epoch: 1, cwd: '/work', file: '/work/session.jsonl', core: 'remote-core', terminal });
+const ready = (terminal: string) => ({ origin: "hub-operation" as const, opId: 'op', sessionId: 'session-1', epoch: 1, cwd: '/work', file: '/work/session.jsonl', core: 'remote-core', terminal });
 const slot = { space: 's1' as SpaceId, tab: 'tb1' as TabId };
 async function fixture() {
   const f = await createClientFixture();

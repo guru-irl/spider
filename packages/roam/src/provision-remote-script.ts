@@ -2,6 +2,10 @@ import selectedSource from "./selected-files.ts?raw";
 import authSource from "./auth.ts?raw";
 import receiptSource from "./release-receipt.ts?raw";
 import releaseRequestSource from "./release-request.ts?raw";
+import enrollmentSource from "./enrollment.ts?raw";
+import configSource from "./config.ts?raw";
+import machineIdSource from "./machine-id.ts?raw";
+import { DEFAULT_LIMITS } from "./contracts";
 
 // The destination executes the same file and auth checks as the local installer. Node's
 // native TypeScript stripping needs no package install before the release exists.
@@ -9,9 +13,20 @@ const authForRemote = authSource
   .replace('import { basename, dirname } from "node:path";', 'import { basename } from "node:path";')
   .replace('import type { Journal, Peer } from "./contracts";', "")
   .replace('import { installPiAuthBytes, readPrivateBytes } from "./selected-files";', "");
-if (authForRemote === authSource || authForRemote.includes('from "./')) throw new Error("Cannot assemble provisioning program");
+const configForRemote = configSource
+  .replace('import { readFileSync } from "node:fs";', "")
+  .replace('import { isAbsolute } from "node:path";', "")
+  .replace('import { DEFAULT_LIMITS } from "./contracts";', "")
+  .replace('import { isMachineId } from "./machine-id";', "")
+  .replace('import type { Limits, Peer, RoamConfig } from "./contracts";', "")
+  .replace(/^export /gm, "");
+const machineIdForRemote = machineIdSource.replace(/^export /gm, "");
+const enrollmentForRemote = enrollmentSource.replace('import { parseConfig as parseRoamConfig } from "./config";', "");
+if (authForRemote === authSource || authForRemote.includes('from "./') || configForRemote.includes("import ") ||
+    enrollmentForRemote === enrollmentSource || enrollmentForRemote.includes('from "./')) throw new Error("Cannot assemble provisioning program");
+const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAULT_LIMITS = ${JSON.stringify(DEFAULT_LIMITS)};\n${machineIdForRemote}\n${configForRemote}\nreturn parseConfig;\n})();\n`;
 
-export const PROVISION_REMOTE_SCRIPT: string = selectedSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + String.raw`
+export const PROVISION_REMOTE_SCRIPT: string = selectedSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + String.raw`
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
@@ -172,6 +187,12 @@ async function run(): Promise<unknown> {
     unlock = () => endShortWrite(lockInput, claim.token);
   }
   try {
+  if (action === "enrollment") {
+    releaseCore(text("core"), text("coreId"));
+    const result = installBoxEnrollment(globalRoot, machineId, text("hubMachineId"), text("coreUnit"));
+    releaseCore(text("core"), text("coreId"));
+    return result;
+  }
   if (action === "clear-secrets") {
     for (const operation of readdirSync(provision)) {
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operation)) continue;
@@ -325,8 +346,7 @@ async function run(): Promise<unknown> {
       const timeout = Number.isSafeInteger(request.timeout) && request.timeout > 0 ? request.timeout : 600_000;
       command(npm, ["install", "--global", "--prefix", npmPrefix, "--no-audit", "--no-fund", "@earendil-works/pi-coding-agent@1.2.0"], env, timeout);
       command(npm, ["install", "--prefix", installPrefix, "--no-audit", "--no-fund", archive], env, timeout);
-      for (const file of [join(release, "dist", "extension.js"), join(release, "dist", "intercom", "broker.mjs"), expectedCli, expectedSupervisor,
-        join(release, "scripts", "intercom-switchover.mjs"), join(release, "scripts", "extension-shim.mjs")]) {
+      for (const file of RELEASE_ENTRIES.map(entry => join(release, entry))) {
         const info = lstatSync(file); if (!info.isFile() || info.isSymbolicLink() || !own(info)) bad("incomplete-release");
       }
       const version = spawnSync(text("pi"), ["--version"], { env, encoding: "utf8", timeout: 15_000, maxBuffer: 4096 });

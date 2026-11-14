@@ -7,8 +7,13 @@ import type { Stats } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 
 export interface SelectedFile { path: string; bytes: Buffer; mode: 0o600 | 0o700 }
+export interface SelectedFileMetadata { path: string; size: number; mode: 0o600 | 0o700 }
 interface SourceFile extends SelectedFile { privateMode: boolean }
 export interface PreparedFiles { files: readonly SelectedFile[]; credentialFiles: readonly SelectedFile[]; providers: readonly string[] }
+export function describeSelectedFiles(input: PreparedFiles): SelectedFileMetadata[] {
+  return [...input.files, ...input.credentialFiles].map(file => ({ path: file.path, size: file.bytes.length, mode: file.mode }))
+    .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+}
 export class SelectedFilesError extends Error {
   readonly code: string;
   readonly files: readonly string[];

@@ -9,7 +9,7 @@ import { placePaneWithoutFocus } from './jobs/placement.js';
 import { hash, privateDirectory, readPrivateJson, withProcessLock, writePrivateJson, type TerminalRegistry } from './sessions/registry.js';
 
 type Slot = Pick<OwnerPlacement, 'space' | 'tab'>;
-type Readiness = { operationId: string; sessionId: string; epoch: number; cwd: string; file: string; core: string; terminal: string };
+import type { Readiness } from "@spider/db-core/roam/types";
 type LaunchFailure = { attempts: number; retryable: boolean };
 type Attempt = { session: string; remote: string; core: string; proxy: string | null; closed: boolean; localOwners: string[]; failure?: LaunchFailure };
 type State = { version: 1; slots: { session: string; space: string; tab: string }[]; attempts: Attempt[] };

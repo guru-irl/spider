@@ -9,7 +9,7 @@ const remote = "cc675f62-57b4-4c33-9a9d-cd2d3e711fa3";
 const intent: HostIntent = { sessionId: "session-1", epoch: 1, desired: "running", suspended: null,
   file: "/fixture/session.jsonl", cwd: "/fixture/work", moveId: null };
 const active: SessionState = { sessionId: "session-1", epoch: 1, state: "active", moveId: null, freezeSeq: null };
-const ready = { operationId: "launch-1", sessionId: "session-1", epoch: 1, cwd: intent.cwd, file: intent.file,
+const ready = { origin: "hub-operation" as const, opId: "launch-1", sessionId: "session-1", epoch: 1, cwd: intent.cwd, file: intent.file,
   core: "core-1", terminal: "terminal-1" };
 
 async function supervisorModule() {
@@ -64,7 +64,7 @@ function fixture() {
       launches.push({ intent: value, at: now });
       owner = { kind: "live", identity: { bootId: "boot-1", pid: 100 + launches.length, startTime: `start-${launches.length}` } };
       return { code: 0, reason: "ready", operationId: reservation.operationId, home: typeof home === "object" ? home : null,
-        epoch: value.epoch, repairCommand: null, value: { ...ready, operationId: reservation.operationId } };
+        epoch: value.epoch, repairCommand: null, value: { ...ready, opId: reservation.operationId } };
     },
   });
   return { ports, intents, launches, notices, stops, timers, listeners,

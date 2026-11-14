@@ -1,3 +1,4 @@
+import { qualifiedName } from "../protocol.js";
 import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
@@ -36,7 +37,7 @@ export class InlineMessageComponent implements Component {
   render(width: number): string[] {
     const lines: string[] = [];
     const borderChar = "─";
-    const senderName = this.from.name || this.from.id.slice(0, 8);
+    const senderName = this.from.remote ? qualifiedName(this.from) : this.from.name || this.from.id.slice(0, 8);
     if (width < 3) {
       return [truncateToWidth(`From ${senderName}`, width)];
     }

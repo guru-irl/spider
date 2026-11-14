@@ -1,3 +1,4 @@
+import { createDeliveryObserver } from "@spider/intercom/protocol";
 import type { ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { randomUUID } from "node:crypto";
@@ -173,7 +174,9 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
   let closed = false, settled = false, stopping = false, discardAfterSettle = false;
   let steering: string[] = [], followUp: string[] = [];
   let promptAccepted = false, failureReason: string | undefined, stderrTail = "", warnedDisposition = false;
-  type Pending = { command: string; message?: string; childAccepted?: boolean; additions?: string[]; entries?: string[]; queuedText?: string; observed?: boolean; reportedDelivery?: SteerDelivery; finish: (ack: SteerAck) => void; timer?: ReturnType<typeof setTimeout> };
+  const deliveryObserver = createDeliveryObserver<string>();
+  const generation = randomUUID();
+  type Pending = { id: string; command: string; message?: string; additions?: string[]; entries?: string[]; queuedText?: string; reportedDelivery?: SteerDelivery; finish: (ack: SteerAck) => void; timer?: ReturnType<typeof setTimeout> };
   const pending = new Map<string, Pending>();
   let activeSteer: string | undefined;
   let steerBusy = false;
@@ -194,10 +197,13 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
     }
     return undefined;
   };
-  const deliveryAck = (p: Pending): SteerAck => ({ accepted: p.childAccepted === true || p.observed === true, delivered: p.observed === true,
-    queued: !p.observed && p.queuedText !== undefined && steering.includes(p.queuedText),
-    delivery: p.observed ? "delivered" : p.childAccepted ? "accepted but not confirmed" : "no reply yet, delivery unknown",
-    ...(p.observed ? { observedText: p.queuedText, transformed: p.queuedText !== p.message } : {}) });
+  const deliveryAck = (p: Pending): SteerAck => {
+    const observation = deliveryObserver.snapshot(p.id);
+    return { accepted: observation?.accepted === true || observation?.observed === true, delivered: observation?.observed === true,
+      queued: !observation?.observed && p.queuedText !== undefined && steering.includes(p.queuedText),
+      delivery: observation?.observed ? "delivered" : observation?.accepted ? "accepted but not confirmed" : "no reply yet, delivery unknown",
+      ...(observation?.observed ? { observedText: p.queuedText, transformed: p.queuedText !== p.message } : {}) };
+  };
   const deliveryEvent = (id: string, p: Pending, reason?: string) => {
     const ack = deliveryAck(p);
     if (p.reportedDelivery === "delivered") return;
@@ -216,8 +222,10 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
   const correlate = (p: Pending) => {
     const additions = p.additions ?? [];
     p.queuedText = additions.includes(p.message!) ? p.message : additions.length === 1 ? additions[0] : undefined;
-    p.observed = p.queuedText !== undefined && (p.entries ?? []).includes(p.queuedText)
-      && (p.queuedText === p.message || p.childAccepted === true);
+    if (p.queuedText !== undefined && (p.entries ?? []).includes(p.queuedText)
+      && (p.queuedText === p.message || deliveryObserver.snapshot(p.id)?.accepted === true)) {
+      deliveryObserver.observe(p.id, generation, p.queuedText);
+    }
   };
   const releaseSteer = (id: string) => {
     if (activeSteer !== id) return;
@@ -230,9 +238,11 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
       clearTimeout(p.timer); pending.delete(id);
       if (p.command === "steer") {
         correlate(p);
+        deliveryObserver.settle(id, generation);
         deliveryEvent(id, p, error);
         p.finish({ ...deliveryAck(p), requestId: id, error });
       } else p.finish({ accepted: false, error });
+      deliveryObserver.forget(id);
     }
     activeSteer = undefined; steerBusy = false;
     for (const next of waitingSteers.splice(0)) { clearTimeout(next.timer); next.finish(refused(next.message, `Not sent: ${error}`)); }
@@ -240,9 +250,11 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
   const finalizeSettledSteers = () => {
     for (const [id, p] of pending) if (p.command === "steer") {
       clearTimeout(p.timer); pending.delete(id);
-      const reason = p.observed ? undefined : p.childAccepted ? `Run settled; accepted, delivery not confirmed.${steering.length || followUp.length ? " Remaining queue was discarded." : ""}` : "Run settled before the child replied; delivery unknown.";
+      deliveryObserver.settle(id, generation);
+      const reason = deliveryObserver.snapshot(p.id)?.observed ? undefined : deliveryObserver.snapshot(p.id)?.accepted ? `Run settled; accepted, delivery not confirmed.${steering.length || followUp.length ? " Remaining queue was discarded." : ""}` : "Run settled before the child replied; delivery unknown.";
       deliveryEvent(id, p, reason);
       p.finish({ ...deliveryAck(p), requestId: id, ...(reason ? { error: reason } : {}) });
+      deliveryObserver.forget(id);
     }
     activeSteer = undefined; steerBusy = false;
     for (const next of waitingSteers.splice(0)) {
@@ -276,12 +288,14 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
       maybeComplete();
     }, timeoutMs);
     timer?.unref();
-    pending.set(id, { command: command.type, message: command.message, finish: resolve, timer });
+    if (command.type === "steer") deliveryObserver.register(id, generation);
+    pending.set(id, { id, command: command.type, message: command.message, finish: resolve, timer });
     if (command.type === "steer") activeSteer = id;
     if (!send({ ...command, id })) {
       clearTimeout(timer); pending.delete(id);
       const error = "Child RPC pipe is closed.";
       resolve(command.type === "steer" ? refused(command.message, error, id) : { accepted: false, error });
+      deliveryObserver.forget(id);
       if (command.type === "steer") releaseSteer(id);
     }
   });
@@ -318,11 +332,11 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
           }
         }
         if (p.command === "steer" && event.success === true) {
-          p.childAccepted = true;
+          deliveryObserver.accept(p.id, generation);
           if (disposition === "handled") {
             clearTimeout(p.timer); p.timer = undefined;
             pending.delete(event.id);
-            if (p.observed) {
+            if (deliveryObserver.snapshot(p.id)?.observed) {
               p.finish({ ...deliveryAck(p), requestId: event.id });
             } else {
               const ack: SteerAck = { accepted: true, childAccepted: true, requestId: event.id,
@@ -334,7 +348,7 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
           } else {
             correlate(p);
             deliveryEvent(event.id, p);
-            if (p.observed) {
+            if (deliveryObserver.snapshot(p.id)?.observed) {
               clearTimeout(p.timer); p.timer = undefined;
               p.finish({ ...deliveryAck(p), requestId: event.id });
               pending.delete(event.id);
@@ -344,8 +358,9 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
           clearTimeout(p.timer); p.timer = undefined;
           pending.delete(event.id);
           const error = event.error ?? "Child rejected the command.";
-          p.finish(p.command === "steer" ? p.observed ? { ...deliveryAck(p), requestId: event.id } : refused(p.message!, error, event.id) : { accepted: event.success === true, ...(event.success === true ? {} : { error }) });
+          p.finish(p.command === "steer" ? deliveryObserver.snapshot(p.id)?.observed ? { ...deliveryAck(p), requestId: event.id } : refused(p.message!, error, event.id) : { accepted: event.success === true, ...(event.success === true ? {} : { error }) });
         }
+        if (!pending.has(event.id)) deliveryObserver.forget(event.id);
         if (p.command === "steer") releaseSteer(event.id);
       }
     } else if (event.type === "agent_start") {
@@ -373,7 +388,7 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
         if (i < 0) added.push(text); else remaining.splice(i, 1);
       }
       const p = activeSteer ? pending.get(activeSteer) : undefined;
-      if (p && !p.childAccepted) { p.additions = [...(p.additions ?? []), ...added]; correlate(p); }
+      if (p && !deliveryObserver.snapshot(p.id)?.accepted) { p.additions = [...(p.additions ?? []), ...added]; correlate(p); }
       steering = next;
       followUp = Array.isArray(event.followUp) ? event.followUp : [];
       // Queue removal alone is not delivery: clear_queue also removes entries.
@@ -384,14 +399,15 @@ export function ownRpcChild(child: ChildProcess, prompt: string, onEvent?: (even
       const content = event.message.content;
       const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter(c => c.type === "text").map(c => c.text).join("") : undefined;
       // One conversation event confirms at most one steer, even for duplicate text.
-      for (const [id, p] of pending) if (p.command === "steer" && !p.observed && p.queuedText !== undefined && p.queuedText === text) {
+      for (const [id, p] of pending) if (p.command === "steer" && !deliveryObserver.snapshot(p.id)?.observed && p.queuedText !== undefined && p.queuedText === text) {
         (p.entries ??= []).push(text); correlate(p);
-        if (p.observed) {
+        if (deliveryObserver.snapshot(p.id)?.observed) {
           deliveryEvent(id, p);
-          if (p.childAccepted) {
+          if (deliveryObserver.snapshot(p.id)?.accepted) {
             clearTimeout(p.timer); p.timer = undefined;
             p.finish({ ...deliveryAck(p), requestId: id });
             pending.delete(id);
+            deliveryObserver.forget(id);
           }
         }
         break;

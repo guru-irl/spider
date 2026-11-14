@@ -1,10 +1,12 @@
+import { FEDERATION_FEATURE, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
+import { isFederationDispatchResult, parseFederationBrokerMessage } from "./protocol.js";
 import { EventEmitter } from "events";
 import net from "net";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerConnectTarget, type BrokerConnectTarget } from "./paths.js";
 import { isMessage, isMessageControl, isMessageReceipt, isSessionInfo } from "./protocol.js";
-import { getIntercomScopeId } from "../config.js";
+import { getAskTimeoutMs, getIntercomScopeId } from "../config.js";
 import { EXACT_SEND_FEATURE, EXTENSION_BUS_FEATURE, type DeliveryDetails } from "../types.js";
 import type {
   Attachment,
@@ -23,6 +25,7 @@ interface SendOptions {
   attachments?: Attachment[];
   replyTo?: string;
   expectsReply?: boolean;
+  remainingMs?: number;
   messageId?: string;
   supersedes?: string;
   retryOf?: string;
@@ -286,6 +289,7 @@ export class IntercomClient extends EventEmitter {
         const scopeId = getIntercomScopeId();
         writeMessage(socket, {
           type: "register",
+          features: [FEDERATION_FEATURE],
           session,
           ...(sessionId ? { sessionId } : {}),
           ...(scopeId ? { scopeId } : {}),
@@ -383,7 +387,7 @@ export class IntercomClient extends EventEmitter {
         }
 
         this.pendingSends.delete(messageId);
-        pending.resolve({ id: messageId, delivered: true, delivery: delivery as "socket_delivered" | "queued" | undefined ?? "socket_delivered", retryable: retryable as boolean | undefined ?? false, outcomeKnown: outcomeKnown as boolean | undefined ?? true, ...(typeof brokerMessage.code === "string" ? { code: brokerMessage.code } : {}) });
+        pending.resolve({ id: messageId, delivered: true, delivery: delivery as "socket_delivered" | "queued" | undefined ?? "socket_delivered", retryable: retryable as boolean | undefined ?? false, outcomeKnown: outcomeKnown as boolean | undefined ?? true, ...(typeof brokerMessage.code === "string" ? { code: brokerMessage.code } : {}), ...(brokerMessage.acceptance ? { acceptance: brokerMessage.acceptance as import("../protocol.js").AcceptanceEvidence } : {}), ...(brokerMessage.consumption ? { consumption: brokerMessage.consumption as MessageReceipt } : {}) });
         break;
       }
 
@@ -400,7 +404,7 @@ export class IntercomClient extends EventEmitter {
         }
 
         this.pendingSends.delete(messageId);
-        pending.resolve({ id: messageId, delivered: false, reason, delivery: delivery as "failed" | "unknown" | undefined ?? "failed", retryable: retryable as boolean | undefined ?? false, outcomeKnown: outcomeKnown as boolean | undefined ?? true, ...(typeof brokerMessage.code === "string" ? { code: brokerMessage.code } : {}) });
+        pending.resolve({ id: messageId, delivered: false, reason, delivery: delivery as "failed" | "unknown" | undefined ?? "failed", retryable: retryable as boolean | undefined ?? false, outcomeKnown: outcomeKnown as boolean | undefined ?? true, ...(typeof brokerMessage.code === "string" ? { code: brokerMessage.code } : {}), ...(brokerMessage.acceptance ? { acceptance: brokerMessage.acceptance as import("../protocol.js").AcceptanceEvidence } : {}), ...(brokerMessage.consumption ? { consumption: brokerMessage.consumption as MessageReceipt } : {}) });
         break;
       }
 
@@ -627,6 +631,8 @@ export class IntercomClient extends EventEmitter {
     }
 
     const messageId = options.messageId ?? randomUUID();
+    const startedAt = Date.now();
+    const deadline = options.expectsReply ? startedAt + (options.remainingMs ?? getAskTimeoutMs()) : undefined;
     const message: Message = {
       id: messageId,
       timestamp: Date.now(),
@@ -635,6 +641,7 @@ export class IntercomClient extends EventEmitter {
       retryOf: options.retryOf,
       replyTo: options.replyTo,
       expectsReply: options.expectsReply,
+      remainingMs: options.remainingMs,
       provenance: options.provenance,
       content: {
         text: options.text,
@@ -643,6 +650,13 @@ export class IntercomClient extends EventEmitter {
     };
 
     const sendOnce = (targetId?: string, targetEpoch?: string): Promise<SendResult> => new Promise((resolve, reject) => {
+      if (deadline !== undefined) {
+        message.remainingMs = Math.max(0, deadline - Date.now());
+        if (Date.now() < startedAt || message.remainingMs <= 0) {
+          resolve({ id: message.id, delivered: false, delivery: "failed", code: "E_ASK_EXPIRED", reason: "The original ask deadline expired", retryable: false, outcomeKnown: true });
+          return;
+        }
+      }
       const wrappedResolve = (result: SendResult) => {
         clearTimeout(timeout);
         resolve(result);
@@ -674,11 +688,8 @@ export class IntercomClient extends EventEmitter {
 
     const resolveTarget = async (): Promise<{ id: string; epoch: string } | null> => {
       const sessions = await this.listSessions();
-      const byId = sessions.find((session) => session.id === to);
-      const byName = byId ? [] : sessions.filter((session) => session.name?.toLowerCase() === to.toLowerCase());
-      const byPrefix = byId || byName.length > 0 ? [] : sessions.filter((session) => session.id.startsWith(to));
-      const matches = byId ? [byId] : byName.length > 0 ? byName : byPrefix;
-      const target = matches.length === 1 ? matches[0]! : null;
+      let target: SessionInfo | null;
+      try { target = resolveSessionTarget(to, sessions); } catch { return null; }
       return target?.endpointEpoch ? { id: target.id, epoch: target.endpointEpoch } : null;
     };
 
@@ -789,5 +800,92 @@ export class IntercomClient extends EventEmitter {
   onMessageControl(handler: (from: SessionInfo, control: MessageControl) => void): () => void {
     this.on("message_control", handler);
     return () => this.off("message_control", handler);
+  }
+}
+
+
+/** One service-owned connection. Session clients cannot publish remote identities. */
+export class IntercomFederationClient extends EventEmitter {
+  private socket: net.Socket | null = null;
+  private bridge: FederationBridge | null = null;
+  private ready = false;
+  private requests = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
+
+  async connect(registration: BridgeRegistration, bridge: FederationBridge): Promise<void> {
+    if (this.socket) throw new Error("bridge-already-connected");
+    const target = getBrokerConnectTarget();
+    if (typeof target !== "string") throw new Error("federation-private-socket-required");
+    const socket = net.connect(target);
+    this.socket = socket;
+    this.bridge = bridge;
+    await new Promise<void>((resolve, reject) => {
+      let registered = false;
+      const timer = setTimeout(() => { reject(new Error("federation-registration-timeout")); socket.destroy(); }, 4000);
+      socket.on("error", error => { if (!registered) reject(error); });
+      socket.once("close", () => {
+        clearTimeout(timer); this.ready = false; this.socket = null;
+        for (const request of this.requests.values()) { clearTimeout(request.timer); request.reject(new Error("federation-disconnected")); }
+        this.requests.clear();
+        if (!registered) reject(new Error("federation-unavailable"));
+        this.emit("disconnected");
+      });
+      socket.on("data", createMessageReader(message => {
+        const value = parseFederationBrokerMessage(message);
+        if (!value) throw new Error("invalid-bridge-message");
+        if (value.type === "federation_registered") {
+          if (registered || !Array.isArray(value.features) || !value.features.includes(FEDERATION_FEATURE)) throw new Error("federation-feature-required");
+          registered = true; this.ready = true; clearTimeout(timer); resolve();
+        } else if (!registered) throw new Error("federation-unavailable");
+        else this.handleMessage(value);
+      }, error => { if (!registered) reject(error); socket.destroy(); }));
+      writeMessage(socket, { type: "federation_register", ...registration });
+    });
+  }
+  private send(message: FederationClientMessage): void {
+    if (!this.socket || !this.ready || this.socket.destroyed) throw new Error("federation-disconnected");
+    writeMessage(this.socket, message);
+  }
+  private handleMessage(message: FederationBrokerMessage): void {
+    if (message.type === "federation_dispatch") {
+      const requestId = message.requestId;
+      void this.bridge!.dispatch(message.dispatch).then(result => {
+        if (!isFederationDispatchResult(result)) throw new Error("invalid-federation-result");
+        if (this.ready) this.send({ type: "federation_result", requestId, result });
+      }).catch(() => {
+        if (this.ready) this.send({ type: "federation_result", requestId, result: { delivery: "unknown", retryable: false, outcomeKnown: false, acceptance: { accepted: false, durable: false }, reason: "bridge-dispatch-unknown" } });
+      });
+    } else if (message.type === "federation_local_presence") {
+      this.emit("presence", message.sessions);
+    } else if (message.type === "federation_receipt") {
+      this.bridge!.receipt(message.from, message.receipt);
+    } else if (message.type === "federation_control") {
+      this.bridge!.control(message.from, message.to, message.control);
+    } else if (message.type === "federation_delivery_result" || message.type === "blockers") {
+      const request = this.requests.get(message.requestId);
+      if (!request) return;
+      clearTimeout(request.timer); this.requests.delete(message.requestId);
+      request.resolve(message.type === "blockers" ? message.blockers : message.result);
+    } else throw new Error("invalid-bridge-message");
+  }
+  private request(message: FederationClientMessage & { requestId: string }): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.requests.delete(message.requestId); reject(new Error("federation-request-timeout")); }, 4000);
+      timer.unref(); this.requests.set(message.requestId, { resolve, reject, timer });
+      try { this.send(message); } catch (error) { clearTimeout(timer); this.requests.delete(message.requestId); reject(toError(error)); }
+    });
+  }
+  publishPresence(sessions: RemoteSessionInfo[]): void { this.send({ type: "federation_presence", sessions }); }
+  deliver(from: RemoteSessionInfo, to: SessionEndpoint, message: Message): Promise<FederationDispatchResult> {
+    return this.request({ type: "federation_deliver", requestId: randomUUID(), from, to, message }) as Promise<FederationDispatchResult>;
+  }
+  deliverReceipt(from: RemoteSessionInfo, to: SessionAddress, receipt: FederationReceipt): void { this.send({ type: "federation_deliver_receipt", from, to, receipt }); }
+  deliverControl(from: RemoteSessionInfo, to: SessionAddress, control: FederationControl): void { this.send({ type: "federation_deliver_control", from, to, control }); }
+  inspectBlockers(address: SessionAddress): Promise<FederationBlockers> {
+    return this.request({ type: "inspect_blockers", requestId: randomUUID(), address }) as Promise<FederationBlockers>;
+  }
+  async close(): Promise<void> {
+    const socket = this.socket;
+    if (!socket) return;
+    await new Promise<void>(resolve => { socket.once("close", resolve); socket.destroy(); });
   }
 }

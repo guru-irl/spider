@@ -3,8 +3,8 @@
   "files": [
     {
       "path": "broker/broker.ts",
-      "task": "3.6c",
-      "reason": "Route federation through the owned bridge and authorize, bound, and cancel private helper exchanges.",
+      "task": "3.6d",
+      "reason": "Route locally homed mail through durable federation and forward retained receipts after broker restart.",
       "upstreamHash": "65d9ec1dbed5368ea952a1c7c3f978c83b44cd092e1922509085aa070f06829b"
     },
     {
@@ -15,8 +15,8 @@
     },
     {
       "path": "broker/federation.ts",
-      "task": "3.6a",
-      "reason": "Own remote routing and blockers without retaining remote payload queues.",
+      "task": "3.6d",
+      "reason": "Track durable local-home dispatch separately from remote roster authority.",
       "upstreamHash": null
     },
     {
@@ -27,8 +27,20 @@
     },
     {
       "path": "delivery-observation.ts",
-      "task": "3.6a",
-      "reason": "Share acceptance and observed-delivery settlement with owned RPC children.",
+      "task": "3.6d",
+      "reason": "Recognize physical waiter entries and refuse absence proofs for competing generations.",
+      "upstreamHash": null
+    },
+    {
+      "path": "extension-api.ts",
+      "task": "3.6d",
+      "reason": "Preserve acceptance, delivery uncertainty and consumption in outbox acknowledgements.",
+      "upstreamHash": "2a8f8740640368e911f4ae5f020cf7428d8f85c7a173489ca3d1d9f840825235"
+    },
+    {
+      "path": "host-api.ts",
+      "task": "3.6d",
+      "reason": "Declare in-process admitted endpoint and broker-first route resolution ports.",
       "upstreamHash": null
     },
     {
@@ -39,8 +51,8 @@
     },
     {
       "path": "local.ts",
-      "task": "3.6a",
-      "reason": "Observe physical message entries and record matched waiter evidence before releasing replies.",
+      "task": "3.6d",
+      "reason": "Integrate admitted epochs, immutable dispatch IDs, restored evidence, deadlines and surviving reply threads.",
       "upstreamHash": "b99325cd8cb80b4ed41ac4f1427791eb1df916a303ba5ce5b35197eba8972f1c"
     },
     {
@@ -51,14 +63,14 @@
     },
     {
       "path": "protocol.ts",
-      "task": "3.6c",
-      "reason": "Define the pi-free federation and negotiated private helper contracts.",
+      "task": "3.6d",
+      "reason": "Export pi-free in-process host integration contracts without changing federation frames.",
       "upstreamHash": null
     },
     {
       "path": "reply-tracker.ts",
-      "task": "3.6a",
-      "reason": "Resolve incoming ask senders by encoded machine-qualified names.",
+      "task": "3.6d",
+      "reason": "Retain explicit reply threads after a live waiter expires.",
       "upstreamHash": "3782886bdb143ae11bbf68c87803153078d66d321858cc4d53c4e39b9704dbc2"
     },
     {

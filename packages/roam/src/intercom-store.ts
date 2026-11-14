@@ -236,8 +236,8 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     if (result.some(row => row.busy !== 0)) throw new Error("Intercom WAL checkpoint busy");
     checkpointPending = false;
   };
-  const checkpointDeletion = (): void => { checkpointPending = true; checkpoint(); };
-  const ensureCheckpoint = (): void => { if (checkpointPending) checkpoint(); };
+  const ensureCheckpoint = (): void => { if (checkpointPending && !db.raw.inTransaction) checkpoint(); };
+  const checkpointDeletion = (): void => { checkpointPending = true; ensureCheckpoint(); };
   try {
     db.pragma("synchronous = FULL");
     db.pragma("secure_delete = ON");
@@ -599,6 +599,24 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           ON CONFLICT(peer,edge_epoch) DO UPDATE SET state_json=excluded.state_json`).run(peer, edgeEpoch, JSON.stringify(candidate));
         return candidate;
       }).immediate();
+    },
+    acceptLocal(input): IntercomAcceptance {
+      if (input.endpoint.machineId !== options.machineId) throw new Error("Intercom local endpoint mismatch");
+      expire();
+      const rollback = new Error("Intercom local acceptance refused");
+      let refusal: Extract<IntercomAcceptance, { kind: "refused" }> | undefined;
+      try {
+        return db.raw.transaction(() => {
+          const outbound = store.acceptOutbound({ ...input, nextHop: options.machineId });
+          if (outbound.kind !== "accepted") return outbound;
+          const row = copy("outbound", input.message.id)!;
+          const inbox = store.acceptInbound({ peer: options.machineId, frame: frameFor(row, now()) });
+          if (inbox.kind === "refused") { refusal = inbox; throw rollback; }
+          db.prepare("UPDATE intercom_copies SET sent_kind='message',ack_kind='message',transmitted=1 WHERE direction='outbound' AND id=?").run(input.message.id);
+          return outbound;
+        }).immediate();
+      } catch (error) { if (error === rollback && refusal) return refusal; throw error; }
+      finally { ensureCheckpoint(); }
     },
     acceptOutbound(input: OutboundMessage): IntercomAcceptance {
       if (!isMachineId(input.nextHop)) throw new Error("Invalid intercom peer");

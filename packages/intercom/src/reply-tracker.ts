@@ -47,6 +47,7 @@ function resolvePendingSender(pending: IntercomContext[], to: string): IntercomC
 
 export class ReplyTracker {
   private readonly pendingAsks = new Map<string, IntercomContext>();
+  private readonly threads = new Map<string, IntercomContext>();
   private readonly pendingTurnContexts: IntercomContext[] = [];
   private currentTurnContext: IntercomContext | null = null;
 
@@ -54,6 +55,7 @@ export class ReplyTracker {
 
   recordIncomingMessage(from: SessionInfo, message: Message, receivedAt: number = Date.now()): IntercomContext {
     const context = { from, message, receivedAt };
+    this.threads.set(message.id, context);
     if (message.expectsReply) {
       this.pendingAsks.set(message.id, context);
     }
@@ -75,6 +77,7 @@ export class ReplyTracker {
 
   reset(): void {
     this.pendingAsks.clear();
+    this.threads.clear();
     this.pendingTurnContexts.length = 0;
     this.currentTurnContext = null;
   }
@@ -83,7 +86,7 @@ export class ReplyTracker {
     this.pruneExpired(now);
 
     if (options.replyTo) {
-      const target = this.pendingAsks.get(options.replyTo);
+      const target = this.pendingAsks.get(options.replyTo) ?? this.threads.get(options.replyTo);
       if (!target) {
         throw new Error(`No pending ask with message ID "${options.replyTo}"`);
       }

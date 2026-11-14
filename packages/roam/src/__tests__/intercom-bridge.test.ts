@@ -399,3 +399,32 @@ it("reports a failed downstream ask at its origin without cancelling the durable
   expect(originFailures).toHaveLength(1);
   expect(source.retained("outbound", "relay-ask")).toMatchObject({ state: "queued", payloadRetained: true });
 }, 5000);
+
+
+it("local home delivery retains a durable source until its own consumption receipt", async () => {
+  const { source } = pair(), arrivals: any[] = [];
+  const localEndpoint = { ...endpoint, machineId: A };
+  const bridge = await create(A, B, source, { onInbound: (value: any) => arrivals.push(value) });
+  const dispatch = () => bridge.dispatch({ from, to: { remote: true, ...localEndpoint, id: to.sessionId, endpointEpoch: localEndpoint.activationEpoch,
+    machineAlias: "local.invalid", cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 }, message: { id: "local-home", timestamp: 1, content: { text: "synthetic" } } });
+  const result = await dispatch();
+  expect(result).toMatchObject({ delivery: "queued", acceptance: { accepted: true, durable: true } });
+  expect(arrivals).toEqual([{ id: "local-home", to }]);
+  expect(source.retained("outbound", "local-home")).toMatchObject({ payloadRetained: true });
+  source.beginDispatch({ id: "local-home", endpoint: localEndpoint, readiness: "ready" });
+  bridge.receipt(to, { messageId: "local-home", status: "acknowledged", timestamp: 2 });
+  expect(source.retained("outbound", "local-home")).toMatchObject({ payloadRetained: true });
+  bridge.receipt(to, { messageId: "local-home", status: "injected", timestamp: 3, evidence: { kind: "entry", entryId: "physical", sessionId: to.sessionId, activationEpoch: localEndpoint.activationEpoch } });
+  expect(source.retained("outbound", "local-home")).toMatchObject({ payloadRetained: false, state: "injected" });
+  expect(await dispatch()).toMatchObject({ consumption: { messageId: "local-home", status: "injected" } });
+  expect(source.retained("inbound", "local-home")).toMatchObject({ payloadRetained: false, state: "injected" });
+}, 5000);
+
+it("local home quota refusal happens before any durable acceptance", async () => {
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "local-quota-")); roots.push(root);
+  const store = openIntercomStore({ file: join(root, "queue.db"), machineId: A, clock, limits: { queueMessages: 1 } }); stores.push(store);
+  const bridge = await create(A, B, store);
+  const result = await bridge.dispatch({ from, to: { remote: true, id: to.sessionId, address: to, machineId: A, homeEpoch: 1, activationEpoch: "local", endpointEpoch: "local", machineAlias: "local.invalid", cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 }, message: { id: "local-quota", timestamp: 1, content: { text: "synthetic" } } });
+  expect(result).toMatchObject({ delivery: "failed", acceptance: { accepted: false }, reason: "queue-full" });
+  expect(store.retained("outbound", "local-quota")).toBeNull(); expect(store.retained("inbound", "local-quota")).toBeNull();
+}, 5000);

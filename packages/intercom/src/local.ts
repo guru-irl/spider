@@ -1,5 +1,7 @@
+import { isMessage, isSessionInfo } from "./broker/protocol.js";
 import { getIntercomScopeId } from "./config.js";
-import { createIntercomDeliveryObserver, sessionAddress, sameAddress, resolveSessionTarget as resolveRosterTarget, qualifiedName, type SessionAddress } from "./protocol.js";
+import { INTERCOM_HOST_EVENT, INTERCOM_RESOLVE_EVENT, type IntercomHostRequest, type IntercomResolveRequest } from "./host-api.js";
+import { FEDERATION_FEATURE, createIntercomDeliveryObserver, receiptReleasesPayload, sessionAddress, sameAddress, resolveSessionTarget as resolveRosterTarget, qualifiedName, type SessionAddress } from "./protocol.js";
 import { defineTool, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
@@ -12,7 +14,7 @@ import { ComposeOverlay, type ComposeResult } from "./ui/compose.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { getAskTimeoutMs, loadConfig, type IntercomConfig } from "./config.js";
 import { EXTENSION_BUS_FEATURE } from "./types.js";
-import type { Attachment, BrokerMessage, Message, MessageControl, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
+import type { Attachment, BrokerMessage, Message, MessageControl, MessageReceipt, MessageReceiptStatus, SessionInfo, SessionRegistration } from "./types.js";
 import {
   INTERCOM_EXTENSION_REGISTER_EVENT,
   INTERCOM_EXTENSION_REGISTRY_READY_EVENT,
@@ -562,6 +564,7 @@ function formatInboundDeliveryMetadata(message: Message): string {
   if (typeof message.senderSequence === "number") parts.push(`seq ${message.senderSequence}`);
   if (message.supersedes) parts.push(`supersedes ${message.supersedes}`);
   if (message.retryOf) parts.push(`retry of ${message.retryOf}`);
+  if (message.replyTo) parts.push(`reply to ${message.replyTo}`);
   const sentAt = formatMessageTimestamp(message.timestamp);
   if (sentAt) parts.push(`sent ${sentAt}`);
   const brokerDeliveredAt = formatMessageTimestamp(message.brokerDeliveredAt);
@@ -617,13 +620,49 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   let runtimeGeneration = 0;
   let activationEpoch = randomUUID();
   let deliveryObserver: ReturnType<typeof createIntercomDeliveryObserver> | null = null;
-  const resolvedAddresses = new Map<string, { address: SessionAddress; remote: boolean }>();
+  const resolvedAddresses = new Map<string, { address: SessionAddress; remote: boolean; machineAlias?: string; activationEpoch?: string }>();
+  let hostContext: IntercomHostRequest | undefined;
   let agentRunning = false;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker();
 
   const seenInboundMessages = new Map<string, number>();
   const settledInboundAsks = new Set<string>();
+  const restoredDeliveries = new Map<string, ReturnType<typeof createIntercomDeliveryObserver>>();
+  const pendingInbound = new Map<string, { from: SessionInfo; message: Message; deadline?: number }>();
+  const incomingDeadlines = new Map<string, ReturnType<typeof setTimeout>>();
+  const durableReceipts = new Map<string, MessageReceipt>();
+  const orphanReplies = new Set<string>(), notifiedOrphanReplies = new Set<string>();
+  function recordReceipt(receipt: MessageReceipt): void {
+    const prior = durableReceipts.get(receipt.messageId);
+    if (prior && receiptReleasesPayload(prior) && !receiptReleasesPayload(receipt)) { client?.sendMessageReceipt(prior); return; }
+    const evidenced = receipt.status === "injected" && orphanReplies.has(receipt.messageId) ? { ...receipt, detail: "asker-no-longer-waiting" } : receipt;
+    durableReceipts.set(receipt.messageId, evidenced);
+    client?.sendMessageReceipt(evidenced);
+  }
+  function armIncomingDeadline(from: SessionInfo, message: Message, deadline?: number): void {
+    if (!message.expectsReply || incomingDeadlines.has(message.id)) return;
+    const end = deadline ?? Date.now() + (message.remainingMs ?? askTimeoutMs);
+    const timer = setTimeout(() => {
+      incomingDeadlines.delete(message.id);
+      if (deliveryObserver?.snapshot(message.id)?.observed || restoredDeliveries.get(message.id)?.snapshot(message.id)?.observed) return;
+      pendingInbound.delete(message.id); settledInboundAsks.add(message.id); dismissIncomingAsk(message.id);
+      pi.appendEntry("intercom_expired", { messageId: message.id, sessionId: currentSessionId, activationEpoch, timestamp: Date.now() });
+      recordReceipt({ messageId: message.id, status: "expired", timestamp: Date.now(), detail: "Question expired before injection." });
+      pi.sendMessage({ customType: "intercom_notice", content: `Question ${message.id} expired before injection.`, display: true, details: { messageId: message.id, status: "expired" } }, { triggerTurn: false });
+    }, Math.max(0, end - Date.now()));
+    timer.unref?.(); incomingDeadlines.set(message.id, timer);
+  }
+  function retryReadyIncoming(): void {
+    if (!getLiveContext()?.isIdle()) return;
+    for (const [id, pending] of pendingInbound) {
+      if (settledInboundAsks.has(id) || pending.deadline !== undefined && pending.deadline <= Date.now()) continue;
+      const previous = restoredDeliveries.get(id) ?? deliveryObserver;
+      if (previous?.snapshot(id)?.state !== "not_injected") continue;
+      restoredDeliveries.delete(id); pendingInbound.delete(id);
+      handleIncomingMessage(runtimeContext!, pending.from, pending.deadline === undefined ? pending.message : { ...pending.message, remainingMs: Math.max(0, pending.deadline - Date.now()) });
+    }
+  }
   const latestOutboundReceipts = new Map<string, { status: MessageReceiptStatus; timestamp: number; detail?: string }>();
   const outboxRequestIds = new Set<string>();
   const pendingOutboxRequests = new Map<string, PendingOutboxRequest>();
@@ -678,6 +717,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   let replyWaiter: {
     from: SessionAddress;
     remote: boolean;
+    machineAlias?: string;
+    endpoint?: string;
     replyTo: string;
     resolve: (message: Message) => void;
     reject: (error: Error) => void;
@@ -710,6 +751,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       replyWaiter = {
         from: resolvedAddresses.get(from)?.address ?? { sessionId: from, scopeId: getIntercomScopeId() ?? null },
         remote: resolvedAddresses.get(from)?.remote ?? false,
+        machineAlias: resolvedAddresses.get(from)?.machineAlias,
+        endpoint: resolvedAddresses.get(from)?.activationEpoch,
         replyTo,
         resolve: (message) => {
           cleanup();
@@ -723,6 +766,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     });
   }
   function hasRemoteReplyWaiter(): boolean { return replyWaiter?.remote === true; }
+  function linkDownError(edge = replyWaiter?.machineAlias ?? "peer"): Error {
+    return Object.assign(new Error(`Link down to ${edge}. This ask is no longer waiting for a reply.`), { reason: "link-down", edge });
+  }
+  async function sendQuestion(activeClient: IntercomClient, to: string, options: Parameters<IntercomClient["send"]>[1]): Promise<SendResult> {
+    try { return await activeClient.send(to, options); }
+    catch (error) {
+      if (!hasRemoteReplyWaiter()) throw error;
+      return { id: options.messageId!, delivered: false, delivery: "unknown", outcomeKnown: false, retryable: false, acceptance: { accepted: false, durable: false } };
+    }
+  }
   function rejectReplyWaiter(error: Error): void {
     replyWaiter?.reject(error);
   }
@@ -889,6 +942,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     return {
       ...identity,
       activationEpoch,
+      ...(hostContext?.endpoint ? { homeEpoch: hostContext.endpoint.homeEpoch } : {}),
       address: { sessionId: currentSessionId, scopeId: getIntercomScopeId() ?? null },
       cwd: liveContext.cwd,
       model: currentModel,
@@ -984,6 +1038,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     code?: IntercomOutboxResultCode;
     detail?: string;
     messageId?: string;
+    result?: SendResult;
   } = {}): IntercomOutboxResultV1 {
     return {
       version: 1,
@@ -994,6 +1049,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       ...(request.extensionName ? { extensionName: request.extensionName } : {}),
       ...(options.messageId ? { messageId: options.messageId } : {}),
       ...(options.detail ? { detail: options.detail } : {}),
+      ...(options.result ? { delivery: options.result.delivery, outcomeKnown: options.result.outcomeKnown, acceptance: options.result.acceptance, ...(options.result.consumption ? { consumption: options.result.consumption } : {}) } : {}),
     };
   }
   function emitOutboxResult(result: IntercomOutboxResultV1, request: OutboxRequestTrace): void {
@@ -1009,6 +1065,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     code?: IntercomOutboxResultCode;
     detail?: string;
     messageId?: string;
+    result?: SendResult;
   } = {}): boolean {
     const pending = pendingOutboxRequests.get(requestId);
     if (!pending) {
@@ -1105,6 +1162,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           return;
         }
         target = resolved.target;
+        requiresBridge(activeClient, target.id, sessions.find(session => session.id === target.id) ?? null);
       } catch (error) {
         settleOutboxRequest(request.requestId, "failed", { code: "session_unavailable", detail: getErrorMessage(error) });
         return;
@@ -1155,7 +1213,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           return;
         }
         if (!result.delivered) {
-          settleOutboxRequest(request.requestId, "failed", { code: "delivery_failed", messageId: result.id, detail: result.reason ?? "Delivery failed" });
+          settleOutboxRequest(request.requestId, result.delivery === "unknown" ? "unknown" : "failed", { ...(result.delivery === "unknown" ? {} : { code: "delivery_failed" as const }), messageId: result.id, detail: result.reason ?? (result.delivery === "unknown" ? "Delivery is unknown." : "Delivery failed"), result });
           return;
         }
         pi.appendEntry("intercom_sent", {
@@ -1165,7 +1223,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           timestamp: Date.now(),
           extension: { id: request.extensionId, name: request.extensionName, requestId: request.requestId },
         });
-        settleOutboxRequest(request.requestId, "sent", { messageId: result.id });
+        settleOutboxRequest(request.requestId, "sent", { messageId: result.id, result });
       } catch (error) {
         const live = getLiveContext(liveContext, outboxGeneration);
         settleOutboxRequest(request.requestId, "failed", {
@@ -1224,6 +1282,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       return;
     }
     const receiverReceivedAt = Date.now();
+    armIncomingDeadline(from, message);
+    if (settledInboundAsks.has(message.id)) return;
+    const restored = restoredDeliveries.get(message.id);
+    if (restored) {
+      restored.observeEntries();
+      if (restored.snapshot(message.id)?.state !== "not_injected" || !liveContext.isIdle()) { restored.priorReceipt(message.id); return; }
+      restoredDeliveries.delete(message.id);
+    }
     if (hasSeenInboundMessage(from, message, receiverReceivedAt)) {
       if (deliveryObserver?.snapshot(message.id)?.state !== "not_injected" || !liveContext.isIdle() || settledInboundAsks.has(message.id)) {
         deliveryObserver?.priorReceipt(message.id);
@@ -1232,6 +1298,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     }
     if (!deliveryObserver?.register(message.id)) { deliveryObserver?.priorReceipt(message.id); return; }
     const receivedMessage = { ...message, receiverReceivedAt };
+    pi.appendEntry("intercom_pending", { messageId: message.id, sessionId: currentSessionId, activationEpoch,
+      ...(hostContext?.endpoint ? { owner: hostContext.endpoint } : {}), from, expectsReply: message.expectsReply === true,
+      receivedAt: receiverReceivedAt, ...(message.expectsReply ? { deadline: receiverReceivedAt + (message.remainingMs ?? askTimeoutMs) } : {}) });
     emitMessageReceipt(receivedMessage.id, "receiver_received");
     if (replyWaiter) {
       const fromMatches = sameAddress(sessionAddress(from, getIntercomScopeId() ?? null), replyWaiter.from);
@@ -1247,6 +1316,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
         return;
       }
     }
+    if (receivedMessage.replyTo) orphanReplies.add(receivedMessage.id);
     const attachmentText = receivedMessage.content.attachments?.length
       ? formatAttachments(receivedMessage.content.attachments)
       : "";
@@ -1265,6 +1335,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       if (!activeContext.isIdle()) {
         if (!activeContext.hasUI) {
           deliveryObserver?.refuse(receivedMessage.id);
+          pendingInbound.set(receivedMessage.id, { from, message: receivedMessage, ...(message.expectsReply ? { deadline: receiverReceivedAt + (message.remainingMs ?? askTimeoutMs) } : {}) });
           const activeClient = client;
           if (!message.replyTo && activeClient?.isConnected()) {
             try {
@@ -1283,6 +1354,11 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
               // Best-effort reply; keep the busy non-interactive session running either way.
             }
           }
+          return;
+        }
+        if (from.remote && message.expectsReply) {
+          deliveryObserver?.refuse(receivedMessage.id);
+          pendingInbound.set(receivedMessage.id, { from, message: receivedMessage, deadline: receiverReceivedAt + (message.remainingMs ?? askTimeoutMs) });
           return;
         }
         sendIncomingBrokerMessage(entry, "steer");
@@ -1345,6 +1421,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           });
           break;
         case "message_receipt":
+          if (message.receipt.status === "injected" && message.receipt.detail === "asker-no-longer-waiting" && !notifiedOrphanReplies.has(message.receipt.messageId)) {
+            pi.appendEntry("intercom_reply_notice", { messageId: message.receipt.messageId, notice: "Delivered; the asker was no longer waiting." });
+            notifiedOrphanReplies.add(message.receipt.messageId);
+            if (runtimeContext) notifyIfLive(runtimeContext, "Delivered; the asker was no longer waiting.", "info");
+          }
+          if (replyWaiter?.remote && message.receipt.messageId === replyWaiter.replyTo && sameAddress(sessionAddress(message.from, getIntercomScopeId() ?? null), replyWaiter.from) && message.receipt.detail === "link-down") rejectReplyWaiter(linkDownError());
           latestOutboundReceipts.set(message.receipt.messageId, {
             status: message.receipt.status,
             timestamp: message.receipt.timestamp,
@@ -1360,11 +1442,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           }
           break;
         case "session_left":
+          if (replyWaiter?.remote && replyWaiter.from.sessionId === message.sessionId) rejectReplyWaiter(new Error("endpoint-exited"));
           for (const namespace of localExtensions.keys()) {
             emitLocalExtensionEvent(namespace, { type: "session_left", sessionId: message.sessionId });
           }
           break;
         case "presence_update":
+          if (replyWaiter?.remote && message.session.remote && sameAddress(message.session.address, replyWaiter.from)) {
+            if (message.session.reachability === "down") rejectReplyWaiter(linkDownError(message.session.machineAlias));
+            else if (replyWaiter.endpoint && message.session.activationEpoch !== replyWaiter.endpoint) rejectReplyWaiter(new Error("endpoint-exited"));
+          }
           for (const namespace of localExtensions.keys()) {
             emitLocalExtensionEvent(namespace, { type: "presence_update", session: message.session });
           }
@@ -1480,6 +1567,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           throw new Error("Intercom runtime no longer active");
         }
         client = nextClient;
+        for (const receipt of durableReceipts.values()) nextClient.sendMessageReceipt(receipt);
         reconnectAttempt = 0;
         clearDisconnectWarning();
         return nextClient;
@@ -1501,6 +1589,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     reconnectPromiseGeneration = generationAtStart;
     return nextReconnectPromise;
   }
+  function requiresBridge(activeClient: IntercomClient, to: string, target: SessionInfo | null): boolean {
+    const address = target ? sessionAddress(target, getIntercomScopeId() ?? null) : { sessionId: to, scopeId: getIntercomScopeId() ?? null };
+    const home = hostContext?.home?.(address);
+    if (home === "unknown") throw new Error("home-unavailable");
+    const bridge = target?.remote === true || !!home || target?.homeEpoch != null;
+    if (bridge && !activeClient.supportsFeature(FEDERATION_FEATURE)) throw new Error("unsupported-broker");
+    return bridge;
+  }
   async function resolveSessionTarget(activeClient: IntercomClient, nameOrId: string): Promise<string | null> {
     const sessions = await activeClient.listSessions();
     let target: SessionInfo | null;
@@ -1510,7 +1606,8 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       const matches = sessions.filter(session => session.name?.toLowerCase() === nameOrId.toLowerCase() || session.id.startsWith(nameOrId));
       throw new Error(`${getErrorMessage(error)} Address one by the id shown in parentheses by "list" (${matches.map(session => prefixes.get(session.id)).join(", ")}).`);
     }
-    if (target) resolvedAddresses.set(target.id, { address: sessionAddress(target, getIntercomScopeId() ?? null), remote: target.remote === true });
+    requiresBridge(activeClient, nameOrId, target);
+    if (target) resolvedAddresses.set(target.id, { address: sessionAddress(target, getIntercomScopeId() ?? null), remote: target.remote === true, activationEpoch: target.activationEpoch, ...(target.remote ? { machineAlias: target.machineAlias } : {}) });
     return target?.id ?? null;
   }
   async function resolveSupervisorTarget(activeClient: IntercomClient, metadata: ChildOrchestratorMetadata): Promise<string | null> {
@@ -1542,9 +1639,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     if (options.to) {
       const explicit = resolveRosterTarget(options.to, sessions);
       if (explicit?.remote) {
+        requiresBridge(activeClient, options.to, explicit);
         if (options.openProjectPaneIfMissing || options.focus) throw new Error("Remote discovery cannot open or focus a local pane.");
         if (!sameCwd(explicit.cwd, options.cwd)) throw new Error("Remote cwd guard does not match the destination.");
-        resolvedAddresses.set(explicit.id, { address: explicit.address, remote: true });
+        resolvedAddresses.set(explicit.id, { address: explicit.address, remote: true, machineAlias: explicit.machineAlias, activationEpoch: explicit.activationEpoch });
         return { id: explicit.id, label: qualifiedName(explicit) };
       }
     }
@@ -1558,6 +1656,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       ...(options.to ? { to: options.to } : {}),
     });
     if (existing.kind === "found" && existing.session) {
+      requiresBridge(activeClient, existing.session.id, existing.session);
       return { id: existing.session.id, label: options.to || existing.session.name || existing.session.id };
     }
     if (!options.openProjectPaneIfMissing) {
@@ -1573,9 +1672,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       ...(options.to ? { to: options.to } : {}),
       signal: options.signal,
     });
+    requiresBridge(activeClient, session.id, session);
     return { id: session.id, label: session.name || session.id, projectPane };
   }
-  function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string): void {
+  function deliverLocalSubagentRelayMessage(sender: "subagent-control" | "subagent-result", status: string, messageText: string, messageId: string = randomUUID()): void {
     const liveContext = getLiveContext();
     const now = Date.now();
     sendIncomingMessage({
@@ -1590,7 +1690,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
         status,
       },
       message: {
-        id: randomUUID(),
+        id: messageId,
         timestamp: now,
         content: { text: messageText },
       },
@@ -1640,10 +1740,64 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     runtimeContext = ctx;
     currentSessionId = ctx.sessionManager.getSessionId();
     activationEpoch = randomUUID();
+    hostContext = { sessionId: currentSessionId, scopeId: getIntercomScopeId() ?? null, activationEpoch };
+    pi.events.emit(INTERCOM_HOST_EVENT, hostContext);
     const ownSessionId = currentSessionId;
     deliveryObserver = createIntercomDeliveryObserver({ sessionId: ownSessionId, generation: activationEpoch,
       entries: () => { if (ctx.sessionManager.getSessionId() !== ownSessionId || !ctx.sessionManager.getEntries) throw new Error("own-session-entries-unavailable"); return ctx.sessionManager.getEntries(); },
-      receipt: receipt => { client?.sendMessageReceipt(receipt); }, now: () => Date.now() });
+      receipt: recordReceipt, now: () => Date.now() });
+    restoredDeliveries.clear(); durableReceipts.clear(); orphanReplies.clear(); notifiedOrphanReplies.clear(); seenInboundMessages.clear(); settledInboundAsks.clear(); pendingInbound.clear();
+    for (const timer of incomingDeadlines.values()) clearTimeout(timer); incomingDeadlines.clear();
+    for (const entry of ctx.sessionManager.getEntries?.() ?? []) {
+      if (entry.type === "custom" && entry.customType === "intercom_reply_notice") {
+        const data = entry.data as { messageId?: string } | undefined;
+        if (typeof data?.messageId === "string") notifiedOrphanReplies.add(data.messageId);
+      }
+      if (entry.type === "custom" && entry.customType === "intercom_expired") {
+        const data = entry.data as { messageId?: string; sessionId?: string } | undefined;
+        if (typeof data?.messageId === "string" && data.sessionId === ownSessionId) {
+          settledInboundAsks.add(data.messageId);
+          recordReceipt({ messageId: data.messageId, status: "expired", timestamp: Date.now(), detail: "Question expired before injection." });
+        }
+      }
+      if (entry.type === "custom" && entry.customType === "intercom_ask_settled") {
+        const data = entry.data as { askId?: string } | undefined;
+        if (typeof data?.askId === "string") settledInboundAsks.add(data.askId);
+      }
+      let id: string | undefined, generation: string | undefined;
+      if (entry.type === "custom_message" && entry.customType === "intercom_message") {
+        const details = entry.details as { from?: unknown; message?: Message; intercom?: { sessionId?: string; activationEpoch?: string } };
+        if (details?.intercom?.sessionId === ownSessionId) {
+          id = details.message?.id; generation = details.intercom.activationEpoch;
+          if (isMessage(details.message) && isSessionInfo(details.from)) replyTracker.recordIncomingMessage(details.from, details.message, details.message.receiverReceivedAt ?? details.message.timestamp);
+          if (details.message?.replyTo) orphanReplies.add(details.message.id);
+        }
+      } else if (entry.type === "custom" && (entry.customType === "intercom_pending" || entry.customType === "intercom_waiter_receipt")) {
+        const data = entry.data as { messageId?: string; sessionId?: string; activationEpoch?: string } | undefined;
+        if (data?.sessionId === ownSessionId) { id = data.messageId; generation = data.activationEpoch; }
+      }
+      if (typeof id !== "string" || typeof generation !== "string") continue;
+      const restored = createIntercomDeliveryObserver({ sessionId: ownSessionId, generation,
+        entries: () => { if (ctx.sessionManager.getSessionId() !== ownSessionId || !ctx.sessionManager.getSessionFile?.()) throw new Error("own-session-entries-unavailable"); return ctx.sessionManager.getEntries(); }, receipt: recordReceipt, now: Date.now });
+      restored.register(id); restored.accept(id);
+      const data = entry.type === "custom" ? entry.data as { owner?: import("./protocol.js").SessionEndpoint } | undefined : undefined;
+      restored.settle(data?.owner ? hostContext?.exclusion?.(data.owner) : undefined);
+      if (!restoredDeliveries.get(id)?.snapshot(id)?.observed) restoredDeliveries.set(id, restored);
+    }
+    for (const entry of ctx.sessionManager.getEntries?.() ?? []) {
+      if (entry.type === "custom" && entry.customType === "intercom_sent") {
+        const data = entry.data as { message?: { replyTo?: string } } | undefined;
+        if (data?.message?.replyTo) replyTracker.markReplied(data.message.replyTo);
+      }
+    }
+    for (const entry of ctx.sessionManager.getEntries?.() ?? []) {
+      if (entry.type !== "custom" || entry.customType !== "intercom_pending") continue;
+      const data = entry.data as { sessionId?: string; messageId?: string; expectsReply?: boolean; deadline?: number; receivedAt?: number; from?: SessionInfo } | undefined;
+      if (data?.sessionId === ownSessionId && typeof data.messageId === "string" && data.expectsReply && typeof data.deadline === "number" && typeof data.receivedAt === "number" && data.from) {
+        armIncomingDeadline(data.from, { id: data.messageId, expectsReply: true, timestamp: data.receivedAt, content: { text: "" } }, Date.now() < data.receivedAt ? Date.now() : data.deadline);
+      }
+    }
+    for (const ask of settledInboundAsks) replyTracker.dismissPendingAsk(ask);
     currentIntercomSessionId = resolveConfiguredIntercomSessionId(currentSessionId, config);
     publishIntercomSessionId(currentIntercomSessionId);
     currentModel = ctx.model?.id ?? "unknown";
@@ -1663,11 +1817,12 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       });
     }, 0);
   }
-  function emitResultDelivery(requestId: string | undefined, delivered: boolean, error?: unknown): void {
+  function emitResultDelivery(requestId: string | undefined, delivered: boolean, error?: unknown, result?: SendResult): void {
     if (!requestId) return;
     pi.events.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, {
       requestId,
       delivered,
+      ...(result ? deliveryDetails(result) : {}),
       ...(error ? { error: getErrorMessage(error) } : {}),
     });
   }
@@ -1681,13 +1836,14 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     if (!parsed) return;
 
     const relayGeneration = runtimeGeneration;
+    const messageId = parsed.requestId ?? randomUUID();
     void (async () => {
       const relayStillLive = () => !runtimeStarted || Boolean(getLiveContext(runtimeContext, relayGeneration));
       if (!relayStillLive()) {
         return;
       }
       if (currentSessionTargetMatches(parsed.to)) {
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
+        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, messageId);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
       }
@@ -1708,21 +1864,21 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
         return;
       }
       if (currentSessionTargetMatches(parsed.to, target, activeClient)) {
-        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message);
+        deliverLocalSubagentRelayMessage(options.sender, options.status, parsed.message, messageId);
         if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
         return;
       }
 
       try {
-        const result = await activeClient.send(target, { text: parsed.message });
+        const result = await activeClient.send(target, { text: parsed.message, messageId });
         if (!relayStillLive()) return;
         if (!result.delivered) {
           const error = new Error(result.reason ?? "Session may not exist or has disconnected.");
           recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
-          if (options.acknowledge) emitResultDelivery(parsed.requestId, false, error);
+          if (options.acknowledge) emitResultDelivery(parsed.requestId, false, error, result);
           return;
         }
-        if (options.acknowledge) emitResultDelivery(parsed.requestId, true);
+        if (options.acknowledge) emitResultDelivery(parsed.requestId, true, undefined, result);
       } catch (error) {
         if (!relayStillLive()) return;
         recordSubagentDeliveryError(options.errorEntryType, parsed.to, parsed.message, error);
@@ -1760,6 +1916,21 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     });
   });
   const unsubscribeOutboxRequest = pi.events.on(INTERCOM_OUTBOX_REQUEST_EVENT, handleOutboxRequest);
+  const unsubscribeResolve = pi.events.on(INTERCOM_RESOLVE_EVENT, payload => {
+    const request = payload as IntercomResolveRequest;
+    request.handled = true;
+    void (async () => {
+      try {
+        const activeClient = await ensureConnected("background");
+        const sessions = await activeClient.listSessions();
+        let target: SessionInfo | null;
+        try { target = resolveRosterTarget(request.to, sessions); }
+        catch { request.respond({ kind: "ambiguous" }); return; }
+        const address = target ? sessionAddress(target, getIntercomScopeId() ?? null) : { sessionId: request.to, scopeId: getIntercomScopeId() ?? null };
+        request.respond({ kind: requiresBridge(activeClient, request.to, target) ? "bridge" : "local", to: target?.id ?? request.to, address });
+      } catch (error) { request.respond({ kind: "unknown", reason: error instanceof Error && ["unsupported-broker", "home-unavailable"].includes(error.message) ? error.message : "broker-unavailable" }); }
+    })();
+  });
   pi.on("session_start", (_event, ctx) => {
     if (!config.enabled) {
       return;
@@ -1768,7 +1939,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   });
 
   pi.on("message_end", () => {
-    try { deliveryObserver?.observeEntries(); } catch { /* Missing physical metadata never proves injection. */ }
+    try {
+      deliveryObserver?.observeEntries();
+      for (const observer of restoredDeliveries.values()) observer.observeEntries();
+    } catch { /* Missing physical metadata never proves injection. */ }
   });
   pi.on("agent_settled", () => {
     try { deliveryObserver?.settle(); } catch { /* Settlement alone does not exclude old queued messages. */ }
@@ -1780,6 +1954,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     unsubscribeSubagentControlIntercom();
     unsubscribeSubagentResultIntercom();
     unsubscribeOutboxRequest();
+    unsubscribeResolve();
     shuttingDown = true;
     disposed = true;
     failPendingOutboxRequests(runtimeGeneration, "session_ended", "Session shutting down");
@@ -1787,6 +1962,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     clearStartupConnectTimer();
     clearReconnectTimer();
     clearNamePollTimer();
+    for (const timer of incomingDeadlines.values()) clearTimeout(timer); incomingDeadlines.clear();
     clearDisconnectWarning();
     restoreIntercomSessionId();
     rejectReplyWaiter(new Error(event.reason === "reload" ? "session-reloaded" : "Session shutting down"));
@@ -1834,6 +2010,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     if (!refreshRuntimeContext(ctx)) {
       return;
     }
+    retryReadyIncoming();
     agentRunning = false;
     activeTools.clear();
     syncPresenceStatus();
@@ -2060,14 +2237,15 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           const requestText = reason === "interview_request"
             ? formatChildOrchestratorMessage("interview", metadata, formatSupervisorInterviewRequest(supervisorInterview!, typeof params.message === "string" ? params.message : undefined))
             : formatChildOrchestratorMessage("ask", metadata, params.message as string);
-          const sendResult = await connectedClient.send(sendTo, {
+          const sendResult = await sendQuestion(connectedClient, sendTo, {
             messageId: questionId,
             text: requestText,
             expectsReply: true,
           });
           deliveryState = sendResult.delivered ? "socket_delivered" : "delivery_failed";
           if (!sendResult.delivered) {
-            const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
+            const edge = resolvedAddresses.get(sendTo)?.machineAlias;
+              const errorText = sendResult.reason === "link-down" ? linkDownError(edge).message : sendResult.reason ?? "Session may not exist or has disconnected.";
             rejectReplyWaiter(new Error(`Message to "${metadata.orchestratorTarget}" was not delivered: ${errorText}`));
             if (replyPromise) {
               try {
@@ -2124,7 +2302,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
           }
           return {
             content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
-            details: { error: true, ...(questionId ? { messageId: questionId, deliveryState: latestDeliveryState(questionId, deliveryState) } : {}) },
+            details: { error: true, ...(questionId ? { messageId: questionId, deliveryState: latestDeliveryState(questionId, deliveryState) } : {}), ...((error as { reason?: string }).reason === "link-down" ? { reason: "link-down", edge: (error as { edge?: string }).edge } : {}) },
           };
         }
       },
@@ -2555,7 +2733,7 @@ Usage:
             questionId = randomUUID();
             replyPromise = waitForReply(sendTo, questionId, _signal, () => connectedClient.cancelAsk(questionId!), () => latestDeliveryState(questionId, deliveryState));
             replyPromise.catch(() => undefined);
-            const sendResult = await connectedClient.send(sendTo, {
+            const sendResult = await sendQuestion(connectedClient, sendTo, {
               messageId: questionId,
               text: message,
               attachments,
@@ -2567,7 +2745,8 @@ Usage:
 
             deliveryState = sendResult.delivery;
             if (!sendResult.delivered && !(hasRemoteReplyWaiter() && sendResult.delivery === "unknown")) {
-              const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
+              const edge = resolvedAddresses.get(sendTo)?.machineAlias;
+              const errorText = sendResult.reason === "link-down" ? linkDownError(edge).message : sendResult.reason ?? "Session may not exist or has disconnected.";
               rejectReplyWaiter(new Error(`Message to "${targetDisplay}" was not delivered: ${errorText}`));
               if (replyPromise) {
                 try {
@@ -2578,7 +2757,7 @@ Usage:
               }
               return {
                 content: [{ type: "text", text: `Message to "${targetDisplay}" was not delivered: ${errorText}` }],
-                details: { error: true, ...deliveryDetails(sendResult) },
+                details: { error: true, ...deliveryDetails(sendResult), ...(sendResult.reason === "link-down" ? { reason: "link-down", edge } : {}) },
               };
             }
             pi.appendEntry("intercom_sent", {
@@ -2613,7 +2792,7 @@ Usage:
             }
             return {
               content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
-              details: { error: true, ...(questionId ? { messageId: questionId, deliveryState: latestDeliveryState(questionId, deliveryState) } : {}) },
+              details: { error: true, ...(questionId ? { messageId: questionId, deliveryState: latestDeliveryState(questionId, deliveryState) } : {}), ...((error as { reason?: string }).reason === "link-down" ? { reason: "link-down", edge: (error as { edge?: string }).edge } : {}) },
             };
           }
         }
@@ -2634,6 +2813,7 @@ Usage:
                 details: { error: true },
               };
             }
+            await resolveSessionTarget(connectedClient, target.from.id);
             const result = await connectedClient.send(target.from.id, {
               text: message,
               attachments,

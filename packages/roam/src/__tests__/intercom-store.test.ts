@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { openDb } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import type { Message, MessageReceipt, SessionAddress, SessionEndpoint } from "@spider/intercom/protocol";
-import { INTERCOM_QUEUE_BYTES, INTERCOM_QUEUE_MESSAGES, type IntercomFrame, type IntercomMessageFrame, type IntercomReceiptFrame, type IntercomReceiptInput } from "../intercom-contracts";
+import { INTERCOM_PAYLOAD_MS, INTERCOM_QUEUE_BYTES, INTERCOM_QUEUE_MESSAGES, type IntercomFrame, type IntercomMessageFrame, type IntercomReceiptFrame, type IntercomReceiptInput } from "../intercom-contracts";
 import { openIntercomStore } from "../intercom-store";
 import { makeMessageFrame } from "../intercom-codec";
 
@@ -1043,4 +1043,16 @@ it("uses private files and refuses symlink destinations", async () => {
     await expect(open(bad, sourceMachine, clock)).rejects.toThrow(/unsafe|symlink/i);
     expect(readFileSync(other, "utf8")).toBe("unchanged");
   }
+}, 5000);
+
+it("atomic local acceptance checkpoints expiry only after its outer commit", () => {
+  const file = join(root(), "local-expiry", "queue.db"); let value = 1_000_000, ticking = false;
+  const store = openIntercomStore({ file, machineId: sourceMachine, clock: { now: () => ticking ? value++ : value } }); opened.push(store);
+  send(store, mail("old-expiring"), { ...endpoint, address: { ...recipient, sessionId: "old-target" } }); value += INTERCOM_PAYLOAD_MS - 2; ticking = true;
+  let result: unknown;
+  expect(() => { result = store.acceptLocal({ from: sender, endpoint: { ...endpoint, machineId: sourceMachine }, message: mail("local-expiry") }); }).not.toThrow();
+  expect(result).toMatchObject({ kind: "accepted" });
+  expect(existsSync(`${file}-wal`) ? statSync(`${file}-wal`).size : 0).toBe(0);
+  expect(store.retained("outbound", "old-expiring")).toMatchObject({ payloadRetained: false });
+  expect(store.retained("inbound", "local-expiry")).toMatchObject({ payloadRetained: true });
 }, 5000);

@@ -16,7 +16,7 @@ function childTarget(db: Db | undefined, target: string, sessionId: string): Tar
   return exact ? [exact] : rows;
 }
 
-/** Peer transport is queue-first. Live RPC children use their owner's stdin directly. */
+/** Peer transport resolves its route before persistence. Live RPC children use their owner's stdin directly. */
 export function makeMessageHandler(): (args: any, ctx: any) => Promise<{ content: string; isError: boolean; details: any }> {
   return async function messageHandler(args: any, ctx: any) {
     const refuse = (error: string, runId?: string, childAccepted = false) => ({ content: `Message refused: ${error}`, isError: true,
@@ -85,15 +85,21 @@ export function makeMessageHandler(): (args: any, ctx: any) => Promise<{ content
         to: destination, message: args.message, fromSession: ctx.sessionId,
         kind: args.kind, timeoutMs: args.timeoutMs, ephemeral: !!run,
       });
-      if (run) recordSteer(run, { transport: "intercom", ...res, accepted: res.delivered, delivered: false, delivery: res.delivered ? "accepted but not confirmed" : res.timedOut ? "no reply yet, delivery unknown" : "refused" });
-      if (run && res.timedOut) return { content: `Message to child ${run.id}: no reply yet, delivery unknown. The steer may still be delivered; do not resend. ${res.error ?? ""}`, isError: false,
-        details: { ...res, accepted: false, delivered: false, delivery: "no reply yet, delivery unknown", runId: run.id, ...(warning ? { warning } : {}) } };
+      if (run) recordSteer(run, { transport: "intercom", ...res, accepted: res.acceptance.accepted, delivered: false, delivery: res.delivered ? "accepted but not confirmed" : res.deliveryState === "unknown" && !res.brokerRefused ? "no reply yet, delivery unknown" : "refused" });
+      if (run && (res.timedOut || res.deliveryState === "unknown" && !res.brokerRefused)) return { content: `Message to child ${run.id}: no reply yet, delivery unknown. The steer may still be delivered; do not resend. ${res.error ?? ""}`, isError: false,
+        details: { ...res, accepted: res.acceptance.accepted, delivered: false, delivery: "no reply yet, delivery unknown", runId: run.id, ...(warning ? { warning } : {}) } };
       if (run && res.delivered) return { content: `Message to child ${run.id}: accepted but not confirmed. Broker acceptance is not evidence of conversation entry.`, isError: false,
         details: { ...res, accepted: true, delivered: false, delivery: "broker-accepted", runId: run.id, ...(warning ? { warning } : {}) } };
+      if (!run && res.delivery === "unknown") return { content: `Message to ${destination}: delivery is unknown. ${res.acceptance.accepted ? "Durable acceptance is known; do not resend." : "Acceptance is unconfirmed; do not resend with a new message ID."}`, isError: false, details: res };
+      if (!run && res.delivery === "failed") return { content: `Message to ${destination} was refused. ${res.error ?? "No message was accepted."}`, isError: true, details: res };
+      if (!run && res.delivery === "queued" && res.mirrorId === undefined && res.acceptance.accepted) return { content: `Message durably queued for ${destination}; conversation entry is unconfirmed.`, isError: false, details: res };
       if (res.delivered) {
         return { content: `Broker accepted the message for ${destination}; recipient acknowledgement is unconfirmed.${res.error ? ` ${res.error}` : ""}`, isError: false, details: { ...res, ...(run ? { runId: run.id } : {}), ...(warning ? { warning } : {}) } };
       }
-      if (run) return refuse(`${res.brokerRefused ? "The broker did not accept" : "The broker has not confirmed acceptance of"} the steer for child ${run.id}. ${res.error ?? "No broker delivery confirmation."} Steer from its owning session or start a fresh run.`, run.id);
+      if (run) {
+        const failure = refuse(`${res.brokerRefused ? "The broker did not accept" : "The broker has not confirmed acceptance of"} the steer for child ${run.id}. ${res.error ?? "No broker delivery confirmation."} Steer from its owning session or start a fresh run.`, run.id);
+        return { ...failure, details: { ...res, ...failure.details } };
+      }
       return { content: `message queued for ${destination}; ${res.brokerRefused ? "delivery was not accepted by the broker" : "delivery is unconfirmed"}. ${res.error ?? "No broker delivery confirmation."}`, isError: false, details: res };
     } catch (err: unknown) {
       const error = String((err as Error)?.message ?? err);

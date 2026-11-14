@@ -68,15 +68,34 @@ export function createIntercomDeliveryObserver(ports: IntercomObservationPorts) 
     reported.set(id, value.state);
     ports.receipt({ messageId: id, status: value.state, timestamp: ports.now(), ...(value.evidence ? { evidence: value.evidence } : value.state === "not_injected" ? { evidence: { kind: "absence" as const, sessionId: ports.sessionId, activationEpoch: ports.generation, excludedGeneration: ports.generation, complete: true as const } } : {}) });
   };
+  const competing = new Set<string>();
   const observeEntries = (): boolean => {
     let entries: readonly unknown[];
     try { entries = ports.entries(); } catch { return false; }
+    competing.clear();
     for (const entry of entries) {
-      if (!record(entry) || entry.type !== "custom_message" || entry.customType !== "intercom_message" || typeof entry.id !== "string") continue;
+      if (!record(entry) || typeof entry.id !== "string") continue;
+      if (entry.type === "custom" && entry.customType === "intercom_waiter_receipt" && record(entry.data)) {
+        const data = entry.data;
+        if (typeof data.messageId === "string" && ids.has(data.messageId) && typeof data.askId === "string") {
+          if (data.sessionId === ports.sessionId && data.activationEpoch === ports.generation) {
+            observer.observe(data.messageId, ports.generation, { kind: "waiter", entryId: entry.id, sessionId: ports.sessionId, activationEpoch: ports.generation, askId: data.askId }, "matched_waiter");
+            report(data.messageId);
+          } else if (observer.snapshot(data.messageId)?.accepted) competing.add(data.messageId);
+        }
+        continue;
+      }
+      if (entry.type !== "custom_message" || entry.customType !== "intercom_message") continue;
       const details = entry.details;
       if (!record(details) || !record(details.message) || !record(details.intercom)) continue;
       const id = details.message.id;
-      if (typeof id !== "string" || !ids.has(id) || details.intercom.sessionId !== ports.sessionId || details.intercom.activationEpoch !== ports.generation) continue;
+      if (typeof id !== "string" || !ids.has(id)) continue;
+      if (details.intercom.sessionId !== ports.sessionId || details.intercom.activationEpoch !== ports.generation) {
+        // A pre-handoff abort is already excluded. An accepted/unknown delivery
+        // cannot be retried while another generation has a physical entry.
+        if (observer.snapshot(id)?.accepted) competing.add(id);
+        continue;
+      }
       observer.observe(id, ports.generation, { kind: "entry", entryId: entry.id, sessionId: ports.sessionId, activationEpoch: ports.generation });
       report(id);
     }
@@ -98,13 +117,13 @@ export function createIntercomDeliveryObserver(ports: IntercomObservationPorts) 
     },
     refuse(id: string): void {
       const complete = observeEntries();
-      observer.settle(id, ports.generation, complete ? { excludedGeneration: ports.generation, complete: true } : undefined);
+      observer.settle(id, ports.generation, complete && !competing.has(id) ? { excludedGeneration: ports.generation, complete: true } : undefined);
       report(id);
     },
     settle(proof?: GenerationExclusion): void {
       const complete = observeEntries();
       for (const id of ids) {
-        observer.settle(id, ports.generation, complete ? proof : undefined);
+        observer.settle(id, ports.generation, complete && !competing.has(id) ? proof : undefined);
         report(id);
       }
     },

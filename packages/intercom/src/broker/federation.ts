@@ -19,11 +19,13 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
   roster(scopeId: string | null): RemoteSessionInfo[];
   resolve(target: string, scopeId: string | null, local: readonly SessionInfo[]): SessionInfo | null;
   connected(): boolean;
+  dispatchLocal(from: SessionAddress, to: RemoteSessionInfo, message: Message): Promise<FederationDispatchResult>;
   observeControl(from: SessionAddress, to: SessionAddress, control: MessageControl): void;
   observeReceipt(from: SessionAddress, receipt: MessageReceipt): void;
   observeInbound(from: SessionAddress, to: SessionAddress, activationEpoch: string, message: Message): void;
 } {
   let bridge: FederationBridge | null = null;
+  let localMachine: string | null = null;
   let remote = new Map<string, RemoteSessionInfo>();
   const dispatches = new Map<string, DispatchMetadata>();
   const asks = new Map<string, { id: string; from: SessionAddress; to: SessionAddress }>();
@@ -52,6 +54,27 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
       if (!metadata.unobserved) dispatches.delete(receipt.messageId);
     }
   };
+  async function dispatchTracked(from: SessionAddress, to: RemoteSessionInfo, message: Message): Promise<FederationDispatchResult> {
+      admitAsk(from, to.address, message);
+      const metadata: DispatchMetadata = { from, to: to.address, endpoint: to.activationEpoch, pending: true, unknown: false, unobserved: true };
+      dispatches.set(message.id, metadata);
+      try {
+        const result = await requireBridge().dispatch({ from, to, message });
+        metadata.pending = false;
+        metadata.unknown = result.delivery === "unknown";
+        if (result.consumption && result.consumption.messageId !== message.id) throw new Error("receipt-message-mismatch");
+        if (result.delivery === "failed") { metadata.unobserved = false; asks.delete(message.id); dispatches.delete(message.id); }
+        if (result.consumption) applyReceipt(to.address, result.consumption);
+        if (message.replyTo && result.acceptance.accepted) {
+          const edge = asks.get(message.replyTo);
+          if (edge && sameAddress(edge.to, from) && sameAddress(edge.from, to.address)) asks.delete(message.replyTo);
+        }
+        return result;
+      } catch {
+        metadata.pending = false; metadata.unknown = true;
+        return { delivery: "unknown", retryable: false, outcomeKnown: false, acceptance: { accepted: false, durable: false }, reason: "bridge-dispatch-unknown" };
+      }
+  }
   return {
     connected: () => bridge !== null,
     observeReceipt: applyReceipt,
@@ -68,13 +91,13 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
       if (registration.feature !== FEDERATION_FEATURE) throw new Error("federation-feature-required");
       if (registration.agentDir !== ports.agentDir) throw new Error("federation-agent-directory-mismatch");
       if (bridge) throw new Error("bridge-already-registered");
-      bridge = next;
+      bridge = next; localMachine = registration.machineId;
       let released = false;
       return () => {
         if (released) return;
         released = true;
         if (bridge === next) {
-          bridge = null;
+          bridge = null; localMachine = null;
           remote = new Map([...remote].map(([key, entry]) => [key, { ...entry, stale: true, reachability: "unknown" }]));
         }
       };
@@ -101,31 +124,18 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
       return resolveSessionTarget(target, [...local, ...this.roster(scopeId)]);
     },
     async dispatch(from, to, message): Promise<FederationDispatchResult> {
-      const activeBridge = requireBridge();
+      requireBridge();
       if (from.scopeId !== to.address.scopeId) throw new Error("federation-scope-mismatch");
       if (sameAddress(from, to.address)) throw new Error("self-target-refused");
       const current = remote.get(addressKey(to.address));
       if (!current || current.activationEpoch !== to.activationEpoch || current.homeEpoch !== to.homeEpoch || current.machineId !== to.machineId) throw new Error("stale-remote-endpoint");
       if (ports.locals().some(local => sameAddress(local, to.address))) throw new Error("remote-cannot-shadow-local-session");
-      admitAsk(from, to.address, message);
-      const metadata: DispatchMetadata = { from, to: to.address, endpoint: to.activationEpoch, pending: true, unknown: false, unobserved: true };
-      dispatches.set(message.id, metadata);
-      try {
-        const result = await activeBridge.dispatch({ from, to: current, message });
-        metadata.pending = false;
-        metadata.unknown = result.delivery === "unknown";
-        if (result.consumption && result.consumption.messageId !== message.id) throw new Error("receipt-message-mismatch");
-        if (result.delivery === "failed") { metadata.unobserved = false; asks.delete(message.id); dispatches.delete(message.id); }
-        if (result.consumption) this.observeReceipt(to.address, result.consumption);
-        if (message.replyTo && result.acceptance.accepted) {
-          const edge = asks.get(message.replyTo);
-          if (edge && sameAddress(edge.to, from) && sameAddress(edge.from, to.address)) asks.delete(message.replyTo);
-        }
-        return result;
-      } catch {
-        metadata.pending = false; metadata.unknown = true;
-        return { delivery: "unknown", retryable: false, outcomeKnown: false, acceptance: { accepted: false, durable: false }, reason: "bridge-dispatch-unknown" };
-      }
+      return dispatchTracked(from, current, message);
+    },
+    async dispatchLocal(from, to, message) {
+      requireBridge();
+      if (to.machineId !== localMachine || to.homeEpoch === null || !ports.locals().some(local => sameAddress(local, to.address)) || from.scopeId !== to.address.scopeId || sameAddress(from, to.address)) throw new Error("invalid-local-home-endpoint");
+      return dispatchTracked(from, to, message);
     },
     receipt(from, receipt): void {
       applyReceipt(from, receipt);

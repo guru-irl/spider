@@ -1,5 +1,6 @@
 import type { DeliveryDetails, Message, MessageControl, MessageReceipt, SessionInfo, RemoteSessionInfo } from "./types.js";
 export * from "./types.js";
+export * from "./host-api.js";
 import { isMessageReceipt, isConsumptionReceipt } from "./broker/protocol.js";
 export { parseFederationBrokerMessage, isSessionAddress, isSessionEndpoint, isRemoteSessionInfo, isMessage, isMessageReceipt, isMessageControl, isFederationDispatchResult, isConsumptionReceipt, isReceiptEvidence } from "./broker/protocol.js";
 export { createDeliveryObserver, createIntercomDeliveryObserver } from "./delivery-observation.js";

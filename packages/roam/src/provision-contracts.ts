@@ -1,6 +1,6 @@
 import type { Diagnostic, Journal, Limits, Operation, Peer, Transport } from "./contracts";
 import type { AuthPorts } from "./auth";
-import type { SelectedFile, SelectedFileMetadata } from "./selected-files";
+import type { SelectedFile, SelectedFileMetadata, SettingsDestinationPreview, SettingsKeyDigest } from "./selected-files";
 
 export type FileLimit = number | "unlimited" | null;
 export interface FileStatus { present: boolean; readable: boolean; modeSafe: boolean }
@@ -31,7 +31,7 @@ export interface Inventory {
 
 export type ProvisionRequest = {
   operation: Operation; peer: Peer; selected: readonly string[]; includeAuth: boolean; confirmedProviders: readonly string[];
-  expectedAuthBytes?: number; expectedFiles?: readonly SelectedFileMetadata[];
+  expectedAuthBytes?: number; expectedFiles?: readonly SelectedFileMetadata[]; expectedSelectionDigest?: string;
 };
 export interface ProvisionVerification {
   piSignedIn: boolean; nativeSqlite: boolean; extensionLoaded: boolean; exactSession: boolean; privateModes: boolean;
@@ -49,7 +49,8 @@ export interface DoctorPorts {
 export interface ProvisionPreview {
   target: string; machineId: string; inventory: Inventory;
   destinations: ProvisionDestination & { globalRoot: string; pi: string };
-  selectedFiles: readonly string[]; providers: readonly string[]; warnings: readonly string[];
+  selectedFiles: readonly SelectedFileMetadata[]; settingsKeys: readonly string[]; settingsFingerprint: string | null;
+  providers: readonly string[]; warnings: readonly string[];
 }
 export interface ProvisionDestination { home: string; agentDir: string; npmPrefix: string; supervisor: string }
 export interface ProvisionPorts extends DoctorPorts {
@@ -63,6 +64,7 @@ export interface ProvisionPorts extends DoctorPorts {
   persistPeer(peer: Peer): Promise<void>;
   bootstrap: {
     probeAgentDirectory(peer: Peer, home: string): Promise<AgentDirectoryProbe>;
+    previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence): Promise<SettingsDestinationPreview>;
     claimIdentity(peer: Peer, operationId: string, core: CoreFence): Promise<{ machineId: string; coreId: string }>;
   };
   systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<void> };
@@ -71,9 +73,9 @@ export interface ProvisionPorts extends DoctorPorts {
     cleanupSecrets(peer: Peer): Promise<void>;
     installRelease(peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }):
       Promise<{ pi: string; cli: string; supervisor: string }>;
-    installFiles(peer: Peer, files: readonly SelectedFile[]): Promise<void>;
+    installFiles(peer: Peer, files: readonly SelectedFile[], expectedSettingsFingerprint?: string): Promise<void>;
     /** Credential file staging is removed on success and failure. */
-    installCredentialFiles(peer: Peer, files: readonly SelectedFile[]): Promise<void>;
+    installCredentialFiles(peer: Peer, files: readonly SelectedFile[], providers: readonly string[], expectedSettingsFingerprint?: string): Promise<void>;
     auth(peer: Peer, operationId: string): AuthPorts;
     switchover(peer: Peer, operationId: string): Promise<{ status: string }>;
   };

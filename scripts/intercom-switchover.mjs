@@ -17,8 +17,9 @@ function legacyDeclaration(value, roots, directory) {
 }
 
 export function migrateIntercomSettings(text, legacyRoots, directory) {
-  const settings = JSON.parse(text);
-  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Settings must be an object');
+  const settings = JSON.parse(text, (_key, value, context) =>
+    typeof value === 'number' && context.source !== undefined && JSON.stringify(value) !== context.source ? JSON.rawJSON(context.source) : value);
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings) || JSON.isRawJSON(settings)) throw new Error('Settings must be an object');
   const next = { ...settings };
   for (const key of ['packages', 'extensions', 'skills']) {
     if (settings[key] === undefined) continue;

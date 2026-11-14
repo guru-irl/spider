@@ -4,12 +4,14 @@ import { invokeCli, machineAliases } from '@spider/herdr/client/hc';
 import type { CliRequestOptions } from '@spider/herdr/client/cli-transport';
 import { HerdrError, object, parseCore, selectedSocket, text } from '@spider/herdr/client/parse';
 import { DEFAULT_LIMITS } from './contracts';
-import { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_IDENTITY_SCRIPT, BOOTSTRAP_SCRIPT } from './bootstrap-script';
+import { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_IDENTITY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from './bootstrap-script';
 import { PROVISION_REMOTE_SCRIPT } from './provision-remote-script';
 import { isMachineId } from './machine-id';
 import { normalizeConfiguredClis, normalizeCoreUnit, parseBootstrapInventory, sanitizeBootstrapError } from './bootstrap-reply';
 import type { BootstrapPeer, CallOptions, Journal, Peer, Transport } from './contracts';
 import type { AgentDirectoryProbe, CoreFence } from './provision-contracts';
+import { validSettingsDigests } from './selected-files';
+import type { SettingsDestinationPreview, SettingsKeyDigest } from './selected-files';
 
 type CoreObservation = CoreFence;
 interface Resolved { peer: Peer; core: CoreObservation; invalidated?: 'core-changed' | 'peer-invalidated' }
@@ -73,6 +75,7 @@ interface TransportOptions { binary: string; env: Readonly<NodeJS.ProcessEnv>; e
 export interface ProvisionTransport {
   transport: Transport;
   probeAgentDirectory(peer: Peer, home: string): Promise<AgentDirectoryProbe>;
+  previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence): Promise<SettingsDestinationPreview>;
   claimIdentity(peer: Peer, operationId: string, core: CoreFence): Promise<{ machineId: string; coreId: string }>;
   executeProvision(peer: Peer, request: Record<string, unknown>): Promise<unknown>;
   launchRelease(peer: Peer, operationId: string, requestFile: string): Promise<{ terminal: string }>;
@@ -304,8 +307,13 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       const consent = journal?.read(request.operationId).find(({ action, result }) => action === 'provision-consent' &&
         result.approved === true && result.target === state.peer.alias && result.machineId === state.peer.machineId);
       if (!consent) throw new HerdrError('consent-required', 'Provisioning consent must be recorded before installation');
-      if (request.action === 'auth-install' && (!Array.isArray(request.providers) || !Array.isArray(consent.result.providers) ||
-          request.providers.some(provider => typeof provider !== 'string' || !(consent.result.providers as unknown[]).includes(provider)))) {
+      const file = request.file && typeof request.file === 'object' && !Array.isArray(request.file) ? request.file as Record<string, unknown> : null;
+      const secretFile = request.action === 'install-files' && Array.isArray(file?.chunks) && file.chunks.some(chunk =>
+        chunk && typeof chunk === 'object' && typeof chunk.name === 'string' && chunk.name.startsWith('secret-'));
+      if ((request.action === 'auth-install' || request.action === 'secret-chunk' || secretFile) &&
+          (!Array.isArray(request.providers) || !request.providers.length || request.providers.length > 64 ||
+            new Set(request.providers).size !== request.providers.length || !Array.isArray(consent.result.providers) ||
+            request.providers.some(provider => typeof provider !== 'string' || !(consent.result.providers as unknown[]).includes(provider)))) {
         throw new HerdrError('consent-required', 'Authentication providers must be confirmed before installation');
       }
       const timeout = DEFAULT_LIMITS.controlMs;
@@ -341,7 +349,8 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           'chunk-mismatch', 'too-large', 'command-failed', 'unsafe-context', 'machine-mismatch', 'invalid-limits', 'invalid-file',
           'invalid-release', 'release-hash-mismatch', 'incomplete-release', 'pi-version-mismatch', 'invalid-unit', 'invalid-systemctl',
           'unsafe-release', 'invalid-switchover-journal', 'missing-switchover-backup', 'unknown-provision-action', 'provision-failed',
-          'selection-not-allowed', 'unsafe-destination', 'invalid-providers', 'invalid-auth', 'unsafe-auth', 'provider-unavailable',
+          'selection-not-allowed', 'unsafe-destination', 'invalid-destination-settings', 'settings-preview-changed', 'invalid-settings-preview',
+          'credential-file-requires-consent', 'provider-consent-required', 'invalid-providers', 'invalid-auth', 'unsafe-auth', 'provider-unavailable',
           'unsupported-credential-command', 'invalid-release-request', 'invalid-release-receipt', 'release-arguments-changed',
           'release-evidence-unavailable', 'release-in-progress', 'process-identity-unavailable', 'operation-arguments-changed', 'short-write-pending', 'core-unavailable', 'core-changed']);
         if (typeof reply.error !== 'string' || !allowed.has(reply.error)) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
@@ -414,6 +423,54 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         if (error && typeof error === 'object' && 'retryable' in error && error.retryable === true) Object.assign(safe, { retryable: true });
         throw safe;
       }
+    },
+    async previewSettings(peer, home, entries, maximum, requestedCore) {
+      const target = bootstrapTarget(peer);
+      if (typeof home !== 'string' || home === '/' || home.length > 4096 || !posix.isAbsolute(home) || posix.normalize(home) !== home ||
+          /[\u0000-\u001f\u007f]/.test(home) || !validCore(requestedCore) || !validSettingsDigests(entries) ||
+          !Number.isSafeInteger(maximum) || maximum <= 0 || maximum > 256 * 1024 * 1024) {
+        throw new HerdrError('invalid-bootstrap-request', 'Invalid settings preview request');
+      }
+      const expectedCore = { ...requestedCore }, prior = provisionCores.get(target.alias);
+      if (prior && !sameCore(prior, expectedCore)) throw coreChanged();
+      const snapshot = entries.map(entry => ({ path: [...entry.path], sha256: entry.sha256 }));
+      const stdin = Buffer.from(JSON.stringify({ home, agentDir: posix.join(home, '.pi', 'agent'), paths: snapshot.map(entry => entry.path), maximum }));
+      if (stdin.length > 2 * 1024 * 1024) { stdin.fill(0); throw new HerdrError('invalid-bootstrap-request', 'Invalid settings preview request'); }
+      try {
+        const result = await bracket({ kind: 'bootstrap', peer: target }, undefined, DEFAULT_LIMITS.controlMs, async (signal, remainingMs, core) => {
+          if (!sameCore(core, expectedCore)) throw coreChanged();
+          const bytes = await client.exec(target.alias, [target.node, '--input-type=module-typescript', '-e', BOOTSTRAP_SETTINGS_SCRIPT],
+            { timeoutMs: remainingMs, maxBytes: 2 * 1024 * 1024, stdin, signal });
+          let reply: Record<string, unknown>;
+          try { reply = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))); }
+          catch { throw new HerdrError('invalid-bootstrap-reply', 'Invalid settings preview reply'); }
+          if (reply.version !== 1 || reply.kind !== 'settings-preview' || Object.keys(reply).length !== 3) throw new HerdrError('invalid-bootstrap-reply', 'Invalid settings preview reply');
+          if (Object.hasOwn(reply, 'error')) {
+            if (typeof reply.error !== 'string' || !['invalid-destination-settings', 'unsafe-destination', 'invalid-settings-preview', 'settings-preview-failed'].includes(reply.error)) {
+              throw new HerdrError('invalid-bootstrap-reply', 'Invalid settings preview reply');
+            }
+            throw new HerdrError(reply.error, 'Settings preview failed');
+          }
+          const value = object(reply.value);
+          if (Object.keys(value).sort().join(',') !== 'digests,fingerprint' || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint) ||
+              !Array.isArray(value.digests) || value.digests.length !== snapshot.length ||
+              value.digests.some(digest => digest !== null && (typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest)))) {
+            throw new HerdrError('invalid-bootstrap-reply', 'Invalid settings preview reply');
+          }
+          const changedKeys = snapshot.filter((entry, index) => entry.sha256 !== (value.digests as (string | null)[])[index])
+            .map(entry => entry.path.join('.')).sort();
+          return { fingerprint: value.fingerprint, changedKeys };
+        });
+        return result.value;
+      } catch (error) {
+        const allowed = new Set(['core-changed', 'core-unavailable', 'machine-not-found', 'machine-ambiguous', 'cli-timeout', 'cli-aborted',
+          'cli-exit', 'spawn-error', 'missing-hc', 'reply-too-large', 'invalid-bootstrap-reply', 'invalid-destination-settings', 'unsafe-destination',
+          'invalid-settings-preview', 'settings-preview-failed']);
+        const code = error instanceof HerdrError && allowed.has(error.code) ? error.code : 'settings-preview-failed';
+        const safe = new HerdrError(code, 'Settings preview failed');
+        if (error && typeof error === 'object' && 'retryable' in error && error.retryable === true) Object.assign(safe, { retryable: true });
+        throw safe;
+      } finally { stdin.fill(0); }
     },
     async claimIdentity(peer, operationId, requestedCore) {
       const target = bootstrapTarget(peer);

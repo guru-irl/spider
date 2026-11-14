@@ -88,6 +88,7 @@ import { renderSpiderResult, renderSpiderCall, renderSubagentDone, renderCommand
 import { modelReviewer } from "./memory-reviewer";
 import { createAdmissionPorts, protectAdmissionApi, registerAdmission } from "./roam/admission.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./roam/activation.js";
+import { createHostIntercomPorts, registerRoamIntercom } from "./roam/intercom.js";
 
 export { registerGlobalAction as registerAction };
 
@@ -874,7 +875,8 @@ async function dispatchWithDoctorSnapshot(
 
 export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
-  const admission = registerAdmission(hostPi as unknown as ExtensionAPI, createAdmissionPorts());
+  const admissionPorts = createAdmissionPorts();
+  const admission = registerAdmission(hostPi as unknown as ExtensionAPI, admissionPorts);
   // Pi reads context files after extension factories but before session_start.
   // This machine-level configuration is independent of the session admission gate.
   prepareManagedGuidance({ skipAgentsMd: process.env.VITEST === "true" });
@@ -883,7 +885,8 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
   let intercom: ReturnType<typeof registerIntercomOnce> | undefined;
   try {
-    intercom = registerIntercomOnce(activity.pi, ports.intercomBroker);
+  registerRoamIntercom(hostPi as unknown as ExtensionAPI, createHostIntercomPorts(admission));
+    registerIntercomOnce(hostPi as unknown as ExtensionAPI, ports.intercomBroker);
   } catch {
     hostPi.on("session_start", (_event, ctx) => {
       const message = "Intercom is unavailable in this session. Spider's other features still work.";

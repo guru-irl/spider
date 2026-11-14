@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import type { IntercomFederationClient } from "../../intercom/src/broker/client";
 import {
-  FEDERATION_FEATURE, addressKey, isRemoteSessionInfo, sameAddress,
+  FEDERATION_FEATURE, addressKey, isRemoteSessionInfo, receiptReleasesPayload, sameAddress,
   type FederationBlockers, type FederationBridge, type FederationDispatch, type FederationDispatchResult,
   type LocalPresence, type MessageControl, type MessageReceipt, type RemoteSessionInfo, type SessionAddress,
 } from "@spider/intercom/protocol";
@@ -639,13 +639,24 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     },
     async dispatch(input: FederationDispatch): Promise<FederationDispatchResult> {
       if (!started || stopped) return failed("bridge-unavailable");
+      const local = input.to.machineId === ports.machineId;
       const edge = lookup(input.to.machineId);
-      if (!edge) return failed("machine-not-enrolled");
+      if (!local && !edge) return failed("machine-not-enrolled");
       const currentHome = () => {
         const home = ports.authoritativeHome(input.to.address);
         return !home || home.sessionId === input.to.address.sessionId && home.machineId === input.to.machineId && home.epoch === input.to.homeEpoch;
       };
       if (!currentHome()) return failed("stale-home-epoch");
+      if (local) {
+        const endpoint = { address: input.to.address, machineId: ports.machineId, homeEpoch: input.to.homeEpoch, activationEpoch: input.to.activationEpoch };
+        const accepted = ports.store.acceptLocal({ from: input.from, endpoint, message: input.message });
+        if (accepted.kind === "refused") return failed(accepted.reason);
+        ports.onInbound?.({ id: accepted.identity.id, to: accepted.identity.to });
+        armExpiry();
+        return { delivery: "queued", retryable: false, outcomeKnown: true, acceptance: accepted.acceptance,
+          ...(accepted.receipt && receiptReleasesPayload(accepted.receipt) ? { consumption: accepted.receipt } : {}) };
+      }
+      if (!edge) return failed("machine-not-enrolled");
       let message = input.message;
       if (message.expectsReply) {
         if (input.to.reachability === "down" || input.to.reachability === "recovering" ||
@@ -665,14 +676,24 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       const accepted = ports.store.acceptOutbound({ from: input.from, endpoint, message, nextHop: edge.config.peer.machineId });
       if (accepted.kind === "refused") return failed(accepted.reason);
       armExpiry(); bridge.wake(edge.config.peer.machineId);
-      return { delivery: "queued", retryable: false, outcomeKnown: true, acceptance: accepted.acceptance };
+      return { delivery: "queued", retryable: false, outcomeKnown: true, acceptance: accepted.acceptance,
+          ...(accepted.receipt && receiptReleasesPayload(accepted.receipt) ? { consumption: accepted.receipt } : {}) };
     },
     receipt(from: SessionAddress, receipt: MessageReceipt) {
       if (!started || stopped) return bad("bridge-unavailable");
       const row = ports.store.retained("inbound", receipt.messageId);
       if (!row || !sameAddress(row.endpoint.address, from)) return bad("invalid-receipt");
       const frame = { from: row.endpoint, to: row.identity.from, digest: row.identity.digest, attempt: row.latestAttempt, receipt };
-      ports.store.settleReceipt({ queue: "inbound", peer: row.peer, frame }); armExpiry(); bridge.wake(row.peer);
+      ports.store.settleReceipt({ queue: "inbound", peer: row.peer, frame });
+      if (receipt.status === "not_injected" && ports.store.retained("inbound", receipt.messageId)?.pendingProof) {
+        ports.store.resolveUnknown({ queue: "inbound", id: receipt.messageId, digest: row.identity.digest, proof: frame });
+      }
+      if (row.peer === ports.machineId) {
+        ports.store.settleReceipt({ queue: "outbound", peer: row.peer, frame });
+        if (receipt.status === "not_injected" && ports.store.retained("outbound", receipt.messageId)?.pendingProof) ports.store.resolveUnknown({ queue: "outbound", id: receipt.messageId, digest: row.identity.digest, proof: frame });
+        ports.onReceipt?.(frame);
+      } else bridge.wake(row.peer);
+      armExpiry();
     },
     control(from: SessionAddress, to: SessionAddress, control: MessageControl) {
       if (!started || stopped) return bad("bridge-unavailable");

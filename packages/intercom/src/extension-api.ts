@@ -1,11 +1,12 @@
-import type { SessionInfo } from "./types.js";
+import type { DeliveryState, MessageReceipt, SessionInfo } from "./types.js";
+import type { AcceptanceEvidence } from "./protocol.js";
 
 export const INTERCOM_EXTENSION_REGISTER_EVENT = "intercom:extension-register";
 export const INTERCOM_EXTENSION_REGISTRY_READY_EVENT = "intercom:extension-registry-ready";
 export const INTERCOM_OUTBOX_REQUEST_EVENT = "intercom:outbox-request";
 export const INTERCOM_OUTBOX_RESULT_EVENT = "intercom:outbox-result";
 
-export type IntercomOutboxResultStatus = "sent" | "rejected" | "blocked" | "failed";
+export type IntercomOutboxResultStatus = "sent" | "rejected" | "blocked" | "failed" | "unknown";
 
 export type IntercomOutboxResultCode =
   | "user_cancelled"
@@ -39,6 +40,10 @@ export interface IntercomOutboxResultV1 {
   extensionName?: string;
   messageId?: string;
   detail?: string;
+  delivery?: DeliveryState;
+  outcomeKnown?: boolean;
+  acceptance?: AcceptanceEvidence;
+  consumption?: MessageReceipt;
 }
 
 export type IntercomOutboxResult = IntercomOutboxResultV1;

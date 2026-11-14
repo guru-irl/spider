@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { startTestBroker } from "../test-support.js";
+import { startTestBroker, stopTestBroker, testTmpDir } from "../test-support.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import { type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import net from "node:net";
@@ -9,6 +11,7 @@ import { IntercomClient, IntercomFederationClient } from "./client.js";
 import { FEDERATION_FEATURE, type FederationBridge, type RemoteSessionInfo } from "../protocol.js";
 
 let broker: ChildProcess;
+let fixtureHome: string;
 const clients: IntercomClient[] = [];
 let bridge: IntercomFederationClient;
 const frames: any[] = [], receipts: any[] = [], controls: any[] = [];
@@ -19,7 +22,8 @@ const adapter: FederationBridge = {
   control: (from, to, control) => { controls.push({ from, to, control }); },
 };
 beforeAll(async () => {
-  broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: process.env, stdio: ["ignore", "pipe", "pipe"] }, "suite");
+  fixtureHome = mkdtempSync(join(testTmpDir(), "h-"));
+  broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: fixtureHome }, stdio: ["ignore", "pipe", "pipe"] }, "suite");
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("fixture broker startup timed out")), 4000);
     broker.once("exit", code => { clearTimeout(timer); reject(new Error(`fixture broker exit ${code}`)); });
@@ -30,13 +34,17 @@ beforeAll(async () => {
   bridge.publishPresence([remote]);
 }, 5000);
 afterAll(async () => {
-  for (const client of clients) await client.disconnect();
-  await bridge?.close();
-  if (broker?.exitCode === null) { const exited = once(broker, "exit"); broker.kill(); await exited; }
+  try {
+    for (const client of clients) await client.disconnect();
+    await bridge?.close();
+  } finally {
+    if (broker) await stopTestBroker(broker);
+    if (fixtureHome) rmSync(fixtureHome, { recursive: true, force: true });
+  }
 }, 5000);
-async function session(id: string, name = id, homeEpoch?: number) {
+async function session(id: string, name = id, homeEpoch?: number, logicalId = id) {
   const client = new IntercomClient(); clients.push(client);
-  await client.connect({ cwd: "/workspace", model: "fixture", pid: process.pid, name, startedAt: 1, lastActivity: 1, activationEpoch: `${id}-activation`, ...(homeEpoch !== undefined ? { homeEpoch } : {}) }, id);
+  await client.connect({ address: { sessionId: logicalId, scopeId: null }, cwd: "/workspace", model: "fixture", pid: process.pid, name, startedAt: 1, lastActivity: 1, activationEpoch: `${id}-activation`, ...(homeEpoch !== undefined ? { homeEpoch } : {}) }, id);
   return client;
 }
 
@@ -150,4 +158,32 @@ it("a stale endpoint has no socket delivery and blockers expose no payloads", as
   const blockers = await bridge.inspectBlockers({ sessionId: "fenced", scopeId: null });
   expect(blockers).toMatchObject({ asks: [{ id: "waiting", from: { sessionId: "fenced", scopeId: null }, to: remote.address }], unobservedReceipts: ["waiting"] });
   expect(JSON.stringify(blockers)).not.toContain("private-synthetic");
+}, 5000);
+
+
+it("a locally homed target uses durable federation instead of a second mailbox", async () => {
+  const sender = await session("homed-sender"), target = await session("homed-target", "homed-target", 8);
+  let received = 0; target.on("message", () => received++);
+  const result = await sender.send("homed-target", { messageId: "homed-mail", text: "synthetic" });
+  expect(result, JSON.stringify(result)).toMatchObject({ delivery: "queued", acceptance: { accepted: true, durable: true } });
+  expect(frames.at(-1)).toMatchObject({ from: { sessionId: "homed-sender", scopeId: null }, to: { machineId: "machine-1", homeEpoch: 8 } });
+  expect(received).toBe(0);
+}, 5000);
+
+it("durable receipts reach a surviving waiter without transient broker route metadata", async () => {
+  const client = await session("receipt-after-restart"), observed: any[] = [];
+  client.onMessageReceipt((_from, receipt) => observed.push(receipt));
+  bridge.deliverReceipt(remote, { sessionId: "receipt-after-restart", scopeId: null }, { messageId: "ask-before-restart", status: "unknown", timestamp: 2, detail: "link-down" });
+  await bridge.inspectBlockers({ sessionId: "receipt-after-restart", scopeId: null }); await client.listSessions();
+  expect(observed).toEqual([{ messageId: "ask-before-restart", status: "unknown", timestamp: 2, detail: "link-down" }]);
+}, 5000);
+
+it.each(["runtime", "logical"])("local home dispatch preserves logical identity when addressed by %s id", async selector => {
+  const runtimeId = `runtime-${selector}`, logicalId = `logical-${selector}`;
+  const sender = await session(`alias-sender-${selector}`), target = await session(runtimeId, runtimeId, 9, logicalId); let received = 0;
+  target.on("message", () => received++);
+  const result = await sender.send(selector === "runtime" ? runtimeId : logicalId, { messageId: `alias-mail-${selector}`, text: "synthetic" });
+  expect(result).toMatchObject({ delivery: "queued", acceptance: { accepted: true, durable: true } });
+  expect(frames.at(-1)).toMatchObject({ to: { id: logicalId, address: { sessionId: logicalId, scopeId: null } }, message: { id: `alias-mail-${selector}` } });
+  expect(received).toBe(0);
 }, 5000);

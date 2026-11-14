@@ -28,10 +28,10 @@ import { ReplyTracker } from "./reply-tracker.js";
 const remote: RemoteSessionInfo = { remote: true, id: "peer", address: { sessionId: "peer", scopeId: null }, machineId: "machine-2", machineAlias: "box-1.invalid", homeEpoch: 1, activationEpoch: "remote-1", endpointEpoch: "remote-1", name: "helper", cwd: "/workspace", model: "fixture", startedAt: 1, lastActivity: 1 };
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); state.clients.length = 0; state.delivery = "queued"; vi.useRealTimers(); });
-async function fixture() {
+async function fixture(restored: any[] = []) {
   vi.useFakeTimers();
-  const handlers = new Map<string, any>(), tools: any[] = [], entries: any[] = [], messages: any[] = [], events = new EventEmitter();
-  const ctx = { cwd: "/workspace", hasUI: false, mode: "rpc", model: { id: "fixture" }, isIdle: () => true, sessionManager: { getSessionId: () => "own", getEntries: () => entries }, ui: {}, getContextUsage: () => undefined };
+  const handlers = new Map<string, any>(), tools: any[] = [], entries: any[] = restored, messages: any[] = [], events = new EventEmitter();
+  const ctx = { cwd: "/workspace", hasUI: false, mode: "rpc", model: { id: "fixture" }, isIdle: () => true, sessionManager: { getSessionId: () => "own", getSessionFile: () => "fixture.jsonl", getEntries: () => entries }, ui: {}, getContextUsage: () => undefined };
   const pi = { on: (name: string, fn: any) => handlers.set(name, fn), events: { on: (name: string, fn: any) => { events.on(name, fn); return () => events.off(name, fn); }, emit: (name: string, payload: any) => events.emit(name, payload) }, registerTool: (tool: any) => tools.push(tool), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, getSessionName: () => "own", getActiveTools: () => [], sendMessage: (message: any) => messages.push(message), appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data, id: `entry-${entries.length}` }) };
   state.sessions = [{ id: "own", name: "own", cwd: "/workspace", model: "fixture", pid: 1, startedAt: 1, lastActivity: 1 }, remote];
   extension(pi as any); handlers.get("session_start")({}, ctx); await vi.advanceTimersByTimeAsync(0);
@@ -203,4 +203,160 @@ it("broker reconnect preserves the source deadline", async () => {
   await vi.advanceTimersByTimeAsync(1000); expect(settled).toBe(false);
   await vi.advanceTimersByTimeAsync(598000);
   expect((await result).content[0].text).toMatch(/within 10 minutes/);
+}, 5000);
+
+
+it("every dispatch producer preserves one message id", async () => {
+  const f = await fixture(), sent: any[] = [], results: any[] = [];
+  f.client.on("send", (...args: any[]) => sent.push(args));
+  f.events.on("subagent:result-intercom-delivery", value => results.push(value));
+  f.events.emit("subagent:result-intercom", { to: "peer", message: "synthetic", requestId: "stable-relay" });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(sent[0][1].messageId).toBe("stable-relay");
+  expect(results[0]).toMatchObject({ messageId: "stable-relay", delivery: "queued", acceptance: { accepted: true, durable: true } });
+}, 5000);
+it("not_injected retries on next idle or start without stale queue duplication", async () => {
+  const f = await fixture(); f.ctx.isIdle = () => false;
+  f.client.emit("message", remote, { id: "idle-retry", timestamp: 1, content: { text: "synthetic" } });
+  await vi.advanceTimersByTimeAsync(0); expect(f.messages).toEqual([]);
+  f.ctx.isIdle = () => true;
+  f.handlers.get("agent_end")({}, f.ctx); await vi.advanceTimersByTimeAsync(0);
+  f.handlers.get("agent_end")({}, f.ctx); await vi.advanceTimersByTimeAsync(0);
+  expect(f.messages).toHaveLength(1); expect(f.messages[0].details.message.id).toBe("idle-retry");
+}, 5000);
+it("pending metadata survives reconnect without an await stack", async () => {
+  const restored = [{ type: "custom_message", customType: "intercom_message", id: "physical-old", details: { message: { id: "old-delivery" }, intercom: { sessionId: "own", activationEpoch: "old" } } }];
+  const f = await fixture(restored), receipts: any[] = [];
+  f.client.on("receipt", (value: any) => receipts.push(value));
+  f.client.emit("message", remote, { id: "old-delivery", timestamp: 1, content: { text: "synthetic" } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.messages).toEqual([]); expect(receipts.at(-1)).toMatchObject({ status: "injected", evidence: { entryId: "physical-old", activationEpoch: "old" } });
+}, 5000);
+it("recorded busy refusal never revives a settled ask", async () => {
+  const f = await fixture([{ type: "custom", customType: "intercom_ask_settled", id: "settled", data: { askId: "settled-ask", reason: "busy-refusal" } }]);
+  f.client.emit("message", remote, { id: "settled-ask", expectsReply: true, remainingMs: 1000, timestamp: 1, content: { text: "question" } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.messages).toEqual([]);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.entries.some(e => e.customType === "intercom_expired" && e.data.messageId === "settled-ask")).toBe(true);
+}, 5000);
+it("late reply after reload becomes ordinary threaded message", async () => {
+  const f = await fixture();
+  f.client.emit("message", remote, { id: "late-answer", replyTo: "old-ask", timestamp: 2, content: { text: "answer" } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.messages[0].details.message.replyTo).toBe("old-ask");
+  expect(f.messages[0].content).toContain("old-ask");
+}, 5000);
+it("known-down ask fails with link-down", async () => {
+  const f = await fixture();
+  f.client.send = async (_to: string, options: any) => ({ id: options.messageId, delivered: false, delivery: "failed", reason: "link-down", outcomeKnown: true, retryable: true, acceptance: { accepted: false, durable: false } });
+  const result = await f.execute({ action: "ask", to: "peer", message: "question" });
+  expect(result.content[0].text).toContain("Link down to box-1.invalid. This ask is no longer waiting for a reply.");
+  expect(result.details).toMatchObject({ reason: "link-down", edge: "box-1.invalid" });
+}, 5000);
+it("active ask survives first transient failure and retry success", async () => {
+  const f = await fixture(); let ask: any, settled = false;
+  f.client.on("send", (_to: string, options: any) => { ask = options; });
+  const result = f.execute({ action: "ask", to: "peer", message: "question" }).then((value: any) => { settled = true; return value; });
+  await vi.advanceTimersByTimeAsync(0);
+  f.client.emit("broker_message", { type: "presence_update", session: { ...remote, stale: true, reachability: "recovering" } });
+  await vi.advanceTimersByTimeAsync(1000); expect(settled).toBe(false);
+  f.client.emit("broker_message", { type: "presence_update", session: { ...remote, reachability: "live" } });
+  f.client.emit("message", remote, { id: "retry-answer", replyTo: ask.messageId, timestamp: 2, content: { text: "answer" } });
+  expect((await result).content[0].text).toContain("answer");
+}, 5000);
+it("active ask fails after first retry failure but later answer survives", async () => {
+  const f = await fixture(); let ask: any;
+  f.client.on("send", (_to: string, options: any) => { ask = options; });
+  const result = f.execute({ action: "ask", to: "peer", message: "question" });
+  await vi.advanceTimersByTimeAsync(0);
+  f.client.emit("broker_message", { type: "presence_update", session: { ...remote, stale: true, reachability: "down" } });
+  expect((await result).content[0].text).toContain("Link down to box-1.invalid. This ask is no longer waiting for a reply.");
+  f.client.emit("message", remote, { id: "orphan-answer", replyTo: ask.messageId, timestamp: 2, content: { text: "late answer" } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.messages.at(-1).details.message).toMatchObject({ id: "orphan-answer", replyTo: ask.messageId });
+}, 5000);
+
+
+it("a restored incoming question can be answered without reconstructing a waiter", async () => {
+  const question = { id: "restored-question", expectsReply: true, timestamp: 1, content: { text: "question" } };
+  const f = await fixture([{ type: "custom_message", customType: "intercom_message", id: "old-question-entry", details: { from: remote, message: question, intercom: { sessionId: "own", activationEpoch: "old" } } }]);
+  const sent: any[] = []; f.client.on("send", (...args: any[]) => sent.push(args));
+  const result = await f.execute({ action: "reply", replyTo: "restored-question", message: "answer" });
+  expect(result.details.replyTo).toBe("restored-question"); expect(sent[0][1].replyTo).toBe("restored-question");
+}, 5000);
+it("late replies tell the replier when the asker was no longer waiting", async () => {
+  const f = await fixture(); const receipts: any[] = []; f.client.on("receipt", (value: any) => receipts.push(value));
+  f.client.emit("message", remote, { id: "orphan-notice", replyTo: "old-ask", timestamp: 2, content: { text: "answer" } });
+  await vi.advanceTimersByTimeAsync(0);
+  f.entries.push({ type: "custom_message", customType: "intercom_message", id: "orphan-entry", details: f.messages[0].details });
+  f.handlers.get("message_end")({}, f.ctx);
+  expect(receipts.at(-1)).toMatchObject({ status: "injected", detail: "asker-no-longer-waiting" });
+}, 5000);
+it("explicit threaded replies remain possible after the live ask duration", () => {
+  const tracker = new ReplyTracker(1000);
+  tracker.recordIncomingMessage(remote, { id: "expired-wait", expectsReply: true, timestamp: 1, content: { text: "question" } }, 1);
+  expect(tracker.listPending(2000)).toEqual([]);
+  expect(tracker.resolveReplyTarget({ replyTo: "expired-wait" }, 2000).message.id).toBe("expired-wait");
+}, 5000);
+
+it("outbox acknowledgements preserve durable acceptance without claiming consumption", async () => {
+  state.delivery = "unknown"; const f = await fixture(), results: any[] = [];
+  f.events.on("intercom:outbox-result", result => results.push(result));
+  f.events.emit("intercom:outbox-request", { version: 1, requestId: "uncertain-outbox", extensionId: "fixture", extensionName: "Fixture", to: "peer", message: "synthetic" });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(results[0]).toMatchObject({ status: "unknown", messageId: "uncertain-outbox", delivery: "unknown", outcomeKnown: false, acceptance: { accepted: true, durable: true } });
+  expect(results[0].consumption).toBeUndefined();
+}, 5000);
+
+it("an undelivered busy question expires visibly and cannot drain from a stale pi queue", async () => {
+  const f = await fixture(); f.ctx.hasUI = true; f.ctx.isIdle = () => false;
+  f.client.emit("message", remote, { id: "expired-busy-question", expectsReply: true, remainingMs: 1000, timestamp: 1, content: { text: "question" } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.messages.filter(m => m.customType === "intercom_message")).toEqual([]);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.messages.some(m => m.customType === "intercom_notice" && m.details.messageId === "expired-busy-question")).toBe(true);
+  f.ctx.isIdle = () => true; f.handlers.get("agent_end")({}, f.ctx); await vi.advanceTimersByTimeAsync(0);
+  expect(f.messages.filter(m => m.customType === "intercom_message")).toEqual([]);
+}, 5000);
+
+it("restored undelivered question keeps its original deadline across reload", async () => {
+  const f = await fixture([{ type: "custom", customType: "intercom_pending", id: "pending-entry", data: { messageId: "restored-expiry", sessionId: "own", activationEpoch: "old", expectsReply: true, receivedAt: Date.now() - 2000, deadline: Date.now() - 1, from: remote } }]);
+  expect(f.entries.some(e => e.customType === "intercom_expired" && e.data.messageId === "restored-expiry")).toBe(true);
+  f.client.emit("message", remote, { id: "restored-expiry", expectsReply: true, remainingMs: 60000, timestamp: 1, content: { text: "question" } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.messages.filter(m => m.customType === "intercom_message")).toEqual([]);
+}, 5000);
+
+it("restored consumed evidence is not downgraded by competing pending metadata", async () => {
+  const f = await fixture([
+    { type: "custom_message", customType: "intercom_message", id: "physical", details: { from: remote, message: { id: "consumed", expectsReply: true, remainingMs: 1000, timestamp: Date.now(), content: { text: "synthetic" } }, intercom: { sessionId: "own", activationEpoch: "observed-generation" } } },
+    { type: "custom", customType: "intercom_pending", id: "pending", data: { messageId: "consumed", sessionId: "own", activationEpoch: "competing-generation", from: remote, expectsReply: true, receivedAt: Date.now(), deadline: Date.now() + 1000 } },
+  ]), receipts: any[] = [];
+  f.client.on("receipt", (r: any) => receipts.push(r));
+  f.client.emit("message", remote, { id: "consumed", timestamp: 1, content: { text: "synthetic" } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.messages).toEqual([]); expect(receipts.at(-1)).toMatchObject({ status: "injected", evidence: { entryId: "physical", activationEpoch: "observed-generation" } });
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(f.entries.some(e => e.customType === "intercom_expired" && e.data.messageId === "consumed")).toBe(false);
+}, 5000);
+
+it.each([false, true])("replier notice is idempotent including restored notices (%s)", async restored => {
+  const notice = { type: "custom", customType: "intercom_reply_notice", id: "notice", data: { messageId: "orphan-reply" } };
+  const f = await fixture(restored ? [notice] : []);
+  const frame = { type: "message_receipt", from: remote, receipt: { messageId: "orphan-reply", status: "injected", timestamp: 2, detail: "asker-no-longer-waiting", evidence: { kind: "entry", entryId: "reply-entry", sessionId: remote.id, activationEpoch: remote.activationEpoch } } };
+  f.client.emit("broker_message", frame); f.client.emit("broker_message", frame);
+  expect(f.entries.filter(e => e.customType === "intercom_reply_notice")).toHaveLength(1);
+}, 5000);
+
+it("unsupported brokers cannot turn a remote send into legacy local delivery", async () => {
+  const f = await fixture(), sent: any[] = [], outbox: any[] = [];
+  f.client.supportsFeature = () => false; f.client.on("send", (...args: any[]) => sent.push(args));
+  f.events.on("intercom:outbox-result", value => outbox.push(value));
+  const result = await f.execute({ action: "send", to: "peer", message: "synthetic" });
+  expect(result.content[0].text).toContain("unsupported-broker");
+  f.events.emit("subagent:result-intercom", { to: "peer", message: "synthetic", requestId: "unsupported" });
+  f.events.emit("intercom:outbox-request", { version: 1, requestId: "unsupported-outbox", extensionId: "fixture", extensionName: "Fixture", to: "peer", message: "synthetic" });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(sent).toEqual([]); expect(outbox[0]).toMatchObject({ status: "failed", detail: "unsupported-broker" });
 }, 5000);

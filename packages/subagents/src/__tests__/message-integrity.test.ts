@@ -6,6 +6,7 @@ import { openDbAt, type Db } from "@spider/db-core";
 import { sendIntercom, SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom";
 import { makeMessageHandler } from "../actions/message";
 import { MessageStore } from "../message-store";
+import { INTERCOM_RESOLVE_EVENT } from "@spider/intercom/protocol";
 
 const scratch = resolve(".spider/scratch/message-integrity");
 const roots: string[] = [];
@@ -101,3 +102,14 @@ describe("honest message delivery", () => {
     expect(f.globalDb.prepare("SELECT COUNT(*) n FROM message_mirror").get()).toEqual({ n: 0 });
   });
 });
+
+it.each(["unknown", "failed"] as const)("cross-session child results preserve remote %s evidence and original id", async delivery => {
+  const f = fixture(), bus = new EventEmitter(); let messageId: string | undefined;
+  f.db.prepare("INSERT INTO runs(id,session_id,agent,name,status,child_mode,intercom_session) VALUES (?,?,?,?,?,?,?)").run("fixture-child", "other-owner", "worker", "child", "running", "rpc", "target");
+  bus.on(INTERCOM_RESOLVE_EVENT, request => { request.handled = true; request.respond({ kind: "bridge", to: "target", address: { sessionId: "target", scopeId: null } }); });
+  bus.on(SUBAGENT_RESULT_INTERCOM_EVENT, request => { messageId = request.requestId; bus.emit(SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT, { requestId: messageId, messageId, delivered: false, delivery, outcomeKnown: delivery !== "unknown", retryable: false, acceptance: delivery === "unknown" ? { accepted: true, durable: true, location: "intercom:source" } : { accepted: false, durable: false } }); });
+  const pi = { events: { on: (name: string, handler: any) => { bus.on(name, handler); return () => bus.off(name, handler); }, emit: (name: string, data: any) => bus.emit(name, data) } };
+  const result = await makeMessageHandler()({ to: "fixture-child", message: "synthetic" }, { ...f, pi, sessionId: "local-owner" });
+  expect(result.isError).toBe(delivery === "failed");
+  expect(result.details).toMatchObject({ messageId, deliveryState: delivery, accepted: delivery === "unknown", acceptance: { accepted: delivery === "unknown", durable: delivery === "unknown" } });
+}, 5000);

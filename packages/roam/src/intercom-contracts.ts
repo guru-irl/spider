@@ -124,6 +124,8 @@ export interface IntercomEdgeState {
 export interface IntercomStore {
   edgeState(peer: MachineId, edgeEpoch: string): IntercomEdgeState;
   updateEdgeState(peer: MachineId, edgeEpoch: string, change: (state: IntercomEdgeState) => IntercomEdgeState): IntercomEdgeState;
+  /** Atomic same-machine source and inbox admission, with no second broker mailbox. */
+  acceptLocal(input: { from: SessionAddress; endpoint: SessionEndpoint; message: Message }): IntercomAcceptance;
   acceptOutbound(input: OutboundMessage): IntercomAcceptance;
   /** The transport authenticates the peer. Resume owners come from the local authoritative home lookup, not the wire. */
   acceptInbound(input: { peer: MachineId; frame: IntercomFrame; resume?: { cursor: IntercomPairResume; owner: Home | null } }): IntercomAcceptance;

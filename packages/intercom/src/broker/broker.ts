@@ -210,6 +210,7 @@ class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
   private bridgeSocket: net.Socket | null = null;
   private bridgeMachineId: string | null = null;
+  private bridgeMachineAlias: string | null = null;
   private detachBridge: (() => void) | null = null;
   private bridgePending = new Map<string, { resolve(value: FederationDispatchResult): void; timer: NodeJS.Timeout }>();
   private helperToken: string | null = null;
@@ -466,8 +467,7 @@ class IntercomBroker {
           if (!isMessageReceipt(message.receipt)) throw new Error("invalid-federation-receipt");
           const route = this.remoteRoutes.get(message.receipt.messageId);
           // The durable bridge can outlive this broker's transient route cache.
-          if (!route) return;
-          if (addressKey(route.from) !== addressKey(message.to) || addressKey(route.to.address) !== addressKey(message.from.address)) throw new Error("invalid-federation-receipt-route");
+          if (route && (addressKey(route.from) !== addressKey(message.to) || addressKey(route.to.address) !== addressKey(message.from.address))) throw new Error("invalid-federation-receipt-route");
           // Apply evidence without reflecting the same receipt back to the bridge.
           this.federation.observeReceipt(message.from.address, message.receipt);
           if (target?.federation) writeMessage(target.socket, { type: "message_receipt", from: message.from, receipt: message.receipt });
@@ -575,7 +575,7 @@ class IntercomBroker {
         receipt: (from, receipt) => this.writeBridge({ type: "federation_receipt", from, receipt }),
         control: (from, to, control) => this.writeBridge({ type: "federation_control", from, to, control }),
       });
-      this.bridgeSocket = socket; this.bridgeMachineId = clientMessage.machineId;
+      this.bridgeSocket = socket; this.bridgeMachineId = clientMessage.machineId; this.bridgeMachineAlias = clientMessage.machineAlias;
       setKey("federation-bridge");
       if (this.shutdownTimer) { clearTimeout(this.shutdownTimer); this.shutdownTimer = null; }
       this.writeBridge({ type: "federation_registered", features: [FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE] });
@@ -849,14 +849,21 @@ class IntercomBroker {
           try { resolved = this.federation.resolve(clientMessage.to as string, fromSession.scopeId ?? null, [...this.sessions.values()].filter(session => sameScope(session.scopeId, fromSession.scopeId)).map(session => session.info)); }
           catch { this.writeDeliveryFailure(socket, message.id, "Multiple sessions match the target. Use the session ID.", "E_AMBIGUOUS_TARGET"); break; }
         }
+        const localHome = resolved && !resolved.remote && resolved.homeEpoch != null ? resolved : null;
+        if (localHome && !this.bridgeMachineId) { this.writeDeliveryFailure(socket, message.id, "bridge-unavailable", "E_FEDERATION_REFUSED"); break; }
+        if (localHome) resolved = { remote: true, id: sessionAddress(localHome, fromSession.scopeId ?? null).sessionId, address: sessionAddress(localHome, fromSession.scopeId ?? null),
+          machineId: this.bridgeMachineId!, machineAlias: this.bridgeMachineAlias!, homeEpoch: localHome.homeEpoch!,
+          activationEpoch: localHome.activationEpoch ?? localHome.endpointEpoch!, endpointEpoch: localHome.activationEpoch ?? localHome.endpointEpoch!,
+          cwd: localHome.cwd, model: localHome.model, startedAt: localHome.startedAt, lastActivity: localHome.lastActivity,
+          ...(localHome.name ? { name: localHome.name } : {}) };
         if (resolved?.remote) {
-          if (hasTargetId && (clientMessage.targetId !== resolved.id || clientMessage.targetEpoch !== resolved.endpointEpoch)) { this.writeDeliveryFailure(socket, message.id, "Target endpoint changed before delivery", "E_TARGET_REBOUND", true); break; }
+          if (hasTargetId && (clientMessage.targetId !== (localHome?.id ?? resolved.id) || clientMessage.targetEpoch !== (localHome?.endpointEpoch ?? resolved.endpointEpoch))) { this.writeDeliveryFailure(socket, message.id, "Target endpoint changed before delivery", "E_TARGET_REBOUND", true); break; }
           const target = resolved;
           const from = sessionAddress(fromSession.info, fromSession.scopeId ?? null);
           const inboundAsk = message.replyTo ? this.inboundRemoteRoutes.get(message.replyTo) : undefined;
           if (message.replyTo && inboundAsk && (inboundAsk.from.id !== target.id || addressKey(inboundAsk.to) !== addressKey(from))) { this.writeDeliveryFailure(socket, message.id, "Reply target does not match the pending ask", "E_REPLY_TARGET"); break; }
           this.remoteRoutes.set(message.id, { from, to: target });
-          void this.federation.dispatch(from, target, message).then(result => {
+          void (localHome ? this.federation.dispatchLocal(from, target, message) : this.federation.dispatch(from, target, message)).then(result => {
             if (fromSession.socket.destroyed) return;
             const success = result.delivery === "queued" || result.delivery === "socket_delivered";
             writeMessage(socket, { type: success ? "delivered" : "delivery_failed", messageId: message.id, ...result, ...(!success ? { reason: result.reason ?? "Remote delivery was not confirmed" } : {}) });

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { once } from "node:events";
 import net from "node:net";
 import type { ChildProcess } from "node:child_process";
-import { startTestBroker, stopTestBroker } from "../test-support.js";
+import { startTestBroker, stopTestBroker, testBrokerEnv } from "../test-support.js";
 import { getAgentDirPath, getBrokerSocketPath } from "./paths.js";
 import { createMessageReader, writeMessage } from "./framing.js";
 import { IntercomFederationClient } from "./client.js";
@@ -10,7 +10,7 @@ import { FEDERATION_FEATURE, type FederationBridge } from "../protocol.js";
 
 let broker: ChildProcess;
 beforeAll(async () => {
-  broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: process.env, stdio: ["ignore", "pipe", "pipe"] }, "suite");
+  broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: testBrokerEnv(), stdio: ["ignore", "pipe", "pipe"] }, "suite");
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("fixture broker startup timed out")), 4000);
     broker.once("exit", code => { clearTimeout(timer); reject(new Error(`fixture broker exit ${code}`)); });

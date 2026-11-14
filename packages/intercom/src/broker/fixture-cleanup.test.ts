@@ -1,10 +1,10 @@
 import { expect, it, vi } from "vitest";
+import * as childProcess from "node:child_process";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
-import * as testSupport from "../test-support.js";
-import { startTestBroker, stopTestBroker, assertNoTestBrokers, testTmpDir, getTestBrokerOwnership, readTestProcessStart } from "../test-support.js";
+import { startTestBroker, stopTestBroker, assertNoTestBrokers, testTmpDir, testBrokerEnv, getTestBrokerOwnership, readTestProcessStart } from "../test-support.js";
 
 vi.mock("node:child_process", async original => {
   const actual = await original<typeof import("node:child_process")>();
@@ -16,25 +16,28 @@ vi.mock("node:fs", async original => {
 });
 
 it("a broker fixture refuses outside and symlinked roots before spawn", () => {
-  expect(() => startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: "/outside-fixture" } })).toThrow(/fixture/);
-  expect(() => startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: testTmpDir(), PI_CODING_AGENT_DIR: "/outside-fixture" } })).toThrow(/fixture/);
+  const launch = vi.spyOn(childProcess, "spawn").mockImplementation(() => { throw new Error("blocked process launch"); });
   const root = mkdtempSync(join(testTmpDir(), "owned-"));
   try {
+    expect(() => startTestBroker(process.execPath, [], { env: testBrokerEnv() })).toThrow("blocked process launch");
+    expect(launch).toHaveBeenCalledOnce(); launch.mockClear();
+    expect(() => startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: "/outside-fixture" } })).toThrow(/fixture/);
+    expect(() => startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: testTmpDir(), PI_CODING_AGENT_DIR: "/outside-fixture" } })).toThrow(/fixture/);
     const target = join(root, "target"), link = join(root, "link"); mkdirSync(target); symlinkSync(target, link);
     expect(() => startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: link } })).toThrow(/symlink|fixture/);
     expect(() => startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: testTmpDir(), PI_CODING_AGENT_DIR: link } })).toThrow(/symlink|fixture/);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+    expect(launch).not.toHaveBeenCalled();
+  } finally { launch.mockRestore(); rmSync(root, { recursive: true, force: true }); }
 }, 5000);
 
 it("runs a broker with a fixture home when the parent home is outside it", async () => {
-  const makeEnv = (testSupport as { testBrokerEnv?: () => NodeJS.ProcessEnv }).testBrokerEnv;
-  expect(makeEnv).toBeTypeOf("function");
+  expect(testBrokerEnv).toBeTypeOf("function");
   const previousHome = process.env.HOME, previousProfile = process.env.USERPROFILE;
   process.env.HOME = "/outside-fixture";
   process.env.USERPROFILE = "/outside-fixture";
   try {
     const child = startTestBroker(process.execPath, ["-e", "process.stdout.write(JSON.stringify([process.env.HOME, process.env.USERPROFILE, process.env.PI_CODING_AGENT_DIR])); process.stdin.resume()"],
-      { env: makeEnv!(), stdio: ["pipe", "pipe", "pipe"] });
+      { env: testBrokerEnv(), stdio: ["pipe", "pipe", "pipe"] });
     try {
       const [data] = await once(child.stdout, "data");
       const [home, profile, agent] = JSON.parse(String(data)) as string[];
@@ -50,7 +53,7 @@ it("runs a broker with a fixture home when the parent home is outside it", async
 
 it("records a pid and process start identity before admitting a broker", async () => {
   expect(getTestBrokerOwnership).toBeTypeOf("function");
-  const broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: process.env, stdio: "ignore" });
+  const broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: testBrokerEnv(), stdio: "ignore" });
   try {
     const ownership = getTestBrokerOwnership(broker)!;
     expect(ownership.pid).toBe(broker.pid);
@@ -62,7 +65,7 @@ it("records a pid and process start identity before admitting a broker", async (
 it("does not signal a recorded pid whose native start identity changed", async () => {
   const nativeFs = await vi.importActual<typeof import("node:fs")>("node:fs");
   const nativeChildren = await vi.importActual<typeof import("node:child_process")>("node:child_process");
-  const broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: process.env, stdio: "ignore" });
+  const broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: testBrokerEnv(), stdio: "ignore" });
   const signal = vi.spyOn(broker, "kill");
   try {
     if (process.platform === "linux") vi.mocked(readFileSync).mockReturnValue(`${broker.pid} (node) S ${"0 ".repeat(18)}999999999999999`);
@@ -98,11 +101,11 @@ it("leaves a live pi-intercom argv decoy unowned and unsignalled", async () => {
 let failedTestBroker: ReturnType<typeof startTestBroker>;
 let timedOutTestBroker: ReturnType<typeof startTestBroker>;
 it.fails("a failing broker test still runs owned fixture cleanup", () => {
-  failedTestBroker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: process.env, stdio: "ignore" });
+  failedTestBroker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: testBrokerEnv(), stdio: "ignore" });
   throw new Error("synthetic test failure");
 }, 5000);
 it.fails("a timed-out broker test still runs owned fixture cleanup", async () => {
-  timedOutTestBroker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: process.env, stdio: "ignore" });
+  timedOutTestBroker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: testBrokerEnv(), stdio: "ignore" });
   await new Promise(() => {});
 }, 100);
 it("failed and timed-out tests cannot leave brokers behind", () => {
@@ -114,7 +117,7 @@ it("failed and timed-out tests cannot leave brokers behind", () => {
 }, 5000);
 
 it("the broker teardown guard rejects a surviving suite-owned process", async () => {
-  const broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+  const broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: testBrokerEnv(), stdio: ["ignore", "pipe", "pipe"] });
   try {
     await new Promise<void>((resolve, reject) => {
       broker.once("error", reject);

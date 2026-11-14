@@ -4,12 +4,12 @@ import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { assertTestConfigPath, openDb, openDbReadOnly, type Db } from "@spider/db-core";
 import type { Home } from "@spider/db-core/roam/types";
 import {
-  addressKey, isMessageReceipt, isSessionAddress, isSessionEndpoint, receiptReleasesPayload, sameAddress,
+  addressKey, isMessageReceipt, isRemoteSessionInfo, isSessionAddress, isSessionEndpoint, receiptReleasesPayload, sameAddress,
   type ConsumptionEvidence, type FederationBlockers, type Message, type MessageReceipt, type SessionAddress, type SessionEndpoint,
 } from "@spider/intercom/protocol";
 import {
   INTERCOM_EXCHANGE_BYTES, INTERCOM_HOP_ALLOWANCE_MS, INTERCOM_PAYLOAD_MS, INTERCOM_QUEUE_BYTES, INTERCOM_QUEUE_MESSAGES,
-  type IntercomAcceptance, type IntercomFrame, type IntercomIdentity, type IntercomMessageFrame, type IntercomQueue,
+  type IntercomAcceptance, type IntercomEdgeState, type IntercomFrame, type IntercomIdentity, type IntercomMessageFrame, type IntercomQueue,
   type IntercomPairResume, type IntercomReceiptFrame, type IntercomReceiptInput, type IntercomState, type IntercomStore, type IntercomStoreOptions, type OutboundMessage,
   type RebindProof, type RetainedIntercom,
 } from "./intercom-contracts";
@@ -26,17 +26,23 @@ const schemaColumns: Readonly<Record<string, readonly string[]>> = {
   intercom_cursors: ["direction", "from_key", "to_key", "sequence"],
   intercom_receipts: ["receipt_key", "id", "peer", "frame_json", "acknowledged", "sent"],
   intercom_resumptions: ["from_key", "to_key", "peer", "resume_json"],
+  intercom_edge_state: ["peer", "edge_epoch", "state_json"],
 };
 const schemaKeys: Readonly<Record<string, readonly (readonly string[])[]>> = {
   intercom_messages: [["id"], ["from_key", "to_key", "pair_sequence"]],
   intercom_copies: [["direction", "id"]], intercom_cursors: [["direction", "from_key", "to_key"]],
   intercom_receipts: [["receipt_key"]], intercom_resumptions: [["from_key", "to_key"]],
+  intercom_edge_state: [["peer", "edge_epoch"]],
 };
-function validateSchema(db: Db, tables: readonly { name: string }[]): void {
-  if (tables.length !== Object.keys(schemaColumns).length || tables.some(row => !(row.name in schemaColumns))) {
+function validateSchema(db: Db, tables: readonly { name: string }[], version: number): void {
+  const names = new Set(tables.map(row => row.name));
+  if (tables.some(row => !(row.name in schemaColumns)) || Object.keys(schemaColumns).some(name => name !== "intercom_edge_state" && !names.has(name)) ||
+      (version === 2) !== names.has("intercom_edge_state")) {
     throw new Error("Invalid or incomplete intercom store schema");
   }
   for (const [table, expected] of Object.entries(schemaColumns)) {
+    // Databases created by 3.6b acquire this additive table on their next open.
+    if (table === "intercom_edge_state" && !names.has(table)) continue;
     const columns = db.prepare("SELECT name FROM pragma_table_info(?) ORDER BY cid").all(table) as { name: string }[];
     if (JSON.stringify(columns.map(column => column.name)) !== JSON.stringify(expected)) throw new Error("Invalid or incomplete intercom store schema");
     const required = schemaKeys[table] ?? [];
@@ -98,10 +104,10 @@ function prepareFile(file: string, machineId: string): void {
     if (tables.some(row => !row.name.startsWith("intercom_"))) throw new Error("Intercom store must use a separate database");
     if (tables.length && !tables.some(row => row.name === "intercom_meta")) throw new Error("Invalid intercom store metadata");
     if (tables.length) {
-      validateSchema(probe, tables);
       const meta = probe.prepare("SELECT machine_id, version FROM intercom_meta WHERE id=1").get() as { machine_id: string; version: number } | undefined;
       if (!meta || meta.machine_id !== machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1) throw new Error("Unsupported intercom store version");
+      if (meta.version !== 1 && meta.version !== 2) throw new Error("Unsupported intercom store version");
+      validateSchema(probe, tables, meta.version);
     }
   } finally { probe.close(); }
   if (process.platform !== "win32") {
@@ -267,14 +273,18 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           from_key TEXT NOT NULL, to_key TEXT NOT NULL, peer TEXT NOT NULL, resume_json TEXT NOT NULL,
           PRIMARY KEY(from_key,to_key)
         );
+        CREATE TABLE IF NOT EXISTS intercom_edge_state (
+          peer TEXT NOT NULL, edge_epoch TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY(peer,edge_epoch)
+        );
         CREATE INDEX IF NOT EXISTS intercom_copy_peer ON intercom_copies(direction,peer,state);
         CREATE INDEX IF NOT EXISTS intercom_message_pair ON intercom_messages(from_key,to_key,pair_sequence);
         CREATE INDEX IF NOT EXISTS intercom_receipt_peer ON intercom_receipts(peer,acknowledged);
       `);
-      db.prepare("INSERT OR IGNORE INTO intercom_meta(id,machine_id,version,last_clock) VALUES(1,?,1,?)").run(options.machineId, firstNow);
+      db.prepare("INSERT OR IGNORE INTO intercom_meta(id,machine_id,version,last_clock) VALUES(1,?,2,?)").run(options.machineId, firstNow);
       const meta = db.prepare("SELECT machine_id,version,last_clock FROM intercom_meta WHERE id=1").get() as MetaRow;
       if (!meta || meta.machine_id !== options.machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
+      if (meta.version !== 1 && meta.version !== 2 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
+      if (meta.version === 1) db.prepare("UPDATE intercom_meta SET version=2 WHERE id=1").run();
     }).immediate();
     checkpoint();
   } catch (error) { db.close(); throw error; }
@@ -319,6 +329,14 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     if (row.is_ask) db.prepare("UPDATE intercom_messages SET ask_state='expired' WHERE id=? AND ask_state='open'").run(row.id);
     if (row.direction === "inbound") saveReceipt(row, { from: endpoint, to: identity.from, digest: identity.digest, receipt: expired });
     return true;
+  };
+  const cancelRow = (row: CopyRow, at: number): void => {
+    if (["injected", "matched_waiter", "answered", "expired", "cancelled"].includes(row.state)) return;
+    const cancellation: MessageReceipt = { messageId: row.id, status: "cancelled", timestamp: at };
+    db.prepare("UPDATE intercom_copies SET state='cancelled',unknown_outcome=?,receipt_json=? WHERE direction=? AND id=?")
+      .run(row.unknown_outcome || row.transmitted || row.state === "unknown" ? 1 : 0, JSON.stringify(cancellation), row.direction, row.id);
+    if (row.is_ask) db.prepare("UPDATE intercom_messages SET ask_state='cancelled' WHERE id=? AND ask_state='open'").run(row.id);
+    if (row.direction === "inbound") saveReceipt(row, { from: readEndpoint(row), to: readIdentity(row).from, digest: row.digest, receipt: cancellation });
   };
   const expire = (): Array<{ queue: IntercomQueue; id: string }> => {
     ensureCheckpoint();
@@ -475,10 +493,11 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     return release;
   };
 
-  const pending = ((input: { kind: "outbound"; peer: string; hopBudgetMs: number; maxBytes?: number } | { kind: "inbound"; address: SessionAddress } | { kind: "receipts"; peer: string }) => {
+  const pending = ((input: { kind: "outbound"; peer: string; hopBudgetMs: number; maxBytes?: number; skipIds?: readonly string[] } | { kind: "inbound"; address: SessionAddress } | { kind: "receipts"; peer: string; maxBytes?: number }) => {
     ensureCheckpoint();
     if (input.kind === "receipts") {
-      if (!isMachineId(input.peer)) throw new Error("Invalid intercom peer");
+      if (!isMachineId(input.peer) || input.maxBytes !== undefined && (!safeInteger(input.maxBytes) || input.maxBytes > INTERCOM_EXCHANGE_BYTES - 1024)) throw new Error("Invalid intercom peer or receipt budget");
+      const budget = input.maxBytes ?? INTERCOM_EXCHANGE_BYTES - 1024;
       return db.raw.transaction(() => {
         const rows = db.prepare("SELECT receipt_key,frame_json FROM intercom_receipts WHERE peer=? AND acknowledged=0 ORDER BY rowid LIMIT 1024")
           .all(input.peer) as { receipt_key: string; frame_json: string }[];
@@ -486,7 +505,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         for (const row of rows) {
           const size = Buffer.byteLength(row.frame_json, "utf8") + 1;
           if (size > INTERCOM_EXCHANGE_BYTES - 1024) throw new Error("Intercom receipt size limit exceeded");
-          if (bytes + size > INTERCOM_EXCHANGE_BYTES - 1024) break;
+          if (bytes + size > budget) break;
           bytes += size; frames.push(parseStored<IntercomReceiptFrame>(row.frame_json));
           db.prepare("UPDATE intercom_receipts SET sent=1 WHERE receipt_key=?").run(row.receipt_key);
         }
@@ -504,16 +523,20 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       return rows.filter(row => readEndpoint(row).machineId === options.machineId).map(readIdentity);
     }
     if (!isMachineId(input.peer) || !safeInteger(input.hopBudgetMs, 1) ||
-        input.maxBytes !== undefined && (!safeInteger(input.maxBytes) || input.maxBytes > INTERCOM_EXCHANGE_BYTES - 1024)) throw new Error("Invalid intercom handoff budget or peer");
-    const budget = input.maxBytes ?? INTERCOM_EXCHANGE_BYTES - 1024;
+        input.maxBytes !== undefined && (!safeInteger(input.maxBytes) || input.maxBytes > INTERCOM_EXCHANGE_BYTES - 1024) ||
+        input.skipIds !== undefined && (!Array.isArray(input.skipIds) || !input.skipIds.every(nonempty))) throw new Error("Invalid intercom handoff budget or peer");
+    const budget = input.maxBytes ?? INTERCOM_EXCHANGE_BYTES - 1024, skipped = new Set(input.skipIds ?? []);
     const at = now(); let deleted = false;
     const result = db.raw.transaction(() => {
       const rows = db.prepare(`${selectCopy} WHERE c.direction='outbound' AND c.peer=? AND (
         (c.state='queued' AND c.payload_json IS NOT NULL AND coalesce(c.ack_kind,'')!='message') OR
         (c.state IN ('expired','cancelled') AND coalesce(c.ack_kind,'')!='tombstone'))
         ORDER BY m.from_key,m.to_key,m.pair_sequence LIMIT 1024`).all(input.peer) as CopyRow[];
-      const frames: IntercomFrame[] = []; let bytes = 0;
+      const frames: IntercomFrame[] = [], blocked = new Set<string>(); let bytes = 0;
       for (const row of rows) {
+        const pair = JSON.stringify([row.from_key, row.to_key]);
+        if (blocked.has(pair)) continue;
+        if (skipped.has(row.id)) { blocked.add(pair); continue; }
         let next = row, expires = false;
         if (row.state === "queued") {
           const lifetime = row.deadline_at - at - input.hopBudgetMs - INTERCOM_HOP_ALLOWANCE_MS;
@@ -537,7 +560,46 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     return result;
   }) as IntercomStore["pending"];
 
+  const edgeKey = (peer: string, edgeEpoch: string): void => {
+    if (!isMachineId(peer) || peer === options.machineId || !nonempty(edgeEpoch) || edgeEpoch.length > 256) throw new Error("Invalid intercom edge");
+  };
+  const validEdge = (value: unknown, peer: string, edgeEpoch: string): value is IntercomEdgeState => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const state = value as IntercomEdgeState;
+    const fields = ["peer", "edgeEpoch", "outbound", "inbound", "status", "outageSince", "reason", "lastSuccess", "failures", "roster"];
+    if (Object.keys(state).length !== fields.length || !fields.every(key => Object.hasOwn(state, key)) || state.peer !== peer || state.edgeEpoch !== edgeEpoch) return false;
+    const counter = (item: unknown): item is { poll: number; push: number } => !!item && typeof item === "object" && !Array.isArray(item) &&
+      Object.keys(item).length === 2 && safeInteger((item as { poll: unknown }).poll) && safeInteger((item as { push: unknown }).push);
+    return counter(state.outbound) && counter(state.inbound) && ["unknown", "live", "recovering", "down"].includes(state.status) &&
+      (state.outageSince === null || safeInteger(state.outageSince)) && (state.lastSuccess === null || safeInteger(state.lastSuccess)) &&
+      (state.reason === null || typeof state.reason === "string" && /^[a-z0-9_-]{1,64}$/.test(state.reason)) && safeInteger(state.failures) &&
+      Array.isArray(state.roster) && state.roster.every(entry => isRemoteSessionInfo(entry) && isMachineId(entry.machineId)) &&
+      Buffer.byteLength(JSON.stringify(state)) <= INTERCOM_EXCHANGE_BYTES;
+  };
+  const edgeState = (peer: string, edgeEpoch: string): IntercomEdgeState => {
+    edgeKey(peer, edgeEpoch);
+    const row = db.prepare("SELECT state_json FROM intercom_edge_state WHERE peer=? AND edge_epoch=?").get(peer, edgeEpoch) as { state_json: string } | undefined;
+    if (!row) return { peer, edgeEpoch, outbound: { poll: 0, push: 0 }, inbound: { poll: 0, push: 0 }, status: "unknown",
+      outageSince: null, reason: null, lastSuccess: null, failures: 0, roster: [] };
+    const state = parseStored<unknown>(row.state_json);
+    if (!validEdge(state, peer, edgeEpoch)) throw new Error("Invalid intercom edge metadata");
+    return state;
+  };
+
   const store: IntercomStore = {
+    edgeState,
+    updateEdgeState(peer, edgeEpoch, change): IntercomEdgeState {
+      edgeKey(peer, edgeEpoch);
+      if (typeof change !== "function") throw new Error("Invalid intercom edge update");
+      return db.raw.transaction(() => {
+        const before = edgeState(peer, edgeEpoch), candidate = change(JSON.parse(JSON.stringify(before)) as IntercomEdgeState);
+        if (!validEdge(candidate, peer, edgeEpoch) || candidate.outbound.poll < before.outbound.poll || candidate.outbound.push < before.outbound.push ||
+            candidate.inbound.poll < before.inbound.poll || candidate.inbound.push < before.inbound.push) throw new Error("Invalid intercom edge update");
+        db.prepare(`INSERT INTO intercom_edge_state(peer,edge_epoch,state_json) VALUES(?,?,?)
+          ON CONFLICT(peer,edge_epoch) DO UPDATE SET state_json=excluded.state_json`).run(peer, edgeEpoch, JSON.stringify(candidate));
+        return candidate;
+      }).immediate();
+    },
     acceptOutbound(input: OutboundMessage): IntercomAcceptance {
       if (!isMachineId(input.nextHop)) throw new Error("Invalid intercom peer");
       expire(); const at = now();
@@ -550,7 +612,8 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         if (error instanceof Error && /size limit/.test(error.message)) return { kind: "refused", reason: "message-too-large" };
         throw error;
       }
-      return db.raw.transaction(() => {
+      let deleted = false;
+      const result = db.raw.transaction(() => {
         const known = identityRow(candidate.identity.id);
         if (known && !sameIdentity({ ...candidate.identity, sequence: known.pair_sequence }, readIdentity(known))) throw new Error("Intercom message ID or digest conflict");
         if (known && "frame" in input && !sameIdentity(candidate.identity, readIdentity(known))) throw new Error("Intercom message ID or sequence conflict");
@@ -558,7 +621,15 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         if (prior) {
           if (!sameEndpoint(readEndpoint(prior), candidate.endpoint) || prior.peer !== input.nextHop) throw new Error("Intercom message ID route conflict");
           if (candidate.kind === "message") tighten(prior, candidate, at);
-          return accepted("duplicate", readIdentity(prior), prior);
+          else if ("frame" in input) {
+            const inbound = copy("inbound", candidate.identity.id);
+            if (!inbound || !sameIdentity(readIdentity(inbound), candidate.identity) || !sameEndpoint(readEndpoint(inbound), candidate.endpoint)) {
+              throw new Error("Intercom relay requires accepted inbox evidence");
+            }
+            if (candidate.reason === "cancelled") cancelRow(prior, at);
+            else if (!["injected", "matched_waiter", "answered", "expired"].includes(prior.state)) deleted = expireRow(prior, at) || deleted;
+          }
+          return accepted("duplicate", readIdentity(prior), copy("outbound", candidate.identity.id));
         }
         if ("frame" in input) {
           const inbound = copy("inbound", candidate.identity.id);
@@ -598,6 +669,8 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         insertCopy("outbound", candidate, input.nextHop, at); writeCursor("outbound", candidate.identity);
         return accepted("accepted", candidate.identity);
       }).immediate();
+      if (deleted) checkpointDeletion();
+      return result;
     },
     acceptInbound(input): IntercomAcceptance {
       if (!isMachineId(input.peer)) throw new Error("Invalid intercom peer");
@@ -792,15 +865,39 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       db.raw.transaction(() => {
         const row = copy(input.queue, input.id);
         if (!row || !sameAddress(readIdentity(row).from, input.from) || !sameAddress(readIdentity(row).to, input.to)) throw new Error("Intercom cancellation route mismatch");
-        if (["injected", "matched_waiter", "answered", "expired", "cancelled"].includes(row.state)) return;
-        const cancellation: MessageReceipt = { messageId: row.id, status: "cancelled", timestamp: at };
-        db.prepare("UPDATE intercom_copies SET state='cancelled',unknown_outcome=?,receipt_json=? WHERE direction=? AND id=?")
-          .run(row.unknown_outcome || row.transmitted || row.state === "unknown" ? 1 : 0, JSON.stringify(cancellation), input.queue, input.id);
-        if (row.is_ask) db.prepare("UPDATE intercom_messages SET ask_state='cancelled' WHERE id=? AND ask_state='open'").run(input.id);
-        if (input.queue === "inbound") saveReceipt(row, { from: readEndpoint(row), to: input.from, digest: row.digest, receipt: cancellation });
+        cancelRow(row, at);
       }).immediate();
     },
     expire,
+    nextExpiry(): number | null {
+      ensureCheckpoint();
+      const row = db.prepare(`SELECT min(c.deadline_at) AS deadline FROM intercom_copies c JOIN intercom_messages m ON m.id=c.id
+        WHERE c.payload_json IS NOT NULL OR (m.is_ask=1 AND m.ask_state='open')`).get() as { deadline: number | null };
+      if (row.deadline !== null && !safeInteger(row.deadline)) throw new Error("Invalid intercom deadline metadata");
+      return row.deadline;
+    },
+    hasPending(peer): boolean {
+      if (!isMachineId(peer)) throw new Error("Invalid intercom peer");
+      expire();
+      const row = db.prepare(`SELECT EXISTS(SELECT 1 FROM intercom_copies WHERE direction='outbound' AND peer=? AND
+        ((state='queued' AND payload_json IS NOT NULL AND coalesce(ack_kind,'')!='message') OR
+         (state IN ('expired','cancelled') AND coalesce(ack_kind,'')!='tombstone'))) OR
+        EXISTS(SELECT 1 FROM intercom_receipts WHERE peer=? AND acknowledged=0) AS pending`).get(peer, peer) as { pending: number };
+      return row.pending === 1;
+    },
+    openAsks(peer): readonly RetainedIntercom[] {
+      if (!isMachineId(peer)) throw new Error("Invalid intercom peer");
+      expire();
+      const rows = db.prepare(`SELECT c.id FROM intercom_copies c JOIN intercom_messages m ON m.id=c.id
+        WHERE c.direction='outbound' AND c.peer=? AND m.is_ask=1 AND m.ask_state='open' ORDER BY c.id`).all(peer) as { id: string }[];
+      return rows.map(row => store.retained("outbound", row.id)).filter((row): row is RetainedIntercom => row !== null);
+    },
+    expiredOutbounds(peer) {
+      if (!isMachineId(peer)) throw new Error("Invalid intercom peer");
+      const rows = db.prepare(`${selectCopy} WHERE c.direction='outbound' AND c.peer=? AND c.state='expired'
+        AND NOT EXISTS (SELECT 1 FROM intercom_copies i WHERE i.direction='inbound' AND i.id=c.id) ORDER BY c.id`).all(peer) as CopyRow[];
+      return rows.map(row => ({ identity: readIdentity(row), outcomeKnown: row.unknown_outcome === 0 }));
+    },
     inspectBlockers(address): FederationBlockers {
       ensureCheckpoint();
       if (!isSessionAddress(address)) throw new Error("Invalid intercom address");
@@ -870,7 +967,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         pendingProof = { from: endpoint, to: identity.from, digest: identity.digest,
           receipt: parseStored<MessageReceipt>(row.pending_proof_json), attempt: row.pending_proof_attempt };
       }
-      return { identity, endpoint, state: row.state, payloadRetained: row.payload_json !== null,
+      return { identity, endpoint, peer: row.peer, state: row.state, payloadRetained: row.payload_json !== null,
         linkAcknowledged: row.ack_kind === currentKind(row), latestAttempt: row.observed_attempt,
         ...(row.reconciliation_json ? { reconciliation: parseStored<MessageReceipt>(row.reconciliation_json) } : {}),
         ...(pendingProof ? { pendingProof } : {}) };

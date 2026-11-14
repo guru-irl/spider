@@ -27,9 +27,10 @@ type _Outcome = Assert<Equal<Outcome<{ ok: boolean }>, {
   code: 0 | 1 | 2 | 3; reason: string; operationId: string; home: Home | null; epoch: number | null;
   repairCommand: string | null; value: { ok: boolean } | null;
 }>>;
-type _CallOptions = Assert<Equal<CallOptions, { timeoutMs: number; maxBytes: number; stdin?: Buffer }>>;
+type _CallOptions = Assert<Equal<CallOptions, { timeoutMs: number; maxBytes: number; stdin?: Buffer; remoteTimeoutMs?: number;
+  postReserveMs?: number; signal?: AbortSignal; stdinForTimeout?: (remoteTimeoutMs: number) => Buffer; onConnected?: (connected: boolean) => void }>>;
 type _Transport = Assert<Equal<Transport, {
-  resolve(peer: Peer): Promise<Peer>;
+  resolve(peer: Peer, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Peer>;
   bootstrapProbe(peer: BootstrapPeer, kind: "inventory", options?: BootstrapOptions): Promise<Inventory>;
   exec(peer: Peer, argv: readonly string[], options: CallOptions): Promise<Buffer>;
   run(peer: Peer, argv: readonly string[], operationId: string): Promise<{ terminal: string }>;

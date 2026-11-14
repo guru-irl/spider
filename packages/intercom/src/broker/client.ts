@@ -1,4 +1,4 @@
-import { FEDERATION_FEATURE, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
+import { FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
 import { isFederationDispatchResult, parseFederationBrokerMessage } from "./protocol.js";
 import { EventEmitter } from "events";
 import net from "net";
@@ -809,11 +809,14 @@ export class IntercomFederationClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private bridge: FederationBridge | null = null;
   private ready = false;
+  private features = new Set<string>();
+  private helperHandler: ((input: unknown, signal: AbortSignal) => Promise<unknown>) | null = null;
+  private helperRequests = new Map<string, AbortController>();
   private requests = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
 
   async connect(registration: BridgeRegistration, bridge: FederationBridge): Promise<void> {
     if (this.socket) throw new Error("bridge-already-connected");
-    const target = getBrokerConnectTarget();
+    const target = getBrokerConnectTarget(process.platform, { ...process.env, PI_CODING_AGENT_DIR: registration.agentDir });
     if (typeof target !== "string") throw new Error("federation-private-socket-required");
     const socket = net.connect(target);
     this.socket = socket;
@@ -823,7 +826,9 @@ export class IntercomFederationClient extends EventEmitter {
       const timer = setTimeout(() => { reject(new Error("federation-registration-timeout")); socket.destroy(); }, 4000);
       socket.on("error", error => { if (!registered) reject(error); });
       socket.once("close", () => {
-        clearTimeout(timer); this.ready = false; this.socket = null;
+        clearTimeout(timer); this.ready = false; this.socket = null; this.features.clear(); this.helperHandler = null;
+        for (const request of this.helperRequests.values()) request.abort();
+        this.helperRequests.clear();
         for (const request of this.requests.values()) { clearTimeout(request.timer); request.reject(new Error("federation-disconnected")); }
         this.requests.clear();
         if (!registered) reject(new Error("federation-unavailable"));
@@ -834,7 +839,7 @@ export class IntercomFederationClient extends EventEmitter {
         if (!value) throw new Error("invalid-bridge-message");
         if (value.type === "federation_registered") {
           if (registered || !Array.isArray(value.features) || !value.features.includes(FEDERATION_FEATURE)) throw new Error("federation-feature-required");
-          registered = true; this.ready = true; clearTimeout(timer); resolve();
+          registered = true; this.ready = true; this.features = new Set(value.features); clearTimeout(timer); resolve();
         } else if (!registered) throw new Error("federation-unavailable");
         else this.handleMessage(value);
       }, error => { if (!registered) reject(error); socket.destroy(); }));
@@ -860,11 +865,28 @@ export class IntercomFederationClient extends EventEmitter {
       this.bridge!.receipt(message.from, message.receipt);
     } else if (message.type === "federation_control") {
       this.bridge!.control(message.from, message.to, message.control);
-    } else if (message.type === "federation_delivery_result" || message.type === "blockers") {
+    } else if (message.type === "federation_helper_exchange") {
+      const handler = this.helperHandler, aborter = new AbortController();
+      if (!handler || this.helperRequests.has(message.requestId)) {
+        this.send({ type: "federation_helper_result", requestId: message.requestId, error: "bridge-exchange-failed" });
+        return;
+      }
+      this.helperRequests.set(message.requestId, aborter);
+      void Promise.resolve().then(() => handler(message.input, aborter.signal)).then(output => {
+        if (this.ready && !aborter.signal.aborted) this.send({ type: "federation_helper_result", requestId: message.requestId, output });
+      }).catch((error: unknown) => {
+        const code = error && typeof error === "object" && "code" in error ? error.code : null;
+        if (this.ready && !aborter.signal.aborted) this.send({ type: "federation_helper_result", requestId: message.requestId,
+          error: isHelperExchangeError(code) ? code : "bridge-exchange-failed" });
+      }).finally(() => { this.helperRequests.delete(message.requestId); });
+    } else if (message.type === "federation_helper_cancel") {
+      this.helperRequests.get(message.requestId)?.abort();
+      this.helperRequests.delete(message.requestId);
+    } else if (message.type === "federation_delivery_result" || message.type === "blockers" || message.type === "helper_authorized") {
       const request = this.requests.get(message.requestId);
       if (!request) return;
       clearTimeout(request.timer); this.requests.delete(message.requestId);
-      request.resolve(message.type === "blockers" ? message.blockers : message.result);
+      request.resolve(message.type === "blockers" ? message.blockers : message.type === "federation_delivery_result" ? message.result : undefined);
     } else throw new Error("invalid-bridge-message");
   }
   private request(message: FederationClientMessage & { requestId: string }): Promise<unknown> {
@@ -873,6 +895,13 @@ export class IntercomFederationClient extends EventEmitter {
       timer.unref(); this.requests.set(message.requestId, { resolve, reject, timer });
       try { this.send(message); } catch (error) { clearTimeout(timer); this.requests.delete(message.requestId); reject(toError(error)); }
     });
+  }
+  async enableHelpers(token: string, handler: (input: unknown, signal: AbortSignal) => Promise<unknown>): Promise<void> {
+    if (!this.features.has(HELPER_EXCHANGE_FEATURE)) throw new Error("unsupported-broker");
+    if (!/^[0-9a-f]{64}$/.test(token) || this.helperHandler) throw new Error("invalid-helper-authorization");
+    this.helperHandler = handler;
+    try { await this.request({ type: "helper_authorize", requestId: randomUUID(), token }); }
+    catch (error) { this.helperHandler = null; throw error; }
   }
   publishPresence(sessions: RemoteSessionInfo[]): void { this.send({ type: "federation_presence", sessions }); }
   deliver(from: RemoteSessionInfo, to: SessionEndpoint, message: Message): Promise<FederationDispatchResult> {

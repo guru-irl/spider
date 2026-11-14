@@ -49,9 +49,14 @@ export interface Outcome<T> {
   code: 0 | 1 | 2 | 3; reason: string; operationId: string; home: Home | null;
   epoch: number | null; repairCommand: string | null; value: T | null;
 }
-export interface CallOptions { timeoutMs: number; maxBytes: number; stdin?: Buffer }
+export interface CallOptions {
+  timeoutMs: number; maxBytes: number; stdin?: Buffer;
+  remoteTimeoutMs?: number; postReserveMs?: number; signal?: AbortSignal;
+  stdinForTimeout?: (remoteTimeoutMs: number) => Buffer;
+  onConnected?: (connected: boolean) => void;
+}
 export interface Transport {
-  resolve(peer: Peer): Promise<Peer>;
+  resolve(peer: Peer, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Peer>;
   bootstrapProbe(peer: BootstrapPeer, kind: "inventory", options?: BootstrapOptions): Promise<Inventory>;
   exec(peer: Peer, argv: readonly string[], options: CallOptions): Promise<Buffer>;
   run(peer: Peer, argv: readonly string[], operationId: string): Promise<{ terminal: string }>;

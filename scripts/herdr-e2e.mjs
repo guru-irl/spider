@@ -182,7 +182,7 @@ export async function packEntryDigests(checkout, root, pack) {
   if (result.code !== 0) throw new Error('pack failed');
   // npm 10 may rebuild dist during pack even with --ignore-scripts. Snapshot
   // the checkout as packed, including the new build id, not its pre-pack state.
-  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs'];
+  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/cli-main.mjs', 'roam/intercom-helper.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs'];
   const digests = Object.fromEntries(entries.map(entry => [entry, createHash('sha256').update(readFileSync(path.join(checkout, 'dist', entry))).digest('hex')]));
   writeFileSync(path.join(root, 'entries.json'), JSON.stringify(digests, null, 2));
   return { entries, digests };

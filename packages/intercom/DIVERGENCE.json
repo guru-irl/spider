@@ -3,14 +3,14 @@
   "files": [
     {
       "path": "broker/broker.ts",
-      "task": "3.6a",
-      "reason": "Route negotiated remote traffic through one broker-owned bridge and expose metadata blockers.",
+      "task": "3.6c",
+      "reason": "Route federation through the owned bridge and authorize, bound, and cancel private helper exchanges.",
       "upstreamHash": "65d9ec1dbed5368ea952a1c7c3f978c83b44cd092e1922509085aa070f06829b"
     },
     {
       "path": "broker/client.ts",
-      "task": "3.6a",
-      "reason": "Negotiate federation and expose the service-owned bridge connection.",
+      "task": "3.6c",
+      "reason": "Negotiate federation and helper capabilities on the service-owned bridge connection.",
       "upstreamHash": "c810c80fdc0147dc9d7b636f071b82db7a50383dee6b860a6fe6cc0946f6212d"
     },
     {
@@ -21,8 +21,8 @@
     },
     {
       "path": "broker/protocol.ts",
-      "task": "3.6a",
-      "reason": "Validate portable roster entries, bridge replies, and consumption evidence.",
+      "task": "3.6c",
+      "reason": "Validate portable federation traffic and bounded, authorized helper frames.",
       "upstreamHash": "4f97b280ff3e4abc5f622db5e039b57ecda2aba4b93425b20a1aea3f4fec2943"
     },
     {
@@ -51,8 +51,8 @@
     },
     {
       "path": "protocol.ts",
-      "task": "3.6a",
-      "reason": "Define the shared pi-free logical address and broker federation contract.",
+      "task": "3.6c",
+      "reason": "Define the pi-free federation and negotiated private helper contracts.",
       "upstreamHash": null
     },
     {

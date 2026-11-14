@@ -44,12 +44,12 @@ async function launchCohort(f: any, h: any, expected: string, start: (launch: (o
     await h.waitFor(async () => JSON.parse(await readFile(join(f.privateDir, "replace-intent.json"), "utf8").catch(() => "null"))?.serverBuild === expected);
   } catch (error) { failure = { error }; }
   finally { await lock.removeServerRecord(guard, id); }
-  const rows = (await Promise.allSettled(pending)).map(result => {
+  const settled = await Promise.allSettled(pending);
+  if (failure) throw failure.error;
+  return settled.map(result => {
     if (result.status === "rejected") throw result.reason;
     return result.value;
   });
-  if (failure) throw failure.error;
-  return rows;
 }
 async function marker(f: any, build: string) {
   const file = join(f.privateDir, "replace-intent.json");
@@ -69,7 +69,7 @@ for (const kind of ["cold mixed builds", "two newer builds", "staggered newer bu
       const rows = await launchCohort(f, h, expected, async launch => {
         if (kind === "staggered newer builds") {
           launch(n1);
-          // This is the stagger being tested, not a readiness wait.
+          // The guard holds both launchers, so the stagger only changes which intent is written first.
           await new Promise(resolve => setTimeout(resolve, round * 30));
           launch(n2);
         } else {

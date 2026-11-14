@@ -1,4 +1,26 @@
 import machineIdentitySource from "../../db-core/src/roam/machine.ts?raw";
+import selectedSource from "./selected-files.ts?raw";
+
+// Settings values stay on their respective machines. The probe receives only key paths.
+export const BOOTSTRAP_SETTINGS_SCRIPT: string = selectedSource + String.raw`
+import { readFileSync as bootstrapSettingsRead } from "node:fs";
+import { homedir as bootstrapSettingsHome } from "node:os";
+try {
+  const raw = bootstrapSettingsRead(0);
+  if (raw.length > 2 * 1024 * 1024) throw new Error("request");
+  const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
+  if (!input || typeof input !== "object" || Array.isArray(input) ||
+      Object.keys(input).sort().join(",") !== "agentDir,home,maximum,paths" ||
+      typeof input.home !== "string" || input.home !== bootstrapSettingsHome() ||
+      input.agentDir !== join(input.home, ".pi", "agent")) throw new Error("request");
+  const value = inspectDestinationSettingsDigests({ home: input.home, destinationRoot: input.agentDir, paths: input.paths, maximum: input.maximum });
+  process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", value }));
+} catch (error) {
+  const allowed = new Set(["invalid-destination-settings", "unsafe-destination", "invalid-settings-preview"]);
+  const code = error instanceof SelectedFilesError && allowed.has(error.code) ? error.code : "settings-preview-failed";
+  process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", error: code }));
+}
+`;
 
 // The program receives only selected paths on stdin. Its text never varies by peer.
 export const BOOTSTRAP_SCRIPT: string = String.raw`

@@ -86,6 +86,14 @@ it('removes git and SSH declarations for the legacy package but keeps lookalikes
   const result = JSON.parse(migrateIntercomSettings(JSON.stringify({ packages: [...legacy, { source: legacy[0] }, ...other] }), []));
   expect(result.packages).toEqual(other);
 });
+it('retains precise unrelated JSON numbers while removing a legacy package', () => {
+  const result = migrateIntercomSettings('{"packages":["npm:pi-intercom","npm:other"],"large":9007199254740993,"nested":{"huge":1e400}}', []);
+  expect(result).toContain('"large": 9007199254740993'); expect(result).toContain('"huge": 1e400');
+  expect(JSON.parse(result).packages).toEqual(['npm:other']);
+});
+it('rejects numeric JSON roots even when they require exact serialization', () => {
+  expect(() => migrateIntercomSettings('1e400', [])).toThrow('Settings must be an object');
+});
 it('refuses a concurrent settings edit and retries from the new contents', async () => {
   const f = fixture();
   const edited = { ...JSON.parse(readFileSync(f.settings, 'utf8')), theme: 'concurrent-theme', retained: true };

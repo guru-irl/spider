@@ -14,26 +14,48 @@ import { readLocalIdentity } from "./runtime";
 import { loadHerdrConfig } from "./production-hub";
 import { createProvisionTransport } from "./transport";
 import { createProductionProvisionPorts } from "./production-provision";
-import { provision } from "./provision";
+import { provision, provisionSelectionDigest } from "./provision";
 import { RELEASE_ENTRIES } from "./release-request";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
-import { readPrivateBytes } from "./selected-files";
-import { previewPiAuthBytes } from "./auth";
+import { describeSelectedFiles, prepareSelectedFiles, readPrivateBytes, SelectedFilesError } from "./selected-files";
+import { AuthError, previewPiAuthBytes } from "./auth";
 import type { ProvisionPreview } from "./provision-contracts";
 
 interface ConsentRequest { operationId: string; target: string; machineId: string; hubMachineId: string;
-  files: readonly { path: string; size: number; mode: number }[]; releaseHash: string }
-interface ConsentPorts { tty: boolean; yes: boolean; consent: string | null; actor: string; now(): number; ask(text: string): Promise<string> }
+  files: readonly { path: string; size: number; mode: number }[]; releaseHash: string; providers?: readonly string[]; selectionDigest?: string;
+  settingsFingerprint?: string | null; settingsKeys?: readonly string[] }
+interface ConsentPorts { tty: boolean; yes: boolean; consent: string | null; consentedProviders?: readonly string[];
+  actor: string; now(): number; ask(text: string): Promise<string> }
+function consentOperation(request: ConsentRequest) {
+  const providers = [...(request.providers ?? ["github-copilot"])].sort();
+  if (!providers.includes("github-copilot") || providers.length > 64 || new Set(providers).size !== providers.length ||
+      providers.some(name => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(name))) throw new Error("provision-provider-invalid");
+  return { id: request.operationId, kind: "provision-cli", machineId: request.machineId, expectedEpoch: null,
+    args: { target: request.target, hubMachineId: request.hubMachineId, files: request.files.map(row => ({ ...row })), releaseHash: request.releaseHash, providers,
+      ...(request.selectionDigest ? { selectionDigest: request.selectionDigest } : {}) } };
+}
 export async function confirmProvision(journal: Journal, request: ConsentRequest, ports: ConsentPorts): Promise<boolean> {
-  const operation = { id: request.operationId, kind: "provision-cli", machineId: request.machineId, expectedEpoch: null,
-    args: { target: request.target, hubMachineId: request.hubMachineId, files: request.files.map(row => ({ ...row })), releaseHash: request.releaseHash } };
+  const operation = consentOperation(request), providers = operation.args.providers;
+  const settingsFingerprint = request.settingsFingerprint ?? null, settingsKeys = [...(request.settingsKeys ?? [])];
+  if (settingsFingerprint !== null && !/^[a-f0-9]{64}$/.test(settingsFingerprint) ||
+      settingsKeys.some(key => typeof key !== "string" || !key || key.length > 4096 || /[\u0000-\u001f\u007f]/.test(key)) ||
+      new Set(settingsKeys).size !== settingsKeys.length || settingsFingerprint === null && settingsKeys.length) throw new Error("settings-preview-changed");
   journal.begin(operation);
-  if (journal.read(request.operationId).some(row => row.action === "human-consent")) return true;
-  const approved = ports.tty ? /^(?:y|yes)$/i.test((await ports.ask(`Copy copilot-auth to ${request.target} and install this release? [y/N] `)).trim())
-    : ports.yes && ports.consent === "copilot-auth";
+  const prior = journal.read(request.operationId).find(row => row.action === "human-consent");
+  if (prior) {
+    if ((prior.result.settingsFingerprint ?? null) !== settingsFingerprint || JSON.stringify(prior.result.settingsKeys ?? []) !== JSON.stringify(settingsKeys)) {
+      throw new Error("settings-preview-changed");
+    }
+    return true;
+  }
+  const extra = providers.filter(name => name !== "github-copilot");
+  const supplied = [...(ports.consentedProviders ?? [])].sort();
+  const approved = ports.tty ? /^(?:y|yes)$/i.test((await ports.ask(`Copy copilot-auth${extra.length ? ` and credentials for ${extra.join(", ")}` : ""} to ${request.target} and install this release? [y/N] `)).trim())
+    : ports.yes && ports.consent === "copilot-auth" && JSON.stringify(supplied) === JSON.stringify(extra);
   if (!approved) return false;
   journal.record(request.operationId, "human-consent", { actor: ports.actor, at: ports.now(), operationId: request.operationId,
-    target: request.target, machineId: request.machineId, consent: "copilot-auth", files: request.files.map(row => ({ ...row })), releaseHash: request.releaseHash });
+    target: request.target, machineId: request.machineId, consent: "copilot-auth", providers, files: request.files.map(row => ({ ...row })), releaseHash: request.releaseHash,
+    settingsFingerprint, settingsKeys });
   return true;
 }
 export async function pinProvisionRelease(file: string, maximum: number): Promise<{ file: string; sha256: string; bytes: Buffer }> {
@@ -100,9 +122,11 @@ function presentInventory(preview: ProvisionPreview, out: (text: string) => void
   out(`Inventory for ${safe(preview.target)}: ${safe(value.platform)}, Node ${safe(value.nodeVersion)}, pi ${safe(value.piVersion ?? "missing")}.\n`);
   out(`Git ${value.gitVersion ? "available" : "missing"}; systemd user ${value.systemdUser ? "available" : "missing"}; core ${value.core.unitOwned ? "owned" : "unverified"}; pi auth ${value.auth.pi.present ? "present" : "missing"}.\n`);
   out(`Agent directory: ${safe(preview.destinations.agentDir)}\nRoaming root: ${safe(preview.destinations.globalRoot)}\nPi: ${safe(preview.destinations.pi)}\n`);
+  out(`Settings keys changing: ${preview.settingsKeys.map(safe).join(", ") || "none"}\n`);
   for (const warning of preview.warnings) out(`${safe(warning)}\n`);
 }
-export interface ProvisionCliRequest { root: string; target: string; release?: string; yes: boolean; consent: string | null; operationId?: string }
+export interface ProvisionCliRequest { root: string; target: string; release?: string; yes: boolean; consent: string | null; operationId?: string;
+  skills?: readonly string[]; consentedProviders?: readonly string[] }
 export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text: string): void; err(text: string): void }, options: {
   bundleUrl?: URL; tty?: boolean; ask?(text: string): Promise<string>;
 } = {}): Promise<number> {
@@ -118,8 +142,25 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     if (!auth) throw new Error("copilot-auth-unavailable");
     let size: number;
     try { size = previewPiAuthBytes(auth, ["github-copilot"]); }
-    catch { throw new Error("copilot-auth-unavailable"); }
+    catch (error) {
+      if (error instanceof AuthError && error.code === "unsupported-credential-command") throw new SelectedFilesError(error.code, ["auth.json"]);
+      throw new Error("copilot-auth-unavailable");
+    }
     finally { auth.fill(0); }
+    const selected = ["settings.json", "models.json", "keybindings.json", "themes", "AGENTS.md"].filter(name => {
+      try { lstatSync(join(agentRoot, name)); return true; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+    });
+    selected.push(...(input.skills ?? []).map(name => `skills/${name}`));
+    const prepared = prepareSelectedFiles({ sourceRoot: agentRoot, selected, maxBytes: config.limits.agentBytes });
+    const selectedFiles = describeSelectedFiles(prepared), selectionDigest = provisionSelectionDigest(prepared);
+    const providers = [...new Set(["github-copilot", ...prepared.providers])].sort();
+    for (const file of prepared.credentialFiles) file.bytes.fill(0);
+    const extra = providers.filter(name => name !== "github-copilot");
+    if (!tty && JSON.stringify([...(input.consentedProviders ?? [])].sort()) !== JSON.stringify(extra)) {
+      io.err(`Provider consent required: ${extra.map(safe).join(", ") || "none"}.\n`);
+      throw new Error("provision-provider-consent-required");
+    }
     const operationId = input.operationId ?? randomUUID();
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(operationId)) throw new Error("invalid-provision-operation");
     const pinned = await stageProvisionRelease({ root: input.root, operationId, release: input.release, maximum: config.limits.agentBytes, bundleUrl: options.bundleUrl });
@@ -130,27 +171,33 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     const peer = { ...configured, cli: posix.join(releaseRoot, "dist", "roam", "cli.mjs") };
     const destination = { home, agentDir, npmPrefix, supervisor: posix.join(releaseRoot, "dist", "roam", "supervisor.mjs") };
     const journal = openJournal(join(input.root, "roam", "journal.db")), herdr = loadHerdrConfig(input.root);
-    const files = [{ path: "auth.json", size, mode: 0o600 }];
+    const files = [{ path: "auth.json", size, mode: 0o600 }, ...selectedFiles];
     io.out(`Operation: ${operationId}\nRelease SHA-256: ${pinned.sha256}\n`);
-    for (const file of files) io.out(`Selected ${file.path}: ${file.size} bytes, mode ${file.mode.toString(8)}.\n`);
-    const request: ConsentRequest = { operationId, target: peer.alias, machineId: peer.machineId, hubMachineId: config.machineId, files, releaseHash: pinned.sha256 };
+    for (const file of files) io.out(`Selected ${safe(file.path)}: ${file.size} bytes, mode ${file.mode.toString(8)}. Destination: ${safe(posix.join(agentDir, file.path))}\n`);
+    const request: ConsentRequest = { operationId, target: peer.alias, machineId: peer.machineId, hubMachineId: config.machineId, files, releaseHash: pinned.sha256, providers, selectionDigest };
     // Reserve the byte identity before any remote observation. Consent itself is recorded after inventory.
-    journal.begin({ id: operationId, kind: "provision-cli", machineId: peer.machineId, expectedEpoch: null,
-      args: { target: peer.alias, hubMachineId: config.machineId, files, releaseHash: pinned.sha256 } });
+    journal.begin(consentOperation(request));
     const transport = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: [peer] }, journal);
+    let shownSettings: { fingerprint: string | null; keys: readonly string[] } = { fingerprint: null, keys: [] };
     const ports = createProductionProvisionPorts({ root: input.root, hubMachineId: config.machineId, peer, operationId: `${operationId}-install`, transport, journal, limits: config.limits,
       source: { agentRoot, releaseFile: pinned.file, piProviders: ["github-copilot"] }, destination, coreUnit: config.coreUnit, unitDir: posix.join(home, ".config/systemd/user"),
       release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: pinned.sha256, nodeRange: "22.23.4 || 26.4.0" },
-      async present(preview) { presentInventory(preview, io.out); },
-      async confirm() { return confirmProvision(journal, request, { tty, yes: input.yes, consent: input.consent, actor: userInfo().username, now: Date.now,
+      async present(preview) { shownSettings = { fingerprint: preview.settingsFingerprint, keys: [...preview.settingsKeys] }; presentInventory(preview, io.out); },
+      async confirm() { return confirmProvision(journal, { ...request, settingsFingerprint: shownSettings.fingerprint, settingsKeys: shownSettings.keys },
+        { tty, yes: input.yes, consent: input.consent, consentedProviders: input.consentedProviders, actor: userInfo().username, now: Date.now,
         async ask(text) { if (options.ask) return options.ask(text); const readline = createInterface({ input: process.stdin, output: process.stdout }); try { return await readline.question(text); } finally { readline.close(); } } }); },
       async report(rows) { for (const row of rows) io.out(`${safe(row.reason)}\n`); },
       async resources() { throw new Error("Local resource probes are not used for provisioning"); }, async bootId() { throw new Error("Local boot probes are not used for provisioning"); },
     });
     const result = await provision({ operation: { id: `${operationId}-install`, kind: "provision", machineId: peer.machineId, expectedEpoch: null, args: {} },
-      peer, selected: [], includeAuth: true, confirmedProviders: ["github-copilot"], expectedAuthBytes: size }, ports);
+      peer, selected, includeAuth: true, confirmedProviders: providers, expectedAuthBytes: size, expectedFiles: selectedFiles, expectedSelectionDigest: selectionDigest }, ports);
     (result.code === 0 ? io.out : io.err)(`${safe(result.reason)}\n`); return result.code;
   } catch (error) {
+    if (error instanceof SelectedFilesError) {
+      const files = error.files.filter(file => file.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(file));
+      io.err(`${error.code}${files.length ? ` (${files.join(", ")})` : ""}.\n`);
+      return 1;
+    }
     const message = error instanceof Error ? error.message : "";
     const named = /^(?:provision-|copilot-auth-|release-|installed-build-|invalid-provision-)[a-z-]+$/.test(message) ? message
       : message === "Operation ID already has different arguments" ? "provision-operation-arguments-changed" : "provision-unavailable";

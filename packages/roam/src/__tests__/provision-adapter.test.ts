@@ -9,14 +9,15 @@ import { DEFAULT_LIMITS } from "../contracts";
 import { copyPiAuth } from "../auth";
 import { beginRelease, beginShortWrite, endShortWrite } from "../release-receipt";
 import { releaseRequestDigest } from "../release-request";
+import { inspectDestinationSettings, selectedSettingsDigests } from "../selected-files";
 import * as adapterModule from "../provision-adapter";
 
 const roots: string[] = [];
 type Factory = (input: unknown) => {
   enroll(peer: Peer, hubMachineId: string): Promise<void>;
   installRelease(peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }): Promise<{ pi: string; cli: string; supervisor: string }>;
-  installFiles(peer: Peer, files: readonly { path: string; bytes: Buffer; mode: 0o600 | 0o700 }[]): Promise<void>;
-  installCredentialFiles(peer: Peer, files: readonly { path: string; bytes: Buffer; mode: 0o600 | 0o700 }[]): Promise<void>;
+  installFiles(peer: Peer, files: readonly { path: string; bytes: Buffer; mode: 0o600 | 0o700 }[], expectedSettingsFingerprint?: string): Promise<void>;
+  installCredentialFiles(peer: Peer, files: readonly { path: string; bytes: Buffer; mode: 0o600 | 0o700 }[], providers: readonly string[], expectedSettingsFingerprint?: string): Promise<void>;
   auth(peer: Peer, operationId: string): import("../auth").AuthPorts;
   switchover(peer: Peer, operationId: string): Promise<{ status: string }>;
   verifyPeer(): Promise<import("../provision-contracts").ProvisionVerification>;
@@ -239,11 +240,147 @@ it("waits for a live short writer before repeating the same operation", async ()
   expect(readFileSync(join(f.unitDir, unit), "utf8")).toBe("fixture unit");
 }, 5000);
 
+it("refuses unlisted settings at the destination even if a caller bypasses the preview", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  const bytes = Buffer.from('{"theme":"sample","defaultProjectTrust":"always"}');
+  const allowed = { path: "settings.json", bytes: Buffer.from('{"theme":"sample"}'), mode: 0o600 as const };
+  const preview = inspectDestinationSettings({ home: f.home, destinationRoot: f.agentDir, entries: selectedSettingsDigests(allowed), maximum: 1024 * 1024 });
+  await expect(adapter.installFiles(f.peer, [{ path: "settings.json", bytes, mode: 0o600 }], preview.fingerprint))
+    .rejects.toMatchObject({ code: "selection-not-allowed" });
+  expect(existsSync(join(f.agentDir, "settings.json"))).toBe(false);
+  expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1"))).toEqual([]);
+}, 5000);
+
+it("reports invalid box settings by name without writing the file or a backup", async () => {
+  const f = fixture(), adapter = create!(f.options), target = join(f.agentDir, "settings.json");
+  writeFileSync(target, "[broken", { mode: 0o600 });
+  await expect(adapter.installFiles(f.peer, [{ path: "settings.json", bytes: Buffer.from('{"theme":"sample"}'), mode: 0o600 }], "a".repeat(64)))
+    .rejects.toMatchObject({ code: "invalid-destination-settings" });
+  expect(readFileSync(target, "utf8")).toBe("[broken");
+  expect(existsSync(`${target}.spider-roam.bak`)).toBe(false);
+}, 5000);
+
+it("merges credential-bearing settings through private staging and the approved fence", async () => {
+  const f = fixture(), adapter = create!(f.options), target = join(f.agentDir, "settings.json"), secret = "fixture-secret";
+  writeFileSync(target, '{"defaultModel":"old-model","defaultProjectTrust":"never"}', { mode: 0o600 });
+  const file = { path: "settings.json", bytes: Buffer.from(JSON.stringify({ defaultModel: `https://models.invalid/?token=${secret}` })), mode: 0o600 as const };
+  const preview = inspectDestinationSettings({ home: f.home, destinationRoot: f.agentDir, entries: selectedSettingsDigests(file), maximum: 1024 * 1024 });
+  await adapter.installCredentialFiles(f.peer, [file], ["settings"], preview.fingerprint);
+  expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ defaultModel: `https://models.invalid/?token=${secret}`, defaultProjectTrust: "never" });
+  expect(f.writes).toEqual([]); expect(JSON.stringify(f.requests)).not.toContain(secret);
+  expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1"))).toEqual([]);
+}, 5000);
+
+it("rejects a credential substituted into a public batch at the destination", async () => {
+  const f = fixture(), adapter = create!(f.options), remote = f.remote.executeProvision.bind(f.remote);
+  const injected = Buffer.from('{"apiKey":"fixture-secret"}');
+  f.remote.executeProvision = async (peer, request) => {
+    if (request.action !== "install-files") return remote(peer, request);
+    const file = request.file as { path: string; mode: number; chunks: { name: string; size: number; sha256: string }[] };
+    expect(file.chunks).toHaveLength(1);
+    writeFileSync(join(f.globalRoot, "roam", "provision", "op-1", file.chunks[0].name), injected, { mode: 0o600 });
+    const chunk = { ...file.chunks[0], size: injected.length, sha256: createHash("sha256").update(injected).digest("hex") };
+    return remote(peer, { ...request, file: { ...file, chunks: [chunk] } });
+  };
+  await expect(adapter.installFiles(f.peer, [{ path: "keybindings.json", bytes: Buffer.from('{"apiKey":"$K"}'), mode: 0o600 }]))
+    .rejects.toMatchObject({ code: "credential-file-requires-consent" });
+  expect(existsSync(join(f.agentDir, "keybindings.json"))).toBe(false);
+}, 5000);
+
+it("rejects private credentials whose provider was changed after local validation", async () => {
+  const f = fixture(), adapter = create!(f.options), remote = f.remote.executeProvision.bind(f.remote);
+  f.remote.executeProvision = (peer, request) => remote(peer, request.action === "install-files" ? { ...request, providers: ["other"] } : request);
+  const bytes = Buffer.from('{"providers":{"demo":{"apiKey":"fixture-secret"}}}');
+  await expect(adapter.installCredentialFiles(f.peer, [{ path: "models.json", bytes, mode: 0o600 }], ["demo"]))
+    .rejects.toMatchObject({ code: "provider-consent-required" });
+  expect(existsSync(join(f.agentDir, "models.json"))).toBe(false);
+}, 5000);
+
+it("rejects a file assembled from mixed public and private chunks", async () => {
+  const f = fixture(), adapter = create!(f.options), remote = f.remote.executeProvision.bind(f.remote);
+  f.remote.executeProvision = async (peer, request) => {
+    if (request.action !== "install-files") return remote(peer, request);
+    const file = request.file as { path: string; mode: number; chunks: { name: string; size: number; sha256: string }[] };
+    expect(file.chunks.length).toBeGreaterThan(1);
+    const stage = join(f.globalRoot, "roam", "provision", "op-1"), name = `secret-file-${"a".repeat(32)}`;
+    writeFileSync(join(stage, name), readFileSync(join(stage, file.chunks[0].name)), { mode: 0o600 });
+    return remote(peer, { ...request, file: { ...file, chunks: [{ ...file.chunks[0], name }, ...file.chunks.slice(1)] } });
+  };
+  const bytes = Buffer.from(JSON.stringify({ value: "x".repeat(60) }));
+  await expect(adapter.installFiles(f.peer, [{ path: "keybindings.json", bytes, mode: 0o600 }])).rejects.toMatchObject({ code: "invalid-chunks" });
+  expect(existsSync(join(f.agentDir, "keybindings.json"))).toBe(false);
+}, 5000);
+
+it("rejects an unguarded settings batch before staging any bytes", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  await expect(adapter.installFiles(f.peer, [{ path: "settings.json", bytes: Buffer.from('{"theme":"source-theme"}'), mode: 0o600 }]))
+    .rejects.toMatchObject({ code: "invalid-settings-preview" });
+  expect(existsSync(join(f.agentDir, "settings.json"))).toBe(false);
+  expect(f.requests.some(call => call.action === "prepare" || call.action === "install-files")).toBe(false); expect(f.writes).toEqual([]);
+}, 5000);
+
+it("rejects a settings write if its fingerprint is stripped in transit", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  const file = { path: "settings.json", bytes: Buffer.from('{"theme":"source-theme"}'), mode: 0o600 as const };
+  const preview = inspectDestinationSettings({ home: f.home, destinationRoot: f.agentDir, entries: selectedSettingsDigests(file), maximum: 1024 * 1024 });
+  const remote = f.remote.executeProvision.bind(f.remote);
+  f.remote.executeProvision = (peer, request) => {
+    if (request.action !== "install-files") return remote(peer, request);
+    const { expectedSettingsFingerprint: _stripped, ...unguarded } = request;
+    return remote(peer, unguarded);
+  };
+  await expect(adapter.installFiles(f.peer, [file], preview.fingerprint)).rejects.toMatchObject({ code: "invalid-settings-preview" });
+  expect(existsSync(join(f.agentDir, "settings.json"))).toBe(false);
+}, 5000);
+
+it("preserves precise box-only numbers in the generated destination program", async () => {
+  const f = fixture(), adapter = create!(f.options), target = join(f.agentDir, "settings.json");
+  writeFileSync(target, '{"theme":"old-theme","large":9007199254740993,"nested":{"huge":1e400}}', { mode: 0o600 });
+  const file = { path: "settings.json", bytes: Buffer.from('{"theme":"source-theme"}'), mode: 0o600 as const };
+  const preview = inspectDestinationSettings({ home: f.home, destinationRoot: f.agentDir, entries: selectedSettingsDigests(file), maximum: 1024 * 1024 });
+  await adapter.installFiles(f.peer, [file], preview.fingerprint);
+  const result = readFileSync(target, "utf8");
+  expect(result).toContain('"large": 9007199254740993'); expect(result).toContain('"huge": 1e400');
+  expect(JSON.parse(result).theme).toBe("source-theme");
+}, 5000);
+
+it("fences a settings short write against edits made after preview", async () => {
+  const f = fixture(), adapter = create!(f.options), target = join(f.agentDir, "settings.json");
+  writeFileSync(target, '{"theme":"old-theme","defaultProjectTrust":"never"}', { mode: 0o600 });
+  const file = { path: "settings.json", bytes: Buffer.from('{"theme":"source-theme"}'), mode: 0o600 as const };
+  const preview = inspectDestinationSettings({ home: f.home, destinationRoot: f.agentDir, entries: selectedSettingsDigests(file), maximum: 1024 * 1024 });
+  const edited = '{"theme":"external-edit","defaultProjectTrust":"never"}'; writeFileSync(target, edited, { mode: 0o600 });
+  await expect(adapter.installFiles(f.peer, [file], preview.fingerprint)).rejects.toMatchObject({ code: "settings-preview-changed" });
+  expect(readFileSync(target, "utf8")).toBe(edited); expect(existsSync(`${target}.spider-roam.bak`)).toBe(false);
+}, 5000);
+
+it("replays a lost settings merge reply without changing bytes or replacing its backup", async () => {
+  const f = fixture(), adapter = create!(f.options), target = join(f.agentDir, "settings.json"), backup = `${target}.spider-roam.bak`;
+  const original = '{"theme":"old-theme","defaultProjectTrust":"never"}'; writeFileSync(target, original, { mode: 0o600 });
+  const file = { path: "settings.json", bytes: Buffer.from('{"theme":"source-theme"}'), mode: 0o600 as const };
+  const preview = inspectDestinationSettings({ home: f.home, destinationRoot: f.agentDir, entries: selectedSettingsDigests(file), maximum: 1024 * 1024 });
+  const remote = f.remote.executeProvision.bind(f.remote); let lost = false;
+  f.remote.executeProvision = async (peer, request) => {
+    const result = await remote(peer, request);
+    if (request.action === "install-files" && !lost) { lost = true; throw Object.assign(new Error("reply lost"), { code: "cli-timeout" }); }
+    return result;
+  };
+  await adapter.installFiles(f.peer, [file], preview.fingerprint);
+  expect(lost).toBe(true); expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ theme: "source-theme", defaultProjectTrust: "never" });
+  const first = readFileSync(target), inode = lstatSync(target).ino;
+  expect(readFileSync(backup, "utf8")).toBe(original);
+  await adapter.installFiles(f.peer, [file], preview.fingerprint);
+  expect(readFileSync(target)).toEqual(first); expect(lstatSync(target).ino).toBe(inode); expect(readFileSync(backup, "utf8")).toBe(original);
+  expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1"))).toEqual([]);
+}, 5000);
+
 it("rejects changed file bytes for the same operation before overwriting the destination", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
   const f = fixture(), adapter = create!(f.options);
-  await adapter.installFiles(f.peer, [{ path: "settings.json", bytes: Buffer.from('{"theme":"first"}'), mode: 0o600 }]);
-  await expect(adapter.installFiles(f.peer, [{ path: "settings.json", bytes: Buffer.from('{"theme":"second"}'), mode: 0o600 }]))
+  const first = { path: "settings.json", bytes: Buffer.from('{"theme":"first"}'), mode: 0o600 as const };
+  const preview = inspectDestinationSettings({ home: f.home, destinationRoot: f.agentDir, entries: selectedSettingsDigests(first), maximum: 1024 * 1024 });
+  await adapter.installFiles(f.peer, [first], preview.fingerprint);
+  await expect(adapter.installFiles(f.peer, [{ path: "settings.json", bytes: Buffer.from('{"theme":"second"}'), mode: 0o600 }], preview.fingerprint))
     .rejects.toMatchObject({ code: "operation-arguments-changed" });
   expect(readFileSync(join(f.agentDir, "settings.json"), "utf8")).toBe('{"theme":"first"}');
 }, 5000);
@@ -296,6 +433,31 @@ it("cleans interrupted secret and doctor staging while retaining unrelated artif
   expect(JSON.stringify(f.requests)).not.toContain("fixture-secret");
 }, 5000);
 
+it("replays a lost selected-file reply once without losing the backup or accepting changed bytes", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  mkdirSync(join(f.agentDir, "themes"), { recursive: true, mode: 0o700 });
+  const target = join(f.agentDir, "themes", "custom.json"), backup = `${target}.spider-roam.bak`;
+  writeFileSync(target, "previous", { mode: 0o600 });
+  writeFileSync(join(f.agentDir, "unrelated"), "keep", { mode: 0o600 });
+  const remote = f.remote.executeProvision.bind(f.remote); let lost = false;
+  f.remote.executeProvision = async (peer, request) => {
+    const result = await remote(peer, request);
+    if (request.action === "install-files" && !lost) { lost = true; throw Object.assign(new Error("reply lost"), { code: "cli-timeout" }); }
+    return result;
+  };
+  const file = { path: "themes/custom.json", bytes: Buffer.from('{"name":"night"}'), mode: 0o600 as const };
+  await adapter.installFiles(f.peer, [file]);
+  expect(lost).toBe(true); expect(readFileSync(target)).toEqual(file.bytes); expect(readFileSync(backup, "utf8")).toBe("previous");
+  const inode = lstatSync(target).ino, backupInode = lstatSync(backup).ino;
+  await adapter.installFiles(f.peer, [file]);
+  expect(lstatSync(target).ino).toBe(inode); expect(lstatSync(backup).ino).toBe(backupInode);
+  await expect(adapter.installFiles(f.peer, [{ ...file, bytes: Buffer.from('{"name":"light"}') }]))
+    .rejects.toMatchObject({ code: "operation-arguments-changed" });
+  expect(readFileSync(target)).toEqual(file.bytes); expect(readFileSync(backup, "utf8")).toBe("previous");
+  expect(readFileSync(join(f.agentDir, "unrelated"), "utf8")).toBe("keep");
+  expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1"))).toEqual([]);
+}, 5000);
+
 it("refuses a destination symlink without altering its target and cleans transferred chunks", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
   const f = fixture(), adapter = create!(f.options), outside = join(f.root, "outside");
@@ -314,17 +476,79 @@ it("does not expose credential-like remote error codes or messages", async () =>
     return original(peer, request);
   };
   const adapter = create!(f.options); let caught: unknown;
-  try { await adapter.installCredentialFiles(f.peer, [{ path: "models.json", bytes: Buffer.from("fixture-secret"), mode: 0o600 }]); } catch (error) { caught = error; }
+  try { await adapter.installCredentialFiles(f.peer, [{ path: "models.json", bytes: Buffer.from('{"providers":{"demo":{"apiKey":"fixture-secret"}}}'), mode: 0o600 }], ["demo"]); } catch (error) { caught = error; }
   expect(caught).toBeTruthy();
   expect(String(caught)).not.toContain("fixture-secret");
   expect(JSON.stringify(caught)).not.toContain("fixture-secret");
   expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1"))).toEqual([]);
 }, 5000);
 
+it("transfers commented Pi model definitions unchanged when they contain only an environment reference", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  const models = '{\n// portable reference\n"providers":{"demo":{"apiKey":"${DEMO_KEY}",}},\n}\n';
+  await adapter.installFiles(f.peer, [{ path: "models.json", bytes: Buffer.from(models), mode: 0o600 }]);
+  expect(readFileSync(join(f.agentDir, "models.json"), "utf8")).toBe(models);
+  expect(f.writes.length).toBeGreaterThan(0);
+}, 5000);
+
+it("refuses a credential assignment in a model comment on the public file channel", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  const models = '{\n// token: fixture-secret\n"providers":{"demo":{"apiKey":"${DEMO_KEY}"}}\n}';
+  await expect(adapter.installFiles(f.peer, [{ path: "models.json", bytes: Buffer.from(models), mode: 0o600 }]))
+    .rejects.toMatchObject({ code: "credential-file-requires-consent" });
+  expect(f.writes).toEqual([]); expect(f.requests).toEqual([]);
+}, 5000);
+
+it("snapshots public model bytes before asynchronous staging can change the caller buffer", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  const bytes = Buffer.from('{"providers":{"demo":{"apiKey":"${MODEL_TOKEN}"}}}'), expected = Buffer.from(bytes);
+  const position = bytes.indexOf("${MODEL_TOKEN}");
+  f.remote.transport.resolve = async peer => { bytes.write("fixture-secret", position); return peer; };
+  await adapter.installFiles(f.peer, [{ path: "models.json", bytes, mode: 0o600 }]);
+  expect(bytes.toString("utf8")).toContain("fixture-secret");
+  expect(readFileSync(join(f.agentDir, "models.json"))).toEqual(expected);
+  expect(Buffer.concat(f.writes.map(write => write.bytes))).toEqual(expected);
+  expect(Buffer.concat(f.writes.map(write => write.bytes)).toString("utf8")).not.toContain("fixture-secret");
+}, 5000);
+
+it("refuses credential-bearing model definitions on the public file channel", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  const bytes = Buffer.from('{"providers":{"demo":{"apiKey":"fixture-secret"}}}');
+  await expect(adapter.installFiles(f.peer, [{ path: "models.json", bytes, mode: 0o600 }]))
+    .rejects.toMatchObject({ code: "credential-file-requires-consent" });
+  expect(f.writes).toEqual([]); expect(f.requests).toEqual([]);
+  expect(existsSync(join(f.agentDir, "models.json"))).toBe(false);
+}, 5000);
+
+it("snapshots private model bytes and provider names before asynchronous staging", async () => {
+  const f = fixture(), adapter = create!(f.options), providers = ["demo"];
+  const bytes = Buffer.from('{"providers":{"demo":{"apiKey":"fixture-secret"}}}'), expected = Buffer.from(bytes);
+  const remote = f.remote.executeProvision.bind(f.remote), seen: unknown[] = [];
+  f.remote.executeProvision = async (peer, request) => {
+    if (request.action === "secret-chunk" || request.action === "install-files") seen.push(request.providers);
+    return remote(peer, request);
+  };
+  f.remote.transport.resolve = async peer => { bytes.write("evil", bytes.indexOf("demo")); providers[0] = "evil"; return peer; };
+  await adapter.installCredentialFiles(f.peer, [{ path: "models.json", bytes, mode: 0o600 }], providers);
+  expect(bytes.toString("utf8")).toContain("evil"); expect(providers).toEqual(["evil"]);
+  expect(readFileSync(join(f.agentDir, "models.json"))).toEqual(expected);
+  expect(seen.length).toBeGreaterThan(0); expect(seen.every(value => JSON.stringify(value) === '["demo"]')).toBe(true);
+  expect(f.writes).toEqual([]);
+}, 5000);
+
+it("refuses private model credentials for a provider omitted from the transfer consent", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  const models = Buffer.from('{"providers":{"other":{"apiKey":"fixture-secret"}}}');
+  await expect(adapter.installCredentialFiles(f.peer, [{ path: "models.json", bytes: models, mode: 0o600 }], ["demo"]))
+    .rejects.toMatchObject({ code: "provider-consent-required" });
+  expect(f.writes).toEqual([]); expect(f.requests).toEqual([]);
+  expect(existsSync(join(f.agentDir, "models.json"))).toBe(false);
+}, 5000);
+
 it("uses private stdin rather than hc file writes for credential-bearing settings", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
   const f = fixture(), adapter = create!(f.options), secret = Buffer.from('{"providers":{"example":{"apiKey":"fixture-secret"}}}');
-  await adapter.installCredentialFiles(f.peer, [{ path: "models.json", bytes: secret, mode: 0o600 }]);
+  await adapter.installCredentialFiles(f.peer, [{ path: "models.json", bytes: secret, mode: 0o600 }], ["example"]);
   expect(readFileSync(join(f.agentDir, "models.json"))).toEqual(secret);
   expect(f.writes).toEqual([]);
   expect(f.requests.every(item => !JSON.stringify(item.argv).includes("fixture-secret"))).toBe(true);
@@ -445,6 +669,28 @@ it("does not run credential commands or accept an exact-session mismatch", async
   expect(calls.some(args => args[0] === "auth")).toBe(false);
   expect(JSON.stringify(calls)).not.toContain("fixture-command");
   expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1"))).toEqual([]);
+}, 5000);
+
+it("activates Spider's own extension after installing filtered settings", async () => {
+  const f = fixture(), adapter = create!(f.options), scripts = join(f.releaseRoot, "scripts"), extensionDir = join(f.agentDir, "extensions");
+  mkdirSync(join(f.releaseRoot, "dist", "intercom"), { recursive: true, mode: 0o700 }); mkdirSync(scripts, { mode: 0o700 });
+  mkdirSync(extensionDir, { mode: 0o700 }); writeFileSync(join(extensionDir, "keep.ts"), "existing extension", { mode: 0o600 });
+  const bundle = join(f.releaseRoot, "dist", "extension.js");
+  writeFileSync(bundle, "export default () => {};", { mode: 0o600 });
+  writeFileSync(join(f.releaseRoot, "dist", "intercom", "broker.mjs"), "broker", { mode: 0o600 });
+  copyFileSync(join(process.cwd(), "scripts", "intercom-switchover.mjs"), join(scripts, "intercom-switchover.mjs"));
+  copyFileSync(join(process.cwd(), "scripts", "extension-shim.mjs"), join(scripts, "extension-shim.mjs"));
+  writeFileSync(join(f.agentDir, "settings.json"), '{"packages":["npm:pi-intercom","npm:other"],"extensions":["old.ts"],"defaultProjectTrust":"never"}', { mode: 0o600 });
+  const settings = { path: "settings.json", bytes: Buffer.from('{"theme":"sample"}'), mode: 0o600 as const };
+  const preview = inspectDestinationSettings({ home: f.home, destinationRoot: f.agentDir, entries: selectedSettingsDigests(settings), maximum: 1024 * 1024 });
+  await adapter.installFiles(f.peer, [settings], preview.fingerprint);
+  expect(JSON.parse(readFileSync(join(f.agentDir, "settings.json"), "utf8"))).toEqual({ packages: ["npm:pi-intercom", "npm:other"],
+    extensions: ["old.ts"], defaultProjectTrust: "never", theme: "sample" });
+  await adapter.switchover(f.peer, "op-1");
+  expect(JSON.parse(readFileSync(join(f.agentDir, "settings.json"), "utf8"))).toEqual({ packages: ["npm:other"],
+    extensions: ["old.ts"], defaultProjectTrust: "never", theme: "sample" });
+  expect(readFileSync(join(extensionDir, "spider.ts"), "utf8")).toContain(JSON.stringify(bundle));
+  expect(readFileSync(join(extensionDir, "keep.ts"), "utf8")).toBe("existing extension");
 }, 5000);
 
 it("uses the existing switchover transaction and retains old package files", async () => {

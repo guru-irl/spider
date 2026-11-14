@@ -27,7 +27,6 @@ if (authForRemote === authSource || authForRemote.includes('from "./') || config
 const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAULT_LIMITS = ${JSON.stringify(DEFAULT_LIMITS)};\n${machineIdForRemote}\n${configForRemote}\nreturn parseConfig;\n})();\n`;
 
 export const PROVISION_REMOTE_SCRIPT: string = selectedSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + String.raw`
-import { createHash } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -277,9 +276,29 @@ async function run(): Promise<unknown> {
     ensurePrivate(home, agentDir, false);
     if (!request.file || typeof request.file !== "object" || typeof request.file.path !== "string" ||
         (request.file.mode !== 0o600 && request.file.mode !== 0o700)) bad("invalid-file");
-    const bytes = assemble(stage, request.file.chunks, maximum);
-    try { installSelectedFiles({ destinationRoot: agentDir, files: [{ path: request.file.path, mode: request.file.mode, bytes }] }); }
-    finally { bytes.fill(0); }
+    const chunks = request.file.chunks;
+    if (!Array.isArray(chunks) || !chunks.length) bad("invalid-chunks");
+    const privateFile = chunks.every(item => item && typeof item.name === "string" && /^secret-file-[a-f0-9]{32}$/.test(item.name));
+    const publicFile = chunks.every(item => item && typeof item.name === "string" && /^public-[a-f0-9]{32}-[0-9]{1,5}$/.test(item.name));
+    if (!privateFile && !publicFile) bad("invalid-chunks");
+    const bytes = assemble(stage, chunks, maximum);
+    try {
+      const file = { path: request.file.path, mode: request.file.mode, bytes };
+      if (file.path === "settings.json") {
+        let value: Record<string, unknown>, filtered: unknown;
+        try { value = parseConfig(file); filtered = JSON.parse(rewriteSettings(value).toString("utf8")); }
+        catch { bad("invalid-file"); }
+        if (!isDeepStrictEqual(value, filtered)) bad("selection-not-allowed");
+        if (typeof request.expectedSettingsFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(request.expectedSettingsFingerprint)) bad("invalid-settings-preview");
+      }
+      if (privateFile) {
+        if (!Array.isArray(request.providers) || !request.providers.length || request.providers.length > 64 || new Set(request.providers).size !== request.providers.length ||
+            request.providers.some((provider: unknown) => typeof provider !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(provider))) bad("provider-consent-required");
+        assertCredentialSelectedFile(file, request.providers);
+      } else assertPublicSelectedFile(file);
+      installSelectedFiles({ destinationRoot: agentDir, files: [file],
+        ...(file.path === "settings.json" ? { expectedSettingsFingerprint: request.expectedSettingsFingerprint } : {}) });
+    } finally { bytes.fill(0); }
     return true;
   }
   if (action === "auth-install") {

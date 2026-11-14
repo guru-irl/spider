@@ -8,14 +8,14 @@ import { DEFAULT_LIMITS } from "../contracts";
 import type { Outcome, Peer, Transport } from "../contracts";
 import { openJournal } from "../journal";
 import { installPiAuth } from "../auth";
-import { installSelectedFiles } from "../selected-files";
-import type { SelectedFile } from "../selected-files";
+import { inspectDestinationSettings, installSelectedFiles } from "../selected-files";
+import type { SelectedFile, SettingsKeyDigest } from "../selected-files";
 import * as provisionModule from "../provision";
 import { bootstrapPeer, healthyInventory } from "./bootstrap-fixture";
 
 type Provision = (input: { operation: { id: string; machineId: string; expectedEpoch: null; kind: string; args: Record<string, never> }; peer: Peer;
   selected: readonly string[]; includeAuth: boolean; confirmedProviders: readonly string[]; expectedAuthBytes?: number;
-  expectedFiles?: readonly { path: string; size: number; mode: number }[] }, ports: unknown) => Promise<Outcome<{ hostingReady: boolean }>>;
+  expectedFiles?: readonly { path: string; size: number; mode: number }[]; expectedSelectionDigest?: string }, ports: unknown) => Promise<Outcome<{ hostingReady: boolean }>>;
 const provision = (provisionModule as { provision?: Provision }).provision;
 const roots: string[] = [];
 
@@ -76,6 +76,10 @@ function fixture() {
     bootstrap: { async probeAgentDirectory() {
       events.push("agent-directory-probe"); return { status: state.agentDirectory, core: { local: "fixture-local-core", remote: state.coreId } };
     },
+    async previewSettings(_peer: Peer, _home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: { local: string; remote: string }) {
+      if (core.local !== "fixture-local-core" || core.remote !== state.coreId) throw Object.assign(new Error("changed"), { code: "core-changed" });
+      events.push("settings-preview"); return inspectDestinationSettings({ home: root, destinationRoot: destination, entries, maximum });
+    },
     async claimIdentity(peer: Peer, operationId: string, core: { local: string; remote: string }) {
       if (!core || core.local !== "fixture-local-core" || core.remote !== state.coreId) throw Object.assign(new Error("changed"), { code: "core-changed" });
       events.push("identity");
@@ -93,8 +97,12 @@ function fixture() {
         expect(input).toMatchObject({ npmPrefix: virtual.npmPrefix, globalRoot: bootstrapPeer.globalRoot, pi: "1.2.0", intercom: "spider-owned" });
         return { pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, supervisor: virtual.supervisor };
       },
-      async installFiles(_peer: Peer, files: readonly SelectedFile[]) { events.push("files"); installSelectedFiles({ destinationRoot: destination, files }); },
-      async installCredentialFiles(_peer: Peer, files: readonly SelectedFile[]) { events.push("credential-files"); installSelectedFiles({ destinationRoot: destination, files }); },
+      async installFiles(_peer: Peer, files: readonly SelectedFile[], expectedSettingsFingerprint?: string) {
+        events.push("files"); installSelectedFiles({ destinationRoot: destination, files, expectedSettingsFingerprint });
+      },
+      async installCredentialFiles(_peer: Peer, files: readonly SelectedFile[], providers: readonly string[], expectedSettingsFingerprint?: string) {
+        expect(providers.length).toBeGreaterThan(0); events.push("credential-files"); installSelectedFiles({ destinationRoot: destination, files, expectedSettingsFingerprint });
+      },
       auth(_peer: Peer, _operationId: string) {
         return {
           async stage(bytes: Buffer) { events.push("auth-stage"); writeFileSync(stageFile, bytes, { mode: 0o600 }); return { file: stageFile }; },
@@ -196,8 +204,216 @@ it("without auth install succeeds but hosting remains disabled", async () => {
   expect(f.secretCollectionCalls).toEqual([]);
   expect(f.persisted[0].pi).toBe(bootstrapPeer.pi);
   expect(posix.isAbsolute(f.persisted[0].pi)).toBe(true);
-  expect(JSON.parse(readFileSync(join(f.destination, "settings.json"), "utf8"))).toEqual({ theme: "sample", packages: [] });
+  const settings = JSON.parse(readFileSync(join(f.destination, "settings.json"), "utf8"));
+  expect(settings).toEqual({ theme: "sample" });
+  expect(settings).not.toHaveProperty("packages");
   expect(f.preview).toHaveLength(1);
+}, 5000);
+
+it("installs selected Pi files and previews their metadata without their contents", async () => {
+  const f = fixture();
+  f.write(f.source, "settings.json", JSON.stringify({ defaultModel: "demo", theme: "sample", defaultProjectTrust: "always", packages: ["npm:ignored"] }));
+  const models = JSON.stringify({ providers: { demo: { apiKey: "${DEMO_KEY}" } } });
+  f.write(f.source, "models.json", models);
+  f.write(f.source, "keybindings.json", '{"app.exit":"ctrl+x"}');
+  f.write(f.source, "themes/sample.json", "theme contents");
+  f.write(f.source, "AGENTS.md", "instruction contents");
+  f.write(f.source, "skills/check/SKILL.md", "skill contents");
+  f.write(f.source, "skills/check/references/guide.md", "support contents");
+  f.write(f.source, "skills/unselected/SKILL.md", "do not copy");
+  const result = await provision!(f.request("portable", false, [], ["settings.json", "models.json", "keybindings.json", "themes", "AGENTS.md", "skills/check"]), f.ports);
+  expect(result).toMatchObject({ code: 0 });
+  expect(JSON.parse(readFileSync(join(f.destination, "settings.json"), "utf8"))).toEqual({ defaultModel: "demo", theme: "sample" });
+  expect(readFileSync(join(f.destination, "models.json"), "utf8")).toBe(models);
+  expect(readFileSync(join(f.destination, "keybindings.json"), "utf8")).toBe('{"app.exit":"ctrl+x"}');
+  expect(readFileSync(join(f.destination, "themes/sample.json"), "utf8")).toBe("theme contents");
+  expect(readFileSync(join(f.destination, "AGENTS.md"), "utf8")).toBe("instruction contents");
+  expect(readFileSync(join(f.destination, "skills/check/references/guide.md"), "utf8")).toBe("support contents");
+  expect(existsSync(join(f.destination, "skills/unselected"))).toBe(false);
+  expect(f.preview[0]).toMatchObject({ selectedFiles: [
+    { path: "AGENTS.md", size: 20, mode: 0o600 }, { path: "keybindings.json", size: 21, mode: 0o600 },
+    { path: "models.json", size: Buffer.byteLength(models), mode: 0o600 },
+    { path: "settings.json", size: Buffer.byteLength('{\n  "defaultModel": "demo",\n  "theme": "sample"\n}\n'), mode: 0o600 },
+    { path: "skills/check/SKILL.md", size: 14, mode: 0o600 }, { path: "skills/check/references/guide.md", size: 16, mode: 0o600 },
+    { path: "themes/sample.json", size: 14, mode: 0o600 },
+  ], settingsKeys: ["defaultModel", "theme"] });
+  expect(JSON.stringify({ result, preview: f.preview, events: f.events })).not.toContain("instruction contents");
+  expect(JSON.stringify({ result, preview: f.preview, events: f.events })).not.toContain("support contents");
+}, 5000);
+
+it("preserves precise box-only numbers when switchover removes legacy intercom", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", '{"theme":"source-theme"}');
+  const target = f.write(f.destination, "settings.json", '{"theme":"old-theme","large":9007199254740993,"nested":{"huge":1e400},"packages":["npm:pi-intercom","npm:other"]}');
+  expect(await provision!(f.request("settings-precise-switchover"), f.ports)).toMatchObject({ code: 0 });
+  const result = readFileSync(target, "utf8");
+  expect(result).toContain('"large": 9007199254740993'); expect(result).toContain('"huge": 1e400');
+  expect(JSON.parse(result).packages).toEqual(["npm:other"]); expect(JSON.parse(result).theme).toBe("source-theme");
+}, 5000);
+
+it("previews only settings keys whose values will actually change on the box", async () => {
+  const f = fixture();
+  f.write(f.source, "settings.json", JSON.stringify({ defaultModel: "same-model", theme: "new-theme",
+    compaction: { reserveTokens: 200, keepRecentTokens: 50, modelOverrides: { "demo/a": { reserveTokens: 900 } } } }));
+  f.write(f.destination, "settings.json", JSON.stringify({ defaultModel: "same-model", theme: "old-theme", defaultProjectTrust: "never",
+    compaction: { reserveTokens: 100, keepRecentTokens: 50, modelOverrides: { "demo/a": { reserveTokens: 800, local: "keep" } } } }));
+  const result = await provision!(f.request("settings-preview"), f.ports);
+  expect(result.code).toBe(0);
+  expect(f.preview[0]).toMatchObject({ settingsKeys: ["compaction.modelOverrides.demo/a.reserveTokens", "compaction.reserveTokens", "theme"] });
+  expect(JSON.stringify(f.preview)).not.toContain("new-theme"); expect(JSON.stringify(f.preview)).not.toContain("old-theme");
+  expect(JSON.parse(readFileSync(join(f.destination, "settings.json"), "utf8"))).toMatchObject({ defaultProjectTrust: "never", theme: "new-theme" });
+}, 5000);
+
+it("refuses invalid box settings before identity, release, or file changes", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", '{"theme":"sample"}');
+  const target = f.write(f.destination, "settings.json", "[invalid");
+  const outcome = await provision!(f.request("invalid-settings"), f.ports);
+  expect(outcome).toMatchObject({ code: 1, reason: "invalid-destination-settings" });
+  for (const action of ["confirm", "identity", "enrollment", "cleanup-secrets", "release", "files", "switchover"]) expect(f.events).not.toContain(action);
+  expect(readFileSync(target, "utf8")).toBe("[invalid");
+  expect(existsSync(`${target}.spider-roam.bak`)).toBe(false);
+}, 5000);
+
+it("checks box settings before provisioning even when the Mac has no settings file", async () => {
+  const f = fixture(); f.write(f.source, "AGENTS.md", "fixture instructions");
+  const target = f.write(f.destination, "settings.json", "[invalid");
+  const outcome = await provision!(f.request("invalid-settings-without-source", false, [], ["AGENTS.md"]), f.ports);
+  expect(outcome).toMatchObject({ code: 1, reason: "invalid-destination-settings" });
+  for (const action of ["confirm", "identity", "enrollment", "cleanup-secrets", "release", "files", "switchover"]) expect(f.events).not.toContain(action);
+  expect(readFileSync(target, "utf8")).toBe("[invalid"); expect(existsSync(join(f.destination, "AGENTS.md"))).toBe(false);
+}, 5000);
+
+it("rechecks box settings after consent even without a source settings file", async () => {
+  const f = fixture(); f.write(f.source, "AGENTS.md", "fixture instructions");
+  const target = f.write(f.destination, "settings.json", '{"defaultProjectTrust":"never"}');
+  f.ports.confirm = async () => { f.events.push("confirm"); f.write(f.destination, "settings.json", "[invalid"); return true; };
+  const outcome = await provision!(f.request("invalid-after-consent", false, [], ["AGENTS.md"]), f.ports);
+  expect(outcome).toMatchObject({ code: 1, reason: "invalid-destination-settings" });
+  for (const action of ["identity", "enrollment", "cleanup-secrets", "release", "files", "switchover"]) expect(f.events).not.toContain(action);
+  expect(readFileSync(target, "utf8")).toBe("[invalid"); expect(existsSync(join(f.destination, "AGENTS.md"))).toBe(false);
+}, 5000);
+
+it("refuses a box settings change made during consent before target-side mutation", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", '{"theme":"source-theme"}');
+  const target = f.write(f.destination, "settings.json", '{"theme":"old-theme","defaultProjectTrust":"never"}');
+  f.ports.confirm = async () => {
+    f.events.push("confirm"); f.write(f.destination, "settings.json", '{"theme":"other-theme","defaultProjectTrust":"never"}'); return true;
+  };
+  const outcome = await provision!(f.request("settings-race"), f.ports);
+  expect(outcome).toMatchObject({ code: 1, reason: "settings-preview-changed" });
+  for (const action of ["identity", "enrollment", "cleanup-secrets", "release", "files", "switchover"]) expect(f.events).not.toContain(action);
+  expect(readFileSync(target, "utf8")).toBe('{"theme":"other-theme","defaultProjectTrust":"never"}');
+  expect(existsSync(`${target}.spider-roam.bak`)).toBe(false);
+}, 5000);
+
+it("does not overwrite a box edit made after the final preview and before the settings write", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", '{"theme":"source-theme"}');
+  const target = f.write(f.destination, "settings.json", '{"theme":"old-theme","defaultProjectTrust":"never"}');
+  const install = f.ports.transfer.installFiles;
+  f.ports.transfer.installFiles = async (peer, files, expectedSettingsFingerprint) => {
+    f.write(f.destination, "settings.json", '{"theme":"late-edit","defaultProjectTrust":"never"}');
+    await install(peer, files, expectedSettingsFingerprint);
+  };
+  expect(await provision!(f.request("settings-late-race"), f.ports)).toMatchObject({ code: 3, reason: "settings-preview-changed" });
+  expect(readFileSync(target, "utf8")).toBe('{"theme":"late-edit","defaultProjectTrust":"never"}');
+  expect(existsSync(`${target}.spider-roam.bak`)).toBe(false); expect(f.events).not.toContain("switchover");
+}, 5000);
+
+it("reports done without changing bytes when the box settings file was initially missing", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", '{"theme":"source-theme"}');
+  const target = join(f.destination, "settings.json"), request = f.request("settings-missing");
+  expect(await provision!(request, f.ports)).toMatchObject({ code: 0 });
+  const first = readFileSync(target), firstFileWrites = f.events.filter(value => value === "files").length;
+  expect(JSON.parse(first.toString("utf8"))).toEqual({ theme: "source-theme" });
+  expect(await provision!(request, f.ports)).toMatchObject({ code: 0 });
+  expect(readFileSync(target)).toEqual(first); expect(f.events.filter(value => value === "files")).toHaveLength(firstFileWrites);
+  expect(existsSync(`${target}.spider-roam.bak`)).toBe(false); expect(f.confirmations).toHaveLength(1);
+}, 5000);
+
+it("retries a lost settings-write reply using the approved preview and first backup", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", '{"theme":"source-theme"}');
+  const original = '{"theme":"old-theme","defaultProjectTrust":"never"}', target = f.write(f.destination, "settings.json", original);
+  const install = f.ports.transfer.installFiles; let lost = false;
+  f.ports.transfer.installFiles = async (peer, files, expectedSettingsFingerprint) => {
+    await install(peer, files, expectedSettingsFingerprint);
+    if (!lost) { lost = true; throw Object.assign(new Error("reply lost"), { code: "cli-timeout" }); }
+  };
+  expect(await provision!(f.request("settings-retry"), f.ports)).toMatchObject({ code: 3, reason: "cli-timeout" });
+  const first = readFileSync(target), backup = `${target}.spider-roam.bak`;
+  expect(readFileSync(backup, "utf8")).toBe(original);
+  expect(await provision!(f.request("settings-retry"), f.ports)).toMatchObject({ code: 0 });
+  expect(readFileSync(target)).toEqual(first); expect(readFileSync(backup, "utf8")).toBe(original);
+  expect(f.confirmations).toHaveLength(1);
+}, 5000);
+
+it("does not reuse consent after a box settings edit between interrupted retries", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", '{"theme":"source-theme"}');
+  const target = f.write(f.destination, "settings.json", '{"theme":"old-theme"}');
+  const install = f.ports.transfer.installFiles; let lost = false;
+  f.ports.transfer.installFiles = async (peer, files, expectedSettingsFingerprint) => {
+    await install(peer, files, expectedSettingsFingerprint);
+    if (!lost) { lost = true; throw Object.assign(new Error("reply lost"), { code: "cli-timeout" }); }
+  };
+  expect(await provision!(f.request("settings-retry-edited"), f.ports)).toMatchObject({ code: 3, reason: "cli-timeout" });
+  f.write(f.destination, "settings.json", '{"theme":"external-edit"}');
+  expect(await provision!(f.request("settings-retry-edited"), f.ports)).toMatchObject({ code: 1, reason: "settings-preview-changed" });
+  expect(readFileSync(target, "utf8")).toBe('{"theme":"external-edit"}');
+  expect(f.confirmations).toHaveLength(1); expect(f.events.filter(value => value === "identity")).toHaveLength(1);
+}, 5000);
+
+it("copies credential-bearing settings through the private consented merge", async () => {
+  const f = fixture(), secret = "fixture-secret", model = `https://models.invalid/?token=${secret}`;
+  f.write(f.source, "settings.json", JSON.stringify({ defaultModel: model }));
+  f.write(f.source, "auth.json", JSON.stringify({ "github-copilot": { type: "oauth", access: "fixture-auth" } }));
+  const target = f.write(f.destination, "settings.json", '{"defaultModel":"old-model","defaultProjectTrust":"never"}');
+  expect(await provision!(f.request("settings-secret-denied", true, ["github-copilot"]), f.ports)).toMatchObject({ code: 1, reason: "provider-consent-required" });
+  expect(f.events).not.toContain("identity");
+  const outcome = await provision!(f.request("settings-secret-approved", true, ["settings", "github-copilot"]), f.ports);
+  expect(outcome).toMatchObject({ code: 0 }); expect(f.events).toContain("credential-files");
+  expect(JSON.parse(readFileSync(target, "utf8"))).toEqual({ defaultModel: model, defaultProjectTrust: "never" });
+  expect(JSON.stringify({ outcome, preview: f.preview, events: f.events })).not.toContain(secret);
+}, 5000);
+
+it("copies credential-bearing model definitions only after consent for their provider", async () => {
+  const f = fixture(), models = JSON.stringify({ providers: { demo: { apiKey: "fixture-secret" } } });
+  f.write(f.source, "models.json", models);
+  f.write(f.source, "auth.json", JSON.stringify({ "github-copilot": { type: "oauth", access: "auth-secret" } }));
+  const denied = await provision!(f.request("model-denied", true, ["github-copilot"], ["models.json"]), f.ports);
+  expect(denied).toMatchObject({ code: 1, reason: "provider-consent-required" });
+  expect(f.events).not.toContain("identity"); expect(existsSync(join(f.destination, "models.json"))).toBe(false);
+  const approved = await provision!(f.request("model-approved", true, ["demo", "github-copilot"], ["models.json"]), f.ports);
+  expect(approved).toMatchObject({ code: 0 });
+  expect(f.confirmations).toEqual([{ target: bootstrapPeer.alias, providers: ["demo", "github-copilot"] }]);
+  expect(f.events).toContain("credential-files");
+  expect(readFileSync(join(f.destination, "models.json"), "utf8")).toBe(models);
+  expect(JSON.stringify({ denied, approved, preview: f.preview, events: f.events })).not.toContain("fixture-secret");
+  expect(JSON.stringify({ denied, approved, preview: f.preview, events: f.events })).not.toContain("auth-secret");
+}, 5000);
+
+it.each([false, true])("clears credential configuration bytes after transfer (failure: %s)", async fail => {
+  const f = fixture();
+  f.write(f.source, "models.json", JSON.stringify({ providers: { demo: { apiKey: "fixture-secret" } } }));
+  f.write(f.source, "auth.json", JSON.stringify({ "github-copilot": { type: "oauth", access: "auth-secret" } }));
+  const install = f.ports.transfer.installCredentialFiles, retained: Buffer[] = [];
+  f.ports.transfer.installCredentialFiles = async (peer, files, providers) => {
+    retained.push(...files.map(file => file.bytes));
+    expect(providers).toEqual(["demo"]);
+    if (fail) throw new Error("transfer failed");
+    await install(peer, files, providers);
+  };
+  const outcome = await provision!(f.request(`clear-secret-${fail}`, true, ["demo", "github-copilot"], ["models.json"]), f.ports);
+  expect(outcome.code).toBe(fail ? 3 : 0);
+  expect(retained).toHaveLength(1);
+  expect(retained[0].length).toBeGreaterThan(0);
+  expect(retained[0].every(byte => byte === 0)).toBe(true);
+}, 5000);
+
+it("includes the selected auth payload in the metadata-only preview", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.write(f.source, "auth.json", JSON.stringify({ "github-copilot": { type: "oauth", access: "fixture-secret" }, other: { key: "other-secret" } }));
+  expect(await provision!(f.request("auth-preview", true, ["github-copilot"]), f.ports)).toMatchObject({ code: 0 });
+  const size = Buffer.byteLength('{"github-copilot":{"type":"oauth","access":"fixture-secret"}}\n');
+  expect(f.preview[0]).toMatchObject({ selectedFiles: expect.arrayContaining([{ path: "auth.json", size, mode: 0o600 }]) });
+  expect(JSON.stringify(f.preview)).not.toContain("fixture-secret"); expect(JSON.stringify(f.preview)).not.toContain("other-secret");
 }, 5000);
 
 it("refused provider consent leaves identity and auth unmodified", async () => {
@@ -216,6 +432,17 @@ it("changed selected files after preview are refused before consent and target-s
   const f = fixture(); f.write(f.source, "settings.json", '{"theme":"changed"}');
   const result = await provision!({ ...f.request("files-changed"), expectedFiles: [{ path: "settings.json", size: 1, mode: 0o600 }] }, f.ports);
   expect(result).toMatchObject({ code: 1, reason: "selected-files-changed" });
+  expect(f.events).not.toContain("confirm"); expect(f.events).not.toContain("identity"); expect(f.events).not.toContain("files");
+}, 5000);
+
+it("refuses selected bytes that differ from the preview even when their size matches", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", '{"theme":"later"}');
+  const previewBytes = Buffer.from('{\n  "theme": "first"\n}\n');
+  const digest = createHash("sha256").update(JSON.stringify([{ path: "settings.json", mode: 0o600,
+    sha256: createHash("sha256").update(previewBytes).digest("hex") }])).digest("hex");
+  const outcome = await provision!({ ...f.request("same-size-change"), expectedSelectionDigest: digest,
+    expectedFiles: [{ path: "settings.json", size: previewBytes.length, mode: 0o600 }] }, f.ports);
+  expect(outcome).toMatchObject({ code: 1, reason: "selected-files-changed" });
   expect(f.events).not.toContain("confirm"); expect(f.events).not.toContain("identity"); expect(f.events).not.toContain("files");
 }, 5000);
 

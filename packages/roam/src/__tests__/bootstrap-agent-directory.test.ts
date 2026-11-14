@@ -1,10 +1,12 @@
 import { afterEach, expect, it } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import * as bootstrap from "../bootstrap-script";
+import { selectedSettingsDigests } from "../selected-files";
 
+const settingsSource = (bootstrap as { BOOTSTRAP_SETTINGS_SCRIPT?: string }).BOOTSTRAP_SETTINGS_SCRIPT;
 const source = (bootstrap as { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT?: string }).BOOTSTRAP_AGENT_DIRECTORY_SCRIPT;
 const roots: string[] = [];
 function fixture() {
@@ -25,6 +27,49 @@ function fixture() {
   return { root, home, run };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+it("probes selected box settings through a fixed read-only program", () => {
+  expect(settingsSource).toBeTypeOf("string");
+  const f = fixture(), agentDir = join(f.home, ".pi", "agent"); mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+  const target = join(agentDir, "settings.json"), existing = '{"theme":"old-value","defaultModel":"same-value","defaultProjectTrust":"never"}';
+  writeFileSync(target, existing, { mode: 0o600 });
+  const entries = selectedSettingsDigests({ path: "settings.json", bytes: Buffer.from('{"theme":"new-value","defaultModel":"same-value"}'), mode: 0o600 });
+  const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", settingsSource!], {
+    input: JSON.stringify({ home: f.home, agentDir, paths: entries.map(entry => entry.path), maximum: 1024 * 1024 }), cwd: f.home,
+    env: { ...process.env, HOME: f.home }, encoding: "utf8", timeout: 3000,
+  });
+  expect(child.status).toBe(0); expect(child.stderr).toBe("");
+  const reply = JSON.parse(child.stdout) as { version: number; kind: string; value: { fingerprint: string; digests: (string | null)[] } };
+  expect(reply).toMatchObject({ version: 1, kind: "settings-preview", value: { fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/) } });
+  expect(reply.value.digests).toHaveLength(entries.length);
+  expect(entries.filter((entry, index) => entry.sha256 !== reply.value.digests[index]).map(entry => entry.path.join("."))).toEqual(["theme"]);
+  expect(child.stdout).not.toContain("old-value"); expect(child.stdout).not.toContain("new-value"); expect(child.stdout).not.toContain("same-value");
+  expect(readFileSync(target, "utf8")).toBe(existing); expect(existsSync(`${target}.spider-roam.bak`)).toBe(false);
+}, 5000);
+
+it("refuses requests to hash unlisted box settings", () => {
+  const f = fixture(), agentDir = join(f.home, ".pi", "agent"); mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+  const target = join(agentDir, "settings.json"), original = '{"defaultProjectTrust":"never"}'; writeFileSync(target, original, { mode: 0o600 });
+  const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", settingsSource!], {
+    input: JSON.stringify({ home: f.home, agentDir, paths: [["defaultProjectTrust"]], maximum: 1024 * 1024 }), cwd: f.home,
+    env: { ...process.env, HOME: f.home }, encoding: "utf8", timeout: 3000,
+  });
+  expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toEqual({ version: 1, kind: "settings-preview", error: "invalid-settings-preview" });
+  expect(child.stdout).not.toContain("never"); expect(readFileSync(target, "utf8")).toBe(original);
+}, 5000);
+
+it("reports invalid box settings without changing them during the read-only preview", () => {
+  expect(settingsSource).toBeTypeOf("string");
+  const f = fixture(), agentDir = join(f.home, ".pi", "agent"); mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+  const target = join(agentDir, "settings.json"); writeFileSync(target, "[broken", { mode: 0o600 });
+  const entries = selectedSettingsDigests({ path: "settings.json", bytes: Buffer.from('{"theme":"sample"}'), mode: 0o600 });
+  const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", settingsSource!], {
+    input: JSON.stringify({ home: f.home, agentDir, paths: entries.map(entry => entry.path), maximum: 1024 * 1024 }), cwd: f.home,
+    env: { ...process.env, HOME: f.home }, encoding: "utf8", timeout: 3000,
+  });
+  expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toEqual({ version: 1, kind: "settings-preview", error: "invalid-destination-settings" });
+  expect(readFileSync(target, "utf8")).toBe("[broken"); expect(existsSync(`${target}.spider-roam.bak`)).toBe(false);
+}, 5000);
 
 it("accepts only overrides that resolve to the default pi agent directory", () => {
   expect(source).toBeTypeOf("string");

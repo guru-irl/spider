@@ -5,6 +5,7 @@ import type { AuthPorts, AuthStage } from "./auth";
 import type { Limits, Peer } from "./contracts";
 import type { ProvisionDestination, ProvisionPorts, ProvisionVerification } from "./provision-contracts";
 import type { SelectedFile } from "./selected-files";
+import { assertCredentialSelectedFile, assertPublicSelectedFile } from "./selected-files";
 import type { ProvisionTransport } from "./transport";
 import type { InstalledRelease, ReleaseReason } from "./release-receipt";
 import { PROVISION_REMOTE_SCRIPT } from "./provision-remote-script";
@@ -24,7 +25,8 @@ function failure(error: unknown, action: string): HerdrError {
     "consent-required", "invalid-provision-request", "invalid-provision-reply", "invalid-request", "unsafe-path", "unsafe-staging", "unsafe-context",
     "invalid-chunk", "invalid-chunks", "chunk-mismatch", "too-large", "command-failed", "invalid-file", "invalid-release", "release-hash-mismatch",
     "incomplete-release", "pi-version-mismatch", "invalid-unit", "invalid-systemctl", "unsafe-release", "invalid-switchover-journal",
-    "missing-switchover-backup", "selection-not-allowed", "unsafe-destination", "invalid-providers", "invalid-auth", "unsafe-auth",
+    "missing-switchover-backup", "selection-not-allowed", "unsafe-destination", "invalid-destination-settings", "settings-preview-changed", "invalid-settings-preview",
+    "credential-file-requires-consent", "provider-consent-required", "invalid-providers", "invalid-auth", "unsafe-auth",
     "provider-unavailable", "unsupported-credential-command", "release-arguments-changed", "invalid-release-receipt", "release-evidence-unavailable",
     "release-in-progress", "process-identity-unavailable", "release-launch-uncertain", "operation-arguments-changed", "short-write-pending"]);
   const candidate = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "";
@@ -93,34 +95,58 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
       return await use(chunks);
     } finally { await cleanup(target, names); }
   }
-  async function secretUpload(target: Peer, name: string, bytes: Buffer): Promise<void> {
+  async function secretUpload(target: Peer, name: string, bytes: Buffer, providers: readonly string[]): Promise<void> {
     if (!Buffer.isBuffer(bytes) || bytes.length > limits.agentBytes) throw new HerdrError("too-large", "Provisioning input is too large");
     const count = Math.max(1, Math.ceil(bytes.length / limits.chunkBytes));
     for (let index = 0; index < count; index++) {
       const offset = index * limits.chunkBytes, piece = bytes.subarray(offset, Math.min(bytes.length, offset + limits.chunkBytes));
-      await action(target, "secret-chunk", { name, offset, data: piece.toString("base64") });
+      await action(target, "secret-chunk", { name, offset, data: piece.toString("base64"), providers });
     }
   }
-  async function installFiles(target: Peer, files: readonly SelectedFile[], secret = false): Promise<void> {
-    for (const file of files) {
-      if (secret) {
-        const name = `secret-file-${tag("secret-file", file.path)}`;
-        try {
-          await secretUpload(target, name, file.bytes);
-          await action(target, "install-files", { file: { path: file.path, mode: file.mode,
-            chunks: [{ name, size: file.bytes.length, sha256: digest(file.bytes) }] } });
-        } finally { await cleanup(target, [name]); }
-      } else {
-        await publicUpload(target, file.path, file.bytes, chunks => action(target, "install-files", { file: { path: file.path, mode: file.mode, chunks } }));
-      }
-      installedFiles.set(file.path, file.mode);
+  async function installFiles(target: Peer, files: readonly SelectedFile[], providers?: readonly string[], expectedSettingsFingerprint?: string): Promise<void> {
+    if (expectedSettingsFingerprint !== undefined && (typeof expectedSettingsFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(expectedSettingsFingerprint))) {
+      throw new HerdrError("invalid-settings-preview", "Invalid settings preview");
     }
+    if (!Array.isArray(files) || files.length > 10_000) throw new HerdrError("too-large", "Provisioning input is too large");
+    if (providers !== undefined && (!Array.isArray(providers) || !providers.length || providers.length > 64 ||
+        new Set(providers).size !== providers.length || providers.some(name => typeof name !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(name)))) {
+      throw new HerdrError("provider-consent-required", "Authentication providers must be confirmed before installation");
+    }
+    const consented = providers === undefined ? undefined : [...providers], snapshots: SelectedFile[] = [];
+    try {
+      let total = 0;
+      for (const file of files) {
+        if (!file || !Buffer.isBuffer(file.bytes) || (total += file.bytes.length) > limits.agentBytes) throw new HerdrError("too-large", "Provisioning input is too large");
+        snapshots.push({ ...file, bytes: Buffer.from(file.bytes) });
+      }
+      if (new Set(snapshots.map(file => file.path)).size !== snapshots.length) throw new HerdrError("selection-not-allowed", "Invalid selected files");
+      const secret = consented !== undefined;
+      if (secret) for (const file of snapshots) assertCredentialSelectedFile(file, consented);
+      else for (const file of snapshots) assertPublicSelectedFile(file);
+      if (snapshots.some(file => file.path === "settings.json") && !expectedSettingsFingerprint) {
+        throw new HerdrError("invalid-settings-preview", "Settings require an approved preview");
+      }
+      for (const file of snapshots) {
+        const settingsGuard = file.path === "settings.json" && expectedSettingsFingerprint ? { expectedSettingsFingerprint } : {};
+        if (secret) {
+          const name = `secret-file-${tag("secret-file", file.path)}`;
+          try {
+            await secretUpload(target, name, file.bytes, consented);
+            await action(target, "install-files", { providers: consented, ...settingsGuard, file: { path: file.path, mode: file.mode,
+              chunks: [{ name, size: file.bytes.length, sha256: digest(file.bytes) }] } });
+          } finally { await cleanup(target, [name]); }
+        } else {
+          await publicUpload(target, file.path, file.bytes, chunks => action(target, "install-files", { ...settingsGuard, file: { path: file.path, mode: file.mode, chunks } }));
+        }
+        installedFiles.set(file.path, file.mode);
+      }
+    } finally { for (const file of snapshots) file.bytes.fill(0); }
   }
   function auth(target: Peer, requestedOperationId: string): AuthPorts {
     if (requestedOperationId !== operationId) throw new HerdrError("invalid-operation", "Provisioning operation changed");
     const name = `secret-auth-${tag("secret-auth", "auth.json")}`, stagedFile = join(stage, name);
     return {
-      async stage(bytes) { await secretUpload(target, name, bytes); return { file: stagedFile }; },
+      async stage(bytes) { await secretUpload(target, name, bytes, options.piProviders); return { file: stagedFile }; },
       async install(value, providers) {
         if (value.file !== stagedFile) throw new HerdrError("unsafe-auth", "Invalid authentication staging file");
         await action(target, "auth-install", { name, providers });
@@ -191,8 +217,9 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
         observation = await observe();
       }
     },
-    installFiles: (target: Peer, files: readonly SelectedFile[]) => installFiles(target, files),
-    installCredentialFiles: (target: Peer, files: readonly SelectedFile[]) => installFiles(target, files, true),
+    installFiles: (target: Peer, files: readonly SelectedFile[], expectedSettingsFingerprint?: string) => installFiles(target, files, undefined, expectedSettingsFingerprint),
+    installCredentialFiles: (target: Peer, files: readonly SelectedFile[], providers: readonly string[], expectedSettingsFingerprint?: string) =>
+      installFiles(target, files, providers, expectedSettingsFingerprint),
     auth,
     async verifyPeer() {
       const files = [...installedFiles].map(([path, mode]) => ({ path, mode }));

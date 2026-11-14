@@ -1,17 +1,22 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import * as bytesClient from "../../../herdr/src/client/bytes";
 import * as coreClient from "../../../herdr/src/client/hc";
 import * as liveness from "../../../herdr/src/client/liveness";
 import { HerdrError } from "../../../herdr/src/client/parse";
 import * as transportModule from "../transport";
-import { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_SCRIPT } from "../bootstrap-script";
+import { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from "../bootstrap-script";
+import { selectedSettingsDigests } from "../selected-files";
+import type { SettingsDestinationPreview, SettingsKeyDigest } from "../selected-files";
 import type { Journal, Peer, Transport } from "../contracts";
 import { bootstrapPeer, inventoryEnvelope } from "./bootstrap-fixture";
 
 type CoreFence = { local: string; remote: string };
 const coreFence: CoreFence = { local: "local-core", remote: "remote-core" };
 type ProvisionTransport = { transport: Transport; probeAgentDirectory(peer: Peer, home: string): Promise<{ status: "default" | "custom" | "unknown"; core: CoreFence }>;
+  previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence): Promise<SettingsDestinationPreview>;
   claimIdentity(peer: Peer, operationId: string, core: CoreFence): Promise<{ machineId: string; coreId: string }>;
   executeProvision(peer: Peer, request: Record<string, unknown>): Promise<unknown>;
   launchRelease(peer: Peer, operationId: string, requestFile: string): Promise<{ terminal: string }> };
@@ -27,6 +32,7 @@ function fixture() {
     reply: { version: 1, kind: "identity", coreId: "remote-core", machineId: bootstrapPeer.machineId } as Record<string, unknown>,
     provisionReply: { version: 1, kind: "provision", value: true } as Record<string, unknown>, provisionError: null as Error | null,
     agentDirectoryReply: { version: 1, kind: "agent-directory", value: "default" } as Record<string, unknown>,
+    settingsReply: { version: 1, kind: "settings-preview", value: { fingerprint: "a".repeat(64), digests: ["b".repeat(64)] } } as Record<string, unknown>,
     runError: null as Error | null };
   const journal: Journal = {
     begin() { return { kind: "pending", result: null }; },
@@ -45,6 +51,7 @@ function fixture() {
     if (argv.includes("cat")) return Buffer.from(JSON.stringify({ machineId: bootstrapPeer.machineId }));
     if (state.replaceDuringCall) state.remoteCore = "replacement-core";
     if (argv.includes(BOOTSTRAP_AGENT_DIRECTORY_SCRIPT)) return Buffer.from(JSON.stringify(state.agentDirectoryReply));
+    if (argv.includes(BOOTSTRAP_SETTINGS_SCRIPT)) return Buffer.from(JSON.stringify(state.settingsReply));
     if (argv.includes(BOOTSTRAP_SCRIPT)) return Buffer.from(JSON.stringify(inventoryEnvelope()));
     const request = JSON.parse(options.stdin!.toString("utf8")) as { action?: string };
     if (request.action && state.provisionError) throw state.provisionError;
@@ -53,7 +60,7 @@ function fixture() {
   const fixtureRoot = process.env.SPIDER_GLOBAL_ROOT;
   if (!fixtureRoot) throw new Error("Fixture global root is required");
   const options = { binary: "/fixture/hc", env: { HC_SOCKET: resolve(fixtureRoot, "provision-fixture.sock"), HC_SESSION: "fixture" }, enrolled: [bootstrapPeer] };
-  const consent = (peer: Peer = bootstrapPeer) => journal.record("op-1", "provision-consent", { target: peer.alias, machineId: peer.machineId, approved: true, providers: [] });
+  const consent = (peer: Peer = bootstrapPeer) => journal.record("op-1", "provision-consent", { target: peer.alias, machineId: peer.machineId, approved: true, providers: ["github-copilot"] });
   return { actions, calls, controlCalls, events, state, journal, options, consent };
 }
 
@@ -74,6 +81,57 @@ it("checks the target agent directory read-only before enrollment and rejects un
   expect(f.calls).toHaveLength(before);
   f.state.agentDirectoryReply = { version: 1, kind: "agent-directory", value: "default" }; f.state.replaceDuringCall = true;
   await expect(port.probeAgentDirectory(bootstrapPeer, "/home/fixture")).rejects.toMatchObject({ code: "core-changed" });
+}, 5000);
+
+it("does not send source settings value digests to the box before consent", async () => {
+  const f = fixture(), port = create!(f.options, f.journal), entries = [{ path: ["theme"], sha256: "c".repeat(64) }];
+  f.state.settingsReply = { version: 1, kind: "settings-preview", value: { fingerprint: "a".repeat(64), digests: ["b".repeat(64)] } };
+  await port.previewSettings(bootstrapPeer, "/home/fixture", entries, 1024, { local: "local-core", remote: "remote-core" });
+  const request = f.calls.find(call => call.argv.includes(BOOTSTRAP_SETTINGS_SCRIPT));
+  expect(request).toBeTruthy(); expect(request!.stdin!.toString("utf8")).not.toContain(entries[0].sha256);
+}, 5000);
+
+it("runs the actual settings probe through transport without sending source-value hashes", async () => {
+  const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
+  const root = mkdtempSync(join(scratch, "settings-transport-")), home = join(root, "home"), agent = join(home, ".pi", "agent");
+  mkdirSync(agent, { recursive: true, mode: 0o700 });
+  try {
+    writeFileSync(join(agent, "settings.json"), '{"theme":"box-value","defaultModel":"shared-value","defaultProjectTrust":"never"}', { mode: 0o600 });
+    const entries = selectedSettingsDigests({ path: "settings.json", bytes: Buffer.from('{"theme":"source-value","defaultModel":"shared-value"}'), mode: 0o600 });
+    const f = fixture(), port = create!(f.options, f.journal); let request = "";
+    vi.spyOn(bytesClient, "invokeBytes").mockImplementation(async (_binary, argv, _env, options) => {
+      expect(argv).toContain(BOOTSTRAP_SETTINGS_SCRIPT); request = options.stdin!.toString("utf8");
+      const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", BOOTSTRAP_SETTINGS_SCRIPT],
+        { input: options.stdin, env: { ...process.env, HOME: home }, cwd: home, encoding: "utf8", timeout: 3000 });
+      expect(child.status).toBe(0); expect(child.stderr).toBe(""); return Buffer.from(child.stdout);
+    });
+    const preview = await port.previewSettings(bootstrapPeer, home, entries, 1024 * 1024, coreFence);
+    expect(preview.changedKeys).toEqual(["theme"]); expect(preview.fingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(request).not.toContain("source-value"); for (const entry of entries) expect(request).not.toContain(entry.sha256);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 5000);
+
+it("core-fences the read-only settings preview and sends only key paths", async () => {
+  const f = fixture(), port = create!(f.options, f.journal);
+  expect(port.previewSettings).toBeTypeOf("function");
+  const entries = selectedSettingsDigests({ path: "settings.json", bytes: Buffer.from('{"theme":"fixture-sensitive-value"}'), mode: 0o600 });
+  expect(await port.previewSettings(bootstrapPeer, "/home/fixture", entries, 1024 * 1024, coreFence))
+    .toEqual({ fingerprint: "a".repeat(64), changedKeys: ["theme"] });
+  const call = f.calls.at(-1)!;
+  expect(call.argv).toContain(BOOTSTRAP_SETTINGS_SCRIPT); expect(call.argv).toContain("--stdin");
+  expect(JSON.parse(call.stdin!.toString("utf8"))).toEqual({ home: "/home/fixture", agentDir: "/home/fixture/.pi/agent", paths: entries.map(entry => entry.path), maximum: 1024 * 1024 });
+  expect(JSON.stringify(call.argv)).not.toContain("fixture-sensitive-value"); expect(call.stdin!.toString("utf8")).not.toContain("fixture-sensitive-value");
+  expect(f.events.slice(-5)).toEqual(["server", "machine", "identity", "server", "machine"]);
+  f.state.settingsReply = { version: 1, kind: "settings-preview", error: "invalid-destination-settings" };
+  await expect(port.previewSettings(bootstrapPeer, "/home/fixture", entries, 1024 * 1024, coreFence)).rejects.toMatchObject({ code: "invalid-destination-settings" });
+  f.state.settingsReply = { version: 1, kind: "settings-preview", error: "fixture-secret" };
+  await expect(port.previewSettings(bootstrapPeer, "/home/fixture", entries, 1024 * 1024, coreFence)).rejects.toMatchObject({ code: "invalid-bootstrap-reply" });
+  f.state.settingsReply = { version: 1, kind: "settings-preview", value: { fingerprint: "a".repeat(64), digests: ["defaultProjectTrust"] } };
+  await expect(port.previewSettings(bootstrapPeer, "/home/fixture", entries, 1024 * 1024, coreFence)).rejects.toMatchObject({ code: "invalid-bootstrap-reply" });
+  f.state.settingsReply = { version: 1, kind: "settings-preview", value: { fingerprint: "a".repeat(64), digests: [entries[0].sha256] } };
+  expect(await port.previewSettings(bootstrapPeer, "/home/fixture", entries, 1024 * 1024, coreFence)).toEqual({ fingerprint: "a".repeat(64), changedKeys: [] });
+  f.state.replaceDuringCall = true;
+  await expect(port.previewSettings(bootstrapPeer, "/home/fixture", entries, 1024 * 1024, coreFence)).rejects.toMatchObject({ code: "core-changed" });
 }, 5000);
 
 it("refuses a core replacement between the directory probe, inventory, and identity claim", async () => {
@@ -129,7 +187,7 @@ it("reconciles an uncertain launch using a validated core-fenced receipt", async
 it("fences an enrolled installer and sends sensitive request data only on stdin", async () => {
   const f = fixture(), port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   const request = { action: "secret-chunk", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
-    node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi, data: Buffer.from("fixture-secret").toString("base64") };
+    node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi, providers: ["github-copilot"], data: Buffer.from("fixture-secret").toString("base64") };
   await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "consent-required" });
   f.consent();
   expect(await port.executeProvision(handle, request)).toBe(true);
@@ -141,6 +199,27 @@ it("fences an enrolled installer and sends sensitive request data only on stdin"
   expect(JSON.stringify(call.argv)).not.toContain("fixture-secret");
   expect(JSON.stringify(call.argv)).not.toContain(request.data);
   expect(f.events.slice(-5)).toEqual(["server", "machine", "identity", "server", "machine"]);
+}, 5000);
+
+it("refuses credential chunks and files for an unconsented provider before sending bytes", async () => {
+  const f = fixture();
+  f.journal.record("op-1", "provision-consent", { target: bootstrapPeer.alias, machineId: bootstrapPeer.machineId, approved: true, providers: ["github-copilot"] });
+  const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer), before = f.calls.length;
+  const base = { operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi };
+  const chunk = { ...base, action: "secret-chunk", providers: ["demo"], data: Buffer.from("fixture-secret").toString("base64") };
+  await expect(port.executeProvision(handle, chunk)).rejects.toMatchObject({ code: "consent-required" });
+  await expect(port.executeProvision(handle, { ...chunk, providers: [] })).rejects.toMatchObject({ code: "consent-required" });
+  await expect(port.executeProvision(handle, { ...chunk, providers: ["github-copilot", "github-copilot"] })).rejects.toMatchObject({ code: "consent-required" });
+  await expect(port.executeProvision(handle, { ...base, action: "auth-install", providers: ["demo"] })).rejects.toMatchObject({ code: "consent-required" });
+  await expect(port.executeProvision(handle, { ...base, action: "auth-install" })).rejects.toMatchObject({ code: "consent-required" });
+  await expect(port.executeProvision(handle, { ...base, action: "install-files", providers: ["demo"],
+    file: { path: "models.json", chunks: [{ name: "secret-file-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }] } })).rejects.toMatchObject({ code: "consent-required" });
+  expect(f.calls).toHaveLength(before);
+  expect(await port.executeProvision(handle, { ...chunk, providers: ["github-copilot"] })).toBe(true);
+  expect(await port.executeProvision(handle, { ...base, action: "auth-install", providers: ["github-copilot"] })).toBe(true);
+  expect(f.calls.length).toBeGreaterThan(before);
+  expect(JSON.stringify(f.calls.at(-1)!.argv)).not.toContain("fixture-secret");
 }, 5000);
 
 it("admits a consented enrollment action through the real transport policy", async () => {
@@ -166,11 +245,19 @@ it.each(["invalid-enrollment", "unsafe-enrollment", "enrollment-identity-mismatc
     node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi })).rejects.toMatchObject({ code: reason });
 }, 5000);
 
+it.each(["invalid-destination-settings", "settings-preview-changed", "invalid-settings-preview", "credential-file-requires-consent", "provider-consent-required"])("preserves the named %s settings refusal", async reason => {
+  const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  f.state.provisionReply = { version: 1, kind: "provision", error: reason };
+  await expect(port.executeProvision(handle, { action: "install-files", operationId: "op-1", machineId: bootstrapPeer.machineId,
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi }))
+    .rejects.toMatchObject({ code: reason });
+}, 5000);
+
 it("preserves cli-timeout for a bounded provisioning write", async () => {
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   f.state.provisionError = new HerdrError("cli-timeout", "fixture-secret");
   await expect(port.executeProvision(handle, { action: "secret-chunk", operationId: "op-1", machineId: bootstrapPeer.machineId,
-    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi }))
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi, providers: ["github-copilot"] }))
     .rejects.toMatchObject({ code: "cli-timeout" });
 }, 5000);
 
@@ -179,7 +266,7 @@ it("redacts untrusted transport error codes and details", async () => {
   f.state.provisionError = Object.assign(new Error("fixture-secret"), { code: "fixture-secret", details: { stderr: "fixture-secret" } });
   let caught: unknown;
   try { await port.executeProvision(handle, { action: "secret-chunk", operationId: "op-1", machineId: bootstrapPeer.machineId,
-    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi }); } catch (error) { caught = error; }
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi, providers: ["github-copilot"] }); } catch (error) { caught = error; }
   expect(caught).toBeTruthy();
   expect(String(caught)).not.toContain("fixture-secret");
   expect(JSON.stringify(caught)).not.toContain("fixture-secret");

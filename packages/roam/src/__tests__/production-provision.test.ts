@@ -21,7 +21,11 @@ it("composes target-fenced ports, peer locking and durable launcher configuratio
   const transport: Transport = { async resolve(peer) { return peer; }, async bootstrapProbe() { throw new Error("unexpected probe"); },
     async exec() { throw new Error("unexpected exec"); }, async run() { throw new Error("unexpected run"); }, async read() { throw new Error("unexpected read"); }, async write() { throw new Error("unexpected write"); } };
   const core = { local: "fixture-local-core", remote: "fixture-core" }, claims: typeof core[] = [];
+  const previews: { home: string; core: typeof core }[] = [];
   const port = { transport, async probeAgentDirectory() { return { status: "default" as const, core }; },
+    async previewSettings(_peer: unknown, home: string, _entries: unknown, _maximum: number, fence: typeof core) {
+      previews.push({ home, core: fence }); return { fingerprint: "a".repeat(64), changedKeys: ["theme"] };
+    },
     async claimIdentity(_peer: unknown, _id: string, value: typeof core) { claims.push(value); return { machineId: bootstrapPeer.machineId, coreId: "fixture-core" }; },
     async executeProvision() { return true; }, async launchRelease() { return { terminal: "box-1.invalid/t1" }; } };
   const options = { identity: { pid: process.pid, startIdentity: "fixture" }, probe: async () => ({ kind: "live" as const, startIdentity: "fixture" }) };
@@ -35,6 +39,11 @@ it("composes target-fenced ports, peer locking and durable launcher configuratio
   expect(await ports.bootstrap.probeAgentDirectory(bootstrapPeer, "/home/fixture")).toEqual({ status: "default", core });
   await expect(ports.bootstrap.probeAgentDirectory({ ...bootstrapPeer, alias: "other.invalid" }, "/home/fixture")).rejects.toThrow();
   await expect(ports.bootstrap.probeAgentDirectory(bootstrapPeer, "/home/other")).rejects.toThrow();
+  expect(ports.bootstrap.previewSettings).toBeTypeOf("function");
+  expect(await ports.bootstrap.previewSettings(bootstrapPeer, "/home/fixture", [], 1024, core)).toEqual({ fingerprint: "a".repeat(64), changedKeys: ["theme"] });
+  await expect(ports.bootstrap.previewSettings({ ...bootstrapPeer, alias: "other.invalid" }, "/home/fixture", [], 1024, core)).rejects.toThrow();
+  await expect(ports.bootstrap.previewSettings(bootstrapPeer, "/home/other", [], 1024, core)).rejects.toThrow();
+  expect(previews).toEqual([{ home: "/home/fixture", core }]);
   expect(await ports.bootstrap.claimIdentity(bootstrapPeer, "op-1", core)).toEqual({ machineId: bootstrapPeer.machineId, coreId: "fixture-core" });
   expect(claims).toEqual([core]);
   await ports.withPeerLock(bootstrapPeer.machineId, async () => { await ports.persistPeer(bootstrapPeer); });

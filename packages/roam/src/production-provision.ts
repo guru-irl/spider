@@ -33,6 +33,9 @@ export function createProductionProvisionPorts(input: ProductionProvisionOptions
     bootstrap: { async probeAgentDirectory(peer, home) {
       if (!samePeer(input.peer, peer) || home !== input.destination.home) throw new Error("Provision target changed");
       return input.transport.probeAgentDirectory(peer, home);
+    }, async previewSettings(peer, home, entries, maximum, core) {
+      if (!samePeer(input.peer, peer) || home !== input.destination.home) throw new Error("Provision target changed");
+      return input.transport.previewSettings(peer, home, entries, maximum, core);
     }, async claimIdentity(peer, operationId, core) {
       if (!samePeer(input.peer, peer) || operationId !== input.operationId) throw new Error("Provision target changed");
       return input.transport.claimIdentity(peer, operationId, core);

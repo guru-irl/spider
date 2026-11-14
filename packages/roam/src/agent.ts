@@ -1,3 +1,4 @@
+import { ReadinessParseError } from "@spider/db-core/roam/readiness";
 import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -487,8 +488,12 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
         ("header" in operation.args && !plainObject(operation.args.header))) throw new Error("Invalid operation object");
     operation = structuredClone(operation);
     id = artifactId(operation.id);
+    if (["session-start", "session-stop", "session-resume"].includes(operation.kind)) {
+      const { handleSessionOperation } = await import("./participant-runtime");
+      return await handleSessionOperation(operation, ports);
+    }
     request = parseRequest(operation, ports);
-  } catch { return outcome(2, "Invalid agent operation", id); }
+  } catch (error) { return outcome(2, error instanceof ReadinessParseError ? error.reason : "Invalid agent operation", id); }
   if (!["export", "release-export", "split"].includes(request.kind)) return dispatchParsedOperation(operation, request, ports, id);
   let release: (() => void) | null;
   try { release = acquireTransferLease(ports.root, ports.config.hubMachineId, ports.config.limits.peerConcurrency); }

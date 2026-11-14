@@ -11,6 +11,7 @@ import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
 import { runStandaloneHub, type HubNotice, type HubObservation } from "./hub";
 import { createLocalDiagnosticPorts } from "./local-diagnostics";
 import { openJournal } from "./journal";
+import { remoteHosting } from "./remote-observations";
 import { loadPeerState } from "./peer-state";
 import { openLocalCore } from "./runtime";
 import { createTransport } from "./transport";
@@ -123,9 +124,10 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
         if (matches.length !== 1) throw new Error("Unknown machine");
         const state = matches[0].state;
         const reached = loadPeerState(core.db, peer.machineId, core.config.limits.targetBatchBytes).observation?.connected === true;
-        return { reachability: state === "disconnected" ? "unreachable" : state === "connected" && reached ? "reachable" : "unknown",
-          // Phase 3 supplies these observations. Missing sources are not empty inventories.
-          readiness: null, suspensions: null };
+        const reachability = state === "disconnected" ? "unreachable" : state === "connected" && reached ? "reachable" : "unknown";
+        if (reachability !== "reachable") return { reachability, readiness: null, suspensions: null };
+        try { const hosting = await remoteHosting(transport, peer, core.config); return { reachability, ...hosting }; }
+        catch { return { reachability, readiness: null, suspensions: null }; }
       } catch { return { reachability: "unknown", readiness: null, suspensions: null }; }
     };
     const hub = await runStandaloneHub({ config: core.config, globalDb: core.db, journal, transport, clock,

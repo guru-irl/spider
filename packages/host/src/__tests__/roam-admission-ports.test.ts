@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { bindSession, openDb, openDbAt, paths, setGlobalDbPathForTests, type Db } from "@spider/db-core";
 import * as dbCore from "@spider/db-core";
+import { writeLocal } from "@spider/db-core/roam/local-state";
+import { createRunningIntentAuthority } from "@spider/roam/session-control";
 import { claimIdLock, inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import { writeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
 import { createSessionLeases, type ProcessInventoryPorts } from "@spider/herdr/sessions/lease";
@@ -56,6 +58,52 @@ it("reads active membership and origin from the real migrated worktree", async (
   expect(state).toMatchObject({ participating: true, origin: f.machine, captureSafe: true, initialConflict: false, unfinishedFreeze: false });
   expect(state.states).toEqual([{ sessionId: "session-1", epoch: 1, state: "active", moveId: null, freezeSeq: null }]);
   expect(await f.ports.localMachine()).toBe(f.machine);
+}, 5000);
+
+it.each([
+  ["box-local", "missing", "participant-config-unavailable"], ["hub-intent", "missing", "participant-config-unavailable"],
+  ["box-local", "unsafe", "participant-config-unavailable"], ["hub-intent", "unsafe", "participant-config-unavailable"],
+  ["box-local", "wrong-role", "participant-not-box"], ["hub-intent", "capture-disabled", "participant-capture-uninitialized"],
+] as const)("blocks a %s participant with %s enrollment before claiming a lock", async (provenance, failure, reason) => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const f = fixture();
+  f.global.prepare("UPDATE roam_meta SET store_key='global',capture_enabled=1 WHERE id=1").run();
+  if (failure !== "missing") {
+    const config = { enabled: false, role: failure === "wrong-role" ? "hub" : "box", machineId: f.machine,
+      hubMachineId: failure === "wrong-role" ? f.machine : "00000000-0000-4000-8000-000000000001", peers: [], discoveryRoots: [], coreUnit: "fixture.service" };
+    const configFile = join(f.globalRoot, "roam", "config.json");
+    writeFileSync(configFile, JSON.stringify(config), { mode: 0o600 });
+    if (failure === "unsafe") chmodSync(configFile, 0o644);
+    if (failure === "capture-disabled") f.global.prepare("UPDATE roam_meta SET capture_enabled=0 WHERE id=1").run();
+  }
+  if (provenance === "box-local") {
+    writeLocal(f.global, "participant-origin", "session-1", { kind: "box-local", machineId: f.machine, epoch: 1,
+      file: f.file, cwd: f.cwd, pid: f.identity.pid, startIdentity: f.identity.startIdentity, stopped: false });
+  } else {
+    await createRunningIntentAuthority(f.global).set({ sessionId: "session-1", epoch: 1, file: f.file, cwd: f.cwd,
+      desired: "running", suspended: null, moveId: null }, "start-1", { machineId: f.machine, hubMachineId: "00000000-0000-4000-8000-000000000001" });
+  }
+  const hooks = new Map<string, Function>(), lock = vi.spyOn(f.ports, "lock");
+  const gate = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, f.ports);
+  await hooks.get("session_start")!({ reason: "resume" }, f.ctx);
+  expect(gate.inspect()).toMatchObject({ kind: "blocked", blockers: [{ detail: expect.stringContaining(reason) }] });
+  expect(lock).not.toHaveBeenCalled();
+  await gate.close();
+}, 5000);
+
+it("admits a nonparticipant when capture is off and enrollment is unreadable", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const f = fixture();
+  f.current.prepare("DELETE FROM roam_sessions WHERE session_id='session-1'").run();
+  f.global.prepare("UPDATE roam_meta SET capture_enabled=0 WHERE id=1").run();
+  const configFile = join(f.globalRoot, "roam", "config.json");
+  writeFileSync(configFile, "unreadable configuration", { mode: 0o600 }); chmodSync(configFile, 0o644);
+  const hooks = new Map<string, Function>(), lock = vi.spyOn(f.ports, "lock");
+  const gate = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, f.ports);
+  await hooks.get("session_start")!({ reason: "resume" }, f.ctx);
+  expect(gate.inspect()).toMatchObject({ kind: "ordinary", blockers: [] });
+  expect(lock).not.toHaveBeenCalled();
+  await gate.close();
 }, 5000);
 
 it("checks the separate bound worktree as well as the current worktree", async () => {

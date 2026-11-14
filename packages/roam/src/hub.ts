@@ -1,3 +1,4 @@
+import { parseReadiness, validReadiness } from "@spider/db-core/roam/readiness";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { assertTestConfigPath, type Db } from "@spider/db-core";
@@ -83,8 +84,8 @@ function saveStatus(db: Db, machine: string, state: PeerStatus): void {
 function pendingRows(db: Db, machine: string): Readiness[] {
   const value = readLocal<unknown>(db, "hub-placement", machine);
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.some(row => !validReadiness(row))) throw new Error("Invalid durable placement state");
-  return value as Readiness[];
+  if (!Array.isArray(value)) throw new Error("Invalid durable placement state");
+  return (value as unknown[]).map(parseReadiness);
 }
 function savePending(db: Db, machine: string, rows: readonly Readiness[]): void {
   db.raw.transaction(() => writeLocal(db, "hub-placement", machine, rows.length ? rows : undefined)).immediate();
@@ -92,12 +93,7 @@ function savePending(db: Db, machine: string, rows: readonly Readiness[]): void 
 function plain(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(value);
 }
-function validReadiness(value: unknown): value is Readiness {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const row = value as Readiness;
-  return plain(row.operationId) && plain(row.sessionId) && Number.isSafeInteger(row.epoch) && row.epoch > 0 &&
-    plain(row.cwd) && isAbsolute(row.cwd) && plain(row.file) && isAbsolute(row.file) && plain(row.core) && plain(row.terminal);
-}
+
 function validObservation(value: unknown): value is HubObservation {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as HubObservation;

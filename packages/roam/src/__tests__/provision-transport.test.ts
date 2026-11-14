@@ -143,6 +143,29 @@ it("fences an enrolled installer and sends sensitive request data only on stdin"
   expect(f.events.slice(-5)).toEqual(["server", "machine", "identity", "server", "machine"]);
 }, 5000);
 
+it("admits a consented enrollment action through the real transport policy", async () => {
+  const f = fixture(), port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "enrollment", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi, hubMachineId: "00000000-0000-4000-8000-000000000001", coreUnit: "fixture.service" };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "consent-required" });
+  f.consent(); f.state.provisionReply = { version: 1, kind: "provision", value: "enrolled" };
+  expect(await port.executeProvision(handle, request)).toBe("enrolled");
+  expect(f.events.slice(-5)).toEqual(["server", "machine", "identity", "server", "machine"]);
+  expect(JSON.parse(f.calls.at(-1)!.stdin!.toString("utf8"))).toEqual({ ...request, core: bootstrapPeer.core, coreId: "remote-core" });
+  f.state.provisionReply = { version: 1, kind: "provision", value: "untrusted" };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+  f.state.provisionReply = { version: 1, kind: "provision", value: "already-enrolled" };
+  expect(await port.executeProvision(handle, request)).toBe("already-enrolled"); f.state.replaceDuringCall = true;
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "core-changed" });
+}, 5000);
+
+it.each(["invalid-enrollment", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-conflict", "enrollment-publication-pending"])("retains the named %s enrollment refusal", async reason => {
+  const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  f.state.provisionReply = { version: 1, kind: "provision", error: reason };
+  await expect(port.executeProvision(handle, { action: "enrollment", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi })).rejects.toMatchObject({ code: reason });
+}, 5000);
+
 it("preserves cli-timeout for a bounded provisioning write", async () => {
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   f.state.provisionError = new HerdrError("cli-timeout", "fixture-secret");

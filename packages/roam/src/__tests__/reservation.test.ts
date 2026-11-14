@@ -6,7 +6,7 @@ import { createDurableLaunchPort } from "../supervisor";
 const intent: HostIntent = { sessionId: "s1", epoch: 1, desired: "running", suspended: null,
   file: "/fixture/session.jsonl", cwd: "/fixture/work", moveId: null };
 const initial: IntentState = { intent, failures: [], supervision: { kind: "idle", nextAttemptAt: null } };
-const ready = { operationId: "op-1", sessionId: "s1", epoch: 1, cwd: intent.cwd, file: intent.file, core: "core-1", terminal: "terminal-1" };
+const ready = { origin: "hub-operation" as const, opId: "op-1", sessionId: "s1", epoch: 1, cwd: intent.cwd, file: intent.file, core: "core-1", terminal: "terminal-1" };
 function outcome(reason: string, value: typeof ready | null): Outcome<typeof ready> {
   return { code: value ? 0 : 2, reason, operationId: "op-1", home: null, epoch: 1, repairCommand: null, value };
 }

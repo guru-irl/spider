@@ -1,5 +1,8 @@
 import { createHash as releaseHash } from "node:crypto";
 
+export const RELEASE_ENTRIES: readonly string[] = ["dist/extension.js", "dist/intercom/broker.mjs", "dist/roam/cli.mjs", "dist/roam/supervisor.mjs",
+  "scripts/intercom-switchover.mjs", "scripts/extension-shim.mjs"];
+
 export interface ReleaseArguments {
   operationId: string; machineId: string; home: string; globalRoot: string; npmPrefix: string; core: string; node: string;
   pi: string; cli: string; supervisor: string; sha256: string; piVersion: string;

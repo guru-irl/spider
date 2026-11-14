@@ -1,3 +1,6 @@
+import { parseReadiness } from "@spider/db-core/roam/readiness";
+import { validReadiness } from "./session-control";
+import type { HostingObservation } from "./hosting";
 import type { Peer, RoamConfig, Transport } from "./contracts";
 import { createLocalDiagnosticPorts, type inspectLocalConsumers, type runLocalDoctor } from "./local-diagnostics";
 import type { DiagnosticPorts } from "./diagnostics";
@@ -7,13 +10,23 @@ function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-export async function remoteObservation(transport: Transport, peer: Peer, kind: "consumers" | "doctor", config: RoamConfig): Promise<unknown> {
+export async function remoteObservation(transport: Transport, peer: Peer, kind: "consumers" | "doctor" | "hosting", config: RoamConfig): Promise<unknown> {
   const handle = await transport.resolve(peer);
   const bytes = await transport.exec(handle, ["roam", "observe", kind], { timeoutMs: config.limits.controlMs, maxBytes: config.limits.replyBytes });
   const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   if (!record(value) || value.version !== 1 || value.machineId !== peer.machineId || value.kind !== kind || !record(value.value))
     throw new Error("Invalid remote observation");
   return value.value;
+}
+
+export async function remoteHosting(transport: Transport, peer: Peer, config: RoamConfig): Promise<HostingObservation> {
+  const value = await remoteObservation(transport, peer, "hosting", config);
+  if (!record(value) || !Array.isArray(value.readiness) || !value.readiness.every(validReadiness) || !Array.isArray(value.suspensions) ||
+      value.suspensions.some(item => !record(item) || typeof item.sessionId !== "string" || !item.sessionId || !Number.isSafeInteger(item.epoch) || Number(item.epoch) < 1))
+    throw new Error("Invalid hosting observation");
+  if (value.readiness.some(row => row.terminal.includes("/"))) throw new Error("Invalid local terminal identity");
+  return { readiness: value.readiness.map(raw => { const row = parseReadiness(raw); if (row.origin === "box-local" && row.machineId !== peer.machineId) throw new Error("readiness-origin-mismatch"); return { ...row, terminal: `${peer.alias}/${row.terminal}` }; }),
+    suspensions: value.suspensions as HostingObservation["suspensions"] };
 }
 
 type ConsumerSnapshot = Awaited<ReturnType<typeof inspectLocalConsumers>>;

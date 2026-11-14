@@ -58,7 +58,7 @@
     {
       "path": "local.ts",
       "task": "3.6g",
-      "reason": "Integrate admitted epochs, host-owned reconciliation, reply threads and named missing-origin and peer-revoked ask failures.",
+      "reason": "Integrate admitted epochs, reconciliation, reply threads and named ask failures, and release session observers on shutdown.",
       "upstreamHash": "b99325cd8cb80b4ed41ac4f1427791eb1df916a303ba5ce5b35197eba8972f1c"
     },
     {

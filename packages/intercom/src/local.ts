@@ -1985,6 +1985,10 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     disposed = true;
     failPendingOutboxRequests(runtimeGeneration, "session_ended", "Session shutting down");
     runtimeGeneration += 1;
+    deliveryObserver = null;
+    restoredDeliveries.clear();
+    hostContext = undefined;
+    runtimeContext = null;
     clearStartupConnectTimer();
     clearReconnectTimer();
     clearNamePollTimer();
@@ -1999,7 +2003,6 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       await client.disconnect();
       client = null;
     }
-    runtimeContext = null;
     currentSessionId = null;
     currentIntercomSessionId = null;
     sessionStartedAt = null;

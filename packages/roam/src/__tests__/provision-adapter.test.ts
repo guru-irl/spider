@@ -240,6 +240,32 @@ it("waits for a live short writer before repeating the same operation", async ()
   expect(readFileSync(join(f.unitDir, unit), "utf8")).toBe("fixture unit");
 }, 5000);
 
+it("installs a valid thinking level through the generated destination program", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  const file = { path: "settings.json", bytes: Buffer.from('{"defaultThinkingLevel":"xhigh"}'), mode: 0o600 as const };
+  const preview = inspectDestinationSettings({ home: f.home, destinationRoot: f.agentDir, entries: selectedSettingsDigests(file), maximum: 1024 * 1024 });
+  await adapter.installFiles(f.peer, [file], preview.fingerprint);
+  expect(JSON.parse(readFileSync(join(f.agentDir, "settings.json"), "utf8"))).toEqual({ defaultThinkingLevel: "xhigh" });
+}, 5000);
+
+it("the generated destination program rejects a substituted invalid thinking level", async () => {
+  const f = fixture(); f.options.limits.chunkBytes = 1024;
+  const adapter = create!(f.options), remote = f.remote.executeProvision.bind(f.remote);
+  const file = { path: "settings.json", bytes: Buffer.from('{"defaultThinkingLevel":"high"}'), mode: 0o600 as const };
+  const preview = inspectDestinationSettings({ home: f.home, destinationRoot: f.agentDir, entries: selectedSettingsDigests(file), maximum: 1024 * 1024 });
+  const injected = Buffer.from('{"defaultThinkingLevel":"beyond"}');
+  f.remote.executeProvision = async (peer, request) => {
+    if (request.action !== "install-files") return remote(peer, request);
+    const sent = request.file as { path: string; mode: number; chunks: { name: string; size: number; sha256: string }[] };
+    expect(sent.chunks).toHaveLength(1);
+    writeFileSync(join(f.globalRoot, "roam", "provision", "op-1", sent.chunks[0].name), injected, { mode: 0o600 });
+    const chunk = { ...sent.chunks[0], size: injected.length, sha256: createHash("sha256").update(injected).digest("hex") };
+    return remote(peer, { ...request, file: { ...sent, chunks: [chunk] } });
+  };
+  await expect(adapter.installFiles(f.peer, [file], preview.fingerprint)).rejects.toMatchObject({ code: "invalid-file" });
+  expect(existsSync(join(f.agentDir, "settings.json"))).toBe(false);
+}, 5000);
+
 it("refuses unlisted settings at the destination even if a caller bypasses the preview", async () => {
   const f = fixture(), adapter = create!(f.options);
   const bytes = Buffer.from('{"theme":"sample","defaultProjectTrust":"always"}');

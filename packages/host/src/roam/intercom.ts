@@ -77,9 +77,10 @@ export function registerRoamIntercom(pi: ExtensionAPI, ports: HostIntercomPorts)
       return { excludedGeneration: owner.activationEpoch, complete: true };
     };
     if (ports.pendingOwn) request.pendingOwn = async () => ports.pendingOwn!(request.sessionId, request.scopeId);
-    const ownContext = context, ownMachine = machineId;
-    if (ownContext && ports.reconcile) request.reconcile = async (messageId, owner) => {
-      const proof = await ports.reconcile!(ownContext, [{ messageId, owner, exclusion: owner.machineId === ownMachine ? ports.exclusion?.(owner) : undefined }]);
+    const ownGeneration = generation, ownMachine = machineId;
+    if (context && ports.reconcile) request.reconcile = async (messageId, owner) => {
+      if (disposed || ownGeneration !== generation || !context) throw new Error("session-inactive");
+      const proof = await ports.reconcile!(context, [{ messageId, owner, exclusion: owner.machineId === ownMachine ? ports.exclusion?.(owner) : undefined }]);
       return proof[0].receipt;
     };
     const admission = ports.admission();
@@ -87,7 +88,7 @@ export function registerRoamIntercom(pi: ExtensionAPI, ports: HostIntercomPorts)
     const endpoint = { address: { sessionId, scopeId: request.scopeId }, machineId, homeEpoch: admission.home?.epoch ?? null, activationEpoch: request.activationEpoch };
     try { ports.recordGeneration?.(endpoint); request.endpoint = endpoint; } catch { /* Without durable identity, delivery stays unadmitted. */ }
   });
-  const dispose = () => { if (disposed) return; disposed = true; generation++; machineId = undefined; off(); };
+  const dispose = () => { if (disposed) return; disposed = true; generation++; machineId = undefined; context = undefined; off(); };
   pi.on("session_start", async (_event, ctx) => {
     if (disposed) return;
     const ticket = ++generation; sessionId = ctx.sessionManager.getSessionId(); context = ctx; machineId = undefined;

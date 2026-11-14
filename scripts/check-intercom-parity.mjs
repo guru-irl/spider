@@ -24,8 +24,6 @@ const allowedChanges = [
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const walk = directory => readdirSync(directory, { withFileTypes: true }).flatMap(entry => entry.isDirectory() ? walk(join(directory, entry.name)) : [join(directory, entry.name)]);
 const printer = ts.createPrinter({ removeComments: true, newLine: ts.NewLineKind.LineFeed });
-const assertionCache = new Map();
-const runtimeCache = new Map();
 
 function originHashes() {
   const hashes = new Map();
@@ -57,9 +55,6 @@ function normalAssertion(text, name, upstream) {
 }
 
 function assertions(text, name, upstream) {
-  const key = JSON.stringify([name, upstream, sha256(text)]);
-  const cached = assertionCache.get(key);
-  if (cached) return cached;
   const source = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
   if (source.parseDiagnostics.length) throw new Error(`Cannot parse test ${name}`);
   const cases = [], values = [];
@@ -77,9 +72,7 @@ function assertions(text, name, upstream) {
     ts.forEachChild(node, child => visit(child, nestedCase));
   }
   visit(source, null);
-  const result = { cases, assertions: values };
-  assertionCache.set(key, result);
-  return result;
+  return { cases, assertions: values };
 }
 
 function replaceRequired(text, from, to) {
@@ -88,9 +81,6 @@ function replaceRequired(text, from, to) {
 }
 
 function runtime(text, name, fork) {
-  const key = JSON.stringify([name, fork, sha256(text)]);
-  const cached = runtimeCache.get(key);
-  if (cached !== undefined) return cached;
   let normalized = text.replaceAll('\\u2014', '\u2014').replace(/(\.\.?\/[^"']+)\.ts(?=["'])/g, '$1.js');
   if (fork && name === 'index.ts') {
     normalized = replaceRequired(normalized,
@@ -114,13 +104,16 @@ export function getCompiledBrokerPath(): string {
     normalized = replaceRequired(normalized, 'const brokerPath = getCompiledBrokerPath();',
       'const brokerPath = join(dirname(fileURLToPath(import.meta.url)), "broker.ts");');
   }
-  const result = ts.transpileModule(normalized, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, removeComments: true } }).outputText;
-  runtimeCache.set(key, result);
-  return result;
+  return ts.transpileModule(normalized, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, removeComments: true } }).outputText;
 }
 
-function snapshot(upstreamRoot, installedRoot) {
+function snapshot(upstreamRoot, installedRoot, adoption) {
   const origin = originHashes(), tests = {}, sources = {};
+  const adoptedHash = (name, kind) => {
+    const baseline = adoption[kind]?.[name];
+    if (baseline?.sourceSha256 !== origin.get(name) || !/^[a-f0-9]{64}$/.test(baseline.adoptedSha256 ?? '')) throw new Error(`Missing frozen adoption hash in ${name}`);
+    return baseline.adoptedSha256;
+  };
   for (const file of walk(upstreamRoot).filter(file => file.endsWith('.ts')).sort()) {
     const name = relative(upstreamRoot, file).replaceAll('\\', '/');
     let text = readFileSync(file, 'utf8');
@@ -132,9 +125,9 @@ function snapshot(upstreamRoot, installedRoot) {
         if (sha256(installed) !== expectedHash) throw new Error(`Installed payload mismatch in ${name}`);
         text = installed;
       }
-      tests[name] = { provenance: installedTests.has(name) ? 'installed-payload' : 'immutable-public-source', sourceSha256: expectedHash, ...assertions(text, name, true) };
+      tests[name] = { provenance: installedTests.has(name) ? 'installed-payload' : 'immutable-public-source', sourceSha256: expectedHash, adoptedSha256: adoptedHash(name, 'tests'), ...assertions(text, name, true) };
     } else {
-      sources[name] = { sourceSha256: expectedHash, normalizedSha256: sha256(runtime(text, name, false)) };
+      sources[name] = { sourceSha256: expectedHash, adoptedSha256: adoptedHash(name, 'sources'), normalizedSha256: sha256(runtime(text, name, false)) };
     }
   }
   if (Object.keys(tests).length !== 15 || Object.keys(sources).length !== 19) throw new Error('Expected 15 upstream test files and 19 implementation files');
@@ -146,32 +139,6 @@ function snapshot(upstreamRoot, installedRoot) {
 }
 
 function verify(manifest, forkRoot) {
-  if (manifest.version !== 1 || JSON.stringify(manifest.allowedChanges) !== JSON.stringify(allowedChanges) ||
-      Object.keys(manifest.tests ?? {}).length !== 15 || Object.keys(manifest.sources ?? {}).length !== 19) throw new Error('Invalid upstream parity manifest');
-  let assertionCount = 0;
-  const origin = originHashes();
-  for (const [name, expected] of Object.entries(manifest.tests)) {
-    if (expected.sourceSha256 !== origin.get(name) || expected.provenance !== (installedTests.has(name) ? 'installed-payload' : 'immutable-public-source')) throw new Error(`Provenance mismatch in ${name}`);
-    const file = join(forkRoot, name);
-    if (!existsSync(file)) throw new Error(`Missing upstream test ${name}`);
-    const actual = assertions(readFileSync(file, 'utf8'), name, false);
-    if (JSON.stringify(actual.cases) !== JSON.stringify(expected.cases)) throw new Error(`Test cases changed in ${name}`);
-    if (!expected.assertions.length || expected.assertions.some(item => sha256(item.text) !== item.sha256)) throw new Error(`Invalid assertion manifest in ${name}`);
-    if (JSON.stringify(actual.assertions) !== JSON.stringify(expected.assertions)) throw new Error(`Assertion content changed in ${name}`);
-    assertionCount += expected.assertions.length;
-  }
-  for (const [name, expected] of Object.entries(manifest.sources)) {
-    if (expected.sourceSha256 !== origin.get(name)) throw new Error(`Provenance mismatch in ${name}`);
-    const file = join(forkRoot, name === 'index.ts' ? 'local.ts' : name);
-    let actual;
-    try { actual = sha256(runtime(readFileSync(file, 'utf8'), name, true)); }
-    catch (error) { throw new Error(`Runtime mismatch in ${name}: ${error.message}`); }
-    if (actual !== expected.normalizedSha256) throw new Error(`Runtime mismatch in ${name}`);
-  }
-  console.log(`Messaging parity verified for 19 implementation files, 15 test files and ${assertionCount} normalized assertions.`);
-}
-
-export function verifyManifest(manifest, forkRoot) {
   const divergenceFile = join(dirname(forkRoot), 'DIVERGENCE.json');
   const divergence = JSON.parse(readFileSync(divergenceFile, 'utf8'));
   if (divergence.version !== 1 || !Array.isArray(divergence.files)) throw new Error('Invalid divergence manifest');
@@ -188,13 +155,6 @@ export function verifyManifest(manifest, forkRoot) {
     declarations.set(entry.path, entry);
   }
   const known = new Set(Object.keys(manifest.sources ?? {}).map(name => name === 'index.ts' ? 'local.ts' : name));
-  // These host adapters were already present at adoption, outside upstream.
-  for (const [name, hash] of Object.entries(manifest.adoptedFiles ?? {})) {
-    // Keep the adoption hash immutable; a declared adapter change pins its current bytes separately.
-    const current = declarations.has(name) ? declarations.get(name).forkSha256 : hash;
-    if (!/^[a-f0-9]{64}$/.test(hash) || typeof current !== 'string' || !/^[a-f0-9]{64}$/.test(current) || sha256(readFileSync(join(forkRoot, name), 'utf8')) !== current) throw new Error(`Unlisted runtime change in ${name}`);
-    known.add(name);
-  }
   for (const file of walk(forkRoot).filter(file => /\.[cm]?[jt]sx?$/.test(file) && !/\.test\.[cm]?[jt]sx?$/.test(file) && !file.endsWith('.d.ts'))) {
     const name = relative(forkRoot, file).replaceAll('\\', '/');
     if (!known.has(name) && !declarations.has(name)) throw new Error(`Unlisted new runtime file ${name}`);
@@ -223,27 +183,25 @@ export function verifyManifest(manifest, forkRoot) {
     catch (error) { throw new Error(`Runtime mismatch in ${name}: ${error.message}`); }
     if (actual !== expected.normalizedSha256) throw new Error(`Runtime mismatch in ${name}`);
   }
-  return `Intercom provenance verified for 19 original implementation files, ${declarations.size} explicit divergences, 15 test files and ${assertionCount} normalized assertions.`;
+  console.log(`Intercom provenance verified for 19 original implementation files, ${declarations.size} explicit divergences, 15 test files and ${assertionCount} normalized assertions.`);
 }
 
-if (import.meta.main) {
-  try {
-    const args = process.argv.slice(2);
-    const forkAt = args.indexOf('--fork-dir');
-    const forkRoot = forkAt < 0 ? defaultFork : resolve(args[forkAt + 1] ?? '');
-    if (forkAt >= 0) args.splice(forkAt, 2);
-    const manifestAt = args.indexOf('--manifest-file');
-    const inputManifest = manifestAt < 0 ? manifestFile : resolve(args[manifestAt + 1] ?? '');
-    if (manifestAt >= 0) args.splice(manifestAt, 2);
-    if (args[0] === '--manifest' && args.length === 1) console.log(verifyManifest(JSON.parse(readFileSync(inputManifest, 'utf8')), forkRoot));
-    else if (args[0] === '--generate' && args.length === 3) {
-      const result = snapshot(resolve(args[1]), resolve(args[2]));
-      verify(result, forkRoot);
-      writeFileSync(manifestFile, JSON.stringify(result, null, 2) + '\n');
-    } else if (args.length === 1 && !args[0].startsWith('-')) verify(snapshot(resolve(args[0])), forkRoot);
-    else throw new Error('Usage: check-intercom-parity.mjs --manifest [--fork-dir DIR] [--manifest-file FILE] | SOURCE_DIR | --generate SOURCE_DIR INSTALLED_DIR');
-  } catch (error) {
-    console.error(`Intercom parity: ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
-  }
+try {
+  const args = process.argv.slice(2);
+  const forkAt = args.indexOf('--fork-dir');
+  const forkRoot = forkAt < 0 ? defaultFork : resolve(args[forkAt + 1] ?? '');
+  if (forkAt >= 0) args.splice(forkAt, 2);
+  const manifestAt = args.indexOf('--manifest-file');
+  const inputManifest = manifestAt < 0 ? manifestFile : resolve(args[manifestAt + 1] ?? '');
+  if (manifestAt >= 0) args.splice(manifestAt, 2);
+  if (args[0] === '--manifest' && args.length === 1) verify(JSON.parse(readFileSync(inputManifest, 'utf8')), forkRoot);
+  else if (args[0] === '--generate' && args.length === 3) {
+    const result = snapshot(resolve(args[1]), resolve(args[2]), JSON.parse(readFileSync(inputManifest, 'utf8')));
+    verify(result, forkRoot);
+    writeFileSync(manifestFile, JSON.stringify(result, null, 2) + '\n');
+  } else if (args.length === 1 && !args[0].startsWith('-')) verify(snapshot(resolve(args[0]), undefined, JSON.parse(readFileSync(inputManifest, 'utf8'))), forkRoot);
+  else throw new Error('Usage: check-intercom-parity.mjs --manifest [--fork-dir DIR] [--manifest-file FILE] | SOURCE_DIR | --generate SOURCE_DIR INSTALLED_DIR');
+} catch (error) {
+  console.error(`Intercom parity: ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
 }

@@ -1,11 +1,11 @@
-import { afterAll } from "vitest";
-import test, { testTmpDir, waitForSocketClose } from "./test-support.js";
+import { afterAll, afterEach, vi } from "vitest";
+import test, { testTmpDir, waitForSocketClose, startTestBroker } from "./test-support.js";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 import { EventEmitter, once } from "node:events";
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess } from "node:child_process";
 import { ReplyTracker } from "./reply-tracker.js";
 import type { BrokerMessage, Message, SessionInfo } from "./types.js";
 import {
@@ -15,6 +15,12 @@ import {
   type IntercomExtensionChannel,
   type IntercomOutboxResultV1,
 } from "./extension-api.js";
+
+// The fixture owns explicit broker processes; extension reconnect must not launch detached children.
+vi.mock("./broker/spawn.js", async (original) => ({
+  ...await original<typeof import("./broker/spawn.js")>(),
+  spawnBrokerIfNeeded: async () => {},
+}));
 
 const repoDir = process.cwd();
 const brokerEntry = path.join(repoDir, "dist/intercom/broker.mjs");
@@ -174,6 +180,9 @@ function renderToText(component: RenderedComponent): string {
   return component.render(120).map((line) => line.trimEnd()).join("\n");
 }
 
+const activeHarnesses = new Set<() => Promise<void>>();
+afterEach(async () => { for (const close of [...activeHarnesses]) await close(); });
+
 function createExtensionHarness(sessionName: string | (() => string) = "child-worker", options: {
   abort?: () => void;
   hasUI?: boolean;
@@ -190,6 +199,7 @@ function createExtensionHarness(sessionName: string | (() => string) = "child-wo
   let currentSessionName = typeof sessionName === "function" ? sessionName() : sessionName;
   let activeToolNames = [...(options.activeTools ?? [])];
   const entries: Array<{ type: string; data: unknown }> = [];
+  const physicalEntries: Array<Record<string, any>> = [];
   const sentMessages: Array<{ message: { customType?: string; content?: string; details?: unknown }; options?: { triggerTurn?: boolean; deliverAs?: string }; activeTools: string[] }> = [];
   const pi = {
     getSessionName: () => typeof sessionName === "function" ? sessionName() : currentSessionName,
@@ -219,19 +229,32 @@ function createExtensionHarness(sessionName: string | (() => string) = "child-wo
     registerShortcut: () => undefined,
     sendMessage: (message: { customType?: string; content?: string; details?: unknown }, options?: { triggerTurn?: boolean; deliverAs?: string }) => {
       sentMessages.push({ message, options, activeTools: [...activeToolNames] });
+      // This fixture advances to the next dispatch boundary before observing entry.
+      queueMicrotask(() => {
+        physicalEntries.push({ type: "custom_message", customType: message.customType, id: `physical-${physicalEntries.length}`, details: message.details });
+        for (const handler of lifecycleHandlers.get("message_end") ?? []) void handler({ message: { role: "custom", ...message } }, ctx);
+      });
     },
-    appendEntry: (type: string, data: unknown) => entries.push({ type, data }),
+    appendEntry: (type: string, data: unknown) => {
+      entries.push({ type, data });
+      physicalEntries.push({ type: "custom", customType: type, data, id: `physical-${physicalEntries.length}` });
+    },
   };
   const ctx = {
     cwd: repoDir,
     mode: options.mode ?? (options.hasUI ? "tui" : "print"),
     model: { id: "child-model" },
-    sessionManager: { getSessionId: () => typeof options.sessionId === "function" ? options.sessionId() : options.sessionId ?? "session-child-test" },
+    sessionManager: { getSessionId: () => typeof options.sessionId === "function" ? options.sessionId() : options.sessionId ?? "session-child-test", getEntries: () => physicalEntries },
     isIdle: options.isIdle ?? (() => true),
     hasUI: options.hasUI ?? false,
     abort: options.abort ?? (() => undefined),
     ui: options.ui,
   };
+  const close = async () => {
+    if (!activeHarnesses.delete(close)) return;
+    for (const handler of lifecycleHandlers.get("session_shutdown") ?? []) await handler({ reason: "quit" }, ctx);
+  };
+  activeHarnesses.add(close);
   return {
     pi,
     ctx,
@@ -241,6 +264,7 @@ function createExtensionHarness(sessionName: string | (() => string) = "child-wo
     sentMessages,
     getActiveTools: () => pi.getActiveTools(),
     async emitLifecycle(event: string, payload: unknown = {}, eventContext: unknown = ctx) {
+      if (event === "session_shutdown") activeHarnesses.delete(close);
       for (const handler of lifecycleHandlers.get(event) ?? []) {
         await handler(payload, eventContext);
       }
@@ -294,7 +318,7 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
   const { readFileSync } = await import("node:fs");
   const { createMessageReader, writeMessage } = await import("./broker/framing.js");
   const agentDir = mkdtempSync(path.join(testTmpDir(), "i-"));
-  const broker = spawn(process.execPath, [
+  const broker = startTestBroker(process.execPath, [
     "-e",
     "Object.defineProperty(process, 'platform', { value: 'win32' }); import('./dist/intercom/broker.mjs').catch((error) => { console.error(error); process.exit(1); });",
   ], {
@@ -408,7 +432,7 @@ test("opt-in TCP broker requires endpoint state for health and registration", { 
 });
 
 async function setupClients() {
-  const broker = spawn(process.execPath, [brokerEntry], {
+  const broker = startTestBroker(process.execPath, [brokerEntry], {
     cwd: repoDir,
     env: { ...process.env, HOME: sharedHomeDir, USERPROFILE: sharedHomeDir },
     stdio: ["ignore", "pipe", "pipe"],
@@ -440,6 +464,7 @@ async function setupClients() {
       planner,
       orchestrator,
       cleanup: async () => {
+        for (const close of [...activeHarnesses]) await close();
         await planner.disconnect().catch(() => undefined);
         await orchestrator.disconnect().catch(() => undefined);
         broker.kill("SIGTERM");
@@ -661,7 +686,7 @@ test("broker accepts caller supplied stable IDs across reconnect", { concurrency
 });
 
 test("broker scopes discovery, routing, mailbox, and presence", { concurrency: false }, async () => {
-  const broker = spawn(process.execPath, [brokerEntry], {
+  const broker = startTestBroker(process.execPath, [brokerEntry], {
     cwd: repoDir,
     env: { ...process.env, HOME: sharedHomeDir, USERPROFILE: sharedHomeDir },
     stdio: ["ignore", "pipe", "pipe"],

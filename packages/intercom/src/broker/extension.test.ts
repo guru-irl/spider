@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 
 import path from "node:path";
-import test, { testTmpDir } from "../test-support.js";
+import test, { testTmpDir, startTestBroker } from "../test-support.js";
 import type { BrokerMessage, SessionRegistration } from "../types.js";
 import { IntercomClient } from "./client.js";
 import { ExtensionStateManager } from "./extension-state.js";
@@ -40,7 +40,7 @@ async function waitFor(
 }
 
 async function startBroker(agentDir: string): Promise<ChildProcessWithoutNullStreams> {
-  const broker = spawn(
+  const broker = startTestBroker(
     process.execPath,
     [path.join(repoDir, "dist/intercom/broker.mjs")],
     {

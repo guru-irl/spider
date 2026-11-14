@@ -1,3 +1,4 @@
+import { qualifiedName } from "./protocol.js";
 import { getAskTimeoutMs } from "./config.js";
 import type { Message, SessionInfo } from "./types.js";
 
@@ -12,7 +13,7 @@ function matchesPendingSender(context: IntercomContext, to: string): boolean {
     return true;
   }
 
-  return context.from.name?.toLowerCase() === to.toLowerCase();
+  return qualifiedName(context.from).toLowerCase() === to.toLowerCase() || context.from.name?.toLowerCase() === to.toLowerCase();
 }
 
 function resolvePendingSender(pending: IntercomContext[], to: string): IntercomContext {
@@ -25,7 +26,7 @@ function resolvePendingSender(pending: IntercomContext[], to: string): IntercomC
   }
 
   const lowerTo = to.toLowerCase();
-  const exactNameMatches = pending.filter((context) => context.from.name?.toLowerCase() === lowerTo);
+  const exactNameMatches = pending.filter((context) => context.from.name?.toLowerCase() === lowerTo || qualifiedName(context.from).toLowerCase() === lowerTo);
   if (exactNameMatches.length === 1) {
     return exactNameMatches[0]!;
   }
@@ -116,7 +117,7 @@ export class ReplyTracker {
       if (now - context.receivedAt > this.askTimeoutMs) {
         return false;
       }
-      return context.from.id === to || context.from.name?.toLowerCase() === to.toLowerCase();
+      return context.from.id === to || qualifiedName(context.from).toLowerCase() === to.toLowerCase() || context.from.name?.toLowerCase() === to.toLowerCase();
     });
     return candidates.length === 1 ? candidates[0]! : null;
   }

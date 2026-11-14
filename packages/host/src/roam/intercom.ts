@@ -1,10 +1,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Blocker, Home } from "@spider/db-core/roam/types";
-import { openGlobalReadOnly } from "@spider/db-core";
-import { INTERCOM_HOST_EVENT, createIntercomDeliveryObserver, sameAddress, type FederationBlockers, type IntercomHostRequest, type MessageReceipt, type SessionAddress, type SessionEndpoint } from "@spider/intercom/protocol";
-import type { IntercomControlFrame, IntercomReceiptFrame, IntercomStore, SessionGenerationExclusion } from "@spider/roam/intercom-contracts";
-import type { IntercomFederationClient } from "@spider/intercom/broker/client";
-import { addressKey, type RemoteSessionInfo } from "@spider/intercom/protocol";
+import { openDbReadOnly, openGlobal, openGlobalReadOnly, paths, type Db } from "@spider/db-core";
+import { join } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { INTERCOM_HOST_EVENT, addressKey, createIntercomDeliveryObserver, isSessionEndpoint, sameAddress, type FederationBlockers, type IntercomHostRequest, type MessageReceipt, type SessionAddress, type SessionEndpoint } from "@spider/intercom/protocol";
+import type { SessionGenerationExclusion } from "@spider/roam/intercom-contracts";
+import type { ReconcileProof } from "@spider/roam/intercom-delivery";
+import { intercomExclusion, probeIntercomProcess, recordIntercomGeneration, type NativeProcess } from "@spider/roam/intercom-exclusion";
+import { readLocalIdentity } from "@spider/roam/runtime";
+export { createHostIntercomDelivery, type HostIntercomDelivery, type HostIntercomDeliveryPorts, type ReconcileProof } from "@spider/roam/intercom-delivery";
 import type { Admission, AdmissionGate } from "./admission.js";
 import { ordinaryWorkAllowed } from "./activation.js";
 
@@ -14,14 +18,44 @@ export interface HostIntercomPorts {
   machineId(): Promise<string | undefined>;
   home(address: SessionAddress): Home | null | "unknown";
   exclusion?(owner: SessionEndpoint): SessionGenerationExclusion | undefined;
+  recordGeneration?(owner: SessionEndpoint): void;
+  reconcile?(ctx: ExtensionContext, requests: readonly ReconcileRequest[]): Promise<readonly ReconcileProof[]>;
+  pendingOwn?(sessionId: string, scopeId: string | null): readonly { messageId: string; owner: SessionEndpoint }[];
 }
 export interface ReconcileRequest { messageId: string; owner: SessionEndpoint; exclusion?: SessionGenerationExclusion }
-export interface ReconcileProof { owner: SessionEndpoint; receipt: MessageReceipt }
-export function createHostIntercomPorts(gate: AdmissionGate): HostIntercomPorts {
+export function createHostIntercomPorts(gate: AdmissionGate, options: { db?: Db; root?: string; pid?: number; probe?: (pid: number) => NativeProcess } = {}): HostIntercomPorts {
+  const withDb = <T>(run: (db: Db) => T): T => { const db = options.db ?? openGlobal(); try { return run(db); } finally { if (!options.db) db.close(); } };
   return { admission: () => gate.inspect(), machineId: async () => {
     const admission = gate.inspect();
-    return ordinaryWorkAllowed(admission) ? admission.home?.machineId : undefined;
-  }, home(address) {
+    if (!ordinaryWorkAllowed(admission)) return undefined;
+    if (admission.home) return admission.home.machineId;
+    try { const config = readLocalIdentity(paths.globalRoot); return config.intercom.enabled ? config.machineId : undefined; } catch { return undefined; }
+  },
+  recordGeneration(owner) { withDb(db => recordIntercomGeneration(db, { sessionId: owner.address.sessionId, generation: owner.activationEpoch, pid: options.pid ?? process.pid }, options.probe ?? probeIntercomProcess)); },
+  exclusion(owner) { return withDb(db => intercomExclusion(db, owner, options.probe ?? probeIntercomProcess)); },
+  reconcile: reconcileOwnIntercom,
+  pendingOwn(sessionId, scopeId) {
+    const root = options.root ?? paths.globalRoot, file = join(root, "roam", "intercom", "queue.db");
+    try {
+      for (const directory of [root, join(root, "roam"), join(root, "roam", "intercom")]) {
+        const info = lstatSync(directory);
+        if (!info.isDirectory() || info.isSymbolicLink() || realpathSync(directory) !== directory ||
+            typeof process.getuid === "function" && info.uid !== process.getuid() ||
+            directory !== root && process.platform !== "win32" && (info.mode & 0o7777) !== 0o700) throw new Error("intercom-queue-unavailable");
+      }
+      const info = lstatSync(file);
+      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || typeof process.getuid === "function" && info.uid !== process.getuid() ||
+          process.platform !== "win32" && (info.mode & 0o7777) !== 0o600) throw new Error("intercom-queue-unavailable");
+      const db = openDbReadOnly(file); if (!db) return [];
+      try {
+        const rows = db.prepare(`SELECT c.id,c.endpoint_json FROM intercom_copies c JOIN intercom_messages m ON m.id=c.id
+          WHERE c.direction='inbound' AND c.unknown_outcome=1 AND m.to_key=? ORDER BY c.id`).all(addressKey({ sessionId, scopeId })) as Array<{ id: string; endpoint_json: string }>;
+        return rows.flatMap(row => { const endpoint: unknown = JSON.parse(row.endpoint_json);
+          return isSessionEndpoint(endpoint) && endpoint.address.sessionId === sessionId && endpoint.address.scopeId === scopeId ? [{ messageId: row.id, owner: endpoint }] : []; });
+      } finally { db.close(); }
+    } catch { return []; }
+  },
+  home(address) {
     let db: ReturnType<typeof openGlobalReadOnly>;
     try {
       db = openGlobalReadOnly();
@@ -31,24 +65,32 @@ export function createHostIntercomPorts(gate: AdmissionGate): HostIntercomPorts 
   } };
 }
 export function registerRoamIntercom(pi: ExtensionAPI, ports: HostIntercomPorts): Disposable {
-  let sessionId = "", machineId: string | undefined, disposed = false, generation = 0;
+  let sessionId = "", machineId: string | undefined, context: ExtensionContext | undefined, disposed = false, generation = 0;
   const off = pi.events.on(INTERCOM_HOST_EVENT, payload => {
     const request = payload as IntercomHostRequest;
     if (disposed || request.sessionId !== sessionId) return;
     request.home = address => ports.home(address);
     request.exclusion = owner => {
+      if (!machineId || owner.machineId !== machineId) return undefined;
       const proof = ports.exclusion?.(owner);
       if (!proof || !sameAddress(proof.owner.address, owner.address) || proof.owner.machineId !== owner.machineId || proof.owner.homeEpoch !== owner.homeEpoch || proof.owner.activationEpoch !== owner.activationEpoch || proof.excludedGeneration !== owner.activationEpoch) return undefined;
       return { excludedGeneration: owner.activationEpoch, complete: true };
     };
+    if (ports.pendingOwn) request.pendingOwn = async () => ports.pendingOwn!(request.sessionId, request.scopeId);
+    const ownContext = context, ownMachine = machineId;
+    if (ownContext && ports.reconcile) request.reconcile = async (messageId, owner) => {
+      const proof = await ports.reconcile!(ownContext, [{ messageId, owner, exclusion: owner.machineId === ownMachine ? ports.exclusion?.(owner) : undefined }]);
+      return proof[0].receipt;
+    };
     const admission = ports.admission();
     if (!machineId || !ordinaryWorkAllowed(admission)) return;
-    request.endpoint = { address: { sessionId, scopeId: request.scopeId }, machineId, homeEpoch: admission.home?.epoch ?? null, activationEpoch: request.activationEpoch };
+    const endpoint = { address: { sessionId, scopeId: request.scopeId }, machineId, homeEpoch: admission.home?.epoch ?? null, activationEpoch: request.activationEpoch };
+    try { ports.recordGeneration?.(endpoint); request.endpoint = endpoint; } catch { /* Without durable identity, delivery stays unadmitted. */ }
   });
   const dispose = () => { if (disposed) return; disposed = true; generation++; machineId = undefined; off(); };
   pi.on("session_start", async (_event, ctx) => {
     if (disposed) return;
-    const ticket = ++generation; sessionId = ctx.sessionManager.getSessionId(); machineId = undefined;
+    const ticket = ++generation; sessionId = ctx.sessionManager.getSessionId(); context = ctx; machineId = undefined;
     try { const current = await ports.machineId(); if (!disposed && ticket === generation) machineId = current; } catch { /* Unenrolled local sessions remain local. */ }
   });
   pi.on("session_shutdown", dispose);
@@ -85,103 +127,4 @@ export async function reconcileOwnIntercom(ctx: ExtensionContext, requests: read
     observer.settle(excluded ? { excludedGeneration: owner.activationEpoch, complete: true } : undefined);
     return { owner, receipt: receipts.at(-1)! };
   });
-}
-
-
-export interface HostIntercomDeliveryPorts {
-  store: IntercomStore;
-  broker: Pick<IntercomFederationClient, "deliver" | "deliverReceipt" | "deliverControl">;
-  endpoint(address: SessionAddress): SessionEndpoint | null;
-  sender(address: SessionAddress): RemoteSessionInfo | null;
-  wake(peer: string): void;
-  now(): number;
-  onError?(reason: string): void;
-}
-const sameEndpoint = (a: SessionEndpoint, b: SessionEndpoint) => sameAddress(a.address, b.address) && a.machineId === b.machineId && a.homeEpoch === b.homeEpoch && a.activationEpoch === b.activationEpoch;
-/** The machine service owns this adapter. Only the owning fork supplies physical-entry evidence. */
-export interface HostIntercomDelivery {
-  ready(address: SessionAddress, transition: string): Promise<void>;
-  reconcile(proofs: readonly ReconcileProof[]): Promise<void>;
-  onInbound(input: { id: string; to: SessionAddress }): void;
-  onReceipt(frame: IntercomReceiptFrame): void;
-  onControl(frame: IntercomControlFrame): void;
-  onAskFailed(failure: { id: string; from: SessionAddress; to: SessionAddress; reason: "link-down" }): void;
-  onExpiry(event: { id: string; from: SessionAddress; to: SessionAddress }): void;
-}
-export function createHostIntercomDelivery(ports: HostIntercomDeliveryPorts): HostIntercomDelivery {
-  const readiness = new Map<string, string>(), active = new Map<string, Promise<void>>(), notified = new Set<string>();
-  const report = () => ports.onError?.("intercom-broker-unavailable");
-  async function ready(address: SessionAddress, transition: string): Promise<void> {
-    const key = addressKey(address); readiness.set(key, transition);
-    const current = active.get(key);
-    if (current) { await current; if (readiness.get(key) !== transition) return; }
-    const run = (async () => {
-      const endpoint = ports.endpoint(address); if (!endpoint) return;
-      let progress: boolean;
-      do {
-        progress = false;
-        for (const identity of ports.store.pending({ kind: "inbound", address })) {
-          const retained = ports.store.retained("inbound", identity.id), sender = ports.sender(identity.from);
-          if (!retained || !sameEndpoint(retained.endpoint, endpoint) || !sender) continue;
-          let frame;
-          try { frame = ports.store.beginDispatch({ id: identity.id, endpoint, readiness: transition }); }
-          catch (error) { if (error instanceof Error && error.message === "Intercom retry needs a new readiness transition") continue; throw error; }
-          progress = true;
-          try {
-            const result = await ports.broker.deliver(sender, endpoint, frame.message);
-            if (result.consumption) await reconcile([{ owner: endpoint, receipt: result.consumption }]);
-          } catch { report(); }
-        }
-      } while (progress);
-    })();
-    active.set(key, run);
-    try { await run; } finally { if (active.get(key) === run) active.delete(key); }
-  }
-  async function reconcile(proofs: readonly ReconcileProof[]): Promise<void> {
-    for (const proof of proofs) {
-      const row = ports.store.retained("inbound", proof.receipt.messageId);
-      if (!row || !sameEndpoint(row.endpoint, proof.owner)) throw new Error("intercom-reconciliation-owner-mismatch");
-      const frame = { from: row.endpoint, to: row.identity.from, digest: row.identity.digest, receipt: proof.receipt, attempt: row.latestAttempt };
-      if (proof.receipt.status === "not_injected") {
-        if (row.reconciliation && JSON.stringify(row.reconciliation) === JSON.stringify(proof.receipt) && row.state !== "unknown") continue;
-        ports.store.resolveUnknown({ queue: "inbound", id: row.identity.id, digest: row.identity.digest, proof: frame });
-      } else ports.store.settleReceipt({ queue: "inbound", peer: row.peer, frame });
-      ports.wake(row.peer);
-    }
-  }
-  return {
-    ready, reconcile,
-    onInbound(input: { id: string; to: SessionAddress }): void {
-      const transition = readiness.get(addressKey(input.to));
-      if (transition) void ready(input.to, transition).catch(report);
-    },
-    onReceipt(frame: IntercomReceiptFrame): void {
-      const row = ports.store.retained("outbound", frame.receipt.messageId);
-      if (!row || !sameEndpoint(row.endpoint, frame.from) || !sameAddress(row.identity.from, frame.to) || row.identity.digest !== frame.digest) throw new Error("intercom-receipt-route-mismatch");
-      if (frame.receipt.status === "not_injected" && row.pendingProof) {
-        ports.store.resolveUnknown({ queue: "outbound", id: row.identity.id, digest: row.identity.digest, proof: frame });
-        ports.wake(row.peer);
-      }
-      // Wire receipts remain body-free. A reply injected as an ordinary entry (not
-      // a matched waiter) carries enough durable identity to reconstruct this notice.
-      const receipt = row.identity.askId && row.identity.askId !== row.identity.id && frame.receipt.status === "injected"
-        ? { ...frame.receipt, detail: "asker-no-longer-waiting" } : frame.receipt;
-      const sender = ports.sender(frame.from.address); if (sender) ports.broker.deliverReceipt(sender, frame.to, receipt);
-    },
-    onControl(frame: IntercomControlFrame): void {
-      const sender = ports.sender(frame.from); if (sender) ports.broker.deliverControl(sender, frame.to, frame.control);
-    },
-    onAskFailed(failure: { id: string; from: SessionAddress; to: SessionAddress; reason: "link-down" }): void {
-      const sender = ports.sender(failure.to), key = `link-down:${failure.id}`;
-      if (sender && !notified.has(key)) {
-        ports.broker.deliverReceipt(sender, failure.from, { messageId: failure.id, status: "unknown", timestamp: ports.now(), detail: "link-down" }); notified.add(key);
-      }
-    },
-    onExpiry(event: { id: string; from: SessionAddress; to: SessionAddress }): void {
-      const sender = ports.sender(event.to), key = `expired:${event.id}`;
-      if (sender && !notified.has(key)) {
-        ports.broker.deliverReceipt(sender, event.from, { messageId: event.id, status: "expired", timestamp: ports.now(), detail: "Question or queued message expired." }); notified.add(key);
-      }
-    },
-  };
 }

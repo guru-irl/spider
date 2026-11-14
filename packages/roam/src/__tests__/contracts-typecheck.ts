@@ -2,7 +2,7 @@ import type { Db } from "@spider/db-core";
 import type { ApplyReceipt, BatchArtifact, ExportPolicy, Home, JsonObject, MachineId, Probe, ProcessIdentity, HubOperationReadiness, Readiness, ReplicaEffects, StoreBarrier, StoreKey } from "@spider/db-core/roam/types";
 import type {
   AgentPorts, ArtifactManifest, BootstrapPeer, CallOptions, Clock, DestinationObservation, Diagnostic, FreezeAck, GitPorts,
-  HostIntent, HubPorts, Journal, Limits, MoveCheck, MovePorts, MoveRequest, MoveResult, Operation, Outcome,
+  HostIntent, HubPorts, IntercomConfig, Journal, Limits, MoveCheck, MovePorts, MoveRequest, MoveResult, Operation, Outcome,
   Peer, PlacementPort, PreparedMove, PreparedWorkspace, RecoveryPort, RoamConfig, SessionManifest,
   StorePort, SyncService, Transport, WorkspaceSnapshot,
 } from "@spider/roam/contracts";
@@ -20,7 +20,7 @@ type _Limits = Assert<Equal<Limits, {
 }>>;
 type _RoamConfig = Assert<Equal<RoamConfig, {
   enabled: boolean; role: "hub" | "box"; machineId: MachineId; hubMachineId: MachineId; peers: readonly Peer[];
-  discoveryRoots: readonly string[]; coreUnit: string; syncMs: number; limits: Limits;
+  discoveryRoots: readonly string[]; coreUnit: string; syncMs: number; limits: Limits; intercom: IntercomConfig;
 }>>;
 type _Operation = Assert<Equal<Operation, { id: string; machineId: MachineId; expectedEpoch: number | null; kind: string; args: JsonObject }>>;
 type _Outcome = Assert<Equal<Outcome<{ ok: boolean }>, {

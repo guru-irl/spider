@@ -15,6 +15,7 @@ import { remoteHosting } from "./remote-observations";
 import { loadPeerState } from "./peer-state";
 import { openLocalCore } from "./runtime";
 import { createTransport } from "./transport";
+import { createMachineIntercom } from "./intercom-runtime";
 import type { Clock, Peer } from "./contracts";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 export function createHubProcessProbe(probe: (pid: number) => Promise<ProcessProbe>, alive: (pid: number) => void = pid => { process.kill(pid, 0); }) {
@@ -112,6 +113,9 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
     if (self.kind !== "live") throw new Error("Cannot verify the hub process identity");
     const clock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
     const journalFile = join(root, "roam", "journal.db"), journal = openJournal(journalFile);
+    const direct = core.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
+    const intercom = core.config.intercom.enabled ? createMachineIntercom({ root, globalDb: core.db, config: core.config,
+      agentDir: herdr.agentDirectory, clock, env, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }) }) : undefined;
     const observe = async (peer: Peer): Promise<HubObservation> => {
       try {
         const before = await client.identity();
@@ -130,7 +134,7 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
         catch { return { reachability, readiness: null, suspensions: null }; }
       } catch { return { reachability: "unknown", readiness: null, suspensions: null }; }
     };
-    const hub = await runStandaloneHub({ config: core.config, globalDb: core.db, journal, transport, clock,
+    const hub = await runStandaloneHub({ config: core.config, globalDb: core.db, journal, transport, clock, intercom,
       placement: { app: createAppClient({ binary: herdr.app.binary, env }), hc: client,
         registry: createTerminalRegistry(join(root, "herdr")), hcBinary: herdr.core.binary, stateRoot: join(root, "roam", "placement") },
       runtimeRoot: join(root, "roam"), socketPath: join(root, "roam", "hub.sock"),

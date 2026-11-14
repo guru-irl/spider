@@ -7,7 +7,7 @@ import { openJournal } from "@spider/roam/journal";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { createParticipantSupervisor } from "@spider/roam/participant-supervisor";
-import { DEFAULT_LIMITS } from "@spider/roam/contracts";
+import { DEFAULT_LIMITS, disabledIntercom } from "@spider/roam/contracts";
 import { assignInitialHome } from "@spider/roam/homes";
 import { registerAdmission } from "../roam/admission";
 import { SessionScheduler } from "../loop/index";
@@ -20,7 +20,7 @@ afterEach(() => { for (const f of fixtures.splice(0)) f.close(); vi.useRealTimer
 function fixture() {
   const global = createReplica("global", BOX), worktree = createReplica("worktree", BOX); fixtures.push(global, worktree);
   global.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
-  const config = { enabled: false, role: "box" as const, machineId: BOX, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture.service", syncMs: 120000, limits: DEFAULT_LIMITS };
+  const config = { enabled: false, role: "box" as const, machineId: BOX, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture.service", syncMs: 120000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
   return { global, worktree, config, input: { globalDb: global.db, machineId: BOX, sessionId: "new-session", file: join(worktree.root, "session.jsonl"), cwd: worktree.root,
     stores: [{ db: worktree.db, key: worktree.storeKey }], limit: 1024 } };
 }

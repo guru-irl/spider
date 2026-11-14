@@ -1,20 +1,26 @@
 import { randomBytes } from "node:crypto";
 import type { IntercomFederationClient } from "../../intercom/src/broker/client";
 import {
-  FEDERATION_FEATURE, addressKey, isRemoteSessionInfo, receiptReleasesPayload, sameAddress,
+  FEDERATION_FEATURE, addressKey, isConsumptionReceipt, isRemoteSessionInfo, receiptReleasesPayload, sameAddress,
   type FederationBlockers, type FederationBridge, type FederationDispatch, type FederationDispatchResult,
   type LocalPresence, type MessageControl, type MessageReceipt, type RemoteSessionInfo, type SessionAddress,
 } from "@spider/intercom/protocol";
 import type { Home } from "@spider/db-core/roam/types";
 import type { Clock, Peer, Transport } from "./contracts";
 import { encodeExchange } from "./intercom-codec";
-import { INTERCOM_EXCHANGE_BYTES, type ExchangeGeneration, type IntercomControlFrame, type IntercomExchange,
-  type IntercomIdentity, type IntercomLinkAck, type IntercomReceiptFrame, type IntercomRefusal, type IntercomStore } from "./intercom-contracts";
+import { INTERCOM_EXCHANGE_BYTES, INTERCOM_FEDERATION_VERSION, type ExchangeGeneration, type IntercomControlFrame, type IntercomExchange,
+  type IntercomIdentity, type IntercomLinkAck, type IntercomReceiptFrame, type IntercomRefusal, type IntercomStore, type MissingOriginFrame } from "./intercom-contracts";
 import { ExchangeError, exchange as executeExchange, type EnrolledIntercomEdge } from "./intercom-exchange";
 import { parseHelperRequest, type HelperReply } from "./intercom-helper";
 import { acquireHelperRoute, type HelperRouteLease } from "./intercom-route";
 import { isMachineId } from "./machine-id";
 
+export interface IntercomBroker extends Pick<IntercomFederationClient, "connect" | "enableHelpers" | "publishPresence" | "deliver" | "deliverReceipt" | "deliverControl" | "close" | "inspectBlockers"> {
+  on(event: "presence", listener: (sessions: LocalPresence[]) => void): unknown;
+  on(event: "disconnected", listener: () => void): unknown;
+  off(event: "presence", listener: (sessions: LocalPresence[]) => void): unknown;
+  off(event: "disconnected", listener: () => void): unknown;
+}
 export interface BridgePorts {
   machineId: string;
   machineAlias: string;
@@ -22,13 +28,17 @@ export interface BridgePorts {
   store: IntercomStore;
   transport: Transport;
   clock: Clock;
-  broker?: IntercomFederationClient;
+  broker?: IntercomBroker;
   globalRoot?: string;
   agentDir?: string;
+  routeLease?: HelperRouteLease;
+  ensureBroker?(): Promise<void>;
   localPresence(): readonly RemoteSessionInfo[];
+  authorizeLocalPresence?(session: LocalPresence): boolean;
   authoritativeHome(address: SessionAddress): Home | null;
   nextHop?(destinationMachine: string, previousPeer?: string): string | null;
   authorizePresence?(peer: string, entry: RemoteSessionInfo): boolean;
+  authorizeOrigin?(peer: string, originMachineId: string): boolean;
   advertiseRelay?(peer: string, entry: RemoteSessionInfo): boolean;
   publishPresence?(entries: readonly RemoteSessionInfo[]): void;
   onInbound?(identity: { id: string; to: SessionAddress }): void;
@@ -64,6 +74,7 @@ interface EdgeRuntime {
   reportedRefusals: Set<string>;
   reportedExpiries: Set<string>;
   resolved: Peer | null;
+  versionReady: boolean;
   retryCancel: (() => void) | null;
   pollCancel: (() => void) | null;
   livenessCancel: (() => void) | null;
@@ -77,6 +88,8 @@ const hasData = (value: IntercomExchange): boolean => value.frames.length > 0 ||
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 const sameIdentity = (a: IntercomIdentity, b: IntercomIdentity): boolean => a.id === b.id && a.sequence === b.sequence && a.digest === b.digest &&
   a.askId === b.askId && sameAddress(a.from, b.from) && sameAddress(a.to, b.to);
+const sameEndpoint = (a: import("@spider/intercom/protocol").SessionEndpoint, b: import("@spider/intercom/protocol").SessionEndpoint): boolean =>
+  sameAddress(a.address, b.address) && a.machineId === b.machineId && a.homeEpoch === b.homeEpoch && a.activationEpoch === b.activationEpoch;
 const failed = (reason: string): FederationDispatchResult => ({ delivery: "failed",
   retryable: !["machine-not-enrolled", "message-too-large", "ask-expired"].includes(reason), outcomeKnown: true,
   acceptance: { accepted: false, durable: false }, reason });
@@ -88,7 +101,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     if (!isMachineId(config.peer.machineId) || config.peer.machineId === ports.machineId || !config.edgeEpoch || typeof config.initiator !== "boolean" || edges.has(config.peer.machineId)) throw new Error("Invalid intercom enrollment");
     edges.set(config.peer.machineId, { config, incoming: new Map(), outgoing: new Map(), controls: new Map(), failedAsks: new Set(),
       pollSent: new Map(), pushIds: new Set(), acknowledgements: new Map(),
-      receiptAcknowledgements: new Map(), refusals: new Map(), reportedRefusals: new Set(), reportedExpiries: new Set(), resolved: null, retryCancel: null, pollCancel: null,
+      receiptAcknowledgements: new Map(), refusals: new Map(), reportedRefusals: new Set(), reportedExpiries: new Set(), resolved: null, versionReady: false, retryCancel: null, pollCancel: null,
       livenessCancel: null, pushCancel: null, pushDirty: false, admissionWaiters: new Set() });
   }
   if (ports.broker && (!ports.globalRoot || !ports.agentDir)) throw new Error("Invalid intercom broker route");
@@ -97,7 +110,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   const lifetime = new AbortController();
   let routeLease: HelperRouteLease | null = null, brokerLocal: RemoteSessionInfo[] = [];
   let brokerRetryCancel: (() => void) | null = null, brokerRetries = 0, brokerConnectTask: Promise<void> | null = null;
-  let expiryCancel: (() => void) | null = null, expiryDeadline: number | null = null, expiryNoticeRetry = false;
+  let expiryCancel: (() => void) | null = null, expiryDeadline: number | null = null, expiryNoticeRetry = false, localReceiptRetry = false;
   const lookup = (destination: string, previous?: string): EdgeRuntime | null => {
     const hop = edges.has(destination) ? destination : ports.nextHop?.(destination, previous) ?? null;
     return hop && hop !== previous ? edges.get(hop) ?? null : null;
@@ -152,7 +165,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     const deadline = Math.max(successUntil, edge.outgoing.get("poll")?.connectedUntil ?? 0);
     if (deadline > now) edge.livenessCancel = ports.clock.later(deadline - now, () => { edge.livenessCancel = null; publish(); wakeRelays(edge); armLiveness(edge); });
   };
-  const blank = (peer: string, generation: ExchangeGeneration): IntercomExchange => ({ protocol: 1, senderMachine: ports.machineId,
+  const blank = (peer: string, generation: ExchangeGeneration): IntercomExchange => ({ protocol: INTERCOM_FEDERATION_VERSION, senderMachine: ports.machineId,
     recipientMachine: peer, generation, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
   const build = (edge: EdgeRuntime, generation: ExchangeGeneration, acks: readonly IntercomLinkAck[], receiptAcks: readonly IntercomReceiptFrame[], hopBudgetMs: number,
     metadataOnly = false, skipIds: readonly string[] = [], refusals: readonly IntercomRefusal[] = []): IntercomExchange => {
@@ -203,9 +216,10 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     for (const waiter of [...edge.admissionWaiters]) waiter.finish(true);
     publish(); armLiveness(edge);
   };
-  const apply = (edge: EdgeRuntime, incoming: IntercomExchange): { acks: IntercomLinkAck[]; receiptAcks: IntercomReceiptFrame[]; refusals: IntercomRefusal[] } => {
+  const apply = (edge: EdgeRuntime, incoming: IntercomExchange, missingOrigins: readonly MissingOriginFrame[] = []): { acks: IntercomLinkAck[]; receiptAcks: IntercomReceiptFrame[]; refusals: IntercomRefusal[] } => {
     const peer = edge.config.peer.machineId, acks: IntercomLinkAck[] = [], receiptAcks: IntercomReceiptFrame[] = [], refusals: IntercomRefusal[] = [];
     if (incoming.presence.some(entry => entry.machineId === ports.machineId || !(ports.authorizePresence?.(peer, entry) ?? entry.machineId === peer))) return bad("invalid-presence");
+    if (ports.authorizeOrigin && incoming.frames.some(frame => frame.originMachineId !== undefined && !ports.authorizeOrigin!(peer, frame.originMachineId))) return bad("machine-not-enrolled");
     for (const ack of incoming.acknowledgements) {
       ports.store.acknowledge({ peer, ...ack }); edge.pollSent.delete(ack.identity.id); edge.reportedRefusals.delete(ack.identity.id);
     }
@@ -217,6 +231,15 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         if (!ports.store.openAsks(peer).some(item => item.identity.id === refusal.identity.id)) continue;
       }
       const upstream = ports.store.retained("inbound", refusal.identity.id);
+      if (refusal.reason === "missing-origin") {
+        const frame: IntercomReceiptFrame = { from: row.endpoint, to: row.identity.from, digest: row.identity.digest, attempt: row.latestAttempt,
+          receipt: { messageId: row.identity.id, status: "cancelled", timestamp: ports.clock.now(), detail: "missing-origin" } };
+        ports.store.settleReceipt({ queue: "outbound", peer, frame });
+        if (upstream && upstream.peer !== peer) { ports.store.settleReceipt({ queue: "inbound", peer: upstream.peer, frame }); bridge.wake(upstream.peer); }
+        else ports.onReceipt?.(frame);
+        edge.reportedRefusals.add(refusal.identity.id);
+        continue;
+      }
       if (upstream && upstream.peer !== peer) {
         const previous = edges.get(upstream.peer);
         if (previous) { previous.refusals.set(refusal.identity.id, refusal); bridge.wake(upstream.peer); }
@@ -231,17 +254,49 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     }
     for (const ack of incoming.receiptAcknowledgements ?? []) ports.store.acknowledgeReceipt({ peer, frame: ack });
     for (const frame of incoming.receipts) {
-      const outbound = ports.store.retained("outbound", frame.receipt.messageId);
+      let outbound = ports.store.retained("outbound", frame.receipt.messageId);
       if (!outbound || outbound.peer !== peer) return bad("invalid-receipt");
+      if (!sameEndpoint(outbound.endpoint, frame.from)) {
+        const evidence = outbound.reconciliation?.status === "not_injected" && outbound.reconciliation.evidence?.kind === "absence" ? outbound.reconciliation.evidence : null;
+        const next = lookup(frame.from.machineId);
+        if (!evidence || evidence.excludedGeneration !== outbound.endpoint.activationEpoch || !next) return bad("invalid-receipt");
+        ports.store.rebindUndispatched(outbound.identity.to, frame.from, { owner: ports.authoritativeHome(outbound.identity.to),
+          exclusion: { owner: outbound.endpoint, excludedGeneration: evidence.excludedGeneration, kind: "generation-fenced" }, nextHop: next.config.peer.machineId });
+        outbound = ports.store.retained("outbound", frame.receipt.messageId);
+        if (!outbound || outbound.peer !== peer) return bad("invalid-receipt");
+      }
       ports.store.settleReceipt({ queue: "outbound", peer, frame });
+      if (frame.receipt.status === "not_injected" && ports.store.retained("outbound", frame.receipt.messageId)?.pendingProof) {
+        ports.store.resolveUnknown({ queue: "outbound", id: frame.receipt.messageId, digest: frame.digest, proof: frame });
+      }
       const relay = ports.store.retained("inbound", frame.receipt.messageId);
-      if (relay && relay.peer !== peer) ports.store.settleReceipt({ queue: "inbound", peer: relay.peer, frame });
+      if (relay && relay.peer !== peer) {
+        if (!sameEndpoint(relay.endpoint, frame.from)) ports.store.rebindInboundAfterAbsence(frame.receipt.messageId, frame.from);
+        ports.store.settleReceipt({ queue: "inbound", peer: relay.peer, frame });
+        if (frame.receipt.status === "not_injected" && ports.store.retained("inbound", frame.receipt.messageId)?.pendingProof) {
+          ports.store.resolveUnknown({ queue: "inbound", id: frame.receipt.messageId, digest: frame.digest, proof: frame });
+        }
+      }
       edge.controls.delete(frame.receipt.messageId); edge.failedAsks.delete(frame.receipt.messageId);
       receiptAcks.push(frame);
       if (relay && relay.peer !== peer) bridge.wake(relay.peer);
       else ports.onReceipt?.(frame);
     }
-    for (const frame of incoming.frames) {
+    const rejected = new Map(missingOrigins.map(frame => [frame.index, frame]));
+    let nextValid = 0;
+    for (let index = 0; index < incoming.frames.length + missingOrigins.length; index++) {
+      const invalid = rejected.get(index);
+      if (invalid) {
+        ports.store.rejectMissingOrigin({ peer, frame: invalid });
+        refusals.push({ identity: invalid.identity, reason: "missing-origin" });
+        continue;
+      }
+      const frame = incoming.frames[nextValid++];
+      const prior = ports.store.retained("inbound", frame.identity.id);
+      if (frame.kind === "message" && prior?.peer === peer && prior.failureReason === "missing-origin" && sameIdentity(prior.identity, frame.identity)) {
+        refusals.push({ identity: frame.identity, reason: "missing-origin" });
+        continue;
+      }
       const remote = frame.endpoint.machineId !== ports.machineId, next = remote ? lookup(frame.endpoint.machineId, peer) : null;
       if (remote && !next) { refusals.push({ identity: frame.identity, reason: "machine-not-enrolled" }); continue; }
       const resume = incoming.resumptions?.find(item => sameAddress(item.from, frame.identity.from) && sameAddress(item.to, frame.identity.to));
@@ -299,18 +354,36 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     }
     expiryNoticeRetry = retry;
   };
+  const drainLocalReceipts = (): void => {
+    localReceiptRetry = false;
+    for (;;) {
+      const receipts = ports.store.pending({ kind: "receipts", peer: ports.machineId });
+      if (!receipts.length) break;
+      for (const frame of receipts) {
+        try {
+          ports.store.settleReceipt({ queue: "outbound", peer: ports.machineId, frame });
+          const outbound = ports.store.retained("outbound", frame.receipt.messageId);
+          if (frame.receipt.status === "not_injected" && outbound?.pendingProof) ports.store.resolveUnknown({ queue: "outbound", id: outbound.identity.id, digest: outbound.identity.digest, proof: frame });
+          ports.onReceipt?.(frame);
+          ports.store.acknowledgeReceipt({ peer: ports.machineId, frame });
+        } catch { localReceiptRetry = true; }
+      }
+      if (localReceiptRetry) break;
+    }
+  };
   const sweep = (): void => {
     const expired = ports.store.expire();
     reportExpiries();
     for (const item of expired) if (item.queue === "inbound") {
       const row = ports.store.retained("inbound", item.id);
-      if (row) bridge.wake(row.peer);
+      if (row && row.peer !== ports.machineId) bridge.wake(row.peer);
     }
+    drainLocalReceipts();
     armExpiry();
   };
   const armExpiry = (): void => {
     if (stopped) return;
-    const next = ports.store.nextExpiry(), retry = expiryNoticeRetry ? ports.clock.now() + 30_000 : null;
+    const next = ports.store.nextExpiry(), retry = expiryNoticeRetry || localReceiptRetry ? ports.clock.now() + 30_000 : null;
     const deadline = next === null ? retry : retry === null ? next : Math.min(next, retry);
     if (deadline === expiryDeadline && expiryCancel) return;
     expiryCancel?.(); expiryCancel = null; expiryDeadline = deadline;
@@ -359,7 +432,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     const immediate = !new ExchangeError(reason).retryable;
     const down = immediate || before.status === "down" || probe && before.status === "recovering";
     const updated = ports.store.updateEdgeState(peer, edge.config.edgeEpoch, old => ({ ...old, status: down ? "down" : "recovering",
-      outageSince: old.outageSince ?? ports.clock.now(), reason: immediate ? reason : old.reason ?? reason,
+      outageSince: old.outageSince ?? ports.clock.now(), reason,
       failures: old.outageSince === null ? 1 : probe ? old.failures + 1 : old.failures }));
     edge.livenessCancel?.(); edge.livenessCancel = null; publish();
     if (before.status !== updated.status) wakeRelays(edge);
@@ -404,9 +477,9 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         sweep();
         if (!edge.resolved) edge.resolved = await ports.transport.resolve(edge.config.peer, { timeoutMs: remaining(), signal: active.abort.signal });
         if (stopped || active.abort.signal.aborted) return false;
-        const now = ports.clock.now();
+        const now = ports.clock.now(), handshaking = !edge.versionReady;
         for (const [id, handoff] of edge.pollSent) if (now < handoff.at || now >= handoff.until) edge.pollSent.delete(id);
-        input = build(edge, generation, [...edge.acknowledgements.values()], [...edge.receiptAcknowledgements.values()], total, probe || channel === "poll",
+        input = build(edge, generation, [...edge.acknowledgements.values()], [...edge.receiptAcknowledgements.values()], total, handshaking || probe || channel === "poll",
           [...edge.pollSent.keys()], [...edge.refusals.values()]);
         reportExpiries(); armExpiry();
         if (channel === "push") for (const frame of input.frames) edge.pushIds.add(frame.identity.id);
@@ -415,7 +488,9 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
           onConnected: connected => { active.connectedUntil = connected && channel === "poll" && !probe ? begun + total : 0; publish(); armLiveness(edge); },
         });
         if (stopped || active.abort.signal.aborted || edge.outgoing.get(channel) !== active || state(edge).outbound[channel] !== generation.generation) return false;
-        const applied = apply(edge, response.exchange);
+        edge.versionReady = true;
+        const applied = apply(edge, response.exchange, response.missingOrigins);
+        if (handshaking && ports.store.hasPending(peer)) edge.pushDirty = true;
         for (const ack of input.acknowledgements) edge.acknowledgements.delete(ackKey(ack));
         for (const ack of input.receiptAcknowledgements ?? []) edge.receiptAcknowledgements.delete(receiptKey(ack));
         for (const refusal of input.refusals ?? []) edge.refusals.delete(refusal.identity.id);
@@ -426,7 +501,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         succeeded = true;
         return true;
       } catch (error) {
-        edge.resolved = null;
+        edge.resolved = null; edge.versionReady = false;
         if (!active.abort.signal.aborted && !stopped) markFailure(edge, error, probe);
         return false;
       } finally {
@@ -467,7 +542,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   };
 
   const onLocalPresence = (sessions: LocalPresence[]): void => {
-    const next = sessions.map(session => ({ remote: true as const, id: session.address.sessionId, address: session.address, machineId: ports.machineId,
+    const next = sessions.filter(session => ports.authorizeLocalPresence?.(session) ?? true).map(session => ({ remote: true as const, id: session.address.sessionId, address: session.address, machineId: ports.machineId,
       machineAlias: ports.machineAlias, homeEpoch: session.homeEpoch, activationEpoch: session.activationEpoch, endpointEpoch: session.activationEpoch,
       cwd: session.cwd, model: session.model, startedAt: session.startedAt, lastActivity: session.lastActivity,
       ...(session.name === undefined ? {} : { name: session.name }), ...(session.status === undefined ? {} : { status: session.status }) }));
@@ -478,6 +553,8 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   };
   const connectBroker = async (): Promise<void> => {
     const broker = ports.broker!;
+    await ports.ensureBroker?.();
+    if (stopped) return bad("bridge-stopped");
     await broker.connect({ feature: FEDERATION_FEATURE, agentDir: ports.agentDir!, machineId: ports.machineId, machineAlias: ports.machineAlias }, bridge);
     if (stopped) return bad("bridge-stopped");
     const token = randomBytes(32).toString("hex");
@@ -533,7 +610,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         started = true;
         try {
           if (ports.broker) {
-            routeLease = await acquireHelperRoute(ports.globalRoot!, ports.agentDir!, lifetime.signal);
+            routeLease = ports.routeLease ?? await acquireHelperRoute(ports.globalRoot!, ports.agentDir!, lifetime.signal);
             if (stopped) return bad("bridge-stopped");
             ports.broker.on("presence", onLocalPresence);
             ports.broker.on("disconnected", onBrokerDisconnected);
@@ -583,9 +660,11 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       if (!started || stopped) return bad("bridge-unavailable");
       let input;
       try { if (bytes(raw) > INTERCOM_EXCHANGE_BYTES - 1024) return bad("exchange-too-large"); input = parseHelperRequest(raw); }
-      catch (error) { if (error instanceof ExchangeError) throw error; return bad("invalid-request"); }
+      catch (error) { if (error instanceof ExchangeError) throw error; return bad(error instanceof Error && error.message === "peer-version-mismatch" ? "peer-version-mismatch" : "invalid-request"); }
       const incoming = input.exchange, edge = edges.get(incoming.senderMachine);
       if (!edge || incoming.recipientMachine !== ports.machineId || incoming.generation.edgeEpoch !== edge.config.edgeEpoch) return bad("machine-not-enrolled");
+      // A valid request advertises v2 before this side sends any message frames.
+      edge.versionReady = true;
       const fatal = fatalReason(edge); if (fatal) return bad(fatal);
       const channel = incoming.generation.channel, number = incoming.generation.generation;
       if (signal?.aborted) return bad("cli-aborted");
@@ -599,7 +678,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       edge.incoming.set(channel, active);
       try {
         sweep();
-        const applied = apply(edge, incoming);
+        const applied = apply(edge, incoming, input.missingOrigins);
         const hopBudgetMs = channel === "poll" ? 45_000 : 20_000;
         const makeReply = () => build(edge, incoming.generation,
           [...new Map([...edge.acknowledgements.values(), ...applied.acks].map(ack => [ackKey(ack), ack])).values()],
@@ -682,17 +761,18 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     receipt(from: SessionAddress, receipt: MessageReceipt) {
       if (!started || stopped) return bad("bridge-unavailable");
       const row = ports.store.retained("inbound", receipt.messageId);
-      if (!row || !sameAddress(row.endpoint.address, from)) return bad("invalid-receipt");
+      if (!row || !sameAddress(row.endpoint.address, from) || !Number.isSafeInteger(receipt.timestamp) || receipt.timestamp < 0) return;
+      if (receipt.evidence && (receipt.evidence.sessionId !== row.endpoint.address.sessionId || receipt.evidence.activationEpoch !== row.endpoint.activationEpoch)) return;
+      if (["injected", "matched_waiter", "not_injected"].includes(receipt.status) && !isConsumptionReceipt(receipt)) return;
+      if (receipt.status === "matched_waiter" && (receipt.evidence?.kind !== "waiter" || receipt.evidence.askId !== row.identity.askId || row.identity.askId === row.identity.id)) return;
       const frame = { from: row.endpoint, to: row.identity.from, digest: row.identity.digest, attempt: row.latestAttempt, receipt };
       ports.store.settleReceipt({ queue: "inbound", peer: row.peer, frame });
       if (receipt.status === "not_injected" && ports.store.retained("inbound", receipt.messageId)?.pendingProof) {
         ports.store.resolveUnknown({ queue: "inbound", id: receipt.messageId, digest: row.identity.digest, proof: frame });
+        ports.onInbound?.({ id: row.identity.id, to: row.identity.to });
       }
-      if (row.peer === ports.machineId) {
-        ports.store.settleReceipt({ queue: "outbound", peer: row.peer, frame });
-        if (receipt.status === "not_injected" && ports.store.retained("outbound", receipt.messageId)?.pendingProof) ports.store.resolveUnknown({ queue: "outbound", id: receipt.messageId, digest: row.identity.digest, proof: frame });
-        ports.onReceipt?.(frame);
-      } else bridge.wake(row.peer);
+      if (row.peer === ports.machineId) drainLocalReceipts();
+      else bridge.wake(row.peer);
       armExpiry();
     },
     control(from: SessionAddress, to: SessionAddress, control: MessageControl) {

@@ -6,7 +6,7 @@ import { seedSession } from "@spider/db-core/roam/seed";
 import type { StoreKey } from "@spider/db-core/roam/types";
 import { createStorePort } from "../stores";
 import { handleAgentOperation, dispatchArtifactCommand } from "../agent";
-import { DEFAULT_LIMITS } from "../contracts";
+import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import type { AgentPorts, Clock, Journal, Operation, Peer, RoamConfig, Transport } from "../contracts";
 import { openJournal } from "../journal";
 export const HUB = "00000000-0000-4000-8000-000000000001";
@@ -31,7 +31,7 @@ export function network(machineIds: string[] = [BOX]): Network {
   const remotes = new Map<string, { global: ReturnType<typeof createReplica>; worktree: ReturnType<typeof createReplica>;
     stores: ReturnType<typeof createStorePort>; ports: Parameters<typeof handleAgentOperation>[1] }>();
   const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers,
-    discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: { ...DEFAULT_LIMITS, retryDelaysMs: [] } };
+    discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: { ...DEFAULT_LIMITS, retryDelaysMs: [] }, intercom: disabledIntercom() };
   for (const [index, machineId] of machineIds.entries()) {
     const remote = createReplica("global", machineId), worktree = createReplica("worktree", machineId);
     remote.db.prepare("UPDATE roam_meta SET capture_enabled=1").run();

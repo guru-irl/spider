@@ -1,11 +1,11 @@
 import type { Clock, Peer, Transport } from "./contracts";
-import { decodeExchange, encodeExchange } from "./intercom-codec";
-import { INTERCOM_EXCHANGE_BYTES, type IntercomExchange, type IntercomStore } from "./intercom-contracts";
+import { decodeExchange, decodeExchangeWithFrameErrors, encodeExchange } from "./intercom-codec";
+import { INTERCOM_EXCHANGE_BYTES, type IntercomExchange, type IntercomStore, type MissingOriginFrame } from "./intercom-contracts";
 import { isMachineId } from "./machine-id";
 
 export interface EnrolledIntercomEdge { peer: Peer; edgeEpoch: string; initiator: boolean }
 export interface ExchangeRequest { exchange: IntercomExchange; holdMs: number }
-export interface ExchangeReply { version: 1; exchange: IntercomExchange }
+export interface ExchangeReply { version: 1; exchange: IntercomExchange; missingOrigins?: MissingOriginFrame[] }
 export interface ExchangePorts {
   machineId: string;
   enrollment: Pick<EnrolledIntercomEdge, "peer" | "edgeEpoch">;
@@ -21,7 +21,7 @@ export interface ExchangePorts {
 const errors = new Set(["core-changed", "core-unavailable", "machine-not-found", "machine-not-enrolled", "machine-mismatch", "peer-invalidated",
   "needs_login", "unavailable", "spawn_failed", "spawn-error", "missing-hc", "cli-exit", "cli-timeout", "cli-aborted", "reply-too-large",
   "unsupported-broker", "helper-unauthorized", "helper-timeout", "bridge-unavailable", "broker-unavailable", "bridge-exchange-failed", "exchange-too-large",
-  "invalid-request", "invalid-presence", "invalid-refusal", "invalid-receipt", "invalid-reply", "stale-generation", "endpoint-exited"]);
+  "invalid-request", "invalid-presence", "invalid-refusal", "invalid-receipt", "invalid-reply", "stale-generation", "endpoint-exited", "peer-version-mismatch"]);
 export class ExchangeError extends Error {
   readonly code: string;
   readonly retryable: boolean;
@@ -57,7 +57,9 @@ export async function exchange(peer: Peer, input: ExchangeRequest, ports: Exchan
       typeof ports.enrollment.edgeEpoch !== "string" || !ports.enrollment.edgeEpoch) return bad("machine-not-enrolled");
   if (!Number.isSafeInteger(ports.clock.now()) || !Number.isSafeInteger(input.holdMs) || input.holdMs < 0 || input.holdMs > 25_000) return bad("invalid-request");
   let outgoing: IntercomExchange;
-  try { outgoing = decodeExchange(encodeExchange(input.exchange)); } catch { return bad("invalid-request"); }
+  try { outgoing = decodeExchange(encodeExchange(input.exchange)); } catch (error) {
+    return bad(error instanceof Error && error.message === "peer-version-mismatch" ? "peer-version-mismatch" : "invalid-request");
+  }
   if (outgoing.senderMachine !== ports.machineId || outgoing.recipientMachine !== peer.machineId || outgoing.generation.edgeEpoch !== ports.enrollment.edgeEpoch) return bad("machine-mismatch");
   const currentGeneration = () => ports.store.edgeState(peer.machineId, ports.enrollment.edgeEpoch).outbound[outgoing.generation.channel] === outgoing.generation.generation;
   if (!currentGeneration()) return bad("stale-generation");
@@ -91,9 +93,10 @@ export async function exchange(peer: Peer, input: ExchangeRequest, ports: Exchan
   }
   if (envelope.ok !== true || !exact(envelope, ["version", "kind", "ok", "value"]) || !record(envelope.value) ||
       !exact(envelope.value, ["version", "exchange"]) || envelope.value.version !== 1) return bad("invalid-reply");
-  let received: IntercomExchange;
-  try { received = decodeExchange(Buffer.from(JSON.stringify(envelope.value.exchange))); } catch { return bad("invalid-reply"); }
+  let received: IntercomExchange, missingOrigins: MissingOriginFrame[];
+  try { ({ exchange: received, missingOrigins } = decodeExchangeWithFrameErrors(Buffer.from(JSON.stringify(envelope.value.exchange)))); }
+  catch (error) { return bad(error instanceof Error && error.message === "peer-version-mismatch" ? "peer-version-mismatch" : "invalid-reply"); }
   if (received.senderMachine !== peer.machineId || received.recipientMachine !== ports.machineId) return bad("machine-mismatch");
   if (!sameGeneration(received.generation, outgoing.generation)) return bad("invalid-reply");
-  return { version: 1, exchange: received };
+  return { version: 1, exchange: received, ...(missingOrigins.length ? { missingOrigins } : {}) };
 }

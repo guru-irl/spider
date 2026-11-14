@@ -5,13 +5,13 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import type { HcClient, TerminalAddress } from "@spider/herdr";
 import type { HostingObservation } from "./hosting";
-import type { HostIntent, Clock, Diagnostic } from "./contracts";
+import type { HostIntent, Clock, Diagnostic, IntercomLifecycle } from "./contracts";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import type { BoxLocalOrigin } from "./session-control";
 import type { Probe, Readiness } from "@spider/db-core/roam/types";
 import { createHcClient } from "@spider/herdr/client/hc";
 import { bootIdChanged, inspectIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
-import { createSessionLeases, type ProcessInventoryPorts, type ProcessProbe } from "@spider/herdr/sessions/lease";
+import { createSessionLeases, type ProcessIdentity, type ProcessInventoryPorts, type ProcessProbe } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { createIntentStore } from "./intent";
@@ -23,6 +23,8 @@ import { openLocalRuntime, readLocalIdentity } from "./runtime";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority, readReadiness } from "./session-control";
 import { observeHosting } from "./hosting";
 import { readPrivateBytes } from "./selected-files";
+import { createMachineIntercom } from "./intercom-runtime";
+import { createTransport } from "./transport";
 
 export function createSupervisorEvents(databaseFile: string, core: Pick<HcClient, "events">): { subscribe(listener: () => void): () => void } {
   return { subscribe(listener) {
@@ -150,6 +152,30 @@ export function participantCaptureReady(root: string, machineId?: string): boole
     } finally { db.close(); }
   } catch { return false; }
 }
+export async function runLockedSupervisor(input: {
+  root: string; identity: ProcessIdentity; probe(pid: number): Promise<ProcessProbe>;
+  supervisor: { start(): void; stop(): Promise<void> }; intercom?: IntercomLifecycle;
+}): Promise<{ stop(): Promise<void> }> {
+  let release!: () => void;
+  const held = new Promise<void>(done => { release = done; });
+  let ready!: () => void, fail!: (error: unknown) => void;
+  const started = new Promise<void>((done, reject) => { ready = done; fail = reject; });
+  const lock = withProcessLock(join(input.root, "roam"), "roam-supervisor", async () => {
+    let supervisorStarted = false;
+    try {
+      await input.intercom?.start();
+      supervisorStarted = true; input.supervisor.start();
+      ready(); await held;
+    } finally {
+      try { if (supervisorStarted) await input.supervisor.stop(); } finally { await input.intercom?.stop(); }
+    }
+  }, { identity: input.identity, probe: input.probe, timeoutMs: 100 });
+  void lock.catch(fail);
+  await started;
+  let stopping: Promise<void> | undefined;
+  return { stop() { return stopping ??= (async () => { release(); await lock; })(); } };
+}
+
 export async function startProductionSupervisor(root: string, options: { system?: SupervisorSystemPorts; clock?: Clock } = {}): Promise<{ stop(): Promise<void> }> {
   const enrolled = readLocalIdentity(root);
   assertBoxEnrollment(enrolled);
@@ -213,18 +239,18 @@ export async function startProductionSupervisor(root: string, options: { system?
         if (observed.kind === "live") process.kill(observed.identity.pid, "SIGTERM");
         return owner(root, intent, system);
       },
+      async confirmExit(previous) {
+        const current = await system.inventory.probe(previous.pid);
+        return current.kind === "absent" || current.kind === "live" && current.startIdentity !== previous.startTime;
+      },
       async notify() { /* Suspension is persisted by the supervisor and collected by the hub observer. */ },
     });
-    let release!: () => void;
-    const held = new Promise<void>(done => { release = done; });
-    let ready!: () => void, fail!: (error: unknown) => void;
-    const started = new Promise<void>((done, reject) => { ready = done; fail = reject; });
-    const lock = withProcessLock(join(root, "roam"), "roam-supervisor", async () => {
-      supervisor.start(); ready(); await held; await supervisor.stop();
-    }, { identity: { pid: process.pid, startIdentity: identity.startIdentity }, probe: pid => system.inventory.probe(pid) });
-    void lock.catch(fail);
-    await started;
+    const direct = runtime.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
+    const intercom = runtime.config.intercom.enabled ? createMachineIntercom({ root, globalDb: runtime.db, config: runtime.config,
+      agentDir: herdr.agentDirectory, clock, env, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }) }) : undefined;
+    const running = await runLockedSupervisor({ root, supervisor, intercom,
+      identity: { pid: process.pid, startIdentity: identity.startIdentity }, probe: pid => system.inventory.probe(pid) });
     let stopping: Promise<void> | undefined;
-    return { stop() { return stopping ??= (async () => { release(); try { await lock; } finally { await dispose?.(); runtime.close(); } })(); } };
+    return { stop() { return stopping ??= (async () => { try { await running.stop(); } finally { await dispose?.(); runtime.close(); } })(); } };
   } catch (error) { await dispose?.(); runtime.close(); throw error; }
 }

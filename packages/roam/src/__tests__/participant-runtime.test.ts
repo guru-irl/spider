@@ -6,6 +6,8 @@ import { readLocalIdentity } from "../runtime";
 import * as runtimeModule from "../runtime";
 import * as hubModule from "../production-hub";
 import * as localDiagnostics from "../local-diagnostics";
+import * as intercomRuntime from "../intercom-runtime";
+import * as participantSupervisor from "../participant-supervisor";
 import * as hcModule from "@spider/herdr/client/hc";
 import { claimIdLock } from "@spider/herdr/sessions/id-lock";
 import { createParticipantSupervisor } from "../participant-supervisor";
@@ -15,7 +17,7 @@ import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { recordLocation } from "@spider/db-core/roam/catalog";
-import { DEFAULT_LIMITS } from "../contracts";
+import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
 import { handleSessionOperation } from "../participant-runtime";
 import { createRunningIntentAuthority } from "../session-control";
@@ -25,7 +27,7 @@ const fixtures: ReturnType<typeof createReplica>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); vi.restoreAllMocks(); });
 function fixture(enabled = true) {
   const global = createReplica("global", BOX), worktree = createReplica("worktree", BOX); fixtures.push(global, worktree);
-  const config = { enabled, role: "box" as const, machineId: BOX, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture.service", syncMs: 120000, limits: DEFAULT_LIMITS };
+  const config = { enabled, role: "box" as const, machineId: BOX, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture.service", syncMs: 120000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
   mkdirSync(join(global.root, "roam"), { mode: 0o700 });
   writeFileSync(join(global.root, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
   writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
@@ -82,10 +84,37 @@ it.each(["not-roamable", "importing", "trigger-drift"])("refuses %s global captu
 
 it("uninitialized production capture keeps an enrolled service inert", async () => {
   const f = fixture(), file = join(f.global.root, "roam", "config.json"), config = readLocalIdentity(f.global.root);
-  writeFileSync(file, JSON.stringify({ ...config, enabled: false }), { mode: 0o600 });
+  writeFileSync(file, JSON.stringify({ ...config, enabled: false, intercom: { ...config.intercom, enabled: true, machineAlias: "box.invalid" } }), { mode: 0o600 });
+  const factory = vi.spyOn(intercomRuntime, "createMachineIntercom");
   const service = await startProductionSupervisor(f.global.root, { system: { bootId: async () => { throw new Error("must not probe"); } } as never });
   await service.stop();
+  expect(factory).not.toHaveBeenCalled();
   expect(f.worktree.db.prepare("SELECT state FROM roam_sessions").get()).toEqual({ state: "retired" });
+}, 5000);
+
+it.each([false, true])("production box owns its bridge with hub scheduling enabled=%s", async enabled => {
+  const f = fixture(enabled), file = join(f.global.root, "roam", "config.json"), agentDir = join(f.global.root, "agent");
+  mkdirSync(agentDir, { mode: 0o700 });
+  const config = { ...f.ports.config, enabled, intercom: { ...disabledIntercom(), enabled: true as const, machineAlias: "box.invalid" } };
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  await f.global.db.raw.backup(join(f.global.root, "spider.db"));
+  const order: string[] = [];
+  const bridge = { async start() { order.push("bridge-start"); }, async stop() { order.push("bridge-stop"); }, diagnostics() { return []; }, readiness() { return { state: "ready" as const, reason: null }; } };
+  const factory = vi.spyOn(intercomRuntime, "createMachineIntercom").mockReturnValue(bridge);
+  vi.spyOn(runtimeModule, "openLocalRuntime").mockReturnValue({ config, db: f.global.db, journal: f.ports.journal, agent: { ...f.ports, config }, close() { order.push("runtime-close"); } } as never);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ agentDirectory: agentDir, core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(hcModule, "createHcClient").mockReturnValue({ async identity() { return { coreId: "fixture-core", sessionNamespace: "fixture", socket: "/fixture/socket" }; },
+    events() { return { subscribe() { return () => {}; }, dispose() {} }; }, async dispose() {} } as never);
+  vi.spyOn(participantSupervisor, "createParticipantSupervisor").mockReturnValue({ reconcile: async () => {},
+    start() { order.push("supervisor-start"); }, async stop() { order.push("supervisor-stop"); } });
+  const system = { inventory: { async probe() { return { kind: "live" as const, startIdentity: "fixture-process" }; } } } as never;
+  const service = await startProductionSupervisor(f.global.root, { system, clock: { now: () => 1, later: () => () => {} } });
+  try {
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory.mock.calls[0][0]).toMatchObject({ root: f.global.root, agentDir, config: { enabled, machineId: BOX, hubMachineId: HUB } });
+    expect(order).toEqual(["bridge-start", "supervisor-start"]);
+  } finally { await service.stop(); }
+  expect(order).toEqual(["bridge-start", "supervisor-start", "supervisor-stop", "bridge-stop", "runtime-close"]);
 }, 5000);
 
 it.each(["missing", "mode", "hub"])("refuses %s enrollment before effects", async kind => {

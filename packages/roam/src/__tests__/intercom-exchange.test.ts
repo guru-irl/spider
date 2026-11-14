@@ -19,11 +19,11 @@ function twoStores() {
   stores.push(source, inbox); return { root, source, inbox };
 }
 function batch(senderMachine = A, recipientMachine = B): IntercomExchange {
-  return { protocol: 1, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+  return { protocol: 2, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
 }
 function receipt(): IntercomReceiptFrame {
-  const frame = makeMessageFrame({ from, endpoint, sequence: 1, message: { id: "message-1", timestamp: 1, content: { text: "synthetic" } } });
+  const frame = makeMessageFrame({ from, endpoint, originMachineId: A, sequence: 1, message: { id: "message-1", timestamp: 1, content: { text: "synthetic" } } });
   return { from: endpoint, to: from, digest: frame.identity.digest, attempt: 2, receipt: { messageId: "message-1", status: "injected", timestamp: 2,
     evidence: { kind: "entry", entryId: "entry-1", sessionId: to.sessionId, activationEpoch: endpoint.activationEpoch } } };
 }

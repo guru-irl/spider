@@ -584,7 +584,7 @@ it("waiter evidence must name the reply's original ask", async () => {
 
 it("does not acknowledge receipt evidence before it was handed off", async () => {
   const dir = root(), clock = fakeClock(), inbox = await open(join(dir, "queue.db"), targetMachine, clock);
-  const frame = makeMessageFrame({ from: sender, endpoint, sequence: 1, message: mail("one") });
+  const frame = makeMessageFrame({ from: sender, endpoint, originMachineId: sourceMachine, sequence: 1, message: mail("one") });
   inbox.acceptInbound({ peer: sourceMachine, frame });
   inbox.beginDispatch({ id: "one", endpoint, readiness: "ready" });
   const observed = receipt(frame, "unknown");
@@ -599,7 +599,7 @@ it("does not acknowledge receipt evidence before it was handed off", async () =>
 it("reports uncertainty again after a proved same-id retry", async () => {
   const dir = root(), clock = fakeClock(), file = join(dir, "queue.db");
   let inbox = await open(file, targetMachine, clock);
-  const frame = makeMessageFrame({ from: sender, endpoint, sequence: 1, message: mail("one") });
+  const frame = makeMessageFrame({ from: sender, endpoint, originMachineId: sourceMachine, sequence: 1, message: mail("one") });
   inbox.acceptInbound({ peer: sourceMachine, frame });
   inbox.beginDispatch({ id: "one", endpoint, readiness: "idle-1" });
   inbox.settleReceipt({ queue: "inbound", peer: sourceMachine, frame: receipt(frame, "unknown") });
@@ -618,7 +618,7 @@ it("reports uncertainty again after a proved same-id retry", async () => {
 
 it("deduplicates equivalent receipts regardless of object key order and timestamp", async () => {
   const dir = root(), clock = fakeClock(), inbox = await open(join(dir, "queue.db"), targetMachine, clock);
-  const frame = makeMessageFrame({ from: sender, endpoint, sequence: 1, message: mail("one") });
+  const frame = makeMessageFrame({ from: sender, endpoint, originMachineId: sourceMachine, sequence: 1, message: mail("one") });
   inbox.acceptInbound({ peer: sourceMachine, frame });
   inbox.beginDispatch({ id: "one", endpoint, readiness: "ready" });
   const first = receipt(frame, "unknown");
@@ -637,7 +637,7 @@ it("deduplicates equivalent receipts regardless of object key order and timestam
 it("returns bounded receipt batches without dropping unacknowledged evidence", async () => {
   const dir = root(), clock = fakeClock(), inbox = await open(join(dir, "queue.db"), targetMachine, clock);
   for (let index = 1; index <= 30; index++) {
-    const frame = makeMessageFrame({ from: sender, endpoint, sequence: index, message: mail(`receipt-${index}`) });
+    const frame = makeMessageFrame({ from: sender, endpoint, originMachineId: sourceMachine, sequence: index, message: mail(`receipt-${index}`) });
     inbox.acceptInbound({ peer: sourceMachine, frame });
     inbox.beginDispatch({ id: frame.identity.id, endpoint, readiness: `ready-${index}` });
     const observed = receipt(frame, "injected", { evidence: { kind: "entry", entryId: `${"e".repeat(30_000)}${index}`,
@@ -742,7 +742,7 @@ it("a relay recovers a proved non-injection with the same ID", async () => {
 
 it("a duplicate cannot extend the inbox payload lifetime", async () => {
   const dir = root(), clock = fakeClock(), inbox = await open(join(dir, "queue.db"), targetMachine, clock);
-  const frame = makeMessageFrame({ from: sender, endpoint, sequence: 1, message: mail("one"), remainingPayloadMs: 10_000 });
+  const frame = makeMessageFrame({ from: sender, endpoint, originMachineId: sourceMachine, sequence: 1, message: mail("one"), remainingPayloadMs: 10_000 });
   inbox.acceptInbound({ peer: sourceMachine, frame });
   clock.advance(5_000);
   expect(inbox.acceptInbound({ peer: sourceMachine, frame: { ...frame, remainingPayloadMs: 90_000 } }).kind).toBe("duplicate");
@@ -752,7 +752,7 @@ it("a duplicate cannot extend the inbox payload lifetime", async () => {
 
 it("does not start dispatch when the clock crosses the exact expiry boundary", async () => {
   const dir = root(), clock = fakeClock(), inbox = await open(join(dir, "queue.db"), targetMachine, clock);
-  const frame = makeMessageFrame({ from: sender, endpoint, sequence: 1, message: mail("one"), remainingPayloadMs: 10_000 });
+  const frame = makeMessageFrame({ from: sender, endpoint, originMachineId: sourceMachine, sequence: 1, message: mail("one"), remainingPayloadMs: 10_000 });
   inbox.acceptInbound({ peer: sourceMachine, frame });
   const deadline = clock.now() + 10_000; let reads = 0;
   clock.now = () => ++reads === 1 ? deadline - 1 : deadline;

@@ -14,7 +14,7 @@ import { listPendingIdLocks } from "@spider/herdr/sessions/id-lock";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { loadConfig } from "./config";
-import { DEFAULT_LIMITS, type Diagnostic, type RoamConfig } from "./contracts";
+import { DEFAULT_LIMITS, disabledIntercom, type Diagnostic, type RoamConfig } from "./contracts";
 import { doctorLocal, inspectStore, localCaptureRequired, readStatus, type DiagnosticMachine, type DiagnosticPorts, type DiagnosticStore, type LoadedConsumer, type PeerObservation, type RoamStatus, type UsageWorker } from "./diagnostics";
 import { listStoreKeys } from "./store-inventory";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
@@ -172,7 +172,7 @@ export async function inspectLocalConsumers(root: string, machineId: string, bun
 
 function disabledConfig(): RoamConfig {
   return { enabled: false, role: "hub", machineId: "", hubMachineId: "", peers: [], discoveryRoots: [], coreUnit: "",
-    syncMs: 120_000, limits: DEFAULT_LIMITS };
+    syncMs: 120_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
 }
 
 function openOwned(file: string): Db | undefined {

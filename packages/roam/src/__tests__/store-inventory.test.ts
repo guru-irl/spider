@@ -8,7 +8,7 @@ import { enableMemoryCapture } from "@spider/db-core/roam/seed";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { createReplica } from "@spider/db-core/testutil";
 import { handleAgentOperation } from "../agent";
-import { DEFAULT_LIMITS } from "../contracts";
+import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
 import { listStoreKeys } from "../store-inventory";
 
@@ -21,7 +21,7 @@ function fixture() {
   fixtures.push(global, worktree);
   global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('local',?, ?,1,1)").run(worktree.root, worktree.db.raw.name);
   const ports = { config: { enabled: true, role: "box" as const, machineId: BOX, hubMachineId: HUB,
-    peers: [], discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: DEFAULT_LIMITS },
+    peers: [], discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() },
     root: join(global.root, "roam", "staging"), journal: openJournal(join(global.root, "journal.db")),
     openStore(key: string) { if (key !== "global") throw new Error("unexpected store"); return { db: global.db,
       effects: { winning() {}, committed() {} }, policy: { encode: (_: unknown, body: import("@spider/db-core/roam/types").JsonObject) => body } }; } };

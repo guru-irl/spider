@@ -1,5 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { Socket } from 'node:net';
 import { setTimeout as realDelay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import { dirname, resolve } from 'node:path';
@@ -101,6 +102,65 @@ async function fixture(run: (h: ReturnType<typeof harness>, observer: IntercomCl
   }
 }
 
+it('bounds retries and concurrent attempts during a two-minute outage', async () => {
+  let offline = false, outageStart = 0, active = 0, peakActive = 0;
+  const attempts: number[] = [];
+  const releases = new Set<() => void>();
+  const port: IntercomBrokerPort = async connect => {
+    if (!offline) return connect();
+    attempts.push(Date.now() - outageStart);
+    active++;
+    peakActive = Math.max(peakActive, active);
+    try {
+      await new Promise<void>(resolve => { releases.add(resolve); });
+      throw new Error('fixture offline');
+    } finally { active--; }
+  };
+  try {
+    await fixture(async (h, _observer, kick) => {
+      await until(h.connected);
+      const connectedTimers = vi.getTimerCount();
+      offline = true;
+      outageStart = Date.now();
+      await kick();
+      // The client heartbeat stops; one warning and one retry timer replace it.
+      expect(vi.getTimerCount()).toBe(connectedTimers + 1);
+      const events = ['input', 'tool_execution_start', 'tool_execution_end', 'agent_start', 'agent_end', 'session_tree', 'model_select', 'turn_end', 'turn_start'];
+      for (let second = 0; second < 120; second++) {
+        if (second % 6 === 0) {
+          const before = vi.getTimerCount();
+          await h.emit(events[(second / 6) % events.length]!, h.ctx, { toolCallId: 'rate-tool', toolName: 'read', model: { id: 'fixture-model' } });
+          expect(vi.getTimerCount(), 'an event must not add another retry timer').toBe(before);
+        }
+        if (second === 10 || second === 70) {
+          const before = vi.getTimerCount();
+          await h.tool('status');
+          expect(vi.getTimerCount(), 'status must not add another retry timer').toBe(before);
+        }
+        await vi.advanceTimersByTimeAsync(1000);
+        if (releases.size) {
+          // The fired retry is no longer armed; the name poll and warning timers remain.
+          const withoutRetry = vi.getTimerCount();
+          await h.emit('input');
+          const foreground = attempts.length === 1 ? [h.tool('list'), h.tool('list')] : [];
+          expect(active).toBe(1);
+          expect(vi.getTimerCount(), 'an in-flight attempt must not arm a retry').toBe(withoutRetry);
+          for (const release of releases) release();
+          releases.clear();
+          await Promise.all(foreground);
+          await vi.advanceTimersByTimeAsync(0);
+          expect(vi.getTimerCount(), 'a failed attempt must arm exactly one retry').toBe(withoutRetry + 1);
+        }
+      }
+      expect(attempts).toEqual([1000, 3000, 8000, 18000, 48000, 78000, 108000]);
+      expect(peakActive).toBe(1);
+      expect(active).toBe(0);
+    }, port);
+  } finally {
+    for (const release of releases) release();
+  }
+});
+
 // Removing recovery after a failed background attempt must break this test.
 it('retries again when the first reconnect attempt fails', async () => {
   let attempts = 0;
@@ -177,11 +237,30 @@ it.each(['agent_start', 'turn_start', 'turn_end', 'agent_end', 'tool_execution_s
   });
 });
 
-it('refreshes session identity when a pi event supplies a replacement session', async () => {
+it('ignores a foreign event context and keeps the original registration live', async () => {
   await fixture(async (h, observer, kick, advance) => {
+    await until(h.connected);
+    const foreign = { ...h.ctx, sessionManager: { getSessionId: () => 'replacement-id' } };
+    await h.emit('session_tree', foreign);
+    await h.emit('input', foreign);
+    await advance(0);
+    expect(h.connected()).toBe(true);
+    expect((await observer.listSessions()).filter(s => s.name === 'recovering-session').map(s => s.id)).toEqual(['recovering-id']);
+    const result = await observer.send('recovering-id', { text: 'still registered' });
+    expect(result.delivered).toBe(true);
+    await until(() => h.messages.length === 1);
     await kick();
-    const fresh = { ...h.ctx, sessionManager: { getSessionId: () => 'replacement-id' } };
-    await h.emit('session_tree', fresh);
+    await advance(1000);
+    await until(h.connected);
+    expect((await observer.listSessions()).filter(s => s.name === 'recovering-session').map(s => s.id)).toEqual(['recovering-id']);
+  });
+});
+
+it('switches sessions on turn_start', async () => {
+  await fixture(async (h, observer, _kick, advance) => {
+    await until(h.connected);
+    const replacement = { ...h.ctx, sessionManager: { getSessionId: () => 'replacement-id' } };
+    await h.emit('turn_start', replacement);
     await advance(0);
     await until(h.connected);
     expect((await observer.listSessions()).filter(s => s.name === 'recovering-session').map(s => s.id)).toEqual(['replacement-id']);
@@ -275,6 +354,105 @@ it('stops retries on shutdown', async () => {
     expect(attempts).toBe(1);
     expect(h.connected()).toBe(false);
   }, async connect => { attempts++; await connect(); });
+});
+
+it('does not arm recovery timers when status is requested before startup connects', async () => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+  const h = harness(() => { throw new Error('status must not connect'); });
+  try {
+    await h.emit('session_start');
+    const timersBefore = vi.getTimerCount();
+    const status = await h.tool('status');
+    expect(status.details.connected).toBe(false);
+    expect(vi.getTimerCount()).toBe(timersBefore);
+    expect(h.warnings).toEqual([]);
+  } finally {
+    await h.emit('session_shutdown');
+    vi.useRealTimers();
+  }
+});
+
+it('does not show an overdue warning when status receives a fresh context', async () => {
+  let offline = false;
+  await fixture(async (h, _observer, kick, advance) => {
+    await until(h.connected);
+    const fresh = { ...h.ctx };
+    Object.defineProperty(h.ctx, 'hasUI', { get() { throw new Error('old context'); } });
+    offline = true;
+    await kick();
+    await advance(60000);
+    expect(h.warnings).toEqual([]);
+    const timersBefore = vi.getTimerCount();
+    await h.tool('status', fresh);
+    expect(vi.getTimerCount()).toBe(timersBefore);
+    expect(h.warnings).toEqual([]);
+    await h.emit('input', fresh);
+    expect(h.warnings).toEqual(['Intercom is disconnected. Spider is reconnecting.']);
+  }, async connect => { if (offline) throw new Error('fixture offline'); await connect(); });
+});
+
+it('reports the same status fields when connected or disconnected', async () => {
+  await fixture(async (h, _observer, kick) => {
+    await until(h.connected);
+    const connected = await h.tool('status');
+    expect(connected.details).toEqual({ connected: true, sessionId: 'recovering-id', activeSessions: 2 });
+    await kick();
+    const disconnected = await h.tool('status');
+    expect(disconnected.details).toEqual({ connected: false, sessionId: null, activeSessions: null });
+  });
+});
+
+it('leaves the connection and recovery timers unchanged when a status request times out', async () => {
+  await fixture(async (h, observer) => {
+    await until(h.connected);
+    const timersBefore = vi.getTimerCount();
+    const successful = h.tool('status');
+    expect(vi.getTimerCount()).toBe(timersBefore + 1);
+    await successful;
+    expect(vi.getTimerCount()).toBe(timersBefore);
+
+    // Drop the fixture's list request at the socket boundary; keep the real client and timeout.
+    let dropped = 0;
+    const originalWrite = Socket.prototype.write;
+    const socketSpy = vi.spyOn(Socket.prototype, 'write').mockImplementation(function (this: Socket, chunk: any, ...rest: any[]) {
+      if (Buffer.isBuffer(chunk) && chunk.length >= 4 && chunk.readUInt32BE(0) === chunk.length - 4) {
+        try {
+          if (JSON.parse(chunk.toString('utf8', 4)).type === 'list') { dropped++; return true; }
+        } catch { /* Not an intercom frame. */ }
+      }
+      return Reflect.apply(originalWrite, this, [chunk, ...rest]);
+    } as typeof Socket.prototype.write);
+    const timerSpy = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const pending = h.tool('status');
+      expect(dropped).toBe(1);
+      expect(vi.getTimerCount()).toBe(timersBefore + 1);
+      await vi.advanceTimersByTimeAsync(5000);
+      const status = await pending;
+      expect(status.content[0].text).toContain('Active sessions: Unknown');
+      expect(status.details).toEqual({ connected: true, sessionId: 'recovering-id', activeSessions: null });
+      expect(h.connected()).toBe(true);
+      expect(h.warnings).toEqual([]);
+      expect(vi.getTimerCount()).toBe(timersBefore);
+      expect(timerSpy.mock.calls.map(([, ms]) => ms)).toEqual([5000]);
+    } finally {
+      timerSpy.mockRestore();
+      socketSpy.mockRestore();
+    }
+    expect((await observer.listSessions()).find(s => s.id === 'recovering-id')?.name).toBe('recovering-session');
+    expect((await h.tool('status')).details).toEqual({ connected: true, sessionId: 'recovering-id', activeSessions: 2 });
+    expect(vi.getTimerCount()).toBe(timersBefore);
+  });
+});
+
+it('reads connected status without consulting the event context', async () => {
+  await fixture(async (h, observer) => {
+    await until(h.connected);
+    const foreign = { ...h.ctx, sessionManager: { getSessionId: () => { throw new Error('status read context'); } } };
+    const status = await h.tool('status', foreign);
+    expect(status.details).toEqual({ connected: true, sessionId: 'recovering-id', activeSessions: 2 });
+    expect((await observer.listSessions()).some(s => s.id === 'recovering-id')).toBe(true);
+  });
 });
 
 it('does not claim to reconnect when intercom is disabled', async () => {

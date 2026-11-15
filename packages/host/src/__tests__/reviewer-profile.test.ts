@@ -43,7 +43,7 @@ function actionCtx(action: "run" | "control" = "run") {
 const shapes = [
   { name: "single", args: { agent: "reviewer", task: "review" }, agents: ["reviewer"], notices: 1 },
   { name: "parallel", args: { tasks: [{ agent: "worker", task: "work" }, { agent: "reviewer", task: "review" }] }, agents: ["worker", "reviewer"], notices: 2 },
-  { name: "chain", args: { chain: [{ agent: "worker", task: "work" }, { agent: "reviewer", task: "{previous}" }] }, agents: ["worker", "reviewer"], notices: 3 },
+  { name: "chain", args: { chain: [{ agent: "worker", task: "work" }, { agent: "reviewer", task: "{previous}" }] }, agents: ["worker", "reviewer"], notices: 2 },
   { name: "pipeline", args: { pipeline: [{ agent: "worker", task: "work" }, { agent: "reviewer", role: "quality", task: "{previous}" }] }, agents: ["worker", "reviewer"], notices: 2 },
 ];
 for (const childMode of ["rpc", "print"] as const) {

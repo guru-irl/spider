@@ -1,6 +1,7 @@
 import type { Db } from "@spider/db-core";
 import { localRunPredicate } from "@spider/db-core/roam/run-origin";
 import type { Blocker } from "@spider/db-core/roam/types";
+import { PENDING_COMPLETION } from "./completion-delivery";
 
 export interface BlockerOptions {
   pendingPipelines?: () => readonly { pipelineId: string; sessionId: string }[];
@@ -12,7 +13,7 @@ export function listSessionBlockers(db: Db, sessionId: string, options: BlockerO
     WHERE r.session_id=? AND ${localRunPredicate(db)}
     AND (r.status IN ('queued','running','paused') OR (
       r.status IN ('done','failed') AND EXISTS (SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.type='child_supervisor')
-      AND NOT EXISTS (SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.type='completion_delivered')
+      AND ${PENDING_COMPLETION}
     )) ORDER BY r.id`).all(sessionId) as { id: string; status: string }[];
   const blockers: Blocker[] = rows.map(row => ({ kind: "run", id: row.id,
     detail: ["done", "failed"].includes(row.status) ? "Completion has not been delivered." : `Child is ${row.status}.` }));

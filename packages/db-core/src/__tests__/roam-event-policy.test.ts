@@ -22,13 +22,18 @@ describe("portable run-event history", () => {
   }, 5000);
 
   it("chain steps never remain executable", () => {
-    const encoded = policy.encode("run_events", event("chain_steps", { remaining: ["first", "second"] }), A);
+    const encoded = policy.encode("run_events", event("chain_steps", {
+      remaining: ['Step 2 "private-step-name"', 'Step 3 "other-step"'],
+      remainingNames: ["private-step-name", "other-step"], stopOnFailure: true,
+    }), A);
     expect(payload(encoded)).toMatchObject({ count: 2, history: { machineId: A, reference: "run-event:event-1" } });
-    expect(JSON.stringify(encoded)).not.toContain("first");
+    expect(JSON.stringify(encoded)).not.toContain('Step 2');
     expect(JSON.stringify(encoded)).not.toContain("remaining");
+    expect(JSON.stringify(encoded)).not.toContain("private-step-name");
+    expect(JSON.stringify(encoded)).not.toContain("stopOnFailure");
   }, 5000);
 
-  it.each(["completion_delivered", "chain_completion_delivered", "spider_usage_reported"])("exports %s as inert history", type => {
+  it.each(["completion_delivered", "spider_usage_reported"])("exports %s as inert history", type => {
     const body = event(type, { marker: true });
     expect(EVENT_POLICIES[type]).toBe("inert");
     expect(policy.encode("run_events", body, A)).toEqual(body);

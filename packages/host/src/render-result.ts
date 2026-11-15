@@ -812,6 +812,11 @@ export function renderSubagentDone(message: any, options: { expanded?: boolean }
   const result = { details: { run: { name: d.name, agent: d.agent, model: d.model, thinking: d.thinking, status, result: d.output, token_count: d.tokenCount, cost: d.cost, costText: d.costText, compactionCount: d.compactionCount } } };
   const box = new Box(1, 1, bgFn);
   box.addChild(renderSpiderCall(args, theme, {}) as any);
+  if (d.chain?.outcome === "complete" || d.chain?.outcome === "stopped") {
+    const headline = d.chain.outcome === "complete" ? "chain complete"
+      : `chain stopped at step ${d.chain.step} of ${d.chain.total}: ${d.chain.cause}`;
+    box.addChild({ render: (width: number) => [clip(mkTheme(theme).fg("toolTitle", headline), width)], invalidate() {} });
+  }
   box.addChild(renderSpiderResult(result, { expanded }, theme, { args }) as any);
   const container = new Container();
   container.addChild(new Spacer(1));

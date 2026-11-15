@@ -93,14 +93,35 @@ it.each([undefined, 0, 1, 3])("renders matching run-card and completion suffixes
   }
 });
 
-it("sums chain compactions in the existing completion usage lookup", () => {
+it("reports only each chain step's usage and compactions in its own notice", () => {
   const f = fixture(), messages: any[] = [];
-  const { id: second } = f.runs.create({ sessionId: "owner", agent: "worker" });
+  f.runs.updateProgress(f.id, { phase: "step-1" });
+  const { id: second } = f.runs.create({ sessionId: "owner", agent: "worker", phase: "step-2" });
+  f.runs.start(second);
+  appendRunEvent(f.db, { runId: f.id, sessionId: "owner", ts: 1, type: "chain_steps",
+    payload: { remaining: ['Step 2 "worker"'], remainingNames: ["worker"], stopOnFailure: true } });
+  appendRunEvent(f.db, { runId: second, sessionId: "owner", ts: 2, type: "chain_steps",
+    payload: { remaining: [], remainingNames: [], stopOnFailure: true } });
   recordRunUsage(f.db, f.id, { provider: "fixture", model: "actual", usage }, "compaction", 1);
   recordRunUsage(f.db, second, { provider: "fixture", model: "actual", usage }, "compaction", 1);
-  const rows = [f.runs.get(f.id), f.runs.get(second)];
-  makeAsyncNotifier({ db: f.db, pi: { sendMessage: (m: any) => messages.push(m) } })(rows[1], "done", "fixture report", rows);
-  expect(messages[0].content.split("\n")[1]).toBe("2,400,000 tokens · $1.68 · 2 compactions");
+  recordRunUsage(f.db, second, { provider: "fixture", model: "actual", usage }, "compaction", 1);
+  f.runs.finish(f.id, { status: "done", result: "first report" });
+  f.runs.finish(second, { status: "done", result: "last report" });
+  const notify = makeAsyncNotifier({ db: f.db, pi: { sendMessage: (m: any) => messages.push(m) } });
+  notify(f.runs.get(f.id), "done", "first report");
+  notify(f.runs.get(second), "done", "last report");
+  expect(messages).toHaveLength(2);
+  expect(messages.map(m => m.content.split("\n")[1])).toEqual([
+    "1,200,000 tokens · $0.84 · 1 compaction",
+    "2,400,000 tokens · $1.68 · 2 compactions",
+  ]);
+  expect(messages[0].details).toMatchObject({ runId: f.id, output: "first report", compactionCount: 1 });
+  expect(messages[1].details).toMatchObject({ runId: second, output: "last report", compactionCount: 2,
+    chain: { outcome: "complete", step: 2, total: 2, notStarted: [] } });
+  const rendered = renderSubagentDone(messages[1], { expanded: false }, theme).render(120).join("\n");
+  expect(rendered).toContain("chain complete");
+  expect(rendered).toContain("last report");
+  expect(rendered).toContain("2.4M tokens · $1.68 · 2 compactions");
 });
 
 it("shows unpriced compactions on a terminal run even without accounted tokens", () => {

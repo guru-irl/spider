@@ -287,10 +287,19 @@ background.
 Given `chain: [...]`, `runChain()` runs each step in order through
 `Runner.runForeground`. A step's `task` text can reference `{task}` (the
 overall task) and `{previous}` (the prior step's result), so each step can
-build on the one before it. `actions/run.ts` does not await `runChain()`. It
-starts the chain with `void runChain(...)` and returns at once. It attaches a
-`.then()` that sends the completion report once, with the last step's row,
-after the whole chain finishes.
+build on the one before it. `actions/run.ts` starts the chain without waiting
+for it. Each step reports its own result as it finishes. A failure or
+cancellation stops the chain. The last notice carries the chain outcome, its
+step number, and the names of steps that did not start. No separate chain
+summary is sent.
+
+The parent receives earlier step notices before a cancellation. A kill from
+the owning session reports through the kill result and normally sends no
+notice for the cancelled step. If a steer was accepted but not confirmed or
+its delivery is unknown, the cancelled step also sends a notice with that
+information. Other cancellations send a cancelled step notice with the cause
+and stopped outcome. A shutdown cancellation queues it for the next turn.
+Cancelled runs are not re-adopted.
 
 ### Parallel dispatch
 
@@ -366,15 +375,21 @@ as a confirmed effective level.
 
 ### Completion report
 
-`Runner.runAsync` calls an injected `onComplete(run, status, result)` once the
-spawned child's process exits. It does so whether the child's own
-`session_shutdown` hook finalized the run row first, or the parent had to
-finalize it because the child never reached that hook (a headless or killed
-process). `actions/run.ts` supplies that callback as `makeAsyncNotifier`. The
-notifier prefers the finalized run result (`latestRunOutput`, falling back to
-genuine recorded completion). It sends the parent session a message with
-`customType: "spider.subagent_done"`. The message carries a short headline
-(the run's name, agent, and status) followed by that output text. The
+`Runner.runAsync` and each asynchronous chain step in `Runner.runForeground`
+call an injected `onComplete(run, status, result)` when the child exits. They
+do so whether the child's own `session_shutdown` hook finalized the run row
+first or the parent finalized it. Adoption uses the same callback.
+`actions/run.ts` supplies `makeAsyncNotifier`, which prefers the finalized run
+result (`latestRunOutput`, falling back to genuine recorded completion). It
+sends one `spider.subagent_done` message per step, with that step's output,
+notes, and usage. The last step's message includes the chain outcome in
+`details.chain`; it does not repeat earlier steps' output or usage. For a
+supervised run, `completion_delivered` claims the message before dispatch.
+A synchronous send failure rolls back the claim. For a non-cancelled run, the
+route remains available for adoption. The claim prevents repeated dispatch,
+not loss after pi accepts the message. See `completion-delivery.ts` for the
+shared pending-notice query.
+The message carries a short headline followed by that output text. The
 notifier normally asks pi to trigger the next turn (`{ triggerTurn: true }`).
 Session-shutdown cancellations instead queue with `{ triggerTurn: false,
 deliverAs: "nextTurn" }`, so they cannot start a new turn. When a session

@@ -91,7 +91,12 @@ export class Runner {
       // queued row once its owning host exits. No child has been spawned yet.
       hostPid: process.pid,
     });
-    if (opts.remainingSteps) appendRunEvent(this.db, { runId: id, sessionId: this.sessionId, ts: Date.now(), type: 'chain_steps', payload: { remaining: opts.remainingSteps, stopOnFailure: true } });
+    if (opts.remainingSteps) {
+      const step = Number(/^step-(\d+)$/.exec(opts.phase ?? "")?.[1] ?? 0);
+      const remaining = opts.remainingSteps.map((name, index) => `Step ${step + index + 1} ${JSON.stringify(name)}`);
+      appendRunEvent(this.db, { runId: id, sessionId: this.sessionId, ts: Date.now(), type: 'chain_steps',
+        payload: { remaining, remainingNames: opts.remainingSteps, stopOnFailure: true } });
+    }
     if (thinking?.notice) appendRunEvent(this.db, { runId: id, sessionId: this.sessionId, ts: Date.now(), type: "warning", summary: thinking.notice, payload: { thinkingNotice: true, ...thinking, message: thinking.notice } });
     return this.deps.store.get(id)!;
   }

@@ -76,7 +76,7 @@ function childPrompt(spec: ChildSpawnSpec): string {
 const modes = [
   { name: "SINGLE", args: { agent: "worker", task: "single task", skill: "fixture-skill" }, tasks: ["single task"], notifications: 1 },
   { name: "PARALLEL", args: { tasks: [{ agent: "worker", task: "parallel task", count: 2 }], skill: "fixture-skill" }, tasks: ["parallel task", "parallel task"], notifications: 2 },
-  { name: "CHAIN", args: { chain: [{ task: "first task" }, { task: "next task: {previous}" }], skill: "fixture-skill" }, tasks: ["first task", "next task: step output"], notifications: 3 },
+  { name: "CHAIN", args: { chain: [{ task: "first task" }, { task: "next task: {previous}" }], skill: "fixture-skill" }, tasks: ["first task", "next task: step output"], notifications: 2 },
   { name: "PIPELINE", args: { pipeline: [{ agent: "worker", task: "first task", skill: "fixture-skill" }, { agent: "worker", task: "next task: {previous}", skill: "fixture-skill" }] }, tasks: ["first task", "next task: step output"], notifications: 2 },
 ];
 

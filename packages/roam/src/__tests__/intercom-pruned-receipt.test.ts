@@ -166,6 +166,26 @@ it('does not watermark a cancelled slot whose delivery is still unknown', async 
   expect(f.a.retained('outbound', original.identity.id)).toMatchObject({ state: 'injected', payloadRetained: false });
 }, 5000);
 
+it('applies consumption evidence after an absence-resolved cancellation', async () => {
+  const f = await fixture(), id = 'cancel-then-injected';
+  f.a.acceptOutbound({ from: aUser, endpoint: bEndpoint, nextHop: B,
+    message: { id, timestamp: 1000, content: { text: 'synthetic' } } });
+  const original = f.a.pending({ kind: 'outbound', peer: B, hopBudgetMs: 100 })[0];
+  await f.send({ acknowledgements: [{ identity: original.identity, kind: 'message' }] });
+  f.a.cancel({ queue: 'outbound', id, from: aUser, to: bUser });
+  const base = { from: bEndpoint, to: aUser, digest: original.identity.digest, originMachineId: A, sequence: original.identity.sequence };
+  await f.send({ receipts: [{ ...base, attempt: 1, receipt: { messageId: id, status: 'not_injected', timestamp: 1000,
+    evidence: { kind: 'absence', sessionId: bUser.sessionId, activationEpoch: 'b-act', excludedGeneration: 'b-act', complete: true } } }] });
+  expect(f.a.retained('outbound', id)?.state).toBe('cancelled');
+  expect(f.a.inspectBlockers(aUser).unknownOutcomes).toEqual([]);
+  const receipt: IntercomReceiptFrame = { ...base, from: { ...bEndpoint, activationEpoch: 'b-act-2' }, attempt: 2,
+    receipt: { messageId: id, status: 'injected', timestamp: 1001,
+      evidence: { kind: 'entry', entryId: 'later-entry', sessionId: bUser.sessionId, activationEpoch: 'b-act-2' } } };
+  expect(f.a.isSettledReceipt({ peer: B, frame: { ...receipt, from: bEndpoint } })).toBe(false);
+  expect((await f.send({ receipts: [receipt] })).exchange.receiptAcknowledgements).toEqual([receipt]);
+  expect(f.a.retained('outbound', id)).toMatchObject({ state: 'injected', payloadRetained: false });
+}, 5000);
+
 it('a forged low-sequence receipt from an authenticated peer is only acknowledged', async () => {
   const f = await fixture(), receipt = await f.injected('settled-low');
   f.prune();

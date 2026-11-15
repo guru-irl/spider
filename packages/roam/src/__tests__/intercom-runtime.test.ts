@@ -874,7 +874,8 @@ it.each(["session", "origin", "adoption", "generation", "box-origin", "version",
   const entry = { ...remote(BOX, "box.invalid", address), homeEpoch: null };
   await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1, [entry]), new AbortController().signal);
   expect(f.broker.published.at(-1)).toEqual([]);
-  expect(service.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-ambiguous" }));
+  expect(service.diagnostics()).toContainEqual(expect.objectContaining({ reason: kind === 'session' || kind === 'origin'
+    ? "intercom-presence-origin-mismatch" : "intercom-presence-ambiguous" }));
 }, 5000);
 
 it("repairs a switched source copy when its approved direct pair is enrolled later", async () => {
@@ -906,6 +907,28 @@ it("repairs a switched source copy when its approved direct pair is enrolled lat
   } finally { stored.close(); }
 }, 5000);
 
+
+it.each([[HUB, false], [HUB, true], [OTHER, false], [OTHER, true]] as const)(
+  'refuses non-origin homeless claims without poisoning production discovery (%s, disconnected %s)', async (receiver, disconnected) => {
+    const f = machineFixture(receiver), owner = receiver === HUB ? BOX : HUB, attacker = receiver === HUB ? OTHER : BOX;
+    const aliases = new Map([[HUB, 'hub.invalid'], [BOX, 'box.invalid'], [OTHER, 'other.invalid']]);
+    const address = { sessionId: 'homeless-owner', scopeId: 'scope' };
+    const config = parseConfig({ role: receiver === HUB ? 'hub' : 'box', machineId: receiver, hubMachineId: HUB, coreUnit: 'fixture.service',
+      intercom: { enabled: true, mode: 'peers', machineAlias: aliases.get(receiver)!,
+        routes: [owner, attacker].map(id => ({ kind: 'direct', peer: peer(id, aliases.get(id)!), edgeEpoch: 'edge-1' })) } });
+    writeLocal(f.global.db, 'observed-origin', JSON.stringify([address.sessionId, owner]), { id: address.sessionId, origin: owner });
+    const service = await makeMachine({ ...f.options, config }); await service.start();
+    const signal = new AbortController().signal;
+    if (!disconnected) await f.broker.helper!(helperRequest(owner, receiver, 'edge-1', 1, [remote(owner, aliases.get(owner)!, address)]), signal);
+    await f.broker.helper!(helperRequest(attacker, receiver, 'edge-1', 1, [remote(attacker, aliases.get(attacker)!, address)]), signal);
+    const stored = openIntercomStore({ file: join(f.global.root, 'roam', 'intercom', 'queue.db'), machineId: receiver, clock: f.clock });
+    try {
+      expect(stored.presenceOwner(address)).toEqual(disconnected ? null : { machineId: owner, activation: 'recipient-generation', ambiguous: false });
+    } finally { stored.close(); }
+    expect(service.diagnostics()).toContainEqual(expect.objectContaining({ reason: 'intercom-presence-origin-mismatch' }));
+    await f.broker.helper!(helperRequest(owner, receiver, 'edge-1', 2, [remote(owner, aliases.get(owner)!, address)]), signal);
+    expect(f.broker.published.at(-1)).toMatchObject([{ address, machineId: owner }]);
+  }, 5000);
 
 it.each(["observed-origin", "session-row"])("requires a synced %s before publishing homeless remote presence", async kind => {
   const { writeLocal } = await import("@spider/db-core/roam/local-state");

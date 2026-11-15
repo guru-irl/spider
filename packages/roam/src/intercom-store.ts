@@ -15,6 +15,8 @@ import {
 } from "./intercom-contracts";
 import { decodeFrame, encodeFrame, isIntercomPairResume, isRebindProof, makeMessageFrame } from "./intercom-codec";
 import { isMachineId } from "./machine-id";
+import { createIntercomTopologyStore } from "./intercom-topology";
+import { createFirstHomePairResume, isFirstHomePairResume, type FirstHomePairResume } from "./intercom-first-home";
 
 const unsafe = () => new Error("Unsafe intercom store path or symlink");
 const schemaColumns: Readonly<Record<string, readonly string[]>> = {
@@ -30,16 +32,20 @@ const schemaColumns: Readonly<Record<string, readonly string[]>> = {
   intercom_pair_fences: ["peer", "edge_epoch", "fence_id", "fenced_at"],
   intercom_pair_approvals: ["peer", "edge_epoch", "operation_id", "graph_digest", "fence_id"],
   intercom_revocation_notices: ["id", "frame_json"],
+  intercom_topology: ["id", "mode", "transition_json", "switched"],
+  intercom_topology_refusals: ["id", "peer"],
+  intercom_topology_audit: ["id", "transition_id", "old_next_hop", "new_next_hop", "at"],
 };
 const schemaKeys: Readonly<Record<string, readonly (readonly string[])[]>> = {
   intercom_messages: [["id"], ["from_key", "to_key", "pair_sequence"]],
   intercom_copies: [["direction", "id"]], intercom_cursors: [["direction", "from_key", "to_key"]],
+  intercom_topology_refusals: [["id"]], intercom_topology_audit: [["id", "transition_id"]],
   intercom_receipts: [["receipt_key"]], intercom_resumptions: [["from_key", "to_key"]],
   intercom_edge_state: [["peer", "edge_epoch"]], intercom_pair_fences: [["peer"]], intercom_pair_approvals: [["peer"]], intercom_revocation_notices: [["id"]],
 };
 function validateSchema(db: Db, tables: readonly { name: string }[], version: number): void {
   const names = new Set(tables.map(row => row.name));
-  const introduced = (name: string) => name === "intercom_edge_state" ? 2 :
+  const introduced = (name: string) => name.startsWith("intercom_topology") ? 4 : name === "intercom_edge_state" ? 2 :
     name === "intercom_pair_fences" || name === "intercom_pair_approvals" || name === "intercom_revocation_notices" ? 3 : 1;
   if (tables.some(row => !(row.name in schemaColumns)) || Object.keys(schemaColumns).some(name => names.has(name) !== (version >= introduced(name)))) {
     throw new Error("Invalid or incomplete intercom store schema");
@@ -109,7 +115,7 @@ function prepareFile(file: string, machineId: string): void {
     if (tables.length) {
       const meta = probe.prepare("SELECT machine_id, version FROM intercom_meta WHERE id=1").get() as { machine_id: string; version: number } | undefined;
       if (!meta || meta.machine_id !== machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3) throw new Error("Unsupported intercom store version");
+      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4) throw new Error("Unsupported intercom store version");
       validateSchema(probe, tables, meta.version);
     }
   } finally { probe.close(); }
@@ -295,19 +301,30 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         CREATE TABLE IF NOT EXISTS intercom_revocation_notices (
           id TEXT PRIMARY KEY REFERENCES intercom_messages(id), frame_json TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS intercom_topology (
+          id INTEGER PRIMARY KEY CHECK(id=1), mode TEXT NOT NULL, transition_json TEXT, switched TEXT
+        );
+        CREATE TABLE IF NOT EXISTS intercom_topology_refusals (
+          id TEXT PRIMARY KEY REFERENCES intercom_messages(id), peer TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS intercom_topology_audit (
+          id TEXT NOT NULL REFERENCES intercom_messages(id), transition_id TEXT NOT NULL,
+          old_next_hop TEXT NOT NULL, new_next_hop TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(id,transition_id)
+        );
         CREATE INDEX IF NOT EXISTS intercom_copy_peer ON intercom_copies(direction,peer,state);
         CREATE INDEX IF NOT EXISTS intercom_message_pair ON intercom_messages(from_key,to_key,pair_sequence);
         CREATE INDEX IF NOT EXISTS intercom_receipt_peer ON intercom_receipts(peer,acknowledged);
       `);
-      db.prepare("INSERT OR IGNORE INTO intercom_meta(id,machine_id,version,last_clock) VALUES(1,?,3,?)").run(options.machineId, firstNow);
+      db.prepare("INSERT OR IGNORE INTO intercom_meta(id,machine_id,version,last_clock) VALUES(1,?,4,?)").run(options.machineId, firstNow);
       const meta = db.prepare("SELECT machine_id,version,last_clock FROM intercom_meta WHERE id=1").get() as MetaRow;
       if (!meta || meta.machine_id !== options.machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
-      if (meta.version < 3) db.prepare("UPDATE intercom_meta SET version=3 WHERE id=1").run();
+      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
+      if (meta.version < 4) db.prepare("UPDATE intercom_meta SET version=4 WHERE id=1").run();
     }).immediate();
     checkpoint();
   } catch (error) { db.close(); throw error; }
 
+  const topology = createIntercomTopologyStore(db, options.machineId, options.mode ?? "hub-only", now);
   const copy = (direction: IntercomQueue, id: string): CopyRow | undefined =>
     db.prepare(`${selectCopy} WHERE c.direction=? AND c.id=?`).get(direction, id) as CopyRow | undefined;
   const identityRow = (id: string): IdentityRow | undefined =>
@@ -557,6 +574,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         ORDER BY m.from_key,m.to_key,m.pair_sequence LIMIT 1024`).all(input.peer) as CopyRow[];
       const frames: IntercomFrame[] = [], blocked = new Set<string>(); let bytes = 0;
       for (const row of rows) {
+        if (topology.topology().mode === "peers" && readEndpoint(row).machineId !== row.peer) continue;
         const pair = JSON.stringify([row.from_key, row.to_key]);
         if (blocked.has(pair)) continue;
         if (skipped.has(row.id)) { blocked.add(pair); continue; }
@@ -620,6 +638,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
   };
 
   const store: IntercomStore = {
+    ...topology,
     pairFence,
     fencePair(peer, edgeEpoch, fenceId) {
       edgeKey(peer, edgeEpoch);
@@ -770,12 +789,17 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         } else if (known) throw new Error("Intercom message ID already belongs to an inbox");
         const previous = db.prepare(`${selectCopy} WHERE c.direction='outbound' AND m.from_key=? AND m.to_key=?
           ORDER BY m.pair_sequence DESC LIMIT 1`).get(addressKey(candidate.identity.from), addressKey(candidate.identity.to)) as CopyRow | undefined;
+        let continuity: FirstHomePairResume | undefined;
         if (previous && !sameEndpoint(readEndpoint(previous), candidate.endpoint)) {
-          const saved = db.prepare("SELECT peer,resume_json FROM intercom_resumptions WHERE from_key=? AND to_key=?")
-            .get(addressKey(candidate.identity.from), addressKey(candidate.identity.to)) as { peer: string; resume_json: string } | undefined;
-          const resume: unknown = saved ? parseStored<unknown>(saved.resume_json) : null;
-          if (!saved || saved.peer !== input.nextHop || !isIntercomPairResume(resume) || !sameEndpoint(resume.endpoint, candidate.endpoint)) {
-            throw new Error("Intercom route requires authoritative rebind proof");
+          continuity = createFirstHomePairResume(candidate.identity.from, readEndpoint(previous), candidate.endpoint,
+            input.firstHomePresence, previous.pair_sequence, at);
+          if (!continuity) {
+            const saved = db.prepare("SELECT peer,resume_json FROM intercom_resumptions WHERE from_key=? AND to_key=?")
+              .get(addressKey(candidate.identity.from), addressKey(candidate.identity.to)) as { peer: string; resume_json: string } | undefined;
+            const resume: unknown = saved ? parseStored<unknown>(saved.resume_json) : null;
+            if (!saved || saved.peer !== input.nextHop || !isIntercomPairResume(resume) || !sameEndpoint(resume.endpoint, candidate.endpoint)) {
+              throw new Error("Intercom route requires authoritative rebind proof");
+            }
           }
         }
         const seq = "frame" in input ? candidate.identity.sequence : cursor("outbound", candidate.identity) + 1;
@@ -783,6 +807,11 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         if (!("frame" in input)) candidate = makeMessageFrame({ from: input.from, endpoint: input.endpoint, sequence: seq, message: input.message, originMachineId: options.machineId });
         const bytes = candidate.kind === "message" ? encodeFrame(candidate).byteLength : 0;
         if (candidate.kind === "message" && !room(candidate.identity.to, bytes)) return { kind: "refused", reason: "queue-full" } as const;
+        if (continuity) {
+          db.prepare(`INSERT INTO intercom_resumptions(from_key,to_key,peer,resume_json) VALUES(?,?,?,?)
+            ON CONFLICT(from_key,to_key) DO UPDATE SET peer=excluded.peer,resume_json=excluded.resume_json`)
+            .run(addressKey(candidate.identity.from), addressKey(candidate.identity.to), input.nextHop, JSON.stringify(continuity));
+        }
         insertIdentity(candidate.identity, candidate.kind === "message" ? candidate.message.expectsReply === true : candidate.identity.askId === candidate.identity.id,
           candidate.kind === "tombstone" ? candidate.reason : undefined, candidate.originMachineId);
         insertCopy("outbound", candidate, input.nextHop, at); writeCursor("outbound", candidate.identity);
@@ -805,6 +834,10 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         if (known && readOrigin(known) && readOrigin(known) !== frame.originMachineId) throw new Error("Intercom origin conflict");
         if (known && !sameIdentity(readIdentity(known), frame.identity)) throw new Error("Intercom message ID or digest conflict");
         let prior = copy("inbound", frame.identity.id);
+        const mode = topology.topology();
+        if (!prior && frame.endpoint.machineId !== options.machineId && (mode.transition !== null || mode.mode === "peers")) {
+          return { kind: "refused" as const, reason: "intercom-topology-changing" as const };
+        }
         if (prior) {
           const oldEndpoint = readEndpoint(prior);
           if (prior.peer !== input.peer || !sameEndpoint(oldEndpoint, frame.endpoint)) {
@@ -900,10 +933,11 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       ensureCheckpoint();
       if (!isMachineId(peer)) throw new Error("Invalid intercom peer");
       return (db.prepare("SELECT resume_json FROM intercom_resumptions WHERE peer=? ORDER BY from_key,to_key").all(peer) as { resume_json: string }[])
-        .map(row => {
+        .flatMap(row => {
           const value: unknown = parseStored<unknown>(row.resume_json);
+          if (isFirstHomePairResume(value)) return [];
           if (!isIntercomPairResume(value)) throw new Error("Invalid intercom pair resume metadata");
-          return value;
+          return [value];
         });
     },
     pending,

@@ -17,6 +17,7 @@ import { openLocalCore, openLocalRuntime, readLocalIdentity } from "./runtime";
 import { listStoreKeys } from "./store-inventory";
 import { createStorePort } from "./stores";
 import { loadHerdrConfig, startProductionHub } from "./production-hub";
+export { startProductionHub } from "./production-hub";
 import { createTransport } from "./transport";
 import { isPeerFailureReason, peerFailureReason } from "./peer-errors";
 import { remoteDoctor } from "./remote-observations";

@@ -14,8 +14,11 @@ import type { IntercomStore } from "./intercom-contracts";
 import { isMachineId } from "./machine-id";
 import { createHostIntercomDelivery, type HostIntercomDelivery } from "./intercom-delivery";
 import { hasIntercomGeneration } from "./intercom-exclusion";
+import { firstHomeEndpointMatches, readFirstHomeAdoption } from "./intercom-first-home";
 import { createIntercomRegistry, withIntercomPeerLock } from "./intercom-registry";
 import { readLocalIdentity } from "./runtime";
+import { topologyTransitionId } from "./intercom-topology";
+import { openJournal } from "./journal";
 import type { IntercomEnrollmentPair } from "./provision-contracts";
 
 export interface MachineIntercomOptions {
@@ -69,7 +72,16 @@ function checkBrokerBoundary(agentDir: string): void {
 
 /** Owns the bridge for one locked hub or supervisor, never for a pi session. */
 export function createMachineIntercom(options: MachineIntercomOptions): MachineIntercom {
-  const settings = options.config.intercom;
+  const settings = { ...options.config.intercom, routes: [...options.config.intercom.routes] };
+  const initiates = (peer: Peer) => options.config.role === "hub" ||
+    peer.machineId !== options.config.hubMachineId && options.config.machineId < peer.machineId;
+  const stagedRoutes = new Map<string, { kind: "direct"; peer: Peer; edgeEpoch: string }>();
+  let pendingSwitchAck: string | null = null, switchProblem: string | null = null;
+  const activateRoutes = () => {
+    if (settings.mode === "peers") for (const route of stagedRoutes.values()) {
+      settings.routes = [...settings.routes.filter(item => item.peer.machineId !== route.peer.machineId), route];
+    }
+  };
   const enabled = settings.enabled && options.env?.PI_SUBAGENT_CHILD !== "1" && (options.env || process.env).PI_SUBAGENT_CHILD !== "1";
   let status: ReturnType<MachineIntercom["readiness"]> = { state: enabled ? "pending" : "disabled", reason: enabled ? "starting" : null };
   let bridge: IntercomBridge | undefined, store: IntercomStore | undefined, lease: HelperRouteLease | undefined;
@@ -142,15 +154,29 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
       lease = await acquireHelperRoute(options.root, options.agentDir, abort.signal);
       if (stopped) return;
       store = openIntercomStore({ file: join(options.root, "roam", "intercom", "queue.db"), machineId: options.config.machineId,
-        clock: options.clock, limits: settings.limits });
+        clock: options.clock, limits: settings.limits, mode: settings.mode });
+      settings.mode = store.topology().mode;
+      stagedRoutes.clear();
       for (const record of await createIntercomRegistry(options.root).list()) {
         const pair = record.pair;
         if (pair.source.machineId === options.config.machineId) machineAliases.set(pair.target.machineId, pair.target.alias);
         else if (pair.target.machineId === options.config.machineId) machineAliases.set(pair.source.machineId, pair.source.alias);
+        if (options.config.role === "box" && ["pending", "active"].includes(record.state) && "sshUser" in pair &&
+            options.pairScopedHostReady && await options.pairScopedHostReady(pair.pairId)) {
+          const remote = pair.source.machineId === options.config.machineId ? pair.target : pair.target.machineId === options.config.machineId ? pair.source : null;
+          if (remote) {
+            const routePeer = pair.source.machineId === options.config.machineId && record.resources ? { ...remote, alias: record.resources.route.name } : remote;
+            const route = { kind: "direct" as const, peer: routePeer, edgeEpoch: pair.edgeEpoch };
+            stagedRoutes.set(remote.machineId, route);
+            if (options.directPeers && !options.directPeers.some(item => item.machineId === remote.machineId)) options.directPeers.push(routePeer);
+          }
+        }
       }
-      const direct = settings.routes.filter(route => route.kind === "direct");
+      activateRoutes();
+      const direct = [...new Map([...settings.routes.filter(route => route.kind === "direct"), ...stagedRoutes.values()].map(route => [route.peer.machineId, route])).values()];
       const local = options.config.machineId;
       delivery = createHostIntercomDelivery({ store, broker, sender, now: options.clock.now,
+        initialHomeAdoption(endpoint) { return readFirstHomeAdoption(options.globalDb, endpoint); },
         machineAlias(machineId) { return machineId === local ? settings.machineAlias : machineAliases.get(machineId) ?? settings.routes.find(route => route.peer.machineId === machineId)?.peer.alias ?? null; },
         endpoint(address) { const info = locals.get(addressKey(address))?.info;
           return info ? { address: info.address, machineId: info.machineId, homeEpoch: info.homeEpoch, activationEpoch: info.activationEpoch } : null; },
@@ -158,9 +184,10 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
       });
       broker.on("presence", onPresence); broker.on("disconnected", onDisconnected);
       bridge = createIntercomBridge({ machineId: local, machineAlias: settings.machineAlias,
-        edges: direct.map(route => ({ peer: route.peer, edgeEpoch: route.edgeEpoch, initiator: local < route.peer.machineId })),
+        edges: direct.map(route => ({ peer: route.peer, edgeEpoch: route.edgeEpoch, initiator: initiates(route.peer) })),
         nextHop(destination) { const route = settings.routes.find(candidate => candidate.peer.machineId === destination);
-          return route?.kind === "direct" ? route.peer.machineId : route?.via ?? null; },
+          if (options.config.role === "box" && destination !== options.config.hubMachineId && settings.mode === "hub-only") return options.config.hubMachineId;
+          return route?.kind === "direct" ? route.peer.machineId : settings.mode === "hub-only" ? route?.via ?? null : null; },
         authorizePresence(peer, entry) {
           const route = settings.routes.find(candidate => candidate.peer.machineId === entry.machineId);
           if (!route || (machineAliases.get(entry.machineId) ?? route.peer.alias).toLowerCase() !== entry.machineAlias.toLowerCase()) return false;
@@ -173,8 +200,59 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
           return settings.mode === "hub-only" && options.config.role === "box" && peer === options.config.hubMachineId && route?.kind === "relay" && route.via === peer;
         },
         advertiseRelay(peer, entry) {
-          return settings.mode === "hub-only" && options.config.role === "hub" && peer !== entry.machineId &&
+          return settings.mode === "hub-only" && options.config.role === "hub" && (!store!.topology().transition || store!.topology().transition!.state === "draining") && peer !== entry.machineId &&
             direct.some(route => route.peer.machineId === peer) && direct.some(route => route.peer.machineId === entry.machineId);
+        },
+        topology(peer) {
+          if (options.config.role === "hub") {
+            const current = store!.topology().transition;
+            if (!current) return undefined;
+            const next = store!.advanceTopologyTransition();
+            return next.state === "switching" && next.boxes[peer] === "pending" ? { transitionId: next.transitionId, action: "switch" } : undefined;
+          }
+          return peer === options.config.hubMachineId && pendingSwitchAck ? { transitionId: pendingSwitchAck, action: "switched" } : undefined;
+        },
+        onTopology(peer, control) {
+          if (options.config.role === "hub") {
+            if (control) {
+              if (control.action !== "switched") throw new Error("intercom-transition-conflict");
+              store!.acknowledgeTopologySwitch(control.transitionId, peer);
+              settings.mode = store!.topology().mode;
+            }
+            return;
+          }
+          if (peer !== options.config.hubMachineId) { if (control) throw new Error("intercom-transition-conflict"); return; }
+          pendingSwitchAck = null;
+          if (!control) return;
+          if (control.action !== "switch") throw new Error("intercom-transition-conflict");
+          try {
+            const directPeers = [...stagedRoutes.values(), ...settings.routes.filter(route => route.kind === "direct")]
+              .filter(route => route.peer.machineId !== options.config.hubMachineId && !store!.pairFence(route.peer.machineId)).map(route => route.peer.machineId);
+            store!.switchTopology({ transitionId: control.transitionId, hubMachineId: options.config.hubMachineId, directPeers });
+            settings.mode = store!.topology().mode; activateRoutes();
+            switchProblem = null; pendingSwitchAck = control.transitionId;
+            for (const peer of directPeers) bridge?.wake(peer);
+          } catch (error) {
+            if (!(error instanceof Error) || !["intercom-topology-hub-custody", "intercom-topology-outcome-unknown"].includes(error.message)) throw error;
+            switchProblem = error.message;
+          }
+        },
+        async onTopologyRequest(request) {
+          if (options.config.role !== "hub") throw new Error("intercom-requires-hub");
+          if (request.from !== "hub-only" || request.to !== "peers") throw new Error("intercom-transition-unsupported");
+          const records = (await createIntercomRegistry(options.root).list()).filter(record => record.state === "active" &&
+            record.operationId === request.operationId && record.graphDigest === request.graphDigest);
+          if (!records.length) throw new Error("peer-consent-required");
+          const history = openJournal(join(options.root, "roam", "journal.db")).read(request.operationId);
+          const consent = history.find(row => row.action === "intercom-peer-consent" &&
+            row.result.approved === true && row.result.graphDigest === request.graphDigest);
+          if (request.transitionId !== topologyTransitionId(local, request.operationId, request.graphDigest) || !consent || !Array.isArray(consent.result.pairs) || consent.result.pairs.length !== records.length ||
+              consent.result.pairs.some(pair => !pair || typeof pair !== "object" || Array.isArray(pair) || !records.some(record => record.pair.pairId === pair.pairId))) throw new Error("peer-consent-required");
+          if (store!.topology().mode === "peers") return { machineId: local, transitionId: request.transitionId, state: "complete" };
+          const transition = store!.startTopologyTransition({ transitionId: request.transitionId, from: request.from, to: request.to,
+            boxes: direct.map(route => route.peer.machineId) });
+          for (const peer of Object.keys(transition.boxes)) bridge?.wake(peer);
+          return { machineId: local, transitionId: transition.transitionId, state: transition.state };
         },
         async onRevokeRequest(request) {
           const registry = createIntercomRegistry(options.root), records = await registry.list();
@@ -192,34 +270,45 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
           const task = enrollmentTail.then(async () => {
             if (!options.pairScopedHostReady || !await options.pairScopedHostReady(request.pairId)) throw new Error("connector-not-pair-scoped");
             const record = await createIntercomRegistry(options.root).get(request.pairId), pair = record?.pair as IntercomEnrollmentPair | undefined;
-            const config = readLocalIdentity(options.root), route = config.intercom.routes.find(item => item.peer.machineId === request.peer);
+            const config = readLocalIdentity(options.root), configured = config.intercom.routes.find(item => item.peer.machineId === request.peer);
             const remoteIdentity = pair && (pair.source.machineId === local ? pair.target : pair.target.machineId === local ? pair.source : null);
             const remote = remoteIdentity && pair.source.machineId === local && record?.resources ? { ...remoteIdentity, alias: record.resources.route.name } : remoteIdentity;
+            const route = remote && { kind: "direct" as const, peer: remote, edgeEpoch: request.edgeEpoch };
             if (!record || !pair || !remote || !["pending", "active"].includes(record.state) || record.operationId !== request.operationId ||
                 record.graphDigest !== request.graphDigest || !(record.fenceId === request.expectedFenceId || record.state === "active" && record.fenceId === null) || pair.edgeEpoch !== request.edgeEpoch ||
-                remote.machineId !== request.peer || config.machineId !== local || !config.intercom.enabled || config.intercom.mode !== "peers" ||
-                !route || route.kind !== "direct" || route.edgeEpoch !== request.edgeEpoch || JSON.stringify(route.peer) !== JSON.stringify(remote)) {
+                remote.machineId !== request.peer || config.machineId !== local || !config.intercom.enabled || !(config.intercom.mode === "peers" || config.role === "box" && config.intercom.mode === "hub-only") ||
+                !route || !configured || !(configured.kind === "direct" && configured.edgeEpoch === request.edgeEpoch && JSON.stringify(configured.peer) === JSON.stringify(remote) ||
+                  config.role === "box" && config.intercom.mode === "hub-only" && configured.kind === "relay" && configured.via === config.hubMachineId)) {
               throw new Error("peer-consent-required");
             }
             if (remoteIdentity) machineAliases.set(remoteIdentity.machineId, remoteIdentity.alias);
             const priorRoutes = [...settings.routes], priorPeers = options.directPeers && [...options.directPeers];
-            settings.routes = [...settings.routes.filter(item => item.peer.machineId !== request.peer), route];
+            if (settings.mode === "peers") settings.routes = [...settings.routes.filter(item => item.peer.machineId !== request.peer), route];
             if (options.directPeers) options.directPeers.splice(0, options.directPeers.length,
               ...options.directPeers.filter(item => item.machineId !== request.peer), route.peer);
             try {
               if (!bridge) throw new Error("bridge-unavailable");
-              await bridge.enrollPair({ peer: route.peer, edgeEpoch: route.edgeEpoch, initiator: local < route.peer.machineId },
+              await bridge.enrollPair({ peer: route.peer, edgeEpoch: route.edgeEpoch, initiator: initiates(route.peer) },
                 { operationId: request.operationId, graphDigest: request.graphDigest, expectedFenceId: request.expectedFenceId, edgeEpoch: request.edgeEpoch });
             } catch (error) {
               settings.routes = priorRoutes; if (options.directPeers && priorPeers) options.directPeers.splice(0, options.directPeers.length, ...priorPeers);
               throw error;
             }
+            stagedRoutes.set(request.peer, route);
             return { machineId: local, peer: request.peer, edgeEpoch: request.edgeEpoch, applied: true as const };
           });
           enrollmentTail = task.then(() => undefined, () => undefined);
           return task;
         },
-        localPresence: () => [], authorizeLocalPresence: knownGeneration, authoritativeHome(address) {
+        localPresence: () => [], authorizeLocalPresence: knownGeneration,
+        firstHomeAttestation(endpoint) {
+          try {
+            const record = readFirstHomeAdoption(options.globalDb, endpoint);
+            return record && firstHomeEndpointMatches(record, { ...endpoint, homeEpoch: null }, endpoint)
+              ? { activation: record.activation, fromEpoch: null, toEpoch: record.toEpoch } : undefined;
+          } catch { return undefined; }
+        },
+        authoritativeHome(address) {
           const row = options.globalDb.prepare("SELECT machine_id,epoch,move_id,updated_at FROM session_homes WHERE session_id=?").get(address.sessionId) as
             { machine_id: string; epoch: number; move_id: string | null; updated_at: number } | undefined;
           if (!row) return null;
@@ -286,7 +375,15 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
         await closeAttempt();
       })();
     },
-    diagnostics: () => bridge?.diagnostics() ?? [],
+    diagnostics: () => {
+      const result = [...bridge?.diagnostics() ?? []], transition = store?.topology().transition;
+      if (transition && transition.state !== "complete") for (const [peer, state] of Object.entries(transition.boxes)) if (state === "pending") {
+        result.push({ peer, status: "pending", since: 0, reason: `intercom-transition-pending ${peer}` });
+      }
+      for (const peer of store?.missingTopologyRoutes() ?? []) result.push({ peer, status: "pending", since: 0, reason: `intercom-route-missing ${peer}` });
+      if (switchProblem) result.push({ peer: options.config.hubMachineId, status: "blocked", since: 0, reason: switchProblem });
+      return result;
+    },
     readiness: () => ({ ...status }),
   };
 }

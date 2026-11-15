@@ -97,7 +97,7 @@ export function homeChangeInProgress(file: string): boolean | null {
   } catch { return null; }
 }
 
-export async function startProductionHub(root: string): Promise<{ stop(): Promise<void> }> {
+export async function startProductionHub(root: string, options: { intercomClock?: Clock } = {}): Promise<{ stop(): Promise<void> }> {
   const core = openLocalCore(root);
   let hc: ReturnType<typeof createHcClient> | undefined;
   try {
@@ -116,7 +116,7 @@ export async function startProductionHub(root: string): Promise<{ stop(): Promis
     const journalFile = join(root, "roam", "journal.db"), journal = openJournal(journalFile);
     const direct = core.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
     const intercom = core.config.intercom.enabled ? createMachineIntercom({ root, globalDb: core.db, config: core.config,
-      agentDir: herdr.agentDirectory, clock, env, directPeers: direct, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }),
+      agentDir: herdr.agentDirectory, clock: options.intercomClock ?? clock, env, directPeers: direct, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }),
       ...createProductionIntercomMaintenance({ root, config: core.config, binary: herdr.core.binary, env }) }) : undefined;
     const observe = async (peer: Peer): Promise<HubObservation> => {
       try {

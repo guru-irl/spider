@@ -1,4 +1,4 @@
-import { isMessage, isSessionInfo } from "./broker/protocol.js";
+import { isMessage, isSessionInfo, isSessionEndpoint } from "./broker/protocol.js";
 import { getIntercomScopeId } from "./config.js";
 import { INTERCOM_HOST_EVENT, INTERCOM_RESOLVE_EVENT, type IntercomHostRequest, type IntercomResolveRequest } from "./host-api.js";
 import { FEDERATION_FEATURE, createIntercomDeliveryObserver, receiptReleasesPayload, sessionAddress, sameAddress, resolveSessionTarget as resolveRosterTarget, qualifiedName, type SessionAddress } from "./protocol.js";
@@ -622,6 +622,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   let deliveryObserver: ReturnType<typeof createIntercomDeliveryObserver> | null = null;
   const resolvedAddresses = new Map<string, { address: SessionAddress; remote: boolean; machineAlias?: string; activationEpoch?: string }>();
   let hostContext: IntercomHostRequest | undefined;
+  let initialHomeRefresh: Promise<void> | undefined;
   let agentRunning = false;
   const activeTools = new Map<string, string>();
   const replyTracker = new ReplyTracker();
@@ -987,6 +988,17 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     lastPresenceRuntimeFallbackAlias = identity.runtimeFallbackAlias;
     client.updatePresence({ ...identity, status: currentStatus(), ...currentContextUsage() });
   }
+  function refreshInitialHome(): void {
+    const host = hostContext, previous = host?.endpoint;
+    if (initialHomeRefresh || !host?.refreshInitialHome || previous?.homeEpoch !== null) return;
+    const task = host.refreshInitialHome().then(endpoint => {
+      if (hostContext !== host || !isSessionEndpoint(endpoint) || endpoint.homeEpoch === null || endpoint.machineId !== previous.machineId ||
+          endpoint.activationEpoch !== previous.activationEpoch || !sameAddress(endpoint.address, previous.address)) return;
+      host.endpoint = endpoint;
+      client?.updatePresence({ homeEpoch: endpoint.homeEpoch });
+    }).catch(() => {}).finally(() => { if (initialHomeRefresh === task) initialHomeRefresh = undefined; });
+    initialHomeRefresh = task;
+  }
   function startNamePoll(): void {
     clearNamePollTimer();
     const initialIdentity = currentSessionId ? buildPresenceIdentity(pi, currentIntercomSessionId ?? currentSessionId) : null;
@@ -996,6 +1008,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       if (!currentSessionId || !getLiveContext()) {
         return;
       }
+      refreshInitialHome();
       const identity = buildPresenceIdentity(pi, currentIntercomSessionId ?? currentSessionId);
       if (identity.name !== lastPresenceName || identity.runtimeFallbackAlias !== lastPresenceRuntimeFallbackAlias) {
         syncPresenceIdentity(currentSessionId);

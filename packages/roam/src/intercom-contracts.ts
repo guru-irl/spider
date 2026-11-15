@@ -46,7 +46,7 @@ export type IntercomFrame = IntercomMessageFrame | IntercomTombstoneFrame;
 
 /** A link acknowledgement proves durable inbox acceptance, not consumption. */
 export interface IntercomLinkAck { identity: IntercomIdentity; kind: IntercomFrame["kind"] }
-export interface IntercomRefusal { identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "link-down" | "missing-origin" | "peer-revoked" }
+export interface IntercomRefusal { identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "link-down" | "missing-origin" | "peer-revoked" | "intercom-topology-changing" }
 /** Validated metadata from a rejected frame; no payload or fabricated origin is retained. */
 export interface MissingOriginFrame { index: number; identity: IntercomIdentity; endpoint: SessionEndpoint; kind: IntercomFrame["kind"] }
 export interface IntercomReceiptInput {
@@ -72,21 +72,24 @@ export interface IntercomExchange {
   controls: IntercomControlFrame[];
   presence: RemoteSessionInfo[];
   resumptions?: IntercomPairResume[];
+  topology?: { transitionId: string; action: "switch" | "switched" };
 }
 
 export interface IntercomStoreOptions {
   file: string;
   machineId: MachineId;
   clock: Pick<Clock, "now">;
+  mode?: IntercomMode;
   /** Lower local quotas. The defaults are the protocol ceilings. */
   limits?: { queueMessages?: number; queueBytes?: number };
 }
 export type IntercomAcceptance =
   | { kind: "accepted" | "duplicate"; identity: IntercomIdentity; acceptance: Extract<AcceptanceEvidence, { durable: true }>; receipt?: MessageReceipt }
-  | { kind: "refused"; reason: "queue-full" | "message-too-large" };
-export type OutboundMessage =
+  | { kind: "refused"; reason: "queue-full" | "message-too-large" | "intercom-topology-changing" };
+export type OutboundMessage = (
   | { from: SessionAddress; endpoint: SessionEndpoint; message: Message; nextHop: MachineId }
-  | { frame: IntercomFrame; nextHop: MachineId };
+  | { frame: IntercomFrame; nextHop: MachineId }
+) & { firstHomePresence?: RemoteSessionInfo };
 export type IntercomQueue = "outbound" | "inbound";
 export type IntercomState = "queued" | "unknown" | "not_injected" | "injected" | "matched_waiter" | "answered" | "expired" | "cancelled";
 export interface RetainedIntercom {
@@ -133,7 +136,29 @@ export interface IntercomEdgeState {
 
 export interface IntercomPairFence { peer: MachineId; edgeEpoch: string; fenceId: string; fencedAt: number }
 export interface IntercomPairApproval { expectedFenceId: string | null; operationId: string; graphDigest: string; edgeEpoch: string }
-export interface IntercomStore {
+export type IntercomMode = "hub-only" | "peers";
+export interface IntercomTopologyTransition {
+  transitionId: string;
+  from: "hub-only";
+  to: "peers";
+  state: "draining" | "switching" | "complete";
+  boxes: Record<MachineId, "pending" | "switched">;
+}
+export interface IntercomTopologyAudit {
+  id: string; reason: "topology-transition"; transitionId: string; oldNextHop: MachineId; newNextHop: MachineId; timestamp: number;
+}
+export interface IntercomTopologyStore {
+  topology(): { mode: IntercomMode; transition: IntercomTopologyTransition | null; switched: string | null };
+  startTopologyTransition(input: { transitionId: string; from: IntercomMode; to: IntercomMode; boxes: readonly MachineId[] }): IntercomTopologyTransition;
+  advanceTopologyTransition(): IntercomTopologyTransition;
+  acknowledgeTopologySwitch(transitionId: string, peer: MachineId): void;
+  /** One local transaction changes mode, proves each route change safe, and writes its audit. */
+  switchTopology(input: { transitionId: string; hubMachineId: MachineId; directPeers: readonly MachineId[] }): { rebound: number; missing: MachineId[] };
+  recordTopologyRefusal(input: { peer: MachineId; identity: IntercomIdentity }): void;
+  topologyAudit(): readonly IntercomTopologyAudit[];
+  missingTopologyRoutes(): readonly MachineId[];
+}
+export interface IntercomStore extends IntercomTopologyStore {
   pairFence(peer: MachineId): IntercomPairFence | null;
   /** Persist the fence and failure receipts atomically; it never clears an existing fence. */
   fencePair(peer: MachineId, edgeEpoch: string, fenceId?: string): { fence: IntercomPairFence; upstream: readonly MachineId[] };
@@ -144,7 +169,7 @@ export interface IntercomStore {
   edgeState(peer: MachineId, edgeEpoch: string): IntercomEdgeState;
   updateEdgeState(peer: MachineId, edgeEpoch: string, change: (state: IntercomEdgeState) => IntercomEdgeState): IntercomEdgeState;
   /** Atomic same-machine source and inbox admission, with no second broker mailbox. */
-  acceptLocal(input: { from: SessionAddress; endpoint: SessionEndpoint; message: Message }): IntercomAcceptance;
+  acceptLocal(input: { from: SessionAddress; endpoint: SessionEndpoint; message: Message; firstHomePresence?: RemoteSessionInfo }): IntercomAcceptance;
   acceptOutbound(input: OutboundMessage): IntercomAcceptance;
   /** The transport authenticates the peer. Resume owners come from the local authoritative home lookup, not the wire. */
   acceptInbound(input: { peer: MachineId; frame: IntercomFrame; resume?: { cursor: IntercomPairResume; owner: Home | null } }): IntercomAcceptance;

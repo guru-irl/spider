@@ -49,14 +49,19 @@ it("keeps messages queued across a version mismatch and sends them after a match
   const store = openIntercomStore({ file: join(root, "queue.db"), machineId: A, clock }); stores.push(store);
   const target = { ...peer, machineId: B, alias: "remote.invalid" }, calls: any[] = [];
   let firstDone!: () => void, delivered!: () => void; const first = new Promise<void>(done => { firstDone = done; }), done = new Promise<void>(resolveDone => { delivered = resolveDone; });
-  const transport = { resolve: async (target: typeof peer) => target, exec: async (_target: unknown, _argv: unknown, options: { stdinForTimeout(ms: number): Buffer }) => {
+  const transport = { resolve: async (target: typeof peer, options: { timeoutMs: number; signal: AbortSignal }) => {
+    if (options.timeoutMs > 20_000) return new Promise<never>((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(new Error("poll stopped")), { once: true });
+    });
+    return target;
+  }, exec: async (_target: unknown, _argv: unknown, options: { stdinForTimeout(ms: number): Buffer }) => {
     const input = JSON.parse(options.stdinForTimeout(5000).toString()); calls.push(input.exchange);
     if (calls.length === 1) { firstDone(); return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: false, reason: "peer-version-mismatch" })); }
     if (input.exchange.frames.some((frame: any) => frame.identity.id === "queued")) delivered();
     return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value: { version: 1, exchange: { ...input.exchange,
       senderMachine: B, recipientMachine: A, frames: [], acknowledgements: input.exchange.frames.map((frame: any) => ({ identity: frame.identity, kind: frame.kind })), receipts: [], controls: [], presence: [] } } }));
   } };
-  const bridge = createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer: target, edgeEpoch: "edge", initiator: false }],
+  const bridge = createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer: target, edgeEpoch: "edge", initiator: true }],
     store, clock, transport: transport as never, localPresence: () => [], authoritativeHome: () => null }); resources.push(bridge);
   store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "queued", timestamp: 1, content: { text: "synthetic" } } });
   await bridge.start(); bridge.wake(B); await first;

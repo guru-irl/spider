@@ -302,7 +302,12 @@ it("wakes a hub-only poll when a downstream route becomes stale", async () => {
   const remote = { remote: true as const, id: to.sessionId, address: to, machineId: C, machineAlias: "box-c.invalid", homeEpoch: 1,
     activationEpoch: "c-activation", endpointEpoch: "c-activation", cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 };
   hubStore.updateEdgeState(C, "edge-1", old => ({ ...old, status: "live", lastSuccess: clock.now(), roster: [remote] }));
-  const hub = await create(B, A, hubStore, { edges: [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: false }],
+  let connections = 0;
+  const transport = { resolve: async (_target: unknown, options: { signal: AbortSignal }) => {
+    if (++connections > 1) throw new Error("synthetic downstream outage");
+    return new Promise<never>((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("poll stopped")), { once: true }));
+  }, exec: async () => { throw new Error("unexpected exchange"); } };
+  const hub = await create(B, A, hubStore, { transport, edges: [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: true }],
     advertiseRelay: (recipient: string, entry: typeof remote) => recipient === A && entry.machineId === C });
   const waiting = hub.exchange(request(batch(A, B, 1, "poll"), 25_000)), begin = performance.now();
   hub.wake(C);
@@ -379,7 +384,7 @@ it("reports a failed downstream ask at its origin without cancelling the durable
   const originFailures: unknown[] = [], relayFailures: unknown[] = [];
   const transport = { resolve: async () => { throw Object.assign(new Error("offline"), { code: "unavailable" }); }, exec: async () => { throw new Error("unexpected"); } };
   const origin = await create(A, B, source, { clock: fakeClock, transport, onAskFailed: (value: unknown) => originFailures.push(value) });
-  const hub = await create(B, A, relay, { clock: fakeClock, transport, edges: [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: false }],
+  const hub = await create(B, A, relay, { clock: fakeClock, transport, edges: [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: true }],
     onAskFailed: (value: unknown) => relayFailures.push(value) });
   source.acceptOutbound({ from, endpoint: { ...endpoint, machineId: C }, nextHop: B,
     message: { id: "relay-ask", timestamp: 1, expectsReply: true, remainingMs: 180_000, content: { text: "synthetic" } } });
@@ -427,4 +432,74 @@ it("local home quota refusal happens before any durable acceptance", async () =>
   const result = await bridge.dispatch({ from, to: { remote: true, id: to.sessionId, address: to, machineId: A, homeEpoch: 1, activationEpoch: "local", endpointEpoch: "local", machineAlias: "local.invalid", cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 }, message: { id: "local-quota", timestamp: 1, content: { text: "synthetic" } } });
   expect(result).toMatchObject({ delivery: "failed", acceptance: { accepted: false }, reason: "queue-full" });
   expect(store.retained("outbound", "local-quota")).toBeNull(); expect(store.retained("inbound", "local-quota")).toBeNull();
+}, 5000);
+
+
+it("resumes retained outbound payload when an incoming recovery push restores a down link", async () => {
+  const { source } = pair(), sent: string[] = [];
+  const a = await create(A, B, source, { edges: [{ peer: peer(B), edgeEpoch: "edge-1", initiator: true }], transport: {
+    resolve: async (target: unknown) => target,
+    exec: async (_target: unknown, _argv: unknown, options: { stdinForTimeout(ms: number): Buffer }) => {
+      const input = JSON.parse(options.stdinForTimeout(5000).toString()) as { exchange: IntercomExchange };
+      sent.push(...input.exchange.frames.map(frame => frame.identity.id));
+      return Buffer.from(JSON.stringify({ version: 1, exchange: batch(B, A, input.exchange.generation.generation, input.exchange.generation.channel) }));
+    },
+  } });
+  source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "retained-before-recovery", timestamp: 1, content: { text: "synthetic" } } });
+  source.updateEdgeState(B, "edge-1", old => ({ ...old, status: "down", outageSince: clock.now(), reason: "exchange-failed" }));
+  await a.exchange(request(batch(B, A, 1)));
+  await expect.poll(() => sent, { timeout: 500 }).toContain("retained-before-recovery");
+}, 5000);
+
+
+it("keeps the hub edge valid when a previously proved topology refusal arrives after the audited rebind", async () => {
+  const { source } = pair(), a = await create(A, C, source);
+  const accepted = source.acceptOutbound({ from, endpoint, nextHop: C, message: { id: "late-topology-refusal", timestamp: 1, content: { text: "synthetic" } } });
+  if (accepted.kind === "refused") throw new Error(accepted.reason);
+  source.pending({ kind: "outbound", peer: C, hopBudgetMs: 100 });
+  source.recordTopologyRefusal({ peer: C, identity: accepted.identity });
+  source.switchTopology({ transitionId: "00000000-0000-4000-8000-000000000004", hubMachineId: C, directPeers: [B] });
+  const incoming = batch(C, A, 1); incoming.refusals = [{ identity: accepted.identity, reason: "intercom-topology-changing" }];
+  await expect(a.exchange(request(incoming))).resolves.toMatchObject({ version: 1 });
+  expect(source.edgeState(C, "edge-1").status).toBe("live");
+  expect(source.retained("outbound", accepted.identity.id)?.peer).toBe(B);
+}, 5000);
+
+const firstHomePresence = () => ({ remote: true as const, id: to.sessionId, address: to, machineId: B, machineAlias: "target.invalid", homeEpoch: 1,
+  activationEpoch: endpoint.activationEpoch, endpointEpoch: endpoint.activationEpoch, cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1,
+  firstHome: { activation: endpoint.activationEpoch, fromEpoch: null, toEpoch: 1 } });
+it("continues the original pair from authorized attested presence rather than the dispatch argument", async () => {
+  const { source } = pair(), previous = { ...endpoint, homeEpoch: null };
+  source.acceptOutbound({ from, endpoint: previous, nextHop: B, message: { id: "before-home", timestamp: 1, content: { text: "synthetic" } } });
+  const row = source.retained("outbound", "before-home")!;
+  source.settleReceipt({ queue: "outbound", peer: B, frame: { from: previous, to: from, digest: row.identity.digest, attempt: 0,
+    receipt: { messageId: "before-home", status: "injected", timestamp: 1000,
+      evidence: { kind: "entry", entryId: "before-entry", sessionId: to.sessionId, activationEpoch: previous.activationEpoch } } } });
+  const bridge = await create(A, B, source), presence = firstHomePresence(), incoming = batch(B, A, 1);
+  incoming.presence = [presence]; await bridge.exchange(request(incoming));
+  const result = await bridge.dispatch({ from, to: { ...presence, firstHome: undefined }, message: { id: "after-home", timestamp: 2, content: { text: "synthetic" } } });
+  expect(result).toMatchObject({ delivery: "queued", acceptance: { accepted: true, durable: true } });
+  expect(source.retained("outbound", "after-home")).toMatchObject({ identity: { sequence: 2 }, endpoint });
+  expect(source.retained("outbound", "before-home")).toMatchObject({ endpoint: previous });
+}, 5000);
+it("does not trust an attestation supplied only in a dispatch argument", async () => {
+  const { source } = pair(), previous = { ...endpoint, homeEpoch: null };
+  source.acceptOutbound({ from, endpoint: previous, nextHop: B, message: { id: "before-home", timestamp: 1, content: { text: "synthetic" } } });
+  const bridge = await create(A, B, source);
+  await expect(bridge.dispatch({ from, to: firstHomePresence(), message: { id: "forged-home", timestamp: 2, content: { text: "synthetic" } } }))
+    .rejects.toThrow("Intercom route requires authoritative rebind proof");
+  expect(source.retained("outbound", "forged-home")).toBeNull();
+}, 5000);
+it("rejects a first-home attestation advertised by an unauthorized edge", async () => {
+  const { source } = pair(), bridge = await create(A, B, source), incoming = batch(B, A, 1);
+  incoming.presence = [{ ...firstHomePresence(), machineId: C }];
+  await expect(bridge.exchange(request(incoming))).rejects.toMatchObject({ code: "invalid-presence" });
+  expect(source.edgeState(B, "edge-1").roster).toEqual([]);
+}, 5000);
+it.each([null, {}, { activation: "wrong", fromEpoch: null, toEpoch: 1 }, { activation: endpoint.activationEpoch, fromEpoch: 1, toEpoch: 2 },
+  { activation: endpoint.activationEpoch, fromEpoch: null, toEpoch: 1, extra: true }])("rejects malformed first-home presence by name %#", async firstHome => {
+  const { source } = pair(), bridge = await create(A, B, source), incoming = batch(B, A, 1);
+  incoming.presence = [{ ...firstHomePresence(), firstHome }] as never;
+  await expect(bridge.exchange(request(incoming))).rejects.toMatchObject({ code: "invalid-presence" });
+  expect(source.edgeState(B, "edge-1").roster).toEqual([]);
 }, 5000);

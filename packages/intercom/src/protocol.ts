@@ -2,7 +2,7 @@ import type { DeliveryDetails, Message, MessageControl, MessageReceipt, SessionI
 export * from "./types.js";
 export * from "./host-api.js";
 import { isMessageReceipt, isConsumptionReceipt } from "./broker/protocol.js";
-export { parseFederationBrokerMessage, isSessionAddress, isSessionEndpoint, isRemoteSessionInfo, isMessage, isMessageReceipt, isMessageControl, isFederationDispatchResult, isConsumptionReceipt, isReceiptEvidence } from "./broker/protocol.js";
+export { parseFederationBrokerMessage, isSessionAddress, isSessionEndpoint, isFirstHomeAttestation, isRemoteSessionInfo, isMessage, isMessageReceipt, isMessageControl, isFederationDispatchResult, isConsumptionReceipt, isReceiptEvidence } from "./broker/protocol.js";
 export { createDeliveryObserver, createIntercomDeliveryObserver } from "./delivery-observation.js";
 export type { DeliveryObservation, GenerationExclusion, IntercomObservationPorts } from "./delivery-observation.js";
 
@@ -11,7 +11,8 @@ export const HELPER_EXCHANGE_FEATURE = "intercom-exchange-v1";
 export const FEDERATION_NOTICE_ACK_FEATURE = "federation-notice-ack-v1";
 export const HELPER_EXCHANGE_ERRORS: readonly string[] = ["machine-not-enrolled", "machine-mismatch", "stale-generation", "invalid-request",
   "invalid-presence", "invalid-refusal", "invalid-receipt", "invalid-reply", "peer-version-mismatch", "unsupported-broker", "helper-unauthorized",
-  "cli-aborted", "bridge-unavailable", "exchange-too-large", "endpoint-exited", "peer-revoked"];
+  "cli-aborted", "bridge-unavailable", "exchange-too-large", "endpoint-exited", "peer-revoked", "peer-consent-required", "intercom-requires-hub",
+  "intercom-transition-unsupported", "intercom-transition-conflict", "intercom-topology-invalid"];
 export const isHelperExchangeError = (value: unknown): value is string => typeof value === "string" && HELPER_EXCHANGE_ERRORS.includes(value);
 
 /** Logical identity. Machine aliases and endpoint generations are replaceable routes. */

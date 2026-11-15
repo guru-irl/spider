@@ -4,6 +4,8 @@ import { startProductionSupervisor } from "./production-supervisor";
 import { pathToFileURL } from "node:url";
 import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
 
+export { startProductionSupervisor };
+
 export async function main(argv: readonly string[], io: { out(text: string): void; err(text: string): void }): Promise<number> {
   if (argv.length === 1 && ["--help", "-h", "help"].includes(argv[0])) {
     io.out("Usage: spider-roam-supervisor [--help]\nHosts sessions only for an enrolled box with initialized capture and hub-issued intent.\n");

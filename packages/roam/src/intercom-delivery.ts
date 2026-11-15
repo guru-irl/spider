@@ -1,12 +1,14 @@
 import { addressKey, sameAddress, type MessageReceipt, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint } from "@spider/intercom/protocol";
 import type { IntercomFederationClient } from "@spider/intercom/broker/client";
 import type { IntercomControlFrame, IntercomReceiptFrame, IntercomStore } from "./intercom-contracts";
+import { firstHomeEndpointMatches, type FirstHomeAdoption } from "./intercom-first-home";
 
 export interface ReconcileProof { owner: SessionEndpoint; receipt: MessageReceipt }
 export interface HostIntercomDeliveryPorts {
   store: IntercomStore;
   broker: Pick<IntercomFederationClient, "deliver" | "deliverReceipt" | "deliverControl"> & Partial<Pick<IntercomFederationClient, "deliverRevocationNotice">>;
   endpoint(address: SessionAddress): SessionEndpoint | null;
+  initialHomeAdoption?(endpoint: SessionEndpoint): FirstHomeAdoption | undefined;
   sender(address: SessionAddress): RemoteSessionInfo | null;
   machineAlias?(machineId: string): string | null;
   wake(peer: string): void;
@@ -30,6 +32,11 @@ export function createHostIntercomDelivery(ports: HostIntercomDeliveryPorts): Ho
   const readiness = new Map<string, string>(), active = new Map<string, Promise<void>>(), notified = new Set<string>();
   let stopped = false;
   const report = () => ports.onError?.("intercom-broker-unavailable");
+  const matches = (queued: SessionEndpoint, live: SessionEndpoint) => {
+    if (sameEndpoint(queued, live)) return true;
+    try { return firstHomeEndpointMatches(ports.initialHomeAdoption?.(queued), queued, live); }
+    catch { return false; }
+  };
   // Origin is historical provenance, not a current reply route or activation. Do
   // not consult presence: the sender may have exited or moved since acceptance.
   const historical = (address: SessionAddress, machineId: string, endpoint?: SessionEndpoint): RemoteSessionInfo => ({
@@ -52,19 +59,22 @@ export function createHostIntercomDelivery(ports: HostIntercomDeliveryPorts): Ho
           if (stopped) break;
           let retained = ports.store.retained("inbound", identity.id);
           if (!retained || !retained.originMachineId) continue;
-          if (!sameEndpoint(retained.endpoint, endpoint)) {
+          if (!matches(retained.endpoint, endpoint)) {
             try { ports.store.rebindInboundAfterAbsence(identity.id, endpoint); retained = ports.store.retained("inbound", identity.id); }
             catch { continue; }
           }
-          if (!retained || !sameEndpoint(retained.endpoint, endpoint) || !retained.originMachineId) continue;
+          if (!retained || !matches(retained.endpoint, endpoint) || !retained.originMachineId) continue;
           const sender = historical(identity.from, retained.originMachineId);
           let frame;
-          try { frame = ports.store.beginDispatch({ id: identity.id, endpoint, readiness: transition }); }
+          const owner = retained.endpoint;
+          try { frame = ports.store.beginDispatch({ id: identity.id, endpoint: owner, readiness: transition }); }
           catch (error) { if (error instanceof Error && error.message === "Intercom retry needs a new readiness transition") continue; throw error; }
           progress = true;
           try {
+            // The broker still checks the exact current registration. The durable
+            // copy and its receipts keep the pre-adoption owner, on this activation.
             const result = await ports.broker.deliver(sender, endpoint, frame.message);
-            if (result.consumption) await reconcile([{ owner: endpoint, receipt: result.consumption }]);
+            if (result.consumption) await reconcile([{ owner, receipt: result.consumption }]);
           } catch { report(); }
         }
       } while (progress && !stopped);

@@ -1198,6 +1198,11 @@ class IntercomBroker {
         const session = this.sessions.get(currentKey);
         if (session?.socket === socket) {
           let changed = false;
+          if (clientMessage.homeEpoch !== undefined) {
+            if (typeof clientMessage.homeEpoch !== "number" || !Number.isSafeInteger(clientMessage.homeEpoch) || clientMessage.homeEpoch < 1 ||
+                session.info.homeEpoch != null && session.info.homeEpoch !== clientMessage.homeEpoch) throw new Error("Invalid initial home epoch");
+            if (session.info.homeEpoch == null) { session.info.homeEpoch = clientMessage.homeEpoch; changed = true; }
+          }
           if (clientMessage.name !== undefined) {
             if (typeof clientMessage.name !== "string") {
               throw new Error("Invalid presence name");

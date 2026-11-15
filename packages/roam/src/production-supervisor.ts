@@ -25,6 +25,7 @@ import { observeHosting } from "./hosting";
 import { readPrivateBytes } from "./selected-files";
 import { createMachineIntercom } from "./intercom-runtime";
 import { createProductionIntercomMaintenance } from "./intercom-production";
+import type { LocalPairPorts } from "./intercom-local-ops";
 import { createTransport } from "./transport";
 
 export function createSupervisorEvents(databaseFile: string, core: Pick<HcClient, "events">): { subscribe(listener: () => void): () => void } {
@@ -177,9 +178,12 @@ export async function runLockedSupervisor(input: {
   return { stop() { return stopping ??= (async () => { release(); await lock; })(); } };
 }
 
-export async function startProductionSupervisor(root: string, options: { system?: SupervisorSystemPorts; clock?: Clock } = {}): Promise<{ stop(): Promise<void> }> {
+export async function startProductionSupervisor(root: string, options: { system?: SupervisorSystemPorts; clock?: Clock;
+  intercomLocalPorts?: Omit<LocalPairPorts, "enrollBridge" | "inspectBridge" | "inspectFence"> } = {}): Promise<{ stop(): Promise<void> }> {
   const enrolled = readLocalIdentity(root);
   assertBoxEnrollment(enrolled);
+  const platform = options.intercomLocalPorts;
+  if (platform && (platform.root !== root || platform.machineId !== enrolled.machineId)) throw new Error("machine-mismatch");
   if (!participantCaptureReady(root, enrolled.machineId)) {
     let active: { stop(): Promise<void> } | undefined, closed = false, checking: Promise<void> | undefined;
     const timer = setInterval(() => {
@@ -246,10 +250,14 @@ export async function startProductionSupervisor(root: string, options: { system?
       },
       async notify() { /* Suspension is persisted by the supervisor and collected by the hub observer. */ },
     });
+    if (platform && platform.machineId !== runtime.config.machineId) throw new Error("machine-mismatch");
+    const localPorts = platform && { machineId: platform.machineId, root: platform.root, home: platform.home, node: platform.node,
+      ssh: platform.ssh, keygen: platform.keygen, sshd: platform.sshd, sshUser: platform.sshUser, recipe: platform.recipe,
+      systemctl: platform.systemctl, run: platform.run, process: platform.process, cgroup: platform.cgroup };
     const direct = runtime.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
     const intercom = runtime.config.intercom.enabled ? createMachineIntercom({ root, globalDb: runtime.db, config: runtime.config,
       agentDir: herdr.agentDirectory, clock, env, directPeers: direct, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }),
-      ...createProductionIntercomMaintenance({ root, config: runtime.config, binary: herdr.core.binary, env }) }) : undefined;
+      ...createProductionIntercomMaintenance({ root, config: runtime.config, binary: herdr.core.binary, env, localPorts }) }) : undefined;
     const running = await runLockedSupervisor({ root, supervisor, intercom,
       identity: { pid: process.pid, startIdentity: identity.startIdentity }, probe: pid => system.inventory.probe(pid) });
     let stopping: Promise<void> | undefined;

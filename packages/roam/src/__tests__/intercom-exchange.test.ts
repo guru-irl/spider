@@ -153,3 +153,14 @@ it("rejects an adversarial late reply after its own persisted generation is supe
   release(Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value: { version: 1, exchange: batch(B, A) } })));
   await expect(pending).rejects.toMatchObject({ code: "stale-generation" });
 }, 5000);
+
+it("rejects malformed first-home attestations in helper replies as invalid-presence", async () => {
+  const exchange = await exchangeApi(), presence = { remote: true, id: to.sessionId, address: to, machineId: B, machineAlias: "box-1.invalid", homeEpoch: 1,
+    activationEpoch: endpoint.activationEpoch, endpointEpoch: endpoint.activationEpoch, cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1,
+    firstHome: { activation: "wrong", fromEpoch: null, toEpoch: 1 } };
+  const transport = { exec: async () => Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true,
+    value: { version: 1, exchange: { ...batch(B, A), presence: [presence] } } })) };
+  const ports = { transport, store: { edgeState: () => ({ outbound: { poll: 1, push: 1 } }) }, machineId: A,
+    enrollment: { peer, edgeEpoch: "edge-1" }, clock: { now: () => 1000, later: () => () => {} } };
+  await expect(exchange(peer, { exchange: batch(), holdMs: 0 }, ports)).rejects.toMatchObject({ code: "invalid-presence" });
+}, 5000);

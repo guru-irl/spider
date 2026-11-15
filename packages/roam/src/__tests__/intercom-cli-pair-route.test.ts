@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { main } from "../cli";
 import { provisionIntercomEnrollment } from "../intercom-enrollment";
@@ -28,4 +30,24 @@ it("the public source revoke CLI does not treat a dropped pair route as a manage
   expect(err).toContain("intercom-revocation-unconfirmed");
   expect(f.calls.some(call => call.includes("stop spider-pair-pair-1-host.service"))).toBe(true);
   expect(f.calls.some(call => call.includes("machine rm spider-pair-pair-1"))).toBe(false);
+}, 5000);
+
+
+it("stages an approved pair without changing either box's hub-only mode or relay route", async () => {
+  const f = await scenario(), hubId = f.request.operation.machineId;
+  for (const [machineId, local] of f.locals) {
+    const file = join(local.root, "roam", "config.json"), config = JSON.parse(readFileSync(file, "utf8"));
+    const other = machineId === A ? f.target : f.source;
+    config.intercom.mode = "hub-only";
+    config.intercom.routes = [{ kind: "direct", peer: { ...f.source, machineId: hubId, alias: "hub.invalid" }, edgeEpoch: "hub-edge" },
+      { kind: "relay", peer: other, via: hubId }];
+    writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  }
+  const result = await provisionIntercomEnrollment(f.request, f.enrollment);
+  expect(result.code, JSON.stringify(result)).toBe(0);
+  for (const [machineId, local] of f.locals) {
+    const config = JSON.parse(readFileSync(join(local.root, "roam", "config.json"), "utf8"));
+    expect(config.intercom.mode).toBe("hub-only");
+    expect(config.intercom.routes.find((route: { peer: { machineId: string } }) => route.peer.machineId === (machineId === A ? B : A)).kind).toBe("relay");
+  }
 }, 5000);

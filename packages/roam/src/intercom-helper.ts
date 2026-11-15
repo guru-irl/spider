@@ -17,6 +17,22 @@ export interface HelperInspectRequest { version: 1; action: "inspect-pair"; mach
 export interface HelperFenceRequest { version: 1; action: "inspect-fence"; machineId: string; peer: string }
 export interface HelperEnrollRequest { version: 1; action: "enroll-pair"; machineId: string; peer: string; pairId: string; edgeEpoch: string;
   operationId: string; graphDigest: string; expectedFenceId: string | null }
+export interface HelperTopologyRequest { version: 1; action: "transition-topology"; machineId: string; transitionId: string;
+  operationId: string; graphDigest: string; from: "hub-only" | "peers"; to: "hub-only" | "peers" }
+export function parseHelperTopology(value: unknown): HelperTopologyRequest {
+  if (!record(value) || !exact(value, ["version", "action", "machineId", "transitionId", "operationId", "graphDigest", "from", "to"]) ||
+      value.version !== 1 || value.action !== "transition-topology" || !isMachineId(value.machineId) || !isMachineId(value.transitionId) ||
+      typeof value.operationId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value.operationId) ||
+      typeof value.graphDigest !== "string" || !/^[0-9a-f]{64}$/.test(value.graphDigest) ||
+      value.from !== "hub-only" && value.from !== "peers" || value.to !== "hub-only" && value.to !== "peers") return fail("invalid-request");
+  return value as unknown as HelperTopologyRequest;
+}
+export async function requestHelperTopology(root: string, value: unknown): Promise<{ machineId: string; transitionId: string; state: "draining" | "switching" | "complete" }> {
+  const input = parseHelperTopology(value), output = await brokerRequest(readRoute(root), 30_000, input);
+  if (!record(output) || !exact(output, ["machineId", "transitionId", "state"]) || output.machineId !== input.machineId ||
+      output.transitionId !== input.transitionId || !["draining", "switching", "complete"].includes(String(output.state))) return fail("invalid-reply");
+  return output as unknown as { machineId: string; transitionId: string; state: "draining" | "switching" | "complete" };
+}
 interface HelperRoute { agentDir: string; token: string }
 const fail = (reason: string): never => { throw new Error(reason); };
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);

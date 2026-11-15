@@ -1,4 +1,4 @@
-import { paths } from "@spider/db-core";
+import { openDbReadOnly, paths } from "@spider/db-core";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -24,7 +24,7 @@ class FixtureClock {
   }
 }
 async function flush() { for (let i = 0; i < 30; i++) await Promise.resolve(); }
-async function fixture(options: { mode: "blocked" | "failure"; initiator?: boolean }) {
+async function fixture(options: { mode: "blocked" | "failure"; initiator?: boolean; deferPoll?: boolean }) {
   const api = await vi.importActual("../intercom-bridge").catch(() => ({})) as { createIntercomBridge?: (ports: any) => any };
   expect(api.createIntercomBridge).toBeTypeOf("function");
   const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "is-")); roots.push(root);
@@ -32,7 +32,13 @@ async function fixture(options: { mode: "blocked" | "failure"; initiator?: boole
   let mode = options.mode, live = false, failureReason = "needs_login";
   const calls: any[] = [], downs: string[] = [], failedAsks: any[] = [], expirations: any[] = [], rosters: RemoteSessionInfo[][] = [];
   const transport = {
-    resolve: async (target: unknown, resolveOptions: unknown) => { calls.push({ kind: "resolve", options: resolveOptions }); return target; },
+    resolve: async (target: unknown, resolveOptions: { timeoutMs: number; signal: AbortSignal }) => {
+      calls.push({ kind: "resolve", options: resolveOptions });
+      if (options.deferPoll && resolveOptions.timeoutMs > 20_000) return new Promise<never>((_resolve, reject) => {
+        resolveOptions.signal.addEventListener("abort", () => reject(Object.assign(new Error("poll stopped"), { code: "cli-aborted" })), { once: true });
+      });
+      return target;
+    },
     exec: async (_target: unknown, _argv: unknown, call: any) => {
       const input = JSON.parse(call.stdinForTimeout(call.remoteTimeoutMs).toString());
       calls.push({ kind: "exec", input, call }); call.onConnected?.(true);
@@ -49,7 +55,7 @@ async function fixture(options: { mode: "blocked" | "failure"; initiator?: boole
     store, transport, clock, localPresence: () => [], authoritativeHome: () => null, onLinkDown: (_peer: string, reason: string) => downs.push(reason),
     onAskFailed: (value: any) => failedAsks.push(value), onExpiry: (value: any) => expirations.push(value), publishPresence: (entries: RemoteSessionInfo[]) => rosters.push(entries) });
   bridges.push(bridge);
-  return { bridge, clock, store, transport, calls, downs, failedAsks, expirations, rosters, setMode(value: typeof mode) { mode = value; }, setLive(value: boolean) { live = value; }, setFailureReason(value: string) { failureReason = value; } };
+  return { root, bridge, clock, store, transport, calls, downs, failedAsks, expirations, rosters, setMode(value: typeof mode) { mode = value; }, setLive(value: boolean) { live = value; }, setFailureReason(value: string) { failureReason = value; } };
 }
 const execs = (calls: any[]) => calls.filter(call => call.kind === "exec");
 const establishVersion = (bridge: any) => bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000,
@@ -100,7 +106,7 @@ it("retries once after one second, preserves one outage, fails in-flight asks, a
 
 
 it("probes an unknown route, retries once, and deducts the original ask budget", async () => {
-  const f = await fixture({ mode: "failure", initiator: false }); await f.bridge.start();
+  const f = await fixture({ mode: "failure", deferPoll: true }); await f.bridge.start();
   const pending = f.bridge.dispatch({ from, to: remote, message: { id: "unknown-ask", timestamp: 1, expectsReply: true, remainingMs: 30_000, content: { text: "synthetic" } } });
   await flush();
   expect(execs(f.calls)).toHaveLength(1);
@@ -142,7 +148,7 @@ it("does not charge or send one queued ask in both concurrent channels", async (
 }, 5000);
 
 
-it("does not charge a poll handoff again while starting a concurrent push", async () => {
+it("does not charge a responder poll handoff again in a concurrent push reply", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "poll-handoff", timestamp: 1, expectsReply: true, remainingMs: 300_000, content: { text: "synthetic" } } });
   const pull = { protocol: 3, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
@@ -150,7 +156,12 @@ it("does not charge a poll handoff again while starting a concurrent push", asyn
   const reply = await f.bridge.exchange({ version: 1, exchange: pull, holdMs: 0, deadlineMs: 5000 });
   expect(reply.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["poll-handoff"]);
   f.bridge.wake(B); await flush();
-  expect(execs(f.calls)[0].input.exchange.frames).toEqual([]);
+  const next = await f.bridge.exchange({ version: 1, exchange: { ...pull, generation: { ...pull.generation, channel: "push", generation: 2 } }, holdMs: 0, deadlineMs: 5000 });
+  expect(next.exchange.frames).toEqual([]);
+  expect(execs(f.calls)).toEqual([]);
+  const audit = openDbReadOnly(join(f.root, "queue", "queue.db"))!;
+  try { expect(audit.prepare("SELECT remaining_ms FROM intercom_copies WHERE direction='outbound' AND id='poll-handoff'").get())
+    .toEqual({ remaining_ms: reply.exchange.frames[0].message.remainingMs }); } finally { audit.close(); }
 }, 5000);
 
 
@@ -190,7 +201,7 @@ it("retains peer names, queued mail, and one diagnostic over ten minutes and ser
 }, 5000);
 
 
-it("keeps same-pair order while unrelated work uses the push channel", async () => {
+it("keeps responder same-pair order while unrelated work uses the next poll", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "pair-1", timestamp: 1, content: { text: "synthetic" } } });
   const pull = { protocol: 3, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
@@ -201,7 +212,12 @@ it("keeps same-pair order while unrelated work uses the push channel", async () 
   const other = { ...endpoint, address: { sessionId: "other", scopeId: "scope" } };
   f.store.acceptOutbound({ from, endpoint: other, nextHop: B, message: { id: "other-pair", timestamp: 1, content: { text: "synthetic" } } });
   f.bridge.wake(B); await flush();
-  expect(execs(f.calls)[0].input.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["other-pair"]);
+  const next = await f.bridge.exchange({ version: 1, exchange: { ...pull, generation: { ...pull.generation, generation: 2 },
+    acknowledgements: [{ identity: reply.exchange.frames[0].identity, kind: "message" }] }, holdMs: 0, deadlineMs: 5000 });
+  expect(next.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["other-pair", "pair-2"]);
+  expect(reply.exchange.frames[0].identity.sequence).toBe(1);
+  expect(next.exchange.frames.find((frame: any) => frame.identity.id === "pair-2").identity.sequence).toBe(2);
+  expect(execs(f.calls)).toEqual([]);
 }, 5000);
 
 it("expires stale payload during background probes without evicting its metadata", async () => {
@@ -215,12 +231,12 @@ it("expires stale payload during background probes without evicting its metadata
 
 
 it("uses a 35-second successful-exchange lease, then probes rather than trusting stale presence", async () => {
-  const recent = await fixture({ mode: "blocked", initiator: false });
+  const recent = await fixture({ mode: "blocked", deferPoll: true });
   recent.store.updateEdgeState(B, "edge-1", state => ({ ...state, status: "live", lastSuccess: recent.clock.now() }));
   await recent.bridge.start(); await recent.clock.advance(34_999);
   expect(await recent.bridge.dispatch({ from, to: remote, message: { id: "live-lease", timestamp: 1, expectsReply: true, remainingMs: 300_000, content: { text: "synthetic" } } })).toMatchObject({ delivery: "queued" });
   await flush(); expect(execs(recent.calls)[0].call.remoteTimeoutMs).toBe(10_000);
-  const stale = await fixture({ mode: "failure", initiator: false });
+  const stale = await fixture({ mode: "failure", deferPoll: true });
   stale.store.updateEdgeState(B, "edge-1", state => ({ ...state, status: "live", lastSuccess: stale.clock.now() - 35_000 }));
   await stale.bridge.start();
   const ask = stale.bridge.dispatch({ from, to: remote, message: { id: "stale-lease", timestamp: 1, expectsReply: true, remainingMs: 300_000, content: { text: "synthetic" } } });
@@ -245,7 +261,8 @@ it("marks cached roster entries stale when the last-success lease expires", asyn
   f.store.updateEdgeState(B, "edge-1", state => ({ ...state, status: "live", lastSuccess: f.clock.now(), roster: [remote] }));
   await f.bridge.start(); expect(f.rosters.at(-1)?.[0]).toMatchObject({ stale: false, reachability: "live" });
   await f.clock.advance(35_000);
-  expect(f.rosters.at(-1)?.[0]).toMatchObject({ stale: true, reachability: "unknown" });
+  expect(f.rosters.at(-1)?.[0]).toMatchObject({ stale: true, reachability: "down" });
+  expect(f.bridge.diagnostics()).toHaveLength(1);
 }, 5000);
 
 
@@ -323,7 +340,7 @@ it("wakes a held poll before its fake-clock deadline", async () => {
 
 
 it("uses two ten-second admission attempts with one retry and a 21-second cap", async () => {
-  const f = await fixture({ mode: "blocked", initiator: false }), attempts: number[] = [];
+  const f = await fixture({ mode: "blocked", deferPoll: true }), attempts: number[] = [];
   f.transport.exec = async (_target: unknown, _argv: unknown, call: any) => new Promise<Buffer>((_resolve, reject) => {
     attempts.push(call.timeoutMs);
     const cancel = f.clock.later(call.timeoutMs, () => reject(Object.assign(new Error("fixture timeout"), { code: "cli-timeout" })));
@@ -347,7 +364,7 @@ it("uses two ten-second admission attempts with one retry and a 21-second cap", 
 
 
 it("shortens the retry to the original ask deadline instead of extending it", async () => {
-  const f = await fixture({ mode: "blocked", initiator: false }), attempts: number[] = [];
+  const f = await fixture({ mode: "blocked", deferPoll: true }), attempts: number[] = [];
   f.transport.exec = async (_target: unknown, _argv: unknown, call: any) => new Promise<Buffer>((_resolve, reject) => {
     attempts.push(call.timeoutMs);
     const cancel = f.clock.later(call.timeoutMs, () => reject(Object.assign(new Error("fixture timeout"), { code: "cli-timeout" })));
@@ -415,14 +432,14 @@ it("a later proved mismatch replaces a transient reason and cancels its pending 
 
 
 it("expires queued mail and reports it even when a fatal edge never retries", async () => {
-  const f = await fixture({ mode: "failure", initiator: false }); f.setFailureReason("machine-mismatch");
+  const f = await fixture({ mode: "failure", deferPoll: true }); f.setFailureReason("machine-mismatch");
   await f.bridge.start();
   expect(await f.bridge.dispatch({ from, to: remote, message: { id: "fatal-expiry", timestamp: 1, content: { text: "synthetic" } } })).toMatchObject({ delivery: "queued" });
   expect(f.store.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })).toHaveLength(1);
   await flush(); expect(f.store.edgeState(B, "edge-1").status).toBe("down");
   const attempts = execs(f.calls).length; await f.bridge.stop();
   const api = await vi.importActual("../intercom-bridge") as { createIntercomBridge: (ports: any) => any };
-  const restarted = api.createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: false }],
+  const restarted = api.createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: true }],
     store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: () => null,
     onExpiry: (event: unknown) => f.expirations.push(event) });
   bridges.push(restarted); await restarted.start();
@@ -450,9 +467,9 @@ it("cleans expiry work after a failed start and can start again", async () => {
 
 
 it("retries a failed local expiry notification without retrying a fatal edge", async () => {
-  const f = await fixture({ mode: "failure", initiator: false }), api = await vi.importActual("../intercom-bridge") as { createIntercomBridge: (ports: any) => any };
+  const f = await fixture({ mode: "failure", deferPoll: true }), api = await vi.importActual("../intercom-bridge") as { createIntercomBridge: (ports: any) => any };
   f.setFailureReason("machine-mismatch"); let calls = 0; const notices: unknown[] = [];
-  const bridge = api.createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: false }],
+  const bridge = api.createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: true }],
     store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: () => null,
     onExpiry: (event: unknown) => { calls++; if (calls === 1) throw new Error("fixture notification failed"); notices.push(event); } });
   bridges.push(bridge); await bridge.start();

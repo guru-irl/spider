@@ -213,3 +213,34 @@ it("the broker sanitizes even a forged bridge error before replying to a helper"
     expect(JSON.stringify(result)).not.toContain("synthetic confidential body");
   } finally { await helper.close(); await service.close(); }
 }, 5000);
+
+
+it("returns a named unsupported topology transition through the authorized helper without exposing exception text", async () => {
+  const service = new IntercomFederationClient(), helper = connect(), capability = "e".repeat(64);
+  const bridge: FederationBridge = { dispatch: async () => ({ delivery: "failed", retryable: false, outcomeKnown: true,
+    acceptance: { accepted: false, durable: false }, reason: "fixture" }), receipt() {}, control() {} };
+  try {
+    await service.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" }, bridge);
+    await service.enableHelpers(capability, async () => { throw Object.assign(new Error("synthetic confidential body"), { code: "intercom-transition-unsupported" }); });
+    writeMessage(helper.socket, { type: "health", requestId: "health" }); await helper.take("health_ok");
+    writeMessage(helper.socket, { type: "helper_register", requestId: "register", token: capability }); await helper.take("helper_registered");
+    writeMessage(helper.socket, { type: "helper_exchange", requestId: "request", input: {}, deadlineMs: 1000 });
+    const result = await helper.take("helper_error");
+    expect(result).toMatchObject({ requestId: "request", reason: "intercom-transition-unsupported" });
+    expect(JSON.stringify(result)).not.toContain("synthetic confidential body");
+  } finally { await helper.close(); await service.close(); }
+}, 5000);
+
+
+it("publishes a running origin's initial home epoch without replacing its registration", async () => {
+  const session = connect(), service = connect();
+  try {
+    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), machineId: "initial-home-machine", machineAlias: "initial.invalid" });
+    await service.take("federation_registered"); await service.take("federation_local_presence");
+    writeMessage(session.socket, { type: "register", sessionId: "initial-home-session", features: [FEDERATION_FEATURE], session: {
+      cwd: "/workspace", model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1, homeEpoch: null, activationEpoch: "same-process" } });
+    await session.take("registered"); await service.take("federation_local_presence");
+    writeMessage(session.socket, { type: "presence", homeEpoch: 1 });
+    expect(await service.take("federation_local_presence")).toMatchObject({ sessions: [expect.objectContaining({ homeEpoch: 1, activationEpoch: "same-process" })] });
+  } finally { await session.close(); await service.close(); }
+}, 5000);

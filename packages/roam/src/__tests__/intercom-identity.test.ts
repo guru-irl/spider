@@ -7,7 +7,7 @@ import type { RemoteSessionInfo, SessionAddress } from "@spider/intercom/protoco
 import { createIntercomBridge, type BridgePorts } from "../intercom-bridge";
 import { openIntercomStore } from "../intercom-store";
 import { makeMessageFrame } from "../intercom-codec";
-import type { IntercomExchange } from "../intercom-contracts";
+import type { IntercomExchange, IntercomReceiptFrame } from "../intercom-contracts";
 
 const B = "00000000-0000-4000-8000-000000000001", H = "00000000-0000-4000-8000-000000000002", C = "00000000-0000-4000-8000-000000000003";
 const victim = { sessionId: "owner", scopeId: "scope" }, target = { sessionId: "recipient", scopeId: "scope" };
@@ -29,10 +29,10 @@ async function fixture(overrides: Partial<BridgePorts> = {}) {
     publishPresence: entries => { published = [...entries]; }, onInbound: entry => inbound.push(entry.id), ...overrides });
   let bridge = make(); resources.push(async () => { await bridge.stop(); store.close(); }); await bridge.start();
   const generations = new Map<string, number>();
-  const send = async (machine: string, presence: RemoteSessionInfo[] = [], frames: IntercomExchange["frames"] = []) => {
+  const send = async (machine: string, presence: RemoteSessionInfo[] = [], frames: IntercomExchange["frames"] = [], extra: Partial<IntercomExchange> = {}) => {
     const n = (generations.get(machine) ?? 0) + 1; generations.set(machine, n);
     return bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine: machine, recipientMachine: H,
-      generation: { edgeEpoch: "edge", channel: "push", generation: n }, frames, acknowledgements: [], receipts: [], controls: [], presence } });
+      generation: { edgeEpoch: "edge", channel: "push", generation: n }, frames, acknowledgements: [], receipts: [], controls: [], presence, ...extra } });
   };
   const frame = (origin: string, id: string, sequence = 1, from = victim) => makeMessageFrame({ from,
     endpoint: { address: target, machineId: H, homeEpoch: null, activationEpoch: "recipient" }, sequence, originMachineId: origin,
@@ -40,6 +40,25 @@ async function fixture(overrides: Partial<BridgePorts> = {}) {
   return { homes, origins, inbound, frame, send, get store() { return store; }, get bridge() { return bridge; }, get published() { return published; },
     async restart() { await bridge.stop(); store.close(); store = openIntercomStore({ file, machineId: H, clock }); bridge = make(); await bridge.start(); } };
 }
+it.each([false, true])('propagates a retried relay receipt after an interrupted settlement (%s)', async interrupted => {
+  const f = await fixture(), original = f.frame(B, 'relayed');
+  const message = { ...original, endpoint: { ...original.endpoint, machineId: C } };
+  expect((await f.send(B, [info(B)], [message])).exchange.refusals ?? []).toEqual([]);
+  const sent = f.store.pending({ kind: 'outbound', peer: C, hopBudgetMs: 100 })[0];
+  expect(sent.identity).toEqual(message.identity);
+  await f.send(C, [], [], { acknowledgements: [{ identity: sent.identity, kind: 'message' }] });
+  const receipt: IntercomReceiptFrame = { from: message.endpoint, to: victim, digest: message.identity.digest,
+    originMachineId: B, sequence: 1, attempt: 1, receipt: { messageId: 'relayed', status: 'injected', timestamp: 1000,
+      evidence: { kind: 'entry', entryId: 'relayed-entry', sessionId: target.sessionId, activationEpoch: 'recipient' } } };
+  if (interrupted) {
+    f.store.settleReceipt({ queue: 'outbound', peer: C, frame: receipt });
+    await f.restart();
+  }
+  expect((await f.send(C, [], [], { receipts: [receipt] })).exchange.receiptAcknowledgements).toEqual([receipt]);
+  expect(f.store.retained('inbound', 'relayed')?.state).toBe('injected');
+  expect(f.store.pending({ kind: 'receipts', peer: B })).toContainEqual(receipt);
+}, 5000);
+
 it("rejects a box naming a local sender and acknowledges that frame without blocking valid mail", async () => {
   const f = await fixture({ localPresence: () => [info(H)] });
   const legitimate = { sessionId: "box-owner", scopeId: "scope" }, forged = f.frame(B, "forged"), valid = f.frame(B, "valid", 1, legitimate);

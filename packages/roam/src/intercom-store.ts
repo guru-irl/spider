@@ -1317,11 +1317,16 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       ensureCheckpoint();
       const original = identityRow(frame.receipt.messageId);
       if (original && (readOrigin(original) !== frame.originMachineId || readIdentity(original).sequence !== frame.sequence)) throw new Error('receipt-stream-mismatch');
+      const live = copy('outbound', frame.receipt.messageId);
+      if (live) {
+        if (live.peer !== peer || !['injected', 'matched_waiter', 'answered'].includes(live.state)) return false;
+        validReceipt(live, frame);
+      }
       const from = streamKey(frame.originMachineId, frame.to), to = addressKey(frame.from.address);
       const watermark = db.prepare('SELECT sequence FROM intercom_settled_watermarks WHERE peer=? AND from_key=? AND to_key=?').get(peer, from, to) as { sequence: number } | undefined;
       // A covered slot is only a transport duplicate; never reapply its claimed outcome.
       if (watermark && frame.sequence <= watermark.sequence) return true;
-      if (copy('outbound', frame.receipt.messageId)) return false;
+      if (live) return false;
       const position = db.prepare('SELECT receipt_key FROM intercom_receipt_positions WHERE peer=? AND from_key=? AND to_key=? AND sequence=?').get(peer, from, to, frame.sequence) as { receipt_key: string } | undefined;
       return !!position && position.receipt_key === settledReceiptKey(frame, frame.receipt.messageId);
     },

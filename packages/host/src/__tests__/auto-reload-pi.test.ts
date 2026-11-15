@@ -33,6 +33,7 @@ it("runs the registered command through pi and reloads without input or model tu
   const file = join(root, "extension.js");
   const marker = (identity: typeof initial) => `// SPIDER_BUILD_ID=${identity.sha}@${identity.builtAt} v${identity.version}\n`;
   writeFileSync(file, marker(initial));
+  writeFileSync(`${file}.ready`, marker(initial));
   const provider = fauxProvider({ models: [{ id: "fixture" }], tokensPerSecond: 0 });
   const models = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsStore: new InMemoryModelsStore(), modelsPath: null, allowModelNetwork: false, refreshOnCreate: false });
   models.registerNativeProvider(provider.provider);
@@ -67,6 +68,7 @@ it("runs the registered command through pi and reloads without input or model tu
     onError: error => errors.push(error.error) });
   const before = session.sessionManager.getEntries().length;
   writeFileSync(file, marker(updated));
+  writeFileSync(`${file}.ready`, marker(updated));
 
   await vi.advanceTimersByTimeAsync(30_000);
   expect(reloads).toBe(0);

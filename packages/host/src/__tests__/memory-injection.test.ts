@@ -434,6 +434,7 @@ describe("production memory injection", () => {
 
   for (const entry of ["tool", "slash"] as const) {
     it(`${entry} doctor reports organism NOT WIRED with no repo DB`, async () => {
+      vi.stubEnv("PI_SUBAGENT_CHILD", "0");
       const f = fixture(`organism-absent-${entry}`);
       let tool: any;
       const commands: Record<string, any> = {};
@@ -442,7 +443,7 @@ describe("production memory injection", () => {
       spiderExtension(withPiEvents({
         registerTool(t: any) { if (t.name === "spider") tool = t; },
         on(name: string) {
-          if (name === "session_before_compact" && ++compactRegistrations === 3) throw new Error("organism registration failed");
+          if (name === "session_before_compact" && ++compactRegistrations === 4) throw new Error("organism registration failed");
         },
         registerCommand(name: string, command: any) { commands[name] = command; },
         sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
@@ -457,6 +458,7 @@ describe("production memory injection", () => {
     });
 
     it(`${entry} doctor reports a setup failure and a last drain in another session with no repo DB`, async () => {
+      vi.stubEnv("PI_SUBAGENT_CHILD", "0");
       const f = fixture(`setup-absent-${entry}`);
       let tool: any;
       const commands: Record<string, any> = {};
@@ -468,7 +470,7 @@ describe("production memory injection", () => {
         registerCommand(name: string, command: any) { commands[name] = command; },
         sendMessage(message: any) { messages.push(message); }, registerMessageRenderer() {},
       } as any), hostUnitPorts);
-      expect(handlers).toHaveLength(4);
+      expect(handlers).toHaveLength(5);
       const badContext = { cwd: f.cwd, sessionManager: { getSessionId: () => "setup-session", getBranch() { throw new Error("capture failed"); } } };
       for (const handler of handlers) { try { await handler({}, badContext); } catch { /* hooks are independent */ } }
       const check = async (sessionId: string) => {

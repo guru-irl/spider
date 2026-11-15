@@ -50,6 +50,8 @@ function packageWithIdentity(sha: string): { directory: string; artifact: string
   cpSync(join(packedRoot, 'package'), join(directory, 'package'), { recursive: true });
   const extension = join(directory, 'package/dist/extension.js');
   writeFileSync(extension, readFileSync(extension, 'utf8').replace(/SPIDER_BUILD_ID=(?:unknown|[0-9a-f]{7,40})(?:-dirty)?@/, `SPIDER_BUILD_ID=${sha}@`));
+  const stamp = `${extension}.ready`;
+  writeFileSync(stamp, readFileSync(stamp, 'utf8').replace(/SPIDER_BUILD_ID=(?:unknown|[0-9a-f]{7,40})(?:-dirty)?@/, `SPIDER_BUILD_ID=${sha}@`));
   const artifact = join(directory, 'artifact.tgz');
   execFileSync('tar', ['-czf', artifact, '-C', directory, 'package'], { env });
   return { directory, artifact };

@@ -88,7 +88,11 @@ Keep the clone at its linked path. See [Linked shims](docs/architecture/runtime-
 Direct `pi install git:` installs are not supported. Pi omits development dependencies, which spider needs to build the unbundled source.
 
 To update the clone, run `git pull` inside it. If `package-lock.json` changed, quit pi, run `npm ci`, then start pi again.
-Otherwise, run `npm run build`. Sessions started before automatic reload was available need one manual `/reload` to enable it. After that, idle interactive parent sessions reload automatically after bundle changes. Automatic reload waits for chains and pipelines to finish, but ordinary background runs can continue. Set `reload.auto` to `false` to turn it off. A manual `/reload` can still stop foreground chain steps and later pipeline stages. If `/doctor` reports `RESTART NEEDED`, restart pi instead.
+Otherwise, run `npm run build`. Sessions started before automatic reload was available need one manual `/reload` to enable it. After that, idle interactive parent sessions reload automatically when a verified build is ready. Set `reload.auto` to `false` to turn this off. Watch builds do not write a ready stamp, so reload them manually.
+
+Automatic reload waits for open pi prompts and spider overlays, running spider and shell commands, unanswered intercom asks, organism drains and curation, chains and pipelines, and loop or schedule triggers due within a minute. Pending skill reviews resume after the reload, and ordinary background runs can continue. `/spider-reload` skips the quiet-period wait but keeps these checks. A manual `/reload` can still interrupt work.
+
+Pi does not expose the state of built-in selectors, so an open `/model`, `/tree` or `/settings` selector can close during an automatic reload. If a shell command fails before pi records its result, automatic reload stays blocked; after checking the command, use `/reload` to clear it. If `/doctor` reports `RESTART NEEDED`, restart pi instead.
 Reload refreshes the bundle, not dependencies or native modules.
 
 To remove a linked clone, run `npm run unlink` in the clone. If you used `npm run dev:link`, also run `npm run dev:unlink`.

@@ -76,9 +76,10 @@ it("registers every command, shortcut, tool, renderer and handler on both factor
   const first = host();
   await first.emit("session_shutdown");
   const second = host();
-  const expectedCommands = ["agents", "bind", "doctor", "exec-enforce", "herdr-setup", "insights", "learn", "loop", "memory", "search", "spider", "spider-reload", "stats", "todos", "usage"];
+  const expectedCommands = ["agents", "bind", "doctor", "exec-enforce", "herdr-setup", "insights", "learn", "loop", "memory", "search", "spider", "stats", "todos", "usage"];
   for (const pi of [first, second]) {
     expect([...pi.commands.keys()].sort()).toEqual(expectedCommands);
+    expect(pi.commands.has("spider-reload")).toBe(false);
     expect([...pi.shortcuts.keys()]).toEqual(["alt+shift+up"]);
   }
   expect([...second.tools.keys()]).toEqual([...first.tools.keys()]);

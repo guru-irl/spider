@@ -18,6 +18,7 @@ import { controlConfig } from "../control";
 import { controlBind } from "../control-bind";
 import { renderSpiderResult } from "../render-result";
 import { HostOrganismRuntime } from "../organism-runtime";
+import * as reloadModule from "../auto-reload.js";
 
 // Embeddings and completion are external IO boundaries. DBs, routing, models,
 // pi's loader and event dispatch all stay REAL in this integration test.
@@ -156,6 +157,19 @@ function compactEvent(session: SessionManager): SessionBeforeCompactEvent {
 }
 
 describe("the installed pi contract through the full spider extension", () => {
+  it.each([true, false])("wires automatic=%s to the organism shutdown drain", async automatic => {
+    const actual = reloadModule.registerAutoReload;
+    const marker = vi.spyOn(reloadModule, "registerAutoReload").mockImplementation((...args) => ({
+      ...actual(...args), isAutomaticReload: () => automatic,
+    }));
+    try {
+      const f = await setup();
+      f.complete.mockClear();
+      await f.runner.emit({ type: "session_shutdown", reason: "reload" });
+      if (automatic) expect(f.complete).not.toHaveBeenCalled();
+      else expect(f.complete).toHaveBeenCalled();
+    } finally { marker.mockRestore(); }
+  });
   // Break: invalidating the accounting sink before the shutdown drain loses the ending session's calls.
   it("counts the shutdown learner drain and curator before invalidating the ending session", async () => {
     const f = await setup();

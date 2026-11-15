@@ -69,8 +69,14 @@ export class PipelineCoordinator {
     if (!finished || finished.status === "cancelled" || nextIndex >= this.stages.length) { this.dispose(); return; }
     const previous = finished.result ?? "";
     const nextStage = this.stages[nextIndex];
-    // Spawn first so the durable handoff edge can identify the new process.
-    const next = this.spawnStage(nextIndex, previous);
+    let next: RunRow;
+    try {
+      // Spawn first so the durable handoff edge can identify the new process.
+      next = this.spawnStage(nextIndex, previous);
+    } catch (error) {
+      this.dispose();
+      throw error;
+    }
     emitHandoff(this.deps.db, { runId: finished.id, sessionId: this.deps.sessionId, toRunId: next.id, phase: nextStage.phase, summary: `${finished.role ?? finished.agent}\u2192${nextStage.role ?? nextStage.agent}` });
   }
 

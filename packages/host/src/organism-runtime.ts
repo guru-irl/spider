@@ -229,6 +229,10 @@ export class HostOrganismRuntime {
     return entry.actions;
   }
 
+  blocksReload(): boolean {
+    return [...this.#entries.values()].some(entry => entry.actions.worker.blocksReload());
+  }
+
   /** Abort reviews in all bindings, not just the currently selected repo. */
   async stopSkillReviews(): Promise<void> {
     await Promise.all([...this.#entries.values()].map(entry => entry.actions.worker.stopSkillReviews()));

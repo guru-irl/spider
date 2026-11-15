@@ -150,6 +150,47 @@ it('rejects an unlisted new runtime file', () => {
   expect(result.stderr).toMatch(/unlisted new runtime file.*undeclared\.ts/i);
 }, 5000);
 
+it('accepts a pinned host-adapter divergence but rejects later adapter changes', () => {
+  const root = fixture();
+  expect(check(root).status).toBe(0);
+  writeFileSync(join(root, 'single-instance.ts'), readFileSync(join(root, 'single-instance.ts'), 'utf8') + '\nexport const unexpected = true;\n');
+  const result = check(root);
+  expect(result.status).toBe(1);
+  expect(result.stderr).toMatch(/unlisted runtime change.*single-instance\.ts/i);
+}, 5000);
+
+it('rejects an adopted adapter change without a divergence declaration', () => {
+  const root = fixture(), file = join(root, '..', 'DIVERGENCE.json');
+  const divergence = JSON.parse(readFileSync(file, 'utf8'));
+  divergence.files = divergence.files.filter((item: { path: string }) => item.path !== 'single-instance.ts');
+  writeFileSync(file, JSON.stringify(divergence));
+  const result = check(root);
+  expect(result.status).toBe(1);
+  expect(result.stderr).toMatch(/unlisted runtime change.*single-instance\.ts/i);
+}, 5000);
+
+it.each(['missing', 'wrong'])('rejects a %s pin for a divergent host adapter', kind => {
+  const root = fixture(), file = join(root, '..', 'DIVERGENCE.json');
+  const divergence = JSON.parse(readFileSync(file, 'utf8'));
+  const entry = divergence.files.find((item: { path: string }) => item.path === 'single-instance.ts');
+  if (kind === 'missing') delete entry.forkSha256;
+  else entry.forkSha256 = '0'.repeat(64);
+  writeFileSync(file, JSON.stringify(divergence));
+  const result = check(root);
+  expect(result.status).toBe(1);
+  expect(result.stderr).toMatch(/unlisted runtime change.*single-instance\.ts/i);
+}, 5000);
+
+it('rejects a stale divergence for a restored host adapter', () => {
+  const root = fixture(), file = join(root, 'manifest.json');
+  const manifest = JSON.parse(readFileSync(resolve('packages/intercom/upstream-assertions.json'), 'utf8'));
+  manifest.adoptedFiles['single-instance.ts'] = createHash('sha256').update(readFileSync(join(root, 'single-instance.ts'))).digest('hex');
+  writeFileSync(file, JSON.stringify(manifest));
+  const result = check(root, file);
+  expect(result.status).toBe(1);
+  expect(result.stderr).toMatch(/stale divergence entry.*single-instance\.ts/i);
+}, 5000);
+
 it('still checks the frozen host adapters outside upstream', () => {
   const root = fixture();
   writeFileSync(join(root, 'single-instance.ts'), 'export const fixture = true;');

@@ -101,6 +101,7 @@ export function registerOrganism(
   deps: OrganismDepsResolver,
   onSetupError?: (phase: string, error: unknown, ctx?: ExtensionContext) => void,
   admitted: () => boolean = () => true,
+  automaticReload: () => boolean = () => false,
 ): void {
   const workers = new WeakMap<WorkerDeps, OrganismWorker>();
   const workerFor = (ctx: ExtensionContext) => {
@@ -160,7 +161,7 @@ export function registerOrganism(
   }
 
   try {
-    pi?.on?.("session_shutdown", async (_event: any, ctx?: ExtensionContext) => {
+    pi?.on?.("session_shutdown", async (event: any, ctx?: ExtensionContext) => {
       if (!admitted() || process.env.PI_SUBAGENT_CHILD === "1") return undefined;
       const sessionId = ctx?.sessionManager?.getSessionId?.();
       if (!ctx || !sessionId) {
@@ -168,8 +169,14 @@ export function registerOrganism(
         return undefined;
       }
       try {
-        const opts = capture(ctx);
         const worker = workerFor(ctx);
+        // Review candidates live in SQLite and the next activation resumes them.
+        // Shutdown learning's transcript snapshot is in memory, so do not start it on auto-reload.
+        if (event?.reason === "reload" && automaticReload()) {
+          await worker.stopSkillReviews();
+          return undefined;
+        }
+        const opts = capture(ctx);
         await worker.stopSkillReviews();
         if (!admitted()) return undefined;
         await worker.runDrain(sessionId, "shutdown", opts);

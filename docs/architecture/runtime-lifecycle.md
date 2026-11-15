@@ -18,7 +18,9 @@
 - Child diagnostics say that the next child dispatched loads the new bundle.
 - If the query is missing, doctor also suggests that you regenerate a linked shim with `npm run link` and then restart once.
 - Bundle freshness is for information only. It does not fail the health check by itself.
-- Updating the file does not replace loaded code until the session reloads. Automatic reload waits for an idle interactive parent session and for chains and pipelines to finish. Ordinary background runs do not block it.
+- Updating the file does not replace loaded code until the session reloads. Automatic reload requires an idle interactive parent session and a ready stamp matching the installed build. `npm run build` writes the stamp only after the bundle assertions pass.
+- Automatic reload waits for pi prompts, spider overlays and commands, user shell commands, unanswered intercom asks, organism drains and curation, chains and pipelines, and loop or schedule triggers due within 60 seconds. Pending skill reviews resume after reload. Ordinary background runs do not block it. `/spider-reload` skips the quiet-period wait but keeps the other checks.
+- Pi does not expose built-in selector state, so automatic reload can close an open `/model`, `/tree` or `/settings` selector. If a shell command fails before pi records a result, automatic reload stays blocked until a manual reload.
 
 ## Linked shims
 

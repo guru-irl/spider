@@ -112,6 +112,17 @@ it("never launches when authoritative intent is stopped but its local view is st
   expect((await f.state()).intent.desired).toBe("stopped");
 }, 5000);
 
+it("clears stop escalation state when the owner is absent or intent resumes", async () => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), cancelled: string[] = [];
+  (f.ports as SupervisorPorts & { cancelStop(id: string): void }).cancelStop = id => { cancelled.push(id); };
+  const supervisor = module.createSupervisor(f.ports);
+  f.setAuthoritative({ ...intent, desired: "stopped" }); await supervisor.reconcile();
+  expect(cancelled).toEqual([intent.sessionId]);
+  f.setAuthoritative({ ...intent }); await supervisor.reconcile();
+  expect(cancelled).toEqual([intent.sessionId, intent.sessionId]);
+}, 5000);
+
 it("reconciles other sessions when one authoritative intent is unreadable", async () => {
   const module = await supervisorModule(); if (!module) return;
   const f = fixture(), get = f.ports.runningIntents.get;
@@ -215,6 +226,46 @@ it("crash backoff suspends at five in ten minutes", async () => {
   expect(restartDelays).toEqual([5_000, 15_000, 60_000, 300_000]);
   expect(f.notices).toHaveLength(1);
   await supervisor.reconcile(); expect(f.launches).toHaveLength(4);
+}, 5000);
+
+it("counts owners that exit before readiness as crashes and suspends after five", async () => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(); let attempts = 0;
+  f.ports.launch = createDurableLaunchPort({ intents: f.intents, operationId: () => `early-${++attempts}`, authorize: async () => true,
+    async invoke({ intent: value, mode, reservation }) {
+      return { code: mode === "initial" ? 3 : 1, reason: mode === "initial" ? "readiness-pending" : "adopted-exited",
+        operationId: reservation.operationId, home: null, epoch: value.epoch, repairCommand: null, value: null };
+    } });
+  const supervisor = module.createSupervisor(f.ports), delays = [5_000, 15_000, 60_000, 300_000];
+  for (let failure = 0; failure < 5; failure++) {
+    await supervisor.reconcile();
+    expect((await f.state()).supervision.kind).toBe("launching");
+    await supervisor.reconcile();
+    const state = await f.state();
+    expect(state.failures).toHaveLength(failure + 1);
+    if (failure < 4) {
+      expect(state.supervision).toEqual({ kind: "idle", nextAttemptAt: f.now() + delays[failure] });
+      f.advance(delays[failure]);
+    } else expect(state.intent.suspended).toMatch(/repeated session crashes/i);
+  }
+  expect(attempts).toBe(5);
+  expect(f.notices).toHaveLength(1);
+}, 5000);
+
+it("does not suspend for five short-lived owners whose crashes are eleven minutes apart", async () => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), supervisor = module.createSupervisor(f.ports);
+  f.setOwner({ kind: "live", identity: { bootId: "boot-1", pid: 91, startTime: "original" } });
+  await supervisor.reconcile();
+  for (let count = 0; count < 5; count++) {
+    f.advance(60_000); f.setOwner({ kind: "absent" }); await supervisor.reconcile();
+    const state = await f.state();
+    expect(state.intent.suspended).toBeNull();
+    expect(state.failures).toHaveLength(1);
+    if (count < 4) { f.advance(600_000); await supervisor.reconcile(); }
+  }
+  expect(f.notices).toEqual([]);
+  expect(f.launches).toHaveLength(4);
 }, 5000);
 
 it("ten stable minutes clear failures", async () => {

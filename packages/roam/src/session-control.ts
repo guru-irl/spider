@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { Db } from "@spider/db-core";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import { seedSession } from "@spider/db-core/roam/seed";
@@ -42,11 +43,12 @@ function validIntent(value: HostIntent): void {
 }
 export interface ParticipantAuthorization { hubMachineId: string; machineId: string }
 export interface BoxLocalOrigin { kind: "box-local"; machineId: string; epoch: number; file: string; cwd: string; pid: number; startIdentity: string; stopped: boolean }
-interface AuthorityRow { intent: HostIntent; operationId: string; authorization?: ParticipantAuthorization }
+interface AuthorityRow { intent: HostIntent; operationId: string; authorization?: ParticipantAuthorization; stopToken?: string }
 export interface RunningIntentAuthority extends RunningIntentSource {
   set(intent: HostIntent, operationId: string, authorization?: ParticipantAuthorization): Promise<void>;
   authorized(sessionId: string, hubMachineId: string, machineId: string): boolean;
   operationId(sessionId: string): string | null;
+  stopToken(sessionId: string): string | null;
   stop(sessionId: string): Promise<void>;
   resume(sessionId: string, doctor: () => Promise<readonly Diagnostic[]>): Promise<void>;
 }
@@ -55,7 +57,11 @@ export function createRunningIntentAuthority(db: Db): RunningIntentAuthority {
   const listeners = new Set<() => void>();
   function read(id: string): AuthorityRow | undefined {
     const row = readLocal<AuthorityRow>(db, "participant-intent", id);
-    if (row) { validIntent(row.intent); if (row.intent.sessionId !== id || !text(row.operationId)) throw new Error("Invalid participant authority"); }
+    if (row) {
+      validIntent(row.intent);
+      if (row.intent.sessionId !== id || !text(row.operationId) || row.stopToken !== undefined &&
+          (typeof row.stopToken !== "string" || !/^[a-f0-9-]{36}$/.test(row.stopToken) || row.intent.desired !== "stopped")) throw new Error("Invalid participant authority");
+    }
     return row;
   }
   async function set(intent: HostIntent, operationId: string, authorization?: ParticipantAuthorization, resume = false, expected?: AuthorityRow): Promise<void> {
@@ -67,7 +73,8 @@ export function createRunningIntentAuthority(db: Db): RunningIntentAuthority {
       if (!resume && previous?.intent.epoch === intent.epoch && intent.desired === "running" &&
           (previous.intent.desired === "stopped" || previous.intent.suspended)) throw new Error("Participant is stopped or suspended");
       if (authorization && (!text(authorization.hubMachineId) || !text(authorization.machineId) || authorization.hubMachineId === authorization.machineId)) throw new Error("Invalid participant authorization");
-      writeLocal(db, "participant-intent", intent.sessionId, { intent, operationId, ...(authorization ? { authorization } : {}) });
+      const stopToken = intent.desired === "stopped" ? previous?.intent.desired === "stopped" && previous.stopToken || randomUUID() : undefined;
+      writeLocal(db, "participant-intent", intent.sessionId, { intent, operationId, ...(authorization ? { authorization } : {}), ...(stopToken ? { stopToken } : {}) });
     }).immediate();
     for (const listener of listeners) listener();
   }
@@ -76,6 +83,7 @@ export function createRunningIntentAuthority(db: Db): RunningIntentAuthority {
     async get(id) { return read(id)?.intent ?? null; },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     set, operationId: id => read(id)?.operationId ?? null,
+    stopToken(id) { const row = read(id); return row?.intent.desired === "stopped" ? row.stopToken ?? `legacy:${row.operationId}` : null; },
     authorized(id, hubMachineId, machineId) { const row = read(id); return row?.authorization?.hubMachineId === hubMachineId && row.authorization.machineId === machineId; },
     async stop(id) { const row = read(id); if (!row) throw new Error("Participant intent unavailable"); await set({ ...row.intent, desired: "stopped" }, row.operationId, row.authorization); },
     async resume(id, doctor) {

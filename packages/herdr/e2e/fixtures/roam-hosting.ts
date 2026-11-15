@@ -16,9 +16,13 @@ import { createProcessPresence } from '../../src/sessions/presence.js';
 import { fixtureProcessDomain } from '../../../host/src/herdr/fixture-process-domain.js';
 import { createLocalDiagnosticPorts } from '../../../roam/src/local-diagnostics.js';
 import { createIntentStore } from '../../../roam/src/intent.js';
+import { DEFAULT_LIMITS } from '../../../roam/src/contracts.js';
+import { PROVISION_REMOTE_SCRIPT } from '../../../roam/src/provision-remote-script.js';
+import { renderSupervisorUnit } from '../../../roam/src/systemd.js';
 import type { SupervisorSystemPorts } from '../../../roam/src/production-supervisor.js';
 import { readObserved, type ObservedEvent } from '../harness/pi.js';
 import { identityAlive, identityOf } from '../harness/resources.js';
+import { spawnOwned } from '../harness/processes.js';
 import type { Suite } from '../harness/suite.js';
 import { deadline, waitFor } from '../harness/wait.js';
 
@@ -64,8 +68,9 @@ type StartSupervisor = (root: string, options: { system: SupervisorSystemPorts; 
 
 export interface HostedOwner { pid: number; terminal: string; sessionId: string; file: string; cwd: string }
 export interface HostingFixture {
-  suite: Suite; root: string; cwd: string; sessionId: string; file: string; coreUnit: string; shellLog: string;
+  suite: Suite; root: string; cwd: string; sessionId: string; file: string; coreUnit: string; supervisorUnit: string; systemctlLog: string; shellLog: string;
   start(): Promise<void>; settle(): Promise<void>; close(): Promise<void>; waitOwner(previousPid?: number): Promise<HostedOwner>;
+  provisionUnit(): Promise<void>;
   owners(): Promise<HostedOwner[]>; events(pid: number): Promise<ObservedEvent[]>;
   control(kind: 'session-start' | 'session-stop' | 'session-resume', id: string): Promise<Record<string, unknown>>;
   restartCore(): Promise<void>; crash(owner: HostedOwner): Promise<void>; advance(ms: number): void;
@@ -79,7 +84,7 @@ export async function hostingFixture(suite: Suite, name = 'hosting'): Promise<Ho
   const root = suite.directories.SPIDER_GLOBAL_ROOT, cwd = await suite.project(name);
   const sessionId = randomUUID(), repo = randomUUID(), workspace = randomUUID(), file = suite.ownPath(join(cwd, 'session.jsonl'));
   const agent = suite.directories.PI_CODING_AGENT_DIR, herdr = join(root, 'herdr');
-  const unitDir = suite.ownPath(join(suite.root, 'units')), coreUnit = join(unitDir, 'herdr-core.service');
+  const unitDir = suite.ownPath(join(suite.root, 'units')), coreUnit = join(unitDir, 'herdr-core.service'), supervisorUnit = join(unitDir, 'spider-roam-supervisor.service');
   const shell = suite.ownPath(join(suite.root, 'bin', 'hosting-shell')), shellLog = suite.ownPath(join(suite.root, 'shell-plan.log'));
   const systemctlLog = suite.ownPath(join(suite.root, 'systemctl.log'));
   const projectRoot = paths.projectRoot(cwd);
@@ -97,7 +102,7 @@ export async function hostingFixture(suite: Suite, name = 'hosting'): Promise<Ho
   // records the requested limit instead of changing an operating-system limit.
   const sysctl = join(suite.root, 'bin', 'sysctl'), systemctl = join(suite.root, 'bin', 'systemctl');
   await writeFile(sysctl, `#!/bin/sh\n[ "$1" = '-n' ] && [ "$2" = 'kern.bootsessionuuid' ] || exit 1\nprintf '%s\\n' ${quote(BOOT)}\n`, { mode: 0o700 });
-  await writeFile(systemctl, `#!/bin/sh\n[ "$1" = '--user' ] && [ "$2" = 'start' ] && [ "$3" = 'spider-roam-supervisor.service' ] && [ "$#" = 3 ] || exit 1\nprintf '%s\\n' "$*" >> ${quote(systemctlLog)}\n`, { mode: 0o700 });
+  await writeFile(systemctl, `#!/bin/sh\ncase "$*" in '--user start spider-roam-supervisor.service'|'--user enable spider-roam-supervisor.service'|'--user daemon-reload') ;; *) exit 1 ;; esac\nprintf '%s\\n' "$*" >> ${quote(systemctlLog)}\n`, { mode: 0o700 });
   await writeFile(shell, `#!/bin/sh\n[ "$1" = '-c' ] || exit 90\nshift 2\n[ "$1" = "$0" ] || exit 91\nshift\nprintf '%s\\n' "$1" >> ${quote(shellLog)}\nshift\n[ "$1" = ${quote(root)} ] && [ "$2" = ${quote(agent)} ] || exit 92\nexport SPIDER_GLOBAL_ROOT="$1" PI_CODING_AGENT_DIR="$2" SPIDER_HERDR_HANDOFF_FILE="$3"\nunset SPIDER_HERDR_HANDOFF_OPERATION_ID SPIDER_HERDR_HANDOFF_NONCE SPIDER_HERDR_LEASE_TOKEN SPIDER_HERDR_LEASE_FILE SPIDER_HERDR_SSH_BYPASS PI_SUBAGENT_CHILD\nshift 3\n[ "$1" = ${quote(suite.pi.launcher)} ] && [ "$2" = '--session' ] || exit 93\ncase "$3" in ${quote(suite.root)}/*) ;; *) exit 94 ;; esac\nexec "$@"\n`, { mode: 0o700 });
   for (const script of [sysctl, systemctl, shell]) await chmod(script, 0o700);
 
@@ -175,7 +180,32 @@ export async function hostingFixture(suite: Suite, name = 'hosting'): Promise<Ho
     }, value => Boolean(value && value.sessionId === sessionId && value.file === file && value.terminal === owner.terminal), deadline(30_000));
     return owner;
   };
+  const provisionUnit: HostingFixture['provisionUnit'] = async () => {
+    const home = suite.root, npmPrefix = join(home, 'prefix');
+    const common = { operationId: 'fixture-provision', machineId: BOX, home, globalRoot: root, agentDir: agent, npmPrefix, unitDir,
+      core: cores.wrapper, coreId: cores.local.coreId, node: process.execPath, pi: suite.pi.launcher, cli: suite.packed.roamCli,
+      supervisor: suite.packed.roamSupervisor, maximum: DEFAULT_LIMITS.agentBytes, chunkBytes: DEFAULT_LIMITS.chunkBytes };
+    const execute = async (request: Record<string, unknown>) => {
+      const process = spawnOwned(suite.ledger, { label: 'hosting-unit-install', command: globalThis.process.execPath,
+        args: ['--input-type=module-typescript', '-e', PROVISION_REMOTE_SCRIPT], env: { ...suite.env, HOME: home }, cwd: suite.root, stdio: 'pipe' });
+      const stdout: Buffer[] = [], stderr: Buffer[] = [];
+      process.child.stdout!.on('data', chunk => stdout.push(Buffer.from(chunk)));
+      process.child.stderr!.on('data', chunk => stderr.push(Buffer.from(chunk)));
+      process.child.stdin!.end(JSON.stringify({ ...common, ...request }));
+      const code = await new Promise<number | null>(resolve => process.child.once('close', resolve));
+      if (code !== 0) throw new Error(`fixture unit action failed: ${Buffer.concat(stderr).toString('utf8')}`);
+      const reply = JSON.parse(Buffer.concat(stdout).toString('utf8')) as { value?: unknown; error?: string };
+      if (reply.value !== true) throw new Error(`fixture unit action refused: ${reply.error ?? 'invalid reply'}`);
+    };
+    await execute({ action: 'unit-write', unit: 'spider-roam-supervisor.service', contents: renderSupervisorUnit({ node: process.execPath,
+      supervisor: suite.packed.roamSupervisor, coreUnit: 'herdr-core.service', globalRoot: root, agentDir: agent, pi: suite.pi.launcher }) });
+    await execute({ action: 'systemctl', argv: ['--user', 'daemon-reload'] });
+    await execute({ action: 'systemctl', argv: ['--user', 'enable', 'spider-roam-supervisor.service'] });
+  };
   const crash: HostingFixture['crash'] = async owner => {
+    clock.advance(10_000);
+    await waitFor('supervisor records the live owner before crash', () => intents.get(sessionId), row =>
+      row?.value.supervision.kind === 'live' && row.value.supervision.identity.pid === owner.pid, deadline(30_000));
     const current = await owners();
     if (current.length !== 1 || current[0].pid !== owner.pid || current[0].terminal !== owner.terminal) throw new Error('refusing to signal an unowned session');
     const identity = identityOf(owner.pid); process.kill(owner.pid, 'SIGKILL');
@@ -198,7 +228,7 @@ export async function hostingFixture(suite: Suite, name = 'hosting'): Promise<Ho
     suite.ledger.update(ledger => { const core = ledger.cores.find(item => item.side === 'local'); if (!core) throw new Error('fixture core not recorded'); core.pid = identity.pid; core.start = identity.start; });
     await start();
   };
-  return { suite, root, cwd, sessionId, file, coreUnit, shellLog, start, settle: stop, close, waitOwner, owners, events, control, restartCore, crash,
+  return { suite, root, cwd, sessionId, file, coreUnit, supervisorUnit, systemctlLog, shellLog, start, settle: stop, close, waitOwner, owners, events, control, provisionUnit, restartCore, crash,
     advance: ms => clock.advance(ms), state: () => intents.get(sessionId) };
 }
 

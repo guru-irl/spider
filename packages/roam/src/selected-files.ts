@@ -419,10 +419,13 @@ export function prepareSelectedFiles(input: { sourceRoot: string; selected: read
   const pathFiles = new Set<string>(), commandFiles = new Set<string>();
   for (const file of source) {
     let bytes = file.bytes, localProviders = new Set<string>();
-    if (prefixes.some(prefix => file.bytes.includes(Buffer.from(prefix)))) pathFiles.add(file.path);
-    if (containsCredentialCommandReference(file.bytes)) commandFiles.add(file.path);
     if (["settings.json", "models.json", "keybindings.json"].includes(file.path)) {
-      const comments: string[] = [], data = parseConfig(file, comments);
+      const comments: string[] = [];
+      let data = parseConfig(file, comments);
+      if (file.path === "settings.json") {
+        bytes = rewriteSettings(data);
+        data = parseConfig({ ...file, bytes });
+      }
       if (containsSourcePath(data, prefixes)) pathFiles.add(file.path);
       inspectCommentCredentials(comments, localProviders);
       try { inspectCredentials(data, file.path, file.path === "settings.json" ? "settings" : file.path, localProviders); }
@@ -430,8 +433,9 @@ export function prepareSelectedFiles(input: { sourceRoot: string; selected: read
         if (!(error instanceof SelectedFilesError) || error.code !== "unsupported-credential-command") throw error;
         commandFiles.add(file.path);
       }
-      if (file.path === "settings.json") bytes = rewriteSettings(data);
     }
+    if (prefixes.some(prefix => bytes.includes(Buffer.from(prefix)))) pathFiles.add(file.path);
+    if (containsCredentialCommandReference(bytes)) commandFiles.add(file.path);
     if (localProviders.size && !file.privateMode) fail("unsafe-file", [file.path]);
     const result: SelectedFile = { path: file.path, mode: file.mode, bytes };
     if (localProviders.size) { credentialFiles.push(result); for (const provider of localProviders) providers.add(provider); }

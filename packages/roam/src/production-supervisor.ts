@@ -117,6 +117,40 @@ async function owner(root: string, intent: HostIntent, system: SupervisorSystemP
   return { kind: "live", identity: { bootId, pid: lock.identity.pid, startTime: probe.startIdentity } };
 }
 
+/** Stop only the same proved owner; a replacement receives its own grace period. */
+export function createBoundedStop(input: {
+  now(): number; stopToken(id: string): Promise<string | null>; observe(id: string): Promise<Probe>;
+  signal(pid: number, signal: "SIGTERM" | "SIGKILL"): void;
+}): { stop(id: string): Promise<Probe>; cancel(id: string): void } {
+  const pending = new Map<string, { identity: Extract<Probe, { kind: "live" }>["identity"]; at: number; stopToken: string }>();
+  const same = (left: Extract<Probe, { kind: "live" }>["identity"], right: Extract<Probe, { kind: "live" }>["identity"]) =>
+    left.bootId === right.bootId && left.pid === right.pid && left.startTime === right.startTime;
+  return {
+    cancel(id) { pending.delete(id); },
+    async stop(id) {
+      const stopToken = await input.stopToken(id);
+      if (!stopToken) { pending.delete(id); return { kind: "uncertain" }; }
+      const observed = await input.observe(id);
+      if (observed.kind !== "live") { if (observed.kind === "absent") pending.delete(id); return observed; }
+      const now = input.now(), prior = pending.get(id);
+      const fresh = !prior || prior.stopToken !== stopToken || !same(prior.identity, observed.identity) || now < prior.at;
+      if (fresh || now - prior.at >= 30_000) {
+        if (await input.stopToken(id) !== stopToken) { pending.delete(id); return { kind: "uncertain" }; }
+        const confirmed = await input.observe(id);
+        if (confirmed.kind !== "live" || !same(confirmed.identity, observed.identity)) { pending.delete(id); return confirmed; }
+        if (await input.stopToken(id) !== stopToken) { pending.delete(id); return { kind: "uncertain" }; }
+        try { input.signal(confirmed.identity.pid, fresh ? "SIGTERM" : "SIGKILL"); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+          pending.delete(id); return input.observe(id);
+        }
+        if (fresh) pending.set(id, { identity: confirmed.identity, at: now, stopToken });
+      }
+      return input.observe(id);
+    },
+  };
+}
+
 export async function observeLocalHosting(root: string, options: { system?: SupervisorSystemPorts } = {}): Promise<HostingObservation> {
   const runtime = openLocalRuntime(root);
   let hc: ReturnType<typeof createHcClient> | undefined;
@@ -221,6 +255,14 @@ export async function startProductionSupervisor(root: string, options: { system?
         return [];
       } catch { return [{ severity: "block", reason: "Hosting prerequisites need review", repairCommand: null }]; }
     };
+    const authority = createRunningIntentAuthority(runtime.db);
+    const stop = createBoundedStop({ now: clock.now, async stopToken(id) { return authority.stopToken(id); },
+      async observe(id) {
+        const intent = await authority.get(id);
+        return intent?.desired === "stopped" ? owner(root, intent, system) : { kind: "uncertain" };
+      },
+      signal(pid, signal) { process.kill(pid, signal); },
+    });
     const supervisor = createParticipantSupervisor({ root, agent: runtime.agent, clock, diagnostics,
       async identityCurrent() { const current = readLocalIdentity(root); return current.role === "box" && current.machineId === runtime.config.machineId && current.hubMachineId === runtime.config.hubMachineId && participantCaptureReady(root, current.machineId); },
       events: createSupervisorEvents(runtime.db.raw.name, eventClient),
@@ -234,17 +276,15 @@ export async function startProductionSupervisor(root: string, options: { system?
           base: { leases: system.inventory.leases, processInventory: system.inventory, processIdentity: { pid: process.pid, startIdentity: identity.startIdentity },
             env, machineId: runtime.config.machineId, core: { coreId: currentCore, session: env.HC_SESSION ?? "", socket: env.HC_SOCKET ?? "" },
             bootId: system.bootId, limits: system.limits, shell: system.shell ?? "/bin/sh", sessionBytes: runtime.config.limits.sessionBytes } });
-        await adapter.launch({ sessionId: intent.sessionId, file: intent.file, cwd: intent.cwd, epoch: intent.epoch, moveId: intent.moveId,
+        const launched = await adapter.launch({ sessionId: intent.sessionId, file: intent.file, cwd: intent.cwd, epoch: intent.epoch, moveId: intent.moveId,
           pi: absolutePi, sha256: createHash("sha256").update(bytes).digest("hex"), operationId }, { mode: mode === "initial" ? "fresh" : "reconcile" });
+        if ("kind" in launched && launched.kind === "adopted-exited") {
+          return { code: 1, reason: "adopted-exited", operationId, home: null, epoch: intent.epoch, repairCommand: null, value: null };
+        }
         const ready = readReadiness(runtime.journal, operationId);
         return { code: ready ? 0 : 3, reason: ready ? "ready" : "readiness-pending", operationId, home: null, epoch: intent.epoch, repairCommand: null, value: ready };
       },
-      async stop(id) {
-        const intent = await createRunningIntentAuthority(runtime.db).get(id); if (!intent) return { kind: "uncertain" };
-        const observed = await owner(root, intent, system);
-        if (observed.kind === "live") process.kill(observed.identity.pid, "SIGTERM");
-        return owner(root, intent, system);
-      },
+      stop: stop.stop, cancelStop: stop.cancel,
       async confirmExit(previous) {
         const current = await system.inventory.probe(previous.pid);
         return current.kind === "absent" || current.kind === "live" && current.startIdentity !== previous.startTime;

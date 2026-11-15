@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -10,7 +10,8 @@ import { readLocal } from "@spider/db-core/roam/local-state";
 import type { Scope, StoreKey } from "@spider/db-core/roam/types";
 import { createProcessPresence, type PresenceBuild, type PresenceRecord } from "@spider/herdr/sessions/presence";
 import { inspectRoamPlacement } from "@spider/herdr/roam-placement";
-import { listPendingIdLocks } from "@spider/herdr/sessions/id-lock";
+import { listPendingIdLocks, localBootId } from "@spider/herdr/sessions/id-lock";
+import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { loadConfig } from "./config";
@@ -21,11 +22,16 @@ import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { isPeerFailureReason } from "./peer-errors";
 import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
 import { createRunningIntentAuthority } from "./session-control";
-import { inspectIntentReservations } from "./intent";
+import { inspectIntentReservations, inspectSuspendedIntents } from "./intent";
+import { adoptedOwnerExited } from "./launcher";
 import { createIntercomRegistry } from "./intercom-registry";
 import { inspectLocalIntercomDoctor } from "./intercom-doctor";
 
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+function resumeCommand(id: string): string {
+  const argument = /^[A-Za-z0-9_][A-Za-z0-9._:-]*$/.test(id) ? id : `'${id.replaceAll("'", "'\\''")}'`;
+  return `spider roam resume ${id.startsWith("-") ? "-- " : ""}${argument}`;
+}
 function snapshotProblem(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   if (/WAL.*commit/i.test(message)) return " The WAL commit boundary is unverified; retry after normal SQLite recovery.";
@@ -89,22 +95,35 @@ function absentOrUnknown(pid: number): ProcessProbe {
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? { kind: "absent" } : { kind: "unknown" }; }
 }
 
-function probeLocal(pid: number, usage: boolean): ProcessProbe {
+export async function probeLocal(pid: number, usage: boolean, options: {
+  platform?: NodeJS.Platform; ps?: (pid: number, timeoutMs: number) => Promise<string>;
+} = {}): Promise<ProcessProbe> {
   try { process.kill(pid, 0); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? { kind: "absent" } : { kind: "unknown" }; }
-  try {
-    if (process.platform === "linux") {
+  const platform = options.platform ?? process.platform;
+  if (platform === "linux") {
+    try {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
       if (fields[0] === "Z") return { kind: "absent" };
       if (!fields[19]) return absentOrUnknown(pid);
       return { kind: "live", startIdentity: usage ? fields[19] : `linux:${fields[19]}` };
-    }
-    if (process.platform === "win32") return absentOrUnknown(pid);
-    const start = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="],
-      { encoding: "utf8", timeout: 1000, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
-    return start ? { kind: "live", startIdentity: `${usage ? "ps-utc" : "posix"}:${start}` } : absentOrUnknown(pid);
-  } catch { return absentOrUnknown(pid); }
+    } catch { return absentOrUnknown(pid); }
+  }
+  if (platform === "win32") return absentOrUnknown(pid);
+  const ps = options.ps ?? ((id, timeoutMs) => new Promise<string>((done, reject) => {
+    execFile("/bin/ps", ["-p", String(id), "-o", "lstart="],
+      { encoding: "utf8", timeout: timeoutMs, maxBuffer: 4096, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } },
+      (error, stdout) => error ? reject(error) : done(stdout));
+  }));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const start = (await ps(pid, 2000)).trim();
+      if (start) return { kind: "live", startIdentity: `${usage ? "ps-utc" : "posix"}:${start}` };
+    } catch { /* Retry once if the process still exists. */ }
+    if (absentOrUnknown(pid).kind === "absent") return { kind: "absent" };
+  }
+  return absentOrUnknown(pid);
 }
 
 function serviceExecutables(): { label: string; file: string }[] {
@@ -279,6 +298,7 @@ function readDoctorCatalog(db: Db, projects: DoctorProject[], globalPath: string
 
 /** Inspect registered local stores without modifying them. */
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
+  launchRecovery?: { bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe> };
   intercomDoctor?: (input: { root: string; config: RoamConfig; agentDir: string }) => Promise<Diagnostic[]> }): Promise<{ enabled: boolean; diagnostics: readonly Diagnostic[]; consumers: LoadedConsumer[] }> {
   if (!isAbsolute(input.root)) throw new Error("The roaming root must be absolute");
   let root = resolve(input.root);
@@ -403,9 +423,23 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     for (const reservation of await inspectIntentReservations(root)) {
       if (reportedHandoffs.has(`${reservation.sessionId}\0${reservation.operationId}`)) continue;
       const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
-      inventory.push({ severity, reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} is pending; handoff and core evidence are unavailable.`, repairCommand: null });
+      const local = { machineId: config.machineId, label: "local machine", peer: null };
+      const recovery = input.launchRecovery ?? { bootId: localBootId, probe: (pid: number) => createLocalDiagnosticPorts(root, []).probeProcess(local, pid) };
+      let exited = false;
+      try { exited = await adoptedOwnerExited({ root: join(root, "herdr"), sessionId: reservation.sessionId, operationId: reservation.operationId,
+        file: reservation.file, leases: createSessionLeases(join(root, "herdr")), ...recovery }); } catch { /* Missing evidence remains pending. */ }
+      if (exited) inventory.push({ severity: "warning", reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} exited before readiness was recorded.`,
+        repairCommand: resumeCommand(reservation.sessionId) });
+      else inventory.push({ severity, reason: `Session ${safe(reservation.sessionId)}: exact launch ${safe(reservation.operationId)} is pending; handoff and core evidence are unavailable.`, repairCommand: null });
     }
   } catch { inventory.push({ severity, reason: "Cannot inspect pending launch reservations.", repairCommand: null }); }
+  try {
+    for (const suspended of await inspectSuspendedIntents(root)) {
+      const safe = (value: string) => value.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 256);
+      const id = suspended.sessionId;
+      inventory.push({ severity: "warning", reason: `Session ${safe(id)} is suspended: ${safe(suspended.reason)}.`, repairCommand: resumeCommand(id) });
+    }
+  } catch { inventory.push({ severity, reason: "Cannot inspect suspended hosting intents.", repairCommand: null }); }
   try {
     const records = await createIntercomRegistry(root).list();
     let snapshot: Db | undefined;

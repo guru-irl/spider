@@ -43,6 +43,12 @@ async function coreOnly(suite: Suite): Promise<void> {
   const fixture = await hostingFixture(suite), before = await digestFile(fixture.coreUnit);
   try {
     const owner = await start(fixture);
+    await fixture.provisionUnit();
+    expect(await readFile(fixture.supervisorUnit, 'utf8')).toContain('Requires=herdr-core.service');
+    expect(await readFile(fixture.systemctlLog, 'utf8')).toContain('--user enable spider-roam-supervisor.service');
+    expect((await suite.hc(['server', 'status', '--json'])).json).toMatchObject({ core: { id: suite.cores!.local.coreId } });
+    expect((await suite.hc(['get', owner.terminal, '--json'])).json).toMatchObject({ state: 'live' });
+    expect((await fixture.owners()).map(value => value.pid)).toEqual([owner.pid]);
     const startup = await event(fixture, owner, 'session_start', row => row.sessionId === fixture.sessionId);
     expect(startup).toMatchObject({ mode: 'tui', stdinTTY: true, sessionFile: fixture.file, cwd: fixture.cwd, hcTerminal: owner.terminal });
     const result = await runTool(fixture, owner, 'probe', 'hosting-probe');
@@ -89,6 +95,8 @@ async function restartAndRestore(suite: Suite): Promise<void> {
   const fixture = await hostingFixture(suite), before = await digestFile(fixture.coreUnit);
   try {
     const first = await start(fixture);
+    await fixture.provisionUnit();
+    expect((await suite.hc(['get', first.terminal, '--json'])).json).toMatchObject({ state: 'live' });
     await runTool(fixture, first, 'schedule', 'schedule-trigger');
     await event(fixture, first, 'agent_settled', () => true);
     await fixture.restartCore();

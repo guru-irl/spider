@@ -345,7 +345,10 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       let reply: Record<string, unknown>;
       try { reply = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(result.value))); }
       catch { throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply'); }
-      if (reply.kind !== 'provision' || reply.version !== 1 || Object.keys(reply).length !== 3) {
+      const blocked = reply.error === 'release-in-progress' && Object.keys(reply).length === 4 &&
+        typeof reply.operationId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(reply.operationId);
+      if (reply.kind !== 'provision' || reply.version !== 1 ||
+          !(Object.keys(reply).length === 3 && reply.error !== 'release-in-progress' || blocked)) {
         throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
       }
       if (Object.hasOwn(reply, 'error')) {
@@ -360,7 +363,8 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           'release-evidence-unavailable', 'release-in-progress', 'process-identity-unavailable', 'operation-arguments-changed', 'short-write-pending', 'core-unavailable', 'core-changed']);
         if (typeof reply.error !== 'string' || !allowed.has(reply.error)) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         if (reply.error === 'core-changed') { invalidate(state.peer.alias, state, 'core-changed'); throw coreChanged(); }
-        throw new HerdrError(reply.error, 'Provisioning operation failed');
+        throw new HerdrError(reply.error, blocked ? `Provisioning is blocked by operation ${reply.operationId}` : 'Provisioning operation failed',
+          blocked ? { blockingOperationId: reply.operationId } : undefined);
       }
       if (!Object.hasOwn(reply, 'value')) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
       if (request.action === 'enrollment') {
@@ -373,7 +377,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           if (Object.keys(value).length !== 1) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         } else if (value.state === 'failed') {
           if (Object.keys(value).length !== 2 || !['installer-interrupted', 'release-install-failed', 'command-failed', 'release-hash-mismatch',
-            'incomplete-release', 'pi-version-mismatch'].includes(String(value.reason))) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+            'incomplete-release', 'pi-version-mismatch', 'release-abandoned'].includes(String(value.reason))) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         } else if (value.state === 'finished') {
           const installed = object(value.value);
           if (Object.keys(value).length !== 2 || Object.keys(installed).length !== 3 || installed.pi !== state.peer.pi ||

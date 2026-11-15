@@ -11,7 +11,7 @@ export interface ReleaseOwner { pid: number; bootId: string; start: string }
 export interface ReleaseKey { directory: string; operationId: string; digest: string }
 export interface ReleaseInput extends ReleaseKey { owner: ReleaseOwner }
 export interface InstalledRelease { pi: string; cli: string; supervisor: string }
-export type ReleaseReason = "installer-interrupted" | "release-install-failed" | "command-failed" | "release-hash-mismatch" | "incomplete-release" | "pi-version-mismatch";
+export type ReleaseReason = "installer-interrupted" | "release-abandoned" | "release-install-failed" | "command-failed" | "release-hash-mismatch" | "incomplete-release" | "pi-version-mismatch";
 export type ReleaseObservation = { state: "absent" } | { state: "started" } |
   { state: "finished"; value: InstalledRelease } | { state: "failed"; reason: ReleaseReason };
 export type ReleaseBegin = { kind: "acquired"; token: string } | { kind: "duplicate"; state: "started" | "finished" | "failed" };
@@ -46,7 +46,7 @@ function releaseValue(value: unknown): value is InstalledRelease {
   return Object.keys(row).length === 3 && releasePath(row.pi) && releasePath(row.cli) && releasePath(row.supervisor);
 }
 function releaseReason(value: unknown): value is ReleaseReason {
-  return typeof value === "string" && ["installer-interrupted", "release-install-failed", "command-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch"].includes(value);
+  return typeof value === "string" && ["installer-interrupted", "release-abandoned", "release-install-failed", "command-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch"].includes(value);
 }
 function releaseReadJson(directory: string, name: string): unknown | null {
   let fd: number;

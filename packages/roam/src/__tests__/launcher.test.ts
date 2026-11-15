@@ -143,7 +143,7 @@ it("does not use an exit recorded before the corresponding process start", async
   expect(evidence.proof).toBeUndefined();
 }, 5000);
 
-it.each(["in-flight", "core-changed", "incomplete", "early-second", "changed-boot", "wrong-operation"] as const)(
+it.each(["in-flight", "core-changed", "incomplete", "early-second", "wrong-operation"] as const)(
   "keeps incomplete launch evidence pending: %s", async mode => {
     const module = await launcherModule(); if (!module) return;
     const f = fixture();
@@ -154,12 +154,54 @@ it.each(["in-flight", "core-changed", "incomplete", "early-second", "changed-boo
     }
     if (mode === "incomplete") f.setComplete(false);
     if (mode === "early-second") f.ports.clock.wait = async () => {};
-    if (mode === "changed-boot") f.ports.bootId = async () => "boot-2";
     const op = mode === "wrong-operation" ? "op-2" : "op-1";
     const evidence = await module.createLaunchReconciler(f.ports)(op, { signal: new AbortController().signal });
     expect(evidence.proof).toBeUndefined();
     if (mode === "in-flight") expect(f.queries).toHaveLength(1);
   }, 5000);
+
+it("proves a pending handoff did not survive a reboot when its original core has no labelled terminal", async () => {
+  const f = fixture(); f.ports.bootId = async () => "boot-2";
+  const evidence = await launcher.createLaunchReconciler(f.ports)("op-1", { signal: new AbortController().signal });
+  expect(evidence.proof).toMatchObject({ kind: "boot-changed-no-terminal", operationId: "op-1", coreId: "core-1",
+    previousBootId: "boot-1", currentBootId: "boot-2" });
+  expect(f.queries).toHaveLength(1);
+}, 5000);
+
+it("recovers a rebooted handoff even if hc tracking never began", async () => {
+  const f = fixture(); f.actions.splice(0); f.ports.bootId = async () => "boot-2";
+  const evidence = await launcher.createLaunchReconciler(f.ports)("op-1", { signal: new AbortController().signal });
+  expect(evidence.proof).toMatchObject({ kind: "boot-changed-no-terminal", operationId: "op-1", coreId: "core-1" });
+  expect(f.queries).toHaveLength(1);
+}, 5000);
+
+it("checks every attempt for a live terminal after reboot", async () => {
+  const f = fixture(); f.actions.splice(0, f.actions.length, { action: "exact-attempt", result: { attemptId: "latest" } },
+    { action: "exact-core", result: { coreId: "core-1" } });
+  f.ports.bootId = async () => "boot-2"; let attempt: string | undefined = "not queried";
+  f.ports.terminals = async (_id, options) => {
+    attempt = options.attemptId;
+    return { complete: true, terminals: options.attemptId ? [] : [{ id: "earlier-terminal", state: "live" }] };
+  };
+  expect((await launcher.createLaunchReconciler(f.ports)("op-1", { signal: new AbortController().signal })).proof).toBeUndefined();
+  expect(attempt).toBeUndefined();
+}, 5000);
+
+it("does not recover a rebooted handoff with contradictory journal core evidence", async () => {
+  const f = fixture(); f.actions.splice(0, f.actions.length, { action: "exact-core", result: { coreId: "different-core" } });
+  f.ports.bootId = async () => "boot-2";
+  expect((await launcher.createLaunchReconciler(f.ports)("op-1", { signal: new AbortController().signal })).proof).toBeUndefined();
+  expect(f.queries).toEqual([]);
+}, 5000);
+
+it.each(["changed-core", "live-terminal", "finished-terminal", "incomplete"]) ("keeps a rebooted handoff fenced with %s", async kind => {
+  const f = fixture(); f.ports.bootId = async () => "boot-2";
+  if (kind === "changed-core") f.setCore("core-2");
+  if (kind === "live-terminal" || kind === "finished-terminal") f.setRows([{ id: "terminal-1", state: kind === "live-terminal" ? "live" : "finished" }]);
+  if (kind === "incomplete") f.setComplete(false);
+  const evidence = await launcher.createLaunchReconciler(f.ports)("op-1", { signal: new AbortController().signal });
+  expect(evidence.proof).toBeUndefined();
+}, 5000);
 
 it("cancels a stalled query without clearing the pending operation", async () => {
   const module = await launcherModule(); if (!module) return;
@@ -349,6 +391,94 @@ it("adopts a child that acquired the reserved operation while the supervisor was
     expect(await second.launch(request, { mode: "reconcile" })).toMatchObject({ operationId: request.operationId, pid: 102 });
     expect(f.calls).toHaveLength(1);
   } finally { await f.release(); }
+}, 5000);
+
+it.each(["lock retained", "lock released"])("recognizes an adopted owner that exited before live was recorded (%s)", async kind => {
+  const f = await exactFixture(), request = { ...f.request, operationId: "reserved-operation" };
+  f.hc.run = async (spawn, observer) => {
+    f.calls.push(spawn); observer.started(201, "hc-start"); await f.adopt(spawn);
+    f.setProbe(102, { kind: "absent" });
+    if (kind === "lock released") await f.release();
+    observer.exited(201); f.wake(); return { terminal: "terminal-1" };
+  };
+  const adapter = launcher.createExactLaunchAdapter({ base: f.base, journal: f.journal, hc: f.hc, clock: f.clock });
+  await expect(adapter.launch(request, { mode: "fresh" })).rejects.toMatchObject({ code: "launch-pending" });
+  expect(await adapter.launch(request, { mode: "reconcile" })).toMatchObject({ kind: "adopted-exited", operationId: request.operationId });
+  expect(f.calls).toHaveLength(1);
+}, 5000);
+
+it("keeps a released adoption fenced while its process is still alive", async () => {
+  const f = await exactFixture(), request = { ...f.request, operationId: "reserved-operation" };
+  const adapter = launcher.createExactLaunchAdapter({ base: f.base, journal: f.journal, hc: f.hc, clock: f.clock });
+  await adapter.launch(request, { mode: "fresh" });
+  await f.release();
+  const lease = await f.leases.get(f.file); expect(lease).not.toBeNull();
+  await f.leases.release(f.file, lease!.token, { mode: "bookkeeping" });
+  expect(await f.leases.get(f.file)).toBeNull();
+  await expect(adapter.launch(request, { mode: "reconcile" })).rejects.toMatchObject({ code: "launch-pending" });
+  expect(f.calls).toHaveLength(1);
+}, 5000);
+
+it("relaunches a pending handoff once after a reboot and an unchanged core observation", async () => {
+  const f = await exactFixture(), request = { ...f.request, operationId: "reserved-operation" };
+  let boot = "boot-1", finish!: () => void;
+  const adopted = new Promise<void>(resolve => { finish = resolve; });
+  let newLock: Awaited<ReturnType<typeof claimIdLock>> | undefined;
+  f.hc.run = async (spawn, observer) => {
+    f.calls.push(spawn); observer.started(200 + f.calls.length, `hc-${f.calls.length}`);
+    if (f.calls.length === 1) { f.wake(); return new Promise(() => {}); }
+    try {
+      const handoff = await readLaunchHandoff(f.stateRoot, join(f.stateRoot, "handoffs", `${request.operationId}.json`), request.sessionId, request.file);
+      newLock = await claimIdLock(f.stateRoot, request.sessionId, { pid: 102, startIdentity: "child-start" }, f.base.processInventory.probe,
+        { bootId: async () => boot, handoff: { operationId: request.operationId, nonce: handoff.nonce, file: request.file } });
+      await f.leases.adopt(request.file, handoff.leaseToken, { pid: 102, startIdentity: "child-start" });
+      await removeLaunchHandoff(f.stateRoot, request.operationId); observer.exited(202);
+      return { terminal: "terminal-2" };
+    } finally { finish(); }
+  };
+  const first = launcher.createExactLaunchAdapter({ base: { ...f.base, bootId: async () => boot }, journal: f.journal, hc: f.hc, clock: f.clock });
+  await expect(first.launch(request, { mode: "fresh" })).rejects.toMatchObject({ code: "launch-pending" });
+  boot = "boot-2"; f.setProbe(101, { kind: "absent" }); f.setProbe(103, { kind: "live", startIdentity: "replacement" });
+  const second = launcher.createExactLaunchAdapter({ base: { ...f.base, bootId: async () => boot, processIdentity: { pid: 103, startIdentity: "replacement" },
+    wait: async ms => { await adopted; await f.clock.wait(Math.max(ms, 1000), new AbortController().signal); } }, journal: f.journal, hc: f.hc, clock: f.clock });
+  try {
+    expect(await second.launch(request, { mode: "reconcile" })).toMatchObject({ pid: 102, operationId: request.operationId });
+    expect(f.calls).toHaveLength(2);
+    expect(f.calls[1].terminal?.labels["spider.roam.operation"]).toBe(request.operationId);
+  } finally { await newLock?.release(); }
+}, 5000);
+
+it("relaunches once after reboot when handoff preceded all hc tracking", async () => {
+  const f = await exactFixture(), request = { ...f.request, operationId: "reserved-operation" };
+  let boot = "boot-1", finish!: () => void;
+  const adopted = new Promise<void>(resolve => { finish = resolve; });
+  const interrupted: Journal = { ...f.journal, record(id, action, result) {
+    if (action === "exact-attempt") throw new Error("fixture crash before tracking");
+    f.journal.record(id, action, result);
+  } };
+  f.wake();
+  const first = launcher.createExactLaunchAdapter({ base: { ...f.base, bootId: async () => boot }, journal: interrupted, hc: f.hc, clock: f.clock });
+  await expect(first.launch(request, { mode: "fresh" })).rejects.toMatchObject({ code: "launch-pending" });
+  expect(f.calls).toHaveLength(0);
+  boot = "boot-2"; f.setProbe(101, { kind: "absent" }); f.setProbe(103, { kind: "live", startIdentity: "replacement" });
+  let childLock: Awaited<ReturnType<typeof claimIdLock>> | undefined;
+  f.hc.run = async (spawn, observer) => {
+    f.calls.push(spawn); observer.started(201, "hc-start");
+    try {
+      const handoff = await readLaunchHandoff(f.stateRoot, join(f.stateRoot, "handoffs", `${request.operationId}.json`), request.sessionId, request.file);
+      childLock = await claimIdLock(f.stateRoot, request.sessionId, { pid: 102, startIdentity: "child-start" }, f.base.processInventory.probe,
+        { bootId: async () => boot, handoff: { operationId: request.operationId, nonce: handoff.nonce, file: request.file } });
+      await f.leases.adopt(request.file, handoff.leaseToken, { pid: 102, startIdentity: "child-start" });
+      await removeLaunchHandoff(f.stateRoot, request.operationId); observer.exited(201);
+      return { terminal: "terminal-1" };
+    } finally { finish(); }
+  };
+  const second = launcher.createExactLaunchAdapter({ base: { ...f.base, bootId: async () => boot, processIdentity: { pid: 103, startIdentity: "replacement" },
+    wait: async ms => { await adopted; await f.clock.wait(Math.max(ms, 1000), new AbortController().signal); } }, journal: f.journal, hc: f.hc, clock: f.clock });
+  try {
+    expect(await second.launch(request, { mode: "reconcile" })).toMatchObject({ pid: 102, operationId: request.operationId });
+    expect(f.calls).toHaveLength(1);
+  } finally { await childLock?.release(); }
 }, 5000);
 
 it("refuses fresh launch and stays fenced when the old call lacks no-start proof", async () => {

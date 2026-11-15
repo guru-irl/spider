@@ -36,6 +36,9 @@ type Request = Record<string, any>;
 const requestFile = process.argv[1] ?? null;
 const request: Request = JSON.parse(requestFile === null ? readFileSync(0, "utf8") : readFile(requestFile, 2 * 1024 * 1024).bytes.toString("utf8"));
 function bad(code: string): never { throw Object.assign(new Error("Provision request refused"), { code }); }
+function releaseInProgress(operationId: string): never {
+  throw Object.assign(new Error("Provision request refused"), { code: "release-in-progress", operationId });
+}
 function text(name: string): string {
   const value = request[name];
   if (typeof value !== "string" || !value || value.includes("\0")) bad("invalid-request");
@@ -115,6 +118,19 @@ function releaseRuntimeProbe(owner: ReleaseOwner): "live" | "absent" | "unknown"
     if (!fields[0] || !/^[0-9]+$/.test(fields[19] ?? "")) return "unknown";
     return fields[0] === "Z" || fields[19] !== owner.start ? "absent" : "live";
   } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "unknown"; }
+}
+function pruneReleaseChunks(stage: string): void {
+  let removed = false;
+  for (const entry of readdirSync(stage)) {
+    if (!/^release-[a-f0-9]{32}-[0-9]{1,5}$/.test(entry)) continue;
+    const path = join(stage, entry);
+    try {
+      const stat = lstatSync(path);
+      if (!own(stat) || !(stat.isFile() || stat.isSymbolicLink())) bad("unsafe-staging");
+      unlinkSync(path); removed = true;
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
+  if (removed) syncDirectory(stage);
 }
 function releaseCore(core: string, coreId: string): void {
   const status = spawnSync(core, ["server", "status", "--json"], { encoding: "utf8", timeout: 5000, maxBuffer: 16_384, stdio: ["ignore", "pipe", "ignore"] });
@@ -202,8 +218,25 @@ async function run(): Promise<unknown> {
         if (prior) {
           let previous: Request; try { previous = JSON.parse(prior.toString("utf8")); } catch { bad("invalid-release-request"); }
           if (previous.operationId !== operation || previous.machineId !== machineId || previous.globalRoot !== globalRoot) bad("invalid-release-request");
-          const observed = inspectRelease({ directory: directoryPath, operationId: operation, digest: releaseRequestDigest(previous as ReleaseArguments) }, releaseRuntimeProbe);
-          if (observed.state === "started" || observed.state === "absent") bad("release-in-progress");
+          const key = { directory: directoryPath, operationId: operation, digest: releaseRequestDigest(previous as ReleaseArguments) };
+          let observed = inspectRelease(key, releaseRuntimeProbe);
+          // Give a dispatched launch time to publish a terminal. The receipt lock below
+          // fences a delayed launch that reaches the box after this observation.
+          if (observed.state === "absent" && Date.now() - lstatSync(join(directoryPath, "release-request")).mtimeMs >= ${DEFAULT_LIMITS.launchMs}) {
+            let terminal: "none" | "live" | "finished" | null = null;
+            try {
+              if (previous.core === text("core") && previous.coreId === text("coreId")) {
+                terminal = releaseTerminals(previous.core, previous.coreId, operation, machineId);
+              }
+            } catch { /* Missing or changed core evidence cannot prove absence. */ }
+            if (terminal === "none") {
+              const input = { ...key, owner: releaseRuntimeOwner() }, claim = beginRelease(input);
+              if (claim.kind === "acquired") finishRelease(input, claim.token, { state: "failed", reason: "release-abandoned" });
+              observed = inspectRelease(key, releaseRuntimeProbe);
+            }
+          }
+          if (observed.state === "started" || observed.state === "absent") releaseInProgress(operation);
+          pruneReleaseChunks(directoryPath);
         }
       }
       let removed = false;
@@ -331,18 +364,22 @@ async function run(): Promise<unknown> {
     }
     if (action === "release-observe") {
       const observation = inspectRelease(key, releaseRuntimeProbe);
-      if (observation.state === "finished" || observation.state === "failed") return observation;
+      if (observation.state === "finished" || observation.state === "failed") { pruneReleaseChunks(stage); return observation; }
       const terminal = releaseTerminals(core, coreId, operationId, machineId);
       if (observation.state === "started") {
-        return terminal === "finished" ? inspectRelease(key, owner => {
+        const reconciled = terminal === "finished" ? inspectRelease(key, owner => {
           const state = releaseRuntimeProbe(owner); return state === "unknown" ? "absent" : state;
         }) : observation;
+        if (reconciled.state === "finished" || reconciled.state === "failed") pruneReleaseChunks(stage);
+        return reconciled;
       }
       if (terminal === "live") return { state: "started" };
       if (terminal === "finished") {
         const input = { ...key, owner: releaseRuntimeOwner() }, claim = beginRelease(input);
         if (claim.kind === "acquired") finishRelease(input, claim.token, { state: "failed", reason: "installer-interrupted" });
-        return inspectRelease(key, releaseRuntimeProbe);
+        const finished = inspectRelease(key, releaseRuntimeProbe);
+        if (finished.state === "finished" || finished.state === "failed") pruneReleaseChunks(stage);
+        return finished;
       }
       return { state: "absent", prepared: saved !== null };
     }
@@ -378,7 +415,13 @@ async function run(): Promise<unknown> {
       const reason: ReleaseReason = releaseReason(code) ? code : "release-install-failed";
       finishRelease(input, claim.token, { state: "failed", reason });
       return { state: "failed", reason };
-    } finally { bytes?.fill(0); try { unlinkSync(archive); } catch { /* a retry cleans partial staging */ } }
+    } finally {
+      bytes?.fill(0); try { unlinkSync(archive); } catch { /* a retry cleans partial staging */ }
+      try {
+        const finished = inspectRelease(key, releaseRuntimeProbe);
+        if (finished.state === "finished" || finished.state === "failed") pruneReleaseChunks(stage);
+      } catch { /* A later receipt observation retries cleanup. */ }
+    }
   }
   if (action === "unit-write") {
     ensurePrivate(home, unitDir, false);
@@ -521,6 +564,8 @@ async function run(): Promise<unknown> {
 try { const value = await run(); process.stdout.write(JSON.stringify({ kind: "provision", version: 1, value })); }
 catch (error) {
   const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[a-z0-9-]{1,64}$/.test(error.code) ? error.code : "provision-failed";
-  process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code }));
+  const operationId = code === "release-in-progress" && error && typeof error === "object" && "operationId" in error &&
+    typeof error.operationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(error.operationId) ? error.operationId : undefined;
+  process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code, ...(operationId ? { operationId } : {}) }));
 }
 `;

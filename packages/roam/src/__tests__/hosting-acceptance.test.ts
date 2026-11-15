@@ -61,7 +61,12 @@ function provisionFixture() {
     systemd: {
       unitDir: `${home}/.config/systemd/user`,
       async writeUnit(name, bytes) { actions.push(`write:${name}`); writeFileSync(join(units, name), bytes, { mode: 0o600 }); },
-      async systemctl(argv) { actions.push(`systemctl:${argv.join(" ")}`); },
+      async systemctl(argv) {
+        actions.push(`systemctl:${argv.join(" ")}`);
+        if (argv[0] === "--user" && ["stop", "restart", "kill"].includes(argv[1]) && argv.includes("herdr-core.service")) {
+          writeFileSync(terminals, "[]", { mode: 0o600 });
+        }
+      },
     },
     async resources() { throw new Error("host resource probe forbidden"); },
     async bootId() { throw new Error("host boot probe forbidden"); },
@@ -95,6 +100,12 @@ function provisionFixture() {
   const digest = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
   return { root, core, terminals, destination, stageFile, units, journal, actions, diagnostics, state, ports, request, digest };
 }
+
+it("A10 fixture models existing terminal loss on a core restart", async () => {
+  const f = provisionFixture(), before = f.digest(f.terminals);
+  await f.ports.systemd.systemctl(["--user", "restart", "herdr-core.service"]);
+  expect(f.digest(f.terminals)).not.toBe(before);
+}, 5000);
 
 it("A10 provision never changes existing core", async () => {
   const f = provisionFixture();
@@ -205,7 +216,10 @@ it("uses the fixture shell for a supervised exact launch", async () => {
     vi.spyOn(hcModule, "createHcClient").mockReturnValue({ async identity() { return { coreId: "core-1", sessionNamespace: "owned", socket: "/fixture/socket" }; },
       events() { return { subscribe() { return () => {}; }, dispose() {} }; }, async dispose() {} } as never);
     vi.spyOn(launcher, "createProductionLocalExactHc").mockReturnValue({ async coreId() { return "core-1"; }, async dispose() {} } as never);
-    const adapter = vi.spyOn(launcher, "createExactLaunchAdapter").mockReturnValue({ async launch() {} } as never);
+    const adapter = vi.spyOn(launcher, "createExactLaunchAdapter").mockReturnValue({ async launch(request: { file: string; sessionId: string; cwd: string; operationId: string }) {
+      return { pid: 123, startIdentity: "fixture-process", sessionFile: request.file, sessionId: request.sessionId,
+        cwd: request.cwd, token: "fixture", operationId: request.operationId };
+    } } as never);
     let launch: Parameters<typeof createParticipantSupervisor>[0]["launch"] | undefined;
     vi.spyOn(participantSupervisor, "createParticipantSupervisor").mockImplementation(input => {
       launch = input.launch; return { async reconcile() {}, start() {}, async stop() {} };

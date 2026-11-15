@@ -61,13 +61,17 @@ and `3` means durable pending work or reconciliation is needed.
 
 Production hosting stays disabled until phase 4 acceptance succeeds. Provisioning
 installs only the supervisor service and leaves the existing core service and its
-terminals unchanged. The hub's enable switch controls hub scheduling; it is not
-a box hosting switch.
+terminals unchanged. The supervisor unit uses `Requires=` and `PartOf=` for the
+core. Starting the enabled supervisor at login starts the core; stopping the core
+stops the supervisor. The hub's enable switch controls hub scheduling, not box
+hosting.
 
 Authentication is never copied by default. Copying selected Pi credentials
 requires explicit consent for each target and provider. A missing Pi sign-in
 blocks hosting but does not prevent installation. Missing tool authentication is
-a warning; sign in to the affected tool separately if it is needed.
+a warning; sign in to the affected tool separately if it is needed. Provisioning
+installs Pi 1.2.0 at `~/.local/bin/pi`, replacing an existing installation there.
+Use `--no-settings` to omit the local `settings.json` from the copy.
 
 Use `spider roam stop <session>` on the hub to persist a stopped intent. A
 session quit also stops it. `spider roam resume <session>` runs doctor first and
@@ -78,15 +82,18 @@ terminals. The supervisor restores an eligible running session from its exact
 file, while a deliberate stop remains stopped. Repeated crashes suspend the
 session until a successful doctor and resume.
 
-After a Windows restart, agents hosted on a box stay stopped until someone signs
-in to that machine's desktop. The tunnel and WSL logon tasks also wait for that
-sign-in. Supervisor recovery cannot power on a machine or sign in its host.
-Remote upgrade and uninstall orchestration are deferred; do not assume
-provisioning performs either.
+Windows updates can silently restart WSL. After a WSL restart, the supervisor
+relaunches eligible running sessions. Once it proves an owner is gone, it counts
+that loss once toward crash suspension. After a Windows restart, agents stay stopped
+until someone signs in to that machine's desktop. The tunnel and WSL logon tasks
+also wait for that sign-in. Supervisor recovery cannot power on a machine or
+sign in its host. Remote upgrade and uninstall orchestration are deferred; do not
+assume provisioning performs either.
 
 The headless acceptance stories use a packaged extension and supervisor on
 owned cores, with fixture service, boot, process and limit ports. R03 checks a
-core-only session and child status without app configuration. R04 restarts the
+core-only session, child status, and a supervisor unit installation against a
+live core without app configuration. R04 restarts the
 core and checks one exact-file owner and one restored trigger delivery. R05
 checks crash suspension and a durable stop. They do not prove actual systemd or
 real-box behavior; phase 4 owns those checks.

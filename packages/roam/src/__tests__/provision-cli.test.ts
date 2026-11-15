@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, lstatSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, lstatSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -166,6 +166,89 @@ it("previews and records the fixed selection and exact selected Copilot auth byt
   expect(expectedFiles).toEqual(metadata);
   const consentFiles = f.journal.read("preview-1").find(row => row.action === "human-consent")?.result.files;
   expect(consentFiles).toEqual([{ path: "auth.json", size, mode: 0o600 }, ...metadata]);
+}, 5000);
+
+it("omits settings from the preview and transfer when requested", async () => {
+  const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
+  writeFileSync(join(agent, "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth", access: "fixture" } }), { mode: 0o600 });
+  writeFileSync(join(agent, "settings.json"), '{"theme":"fixture"}', { mode: 0o600 });
+  writeFileSync(join(agent, "AGENTS.md"), "instructions", { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB,
+    peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/fixture/node", pi: "/home/fixture/.local/bin/pi", cli: "/home/fixture/cli", core: "/home/fixture/hc", globalRoot: "/home/fixture/.pi/agent/spider" }], coreUnit: "fixture.service" }), { mode: 0o600 });
+  vi.stubEnv("PI_CODING_AGENT_DIR", agent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: {} } as never);
+  let requested: readonly string[] = [];
+  vi.spyOn(provisionModule, "provision").mockImplementation(async (request, ports) => {
+    requested = request.selected; await ports.confirm(request.peer.alias, request.confirmedProviders);
+    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
+  });
+  let output = "", errors = "";
+  expect(await main(["roam", "provision", f.request.target, "--release", f.release, "--no-settings",
+    "--yes", "--consent", "copilot-auth", "--operation-id", "no-settings"], { out(text) { output += text; }, err(text) { errors += text; } })).toBe(0);
+  expect(requested).toEqual(["AGENTS.md"]);
+  expect(output).not.toContain("Selected settings.json");
+  expect(f.journal.read("no-settings").find(row => row.action === "human-consent")?.result.files)
+    .toEqual([{ path: "auth.json", size: expect.any(Number), mode: 0o600 }, { path: "AGENTS.md", size: 12, mode: 0o600 }]);
+  expect(errors).toBe("");
+}, 5000);
+
+it("prunes the completed source snapshot and safely replays without repacking", async () => {
+  const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
+  writeFileSync(join(agent, "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth", access: "fixture" } }), { mode: 0o600 });
+  writeFileSync(join(agent, "settings.json"), '{"theme":"dark"}', { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB,
+    peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/fixture/node", pi: "/home/fixture/.local/bin/pi", cli: "/home/fixture/cli", core: "/home/fixture/hc", globalRoot: "/home/fixture/.pi/agent/spider" }], coreUnit: "fixture.service" }), { mode: 0o600 });
+  vi.stubEnv("PI_CODING_AGENT_DIR", agent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  const transport = vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: {} } as never);
+  const install = vi.spyOn(provisionModule, "provision").mockImplementation(async (request, ports) => {
+    await ports.confirm(request.peer.alias, request.confirmedProviders);
+    const outcome = { code: 0 as const, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
+    ports.journal.begin({ ...request.operation, args: { fixture: true } });
+    ports.journal.record(request.operation.id, "done", outcome as never);
+    return outcome;
+  });
+  const args = ["roam", "provision", f.request.target, "--yes", "--consent", "copilot-auth", "--operation-id", "prune-done"];
+  let output = "", errors = ""; const io = { out(text: string) { output += text; }, err(text: string) { errors += text; } };
+  expect(await main([...args, "--release", f.release], io)).toBe(0);
+  expect(f.journal.read("prune-done-install").at(-1)?.action).toBe("done");
+  expect(existsSync(join(f.root, "roam", "provision-source", "prune-done"))).toBe(false);
+  expect(await main(args, io)).toBe(0);
+  expect(install).toHaveBeenCalledTimes(1); expect(transport).toHaveBeenCalledTimes(1);
+  expect(output).toContain("installed"); expect(errors).toBe("");
+  writeFileSync(join(agent, "settings.json"), '{"theme":"lite"}', { mode: 0o600 });
+  expect(await main(args, io)).toBe(1); expect(errors).toContain("provision-operation-arguments-changed");
+  expect(install).toHaveBeenCalledTimes(1);
+  writeFileSync(join(agent, "settings.json"), '{"theme":"dark"}', { mode: 0o600 });
+  writeFileSync(f.release, "another-release"); errors = "";
+  expect(await main([...args, "--release", f.release], io)).toBe(1);
+  expect(errors).toContain("release-arguments-changed"); expect(install).toHaveBeenCalledTimes(1);
+  const base = join(f.root, "roam", "provision-source"), unrelated = join(f.root, "unrelated");
+  mkdirSync(join(unrelated, "prune-done"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(unrelated, "prune-done", "keep"), "unrelated", { mode: 0o600 });
+  renameSync(base, `${base}-old`); symlinkSync(unrelated, base); errors = "";
+  expect(await main(args, io)).toBe(1);
+  expect(readFileSync(join(unrelated, "prune-done", "keep"), "utf8")).toBe("unrelated");
+  expect(install).toHaveBeenCalledTimes(1);
+}, 5000);
+
+it("retains the source snapshot while provisioning is pending", async () => {
+  const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
+  writeFileSync(join(agent, "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth", access: "fixture" } }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB,
+    peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/fixture/node", pi: "/home/fixture/.local/bin/pi", cli: "/home/fixture/cli", core: "/home/fixture/hc", globalRoot: "/home/fixture/.pi/agent/spider" }], coreUnit: "fixture.service" }), { mode: 0o600 });
+  vi.stubEnv("PI_CODING_AGENT_DIR", agent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: {} } as never);
+  vi.spyOn(provisionModule, "provision").mockImplementation(async request => ({ code: 3, reason: "release-pending",
+    operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: null }));
+  expect(await main(["roam", "provision", f.request.target, "--release", f.release, "--yes", "--consent", "copilot-auth", "--operation-id", "keep-pending"],
+    { out() {}, err() {} })).toBe(3);
+  expect(readFileSync(join(f.root, "roam", "provision-source", "keep-pending", "release.tgz"), "utf8")).toBe("release-one");
 }, 5000);
 
 it("selects only explicitly named skills and includes their supporting files", async () => {

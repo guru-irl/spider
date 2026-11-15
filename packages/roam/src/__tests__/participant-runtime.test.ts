@@ -22,6 +22,7 @@ import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
 import { handleSessionOperation } from "../participant-runtime";
 import { createRunningIntentAuthority } from "../session-control";
+import { createIntentStore } from "../intent";
 
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
@@ -263,6 +264,35 @@ it("an initialized provisioned box without a hub intent launches nothing", async
   f.worktree.db.prepare("UPDATE roam_sessions SET state='active' WHERE session_id='s-1'").run();
   await createRunningIntentAuthority(f.global.db).set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, "unproved-intent");
   await supervisor.reconcile(); expect(launches).toBe(0); await supervisor.stop();
+}, 5000);
+
+it.each(["absent", "live", "unknown"] as const)("resume clears an adopted reservation only when its owner is %s", async presence => {
+  const f = fixture(false), authority = createRunningIntentAuthority(f.global.db), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
+  const intent = { sessionId: "s-1", epoch: 2, desired: "stopped" as const, suspended: null, ...location, moveId: "move-1" };
+  await authority.set(intent, "stop-1", { machineId: BOX, hubMachineId: HUB });
+  const store = createIntentStore(f.global.root);
+  await store.update("s-1", null, { intent, failures: [1], supervision: { kind: "launching", operationId: "launch-1", phase: "invoking" } });
+  const root = join(f.global.root, "herdr"), old = { pid: 201, startIdentity: "old-launcher" }, child = { pid: 202, startIdentity: "child" };
+  const launcher = await claimIdLock(root, "s-1", old, async () => ({ kind: "live", startIdentity: old.startIdentity }), { bootId: async () => "boot-1" });
+  const handoff = await launcher.prepareHandoff("launch-1", location.file, "core-1");
+  const adopted = await claimIdLock(root, "s-1", child, async () => ({ kind: "live", startIdentity: child.startIdentity }), { bootId: async () => "boot-1", handoff });
+  await adopted.release();
+  vi.spyOn(localDiagnostics, "runLocalDoctor").mockResolvedValue({ enabled: false, diagnostics: [], consumers: [] });
+  let wakes = 0;
+  const result = await handleSessionOperation({ ...f.operation, id: `resume-${presence}`, kind: "session-resume" }, f.ports,
+    { wake: async () => { wakes++; }, launchRecovery: { bootId: async () => "boot-1", probe: async () => presence === "live"
+      ? { kind: "live" as const, startIdentity: child.startIdentity } : { kind: presence } } });
+  if (presence === "absent") {
+    expect(result).toMatchObject({ code: 0, reason: "resumed-intent" });
+    expect(await authority.get("s-1")).toMatchObject({ desired: "running" });
+    expect((await store.get("s-1"))?.value.supervision).toEqual({ kind: "idle", nextAttemptAt: null });
+    expect(wakes).toBe(1);
+  } else {
+    expect(result).toMatchObject({ code: 3, reason: "launch-reconciliation-required" });
+    expect(await authority.get("s-1")).toMatchObject({ desired: "stopped" });
+    expect((await store.get("s-1"))?.value.supervision.kind).toBe("launching");
+    expect(wakes).toBe(0);
+  }
 }, 5000);
 
 it("resume reports a blocking doctor and leaves the stopped intent unchanged", async () => {

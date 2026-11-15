@@ -31,6 +31,7 @@ export function createParticipantSupervisor(input: {
   diagnostics(intent: HostIntent): Promise<readonly Diagnostic[]>;
   launch(intent: HostIntent, operationId: string, mode: "initial" | "reconcile"): Promise<Outcome<HubOperationReadiness>>;
   stop(sessionId: string): Promise<Probe>;
+  cancelStop?(sessionId: string): void;
   confirmExit?(identity: { pid: number; startTime: string }): Promise<boolean>;
   notify(sessionId: string, reason: string): Promise<void>;
 }): { reconcile(): Promise<void>; start(): void; stop(): Promise<void> } {
@@ -74,5 +75,5 @@ export function createParticipantSupervisor(input: {
     inspect, launch, async stop(id) {
       const intent = await trusted.get(id), before = intent ? await input.owner(intent) : { kind: "uncertain" as const };
       return stopParticipantWithExclusion(global, id, before, () => input.stop(id), input.confirmExit);
-    }, notify: input.notify });
+    }, cancelStop: input.cancelStop, notify: input.notify });
 }

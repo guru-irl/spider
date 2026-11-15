@@ -52,8 +52,8 @@ async function syncDirectory(path: string): Promise<void> {
   try { await fd.sync(); } finally { await fd.close(); }
 }
 
-/** Read local reservations without repairing modes, acquiring locks, or exposing file contents. */
-export async function inspectIntentReservations(globalRoot: string): Promise<Array<{ sessionId: string; operationId: string; phase: "reserved" | "invoking" }>> {
+/** Read local hosting views without repairing modes or acquiring locks. */
+async function inspectIntentViews(globalRoot: string): Promise<IntentState[]> {
   if (!isAbsolute(globalRoot)) throw new Error("Hosting state root must be absolute");
   const root = resolve(globalRoot), roam = join(root, "roam"), base = join(roam, "intents");
   assertTestConfigPath(base);
@@ -66,7 +66,7 @@ export async function inspectIntentReservations(globalRoot: string): Promise<Arr
       }
     }
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
-  const result: Array<{ sessionId: string; operationId: string; phase: "reserved" | "invoking" }> = [];
+  const result: IntentState[] = [];
   for (const path of await jsonFiles(base)) {
     const info = await lstat(path);
     if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || !owned(info) || process.platform !== "win32" && (info.mode & 0o7777) !== 0o600) {
@@ -77,9 +77,20 @@ export async function inspectIntentReservations(globalRoot: string): Promise<Arr
         path !== join(base, `${hash(record.value.intent.sessionId)}.json`)) throw new Error("Invalid hosting intent file");
     const id = record.value.intent.sessionId;
     validate(id, record.value);
-    if (record.value.supervision.kind === "launching") result.push({ sessionId: id, operationId: record.value.supervision.operationId, phase: record.value.supervision.phase });
+    result.push(record.value);
   }
   return result;
+}
+
+/** Read local reservations without exposing their file contents. */
+export async function inspectIntentReservations(globalRoot: string): Promise<Array<{ sessionId: string; file: string; operationId: string; phase: "reserved" | "invoking" }>> {
+  return (await inspectIntentViews(globalRoot)).flatMap(({ intent, supervision }) => supervision.kind === "launching"
+    ? [{ sessionId: intent.sessionId, file: intent.file, operationId: supervision.operationId, phase: supervision.phase }] : []);
+}
+
+export async function inspectSuspendedIntents(globalRoot: string): Promise<Array<{ sessionId: string; reason: string }>> {
+  return (await inspectIntentViews(globalRoot)).flatMap(({ intent }) => intent.suspended
+    ? [{ sessionId: intent.sessionId, reason: intent.suspended }] : []);
 }
 
 /** The files hold local intent and crash history, never homes or terminal placement. */

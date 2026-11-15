@@ -78,10 +78,11 @@ terminals. The supervisor restores an eligible running session from its exact
 file, while a deliberate stop remains stopped. Repeated crashes suspend the
 session until a successful doctor and resume.
 
-After a Windows restart, the tunnel and WSL logon tasks do not run until desktop
-sign-in. Hosted agents remain stopped until then. Supervisor recovery cannot
-power on a machine or sign in its host. Remote upgrade and uninstall
-orchestration are deferred; do not assume provisioning performs either.
+After a Windows restart, agents hosted on a box stay stopped until someone signs
+in to that machine's desktop. The tunnel and WSL logon tasks also wait for that
+sign-in. Supervisor recovery cannot power on a machine or sign in its host.
+Remote upgrade and uninstall orchestration are deferred; do not assume
+provisioning performs either.
 
 The headless acceptance stories use a packaged extension and supervisor on
 owned cores, with fixture service, boot, process and limit ports. R03 checks a
@@ -99,22 +100,98 @@ use scope and machine-qualified names to disambiguate recipients.
 
 A durable acceptance means the bridge stored a message. It does not mean Pi
 injected the message. The sender retains the payload until a receipt identifies
-a physical entry in the recipient's own session or a matching reply waiter.
-An uncertain delivery stays `unknown` across reload. A same-ID retry requires
-an own-session entry scan and proof that the old generation cannot inject.
-Later messages can advance while an earlier outcome remains unknown.
+a physical entry in the recipient's own session or a matching reply waiter,
+or until the payload expires. An uncertain delivery stays `unknown` across
+reload. A same-ID retry requires an own-session entry scan and proof that the
+old generation cannot inject. Later messages can advance while an earlier
+outcome remains unknown.
+
+The delivery and reconciliation code is in `packages/roam/src/intercom-store.ts`,
+`packages/roam/src/intercom-delivery.ts`, and
+`packages/intercom/src/delivery-observation.ts`.
 
 A link outage preserves peer names and queued mail. The first transient failure
 keeps active asks waiting. If its retry fails, the bridge reports `link-down`
 and emits one diagnostic for the outage. An ask to a known-down edge fails
 immediately. A late reply remains a message after the original waiter ends.
-Undelivered payloads expire after at most 24 hours.
+The payload lifetime is capped at 24 hours. The store removes expired payloads
+when it processes expiry.
 
 Hub-only routing depends on the hub and cannot deliver between boxes while the
 hub is off. Approved peer enrollment adds a dedicated connector, key, and route
-for one box pair. Revocation fences that pair and removes its owned resources.
-If a peer is unreachable, revocation remains pending rather than claiming the
-remote resources were removed. Enrollment does not enable unrelated pairs.
+for one box pair. Enrollment does not enable unrelated pairs. The bridge and
+transport are implemented in `packages/roam/src/intercom-bridge.ts` and
+`packages/roam/src/intercom-exchange.ts`.
+
+### Protocol versions
+
+Replication batches use protocol 1. Intercom exchanges use federation
+protocol 3, which carries `peer-revoked` refusals and revocation receipts.
+The local broker feature `federation-v1` and the helper envelope version 1
+are separate from the intercom exchange version. They do not make an older
+exchange compatible with protocol 3.
+
+An exchange with a different safe integer protocol version is refused with
+`peer-version-mismatch`. The bridge performs a version handshake before it
+sends message frames on a new edge. The version and validation are defined in
+`packages/roam/src/intercom-contracts.ts`, `packages/roam/src/intercom-codec.ts`,
+`packages/roam/src/intercom-helper.ts`, and `packages/roam/src/intercom-bridge.ts`.
+Replication batch validation is in `packages/db-core/src/roam/codec.ts`.
+
+### Origin authentication
+
+`originMachineId` identifies the machine that first accepted a message. The
+store retains it when forwarding the message or replacing it with a tombstone,
+and rejects a conflicting origin for the same message ID. The transport
+checks the enrolled peer. The receiving bridge also checks that the origin is
+allowed on that edge. A direct edge accepts its peer as origin. In hub-only
+mode, a box can also accept a configured relay origin through the hub. A
+missing origin is refused with `missing-origin`, and an unauthorized origin
+fails with `machine-not-enrolled`. This check trusts the authorized edge and
+route configuration; it is not an end-to-end signature.
+
+The checks are in `packages/roam/src/intercom-runtime.ts`,
+`packages/roam/src/intercom-bridge.ts`, `packages/roam/src/intercom-codec.ts`,
+and `packages/roam/src/intercom-store.ts`.
+
+### Pair revocation
+
+Revocation first writes a durable pair fence and failure receipts in one local
+transaction. The bridge rejects the fenced edge with `peer-revoked`, aborts its
+active exchanges, and waits for them to close before resource cleanup. Queued
+and uncertain copies for that peer are marked cancelled, and open asks fail
+with `peer-revoked`. An uncertain copy can already have been transmitted, so
+cancellation does not prove that the recipient did not inject it. The bridge
+retains local failure notices until the addressed session confirms them and
+routes relay receipts back toward the origin.
+
+The revocation process fences the other endpoint when reachable and checks
+pair-owned access and connection cleanup. If the pair host is unreachable or
+required closure evidence is missing, cleanup remains unconfirmed. The pair
+host can remove its key even when the connecting box is unreachable, but other
+cleanup can remain pending. Shared jobs can also leave cleanup pending.
+Re-enrollment needs fresh consent for the recorded fence and a new edge epoch.
+The implementation is in `packages/roam/src/intercom-store.ts`,
+`packages/roam/src/intercom-bridge.ts`, and
+`packages/roam/src/intercom-enrollment.ts`.
+
+### Fork parity and declared divergences
+
+Spider checks its intercom fork against the recorded upstream baseline to keep
+unintended runtime changes and lost upstream test assertions visible. The check
+uses `packages/intercom/upstream-assertions.json` and the provenance hashes in
+`packages/intercom/ORIGIN.md`. Run `node scripts/check-intercom-parity.mjs --manifest`
+to compare the fork with those records.
+
+For an intentional runtime difference, add an entry to
+`packages/intercom/DIVERGENCE.json` with the path relative to
+`packages/intercom/src`, a task identifier such as `3.6a`, a nonempty one-line
+reason, and the upstream SHA-256. Use `null` for a new file without an upstream
+baseline. The fork's `local.ts` uses the upstream hash for `index.ts`, while the
+fork's new `index.ts` uses `null`. The check rejects missing, duplicate, stale,
+and incorrectly hashed entries, as well as unlisted new runtime files. A
+declaration does not waive the upstream test case and assertion checks. The
+rules are implemented in `scripts/check-intercom-parity.mjs`.
 
 ### Explicit hub-only to peers transition
 
@@ -155,6 +232,10 @@ or audit rows. Already-switched boxes continue directly while the hub is down.
 Unswitched boxes keep source mail queued behind the hub's intake fence.
 The reverse transition refuses with `intercom-transition-unsupported`.
 
+The transition is implemented in `packages/roam/src/intercom-topology.ts`,
+`packages/roam/src/intercom-bridge.ts`, and
+`packages/roam/src/intercom-runtime.ts`.
+
 ### Edge initiation and responder queues
 
 Each pair has one bidirectional edge. The hub initiates its box edges; the
@@ -170,6 +251,8 @@ stops polling, the responder's 35-second last-success lease expires. It keeps
 ordinary mail queued, exposes one outage diagnostic, and issues no reverse
 probes. Pending asks keep their original deadlines and fail with `link-down`
 when those deadlines expire. A valid incoming exchange restores live health.
+The edge selection and lease are implemented in
+`packages/roam/src/intercom-runtime.ts` and `packages/roam/src/intercom-bridge.ts`.
 
 ### First-home adoption and retained mail
 
@@ -214,6 +297,8 @@ copies keep their original endpoints and receipt owners. This local record is
 not sent as an exclusion proof and cannot authorize a cursor jump elsewhere.
 Every other endpoint change still requires the existing authoritative rebind
 proof; `stale-home-epoch` and strict inbound exclusion checks remain intact.
+The adoption and delivery checks are in `packages/roam/src/intercom-first-home.ts`,
+`packages/roam/src/intercom-store.ts`, and `packages/roam/src/intercom-delivery.ts`.
 
 ## Isolated intercom acceptance
 
@@ -238,7 +323,9 @@ missing records, changed machines, activations and epochs, attested outbound
 pair continuity, malformed presence, and unauthorized edges.
 
 Task 4.7 still owns actual SSH, systemd, connector connectivity, and Mac-off
-receipts on real machines. Peer mode stays disabled until that gate passes.
+receipts on real machines. Keep peer mode disabled until phase 4 acceptance succeeds. The stories are in
+`packages/herdr/e2e/scenarios/roam-intercom.test.ts` and
+`packages/herdr/e2e/scenarios/intercom-fork.test.ts`.
 
 ## Diagnosed duplicate todos
 

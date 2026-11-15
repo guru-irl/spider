@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { authorizeTestBridge, startTestBroker, stopTestBroker, testTmpDir } from "../test-support.js";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
@@ -118,11 +118,11 @@ it("remote receipts and cancellation use the single bridge", async () => {
   expect(delivered.delivery).toBe("socket_delivered");
   expect((await received)[0]).toEqual(remote);
   client.sendMessageReceipt({ messageId: "incoming", status: "injected", timestamp: 2, evidence: { kind: "entry", entryId: "physical", sessionId: "recipient", activationEpoch: "recipient-activation" } });
-  await client.listSessions();
-  expect(receipts.at(-1)).toMatchObject({ from: { sessionId: "recipient", scopeId: null }, receipt: { messageId: "incoming", status: "injected" } });
+  // The broker forwards to the bridge on the bridge's own socket, so a reply on this socket doesn't order it.
+  await vi.waitFor(() => expect(receipts.at(-1)).toMatchObject({ from: { sessionId: "recipient", scopeId: null }, receipt: { messageId: "incoming", status: "injected" } }), { timeout: 2000 });
   await client.send("remote", { messageId: "cancel-me", text: "synthetic" });
   await client.cancelMessage("cancel-me");
-  expect(controls.at(-1)).toMatchObject({ from: { sessionId: "recipient", scopeId: null }, to: remote.address, control: { action: "cancel", messageId: "cancel-me" } });
+  await vi.waitFor(() => expect(controls.at(-1)).toMatchObject({ from: { sessionId: "recipient", scopeId: null }, to: remote.address, control: { action: "cancel", messageId: "cancel-me" } }), { timeout: 2000 });
 }, 5000);
 
 it("a foreign socket cannot clear another recipient's blocker", async () => {

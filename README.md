@@ -82,7 +82,7 @@ npm run link
 `npm run link` writes `~/.pi/agent/extensions/spider.ts`, a loader file that points at the clone's `dist/extension.js`. It also removes an existing development loader and links `~/.local/bin/spider` to the built roaming CLI. It refuses to replace an unrelated command. Add `~/.local/bin` to your shell's `PATH` if needed.
 Run `/reload` in pi or start a new process, then run `/doctor` to check the bundle, native modules, databases, and config.
 
-`spider roam --help` describes the shell controls. Roaming is disabled by default; keep production replication and hosting disabled until phase 4 acceptance succeeds. A Windows-hosted box needs desktop sign-in after a restart before its tunnel and WSL tasks run. See [Roaming replication](docs/architecture/roaming.md).
+`spider roam --help` describes the shell controls. Roaming is disabled by default. Keep production replication and hosting disabled until phase 4 acceptance succeeds. After a Windows restart, agents hosted on a box stay stopped until someone signs in to that machine's desktop. See [Roaming replication](docs/architecture/roaming.md).
 
 Keep the clone at its linked path. See [Linked shims](docs/architecture/runtime-lifecycle.md#linked-shims) for loading precautions and fallback behavior.
 Direct `pi install git:` installs are not supported. Pi omits development dependencies, which spider needs to build the unbundled source.

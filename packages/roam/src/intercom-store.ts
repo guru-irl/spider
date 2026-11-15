@@ -23,7 +23,7 @@ const unsafe = () => new Error("Unsafe intercom store path or symlink");
 const schemaColumns: Readonly<Record<string, readonly string[]>> = {
   intercom_hop_cursors: ["direction", "peer", "edge_epoch", "sequence"],
   intercom_hop_slots: ["direction", "peer", "edge_epoch", "sequence", "identity_key", "id", "reason", "at"],
-  intercom_meta: ["id", "machine_id", "version", "last_clock"],
+  intercom_meta: ["id", "machine_id", "version", "last_clock", "discard_counts"],
   intercom_messages: ["id", "from_key", "to_key", "digest", "pair_sequence", "ask_id", "identity_json", "is_ask", "ask_state"],
   intercom_copies: ["direction", "id", "endpoint_json", "peer", "payload_json", "payload_bytes", "state", "unknown_outcome", "deadline_at",
     "remaining_ms", "last_clock", "ack_kind", "sent_kind", "transmitted", "readiness", "attempt", "observed_attempt", "receipt_json", "reconciliation_json", "reconciliation_attempt",
@@ -42,7 +42,7 @@ const schemaColumns: Readonly<Record<string, readonly string[]>> = {
   intercom_rejections: ["peer", "id", "reason", "at"],
   intercom_notices: ["id", "kind"],
   intercom_endpoint_aliases: ["direction", "id", "endpoint_json"],
-  intercom_refused_slots: ["from_key", "to_key", "sequence"],
+  intercom_refused_slots: ["from_key", "to_key", "sequence", "at"],
   intercom_settled_receipts: ["peer", "receipt_key"],
   intercom_receipt_positions: ['peer', 'from_key', 'to_key', 'sequence', 'receipt_key'],
   intercom_settled_watermarks: ['peer', 'from_key', 'to_key', 'sequence'],
@@ -72,7 +72,7 @@ function validateSchema(db: Db, tables: readonly { name: string }[], version: nu
   for (const [table, expected] of Object.entries(schemaColumns)) {
     if (!names.has(table)) continue;
     const columns = db.prepare("SELECT name FROM pragma_table_info(?) ORDER BY cid").all(table) as { name: string }[];
-    if (JSON.stringify(columns.map(column => column.name)) !== JSON.stringify(table === "intercom_resumptions" && version < 8 ? expected.filter(name => name !== "edge_epoch") : expected)) throw new Error("Invalid or incomplete intercom store schema");
+    if (JSON.stringify(columns.map(column => column.name)) !== JSON.stringify(table === "intercom_resumptions" && version < 8 ? expected.filter(name => name !== "edge_epoch") : version < 9 && ["intercom_meta", "intercom_refused_slots"].includes(table) ? expected.filter(name => name !== "discard_counts" && name !== "at") : expected)) throw new Error("Invalid or incomplete intercom store schema");
     const required = table === "intercom_resumptions" && version < 8 ? [["from_key", "to_key"]] : schemaKeys[table] ?? [];
     const indexes = db.prepare("SELECT name FROM pragma_index_list(?) WHERE \"unique\"=1").all(table) as { name: string }[];
     const actual = indexes.map(index => (db.prepare("SELECT name FROM pragma_index_info(?) ORDER BY seqno").all(index.name) as { name: string }[]).map(column => column.name));
@@ -80,9 +80,9 @@ function validateSchema(db: Db, tables: readonly { name: string }[], version: nu
       throw new Error("Invalid intercom store identity constraints");
     }
   }
-  for (const table of ["intercom_copies", "intercom_receipts", ...(version >= 3 ? ["intercom_revocation_notices"] : [])]) {
-    const keys = db.prepare("SELECT \"table\",\"from\",\"to\" FROM pragma_foreign_key_list(?)").all(table) as { table: string; from: string; to: string }[];
-    if (!keys.some(key => key.table === "intercom_messages" && key.from === "id" && key.to === "id")) throw new Error("Invalid intercom store identity constraints");
+  for (const table of ["intercom_copies", "intercom_receipts", ...(version >= 3 ? ["intercom_revocation_notices"] : []), ...(version >= 8 ? ["intercom_hop_slots"] : [])]) {
+    const keys = db.prepare("SELECT \"table\",\"from\",\"to\",on_delete FROM pragma_foreign_key_list(?)").all(table) as { table: string; from: string; to: string; on_delete: string }[];
+    if (!keys.some(key => key.table === "intercom_messages" && key.from === "id" && key.to === "id" && (table !== "intercom_hop_slots" || key.on_delete === "CASCADE"))) throw new Error("Invalid intercom store identity constraints");
   }
 }
 function owned(stat: ReturnType<typeof fstatSync>): boolean {
@@ -134,7 +134,7 @@ function prepareFile(file: string, machineId: string): void {
     if (tables.length) {
       const meta = probe.prepare("SELECT machine_id, version FROM intercom_meta WHERE id=1").get() as { machine_id: string; version: number } | undefined;
       if (!meta || meta.machine_id !== machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7 && meta.version !== 8) throw new Error("Unsupported intercom store version");
+      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7 && meta.version !== 8 && meta.version !== 9) throw new Error("Unsupported intercom store version");
       validateSchema(probe, tables, meta.version);
     }
   } finally { probe.close(); }
@@ -295,7 +295,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
   const firstNow = now();
   prepareFile(options.file, options.machineId);
   const db = openDb(options.file, { fileMustExist: true, checkpointOnClose: false, busyTimeoutMs: 1000 });
-  let closed = false, checkpointPending = false, rebuildReceiptEvidence = false;
+  let closed = false, checkpointPending = false;
   const checkpoint = (): void => {
     const result = db.raw.pragma("wal_checkpoint(TRUNCATE)") as Array<{ busy: number }>;
     if (result.some(row => row.busy !== 0)) throw new Error("Intercom WAL checkpoint busy");
@@ -318,7 +318,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           PRIMARY KEY(direction,peer,edge_epoch,sequence), UNIQUE(direction,peer,edge_epoch,id)
         );
         CREATE TABLE IF NOT EXISTS intercom_meta (
-          id INTEGER PRIMARY KEY CHECK(id=1), machine_id TEXT NOT NULL, version INTEGER NOT NULL, last_clock INTEGER NOT NULL
+          id INTEGER PRIMARY KEY CHECK(id=1), machine_id TEXT NOT NULL, version INTEGER NOT NULL, last_clock INTEGER NOT NULL, discard_counts TEXT NOT NULL DEFAULT '{}'
         );
         CREATE TABLE IF NOT EXISTS intercom_messages (
           id TEXT PRIMARY KEY, from_key TEXT NOT NULL, to_key TEXT NOT NULL, digest TEXT NOT NULL,
@@ -339,7 +339,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           peer TEXT NOT NULL, receipt_key TEXT NOT NULL, PRIMARY KEY(peer,receipt_key)
         );
         CREATE TABLE IF NOT EXISTS intercom_refused_slots (
-          from_key TEXT NOT NULL, to_key TEXT NOT NULL, sequence INTEGER NOT NULL,
+          from_key TEXT NOT NULL, to_key TEXT NOT NULL, sequence INTEGER NOT NULL, at INTEGER NOT NULL DEFAULT 0,
           PRIMARY KEY(from_key,to_key,sequence)
         );
         CREATE TABLE IF NOT EXISTS intercom_receipt_positions (
@@ -405,9 +405,30 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       db.prepare("INSERT OR IGNORE INTO intercom_meta(id,machine_id,version,last_clock) VALUES(1,?,4,?)").run(options.machineId, firstNow);
       const meta = db.prepare("SELECT machine_id,version,last_clock FROM intercom_meta WHERE id=1").get() as MetaRow;
       if (!meta || meta.machine_id !== options.machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7 && meta.version !== 8 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
+      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7 && meta.version !== 8 && meta.version !== 9 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
       rollbackPending ||= firstNow < meta.last_clock;
       highWater = Math.max(highWater, meta.last_clock);
+      if (meta.version < 9) {
+        const metaColumns = db.prepare("SELECT name FROM pragma_table_info('intercom_meta')").all() as { name: string }[];
+        if (!metaColumns.some(column => column.name === 'discard_counts')) db.exec("ALTER TABLE intercom_meta ADD COLUMN discard_counts TEXT NOT NULL DEFAULT '{}'");
+        const refusalColumns = db.prepare("SELECT name FROM pragma_table_info('intercom_refused_slots')").all() as { name: string }[];
+        if (!refusalColumns.some(column => column.name === 'at')) {
+          db.exec('ALTER TABLE intercom_refused_slots ADD COLUMN at INTEGER NOT NULL DEFAULT 0');
+          // The creation time is unknown; conservatively start legacy retention now.
+          db.prepare('UPDATE intercom_refused_slots SET at=?').run(highWater);
+        }
+        for (const table of ['intercom_receipts', 'intercom_revocation_notices']) {
+          for (const entry of db.prepare(`SELECT id,frame_json FROM ${table}`).all() as { id: string; frame_json: string }[]) {
+            const original = db.prepare('SELECT * FROM intercom_messages WHERE id=?').get(entry.id) as IdentityRow | undefined;
+            if (!original) throw new Error('receipt-stream-unavailable');
+            if (readOrigin(original)) continue;
+            const discarded = db.prepare(`DELETE FROM ${table} WHERE id=? AND frame_json=?`).run(entry.id, entry.frame_json).changes;
+            const category = table === 'intercom_receipts' ? 'origin-less-receipts' : 'origin-less-revocation-notices';
+            const key = `$."${category}"`;
+            db.prepare('UPDATE intercom_meta SET discard_counts=json_set(discard_counts,?,coalesce(json_extract(discard_counts,?),0)+?) WHERE id=1').run(key, key, discarded);
+          }
+        }
+      }
       if (meta.version < 5) {
         db.prepare(`UPDATE intercom_messages SET identity_json=json_set(identity_json,'$.rejectedBy',
           (SELECT c.peer FROM intercom_copies c WHERE c.id=intercom_messages.id AND c.direction='inbound'),'$.rejectionUsed',json('false'))
@@ -440,16 +461,10 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         db.prepare("UPDATE intercom_meta SET version=6 WHERE id=1").run();
       }
       if (meta.version < 7) {
-        rebuildReceiptEvidence = true;
         for (const table of ['intercom_receipts', 'intercom_revocation_notices']) {
           for (const entry of db.prepare(`SELECT id,frame_json FROM ${table}`).all() as { id: string; frame_json: string }[]) {
             const original = db.prepare('SELECT * FROM intercom_messages WHERE id=?').get(entry.id) as IdentityRow | undefined;
             if (!original) throw new Error('receipt-stream-unavailable');
-            if (table === 'intercom_receipts' && !readOrigin(original) && isMachineId(parseStored<{ rejectedBy?: unknown }>(original.identity_json).rejectedBy)) {
-              // Origin-less rejections use transport refusals, not fabricated stream receipts.
-              db.prepare('DELETE FROM intercom_receipts WHERE id=? AND frame_json=?').run(entry.id, entry.frame_json);
-              continue;
-            }
             const frame = receiptWithStream(original, parseStored<IntercomReceiptInput>(entry.frame_json));
             db.prepare(`UPDATE ${table} SET frame_json=? WHERE id=? AND frame_json=?`).run(JSON.stringify(frame), entry.id, entry.frame_json);
           }
@@ -471,6 +486,11 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
             DROP TABLE intercom_legacy_resumptions;`);
         }
         db.prepare('UPDATE intercom_meta SET version=8 WHERE id=1').run();
+      }
+      if (meta.version < 9) {
+        // Also repair retained evidence after an interrupted deployed schema-7 rebuild.
+        for (const row of db.prepare(`${selectCopy} WHERE c.direction='outbound'`).all() as CopyRow[]) rememberSettled(row);
+        db.prepare('UPDATE intercom_meta SET version=9 WHERE id=1').run();
       }
     }).immediate();
     checkpoint();
@@ -610,6 +630,8 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         deleted = true;
       }
       for (const [from, to] of prunedStreams.values()) refreshWatermarks(from, to);
+      db.prepare('DELETE FROM intercom_refused_slots WHERE at<?').run(at - 2 * INTERCOM_PAYLOAD_MS);
+      db.prepare('DELETE FROM intercom_hop_slots WHERE reason IS NOT NULL AND at<?').run(at - 2 * INTERCOM_PAYLOAD_MS);
       db.prepare("DELETE FROM intercom_rejections WHERE at<?").run(at - 2 * INTERCOM_PAYLOAD_MS);
       db.prepare(`DELETE FROM intercom_resumptions WHERE json_extract(resume_json,'$.reason')='first-home-adoption'
         AND NOT EXISTS (SELECT 1 FROM intercom_messages m WHERE m.from_key=intercom_resumptions.from_key AND m.to_key=intercom_resumptions.to_key)`).run();
@@ -1295,9 +1317,11 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         throw new Error("Invalid intercom rejection");
       }
       db.raw.transaction(() => {
-        if (identity.sequence > cursor("inbound", identity, origin)) {
-          db.prepare("INSERT OR IGNORE INTO intercom_refused_slots(from_key,to_key,sequence) VALUES(?,?,?)")
-            .run(streamKey(origin, identity.from), addressKey(identity.to), identity.sequence);
+        const through = cursor("inbound", identity, origin);
+        const count = (db.prepare("SELECT count(*) AS n FROM intercom_refused_slots").get() as { n: number }).n;
+        if (identity.sequence > through && identity.sequence - through <= queueMessages && count < caps.machineMessages) {
+          db.prepare("INSERT OR IGNORE INTO intercom_refused_slots(from_key,to_key,sequence,at) VALUES(?,?,?,?)")
+            .run(streamKey(origin, identity.from), addressKey(identity.to), identity.sequence, now());
         }
         store.recordRejection(peer, identity.id, reason);
       }).immediate();
@@ -1650,8 +1674,5 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       checkpoint(); db.close(); closed = true;
     },
   };
-  if (rebuildReceiptEvidence) db.raw.transaction(() => {
-    for (const row of db.prepare(`${selectCopy} WHERE c.direction='outbound'`).all() as CopyRow[]) rememberSettled(row);
-  }).immediate();
   return store;
 }

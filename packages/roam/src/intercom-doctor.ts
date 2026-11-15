@@ -12,6 +12,7 @@ import { pairPaths } from "./intercom-pair-files";
 import { compareSshHostKey, inspectServedSshIdentity } from "./intercom-ssh-observation";
 import { runForeground } from "./intercom-local-ops";
 import { observeHelperFeatures, requestHelperInspect } from "./intercom-helper";
+import { openDiagnosticSnapshot } from './diagnostic-snapshot';
 
 interface DoctorOptions {
   root: string; config: RoamConfig; agentDir: string;
@@ -30,10 +31,33 @@ function readOwned(file: string, maximum: number): string {
     return readFileSync(fd, "utf8");
   } finally { closeSync(fd); }
 }
+/** Only categories and counts leave this read-only migration audit. */
+export function inspectIntercomMigrationDiscards(file: string): Diagnostic[] {
+  try {
+    const db = openDiagnosticSnapshot(file);
+    if (!db) return [];
+    try {
+      const columns = db.prepare("SELECT name FROM pragma_table_info('intercom_meta')").all() as { name: string }[];
+      if (!columns.some(column => column.name === 'discard_counts')) return [];
+      const row = db.prepare('SELECT discard_counts FROM intercom_meta WHERE id=1').get() as { discard_counts: string } | undefined;
+      const value: unknown = row ? JSON.parse(row.discard_counts) : null;
+      if (!record(value) || Object.entries(value).some(([category, count]) => !['origin-less-receipts', 'origin-less-revocation-notices'].includes(category) ||
+          typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0)) throw new Error('invalid migration audit');
+      return Object.entries(value).filter(([, count]) => (count as number) > 0).map(([category, count]) => ({
+        severity: 'warning', reason: `intercom-migration-discard: ${category}=${count}`, repairCommand: null,
+      }));
+    } finally { db.close(); }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    return [{ severity: 'warning', reason: 'intercom-migration-discard-inspection-unavailable', repairCommand: null }];
+  }
+}
+
 /** An explicit doctor action may run only the operator's read-only connector check. */
 export async function inspectLocalIntercomDoctor(input: DoctorOptions): Promise<Diagnostic[]> {
-  if (!input.config.intercom.enabled) return [];
-  const diagnostics: Diagnostic[] = [], add = (reason: string, detail: string) => diagnostics.push({ severity: "warning", reason: `${reason}: ${detail}`, repairCommand: null });
+  const diagnostics = inspectIntercomMigrationDiscards(join(input.root, 'roam', 'intercom', 'queue.db'));
+  if (!input.config.intercom.enabled) return diagnostics;
+  const add = (reason: string, detail: string) => diagnostics.push({ severity: "warning", reason: `${reason}: ${detail}`, repairCommand: null });
   const run = input.run ?? runForeground, recipe = input.config.intercom.connector;
   if (!recipe) add("intercom-connector-recipe-missing", "Configure the machine-local connector recipe.");
   else try {

@@ -2,8 +2,18 @@ import type { Db } from '@spider/db-core';
 import { beforeEach } from 'vitest';
 import type { IntercomExchange, IntercomIdentity } from '../intercom-contracts';
 
-/** Reproduce the exact undeployed pre-hop schema while preserving its original rows. */
+/** Reproduce the pre-hop schema while preserving its original rows. */
 export function legacyHopSchema(db: Db): void {
+  if ((db.prepare("SELECT name FROM pragma_table_info('intercom_meta')").all() as { name: string }[]).some(column => column.name === 'discard_counts')) {
+    db.exec(`ALTER TABLE intercom_meta RENAME TO fixture_meta;
+      CREATE TABLE intercom_meta (id INTEGER PRIMARY KEY CHECK(id=1),machine_id TEXT NOT NULL,version INTEGER NOT NULL,last_clock INTEGER NOT NULL);
+      INSERT INTO intercom_meta SELECT id,machine_id,version,last_clock FROM fixture_meta; DROP TABLE fixture_meta;`);
+  }
+  if ((db.prepare("SELECT name FROM pragma_table_info('intercom_refused_slots')").all() as { name: string }[]).some(column => column.name === 'at')) {
+    db.exec(`ALTER TABLE intercom_refused_slots RENAME TO fixture_refusals;
+      CREATE TABLE intercom_refused_slots (from_key TEXT NOT NULL,to_key TEXT NOT NULL,sequence INTEGER NOT NULL,PRIMARY KEY(from_key,to_key,sequence));
+      INSERT INTO intercom_refused_slots SELECT from_key,to_key,sequence FROM fixture_refusals; DROP TABLE fixture_refusals;`);
+  }
   db.exec(`DROP TABLE intercom_hop_slots; DROP TABLE intercom_hop_cursors;
     ALTER TABLE intercom_resumptions RENAME TO fixture_resumptions;
     CREATE TABLE intercom_resumptions (from_key TEXT NOT NULL,to_key TEXT NOT NULL,peer TEXT NOT NULL,

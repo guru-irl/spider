@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { rmSync } from "node:fs";
-import { join } from "node:path";
+import { rmSync, readdirSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { openDbAt, paths } from "@spider/db-core";
 import { sendIntercom, SUBAGENT_RESULT_INTERCOM_EVENT, SUBAGENT_RESULT_INTERCOM_DELIVERY_EVENT } from "../intercom";
@@ -30,6 +30,7 @@ function fakePiNoBroker() {
         return () => handlers.get(event)?.delete(fn);
       },
       emit(event: string, payload: any) {
+        if (event === "spider:intercom-resolve") { payload.handled = true; payload.respond({ kind: "unknown", reason: "broker-unavailable" }); }
         // Do NOT auto-ack — let the request timeout
         for (const fn of handlers.get(event) ?? []) fn(payload);
       },
@@ -328,3 +329,26 @@ describe("Task 5: queue-first intercom durability", () => {
     });
   });
 });
+
+it("delivered local mail removes its private route file", () => {
+  const db = freshGlobal();
+  try {
+    const store = new MessageStore(db), id = store.enqueue({ toSession: "route-cleanup", body: "synthetic" });
+    const root = join(dirname(dbPath), "intercom-routes");
+    const before = readdirSync(root);
+    const own = new MessageStore(db).pending("route-cleanup")[0];
+    expect(own.route?.kind).toBe("local");
+    store.markDelivered(id);
+    expect(readdirSync(root)).toHaveLength(before.length - 1);
+  } finally { db.close(); }
+}, 5000);
+it("mail queued before route files existed still drains locally", async () => {
+  const db = freshGlobal();
+  try {
+    db.prepare("INSERT INTO message_mirror(to_session,body,created_at) VALUES (?,?,?)").run("legacy-local", "synthetic", 1);
+    const messages: any[] = [];
+    await (await import("../intercom")).pollPendingMessages(db, "legacy-local", { sendMessage: (m: any) => messages.push(m) });
+    expect(messages).toHaveLength(1);
+    expect(new MessageStore(db).pending("legacy-local")).toEqual([]);
+  } finally { db.close(); }
+}, 5000);

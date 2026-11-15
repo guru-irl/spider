@@ -108,6 +108,18 @@
       "task": "3.6a",
       "reason": "Show remote machine qualifiers without claiming local cwd affinity.",
       "upstreamHash": "38433b22225acb18b24a3290678c6df161d03e218dc036c8023781cb41d6601a"
+    },
+    {
+      "path": "broker/extension.test.ts",
+      "task": "3.6a",
+      "reason": "Use owned fixture brokers and private agent directories while keeping every upstream assertion.",
+      "upstreamHash": "ee68f4a658f45c02f1ce36f828c230b2ceb1dff4b16d580140479c715b39704d"
+    },
+    {
+      "path": "intercom.integration.test.ts",
+      "task": "3.6a",
+      "reason": "Use owned fixture brokers and private agent directories while keeping every upstream assertion.",
+      "upstreamHash": "dfe7593d2d778e0964e17b855e4f063369aa1da2702a0d8a0697c85a6b973f87"
     }
   ]
 }

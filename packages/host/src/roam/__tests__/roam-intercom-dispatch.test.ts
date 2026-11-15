@@ -48,12 +48,12 @@ it("local offline portable-id row without home still replays", async () => {
   await pollPendingMessages(f.db, id, { sendMessage: (m: unknown) => messages.push(m) });
   expect(messages).toHaveLength(1); expect(messages[0].details.body).toBe("local body"); expect(store.pending(id)).toEqual([]);
 }, 5000);
-it("historical route evidence selects replay without address guessing", async () => {
+it("pre-upgrade rows migrate once to local routes without address guessing", async () => {
   const f = fixture(), messages: unknown[] = [];
   f.db.prepare("INSERT INTO message_mirror(to_session,body,created_at) VALUES ('target','unresolved',1)").run();
   await pollPendingMessages(f.db, "target", { sendMessage: (m: unknown) => messages.push(m) });
-  expect(messages).toEqual([]);
-  expect(new MessageStore(f.db).pending("target")[0].body).toBe("unresolved");
+  expect(messages).toHaveLength(1);
+  expect(new MessageStore(f.db).pending("target")).toEqual([]);
 }, 5000);
 it("ambiguous target has zero send and mailbox effects", async () => {
   const f = fixture("ambiguous"); const result = await sendIntercom(f.pi, f.db, { to: "target", message: "synthetic" });

@@ -6,6 +6,15 @@ export { parseFederationBrokerMessage, isSessionAddress, isSessionEndpoint, isFi
 export { createDeliveryObserver, createIntercomDeliveryObserver } from "./delivery-observation.js";
 export type { DeliveryObservation, GenerationExclusion, IntercomObservationPorts } from "./delivery-observation.js";
 
+export const RECEIPT_EVIDENCE_FEATURE = "receipt-evidence-v1";
+export const RECEIPT_ACK_FEATURE = "receipt-ack-v1";
+/** Legacy peers cannot express exclusion or uncertainty. Never turn either into consumption. */
+export function compatibleReceipt(receipt: MessageReceipt, evidence: boolean): MessageReceipt | undefined {
+  if (evidence) return receipt;
+  if (receipt.status === "unknown" || receipt.status === "not_injected") return undefined;
+  // A matched waiter received the reply, but legacy acknowledgement makes no injection claim.
+  return receipt.status === "matched_waiter" ? { ...receipt, status: "acknowledged" } : receipt;
+}
 export const FEDERATION_FEATURE = "federation-v1";
 export const HELPER_EXCHANGE_FEATURE = "intercom-exchange-v1";
 export const FEDERATION_NOTICE_ACK_FEATURE = "federation-notice-ack-v1";
@@ -45,7 +54,7 @@ export interface FederationBlockers {
   unknownOutcomes: readonly string[];
   unobservedReceipts: readonly string[];
 }
-export interface BridgeRegistration { feature: string; agentDir: string; machineId: string; machineAlias: string }
+export interface BridgeRegistration { credential?: string; feature: string; agentDir: string; machineId: string; machineAlias: string }
 /** The one machine-owned durable bridge. The broker owns no remote payload queue. */
 export interface FederationBridge {
   dispatch(frame: FederationDispatch): Promise<FederationDispatchResult>;

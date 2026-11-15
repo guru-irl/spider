@@ -7,6 +7,7 @@ import { INTERCOM_HOST_EVENT, addressKey, createIntercomDeliveryObserver, isSess
 import type { SessionGenerationExclusion } from "@spider/roam/intercom-contracts";
 import type { ReconcileProof } from "@spider/roam/intercom-delivery";
 import { intercomExclusion, probeIntercomProcess, recordIntercomGeneration, type NativeProcess } from "@spider/roam/intercom-exclusion";
+import { sessionHome } from "@spider/roam/homes";
 import { readLocalIdentity } from "@spider/roam/runtime";
 import { recordFirstHomeAdoption } from "@spider/roam/intercom-first-home";
 export { createHostIntercomDelivery, type HostIntercomDelivery, type HostIntercomDeliveryPorts, type ReconcileProof } from "@spider/roam/intercom-delivery";
@@ -63,8 +64,7 @@ export function createHostIntercomPorts(gate: AdmissionGate, options: { db?: Db;
     let db: ReturnType<typeof openGlobalReadOnly>;
     try {
       db = openGlobalReadOnly();
-      const row = db?.prepare("SELECT machine_id,epoch,move_id,updated_at FROM session_homes WHERE session_id=?").get(address.sessionId) as { machine_id: string; epoch: number; move_id: string | null; updated_at: number } | undefined;
-      return row ? { sessionId: address.sessionId, machineId: row.machine_id, epoch: row.epoch, moveId: row.move_id, updatedAt: row.updated_at } : null;
+      return db ? sessionHome(db, address.sessionId) : null;
     } catch { return "unknown"; } finally { db?.close(); }
   } };
 }

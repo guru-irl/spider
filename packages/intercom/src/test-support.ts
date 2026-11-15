@@ -1,7 +1,7 @@
 import { afterAll, afterEach, it } from 'vitest';
 import type { EventEmitter } from 'node:events';
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnOptionsWithStdioTuple, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomBytes } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve, join, relative, isAbsolute, basename } from 'node:path';
 const base = resolve('.spider/scratch');
@@ -125,4 +125,15 @@ export function waitForSocketClose(socket: EventEmitter): Promise<void> {
 export default function test(name: string, optionsOrBody: { concurrency?: boolean; timeout?: number; skip?: boolean } | (() => unknown), body?: () => unknown): void {
   const run = typeof optionsOrBody === 'object' && optionsOrBody.skip ? it.skip : it;
   run(name, body ?? optionsOrBody as () => unknown, 5000);
+}
+
+/** A runtime-owned credential and explicit enabled config for real broker fixtures. */
+export function authorizeTestBridge(agentDir: string, machineId: string): string {
+  const runtime = join(agentDir, "roam"), broker = join(agentDir, "intercom");
+  mkdirSync(runtime, { recursive: true, mode: 0o700 });
+  mkdirSync(broker, { recursive: true, mode: 0o700 });
+  const credential = randomBytes(32).toString("hex");
+  writeFileSync(join(runtime, "config.json"), JSON.stringify({ machineId, intercom: { enabled: true } }), { mode: 0o600 });
+  writeFileSync(join(broker, "bridge-authority.json"), JSON.stringify({ version: 1, root: agentDir, machineId, credential }), { mode: 0o600 });
+  return credential;
 }

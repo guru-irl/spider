@@ -69,9 +69,9 @@ export function createIntercomDeliveryObserver(ports: IntercomObservationPorts) 
     ports.receipt({ messageId: id, status: value.state, timestamp: ports.now(), ...(value.evidence ? { evidence: value.evidence } : value.state === "not_injected" ? { evidence: { kind: "absence" as const, sessionId: ports.sessionId, activationEpoch: ports.generation, excludedGeneration: ports.generation, complete: true as const } } : {}) });
   };
   const competing = new Set<string>();
-  const observeEntries = (): boolean => {
+  const observeEntries = (physicalEntries?: readonly unknown[]): boolean => {
     let entries: readonly unknown[];
-    try { entries = ports.entries(); } catch { return false; }
+    try { entries = physicalEntries ?? ports.entries(); } catch { return false; }
     competing.clear();
     for (const entry of entries) {
       if (!record(entry) || typeof entry.id !== "string") continue;
@@ -108,7 +108,7 @@ export function createIntercomDeliveryObserver(ports: IntercomObservationPorts) 
       return registered;
     },
     accept(id: string): void { observer.accept(id, ports.generation); },
-    observeEntries: (): void => { observeEntries(); },
+    observeEntries: (entries?: readonly unknown[]): void => { observeEntries(entries); },
     snapshot: (id: string): DeliveryObservation<ConsumptionEvidence> | undefined => observer.snapshot(id),
     priorReceipt(id: string): void { reported.delete(id); report(id); },
     matchedWaiter(id: string, evidence: Extract<ConsumptionEvidence, { kind: "waiter" }>): void {

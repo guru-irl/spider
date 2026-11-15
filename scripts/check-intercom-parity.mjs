@@ -171,6 +171,7 @@ function verify(manifest, forkRoot) {
     if (JSON.stringify(actual.cases) !== JSON.stringify(expected.cases)) throw new Error(`Test cases changed in ${name}`);
     if (!expected.assertions.length || expected.assertions.some(item => sha256(item.text) !== item.sha256)) throw new Error(`Invalid assertion manifest in ${name}`);
     if (JSON.stringify(actual.assertions) !== JSON.stringify(expected.assertions)) throw new Error(`Assertion content changed in ${name}`);
+    if (!declarations.has(name) && sha256(readFileSync(file, 'utf8')) !== expected.adoptedSha256) throw new Error(`Unlisted test setup change in ${name}`);
     assertionCount += expected.assertions.length;
   }
   for (const [name, expected] of Object.entries(manifest.sources)) {

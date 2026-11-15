@@ -1,6 +1,7 @@
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import type { Db } from "@spider/db-core";
 import { createHash, randomUUID } from "node:crypto";
-import { constants, closeSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { constants, closeSync, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 export type MessageRoute = { kind: "local" | "bridge"; messageId: string };
@@ -43,7 +44,21 @@ function writeRoute(db: Db, row: MessageRow, route: MessageRoute): void {
 }
 
 export class MessageStore {
-  constructor(private db: Db) {}
+  constructor(private db: Db) {
+    // Before route files existed this table held only local mail. Upgrade it once,
+    // never treating a missing or invalid proof on a later row as local authority.
+    this.db.transaction(() => {
+      if (readLocal<boolean>(db, "intercom-mail", "routes-migrated")) return;
+      const rows = db.prepare("SELECT * FROM message_mirror WHERE delivered_at IS NULL").all() as any[];
+      for (const r of rows) {
+        const row: MessageRow = { id: r.id, fromSession: r.from_session, toSession: r.to_session, kind: r.kind, body: r.body, createdAt: r.created_at, deliveredAt: r.delivered_at, readAt: r.read_at };
+        try { lstatSync(routeFile(db, row)); continue; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        writeRoute(db, row, { kind: "local", messageId: randomUUID() });
+      }
+      writeLocal(db, "intercom-mail", "routes-migrated", true);
+    })();
+  }
   enqueue(m: { fromSession?: string; toSession: string; kind?: string; body: string; route?: MessageRoute }): number {
     return this.db.transaction(() => {
       const createdAt = Date.now();
@@ -56,7 +71,7 @@ export class MessageStore {
       return id;
     })();
   }
-  /** Undelivered messages addressed to this session. Missing historical evidence never permits replay. */
+  /** Pre-route-file rows were local mail. Bridge payloads are never stored here. */
   pending(sessionId: string, limit?: number): MessageRow[] {
     const sql = `SELECT * FROM message_mirror WHERE to_session = ? AND delivered_at IS NULL ORDER BY created_at, id${limit ? " LIMIT ?" : ""}`;
     const rows = limit ? this.db.prepare(sql).all(sessionId, limit) : this.db.prepare(sql).all(sessionId);
@@ -66,7 +81,13 @@ export class MessageStore {
     });
   }
   markDelivered(id: number, now?: number): boolean {
-    return this.db.prepare("UPDATE message_mirror SET delivered_at = @now WHERE id = @id AND delivered_at IS NULL").run({ id, now: now ?? Date.now() }).changes > 0;
+    const row = this.db.prepare("SELECT * FROM message_mirror WHERE id=?").get(id) as any;
+    const changed = this.db.prepare("UPDATE message_mirror SET delivered_at = @now WHERE id = @id AND delivered_at IS NULL").run({ id, now: now ?? Date.now() }).changes > 0;
+    if (row) {
+      try { unlinkSync(routeFile(this.db, { id: row.id, fromSession: row.from_session, toSession: row.to_session, kind: row.kind, body: row.body, createdAt: row.created_at, deliveredAt: row.delivered_at, readAt: row.read_at })); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
+    return changed;
   }
   markRead(id: number, now?: number): boolean {
     return this.db.prepare("UPDATE message_mirror SET read_at = @now WHERE id = @id AND read_at IS NULL").run({ id, now: now ?? Date.now() }).changes > 0;

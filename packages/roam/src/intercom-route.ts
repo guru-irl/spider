@@ -1,10 +1,11 @@
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, open, realpath, unlink } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
 import { privateDirectory, readPrivateJson, withProcessLock, writePrivateJson } from "@spider/herdr/sessions/registry";
 
-export interface HelperRouteLease { publish(token: string): Promise<void>; close(): Promise<void> }
+export interface HelperRouteLease { authorizeBridge(machineId: string): Promise<string>; publish(token: string): Promise<void>; close(): Promise<void> }
 const owned = (info: Awaited<ReturnType<typeof lstat>>): boolean => process.platform === "win32" || typeof process.getuid !== "function" || info.uid === process.getuid();
 async function directory(path: string, privateMode: boolean): Promise<void> {
   const info = await lstat(path);
@@ -40,8 +41,17 @@ export async function acquireHelperRoute(globalRoot: string, agentDir: string, s
   const ready = new Promise<void>(resolveReady => { acquired = resolveReady; });
   const lease = withProcessLock(base, "intercom-bridge-service", async () => { acquired(); await held; }, { signal });
   await Promise.race([ready, lease.then(() => { throw new Error("helper-route-lease-lost"); })]);
-  let current: string | null = null, closed = false;
+  let current: string | null = null, bridgeCredential: string | null = null, closed = false;
+  const brokerDirectory = join(agentDir, "intercom"), authority = join(brokerDirectory, "bridge-authority.json");
   return {
+    async authorizeBridge(machineId) {
+      if (closed) throw new Error("helper-route-lease-lost");
+      await privateDirectory(brokerDirectory); await directory(brokerDirectory, true); await safeFile(authority);
+      if (!bridgeCredential) bridgeCredential = randomBytes(32).toString("hex");
+      await writePrivateJson(authority, { version: 1, root: globalRoot, machineId, credential: bridgeCredential });
+      await syncDirectory(brokerDirectory);
+      return bridgeCredential;
+    },
     async publish(token) {
       if (closed || !/^[0-9a-f]{64}$/.test(token)) throw new Error("unsafe-helper-route");
       await directory(base, true); await safeFile(file);
@@ -50,6 +60,10 @@ export async function acquireHelperRoute(globalRoot: string, agentDir: string, s
     async close() {
       if (closed) return; closed = true;
       try {
+        if (bridgeCredential && await safeFile(authority)) {
+          const value = await readPrivateJson(authority) as { credential?: unknown } | null;
+          if (value?.credential === bridgeCredential) { await unlink(authority); await syncDirectory(brokerDirectory); }
+        }
         if (current && await safeFile(file)) {
           const value = await readPrivateJson(file) as { token?: unknown; agentDir?: unknown } | null;
           if (value?.token === current && value.agentDir === agentDir) { await unlink(file); await syncDirectory(base); }

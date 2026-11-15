@@ -7,6 +7,7 @@ import {
 import { isRemoteSessionInfo, isConsumptionReceipt } from "./protocol.js";
 
 interface DispatchMetadata {
+  createdAt: number;
   from: SessionAddress;
   to: SessionAddress;
   endpoint: string;
@@ -28,7 +29,13 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
   let localMachine: string | null = null;
   let remote = new Map<string, RemoteSessionInfo>();
   const dispatches = new Map<string, DispatchMetadata>();
-  const asks = new Map<string, { id: string; from: SessionAddress; to: SessionAddress }>();
+  const asks = new Map<string, { id: string; from: SessionAddress; to: SessionAddress; createdAt: number }>();
+  const prune = () => {
+    const now = ports.now();
+    for (const [id, value] of dispatches) if (now - value.createdAt > 60 * 60 * 1000) dispatches.delete(id);
+    for (const [id, value] of asks) if (now - value.createdAt > 60 * 60 * 1000) asks.delete(id);
+    for (const map of [dispatches, asks]) while (map.size > 4096) map.delete(map.keys().next().value!);
+  };
   const requireBridge = () => { if (!bridge) throw new Error("federation-unavailable"); return bridge; };
   const related = (address: SessionAddress, item: DispatchMetadata) => sameAddress(address, item.from) || sameAddress(address, item.to);
   const applyControl = (from: SessionAddress, to: SessionAddress, control: MessageControl): void => {
@@ -39,7 +46,7 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
     if (!message.expectsReply) return;
     if ([...asks.values()].some(edge => sameAddress(edge.from, from) && edge.id !== message.id)) throw new Error("one-outbound-ask");
     if ([...asks.values()].some(edge => edge.id !== message.replyTo && sameAddress(edge.from, to) && sameAddress(edge.to, from))) throw new Error("mutual-ask-refused");
-    asks.set(message.id, { id: message.id, from, to });
+    asks.set(message.id, { id: message.id, from, to, createdAt: ports.now() });
   };
   const applyReceipt = (from: SessionAddress, receipt: MessageReceipt): void => {
     const edge = asks.get(receipt.messageId);
@@ -55,9 +62,10 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
     }
   };
   async function dispatchTracked(from: SessionAddress, to: RemoteSessionInfo, message: Message): Promise<FederationDispatchResult> {
+      prune();
       admitAsk(from, to.address, message);
-      const metadata: DispatchMetadata = { from, to: to.address, endpoint: to.activationEpoch, pending: true, unknown: false, unobserved: true };
-      dispatches.set(message.id, metadata);
+      const metadata: DispatchMetadata = { createdAt: ports.now(), from, to: to.address, endpoint: to.activationEpoch, pending: true, unknown: false, unobserved: true };
+      dispatches.set(message.id, metadata); prune();
       try {
         const result = await requireBridge().dispatch({ from, to, message });
         metadata.pending = false;
@@ -80,8 +88,9 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
     observeReceipt: applyReceipt,
     observeControl: applyControl,
     observeInbound(from, to, activationEpoch, message): void {
+      prune();
       admitAsk(from, to, message);
-      dispatches.set(message.id, { from, to, endpoint: activationEpoch, pending: false, unknown: false, unobserved: true });
+      dispatches.set(message.id, { createdAt: ports.now(), from, to, endpoint: activationEpoch, pending: false, unknown: false, unobserved: true });
       if (message.replyTo) {
         const edge = asks.get(message.replyTo);
         if (edge && sameAddress(edge.from, to) && sameAddress(edge.to, from)) asks.delete(message.replyTo);
@@ -146,9 +155,10 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
       applyControl(from, to, control);
     },
     inspectBlockers(address): FederationBlockers {
+      prune();
       const entries = [...dispatches.entries()].filter(([, value]) => related(address, value));
       return {
-        asks: structuredClone([...asks.values()].filter(edge => sameAddress(edge.from, address) || sameAddress(edge.to, address))),
+        asks: structuredClone([...asks.values()].filter(edge => sameAddress(edge.from, address) || sameAddress(edge.to, address)).map(({ id, from, to }) => ({ id, from, to }))),
         pendingDispatch: entries.filter(([, value]) => value.pending).map(([id]) => id),
         unknownOutcomes: entries.filter(([, value]) => value.unknown).map(([id]) => id),
         unobservedReceipts: entries.filter(([, value]) => value.unobserved).map(([id]) => id),

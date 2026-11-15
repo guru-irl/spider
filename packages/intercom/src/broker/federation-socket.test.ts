@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { startTestBroker, stopTestBroker, testTmpDir } from "../test-support.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { authorizeTestBridge, startTestBroker, stopTestBroker, testTmpDir } from "../test-support.js";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -23,14 +23,17 @@ const adapter: FederationBridge = {
 };
 beforeAll(async () => {
   fixtureHome = mkdtempSync(join(testTmpDir(), "h-"));
-  broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: fixtureHome }, stdio: ["ignore", "pipe", "pipe"] }, "suite");
+  const clock = join(fixtureHome, "clock"), preload = join(fixtureHome, "clock.mjs");
+  writeFileSync(clock, String(Date.now()));
+  writeFileSync(preload, `import { readFileSync } from 'node:fs'; Date.now = () => Number(readFileSync(${JSON.stringify(clock)}, 'utf8'));`);
+  broker = startTestBroker(process.execPath, ["--import", preload, "dist/intercom/broker.mjs"], { env: { ...process.env, HOME: fixtureHome }, stdio: ["ignore", "pipe", "pipe"] }, "suite");
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("fixture broker startup timed out")), 4000);
     broker.once("exit", code => { clearTimeout(timer); reject(new Error(`fixture broker exit ${code}`)); });
     broker.stdout!.on("data", chunk => { if (String(chunk).includes("Intercom broker started")) { clearTimeout(timer); resolve(); } });
   });
   bridge = new IntercomFederationClient();
-  await bridge.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" }, adapter);
+  await bridge.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "machine-1"), machineId: "machine-1", machineAlias: "local.invalid" }, adapter);
   bridge.publishPresence([remote]);
 }, 5000);
 afterAll(async () => {
@@ -186,4 +189,81 @@ it.each(["runtime", "logical"])("local home dispatch preserves logical identity 
   expect(result).toMatchObject({ delivery: "queued", acceptance: { accepted: true, durable: true } });
   expect(frames.at(-1)).toMatchObject({ to: { id: logicalId, address: { sessionId: logicalId, scopeId: null } }, message: { id: `alias-mail-${selector}` } });
   expect(received).toBe(0);
+}, 5000);
+
+it("an ordinary local peer cannot claim the bridge before or after the service", async () => {
+  const attempt = async (id: string) => {
+    const socket = net.connect(getBrokerSocketPath()), messages: any[] = [];
+    socket.on("data", createMessageReader(message => messages.push(message), () => socket.destroy()));
+    writeMessage(socket, { type: "federation_register", feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "squatter", machineAlias: "fake.invalid" });
+    writeMessage(socket, { type: "list", requestId: "still-ordinary" });
+    await new Promise<void>(resolve => { socket.on("close", resolve); });
+    expect(messages.some(message => message.type === "federation_registered")).toBe(false);
+    expect(await (await session(id)).listSessions()).toBeInstanceOf(Array);
+  };
+  await bridge.close();
+  await attempt("before-service");
+  bridge = new IntercomFederationClient();
+  await bridge.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "machine-1"), machineId: "machine-1", machineAlias: "local.invalid" }, adapter);
+  await attempt("after-service");
+  expect(await bridge.inspectBlockers({ sessionId: "before-service", scopeId: null })).toBeDefined();
+}, 5000);
+
+it("unobserved local receipts become bounded unknown markers and expire", async () => {
+  const source = await session("retained-source"), target = await session("retained-target");
+  await source.send("retained-target", { messageId: "retained-receipt", text: "synthetic" });
+  expect((await bridge.inspectBlockers({ sessionId: "retained-source", scopeId: null })).unobservedReceipts).toContain("retained-receipt");
+  await target.disconnect();
+  expect((await bridge.inspectBlockers({ sessionId: "retained-source", scopeId: null })).unknownOutcomes).toContain("retained-receipt");
+  const clock = join(fixtureHome, "clock"), now = readFileSync(clock, "utf8");
+  try {
+    writeFileSync(clock, String(Number(now) + 60 * 60 * 1000 + 1));
+    const result = await bridge.inspectBlockers({ sessionId: "retained-source", scopeId: null });
+    expect(result.unobservedReceipts).not.toContain("retained-receipt");
+    expect(result.unknownOutcomes).not.toContain("retained-receipt");
+  } finally { writeFileSync(clock, now); }
+}, 5000);
+it("even a valid bridge credential is refused when federation is disabled", async () => {
+  const file = join(getAgentDirPath(), "roam", "config.json"), config = readFileSync(file, "utf8");
+  const credential = JSON.parse(readFileSync(join(getAgentDirPath(), "intercom", "bridge-authority.json"), "utf8")).credential;
+  await bridge.close();
+  const socket = net.connect(getBrokerSocketPath()), messages: any[] = [];
+  socket.on("data", createMessageReader(message => messages.push(message), () => socket.destroy()));
+  try {
+    writeFileSync(file, JSON.stringify({ machineId: "machine-1", intercom: { enabled: false } }));
+    writeMessage(socket, { type: "federation_register", feature: FEDERATION_FEATURE, credential, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" });
+    writeMessage(socket, { type: "list", requestId: "must-refuse" });
+    await new Promise<void>(resolve => socket.once("close", resolve));
+    expect(messages.some(message => message.type === "federation_registered")).toBe(false);
+  } finally {
+    socket.destroy(); writeFileSync(file, config); bridge = new IntercomFederationClient();
+    await bridge.connect({ feature: FEDERATION_FEATURE, credential, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" }, adapter);
+  }
+}, 5000);
+it("unsafe bridge credential permissions do not authorize a claim", async () => {
+  const file = join(getAgentDirPath(), "intercom", "bridge-authority.json"), authority = JSON.parse(readFileSync(file, "utf8"));
+  await bridge.close();
+  const socket = net.connect(getBrokerSocketPath()), messages: any[] = [];
+  socket.on("data", createMessageReader(message => messages.push(message), () => socket.destroy()));
+  try {
+    chmodSync(file, 0o644);
+    writeMessage(socket, { type: "federation_register", feature: FEDERATION_FEATURE, credential: authority.credential, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" });
+    writeMessage(socket, { type: "list", requestId: "must-refuse" });
+    await new Promise<void>(resolve => socket.once("close", resolve));
+    expect(messages.some(message => message.type === "federation_registered")).toBe(false);
+  } finally {
+    socket.destroy(); chmodSync(file, 0o600); bridge = new IntercomFederationClient();
+    await bridge.connect({ feature: FEDERATION_FEATURE, credential: authority.credential, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" }, adapter);
+  }
+}, 5000);
+
+it("a reloaded local recipient can prove a queued entry from its old activation", async () => {
+  const sender = await session("reload-proof-source"), old = await session("reload-proof-old", "old", undefined, "reload-proof-recipient"), receipts: any[] = [];
+  sender.onMessageReceipt((_from, receipt) => receipts.push(receipt));
+  await sender.send("reload-proof-old", { messageId: "reload-proof", text: "synthetic" });
+  await old.disconnect();
+  const current = await session("reload-proof-new", "new", undefined, "reload-proof-recipient");
+  current.sendMessageReceipt({ messageId: "reload-proof", status: "injected", timestamp: Date.now(), evidence: { kind: "entry", entryId: "physical-old-queue", sessionId: "reload-proof-recipient", activationEpoch: "reload-proof-old-activation" } });
+  await current.listSessions(); await sender.listSessions();
+  expect(receipts).toMatchObject([{ messageId: "reload-proof", status: "injected", evidence: { entryId: "physical-old-queue" } }]);
 }, 5000);

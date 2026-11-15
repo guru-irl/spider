@@ -1,5 +1,5 @@
 import { spawn } from "child_process";
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
+import { statSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { createRequire } from "module";
@@ -294,6 +294,7 @@ interface ProbeContext { env: NodeJS.ProcessEnv; pidPath: string; signal?: Abort
 async function isBrokerRunning(context: ProbeContext): Promise<boolean> {
   const state = await probeSocket(context);
   if (state === "compatible") return true;
+  if (state === "retry") { await waitForBroker(context); return true; }
   if (state === "occupied") throw new Error("unsupported-broker");
   if (!existsSync(context.pidPath)) return false;
   let pid: number;
@@ -314,7 +315,7 @@ function connectToBrokerTarget(target: BrokerConnectTarget): net.Socket {
     : net.connect({ host: target.host, port: target.port });
 }
 
-function probeSocket(context: ProbeContext): Promise<"compatible" | "occupied" | "absent"> {
+function probeSocket(context: ProbeContext): Promise<"compatible" | "occupied" | "absent" | "retry"> {
   return new Promise((resolve, reject) => {
     if (context.signal?.aborted) { reject(new Error("broker-start-aborted")); return; }
     let target: BrokerConnectTarget;
@@ -323,23 +324,24 @@ function probeSocket(context: ProbeContext): Promise<"compatible" | "occupied" |
     const socket = connectToBrokerTarget(target), requestId = randomUUID();
     const expectedStateId = typeof target === "string" ? undefined : target.stateId;
     let settled = false, connected = false;
-    const finish = (state: "compatible" | "occupied" | "absent", aborted = false) => {
+    const finish = (state: "compatible" | "occupied" | "absent" | "retry", aborted = false) => {
       if (settled) return;
       settled = true; clearTimeout(timeout); context.signal?.removeEventListener("abort", onAbort);
-      socket.off("connect", onConnect); socket.off("error", onError); socket.off("data", reader); socket.destroy();
+      socket.off("close", onClose); socket.off("connect", onConnect); socket.off("error", onError); socket.off("data", reader); socket.destroy();
       if (aborted) reject(new Error("broker-start-aborted")); else resolve(state);
     };
     const onAbort = () => finish("occupied", true);
     const onConnect = () => {
       connected = true;
       try { writeMessage(socket, { type: "health", requestId, ...(expectedStateId ? { stateId: expectedStateId } : {}) }); }
-      catch { finish("occupied"); }
+      catch { finish("retry"); }
     };
-    const onError = (error: NodeJS.ErrnoException) => finish(!connected && (error.code === "ENOENT" || error.code === "ECONNREFUSED") ? "absent" : "occupied");
+    const onClose = () => finish("retry");
+    const onError = (error: NodeJS.ErrnoException) => finish(!connected && (error.code === "ENOENT" || error.code === "ECONNREFUSED") ? "absent" : "retry");
     const reader = createMessageReader(message => finish(isBrokerHealthOkMessage(message, requestId) ? "compatible" : "occupied"), () => finish("occupied"));
-    const timeout = setTimeout(() => finish("occupied"), 1000);
+    const timeout = setTimeout(() => finish("retry"), 1000);
     context.signal?.addEventListener("abort", onAbort, { once: true });
-    socket.on("connect", onConnect); socket.on("error", onError); socket.on("data", reader);
+    socket.on("close", onClose); socket.on("connect", onConnect); socket.on("error", onError); socket.on("data", reader);
   });
 }
 
@@ -383,13 +385,13 @@ function isSpawnLockStale(lockPath: string): boolean {
     const ageMs = Date.now() - createdAt;
 
     if (Number.isSafeInteger(pid) && pid > 1) {
-      try { process.kill(pid, 0); return false; }
-      catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+      try { process.kill(pid, 0); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; }
     }
     return Number.isFinite(createdAt) && ageMs > 10_000;
   } catch {
-    // An unreadable owner cannot safely be displaced.
-    return false;
+    // An unreadable lock retains the same bounded age fallback.
+    try { return Date.now() - statSync(lockPath).mtimeMs > 10_000; } catch { return false; }
   }
 }
 

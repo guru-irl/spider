@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import shippedPatches from '../../assets/look/patches.json' with { type: 'json' };
 import theme from '../../assets/themes/spider-glass.json' with { type: 'json' };
 import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
-import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren } from '../../assets/agents/children.js';
+import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, agentRenderInputs, agentChildRows } from '../../assets/agents/children.js';
 import { HerdrLabelContract } from '../contracts.js';
 import { FEED_REFRESH_MS, middlePath, panelIpcArgv, parseSessionIpcReply } from '../../assets/shared/feed.js';
 import { identityPill, assignSpaceIdentities, threadKeylines } from '../../assets/shared/look.js';
@@ -42,7 +42,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, middlePath, identityPill, assignSpaceIdentities, threadKeylines, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, machines: () => [], View: class {}, ...ui, localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }, ...supplied };
+  const ports = { FEED_REFRESH_MS, middlePath, identityPill, assignSpaceIdentities, threadKeylines, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, agentRenderInputs, agentChildRows, machines: () => [], View: class {}, ...ui, localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} }, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);
@@ -507,7 +507,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
       spaces: () => [{ id: 'space', name: 'workspace', tabs }], theme: () => palette, shared: (key: string) => key === 'agents.sort' ? sorting : null, setShared: () => {}, setAgentOrder: () => {},
       props: () => props, layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } });
     const view = new Agents(); view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set(); view.listed = new Map();
-    view.spiderFeeds = [{ owner: { name: 'Planner', terminal: { address: 't1' } }, runs: { rows: [] } }];
+    view.spiderFeeds = [{ sessionId: 'planner', updatedAt: Date.now(), owner: { name: 'Planner', terminal: { address: 't1' } }, runs: { rows: [] } }];
     let rendered = view.render({});
     const rowWords = (id: string) => {
       const node = all(rendered).find(node => node.id === id)!;
@@ -517,7 +517,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar look on the curr
     expect(rowWords('ag-t2')).toContain('Builder two');
     expect(rowWords('ag-t3')).toContain('Named tab');
     expect(rowWords('ag-t4')).toContain('123');
-    view.spiderFeeds.push({ owner: { name: '42', terminal: { address: 't3' } }, runs: { rows: [] } });
+    view.spiderFeeds.push({ sessionId: 'numeric', updatedAt: Date.now(), owner: { name: '42', terminal: { address: 't3' } }, runs: { rows: [] } });
     rendered = view.render({});
     expect(rowWords('ag-t3')).toContain('42');
     sorting = 'grouped'; rendered = view.render({});

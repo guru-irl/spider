@@ -15,6 +15,65 @@ export async function loadAgentFeeds(root, ports) {
   }
   return { feeds, errors, truncated: ids.length > 256 };
 }
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const text = value => value == null || typeof value === 'string';
+const identity = value => typeof value === 'string' && value.length > 0 && !value.includes('\0');
+const texts = (value, keys) => keys.every(key => text(value[key]));
+const numbers = (value, keys) => keys.every(key => value[key] == null || typeof value[key] === 'number' && Number.isFinite(value[key]));
+const status = value => value == null || ['idle', 'working', 'blocked', 'done', 'error', 'queued', 'paused', 'disconnected', 'unreachable', 'cancelled', 'unknown', 'running', 'failed'].includes(value);
+const program = value => value == null || object(value) && texts(value, ['key', 'name', 'icon']);
+function renderRecords(values, kind, decode, rejected) {
+  const result = [];
+  if (!Array.isArray(values)) { rejected(kind); return result; }
+  for (const value of values) {
+    try {
+      const decoded = decode(value);
+      if (decoded) result.push(decoded); else rejected(kind);
+    } catch { rejected(kind); }
+  }
+  return result;
+}
+const terminalRecord = value => object(value) && identity(value.address) && program(value.program)
+  && texts(value, ['name', 'template', 'parent', 'reason']) && numbers(value, ['signal', 'exitCode', 'exit_code', 'finishedAt', 'finished_ms'])
+  && (value.labels === undefined || object(value.labels) && Object.values(value.labels).every(text))
+  && (value.status == null || typeof value.status === 'string' && status(value.status) || object(value.status) && typeof value.status.state === 'string' && status(value.status.state))
+  ? { ...value, labels: value.labels ?? {} } : null;
+
+/** Snapshot and narrow external records once; one malformed record never poisons its neighbors. */
+export function agentRenderInputs(input, rejected) {
+  const agents = renderRecords(input.agents, 'agent', value => object(value) && identity(value.address)
+    && program(value.program) && status(value.status) && numbers(value, ['seq']) && texts(value, ['title', 'name', 'space_name', 'space', 'tab', 'pane']) ? { ...value } : null, rejected);
+  const terminals = renderRecords(input.terminals, 'terminal', terminalRecord, rejected);
+  const panes = renderRecords(input.panes, 'pane', value => object(value) && program(value.program)
+    && texts(value, ['tab', 'title']) ? { ...value } : null, rejected);
+  const spaces = renderRecords(input.spaces, 'space', value => {
+    if (!object(value) || !identity(value.id) || !text(value.name)) return null;
+    const tabs = renderRecords(value.tabs ?? [], 'tab', tab => object(tab) && identity(tab.id) && text(tab.name) ? { ...tab, name: tab.name ?? '' } : null, rejected);
+    return { ...value, name: value.name ?? '', tabs };
+  }, rejected);
+  const machines = renderRecords(input.machines, 'machine', value => object(value) && identity(value.name) ? { ...value } : null, rejected);
+  const feeds = renderRecords(input.feeds, 'feed', feed => {
+    if (!object(feed) || !identity(feed.sessionId) || !Number.isFinite(feed.updatedAt)
+      || !object(feed.owner) || !object(feed.owner.terminal) || !identity(feed.owner.terminal.address)
+      || !text(feed.owner.name) || !object(feed.runs) || !Array.isArray(feed.runs.rows)) return null;
+    const rows = renderRecords(feed.runs.rows, 'run', run => object(run) && identity(run.id)
+      && identity(run.ownerSessionId) && status(run.status) && texts(run, ['name', 'viewer']) && numbers(run, ['finishedAt']) ? { ...run } : null, rejected);
+    return { ...feed, owner: { ...feed.owner, terminal: { ...feed.owner.terminal } }, runs: { ...feed.runs, rows } };
+  }, rejected);
+  return { agents, terminals, panes, spaces, machines, feeds };
+}
+
+/** Optional labels/addresses can disappear during replacement; identities and text types cannot. */
+export function agentChildRows(values, rejected) {
+  return renderRecords(values, 'child', row => {
+    if (!object(row) || !identity(row.key) || !['native', 'subagent', 'remote', 'console'].includes(row.kind)
+      || !Number.isSafeInteger(row.depth) || row.depth < 0 || row.depth >= values.length || !program(row.program)
+      || !status(row.status) || !texts(row, ['name', 'template', 'address', 'originalAddress', 'description', 'outcome', 'parentKey'])
+      || row.terminal != null && !terminalRecord(row.terminal)) return null;
+    return { ...row, name: row.name || row.template || row.program?.name || row.address || row.key };
+  }, rejected);
+}
+
 const state = t => typeof t.status === 'string' ? t.status : t.status?.state ?? 'idle';
 const isJob = (t, labels, kinds) => Boolean(t.labels[labels.job]) && [kinds.exec, kinds.execFile, kinds.batch].includes(t.labels[labels.kind]);
 const isConsole = (t, labels, kinds) => t.labels[labels.kind] === kinds.remoteConsole && Boolean(t.labels[labels.machine]);

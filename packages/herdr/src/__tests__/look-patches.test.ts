@@ -7,7 +7,7 @@ import { FEED_REFRESH_MS, createFeedReader, parseFeed, panelIpcArgv, parsePanelI
 import shippedPatches from '../../assets/look/patches.json' with { type: 'json' };
 import glassTheme from '../../assets/themes/spider-glass.json' with { type: 'json' };
 import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
-import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren } from '../../assets/agents/children.js';
+import { projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, agentRenderInputs, agentChildRows } from '../../assets/agents/children.js';
 import { buildGlassLayout } from '../look/layout.js';
 import { HERDR_LABELS, HERDR_KINDS, HerdrLabelContract } from '../contracts.js';
 import type { AgentTerminal } from '../../assets/agents/children.js';
@@ -166,7 +166,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, identityPill, assignSpaceIdentities, threadKeylines, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, createFeedReader, machines: () => [], Scrollbar: { vertical: () => ui() }, exec: async () => { throw new Error('Unexpected reader process'); }, ...supplied };
+  const ports = { FEED_REFRESH_MS, identityPill, assignSpaceIdentities, threadKeylines, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, agentRenderInputs, agentChildRows, createFeedReader, machines: () => [], Scrollbar: { vertical: () => ui() }, exec: async () => { throw new Error('Unexpected reader process'); }, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);

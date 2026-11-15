@@ -46,12 +46,12 @@ function outgoing(store: Store, peer = targetMachine, budget = 100): IntercomFra
   return [...store.pending({ kind: "outbound", peer, hopBudgetMs: budget })];
 }
 function incoming(store: Store): string[] { return store.pending({ kind: "inbound", address: recipient }).map(value => value.id); }
-function receipt(frame: IntercomMessageFrame, status: "injected" | "not_injected" | "unknown" | "matched_waiter" | "expired", overrides: Partial<MessageReceipt> = {}): IntercomReceiptInput {
+function receipt(frame: IntercomMessageFrame, status: "injected" | "not_injected" | "unknown" | "matched_waiter" | "expired", overrides: Partial<MessageReceipt> = {}): IntercomReceiptInput & Pick<IntercomReceiptFrame, 'originMachineId' | 'sequence'> {
   const evidence = status === "injected" ? { kind: "entry" as const, entryId: "entry-1", sessionId: recipient.sessionId, activationEpoch: endpoint.activationEpoch }
     : status === "not_injected" ? { kind: "absence" as const, sessionId: recipient.sessionId, activationEpoch: endpoint.activationEpoch, excludedGeneration: endpoint.activationEpoch, complete: true as const }
     : status === "matched_waiter" ? { kind: "waiter" as const, entryId: "waiter-1", sessionId: recipient.sessionId, activationEpoch: endpoint.activationEpoch, askId: frame.identity.askId ?? "ask" }
     : undefined;
-  return { from: endpoint, to: sender, digest: frame.identity.digest, receipt: { messageId: frame.identity.id, status, timestamp: 1_001_000, ...(evidence ? { evidence } : {}), ...overrides } };
+  return { from: endpoint, to: sender, digest: frame.identity.digest, originMachineId: frame.originMachineId, sequence: frame.identity.sequence, receipt: { messageId: frame.identity.id, status, timestamp: 1_001_000, ...(evidence ? { evidence } : {}), ...overrides } };
 }
 
 it("source and inbox commits survive restart", async () => {
@@ -561,6 +561,7 @@ it("unproved absence cannot authorize same-id retry", async () => {
   send(source, mail("one"));
   const frame = outgoing(source)[0] as IntercomMessageFrame;
   const incomplete: IntercomReceiptFrame = { from: endpoint, to: sender, digest: frame.identity.digest, attempt: 1,
+    originMachineId: frame.originMachineId, sequence: frame.identity.sequence,
     receipt: { messageId: "one", status: "not_injected", timestamp: clock.now() } };
   source.settleReceipt({ queue: "outbound", peer: targetMachine, frame: { ...receipt(frame, "unknown"), attempt: 1 } });
   expect(() => source.settleReceipt({ queue: "outbound", peer: targetMachine, frame: incomplete })).toThrow(/proof|evidence/i);
@@ -630,7 +631,7 @@ it("deduplicates equivalent receipts regardless of object key order and timestam
   inbox.settleReceipt({ queue: "inbound", peer: sourceMachine, frame: reordered });
   const pending = inbox.pending({ kind: "receipts", peer: sourceMachine });
   expect(pending).toHaveLength(1);
-  inbox.acknowledgeReceipt({ peer: sourceMachine, frame: { ...reordered, attempt: pending[0].attempt } });
+  inbox.acknowledgeReceipt({ peer: sourceMachine, frame: { ...reordered, attempt: pending[0].attempt, originMachineId: frame.originMachineId, sequence: frame.identity.sequence } });
   expect(inbox.pending({ kind: "receipts", peer: sourceMachine })).toEqual([]);
 }, 5000);
 

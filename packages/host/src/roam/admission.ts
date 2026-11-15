@@ -13,6 +13,9 @@ import { lockParticipant, type ParticipantLockOptions } from "../herdr/ports.js"
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./activation.js";
 import { AUTO_RELOAD_ARG } from "../auto-reload.js";
 import { productionParticipantAdmission } from "./readiness.js";
+import { lstatSync } from "node:fs";
+import { participantCaptureReady } from "@spider/roam/production-supervisor";
+import type { RoamConfig } from "@spider/roam/contracts";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[] }
 export interface AdmissionGate {
@@ -27,6 +30,8 @@ export interface AdmissionPorts {
   expectedEpoch: number | null;
   localMachine(): Promise<MachineId>;
   knownParticipant(sessionId: string): boolean;
+  /** Null excludes discovery; unchanged revisions require no admission lookup. */
+  captureVersion?(): string | null;
   warnOnce(sessionId: string, reason: string): void;
   load(sessionId: string): Promise<{ home: Home | null; states: readonly SessionState[]; origin: MachineId | null;
     participating: boolean; captureSafe: boolean; unfinishedFreeze: boolean; initialConflict: boolean }>;
@@ -58,6 +63,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   let admission: Admission = { kind: "ordinary", home: null, blockers: [] };
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission);
   let sessionId = "", sessionFile = "", epoch: number | null = null, participating = false, generation = 0;
+  let discoverable = false, captureVersion: string | null = null;
   let held: { sessionId: string; file: string; release: () => Promise<void>; valid: boolean } | undefined;
   let transition: Promise<void> = Promise.resolve();
   let freeze: { moveId: string; epoch: number } | undefined;
@@ -109,7 +115,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       try { if (held && (!held.valid || held.sessionId !== id || held.file !== file)) await release(); }
       catch { if (ticket === generation) { sessionId = id; publish("blocked", null, VERIFY); } return; }
       if (ticket !== generation) return;
-      sessionId = id; sessionFile = file; epoch = null; participating = false;
+      sessionId = id; sessionFile = file; epoch = null; participating = false; discoverable = false; captureVersion = null;
       if (!id) { publish(handoffRequired ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : undefined); return; }
       try { await ports.prepare?.(id, file); }
       catch (error) { if (ticket === generation) publish("blocked", null, admissionFailure(error)); return; }
@@ -126,7 +132,11 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       participating = state.participating;
       if (!state.participating) {
         if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publish("blocked", null, VERIFY);
-        else { freeze = undefined; publish("ordinary", null); }
+        else {
+          freeze = undefined; publish("ordinary", null);
+          discoverable = state.captureSafe && Boolean(ctx && file);
+          captureVersion = ports.captureVersion?.() ?? null;
+        }
         return;
       }
       observed.add(id);
@@ -197,6 +207,18 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   return {
     inspect: () => admission,
     async refreshInitialHome() {
+      if (discoverable && !participating && ordinaryWorkAllowed() && admission.home === null && !freeze) {
+        const version = ports.captureVersion?.() ?? null;
+        if (version === null || version === captureVersion) return admission;
+        captureVersion = version;
+        const ticket = generation;
+        const state = await ports.load(sessionId);
+        if (ticket !== generation || !discoverable || !ordinaryWorkAllowed() || freeze || !state.participating) return admission;
+        // Capture happened after this activation started. Acquire ownership and
+        // pass every original admission/readiness fence before publishing a home.
+        await start(lastContext);
+        return admission;
+      }
       const eligible = () => participating && held?.valid && ordinaryWorkAllowed() && admission.home === null && !freeze && epoch !== null;
       const ownedEpoch = epoch;
       if (!eligible() || ownedEpoch === null) return admission;
@@ -289,12 +311,43 @@ function hasTable(db: Db, name: string): boolean {
 export function createAdmissionPorts(options: ParticipantLockOptions = {}): AdmissionPorts & { setContext(ctx: ExtensionContext): void } {
   let context: ExtensionContext | undefined;
   let machineIds: string[] = [];
+  let discoveryAllowed = false, discoveryFiles: string[] = [];
+  let configVersion: string | undefined, config: RoamConfig | null = null;
+  let participantVersion: string | undefined, participantReady = false;
+  const fileVersion = (file: string): string => {
+    try {
+      const stat = lstatSync(file, { bigint: true });
+      return `${file}:${stat.dev}:${stat.ino}:${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+    } catch { return `${file}:unavailable`; }
+  };
+  const dbVersion = (file: string) => `${fileVersion(file)}|${fileVersion(`${file}-wal`)}`;
   const cache = () => participantCache(paths.globalRoot);
   return {
     ...productionParticipantAdmission(() => context?.cwd),
     expectedEpoch: null,
     setContext(ctx) { context = ctx; },
     knownParticipant(id) { return cache().known.has(id); },
+    captureVersion() {
+      if (!discoveryAllowed || !context) return null;
+      const root = paths.globalRoot;
+      const observed = `${fileVersion(join(root, 'roam', 'config.json'))}|${fileVersion(join(root, 'roam', 'machine.json'))}`;
+      if (configVersion !== observed) {
+        configVersion = observed;
+        try { config = readLocalIdentity(root); } catch { config = null; }
+      }
+      if (!config || config.role === 'hub' && !config.enabled) return null;
+      // A box's enabled flag controls the hub scheduler, not participation.
+      // Its configured global capture is the existing participation boundary.
+      if (config.role === 'box') {
+        const version = dbVersion(join(root, 'spider.db'));
+        if (participantVersion !== version) {
+          participantVersion = version;
+          participantReady = participantCaptureReady(root, config.machineId);
+        }
+        if (!participantReady) return null;
+      }
+      return `${observed}|${discoveryFiles.map(dbVersion).join('|')}`;
+    },
     warnOnce(id, reason) {
       if (cache().warned.has(id)) return;
       cache().warned.add(id);
@@ -308,6 +361,7 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
     },
     async lock(id, file) { return lockParticipant(join(paths.globalRoot, "herdr"), id, file, options); },
     async load(id) {
+      discoveryAllowed = false;
       let failed = false, failure: unknown;
       const attempt = <T>(read: () => T): T | undefined => {
         try { return read(); } catch (error) { if (!failed) failure = error; failed = true; return undefined; }
@@ -363,6 +417,15 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
         if (failed) throw failure ?? new Error("Session ownership read failed");
         const home: Home | null = homeRow?.machine_id ? { sessionId: id, machineId: homeRow.machine_id, epoch: homeRow.epoch, moveId: homeRow.move_id, updatedAt: homeRow.updated_at } : null;
         const participating = Boolean(homeRow || states.length);
+        if (!participating) {
+          discoveryAllowed = [...opened.values()].every(db => {
+            if (!hasTable(db, 'roam_meta')) return false;
+            const meta = db.withRetry(() => db.prepare('SELECT roamable,problem FROM roam_meta WHERE id=1').get()) as { roamable: number; problem: string | null } | undefined;
+            return meta?.roamable === 1 && meta.problem === null;
+          });
+          discoveryFiles = [...new Set([join(paths.globalRoot, 'spider.db'),
+            ...(context?.cwd ? [join(paths.projectRoot(context.cwd), 'project.db')] : []), ...opened.keys()])];
+        }
         let captureSafe = true, unfinishedFreeze = false;
         machineIds = [];
         if (participating) {

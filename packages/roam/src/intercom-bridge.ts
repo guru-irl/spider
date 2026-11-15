@@ -38,6 +38,7 @@ export interface BridgePorts {
   authorizeLocalPresence?(session: LocalPresence): boolean;
   authoritativeHome(address: SessionAddress): Home | null;
   knownSessionMachines?(address: SessionAddress): readonly string[];
+  sessionOrigin?(address: SessionAddress): string | null;
   nextHop?(destinationMachine: string, previousPeer?: string): string | null;
   authorizePresence?(peer: string, entry: RemoteSessionInfo): boolean;
   authorizeOrigin?(peer: string, originMachineId: string): boolean;
@@ -178,10 +179,16 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       const others = [...edges.values()].filter(other => other !== edge).flatMap(other => state(other).roster)
         .concat([...entries]).filter(item => sameAddress(item.address, entry.address) &&
           (item.machineId !== entry.machineId || item.activationEpoch !== entry.activationEpoch));
-      if (!ports.store.claimPresence(entry, { assigned: home !== null, competing: local.length + others.length > 0,
-        knownMachines: [...local, ...others].map(item => item.machineId).concat(ports.knownSessionMachines?.(entry.address) ?? []) })) {
+      const context = { assigned: home !== null, competing: local.length + others.length > 0,
+        knownMachines: [...local, ...others].map(item => item.machineId).concat(ports.knownSessionMachines?.(entry.address) ?? []) };
+      const originMatches = home !== null || ports.sessionOrigin?.(entry.address) === entry.machineId;
+      if (!originMatches && !ports.store.presenceOwner(entry.address) && !context.competing && context.knownMachines.every(machine => machine === entry.machineId)) {
+        ports.store.recordRejection(peer, "presence", "presence-origin-unknown"); return false;
+      }
+      if (!ports.store.claimPresence(entry, context)) {
         ports.store.recordRejection(peer, "presence", "presence-ambiguous"); return false;
       }
+      if (!originMatches) { ports.store.recordRejection(peer, "presence", "presence-origin-unknown"); return false; }
       return true;
     } catch { ports.store.recordRejection(peer, "presence", "presence-ownership-unavailable"); return false; }
   });
@@ -306,7 +313,9 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       }
       const upstream = ports.store.retained("inbound", refusal.identity.id);
       if (["missing-origin", "peer-revoked", "sender-unauthorized", "store-rejected"].includes(refusal.reason)) {
+        if (!row.originMachineId) return bad('missing-origin');
         const frame: IntercomReceiptFrame = { from: row.endpoint, to: row.identity.from, digest: row.identity.digest, attempt: row.latestAttempt,
+          originMachineId: row.originMachineId, sequence: row.identity.sequence,
           receipt: { messageId: row.identity.id, status: "cancelled", timestamp: ports.clock.now(), detail: refusal.reason } };
         ports.store.settleReceipt({ queue: "outbound", peer, frame });
         if (upstream && upstream.peer !== peer) { ports.store.settleReceipt({ queue: "inbound", peer: upstream.peer, frame }); bridge.wake(upstream.peer); }
@@ -329,6 +338,11 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     for (const ack of incoming.receiptAcknowledgements ?? []) ports.store.acknowledgeReceipt({ peer, frame: ack });
     for (const frame of incoming.receipts) {
       let outbound = ports.store.retained("outbound", frame.receipt.messageId);
+      if (outbound && (frame.originMachineId !== outbound.originMachineId || frame.sequence !== outbound.identity.sequence)) return bad('receipt-stream-mismatch');
+      let settled: boolean;
+      try { settled = ports.store.isSettledReceipt({ peer, frame }); }
+      catch (error) { if (error instanceof Error && error.message === 'receipt-stream-mismatch') return bad('receipt-stream-mismatch'); throw error; }
+      if (settled) { receiptAcks.push(frame); continue; }
       if (!outbound || outbound.peer !== peer) return bad("invalid-receipt");
       if (!sameEndpoint(outbound.endpoint, frame.from) && receiptReleasesPayload(frame.receipt)) {
         ports.store.followConsumption({ queue: "outbound", peer, frame });
@@ -379,20 +393,21 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         refusals.push({ identity: frame.identity, reason: "missing-origin" });
         continue;
       }
-      const reject = (reason: "sender-unauthorized" | "store-rejected") => {
-        ports.store.recordRejection(peer, frame.identity.id, reason);
+      const originAuthorized = ports.authorizeOrigin?.(peer, frame.originMachineId) ?? frame.originMachineId === peer;
+      const reject = (reason: "sender-unauthorized" | "store-rejected" | "peer-revoked") => {
+        ports.store.rejectFrame({ peer, origin: originAuthorized ? frame.originMachineId : peer, identity: frame.identity, reason });
         refusals.push({ identity: frame.identity, reason });
         acks.push({ identity: frame.identity, kind: frame.kind });
       };
       const home = ports.authoritativeHome(frame.identity.from), owner = ports.store.presenceOwner(frame.identity.from);
       const replay = prior && prior.originMachineId === frame.originMachineId && sameIdentity(prior.identity, frame.identity);
-      if (!(ports.authorizeOrigin?.(peer, frame.originMachineId) ?? frame.originMachineId === peer) ||
+      if (!originAuthorized ||
           !replay && (home ? home.machineId !== frame.originMachineId : !owner || owner.ambiguous || owner.machineId !== frame.originMachineId)) {
         reject("sender-unauthorized"); continue;
       }
       const remote = frame.endpoint.machineId !== ports.machineId, next = remote ? lookup(frame.endpoint.machineId, peer) : null;
       if (remote && !next) { refusals.push({ identity: frame.identity, reason: "machine-not-enrolled" }); continue; }
-      if (next && fenced(next)) { refusals.push({ identity: frame.identity, reason: "peer-revoked" }); continue; }
+      if (next && fenced(next)) { reject("peer-revoked"); continue; }
       const resume = incoming.resumptions?.find(item => sameAddress(item.from, frame.identity.from) && sameAddress(item.to, frame.identity.to));
       try {
       const accepted = ports.store.acceptInbound({ peer, frame, ...(resume ? { resume: { cursor: resume, owner: ports.authoritativeHome(frame.identity.to) } } : {}) });
@@ -867,7 +882,14 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         if (existing.config.edgeEpoch !== config.edgeEpoch || existing.config.initiator !== config.initiator ||
             previous.machineId !== next.machineId || previous.alias !== next.alias || previous.node !== next.node || previous.pi !== next.pi ||
             previous.cli !== next.cli || previous.core !== next.core || previous.globalRoot !== next.globalRoot) throw new Error("intercom-edge-must-be-revoked");
-        ports.store.approvePair(peer, approval); return;
+        const changed = ports.store.approvePair(peer, approval), current = state(existing);
+        if (changed && current.reason && new ExchangeError(current.reason).retryable) {
+          existing.retryCancel?.(); existing.retryCancel = null;
+          existing.resolved = null; existing.versionReady = false;
+          ports.store.updateEdgeState(peer, config.edgeEpoch, old => ({ ...old, status: "unknown", failures: 0, lastSuccess: null }));
+          if (started && config.initiator) void transfer(existing, "push", true);
+        }
+        return;
       }
       if (existing && (existing.incomingAll.size || existing.outgoing.size)) throw new Error("intercom-edge-still-active");
       ports.store.approvePair(peer, approval);
@@ -882,7 +904,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       if (!started || stopped) return bad("bridge-unavailable");
       let input;
       try { if (bytes(raw) > INTERCOM_EXCHANGE_BYTES - 1024) return bad("exchange-too-large"); input = parseHelperRequest(raw); }
-      catch (error) { if (error instanceof ExchangeError) throw error; return bad(error instanceof Error && (error.message === "peer-version-mismatch" || error.message === "invalid-presence") ? error.message : "invalid-request"); }
+      catch (error) { if (error instanceof ExchangeError) throw error; return bad(error instanceof Error && (error.message === "peer-version-mismatch" || error.message === "invalid-presence" || error.message === 'receipt-stream-missing') ? error.message : "invalid-request"); }
       const incoming = input.exchange, edge = edges.get(incoming.senderMachine);
       if (!edge || incoming.recipientMachine !== ports.machineId) return bad("machine-not-enrolled");
       if (fenced(edge)) return bad("peer-revoked");

@@ -70,7 +70,7 @@ it("returns a named peer-revoked failure through the packaged helper", async () 
     else if (message.type === "helper_register" && message.token === f.token) writeMessage(socket, { type: "helper_registered", requestId: message.requestId });
     else if (message.type === "helper_exchange") writeMessage(socket, { type: "helper_error", requestId: message.requestId, reason: "peer-revoked" });
   });
-  try { const result = await run(f.root, request(3)); expect(result.code).toBe(0); expect(result.err).toBe("");
+  try { const result = await run(f.root, request(4)); expect(result.code).toBe(0); expect(result.err).toBe("");
     expect(JSON.parse(result.out)).toEqual({ version: 1, kind: "intercom-exchange", ok: false, reason: "peer-revoked" });
   } finally { await closeServer(stub); }
 }, 5000);
@@ -80,7 +80,7 @@ it("forwards a malformed v2 frame intact so the owning bridge can record its rej
   const from = { sessionId: "sender", scopeId: "scope" }, to = { sessionId: "recipient", scopeId: "scope" };
   const endpoint = { address: to, machineId: B, homeEpoch: null, activationEpoch: "recipient-1" };
   const full = makeMessageFrame({ from, endpoint, originMachineId: A, sequence: 1, message: { id: "bad", timestamp: 1, content: { text: "synthetic" } } });
-  const { originMachineId: _origin, ...missing } = full, input = request(3, [missing]);
+  const { originMachineId: _origin, ...missing } = full, input = request(4, [missing]);
   const resultExchange = { ...input.exchange, senderMachine: B, recipientMachine: A, frames: [], refusals: [{ identity: full.identity, reason: "missing-origin" }] };
   const stub = await server(f.socket, (message, socket) => { seen.push(message);
     if (message.type === "health") writeMessage(socket, { type: "health_ok", requestId: message.requestId, protocol: "pi-intercom", version: 1, features: ["intercom-exchange-v1"] });

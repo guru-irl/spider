@@ -38,7 +38,7 @@ async function fixture() {
     now = until; await flush();
   };
   const exchange = (generation: number, holdMs = 0, frames: IntercomExchange["frames"] = []) => bridge.exchange({ version: 1, holdMs, deadlineMs: 30_000,
-    exchange: { protocol: 3, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "poll", generation },
+    exchange: { protocol: 4, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "poll", generation },
       frames, acknowledgements: [], receipts: [], controls: [], presence: [destination] } });
   const ask = (id = "reverse-ask", remainingMs = 180_000) => bridge.dispatch({ from: to, to: destination,
     message: { id, timestamp: 1, expectsReply: true, remainingMs, content: { text: "synthetic reverse question" } } });

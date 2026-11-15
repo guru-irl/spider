@@ -98,6 +98,7 @@ it("binds a pair key's forced command to its own pair and epoch and refuses a re
   const env = (pair = f.pair.pairId, epoch = f.pair.edgeEpoch) => ({ ...process.env, SSH_ORIGINAL_COMMAND: `spider-intercom:${pair}:${epoch}:${Buffer.from("printf pair-ok").toString("base64")}` });
   expect(execFileSync(process.execPath, [gate], { env: env(), timeout: 2000, encoding: "utf8" })).toBe("pair-ok");
   expect(() => execFileSync(process.execPath, [gate], { env: env("other-pair"), timeout: 2000 })).toThrow();
+  expect(() => execFileSync(process.execPath, [gate], { env: env("xxxxxx"), timeout: 2000 })).toThrow();
   expect(() => execFileSync(process.execPath, [gate], { env: env(f.pair.pairId, "other-epoch"), timeout: 2000 })).toThrow();
   await registry.beginRevocation(f.pair.pairId, "00000000-0000-4000-8000-000000000009");
   expect(() => execFileSync(process.execPath, [gate], { env: env(), timeout: 2000 })).toThrow();

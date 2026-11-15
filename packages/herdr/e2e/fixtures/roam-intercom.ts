@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rename, unlink, writeFile } from 'node:fs/promises';
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
-import { openDb, migrate } from '@spider/db-core';
+import { openDb, openDbReadOnly, migrate, type Db } from '@spider/db-core';
+import { readLocal, writeLocal } from '@spider/db-core/roam/local-state';
+import { mapWorkspace, resolveRepositoryKey } from '@spider/db-core/roam/repo-map';
+import type { StoreKey } from '@spider/db-core/roam/types';
+import { readSessionHeader } from '@spider/herdr/sessions/launcher';
+import { seedNewParticipant } from '../../../roam/src/session-control.js';
+import { createStorePort } from '../../../roam/src/stores.js';
 import { IntercomClient } from '@spider/intercom/broker/client';
 import { parseConfig } from '../../../roam/src/config.js';
 import type { IntercomRoute, Peer, RoamConfig } from '../../../roam/src/contracts.js';
@@ -80,6 +86,109 @@ export async function launchMachinePi(suite: Suite, machine: Machine, cwd: strin
       runHc(suite.cores!.wrapper, argv, machine.core.env, options) };
   return await launchPi(suite.pi, suite.ledger, { mode: 'interactive', cwd, args: ['--session', file, '--name', name, ...args],
     extraEnv: { ...machine.env, ...extraEnv }, terminalSide: machine.core.side }, cores) as InteractiveDriver;
+}
+
+export async function pauseFederation(network: Network): Promise<void> {
+  for (const machine of network.machines) await machine.service.stop();
+}
+
+export async function resumeFederation(network: Network): Promise<void> {
+  await network.restartHub();
+  await network.restartBox(1, network.machines[1].config);
+  await network.restartBox(2, network.machines[2].config);
+}
+
+async function captureSession(suite: Suite, machine: Machine, global: Db, id: string, file: string, cwd: string): Promise<StoreKey> {
+  const db = openDb(suite.ownPath(join(cwd, '.spider', 'project.db')), { fileMustExist: true });
+  try {
+    const row = db.prepare('SELECT origin_machine FROM sessions WHERE id=?').get(id) as { origin_machine: string } | undefined;
+    if (row?.origin_machine !== machine.id) throw new HarnessError('isolation-unproved', 'captured session is not native to its owned machine');
+    let key = (db.prepare('SELECT store_key FROM roam_meta WHERE id=1').get() as { store_key: StoreKey | null }).store_key;
+    if (!key) {
+      const repoKey = resolveRepositoryKey(global, cwd);
+      let workspaceId = readLocal<string>(db, 'workspace', 'id');
+      if (!workspaceId) {
+        workspaceId = randomUUID();
+        db.raw.transaction(() => writeLocal(db, 'workspace', 'id', workspaceId)).immediate();
+      }
+      await mapWorkspace(global, { repoKey, workspaceId, path: cwd });
+      key = `worktree:${repoKey}:${workspaceId}`;
+    }
+    if (!global.prepare('SELECT 1 FROM session_homes WHERE session_id=?').get(id)) {
+      seedNewParticipant({ globalDb: global, machineId: machine.id, sessionId: id, file, cwd,
+        stores: [{ key, db }], limit: machine.config.limits.targetBatchBytes });
+    }
+    return key;
+  } finally { db.close(); }
+}
+
+/** Capture real owned session rows, then import/export the resulting records through the hub.
+ * This mirrors admission capture and data sync without assigning a first home. */
+export async function syncOrigins(suite: Suite, network: Network): Promise<void> {
+  const globals = network.machines.map(machine => openDb(suite.ownPath(join(machine.global, 'spider.db')), { fileMustExist: true }));
+  const adapters = globals.map((db, i) => createStorePort(network.machines[i].config, db));
+  const keys = new Map<StoreKey, number>();
+  try {
+    for (const [i, machine] of network.machines.entries()) {
+      for (const name of await readdir(machine.sessions)) {
+        if (!/^[0-9a-f-]{36}\.jsonl$/.test(name)) continue;
+        const file = suite.ownPath(join(machine.sessions, name)), header = await readSessionHeader(file);
+        const cwd = suite.ownPath(header.cwd);
+        const key = await captureSession(suite, machine, globals[i], header.id, file, cwd);
+        keys.set(key, i);
+      }
+    }
+    for (const key of keys.keys()) {
+      const separator = key.lastIndexOf(':');
+      const repoKey = key.slice('worktree:'.length, separator), workspaceId = key.slice(separator + 1);
+      for (const [i, machine] of network.machines.entries()) {
+        if (globals[i].prepare('SELECT 1 FROM roam_workspace_maps WHERE repo_key=? AND workspace_id=?').get(repoKey, workspaceId)) continue;
+        const path = suite.ownPath(join(machine.global, 'origin-workspaces', workspaceId));
+        await mkdir(path, { recursive: true, mode: 0o700 });
+        const db = openDb(suite.ownPath(join(path, '.spider', 'project.db')));
+        try { migrate(db, 'worktree', { machineId: machine.id, globalRoot: machine.global }); }
+        finally { db.close(); }
+        await mapWorkspace(globals[i], { repoKey, workspaceId, path });
+      }
+    }
+    const transfer = async (from: number, to: number, key: StoreKey): Promise<void> => {
+      const meta = adapters[from].openStore(key).db.prepare('SELECT machine_id,stream_id FROM roam_meta WHERE id=1').get() as { machine_id: string; stream_id: string };
+      for (;;) {
+        const after = adapters[to].cursor(key, meta.machine_id, meta.stream_id);
+        const batch = await adapters[from].export(key, after, network.machines[from].config.limits.targetBatchBytes, randomUUID());
+        if (batch.header.count === 0) return;
+        suite.ownPath(batch.file);
+        try { await adapters[to].accept(key, batch); }
+        finally { await unlink(batch.file); }
+      }
+    };
+    for (const [key, source] of keys) {
+      if (source !== 0) await transfer(source, 0, key);
+      for (let target = 1; target < network.machines.length; target++) await transfer(0, target, key);
+    }
+    await suite.evidence('captured-origins.json', adapters.map(adapter => [...adapter.origins()].map(([id, origins]) => ({ id, origins: [...origins] }))));
+  } finally {
+    for (const adapter of adapters.reverse()) adapter.close();
+    for (const db of globals.reverse()) db.close();
+  }
+}
+
+export async function saveIntercomEvidence(suite: Suite, network: Network): Promise<void> {
+  const snapshots = network.machines.map(machine => {
+    const db = openDbReadOnly(suite.ownPath(join(machine.global, 'roam', 'intercom', 'queue.db')));
+    if (!db) throw new HarnessError('missing-prerequisite', 'owned intercom queue is missing');
+    try {
+      return db.raw.transaction(() => ({ machine: machine.id, tables: Object.fromEntries([
+        'intercom_messages', 'intercom_copies', 'intercom_cursors', 'intercom_receipts', 'intercom_resumptions',
+        'intercom_edge_state', 'intercom_rejections', 'intercom_endpoint_aliases',
+      ].map(table => [table, db.prepare(`SELECT * FROM ${table} LIMIT 100`).all()])) }))();
+    } finally { db.close(); }
+  });
+  await suite.evidence('intercom-queues.json', snapshots);
+  for (const [i, machine] of network.machines.entries()) {
+    await suite.keepEvidence(join(machine.global, '..', 'service.log'), `intercom-service-${i}.log`);
+    await suite.keepEvidence(join(machine.global, '..', 'broker.log'), `intercom-broker-${i}.log`);
+  }
 }
 
 function checked(result: HcResult, what: string): Record<string, unknown> {

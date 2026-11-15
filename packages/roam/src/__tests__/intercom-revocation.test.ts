@@ -27,7 +27,7 @@ const endpoint = (machineId: string) => {
   return { address: value.address, machineId: value.machineId, homeEpoch: value.homeEpoch, activationEpoch: value.activationEpoch };
 };
 const wire = (source: string, generation: number, epoch = "edge-1", channel: "push" | "poll" = "push"): IntercomExchange => ({
-  protocol: 3, senderMachine: source, recipientMachine: A, generation: { edgeEpoch: epoch, channel, generation },
+  protocol: 4, senderMachine: source, recipientMachine: A, generation: { edgeEpoch: epoch, channel, generation },
   frames: [], acknowledgements: [], receipts: [], controls: [], presence: [],
 });
 const request = (exchange: IntercomExchange, holdMs = 0) => ({ version: 1, exchange, holdMs, deadlineMs: holdMs ? holdMs + 5000 : 5000 });

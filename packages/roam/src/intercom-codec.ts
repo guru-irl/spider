@@ -132,8 +132,20 @@ function validGeneration(value: unknown): value is ExchangeGeneration {
   return record(value) && keys(value, ["edgeEpoch", "channel", "generation"]) && text(value.edgeEpoch)
     && (value.channel === "poll" || value.channel === "push") && integer(value.generation, 1);
 }
+function checkReceiptStreams(value: unknown): void {
+  if (!record(value)) return;
+  for (const kind of ['receipts', 'receiptAcknowledgements']) {
+    const frames = value[kind];
+    if (!Array.isArray(frames)) continue;
+    for (const frame of frames) {
+      if (record(frame) && (frame.originMachineId === undefined || frame.sequence === undefined)) {
+        throw new Error('receipt-stream-missing');
+      }
+    }
+  }
+}
 function validReceipt(value: unknown): boolean {
-  if (!record(value) || !keys(value, ["from", "to", "digest", "receipt", "attempt"]) || !validEndpoint(value.from) || !isSessionAddress(value.to)
+  if (!record(value) || !isMachineId(value.originMachineId) || !integer(value.sequence, 1) || !keys(value, ["from", "to", "digest", "receipt", "attempt", "originMachineId", "sequence"]) || !validEndpoint(value.from) || !isSessionAddress(value.to)
       || value.from.address.scopeId !== value.to.scopeId || !digest(value.digest) || !isMessageReceipt(value.receipt) || !integer(value.attempt)) return false;
   const receipt = value.receipt;
   if (!record(receipt) || !keys(receipt, ["messageId", "status", "timestamp", "evidence", "detail"]) || !text(receipt.messageId) || !integer(receipt.timestamp)) return false;
@@ -194,6 +206,7 @@ export function encodeExchange(exchange: IntercomExchange): Buffer {
   const clean = cleanPresence(exchange);
   checkVersion(clean);
   checkFirstHomePresence(clean);
+  checkReceiptStreams(clean);
   if (!validExchange(clean)) return bad();
   return encode(clean, INTERCOM_EXCHANGE_BYTES);
 }
@@ -201,6 +214,7 @@ export function decodeExchange(bytes: Uint8Array): IntercomExchange {
   const value = cleanPresence(parse(bytes, INTERCOM_EXCHANGE_BYTES));
   checkVersion(value);
   checkFirstHomePresence(value);
+  checkReceiptStreams(value);
   if (!validExchange(value)) return bad();
   return value;
 }
@@ -209,6 +223,7 @@ export function decodeExchangeWithFrameErrors(bytes: Uint8Array): { exchange: In
   const value = cleanPresence(parse(bytes, INTERCOM_EXCHANGE_BYTES));
   checkVersion(value);
   checkFirstHomePresence(value);
+  checkReceiptStreams(value);
   if (!record(value) || !Array.isArray(value.frames)) return bad();
   const frames: unknown[] = [], missingOrigins: MissingOriginFrame[] = [];
   value.frames.forEach((frame, index) => {

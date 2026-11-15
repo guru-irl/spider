@@ -46,7 +46,7 @@ it("an entry receipt for a late reply tells its replier the asker no longer wait
   const f = fixture(), destination = { address: from, machineId: A, homeEpoch: null, activationEpoch: "sender-generation" };
   const accepted = f.store.acceptOutbound({ from: to, endpoint: destination, nextHop: A, message: { id: "late-reply", replyTo: "old-ask", timestamp: 1, content: { text: "synthetic reply" } } });
   if (accepted.kind === "refused") throw new Error("fixture acceptance refused");
-  f.delivery.onReceipt({ attempt: 1, from: destination, to, digest: accepted.identity.digest, receipt: { messageId: "late-reply", status: "injected", timestamp: 2, evidence: { kind: "entry", entryId: "late-entry", sessionId: from.sessionId, activationEpoch: destination.activationEpoch } } });
+  f.delivery.onReceipt({ attempt: 1, originMachineId: f.store.retained('outbound', 'late-reply')!.originMachineId!, sequence: accepted.identity.sequence, from: destination, to, digest: accepted.identity.digest, receipt: { messageId: "late-reply", status: "injected", timestamp: 2, evidence: { kind: "entry", entryId: "late-entry", sessionId: from.sessionId, activationEpoch: destination.activationEpoch } } });
   expect(f.receipts[0]?.[2]).toMatchObject({ messageId: "late-reply", detail: "asker-no-longer-waiting" });
 }, 5000);
 

@@ -19,12 +19,12 @@ function twoStores() {
   stores.push(source, inbox); return { root, source, inbox };
 }
 function batch(senderMachine = A, recipientMachine = B): IntercomExchange {
-  return { protocol: 3, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+  return { protocol: 4, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
 }
 function receipt(): IntercomReceiptFrame {
   const frame = makeMessageFrame({ from, endpoint, originMachineId: A, sequence: 1, message: { id: "message-1", timestamp: 1, content: { text: "synthetic" } } });
-  return { from: endpoint, to: from, digest: frame.identity.digest, attempt: 2, receipt: { messageId: "message-1", status: "injected", timestamp: 2,
+  return { from: endpoint, to: from, digest: frame.identity.digest, attempt: 2, originMachineId: frame.originMachineId, sequence: frame.identity.sequence, receipt: { messageId: "message-1", status: "injected", timestamp: 2,
     evidence: { kind: "entry", entryId: "entry-1", sessionId: to.sessionId, activationEpoch: endpoint.activationEpoch } } };
 }
 
@@ -104,7 +104,7 @@ it("reserves receipt batch space without marking omitted receipts sent", () => {
   const frames = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 });
   const received = frames.map(frame => {
     inbox.acceptInbound({ peer: A, frame }); inbox.beginDispatch({ id: frame.identity.id, endpoint, readiness: "ready" });
-    const observed: IntercomReceiptFrame = { from: endpoint, to: from, digest: frame.identity.digest, attempt: 1,
+    const observed: IntercomReceiptFrame = { from: endpoint, to: from, digest: frame.identity.digest, attempt: 1, originMachineId: frame.originMachineId, sequence: frame.identity.sequence,
       receipt: { messageId: frame.identity.id, status: "unknown", timestamp: 2 } };
     inbox.settleReceipt({ queue: "inbound", peer: A, frame: observed }); return observed;
   });

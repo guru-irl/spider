@@ -1,7 +1,14 @@
 import { afterEach, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+// Reuse the verifier; the manifest gate separately runs its CLI.
+const { verifyManifest } = await import(/* @vite-ignore */ pathToFileURL(resolve('scripts/check-intercom-parity.mjs')).href) as {
+  verifyManifest: (manifest: unknown, forkRoot: string) => string;
+};
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -13,7 +20,12 @@ function fixture(): string {
   return join(root, 'src');
 }
 function check(fork?: string, manifest?: string) {
-  return spawnSync(process.execPath, [resolve('scripts/check-intercom-parity.mjs'), '--manifest', ...(fork ? ['--fork-dir', fork] : []), ...(manifest ? ['--manifest-file', manifest] : [])], { encoding: 'utf8' });
+  try {
+    const data = JSON.parse(readFileSync(manifest ?? resolve('packages/intercom/upstream-assertions.json'), 'utf8'));
+    return { status: 0, stdout: verifyManifest(data, fork ?? resolve('packages/intercom/src')), stderr: '' };
+  } catch (error) {
+    return { status: 1, stdout: '', stderr: `Intercom parity: ${error instanceof Error ? error.message : String(error)}` };
+  }
 }
 function mutate(root: string, file: string, before: string, after: string) {
   const path = join(root, file), text = readFileSync(path, 'utf8');
@@ -25,6 +37,44 @@ it('checks all upstream assertions and runtime files against the committed manif
   const result = check();
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toMatch(/15 test files/);
+}, 5000);
+
+it('the CLI rejects an unreadable manifest', () => {
+  const root = fixture();
+  const result = spawnSync(process.execPath, [resolve('scripts/check-intercom-parity.mjs'), '--manifest', '--manifest-file', join(root, 'missing.json')], { encoding: 'utf8' });
+  expect(result.status).toBe(1);
+  expect(result.stderr).toMatch(/Intercom parity:.*ENOENT/);
+}, 5000);
+
+it.runIf(process.platform !== 'win32')('runs the CLI through a symlink', () => {
+  const root = fixture();
+  const link = join(root, 'checker.mjs');
+  symlinkSync(resolve('scripts/check-intercom-parity.mjs'), link);
+  const result = spawnSync(process.execPath, [link, '--manifest', '--manifest-file', join(root, 'missing.json')], { encoding: 'utf8' });
+  expect(result.status).toBe(1);
+  expect(result.stderr).toMatch(/Intercom parity:.*ENOENT/);
+}, 5000);
+
+it('rechecks a file changed after an earlier successful verification', () => {
+  const root = fixture();
+  expect(check(root).status).toBe(0);
+  mutate(root, 'broker/spawn.test.ts', 'assert.equal(spec.command, "node");', 'assert.equal(spec.command, "not-node");');
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/assertion.*broker\/spawn\.test\.ts/i);
+}, 5000);
+
+it('rechecks runtime normalization after a changed file is re-hashed', () => {
+  const root = fixture();
+  expect(check(root).status).toBe(0);
+  mutate(root, 'broker/spawn.ts', 'command: getNodeCommand(nodePath),', 'command: nodePath,');
+  const manifest = JSON.parse(readFileSync(resolve('packages/intercom/upstream-assertions.json'), 'utf8'));
+  manifest.sources['broker/spawn.ts'].adoptedSha256 = createHash('sha256').update(readFileSync(join(root, 'broker/spawn.ts'))).digest('hex');
+  const file = join(root, 'manifest.json');
+  writeFileSync(file, JSON.stringify(manifest));
+  const result = check(root, file);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/runtime mismatch.*broker\/spawn\.ts/i);
 }, 5000);
 
 it('rejects a changed assertion even when the assertion count is unchanged', () => {

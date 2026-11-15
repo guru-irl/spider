@@ -1592,9 +1592,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   function refreshRuntimeContext(ctx: ExtensionContext): boolean {
     if (!config.enabled || disposed || shuttingDown) return false;
     try {
-      if (ctx.sessionManager.getSessionId() !== currentSessionId) {
-        startSessionRuntime(ctx);
-      }
+      if (ctx.sessionManager.getSessionId() !== currentSessionId) return false;
       if (!getLiveContext(ctx)) return false;
       runtimeContext = ctx;
       scheduleReconnect();
@@ -2201,13 +2199,31 @@ Usage:
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      refreshRuntimeContext(ctx);
-      if (params.action === "status" && !client?.isConnected()) {
-        return {
-          content: [{ type: "text", text: `**Intercom Status:**\nConnected: No\n${!config.enabled ? "Intercom is disabled." : disposed || shuttingDown ? "Intercom runtime is not active." : "Spider is reconnecting."}` }],
-          details: { connected: false },
-        };
+      if (params.action === "status") {
+        const statusClient = client;
+        if (!statusClient?.isConnected()) {
+          return {
+            content: [{ type: "text", text: `**Intercom Status:**\nConnected: No\n${!config.enabled ? "Intercom is disabled." : disposed || shuttingDown ? "Intercom runtime is not active." : "Spider is reconnecting."}` }],
+            details: { connected: false, sessionId: null, activeSessions: null },
+          };
+        }
+        try {
+          const sessionId = statusClient.sessionId;
+          const sessions = await statusClient.listSessions();
+          return {
+            content: [{ type: "text", text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${sessionId}\nActive sessions: ${sessions.length}` }],
+            details: { connected: true, sessionId, activeSessions: sessions.length },
+          };
+        } catch (error) {
+          const connected = statusClient.isConnected();
+          const sessionId = statusClient.sessionId;
+          return {
+            content: [{ type: "text", text: `**Intercom Status:**\nConnected: ${connected ? "Yes" : "No"}\nSession ID: ${sessionId ?? "Unknown"}\nActive sessions: Unknown\nSession list error: ${getErrorMessage(error)}` }],
+            details: { connected, sessionId, activeSessions: null },
+          };
+        }
       }
+      refreshRuntimeContext(ctx);
       let connectedClient: IntercomClient;
       try {
         connectedClient = await ensureConnected("tool");
@@ -2642,25 +2658,6 @@ Usage:
             content: [{ type: "text", text: `**Pending asks:**\n${lines.join("\n")}` }],
             details: {},
           };
-        }
-
-        case "status": {
-          try {
-            const mySessionId = connectedClient.sessionId;
-            const sessions = await connectedClient.listSessions();
-            return {
-              content: [{
-                type: "text",
-                text: `**Intercom Status:**\nConnected: Yes\nSession ID: ${mySessionId}\nActive sessions: ${sessions.length}`,
-              }],
-              details: {},
-            };
-          } catch (error) {
-            return {
-              content: [{ type: "text", text: `Failed to get status: ${getErrorMessage(error)}` }],
-              details: { error: true },
-            };
-          }
         }
 
         default:

@@ -62,7 +62,21 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   let transition: Promise<void> = Promise.resolve();
   let freeze: { moveId: string; epoch: number } | undefined;
   let lastContext: ExtensionContext | undefined;
+  let signalled = false, watchingSignals = false;
   const observed = new Set<string>();
+  const noteSignal = () => { signalled = true; };
+  const unwatchSignals = () => {
+    if (!watchingSignals) return;
+    watchingSignals = false;
+    process.off("SIGTERM", noteSignal);
+    if (process.platform !== "win32") process.off("SIGHUP", noteSignal);
+  };
+  const watchSignals = () => {
+    if (watchingSignals || !ports.stopped) return;
+    watchingSignals = true;
+    process.on("SIGTERM", noteSignal);
+    if (process.platform !== "win32") process.on("SIGHUP", noteSignal);
+  };
 
   function publish(kind: Admission["kind"], home: Home | null, detail?: string): void {
     admission = { kind, home, blockers: detail ? [{ kind: "admission", id: sessionId, detail }] : [] };
@@ -146,6 +160,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         if (ticket !== generation) return;
         if (reopening) freeze = undefined;
         publish("ordinary", home);
+        watchSignals();
       } catch {
         if (ticket === generation) publish("blocked", home, VERIFY);
       }
@@ -159,7 +174,10 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
 
   pi.on("session_start", async (_event, ctx) => start(ctx));
   pi.on("session_shutdown", async event => {
-    if (event.reason !== "reload" && participating && ordinaryWorkAllowed()) await ports.stopped?.(sessionId);
+    // Pi starts shutdown from its prepended signal listener before other listeners run.
+    await Promise.resolve();
+    unwatchSignals();
+    if (!signalled && event.reason !== "reload" && participating && ordinaryWorkAllowed()) await ports.stopped?.(sessionId);
   });
   pi.on("input", (_event, ctx) => {
     if (ordinaryWorkAllowed()) return undefined;
@@ -204,7 +222,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         if (current === transition) return admission;
       }
     },
-    async close() { ++generation; publish("blocked", admission.home, VERIFY); await sequence(release); },
+    async close() { unwatchSignals(); ++generation; publish("blocked", admission.home, VERIFY); await sequence(release); },
     async freeze(moveId, expectedEpoch) {
       const sameFreeze = freeze?.moveId === moveId && freeze.epoch === expectedEpoch && admission.kind === "control-only";
       if (!participating || !held?.valid || !moveId || epoch !== expectedEpoch || (!ordinaryWorkAllowed() && !sameFreeze) ||

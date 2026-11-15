@@ -49,11 +49,33 @@ it.each(["quit", "reload"])("%s preserves the correct durable hosting intent", a
   await authority.set({ sessionId: f.ready.sessionId, epoch: 1, desired: "running", suspended: null, file: f.ready.file, cwd: f.ready.cwd, moveId: null }, f.ready.opId);
   f.ports.ready = async () => persistReadiness(f.journal, f.ready);
   f.ports.stopped = id => authority.stop(id);
+  const before = new Set(process.listeners("SIGTERM"));
   const gate = registerAdmission(f.pi as never, f.ports);
   await f.hooks.get("session_start")![0]({}, f.ctx);
   await f.hooks.get("session_shutdown")![0]({ reason }, f.ctx);
   expect(await authority.get(f.ready.sessionId)).toMatchObject({ desired: reason === "quit" ? "stopped" : "running" });
+  expect(process.listeners("SIGTERM").every(listener => before.has(listener))).toBe(true);
   await gate.close();
+}, 5000);
+
+it.each((process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"]) as NodeJS.Signals[])("%s shutdown preserves running intent even when the shutdown hook runs first", async signal => {
+  const f = fixture(), authority = createRunningIntentAuthority(f.db);
+  await authority.set({ sessionId: f.ready.sessionId, epoch: 1, desired: "running", suspended: null, file: f.ready.file, cwd: f.ready.cwd, moveId: null }, f.ready.opId);
+  f.ports.stopped = id => authority.stop(id);
+  const before = new Set(process.listeners(signal));
+  const gate = registerAdmission(f.pi as never, f.ports);
+  try {
+    await f.hooks.get("session_start")![0]({}, f.ctx);
+    const added = process.listeners(signal).filter(listener => !before.has(listener));
+    expect(added).toHaveLength(1);
+    // Pi invokes its prepended signal handler first, which starts session_shutdown
+    // before Node dispatches the remaining listeners for that same signal.
+    const shutdown = f.hooks.get("session_shutdown")![0]({ reason: "quit" }, f.ctx);
+    added[0](signal);
+    await shutdown;
+    expect(await authority.get(f.ready.sessionId)).toMatchObject({ desired: "running" });
+    expect(process.listeners(signal)).not.toContain(added[0]);
+  } finally { await gate.close(); }
 }, 5000);
 
 it("a replay cannot replace the persisted readiness owner", () => {

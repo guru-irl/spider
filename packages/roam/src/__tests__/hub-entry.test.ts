@@ -261,7 +261,22 @@ async function twoNodeFixture(capture = true) {
     hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
   writeFileSync(join(f.root, "bin", "sqlite3"), `#!${process.execPath}\nconsole.log('3.45.0');\n`, { mode: 0o700 });
   f.env.PATH = join(f.root, "bin");
-  writeFileSync(join(f.root, "hc"), `#!${process.execPath}\nimport {appendFileSync,readFileSync} from 'node:fs'; import {spawnSync} from 'node:child_process';\nconst a=process.argv.slice(2); appendFileSync(${JSON.stringify(calls)},JSON.stringify(a)+'\\n');\nif(process.env.SPIDER_TEST_HC_OFFLINE==='1') process.exit(1);\nif(a[0]==='server') console.log(JSON.stringify({core:{id:'local-core'},version:'0.1.16'}));\nelse if(a[0]==='machine') console.log(JSON.stringify({machines:[{name:${JSON.stringify(alias)},id:'remote-core',state:'connected'}]}));\nelse if(a[0]==='exec' && a.includes(${JSON.stringify(`--on=${alias}`)})) { const cmd=a.slice(a.indexOf('--')+1); if(cmd[0]==='cat' && cmd.at(-1)===${JSON.stringify(join(box, "roam", "machine.json"))}) process.stdout.write(readFileSync(cmd.at(-1))); else if(cmd[0]===${JSON.stringify(process.execPath)} && cmd[1]===${JSON.stringify(f.cli)} && cmd[2]==='--global-root' && cmd[3]===${JSON.stringify(box)}) { const result=spawnSync(cmd[0],cmd.slice(1),{env:{...process.env,HOME:${JSON.stringify(box)}},input:a.includes('--stdin')?readFileSync(0):undefined}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status??1; } else process.exitCode=2; }\nelse process.exitCode=1;\n`, { mode: 0o700 });
+  const hcScript = join(f.root, "hc.js");
+  writeFileSync(hcScript, `#!${process.execPath}\nimport {appendFileSync,readFileSync} from 'node:fs'; import {spawnSync} from 'node:child_process';\nconst a=process.argv.slice(2); appendFileSync(${JSON.stringify(calls)},JSON.stringify(a)+'\\n');\nif(process.env.SPIDER_TEST_HC_OFFLINE==='1') process.exit(1);\nif(a[0]==='server') console.log(JSON.stringify({core:{id:'local-core'},version:'0.1.16'}));\nelse if(a[0]==='machine') console.log(JSON.stringify({machines:[{name:${JSON.stringify(alias)},id:'remote-core',state:'connected'}]}));\nelse if(a[0]==='exec' && a.includes(${JSON.stringify(`--on=${alias}`)})) { const cmd=a.slice(a.indexOf('--')+1); if(cmd[0]==='cat' && cmd.at(-1)===${JSON.stringify(join(box, "roam", "machine.json"))}) process.stdout.write(readFileSync(cmd.at(-1))); else if(cmd[0]===${JSON.stringify(process.execPath)} && cmd[1]===${JSON.stringify(f.cli)} && cmd[2]==='--global-root' && cmd[3]===${JSON.stringify(box)}) { const result=spawnSync(cmd[0],cmd.slice(1),{env:{...process.env,HOME:${JSON.stringify(box)}},input:a.includes('--stdin')?readFileSync(0):undefined}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status??1; } else process.exitCode=2; }\nelse process.exitCode=1;\n`, { mode: 0o700 });
+  // Repeated fixed probes do not need a separate Node process.
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const fast = (args: string[], reply: unknown) => `if [ "$#" = 3 ] && [ "$1" = ${quote(args[0])} ] && [ "$2" = ${quote(args[1])} ] && [ "$3" = ${quote(args[2])} ]; then
+  printf '%s\\n' ${quote(JSON.stringify(args))} >> ${quote(calls)}
+  [ "\${SPIDER_TEST_HC_OFFLINE:-}" != 1 ] || exit 1
+  printf '%s\\n' ${quote(JSON.stringify(reply))}
+  exit 0
+fi`;
+  const shell = `#!/bin/sh
+${fast(['server', 'status', '--json'], { core: { id: 'local-core' }, version: '0.1.16' })}
+${fast(['machine', 'ls', '--json'], { machines: [{ name: alias, id: 'remote-core', state: 'connected' }] })}
+exec ${quote(process.execPath)} ${quote(hcScript)} "$@"
+`;
+  writeFileSync(join(f.root, "hc"), shell, { mode: 0o700 });
   const server = createServer(socket => socket.end()); await new Promise<void>(done => server.listen(f.env.HC_SOCKET, done));
   return { f, alias, box, calls, peer, server };
 }

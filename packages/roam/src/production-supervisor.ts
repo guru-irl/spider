@@ -66,6 +66,7 @@ export function createSupervisorEvents(databaseFile: string, core: Pick<HcClient
 }
 
 export interface SupervisorSystemPorts {
+  shell?: string;
   bootId(): Promise<string>;
   limits(): Promise<{ soft: number; hard: number }>;
   inventory: ProcessInventoryPorts;
@@ -232,7 +233,7 @@ export async function startProductionSupervisor(root: string, options: { system?
           clock: { now: clock.now, async wait(ms, signal) { await new Promise<void>((done, reject) => { const timer = setTimeout(done, ms); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true }); }); } },
           base: { leases: system.inventory.leases, processInventory: system.inventory, processIdentity: { pid: process.pid, startIdentity: identity.startIdentity },
             env, machineId: runtime.config.machineId, core: { coreId: currentCore, session: env.HC_SESSION ?? "", socket: env.HC_SOCKET ?? "" },
-            bootId: system.bootId, limits: system.limits, shell: "/bin/sh", sessionBytes: runtime.config.limits.sessionBytes } });
+            bootId: system.bootId, limits: system.limits, shell: system.shell ?? "/bin/sh", sessionBytes: runtime.config.limits.sessionBytes } });
         await adapter.launch({ sessionId: intent.sessionId, file: intent.file, cwd: intent.cwd, epoch: intent.epoch, moveId: intent.moveId,
           pi: absolutePi, sha256: createHash("sha256").update(bytes).digest("hex"), operationId }, { mode: mode === "initial" ? "fresh" : "reconcile" });
         const ready = readReadiness(runtime.journal, operationId);

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
@@ -29,6 +29,86 @@ afterAll(async () => {
   for (const client of clients) await client.disconnect();
   for (const broker of brokers) await stopTestBroker(broker);
   if (root) rmSync(root, { recursive: true, force: true });
+}, 5000);
+
+it("discards queued evidence receipts before reconnecting to an older broker", async () => {
+  const agent = mkdtempSync(join(root, "swap-"));
+  const prior = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agent;
+  const start = async (version: "old" | "new") => {
+    const child = startTestBroker(process.execPath, [version === "old" ? join(root, "old-broker.mjs") : "dist/intercom/broker.mjs"], { env: { ...process.env, HOME: root }, stdio: ["ignore", "pipe", "pipe"] }, "suite");
+    brokers.push(child);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("broker startup timeout")), 3000);
+      child.once("exit", code => { clearTimeout(timer); reject(new Error(`broker exit ${code}`)); });
+      child.stdout!.on("data", chunk => { if (String(chunk).includes("Intercom broker started")) { clearTimeout(timer); resolve(); } });
+    });
+    return child;
+  };
+  try {
+    let broker = await start("new");
+    const receiver = new IntercomClient();
+    clients.push(receiver);
+    receiver.on("error", () => {});
+    const registration = { cwd: "/workspace", model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1 };
+    await receiver.connect(registration, "receiver");
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    for (let i = 0; i < 60; i++) {
+      receiver.sendMessageReceipt({ messageId: `queued-${i}`, status: "unknown", timestamp: 1 });
+    }
+    const disconnected = new Promise<void>(resolve => receiver.once("disconnected", resolve));
+    await stopTestBroker(broker);
+    await disconnected;
+    expect(receiver.isConnected()).toBe(false);
+    broker = await start("old");
+    await receiver.connect(registration, "receiver");
+    receiver.sendMessageReceipt({ messageId: "after-swap", status: "acknowledged", timestamp: 2 });
+    expect(await receiver.listSessions()).toHaveLength(1);
+    expect(receiver.isConnected()).toBe(true);
+    await receiver.disconnect();
+    await stopTestBroker(broker);
+  } finally {
+    vi.useRealTimers();
+    if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prior;
+  }
+}, 5000);
+
+it("preserves a queued waiter receipt when an older broker needs an acknowledgement", async () => {
+  const agent = mkdtempSync(join(root, "legacy-"));
+  const prior = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agent;
+  try {
+    const broker = startTestBroker(process.execPath, [join(root, "old-broker.mjs")], { env: { ...process.env, HOME: root }, stdio: ["ignore", "pipe", "pipe"] }, "suite");
+    brokers.push(broker);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("broker startup timeout")), 3000);
+      broker.once("exit", code => { clearTimeout(timer); reject(new Error(`broker exit ${code}`)); });
+      broker.stdout!.on("data", chunk => { if (String(chunk).includes("Intercom broker started")) { clearTimeout(timer); resolve(); } });
+    });
+    const sender = new IntercomClient(), receiver = new IntercomClient();
+    clients.push(sender, receiver);
+    sender.on("error", () => {}); receiver.on("error", () => {});
+    const registration = { cwd: "/workspace", model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1 };
+    await sender.connect(registration, "sender"); await receiver.connect(registration, "receiver");
+    const statuses: string[] = [];
+    sender.onMessageReceipt((_from, receipt) => statuses.push(receipt.status));
+    expect((await sender.send("receiver", { messageId: "target", text: "synthetic" })).delivered).toBe(true);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    for (let i = 0; i < 20; i++) receiver.sendMessageReceipt({ messageId: `sent-${i}`, status: "acknowledged", timestamp: 1 });
+    receiver.sendMessageReceipt({ messageId: "target", status: "matched_waiter", timestamp: 2,
+      evidence: { kind: "waiter", entryId: "entry", askId: "ask", sessionId: "receiver", activationEpoch: "generation" } });
+    receiver.sendMessageReceipt({ messageId: "target", status: "cancellation_requested", timestamp: 3 });
+    await vi.advanceTimersByTimeAsync(250);
+    await receiver.listSessions(); await sender.listSessions();
+    expect(statuses).toEqual(["acknowledged"]);
+    expect(receiver.isConnected()).toBe(true);
+    await sender.disconnect(); await receiver.disconnect(); await stopTestBroker(broker);
+  } finally {
+    vi.useRealTimers();
+    if (prior === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prior;
+  }
 }, 5000);
 
 for (const version of ["old", "new"] as const) {

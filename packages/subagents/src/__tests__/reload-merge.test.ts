@@ -287,10 +287,13 @@ it("a chain killed on reload keeps each completed step's thinking notice without
     modelRegistry: { find: () => ({ reasoning: true, thinkingLevelMap: { xhigh: "extra", max: null, low: null } }) } });
   expect(result.content).toContain("step 1: thinking capped");
   expect(result.content).toContain("step 2: thinking adjusted");
-  await tick(); await detachForReload("chain"); await tick();
-  expect(spawned).toBe(2);
+  await tick();
   expect(pi.sendMessage).toHaveBeenCalledTimes(1);
-  expect(pi.sendMessage.mock.calls[0][0].content).toContain("step 1: thinking capped");
-  expect(pi.sendMessage.mock.calls[0][0].content).toContain("step 2: thinking adjusted");
-  expect(pi.sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: false, deliverAs: "nextTurn" });
+  expect(pi.sendMessage.mock.calls[0][0].content).toContain("thinking capped");
+  expect(pi.sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: true });
+  await detachForReload("chain"); await tick();
+  expect(spawned).toBe(2);
+  expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+  expect(pi.sendMessage.mock.calls[1][0].content).toContain("thinking adjusted");
+  expect(pi.sendMessage.mock.calls[1][1]).toEqual({ triggerTurn: false, deliverAs: "nextTurn" });
 });

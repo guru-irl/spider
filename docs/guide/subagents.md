@@ -17,6 +17,7 @@
 - On hosts without usage entries attributed to a model, run usage attaches to the owner's next spider tool result, under tools and in summaries. With this fallback, usage can be lost if the host crashes before it saves the result.
 - Parallel dispatch defaults to a concurrency of `4`. Give tasks short names for the UI.
 - A chain passes `{previous}` to the next step.
+- A chain sends `spider.subagent_done` as each step finishes. A successful chain sends a `spider.chain_done` summary. If a step fails, the chain stops and sends `spider.chain_done` with the failed step and its result.
 - Pipeline templates use `{task}` for the first stage's original task text. Both `{previous}` and `{handoff}` use the prior stage's result. Spider does not expand `{outputs.<as>}`, so it stays in the task as literal text.
 - After a stage is done or has failed, the pipeline starts the next stage in a new child. Cancellation ends the pipeline.
 - `handoff:"intercom"` and `handoff:"wait"` are kept for compatibility and do nothing. Neither one sends a mailbox message or creates a blocking wait.

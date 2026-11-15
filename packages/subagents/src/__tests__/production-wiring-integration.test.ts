@@ -43,8 +43,8 @@ describe("Production Wiring Integration Tests", () => {
         models: { catalog: () => [], pick: () => null },
       };
 
-      // Enter through REAL production: makeRunHandler creates the coordinator
-      const runHandler = makeRunHandler();
+      // Keep the production coordinator and replace only the external child process.
+      const runHandler = makeRunHandler({ spawner: () => ({ wait: () => new Promise(() => {}), kill() {}, detach() {} }) });
       
       // Trigger a run (which sets up the notifier through production)
       await runHandler({ agent: "worker", task: "test", async: true }, ctx);

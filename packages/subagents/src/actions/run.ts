@@ -6,7 +6,7 @@ import { RunStore } from "../run-store";
 import { hasOwnership, isLocalRun } from "../roam-origin";
 import { runUsageSummary, sumUsage, safelyReportUsage } from "../usage";
 import { RunEventTailer } from "../event-tailer";
-import { Runner, type Spawner } from "../runner";
+import { Runner, UNDELIVERED_RUN_QUERY, type Spawner } from "../runner";
 import { PipelineCoordinator } from "../pipeline";
 import { getCoordinators, setupEscalationNotifier, type SessionCoordinators } from "../coordinators";
 import { runChain } from "../chain";
@@ -16,7 +16,7 @@ import { thinkingFromModel, stripThinkingSuffix } from "../pi-args";
 import { qualifyModelProvider, listPiModels, resolveRoleModel, resolveModelThinking } from "../model-resolve";
 import { defaultSpawner } from "../spawn-default";
 import { latestRunOutput } from "../completion-output";
-import { adoptShared, adoptableFor, getShared, sharedRegistry, type AdoptResult } from "../child-registry";
+import { adoptShared, adoptableFor, CHAIN_STEPS_QUERY, getShared, sharedRegistry, type AdoptResult } from "../child-registry";
 import { isShutdownReason } from "../shutdown-reason";
 import { discoverDurableChildren } from '../durable-adoption';
 
@@ -25,6 +25,9 @@ export const SUPERVISED_QUERY = "SELECT 1 FROM run_events WHERE run_id=? AND typ
 export const CLAIM_COMPLETION_QUERY = `INSERT INTO run_events (run_id,session_id,ts,type)
             SELECT id,session_id,?,'completion_delivered' FROM runs WHERE id=?
             AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=? AND type='completion_delivered')`;
+export const CLAIM_CHAIN_COMPLETION_QUERY = `INSERT INTO run_events (run_id,session_id,ts,type)
+            SELECT id,session_id,?,'chain_completion_delivered' FROM runs WHERE id=?
+            AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=? AND type='chain_completion_delivered')`;
 
 
 // Kept local to avoid a subagents -> UI dependency. Host parity tests cover both formatters.
@@ -70,8 +73,18 @@ export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { prov
       if (notes.size) output = [output, ...notes].filter(Boolean).join("\n\n");
       const name = run?.name ?? run?.agent ?? "subagent";
       const agent = run?.agent ?? "worker";
-      // UI standard: italic verb (`subagent`) + italic status, mirroring the tool titles.
-      const headline = `🕸 *subagent* "${name}" · ${agent} · *${status}*`;
+      let failedChainStep: number | undefined;
+      if (!steps && status === "failed") {
+        try {
+          const event = ctx.db.prepare(CHAIN_STEPS_QUERY).get(run.id) as { payload: string } | undefined;
+          const phase = /^step-(\d+)$/.exec(run.phase ?? "");
+          // Older chains could continue after failure. Only new chains promise to stop here.
+          if (event && phase && JSON.parse(event.payload).stopOnFailure === true) failedChainStep = Number(phase[1]);
+        } catch { /* a missing diagnostic cannot suppress the step notice */ }
+      }
+      const headline = steps
+        ? `🕸 *chain* completed · ${steps.length} step(s) · *${status}*`
+        : `🕸 *subagent* "${name}" · ${agent} · *${status}*`;
       // Carry the COMPLETE curated output in the transcript; the registered renderer collapses
       // it and ctrl+o expands the whole thing. triggerTurn wakes an idle main agent so the
       // conversation continues automatically instead of waiting for the user to send a message.
@@ -90,30 +103,49 @@ export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { prov
       if (!ctx.pi?.sendMessage) return;
       const deliver = () => ctx.pi.sendMessage(
         {
-          customType: "spider.subagent_done",
+          customType: steps ? "spider.chain_done" : "spider.subagent_done",
           content,
           display: true,
-          details: { runId: run?.id, name, agent: run?.agent, model: run?.model, thinking: run?.thinking, status, output, tokenCount, cost, ...(costText === undefined ? {} : { costText }), ...(compactionCount === undefined ? {} : { compactionCount }) },
+          details: { runId: run?.id, name, agent: run?.agent, model: run?.model, thinking: run?.thinking, status, output, tokenCount, cost, ...(steps ? { steps: steps.length } : {}), ...(costText === undefined ? {} : { costText }), ...(compactionCount === undefined ? {} : { compactionCount }) },
         },
         shutdown ? { triggerTurn: false, deliverAs: "nextTurn" } : { triggerTurn: true },
       );
+      const deliverFailedChain = () => ctx.pi.sendMessage(
+        {
+          customType: "spider.chain_done",
+          content: `🕸 *chain* ended at step ${failedChainStep} "${name}" · *failed*\n\n${output || "(no output)"}`,
+          display: true,
+          details: { runId: run.id, name, agent: run.agent, status, step: failedChainStep, output },
+        },
+        { triggerTurn: true },
+      );
       let supervised = false;
       try { supervised = Boolean(ctx.db?.prepare(SUPERVISED_QUERY).get(run.id)); } catch { /* A closed optional DB cannot suppress a legacy shutdown notice. */ }
+      let delivered = false, chainDelivered = false;
       if (supervised) {
-        const delivered = ctx.db.transaction(() => {
-          // Start with a write, not a read-then-write, so competing parents cannot both claim this notification.
-          const claim = ctx.db.prepare(CLAIM_COMPLETION_QUERY);
-          if (!claim.run(Date.now(), run.id, run.id).changes) return false;
-          for (const step of completed) if (step.id !== run.id) claim.run(Date.now(), step.id, step.id);
-          deliver(); // A synchronous delivery failure rolls the claims back for the next resume.
+        const claimAndDeliver = (query: string, send: () => void): boolean => ctx.db.transaction(() => {
+          // Write first so competing activations cannot both deliver the same notice.
+          if (!ctx.db.prepare(query).run(Date.now(), run.id, run.id).changes) return false;
+          send(); // A synchronous delivery failure rolls this claim back for the next resume.
           return true;
         })();
-        if (!delivered) return;
-        ctx.db.afterCommit(() => {
-          for (const step of completed) ctx.globalDb?.prepare('DELETE FROM run_routes WHERE run_id=?').run(step.id);
-        });
-      } else deliver();
-      ctx.ui?.notify?.(`subagent "${name}" ${status}`, status === "failed" ? "error" : "info");
+        try { delivered = claimAndDeliver(steps ? CLAIM_CHAIN_COMPLETION_QUERY : CLAIM_COMPLETION_QUERY, deliver); }
+        catch { /* the other notice can still be sent */ }
+        if (failedChainStep !== undefined) {
+          try { chainDelivered = claimAndDeliver(CLAIM_CHAIN_COMPLETION_QUERY, deliverFailedChain); }
+          catch { /* retain the route so this notice can be retried */ }
+        }
+        if (!ctx.db.prepare(UNDELIVERED_RUN_QUERY).get(run.id)) {
+          ctx.db.afterCommit(() => ctx.globalDb?.prepare('DELETE FROM run_routes WHERE run_id=?').run(run.id));
+        }
+      } else {
+        try { deliver(); delivered = true; } catch { /* the other notice can still be sent */ }
+        if (failedChainStep !== undefined) {
+          try { deliverFailedChain(); chainDelivered = true; } catch { /* best-effort */ }
+        }
+      }
+      if (!delivered && !chainDelivered) return;
+      if (delivered) ctx.ui?.notify?.(`subagent "${name}" ${status}`, status === "failed" ? "error" : "info");
     } catch { /* best-effort; saved completions remain recoverable */ }
   };
 }
@@ -219,13 +251,13 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       return { content: `pipeline ${pipelineId} started (${args.pipeline.length} stages), first run ${firstRunId}`, details: withWarning({ pipelineId, firstRunId }) };
     }
     if (Array.isArray(args.chain)) {
-      // Async by design: kick the chain off in the background and report back when the last
-      // step finishes (each step feeds the next). The tool returns immediately.
+      // Each foreground step reports on exit. A successful chain also reports its aggregate;
+      // a failed step reports the stopped chain without waiting for this continuation.
       const chain = args.chain.map((c: any, index: number) => ({ ...c, ...resolveMT(c.model, c.thinking, c.agent ?? "worker", index + 1) }));
       void runChain(runner, chain, { task: args.task ?? "", context: args.context ?? "fresh", skill })
         .then((rows: any[]) => {
           const last = rows[rows.length - 1];
-          if (last) onComplete(last, last.status, last.result ?? undefined, rows);
+          if (last?.status === "done") onComplete(last, last.status, last.result ?? undefined, rows);
         })
         .catch(() => { /* best-effort */ });
       const first = chain[0] ?? {};

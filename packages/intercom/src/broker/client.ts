@@ -1,4 +1,4 @@
-import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
+import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, receiptReleasesPayload, FEDERATION_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
 import { isFederationDispatchResult, parseFederationBrokerMessage } from "./protocol.js";
 import { EventEmitter } from "events";
 import net from "net";
@@ -42,6 +42,13 @@ function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+function receiptPriority(receipt: MessageReceipt): number {
+  // Consumption and expiry outrank unresolved durable receipts, which outrank transient notices.
+  if (receiptReleasesPayload(receipt)) return 2;
+  return receipt.status === "injected" || receipt.status === "matched_waiter" || receipt.status === "expired"
+    || receipt.status === "not_injected" || receipt.status === "unknown" ? 1 : 0;
+}
+
 /**
  * Liveness heartbeat interval. A half-open socket (peer killed with SIGKILL or
  * crashed without sending a FIN) stays "writable" indefinitely, so passive
@@ -70,7 +77,7 @@ export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _features = new Set<string>();
-  private receiptQueue = new Map<string, MessageReceipt>();
+  private receiptQueue = new Map<string, { receipt: MessageReceipt; priority: number }>();
   private receiptTimer: ReturnType<typeof setTimeout> | null = null;
   private receiptBudget = 20;
   private pendingSends = new Map<string, { resolve: (r: SendResult) => void; reject: (e: Error) => void }>();
@@ -763,18 +770,30 @@ export class IntercomClient extends EventEmitter {
 
     const compatible = compatibleReceipt(receipt, this.supportsFeature(RECEIPT_EVIDENCE_FEATURE));
     if (!compatible) return;
-    this.receiptQueue.set(receipt.messageId, compatible);
-    while (this.receiptQueue.size > 4096) this.receiptQueue.delete(this.receiptQueue.keys().next().value!);
+    const priority = receiptPriority(receipt);
+    const pending = this.receiptQueue.get(receipt.messageId);
+    if (pending && pending.priority > priority) return;
+    // Updating a Map entry retains its original place in the queue.
+    this.receiptQueue.set(receipt.messageId, { receipt: compatible, priority });
+    while (this.receiptQueue.size > 4096) {
+      let transient: string | undefined;
+      for (const [id, queued] of this.receiptQueue) {
+        if (queued.priority === 0) { transient = id; break; }
+      }
+      // Durable receipts can temporarily exceed the limit rather than being discarded.
+      if (transient === undefined) break;
+      this.receiptQueue.delete(transient);
+    }
     this.flushReceipts();
   }
 
   private flushReceipts(): void {
     if (!this.isConnected()) return;
     while (this.receiptBudget > 0 && this.receiptQueue.size) {
-      const [id, receipt] = this.receiptQueue.entries().next().value!;
+      const [id, pending] = this.receiptQueue.entries().next().value!;
       this.receiptQueue.delete(id);
       this.receiptBudget--;
-      writeMessage(this.socket!, { type: "message_receipt", receipt });
+      writeMessage(this.socket!, { type: "message_receipt", receipt: pending.receipt });
     }
     if (!this.receiptTimer && this.receiptBudget < 20) {
       this.receiptTimer = setTimeout(() => { this.receiptTimer = null; this.receiptBudget = 20; this.flushReceipts(); }, 250);

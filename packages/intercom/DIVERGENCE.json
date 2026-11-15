@@ -10,7 +10,7 @@
     {
       "path": "broker/client.ts",
       "task": "3.6f",
-      "reason": "Negotiate federation and helper capabilities, acknowledge processed notices, and fence asynchronous completions to their original broker connection. Carry owner-approved first-home presence updates without reconnecting the session.",
+      "reason": "Negotiate federation and helper capabilities, acknowledge processed notices, and fence asynchronous completions to their original broker connection. Carry owner-approved first-home presence updates without reconnecting the session. Pace receipts while preserving durable evidence and queue order.",
       "upstreamHash": "c810c80fdc0147dc9d7b636f071b82db7a50383dee6b860a6fe6cc0946f6212d"
     },
     {

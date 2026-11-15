@@ -103,7 +103,7 @@ it("returns the new activation's physical consumption evidence to the original s
   }, deliverReceipt() {}, deliverControl() {} } as never, endpoint: () => next, sender: () => null, wake() {}, now: clock.now });
   try {
     await bridge.start(); await delivery.ready(to, "ready"); await delivery.ready(to, "ready-again");
-    const reply = await bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 3, senderMachine: B, recipientMachine: A,
+    const reply = await bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine: B, recipientMachine: A,
       generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: inbox.pending({ kind: "receipts", peer: A }), controls: [], presence: [] } });
     for (const receipt of reply.exchange.receiptAcknowledgements ?? []) inbox.acknowledgeReceipt({ peer: A, frame: receipt });
     expect(received).toEqual(["receipt-after-restart"]);
@@ -125,7 +125,7 @@ it("acknowledges a lost-link-ack replay of the original endpoint after a safe lo
     const original = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
     inbox.acceptInbound({ peer: A, frame: original }); inbox.rebindInboundAfterAbsence("lost-ack", next);
     await receiver.start();
-    const reply = await receiver.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 3, senderMachine: A, recipientMachine: B,
+    const reply = await receiver.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine: A, recipientMachine: B,
       generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [original], acknowledgements: [], receipts: [], controls: [], presence: [] } });
     expect(reply.exchange.refusals ?? []).toEqual([]);
     expect(reply.exchange.acknowledgements).toEqual([{ identity: original.identity, kind: "message" }]);

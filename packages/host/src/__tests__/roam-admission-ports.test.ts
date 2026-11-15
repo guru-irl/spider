@@ -6,7 +6,13 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { bindSession, openDb, openDbAt, paths, setGlobalDbPathForTests, type Db } from "@spider/db-core";
 import * as dbCore from "@spider/db-core";
 import { writeLocal } from "@spider/db-core/roam/local-state";
-import { createRunningIntentAuthority } from "@spider/roam/session-control";
+import { createRunningIntentAuthority, seedNewParticipant } from "@spider/roam/session-control";
+import { mapWorkspace } from "@spider/db-core/roam/repo-map";
+import { enableMemoryCapture } from "@spider/db-core/roam/seed";
+import { assignInitialHome, sessionHome } from "@spider/roam/homes";
+import { INTERCOM_HOST_EVENT, type IntercomHostRequest } from "@spider/intercom/protocol";
+import { createHostSessionFixture } from "./fixtures/pi-events";
+import { createHostIntercomPorts, registerRoamIntercom } from "../roam/intercom";
 import { claimIdLock, inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import { writeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
 import { createSessionLeases, type ProcessInventoryPorts } from "@spider/herdr/sessions/lease";
@@ -51,6 +57,94 @@ function fixture() {
   ports.setContext(ctx);
   return { globalRoot, cwd, bound, global, current, file, machine, identity, probe, ports, worktree, ctx };
 }
+
+function uncapturedHub() {
+  const f = fixture();
+  f.current.prepare("DELETE FROM roam_sessions WHERE session_id='session-1'").run();
+  f.current.prepare("UPDATE roam_meta SET capture_enabled=0 WHERE id=1").run();
+  const config = { enabled: false, role: 'hub', machineId: f.machine, hubMachineId: f.machine, peers: [], discoveryRoots: [],
+    coreUnit: 'fixture.service', intercom: { enabled: true, mode: 'hub-only', machineAlias: 'hub.invalid', routes: [] } };
+  const configFile = join(f.globalRoot, 'roam', 'config.json');
+  writeFileSync(configFile, JSON.stringify(config), { mode: 0o600 });
+  const host = createHostSessionFixture({ cwd: f.cwd, sessionId: 'session-1', sessionFile: f.file });
+  const gate = registerAdmission(host.pi as unknown as ExtensionAPI, f.ports);
+  const emitStart = async () => { for (const hook of host.hooks.get('session_start') ?? []) await hook({}, host.ctx); };
+  const enable = () => writeFileSync(configFile, JSON.stringify({ ...config, enabled: true }), { mode: 0o600 });
+  const capture = async () => {
+    await mapWorkspace(f.global, { repoKey: 'fixture', workspaceId: 'current', path: f.cwd });
+    enableMemoryCapture(f.global, 'global');
+    seedNewParticipant({ globalDb: f.global, machineId: f.machine, sessionId: 'session-1', file: f.file, cwd: f.cwd,
+      stores: [{ key: 'worktree:fixture:current', db: f.current }], limit: 4096 });
+  };
+  return { ...f, host, gate, emitStart, enable, capture };
+}
+
+it.each([false, true])('re-admits the same live session after enable, capture and enrollment without a reload (already enabled: %s)', async alreadyEnabled => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '0');
+  const f = uncapturedHub(), lock = vi.spyOn(f.ports, 'lock'), load = vi.spyOn(f.ports, 'load');
+  if (alreadyEnabled) f.enable();
+  const registration = registerRoamIntercom(f.host.pi as unknown as ExtensionAPI, { ...createHostIntercomPorts(f.gate, { db: f.global,
+    pid: f.identity.pid, probe: () => ({ kind: 'live', startIdentity: f.identity.startIdentity }) }),
+    home: address => sessionHome(f.global, address.sessionId) });
+  try {
+    await f.emitStart();
+    expect(f.gate.inspect()).toEqual({ kind: 'ordinary', home: null, blockers: [] });
+    expect(lock).not.toHaveBeenCalled();
+    const request: IntercomHostRequest = { sessionId: 'session-1', scopeId: null, activationEpoch: 'running-before-enable' };
+    f.host.pi.events.emit(INTERCOM_HOST_EVENT, request);
+    expect(request.endpoint).toMatchObject({ machineId: f.machine, homeEpoch: null, activationEpoch: 'running-before-enable' });
+    if (!alreadyEnabled) f.enable();
+    await f.capture();
+    const home = assignInitialHome(f.global, 'session-1', f.machine, f.machine);
+    const refreshed = await request.refreshInitialHome!();
+    expect(refreshed).toMatchObject({ machineId: f.machine, homeEpoch: 1, activationEpoch: 'running-before-enable' });
+    expect(f.gate.inspect()).toEqual({ kind: 'ordinary', home, blockers: [] });
+    expect(lock).toHaveBeenCalledTimes(1);
+    load.mockClear();
+    for (let i = 0; i < 10; i++) await f.gate.refreshInitialHome();
+    expect(load).not.toHaveBeenCalled();
+  } finally { registration.dispose(); await f.gate.close(); }
+}, 5000);
+
+it('a disabled hub stays ordinary after capture and home changes without new refresh DB reads', async () => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '0');
+  const f = uncapturedHub(), lock = vi.spyOn(f.ports, 'lock'), load = vi.spyOn(f.ports, 'load');
+  try {
+    await f.emitStart();
+    await f.capture(); assignInitialHome(f.global, 'session-1', f.machine, f.machine);
+    load.mockClear();
+    const open = vi.spyOn(dbCore, 'openGlobalReadOnly');
+    for (let i = 0; i < 10; i++) await f.gate.refreshInitialHome();
+    expect(f.gate.inspect()).toEqual({ kind: 'ordinary', home: null, blockers: [] });
+    expect(load).not.toHaveBeenCalled(); expect(open).not.toHaveBeenCalled(); expect(lock).not.toHaveBeenCalled();
+  } finally { await f.gate.close(); }
+}, 5000);
+
+it('an enabled uncaptured session does not perform a full admission lookup on unchanged ticks', async () => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '0');
+  const f = uncapturedHub(); f.enable();
+  try {
+    await f.emitStart();
+    const load = vi.spyOn(f.ports, 'load'), open = vi.spyOn(dbCore, 'openGlobalReadOnly');
+    for (let i = 0; i < 10; i++) await f.gate.refreshInitialHome();
+    expect(load).not.toHaveBeenCalled(); expect(open).not.toHaveBeenCalled();
+    expect(f.gate.inspect()).toEqual({ kind: 'ordinary', home: null, blockers: [] });
+  } finally { await f.gate.close(); }
+}, 5000);
+
+it.each([[0, null], [1, 'excluded by policy'], [0, 'excluded by policy']] as const)('a policy-excluded worktree (%s, %s) remains outside admission even after an initial home appears', async (roamable, problem) => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '0');
+  const f = uncapturedHub(); f.enable();
+  f.current.prepare('UPDATE roam_meta SET roamable=?,problem=? WHERE id=1').run(roamable, problem);
+  try {
+    await f.emitStart();
+    assignInitialHome(f.global, 'session-1', f.machine, f.machine);
+    const load = vi.spyOn(f.ports, 'load'), lock = vi.spyOn(f.ports, 'lock');
+    for (let i = 0; i < 10; i++) await f.gate.refreshInitialHome();
+    expect(f.gate.inspect()).toEqual({ kind: 'ordinary', home: null, blockers: [] });
+    expect(load).not.toHaveBeenCalled(); expect(lock).not.toHaveBeenCalled();
+  } finally { await f.gate.close(); }
+}, 5000);
 
 it("reads active membership and origin from the real migrated worktree", async () => {
   const f = fixture();

@@ -467,6 +467,57 @@ it("a conflicting initial home and incompatible epoch never admit", async () => 
 }, 5000);
 
 
+it('late-capture refresh never admits an ordinary subagent child', async () => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '1');
+  const f = fixture(snapshot({ home: null, states: [], participating: false }));
+  let version = 'uncaptured';
+  Object.assign(f.ports, { captureVersion: () => version });
+  await f.emit('session_start');
+  f.setSnapshot(snapshot({ home: { ...home, epoch: 1 }, states: [{ ...active, epoch: 1 }] }));
+  version = 'captured';
+  await f.gate.refreshInitialHome();
+  expect(f.gate.inspect()).toEqual({ kind: 'ordinary', home: null, blockers: [] });
+  expect(f.calls.admission).toBe(0); expect(f.calls.lock).toBe(0);
+}, 5000);
+
+it('capture rediscovery cannot reopen a superseded activation', async () => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '0');
+  const f = fixture(snapshot({ home: null, states: [], participating: false }));
+  let version = 'uncaptured';
+  Object.assign(f.ports, { captureVersion: () => version });
+  await f.emit('session_start');
+  const captured = snapshot({ home: { ...home, epoch: 1 }, states: [{ ...active, epoch: 1 }] });
+  let entered!: () => void, finish!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; }), complete = new Promise<void>(resolve => { finish = resolve; });
+  const original = f.ports.load;
+  f.ports.load = async id => { if (id === sessionId) { entered(); await complete; return captured; } return original(id); };
+  version = 'captured';
+  const refresh = f.gate.refreshInitialHome(); await waiting;
+  Object.assign(f.ctx.sessionManager, { getSessionId: () => 'new-session', getSessionFile: () => '/fixture/new-session.jsonl' });
+  f.setSnapshot(snapshot({ home: null, states: [], origin: null, participating: false }));
+  await f.emit('session_start');
+  const lookups = f.calls.admission;
+  finish(); await refresh;
+  expect(f.gate.inspect()).toEqual({ kind: 'ordinary', home: null, blockers: [] });
+  expect(f.calls.admission).toBe(lookups);
+  expect(f.calls.lock).toBe(0);
+}, 5000);
+
+it('late-capture refresh cannot reopen a deliberately blocked handoff', async () => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '0');
+  vi.stubEnv('SPIDER_HERDR_HANDOFF_FILE', '/fixture/handoff.json');
+  const f = fixture(snapshot({ home: null, states: [], participating: false }));
+  let version = 'uncaptured';
+  Object.assign(f.ports, { captureVersion: () => version });
+  await f.emit('session_start');
+  const before = f.gate.inspect(), lookups = f.calls.admission;
+  f.setSnapshot(snapshot({ home: { ...home, epoch: 1 }, states: [{ ...active, epoch: 1 }] }));
+  version = 'captured';
+  await f.gate.refreshInitialHome();
+  expect(f.gate.inspect()).toEqual(before); expect(before.kind).toBe('blocked');
+  expect(f.calls.admission).toBe(lookups); expect(f.calls.lock).toBe(0);
+}, 5000);
+
 it("formalizes a running origin's first home through ownership readiness without reacquiring its lock", async () => {
   vi.stubEnv("PI_SUBAGENT_CHILD", "0");
   const initial = snapshot({ home: null, states: [{ ...active, epoch: 1 }] });

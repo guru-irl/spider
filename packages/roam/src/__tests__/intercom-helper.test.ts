@@ -25,7 +25,7 @@ function fixture() {
   return { root, token, socket: join(intercom, "broker.sock") };
 }
 function batch(senderMachine: string, recipientMachine: string) {
-  return { protocol: 3, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+  return { protocol: 4, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
 }
 async function server(path: string, handler: (message: Record<string, unknown>, socket: Socket) => void): Promise<{ server: Server; clients: Set<Socket> }> {

@@ -2,7 +2,8 @@ import type { Home, MachineId } from "@spider/db-core/roam/types";
 import type { AcceptanceEvidence, FederationBlockers, Message, MessageControl, MessageReceipt, RemoteSessionInfo, SessionAddress, SessionEndpoint } from "@spider/intercom/protocol";
 import type { Clock } from "./contracts";
 
-export const INTERCOM_FEDERATION_VERSION = 3 as const;
+// Protocol 4 predates cross-machine deployment; old receipts have no compatibility path.
+export const INTERCOM_FEDERATION_VERSION = 4 as const;
 export const INTERCOM_MESSAGE_BYTES: number = 256 * 1024;
 export const INTERCOM_EXCHANGE_BYTES: number = 512 * 1024;
 export const INTERCOM_QUEUE_MESSAGES: number = 256;
@@ -60,8 +61,15 @@ export interface IntercomReceiptInput {
   receipt: MessageReceipt;
   /** Assigned by the receiving store and relayed unchanged. */
   attempt?: number;
+  /** Original message provenance; local producers let the store derive both fields. */
+  originMachineId?: MachineId;
+  sequence?: number;
 }
-export interface IntercomReceiptFrame extends IntercomReceiptInput { attempt: number }
+export interface IntercomReceiptFrame extends IntercomReceiptInput {
+  attempt: number;
+  originMachineId: MachineId;
+  sequence: number;
+}
 export interface IntercomControlFrame { from: SessionAddress; to: SessionAddress; control: MessageControl }
 export interface IntercomExchange {
   protocol: typeof INTERCOM_FEDERATION_VERSION;
@@ -172,7 +180,7 @@ export interface IntercomStore extends IntercomTopologyStore {
   /** Persist the fence and failure receipts atomically; it never clears an existing fence. */
   fencePair(peer: MachineId, edgeEpoch: string, fenceId?: string): { fence: IntercomPairFence; upstream: readonly MachineId[] };
   /** Call only with a durable human-consent record for the exact graph and fence generation. */
-  approvePair(peer: MachineId, approval: IntercomPairApproval): void;
+  approvePair(peer: MachineId, approval: IntercomPairApproval): boolean;
   pendingRevocationNotices(): readonly IntercomReceiptFrame[];
   acknowledgeRevocationNotice(frame: IntercomReceiptFrame): void;
   edgeState(peer: MachineId, edgeEpoch: string): IntercomEdgeState;
@@ -183,6 +191,7 @@ export interface IntercomStore extends IntercomTopologyStore {
   /** The transport authenticates the peer. Resume owners come from the local authoritative home lookup, not the wire. */
   acceptInbound(input: { peer: MachineId; frame: IntercomFrame; resume?: { cursor: IntercomPairResume; owner: Home | null } }): IntercomAcceptance;
   rejectMissingOrigin(input: { peer: MachineId; frame: MissingOriginFrame }): void;
+  rejectFrame(input: { peer: MachineId; origin: MachineId; identity: IntercomIdentity; reason: "sender-unauthorized" | "store-rejected" | "peer-revoked" }): void;
   outboundResumptions(peer: MachineId): readonly IntercomPairResume[];
   /** maxBytes includes each encoded frame and one separator, after reserving the rest of the exchange. */
   pending(input: { kind: "outbound"; peer: MachineId; hopBudgetMs: number; maxBytes?: number; skipIds?: readonly string[] }): readonly IntercomFrame[];
@@ -195,6 +204,7 @@ export interface IntercomStore extends IntercomTopologyStore {
   retryKnownNotSent(input: { id: string; endpoint: SessionEndpoint; attempt: number }): void;
   followConsumption(input: { queue: IntercomQueue; peer: MachineId; frame: IntercomReceiptInput }): void;
   settleReceipt(input: { queue: IntercomQueue; peer: MachineId; frame: IntercomReceiptInput }): void;
+  isSettledReceipt(input: { peer: MachineId; frame: IntercomReceiptFrame }): boolean;
   resolveUnknown(input: { queue: IntercomQueue; id: string; digest: string; proof: IntercomReceiptInput }): void;
   cancel(input: { queue: IntercomQueue; id: string; from: SessionAddress; to: SessionAddress }): void;
   expire(): readonly { queue: IntercomQueue; id: string }[];

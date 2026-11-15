@@ -5,7 +5,7 @@ import type { IntercomExchange } from "../intercom-contracts";
 const A = "00000000-0000-4000-8000-000000000001", B = "00000000-0000-4000-8000-000000000002";
 const entry = { remote: true as const, id: "owner", address: { sessionId: "owner", scopeId: "scope" }, machineId: A, machineAlias: "peer.invalid",
   homeEpoch: null, activationEpoch: "activation", endpointEpoch: "activation", name: "owner", cwd: "/fixture", model: "fixture", status: "idle", startedAt: 1, lastActivity: 1 };
-const exchange = (presence: unknown): IntercomExchange => ({ protocol: 3, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge", channel: "push", generation: 1 },
+const exchange = (presence: unknown): IntercomExchange => ({ protocol: 4, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge", channel: "push", generation: 1 },
   frames: [], acknowledgements: [], receipts: [], controls: [], presence: [presence] } as IntercomExchange);
 it.each([["name", 256], ["machineAlias", 255], ["cwd", 4096], ["model", 256], ["status", 512]] as const)("bounds peer-supplied %s", (field, max) => {
   expect(isRemoteSessionInfo({ ...entry, [field]: "x".repeat(max) })).toBe(true);

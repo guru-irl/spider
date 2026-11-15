@@ -190,6 +190,52 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
         wake(peer) { bridge?.wake(peer); },
       });
       broker.on("presence", onPresence); broker.on("disconnected", onDisconnected);
+      const sessionMachines = (address: SessionAddress, originsOnly = false): string[] => {
+        const db = options.globalDb, machines = new Set<string>();
+        for (const kind of originsOnly ? ["observed-origin"] : ["observed-origin", "participant-origin", "intercom-first-home", "intercom-generation", "intercom-owner"]) {
+          for (const { key, value } of localEntries<Record<string, unknown>>(db, kind)) {
+            if ((value.id ?? value.sessionId ?? (kind === "participant-origin" ? key : null)) !== address.sessionId) continue;
+            const machine = value.origin ?? value.machine ?? value.machineId ?? (kind === "intercom-generation" ? local : null);
+            if (!isMachineId(machine)) throw new Error("intercom-owner-unavailable");
+            machines.add(machine);
+          }
+        }
+        const rememberHome = (json: string) => {
+          const home = JSON.parse(json) as { machineId?: unknown };
+          if (!isMachineId(home?.machineId)) throw new Error("intercom-owner-unavailable");
+          machines.add(home.machineId);
+        };
+        if (!originsOnly) for (const row of db.prepare("SELECT committed_home_json AS home FROM roam_home_actions WHERE session_id=? AND committed_home_json IS NOT NULL").all(address.sessionId) as { home: string }[]) rememberHome(row.home);
+        const location = db.prepare("SELECT home_json FROM roam_locations WHERE session_id=?").get(address.sessionId) as { home_json: string | null } | undefined;
+        if (!originsOnly && location?.home_json) rememberHome(location.home_json);
+        const inspect = (sessionDb: Db) => {
+          if (!originsOnly && sessionDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_versions'").get()) {
+            for (const row of sessionDb.prepare("SELECT origin_machine FROM roam_versions WHERE entity='sessions' AND row_key=?").all(address.sessionId) as { origin_machine: string }[]) {
+              if (!isMachineId(row.origin_machine)) throw new Error("intercom-owner-unavailable"); machines.add(row.origin_machine);
+            }
+          }
+          if (!sessionDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").get()) return;
+          const columns = sessionDb.prepare("SELECT name FROM pragma_table_info('sessions')").all() as { name: string }[];
+          const hasOrigin = columns.some(row => row.name === "origin_machine");
+          const row = sessionDb.prepare(`SELECT ${hasOrigin ? "origin_machine" : "'' AS origin_machine"} FROM sessions WHERE id=?`).get(address.sessionId) as { origin_machine: string } | undefined;
+          if (row && (!originsOnly || row.origin_machine)) { const origin = row.origin_machine || local; if (!isMachineId(origin)) throw new Error("intercom-owner-unavailable"); machines.add(origin); }
+        };
+        inspect(db);
+        for (const row of db.prepare("SELECT db_path FROM projects").all() as { db_path: string }[]) {
+          let handle: Db | undefined;
+          try {
+            const stat = lstatSync(row.db_path);
+            if (stat.isSymbolicLink() || !stat.isFile() || realpathSync(row.db_path) !== row.db_path || process.getuid && stat.uid !== process.getuid()) throw new Error("intercom-owner-unavailable");
+            handle = openDbReadOnly(row.db_path); if (!handle) throw new Error("intercom-owner-unavailable"); inspect(handle);
+          } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+          finally { handle?.close(); }
+        }
+        for (const key of listStoreKeys(db)) if (key.startsWith("worktree:")) {
+          const handle = openRoamStoreReadOnly(db, key); if (!handle) continue;
+          try { inspect(handle); } finally { handle.close(); }
+        }
+        return [...machines];
+      };
       bridge = createIntercomBridge({ machineId: local, machineAlias: settings.machineAlias,
         edges: direct.map(route => ({ peer: route.peer, edgeEpoch: route.edgeEpoch, initiator: initiates(route.peer) })),
         nextHop(destination) { const route = settings.routes.find(candidate => candidate.peer.machineId === destination);
@@ -321,51 +367,10 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
           lastMaintenance = now;
           pruneIntercomRecords(options.globalDb, (id, generation) => store!.hasGenerationReferences(id, generation));
         },
-        knownSessionMachines(address) {
-          const db = options.globalDb, machines = new Set<string>();
-          for (const kind of ["observed-origin", "participant-origin", "intercom-first-home", "intercom-generation", "intercom-owner"]) {
-            for (const { key, value } of localEntries<Record<string, unknown>>(db, kind)) {
-              if ((value.id ?? value.sessionId ?? (kind === "participant-origin" ? key : null)) !== address.sessionId) continue;
-              const machine = value.origin ?? value.machine ?? value.machineId ?? (kind === "intercom-generation" ? local : null);
-              if (!isMachineId(machine)) throw new Error("intercom-owner-unavailable");
-              machines.add(machine);
-            }
-          }
-          const rememberHome = (json: string) => {
-            const home = JSON.parse(json) as { machineId?: unknown };
-            if (!isMachineId(home?.machineId)) throw new Error("intercom-owner-unavailable");
-            machines.add(home.machineId);
-          };
-          for (const row of db.prepare("SELECT committed_home_json AS home FROM roam_home_actions WHERE session_id=? AND committed_home_json IS NOT NULL").all(address.sessionId) as { home: string }[]) rememberHome(row.home);
-          const location = db.prepare("SELECT home_json FROM roam_locations WHERE session_id=?").get(address.sessionId) as { home_json: string | null } | undefined;
-          if (location?.home_json) rememberHome(location.home_json);
-          const inspect = (sessionDb: Db) => {
-            if (sessionDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_versions'").get()) {
-              for (const row of sessionDb.prepare("SELECT origin_machine FROM roam_versions WHERE entity='sessions' AND row_key=?").all(address.sessionId) as { origin_machine: string }[]) {
-                if (!isMachineId(row.origin_machine)) throw new Error("intercom-owner-unavailable"); machines.add(row.origin_machine);
-              }
-            }
-            if (!sessionDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").get()) return;
-            const columns = sessionDb.prepare("SELECT name FROM pragma_table_info('sessions')").all() as { name: string }[];
-            const hasOrigin = columns.some(row => row.name === "origin_machine");
-            const row = sessionDb.prepare(`SELECT ${hasOrigin ? "origin_machine" : "'' AS origin_machine"} FROM sessions WHERE id=?`).get(address.sessionId) as { origin_machine: string } | undefined;
-            if (row) { const origin = row.origin_machine || local; if (!isMachineId(origin)) throw new Error("intercom-owner-unavailable"); machines.add(origin); }
-          };
-          inspect(db);
-          for (const row of db.prepare("SELECT db_path FROM projects").all() as { db_path: string }[]) {
-            let handle: Db | undefined;
-            try {
-              const stat = lstatSync(row.db_path);
-              if (stat.isSymbolicLink() || !stat.isFile() || realpathSync(row.db_path) !== row.db_path || process.getuid && stat.uid !== process.getuid()) throw new Error("intercom-owner-unavailable");
-              handle = openDbReadOnly(row.db_path); if (!handle) throw new Error("intercom-owner-unavailable"); inspect(handle);
-            } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-            finally { handle?.close(); }
-          }
-          for (const key of listStoreKeys(db)) if (key.startsWith("worktree:")) {
-            const handle = openRoamStoreReadOnly(db, key); if (!handle) continue;
-            try { inspect(handle); } finally { handle.close(); }
-          }
-          return [...machines];
+        knownSessionMachines(address) { return sessionMachines(address); },
+        sessionOrigin(address) {
+          const origins = sessionMachines(address, true);
+          return origins.length === 1 ? origins[0] : null;
         },
         authoritativeHome(address) {
           const row = options.globalDb.prepare("SELECT machine_id,epoch,move_id,updated_at FROM session_homes WHERE session_id=?").get(address.sessionId) as

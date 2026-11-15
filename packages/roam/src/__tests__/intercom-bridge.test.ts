@@ -14,7 +14,7 @@ afterEach(async () => { for (const resource of resources.splice(0)) await resour
 const clock = { now: () => Date.now(), later: (ms: number, fn: () => void) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
 const peer = (machineId: string) => ({ machineId, alias: `fixture-${machineId.slice(-1)}.invalid`, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: "/fixture/global" });
 const batch = (senderMachine: string, recipientMachine: string, generation: number, channel: "push" | "poll" = "push"): IntercomExchange => ({
-  protocol: 3, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel, generation },
+  protocol: 4, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel, generation },
   frames: [], acknowledgements: [], receipts: [], controls: [], presence: [],
 });
 const request = (exchange: IntercomExchange, holdMs = 0) => ({ version: 1, exchange, holdMs, deadlineMs: holdMs ? holdMs + 5000 : 5000 });
@@ -54,7 +54,7 @@ it("forwards a durable receipt and stops replay only after its explicit acknowle
   const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
   const initial = batch(A, B, 1); initial.frames.push(frame); await b.exchange(request(initial));
   inbox.beginDispatch({ id: "m2", endpoint, readiness: "ready" });
-  const receipt: IntercomReceiptFrame = { from: endpoint, to: from, digest: frame.identity.digest, attempt: 1,
+  const receipt: IntercomReceiptFrame = { from: endpoint, to: from, digest: frame.identity.digest, attempt: 1, originMachineId: frame.originMachineId, sequence: frame.identity.sequence,
     receipt: { messageId: "m2", status: "injected", timestamp: 2, evidence: { kind: "entry", entryId: "entry-1", sessionId: to.sessionId, activationEpoch: endpoint.activationEpoch } } };
   inbox.settleReceipt({ queue: "inbound", peer: A, frame: receipt });
   const poll = await b.exchange(request(batch(A, B, 1, "poll")));
@@ -366,7 +366,7 @@ it("forwards a multihop consumption receipt without notifying a non-origin relay
   const original = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0], first = batch(A, B, 1); first.frames.push(original); await hub.exchange(request(first));
   const forwarded = relay.pending({ kind: "outbound", peer: C, hopBudgetMs: 100 })[0], last = batch(B, C, 1); last.frames.push(forwarded); await receiver.exchange(request(last));
   inbox.beginDispatch({ id: "relay-receipt", endpoint: destination, readiness: "ready" });
-  const receipt: IntercomReceiptFrame = { from: destination, to: from, digest: original.identity.digest, attempt: 1,
+  const receipt: IntercomReceiptFrame = { from: destination, to: from, digest: original.identity.digest, attempt: 1, originMachineId: original.originMachineId, sequence: original.identity.sequence,
     receipt: { messageId: "relay-receipt", status: "injected", timestamp: 2, evidence: { kind: "entry", entryId: "entry-1", sessionId: to.sessionId, activationEpoch: destination.activationEpoch } } };
   inbox.settleReceipt({ queue: "inbound", peer: B, frame: receipt });
   const downstream = batch(C, B, 1); downstream.receipts = [...inbox.pending({ kind: "receipts", peer: B })]; await hub.exchange(request(downstream));

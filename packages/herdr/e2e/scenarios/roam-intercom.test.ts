@@ -12,7 +12,7 @@ import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/
 import type { Suite } from '../harness/suite.js';
 import { writeScript, type InteractiveDriver, type ObservedEvent, type RpcDriver } from '../harness/pi.js';
 import { deadline, waitFor } from '../harness/wait.js';
-import { advanceIntercomClock, dropNextReply, intercomNetwork, launchMachinePi, setLinkFault, type Machine } from '../fixtures/roam-intercom.js';
+import { advanceIntercomClock, dropNextReply, intercomNetwork, launchMachinePi, pauseFederation, resumeFederation, saveIntercomEvidence, setLinkFault, syncOrigins, type Machine } from '../fixtures/roam-intercom.js';
 import { enrollPair, preparePair, type PairFixture } from '../fixtures/roam-pair.js';
 import { runHc } from '../harness/hc.js';
 import { identityOf } from '../harness/resources.js';
@@ -62,6 +62,7 @@ async function actions(suite: Suite): Promise<void> {
   const network = await intercomNetwork(suite);
   const sessions: InteractiveDriver[] = [], ids: string[] = [];
   try {
+    await pauseFederation(network);
     // Both boxes use the same name; the fourth session uses a different scope.
     for (const [i, machine, name, scope] of [[0, 0, 'coordinator', ''], [1, 1, 'helper', ''], [2, 2, 'helper', ''], [3, 2, 'hidden-helper', 'private-scope']] as const) {
       const cwd = await suite.project(`intercom-${i}`);
@@ -74,6 +75,8 @@ async function actions(suite: Suite): Promise<void> {
       await session.prompt(mark('ready'));
       await session.waitEvent('agent_settled', event => event.at >= before, deadline(30_000));
     }
+    await syncOrigins(suite, network);
+    await resumeFederation(network);
     await waitFor('all in-scope packaged sessions appear on every machine',
       () => Promise.all(network.machines.map(machine => machine.probe.listSessions())),
       lists => lists.every(list => ids.slice(0, 3).every(id => list.some(session => session.id === id)) && !list.some(session => session.id === ids[3])), deadline(60_000));
@@ -265,6 +268,7 @@ async function actions(suite: Suite): Promise<void> {
       ambiguous: ambiguous.result, hidden: hidden.result, sent: sent.result, cancelled: cancelled.result, pending: pending.result,
       question1, reply1: reply1.result, answer1: answer1.result, question2, reply2: reply2.result, answer2: answer2.result });
   } finally {
+    await saveIntercomEvidence(suite, network);
     for (const session of sessions.reverse()) await session.close();
     await network.close();
   }
@@ -311,6 +315,7 @@ async function outages(suite: Suite): Promise<void> {
   const network = await intercomNetwork(suite, { faults: true, virtualClock: true });
   const sessions: InteractiveDriver[] = [], cwds: string[] = [], ids: string[] = [];
   try {
+    await pauseFederation(network);
     for (const [i, machine, name] of [[0, 0, 'coordinator'], [1, 1, 'helper'], [2, 2, 'reviewer'], [3, 0, 'second-sender']] as const) {
       const cwd = await suite.project(`outage-${i}`); cwds.push(cwd);
       const session = await launchMachinePi(suite, network.machines[machine], cwd, name, i === 3 ? { PI_INTERCOM_ASK_TIMEOUT_MS: '5000' } : {});
@@ -320,6 +325,8 @@ async function outages(suite: Suite): Promise<void> {
       await session.waitEvent('agent_settled', event => event.at >= before, deadline(30_000));
     }
     const [hub, box] = network.machines;
+    await syncOrigins(suite, network);
+    await resumeFederation(network);
     await waitFor('live box roster before outage', () => hub.probe.listSessions(), list => list.some(session => session.name === 'helper'), deadline(60_000));
     await sessions[1].prompt(mark('expiringBusy')); await gates.ready('expiring-busy', deadline(30_000));
     await sessions[3].prompt(mark('expiringAsk'));
@@ -445,6 +452,7 @@ async function outages(suite: Suite): Promise<void> {
       expiredAsk: expiredAsk.result, expiredAskCopy, expiredAskInbox, expiry: expiry.result, expiredClock, expired, claims, settled, logPaths,
       barrier: barrier.result, received: [...firsts, ...seconds] });
   } finally {
+    await saveIntercomEvidence(suite, network);
     for (const session of sessions.reverse()) await session.close();
     await network.close();
   }
@@ -478,6 +486,7 @@ async function topology(suite: Suite): Promise<void> {
   const network = await intercomNetwork(suite, { faults: true }), sessions: InteractiveDriver[] = [], sessionIds: string[] = [];
   let pair: PairFixture | undefined;
   try {
+    await pauseFederation(network);
     for (const [i, name] of ['coordinator', 'alpha', 'beta'].entries()) {
       const session = await launchMachinePi(suite, network.machines[i], await suite.project(`topology-${i}`), name);
       sessions.push(session);
@@ -486,6 +495,8 @@ async function topology(suite: Suite): Promise<void> {
       await session.waitEvent('agent_settled', event => event.at >= before, deadline(30_000));
     }
     const [hub, source, target] = network.machines;
+    await syncOrigins(suite, network);
+    await resumeFederation(network);
     await waitFor('hub-only boxes see each other through the hub', () => source.probe.listSessions(), list => list.some(session => session.name === 'beta'), deadline(60_000));
     const relayA = await call(sessions[1], 'relayA');
     expect(result(relayA).details.delivered).toBe(true);
@@ -562,7 +573,9 @@ async function topology(suite: Suite): Promise<void> {
     expect(edge(target, hub)?.roster.every(entry => entry.machineId === hub.id)).toBe(true);
     for (const [sender, recipient, marker, body] of [[0, 1, 'hubToA', 'hub to alpha after transition'], [1, 0, 'aToHub', 'alpha to hub after transition'],
       [0, 2, 'hubToB', 'hub to beta after transition'], [2, 0, 'bToHub', 'beta to hub after transition']] as const) {
-      const sent = await call(sessions[sender], marker); expect(result(sent).details.delivered).toBe(true);
+      const sent = await call(sessions[sender], marker);
+      await suite.evidence(`R13-${marker}.json`, sent.result as object);
+      expect(result(sent).details.delivered).toBe(true);
       await sessions[recipient].waitEvent('message_end', event => received(event, body), deadline(60_000));
     }
     await hub.service.stop();
@@ -624,16 +637,49 @@ async function topology(suite: Suite): Promise<void> {
     const peerAfterCopy = await waitFor('original A to B send is consumed over the peer edge', () => copy(source, peerAfterId),
       row => row?.state === 'injected', deadline(60_000));
     expect(peerAfterCopy?.peer).toBe(target.id);
-    // Independent sessions also exercise both directions on the same pair.
+    // Already-synced sessions still communicate above while the hub is off.
+    // New sessions cannot be claimed remotely until their captured origin syncs.
+    const freshSessionIds: string[] = [];
+    const originRefusal = (machine: Machine, peer: Machine) => {
+      const db = openDbReadOnly(join(machine.global, 'roam', 'intercom', 'queue.db'));
+      if (!db) return null;
+      try { return db.prepare('SELECT reason FROM intercom_rejections WHERE peer=? AND reason=?').get(peer.id, 'presence-origin-unknown') ?? null; }
+      finally { db.close(); }
+    };
+    expect(originRefusal(source, target)).toBeNull();
+    expect(originRefusal(target, source)).toBeNull();
     for (const [index, name] of [[1, 'alpha-peer'], [2, 'beta-peer']] as const) {
       const session = await launchMachinePi(suite, network.machines[index], await suite.project(`topology-${name}`), name);
-      sessions.push(session); await session.waitEvent('session_start', () => true, deadline(30_000));
+      sessions.push(session);
+      freshSessionIds.push(String((await session.waitEvent('session_start', () => true, deadline(30_000))).sessionId));
       const before = Date.now(); await session.prompt(mark('ready'));
       await session.waitEvent('agent_settled', event => event.at >= before, deadline(30_000));
     }
-    await waitFor('enrolled boxes see one another without the hub', async () => Promise.all([source.probe.listSessions(), target.probe.listSessions()]),
-      lists => lists[0].some(session => session.remote === true && session.name === 'beta-peer' && session.reachability === 'live') &&
-        lists[1].some(session => session.remote === true && session.name === 'alpha-peer' && session.reachability === 'live'), deadline(60_000));
+    await waitFor('unsynced peer sessions are refused remotely with presence-origin-unknown', async () => ({
+      lists: await Promise.all([source.probe.listSessions(), target.probe.listSessions()]),
+      refusals: [originRefusal(source, target), originRefusal(target, source)],
+    }), state => state.refusals.every(refusal => refusal !== null) &&
+      !state.lists[0].some(session => session.id === freshSessionIds[1]) && !state.lists[1].some(session => session.id === freshSessionIds[0]), deadline(60_000));
+    expect(originRefusal(source, target)).toEqual({ reason: 'presence-origin-unknown' });
+    expect(originRefusal(target, source)).toEqual({ reason: 'presence-origin-unknown' });
+    expect(await source.probe.listSessions()).not.toContainEqual(expect.objectContaining({ id: freshSessionIds[1] }));
+    expect(await target.probe.listSessions()).not.toContainEqual(expect.objectContaining({ id: freshSessionIds[0] }));
+    expect(hub.service.child.exitCode !== null || hub.service.child.signalCode !== null).toBe(true);
+    await suite.evidence('R13-unsynced-origin-refusals.json', { ids: freshSessionIds,
+      refusals: [originRefusal(source, target), originRefusal(target, source)] });
+    await setLinkFault(source, []); await setLinkFault(target, []);
+    await network.restartHub();
+    await waitFor('hub links return before fresh origin sync', () => [edge(source, hub), edge(target, hub)],
+      states => states.every(state => state?.status === 'live'), deadline(60_000));
+    await syncOrigins(suite, network);
+    await waitFor('the same new sessions become reachable after origin sync', async () => Promise.all([source.probe.listSessions(), target.probe.listSessions()]),
+      lists => lists[0].some(session => session.remote === true && session.id === freshSessionIds[1] && session.reachability === 'live') &&
+        lists[1].some(session => session.remote === true && session.id === freshSessionIds[0] && session.reachability === 'live'), deadline(60_000));
+    await hub.service.stop();
+    await setLinkFault(source, [hub.alias]); await setLinkFault(target, [hub.alias]);
+    await waitFor('synced new and original sessions stay reachable with the hub off', async () => Promise.all([source.probe.listSessions(), target.probe.listSessions()]),
+      lists => [sessionIds[2], freshSessionIds[1]].every(id => lists[0].some(session => session.remote === true && session.id === id && session.reachability === 'live')) &&
+        [sessionIds[1], freshSessionIds[0]].every(id => lists[1].some(session => session.remote === true && session.id === id && session.reachability === 'live')), deadline(60_000));
     expect(hub.service.child.exitCode !== null || hub.service.child.signalCode !== null).toBe(true);
     const peerA = await call(sessions[3], 'peerA'); expect(result(peerA).details.delivered).toBe(true);
     await sessions[4].waitEvent('message_end', event => received(event, 'peer A to B'), deadline(60_000));
@@ -696,6 +742,7 @@ async function topology(suite: Suite): Promise<void> {
       firstEnrollment, enrollment, originalPeer: originalPeer.result, originalPeerCopy, peerA: peerA.result, peerB: peerB.result, sourceRoutes: sourceRoutes.json, targetRoutes: targetRoutes.json,
       hubExit, draining, complete, audit, heldOrigin, hubHeld: hubHeld.result, hubHeldEndpoint, drainedSource, drainedEntries, drainedOrigin, heldEndpoint, asks, rebound, heldReceived, heldSource, heldTarget, receipt, peerAfter: peerAfter.result, peerAfterCopy, heldEntries, pairId: pair.pairId, connectorProcesses });
   } finally {
+    await saveIntercomEvidence(suite, network);
     for (const session of sessions.reverse()) await session.close();
     await network.close();
     await pair?.close();

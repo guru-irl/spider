@@ -21,14 +21,14 @@ export interface ExchangePorts {
 const errors = new Set(["core-changed", "core-unavailable", "machine-not-found", "machine-not-enrolled", "machine-mismatch", "peer-invalidated",
   "needs_login", "unavailable", "spawn_failed", "spawn-error", "missing-hc", "cli-exit", "cli-timeout", "cli-aborted", "reply-too-large",
   "unsupported-broker", "helper-unauthorized", "helper-timeout", "bridge-unavailable", "broker-unavailable", "bridge-exchange-failed", "exchange-too-large",
-  "invalid-request", "invalid-presence", "invalid-refusal", "invalid-receipt", "invalid-reply", "stale-generation", "endpoint-exited", "peer-version-mismatch", "peer-revoked"]);
+  "invalid-request", "invalid-presence", "invalid-refusal", "invalid-receipt", "receipt-stream-missing", "receipt-stream-mismatch", "invalid-reply", "stale-generation", "endpoint-exited", "peer-version-mismatch", "peer-revoked"]);
 export class ExchangeError extends Error {
   readonly code: string;
   readonly retryable: boolean;
   readonly exitCode?: number;
   constructor(code: string, exitCode?: number) {
     super(code); this.name = "ExchangeError"; this.code = code;
-    this.retryable = !["machine-not-enrolled", "peer-revoked", "machine-mismatch"].includes(code);
+    this.retryable = !["peer-revoked", "machine-mismatch"].includes(code);
     if (exitCode !== undefined) this.exitCode = exitCode;
   }
 }

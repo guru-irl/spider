@@ -6,6 +6,7 @@ import { HELPER_EXCHANGE_FEATURE } from "@spider/intercom/protocol";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
+import { writeLocal } from "@spider/db-core/roam/local-state";
 import { parseConfig } from "../config";
 import { runHub } from "../hub";
 import { requestHubControl } from "../control-socket";
@@ -464,6 +465,7 @@ it("delivers accepted mail even when its remote sender has left the roster", asy
     const endpoint = { address: to, machineId: HUB, homeEpoch: null, activationEpoch: "recipient-generation" };
     source.acceptOutbound({ from, endpoint, nextHop: HUB, message: { id: "departed-id", timestamp: 1, content: { text: "synthetic" } } });
     const frame = source.pending({ kind: "outbound", peer: HUB, hopBudgetMs: 1000 })[0];
+    writeLocal(f.global.db, "observed-origin", JSON.stringify([from.sessionId, BOX]), { id: from.sessionId, origin: BOX });
     const request = helperRequest(BOX, HUB, "edge-1", 1, [remote(BOX, "box.invalid", from)]);
     const reply = await f.broker.helper!({ ...request, exchange: { ...request.exchange, frames: [frame] } }, new AbortController().signal);
     expect(reply).toMatchObject({ exchange: { acknowledgements: [{ identity: { id: "departed-id" } }] } });
@@ -568,14 +570,14 @@ it("configured peer edges preserve their full enrollment and shared epoch", asyn
   await service.start();
   expect(service.readiness()).toEqual({ state: "ready", reason: null });
   const signal = new AbortController().signal;
-  const reply = await f.broker.helper!({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 3, senderMachine: BOX, recipientMachine: HUB,
+  const reply = await f.broker.helper!({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine: BOX, recipientMachine: HUB,
     generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } }, signal);
   expect(reply).toMatchObject({ version: 1, exchange: { senderMachine: HUB, recipientMachine: BOX } });
   expect(resolved).toEqual([BOX]);
 }, 5000);
 
 function helperRequest(from: string, to: string, edgeEpoch: string, generation: number, presence: RemoteSessionInfo[] = []) {
-  return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 3, senderMachine: from, recipientMachine: to,
+  return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine: from, recipientMachine: to,
     generation: { edgeEpoch, channel: "push", generation }, frames: [], acknowledgements: [], receipts: [], controls: [], presence } };
 }
 function remote(machineId: string, alias: string, address: SessionAddress): RemoteSessionInfo {
@@ -591,6 +593,7 @@ it("hub-only mode advertises and queues an enrolled box through the hub", async 
   const service = await makeMachine({ ...f.options, config }); await service.start();
   const target = { sessionId: "remote-recipient", scopeId: "scope" }, from = { sessionId: "sender", scopeId: "scope" };
   const entry = remote(OTHER, "other.invalid", target), signal = new AbortController().signal;
+  writeLocal(f.global.db, "observed-origin", JSON.stringify([target.sessionId, OTHER]), { id: target.sessionId, origin: OTHER });
   await f.broker.helper!(helperRequest(HUB, BOX, "hub-box", 1, [entry]), signal);
   expect(f.broker.published.at(-1)).toMatchObject([{ address: target, machineId: OTHER }]);
   const accepted = await f.broker.bridge!.dispatch({ from, to: entry, message: { id: "relayed-id", timestamp: 1, content: { text: "synthetic" } } });
@@ -631,6 +634,7 @@ it("hub-only mode advertises one enrolled box to another, but not a spoofed peer
     ] } });
   const service = await makeMachine({ ...f.options, config }); await service.start();
   const address = { sessionId: "box-session", scopeId: "scope" }, signal = new AbortController().signal;
+  writeLocal(f.global.db, "observed-origin", JSON.stringify([address.sessionId, BOX]), { id: address.sessionId, origin: BOX });
   await f.broker.helper!(helperRequest(BOX, HUB, "hub-box", 1, [remote(BOX, "box.invalid", address)]), signal);
   const reply = await f.broker.helper!(helperRequest(OTHER, HUB, "hub-other", 1), signal);
   expect(reply).toMatchObject({ exchange: { presence: [{ address, machineId: BOX }] } });
@@ -900,4 +904,27 @@ it("repairs a switched source copy when its approved direct pair is enrolled lat
     expect(stored.topologyAudit()).toMatchObject([{ id: "waiting-for-route", transitionId, oldNextHop: HUB, newNextHop: OTHER }]);
     expect(stored.hasPending(HUB)).toBe(false);
   } finally { stored.close(); }
+}, 5000);
+
+
+it.each(["observed-origin", "session-row"])("requires a synced %s before publishing homeless remote presence", async kind => {
+  const { writeLocal } = await import("@spider/db-core/roam/local-state");
+  const f = machineFixture(), target = peer(BOX, "box.invalid"), address = { sessionId: "synced-origin", scopeId: "scope" };
+  const config = parseConfig({ ...f.options.config, peers: [target], intercom: { enabled: true, mode: "peers", machineAlias: "hub.invalid",
+    routes: [{ kind: "direct", peer: target, edgeEpoch: "edge-1" }] } });
+  const service = await makeMachine({ ...f.options, config }); await service.start();
+  const signal = new AbortController().signal;
+  await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1, [remote(BOX, "box.invalid", address)]), signal);
+  expect(f.broker.published.at(-1)).toEqual([]);
+  expect(service.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-origin-unknown" }));
+  if (kind === "observed-origin") {
+    writeLocal(f.global.db, "observed-origin", JSON.stringify([address.sessionId, BOX]), { id: address.sessionId, origin: BOX });
+  } else {
+    const replica = createReplica("worktree", BOX); replicas.push(replica);
+    replica.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES(?,1,?)").run(address.sessionId, BOX);
+    f.global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES (?,?,?,1,1)")
+      .run("synced-project", replica.root, replica.db.raw.name);
+  }
+  await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 2, [remote(BOX, "box.invalid", address)]), signal);
+  expect(f.broker.published.at(-1)).toMatchObject([{ address, machineId: BOX }]);
 }, 5000);

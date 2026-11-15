@@ -112,7 +112,7 @@ or until the payload expires. An uncertain delivery stays `unknown` across
 reload. After a socket handoff, a same-ID retry requires an own-session entry scan
 and proof that the old generation cannot inject. A copy with no dispatch
 attempt can bind to the next local activation without that impossible scan. Later messages can advance while an earlier
-outcome remains unknown.
+outcome remains unknown, up to the original-stream window limit.
 
 The delivery and reconciliation code is in `packages/roam/src/intercom-store.ts`,
 `packages/roam/src/intercom-delivery.ts`, and
@@ -135,6 +135,21 @@ Terminal history is eligible for pruning 24 hours after its original payload
 deadline, once required receipts, tombstones, and local notices are acknowledged.
 Unacknowledged evidence remains retained and counts against the limits. The
 store keeps pair cursors after pruning so an old replay cannot become new mail.
+Receipts carry the original message's `originMachineId` and `sequence` in the
+authenticated pair envelope. Relays preserve both fields. They do not name the
+receipt's sender or the session's birthplace. A retained message record with
+different stream fields causes `receipt-stream-mismatch`.
+
+A durable settled watermark is keyed by authenticated peer, original message
+origin, sender address, and recipient address. Covered receipt slots are
+acknowledged without applying their claimed outcomes. Old digests need no
+retained hash below that watermark. Live messages still receive full validation.
+Above the watermark, a pruned settled slot requires a matching message ID,
+digest, and recipient owner hash. One hash per sparse slot is retained until
+the watermark passes it. An unknown earlier slot stops that advance. The
+outbound original-stream window uses the configured queue-message limit, 256
+by default, and returns `queue-full` before sparse hashes can grow past it.
+
 Expiry notices are durable and do not repeat after a bridge restart. Exited,
 unreferenced generation and adoption records reduce to compact ownership
 records. Live process evidence and queue references prevent that pruning.
@@ -148,10 +163,14 @@ transport are implemented in `packages/roam/src/intercom-bridge.ts` and
 ### Protocol versions
 
 Replication batches use protocol 1. Intercom exchanges use federation
-protocol 3, which carries `peer-revoked` refusals and revocation receipts.
+protocol 4, which requires original-stream fields on receipts and retains
+`peer-revoked` refusals and revocation receipts.
 The local broker feature `federation-v1` and the helper envelope version 1
 are separate from the intercom exchange version. They do not make an older
-exchange compatible with protocol 3.
+exchange compatible with protocol 4. Protocol 4 predates cross-machine intercom
+deployment, so old-format receipts have no compatibility path. Missing receipt
+stream fields cause `receipt-stream-missing`. Store schema 7 migrates queued
+receipts from retained original identities.
 
 An exchange with a different safe integer protocol version is refused with
 `peer-version-mismatch`. The bridge performs a version handshake before it
@@ -159,9 +178,11 @@ sends message frames on a new edge. The version and validation are defined in
 `packages/roam/src/intercom-contracts.ts`, `packages/roam/src/intercom-codec.ts`,
 `packages/roam/src/intercom-helper.ts`, and `packages/roam/src/intercom-bridge.ts`.
 Replication batch validation is in `packages/db-core/src/roam/codec.ts`.
-Proved `machine-mismatch`, `machine-not-enrolled`, and `peer-revoked` errors
-stop retries for the current edge epoch. Helper startup, authorization, protocol-version, and reply
-errors keep queued mail and retry with backoff, including after a restart.
+Proved `machine-mismatch` and `peer-revoked` errors stop retries for the current
+edge epoch. `machine-not-enrolled`, helper startup, authorization, protocol-version,
+and reply errors keep queued mail and retry with backoff,
+including after a restart. Fresh durable pair approval clears transient
+backoff. Replaying the same approval does not.
 
 ### Origin authentication
 
@@ -300,8 +321,16 @@ session. The original process refreshes its advertisement through admission
 and ownership readiness, without a reload, a new activation, or another lock.
 Foreign homes, epoch bumps, freezes, and unsafe capture do not qualify.
 
-A home-less remote presence claim is accepted only when no other current
-claim exists, including hub-local sessions. No durable home, session origin,
+A home-less remote presence claim requires a synced session origin record
+that names the claiming machine. Without that record, or when it names another
+machine, the receiver refuses with `presence-origin-unknown` and doctor reports
+`intercom-presence-origin-unknown`. The claim is retried after the next sync.
+This applies in hub-only and peers modes, including when the hub link is down.
+A box-native session therefore stays unreachable from other machines until
+its origin record syncs, but its local work continues.
+
+A matching origin does not override other ownership evidence. No other current
+claim may exist, including hub-local sessions. No durable home, session origin,
 first-home adoption, or past-presence record may name another machine. This
 includes offline local sessions. The first accepted machine and activation
 persist across restarts. A later different-machine claim makes the address

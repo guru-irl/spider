@@ -54,3 +54,33 @@ it("accepts a sender that messages remotely then returns to the hub", () => {
   hub.acceptInbound({ peer: B, frame });
   expect(hub.acceptLocal({ from, endpoint: local, message: { id: "local-second", timestamp: 2, content: { text: "y" } } })).toMatchObject({ kind: "accepted", identity: { sequence: 1 } });
 }, 5000);
+
+
+it("never borrows acknowledged refusal slots from a different origin", () => {
+  const root = mkdtempSync(join(dirname(scratchDbPath("roam-intercom")), "refused-origin-")); roots.push(root);
+  const store = openIntercomStore({ file: join(root, "q.db"), machineId: H, clock }); opened.push(store);
+  const from = { sessionId: "sender", scopeId: "scope" };
+  for (const sequence of [1, 2]) {
+    const frame = makeMessageFrame({ from, endpoint: local, sequence, originMachineId: B,
+      message: { id: `refused-${sequence}`, timestamp: 1, content: { text: "synthetic" } } });
+    store.rejectFrame({ peer: B, origin: B, identity: frame.identity, reason: "sender-unauthorized" });
+  }
+  const frame = makeMessageFrame({ from, endpoint: local, sequence: 3, originMachineId: C,
+    message: { id: "gap", timestamp: 1, content: { text: "synthetic" } } });
+  expect(() => store.acceptInbound({ peer: C, frame })).toThrow("Intercom inbound sequence gap");
+  expect(store.pending({ kind: "inbound", address: recipient })).toEqual([]);
+}, 5000);
+
+it("never borrows acknowledged refusal slots from a different recipient", () => {
+  const root = mkdtempSync(join(dirname(scratchDbPath("roam-intercom")), "refused-recipient-")); roots.push(root);
+  const store = openIntercomStore({ file: join(root, "q.db"), machineId: H, clock }); opened.push(store);
+  const from = { sessionId: "sender", scopeId: "scope" };
+  const refused = makeMessageFrame({ from, endpoint: local, sequence: 1, originMachineId: B,
+    message: { id: "refused", timestamp: 1, content: { text: "synthetic" } } });
+  store.rejectFrame({ peer: B, origin: B, identity: refused.identity, reason: "sender-unauthorized" });
+  const endpoint = { ...local, address: { sessionId: "another", scopeId: "scope" } };
+  const frame = makeMessageFrame({ from, endpoint, sequence: 2, originMachineId: B,
+    message: { id: "gap", timestamp: 1, content: { text: "synthetic" } } });
+  expect(() => store.acceptInbound({ peer: B, frame })).toThrow("Intercom inbound sequence gap");
+  expect(store.pending({ kind: "inbound", address: endpoint.address })).toEqual([]);
+}, 5000);

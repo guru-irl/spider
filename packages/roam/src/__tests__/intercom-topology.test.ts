@@ -39,7 +39,9 @@ function transfer(source: IntercomStore, target: IntercomStore, peer: string, de
 }
 function consume(store: IntercomStore, id: string, peer: string): IntercomReceiptFrame {
   store.beginDispatch({ id, endpoint, readiness: "ready" });
-  const frame: IntercomReceiptFrame = { from: endpoint, to: from, digest: store.retained("inbound", id)!.identity.digest, attempt: 1,
+  const original = store.retained('inbound', id)!;
+  const frame: IntercomReceiptFrame = { from: endpoint, to: from, digest: original.identity.digest, attempt: 1,
+    originMachineId: original.originMachineId!, sequence: original.identity.sequence,
     receipt: { messageId: id, status: "injected", timestamp: 1000, evidence: { kind: "entry", entryId: `entry-${id}`, sessionId: to.sessionId, activationEpoch: endpoint.activationEpoch } } };
   store.settleReceipt({ queue: "inbound", peer, frame }); return frame;
 }
@@ -176,7 +178,7 @@ it("refuses the unsupported reverse transition by name without changing topology
 
 
 it("round-trips bounded topology controls and the retryable refusal without accepting malformed controls", () => {
-  const exchange = { protocol: 3 as const, senderMachine: H, recipientMachine: A,
+  const exchange = { protocol: 4 as const, senderMachine: H, recipientMachine: A,
     generation: { edgeEpoch: "edge", channel: "push" as const, generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [],
     topology: { transitionId, action: "switch" as const } };
   expect(decodeExchange(encodeExchange(exchange))).toEqual(exchange);

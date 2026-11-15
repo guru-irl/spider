@@ -53,12 +53,13 @@
       "path": "index.ts",
       "task": "3.6a",
       "reason": "Export the public federation contracts alongside the adopted extension registration.",
-      "upstreamHash": null
+      "upstreamHash": null,
+      "forkSha256": "2c84170895c9bee985af72fe282701b5aa3bd83abf8ff7ad62839e87b23207b1"
     },
     {
       "path": "local.ts",
       "task": "3.6f",
-      "reason": "Integrate admitted epochs, reconciliation, reply threads and named ask failures, and release session observers on shutdown. Poll the owning admission gate and promptly advertise null-to-initial-epoch formalization without changing activation. Keep registration recovery active across failed retries and stale contexts, fence old connection attempts, and warn once per outage.",
+      "reason": "Integrate admitted epochs, reconciliation, reply threads and named ask failures, and release session observers on shutdown. Poll the owning admission gate and promptly advertise null-to-initial-epoch formalization without changing activation. Keep registration recovery active across failed retries and stale contexts, fence old connection attempts, and warn once per outage, and expose pending asks to the reload gate.",
       "upstreamHash": "b99325cd8cb80b4ed41ac4f1427791eb1df916a303ba5ce5b35197eba8972f1c"
     },
     {
@@ -82,8 +83,9 @@
     {
       "path": "single-instance.ts",
       "task": "3.6-0",
-      "reason": "Fence duplicate extension registrations during rolling adoption.",
-      "upstreamHash": null
+      "reason": "Fence duplicate extension registrations during rolling adoption, and expose the active registration's pending-ask query to the host without bypassing conflict detection.",
+      "upstreamHash": null,
+      "forkSha256": "bfa8ef1c211276072d358b75fabfefee9a4e1066c27e2647b8774c551c7527fc"
     },
     {
       "path": "test-support.ts",

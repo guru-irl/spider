@@ -885,8 +885,8 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
   let intercom: ReturnType<typeof registerIntercomOnce> | undefined;
   try {
-  registerRoamIntercom(hostPi as unknown as ExtensionAPI, createHostIntercomPorts(admission));
-    registerIntercomOnce(hostPi as unknown as ExtensionAPI, ports.intercomBroker);
+    registerRoamIntercom(activity.pi, createHostIntercomPorts(admission));
+    intercom = registerIntercomOnce(activity.pi, ports.intercomBroker);
   } catch {
     hostPi.on("session_start", (_event, ctx) => {
       const message = "Intercom is unavailable in this session. Spider's other features still work.";

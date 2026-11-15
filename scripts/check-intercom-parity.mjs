@@ -159,6 +159,58 @@ function verify(manifest, forkRoot) {
   console.log(`Messaging parity verified for 19 implementation files, 15 test files and ${assertionCount} normalized assertions.`);
 }
 
+function verifyManifest(manifest, forkRoot) {
+  const divergenceFile = join(dirname(forkRoot), 'DIVERGENCE.json');
+  const divergence = JSON.parse(readFileSync(divergenceFile, 'utf8'));
+  if (divergence.version !== 1 || !Array.isArray(divergence.files)) throw new Error('Invalid divergence manifest');
+  const declarations = new Map();
+  for (const entry of divergence.files) {
+    if (!entry || typeof entry.path !== 'string' || entry.path.startsWith('/') || entry.path.split('/').some(part => !part || part === '.' || part === '..') || !/^[0-9]+\.[0-9]+[a-z]?(?:-[0-9]+)?$/.test(entry.task) || typeof entry.reason !== 'string' || !entry.reason.trim() || /[\r\n]/.test(entry.reason) || declarations.has(entry.path)) throw new Error('Invalid divergence entry');
+    const source = entry.path === 'local.ts' ? 'index.ts' : entry.path;
+    const baseline = entry.path === 'index.ts' ? undefined : manifest.sources[source] ?? manifest.tests[source];
+    if (entry.upstreamHash !== (baseline?.sourceSha256 ?? null)) throw new Error(`Divergence upstream hash mismatch in ${entry.path}`);
+    const file = join(forkRoot, entry.path);
+    if (!existsSync(file)) throw new Error(`Missing divergent file ${entry.path}`);
+    if (baseline && [baseline.adoptedSha256, baseline.sourceSha256].includes(sha256(readFileSync(file, 'utf8')))) throw new Error(`Stale divergence entry in ${entry.path}`);
+    declarations.set(entry.path, entry);
+  }
+  const known = new Set(Object.keys(manifest.sources ?? {}).map(name => name === 'index.ts' ? 'local.ts' : name));
+  // These host adapters were already present at adoption, outside upstream.
+  for (const [name, hash] of Object.entries(manifest.adoptedFiles ?? {})) {
+    if (!/^[a-f0-9]{64}$/.test(hash) || sha256(readFileSync(join(forkRoot, name), 'utf8')) !== hash) throw new Error(`Unlisted runtime change in ${name}`);
+    known.add(name);
+  }
+  for (const file of walk(forkRoot).filter(file => /\.[cm]?[jt]sx?$/.test(file) && !/\.test\.[cm]?[jt]sx?$/.test(file) && !file.endsWith('.d.ts'))) {
+    const name = relative(forkRoot, file).replaceAll('\\', '/');
+    if (!known.has(name) && !declarations.has(name)) throw new Error(`Unlisted new runtime file ${name}`);
+  }
+  if (manifest.version !== 1 || JSON.stringify(manifest.allowedChanges) !== JSON.stringify(allowedChanges) ||
+      Object.keys(manifest.tests ?? {}).length !== 15 || Object.keys(manifest.sources ?? {}).length !== 19) throw new Error('Invalid upstream parity manifest');
+  let assertionCount = 0;
+  const origin = originHashes();
+  for (const [name, expected] of Object.entries(manifest.tests)) {
+    if (expected.sourceSha256 !== origin.get(name) || expected.provenance !== (installedTests.has(name) ? 'installed-payload' : 'immutable-public-source')) throw new Error(`Provenance mismatch in ${name}`);
+    const file = join(forkRoot, name);
+    if (!existsSync(file)) throw new Error(`Missing upstream test ${name}`);
+    const actual = assertions(readFileSync(file, 'utf8'), name, false);
+    if (JSON.stringify(actual.cases) !== JSON.stringify(expected.cases)) throw new Error(`Test cases changed in ${name}`);
+    if (!expected.assertions.length || expected.assertions.some(item => sha256(item.text) !== item.sha256)) throw new Error(`Invalid assertion manifest in ${name}`);
+    if (JSON.stringify(actual.assertions) !== JSON.stringify(expected.assertions)) throw new Error(`Assertion content changed in ${name}`);
+    assertionCount += expected.assertions.length;
+  }
+  for (const [name, expected] of Object.entries(manifest.sources)) {
+    if (expected.sourceSha256 !== origin.get(name)) throw new Error(`Provenance mismatch in ${name}`);
+    const file = join(forkRoot, name === 'index.ts' ? 'local.ts' : name);
+    if (declarations.has(name === 'index.ts' ? 'local.ts' : name)) continue;
+    if (!/^[a-f0-9]{64}$/.test(expected.adoptedSha256 ?? '') || sha256(readFileSync(file, 'utf8')) !== expected.adoptedSha256) throw new Error(`Unlisted runtime change in ${name}`);
+    let actual;
+    try { actual = sha256(runtime(readFileSync(file, 'utf8'), name, true)); }
+    catch (error) { throw new Error(`Runtime mismatch in ${name}: ${error.message}`); }
+    if (actual !== expected.normalizedSha256) throw new Error(`Runtime mismatch in ${name}`);
+  }
+  console.log(`Intercom provenance verified for 19 original implementation files, ${declarations.size} explicit divergences, 15 test files and ${assertionCount} normalized assertions.`);
+}
+
 try {
   const args = process.argv.slice(2);
   const forkAt = args.indexOf('--fork-dir');
@@ -167,7 +219,7 @@ try {
   const manifestAt = args.indexOf('--manifest-file');
   const inputManifest = manifestAt < 0 ? manifestFile : resolve(args[manifestAt + 1] ?? '');
   if (manifestAt >= 0) args.splice(manifestAt, 2);
-  if (args[0] === '--manifest' && args.length === 1) verify(JSON.parse(readFileSync(inputManifest, 'utf8')), forkRoot);
+  if (args[0] === '--manifest' && args.length === 1) verifyManifest(JSON.parse(readFileSync(inputManifest, 'utf8')), forkRoot);
   else if (args[0] === '--generate' && args.length === 3) {
     const result = snapshot(resolve(args[1]), resolve(args[2]));
     verify(result, forkRoot);

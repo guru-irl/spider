@@ -602,6 +602,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
   let reconnectPromiseGeneration: number | null = null;
   let startupConnectTimer: NodeJS.Timeout | null = null;
   let reconnectAttempt = 0;
+  let disconnectedSince: number | null = null;
+  let disconnectWarningTimer: NodeJS.Timeout | null = null;
+  let disconnectWarningShown = false;
   let shuttingDown = false;
   let disposed = true;
   let runtimeStarted = false;
@@ -1374,23 +1377,50 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       // Keep broker/socket noise out of the TUI. Reconnect logic runs from the disconnect path.
     });
   }
-  function scheduleReconnect(): void {
-    if (disposed || shuttingDown || reconnectTimer || reconnectPromise || !getLiveContext()) {
-      return;
+  function clearDisconnectWarning(): void {
+    if (disconnectWarningTimer) clearTimeout(disconnectWarningTimer);
+    disconnectWarningTimer = null;
+    disconnectedSince = null;
+    disconnectWarningShown = false;
+  }
+  function warnIfDisconnected(): void {
+    if (disconnectedSince === null || disconnectWarningShown || Date.now() - disconnectedSince < 60000) return;
+    const ctx = getLiveContext();
+    if (!ctx) return;
+    try {
+      if (!ctx.hasUI || ctx.mode !== "tui") return;
+      ctx.ui.notify("Intercom is disconnected. Spider is reconnecting.", "warning");
+      disconnectWarningShown = true;
+    } catch {
+      // Retry the warning when a fresh context is available.
     }
+  }
+  function scheduleReconnect(): void {
+    if (!config.enabled || disposed || shuttingDown || client?.isConnected()) return;
+    if (disconnectedSince === null) {
+      disconnectedSince = Date.now();
+      disconnectWarningTimer = setTimeout(() => {
+        disconnectWarningTimer = null;
+        warnIfDisconnected();
+      }, 60000);
+    }
+    warnIfDisconnected();
+    if (reconnectTimer || reconnectPromise && reconnectPromiseGeneration === runtimeGeneration) return;
     const scheduledGeneration = runtimeGeneration;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
-      if (scheduledGeneration !== runtimeGeneration || !getLiveContext()) {
+      if (scheduledGeneration !== runtimeGeneration || disposed || shuttingDown) return;
+      reconnectAttempt += 1;
+      if (!getLiveContext()) {
+        scheduleReconnect();
         return;
       }
-      reconnectAttempt += 1;
       void ensureConnected("background").catch(() => {
-        // ensureConnected("background") already queued the next retry.
+        // The attempt schedules recovery after releasing its promise.
       });
     }, getReconnectDelayMs());
   }
-  async function ensureConnected(reason: "startup" | "background" | "tool" | "overlay"): Promise<IntercomClient> {
+  async function ensureConnected(_reason: "startup" | "background" | "tool" | "overlay"): Promise<IntercomClient> {
     if (!config.enabled) {
       throw new Error("Intercom disabled");
     }
@@ -1403,6 +1433,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     const contextAtStart = getLiveContext();
     const generationAtStart = runtimeGeneration;
     if (!contextAtStart || !currentSessionId || sessionStartedAt === null) {
+      scheduleReconnect();
       throw new Error("Intercom runtime not initialized");
     }
     clearReconnectTimer();
@@ -1411,33 +1442,38 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     }
     const nextReconnectPromise = (async () => {
       const nextClient = new IntercomClient();
-      client = nextClient;
-      attachClientHandlers(nextClient);
       try {
+        client = nextClient;
+        attachClientHandlers(nextClient);
         await brokerPort(async () => {
+          if (!getLiveContext(undefined, generationAtStart) || client !== nextClient) {
+            throw new Error("Intercom runtime no longer active");
+          }
           await spawnBrokerIfNeeded(config.brokerCommand, config.brokerArgs);
+          if (!getLiveContext(undefined, generationAtStart) || client !== nextClient) {
+            throw new Error("Intercom runtime no longer active");
+          }
           await nextClient.connect(buildRegistration(), currentIntercomSessionId ?? currentSessionId!);
         });
-        if (!getLiveContext(contextAtStart, generationAtStart)) {
-          await nextClient.disconnect();
+        if (!getLiveContext(undefined, generationAtStart) || client !== nextClient) {
           throw new Error("Intercom runtime no longer active");
         }
         client = nextClient;
         reconnectAttempt = 0;
+        clearDisconnectWarning();
         return nextClient;
       } catch (error) {
         if (client === nextClient) {
           client = null;
         }
-        if (reason === "background" && getLiveContext(contextAtStart, generationAtStart)) {
-          scheduleReconnect();
-        }
+        await nextClient.disconnect().catch(() => undefined);
         throw toError(error);
       } finally {
         if (reconnectPromise === nextReconnectPromise!) {
           reconnectPromise = null;
           reconnectPromiseGeneration = null;
         }
+        if (generationAtStart === runtimeGeneration) scheduleReconnect();
       }
     })();
     reconnectPromise = nextReconnectPromise;
@@ -1553,6 +1589,21 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       timestamp: Date.now(),
     });
   }
+  function refreshRuntimeContext(ctx: ExtensionContext): boolean {
+    if (!config.enabled || disposed || shuttingDown) return false;
+    try {
+      if (ctx.sessionManager.getSessionId() !== currentSessionId) {
+        startSessionRuntime(ctx);
+      }
+      if (!getLiveContext(ctx)) return false;
+      runtimeContext = ctx;
+      scheduleReconnect();
+      return true;
+    } catch {
+      scheduleReconnect();
+      return false;
+    }
+  }
   function startSessionRuntime(ctx: ExtensionContext): void {
     const previousClient = client;
     failPendingOutboxRequests(runtimeGeneration, "session_ended", "Session replaced");
@@ -1562,6 +1613,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     runtimeGeneration += 1;
     outboxRequestIds.clear();
     reconnectAttempt = 0;
+    clearDisconnectWarning();
     clearReconnectTimer();
     clearStartupConnectTimer();
     clearNamePollTimer();
@@ -1586,15 +1638,9 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     const startupGeneration = runtimeGeneration;
     startupConnectTimer = setTimeout(() => {
       startupConnectTimer = null;
-      if (!getLiveContext(ctx, startupGeneration)) {
-        return;
-      }
+      if (startupGeneration !== runtimeGeneration || disposed || shuttingDown) return;
       void ensureConnected("startup").catch(() => {
-        if (!getLiveContext(ctx, startupGeneration)) {
-          return;
-        }
-        client = null;
-        scheduleReconnect();
+        // Active runtimes keep retrying even while their context is unavailable.
       });
     }, 0);
   }
@@ -1714,6 +1760,7 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     clearStartupConnectTimer();
     clearReconnectTimer();
     clearNamePollTimer();
+    clearDisconnectWarning();
     restoreIntercomSessionId();
     rejectReplyWaiter(new Error("Session shutting down"));
     replyTracker.reset();
@@ -1728,36 +1775,36 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
     currentIntercomSessionId = null;
     sessionStartedAt = null;
   });
-  pi.on("turn_end", () => {
-    if (!getLiveContext()) {
+  pi.on("turn_end", (_event, ctx) => {
+    if (!refreshRuntimeContext(ctx)) {
       return;
     }
     replyTracker.endTurn();
   });
-  pi.on("agent_start", () => {
-    if (!getLiveContext()) {
+  pi.on("agent_start", (_event, ctx) => {
+    if (!refreshRuntimeContext(ctx)) {
       return;
     }
     agentRunning = true;
     activeTools.clear();
     syncPresenceStatus();
   });
-  pi.on("tool_execution_start", (event) => {
-    if (!getLiveContext()) {
+  pi.on("tool_execution_start", (event, ctx) => {
+    if (!refreshRuntimeContext(ctx)) {
       return;
     }
     activeTools.set(event.toolCallId, event.toolName);
     syncPresenceStatus();
   });
-  pi.on("tool_execution_end", (event) => {
-    if (!getLiveContext()) {
+  pi.on("tool_execution_end", (event, ctx) => {
+    if (!refreshRuntimeContext(ctx)) {
       return;
     }
     activeTools.delete(event.toolCallId);
     syncPresenceStatus();
   });
-  pi.on("agent_end", () => {
-    if (!getLiveContext()) {
+  pi.on("agent_end", (_event, ctx) => {
+    if (!refreshRuntimeContext(ctx)) {
       return;
     }
     agentRunning = false;
@@ -1774,14 +1821,16 @@ export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: Interc
       replyTracker.beginTurn();
       return;
     }
-    if (!getLiveContext(ctx)) {
+    if (!refreshRuntimeContext(ctx)) {
       return;
     }
     syncPresenceIdentity(sessionId);
     replyTracker.beginTurn();
   });
+  pi.on("input", (_event, ctx) => { refreshRuntimeContext(ctx); });
+  pi.on("session_tree", (_event, ctx) => { refreshRuntimeContext(ctx); });
   pi.on("model_select", (event, ctx) => {
-    if (!getLiveContext(ctx)) {
+    if (!refreshRuntimeContext(ctx)) {
       return;
     }
     currentModel = event.model.id;
@@ -2152,6 +2201,13 @@ Usage:
     }),
 
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      refreshRuntimeContext(ctx);
+      if (params.action === "status" && !client?.isConnected()) {
+        return {
+          content: [{ type: "text", text: `**Intercom Status:**\nConnected: No\n${!config.enabled ? "Intercom is disabled." : disposed || shuttingDown ? "Intercom runtime is not active." : "Spider is reconnecting."}` }],
+          details: { connected: false },
+        };
+      }
       let connectedClient: IntercomClient;
       try {
         connectedClient = await ensureConnected("tool");

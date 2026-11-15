@@ -8,7 +8,11 @@ export const INTERCOM_EXCHANGE_BYTES: number = 512 * 1024;
 export const INTERCOM_QUEUE_MESSAGES: number = 256;
 export const INTERCOM_QUEUE_BYTES: number = 64 * 1024 * 1024;
 export const INTERCOM_PAYLOAD_MS: number = 24 * 60 * 60 * 1000;
-/** Minimum after payload expiry. The store currently retains identity evidence indefinitely. */
+export const INTERCOM_ORIGIN_MESSAGES: number = 4096;
+export const INTERCOM_ORIGIN_BYTES: number = 256 * 1024 * 1024;
+export const INTERCOM_MACHINE_MESSAGES: number = 16384;
+export const INTERCOM_MACHINE_BYTES: number = 1024 * 1024 * 1024;
+/** Minimum terminal-history retention after the original payload deadline. */
 export const INTERCOM_DEDUPE_MS: number = 24 * 60 * 60 * 1000;
 export const INTERCOM_HOP_ALLOWANCE_MS: number = 5_000;
 
@@ -46,7 +50,7 @@ export type IntercomFrame = IntercomMessageFrame | IntercomTombstoneFrame;
 
 /** A link acknowledgement proves durable inbox acceptance, not consumption. */
 export interface IntercomLinkAck { identity: IntercomIdentity; kind: IntercomFrame["kind"] }
-export interface IntercomRefusal { identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "link-down" | "missing-origin" | "peer-revoked" | "intercom-topology-changing" }
+export interface IntercomRefusal { identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "link-down" | "missing-origin" | "peer-revoked" | "intercom-topology-changing" | "sender-unauthorized" | "store-rejected" }
 /** Validated metadata from a rejected frame; no payload or fabricated origin is retained. */
 export interface MissingOriginFrame { index: number; identity: IntercomIdentity; endpoint: SessionEndpoint; kind: IntercomFrame["kind"] }
 export interface IntercomReceiptInput {
@@ -81,7 +85,7 @@ export interface IntercomStoreOptions {
   clock: Pick<Clock, "now">;
   mode?: IntercomMode;
   /** Lower local quotas. The defaults are the protocol ceilings. */
-  limits?: { queueMessages?: number; queueBytes?: number };
+  limits?: { queueMessages?: number; queueBytes?: number; originMessages?: number; originBytes?: number; machineMessages?: number; machineBytes?: number };
 }
 export type IntercomAcceptance =
   | { kind: "accepted" | "duplicate"; identity: IntercomIdentity; acceptance: Extract<AcceptanceEvidence, { durable: true }>; receipt?: MessageReceipt }
@@ -154,11 +158,16 @@ export interface IntercomTopologyStore {
   acknowledgeTopologySwitch(transitionId: string, peer: MachineId): void;
   /** One local transaction changes mode, proves each route change safe, and writes its audit. */
   switchTopology(input: { transitionId: string; hubMachineId: MachineId; directPeers: readonly MachineId[] }): { rebound: number; missing: MachineId[] };
+  rebindTopologyRoutes(input: { hubMachineId: MachineId; directPeers: readonly MachineId[] }): { rebound: number; missing: MachineId[] };
   recordTopologyRefusal(input: { peer: MachineId; identity: IntercomIdentity }): void;
   topologyAudit(): readonly IntercomTopologyAudit[];
   missingTopologyRoutes(): readonly MachineId[];
 }
 export interface IntercomStore extends IntercomTopologyStore {
+  claimPresence(entry: RemoteSessionInfo, context: { knownMachines: readonly MachineId[]; assigned: boolean; competing: boolean }): boolean;
+  presenceOwner(address: SessionAddress): { machineId: MachineId; activation: string; ambiguous: boolean } | null;
+  recordRejection(peer: MachineId, id: string, reason: string): void;
+  rejectionDiagnostics(): readonly { peer: MachineId; status: string; since: number; reason: string }[];
   pairFence(peer: MachineId): IntercomPairFence | null;
   /** Persist the fence and failure receipts atomically; it never clears an existing fence. */
   fencePair(peer: MachineId, edgeEpoch: string, fenceId?: string): { fence: IntercomPairFence; upstream: readonly MachineId[] };
@@ -182,6 +191,9 @@ export interface IntercomStore extends IntercomTopologyStore {
   acknowledge(input: { peer: MachineId; identity: IntercomIdentity; kind: IntercomFrame["kind"] }): void;
   acknowledgeReceipt(input: { peer: MachineId; frame: IntercomReceiptFrame }): void;
   beginDispatch(input: { id: string; endpoint: SessionEndpoint; readiness: string }): IntercomMessageFrame;
+  /** Call only with client proof that this exact dispatch never reached a socket write. */
+  retryKnownNotSent(input: { id: string; endpoint: SessionEndpoint; attempt: number }): void;
+  followConsumption(input: { queue: IntercomQueue; peer: MachineId; frame: IntercomReceiptInput }): void;
   settleReceipt(input: { queue: IntercomQueue; peer: MachineId; frame: IntercomReceiptInput }): void;
   resolveUnknown(input: { queue: IntercomQueue; id: string; digest: string; proof: IntercomReceiptInput }): void;
   cancel(input: { queue: IntercomQueue; id: string; from: SessionAddress; to: SessionAddress }): void;
@@ -189,6 +201,9 @@ export interface IntercomStore extends IntercomTopologyStore {
   nextExpiry(): number | null;
   inspectBlockers(address: SessionAddress): FederationBlockers;
   openAsks(peer: MachineId): readonly RetainedIntercom[];
+  hasGenerationReferences(sessionId: string, generation: string): boolean;
+  noticeReported(id: string, kind: "expiry" | "link-down"): boolean;
+  markNoticeReported(id: string, kind: "expiry" | "link-down"): void;
   expiredOutbounds(peer: MachineId): readonly { identity: IntercomIdentity; outcomeKnown: boolean }[];
   hasPending(peer: MachineId): boolean;
   rebindUndispatched(address: SessionAddress, endpoint: SessionEndpoint, proof: RebindProof): number;

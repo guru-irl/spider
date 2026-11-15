@@ -4,7 +4,7 @@ import { readFileSync, openSync, closeSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { connect, createServer } from 'node:net';
 import { isAbsolute, relative, resolve } from 'node:path';
-import { acceptsConnectCommand } from './roam-pair-command.mjs';
+import { pairConnectCommand } from './roam-pair-command.mjs';
 
 const [mode, ...rest] = process.argv.slice(2), descriptorPath = rest.at(-1);
 const d = JSON.parse(readFileSync(descriptorPath, 'utf8'));
@@ -33,10 +33,11 @@ if (mode === 'check') {
       const at = header.indexOf(10); if (at < 0) return;
       socket.off('data', begin);
       let request; try { request = JSON.parse(header.subarray(0, at).toString('utf8')); } catch { socket.destroy(); return; }
-      if (!acceptsConnectCommand(request.line, targetSession)) return socket.destroy();
+      const command = pairConnectCommand(request.line, targetSession, d.connectCommands);
+      if (!command) return socket.destroy();
       const routeFd = openSync(d.viaRoute, 'r');
       let child;
-      try { child = spawn(process.execPath, [d.via, d.viaDescriptor, request.line], { cwd: d.root, env: process.env,
+      try { child = spawn(process.execPath, [d.via, d.viaDescriptor, command], { cwd: d.root, env: process.env,
         stdio: ['pipe', 'pipe', 'pipe', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', 'ignore', routeFd] }); }
       finally { closeSync(routeFd); }
       children.add(child); child.once('exit', () => { children.delete(child); socket.end(); });

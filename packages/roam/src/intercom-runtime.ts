@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { localEntries } from "@spider/db-core/roam/local-state";
+import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
+import { listStoreKeys } from "./store-inventory";
 import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { Db } from "@spider/db-core";
-import { assertTestConfigPath } from "@spider/db-core";
+import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { IntercomFederationClient } from "@spider/intercom/broker/client";
 import { spawnBrokerIfNeeded } from "@spider/intercom/broker/spawn";
 import { addressKey, type LocalPresence, type RemoteSessionInfo, type SessionAddress } from "@spider/intercom/protocol";
@@ -13,7 +16,7 @@ import { openIntercomStore } from "./intercom-store";
 import type { IntercomStore } from "./intercom-contracts";
 import { isMachineId } from "./machine-id";
 import { createHostIntercomDelivery, type HostIntercomDelivery } from "./intercom-delivery";
-import { hasIntercomGeneration } from "./intercom-exclusion";
+import { hasIntercomGeneration, pruneIntercomRecords } from "./intercom-exclusion";
 import { firstHomeEndpointMatches, readFirstHomeAdoption } from "./intercom-first-home";
 import { createIntercomRegistry, withIntercomPeerLock } from "./intercom-registry";
 import { readLocalIdentity } from "./runtime";
@@ -76,10 +79,14 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
   const initiates = (peer: Peer) => options.config.role === "hub" ||
     peer.machineId !== options.config.hubMachineId && options.config.machineId < peer.machineId;
   const stagedRoutes = new Map<string, { kind: "direct"; peer: Peer; edgeEpoch: string }>();
-  let pendingSwitchAck: string | null = null, switchProblem: string | null = null;
+  let pendingSwitchAck: string | null = null, switchProblem: string | null = null, lastMaintenance = -Infinity;
   const activateRoutes = () => {
     if (settings.mode === "peers") for (const route of stagedRoutes.values()) {
       settings.routes = [...settings.routes.filter(item => item.peer.machineId !== route.peer.machineId), route];
+    }
+    if (settings.mode === "peers" && store) {
+      const peers = settings.routes.filter(route => route.kind === "direct" && route.peer.machineId !== options.config.hubMachineId && !store!.pairFence(route.peer.machineId)).map(route => route.peer.machineId);
+      store.rebindTopologyRoutes({ hubMachineId: options.config.hubMachineId, directPeers: peers });
     }
   };
   const enabled = settings.enabled && options.env?.PI_SUBAGENT_CHILD !== "1" && (options.env || process.env).PI_SUBAGENT_CHILD !== "1";
@@ -294,7 +301,8 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
               settings.routes = priorRoutes; if (options.directPeers && priorPeers) options.directPeers.splice(0, options.directPeers.length, ...priorPeers);
               throw error;
             }
-            stagedRoutes.set(request.peer, route);
+            stagedRoutes.set(request.peer, route); activateRoutes();
+            bridge?.wake(request.peer);
             return { machineId: local, peer: request.peer, edgeEpoch: request.edgeEpoch, applied: true as const };
           });
           enrollmentTail = task.then(() => undefined, () => undefined);
@@ -307,6 +315,57 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
             return record && firstHomeEndpointMatches(record, { ...endpoint, homeEpoch: null }, endpoint)
               ? { activation: record.activation, fromEpoch: null, toEpoch: record.toEpoch } : undefined;
           } catch { return undefined; }
+        },
+        maintain() {
+          const now = options.clock.now(); if (now - lastMaintenance < 60_000) return;
+          lastMaintenance = now;
+          pruneIntercomRecords(options.globalDb, (id, generation) => store!.hasGenerationReferences(id, generation));
+        },
+        knownSessionMachines(address) {
+          const db = options.globalDb, machines = new Set<string>();
+          for (const kind of ["observed-origin", "participant-origin", "intercom-first-home", "intercom-generation", "intercom-owner"]) {
+            for (const { key, value } of localEntries<Record<string, unknown>>(db, kind)) {
+              if ((value.id ?? value.sessionId ?? (kind === "participant-origin" ? key : null)) !== address.sessionId) continue;
+              const machine = value.origin ?? value.machine ?? value.machineId ?? (kind === "intercom-generation" ? local : null);
+              if (!isMachineId(machine)) throw new Error("intercom-owner-unavailable");
+              machines.add(machine);
+            }
+          }
+          const rememberHome = (json: string) => {
+            const home = JSON.parse(json) as { machineId?: unknown };
+            if (!isMachineId(home?.machineId)) throw new Error("intercom-owner-unavailable");
+            machines.add(home.machineId);
+          };
+          for (const row of db.prepare("SELECT committed_home_json AS home FROM roam_home_actions WHERE session_id=? AND committed_home_json IS NOT NULL").all(address.sessionId) as { home: string }[]) rememberHome(row.home);
+          const location = db.prepare("SELECT home_json FROM roam_locations WHERE session_id=?").get(address.sessionId) as { home_json: string | null } | undefined;
+          if (location?.home_json) rememberHome(location.home_json);
+          const inspect = (sessionDb: Db) => {
+            if (sessionDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='roam_versions'").get()) {
+              for (const row of sessionDb.prepare("SELECT origin_machine FROM roam_versions WHERE entity='sessions' AND row_key=?").all(address.sessionId) as { origin_machine: string }[]) {
+                if (!isMachineId(row.origin_machine)) throw new Error("intercom-owner-unavailable"); machines.add(row.origin_machine);
+              }
+            }
+            if (!sessionDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").get()) return;
+            const columns = sessionDb.prepare("SELECT name FROM pragma_table_info('sessions')").all() as { name: string }[];
+            const hasOrigin = columns.some(row => row.name === "origin_machine");
+            const row = sessionDb.prepare(`SELECT ${hasOrigin ? "origin_machine" : "'' AS origin_machine"} FROM sessions WHERE id=?`).get(address.sessionId) as { origin_machine: string } | undefined;
+            if (row) { const origin = row.origin_machine || local; if (!isMachineId(origin)) throw new Error("intercom-owner-unavailable"); machines.add(origin); }
+          };
+          inspect(db);
+          for (const row of db.prepare("SELECT db_path FROM projects").all() as { db_path: string }[]) {
+            let handle: Db | undefined;
+            try {
+              const stat = lstatSync(row.db_path);
+              if (stat.isSymbolicLink() || !stat.isFile() || realpathSync(row.db_path) !== row.db_path || process.getuid && stat.uid !== process.getuid()) throw new Error("intercom-owner-unavailable");
+              handle = openDbReadOnly(row.db_path); if (!handle) throw new Error("intercom-owner-unavailable"); inspect(handle);
+            } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+            finally { handle?.close(); }
+          }
+          for (const key of listStoreKeys(db)) if (key.startsWith("worktree:")) {
+            const handle = openRoamStoreReadOnly(db, key); if (!handle) continue;
+            try { inspect(handle); } finally { handle.close(); }
+          }
+          return [...machines];
         },
         authoritativeHome(address) {
           const row = options.globalDb.prepare("SELECT machine_id,epoch,move_id,updated_at FROM session_homes WHERE session_id=?").get(address.sessionId) as

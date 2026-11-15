@@ -86,3 +86,25 @@ export function intercomExclusion(db: Db, owner: SessionEndpoint, probe: (pid: n
   }
   return undefined;
 }
+
+/** Retire per-process evidence only after process exit and after the queue releases every reference. */
+export function pruneIntercomRecords(db: Db, referenced: (sessionId: string, generation: string) => boolean,
+  probe: (pid: number) => NativeProcess = probeIntercomProcess): void {
+  db.raw.transaction(() => {
+    const machine = (db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id: string }).machine_id;
+    for (const entry of localEntries<unknown>(db, generationKind)) {
+      const row = parse(entry.value, false) as GenerationProcess;
+      if (referenced(row.sessionId, row.generation)) continue;
+      const current = probe(row.pid);
+      if (current.kind !== "absent" && !(current.kind === "live" && current.startIdentity !== row.startIdentity)) continue;
+      writeLocal(db, "intercom-owner", JSON.stringify([row.sessionId, machine]), { sessionId: row.sessionId, machine });
+      for (const adoption of localEntries<{ sessionId: string; activation: string; machine: string }>(db, "intercom-first-home")) {
+        if (adoption.value.sessionId === row.sessionId && adoption.value.activation === row.generation) {
+          writeLocal(db, "intercom-owner", JSON.stringify([row.sessionId, adoption.value.machine]), { sessionId: row.sessionId, machine: adoption.value.machine });
+          writeLocal(db, "intercom-first-home", adoption.key, undefined);
+        }
+      }
+      writeLocal(db, exitKind, entry.key, undefined); writeLocal(db, generationKind, entry.key, undefined);
+    }
+  }).immediate();
+}

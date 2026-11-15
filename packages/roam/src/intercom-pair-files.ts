@@ -91,6 +91,15 @@ export async function ensurePairKey(pair: IntercomEnrollmentPair, options: { bin
   return { publicKey: publicKey(text), privateMode: 0o600, privateOwned: true };
 }
 
+export function encodePairCommand(pair: Pick<IntercomEnrollmentPair, "pairId" | "edgeEpoch">, command: string): string {
+  const identifier = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+  if (!pair || typeof pair.pairId !== "string" || !identifier.test(pair.pairId) || typeof pair.edgeEpoch !== "string" ||
+      !identifier.test(pair.edgeEpoch) || typeof command !== "string") throw new Error("invalid-intercom-pair-command");
+  const bytes = Buffer.from(command, "utf8");
+  if (!bytes.length || bytes.length > 1048576 || bytes.includes(0)) throw new Error("invalid-intercom-pair-command");
+  return `spider-intercom:${pair.pairId}:${pair.edgeEpoch}:${bytes.toString("base64")}`;
+}
+
 /** A new host identity requires a new edge epoch and a fresh approval, never an in-place replacement. */
 export function writePairRoute(pair: IntercomEnrollmentPair, options: { node: string; ssh: string; localPort: number }): ReturnType<typeof pairPaths> {
   const files = pairPaths(pair);
@@ -103,10 +112,10 @@ export function writePairRoute(pair: IntercomEnrollmentPair, options: { node: st
   try { writeImmutable(files.knownHosts, known); } catch { throw new Error("host-key-changed"); }
   privateFile(files.knownHosts, 0o600, 16_384);
   const knownOption = /[\s"\\]/.test(files.knownHosts) ? `"${files.knownHosts.replace(/["\\]/g, "\\$&")}"` : files.knownHosts;
-  const args = ["-i", files.privateKey, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes", "-o", `HostKeyAlias=${pair.hostKeyAlias}`,
+  const args = ["-F", "/dev/null", "-i", files.privateKey, "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes", "-o", `HostKeyAlias=${pair.hostKeyAlias}`,
     "-o", `UserKnownHostsFile=${knownOption}`, "-o", "GlobalKnownHostsFile=/dev/null", "-o", "BatchMode=yes", "-o", "ControlMaster=no",
     "-o", "ControlPath=none", "-p", String(options.localPort), `${pair.sshUser}@127.0.0.1`];
-  const script = `#!${options.node}\n(async () => {\n  if (process.argv.length !== 3 || process.argv[2].length > 1048576) { process.exitCode = 2; return; }\n  const { spawn } = await import('node:child_process');\n  const child = spawn(${JSON.stringify(options.ssh)}, [...${JSON.stringify(args)}, process.argv[2]], { stdio: 'inherit' });\n  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));\n  child.on('error', () => { process.exitCode = 1; });\n  child.on('exit', (code, signal) => { if (signal) { process.removeAllListeners(signal); process.kill(process.pid, signal); } else process.exitCode = code ?? 1; });\n})().catch(() => { process.exitCode = 1; });\n`;
+  const script = `#!${options.node}\n(async () => {\n  if (process.argv.length !== 3 || process.argv[2].length > 1048576) { process.exitCode = 2; return; }\n  const { spawn } = await import('node:child_process');\n  const child = spawn(${JSON.stringify(options.ssh)}, [...${JSON.stringify(args)}, (${encodePairCommand.toString()})(${JSON.stringify({ pairId: pair.pairId, edgeEpoch: pair.edgeEpoch })}, process.argv[2])], { stdio: 'inherit' });\n  for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));\n  child.on('error', () => { process.exitCode = 1; });\n  child.on('exit', (code, signal) => { if (signal) { process.removeAllListeners(signal); process.kill(process.pid, signal); } else process.exitCode = code ?? 1; });\n})().catch(() => { process.exitCode = 1; });\n`;
   try { writeImmutable(files.via, Buffer.from(script)); } catch { throw new Error("intercom-route-conflict"); }
   const fd = openSync(files.via, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -126,12 +135,45 @@ function sshDirectory(home: string): string {
   if (!stat.isDirectory() || stat.isSymbolicLink() || !own(stat) || process.platform !== "win32" && (stat.mode & 0o7777) !== 0o700) throw new Error("intercom-unsafe-home");
   return directory;
 }
-function authorizedLine(pair: IntercomEnrollmentPair, pub: string): string {
-  pairIdentity(pair); if (!validPublicKey(pub)) throw new Error("unsafe-pair-key");
-  return `from="127.0.0.1",restrict ${pub} spider-intercom:${pair.pairId}`;
+function pairCommandPath(pair: IntercomEnrollmentPair): string {
+  return join(pair.target.globalRoot, "roam", "intercom", "pairs", pair.pairId, pair.edgeEpoch, "command.mjs");
+}
+const shellQuote = (text: string): string => `'${text.replace(/'/g, "'\\''")}'`;
+export function authorizedPairLine(pair: IntercomEnrollmentPair, pub: string): string {
+  pairIdentity(pair); absolute(pair.target.node); if (!validPublicKey(pub)) throw new Error("unsafe-pair-key");
+  const command = `${shellQuote(pair.target.node)} ${shellQuote(pairCommandPath(pair))}`.replace(/["\\]/g, "\\$&");
+  return `from="127.0.0.1",restrict,command="${command}" ${pub} spider-intercom:${pair.pairId}`;
+}
+function writePairCommand(pair: IntercomEnrollmentPair): void {
+  const file = pairCommandPath(pair), registry = join(pair.target.globalRoot, "roam", "intercom", "enrollments", `${pair.pairId}.json`);
+  assertTestConfigPath(file); privateDirectory(dirname(file));
+  const script = `import { constants, openSync, fstatSync, readFileSync, closeSync, realpathSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+const fail = () => { process.exitCode = 126; };
+try {
+  const prefix = ${JSON.stringify(`spider-intercom:${pair.pairId}:${pair.edgeEpoch}:`)}, original = process.env.SSH_ORIGINAL_COMMAND ?? '';
+  if (!original.startsWith(prefix) || original.length > 1500000) throw new Error();
+  const encoded = original.slice(prefix.length), command = Buffer.from(encoded, 'base64');
+  if (!command.length || command.length > 1048576 || command.toString('base64') !== encoded || command.includes(0)) throw new Error();
+  const file = ${JSON.stringify(registry)};
+  if (realpathSync(file) !== file) throw new Error();
+  const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let record;
+  try { const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 1048576 || stat.uid !== process.getuid() || (stat.mode & 0o7777) !== 0o600) throw new Error();
+    record = JSON.parse(readFileSync(fd, 'utf8'));
+  } finally { closeSync(fd); }
+  if (!['pending','active'].includes(record.state) || record.fenceId !== null || record.pair?.pairId !== ${JSON.stringify(pair.pairId)} || record.pair?.edgeEpoch !== ${JSON.stringify(pair.edgeEpoch)} ||
+      record.pair?.source?.machineId !== ${JSON.stringify(pair.source.machineId)} || record.pair?.target?.machineId !== ${JSON.stringify(pair.target.machineId)}) throw new Error();
+  const child = spawn('/bin/sh', ['-c', command.toString('utf8')], { stdio: 'inherit' });
+  for (const signal of ['SIGINT','SIGTERM','SIGHUP']) process.on(signal, () => child.kill(signal));
+  child.on('error', fail); child.on('exit', code => { process.exitCode = code ?? 1; });
+} catch { fail(); }
+`;
+  writeImmutable(file, Buffer.from(script)); privateFile(file, 0o600, 32 * 1024);
 }
 async function editAuthorization(home: string, pair: IntercomEnrollmentPair, pub: string, remove: boolean): Promise<void> {
-  const line = authorizedLine(pair, pub), root = pair.target.globalRoot;
+  const line = authorizedPairLine(pair, pub), root = pair.target.globalRoot;
   assertTestConfigPath(root); absolute(root);
   await withProcessLock(join(root, "roam", "intercom"), "authorized-keys", async () => {
     const directory = sshDirectory(home), file = join(directory, "authorized_keys"), existed = pathExists(file);
@@ -153,7 +195,7 @@ async function editAuthorization(home: string, pair: IntercomEnrollmentPair, pub
 }
 /** A read-only absence check preserves unrelated authorizations and rejects unsafe files. */
 export function pairKeyAbsent(home: string, pair: IntercomEnrollmentPair, pub: string): boolean {
-  const line = authorizedLine(pair, pub), directory = join(home, ".ssh");
+  const line = authorizedPairLine(pair, pub), directory = join(home, ".ssh");
   absolute(home); assertTestConfigPath(home); pathDirectories(home);
   try {
     pathDirectories(directory);
@@ -164,5 +206,7 @@ export function pairKeyAbsent(home: string, pair: IntercomEnrollmentPair, pub: s
     return !rows.includes(line);
   } catch (error) { if (missing(error)) return true; throw error; }
 }
-export async function authorizePairKey(home: string, pair: IntercomEnrollmentPair, pub: string): Promise<void> { await editAuthorization(home, pair, pub, false); }
+export async function authorizePairKey(home: string, pair: IntercomEnrollmentPair, pub: string): Promise<void> {
+  pairIdentity(pair); writePairCommand(pair); await editAuthorization(home, pair, pub, false);
+}
 export async function removePairKey(home: string, pair: IntercomEnrollmentPair, pub: string): Promise<void> { await editAuthorization(home, pair, pub, true); }

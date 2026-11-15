@@ -4,7 +4,7 @@
 import { connect } from 'node:net';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
-import { acceptsConnectCommand } from './roam-pair-command.mjs';
+import { pairConnectCommand } from './roam-pair-command.mjs';
 
 const descriptor = process.argv[2], d = JSON.parse(readFileSync(descriptor, 'utf8'));
 const inside = path => typeof path === 'string' && isAbsolute(path) && resolve(path) === path && relative(d.root, path) && !relative(d.root, path).startsWith('..');
@@ -15,7 +15,7 @@ const args = process.argv.slice(3), portAt = args.indexOf('-p'), keyAt = args.in
 const port = Number(args[portAt + 1]), command = args.at(-1), destination = args.at(-2);
 const known = args.find(arg => arg.startsWith('UserKnownHostsFile='))?.slice('UserKnownHostsFile='.length);
 if (portAt < 0 || keyAt < 0 || !Number.isSafeInteger(port) || port !== d.localPort || !destination?.endsWith('@127.0.0.1') ||
-    !acceptsConnectCommand(command, session) || !args.includes('StrictHostKeyChecking=yes') || !args.includes('IdentitiesOnly=yes') ||
+    !pairConnectCommand(command, session, d.connectCommands) || !args.includes('StrictHostKeyChecking=yes') || !args.includes('IdentitiesOnly=yes') ||
     !ownedFile(known) || !ownedFile(args[keyAt + 1])) throw new Error('unsafe fixture ssh invocation');
 const socket = connect(port, '127.0.0.1');
 socket.once('connect', () => { socket.write(`${JSON.stringify({ line: command })}\n`); process.stdin.pipe(socket); socket.pipe(process.stdout); });

@@ -837,6 +837,11 @@ export class IntercomClient extends EventEmitter {
 }
 
 
+/** Only a failed connection preflight proves that no request bytes reached a socket. */
+export class FederationRequestNotSentError extends Error {
+  constructor() { super("federation-disconnected"); this.name = "FederationRequestNotSentError"; }
+}
+
 /** One service-owned connection. Session clients cannot publish remote identities. */
 export class IntercomFederationClient extends EventEmitter {
   private socket: net.Socket | null = null;
@@ -880,7 +885,7 @@ export class IntercomFederationClient extends EventEmitter {
     });
   }
   private send(message: FederationClientMessage): void {
-    if (!this.socket || !this.ready || this.socket.destroyed) throw new Error("federation-disconnected");
+    if (!this.socket || !this.ready || this.socket.destroyed) throw new FederationRequestNotSentError();
     writeMessage(this.socket, message);
   }
   /** Late results belong only to the connection that received the request. */

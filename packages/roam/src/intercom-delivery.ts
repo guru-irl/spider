@@ -1,5 +1,5 @@
 import { addressKey, sameAddress, type MessageReceipt, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint } from "@spider/intercom/protocol";
-import type { IntercomFederationClient } from "@spider/intercom/broker/client";
+import { FederationRequestNotSentError, type IntercomFederationClient } from "@spider/intercom/broker/client";
 import type { IntercomControlFrame, IntercomReceiptFrame, IntercomStore } from "./intercom-contracts";
 import { firstHomeEndpointMatches, type FirstHomeAdoption } from "./intercom-first-home";
 
@@ -29,7 +29,7 @@ export interface HostIntercomDelivery {
   stop(): Promise<void>;
 }
 export function createHostIntercomDelivery(ports: HostIntercomDeliveryPorts): HostIntercomDelivery {
-  const readiness = new Map<string, string>(), active = new Map<string, Promise<void>>(), notified = new Set<string>();
+  const readiness = new Map<string, string>(), active = new Map<string, Promise<void>>(), rerun = new Set<string>();
   let stopped = false;
   const report = () => ports.onError?.("intercom-broker-unavailable");
   const matches = (queued: SessionEndpoint, live: SessionEndpoint) => {
@@ -45,42 +45,58 @@ export function createHostIntercomDelivery(ports: HostIntercomDeliveryPorts): Ho
     endpointEpoch: endpoint?.activationEpoch ?? "unknown", cwd: "", model: "", startedAt: 0, lastActivity: 0,
     status: "unknown", stale: true, reachability: "down",
   });
-  async function ready(address: SessionAddress, transition: string): Promise<void> {
-    if (stopped) return;
-    const key = addressKey(address); readiness.set(key, transition);
+  function ready(address: SessionAddress, transition: string): Promise<void> {
+    if (stopped) return Promise.resolve();
+    const key = addressKey(address), changed = readiness.get(key) !== transition;
+    readiness.set(key, transition);
     const current = active.get(key);
-    if (current) { await current; if (stopped || readiness.get(key) !== transition) return; }
-    const run = (async () => {
-      const endpoint = ports.endpoint(address); if (!endpoint) return;
-      let progress: boolean;
-      do {
-        progress = false;
-        for (const identity of ports.store.pending({ kind: "inbound", address })) {
-          if (stopped) break;
-          let retained = ports.store.retained("inbound", identity.id);
-          if (!retained || !retained.originMachineId) continue;
-          if (!matches(retained.endpoint, endpoint)) {
-            try { ports.store.rebindInboundAfterAbsence(identity.id, endpoint); retained = ports.store.retained("inbound", identity.id); }
-            catch { continue; }
-          }
-          if (!retained || !matches(retained.endpoint, endpoint) || !retained.originMachineId) continue;
-          const sender = historical(identity.from, retained.originMachineId);
-          let frame;
-          const owner = retained.endpoint;
-          try { frame = ports.store.beginDispatch({ id: identity.id, endpoint: owner, readiness: transition }); }
-          catch (error) { if (error instanceof Error && error.message === "Intercom retry needs a new readiness transition") continue; throw error; }
-          progress = true;
-          try {
-            // The broker still checks the exact current registration. The durable
-            // copy and its receipts keep the pre-adoption owner, on this activation.
-            const result = await ports.broker.deliver(sender, endpoint, frame.message);
-            if (result.consumption) await reconcile([{ owner, receipt: result.consumption }]);
-          } catch { report(); }
-        }
-      } while (progress && !stopped);
-    })();
+    if (current) { if (changed) rerun.add(key); return current; }
+    let resolveRun!: () => void, rejectRun!: (error: unknown) => void;
+    const run = new Promise<void>((resolve, reject) => { resolveRun = resolve; rejectRun = reject; });
     active.set(key, run);
-    try { await run; } finally { if (active.get(key) === run) active.delete(key); }
+    void (async () => {
+      try {
+        do { rerun.delete(key); await drain(address, readiness.get(key)!); }
+        while (!stopped && rerun.has(key));
+      } finally { active.delete(key); rerun.delete(key); }
+    })().then(resolveRun, rejectRun);
+    return run;
+  }
+  async function drain(address: SessionAddress, transition: string): Promise<void> {
+    const endpoint = ports.endpoint(address); if (!endpoint) return;
+    let progress: boolean;
+    do {
+      progress = false;
+      for (const identity of ports.store.pending({ kind: "inbound", address })) {
+        if (stopped) break;
+        let retained = ports.store.retained("inbound", identity.id);
+        if (!retained || !retained.originMachineId) continue;
+        if (!matches(retained.endpoint, endpoint)) {
+          try { ports.store.rebindInboundAfterAbsence(identity.id, endpoint); retained = ports.store.retained("inbound", identity.id); }
+          catch { continue; }
+        }
+        if (!retained || !matches(retained.endpoint, endpoint) || !retained.originMachineId) continue;
+        const sender = historical(identity.from, retained.originMachineId);
+        let frame;
+        const owner = retained.endpoint;
+        try { frame = ports.store.beginDispatch({ id: identity.id, endpoint: owner, readiness: transition }); }
+        catch (error) { if (error instanceof Error && error.message === "Intercom retry needs a new readiness transition") continue; throw error; }
+        progress = true;
+        const attempt = ports.store.retained("inbound", identity.id)!.latestAttempt;
+        try {
+          // The broker still checks the exact current registration. The durable
+          // copy and its receipts keep the pre-adoption owner, on this activation.
+          const result = await ports.broker.deliver(sender, endpoint, frame.message);
+          if (result.consumption) await reconcile([{ owner, receipt: result.consumption }]);
+        } catch (error) {
+          if (error instanceof FederationRequestNotSentError) {
+            ports.store.retryKnownNotSent({ id: identity.id, endpoint: owner, attempt });
+            report(); return;
+          }
+          report();
+        }
+      }
+    } while (progress && !stopped);
   }
   async function reconcile(proofs: readonly ReconcileProof[]): Promise<void> {
     for (const proof of proofs) {
@@ -98,8 +114,11 @@ export function createHostIntercomDelivery(ports: HostIntercomDeliveryPorts): Ho
     ready, reconcile,
     async stop() { stopped = true; await Promise.allSettled([...active.values()]); },
     onInbound(input: { id: string; to: SessionAddress }): void {
-      const transition = readiness.get(addressKey(input.to));
-      if (!stopped && transition) void ready(input.to, transition).catch(report);
+      const key = addressKey(input.to), transition = readiness.get(key);
+      if (!stopped && transition) {
+        if (active.has(key)) rerun.add(key);
+        void ready(input.to, transition).catch(report);
+      }
     },
     onReceipt(frame: IntercomReceiptFrame): void {
       const row = ports.store.retained("outbound", frame.receipt.messageId);
@@ -126,17 +145,17 @@ export function createHostIntercomDelivery(ports: HostIntercomDeliveryPorts): Ho
       const sender = ports.sender(frame.from); if (sender) ports.broker.deliverControl(sender, frame.to, frame.control);
     },
     onAskFailed(failure: { id: string; from: SessionAddress; to: SessionAddress; reason: "link-down" }): void {
-      const row = ports.store.retained("outbound", failure.id), key = `link-down:${failure.id}`;
+      const row = ports.store.retained("outbound", failure.id);
       const sender = row ? historical(failure.to, row.endpoint.machineId, row.endpoint) : ports.sender(failure.to);
-      if (sender && !notified.has(key)) {
-        ports.broker.deliverReceipt(sender, failure.from, { messageId: failure.id, status: "unknown", timestamp: ports.now(), detail: "link-down" }); notified.add(key);
+      if (row && sender && !ports.store.noticeReported(failure.id, "link-down")) {
+        ports.broker.deliverReceipt(sender, failure.from, { messageId: failure.id, status: "unknown", timestamp: ports.now(), detail: "link-down" }); ports.store.markNoticeReported(failure.id, "link-down");
       }
     },
     onExpiry(event: { id: string; from: SessionAddress; to: SessionAddress }): void {
-      const row = ports.store.retained("outbound", event.id), key = `expired:${event.id}`;
+      const row = ports.store.retained("outbound", event.id);
       const sender = row ? historical(event.to, row.endpoint.machineId, row.endpoint) : ports.sender(event.to);
-      if (sender && !notified.has(key)) {
-        ports.broker.deliverReceipt(sender, event.from, { messageId: event.id, status: "expired", timestamp: ports.now(), detail: "Question or queued message expired." }); notified.add(key);
+      if (row && sender && !ports.store.noticeReported(event.id, "expiry")) {
+        ports.broker.deliverReceipt(sender, event.from, { messageId: event.id, status: "expired", timestamp: ports.now(), detail: "Question or queued message expired." }); ports.store.markNoticeReported(event.id, "expiry");
       }
     },
   };

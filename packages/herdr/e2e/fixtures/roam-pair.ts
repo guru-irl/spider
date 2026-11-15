@@ -5,6 +5,9 @@ import { existsSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { encodePairCommand } from '../../../roam/src/intercom-pair-files.js';
+// @ts-ignore The connector also loads this ESM fixture directly.
+import { connectCommands } from './roam-pair-command.mjs';
 import { parseConfig } from '../../../roam/src/config.js';
 import type { Peer } from '../../../roam/src/contracts.js';
 import { HarnessError, assertSocketPath } from '../harness/environment.js';
@@ -15,7 +18,7 @@ import { deadline, waitFor } from '../harness/wait.js';
 import type { Suite } from '../harness/suite.js';
 import type { Network } from './roam-intercom.js';
 
-const PAIR = 'fixture-pair', ALIAS = `spider-pair-${PAIR}`;
+const PAIR = 'fixture-pair', EPOCH = 'fixture-pair-epoch', ALIAS = `spider-pair-${PAIR}`;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 async function ports(): Promise<[number, number]> {
   const servers = [createServer(), createServer()];
@@ -71,7 +74,7 @@ export async function preparePair(suite: Suite, network: Network): Promise<PairF
       Object.assign(machine.env, { SPIDER_E2E_PAIR_ALIAS: ALIAS });
       const value = { root: suite.root, global: machine.global, machineId: machine.id, home, socket, stateFile, node: process.execPath,
         connector, systemctl: join(machineRoot, 'systemctl'), ssh, sshd, hc: suite.cores.wrapper, env: machine.env,
-        hostPort, localPort, localCore: machine.core.socket, peerCore: (offset === 0 ? target : source).core.socket,
+        hostPort, localPort, connectCommands: connectCommands(target.core.namespace).map((command: string) => ({ command, envelope: encodePairCommand({ pairId: PAIR, edgeEpoch: EPOCH }, command) })), localCore: machine.core.socket, peerCore: (offset === 0 ? target : source).core.socket,
         via: join(bin, 'via.mjs'), viaDescriptor: join(suite.root, 'via-i2.json'), viaRoute: join(bin, 'via-i2') };
       await writeFile(descriptor, JSON.stringify(value), { mode: 0o600 }); descriptors.push(descriptor);
       const manager = spawnOwned(suite.ledger, { label: `pair-systemd-${offset + 1}`, command: process.execPath,
@@ -98,7 +101,7 @@ export async function preparePair(suite: Suite, network: Network): Promise<PairF
     // The production CLI creates this exact reserved alias; register its ownership before that effect.
     suite.ledger.update(ledger => { ledger.machines.push({ side: source.core.side, name: ALIAS }); });
     const graph = suite.ownPath(join(suite.root, 'pair-graph.json'));
-    await writeFile(graph, JSON.stringify({ pairs: [{ pairId: PAIR, source: source.alias, target: target.alias, edgeEpoch: 'fixture-pair-epoch',
+    await writeFile(graph, JSON.stringify({ pairs: [{ pairId: PAIR, source: source.alias, target: target.alias, edgeEpoch: EPOCH,
       connector: { tunnelId: 'fixture-tunnel', session: target.core.namespace, remotePort: hostPort } }] }), { mode: 0o600 });
     return { graph, pairId: PAIR, alias: ALIAS, descriptors, managers, close };
   } catch (error) { await close(); throw error; }

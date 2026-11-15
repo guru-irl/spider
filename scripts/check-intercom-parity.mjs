@@ -162,8 +162,7 @@ function verify(manifest, forkRoot) {
     if (entry.upstreamHash !== (baseline?.sourceSha256 ?? null)) throw new Error(`Divergence upstream hash mismatch in ${entry.path}`);
     const file = join(forkRoot, entry.path);
     if (!existsSync(file)) throw new Error(`Missing divergent file ${entry.path}`);
-    const currentHash = sha256(readFileSync(file, 'utf8'));
-    if ((baseline && [baseline.adoptedSha256, baseline.sourceSha256].includes(currentHash)) || manifest.adoptedFiles?.[entry.path] === currentHash) throw new Error(`Stale divergence entry in ${entry.path}`);
+    if (baseline && [baseline.adoptedSha256, baseline.sourceSha256].includes(sha256(readFileSync(file, 'utf8')))) throw new Error(`Stale divergence entry in ${entry.path}`);
     declarations.set(entry.path, entry);
   }
   const known = new Set(Object.keys(manifest.sources ?? {}).map(name => name === 'index.ts' ? 'local.ts' : name));
@@ -211,13 +210,16 @@ export function verifyManifest(manifest, forkRoot) {
     if (entry.upstreamHash !== (baseline?.sourceSha256 ?? null)) throw new Error(`Divergence upstream hash mismatch in ${entry.path}`);
     const file = join(forkRoot, entry.path);
     if (!existsSync(file)) throw new Error(`Missing divergent file ${entry.path}`);
-    if (baseline && [baseline.adoptedSha256, baseline.sourceSha256].includes(sha256(readFileSync(file, 'utf8')))) throw new Error(`Stale divergence entry in ${entry.path}`);
+    const currentHash = sha256(readFileSync(file, 'utf8'));
+    if ((baseline && [baseline.adoptedSha256, baseline.sourceSha256].includes(currentHash)) || manifest.adoptedFiles?.[entry.path] === currentHash) throw new Error(`Stale divergence entry in ${entry.path}`);
     declarations.set(entry.path, entry);
   }
   const known = new Set(Object.keys(manifest.sources ?? {}).map(name => name === 'index.ts' ? 'local.ts' : name));
   // These host adapters were already present at adoption, outside upstream.
   for (const [name, hash] of Object.entries(manifest.adoptedFiles ?? {})) {
-    if (!declarations.has(name) && (!/^[a-f0-9]{64}$/.test(hash) || sha256(readFileSync(join(forkRoot, name), 'utf8')) !== hash)) throw new Error(`Unlisted runtime change in ${name}`);
+    // Keep the adoption hash immutable; a declared adapter change pins its current bytes separately.
+    const current = declarations.has(name) ? declarations.get(name).forkSha256 : hash;
+    if (!/^[a-f0-9]{64}$/.test(hash) || typeof current !== 'string' || !/^[a-f0-9]{64}$/.test(current) || sha256(readFileSync(join(forkRoot, name), 'utf8')) !== current) throw new Error(`Unlisted runtime change in ${name}`);
     known.add(name);
   }
   for (const file of walk(forkRoot).filter(file => /\.[cm]?[jt]sx?$/.test(file) && !/\.test\.[cm]?[jt]sx?$/.test(file) && !file.endsWith('.d.ts'))) {

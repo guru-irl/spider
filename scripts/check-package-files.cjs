@@ -7,7 +7,7 @@ process.stdin.on('data', chunk => { input += chunk; }).on('end', () => {
   const skillDirs = ['packages/superpowers/skills', 'packages/pstack/skills', 'packages/intercom/skills'];
   const skills = skillDirs.flatMap(dir => fs.readdirSync(dir, { recursive: true })
     .filter(file => file === 'SKILL.md' || file.endsWith('/SKILL.md')).map(file => `${dir}/${file}`));
-  const required = ['dist/extension.js', 'dist/intercom/broker.mjs', 'dist/dashboard/index.html', 'dist/roam/cli.mjs', 'dist/roam/cli-main.mjs',
+  const required = ['dist/extension.js', 'dist/extension.js.ready', 'dist/intercom/broker.mjs', 'dist/dashboard/index.html', 'dist/roam/cli.mjs', 'dist/roam/cli-main.mjs',
     'dist/roam/intercom-helper.mjs', 'dist/roam/supervisor.mjs',
     'scripts/link.mjs', 'scripts/dev-link.mjs', 'scripts/link-roam.mjs', 'scripts/extension-shim.mjs', 'scripts/pi-agent-dir.mjs',
     'README.md', 'LICENSE', 'NOTICE.md', 'packages/context/LICENSE', 'packages/pstack/LICENSE', 'packages/intercom/LICENSE', 'packages/intercom/ORIGIN.md', 'scripts/intercom-switchover.mjs', ...skills];

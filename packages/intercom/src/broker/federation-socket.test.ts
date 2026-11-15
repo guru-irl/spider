@@ -51,6 +51,20 @@ async function session(id: string, name = id, homeEpoch?: number, logicalId = id
   return client;
 }
 
+function trackSocket(socket: net.Socket) {
+  const errors: NodeJS.ErrnoException[] = [];
+  socket.on("error", error => errors.push(error));
+  const closed = new Promise<boolean>(resolve => socket.once("close", resolve));
+  return { errors, closed };
+}
+
+function expectRefused(socket: net.Socket, messages: any[], errors: NodeJS.ErrnoException[], hadError: boolean) {
+  expect(socket.destroyed).toBe(true);
+  expect(messages.some(message => message.type === "federation_registered")).toBe(false);
+  expect(hadError).toBe(errors.length > 0);
+  expect(errors.filter(error => error.code !== "ECONNRESET")).toEqual([]);
+}
+
 it("broker derives the sender and every client producer reaches one bridge", async () => {
   const client = await session("sender");
   expect(client.supportsFeature(FEDERATION_FEATURE)).toBe(true);
@@ -76,6 +90,7 @@ it("local presence includes portable epochs and activity but no local handles", 
 
 it("legacy-client local compatibility hides remote entries", async () => {
   const socket = net.connect(getBrokerSocketPath());
+  const { errors, closed } = trackSocket(socket);
   try {
     const messages: any[] = [];
     socket.on("data", createMessageReader(message => messages.push(message), error => socket.destroy(error)));
@@ -84,7 +99,8 @@ it("legacy-client local compatibility hides remote entries", async () => {
     writeMessage(socket, { type: "list", requestId: "legacy-list" });
     await new Promise<void>(resolve => { const check = () => { if (messages.some(m => m.type === "sessions")) resolve(); else setImmediate(check); }; check(); });
     expect(messages.find(m => m.type === "sessions").sessions.some((s: any) => s.remote)).toBe(false);
-  } finally { const closed = once(socket, "close"); socket.destroy(); await closed; }
+  } finally { socket.destroy(); await closed; }
+  expect(errors).toEqual([]);
 }, 5000);
 
 it("remote receipts and cancellation use the single bridge", async () => {
@@ -194,11 +210,11 @@ it.each(["runtime", "logical"])("local home dispatch preserves logical identity 
 it("an ordinary local peer cannot claim the bridge before or after the service", async () => {
   const attempt = async (id: string) => {
     const socket = net.connect(getBrokerSocketPath()), messages: any[] = [];
-    socket.on("data", createMessageReader(message => messages.push(message), () => socket.destroy()));
+    const { errors, closed } = trackSocket(socket);
+    socket.on("data", createMessageReader(message => messages.push(message), error => socket.destroy(error)));
     writeMessage(socket, { type: "federation_register", feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "squatter", machineAlias: "fake.invalid" });
     writeMessage(socket, { type: "list", requestId: "still-ordinary" });
-    await new Promise<void>(resolve => { socket.on("close", resolve); });
-    expect(messages.some(message => message.type === "federation_registered")).toBe(false);
+    expectRefused(socket, messages, errors, await closed);
     expect(await (await session(id)).listSessions()).toBeInstanceOf(Array);
   };
   await bridge.close();
@@ -207,6 +223,28 @@ it("an ordinary local peer cannot claim the bridge before or after the service",
   await bridge.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "machine-1"), machineId: "machine-1", machineAlias: "local.invalid" }, adapter);
   await attempt("after-service");
   expect(await bridge.inspectBlockers({ sessionId: "before-service", scopeId: null })).toBeDefined();
+}, 5000);
+
+it("a reset during a refused bridge claim still proves the claim was refused", async () => {
+  const socket = net.connect(getBrokerSocketPath()), messages: any[] = [];
+  const { errors, closed } = trackSocket(socket);
+  socket.on("data", createMessageReader(message => messages.push(message), error => socket.destroy(error)));
+  socket.once("end", () => socket.destroy(Object.assign(new Error("synthetic read ECONNRESET"), { code: "ECONNRESET" })));
+  writeMessage(socket, { type: "federation_register", feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "squatter", machineAlias: "fake.invalid" });
+  expectRefused(socket, messages, errors, await closed);
+  expect(errors.map(error => error.code)).toEqual(["ECONNRESET"]);
+}, 5000);
+
+it("does not mistake an unexpected error or registration for a refused claim", async () => {
+  const socket = net.connect(getBrokerSocketPath()), messages: any[] = [];
+  const { errors, closed } = trackSocket(socket);
+  socket.on("data", createMessageReader(message => messages.push(message), error => socket.destroy(error)));
+  socket.once("end", () => socket.destroy(Object.assign(new Error("synthetic write EPIPE"), { code: "EPIPE" })));
+  writeMessage(socket, { type: "federation_register", feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "squatter", machineAlias: "fake.invalid" });
+  const hadError = await closed;
+  expect(errors.map(error => error.code)).toEqual(["EPIPE"]);
+  expect(() => expectRefused(socket, messages, errors, hadError)).toThrow();
+  expect(() => expectRefused(socket, [...messages, { type: "federation_registered" }], [], false)).toThrow();
 }, 5000);
 
 it("unobserved local receipts become bounded unknown markers and expire", async () => {
@@ -228,13 +266,13 @@ it("even a valid bridge credential is refused when federation is disabled", asyn
   const credential = JSON.parse(readFileSync(join(getAgentDirPath(), "intercom", "bridge-authority.json"), "utf8")).credential;
   await bridge.close();
   const socket = net.connect(getBrokerSocketPath()), messages: any[] = [];
-  socket.on("data", createMessageReader(message => messages.push(message), () => socket.destroy()));
+  const { errors, closed } = trackSocket(socket);
+  socket.on("data", createMessageReader(message => messages.push(message), error => socket.destroy(error)));
   try {
     writeFileSync(file, JSON.stringify({ machineId: "machine-1", intercom: { enabled: false } }));
     writeMessage(socket, { type: "federation_register", feature: FEDERATION_FEATURE, credential, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" });
     writeMessage(socket, { type: "list", requestId: "must-refuse" });
-    await new Promise<void>(resolve => socket.once("close", resolve));
-    expect(messages.some(message => message.type === "federation_registered")).toBe(false);
+    expectRefused(socket, messages, errors, await closed);
   } finally {
     socket.destroy(); writeFileSync(file, config); bridge = new IntercomFederationClient();
     await bridge.connect({ feature: FEDERATION_FEATURE, credential, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" }, adapter);
@@ -244,13 +282,13 @@ it("unsafe bridge credential permissions do not authorize a claim", async () => 
   const file = join(getAgentDirPath(), "intercom", "bridge-authority.json"), authority = JSON.parse(readFileSync(file, "utf8"));
   await bridge.close();
   const socket = net.connect(getBrokerSocketPath()), messages: any[] = [];
-  socket.on("data", createMessageReader(message => messages.push(message), () => socket.destroy()));
+  const { errors, closed } = trackSocket(socket);
+  socket.on("data", createMessageReader(message => messages.push(message), error => socket.destroy(error)));
   try {
     chmodSync(file, 0o644);
     writeMessage(socket, { type: "federation_register", feature: FEDERATION_FEATURE, credential: authority.credential, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" });
     writeMessage(socket, { type: "list", requestId: "must-refuse" });
-    await new Promise<void>(resolve => socket.once("close", resolve));
-    expect(messages.some(message => message.type === "federation_registered")).toBe(false);
+    expectRefused(socket, messages, errors, await closed);
   } finally {
     socket.destroy(); chmodSync(file, 0o600); bridge = new IntercomFederationClient();
     await bridge.connect({ feature: FEDERATION_FEATURE, credential: authority.credential, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" }, adapter);

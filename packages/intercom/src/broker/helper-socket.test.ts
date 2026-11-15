@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { once } from "node:events";
 import net from "node:net";
 import type { ChildProcess } from "node:child_process";
 import { authorizeTestBridge, startTestBroker, stopTestBroker, testBrokerEnv } from "../test-support.js";
@@ -20,14 +19,14 @@ beforeAll(async () => {
 afterAll(async () => { if (broker) await stopTestBroker(broker); }, 5000);
 
 function connect() {
-  const socket = net.connect(getBrokerSocketPath()), messages: Array<Record<string, unknown>> = [];
+  const socket = net.connect(getBrokerSocketPath()), messages: Array<Record<string, unknown>> = [], errors: NodeJS.ErrnoException[] = [];
   const pending = new Set<() => void>();
   let closed = false;
-  socket.on("data", createMessageReader(value => { messages.push(value as Record<string, unknown>); for (const wake of pending) wake(); }, () => socket.destroy()));
-  socket.on("error", () => {});
-  socket.on("close", () => { closed = true; for (const wake of pending) wake(); });
+  socket.on("error", error => errors.push(error));
+  socket.on("data", createMessageReader(value => { messages.push(value as Record<string, unknown>); for (const wake of pending) wake(); }, error => socket.destroy(error)));
+  const finished = new Promise<void>(resolve => socket.on("close", () => { closed = true; for (const wake of pending) wake(); resolve(); }));
   return {
-    socket,
+    socket, errors,
     async take(type: string): Promise<Record<string, unknown> | null> {
       return new Promise(resolve => {
         const finish = (value: Record<string, unknown> | null) => { clearTimeout(timer); pending.delete(check); resolve(value); };
@@ -36,9 +35,20 @@ function connect() {
         pending.add(check); check();
       });
     },
-    async close() { if (!socket.destroyed) { const finished = once(socket, "close"); socket.destroy(); await finished; } },
+    async close() { socket.destroy(); await finished; expect(errors).toEqual([]); },
   };
 }
+
+it("records raw helper socket errors instead of ignoring them", async () => {
+  const client = connect();
+  const error = Object.assign(new Error("synthetic helper socket error"), { code: "EPIPE" });
+  const closed = new Promise<void>(resolve => client.socket.once("close", resolve));
+  try {
+    client.socket.emit("error", error);
+    expect(client.errors).toEqual([error]);
+    await expect(client.close()).rejects.toThrow();
+  } finally { client.socket.destroy(); await closed; }
+}, 5000);
 
 it("advertises helper exchange in the existing private broker handshake", async () => {
   const client = connect();

@@ -3,6 +3,7 @@
 import { readFile } from 'node:fs/promises';
 import { expect, it, vi } from 'vitest';
 import * as move from '../../assets/agents/move.js';
+import { projectAgentChildren } from '../../assets/agents/children.js';
 import { panelIpcArgv, parseSessionIpcReply, FEED_DISCONNECT_MS } from '../../assets/shared/feed.js';
 import { HerdrLabelContract } from '../contracts.js';
 
@@ -310,6 +311,24 @@ it('offers a saved view the same open actions without offering a live kill', asy
   expect(texts(root)).toContain('Open in new tab'); expect(texts(root)).toContain('Open in tab');
   expect(byId(root, 'move-new').events.on_click).toBeTypeOf('function');
   expect(byId(root, 'move-kill').events.on_click).toBeUndefined();
+});
+
+it('keeps hide and kill entries for a saved run whose old viewer machine is unavailable', async () => {
+  const viewer = { address: 'alpha.invalid/viewer', parent: 'parent', state: 'live' as const, status: null, labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 'owner', 'spider.run': 'finished' } };
+  const feed = { sessionId: 'owner', generation: 'gen', lifecycle: 'live', updatedAt: Date.now(), ipc: { address: 'socket', capabilityFile: 'cap' }, owner: { terminal: { address: 'parent' } },
+    runs: { rows: [{ id: 'finished', ownerSessionId: 'owner', status: 'done', name: 'Worker', viewer: viewer.address, finishedAt: Date.now() - 1 }] } };
+  const row = projectAgentChildren([viewer], [feed as never], 'parent', HerdrLabelContract, { machines: [{ name: 'alpha.invalid', layout: 'unavailable' }] })[0];
+  expect(row).toMatchObject({ status: 'done', action: { kind: 'ipc' } });
+  const ui = await popup({ modId: 'spider-agents', nodePath: 'node', cliPath: 'cli', feedRoot: '/fixture/feed', overlay: 'overlay', labelContract: HerdrLabelContract,
+    moveMenu: { kind: row.kind, key: row.key, terminal: row.originalAddress, retained: row.retained, action: row.action } },
+    { panes: () => [{ pane: 'p1', terminal: viewer.address, tab: 't1' }] }, [feed]);
+  await ui.drain(); const root = ui.renderMoveMenu(ui.instance, ui.cx);
+  expect(texts(root)).toEqual(expect.arrayContaining(['Hide', 'Kill subagent']));
+  expect(byId(root, 'move-kill').disabled).toBe(true);
+  expect(byId(root, 'move-hide').events.on_click).toBeTypeOf('function');
+  byId(root, 'move-hide').events.on_click({}, ui.cx); await ui.drain();
+  const sent = ui.calls.find((value: any) => value.binary === 'node');
+  expect(JSON.parse(sent.args[sent.args.indexOf('--request') + 1])).toEqual({ op: 'moveRun', runId: 'finished', destination: { kind: 'hide' }, generation: 'gen' });
 });
 
 it('sends a command pane kill to its owner instead of the observer', async () => {

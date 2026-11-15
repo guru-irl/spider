@@ -197,7 +197,7 @@ export function mountChildHerdr(pi: ExtensionAPI, options: HostHerdrOptions, job
   }, monitorOptions: () => ({ hc, clock: Date.now, journalRoot: join(need(config).globalRoot, 'herdr/jobs'), outputCollector: need(output).outputCollector, reportError: report,
     child: { id: process.env.PI_SUBAGENT_RUN_ID as import('@spider/herdr').RunId, pid: process.pid, startIdentity: need(childIdentity) },
   }) });
-  const consoles = registerChildAgentConsoleLifecycle(registrationPi, { hc, currentOwner: () => owner });
+  const consoles = registerChildAgentConsoleLifecycle(registrationPi, { hc, currentOwner: () => owner, reportCleanupError: report });
   offs.push(registrationPi.on('session_shutdown', async () => { await closeResources(); await presence.remove(identity); context = null; }));
   // Active children read hc; inactive children retain their parent's read-only policy.
   const transportPolicy = createTransportPolicy(createSshPolicyReader(async () => {

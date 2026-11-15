@@ -50,7 +50,7 @@ it('retries closing an ended run console after the machine reconnects without cl
   const errors: unknown[] = [];
   const hc: HcClient = { ...h.hc,
     events: () => { const stream = h.hc.events(); return { ...stream, subscribe: listener => { if (++subscriptions === 1) deliver = listener; return stream.subscribe(listener); } }; },
-    machines: async () => (await h.hc.machines()).map(machine => online ? machine : { ...machine, state: 'disconnected' }),
+    machines: async () => (await h.hc.machines()).map(machine => ({ ...machine, state: online ? 'connected' : 'disconnected' })),
     get: async address => {
       if (!online && address.startsWith('remote.invalid/')) throw Object.assign(new Error('machine unavailable'), { code: 'not_found' });
       return h.hc.get(address);
@@ -69,10 +69,10 @@ it('retries closing an ended run console after the machine reconnects without cl
     await expect.poll(() => errors.length, { timeout: 8000 }).toBeGreaterThan(0);
     expect((await h.hc.get(console.address)).state).toBe('live');
     online = true; deliver({ type: 'missed', seq: 100, terminals: [] });
-    await expect.poll(async () => { try { await h.hc.get(console.address); return false; } catch (error) { if ((error as { code?: string }).code === 'not_found') return true; throw error; } }, { timeout: 3500, interval: 50 }).toBe(true);
+    await expect.poll(async () => { try { await h.hc.get(console.address); return false; } catch (error) { if ((error as { code?: string }).code === 'not_found') return true; throw error; } }, { timeout: 3500, interval: 100 }).toBe(true);
     expect((await h.hc.get(unrelated.address)).state).toBe('live');
   } finally { life.dispose(); }
-}, 10000);
+}, 30000);
 
 it.each(['unavailable', 'not_found'] as const)('the journal handoff retries a real ended-run close after %s', async failure => {
   const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();

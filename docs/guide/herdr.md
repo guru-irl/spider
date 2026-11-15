@@ -302,7 +302,7 @@ The console shows each command's header, its stdout, its stderr with a label, an
 
 When the runtime changes, the next command replaces an older console only after that agent's jobs on the machine have finished. The console labels include `spider.kind`, `spider.session`, `spider.owner-core`, `spider.owner-terminal`, `spider.machine`, `spider.display-name`, `spider.runtime`, and, for a subagent, `spider.run`. The `spider.runtime` value is the runtime's SHA-256 digest.
 
-A subagent's consoles stay open while its run is active, even if the parent pi exits. When you resume the same session, spider recognizes those consoles and closes them when the run ends. A session's own consoles close when you quit that session or replace it with `/new`, `/resume`, or a fork. `/reload` keeps them open. A later startup removes abandoned consoles only when their owning session and run are both gone.
+A subagent's consoles stay open while its run is active, even if the parent pi exits. When you resume the same session, spider recognizes those consoles and closes them when the run ends. A session's own consoles close when you quit that session or replace it with `/new`, `/resume`, or a fork. `/reload` keeps those consoles open and closes run consoles only when the run is known to have ended. If a machine is unavailable, spider retries closing its consoles while pi is running and after the machine reconnects, up to 24 failed attempts. A later startup removes abandoned consoles only when their owning session and run are both gone.
 
 ### Background jobs and timeouts
 
@@ -344,7 +344,7 @@ The left sidebar is Herdr's agents list, extended by setup. It lists each live p
 
 Finished rows are hidden by default. Click **N finished** under a session to show them, and **Hide finished** to hide them again. A finished parent stays visible when it has a running child. Each session has its own toggle.
 
-When a machine is unavailable, its console, command, and viewer rows show **Unreachable** and cannot be opened. They do not count toward the live pills. The rows update when the machine reconnects.
+When a machine is unavailable, its console, command, and running viewer rows show **Unreachable** and cannot be opened. They do not count toward the live pills. The rows update when the machine reconnects. While the owning session is reachable, a finished run can still open its saved local view.
 
 Use the chevron to the left of an agent icon to fold its children. The pill on a folded row counts active children and opens the list again. To pin or unpin an agent, hover over its icon and click the pin. The elapsed time stays visible.
 
@@ -457,7 +457,7 @@ Owner quit and replacement are exceptions. Those viewers stay open and read-only
 
 Opening an already-finished, failed, or cancelled run from the sidebar or the spider panel opens a saved read-only view until you close it. If the live viewer is still closing, spider waits for it to exit before opening the saved view. Viewers never start another subagent and never change how a child runs. Opening or closing a viewer does not change the agent pane.
 
-`hc` accepts only simple names for terminals. Spider names each viewer `run-<hash>`, each observer `obs-<hash>`, and each console `console-<hash>`, and keeps the readable name in the `spider.display-name` label. Pane headers and the panel show the readable name. Console rows in the sidebar show the machine name.
+`hc` accepts only simple names for terminals. Spider names each viewer `run-<hash>`, each observer `obs-<hash>`, and each console `console-<hash>`, and keeps the readable name in the `spider.display-name` label. The sidebar, pane headers, and panel show the readable name, except that console rows in the sidebar show the machine name.
 
 ## Use the spider panel
 

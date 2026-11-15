@@ -7,7 +7,7 @@ import shippedPatches from '../../assets/look/patches.json' with { type: 'json' 
 import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
 import * as children from '../../assets/agents/children.js';
 import { HerdrLabelContract } from '../contracts.js';
-import { FEED_REFRESH_MS, middlePath } from '../../assets/shared/feed.js';
+import { FEED_REFRESH_MS, middlePath, panelIpcArgv, parseSessionIpcReply } from '../../assets/shared/feed.js';
 import * as look from '../../assets/shared/look.js';
 
 // A recording stand-in for gpui elements: every call is kept with its arguments.
@@ -41,7 +41,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, middlePath, ...look, ...children, machines: () => [], View: class {}, ...ui, ...supplied };
+  const ports = { FEED_REFRESH_MS, middlePath, panelIpcArgv, parseSessionIpcReply, ...look, ...children, machines: () => [], View: class {}, ...ui, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);

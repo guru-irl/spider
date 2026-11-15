@@ -8,15 +8,16 @@ export function needsFailedCleanup(job: JournalJob): boolean {
 }
 
 export interface CleanupSweep {
-  enqueue(key: string, operation: () => Promise<void>): boolean;
+  enqueue(key: string, operation: () => Promise<void>, options?: { afterFailure?: boolean }): boolean;
   cancel(key: string): void;
   start(): void;
+  retry(keys: readonly string[]): void;
   flush(keys: readonly string[]): Promise<void>;
   dispose(): Promise<void>;
 }
 /** Cleanup never owns the monitor's foreground queue while waiting on a core. */
 export function createCleanupSweep(clock: () => number, report: (error: unknown) => void): CleanupSweep {
-  const pending = new Map<string, { operation: () => Promise<void>; failures: number; nextAt: number; reported: boolean; running: boolean }>();
+  const pending = new Map<string, { operation: () => Promise<void>; failures: number; nextAt: number; reported: boolean; running: boolean; wakeOnFailure: boolean }>();
   const active = new Set<Promise<void>>();
   const running = new Map<string, Promise<void>>();
   let started = false, closed = false, timer: ReturnType<typeof setTimeout> | undefined;
@@ -37,7 +38,9 @@ export function createCleanupSweep(clock: () => number, report: (error: unknown)
       entry.running = true;
       const task = entry.operation().then(() => { if (pending.get(key) === entry) pending.delete(key); }, error => {
         if (pending.get(key) !== entry) return;
-        entry.failures++; entry.nextAt = clock() + Math.min(3600000, 30000 * 2 ** Math.min(entry.failures - 1, 7));
+        entry.failures++;
+        entry.nextAt = entry.wakeOnFailure ? clock() : clock() + Math.min(3600000, 30000 * 2 ** Math.min(entry.failures - 1, 7));
+        entry.wakeOnFailure = false;
         if (!closed && !entry.reported) { entry.reported = true; report(error); }
       }).finally(() => { entry.running = false; active.delete(task); if (running.get(key) === task) running.delete(key); schedule(); });
       active.add(task); running.set(key, task);
@@ -45,9 +48,21 @@ export function createCleanupSweep(clock: () => number, report: (error: unknown)
     schedule();
   }
   return {
-    enqueue(key, operation) { if (closed || pending.has(key)) return false; pending.set(key, { operation, failures: 0, nextAt: 0, reported: false, running: false }); schedule(); return true; },
+    enqueue(key, operation, options) {
+      if (closed || pending.has(key)) return false;
+      const failed = options?.afterFailure === true;
+      pending.set(key, { operation, failures: failed ? 1 : 0, nextAt: failed ? clock() + 30000 : 0, reported: failed, running: false, wakeOnFailure: false });
+      schedule(); return true;
+    },
     cancel(key) { pending.delete(key); schedule(); },
     start() { started = true; schedule(); },
+    retry(keys) {
+      for (const key of keys) {
+        const entry = pending.get(key); if (!entry) continue;
+        if (entry.running) entry.wakeOnFailure = true; else entry.nextAt = clock();
+      }
+      schedule();
+    },
     async flush(keys) {
       const remaining = new Set(keys);
       while (!closed && remaining.size) {

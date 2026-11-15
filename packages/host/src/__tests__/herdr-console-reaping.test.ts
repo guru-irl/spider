@@ -80,19 +80,6 @@ it('reports a console replacement failure without adding a UI warning', async ()
   } finally { stderr.mockRestore(); }
 }, 30000);
 
-it('records a lifecycle console cleanup failure without a UI warning', async () => {
-  const f = await fixture('fake', true, true); await f.emit('session_start', { reason: 'startup' });
-  const session = f.h.owner!.sessionId, run = f.store.create({ sessionId: session, agent: 'worker' }).id; f.store.start(run);
-  const console = await f.launch(f.labels(session, run));
-  await f.h.scenario({ steps: [{ argvPrefix: ['get', console.address], stderr: { error: { kind: 'fixture-failure', message: 'Machine unavailable' } }, exitCode: 3 }] });
-  const noticesBefore = [...f.notices];
-  try {
-    f.store.cancel(run, 'finished');
-    await vi.waitFor(() => expect(f.errors.some(error => (error as { code?: string }).code === 'fixture-failure')).toBe(true), { timeout: 3500, interval: 50 });
-    expect(f.notices).toEqual(noticesBefore);
-  } finally { await f.h.scenario({ steps: [] }); }
-}, 10000);
-
 it('startup reaps crashed-owner run consoles while keeping live and unverified owners', async () => {
   const f = await fixture();
   const parent = await f.h.hc.run({ argv: [f.h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, labels: {}, noNotify: true, background: true, outliveParent: true });

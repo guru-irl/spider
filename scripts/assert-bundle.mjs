@@ -4,7 +4,7 @@ import { builtinModules } from "node:module";
 import { gunzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import ts from "typescript";
-import { parseBuildId } from "./build-id.mjs";
+import { formatBuildId, parseBuildId } from "./build-id.mjs";
 import { assertRoamBundle } from "./check-roam-bundle.mjs";
 import { resolve, dirname, join, posix } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -54,6 +54,10 @@ if (args[0] === '--package') {
 } else if (args[0] === '--root') process.chdir(resolve(args[1]));
 
 const OUT = "dist/extension.js";
+const READY = `${OUT}.ready`;
+// A failed local assertion must not leave a previous success stamp behind.
+// Verification of a supplied root or package is read-only.
+if (!args.length) rmSync(READY, { force: true });
 if (!existsSync(OUT)) {
   console.error(`assert-bundle: ${OUT} missing — run the bundle first`);
   process.exit(1);
@@ -65,7 +69,7 @@ if (!existsSync(OUT)) {
 // packaging gates also account for the separately built Herdr programs and
 // dashboard, but never extension chunks. Assert the invariant directly
 // instead of assuming it from codeSplitting's presence in the config.
-const distEntries = readdirSync("dist").sort();
+const distEntries = readdirSync("dist").filter(name => name !== "extension.js.ready").sort();
 if (distEntries.join() !== "dashboard,extension.js,herdr,intercom,roam") {
   const found = distEntries.join(", ") || "(empty)";
   console.error(
@@ -124,6 +128,15 @@ const buildId = parseBuildId(src.slice(0, 16 * 1024));
 if (!buildId) {
   console.error("assert-bundle: build marker missing or malformed in bundle header (expected SPIDER_BUILD_ID=<sha>[-dirty]@<ISO timestamp>)");
   process.exit(1);
+}
+
+if (extracted) {
+  const ready = existsSync(READY) && lstatSync(READY).isFile() && lstatSync(READY).size <= 4096
+    ? parseBuildId(readFileSync(READY, "utf8")) : null;
+  if (!ready || formatBuildId(ready) !== formatBuildId(buildId)) {
+    console.error("assert-bundle: packaged ready stamp missing or does not match the bundle");
+    process.exit(1);
+  }
 }
 
 if (packageCommit && (buildId.sha !== args[3] || buildId.dirty)) {
@@ -248,5 +261,11 @@ try {
 } catch (error) {
   console.error(`assert-bundle: native import failed: ${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
+}
+if (!args.length) {
+  // Refuse to stamp a bundle replaced while the assertions were running.
+  const current = parseBuildId(readFileSync(OUT, "utf8").slice(0, 16 * 1024));
+  if (!current || formatBuildId(current) !== formatBuildId(buildId)) throw new Error("assert-bundle: bundle changed during verification");
+  writeFileSync(READY, `${formatBuildId(buildId)}\n`);
 }
 console.log(`assert-bundle: OK (single-file extension, dashboard, six explicit Herdr entries, valid mod assets and notices, self-contained remote runtime, build marker valid, natives/peers external, native import verified${extracted ? ', tarball verified' : ''})`);

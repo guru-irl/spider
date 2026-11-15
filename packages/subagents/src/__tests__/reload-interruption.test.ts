@@ -3,6 +3,7 @@ import { RunStore } from "../run-store.js";
 import { PipelineCoordinator } from "../pipeline.js";
 import { makeRunHandler } from "../actions/run.js";
 import * as coordinators from "../coordinators.js";
+import * as runEvents from "../run-events.js";
 import {
   CHILD_REGISTRY_KEY, parkSession, registerShared, resetSharedRegistryForTests, setSink, sharedRegistry,
 } from "../child-registry.js";
@@ -156,6 +157,58 @@ it("tracks an active pipeline across the handoff between stages", () => {
   store.finish(ids[1], { status: "done", result: "second" });
   pipeline.onRunTerminal(ids[1]);
   expect(wouldInterrupt(sessionId)).toBe(false);
+});
+
+it("unblocks reload if the next pipeline stage cannot start", () => {
+  const db = dbFixture();
+  const sessionId = "pipeline-start-failure";
+  const store = new RunStore(db);
+  let firstId = "";
+  const runner = { runAsync(options: { agent: string; task: string }) {
+    if (firstId) throw new Error("cannot start next stage");
+    firstId = store.create({ sessionId, agent: options.agent, task: options.task }).id;
+    store.start(firstId);
+    return store.get(firstId);
+  } };
+  const pipeline = new PipelineCoordinator({ db, globalDb: db, store, runner, pi: {}, sessionId });
+  const owned = coordinators.getCoordinators(sessionId, () => ({ tailer: { stop() {} } as never, pipelines: [], children: new Map() }));
+  owned.pipelines.push(pipeline);
+  pipeline.start({ pipeline: [{ agent: "worker", task: "first" }, { agent: "worker", task: "second" }], handoff: "intercom" });
+  expect(wouldInterrupt(sessionId)).toBe(true);
+  store.finish(firstId, { status: "done", result: "first" });
+  expect(() => pipeline.onRunTerminal(firstId)).toThrow("cannot start next stage");
+  expect(wouldInterrupt(sessionId)).toBe(false);
+});
+
+it("keeps coordinating if handoff recording fails after the next stage started", () => {
+  const db = dbFixture();
+  const sessionId = "pipeline-handoff-error";
+  const store = new RunStore(db);
+  const ids: string[] = [];
+  const runner = { runAsync(options: { agent: string; task: string }) {
+    const { id } = store.create({ sessionId, agent: options.agent, task: options.task });
+    store.start(id); ids.push(id);
+    return store.get(id);
+  } };
+  const pipeline = new PipelineCoordinator({ db, globalDb: db, store, runner, pi: {}, sessionId });
+  const owned = coordinators.getCoordinators(sessionId, () => ({ tailer: { stop() {} } as never, pipelines: [], children: new Map() }));
+  owned.pipelines.push(pipeline);
+  const handoff = vi.spyOn(runEvents, "emitHandoff").mockImplementation(() => { throw new Error("handoff write failed"); });
+  try {
+    pipeline.start({ pipeline: [{ agent: "worker" }, { agent: "worker" }, { agent: "worker" }], handoff: "intercom" });
+    store.finish(ids[0], { status: "done", result: "first" });
+    expect(() => pipeline.onRunTerminal(ids[0])).toThrow("handoff write failed");
+    expect(ids).toHaveLength(2);
+    expect(wouldInterrupt(sessionId)).toBe(true);
+    handoff.mockRestore();
+    store.finish(ids[1], { status: "done", result: "second" });
+    pipeline.onRunTerminal(ids[1]);
+    expect(ids).toHaveLength(3);
+    expect(wouldInterrupt(sessionId)).toBe(true);
+    store.finish(ids[2], { status: "done" });
+    pipeline.onRunTerminal(ids[2]);
+    expect(wouldInterrupt(sessionId)).toBe(false);
+  } finally { handoff.mockRestore(); }
 });
 
 it("blocks until every concurrent pipeline completes", () => {

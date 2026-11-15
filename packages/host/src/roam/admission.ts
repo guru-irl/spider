@@ -8,6 +8,7 @@ import { readSessionState } from "@spider/db-core/roam/state";
 import { join, resolve } from "node:path";
 import { lockParticipant, type ParticipantLockOptions } from "../herdr/ports.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./activation.js";
+import { AUTO_RELOAD_ARG } from "../auto-reload.js";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[] }
 export interface AdmissionGate {
@@ -192,7 +193,10 @@ export function protectAdmissionApi<T extends ExtensionAPI>(pi: T, gate: Admissi
       ...command, handler: (...args: unknown[]) => {
         const arg = typeof args[0] === "string" ? args[0].trim() : "";
         const readOnlyDoctor = key === "registerCommand" && (name === "doctor" && arg === "" || name === "spider" && arg === "roam doctor");
-        if (ordinaryWorkAllowed() || readOnlyDoctor) return command.handler(...args);
+        // The automatic handler validates its token and rechecks admission itself.
+        // It must see a refusal so it can clear the queued attempt without a toast.
+        const queuedReload = key === "registerCommand" && name === "spider-reload" && arg.startsWith(AUTO_RELOAD_ARG);
+        if (ordinaryWorkAllowed() || readOnlyDoctor || queuedReload) return command.handler(...args);
         const detail = gate.inspect().blockers[0]?.detail ?? VERIFY;
         const ctx = args[key === "registerCommand" ? 1 : 0] as ExtensionContext | undefined;
         if (ctx?.hasUI) ctx.ui.notify(detail, "warning"); else process.stderr.write(detail + "\n");

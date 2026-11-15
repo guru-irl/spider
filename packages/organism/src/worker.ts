@@ -68,6 +68,7 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 export class OrganismWorker {
   readonly #deps: WorkerDeps;
   #inflight: Promise<unknown> = Promise.resolve();
+  #queuedWork = 0;
   #lastDrain: DrainReport | undefined;
   #reviewTask: Promise<void> | undefined;
   #reviewController: AbortController | undefined;
@@ -91,10 +92,14 @@ export class OrganismWorker {
   constructor(deps: WorkerDeps) { this.#deps = deps; }
 
   #serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.#inflight.then(fn, fn);
+    this.#queuedWork++;
+    const run = this.#inflight.then(fn, fn).finally(() => { this.#queuedWork--; });
     this.#inflight = run.then(() => undefined, () => undefined);
     return run;
   }
+
+  /** Drains and curation use in-memory inputs; do not interrupt them with an automatic reload. */
+  blocksReload(): boolean { return this.#queuedWork > 0; }
 
   /** Latest in-process outcome; persisted receipts survive reload in run_events. */
   getLastDrain(): DrainReport | undefined {

@@ -24,6 +24,7 @@ import { isAbsolutePathList, isToolSelectorList } from "@spider/ui";
 import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerLoopSchedule, type SessionScheduler, type LoopArgs, type ScheduleArgs } from "./loop/index";
 import { registerAutoReload } from "./auto-reload.js";
+import { trackReloadActivity } from "./reload-activity.js";
 import { createTimeMath } from "./loop/time-math";
 import { registerUsage } from "./usage/mount.js";
 import { makeRunCostFormatter } from "./run-credits.js";
@@ -878,9 +879,11 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   // This machine-level configuration is independent of the session admission gate.
   prepareManagedGuidance({ skipAgentsMd: process.env.VITEST === "true" });
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
-  const pi = protectAdmissionApi(hostPi as unknown as ExtensionAPI, admission) as unknown as PiToolAPI;
+  const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
+  const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
+  let intercom: ReturnType<typeof registerIntercomOnce> | undefined;
   try {
-    registerIntercomOnce(hostPi as unknown as ExtensionAPI, ports.intercomBroker);
+    intercom = registerIntercomOnce(activity.pi, ports.intercomBroker);
   } catch {
     hostPi.on("session_start", (_event, ctx) => {
       const message = "Intercom is unavailable in this session. Spider's other features still work.";
@@ -889,10 +892,13 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       else process.stderr.write(message + "\n");
     });
   }
-  registerAutoReload(pi as unknown as ExtensionAPI, loadedBundle, cwd => controlConfig("get", cwd, "reload.auto") !== false, ordinaryWorkAllowed, reloadWouldInterrupt);
+  let scheduler: SessionScheduler | undefined;
+  const autoReload = registerAutoReload(pi as unknown as ExtensionAPI, loadedBundle, cwd => controlConfig("get", cwd, "reload.auto") !== false, ordinaryWorkAllowed, reloadWouldInterrupt,
+    () => activity.busy() || !!intercom?.hasPendingInboundAsks() || !!scheduler?.blocksReload() || organism.blocksReload());
   const setForHost = <T>(map: WeakMap<object, T>, value: T) => { map.set(hostPi, value); map.set(pi, value); };
   const clearForHost = <T>(map: WeakMap<object, T>, value: T) => { for (const key of [hostPi, pi]) if (map.get(key) === value) map.delete(key); };
   const loopCommand = registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath(), ordinaryWorkAllowed);
+  scheduler = loopCommand.scheduler;
   setForHost(sessionSchedulers, loopCommand.scheduler);
   let herdr: HerdrMount | undefined;
   const accounting = new UsageAccounting();
@@ -1399,7 +1405,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   // Cancel storage maintenance and reviewers before any shutdown learning drain starts.
   pi.on("session_shutdown", async () => { await organism.stopSkillReviews(); });
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
-    registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx), ordinaryWorkAllowed);
+    registerOrganism(pi, pi, ctx => organism.fromContext(ctx).worker, (phase, error, ctx) => organism.recordSetupFailure(phase, error, ctx), ordinaryWorkAllowed, autoReload.isAutomaticReload);
   }
 
   try {

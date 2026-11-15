@@ -1,18 +1,21 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import localIntercom, { type IntercomBrokerPort } from './local.js';
+import localIntercom, { type IntercomBrokerPort, type IntercomRegistration } from './local.js';
 import { INTERCOM_EXTENSION_REGISTRY_READY_EVENT } from './extension-api.js';
 
 export const INTERCOM_CONFLICT_MESSAGE = 'Another intercom extension is loaded. Remove its package or extension entry and run /reload.';
-const instances = new WeakMap<object, { foreign: boolean; duplicate: boolean; conflict: boolean; started: boolean }>();
+const instances = new WeakMap<object, { foreign: boolean; duplicate: boolean; conflict: boolean; started: boolean; registration: IntercomRegistration }>();
 const forkSignal = Symbol('spider-intercom');
 
 export function intercomConflict(pi: Pick<ExtensionAPI, 'events'>): 'intercom-extension-conflict' | undefined {
   return instances.get(pi.events)?.conflict ? 'intercom-extension-conflict' : undefined;
 }
 
-export function registerIntercomOnce(pi: ExtensionAPI, brokerPort?: IntercomBrokerPort): void {
-  if (instances.has(pi.events)) return;
-  const state = { foreign: false, duplicate: false, conflict: false, started: false };
+export function registerIntercomOnce(pi: ExtensionAPI, brokerPort?: IntercomBrokerPort): IntercomRegistration {
+  const existing = instances.get(pi.events);
+  if (existing) return existing.registration;
+  let local: IntercomRegistration | undefined;
+  const registration: IntercomRegistration = { hasPendingInboundAsks: () => local?.hasPendingInboundAsks() ?? false };
+  const state = { foreign: false, duplicate: false, conflict: false, started: false, registration };
   instances.set(pi.events, state);
   const stopProbe = pi.events.on(INTERCOM_EXTENSION_REGISTRY_READY_EVENT, payload => {
     if (payload && typeof payload === 'object' && forkSignal in payload) state.duplicate = true;
@@ -50,7 +53,8 @@ export function registerIntercomOnce(pi: ExtensionAPI, brokerPort?: IntercomBrok
         } };
       return Reflect.get(target, key, receiver);
     } });
-    localIntercom(proxy, brokerPort);
+    local = localIntercom(proxy, brokerPort);
     for (const start of starts) await start(event, ctx);
   });
+  return registration;
 }

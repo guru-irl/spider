@@ -132,7 +132,7 @@ SOFTWARE.`;
         .filter(file => file === "SKILL.md" || file.endsWith("/SKILL.md")).map(file => `${dir}/${file}`));
     const requiredLicences = ["LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md"];
     const files = [
-      "dist/extension.js", "dist/dashboard/index.html", "README.md",
+      "dist/extension.js", "dist/extension.js.ready", "dist/dashboard/index.html", "README.md",
       "dist/roam/cli.mjs", "dist/roam/supervisor.mjs", "dist/intercom/broker.mjs", "scripts/intercom-switchover.mjs",
       "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs",
       "dist/dashboard/assets/index-12345678.js", "dist/dashboard/assets/index-12345678.css",

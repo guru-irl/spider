@@ -578,7 +578,8 @@ function getNamePollMs(): number {
   return 1000;
 }
 export type IntercomBrokerPort = (connect: () => Promise<void>) => Promise<void>;
-export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: IntercomBrokerPort = connect => connect()): void {
+export interface IntercomRegistration { hasPendingInboundAsks(): boolean }
+export default function piIntercomExtension(pi: ExtensionAPI, brokerPort: IntercomBrokerPort = connect => connect()): IntercomRegistration {
   let client: IntercomClient | null = null;
   const config: IntercomConfig = loadConfig();
   const askTimeoutMs = getAskTimeoutMs();
@@ -2874,4 +2875,6 @@ Usage:
     description: "Open session intercom",
     handler: async (ctx) => openIntercomOverlay(ctx),
   });
+  // Incoming asks remain activation-local; automatic reload waits rather than persisting them.
+  return { hasPendingInboundAsks: () => replyTracker.listPending().length > 0 };
 }

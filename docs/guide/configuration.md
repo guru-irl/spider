@@ -121,7 +121,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector. Takes effect next session. |
-| `reload.auto` | `true` | Reload idle interactive parent sessions after a bundle update. Wait for chains and pipelines to finish. Changes apply live. |
+| `reload.auto` | `true` | Reload idle interactive parent sessions after a verified build, once active work and prompts are clear. Changes apply live. |
 | `usage.footer` | `true` | Global-only. Footer with corrected credits in parent TUI sessions. Changes apply live. |
 | `usage.counter.poll` | `true` | Global-only. Read-only account polling every ten minutes, in parent sessions only. Changes apply live. |
 | `usage.calibration` | `auto` | Global-only, `auto` or `off`. `auto` uses the trailing seven days of counter evidence when there is enough of it. `off` shows published estimates and turns off factor history. Changes apply live. |

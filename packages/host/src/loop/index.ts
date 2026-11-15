@@ -140,6 +140,9 @@ export class SessionScheduler {
 
   private readonly listeners = new Set<() => void>();
   private lastListing = "[]";
+  blocksReload(now: number = Date.now()): boolean {
+    return this.running || !!this.gate || [...this.triggers.values()].some(trigger => trigger.nextAt !== null && trigger.nextAt <= now + 60_000);
+  }
   listTriggers(): TriggerListing[] {
     return [...this.triggers.values()].sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0).map(t => ({
       ...t, state: t.nextAt === null ? "waiting-for-rearm" : t.nextAt <= Date.now() ? "due" : "scheduled",

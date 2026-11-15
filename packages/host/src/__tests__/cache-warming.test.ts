@@ -142,6 +142,100 @@ describe("parent cache warming while subagents run", () => {
     expect(handler!(event("stop"), ctx)).toBeUndefined();
   });
 
+  describe("idle cap", () => {
+    let now = 1_000_000;
+    beforeEach(() => { now = 1_000_000; vi.spyOn(Date, "now").mockImplementation(() => now); });
+    const minutes = (count: number) => count * 60_000;
+    // Children here stay chatty, so only the parent's idle time can end warming.
+    const live: ChildHandle[] = [];
+    afterEach(() => { live.length = 0; });
+    function liveChild(): ChildHandle { const handle = child(); live.push(handle); return handle; }
+
+    // Several spider modules listen to the same pi events, so keep every handler.
+    function loadAll() {
+      const hooks = new Map<string, Array<(event: unknown, ctx: unknown) => unknown>>();
+      spiderExtension(withPiEvents({ registerTool() {}, registerCommand() {}, on(name: string, handler: (event: unknown, ctx: unknown) => unknown) {
+        hooks.set(name, [...(hooks.get(name) ?? []), handler]);
+      } } as never), hostUnitPorts);
+      const fire = (name: string, at: typeof ctx = ctx) => { for (const handler of hooks.get(name) ?? []) { try { void handler({ type: name, messages: [] }, at); } catch { /* other modules' fakes */ } } };
+      const decide = (action: "warm" | "stop", at: unknown = ctx) => { for (const handle of live) handle.lastEventAt = now; return (hooks.get("cache_warming_decision")!.at(-1) as Handler)(event(action), at); };
+      return { fire, decide };
+    }
+
+    it("stops overriding pi after an hour of idle time by default", () => {
+      registerChild("parent", "active", liveChild());
+      const { fire, decide } = loadAll();
+      fire("agent_start");
+      fire("agent_end");
+      now += minutes(59);
+      expect(decide("stop")).toEqual({ action: "warm" });
+      now += minutes(1);
+      expect(decide("stop")).toBeUndefined();
+      expect(decide("warm")).toBeUndefined();
+    });
+
+    it("restarts the idle clock when the parent takes another turn", () => {
+      registerChild("parent", "active", liveChild());
+      const { fire, decide } = loadAll();
+      fire("agent_end");
+      now += minutes(61);
+      expect(decide("stop")).toBeUndefined();
+      fire("agent_start");
+      expect(decide("stop")).toEqual({ action: "warm" });
+      now += minutes(5);
+      fire("agent_end");
+      now += minutes(30);
+      expect(decide("stop")).toEqual({ action: "warm" });
+    });
+
+    it("starts the idle clock at the first decision when no turn end was seen", () => {
+      registerChild("parent", "active", liveChild());
+      const { decide } = loadAll();
+      expect(decide("stop")).toEqual({ action: "warm" });
+      now += minutes(59);
+      expect(decide("stop")).toEqual({ action: "warm" });
+      now += minutes(1);
+      expect(decide("stop")).toBeUndefined();
+    });
+
+    it("keeps a separate idle clock per session", () => {
+      registerChild("parent", "active", liveChild());
+      registerChild("other", "other-run", liveChild());
+      const other = { ...ctx, sessionManager: { getSessionId: () => "other" } };
+      const { fire, decide } = loadAll();
+      fire("agent_end");
+      now += minutes(50);
+      fire("agent_end", other);
+      now += minutes(20);
+      expect(decide("stop")).toBeUndefined();
+      expect(decide("stop", other)).toEqual({ action: "warm" });
+    });
+
+    it("honors a configured limit and falls back to an hour for malformed values", () => {
+      registerChild("parent", "active", liveChild());
+      const { fire, decide } = loadAll();
+      fire("agent_end");
+      controlConfig("set", root, "subagents.keepCacheWarmMaxIdleMinutes", 10);
+      now += minutes(9);
+      expect(decide("stop")).toEqual({ action: "warm" });
+      now += minutes(1);
+      expect(decide("stop")).toBeUndefined();
+      writeFileSync(join(root, ".spider/config.json"), JSON.stringify({ "subagents.keepCacheWarmMaxIdleMinutes": "bogus" }));
+      expect(decide("stop")).toEqual({ action: "warm" });
+      now += minutes(50);
+      expect(decide("stop")).toBeUndefined();
+    });
+
+    it("exposes the limit through the schema-backed config action", () => {
+      expect(configValues(root)).toMatchObject({ config: { "subagents.keepCacheWarmMaxIdleMinutes": 60 } });
+      expect(applyConfigEdit(root, "subagents.keepCacheWarmMaxIdleMinutes", "90")).toMatchObject({ ok: true });
+      expect(controlConfig("get", root, "subagents.keepCacheWarmMaxIdleMinutes")).toBe(90);
+      expect(applyConfigEdit(root, "subagents.keepCacheWarmMaxIdleMinutes", "0")).toMatchObject({ ok: false });
+      expect(applyConfigUnset(root, "subagents.keepCacheWarmMaxIdleMinutes")).toMatchObject({ ok: true });
+      expect(controlConfig("get", root, "subagents.keepCacheWarmMaxIdleMinutes")).toBe(60);
+    });
+  });
+
   it("does not treat malformed values as enabled", () => {
     registerChild("parent", "active", child());
     writeFileSync(join(root, ".spider/config.json"), JSON.stringify({ "subagents.keepCacheWarm": "false" }));

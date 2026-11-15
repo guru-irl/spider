@@ -129,6 +129,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | `usage.alerts.runCredits` | `0` | Global-only. Finite nonnegative run threshold. Reserved: alerts are not implemented. |
 | `subagents.childMode` | `"rpc"` | RPC children. `"print"` selects one-shot children. |
 | `subagents.keepCacheWarm` | `true` | Ask pi to keep the parent cache warm while its subagents start or run, within the limits below. Applies at the next warming decision. |
+| `subagents.keepCacheWarmMaxIdleMinutes` | `60` | Minutes the parent can sit idle before spider stops asking pi to keep its cache warm. A positive number. Past about an hour, rewriting the cache usually costs less than more warming. Applies at the next warming decision. |
 | `subagents.extensions` | `[]` | Global-only, managed by the user. Absolute extension file paths that every child loads. |
 | `subagents.profiles.reviewer.excludeTools` | `["edit", "write"]` | Global-only, managed by the user. Tools removed from `agent:"reviewer"` children. Not a sandbox. |
 | `herdr.enabled` | `"auto"` | Global-only. `"auto"`, `true`, or `false`. Turns the [Herdr integration](herdr.md#turn-the-integration-on-or-off) on or off. |

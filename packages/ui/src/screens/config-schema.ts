@@ -66,6 +66,7 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 	]},
 	{ id: "subagents", label: "Subagents", fields: [
 		{ key: "subagents.keepCacheWarm", label: "Keep parent cache warm", type: "boolean", default: true, description: "Override pi's cache-warming decision while this parent session has starting or running subagents. Applies at the next decision." },
+		{ key: "subagents.keepCacheWarmMaxIdleMinutes", label: "Warm while idle (minutes)", type: "number", default: 60, min: 1, max: 1440, description: "Stop overriding pi's warming decision after the parent has been idle this long. Past about an hour, a cache rewrite usually costs less than more warming. Applies at the next decision." },
 		{ key: "subagents.extensions", label: "Child extensions", type: "absolute-path-list", default: [], description: "Global-only JSON array of fully absolute extension file paths. Only the user can edit it in the global config file. Missing files are skipped with a run warning." },
 		{ key: "subagents.profiles.reviewer.excludeTools", label: "Reviewer excluded tools", type: "tool-selector-list", default: ["edit", "write"], scope: "global", description: "User-only global JSON array of excluded tool names or patterns. Applies to new reviewer children. Not a sandbox: spider exec can still write files." },
 		{ key: "subagents.childMode", label: "Child mode", type: "enum", enum: ["rpc", "print"], default: "rpc", description: "RPC permits steering. Print retains legacy one-shot behavior. Applies to new runs." },

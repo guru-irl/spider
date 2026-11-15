@@ -953,14 +953,25 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   registerSubagentActions({ registerAction }, pi);
 
   // A child completion will request a parent turn. Keep that parent's cache warm
-  // using the live session-owned handles, never a runs-table scan.
+  // using the live session-owned handles, never a runs-table scan. Past the idle
+  // limit a cache rewrite costs less than more warming, so pi decides again.
   if (process.env.PI_SUBAGENT_CHILD !== "1") {
+    const idleSince = new Map<string, number>();
+    const sessionOf = (ctx: unknown) => { try { return sessionIdOf(ctx as never); } catch { return undefined; } };
+    pi.on("agent_start", (_event, ctx) => { const sessionId = sessionOf(ctx); if (sessionId) idleSince.delete(sessionId); });
+    pi.on("agent_end", (_event, ctx) => { const sessionId = sessionOf(ctx); if (sessionId) idleSince.set(sessionId, Date.now()); });
     pi.on("cache_warming_decision", (_event, ctx): CacheWarmingDecisionEventResult | undefined => {
       try {
         if (!ordinaryWorkAllowed() || process.env.PI_SUBAGENT_CHILD === "1") return undefined;
         const sessionId = sessionIdOf(ctx);
         if (!sessionId || activeChildCount(sessionId) === 0) return undefined;
-        if (controlConfig("get", cwdOf(ctx) ?? process.cwd(), "subagents.keepCacheWarm") !== true) return undefined;
+        const cwd = cwdOf(ctx) ?? process.cwd();
+        if (controlConfig("get", cwd, "subagents.keepCacheWarm") !== true) return undefined;
+        const now = Date.now();
+        if (!idleSince.has(sessionId)) idleSince.set(sessionId, now);
+        const configured = controlConfig("get", cwd, "subagents.keepCacheWarmMaxIdleMinutes");
+        const limitMinutes = typeof configured === "number" && Number.isFinite(configured) && configured > 0 ? configured : 60;
+        if (now - idleSince.get(sessionId)! >= limitMinutes * 60_000) return undefined;
         return { action: "warm" };
       } catch { return undefined; }
     });

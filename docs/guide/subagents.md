@@ -7,6 +7,7 @@
 - `subagents.keepCacheWarm` defaults to `true`. It asks pi to keep the parent prompt cache warm while the session has subagents that are starting or running. Set it to `false` to leave pi's warming decision as it is. Child sessions do not override warming.
 - Warming happens only when pi knows the model's cache lifetime and idle warming is on.
 - Pi still applies its own limit on idle warming.
+- Spider stops asking for warming once the parent has been idle for `subagents.keepCacheWarmMaxIdleMinutes`, 60 by default, and pi then makes its own decision. The clock restarts at each parent turn.
 - A subagent that sends nothing for 60 minutes stops holding warming. Any child event resets this clock and leaves the run status unchanged.
 - Model calls, compactions, cache warming and spider reviewer calls inside a child count toward the dispatching session's pi footer, `/session` and RPC totals once the run finishes. Failed and killed runs count too.
 - Run cards, completion messages and run details in `/agents` show tokens and cost.

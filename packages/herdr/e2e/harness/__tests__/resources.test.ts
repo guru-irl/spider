@@ -9,7 +9,7 @@ import { buildEnvironment, fencedDirectories } from '../environment.js';
 import { startCores } from '../hc.js';
 import { dirname, join } from 'node:path';
 import { assertSocketPath, createFixtureRoot, createFencedDirectories } from '../environment.js';
-import { openLedger, cleanupLedger, reconcileLedgers, identityAlive, identityOf, processStart, readLedger, spawnedIdentity, type LedgerHandle } from '../resources.js';
+import { openLedger, cleanupLedger, reconcileLedgers, identityAlive, identityOf, processStart, readLedger, rootProcesses, spawnedIdentity, type LedgerHandle } from '../resources.js';
 import { spawnOwned } from '../processes.js';
 import { waitFor, deadline } from '../wait.js';
 import { createSuite } from '../suite.js';
@@ -129,9 +129,11 @@ describe('resource ledger cleanup', () => {
 
   it('drains a live via registration before declaring cleanup complete', async () => {
     const { root, ledger } = await fixture();
-    const directory = join(root, 'via-processes'); mkdirSync(directory, { recursive: true });
+    const directory = join(root, 'via-processes'), bin = join(root, 'bin'); mkdirSync(directory, { recursive: true }); mkdirSync(bin, { recursive: true });
     ledger.update(l => { Object.assign(l, { viaDirectory: directory }); });
-    const via = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', join(root, 'via-d.json')], { stdio: 'ignore' });
+    const route = join(bin, 'via-d');
+    writeFileSync(route, `#!/bin/sh\nexec 9<"$0"\nexec "${process.execPath}" -e 'setInterval(() => {}, 1000)' "$@"\n`, { mode: 0o700 });
+    const via = spawn(route, [join(root, 'via-d.json')], { stdio: 'ignore' });
     try {
       const identity = await waitFor('via process identity', () => { try { return identityOf(via.pid!); } catch { return null; } }, Boolean, deadline(5000));
       writeFileSync(join(directory, `${identity!.pid}.json`), JSON.stringify(identity));
@@ -146,6 +148,62 @@ describe('resource ledger cleanup', () => {
       }
     }
   });
+
+  it('drains an unregistered mesh via by its open route, not a decoy argv', async () => {
+    const { root, ledger } = await fixture(), { root: outside } = await fixture();
+    const directory = join(root, 'via-processes'), bin = join(root, 'bin'), decoyBin = join(outside, 'bin');
+    mkdirSync(directory, { recursive: true }); mkdirSync(bin, { recursive: true }); mkdirSync(decoyBin, { recursive: true });
+    ledger.update(l => { l.viaDirectory = directory; });
+    const route = join(bin, 'via-i2'), decoyRoute = join(decoyBin, 'via-i2');
+    const shell = `#!/bin/sh\nexec 9<"$0"\nexec "${process.execPath}" -e 'setInterval(() => {}, 1000)' "$@"\n`;
+    writeFileSync(route, shell, { mode: 0o700 }); writeFileSync(decoyRoute, shell, { mode: 0o700 });
+    const via = spawn(route, [join(root, 'via-i2.json')], { stdio: 'ignore' });
+    // The decoy mentions this root but holds only its own route outside it.
+    const decoy = spawn(decoyRoute, [join(root, 'via-i2.json')], { stdio: 'ignore' });
+    try {
+      const identities = await waitFor('both transport processes appear', () => {
+        try { return [via, decoy].every(child => rootProcesses(root).some(process => process.pid === child.pid)) ? [identityOf(via.pid!), identityOf(decoy.pid!)] : null; } catch { return null; }
+      }, Boolean, deadline(5000));
+      // A same-user decoy can forge a record. Its live process still owns no route in this root.
+      writeFileSync(join(directory, `${identities![1].pid}.json`), JSON.stringify(identities![1]));
+      const closing = cleanupLedger(ledger.path, 'unregistered-mesh-via');
+      await waitFor('owned mesh via exits', () => identityAlive(identities![0]), alive => !alive, deadline(5000));
+      expect(identityAlive(identities![1])).toBe(true);
+      decoy.kill('SIGTERM');
+      await waitFor('decoy exits after explicit test cleanup', () => processStart(decoy.pid!), start => start === null, deadline(5000));
+      const proof = await closing;
+      expect(proof.clean, JSON.stringify(proof.survivors)).toBe(true);
+      expect(proof.viaActions.some(action => action.pid === identities![0].pid)).toBe(true);
+      expect(proof.signalled.some(action => action.pid === identities![1].pid)).toBe(false);
+    } finally {
+      for (const child of [via, decoy]) if (child.pid && processStart(child.pid)) child.kill('SIGKILL');
+    }
+  }, 15_000);
+
+  it('stops only a holder with an owned socket, not a decoy argv', async () => {
+    const { root, ledger } = await fixture(), { root: outside } = await fixture();
+    const socket = assertSocketPath(root, join(root, 'owned.sock'));
+    const holderSocket = assertSocketPath(root, join(root, 'owned.holder.1'));
+    const decoySocket = assertSocketPath(outside, join(outside, 'owned.holder.1'));
+    const script = `const net=require('node:net'),fs=require('node:fs');net.createServer().listen(process.argv[3],()=>fs.writeFileSync(process.argv[4],'ready'));`;
+    const ready = join(root, 'holder-ready'), decoyReady = join(outside, 'holder-ready');
+    const holder = spawn(process.execPath, ['-e', script, 'hold', '--socket', holderSocket, ready], { stdio: 'ignore' });
+    const decoy = spawn(process.execPath, ['-e', script, 'hold', '--socket', decoySocket, decoyReady, holderSocket], { stdio: 'ignore' });
+    ledger.update(l => { l.cores.push({ side: 'dest', namespace: 'fixture', socket, hcBinary: join(root, 'unused'), env: {} }); });
+    try {
+      await waitFor('both holder sockets listen', () => existsSync(ready) && existsSync(decoyReady), Boolean, deadline(5000));
+      const owned = identityOf(holder.pid!), other = identityOf(decoy.pid!);
+      const closing = cleanupLedger(ledger.path, 'holder-socket-proof');
+      await waitFor('owned holder exits', () => identityAlive(owned), alive => !alive, deadline(5000));
+      expect(identityAlive(other)).toBe(true);
+      decoy.kill('SIGTERM');
+      await waitFor('holder decoy exits after explicit test cleanup', () => identityAlive(other), alive => !alive, deadline(5000));
+      const proof = await closing;
+      expect(proof.clean, JSON.stringify(proof.survivors)).toBe(true);
+      expect(proof.signalled.some(action => action.pid === owned.pid)).toBe(true);
+      expect(proof.signalled.some(action => action.pid === other.pid)).toBe(false);
+    } finally { for (const child of [holder, decoy]) if (child.pid && processStart(child.pid)) child.kill('SIGKILL'); }
+  }, 15_000);
 
   it('retries a failed ledger and stops registered resources that still belong to it', async () => {
     const { root, ledger } = await fixture();
@@ -176,7 +234,7 @@ describe('resource ledger cleanup', () => {
       await waitFor('stray visible', () => processStart(stray.pid!), Boolean, deadline(5000));
       const proof = await cleanupLedger(ledger.path, 'test');
       expect(proof.clean).toBe(false);
-      expect(proof.survivors.some(s => s.kind === 'root-process' && s.id.startsWith(String(stray.pid)))).toBe(true);
+      expect(proof.survivors).toContainEqual({ kind: 'root-process', id: `${stray.pid} node` });
       expect(readLedger(ledger.path).state).toBe('cleanup-failed');
     } finally { stray.kill('SIGKILL'); }
   });

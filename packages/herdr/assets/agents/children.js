@@ -96,7 +96,8 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     if (run.ownerSessionId !== feed.sessionId) continue;
     const native = terminals.find(t => t.labels[labels.kind] === kinds.subagentViewer && t.labels[labels.run] === run.id && t.labels[labels.session] === feed.sessionId);
     const done = ['done', 'failed', 'cancelled'].includes(run.status);
-    const unreachable = isUnreachable(native ?? (run.viewer ? { address: run.viewer } : null));
+    const action = sessionAction('subagent', run.id, feed.sessionId, native);
+    const unreachable = isUnreachable(native ?? (run.viewer ? { address: run.viewer } : null)) && !(done && action?.kind === 'ipc');
     const status = unreachable ? 'unreachable' : run.status === 'running' ? (now - feed.updatedAt > FEED_DISCONNECT_MS && feed.lifecycle === 'live' ? 'disconnected' : 'working') : run.status === 'failed' ? 'error' : run.status;
     const previous = rows.get(run.id);
     rows.set(run.id, {
@@ -104,7 +105,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
       name: run.name ?? run.id, description: null, status, outcome: done ? run.status : null, completeness: 'unknown',
       machine: null, parentKey: null,
       finishedAt: run.finishedAt, retained: done, depth: previous?.depth ?? 0, terminal: native ?? null,
-      action: unreachable ? null : sessionAction('subagent', run.id, feed.sessionId, native),
+      action: unreachable ? null : action,
     });
   }
   const all = [...rows.values()];

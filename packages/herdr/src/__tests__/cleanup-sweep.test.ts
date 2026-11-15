@@ -225,6 +225,31 @@ it('retries cleanup on its backoff timer and does not delay newly queued work', 
   } finally { await sweep.dispose(); vi.useRealTimers(); }
 });
 
+it('backs off after an initial failure and wakes only the requested cleanup', async () => {
+  vi.useFakeTimers(); const calls: string[] = [];
+  const sweep = createCleanupSweep(Date.now, () => {});
+  try {
+    sweep.enqueue('alpha', async () => { calls.push('alpha'); }, { afterFailure: true });
+    sweep.enqueue('beta', async () => { calls.push('beta'); }, { afterFailure: true });
+    sweep.start(); await vi.advanceTimersByTimeAsync(0); expect(calls).toEqual([]);
+    sweep.retry(['alpha']); await vi.advanceTimersByTimeAsync(0); expect(calls).toEqual(['alpha']);
+    await vi.advanceTimersByTimeAsync(29999); expect(calls).toEqual(['alpha']);
+    await vi.advanceTimersByTimeAsync(1); expect(calls).toEqual(['alpha', 'beta']);
+  } finally { await sweep.dispose(); vi.useRealTimers(); }
+});
+
+it('retries promptly if reconnect occurs during an in-flight failed cleanup', async () => {
+  vi.useFakeTimers(); let attempts = 0, reject!: (error: Error) => void;
+  const held = new Promise<void>((_resolve, fail) => { reject = fail; });
+  const sweep = createCleanupSweep(Date.now, () => {});
+  try {
+    sweep.enqueue('alpha', async () => { if (++attempts === 1) await held; }); sweep.start();
+    await vi.advanceTimersByTimeAsync(0); expect(attempts).toBe(1);
+    sweep.retry(['alpha']); reject(new Error('offline')); await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toBe(2);
+  } finally { reject(new Error('fixture cleanup')); await sweep.dispose(); vi.useRealTimers(); }
+}, 5000);
+
 it('binds remote execution before any backlog cleanup starts', async () => {
   const f = await backlog(12), get = vi.spyOn(f.hc, 'get').mockRejectedValue(new Error('unreachable'));
   const hooks = new Map<string, Function>(); let bound = false;

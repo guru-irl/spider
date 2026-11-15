@@ -19,7 +19,9 @@ function fixture() {
   const errors: unknown[] = [], quiet: unknown[] = [], attempts = new Map<string, number>();
   let current = A, onKill: ((terminal: TerminalSummary) => void) | undefined;
   let getError: ((address: TerminalAddress) => unknown | undefined) | undefined;
+  let onGet: ((address: TerminalAddress) => Promise<void>) | undefined;
   let ownerCheck: (terminal: TerminalSummary) => Promise<boolean | null> = async () => true;
+  let runCheck: (terminal: TerminalSummary) => Promise<boolean | null> = async terminal => ended.has(terminal.labels['spider.run']) ? false : true;
   const emit = (event: HcEvent) => { for (const listener of [...listeners]) listener(event); };
   const notFound = () => Object.assign(new Error('terminal not found'), { code: 'not_found' });
   const hc: HcClient = {
@@ -38,6 +40,7 @@ function fixture() {
     },
     get: async address => {
       attempts.set(address, (attempts.get(address) ?? 0) + 1);
+      await onGet?.(address);
       const error = getError?.(address); if (error) throw error;
       if (states.get(address.split('/')[0]) !== 'connected') throw notFound();
       const terminal = terminals.get(address); if (!terminal) throw notFound(); return copy(terminal);
@@ -50,7 +53,7 @@ function fixture() {
   const pi = { on: (name: string, handler: Function) => { hooks.set(name, handler); return () => hooks.delete(name); } } as unknown as ExtensionAPI;
   const life = registerAgentConsoleLifecycle(pi, {
     hc, env: { HC_TERMINAL_ID: 'parent' }, currentOwner: () => current,
-    ownerIsLive: terminal => ownerCheck(terminal), runIsLive: async terminal => ended.has(terminal.labels['spider.run']) ? false : true,
+    ownerIsLive: terminal => ownerCheck(terminal), runIsLive: terminal => runCheck(terminal),
     subscribeRunEnds: (agent, listener) => { runEnds.set(agent.sessionId, listener); return () => runEnds.delete(agent.sessionId); },
     reportError: error => errors.push(error), reportCleanupError: (error: unknown) => quiet.push(error),
   } as Parameters<typeof registerAgentConsoleLifecycle>[1]);
@@ -68,11 +71,14 @@ function fixture() {
     useOwner: (value: Owner) => { current = value; },
     online: (machine: string, connected: boolean) => { states.set(machine, connected ? 'connected' : 'disconnected'); },
     signalInventory: () => emit({ type: 'missed', seq: 3, terminals: [] }),
+    replay: (address: TerminalAddress) => emit({ type: 'created', seq: 4, terminal: address, data: copy(terminals.get(address)!) }),
     finish: (session: Owner, run: string) => { ended.add(run); runEnds.get(session.sessionId)?.(run as RunId); },
     markEnded: (run: string) => { ended.add(run); },
     onKill: (handler: (terminal: TerminalSummary) => void) => { onKill = handler; },
     getError: (handler: ((address: TerminalAddress) => unknown | undefined) | undefined) => { getError = handler; },
+    onGet: (handler: (address: TerminalAddress) => Promise<void>) => { onGet = handler; },
     ownerCheck: (handler: typeof ownerCheck) => { ownerCheck = handler; },
+    runCheck: (handler: typeof runCheck) => { runCheck = handler; },
     start: async (reason = 'startup') => hooks.get('session_start')?.({ reason }, {} as ExtensionContext),
     shutdown: async (reason = 'quit') => hooks.get('session_shutdown')?.({ reason }, {} as ExtensionContext),
     dispose: () => life.dispose(),
@@ -113,6 +119,78 @@ it('installs the replacement startup scan and run-end watcher after a failed clo
   f.finish(B, 'finished-later'); await settle();
   expect(f.terminals.has(late)).toBe(false);
 });
+
+it('cancels a pending replacement close if the old session is resumed', async () => {
+  fakeClock(); const f = makeFixture(); await f.start();
+  const address = f.create(A, 'resumed'); f.online('alpha.invalid', false); f.useOwner(B);
+  await expect(f.start('new')).resolves.toBeUndefined();
+  f.useOwner(A); await f.start('resume');
+  f.online('alpha.invalid', true); f.signalInventory(); await vi.advanceTimersByTimeAsync(65000);
+  expect(f.terminals.get(address)?.state).toBe('live');
+});
+
+it('keeps a failed replacement close pending through a reload event', async () => {
+  fakeClock(); const f = makeFixture(); await f.start();
+  const address = f.create(A, 'reload-pending'); f.online('alpha.invalid', false); f.useOwner(B); await f.start('new');
+  await f.shutdown('reload'); await f.start('reload');
+  f.online('alpha.invalid', true); f.signalInventory(); await vi.advanceTimersByTimeAsync(2500);
+  expect(f.terminals.has(address)).toBe(false);
+});
+
+it('does not close a console if its session resumes during a queued lookup', async () => {
+  fakeClock(); const f = makeFixture(); await f.start();
+  const address = f.create(A, 'close-inflight'); f.online('alpha.invalid', false); f.useOwner(B); await f.start('new');
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  f.onGet(async target => { if (target === address) { entered(); await held; } });
+  try {
+    f.online('alpha.invalid', true); f.signalInventory(); await settle(); await started;
+    f.useOwner(A); await f.start('resume'); release(); await settle();
+    expect(f.terminals.get(address)?.state).toBe('live');
+  } finally { release(); }
+}, 5000);
+
+it('does not reap a queued former orphan after its session resumes', async () => {
+  fakeClock(); const f = makeFixture();
+  const address = f.create(A, 'orphan', 'alpha.invalid', undefined, false);
+  f.online('alpha.invalid', false); f.ownerCheck(async () => false); f.useOwner(B);
+  await f.start('startup');
+  f.useOwner(A); await f.start('resume');
+  f.online('alpha.invalid', true); f.signalInventory(); await vi.advanceTimersByTimeAsync(2500);
+  expect(f.terminals.get(address)?.state).toBe('live');
+});
+
+it('does not kill a queued orphan if its session resumes during lookup', async () => {
+  fakeClock(); const f = makeFixture();
+  const address = f.create(A, 'orphan-inflight', 'alpha.invalid', undefined, false);
+  f.online('alpha.invalid', false); f.ownerCheck(async () => false); f.useOwner(B); await f.start('startup');
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  f.onGet(async target => { if (target === address) { entered(); await held; } });
+  try {
+    f.online('alpha.invalid', true); f.signalInventory(); await settle(); await started;
+    f.useOwner(A); await f.start('resume'); release(); await settle();
+    expect(f.terminals.get(address)?.state).toBe('live');
+  } finally { release(); }
+}, 5000);
+
+it('rechecks a queued run when its owning session resumes during liveness lookup', async () => {
+  fakeClock(); const f = makeFixture();
+  const address = f.create(A, 'run-inflight', 'alpha.invalid', 'live-run', false);
+  let resumed = false, hold = false, release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  f.ownerCheck(async () => false);
+  f.runCheck(async () => { const result = resumed ? true : null; if (hold) { entered(); await held; } return result; });
+  f.online('alpha.invalid', false); f.useOwner(B); await f.start('startup');
+  try {
+    hold = true; f.online('alpha.invalid', true); f.signalInventory(); await settle(); await started;
+    resumed = true; f.useOwner(A); await f.start('resume'); hold = false; release(); await settle();
+    expect(f.terminals.get(address)?.state).toBe('live');
+  } finally { release(); }
+}, 5000);
 
 it('retries a failed quit close while the lifecycle is still alive', async () => {
   fakeClock(); const f = makeFixture(); await f.start();
@@ -176,6 +254,19 @@ it('retries only the reconnected machine without bypassing a connected machine b
   expect(f.attempts.get(beta)).toBe(betaAttempts);
   await vi.advanceTimersByTimeAsync(1);
   expect(f.attempts.get(beta)).toBeGreaterThan(betaAttempts!);
+});
+
+it('counts one failed liveness check only once when duplicate events arrive concurrently', async () => {
+  fakeClock(); const f = makeFixture(); await f.start();
+  const address = f.create(A, 'duplicate-events', 'alpha.invalid', 'run', false); f.markEnded('run');
+  let release!: () => void, failing = true;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  f.ownerCheck(async () => { if (failing) { await held; throw new Error('one failed check'); } return true; });
+  for (let i = 0; i < 30; i++) f.replay(address);
+  await Promise.resolve(); failing = false; release(); await settle();
+  expect(f.quiet.filter(value => (value as { code?: string }).code === 'console-cleanup-exhausted')).toHaveLength(0);
+  await vi.advanceTimersByTimeAsync(30000);
+  expect(f.terminals.has(address)).toBe(false);
 });
 
 it('bounds retries for one console even if the machine repeatedly reconnects', async () => {

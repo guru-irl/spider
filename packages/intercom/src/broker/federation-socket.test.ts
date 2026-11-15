@@ -61,9 +61,17 @@ function trackSocket(socket: net.Socket) {
 function expectRefused(socket: net.Socket, messages: any[], errors: NodeJS.ErrnoException[], hadError: boolean) {
   expect(socket.destroyed).toBe(true);
   expect(messages.some(message => message.type === "federation_registered")).toBe(false);
+  expect(messages.some(message => message.requestId === 'must-refuse')).toBe(false);
   expect(hadError).toBe(errors.length > 0);
-  expect(errors.filter(error => error.code !== "ECONNRESET")).toEqual([]);
+  expect(errors.filter(error => error.code !== "ECONNRESET" && error.code !== 'EPIPE')).toEqual([]);
 }
+
+it.each(['ECONNRESET', 'EPIPE'])('recognizes peer closure %s without accepting a must-refuse reply', code => {
+  const socket = new net.Socket(); socket.destroy();
+  const error: NodeJS.ErrnoException = Object.assign(new Error('peer closed'), { code });
+  expectRefused(socket, [], [error], true);
+  expect(() => expectRefused(socket, [{ type: 'error', requestId: 'must-refuse' }], [error], true)).toThrow();
+}, 5000);
 
 it("broker derives the sender and every client producer reaches one bridge", async () => {
   const client = await session("sender");
@@ -239,10 +247,10 @@ it("does not mistake an unexpected error or registration for a refused claim", a
   const socket = net.connect(getBrokerSocketPath()), messages: any[] = [];
   const { errors, closed } = trackSocket(socket);
   socket.on("data", createMessageReader(message => messages.push(message), error => socket.destroy(error)));
-  socket.once("end", () => socket.destroy(Object.assign(new Error("synthetic write EPIPE"), { code: "EPIPE" })));
+  socket.once("end", () => socket.destroy(Object.assign(new Error("synthetic read ETIMEDOUT"), { code: "ETIMEDOUT" })));
   writeMessage(socket, { type: "federation_register", feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "squatter", machineAlias: "fake.invalid" });
   const hadError = await closed;
-  expect(errors.map(error => error.code)).toEqual(["EPIPE"]);
+  expect(errors.map(error => error.code)).toEqual(["ETIMEDOUT"]);
   expect(() => expectRefused(socket, messages, errors, hadError)).toThrow();
   expect(() => expectRefused(socket, [...messages, { type: "federation_registered" }], [], false)).toThrow();
 }, 5000);

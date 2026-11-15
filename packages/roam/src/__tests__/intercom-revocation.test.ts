@@ -1,3 +1,4 @@
+import { withHopExchange } from "./intercom-hop-fixture";
 import { paths } from "@spider/db-core";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -26,11 +27,11 @@ const endpoint = (machineId: string) => {
   const value = info(machineId);
   return { address: value.address, machineId: value.machineId, homeEpoch: value.homeEpoch, activationEpoch: value.activationEpoch };
 };
-const wire = (source: string, generation: number, epoch = "edge-1", channel: "push" | "poll" = "push"): IntercomExchange => ({
-  protocol: 4, senderMachine: source, recipientMachine: A, generation: { edgeEpoch: epoch, channel, generation },
+const wire = (source: string, generation: number, epoch = "edge-1", channel: "push" | "poll" = "push"): IntercomExchange => (withHopExchange({
+  protocol: 5, senderMachine: source, recipientMachine: A, generation: { edgeEpoch: epoch, channel, generation },
   frames: [], acknowledgements: [], receipts: [], controls: [], presence: [],
-});
-const request = (exchange: IntercomExchange, holdMs = 0) => ({ version: 1, exchange, holdMs, deadlineMs: holdMs ? holdMs + 5000 : 5000 });
+}));
+const request = (exchange: IntercomExchange, holdMs = 0) => ({ version: 1, exchange: withHopExchange(exchange), holdMs, deadlineMs: holdMs ? holdMs + 5000 : 5000 });
 
 function fixture(options: { holdAbort?: boolean; rejectNotices?: boolean; holdConfirm?: boolean; senderMachine?: string } = {}) {
   const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "intercom-revoke-")); roots.push(root);

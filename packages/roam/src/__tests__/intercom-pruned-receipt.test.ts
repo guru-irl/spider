@@ -1,3 +1,4 @@
+import { createHopFixture, legacyHopSchema } from "./intercom-hop-fixture";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -35,15 +36,15 @@ async function fixture(queueMessages = 256) {
     publishPresence: () => {}, onInbound: entry => inbound.push(entry.id) });
   let bridge = make();
   cleanups.push(async () => { await bridge.stop(); a.close(); b.close(); }); await bridge.start();
-  let generation = 0;
-  const send = (input: Partial<IntercomExchange>) => bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4,
+  let generation = 0; const hops = createHopFixture();
+  const send = (input: Partial<IntercomExchange>) => bridge.exchange(hops({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 5,
     senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge", channel: "push", generation: ++generation },
-    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [presence], ...input } });
+    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [presence], ...input } }));
   const injected = async (id: string): Promise<IntercomReceiptFrame> => {
     a.acceptOutbound({ from: aUser, endpoint: bEndpoint, nextHop: B, message: { id, timestamp: time, content: { text: "synthetic" } } });
-    const frame = a.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 }).find(frame => frame.identity.id === id)!;
+    const frame = a.pending({ kind: "outbound", peer: B, edgeEpoch: "edge", hopBudgetMs: 100 }).find(frame => frame.identity.id === id)!;
     b.acceptInbound({ peer: A, frame });
-    await send({ acknowledgements: [{ identity: frame.identity, kind: "message" }] });
+    await send({ acknowledgements: [{ identity: frame.identity, hopSequence: frame.identity.sequence, kind: "message" }] });
     b.beginDispatch({ id, endpoint: bEndpoint, readiness: `ready-${id}` });
     b.settleReceipt({ queue: "inbound", peer: A, frame: { from: bEndpoint, to: aUser, digest: frame.identity.digest, attempt: 1,
       receipt: { messageId: id, status: "injected", timestamp: time,
@@ -58,7 +59,7 @@ async function fixture(queueMessages = 256) {
   return { send, injected, frame, inbound, get b() { return b; }, get a() { return a; },
     settleStored(id: string) {
       a.acceptOutbound({ from: aUser, endpoint: bEndpoint, nextHop: B, message: { id, timestamp: time, content: { text: 'synthetic' } } });
-      const original = a.pending({ kind: 'outbound', peer: B, hopBudgetMs: 100 }).find(frame => frame.identity.id === id)!;
+      const original = a.pending({ kind: 'outbound', peer: B, edgeEpoch: 'edge', hopBudgetMs: 100 }).find(frame => frame.identity.id === id)!;
       const receipt: IntercomReceiptFrame = { from: bEndpoint, to: aUser, digest: original.identity.digest,
         originMachineId: original.originMachineId, sequence: original.identity.sequence, attempt: 1,
         receipt: { messageId: id, status: 'injected', timestamp: time,
@@ -75,7 +76,7 @@ async function fixture(queueMessages = 256) {
         legacy = { from: bEndpoint, to: aUser, digest: original.identity.digest, attempt: 0,
           receipt: { messageId: 'legacy-rejected', status: 'cancelled', timestamp: 1000, detail: 'missing-origin' } };
       }
-      b.close(); const db = openDb(join(root, 'b.db'));
+      b.close(); const db = openDb(join(root, 'b.db')); legacyHopSchema(db);
       try {
         if (legacy) db.prepare('INSERT INTO intercom_receipts(receipt_key,id,peer,frame_json) VALUES(?,?,?,?)').run('f'.repeat(64), 'legacy-rejected', A, JSON.stringify(legacy));
         db.exec("DROP TABLE IF EXISTS intercom_receipt_positions; DROP TABLE IF EXISTS intercom_settled_watermarks; UPDATE intercom_receipts SET frame_json=json_remove(frame_json,'$.originMachineId','$.sequence'); UPDATE intercom_meta SET version=6");
@@ -86,7 +87,7 @@ async function fixture(queueMessages = 256) {
     prune() { time += 2 * INTERCOM_PAYLOAD_MS + 1; a.expire(); b.expire(); },
     async upgradeFromV5() {
       await bridge.stop(); a.close();
-      const db = openDb(file);
+      const db = openDb(file); legacyHopSchema(db);
       try { db.exec("DROP TABLE IF EXISTS intercom_receipt_positions; DROP TABLE IF EXISTS intercom_settled_watermarks; DROP TABLE intercom_refused_slots; DROP TABLE intercom_settled_receipts; UPDATE intercom_meta SET version=5"); } finally { db.close(); }
       a = openIntercomStore(sourceOptions); bridge = make(); await bridge.start();
     },
@@ -129,7 +130,7 @@ it('settled receipt hash retention does not grow with pruned history', async () 
 it.each(['injected', 'not_injected'] as const)('bounds receipt hashes behind an unknown slot and validates above-watermark digests with %s recovery', async recovery => {
   const f = await fixture(4);
   f.a.acceptOutbound({ from: aUser, endpoint: bEndpoint, nextHop: B, message: { id: 'hole', timestamp: 1, content: { text: 'synthetic' } } });
-  const hole = f.a.pending({ kind: 'outbound', peer: B, hopBudgetMs: 100 })[0];
+  const hole = f.a.pending({ kind: 'outbound', peer: B, edgeEpoch: 'edge', hopBudgetMs: 100 })[0];
   f.a.settleReceipt({ queue: 'outbound', peer: B, frame: { from: bEndpoint, to: aUser, digest: hole.identity.digest, attempt: 1,
     receipt: { messageId: 'hole', status: 'unknown', timestamp: 1000 } } });
   const later = f.settleStored('later-1'); f.settleStored('later-2'); f.settleStored('later-3');
@@ -154,7 +155,7 @@ it.each(['injected', 'not_injected'] as const)('bounds receipt hashes behind an 
 it('does not watermark a cancelled slot whose delivery is still unknown', async () => {
   const f = await fixture();
   f.a.acceptOutbound({ from: aUser, endpoint: bEndpoint, nextHop: B, message: { id: 'late-consumption', timestamp: 1000, content: { text: 'synthetic' } } });
-  const original = f.a.pending({ kind: 'outbound', peer: B, hopBudgetMs: 100 })[0];
+  const original = f.a.pending({ kind: 'outbound', peer: B, edgeEpoch: 'edge', hopBudgetMs: 100 })[0];
   f.a.cancel({ queue: 'outbound', id: original.identity.id, from: aUser, to: bUser });
   expect(f.a.retained('outbound', original.identity.id)).toMatchObject({ state: 'cancelled', payloadRetained: true });
   expect(f.a.inspectBlockers(aUser).unknownOutcomes).toEqual([original.identity.id]);
@@ -170,8 +171,8 @@ it('applies consumption evidence after an absence-resolved cancellation', async 
   const f = await fixture(), id = 'cancel-then-injected';
   f.a.acceptOutbound({ from: aUser, endpoint: bEndpoint, nextHop: B,
     message: { id, timestamp: 1000, content: { text: 'synthetic' } } });
-  const original = f.a.pending({ kind: 'outbound', peer: B, hopBudgetMs: 100 })[0];
-  await f.send({ acknowledgements: [{ identity: original.identity, kind: 'message' }] });
+  const original = f.a.pending({ kind: 'outbound', peer: B, edgeEpoch: 'edge', hopBudgetMs: 100 })[0];
+  await f.send({ acknowledgements: [{ identity: original.identity, hopSequence: original.identity.sequence, kind: 'message' }] });
   f.a.cancel({ queue: 'outbound', id, from: aUser, to: bUser });
   const base = { from: bEndpoint, to: aUser, digest: original.identity.digest, originMachineId: A, sequence: original.identity.sequence };
   await f.send({ receipts: [{ ...base, attempt: 1, receipt: { messageId: id, status: 'not_injected', timestamp: 1000,
@@ -255,7 +256,7 @@ it("still validates receipts for newer unsettled messages and rejects changed pr
   const f = await fixture(), receipt = await f.injected("old");
   f.prune();
   f.a.acceptOutbound({ from: aUser, endpoint: bEndpoint, nextHop: B, message: { id: "newer", timestamp: 1, content: { text: "synthetic" } } });
-  const newer = f.a.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
+  const newer = f.a.pending({ kind: "outbound", peer: B, edgeEpoch: "edge", hopBudgetMs: 100 })[0];
   const invalid = { ...receipt, originMachineId: A, sequence: newer.identity.sequence, digest: "f".repeat(64), receipt: { ...receipt.receipt, messageId: "newer" } };
   await expect(f.send({ receipts: [invalid] })).rejects.toThrow();
   expect(f.a.retained("outbound", "newer")).toMatchObject({ state: "queued", payloadRetained: true });

@@ -1,3 +1,4 @@
+import { withHopExchange } from "./intercom-hop-fixture";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -178,16 +179,16 @@ it("refuses the unsupported reverse transition by name without changing topology
 
 
 it("round-trips bounded topology controls and the retryable refusal without accepting malformed controls", () => {
-  const exchange = { protocol: 4 as const, senderMachine: H, recipientMachine: A,
+  const exchange = withHopExchange({ protocol: 5 as const, senderMachine: H, recipientMachine: A,
     generation: { edgeEpoch: "edge", channel: "push" as const, generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [],
-    topology: { transitionId, action: "switch" as const } };
-  expect(decodeExchange(encodeExchange(exchange))).toEqual(exchange);
+    topology: { transitionId, action: "switch" as const } });
+  expect(decodeExchange(encodeExchange(withHopExchange(exchange)))).toEqual(exchange);
   expect(() => decodeExchange(Buffer.from(JSON.stringify({ ...exchange, topology: { ...exchange.topology, transitionId: "not-an-id" } })))).toThrow();
   expect(() => decodeExchange(Buffer.from(JSON.stringify({ ...exchange, topology: { ...exchange.topology, action: "fallback" } })))).toThrow();
   expect(() => decodeExchange(Buffer.from(JSON.stringify({ ...exchange, topology: { ...exchange.topology, extra: true } })))).toThrow();
   const f = fixture(), source = f.open(A), identity = send(source, "refusal-codec");
-  const refused = { ...exchange, topology: undefined, refusals: [{ identity, reason: "intercom-topology-changing" as const }] };
-  expect(decodeExchange(encodeExchange(refused)).refusals).toEqual(refused.refusals);
+  const refused = { ...exchange, topology: undefined, refusals: [{ identity, hopSequence: 1, reason: "intercom-topology-changing" as const }] };
+  expect(decodeExchange(encodeExchange(withHopExchange(refused))).refusals).toEqual(refused.refusals);
 }, 5000);
 
 

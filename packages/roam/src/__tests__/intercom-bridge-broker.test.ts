@@ -1,3 +1,5 @@
+import { withHopRequest } from "./intercom-hop-fixture";
+import { withHopExchange } from "./intercom-hop-fixture";
 import { paths } from "@spider/db-core";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -80,8 +82,8 @@ it("publishes a private capability for the configured agent directory and serves
     expect(JSON.parse(readFileSync(file, "utf8"))).toMatchObject({ version: 1, agentDir, token: expect.stringMatching(/^[0-9a-f]{64}$/) });
     source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "through-helper", timestamp: 1, content: { text: "synthetic" } } });
     const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
-    const exchange = { protocol: 4, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
-      frames: [frame], acknowledgements: [], receipts: [], controls: [], presence: [] };
+    const exchange = withHopExchange({ protocol: 5, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+      frames: [frame], acknowledgements: [], receipts: [], controls: [], presence: [] });
     const child = spawn(process.execPath, [join(root, "roam-build", "cli.mjs"), "--global-root", globalRoot, "roam", "intercom", "exchange"],
       { env: { ...process.env, HOME: globalRoot, SPIDER_GLOBAL_ROOT: globalRoot }, stdio: ["pipe", "pipe", "pipe"] });
     let output = "", errors = "";
@@ -113,16 +115,16 @@ it("records one missing-origin frame through the packaged helper without blockin
       message: { id, timestamp: 1, content: { text: "synthetic" } } });
     const [first, second] = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 });
     const { originMachineId: _origin, ...missing } = first;
-    const exchange = { protocol: 4, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
-      frames: [missing, second], acknowledgements: [], receipts: [], controls: [], presence: [] };
+    const exchange = withHopExchange({ protocol: 5, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+      frames: [missing, second], acknowledgements: [], receipts: [], controls: [], presence: [] });
     const child = spawn(process.execPath, [join(root, "roam-build", "cli.mjs"), "--global-root", globalRoot, "roam", "intercom", "exchange"],
       { env: { ...process.env, HOME: globalRoot, SPIDER_GLOBAL_ROOT: globalRoot }, stdio: ["pipe", "pipe", "pipe"] });
     let output = "", errors = ""; child.stdout.on("data", value => { output += value.toString(); }); child.stderr.on("data", value => { errors += value.toString(); });
     child.stdin.end(JSON.stringify({ version: 1, exchange, holdMs: 0, deadlineMs: 4000 }));
     const [code] = await once(child, "close"); expect(code).toBe(0); expect(errors).toBe("");
     expect(JSON.parse(output)).toMatchObject({ ok: true, value: { exchange: { refusals: [{ reason: "missing-origin", identity: { id: "bad-origin" } }],
-      acknowledgements: [{ identity: { id: "good-origin" }, kind: "message" }] } } });
-    expect(inbox.retained("inbound", "bad-origin")).toMatchObject({ failureReason: "missing-origin", payloadRetained: false });
+      acknowledgements: [{ identity: { id: "bad-origin" }, kind: "message" }, { identity: { id: "good-origin" }, kind: "message" }] } } });
+    expect(inbox.retained("inbound", "bad-origin")).toBeNull();
     expect(inbox.pending({ kind: "inbound", address: to }).map(value => value.id)).toEqual(["good-origin"]);
   } finally { await bridge.stop(); await client.close(); source.close(); inbox.close(); }
 }, 5000);
@@ -147,18 +149,18 @@ it("exchanges durable frames through fake hc, the packaged helper, and a fixture
     const handle = await transport.resolve(target);
     source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "full-trip", timestamp: 1, content: { text: "synthetic private body" } } });
     const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
-    const input = { protocol: 4 as const, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push" as const, generation: 1 },
-      frames: [frame], acknowledgements: [], receipts: [], controls: [], presence: [] };
+    const input = withHopExchange({ protocol: 5 as const, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "push" as const, generation: 1 },
+      frames: [frame], acknowledgements: [], receipts: [], controls: [], presence: [] });
     source.updateEdgeState(B, "edge-1", state => ({ ...state, outbound: { ...state.outbound, push: 1 } }));
-    const result = await executeExchange(handle, { exchange: input, holdMs: 0 }, { machineId: A, enrollment: { peer: target, edgeEpoch: "edge-1" }, transport, store: source, clock });
-    expect(result.exchange.acknowledgements).toEqual([{ identity: frame.identity, kind: "message" }]);
+    const result = await executeExchange(handle, withHopRequest({ exchange: input, holdMs: 0 }), { machineId: A, enrollment: { peer: target, edgeEpoch: "edge-1" }, transport, store: source, clock });
+    expect(result.exchange.acknowledgements).toEqual([{ identity: frame.identity, kind: "message" , hopSequence: frame.identity.sequence }]);
     expect(inbox.retained("inbound", "full-trip")).toMatchObject({ state: "queued", payloadRetained: true });
     const calls = await fixture.calls(), invocation = calls.find(call => call.argv.includes("exchange"));
     expect(invocation?.argv).toContain("--stdin"); expect(invocation?.argv).toContain(globalRoot);
     expect(JSON.stringify(invocation?.argv)).not.toContain("synthetic private body");
     const stale = { ...input, generation: { ...input.generation, edgeEpoch: "old-edge" }, frames: [] };
     source.updateEdgeState(B, "old-edge", state => ({ ...state, outbound: { ...state.outbound, push: 1 } }));
-    await expect(executeExchange(handle, { exchange: stale, holdMs: 0 }, { machineId: A,
+    await expect(executeExchange(handle, withHopRequest({ exchange: stale, holdMs: 0 }), { machineId: A,
       enrollment: { peer: target, edgeEpoch: "old-edge" }, transport, store: source, clock }))
       .rejects.toMatchObject({ code: "machine-not-enrolled", retryable: true });
   } finally { await bridge.stop(); await client.close(); source.close(); inbox.close(); await fixture.close(); }

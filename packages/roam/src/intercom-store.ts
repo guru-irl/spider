@@ -11,7 +11,7 @@ import {
   INTERCOM_DEDUPE_MS, INTERCOM_MACHINE_BYTES, INTERCOM_MACHINE_MESSAGES, INTERCOM_ORIGIN_BYTES, INTERCOM_ORIGIN_MESSAGES,
   INTERCOM_EXCHANGE_BYTES, INTERCOM_HOP_ALLOWANCE_MS, INTERCOM_PAYLOAD_MS, INTERCOM_QUEUE_BYTES, INTERCOM_QUEUE_MESSAGES,
   type IntercomAcceptance, type IntercomEdgeState, type IntercomFrame, type IntercomIdentity, type IntercomMessageFrame, type IntercomQueue,
-  type IntercomPairFence, type IntercomPairResume, type IntercomReceiptFrame, type IntercomReceiptInput, type IntercomState, type IntercomStore, type IntercomStoreOptions, type OutboundMessage,
+  type IntercomRefusal, type IntercomPairFence, type IntercomPairResume, type IntercomReceiptFrame, type IntercomReceiptInput, type IntercomState, type IntercomStore, type IntercomStoreOptions, type OutboundMessage,
   type RebindProof, type RetainedIntercom,
 } from "./intercom-contracts";
 import { decodeFrame, encodeFrame, isIntercomPairResume, isRebindProof, makeMessageFrame } from "./intercom-codec";
@@ -21,6 +21,8 @@ import { createFirstHomePairResume, isFirstHomePairResume, type FirstHomePairRes
 
 const unsafe = () => new Error("Unsafe intercom store path or symlink");
 const schemaColumns: Readonly<Record<string, readonly string[]>> = {
+  intercom_hop_cursors: ["direction", "peer", "edge_epoch", "sequence"],
+  intercom_hop_slots: ["direction", "peer", "edge_epoch", "sequence", "identity_key", "id", "reason", "at"],
   intercom_meta: ["id", "machine_id", "version", "last_clock"],
   intercom_messages: ["id", "from_key", "to_key", "digest", "pair_sequence", "ask_id", "identity_json", "is_ask", "ask_state"],
   intercom_copies: ["direction", "id", "endpoint_json", "peer", "payload_json", "payload_bytes", "state", "unknown_outcome", "deadline_at",
@@ -28,7 +30,7 @@ const schemaColumns: Readonly<Record<string, readonly string[]>> = {
     "pending_proof_json", "pending_proof_attempt"],
   intercom_cursors: ["direction", "from_key", "to_key", "sequence"],
   intercom_receipts: ["receipt_key", "id", "peer", "frame_json", "acknowledged", "sent"],
-  intercom_resumptions: ["from_key", "to_key", "peer", "resume_json"],
+  intercom_resumptions: ["from_key", "to_key", "peer", "edge_epoch", "resume_json"],
   intercom_edge_state: ["peer", "edge_epoch", "state_json"],
   intercom_pair_fences: ["peer", "edge_epoch", "fence_id", "fenced_at"],
   intercom_pair_approvals: ["peer", "edge_epoch", "operation_id", "graph_digest", "fence_id"],
@@ -46,6 +48,8 @@ const schemaColumns: Readonly<Record<string, readonly string[]>> = {
   intercom_settled_watermarks: ['peer', 'from_key', 'to_key', 'sequence'],
 };
 const schemaKeys: Readonly<Record<string, readonly (readonly string[])[]>> = {
+  intercom_hop_cursors: [["direction", "peer", "edge_epoch"]],
+  intercom_hop_slots: [["direction", "peer", "edge_epoch", "sequence"]],
   intercom_endpoint_aliases: [["direction", "id", "endpoint_json"]],
   intercom_refused_slots: [["from_key", "to_key", "sequence"]],
   intercom_settled_receipts: [["peer", "receipt_key"]],
@@ -55,12 +59,12 @@ const schemaKeys: Readonly<Record<string, readonly (readonly string[])[]>> = {
   intercom_messages: [["id"], ["from_key", "to_key", "pair_sequence"]],
   intercom_copies: [["direction", "id"]], intercom_cursors: [["direction", "from_key", "to_key"]],
   intercom_topology_refusals: [["id"]], intercom_topology_audit: [["id", "transition_id"]],
-  intercom_receipts: [["receipt_key"]], intercom_resumptions: [["from_key", "to_key"]],
+  intercom_receipts: [["receipt_key"]], intercom_resumptions: [["peer", "edge_epoch", "from_key", "to_key"]],
   intercom_edge_state: [["peer", "edge_epoch"]], intercom_pair_fences: [["peer"]], intercom_pair_approvals: [["peer"]], intercom_revocation_notices: [["id"]],
 };
 function validateSchema(db: Db, tables: readonly { name: string }[], version: number): void {
   const names = new Set(tables.map(row => row.name));
-  const introduced = (name: string) => ['intercom_receipt_positions', 'intercom_settled_watermarks'].includes(name) ? 7 : ["intercom_refused_slots", "intercom_settled_receipts"].includes(name) ? 6 : ["intercom_presence_claims", "intercom_rejections", "intercom_notices", "intercom_endpoint_aliases"].includes(name) ? 5 : name.startsWith("intercom_topology") ? 4 : name === "intercom_edge_state" ? 2 :
+  const introduced = (name: string) => name.startsWith('intercom_hop_') ? 8 : ['intercom_receipt_positions', 'intercom_settled_watermarks'].includes(name) ? 7 : ["intercom_refused_slots", "intercom_settled_receipts"].includes(name) ? 6 : ["intercom_presence_claims", "intercom_rejections", "intercom_notices", "intercom_endpoint_aliases"].includes(name) ? 5 : name.startsWith("intercom_topology") ? 4 : name === "intercom_edge_state" ? 2 :
     name === "intercom_pair_fences" || name === "intercom_pair_approvals" || name === "intercom_revocation_notices" ? 3 : 1;
   if (tables.some(row => !(row.name in schemaColumns)) || Object.keys(schemaColumns).some(name => names.has(name) !== (version >= introduced(name)))) {
     throw new Error("Invalid or incomplete intercom store schema");
@@ -68,8 +72,8 @@ function validateSchema(db: Db, tables: readonly { name: string }[], version: nu
   for (const [table, expected] of Object.entries(schemaColumns)) {
     if (!names.has(table)) continue;
     const columns = db.prepare("SELECT name FROM pragma_table_info(?) ORDER BY cid").all(table) as { name: string }[];
-    if (JSON.stringify(columns.map(column => column.name)) !== JSON.stringify(expected)) throw new Error("Invalid or incomplete intercom store schema");
-    const required = schemaKeys[table] ?? [];
+    if (JSON.stringify(columns.map(column => column.name)) !== JSON.stringify(table === "intercom_resumptions" && version < 8 ? expected.filter(name => name !== "edge_epoch") : expected)) throw new Error("Invalid or incomplete intercom store schema");
+    const required = table === "intercom_resumptions" && version < 8 ? [["from_key", "to_key"]] : schemaKeys[table] ?? [];
     const indexes = db.prepare("SELECT name FROM pragma_index_list(?) WHERE \"unique\"=1").all(table) as { name: string }[];
     const actual = indexes.map(index => (db.prepare("SELECT name FROM pragma_index_info(?) ORDER BY seqno").all(index.name) as { name: string }[]).map(column => column.name));
     if (required.some(key => !actual.some(columnsInIndex => JSON.stringify(columnsInIndex) === JSON.stringify(key)))) {
@@ -130,7 +134,7 @@ function prepareFile(file: string, machineId: string): void {
     if (tables.length) {
       const meta = probe.prepare("SELECT machine_id, version FROM intercom_meta WHERE id=1").get() as { machine_id: string; version: number } | undefined;
       if (!meta || meta.machine_id !== machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7) throw new Error("Unsupported intercom store version");
+      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7 && meta.version !== 8) throw new Error("Unsupported intercom store version");
       validateSchema(probe, tables, meta.version);
     }
   } finally { probe.close(); }
@@ -304,6 +308,15 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     db.pragma("secure_delete = ON");
     db.raw.transaction(() => {
       db.exec(`
+        CREATE TABLE IF NOT EXISTS intercom_hop_cursors (
+          direction TEXT NOT NULL, peer TEXT NOT NULL, edge_epoch TEXT NOT NULL, sequence INTEGER NOT NULL,
+          PRIMARY KEY(direction,peer,edge_epoch)
+        );
+        CREATE TABLE IF NOT EXISTS intercom_hop_slots (
+          direction TEXT NOT NULL, peer TEXT NOT NULL, edge_epoch TEXT NOT NULL, sequence INTEGER NOT NULL,
+          identity_key TEXT NOT NULL, id TEXT REFERENCES intercom_messages(id) ON DELETE CASCADE, reason TEXT, at INTEGER NOT NULL,
+          PRIMARY KEY(direction,peer,edge_epoch,sequence), UNIQUE(direction,peer,edge_epoch,id)
+        );
         CREATE TABLE IF NOT EXISTS intercom_meta (
           id INTEGER PRIMARY KEY CHECK(id=1), machine_id TEXT NOT NULL, version INTEGER NOT NULL, last_clock INTEGER NOT NULL
         );
@@ -346,8 +359,8 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           frame_json TEXT NOT NULL, acknowledged INTEGER NOT NULL DEFAULT 0, sent INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS intercom_resumptions (
-          from_key TEXT NOT NULL, to_key TEXT NOT NULL, peer TEXT NOT NULL, resume_json TEXT NOT NULL,
-          PRIMARY KEY(from_key,to_key)
+          from_key TEXT NOT NULL, to_key TEXT NOT NULL, peer TEXT NOT NULL, edge_epoch TEXT NOT NULL DEFAULT 'local', resume_json TEXT NOT NULL,
+          PRIMARY KEY(peer,edge_epoch,from_key,to_key)
         );
         CREATE TABLE IF NOT EXISTS intercom_edge_state (
           peer TEXT NOT NULL, edge_epoch TEXT NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY(peer,edge_epoch)
@@ -392,7 +405,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       db.prepare("INSERT OR IGNORE INTO intercom_meta(id,machine_id,version,last_clock) VALUES(1,?,4,?)").run(options.machineId, firstNow);
       const meta = db.prepare("SELECT machine_id,version,last_clock FROM intercom_meta WHERE id=1").get() as MetaRow;
       if (!meta || meta.machine_id !== options.machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
+      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7 && meta.version !== 8 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
       rollbackPending ||= firstNow < meta.last_clock;
       highWater = Math.max(highWater, meta.last_clock);
       if (meta.version < 5) {
@@ -447,6 +460,18 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           SELECT c.peer,m.from_key,m.to_key,0 FROM intercom_copies c JOIN intercom_messages m ON m.id=c.id WHERE c.direction='outbound'`).run();
         db.prepare('UPDATE intercom_meta SET version=7 WHERE id=1').run();
       }
+      if (meta.version < 8) {
+        const columns = db.prepare("SELECT name FROM pragma_table_info('intercom_resumptions')").all() as { name: string }[];
+        if (!columns.some(column => column.name === "edge_epoch")) {
+          db.exec(`ALTER TABLE intercom_resumptions RENAME TO intercom_legacy_resumptions;
+            CREATE TABLE intercom_resumptions (from_key TEXT NOT NULL,to_key TEXT NOT NULL,peer TEXT NOT NULL,
+              edge_epoch TEXT NOT NULL DEFAULT 'local',resume_json TEXT NOT NULL,PRIMARY KEY(peer,edge_epoch,from_key,to_key));
+            INSERT INTO intercom_resumptions(from_key,to_key,peer,edge_epoch,resume_json)
+              SELECT from_key,to_key,peer,'unscoped',resume_json FROM intercom_legacy_resumptions;
+            DROP TABLE intercom_legacy_resumptions;`);
+        }
+        db.prepare('UPDATE intercom_meta SET version=8 WHERE id=1').run();
+      }
     }).immediate();
     checkpoint();
   } catch (error) { db.close(); throw error; }
@@ -463,7 +488,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
   };
   const writeCursor = (direction: IntercomQueue, identity: IntercomIdentity, origin: string | undefined): void => {
     db.prepare(`INSERT INTO intercom_cursors(direction,from_key,to_key,sequence) VALUES(?,?,?,?)
-      ON CONFLICT(direction,from_key,to_key) DO UPDATE SET sequence=excluded.sequence`)
+      ON CONFLICT(direction,from_key,to_key) DO UPDATE SET sequence=max(sequence,excluded.sequence)`)
       .run(direction, streamKey(origin, identity.from), addressKey(identity.to), identity.sequence);
     if (direction === "inbound") db.prepare("DELETE FROM intercom_refused_slots WHERE from_key=? AND to_key=? AND sequence<=?")
       .run(streamKey(origin, identity.from), addressKey(identity.to), identity.sequence);
@@ -736,7 +761,50 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     return release;
   };
 
-  const pending = ((input: { kind: "outbound"; peer: string; hopBudgetMs: number; maxBytes?: number; skipIds?: readonly string[] } | { kind: "inbound"; address: SessionAddress } | { kind: "receipts"; peer: string; maxBytes?: number }) => {
+  const hopIdentity = (identity: IntercomIdentity, origin?: string): string => createHash("sha256")
+    .update(JSON.stringify([origin ?? "", identity.id, identity.digest, identity.sequence, addressKey(identity.from), addressKey(identity.to), identity.askId])).digest("hex");
+  const hopCursor = (direction: IntercomQueue, peer: string, edgeEpoch: string): number | undefined => {
+    const row = db.prepare("SELECT sequence FROM intercom_hop_cursors WHERE direction=? AND peer=? AND edge_epoch=?")
+      .get(direction, peer, edgeEpoch) as { sequence: number } | undefined;
+    return row?.sequence;
+  };
+  const inspectHop: IntercomStore["inspectHop"] = input => {
+    edgeKey(input.peer, input.edgeEpoch);
+    if (!safeInteger(input.sequence, 1)) throw new Error("hop-sequence-invalid");
+    const through = hopCursor("inbound", input.peer, input.edgeEpoch);
+    if (through === undefined) throw new Error("hop-stream-unstarted");
+    const slot = db.prepare("SELECT identity_key,reason FROM intercom_hop_slots WHERE direction='inbound' AND peer=? AND edge_epoch=? AND sequence=?")
+      .get(input.peer, input.edgeEpoch, input.sequence) as { identity_key: string; reason: IntercomRefusal["reason"] | null } | undefined;
+    if (slot && slot.identity_key !== hopIdentity(input.identity, input.origin)) throw new Error("hop-slot-mismatch");
+    if (slot?.reason) return { kind: "refused", reason: slot.reason };
+    if (input.sequence <= through) return { kind: "duplicate" };
+    if (input.sequence !== through + 1) throw new Error("hop-sequence-gap");
+    return { kind: "next" };
+  };
+  const saveHop = (direction: IntercomQueue, peer: string, edgeEpoch: string, sequence: number,
+    identity: IntercomIdentity, origin: string | undefined, reason: IntercomRefusal["reason"] | null = null): void => {
+    db.prepare("INSERT OR IGNORE INTO intercom_hop_slots(direction,peer,edge_epoch,sequence,identity_key,id,reason,at) VALUES(?,?,?,?,?,?,?,?)")
+      .run(direction, peer, edgeEpoch, sequence, hopIdentity(identity, origin), reason ? null : identity.id, reason, now());
+    db.prepare(`INSERT INTO intercom_hop_cursors(direction,peer,edge_epoch,sequence) VALUES(?,?,?,?)
+      ON CONFLICT(direction,peer,edge_epoch) DO UPDATE SET sequence=max(sequence,excluded.sequence)`).run(direction, peer, edgeEpoch, sequence);
+    // Old covered refusals are transport duplicates with no message outcome effect.
+    db.prepare("DELETE FROM intercom_hop_slots WHERE direction=? AND peer=? AND edge_epoch=? AND reason IS NOT NULL AND sequence<=?")
+      .run(direction, peer, edgeEpoch, sequence - queueMessages);
+  };
+  const outboundHop = (peer: string, edgeEpoch: string, identity: IntercomIdentity, origin: string): number => {
+    edgeKey(peer, edgeEpoch);
+    const prior = db.prepare("SELECT sequence,identity_key FROM intercom_hop_slots WHERE direction='outbound' AND peer=? AND edge_epoch=? AND id=?")
+      .get(peer, edgeEpoch, identity.id) as { sequence: number; identity_key: string } | undefined;
+    if (prior) {
+      if (prior.identity_key !== hopIdentity(identity, origin)) throw new Error("hop-slot-mismatch");
+      return prior.sequence;
+    }
+    const sequence = (hopCursor("outbound", peer, edgeEpoch) ?? 0) + 1;
+    if (!safeInteger(sequence, 1)) throw new Error("hop-sequence-overflow");
+    saveHop("outbound", peer, edgeEpoch, sequence, identity, origin);
+    return sequence;
+  };
+  const pending = ((input: { kind: "outbound"; peer: string; edgeEpoch?: string; hopBudgetMs: number; maxBytes?: number; skipIds?: readonly string[] } | { kind: "inbound"; address: SessionAddress } | { kind: "receipts"; peer: string; maxBytes?: number }) => {
     ensureCheckpoint();
     if (input.kind === "receipts") {
       if (!isMachineId(input.peer) || input.maxBytes !== undefined && (!safeInteger(input.maxBytes) || input.maxBytes > INTERCOM_EXCHANGE_BYTES - 1024)) throw new Error("Invalid intercom peer or receipt budget");
@@ -775,7 +843,8 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         AND (?='hub-only' OR json_extract(c.endpoint_json,'$.machineId')=c.peer) AND (
         (c.state='queued' AND c.payload_json IS NOT NULL AND coalesce(c.ack_kind,'')!='message') OR
         (c.state IN ('expired','cancelled') AND coalesce(c.ack_kind,'')!='tombstone'))
-        ORDER BY m.from_key,m.to_key,m.pair_sequence LIMIT 1024`).all(input.peer, topology.topology().mode) as CopyRow[];
+        ORDER BY coalesce((SELECT h.sequence FROM intercom_hop_slots h WHERE h.direction='outbound' AND h.peer=? AND h.edge_epoch=? AND h.id=m.id),9223372036854775807),
+        m.from_key,m.to_key,m.pair_sequence LIMIT 1024`).all(input.peer, topology.topology().mode, input.peer, input.edgeEpoch ?? "local") as CopyRow[];
       const frames: IntercomFrame[] = [], blocked = new Set<string>(); let bytes = 0;
       for (const row of rows) {
         const pair = JSON.stringify([row.from_key, row.to_key]);
@@ -789,7 +858,9 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           if (lifetime <= 0 || remaining !== null && remaining <= 0) { next = { ...row, state: "expired" }; expires = true; }
           else next = { ...row, deadline_at: at + lifetime, remaining_ms: remaining, last_clock: at };
         }
-        const frame = frameFor(next, at), size = encodeFrame(frame).byteLength + 1;
+        const plain = frameFor(next, at);
+        const frame = input.edgeEpoch ? { ...plain, hopSequence: outboundHop(input.peer, input.edgeEpoch, plain.identity, plain.originMachineId) } : plain;
+        const size = encodeFrame(frame).byteLength + 1;
         if (bytes + size > budget) break;
         if (expires) { if (expireRow(row, at)) deleted = true; }
         else if (next !== row && row.is_ask) db.prepare("UPDATE intercom_copies SET remaining_ms=?,last_clock=?,deadline_at=? WHERE direction='outbound' AND id=?")
@@ -798,7 +869,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         db.prepare("UPDATE intercom_copies SET sent_kind=?,transmitted=CASE WHEN ?='message' THEN 1 ELSE transmitted END WHERE direction='outbound' AND id=?")
           .run(frame.kind, frame.kind, row.id);
       }
-      return frames;
+      return frames.sort((a, b) => (a.hopSequence ?? 0) - (b.hopSequence ?? 0));
     }).immediate();
     if (deleted) checkpointDeletion();
     return result;
@@ -852,6 +923,26 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       .some(alias => sameEndpoint(parseStored<SessionEndpoint>(alias.endpoint_json), endpoint));
   const store: IntercomStore = {
     ...topology,
+    openHop(peer, edgeEpoch) {
+      edgeKey(peer, edgeEpoch);
+      db.prepare("INSERT OR IGNORE INTO intercom_hop_cursors(direction,peer,edge_epoch,sequence) VALUES('inbound',?,?,0)").run(peer, edgeEpoch);
+    },
+    inspectHop,
+    hopPosition(queue, peer, edgeEpoch, identity) {
+      const original = identityRow(identity.id);
+      if (!original || !sameIdentity(identity, readIdentity(original))) return undefined;
+      const row = db.prepare("SELECT sequence FROM intercom_hop_slots WHERE direction=? AND peer=? AND edge_epoch=? AND identity_key=?")
+        .get(queue, peer, edgeEpoch, hopIdentity(identity, readOrigin(original))) as { sequence: number } | undefined;
+      return row?.sequence;
+    },
+    rejectHop(input) {
+      db.raw.transaction(() => {
+        const status = inspectHop(input);
+        if (status.kind !== "next") return;
+        saveHop("inbound", input.peer, input.edgeEpoch, input.sequence, input.identity, input.origin, input.reason);
+        store.recordRejection(input.peer, input.identity.id, input.reason);
+      }).immediate();
+    },
     presenceOwner(address) {
       const row = db.prepare("SELECT machine_id,activation,ambiguous FROM intercom_presence_claims WHERE address_key=?").get(addressKey(address)) as
         { machine_id: string; activation: string; ambiguous: number } | undefined;
@@ -1044,8 +1135,8 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           continuity = createFirstHomePairResume(candidate.identity.from, readEndpoint(previous), candidate.endpoint,
             input.firstHomePresence, previous.pair_sequence, at);
           if (!continuity) {
-            const saved = db.prepare("SELECT peer,resume_json FROM intercom_resumptions WHERE from_key=? AND to_key=?")
-              .get(streamKey(candidate.originMachineId, candidate.identity.from), addressKey(candidate.identity.to)) as { peer: string; resume_json: string } | undefined;
+            const saved = db.prepare("SELECT peer,resume_json FROM intercom_resumptions WHERE from_key=? AND to_key=? AND peer=? AND edge_epoch=?")
+              .get(streamKey(candidate.originMachineId, candidate.identity.from), addressKey(candidate.identity.to), input.nextHop, input.edgeEpoch ?? "local") as { peer: string; resume_json: string } | undefined;
             const resume: unknown = saved ? parseStored<unknown>(saved.resume_json) : null;
             if (!saved || saved.peer !== input.nextHop || !isIntercomPairResume(resume) || !sameEndpoint(resume.endpoint, candidate.endpoint)) {
               throw new Error("Intercom route requires authoritative rebind proof");
@@ -1053,7 +1144,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           }
         }
         const seq = "frame" in input ? candidate.identity.sequence : cursor("outbound", candidate.identity, candidate.originMachineId) + 1;
-        if (!safeInteger(seq, 1) || seq !== cursor("outbound", candidate.identity, candidate.originMachineId) + 1) throw new Error("Intercom outbound sequence gap");
+        if (!safeInteger(seq, 1) || !("frame" in input && input.edgeEpoch) && seq !== cursor("outbound", candidate.identity, candidate.originMachineId) + 1) throw new Error("Intercom outbound sequence gap");
         if (!("frame" in input)) candidate = makeMessageFrame({ from: input.from, endpoint: input.endpoint, sequence: seq, message: input.message, originMachineId: options.machineId });
         const bytes = candidate.kind === "message" ? encodeFrame(candidate).byteLength : 0;
         // Bound sparse proofs when an unknown earlier slot stalls the settled watermark.
@@ -1062,9 +1153,9 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         if (cursor('outbound', candidate.identity, candidate.originMachineId) - settled.sequence >= queueMessages) return { kind: 'refused', reason: 'queue-full' } as const;
         if (!room(candidate.identity.to, bytes, candidate.originMachineId, candidate.identity.id)) return { kind: "refused", reason: "queue-full" } as const;
         if (continuity) {
-          db.prepare(`INSERT INTO intercom_resumptions(from_key,to_key,peer,resume_json) VALUES(?,?,?,?)
-            ON CONFLICT(from_key,to_key) DO UPDATE SET peer=excluded.peer,resume_json=excluded.resume_json`)
-            .run(streamKey(candidate.originMachineId, candidate.identity.from), addressKey(candidate.identity.to), input.nextHop, JSON.stringify(continuity));
+          db.prepare(`INSERT INTO intercom_resumptions(from_key,to_key,peer,edge_epoch,resume_json) VALUES(?,?,?,?,?)
+            ON CONFLICT(peer,edge_epoch,from_key,to_key) DO UPDATE SET resume_json=excluded.resume_json`)
+            .run(streamKey(candidate.originMachineId, candidate.identity.from), addressKey(candidate.identity.to), input.nextHop, input.edgeEpoch ?? "local", JSON.stringify(continuity));
         }
         insertIdentity(candidate.identity, candidate.kind === "message" ? candidate.message.expectsReply === true : candidate.identity.askId === candidate.identity.id,
           candidate.kind === "tombstone" ? candidate.reason : undefined, candidate.originMachineId);
@@ -1083,7 +1174,15 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         throw error;
       }
       let deleted = false;
-      const result = db.raw.transaction(() => {
+      const rollback = new Error("Intercom relay admission refused");
+      let forwardRefusal: Extract<IntercomAcceptance, { kind: "refused" }> | undefined;
+      let result: IntercomAcceptance;
+      try { result = db.raw.transaction(() => {
+        if (input.hop) {
+          const status = inspectHop({ peer: input.peer, edgeEpoch: input.hop.edgeEpoch, sequence: input.hop.sequence, identity: frame.identity, origin: frame.originMachineId });
+          if (status.kind === "refused" || status.kind === "duplicate" && !identityRow(frame.identity.id)) return accepted("duplicate", frame.identity);
+        }
+        const admit = (): IntercomAcceptance => {
         const known = identityRow(frame.identity.id);
         if (known && readOrigin(known) && readOrigin(known) !== frame.originMachineId) throw new Error("Intercom origin conflict");
         if (known && !sameIdentity(readIdentity(known), frame.identity)) throw new Error("Intercom message ID or digest conflict");
@@ -1133,8 +1232,8 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           return accepted("duplicate", frame.identity);
         }
         const previous = cursor("inbound", frame.identity, frame.originMachineId);
-        if (!known && frame.identity.sequence <= previous) return accepted("duplicate", frame.identity);
-        if (frame.identity.sequence !== previous + 1) {
+        if (!input.hop && !known && frame.identity.sequence <= previous) return accepted("duplicate", frame.identity);
+        if (!input.hop && frame.identity.sequence !== previous + 1) {
           const rejected = db.prepare(`SELECT m.id,m.pair_sequence FROM intercom_messages m JOIN intercom_copies c ON c.id=m.id
             WHERE c.direction='inbound' AND c.peer=? AND json_extract(m.identity_json,'$.rejectedBy')=?
             AND coalesce(json_extract(m.identity_json,'$.rejectionUsed'),0)=0
@@ -1173,7 +1272,19 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           saveReceipt(received, { from: frame.endpoint, to: frame.identity.from, digest: frame.identity.digest, receipt: terminal });
         }
         return accepted("accepted", frame.identity);
-      }).immediate();
+        };
+        const outcome = admit();
+        if (outcome.kind !== "refused") {
+          const retained = copy("inbound", frame.identity.id);
+          if (input.forward && retained) {
+            const forwarded = store.acceptOutbound({ frame: { ...frame, endpoint: readEndpoint(retained) }, nextHop: input.forward.peer,
+              edgeEpoch: input.forward.edgeEpoch, firstHomePresence: input.forward.firstHomePresence });
+            if (forwarded.kind === "refused") { forwardRefusal = forwarded; throw rollback; }
+          }
+          if (input.hop) saveHop("inbound", input.peer, input.hop.edgeEpoch, input.hop.sequence, frame.identity, frame.originMachineId);
+        }
+        return outcome;
+      }).immediate(); } catch (error) { if (error === rollback && forwardRefusal) return forwardRefusal; throw error; }
       if (deleted) checkpointDeletion();
       return result;
     },
@@ -1214,10 +1325,10 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         // No original origin exists for this rejected frame. Its transport refusal is the acknowledgement.
       }).immediate();
     },
-    outboundResumptions(peer): readonly IntercomPairResume[] {
+    outboundResumptions(peer, edgeEpoch = "local"): readonly IntercomPairResume[] {
       ensureCheckpoint();
       if (!isMachineId(peer)) throw new Error("Invalid intercom peer");
-      return (db.prepare("SELECT resume_json FROM intercom_resumptions WHERE peer=? ORDER BY from_key,to_key").all(peer) as { resume_json: string }[])
+      return (db.prepare("SELECT resume_json FROM intercom_resumptions WHERE peer=? AND edge_epoch=? ORDER BY from_key,to_key").all(peer, edgeEpoch) as { resume_json: string }[])
         .flatMap(row => {
           const value: unknown = parseStored<unknown>(row.resume_json);
           if (isFirstHomePairResume(value)) return [];
@@ -1228,6 +1339,16 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     pending,
     acknowledge(input): void {
       ensureCheckpoint();
+      if (input.edgeEpoch) {
+        edgeKey(input.peer, input.edgeEpoch);
+        const sequence = input.hopSequence ?? 0;
+        if (!safeInteger(sequence, 1)) throw new Error('hop-ack-mismatch');
+        const slot = db.prepare("SELECT identity_key FROM intercom_hop_slots WHERE direction='outbound' AND peer=? AND edge_epoch=? AND sequence=?")
+          .get(input.peer, input.edgeEpoch, sequence) as { identity_key: string } | undefined;
+        const original = identityRow(input.identity.id);
+        if (!original && !slot && sequence <= (hopCursor('outbound', input.peer, input.edgeEpoch) ?? 0)) return;
+        if (!slot || !original || slot.identity_key !== hopIdentity(input.identity, readOrigin(original))) throw new Error("hop-ack-mismatch");
+      }
       if (!isMachineId(input.peer) || !input.identity || !nonempty(input.identity.id) || (input.kind !== "message" && input.kind !== "tombstone")) throw new Error("Invalid intercom acknowledgement");
       db.raw.transaction(() => {
         const row = copy("outbound", input.identity.id);
@@ -1466,7 +1587,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           reconciliation_attempt=NULL,pending_proof_json=NULL,pending_proof_attempt=NULL WHERE direction='inbound' AND id=?`).run(JSON.stringify(endpoint), id);
       }).immediate();
     },
-    rebindUndispatched(address: SessionAddress, endpoint: SessionEndpoint, proof: RebindProof): number {
+    rebindUndispatched(address: SessionAddress, endpoint: SessionEndpoint, proof: RebindProof, edgeEpoch = "local"): number {
       ensureCheckpoint();
       if (!isSessionAddress(address) || !isSessionEndpoint(endpoint) || !isMachineId(endpoint.machineId) || !sameAddress(address, endpoint.address) ||
           !isRebindProof(proof, address, endpoint)) throw new Error("Invalid intercom rebind proof");
@@ -1496,9 +1617,9 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         for (const { identity, origin, last, firstPending } of pairs.values()) {
           const resume: IntercomPairResume = { from: identity.from, to: identity.to, through: firstPending === null ? last : firstPending - 1, endpoint, proof };
           if (Buffer.byteLength(JSON.stringify(resume), "utf8") + 1 > INTERCOM_EXCHANGE_BYTES - 1024) throw new Error("Intercom resume size limit exceeded");
-          db.prepare(`INSERT INTO intercom_resumptions(from_key,to_key,peer,resume_json) VALUES(?,?,?,?)
-            ON CONFLICT(from_key,to_key) DO UPDATE SET peer=excluded.peer,resume_json=excluded.resume_json`)
-            .run(streamKey(origin, identity.from), addressKey(identity.to), proof.nextHop, JSON.stringify(resume));
+          db.prepare(`INSERT INTO intercom_resumptions(from_key,to_key,peer,edge_epoch,resume_json) VALUES(?,?,?,?,?)
+            ON CONFLICT(peer,edge_epoch,from_key,to_key) DO UPDATE SET resume_json=excluded.resume_json`)
+            .run(streamKey(origin, identity.from), addressKey(identity.to), proof.nextHop, edgeEpoch, JSON.stringify(resume));
         }
         for (const row of candidates) db.prepare("UPDATE intercom_copies SET endpoint_json=?,peer=?,ack_kind=NULL,sent_kind=NULL,reconciliation_attempt=NULL,observed_attempt=0 WHERE direction='outbound' AND id=?")
           .run(JSON.stringify(endpoint), proof.nextHop, row.id);

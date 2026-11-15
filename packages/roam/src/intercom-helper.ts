@@ -7,10 +7,10 @@ import { getBrokerSocketPath } from "../../intercom/src/broker/paths.js";
 import { HELPER_EXCHANGE_ERRORS, HELPER_EXCHANGE_FEATURE, isHelperExchangeError } from "@spider/intercom/protocol";
 import { projectRoot } from "../../db-core/src/paths";
 import { decodeExchangeWithFrameErrors, encodeExchange } from "./intercom-codec";
-import { INTERCOM_EXCHANGE_BYTES, type IntercomExchange, type MissingOriginFrame } from "./intercom-contracts";
+import { INTERCOM_EXCHANGE_BYTES, type AuthenticatedIntercomExchange, type IntercomExchange, type IntercomWireMissingOriginFrame } from "./intercom-contracts";
 import { isMachineId } from "./machine-id";
 
-export interface HelperRequest { version: 1; exchange: IntercomExchange; holdMs: number; deadlineMs: number; missingOrigins?: MissingOriginFrame[] }
+export interface HelperRequest { version: 1; exchange: AuthenticatedIntercomExchange; holdMs: number; deadlineMs: number; missingOrigins?: IntercomWireMissingOriginFrame[] }
 export interface HelperReply { version: 1; exchange: IntercomExchange }
 export interface HelperRevokeRequest { version: 1; action: "revoke-pair"; machineId: string; peer: string; edgeEpoch: string; fenceId?: string }
 export interface HelperInspectRequest { version: 1; action: "inspect-pair"; machineId: string; peer: string; edgeEpoch: string }
@@ -228,7 +228,7 @@ async function readInput(): Promise<unknown> {
 /** Every completed private command returns one exit-zero outcome envelope. */
 export async function main(root: string, mode: "exchange" | "revoke-local" = "exchange"): Promise<number> {
   const allowed = new Set([...HELPER_EXCHANGE_ERRORS, "unsupported-broker", "helper-unauthorized", "helper-timeout", "broker-unavailable",
-    "bridge-exchange-failed", "unsafe-helper-route", "invalid-reply", "peer-version-mismatch"]);
+    "bridge-exchange-failed", "unsafe-helper-route", "invalid-reply", "peer-version-mismatch", "hop-stream-missing", "hop-stream-unstarted", "hop-sequence-gap", "hop-sequence-invalid", "hop-slot-mismatch", "hop-ack-mismatch"]);
   const kind = mode === "exchange" ? "intercom-exchange" : "intercom-revoke";
   try {
     const original = await readInput();

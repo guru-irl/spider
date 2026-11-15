@@ -1,3 +1,5 @@
+import { withHopRequest } from "./intercom-hop-fixture";
+import { withHopExchange } from "./intercom-hop-fixture";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -103,8 +105,8 @@ it("returns the new activation's physical consumption evidence to the original s
   }, deliverReceipt() {}, deliverControl() {} } as never, endpoint: () => next, sender: () => null, wake() {}, now: clock.now });
   try {
     await bridge.start(); await delivery.ready(to, "ready"); await delivery.ready(to, "ready-again");
-    const reply = await bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine: B, recipientMachine: A,
-      generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: inbox.pending({ kind: "receipts", peer: A }), controls: [], presence: [] } });
+    const reply = await bridge.exchange(withHopRequest({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: withHopExchange({ protocol: 5, senderMachine: B, recipientMachine: A,
+      generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: inbox.pending({ kind: "receipts", peer: A }), controls: [], presence: [] }) }));
     for (const receipt of reply.exchange.receiptAcknowledgements ?? []) inbox.acknowledgeReceipt({ peer: A, frame: receipt });
     expect(received).toEqual(["receipt-after-restart"]);
     expect(receipts).toHaveLength(1);
@@ -125,10 +127,10 @@ it("acknowledges a lost-link-ack replay of the original endpoint after a safe lo
     const original = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
     inbox.acceptInbound({ peer: A, frame: original }); inbox.rebindInboundAfterAbsence("lost-ack", next);
     await receiver.start();
-    const reply = await receiver.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine: A, recipientMachine: B,
-      generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [original], acknowledgements: [], receipts: [], controls: [], presence: [] } });
+    const reply = await receiver.exchange(withHopRequest({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: withHopExchange({ protocol: 5, senderMachine: A, recipientMachine: B,
+      generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [original], acknowledgements: [], receipts: [], controls: [], presence: [] }) }));
     expect(reply.exchange.refusals ?? []).toEqual([]);
-    expect(reply.exchange.acknowledgements).toEqual([{ identity: original.identity, kind: "message" }]);
+    expect(reply.exchange.acknowledgements).toEqual([{ identity: original.identity, kind: "message" , hopSequence: original.identity.sequence }]);
     expect(inbox.retained("inbound", "lost-ack")).toMatchObject({ endpoint: next, state: "queued", latestAttempt: 0 });
   } finally { await receiver.stop(); source.close(); inbox.close(); }
 }, 5000);

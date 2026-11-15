@@ -118,7 +118,7 @@ export function createIntercomRegistry(root: string) {
     const snapshot = openDiagnosticSnapshot(join(base, "queue.db")); if (!snapshot) return false;
     try {
       const meta = snapshot.prepare("SELECT machine_id,version FROM intercom_meta WHERE id=1").get() as { machine_id: string; version: number } | undefined;
-      if (!meta || !isMachineId(meta.machine_id) || meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7) throw new Error("intercom-fence-unavailable");
+      if (!meta || !isMachineId(meta.machine_id) || meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6 && meta.version !== 7 && meta.version !== 8) throw new Error("intercom-fence-unavailable");
       const other = scope ? meta.machine_id === scope.source.machineId ? scope.target.machineId : meta.machine_id === scope.target.machineId ? scope.source.machineId : null : peer;
       if (!other) return false;
       const fence = snapshot.prepare("SELECT edge_epoch,fence_id FROM intercom_pair_fences WHERE peer=?").get(other) as { edge_epoch: string; fence_id: string } | undefined;

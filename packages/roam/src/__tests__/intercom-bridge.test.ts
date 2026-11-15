@@ -1,3 +1,4 @@
+import { withHopExchange } from "./intercom-hop-fixture";
 import { paths } from "@spider/db-core";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -13,11 +14,11 @@ const roots: string[] = [], resources: Array<{ stop(): Promise<void> }> = [], st
 afterEach(async () => { for (const resource of resources.splice(0)) await resource.stop(); for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 const clock = { now: () => Date.now(), later: (ms: number, fn: () => void) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
 const peer = (machineId: string) => ({ machineId, alias: `fixture-${machineId.slice(-1)}.invalid`, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: "/fixture/global" });
-const batch = (senderMachine: string, recipientMachine: string, generation: number, channel: "push" | "poll" = "push"): IntercomExchange => ({
-  protocol: 4, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel, generation },
+const batch = (senderMachine: string, recipientMachine: string, generation: number, channel: "push" | "poll" = "push"): IntercomExchange => (withHopExchange({
+  protocol: 5, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel, generation },
   frames: [], acknowledgements: [], receipts: [], controls: [], presence: [],
-});
-const request = (exchange: IntercomExchange, holdMs = 0) => ({ version: 1, exchange, holdMs, deadlineMs: holdMs ? holdMs + 5000 : 5000 });
+}));
+const request = (exchange: IntercomExchange, holdMs = 0) => ({ version: 1, exchange: withHopExchange(exchange), holdMs, deadlineMs: holdMs ? holdMs + 5000 : 5000 });
 async function create(machineId: string, other: string, store: ReturnType<typeof openIntercomStore>, overrides: Record<string, unknown> = {}) {
   const api = await vi.importActual("../intercom-bridge").catch(() => ({})) as { createIntercomBridge?: (ports: any) => any };
   expect(api.createIntercomBridge).toBeTypeOf("function");
@@ -38,10 +39,10 @@ function pair() {
 it("acks only durable acceptance and never treats a link ack as consumption", async () => {
   const { source, inbox } = pair(), a = await create(A, B, source), b = await create(B, A, inbox);
   source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "m1", timestamp: 1, content: { text: "synthetic" } } });
-  const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
+  const frame = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0];
   const inbound = batch(A, B, 1); inbound.frames.push(frame);
   const accepted = await b.exchange(request(inbound));
-  expect(accepted.exchange.acknowledgements).toEqual([{ identity: frame.identity, kind: "message" }]);
+  expect(accepted.exchange.acknowledgements).toEqual([{ identity: frame.identity, kind: "message" , hopSequence: frame.identity.sequence }]);
   expect(inbox.retained("inbound", "m1")).toMatchObject({ payloadRetained: true, state: "queued" });
   const confirmation = batch(B, A, 1); confirmation.acknowledgements = accepted.exchange.acknowledgements;
   await a.exchange(request(confirmation));
@@ -51,7 +52,7 @@ it("acks only durable acceptance and never treats a link ack as consumption", as
 it("forwards a durable receipt and stops replay only after its explicit acknowledgement", async () => {
   const { source, inbox } = pair(), a = await create(A, B, source), b = await create(B, A, inbox);
   source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "m2", timestamp: 1, content: { text: "synthetic" } } });
-  const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
+  const frame = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0];
   const initial = batch(A, B, 1); initial.frames.push(frame); await b.exchange(request(initial));
   inbox.beginDispatch({ id: "m2", endpoint, readiness: "ready" });
   const receipt: IntercomReceiptFrame = { from: endpoint, to: from, digest: frame.identity.digest, attempt: 1, originMachineId: frame.originMachineId, sequence: frame.identity.sequence,
@@ -136,7 +137,7 @@ it("a push generation does not preempt a waiting poll generation", async () => {
 it("a stale generation applies neither acknowledgements nor cancellations", async () => {
   const { source, inbox } = pair(), a = await create(A, B, source), b = await create(B, A, inbox);
   source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "fenced", timestamp: 1, content: { text: "synthetic" } } });
-  const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
+  const frame = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0];
   const initial = batch(A, B, 1); initial.frames.push(frame); await b.exchange(request(initial));
   await a.exchange(request(batch(B, A, 3))); await b.exchange(request(batch(A, B, 3)));
   const oldAck = batch(B, A, 2); oldAck.acknowledgements.push({ identity: frame.identity, kind: "message" });
@@ -155,15 +156,15 @@ it("reports receiver quota refusal without acknowledging or evicting accepted ma
   stores.push(source, inbox);
   const refused: unknown[] = [], a = await create(A, B, source, { onRefusal: (value: unknown) => refused.push(value) }), b = await create(B, A, inbox);
   for (const id of ["kept", "overflow"]) source.acceptOutbound({ from, endpoint, nextHop: B, message: { id, timestamp: 1, content: { text: "synthetic" } } });
-  const frames = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 });
+  const frames = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 });
   const first = batch(A, B, 1); first.frames.push(frames[0]); await b.exchange(request(first));
   const second = batch(A, B, 2); second.frames.push(frames[1]);
   const response = await b.exchange(request(second));
   expect(response.exchange.acknowledgements).toEqual([]);
-  expect(response.exchange.refusals).toEqual([{ identity: frames[1].identity, reason: "queue-full" }]);
+  expect(response.exchange.refusals).toEqual([{ identity: frames[1].identity, reason: "queue-full" , hopSequence: frames[1].identity.sequence }]);
   const report = batch(B, A, 1) as IntercomExchange & { refusals: unknown[] }; report.refusals = response.exchange.refusals;
   await a.exchange(request(report));
-  expect(refused).toEqual([{ peer: B, identity: frames[1].identity, reason: "queue-full" }]);
+  expect(refused).toEqual([{ peer: B, identity: frames[1].identity, reason: "queue-full" , hopSequence: frames[1].identity.sequence }]);
   expect(source.retained("outbound", "overflow")).toMatchObject({ linkAcknowledged: false, payloadRetained: true });
   expect(inbox.retained("inbound", "kept")).toMatchObject({ state: "queued", payloadRetained: true });
 }, 5000);
@@ -175,12 +176,12 @@ it("replays explicit cancellation after restart and notifies the receiving runti
     const inbox = openIntercomStore({ file: join(root, "inbox", "queue.db"), machineId: B, clock }); stores.push(source, inbox); return { root, source, inbox }; })();
   const notices: unknown[] = [], a = await create(A, B, source), b = await create(B, A, inbox, { onControl: (frame: unknown) => notices.push(frame) });
   source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "cancel-me", timestamp: 1, content: { text: "synthetic" } } });
-  const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
+  const frame = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0];
   const first = batch(A, B, 1); first.frames.push(frame); await b.exchange(request(first));
   a.control(from, to, { messageId: "cancel-me", action: "cancel", timestamp: 2 });
   await a.stop(); source.close();
   const reopened = openIntercomStore({ file: join(root, "source", "queue.db"), machineId: A, clock }); stores.push(reopened);
-  const tombstone = reopened.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
+  const tombstone = reopened.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0];
   expect(tombstone).toMatchObject({ kind: "tombstone", reason: "cancelled" });
   const retry = batch(A, B, 2); retry.frames.push(tombstone); await b.exchange(request(retry));
   expect(inbox.retained("inbound", "cancel-me")).toMatchObject({ state: "cancelled" });
@@ -207,14 +208,14 @@ it("relays a later cancellation tombstone instead of replaying the old payload",
   const bridge = await create(B, A, relay, { edges: [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: false }], routeTo: () => C });
   const receiver = await create(C, B, inbox, { onControl: (frame: unknown) => controls.push(frame) });
   source.acceptOutbound({ from, endpoint: destination, nextHop: B, message: { id: "relayed-cancel", timestamp: 1, content: { text: "synthetic" } } });
-  const original = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
+  const original = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0];
   const initial = batch(A, B, 1); initial.frames.push(original); await bridge.exchange(request(initial));
   expect(relay.retained("outbound", "relayed-cancel")).toMatchObject({ state: "queued" });
   source.cancel({ queue: "outbound", id: "relayed-cancel", from, to });
-  const tombstone = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
+  const tombstone = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0];
   const cancelled = batch(A, B, 2); cancelled.frames.push(tombstone); await bridge.exchange(request(cancelled));
   expect(relay.retained("outbound", "relayed-cancel")).toMatchObject({ state: "cancelled" });
-  const forwarded = relay.pending({ kind: "outbound", peer: C, hopBudgetMs: 100 })[0];
+  const forwarded = relay.pending({ kind: "outbound", peer: C, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0];
   expect(forwarded).toMatchObject({ kind: "tombstone", reason: "cancelled" });
   const last = batch(B, C, 1); last.frames.push(forwarded); await receiver.exchange(request(last));
   expect(inbox.retained("inbound", "relayed-cancel")).toMatchObject({ state: "cancelled" });
@@ -229,11 +230,11 @@ it("relays a separately delivered cancellation control before another payload ca
   const bridge = await create(B, A, relay, { edges: [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: false }], routeTo: () => C });
   const destination = { ...endpoint, machineId: C };
   source.acceptOutbound({ from, endpoint: destination, nextHop: B, message: { id: "relay-control", timestamp: 1, content: { text: "synthetic" } } });
-  const first = batch(A, B, 1); first.frames.push(source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0]); await bridge.exchange(request(first));
+  const first = batch(A, B, 1); first.frames.push(source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0]); await bridge.exchange(request(first));
   const control = batch(A, B, 2); control.controls.push({ from, to, control: { messageId: "relay-control", action: "cancel", timestamp: 2 } });
   await bridge.exchange(request(control));
   expect(relay.retained("outbound", "relay-control")).toMatchObject({ state: "cancelled" });
-  expect(relay.pending({ kind: "outbound", peer: C, hopBudgetMs: 100 })[0]).toMatchObject({ kind: "tombstone", reason: "cancelled" });
+  expect(relay.pending({ kind: "outbound", peer: C, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0]).toMatchObject({ kind: "tombstone", reason: "cancelled" });
 }, 5000);
 
 
@@ -244,13 +245,14 @@ it("relays downstream quota refusals to the original sender without dropping the
   const notices: unknown[] = [], sender = await create(A, B, source, { onRefusal: (value: unknown) => notices.push(value) });
   const bridge = await create(B, A, relay, { edges: [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: false }], routeTo: () => C });
   source.acceptOutbound({ from, endpoint: { ...endpoint, machineId: C }, nextHop: B, message: { id: "relay-full", timestamp: 1, content: { text: "synthetic" } } });
-  const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
+  const frame = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0];
   const first = batch(A, B, 1); first.frames.push(frame); await bridge.exchange(request(first));
-  const refusal = batch(C, B, 1); refusal.refusals = [{ identity: frame.identity, reason: "queue-full" }]; await bridge.exchange(request(refusal));
+  relay.pending({ kind: 'outbound', peer: C, edgeEpoch: 'edge-1', hopBudgetMs: 100 });
+  const refusal = batch(C, B, 1); refusal.refusals = [{ identity: frame.identity, hopSequence: 1, reason: "queue-full" }]; await bridge.exchange(request(refusal));
   const returned = await bridge.exchange(request(batch(A, B, 1, "poll")));
-  expect(returned.exchange.refusals).toEqual([{ identity: frame.identity, reason: "queue-full" }]);
+  expect(returned.exchange.refusals).toEqual([{ identity: frame.identity, reason: "queue-full" , hopSequence: frame.identity.sequence }]);
   const notify = batch(B, A, 1); notify.refusals = returned.exchange.refusals; await sender.exchange(request(notify));
-  expect(notices).toEqual([{ peer: B, identity: frame.identity, reason: "queue-full" }]);
+  expect(notices).toEqual([{ peer: B, identity: frame.identity, reason: "queue-full" , hopSequence: frame.identity.sequence }]);
   expect(relay.retained("outbound", "relay-full")).toMatchObject({ state: "queued", payloadRetained: true });
 }, 5000);
 
@@ -342,12 +344,12 @@ it("refuses an unenrolled relay destination before accepting its payload", async
   const sender = await create(A, B, source, { onRefusal: (value: unknown) => refusals.push(value) }), relay = await create(B, A, inbox);
   source.acceptOutbound({ from, endpoint: { ...endpoint, machineId: C }, nextHop: B,
     message: { id: "no-route", timestamp: 1, content: { text: "synthetic" } } });
-  const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0], sent = batch(A, B, 1); sent.frames.push(frame);
+  const frame = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0], sent = batch(A, B, 1); sent.frames.push(frame);
   const result = await relay.exchange(request(sent));
   expect(result.exchange.acknowledgements).toEqual([]);
-  expect(result.exchange.refusals).toEqual([{ identity: frame.identity, reason: "machine-not-enrolled" }]);
+  expect(result.exchange.refusals).toEqual([{ identity: frame.identity, reason: "machine-not-enrolled" , hopSequence: frame.identity.sequence }]);
   const notify = batch(B, A, 1); notify.refusals = result.exchange.refusals; await sender.exchange(request(notify));
-  expect(refusals).toEqual([{ peer: B, identity: frame.identity, reason: "machine-not-enrolled" }]);
+  expect(refusals).toEqual([{ peer: B, identity: frame.identity, reason: "machine-not-enrolled" , hopSequence: frame.identity.sequence }]);
   expect(inbox.retained("inbound", "no-route")).toBeNull();
 }, 5000);
 
@@ -363,8 +365,8 @@ it("forwards a multihop consumption receipt without notifying a non-origin relay
     onReceipt: (value: unknown) => relayNotices.push(value) });
   const receiver = await create(C, B, inbox);
   source.acceptOutbound({ from, endpoint: destination, nextHop: B, message: { id: "relay-receipt", timestamp: 1, content: { text: "synthetic" } } });
-  const original = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0], first = batch(A, B, 1); first.frames.push(original); await hub.exchange(request(first));
-  const forwarded = relay.pending({ kind: "outbound", peer: C, hopBudgetMs: 100 })[0], last = batch(B, C, 1); last.frames.push(forwarded); await receiver.exchange(request(last));
+  const original = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0], first = batch(A, B, 1); first.frames.push(original); await hub.exchange(request(first));
+  const forwarded = relay.pending({ kind: "outbound", peer: C, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0], last = batch(B, C, 1); last.frames.push(forwarded); await receiver.exchange(request(last));
   inbox.beginDispatch({ id: "relay-receipt", endpoint: destination, readiness: "ready" });
   const receipt: IntercomReceiptFrame = { from: destination, to: from, digest: original.identity.digest, attempt: 1, originMachineId: original.originMachineId, sequence: original.identity.sequence,
     receipt: { messageId: "relay-receipt", status: "injected", timestamp: 2, evidence: { kind: "entry", entryId: "entry-1", sessionId: to.sessionId, activationEpoch: destination.activationEpoch } } };
@@ -394,16 +396,16 @@ it("reports a failed downstream ask at its origin without cancelling the durable
     onAskFailed: (value: unknown) => relayFailures.push(value) });
   source.acceptOutbound({ from, endpoint: { ...endpoint, machineId: C }, nextHop: B,
     message: { id: "relay-ask", timestamp: 1, expectsReply: true, remainingMs: 180_000, content: { text: "synthetic" } } });
-  const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0], sent = batch(A, B, 1); sent.frames.push(frame); await hub.exchange(request(sent));
+  const frame = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0], sent = batch(A, B, 1); sent.frames.push(frame); await hub.exchange(request(sent));
   await flush(); expect(relay.edgeState(C, "edge-1").status).toBe("recovering");
   now += 1000; for (const [id, timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.fn(); await flush();
   expect(relay.edgeState(C, "edge-1").status).toBe("down");
   const report = await hub.exchange(request(batch(A, B, 1, "poll")));
-  expect(report.exchange.refusals).toEqual([{ identity: frame.identity, reason: "link-down" }]);
+  expect(report.exchange.refusals).toEqual([{ identity: frame.identity, reason: "link-down" , hopSequence: frame.identity.sequence }]);
   expect(relayFailures).toEqual([]); expect(originFailures).toEqual([]);
   now += 2000; for (const [id, timer] of [...timers]) if (timer.at <= now && timers.delete(id)) timer.fn(); await flush();
   const retry = await hub.exchange(request(batch(A, B, 2, "poll")));
-  expect(retry.exchange.refusals).toEqual([{ identity: frame.identity, reason: "link-down" }]);
+  expect(retry.exchange.refusals).toEqual([{ identity: frame.identity, reason: "link-down" , hopSequence: frame.identity.sequence }]);
   const notify = batch(B, A, 1); notify.refusals = retry.exchange.refusals; await origin.exchange(request(notify));
   expect(originFailures).toEqual([{ peer: B, id: "relay-ask", from, to, reason: "link-down", outcomeKnown: false }]);
   const duplicate = batch(B, A, 2); duplicate.refusals = retry.exchange.refusals; await origin.exchange(request(duplicate));
@@ -462,7 +464,7 @@ it("keeps the hub edge valid when a previously proved topology refusal arrives a
   const { source } = pair(), a = await create(A, C, source);
   const accepted = source.acceptOutbound({ from, endpoint, nextHop: C, message: { id: "late-topology-refusal", timestamp: 1, content: { text: "synthetic" } } });
   if (accepted.kind === "refused") throw new Error(accepted.reason);
-  source.pending({ kind: "outbound", peer: C, hopBudgetMs: 100 });
+  source.pending({ kind: "outbound", peer: C, edgeEpoch: "edge-1", hopBudgetMs: 100 });
   source.recordTopologyRefusal({ peer: C, identity: accepted.identity });
   source.switchTopology({ transitionId: "00000000-0000-4000-8000-000000000004", hubMachineId: C, directPeers: [B] });
   const incoming = batch(C, A, 1); incoming.refusals = [{ identity: accepted.identity, reason: "intercom-topology-changing" }];

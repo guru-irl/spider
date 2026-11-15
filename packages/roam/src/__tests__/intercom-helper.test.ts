@@ -1,3 +1,4 @@
+import { withHopExchange } from "./intercom-hop-fixture";
 import { paths } from "@spider/db-core";
 import { afterEach, beforeAll, afterAll, expect, it } from "vitest";
 import { spawn } from "node:child_process";
@@ -25,8 +26,8 @@ function fixture() {
   return { root, token, socket: join(intercom, "broker.sock") };
 }
 function batch(senderMachine: string, recipientMachine: string) {
-  return { protocol: 4, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
-    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
+  return withHopExchange({ protocol: 5, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
 }
 async function server(path: string, handler: (message: Record<string, unknown>, socket: Socket) => void): Promise<{ server: Server; clients: Set<Socket> }> {
   const clients = new Set<Socket>();

@@ -1,3 +1,4 @@
+import { withHopExchange } from "./intercom-hop-fixture";
 import { expect, it } from "vitest";
 import type { Message, SessionAddress, SessionEndpoint } from "@spider/intercom/protocol";
 import * as api from "../intercom-codec";
@@ -37,13 +38,13 @@ it("caps an encoded message including attachments at 256 KiB", async () => {
 it("caps complete encoded exchanges at 512 KiB and separates poll and push generations", async () => {
   const make = (id: string, sequence: number) => api.makeMessageFrame({ from, endpoint, originMachineId: "00000000-0000-4000-8000-000000000001", sequence,
     message: { id, timestamp: 1, content: { text: "x".repeat(180 * 1024) } } });
-  const batch = { protocol: 4 as const, senderMachine: "00000000-0000-4000-8000-000000000001", recipientMachine: endpoint.machineId,
+  const batch = withHopExchange({ protocol: 5 as const, senderMachine: "00000000-0000-4000-8000-000000000001", recipientMachine: endpoint.machineId,
     generation: { edgeEpoch: "edge-1", channel: "poll" as const, generation: 1 },
-    frames: [make("a", 1), make("b", 2)], acknowledgements: [], receipts: [], controls: [], presence: [] };
-  expect(api.decodeExchange(api.encodeExchange(batch))).toEqual(batch);
+    frames: [make("a", 1), make("b", 2)], acknowledgements: [], receipts: [], controls: [], presence: [] });
+  expect(api.decodeExchange(api.encodeExchange(withHopExchange(batch)))).toEqual(batch);
   const push = { ...batch, generation: { ...batch.generation, channel: "push" as const } };
-  expect(api.decodeExchange(api.encodeExchange(push)).generation).toEqual({ edgeEpoch: "edge-1", channel: "push", generation: 1 });
-  expect(() => api.encodeExchange({ ...batch, frames: [...batch.frames, make("c", 3)] })).toThrow(/size|limit|large/i);
+  expect(api.decodeExchange(api.encodeExchange(withHopExchange(push))).generation).toEqual({ edgeEpoch: "edge-1", channel: "push", generation: 1 });
+  expect(() => api.encodeExchange(withHopExchange({ ...batch, frames: [...batch.frames, make("c", 3)] }))).toThrow(/size|limit|large/i);
 }, 5000);
 
 it("round-trips an owner-bound pair cursor and rejects a forged exclusion", () => {
@@ -52,24 +53,24 @@ it("round-trips an owner-bound pair cursor and rejects a forged exclusion", () =
     owner: { sessionId: to.sessionId, machineId: target.machineId, epoch: 3, moveId: "move-1", updatedAt: 100 },
     exclusion: { owner: endpoint, excludedGeneration: endpoint.activationEpoch, kind: "generation-fenced" }, nextHop: target.machineId,
   } };
-  const batch: IntercomExchange = { protocol: 4, senderMachine: "00000000-0000-4000-8000-000000000001", recipientMachine: target.machineId,
-    generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [], resumptions: [resume] };
-  expect(api.decodeExchange(api.encodeExchange(batch)).resumptions).toEqual([resume]);
+  const batch: IntercomExchange = withHopExchange({ protocol: 5, senderMachine: "00000000-0000-4000-8000-000000000001", recipientMachine: target.machineId,
+    generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [], resumptions: [resume] });
+  expect(api.decodeExchange(api.encodeExchange(withHopExchange(batch))).resumptions).toEqual([resume]);
   const forged = { ...resume, proof: { ...resume.proof, exclusion: { ...resume.proof.exclusion, excludedGeneration: "wrong" } } };
-  expect(() => api.encodeExchange({ ...batch, resumptions: [forged] })).toThrow();
+  expect(() => api.encodeExchange(withHopExchange({ ...batch, resumptions: [forged] }))).toThrow();
 }, 5000);
 
 it("rejects unknown fields in receipt and control metadata", () => {
   const frame = api.makeMessageFrame({ from, endpoint, originMachineId: "00000000-0000-4000-8000-000000000001", sequence: 1, message });
-  const batch: IntercomExchange = { protocol: 4, senderMachine: "00000000-0000-4000-8000-000000000001", recipientMachine: endpoint.machineId,
-    generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
+  const batch: IntercomExchange = withHopExchange({ protocol: 5, senderMachine: "00000000-0000-4000-8000-000000000001", recipientMachine: endpoint.machineId,
+    generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
   const badReceipt = { from: endpoint, to: from, digest: frame.identity.digest, attempt: 1, receipt: { messageId: message.id, status: "unknown", timestamp: 1, hidden: "body" } };
   const badEvidence = { ...badReceipt, receipt: { messageId: message.id, status: "injected", timestamp: 1,
     evidence: { kind: "entry", sessionId: to.sessionId, activationEpoch: endpoint.activationEpoch, entryId: "entry", hidden: "body" } } };
   const badControl = { from, to, control: { messageId: message.id, action: "cancel", timestamp: 1, hidden: "body" } };
-  expect(() => api.encodeExchange({ ...batch, receipts: [badReceipt] } as unknown as IntercomExchange)).toThrow();
-  expect(() => api.encodeExchange({ ...batch, receipts: [badEvidence] } as unknown as IntercomExchange)).toThrow();
-  expect(() => api.encodeExchange({ ...batch, controls: [badControl] } as unknown as IntercomExchange)).toThrow();
+  expect(() => api.encodeExchange(withHopExchange({ ...batch, receipts: [badReceipt] } as unknown as IntercomExchange))).toThrow();
+  expect(() => api.encodeExchange(withHopExchange({ ...batch, receipts: [badEvidence] } as unknown as IntercomExchange))).toThrow();
+  expect(() => api.encodeExchange(withHopExchange({ ...batch, controls: [badControl] } as unknown as IntercomExchange))).toThrow();
 }, 5000);
 
 it("round-trips receipt attempt fences and rejects invalid generations", () => {
@@ -78,23 +79,23 @@ it("round-trips receipt attempt fences and rejects invalid generations", () => {
     messageId: message.id, status: "injected" as const, timestamp: 1,
     evidence: { kind: "entry" as const, entryId: "entry", sessionId: to.sessionId, activationEpoch: endpoint.activationEpoch },
   } };
-  const batch: IntercomExchange = { protocol: 4, senderMachine: endpoint.machineId, recipientMachine: "00000000-0000-4000-8000-000000000001",
-    generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [observed], controls: [], presence: [] };
-  expect(api.decodeExchange(api.encodeExchange(batch)).receipts).toEqual([observed]);
+  const batch: IntercomExchange = withHopExchange({ protocol: 5, senderMachine: endpoint.machineId, recipientMachine: "00000000-0000-4000-8000-000000000001",
+    generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [observed], controls: [], presence: [] });
+  expect(api.decodeExchange(api.encodeExchange(withHopExchange(batch))).receipts).toEqual([observed]);
   const { attempt: _attempt, ...untagged } = observed;
-  expect(() => api.encodeExchange({ ...batch, receipts: [untagged as unknown as IntercomReceiptFrame] })).toThrow();
+  expect(() => api.encodeExchange(withHopExchange({ ...batch, receipts: [untagged as unknown as IntercomReceiptFrame] }))).toThrow();
   for (const attempt of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
-    expect(() => api.encodeExchange({ ...batch, receipts: [{ ...observed, attempt }] })).toThrow();
+    expect(() => api.encodeExchange(withHopExchange({ ...batch, receipts: [{ ...observed, attempt }] }))).toThrow();
   }
 }, 5000);
 
 it("rejects terminal receipt claims that lack the corresponding evidence", () => {
   const frame = api.makeMessageFrame({ from, endpoint, originMachineId: "00000000-0000-4000-8000-000000000001", sequence: 1, message });
-  const batch: IntercomExchange = { protocol: 4, senderMachine: "00000000-0000-4000-8000-000000000001", recipientMachine: endpoint.machineId,
-    generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
+  const batch: IntercomExchange = withHopExchange({ protocol: 5, senderMachine: "00000000-0000-4000-8000-000000000001", recipientMachine: endpoint.machineId,
+    generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
   for (const status of ["injected", "matched_waiter", "not_injected"] as const) {
-    expect(() => api.encodeExchange({ ...batch, receipts: [{ from: endpoint, to: from, digest: frame.identity.digest, attempt: 1, originMachineId: frame.originMachineId, sequence: frame.identity.sequence,
-      receipt: { messageId: message.id, status, timestamp: 1 } }] })).toThrow();
+    expect(() => api.encodeExchange(withHopExchange({ ...batch, receipts: [{ from: endpoint, to: from, digest: frame.identity.digest, attempt: 1, originMachineId: frame.originMachineId, sequence: frame.identity.sequence,
+      receipt: { messageId: message.id, status, timestamp: 1 } }] }))).toThrow();
   }
 }, 5000);
 

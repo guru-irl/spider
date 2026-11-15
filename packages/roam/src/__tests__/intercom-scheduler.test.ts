@@ -1,3 +1,5 @@
+import { withHopRequest } from "./intercom-hop-fixture";
+import { withHopExchange } from "./intercom-hop-fixture";
 import { openDbReadOnly, paths } from "@spider/db-core";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -58,9 +60,9 @@ async function fixture(options: { mode: "blocked" | "failure"; initiator?: boole
   return { root, bridge, clock, store, transport, calls, downs, failedAsks, expirations, rosters, setMode(value: typeof mode) { mode = value; }, setLive(value: boolean) { live = value; }, setFailureReason(value: string) { failureReason = value; } };
 }
 const execs = (calls: any[]) => calls.filter(call => call.kind === "exec");
-const establishVersion = (bridge: any) => bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000,
-  exchange: { protocol: 4, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
-    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } });
+const establishVersion = (bridge: any) => bridge.exchange(withHopRequest({ version: 1, holdMs: 0, deadlineMs: 5000,
+  exchange: withHopExchange({ protocol: 5, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] }) }));
 
 it("runs one poll and one push independently, with separately persisted generations", async () => {
   const f = await fixture({ mode: "blocked" }); await f.bridge.start(); await flush();
@@ -151,12 +153,12 @@ it("does not charge or send one queued ask in both concurrent channels", async (
 it("does not charge a responder poll handoff again in a concurrent push reply", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "poll-handoff", timestamp: 1, expectsReply: true, remainingMs: 300_000, content: { text: "synthetic" } } });
-  const pull = { protocol: 4, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
-    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
-  const reply = await f.bridge.exchange({ version: 1, exchange: pull, holdMs: 0, deadlineMs: 5000 });
+  const pull = withHopExchange({ protocol: 5, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
+    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
+  const reply = await f.bridge.exchange(withHopRequest({ version: 1, exchange: pull, holdMs: 0, deadlineMs: 5000 }));
   expect(reply.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["poll-handoff"]);
   f.bridge.wake(B); await flush();
-  const next = await f.bridge.exchange({ version: 1, exchange: { ...pull, generation: { ...pull.generation, channel: "push", generation: 2 } }, holdMs: 0, deadlineMs: 5000 });
+  const next = await f.bridge.exchange(withHopRequest({ version: 1, exchange: { ...pull, generation: { ...pull.generation, channel: "push", generation: 2 } }, holdMs: 0, deadlineMs: 5000 }));
   expect(next.exchange.frames).toEqual([]);
   expect(execs(f.calls)).toEqual([]);
   const audit = openDbReadOnly(join(f.root, "queue", "queue.db"))!;
@@ -204,16 +206,16 @@ it("retains peer names, queued mail, and one diagnostic over ten minutes and ser
 it("keeps responder same-pair order while unrelated work uses the next poll", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "pair-1", timestamp: 1, content: { text: "synthetic" } } });
-  const pull = { protocol: 4, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
-    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
-  const reply = await f.bridge.exchange({ version: 1, exchange: pull, holdMs: 0, deadlineMs: 5000 });
+  const pull = withHopExchange({ protocol: 5, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
+    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
+  const reply = await f.bridge.exchange(withHopRequest({ version: 1, exchange: pull, holdMs: 0, deadlineMs: 5000 }));
   expect(reply.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["pair-1"]);
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "pair-2", timestamp: 1, content: { text: "synthetic" } } });
   const other = { ...endpoint, address: { sessionId: "other", scopeId: "scope" } };
   f.store.acceptOutbound({ from, endpoint: other, nextHop: B, message: { id: "other-pair", timestamp: 1, content: { text: "synthetic" } } });
   f.bridge.wake(B); await flush();
-  const next = await f.bridge.exchange({ version: 1, exchange: { ...pull, generation: { ...pull.generation, generation: 2 },
-    acknowledgements: [{ identity: reply.exchange.frames[0].identity, kind: "message" }] }, holdMs: 0, deadlineMs: 5000 });
+  const next = await f.bridge.exchange(withHopRequest({ version: 1, exchange: { ...pull, generation: { ...pull.generation, generation: 2 },
+    acknowledgements: [{ identity: reply.exchange.frames[0].identity, kind: "message" }] }, holdMs: 0, deadlineMs: 5000 }));
   expect(next.exchange.frames.map((frame: any) => frame.identity.id)).toEqual(["other-pair", "pair-2"]);
   expect(reply.exchange.frames[0].identity.sequence).toBe(1);
   expect(next.exchange.frames.find((frame: any) => frame.identity.id === "pair-2").identity.sequence).toBe(2);
@@ -342,10 +344,10 @@ it("reports source expiration during an extended outage without claiming remote 
 
 it("wakes a held poll before its fake-clock deadline", async () => {
   const f = await fixture({ mode: "blocked", initiator: false }); await f.bridge.start();
-  const input = { protocol: 4, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
-    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
+  const input = withHopExchange({ protocol: 5, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "poll", generation: 1 },
+    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
   let settled = false;
-  const pending = f.bridge.exchange({ version: 1, exchange: input, holdMs: 200, deadlineMs: 5200 }).then((reply: any) => { settled = true; return reply; });
+  const pending = f.bridge.exchange(withHopRequest({ version: 1, exchange: input, holdMs: 200, deadlineMs: 5200 })).then((reply: any) => { settled = true; return reply; });
   try {
     f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "fake-wake", timestamp: 1, content: { text: "synthetic" } } });
     f.bridge.wake(B); await flush(); expect(settled).toBe(true);
@@ -407,7 +409,7 @@ it("a proved identity failure fences a concurrent late success", async () => {
     if (input.exchange.generation.channel === "poll") return new Promise<Buffer>((_resolve, reject) => { failPoll = reject; });
     return new Promise<Buffer>(resolve => { finishPush = () => resolve(Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true,
       value: { version: 1, exchange: { ...input.exchange, senderMachine: B, recipientMachine: A, frames: [],
-        acknowledgements: input.exchange.frames.map((frame: any) => ({ identity: frame.identity, kind: frame.kind })), receipts: [], controls: [], presence: [remote] } } }))); });
+        acknowledgements: input.exchange.frames.map((frame: any) => ({ identity: frame.identity, hopSequence: frame.hopSequence, kind: frame.kind })), receipts: [], controls: [], presence: [remote] } } }))); });
   };
   try {
     await f.bridge.start(); await flush();
@@ -418,9 +420,9 @@ it("a proved identity failure fences a concurrent late success", async () => {
     finishPush(); await flush();
     expect(f.store.edgeState(B, "edge-1").status).toBe("down");
     expect(f.store.retained("outbound", "late-success")).toMatchObject({ linkAcknowledged: false, payloadRetained: true });
-    const incoming = { protocol: 4, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
-      frames: [], acknowledgements: [], receipts: [], controls: [], presence: [remote] };
-    await expect(f.bridge.exchange({ version: 1, exchange: incoming, holdMs: 0, deadlineMs: 5000 })).rejects.toMatchObject({ code: "machine-mismatch" });
+    const incoming = withHopExchange({ protocol: 5, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+      frames: [], acknowledgements: [], receipts: [], controls: [], presence: [remote] });
+    await expect(f.bridge.exchange(withHopRequest({ version: 1, exchange: incoming, holdMs: 0, deadlineMs: 5000 }))).rejects.toMatchObject({ code: "machine-mismatch" });
     expect(f.store.edgeState(B, "edge-1").status).toBe("down");
   } finally { finishPush?.(); await f.bridge.stop(); }
 }, 5000);

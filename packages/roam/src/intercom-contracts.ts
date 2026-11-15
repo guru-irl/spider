@@ -2,8 +2,8 @@ import type { Home, MachineId } from "@spider/db-core/roam/types";
 import type { AcceptanceEvidence, FederationBlockers, Message, MessageControl, MessageReceipt, RemoteSessionInfo, SessionAddress, SessionEndpoint } from "@spider/intercom/protocol";
 import type { Clock } from "./contracts";
 
-// Protocol 4 predates cross-machine deployment; old receipts have no compatibility path.
-export const INTERCOM_FEDERATION_VERSION = 4 as const;
+// Protocol 5 predates cross-machine deployment. Prior hop formats have no compatibility path.
+export const INTERCOM_FEDERATION_VERSION = 5 as const;
 export const INTERCOM_MESSAGE_BYTES: number = 256 * 1024;
 export const INTERCOM_EXCHANGE_BYTES: number = 512 * 1024;
 export const INTERCOM_QUEUE_MESSAGES: number = 256;
@@ -31,6 +31,8 @@ export interface IntercomIdentity {
 }
 export interface IntercomMessageFrame {
   kind: "message";
+  /** Physical position inside the authenticated enrollment edge, never original provenance. */
+  hopSequence?: number;
   identity: IntercomIdentity;
   endpoint: SessionEndpoint;
   message: Message;
@@ -41,6 +43,7 @@ export interface IntercomMessageFrame {
 }
 export interface IntercomTombstoneFrame {
   kind: "tombstone";
+  hopSequence?: number;
   identity: IntercomIdentity;
   endpoint: SessionEndpoint;
   /** Preserves the same origin when the message becomes a tombstone. */
@@ -50,10 +53,10 @@ export interface IntercomTombstoneFrame {
 export type IntercomFrame = IntercomMessageFrame | IntercomTombstoneFrame;
 
 /** A link acknowledgement proves durable inbox acceptance, not consumption. */
-export interface IntercomLinkAck { identity: IntercomIdentity; kind: IntercomFrame["kind"] }
-export interface IntercomRefusal { identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "link-down" | "missing-origin" | "peer-revoked" | "intercom-topology-changing" | "sender-unauthorized" | "store-rejected" }
+export interface IntercomLinkAck { hopSequence?: number; identity: IntercomIdentity; kind: IntercomFrame["kind"] }
+export interface IntercomRefusal { hopSequence?: number; identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "hop-sequence-gap" | "hop-slot-mismatch" | "link-down" | "missing-origin" | "peer-revoked" | "intercom-topology-changing" | "sender-unauthorized" | "store-rejected" }
 /** Validated metadata from a rejected frame; no payload or fabricated origin is retained. */
-export interface MissingOriginFrame { index: number; identity: IntercomIdentity; endpoint: SessionEndpoint; kind: IntercomFrame["kind"] }
+export interface MissingOriginFrame { hopSequence?: number; index: number; identity: IntercomIdentity; endpoint: SessionEndpoint; kind: IntercomFrame["kind"] }
 export interface IntercomReceiptInput {
   from: SessionEndpoint;
   to: SessionAddress;
@@ -76,6 +79,8 @@ export interface IntercomExchange {
   senderMachine: MachineId;
   recipientMachine: MachineId;
   generation: ExchangeGeneration;
+  /** Authenticated start at zero. Repeated starts never reset a persisted cursor. */
+  streamStart?: { after: 0 };
   frames: IntercomFrame[];
   acknowledgements: IntercomLinkAck[];
   refusals?: IntercomRefusal[];
@@ -86,6 +91,18 @@ export interface IntercomExchange {
   resumptions?: IntercomPairResume[];
   topology?: { transitionId: string; action: "switch" | "switched" };
 }
+
+/** The codec proves these transport fields before exposing an authenticated exchange. */
+export type IntercomWireMissingOriginFrame = MissingOriginFrame & { hopSequence: number };
+export type IntercomWireFrame = IntercomFrame & { hopSequence: number };
+export type IntercomWireAck = IntercomLinkAck & { hopSequence: number };
+export type IntercomWireRefusal = IntercomRefusal & { hopSequence: number };
+export type AuthenticatedIntercomExchange = Omit<IntercomExchange, "streamStart" | "frames" | "acknowledgements" | "refusals"> & {
+  streamStart: { after: 0 };
+  frames: IntercomWireFrame[];
+  acknowledgements: IntercomWireAck[];
+  refusals?: IntercomWireRefusal[];
+};
 
 export interface IntercomStoreOptions {
   file: string;
@@ -101,7 +118,7 @@ export type IntercomAcceptance =
 export type OutboundMessage = (
   | { from: SessionAddress; endpoint: SessionEndpoint; message: Message; nextHop: MachineId }
   | { frame: IntercomFrame; nextHop: MachineId }
-) & { firstHomePresence?: RemoteSessionInfo };
+) & { firstHomePresence?: RemoteSessionInfo; edgeEpoch?: string };
 export type IntercomQueue = "outbound" | "inbound";
 export type IntercomState = "queued" | "unknown" | "not_injected" | "injected" | "matched_waiter" | "answered" | "expired" | "cancelled";
 export interface RetainedIntercom {
@@ -189,15 +206,23 @@ export interface IntercomStore extends IntercomTopologyStore {
   acceptLocal(input: { from: SessionAddress; endpoint: SessionEndpoint; message: Message; firstHomePresence?: RemoteSessionInfo }): IntercomAcceptance;
   acceptOutbound(input: OutboundMessage): IntercomAcceptance;
   /** The transport authenticates the peer. Resume owners come from the local authoritative home lookup, not the wire. */
-  acceptInbound(input: { peer: MachineId; frame: IntercomFrame; resume?: { cursor: IntercomPairResume; owner: Home | null } }): IntercomAcceptance;
+  openHop(peer: MachineId, edgeEpoch: string): void;
+  inspectHop(input: { peer: MachineId; edgeEpoch: string; sequence: number; identity: IntercomIdentity; origin?: MachineId }):
+    { kind: "next" | "duplicate" } | { kind: "refused"; reason: IntercomRefusal["reason"] };
+  hopPosition(queue: IntercomQueue, peer: MachineId, edgeEpoch: string, identity: IntercomIdentity): number | undefined;
+  rejectHop(input: { peer: MachineId; edgeEpoch: string; sequence: number; identity: IntercomIdentity; origin?: MachineId; reason: IntercomRefusal["reason"] }): void;
+  acceptInbound(input: { peer: MachineId; frame: IntercomFrame; hop?: { edgeEpoch: string; sequence: number };
+    forward?: { peer: MachineId; edgeEpoch: string; firstHomePresence?: RemoteSessionInfo };
+    resume?: { cursor: IntercomPairResume; owner: Home | null } }): IntercomAcceptance;
   rejectMissingOrigin(input: { peer: MachineId; frame: MissingOriginFrame }): void;
   rejectFrame(input: { peer: MachineId; origin: MachineId; identity: IntercomIdentity; reason: "sender-unauthorized" | "store-rejected" | "peer-revoked" }): void;
-  outboundResumptions(peer: MachineId): readonly IntercomPairResume[];
+  outboundResumptions(peer: MachineId, edgeEpoch?: string): readonly IntercomPairResume[];
   /** maxBytes includes each encoded frame and one separator, after reserving the rest of the exchange. */
-  pending(input: { kind: "outbound"; peer: MachineId; hopBudgetMs: number; maxBytes?: number; skipIds?: readonly string[] }): readonly IntercomFrame[];
+  pending(input: { kind: "outbound"; peer: MachineId; edgeEpoch: string; hopBudgetMs: number; maxBytes?: number; skipIds?: readonly string[] }): readonly IntercomWireFrame[];
+  pending(input: { kind: "outbound"; peer: MachineId; edgeEpoch?: string; hopBudgetMs: number; maxBytes?: number; skipIds?: readonly string[] }): readonly IntercomFrame[];
   pending(input: { kind: "inbound"; address: SessionAddress }): readonly IntercomIdentity[];
   pending(input: { kind: "receipts"; peer: MachineId; maxBytes?: number }): readonly IntercomReceiptFrame[];
-  acknowledge(input: { peer: MachineId; identity: IntercomIdentity; kind: IntercomFrame["kind"] }): void;
+  acknowledge(input: { peer: MachineId; edgeEpoch?: string; hopSequence?: number; identity: IntercomIdentity; kind: IntercomFrame["kind"] }): void;
   acknowledgeReceipt(input: { peer: MachineId; frame: IntercomReceiptFrame }): void;
   beginDispatch(input: { id: string; endpoint: SessionEndpoint; readiness: string }): IntercomMessageFrame;
   /** Call only with client proof that this exact dispatch never reached a socket write. */
@@ -216,7 +241,7 @@ export interface IntercomStore extends IntercomTopologyStore {
   markNoticeReported(id: string, kind: "expiry" | "link-down"): void;
   expiredOutbounds(peer: MachineId): readonly { identity: IntercomIdentity; outcomeKnown: boolean }[];
   hasPending(peer: MachineId): boolean;
-  rebindUndispatched(address: SessionAddress, endpoint: SessionEndpoint, proof: RebindProof): number;
+  rebindUndispatched(address: SessionAddress, endpoint: SessionEndpoint, proof: RebindProof, edgeEpoch?: string): number;
   rebindInboundAfterAbsence(id: string, endpoint: SessionEndpoint): void;
   retained(queue: IntercomQueue, id: string): RetainedIntercom | null;
   close(): void;

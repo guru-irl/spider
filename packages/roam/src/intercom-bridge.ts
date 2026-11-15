@@ -412,7 +412,9 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       }
       const ack = { identity: frame.identity, hopSequence: frame.hopSequence, kind: frame.kind };
       if (position.kind === "refused") {
-        refusals.push({ identity: frame.identity, hopSequence: frame.hopSequence, reason: position.reason }); acks.push(ack); continue;
+        refusals.push({ identity: frame.identity, hopSequence: frame.hopSequence, reason: position.reason });
+        if (position.reason !== "intercom-topology-changing") acks.push(ack);
+        continue;
       }
       const prior = ports.store.retained("inbound", frame.identity.id);
       if (position.kind === "duplicate" && (!prior || prior.originMachineId !== frame.originMachineId || !sameIdentity(prior.identity, frame.identity))) {

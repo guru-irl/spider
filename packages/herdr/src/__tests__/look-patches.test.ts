@@ -166,7 +166,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, identityPill, assignSpaceIdentities, threadKeylines, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, createFeedReader, Scrollbar: { vertical: () => ui() }, exec: async () => { throw new Error('Unexpected reader process'); }, ...supplied };
+  const ports = { FEED_REFRESH_MS, identityPill, assignSpaceIdentities, threadKeylines, projectAgentChildren, filterTopLevelAgents, loadAgentFeeds, selectAgentChildren, createFeedReader, machines: () => [], Scrollbar: { vertical: () => ui() }, exec: async () => { throw new Error('Unexpected reader process'); }, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);

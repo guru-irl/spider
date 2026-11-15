@@ -162,7 +162,7 @@ function elements(root: Element): Element[] {
   return [value, ...value.children.filter(x => typeof x === 'object' && x !== null).flatMap(x => elements(x as Element))];
 }
 function loadView(supplied: Record<string, unknown>): any {
-  const dependencies = { ...children, ...sharedLook, Scrollbar: { vertical: () => ui() }, ...supplied };
+  const dependencies = { ...children, ...sharedLook, machines: () => [], Scrollbar: { vertical: () => ui() }, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('dependencies', `const { ${Object.keys(dependencies).join(', ')} } = dependencies; ${code}; return ${name};`)(dependencies);
@@ -176,6 +176,15 @@ function failedFeed(now: number) {
 describe('installed agents sidebar', () => {
   test('setup verifies patches applied to the real upstream mods', () => {
     expect(doctorFailures).toEqual([]);
+  });
+
+  test('the installed console projection uses current machine availability', async () => {
+    const terminal = { address: 'box-1.invalid/console', parent: 't1', state: 'live' as const, status: 'idle', labels: { 'spider.kind': 'remote-console', 'spider.machine': 'box-1.invalid' } };
+    const installedProject = children.projectAgentChildren as typeof import('../../../herdr/assets/agents/children.js').projectAgentChildren;
+    const project = (layout: 'unavailable' | 'ready') => installedProject([terminal], [], 't1', HerdrLabelContract, { machines: [{ name: 'box-1.invalid', layout }] });
+    expect(project('unavailable')[0]).toMatchObject({ name: 'box-1.invalid', status: 'unreachable', action: null });
+    expect(project('ready')[0]).toMatchObject({ name: 'box-1.invalid', status: 'idle' });
+    expect(await readFile(join(harness!.directories.app, 'mods/spider-agents/spider-children.js'))).toEqual(await readFile(resolve('packages/herdr/assets/agents/children.js')));
   });
 
   test('setup installs the shared look module and records its digest', async () => {

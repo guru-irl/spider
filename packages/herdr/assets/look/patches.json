@@ -83,7 +83,7 @@
       {
         "id": "move-row-hook",
         "anchor": "      .gap(0)\n      .items_center()\n      .text_size(12.5)",
-        "replacement": "      .gap(0)\n      .items_center()\n      .text_size(12.5)\n      .when([\"subagent\", \"console\", \"remote\"].includes(k.kind), el => el.on_mouse_down(\"right\", (_e, cx) => {\n        cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: k.kind, key: k.key, terminal: k.originalAddress ?? k.address, action: k.action, retained: k.retained } } });\n      }))"
+        "replacement": "      .gap(0)\n      .items_center()\n      .text_size(12.5)\n      .when(k.status !== \"unreachable\" && [\"subagent\", \"console\", \"remote\"].includes(k.kind), el => el.on_mouse_down(\"right\", (_e, cx) => {\n        cx.stop_propagation(); openOverlay({ mod: \"spider-agents\", kind: \"popup\", width: 280, height: 420, props: { ...spiderProps(), modId: \"spider-agents\", moveMenu: { kind: k.kind, key: k.key, terminal: k.originalAddress ?? k.address, action: k.action, retained: k.retained } } });\n      }))"
       },
       {
         "id": "move-session-rail-hook",
@@ -133,7 +133,7 @@
       {
         "id": "live-child-priority",
         "anchor": "this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0)",
-        "replacement": "this.projectChildren(all, a.address).filter((child) => !child.retained).map((child) => RANK[kidStatus(child, this.listed)] ?? 0)"
+        "replacement": "this.projectChildren(all, a.address).filter((child) => !child.retained && child.status !== \"unreachable\").map((child) => RANK[kidStatus(child, this.listed)] ?? 0)"
       },
       {
         "id": "live-child-fold-color",
@@ -153,17 +153,17 @@
       {
         "id": "child-details",
         "anchor": ".child(k.name || k.template || k.program?.name || k.address))",
-        "replacement": ".child(k.name || k.template || k.program?.name || k.address).tooltip([k.outcome, k.retained ? \"Saved output\" : null, k.completeness === \"unknown\" ? \"Output completeness unknown\" : null, !k.action ? \"No live endpoint\" : null, k.originalAddress].filter(Boolean).join(\" · \")))"
+        "replacement": ".child(k.name || k.template || k.program?.name || k.address).tooltip([k.description, k.outcome, k.retained ? \"Saved output\" : null, k.completeness === \"unknown\" ? \"Output completeness unknown\" : null, !k.action ? \"No live endpoint\" : null, k.originalAddress].filter(Boolean).join(\" · \")))"
       },
       {
         "id": "deferred-chips",
         "anchor": "    const color = t[a.status] ?? t.dim;",
-        "replacement": "    const color = t[a.status] ?? t.dim;\n    const deferred = { queued: \"Queued\", paused: \"Paused\", disconnected: \"Disconnected\", cancelled: \"Cancelled\", unknown: \"Unknown\" }[a.status];\n    if (deferred) return div().flex_none().px(8).h(18).rounded(999).bg(t.hover).text_size(10.5).text_color(t.muted).flex().items_center().child(deferred);"
+        "replacement": "    const color = t[a.status] ?? t.dim;\n    const deferred = { queued: \"Queued\", paused: \"Paused\", disconnected: \"Disconnected\", unreachable: \"Unreachable\", cancelled: \"Cancelled\", unknown: \"Unknown\" }[a.status];\n    if (deferred) return div().flex_none().px(8).h(18).rounded(999).bg(t.hover).text_size(10.5).text_color(t.muted).flex().items_center().child(deferred);"
       },
       {
         "id": "feed-host-imports",
         "anchor": "import { agents, terminals, panes,",
-        "replacement": "import { readTextFile, exec, watchFolder, agents, terminals, panes,"
+        "replacement": "import { readTextFile, exec, watchFolder, agents, terminals, panes, machines,"
       },
       {
         "id": "feed-lifecycle",
@@ -173,12 +173,12 @@
       {
         "id": "feed-and-actions",
         "anchor": "  peek(addr) {\n",
-        "replacement": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const rows = projectAgentChildren(all, this.spiderFeeds ?? [], addr, p.labelContract, p.retention ?? {});\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n"
+        "replacement": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const rows = projectAgentChildren(all, this.spiderFeeds ?? [], addr, p.labelContract, { ...p.retention, machines: machines() });\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n"
       },
       {
         "id": "child-action",
         "anchor": ".on_click(() => this.peek(k.address))",
-        "replacement": ".on_click((_e, cx) => cx.spawn(async cx => { await this.openChild(k); cx.notify(); }))"
+        "replacement": ".when(k.status !== \"unreachable\", el => el.on_click((_e, cx) => cx.spawn(async cx => { await this.openChild(k); cx.notify(); })))"
       },
       {
         "id": "feed-diagnostic",
@@ -343,7 +343,7 @@
       {
         "id": "fold-count-argument",
         "anchor": "    const fold = (a, subs) => {",
-        "replacement": "    const childCounts = addr => {\n      const rows = this.projectChildren(all, addr);\n      const consoles = rows.filter(child => child.kind === \"console\" && child.terminal?.state === \"live\");\n      const bots = rows.filter(child => !child.retained && child.kind !== \"console\" && !(child.kind === \"remote\" && rows.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));\n      const states = rows.filter(child => !child.retained).map(child => kidStatus(child, this.listed));\n      return { consoles, bots, states };\n    };\n    const fold = (a, subs, live) => {"
+        "replacement": "    const childCounts = addr => {\n      const rows = this.projectChildren(all, addr);\n      const consoles = rows.filter(child => child.kind === \"console\" && child.status !== \"unreachable\" && child.terminal?.state === \"live\");\n      const bots = rows.filter(child => !child.retained && child.status !== \"unreachable\" && child.kind !== \"console\" && !(child.kind === \"remote\" && rows.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));\n      const states = rows.filter(child => !child.retained && child.status !== \"unreachable\").map(child => kidStatus(child, this.listed));\n      return { consoles, bots, states };\n    };\n    const fold = (a, subs, live) => {"
       },
       {
         "id": "grouped-tree",

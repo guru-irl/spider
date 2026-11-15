@@ -21,6 +21,13 @@ it.each(['closed', 'stale', 'replaced'] as const)('%s owner rows open their surv
   expect(rows[0].key).toBe(run.id);
   expect(rows[0].action).toEqual({ kind: 'peek', terminal: 'viewer' });
 });
+it('does not peek a surviving viewer on an unavailable machine', () => {
+  const current = feed(); current.lifecycle = 'closed'; current.ipc = null;
+  const remote = { ...viewer, address: 'box-1.invalid/viewer' };
+  const project = (layout: 'unavailable' | 'ready') => projectAgentChildren([remote], [current], 'owner', HerdrLabelContract, { now: 1000, machines: [{ name: 'box-1.invalid', layout }] });
+  expect(project('unavailable')[0]).toMatchObject({ status: 'unreachable', action: null });
+  expect(project('ready')[0].action).toEqual({ kind: 'peek', terminal: 'box-1.invalid/viewer' });
+});
 it('keeps generation-bound IPC for a live owned run', () => {
   const rows = projectAgentChildren([viewer], [feed()], 'owner', HerdrLabelContract, { now: 1000 });
   expect(rows[0].action).toMatchObject({ kind: 'ipc', request: { op: 'openRun', runId: run.id, generation: 'activation' } });

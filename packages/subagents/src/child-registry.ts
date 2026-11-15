@@ -304,6 +304,20 @@ function recordChainInterruption(entry: SharedChildEntry, closed: boolean): void
   finally { db?.close(); }
 }
 
+function doomedByPark(entry: SharedChildEntry, opts: Pick<DetachOpts, "durableOnly">): boolean {
+  return !entry.survivable || (opts.durableOnly === true && !entry.handle.durable);
+}
+
+/** Inspect the existing registry without creating, parking, or mutating entries. */
+export function hasReloadDoomedChildren(sessionId: string): boolean {
+  const reg = (globalThis as Record<symbol, unknown>)[CHILD_REGISTRY_KEY];
+  if (!isRegistryV1(reg)) return false;
+  for (const entry of reg.entries.values()) {
+    if (entry.sessionId === sessionId && doomedByPark(entry, {})) return true;
+  }
+  return false;
+}
+
 /**
  * Reload, step one (synchronous): park this session's survivable children (sink dropped, events
  * unbound, TTL armed). Entries that cannot survive (foreground chain steps) are removed and
@@ -316,7 +330,7 @@ export function parkSession(sessionId: string, opts: DetachOpts = {}): SharedChi
   let parked = false;
   for (const entry of [...reg.entries.values()]) {
     if (entry.sessionId !== sessionId) continue;
-    if (!entry.survivable || (opts.durableOnly && !entry.handle.durable)) { clearTimeout(entry.timer); doomed.push(entry); reg.entries.delete(entry.runId); continue; }
+    if (doomedByPark(entry, opts)) { clearTimeout(entry.timer); doomed.push(entry); reg.entries.delete(entry.runId); continue; }
     if (entry.state !== "attached") {
       if (entry.handle.durable) {
         entry.state = "independent";

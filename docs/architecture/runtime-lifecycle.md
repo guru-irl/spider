@@ -11,14 +11,14 @@
 | Bundle status | Meaning or remedy |
 | --- | --- |
 | `current` | The loaded and installed build identities match. |
-| `RELOAD NEEDED` | The bundle changed, and the loaded URL has the `?build=` query that the generated shim adds. Use `/reload`. |
+| `RELOAD NEEDED` | The bundle changed, and the loaded URL has the `?build=` query that the generated shim adds. Idle interactive parent sessions reload automatically, or you can use `/reload`. |
 | `RESTART NEEDED` | A direct load, an old-shim load, or a fallback load has no query. Restart pi. |
 | Unreadable or marker unavailable | Doctor cannot verify the installed identity and does not claim it is current. |
 
 - Child diagnostics say that the next child dispatched loads the new bundle.
 - If the query is missing, doctor also suggests that you regenerate a linked shim with `npm run link` and then restart once.
 - Bundle freshness is for information only. It does not fail the health check by itself.
-- Updating the file does not replace code that a session has already loaded.
+- Updating the file does not replace loaded code until the session reloads. Automatic reload waits for an idle interactive parent session and for chains and pipelines to finish. Ordinary background runs do not block it.
 
 ## Linked shims
 

@@ -22,6 +22,7 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "herdr.enabled": "auto",
   "herdr.config": "",
   "ui.footer": true,
+  "reload.auto": true,
   "tools.structured": false,
   ...USAGE_DEFAULTS,
   ...COMPACTION_DEFAULTS,

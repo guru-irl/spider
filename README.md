@@ -88,7 +88,7 @@ Keep the clone at its linked path. See [Linked shims](docs/architecture/runtime-
 Direct `pi install git:` installs are not supported. Pi omits development dependencies, which spider needs to build the unbundled source.
 
 To update the clone, run `git pull` inside it. If `package-lock.json` changed, quit pi, run `npm ci`, then start pi again.
-Otherwise, run `npm run build` and `/reload`. If `/doctor` reports `RESTART NEEDED`, restart pi instead.
+Otherwise, run `npm run build`. Sessions started before automatic reload was available need one manual `/reload` to enable it. After that, idle interactive parent sessions reload automatically after bundle changes. Automatic reload waits for chains and pipelines to finish, but ordinary background runs can continue. Set `reload.auto` to `false` to turn it off. A manual `/reload` can still stop foreground chain steps and later pipeline stages. If `/doctor` reports `RESTART NEEDED`, restart pi instead.
 Reload refreshes the bundle, not dependencies or native modules.
 
 To remove a linked clone, run `npm run unlink` in the clone. If you used `npm run dev:link`, also run `npm run dev:unlink`.

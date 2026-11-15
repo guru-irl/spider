@@ -23,6 +23,7 @@ import { isAbsolutePathList, isToolSelectorList } from "@spider/ui";
 // attach action handlers via registerAction (re-exported below).
 import type { CacheWarmingDecisionEventResult, ContextEvent, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { registerLoopSchedule, type SessionScheduler, type LoopArgs, type ScheduleArgs } from "./loop/index";
+import { registerAutoReload } from "./auto-reload.js";
 import { createTimeMath } from "./loop/time-math";
 import { registerUsage } from "./usage/mount.js";
 import { makeRunCostFormatter } from "./run-credits.js";
@@ -59,7 +60,7 @@ import {
   renderRememberResult, renderRecallResult, renderPending, MEMORY_CONSOLIDATE_RENAMED_MESSAGE,
 } from "@spider/memory";
 import { makeTodo, makeTodosCommand, viewCatalogSession } from "@spider/todo";
-import { registerSubagentActions, adoptReloadedChildren, adoptableFor, activeChildCount } from "@spider/subagents";
+import { registerSubagentActions, adoptReloadedChildren, adoptableFor, activeChildCount, reloadWouldInterrupt } from "@spider/subagents";
 import {
   registerOrganism,
   readOrganismConfig,
@@ -888,6 +889,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       else process.stderr.write(message + "\n");
     });
   }
+  registerAutoReload(pi as unknown as ExtensionAPI, loadedBundle, cwd => controlConfig("get", cwd, "reload.auto") !== false, ordinaryWorkAllowed, reloadWouldInterrupt);
   const setForHost = <T>(map: WeakMap<object, T>, value: T) => { map.set(hostPi, value); map.set(pi, value); };
   const clearForHost = <T>(map: WeakMap<object, T>, value: T) => { for (const key of [hostPi, pi]) if (map.get(key) === value) map.delete(key); };
   const loopCommand = registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath(), ordinaryWorkAllowed);

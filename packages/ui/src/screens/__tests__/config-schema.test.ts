@@ -4,7 +4,7 @@ import { CONFIG_SCHEMA, createConfigSchema, getField, coerce } from "../config-s
 describe("config schema", () => {
 	it("declares groups with working or explicitly reserved settings", () => {
 		const ids = CONFIG_SCHEMA.map((g) => g.id).sort();
-		expect(ids).toEqual(["auxiliary", "compaction", "curator", "embeddings", "exec", "herdr", "memory", "models", "organism", "routing", "skills", "subagents", "tools", "ui", "usage"]);
+		expect(ids).toEqual(["auxiliary", "compaction", "curator", "embeddings", "exec", "herdr", "memory", "models", "organism", "reload", "routing", "skills", "subagents", "tools", "ui", "usage"]);
 	});
 	it("coerces Herdr activation to booleans or auto and exposes its config path", () => {
 		const enabled = getField("herdr.enabled")!;
@@ -53,6 +53,13 @@ describe("config schema", () => {
 		const field = getField("subagents.extensions");
 		expect(field).toBeDefined();
 		expect(coerce(field!, raw)).toMatchObject({ ok: false, error: expect.stringMatching(/absolute.*paths/i) });
+	});
+	it("allows disabling automatic reload with a live boolean setting", () => {
+		const field = getField("reload.auto");
+		expect(field).toMatchObject({ type: "boolean", default: true });
+		expect(field!.restart).not.toBe(true);
+		expect(coerce(field!, "false")).toEqual({ ok: true, value: false });
+		expect(coerce(field!, "true")).toEqual({ ok: true, value: true });
 	});
 	it("allows disabling subagent cache warming with a live boolean setting", () => {
 		const field = getField("subagents.keepCacheWarm");

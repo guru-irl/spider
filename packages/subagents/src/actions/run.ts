@@ -8,7 +8,7 @@ import { runUsageSummary, sumUsage, safelyReportUsage } from "../usage";
 import { RunEventTailer } from "../event-tailer";
 import { Runner, UNDELIVERED_RUN_QUERY, type Spawner } from "../runner";
 import { PipelineCoordinator } from "../pipeline";
-import { getCoordinators, setupEscalationNotifier, type SessionCoordinators } from "../coordinators";
+import { getCoordinators, setupEscalationNotifier, trackChain, type SessionCoordinators } from "../coordinators";
 import { runChain } from "../chain";
 import { runParallel } from "../parallel";
 import { runSingle } from "../single";
@@ -237,8 +237,9 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     if (Array.isArray(args.chain)) {
       // Each foreground step reports on exit, including the final chain outcome when applicable.
       const chain = args.chain.map((c: any, index: number) => ({ ...c, ...resolveMT(c.model, c.thinking, c.agent ?? "worker", index + 1) }));
+      const releaseChain = trackChain(ctx.sessionId);
       void runChain(runner, chain, { task: args.task ?? "", context: args.context ?? "fresh", skill })
-        .catch(() => { /* best-effort */ });
+        .catch(() => { /* best-effort */ }).finally(releaseChain);
       const first = chain[0] ?? {};
       return { content: [`chain started: ${chain.length} step(s)`, ...thinkingDiagnostics.map(info => `step ${info.step}: ${info.notice}`)].join("\n"), details: withWarning({ chain: chain.length, first: first.name ?? first.agent }) };
     }

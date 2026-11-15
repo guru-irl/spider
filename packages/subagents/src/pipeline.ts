@@ -81,6 +81,8 @@ export class PipelineCoordinator {
     return { pipelineId: this.pipelineId, sessionId: this.deps.sessionId };
   }
 
+  isActive(): boolean { return this.off !== null; }
+
   dispose(): void { this.off?.(); this.off = null; }
 
   /** Reload ends coordination (the coordinator is activation-local). The in-flight stage child

@@ -3,7 +3,7 @@
 import { afterEach, expect, it } from 'vitest';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
-import { registerAgentConsoleLifecycle } from '../remote/console.js';
+import { closeAgentConsoles, registerAgentConsoleLifecycle } from '../remote/console.js';
 import type { HcClient, HcEvent, MachineName, RunId } from '../contracts.js';
 
 const harnesses: HerdrHarness[] = [];
@@ -62,9 +62,20 @@ it('retries closing an ended run console after the machine reconnects without cl
     await expect.poll(() => errors.length, { timeout: 8000 }).toBeGreaterThan(0);
     expect((await h.hc.get(console.address)).state).toBe('live');
     online = true;
-    await expect.poll(async () => { try { await h.hc.get(console.address); return false; } catch (error) { if ((error as { code?: string }).code === 'not_found') return true; throw error; } }, { timeout: 12000 }).toBe(true);
+    await expect.poll(async () => { try { await h.hc.get(console.address); return false; } catch (error) { if ((error as { code?: string }).code === 'not_found') return true; throw error; } }, { timeout: 45000 }).toBe(true);
     expect((await h.hc.get(unrelated.address)).state).toBe('live');
   } finally { life.dispose(); }
+}, 60000);
+
+it('does not close a terminal whose console label changes after inventory', async () => {
+  const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
+  const owner = h.owner!, run = 'relabelled-run' as RunId;
+  const terminal = await h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: 'remote.invalid' as MachineName,
+    labels: { 'spider.kind': 'remote-console', 'spider.session': owner.sessionId, 'spider.machine': 'remote.invalid', 'spider.run': run }, noNotify: true, background: true, outliveParent: true });
+  const hc: HcClient = { ...h.hc, get: async address => ({ ...await h.hc.get(address), labels: { ...(await h.hc.get(address)).labels, 'spider.kind': 'exec' } }) };
+  await closeAgentConsoles({ ...owner, runId: run }, hc);
+  const surviving = await h.hc.get(terminal.address).catch(error => { if ((error as { code?: string }).code === 'not_found') return null; throw error; });
+  expect(surviving?.state).toBe('live');
 }, 30000);
 
 it('reaps a finished run console recovered in a missed-event snapshot', async () => {

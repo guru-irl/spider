@@ -158,7 +158,7 @@ export interface RpcDriver extends Common { mode: 'rpc'; rpc(command: Record<str
 export interface OneShotDriver extends Common { mode: 'print' | 'json'; exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; output(): Promise<string> }
 export interface InteractiveDriver extends Common { mode: 'interactive'; terminal: string; prompt(text: string): Promise<void>; key(bytes: string): Promise<void>; draft(): Promise<string>; rawOutput(): Promise<Buffer> }
 export type PiDriver = RpcDriver | OneShotDriver | InteractiveDriver;
-export interface LaunchOptions { mode: PiMode; cwd: string; args?: readonly string[]; prompt?: string; extraEnv?: Record<string, string>; label?: string }
+export interface LaunchOptions { mode: PiMode; cwd: string; args?: readonly string[]; prompt?: string; extraEnv?: Record<string, string>; label?: string; terminalSide?: string }
 
 let launches = 0;
 export async function launchPi(pi: PiEnvironment, ledger: LedgerHandle, options: LaunchOptions, cores?: Cores): Promise<PiDriver> {
@@ -220,6 +220,10 @@ function rpcDriver(proc: OwnedProcess, common: Omit<Common, 'close'>): RpcDriver
 }
 
 async function launchInteractive(pi: PiEnvironment, ledger: LedgerHandle, cores: Cores, cwd: OwnedPath, options: LaunchOptions, n: number): Promise<InteractiveDriver> {
+  const side = options.terminalSide ?? 'local';
+  if (!ledger.read().cores.some(core => core.side === side && core.coreId === cores.local.coreId)) {
+    throw new HarnessError('terminal-core-unowned', 'the selected core does not match the owned ledger side');
+  }
   const socketPath = ownedPath(pi.root, join(pi.root, `b${n}.s`)), rawLog = ownedPath(pi.root, join(pi.root, 'logs', `tui-${n}.raw`));
   mkdirSync(dirname(rawLog), { recursive: true });
   // hc decides the terminal program's base environment; the broker replaces it with the fenced one plus extraEnv,
@@ -231,16 +235,23 @@ async function launchInteractive(pi: PiEnvironment, ledger: LedgerHandle, cores:
   const address = (result.json as { address?: unknown; terminal?: { address?: unknown } } | null);
   const terminal = typeof address?.address === 'string' ? address.address : typeof address?.terminal?.address === 'string' ? address.terminal.address : null;
   if (result.exitCode !== 0 || !terminal) throw new HarnessError('hc-run-failed', result.stderr || result.stdout);
-  ledger.update(l => { l.terminals.push({ side: 'local', address: terminal }); });
+  ledger.update(l => { l.terminals.push({ side, address: terminal }); });
   const call = (request: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve, reject) => {
     const socket = connect(socketPath); let buffer = '';
     socket.on('connect', () => socket.write(JSON.stringify(request) + '\n'));
     socket.on('data', d => { buffer += d; const i = buffer.indexOf('\n'); if (i >= 0) { socket.destroy(); try { resolve(JSON.parse(buffer.slice(0, i))); } catch (e) { reject(e); } } });
     socket.on('error', reject);
   });
-  await waitFor('pty broker socket', () => existsSync(socketPath), Boolean, makeDeadline(20_000));
-  const hello = await call({ op: 'hello' });
-  if (typeof hello.pid !== 'number' || hello.terminal !== terminal) throw new HarnessError('broker-identity', `broker reports ${JSON.stringify(hello)} for ${terminal}`);
+  // bind creates the path before listen; readiness requires an answered handshake.
+  const hello = await waitFor('pty broker socket', async () => {
+    if (!existsSync(socketPath)) return null;
+    try { return await call({ op: 'hello' }); }
+    catch (error) {
+      if (['ENOENT', 'ECONNREFUSED'].includes((error as NodeJS.ErrnoException).code ?? '')) return null;
+      throw error;
+    }
+  }, value => value !== null, makeDeadline(20_000));
+  if (!hello || typeof hello.pid !== 'number' || hello.terminal !== terminal) throw new HarnessError('broker-identity', `broker reports ${JSON.stringify(hello)} for ${terminal}`);
   if (typeof hello.brokerPid !== 'number') throw new HarnessError('broker-identity', 'broker did not report its own PID');
   const identity = identityOf(hello.pid), brokerIdentity = identityOf(hello.brokerPid);
   ledger.update(l => { l.processes.push({ ...identity, label: `pi-tui-${n}`, group: false }, { ...brokerIdentity, label: `pi-broker-${n}`, group: false }); });

@@ -19,7 +19,7 @@ function extensionArgs(args: string[]): string[] {
 function withoutExclusions(args: string[]): string[] {
   return args.filter((arg, i) => arg !== '--exclude-tools' && args[i - 1] !== '--exclude-tools');
 }
-async function adoption(suite: Suite): Promise<void> {
+export async function adoption(suite: Suite): Promise<void> {
   const unwrapped = suite.ownPath(join(suite.root, 'unwrapped'));
   await mkdir(unwrapped);
   // The unguarded local factory is a fork-derived fixture, not an installed
@@ -160,6 +160,24 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
       expect(() => process.kill(brokerPid, 0)).not.toThrow();
       evidence.push({ scope, oldRun, oldPid, newPid: newReady.pid, switchover, probes, launches, brokerPid });
     } finally { await peer?.close(); await owner.close(); }
+  }
+  for (const [label, order] of [
+    ['legacy-first', [join(unwrapped, 'index.mjs'), suite.packed.extension]],
+    ['fork-first', [suite.packed.extension, join(unwrapped, 'index.mjs')]],
+  ] as const) {
+    const duplicate = await suite.launchPi({ mode: 'rpc', cwd: await suite.project(`duplicate-${label}`),
+      args: ['--name', `duplicate-${label}`, '--no-extensions', '--extension', suite.pi.providerPath,
+        '--extension', suite.pi.observerPath, ...order.flatMap(extension => ['--extension', extension]), '--extension', probe] }) as RpcDriver;
+    try {
+      await duplicate.waitEvent('session_start', () => true, deadline(30_000));
+      const starts = await waitFor(`duplicate ${label} registry`, async () => (await readFile(probeLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line)),
+        rows => rows.some(row => row.pid === duplicate.pid), deadline(30_000));
+      expect(starts.find(row => row.pid === duplicate.pid).tools.filter((name: string) => name === 'intercom')).toHaveLength(1);
+      await duplicate.prompt(mark('unwrapped-ready'));
+      expect((await duplicate.toolResult('unwrapped-roster', deadline(30_000))).isError).toBe(false);
+      expect(JSON.stringify(duplicate.records())).toContain('Another intercom extension is loaded');
+      evidence.push({ duplicate: label, pid: duplicate.pid, tools: starts.find(row => row.pid === duplicate.pid).tools });
+    } finally { await duplicate.close(); }
   }
   const unexpected = suite.ownPath(join(suite.root, 'unexpected-copy.mjs'));
   await buildFixture({ stdin: { contents: "export {default} from '@spider/intercom/local';", resolveDir: resolve('.') },

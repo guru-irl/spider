@@ -113,7 +113,7 @@ export async function startCores(ledger: LedgerHandle, root: string, base: Recor
   ledger.update(l => { l.viaDirectory = viaDirectory; });
   await writeFile(descriptorPath, JSON.stringify({ root, env: sides.dest.env, log: viaLog, ledgerPath: ledger.path, socket: sockets.dest, viaDirectory }), { mode: 0o600 });
   const via = ownedPath(root, join(bin, 'via-d'));
-  await writeFile(via, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(fileURLToPath(new URL('../fixtures/via.mjs', import.meta.url)))} ${quote(descriptorPath)} "$@"\n`); await chmod(via, 0o700);
+  await writeFile(via, `#!/bin/sh\nexec 9<"$0"\nexec ${quote(process.execPath)} ${quote(fileURLToPath(new URL('../fixtures/via.mjs', import.meta.url)))} ${quote(descriptorPath)} "$@"\n`); await chmod(via, 0o700);
   ledger.update(l => { l.machines.push({ side: 'local', name: DEST_MACHINE }); });
   ok(await hc(['machine', 'add', '--via', via, '--name', DEST_MACHINE, '--session', 'd', '--json']), 'machine add');
   const machines = ok(await hc(['machine', 'ls', '--json']), 'machine ls').machines;

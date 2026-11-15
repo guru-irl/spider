@@ -3,7 +3,7 @@
 // Durable resource ledger, idempotent cleanup, the out-of-group watchdog and next-run reconciliation.
 // Self-contained (node: imports only, erasable types) so `node resources.ts watchdog|reconcile|cleanup ...`
 // runs it directly with Node's type stripping, outside any Vitest process.
-import { readFileSync, writeFileSync, renameSync, existsSync, readdirSync, mkdirSync, openSync, closeSync, rmSync, unlinkSync, lstatSync, chmodSync, realpathSync, type Stats } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, existsSync, readdirSync, readlinkSync, mkdirSync, openSync, closeSync, rmSync, unlinkSync, lstatSync, chmodSync, realpathSync, type Stats } from 'node:fs';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { connect } from 'node:net';
 import { join, dirname, basename, resolve, sep } from 'node:path';
@@ -206,36 +206,87 @@ function viaRecords(ledger: Ledger): { records: ViaRecord[]; invalid: string[] }
   return { records, invalid };
 }
 
+// Candidate argv is not ownership evidence. Check the process's actual open file descriptors.
+function openPaths(pid: number): string[] {
+  if (process.platform === 'linux') {
+    try {
+      const paths = readdirSync(`/proc/${pid}/fd`).flatMap(fd => { try { return [readlinkSync(`/proc/${pid}/fd/${fd}`)]; } catch { return []; } });
+      const sockets = new Set(paths.map(path => /^socket:\[(\d+)\]$/.exec(path)?.[1]).filter(Boolean));
+      if (sockets.size) for (const line of readFileSync('/proc/net/unix', 'utf8').split('\n')) {
+        const fields = line.trim().split(/\s+/); if (fields.length >= 8 && sockets.has(fields[6])) paths.push(fields[7]);
+      }
+      return paths;
+    } catch { return []; }
+  }
+  const result = spawnSync('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-Fn'], { encoding: 'utf8' });
+  if (result.status !== 0 || !result.stdout) return [];
+  const paths: string[] = []; let descriptor = '';
+  for (const line of result.stdout.split('\n')) {
+    if (line.startsWith('f')) descriptor = line.slice(1);
+    else if (line.startsWith('n') && /^\d+$/.test(descriptor)) paths.push(line.slice(1));
+  }
+  return paths;
+}
+function ownedOpenPath(pid: number, root: string, match: (path: string) => boolean, kind: 'route' | 'socket'): boolean {
+  return openPaths(pid).some(path => {
+    if (!path.startsWith(root + sep) || !match(path)) return false;
+    try {
+      const info = lstatSync(path);
+      return !info.isSymbolicLink() && (kind === 'route' ? info.isFile() : info.isSocket()) &&
+        (!process.getuid || info.uid === process.getuid()) && realpathSync(path) === path;
+    } catch { return false; }
+  });
+}
+function ownsViaRoute(ledger: Ledger, pid: number): boolean {
+  const directory = join(ledger.root, 'bin');
+  return ownedOpenPath(pid, ledger.root, path => dirname(path) === directory && /^via-(?:d|i\d+)$/.test(basename(path)), 'route');
+}
+function processName(pid: number): string {
+  const result = spawnSync('ps', ['-p', String(pid), '-o', 'comm='], { encoding: 'utf8', env: { PATH: '/bin:/usr/bin', LC_ALL: 'C' } });
+  return basename(result.stdout?.trim() || 'unknown');
+}
 /** A via may have been forked just before teardown and not yet written its record. */
-function pendingVia(ledger: Ledger): ProcessIdentity[] {
-  return rootProcesses(ledger.root).filter(p => p.command.includes(join(ledger.root, 'via-d.json')) || p.command.includes(join(ledger.root, 'bin/via-d')))
-    .flatMap(p => {
-      const start = processStart(p.pid);
-      const same = start && rootProcesses(ledger.root).some(current => current.pid === p.pid && current.command === p.command);
-      return same ? [{ pid: p.pid, start }] : [];
-    });
+function pendingVia(ledger: Ledger, recorded: readonly ProcessIdentity[]): { owned: ProcessIdentity[]; unknown: { pid: number; start: string; name: string }[] } {
+  const routeDirectory = join(ledger.root, 'bin'), owned: ProcessIdentity[] = [], unknown: { pid: number; start: string; name: string }[] = [];
+  for (const candidate of rootProcesses(ledger.root).filter(p => p.command.includes(join(ledger.root, 'via-d.json')) || p.command.includes(join(ledger.root, 'via-i')) || p.command.includes(join(routeDirectory, 'via-')))) {
+    const start = processStart(candidate.pid);
+    if (!start || recorded.some(identity => identity.pid === candidate.pid && identity.start === start)) continue;
+    const ownsRoute = ownsViaRoute(ledger, candidate.pid);
+    if (processStart(candidate.pid) !== start) continue;
+    if (ownsRoute) owned.push({ pid: candidate.pid, start });
+    else unknown.push({ pid: candidate.pid, start, name: basename(candidate.command.trim().split(/\s+/, 1)[0]) });
+  }
+  return { owned, unknown };
 }
 
 async function drainVia(ledger: Ledger, proof: CleanupProof): Promise<boolean> {
   const seen = new Set<string>();
   const collect = () => {
-    const snapshot = viaRecords(ledger);
-    const identities = [...snapshot.records.flatMap(record => [record, ...(record.child ? [record.child] : [])]), ...pendingVia(ledger)];
+    const snapshot = viaRecords(ledger), untrusted: { pid: number; start: string; name: string }[] = [];
+    const trusted = snapshot.records.filter(record => {
+      if (!identityAlive(record) || ledger.processes.some(identity => identity.pid === record.pid && identity.start === record.start) || ownsViaRoute(ledger, record.pid)) return true;
+      if (identityAlive(record)) untrusted.push({ pid: record.pid, start: record.start, name: processName(record.pid) });
+      return false;
+    });
+    const viaRecordsOwned = trusted.flatMap(record => [record, ...(record.child ? [record.child] : [])]);
+    const pending = pendingVia(ledger, [...viaRecordsOwned, ...ledger.processes]);
+    const identities = [...viaRecordsOwned, ...pending.owned];
     const unique = [...new Map(identities.map(identity => [`${identity.pid}:${identity.start}`, identity])).values()];
     for (const identity of unique) {
       const key = `${identity.pid}:${identity.start}`;
       if (!seen.has(key)) { seen.add(key); proof.viaActions.push({ pid: identity.pid, start: identity.start, action: 'observed' }); }
     }
-    return { ...snapshot, live: unique.filter(identityAlive) };
+    const unknown = [...new Map([...untrusted, ...pending.unknown].map(item => [`${item.pid}:${item.start}`, item])).values()];
+    return { ...snapshot, unknown: unknown.filter(identityAlive), live: unique.filter(identityAlive) };
   };
-  await observeUntil(() => collect().live.length === 0, 1500);
+  await observeUntil(() => { const current = collect(); return current.live.length === 0 && current.unknown.length === 0; }, 1500);
   for (const sig of ['SIGTERM', 'SIGKILL'] as const) {
     for (const identity of collect().live) {
       if (!identityAlive(identity)) continue;
       signal({ ...identity, label: 'via', group: false }, sig, proof);
       proof.viaActions.push({ pid: identity.pid, start: identity.start, action: sig });
     }
-    if (await observeUntil(() => collect().live.length === 0, 1500)) break;
+    if (await observeUntil(() => { const current = collect(); return current.live.length === 0 && current.unknown.length === 0; }, 1500)) break;
   }
   const final = collect();
   for (const record of final.records) if (!identityAlive(record) && (!record.child || !identityAlive(record.child))) {
@@ -247,12 +298,14 @@ async function drainVia(ledger: Ledger, proof: CleanupProof): Promise<boolean> {
   }
   for (const path of final.invalid) proof.survivors.push({ kind: 'via-record', id: path });
   for (const identity of final.live) proof.survivors.push({ kind: 'via-process', id: `${identity.pid}:${identity.start}` });
-  return final.invalid.length === 0 && final.live.length === 0;
+  for (const candidate of final.unknown) proof.survivors.push({ kind: 'unattributed-process', id: `${candidate.pid} ${candidate.name}` });
+  return final.invalid.length === 0 && final.live.length === 0 && final.unknown.length === 0;
 }
 
 function coreHolders(ledger: Ledger, core: LedgerCore): { pid: number; command: string }[] {
   const prefix = join(dirname(core.socket), basename(core.socket).replace(/\.sock$/, '.holder.'));
-  return rootProcesses(ledger.root).filter(p => p.command.includes(' hold --socket ') && p.command.includes(prefix));
+  return rootProcesses(ledger.root).filter(p => p.command.includes(' hold --socket ') && p.command.includes(prefix) &&
+    ownedOpenPath(p.pid, ledger.root, path => path.startsWith(prefix), 'socket'));
 }
 
 async function coreStaysStopped(ledger: Ledger, core: LedgerCore): Promise<boolean> {
@@ -342,7 +395,7 @@ export async function cleanupLedger(path: string, reason: string, options: { rem
   for (const core of ledger.cores) if (core.pid && core.start && identityAlive({ pid: core.pid, start: core.start })) proof.survivors.push({ kind: 'core-process', id: `${core.side}:${core.pid}` });
   const exclude = ledger.watchdog ? [ledger.watchdog.pid] : [];
   if (!(await observeUntil(() => rootProcesses(ledger.root, exclude).length === 0, 3000)))
-    for (const p of rootProcesses(ledger.root, exclude)) proof.survivors.push({ kind: 'root-process', id: `${p.pid} ${p.command.slice(0, 200)}` });
+    for (const p of rootProcesses(ledger.root, exclude)) proof.survivors.push({ kind: 'root-process', id: `${p.pid} ${basename(p.command.trim().split(/\s+/, 1)[0])}` });
   proof.clean = proof.survivors.length === 0;
   writeAtomic(path.replace(/\.json$/, '.cleanup.json'), proof);
   const next = readLedger(path); next.state = proof.clean ? 'closed' : 'cleanup-failed'; writeAtomic(path, next);

@@ -467,6 +467,43 @@ it("a conflicting initial home and incompatible epoch never admit", async () => 
 }, 5000);
 
 
+it.each([false, true])('keeps a running session working throughout late readiness (failure %s)', async failure => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '0');
+  const f = fixture(snapshot({ home: null, states: [], participating: false }));
+  let version = 'uncaptured', enter!: () => void, finish!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), waiting = new Promise<void>(resolve => { finish = resolve; });
+  Object.assign(f.ports, { captureVersion: () => version, ready: async () => {
+    enter(); await waiting; if (failure) throw new Error('participant-launch-provenance-unavailable');
+  } });
+  await f.emit('session_start');
+  f.setSnapshot(snapshot({ home: { ...home, epoch: 1 }, states: [{ ...active, epoch: 1 }] })); version = 'captured';
+  const refreshing = f.gate.refreshInitialHome(); await entered;
+  const during = f.gate.inspect(), tool = await f.emit('tool_call'), input = await f.emit('input');
+  await f.emit('turn_start'); await f.emit('before_agent_start');
+  finish(); await refreshing;
+  expect(during).toEqual({ kind: 'ordinary', home: null, blockers: [] });
+  expect(tool).toBeUndefined(); expect(input).toBeUndefined(); expect(f.ctx.abort).not.toHaveBeenCalled();
+  expect(f.gate.inspect()).toMatchObject({ kind: 'ordinary', home: failure ? null : { ...home, epoch: 1 } });
+  expect(await f.emit('tool_call')).toBeUndefined();
+  if (failure) {
+    expect(f.gate.inspect().blockers[0]?.detail).toContain('late-admission-readiness-failed');
+    expect(f.warnings[0]).toContain('participant-launch-provenance-unavailable');
+    expect(f.calls.released).toBe(1);
+    await expect(f.gate.freeze('not-a-participant', 1)).rejects.toThrow();
+  }
+}, 5000);
+
+it('keeps a running session outside participation after a failed late lookup', async () => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '0');
+  const f = fixture(snapshot({ home: null, states: [], participating: false }));
+  let version = 'uncaptured'; f.ports.captureVersion = () => version;
+  await f.emit('session_start'); version = 'captured'; f.failRead(new Error('lookup-unavailable'), false);
+  await expect(f.gate.refreshInitialHome()).resolves.toMatchObject({ kind: 'ordinary', home: null });
+  expect(f.gate.inspect().blockers[0]?.detail).toContain('late-admission-load-failed');
+  expect(await f.emit('tool_call')).toBeUndefined();
+  expect(f.calls.lock).toBe(0);
+}, 5000);
+
 it('late-capture refresh never admits an ordinary subagent child', async () => {
   vi.stubEnv('PI_SUBAGENT_CHILD', '1');
   const f = fixture(snapshot({ home: null, states: [], participating: false }));

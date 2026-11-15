@@ -104,75 +104,103 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
     await previous.release();
     if (held === previous) held = undefined;
   }
-  async function start(ctx: ExtensionContext | undefined, reopening = false): Promise<void> {
+  async function start(ctx: ExtensionContext | undefined, reopening = false, late = false): Promise<void> {
     const id = ctx?.sessionManager?.getSessionId?.() ?? "";
     const file = ctx?.sessionManager?.getSessionFile?.() ?? "";
     const ticket = ++generation;
-    publish("pending", null);
+    let result: Admission | undefined, admitted = false, stage = "eligibility";
+    const publishResult = (kind: Admission["kind"], home: Home | null, detail?: string) => {
+      if (late) result = { kind, home, blockers: detail ? [{ kind: "admission", id, detail }] : [] };
+      else publish(kind, home, detail);
+    };
+    if (!late) publish("pending", null);
     await sequence(async () => {
-      if (ticket !== generation) return;
-      if (ctx) { lastContext = ctx; ports.setContext?.(ctx); }
-      try { if (held && (!held.valid || held.sessionId !== id || held.file !== file)) await release(); }
-      catch { if (ticket === generation) { sessionId = id; publish("blocked", null, VERIFY); } return; }
-      if (ticket !== generation) return;
-      sessionId = id; sessionFile = file; epoch = null; participating = false; discoverable = false; captureVersion = null;
-      if (!id) { publish(handoffRequired ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : undefined); return; }
-      try { await ports.prepare?.(id, file); }
-      catch (error) { if (ticket === generation) publish("blocked", null, admissionFailure(error)); return; }
-      let state: Awaited<ReturnType<AdmissionPorts["load"]>>;
       try {
-        state = await ports.load(id);
-      } catch (error) {
         if (ticket !== generation) return;
-        if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publish("blocked", null, admissionFailure(error));
-        else { ports.warnOnce(id, VERIFY); publish("ordinary", null); }
-        return;
-      }
-      if (ticket !== generation) return;
-      participating = state.participating;
-      if (!state.participating) {
-        if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publish("blocked", null, VERIFY);
-        else {
-          freeze = undefined; publish("ordinary", null);
-          discoverable = state.captureSafe && Boolean(ctx && file);
-          captureVersion = ports.captureVersion?.() ?? null;
-        }
-        return;
-      }
-      observed.add(id);
-      const home = state.home;
-      epoch = home?.epoch ?? state.states[0]?.epoch ?? null;
-      if (state.initialConflict) { publish("blocked", home, "This session has conflicting initial homes. Run /spider roam doctor for details."); return; }
-      const frozenState = state.states.find(row => row.state === "frozen");
-      if (frozenState?.moveId) freeze ??= { moveId: frozenState.moveId, epoch: frozenState.epoch };
-      if (!reopening && (freeze || state.unfinishedFreeze || frozenState)) {
-        publish("control-only", home, FROZEN); return;
-      }
-      if (state.unfinishedFreeze || frozenState) { publish("control-only", home, FROZEN); return; }
-      if (!state.captureSafe || !state.states.length || state.states.some(row => row.sessionId !== id || row.state !== "active" || row.epoch !== epoch) ||
-        epoch === null || ports.expectedEpoch !== null && ports.expectedEpoch !== epoch) {
-        publish("blocked", home, VERIFY); return;
-      }
-      try {
-        const machine = await ports.localMachine();
+        if (ctx) { lastContext = ctx; ports.setContext?.(ctx); }
+        try { if (held && (!held.valid || held.sessionId !== id || held.file !== file)) await release(); }
+        catch { if (ticket === generation) { sessionId = id; publishResult("blocked", null, VERIFY); } return; }
         if (ticket !== generation) return;
-        if (!machine || (home ? home.sessionId !== id || home.machineId !== machine : state.origin !== machine || epoch !== 1)) {
-          publish("blocked", home, home?.machineId ? homeMessage(home.machineId) : VERIFY); return;
+        sessionId = id; sessionFile = file; epoch = null; participating = false; discoverable = false; captureVersion = null;
+        if (!id) { publishResult(handoffRequired ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : undefined); return; }
+        stage = "prepare";
+        try { await ports.prepare?.(id, file); }
+        catch (error) { if (ticket === generation) publishResult("blocked", null, admissionFailure(error)); return; }
+        let state: Awaited<ReturnType<AdmissionPorts["load"]>>;
+        stage = "load";
+        try {
+          state = await ports.load(id);
+        } catch (error) {
+          if (ticket !== generation) return;
+          if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publishResult("blocked", null, admissionFailure(error));
+          else { if (!late) ports.warnOnce(id, VERIFY); publishResult("ordinary", null, late && error instanceof Error ? error.message : undefined); }
+          return;
         }
-        if (!file) { publish("blocked", home, VERIFY); return; }
-        if (!held) {
-          const unlock = await ports.lock(id, file);
-          held = { sessionId: id, file, release: unlock, valid: true };
-          handoffRequired = false;
-          if (ticket !== generation) { await release(); return; }
-        }
-        await ports.ready?.(id, file, epoch, home);
         if (ticket !== generation) return;
-        if (reopening) freeze = undefined;
-        publish("ordinary", home);
-        watchSignals();
-      } catch {
-        if (ticket === generation) publish("blocked", home, VERIFY);
+        stage = "eligibility";
+        participating = !late && state.participating;
+        if (!state.participating) {
+          if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publishResult("blocked", null, VERIFY);
+          else {
+            freeze = undefined; publishResult("ordinary", null);
+            discoverable = state.captureSafe && Boolean(ctx && file);
+            captureVersion = ports.captureVersion?.() ?? null;
+          }
+          return;
+        }
+        if (!late) observed.add(id);
+        const home = state.home;
+        epoch = home?.epoch ?? state.states[0]?.epoch ?? null;
+        if (state.initialConflict) { publishResult("blocked", home, "This session has conflicting initial homes. Run /spider roam doctor for details."); return; }
+        const frozenState = state.states.find(row => row.state === "frozen");
+        if (frozenState?.moveId) freeze ??= { moveId: frozenState.moveId, epoch: frozenState.epoch };
+        if (!reopening && (freeze || state.unfinishedFreeze || frozenState)) {
+          publishResult("control-only", home, FROZEN); return;
+        }
+        if (state.unfinishedFreeze || frozenState) { publishResult("control-only", home, FROZEN); return; }
+        if (!state.captureSafe || !state.states.length || state.states.some(row => row.sessionId !== id || row.state !== "active" || row.epoch !== epoch) ||
+          epoch === null || ports.expectedEpoch !== null && ports.expectedEpoch !== epoch) {
+          publishResult("blocked", home, VERIFY); return;
+        }
+        stage = "ownership";
+        try {
+          const machine = await ports.localMachine();
+          if (ticket !== generation) return;
+          if (!machine || (home ? home.sessionId !== id || home.machineId !== machine : state.origin !== machine || epoch !== 1)) {
+            publishResult("blocked", home, home?.machineId ? homeMessage(home.machineId) : VERIFY); return;
+          }
+          if (!file) { publishResult("blocked", home, VERIFY); return; }
+          if (!held) {
+            stage = "lock";
+            const unlock = await ports.lock(id, file);
+            held = { sessionId: id, file, release: unlock, valid: true };
+            handoffRequired = false;
+            if (ticket !== generation) { await release(); return; }
+          }
+          stage = "readiness";
+          await ports.ready?.(id, file, epoch, home);
+          if (ticket !== generation) return;
+          if (reopening) freeze = undefined;
+          admitted = true;
+          publishResult("ordinary", home);
+          if (!late) watchSignals();
+        } catch (error) {
+          if (ticket === generation) publishResult("blocked", home, late && error instanceof Error ? error.message : VERIFY);
+        }
+      } finally {
+        if (late && ticket === generation) {
+          if (admitted && result) {
+            participating = true; observed.add(id);
+            publish(result.kind, result.home); watchSignals();
+          } else {
+            let detail = `late-admission-${stage}-failed. ${result?.blockers[0]?.detail ?? VERIFY}`;
+            try { await release(); } catch { detail = `late-admission-lock-release-failed. ${detail}`; }
+            if (ticket === generation) {
+              participating = false; epoch = null; discoverable = false;
+              publish("ordinary", null, detail); ports.warnOnce(id, detail);
+            }
+          }
+        }
       }
     });
   }
@@ -212,11 +240,19 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         if (version === null || version === captureVersion) return admission;
         captureVersion = version;
         const ticket = generation;
-        const state = await ports.load(sessionId);
+        let state: Awaited<ReturnType<AdmissionPorts["load"]>>;
+        try { state = await ports.load(sessionId); }
+        catch (error) {
+          if (ticket === generation) {
+            const detail = `late-admission-load-failed. ${error instanceof Error ? error.message : VERIFY}`;
+            discoverable = false; publish("ordinary", null, detail); ports.warnOnce(sessionId, detail);
+          }
+          return admission;
+        }
         if (ticket !== generation || !discoverable || !ordinaryWorkAllowed() || freeze || !state.participating) return admission;
-        // Capture happened after this activation started. Acquire ownership and
-        // pass every original admission/readiness fence before publishing a home.
-        await start(lastContext);
+        // Late checks never withdraw ordinary admission from a running nonparticipant.
+        // Publish participation only after the complete ownership/readiness path succeeds.
+        await start(lastContext, false, true);
         return admission;
       }
       const eligible = () => participating && held?.valid && ordinaryWorkAllowed() && admission.home === null && !freeze && epoch !== null;

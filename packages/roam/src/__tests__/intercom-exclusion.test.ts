@@ -39,3 +39,17 @@ it("malformed and conflicting persisted proofs are refused by name", () => {
   db.raw.transaction(() => writeLocal(db, "intercom-supervisor-exit", key, { malformed: true })).immediate();
   expect(() => intercomExclusion(db, owner, same)).toThrow("intercom-exclusion-invalid");
 }, 5000);
+
+it("prunes exited unreferenced process history but retains compact ownership and live evidence", async () => {
+  const { localEntries, writeLocal } = await import("@spider/db-core/roam/local-state");
+  const { pruneIntercomRecords, recordIntercomGeneration } = await import("../intercom-exclusion");
+  const f = createReplica("global", A); replicas.push(f);
+  for (const [generation, pid] of [["ended", 101], ["referenced", 102], ["live", 103]] as const) {
+    recordIntercomGeneration(f.db, { sessionId: "owner", generation, pid }, () => ({ kind: "live", startIdentity: "started" }));
+    writeLocal(f.db, "intercom-first-home", JSON.stringify(["owner",generation,A]), { sessionId: "owner", activation: generation, machine: A, fromEpoch: null, toEpoch: 1, adoptedAt: 1 });
+  }
+  pruneIntercomRecords(f.db, (_id, generation) => generation === "referenced", pid => pid === 103 ? { kind: "live", startIdentity: "started" } : { kind: "absent" });
+  expect(localEntries<{ generation: string }>(f.db, "intercom-generation").map(row => row.value.generation).sort()).toEqual(["live", "referenced"]);
+  expect(localEntries<{ activation: string }>(f.db, "intercom-first-home").map(row => row.value.activation).sort()).toEqual(["live", "referenced"]);
+  expect(localEntries(f.db, "intercom-owner").map(row => row.value)).toContainEqual({ sessionId: "owner", machine: A });
+}, 5000);

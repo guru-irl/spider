@@ -214,3 +214,28 @@ it("accepts a delayed topology refusal only for the audited old hop, including a
   expect(() => source.recordTopologyRefusal({ peer: H, identity: { ...identity, digest: "0".repeat(64) } })).toThrow("intercom-topology-invalid-refusal");
   expect(source.retained("outbound", identity.id)).toMatchObject({ peer: B, state: "injected", payloadRetained: false });
 }, 5000);
+
+it("rebinds a previously missing direct route under the original transition and audit", () => {
+  const f = fixture(); let source = f.open(A); const identity = send(source, "missing-then-enrolled");
+  source.switchTopology({ transitionId, hubMachineId: H, directPeers: [] });
+  expect(source.hasPending(H)).toBe(false);
+  expect(source.pending({ kind: "outbound", peer: H, hopBudgetMs: 100 })).toEqual([]);
+  source = f.restart(source, A);
+  expect(source.rebindTopologyRoutes({ hubMachineId: H, directPeers: [B] })).toEqual({ rebound: 1, missing: [] });
+  expect(source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 }).map(frame => frame.identity)).toEqual([identity]);
+  expect(source.topologyAudit()).toEqual([{ id: identity.id, reason: "topology-transition", transitionId, oldNextHop: H, newNextHop: B, timestamp: 1000 }]);
+  expect(source.rebindTopologyRoutes({ hubMachineId: H, directPeers: [B] }).rebound).toBe(0);
+}, 5000);
+
+it("does not let an unacknowledgeable receipt to a revoked upstream block draining", () => {
+  const f = fixture(), source = f.open(A), hub = f.open(H), target = f.open(B);
+  const identity = send(source, "revoked-upstream"); const [frame] = transfer(source, hub, A, H);
+  hub.acceptOutbound({ frame, nextHop: B }); start(hub); transfer(hub, target, H, B);
+  const receipt = consume(target, identity.id, H);
+  hub.settleReceipt({ queue: "outbound", peer: B, frame: receipt }); hub.settleReceipt({ queue: "inbound", peer: A, frame: receipt });
+  expect(hub.pending({ kind: "receipts", peer: A })).toHaveLength(1);
+  expect(hub.advanceTopologyTransition().state).toBe("draining");
+  hub.fencePair(A, "edge-a");
+  expect(hub.pending({ kind: "receipts", peer: A })).toHaveLength(1);
+  expect(hub.advanceTopologyTransition().state).toBe("switching");
+}, 5000);

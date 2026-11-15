@@ -17,7 +17,7 @@ async function fixture() {
   const inbox = openIntercomStore({ file: join(root, "inbox.db"), machineId: B, clock }); stores.push(source, inbox);
   const bridge = createIntercomBridge({ machineId: B, machineAlias: "local.invalid", edges: [{ peer, edgeEpoch: "edge", initiator: false }], store: inbox, clock,
     transport: { resolve: async () => { throw new Error("offline"); }, exec: async () => { throw new Error("offline"); } } as never,
-    localPresence: () => [], authoritativeHome: () => null }); resources.push(bridge); await bridge.start();
+    localPresence: () => [], authoritativeHome: address => address.sessionId === from.sessionId ? { sessionId: from.sessionId, machineId: A, epoch: 1, moveId: null, updatedAt: 1 } : null }); resources.push(bridge); await bridge.start();
   return { source, inbox, bridge };
 }
 function request(protocol: number, frames: unknown[] = []) {

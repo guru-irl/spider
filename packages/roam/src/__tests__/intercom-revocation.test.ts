@@ -32,7 +32,7 @@ const wire = (source: string, generation: number, epoch = "edge-1", channel: "pu
 });
 const request = (exchange: IntercomExchange, holdMs = 0) => ({ version: 1, exchange, holdMs, deadlineMs: holdMs ? holdMs + 5000 : 5000 });
 
-function fixture(options: { holdAbort?: boolean; rejectNotices?: boolean; holdConfirm?: boolean } = {}) {
+function fixture(options: { holdAbort?: boolean; rejectNotices?: boolean; holdConfirm?: boolean; senderMachine?: string } = {}) {
   const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "intercom-revoke-")); roots.push(root);
   const file = join(root, "queue.db"), store = openIntercomStore({ file, machineId: A, clock }); stores.push(store);
   let started!: () => void, releaseAbort = () => {}, transportCalls = 0;
@@ -52,7 +52,8 @@ function fixture(options: { holdAbort?: boolean; rejectNotices?: boolean; holdCo
   };
   const bridge = createIntercomBridge({ machineId: A, machineAlias: "box-1.invalid", edges: [
     { peer: peer(B), edgeEpoch: "edge-1", initiator: true }, { peer: peer(C), edgeEpoch: "edge-2", initiator: false },
-  ], store, clock, transport: transport as any, localPresence: () => [], authoritativeHome: () => null,
+  ], store, clock, transport: transport as any, localPresence: () => [],
+    authoritativeHome: address => address.sessionId === sender.sessionId ? { sessionId: sender.sessionId, machineId: options.senderMachine ?? A, epoch: 1, moveId: null, updatedAt: 1 } : null,
   onReceipt: value => { if (options.rejectNotices) throw new Error("broker offline"); receipts.push(value); },
   onRevocationNotice: async value => { if (options.rejectNotices) throw new Error("broker offline"); receipts.push(value);
     if (options.holdConfirm) return new Promise<boolean>(resolve => { confirmNotice = resolve; }); return true; },
@@ -221,7 +222,7 @@ it("retains an unconfirmed revocation notice across a bridge crash and retries u
 }, 5000);
 
 it("returns relay failures to the upstream origin and refuses new work routed through a fenced edge", async () => {
-  const f = fixture(); await f.bridge.start();
+  const f = fixture({ senderMachine: C }); await f.bridge.start();
   const source = openIntercomStore({ file: join(f.root, "source", "queue.db"), machineId: C, clock }); stores.push(source);
   source.acceptOutbound({ from: sender, endpoint: endpoint(B), nextHop: A, message: { id: "relay-1", timestamp: 1, content: { text: "test" } } });
   const initial = wire(C, 1, "edge-2"); initial.frames.push(source.pending({ kind: "outbound", peer: A, hopBudgetMs: 100 })[0]);

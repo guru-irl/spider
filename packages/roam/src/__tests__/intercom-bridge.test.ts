@@ -23,7 +23,9 @@ async function create(machineId: string, other: string, store: ReturnType<typeof
   expect(api.createIntercomBridge).toBeTypeOf("function");
   const bridge = api.createIntercomBridge!({ machineId, machineAlias: `fixture-${machineId.slice(-1)}.invalid`, edges: [{ peer: peer(other), edgeEpoch: "edge-1", initiator: false }],
     store, clock, transport: { resolve: async () => { throw new Error("unexpected remote call"); }, exec: async () => { throw new Error("unexpected remote call"); } },
-    localPresence: () => [], authoritativeHome: () => null, ...overrides });
+    localPresence: () => [], authoritativeHome: (address: typeof from) => address.sessionId === from.sessionId
+      ? { sessionId: from.sessionId, machineId: A, epoch: 1, moveId: null, updatedAt: 1 } : null,
+    authorizeOrigin: (previous: string, origin: string) => previous === origin || machineId === C && previous === B && origin === A, ...overrides });
   resources.push(bridge); await bridge.start(); return bridge;
 }
 function pair() {
@@ -261,7 +263,8 @@ it("does not let a remote presence hint shadow a local session and prefers the n
   source.updateEdgeState(B, "edge-1", old => ({ ...old, status: "live", lastSuccess: clock.now(), roster: [hint(B, from, 99, "shadow"), hint(B, to, 1, "old")] }));
   source.updateEdgeState(C, "edge-1", old => ({ ...old, status: "down", outageSince: clock.now(), roster: [hint(C, to, 2, "new")] }));
   await create(A, B, source, { edges: [{ peer: peer(B), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: false }],
-    localPresence: () => [local], publishPresence: (entries: unknown[]) => observed.push(entries) });
+    localPresence: () => [local], publishPresence: (entries: unknown[]) => observed.push(entries),
+    authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : C, epoch: address.sessionId === from.sessionId ? 5 : 2, moveId: null, updatedAt: 1 }) });
   expect(observed.at(-1)).toEqual([expect.objectContaining({ address: to, machineId: C, homeEpoch: 2, stale: true })]);
 }, 5000);
 
@@ -281,9 +284,11 @@ it("relays explicitly authorized stale presence in hub-only mode and refuses ask
     activationEpoch: "c-activation", endpointEpoch: "c-activation", cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 };
   hubStore.updateEdgeState(C, "edge-1", old => ({ ...old, status: "down", outageSince: clock.now(), roster: [remote] }));
   const hub = await create(B, A, hubStore, { edges: [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: false }],
-    advertiseRelay: (recipient: string, entry: typeof remote) => recipient === A && entry.machineId === C });
+    advertiseRelay: (recipient: string, entry: typeof remote) => recipient === A && entry.machineId === C,
+    authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : C, epoch: 1, moveId: null, updatedAt: 1 }) });
   const a = await create(A, B, source, { nextHop: (machine: string) => machine === C ? B : null,
     authorizePresence: (previous: string, entry: typeof remote) => previous === B && entry.machineId === C,
+    authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : C, epoch: 1, moveId: null, updatedAt: 1 }),
     publishPresence: (entries: unknown[]) => rosters.push(entries) });
   const response = await hub.exchange(request(batch(A, B, 1, "poll")));
   expect(response.exchange.presence).toEqual([expect.objectContaining({ machineId: C, stale: true, reachability: "down" })]);
@@ -308,7 +313,8 @@ it("wakes a hub-only poll when a downstream route becomes stale", async () => {
     return new Promise<never>((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new Error("poll stopped")), { once: true }));
   }, exec: async () => { throw new Error("unexpected exchange"); } };
   const hub = await create(B, A, hubStore, { transport, edges: [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: true }],
-    advertiseRelay: (recipient: string, entry: typeof remote) => recipient === A && entry.machineId === C });
+    advertiseRelay: (recipient: string, entry: typeof remote) => recipient === A && entry.machineId === C,
+    authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : C, epoch: 1, moveId: null, updatedAt: 1 }) });
   const waiting = hub.exchange(request(batch(A, B, 1, "poll"), 25_000)), begin = performance.now();
   hub.wake(C);
   const response = await waiting;
@@ -475,7 +481,7 @@ it("continues the original pair from authorized attested presence rather than th
   source.settleReceipt({ queue: "outbound", peer: B, frame: { from: previous, to: from, digest: row.identity.digest, attempt: 0,
     receipt: { messageId: "before-home", status: "injected", timestamp: 1000,
       evidence: { kind: "entry", entryId: "before-entry", sessionId: to.sessionId, activationEpoch: previous.activationEpoch } } } });
-  const bridge = await create(A, B, source), presence = firstHomePresence(), incoming = batch(B, A, 1);
+  const bridge = await create(A, B, source, { authoritativeHome: () => ({ sessionId: to.sessionId, machineId: B, epoch: 1, moveId: null, updatedAt: 1 }) }), presence = firstHomePresence(), incoming = batch(B, A, 1);
   incoming.presence = [presence]; await bridge.exchange(request(incoming));
   const result = await bridge.dispatch({ from, to: { ...presence, firstHome: undefined }, message: { id: "after-home", timestamp: 2, content: { text: "synthetic" } } });
   expect(result).toMatchObject({ delivery: "queued", acceptance: { accepted: true, durable: true } });

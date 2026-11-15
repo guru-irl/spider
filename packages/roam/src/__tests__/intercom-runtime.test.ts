@@ -494,8 +494,9 @@ it("rejects an origin claim a direct peer is not authorized to relay", async () 
     source.acceptOutbound({ from, endpoint: { address: to, machineId: HUB, homeEpoch: null, activationEpoch: "recipient-generation" }, nextHop: HUB,
       message: { id: "forged-origin", timestamp: 1, content: { text: "synthetic" } } });
     const frame = source.pending({ kind: "outbound", peer: HUB, hopBudgetMs: 1000 })[0], request = helperRequest(BOX, HUB, "edge-1", 1);
-    await expect(f.broker.helper!({ ...request, exchange: { ...request.exchange, frames: [{ ...frame, originMachineId: OTHER }] } }, new AbortController().signal))
-      .rejects.toMatchObject({ code: "machine-not-enrolled" });
+    const rejected = await f.broker.helper!({ ...request, exchange: { ...request.exchange, frames: [{ ...frame, originMachineId: OTHER }] } }, new AbortController().signal);
+    expect(rejected).toMatchObject({ exchange: { refusals: [{ identity: frame.identity, reason: "sender-unauthorized" }],
+      acknowledgements: [{ identity: frame.identity, kind: "message" }] } });
     expect(f.broker.deliveries).toEqual([]);
   } finally { source.close(); }
 }, 5000);
@@ -847,4 +848,56 @@ it.each(["different-machine", "epoch-bump"] as const)("keeps stale-home-epoch fo
     message: { id: `must-refuse-${mode}`, timestamp: 1, content: { text: "synthetic" } } });
   expect(result).toMatchObject({ reason: "stale-home-epoch", acceptance: { accepted: false, durable: false } });
   expect(f.broker.deliveries).toEqual([]);
+}, 5000);
+
+it.each(["session", "origin", "adoption", "generation", "box-origin", "version", "location-home", "past-home"])("keeps an offline session's durable %s ownership from being claimed by another box", async kind => {
+  const { writeLocal } = await import("@spider/db-core/roam/local-state");
+  const f = machineFixture(), target = peer(BOX, "box.invalid"), address = { sessionId: "offline-owner", scopeId: "scope" };
+  if (kind === "session") {
+    const project = createReplica("worktree", HUB); replicas.push(project);
+    project.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES(?,1,?)").run(address.sessionId, HUB);
+    f.global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES (?,?,?,1,1)").run("offline-project", project.root, project.db.raw.name);
+  } else if (kind === "origin") writeLocal(f.global.db, "observed-origin", JSON.stringify([address.sessionId,HUB]), { id: address.sessionId, origin: HUB });
+  else if (kind === "adoption") writeLocal(f.global.db, "intercom-first-home", JSON.stringify([address.sessionId,"old",HUB]),
+    { sessionId: address.sessionId, activation: "old", machine: HUB, fromEpoch: null, toEpoch: 1, adoptedAt: 1 });
+  else if (kind === "generation") recordIntercomGeneration(f.global.db, { sessionId: address.sessionId, generation: "offline", pid: 12345 }, () => ({ kind: "live", startIdentity: "offline-process" }));
+  else if (kind === "box-origin") writeLocal(f.global.db, "participant-origin", address.sessionId, { kind: "box-local", machineId: OTHER });
+  else if (kind === "version") f.global.db.prepare("INSERT INTO roam_versions(entity,row_key,change_id,hlc_ms,hlc_count,origin_machine,origin_stream,deleted) VALUES('sessions',?,'change',1,0,?,'stream',1)").run(address.sessionId, HUB);
+  else if (kind === "location-home") f.global.db.prepare("INSERT INTO roam_locations(session_id,stores_json,home_json) VALUES(?,'[]',?)").run(address.sessionId, JSON.stringify({ machineId: HUB, epoch: 1 }));
+  else f.global.db.prepare("INSERT INTO roam_home_actions(move_id,session_id,expected_epoch,args_digest,committed_home_json) VALUES('move',?,1,'digest',?)").run(address.sessionId, JSON.stringify({ machineId: HUB, epoch: 1 }));
+  const config = parseConfig({ ...f.options.config, peers: [target], intercom: { enabled: true, mode: "peers", machineAlias: "hub.invalid", routes: [{ kind: "direct", peer: target, edgeEpoch: "edge-1" }] } });
+  const service = await makeMachine({ ...f.options, config }); await service.start();
+  const entry = { ...remote(BOX, "box.invalid", address), homeEpoch: null };
+  await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1, [entry]), new AbortController().signal);
+  expect(f.broker.published.at(-1)).toEqual([]);
+  expect(service.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-ambiguous" }));
+}, 5000);
+
+it("repairs a switched source copy when its approved direct pair is enrolled later", async () => {
+  const f = machineFixture(BOX), target = peer(OTHER, "other.invalid"), source = { ...peer(BOX, "box.invalid"), globalRoot: f.global.root };
+  const config = parseConfig({ role: "box", machineId: BOX, hubMachineId: HUB, coreUnit: "fixture", intercom: { enabled: true, mode: "hub-only", machineAlias: source.alias,
+    routes: [{ kind: "direct", peer: peer(HUB, "hub.invalid"), edgeEpoch: "hub-box" }, { kind: "relay", peer: target, via: HUB }] } });
+  const file = join(f.global.root, "roam", "intercom", "queue.db"), queue = openIntercomStore({ file, machineId: BOX, mode: "hub-only", clock: f.clock });
+  const transitionId = "00000000-0000-4000-8000-000000000004", from = { sessionId: "sender", scopeId: "scope" }, to = { sessionId: "recipient", scopeId: "scope" };
+  queue.acceptOutbound({ from, endpoint: { address: to, machineId: OTHER, homeEpoch: null, activationEpoch: "recipient" }, nextHop: HUB,
+    message: { id: "waiting-for-route", timestamp: 1, content: { text: "x" } } });
+  queue.switchTopology({ transitionId, hubMachineId: HUB, directPeers: [] }); queue.close();
+  mkdirSync(join(f.global.root, "roam"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(f.global.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+  writeFileSync(join(f.global.root, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
+  const key = Buffer.concat([Buffer.from([0, 0, 0, 11]), Buffer.from("ssh-ed25519"), Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, 7)]);
+  const pair = { pairId: "pair-later", source, target, connector: { tunnelId: "tunnel", remotePort: 22, session: "session" }, edgeEpoch: "new-edge", sshUser: "fixture",
+    hostKey: { type: "ssh-ed25519", base64: key.toString("base64") }, hostKeyAlias: `spider-${"a".repeat(32)}` };
+  const { createIntercomRegistry } = await import("../intercom-registry"), { persistIntercomPairRoute } = await import("../provision-config");
+  const registry = createIntercomRegistry(f.global.root), digest = "a".repeat(64);
+  await registry.register(pair, "approval", digest); await registry.bind(pair, "approval"); await persistIntercomPairRoute(f.global.root, pair, "approval", digest);
+  const service = await makeMachine({ ...f.options, config, async pairScopedHostReady() { return true; } }); await service.start();
+  await f.broker.helper!({ version: 1, action: "enroll-pair", machineId: BOX, peer: OTHER, pairId: pair.pairId, edgeEpoch: pair.edgeEpoch,
+    operationId: "approval", graphDigest: digest, expectedFenceId: null }, new AbortController().signal);
+  const stored = openIntercomStore({ file, machineId: BOX, clock: f.clock });
+  try {
+    expect(stored.retained("outbound", "waiting-for-route")).toMatchObject({ peer: OTHER, originMachineId: BOX, identity: { sequence: 1 } });
+    expect(stored.topologyAudit()).toMatchObject([{ id: "waiting-for-route", transitionId, oldNextHop: HUB, newNextHop: OTHER }]);
+    expect(stored.hasPending(HUB)).toBe(false);
+  } finally { stored.close(); }
 }, 5000);

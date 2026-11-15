@@ -682,14 +682,14 @@ it("a relay durably forwards consumption evidence to the original source", async
   expect(JSON.stringify(relay.inspectBlockers(recipient))).not.toContain("relay-private-sentinel");
 }, 5000);
 
-it("clock rollback expires old payloads without poisoning newly accepted mail", async () => {
+it("clock rollback preserves ordinary payloads and their original deadline", async () => {
   const dir = root(), clock = fakeClock(), source = await open(join(dir, "queue.db"), sourceMachine, clock);
   send(source, mail("old"));
   clock.advance(10_000); outgoing(source);
   clock.set(999_000); source.expire();
-  expect(source.retained("outbound", "old")).toMatchObject({ state: "expired", payloadRetained: false });
+  expect(source.retained("outbound", "old")).toMatchObject({ state: "queued", payloadRetained: true });
   expect(send(source, mail("new")).sequence).toBe(2);
-  expect(outgoing(source).map(frame => [frame.identity.id, frame.kind])).toEqual([["old", "tombstone"], ["new", "message"]]);
+  expect(outgoing(source).map(frame => [frame.identity.id, frame.kind])).toEqual([["old", "message"], ["new", "message"]]);
 }, 5000);
 
 it("ordinary retries do not restart or repeatedly shorten the source deadline", async () => {
@@ -1055,4 +1055,38 @@ it("atomic local acceptance checkpoints expiry only after its outer commit", () 
   expect(existsSync(`${file}-wal`) ? statSync(`${file}-wal`).size : 0).toBe(0);
   expect(store.retained("outbound", "old-expiring")).toMatchObject({ payloadRetained: false });
   expect(store.retained("inbound", "local-expiry")).toMatchObject({ payloadRetained: true });
+}, 5000);
+
+it("does not reset an inbox attempt by rebinding to its unchanged activation", async () => {
+  const dir = root(), clock = fakeClock(), source = await open(join(dir, "s.db"), sourceMachine, clock), inbox = await open(join(dir, "i.db"), targetMachine, clock);
+  send(source, mail("unchanged")); inbox.acceptInbound({ peer: sourceMachine, frame: outgoing(source)[0] });
+  expect(() => inbox.rebindInboundAfterAbsence("unchanged", endpoint)).toThrow(/absence proof/);
+  expect(inbox.retained("inbound", "unchanged")).toMatchObject({ state: "queued", latestAttempt: 0, endpoint });
+}, 5000);
+
+it("does not reuse a completed pair's resume through a different next hop", async () => {
+  const dir = root(), clock = fakeClock(), source = await open(join(dir, "s.db"), sourceMachine, clock);
+  send(source, mail("completed")); const first = outgoing(source)[0] as IntercomMessageFrame;
+  source.settleReceipt({ queue: "outbound", peer: targetMachine, frame: receipt(first, "injected") });
+  const target: SessionEndpoint = { address: recipient, machineId: nextMachine, homeEpoch: 3, activationEpoch: "generation-3" };
+  const proof = { owner: { sessionId: recipient.sessionId, machineId: nextMachine, epoch: 3, moveId: "move-1", updatedAt: clock.now() },
+    exclusion: { owner: endpoint, excludedGeneration: endpoint.activationEpoch, kind: "owner-exited" as const }, nextHop: nextMachine };
+  expect(source.rebindUndispatched(recipient, target, proof)).toBe(0);
+  expect(() => source.acceptOutbound({ from: sender, endpoint: target, nextHop: targetMachine, message: mail("wrong-hop") })).toThrow(/authoritative rebind proof/);
+  expect(source.retained("outbound", "wrong-hop")).toBeNull();
+  expect(send(source, mail("right-hop"), target, sender, nextMachine).sequence).toBe(2);
+}, 5000);
+
+it("requires a complete old-generation exclusion before a dispatched inbox accepts a resumed endpoint", async () => {
+  const dir = root(), clock = fakeClock(), source = await open(join(dir, "s.db"), sourceMachine, clock), inbox = await open(join(dir, "i.db"), targetMachine, clock);
+  send(source, mail("needs-exclusion")); const first = outgoing(source)[0] as IntercomMessageFrame;
+  inbox.acceptInbound({ peer: sourceMachine, frame: first }); inbox.beginDispatch({ id: first.identity.id, endpoint, readiness: "old-idle" });
+  const target: SessionEndpoint = { ...endpoint, activationEpoch: "replacement" };
+  const proof = { owner: { sessionId: recipient.sessionId, machineId: targetMachine, epoch: endpoint.homeEpoch!, moveId: null, updatedAt: clock.now() },
+    exclusion: { owner: endpoint, excludedGeneration: endpoint.activationEpoch, kind: "owner-exited" as const }, nextHop: targetMachine };
+  const cursor = { from: sender, to: recipient, through: 0, endpoint: target, proof };
+  expect(() => inbox.resolveUnknown({ queue: "inbound", id: first.identity.id, digest: first.identity.digest, proof: receipt(first, "not_injected", {
+    evidence: { kind: "absence", sessionId: recipient.sessionId, activationEpoch: endpoint.activationEpoch, excludedGeneration: "another-generation", complete: true } }) })).toThrow();
+  expect(() => inbox.acceptInbound({ peer: sourceMachine, frame: { ...first, endpoint: target }, resume: { cursor, owner: proof.owner } })).toThrow(/non-injection|exclusion/);
+  expect(inbox.retained("inbound", first.identity.id)).toMatchObject({ state: "unknown", endpoint, latestAttempt: 1 });
 }, 5000);

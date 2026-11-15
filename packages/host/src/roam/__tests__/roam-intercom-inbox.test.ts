@@ -51,7 +51,9 @@ it("an entry receipt for a late reply tells its replier the asker no longer wait
 }, 5000);
 
 it("at-least-once failure and expiry callbacks have one effect per message", () => {
-  const f = fixture(), event = { id: "mail", from: to, to: from };
+  const f = fixture(), event = { id: "outgoing", from: to, to: from };
+  f.store.acceptOutbound({ from: to, endpoint: { address: from, machineId: A, homeEpoch: null, activationEpoch: "sender-generation" }, nextHop: A,
+    message: { id: event.id, timestamp: 1, content: { text: "synthetic" } } });
   f.delivery.onAskFailed({ ...event, reason: "link-down" }); f.delivery.onAskFailed({ ...event, reason: "link-down" });
   f.delivery.onExpiry(event); f.delivery.onExpiry(event);
   expect(f.receipts.map(args => args[2].status)).toEqual(["unknown", "expired"]);

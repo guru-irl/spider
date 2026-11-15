@@ -43,12 +43,12 @@ rollout must retain the admission and origin guards.
 ## Shell command
 
 The installed `spider roam` command provides status, doctor, sync, enable,
-disable, repository mapping, and memory tagging. For a machine alias starting
-with a dash, use `spider roam sync -- <alias>` or
-`spider roam sync --machine <alias>`; doctor supports the same forms. On a box,
-only local status, doctor, and repository mapping run locally. Other public
-controls direct the user to the Mac. Future hosting and move commands remain
-unavailable.
+disable, repository mapping, memory tagging, provisioning, and session stop and
+resume. For a machine alias starting with a dash, use
+`spider roam sync -- <alias>` or `spider roam sync --machine <alias>`; doctor
+supports the same forms. On a box, only local status, doctor, and repository
+mapping run locally. Other public controls direct the user to the hub. Move
+commands remain unavailable.
 
 Enable refuses while a usage worker is starting or being replaced; retry after
 it settles. If the hub socket is unavailable, disable requires the hub lock and
@@ -56,6 +56,39 @@ a journal proving no home change is pending. A missing journal is unknown.
 
 Exit code `0` means complete, `1` means refused, `2` means invalid arguments,
 and `3` means durable pending work or reconciliation is needed.
+
+## Box hosting and recovery
+
+Production hosting stays disabled until phase 4 acceptance succeeds. Provisioning
+installs only the supervisor service and leaves the existing core service and its
+terminals unchanged. The hub's enable switch controls hub scheduling; it is not
+a box hosting switch.
+
+Authentication is never copied by default. Copying selected Pi credentials
+requires explicit consent for each target and provider. A missing Pi sign-in
+blocks hosting but does not prevent installation. Missing tool authentication is
+a warning; sign in to the affected tool separately if it is needed.
+
+Use `spider roam stop <session>` on the hub to persist a stopped intent. A
+session quit also stops it. `spider roam resume <session>` runs doctor first and
+refuses if blocking diagnostics remain. Doctor reports resource repairs, such as
+file limits and inotify settings, for an administrator to apply; provisioning
+does not make those repairs or restart the core. A core restart kills its
+terminals. The supervisor restores an eligible running session from its exact
+file, while a deliberate stop remains stopped. Repeated crashes suspend the
+session until a successful doctor and resume.
+
+After a Windows restart, the tunnel and WSL logon tasks do not run until desktop
+sign-in. Hosted agents remain stopped until then. Supervisor recovery cannot
+power on a machine or sign in its host. Remote upgrade and uninstall
+orchestration are deferred; do not assume provisioning performs either.
+
+The headless acceptance stories use a packaged extension and supervisor on
+owned cores, with fixture service, boot, process and limit ports. R03 checks a
+core-only session and child status without app configuration. R04 restarts the
+core and checks one exact-file owner and one restored trigger delivery. R05
+checks crash suspension and a durable stop. They do not prove actual systemd or
+real-box behavior; phase 4 owns those checks.
 
 ## Intercom across machines
 

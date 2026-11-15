@@ -83,6 +83,12 @@ function readUsageWorker(root: string): UsageWorker | null {
   } finally { if (fd !== undefined) closeSync(fd); }
 }
 
+// A process may exit after the first presence check. Only ESRCH proves it is absent.
+function absentOrUnknown(pid: number): ProcessProbe {
+  try { process.kill(pid, 0); return { kind: "unknown" }; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? { kind: "absent" } : { kind: "unknown" }; }
+}
+
 function probeLocal(pid: number, usage: boolean): ProcessProbe {
   try { process.kill(pid, 0); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH" ? { kind: "absent" } : { kind: "unknown" }; }
@@ -91,14 +97,14 @@ function probeLocal(pid: number, usage: boolean): ProcessProbe {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
       if (fields[0] === "Z") return { kind: "absent" };
-      if (!fields[19]) return { kind: "unknown" };
+      if (!fields[19]) return absentOrUnknown(pid);
       return { kind: "live", startIdentity: usage ? fields[19] : `linux:${fields[19]}` };
     }
-    if (process.platform === "win32") return { kind: "unknown" };
+    if (process.platform === "win32") return absentOrUnknown(pid);
     const start = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="],
       { encoding: "utf8", timeout: 1000, env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
-    return start ? { kind: "live", startIdentity: `${usage ? "ps-utc" : "posix"}:${start}` } : { kind: "unknown" };
-  } catch { return { kind: "unknown" }; }
+    return start ? { kind: "live", startIdentity: `${usage ? "ps-utc" : "posix"}:${start}` } : absentOrUnknown(pid);
+  } catch { return absentOrUnknown(pid); }
 }
 
 function serviceExecutables(): { label: string; file: string }[] {

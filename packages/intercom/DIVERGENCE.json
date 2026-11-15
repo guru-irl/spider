@@ -58,7 +58,7 @@
     {
       "path": "local.ts",
       "task": "3.6f",
-      "reason": "Integrate admitted epochs, reconciliation, reply threads and named ask failures, and release session observers on shutdown. Poll the owning admission gate and promptly advertise null-to-initial-epoch formalization without changing activation.",
+      "reason": "Integrate admitted epochs, reconciliation, reply threads and named ask failures, and release session observers on shutdown. Poll the owning admission gate and promptly advertise null-to-initial-epoch formalization without changing activation. Keep registration recovery active across failed retries and stale contexts, fence old connection attempts, and warn once per outage.",
       "upstreamHash": "b99325cd8cb80b4ed41ac4f1427791eb1df916a303ba5ce5b35197eba8972f1c"
     },
     {
@@ -88,7 +88,7 @@
     {
       "path": "test-support.ts",
       "task": "3.6a",
-      "reason": "Record each fixture child PID and native start identity, gate every signal on ownership, and stop owned brokers after failed or timed-out tests.",
+      "reason": "Record each fixture child PID and native start identity, gate every signal on ownership, and stop owned brokers after failed or timed-out tests. Record fixture child process ownership, reject non-fixture roots, and stop only owned brokers.",
       "upstreamHash": null
     },
     {

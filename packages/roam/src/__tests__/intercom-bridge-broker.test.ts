@@ -2,13 +2,14 @@ import { paths } from "@spider/db-core";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
 import { buildIntercom } from "../../../../scripts/build-intercom.mjs";
-import { startTestBroker, stopTestBroker } from "../../../intercom/src/test-support";
+import { authorizeTestBridge, startTestBroker, stopTestBroker } from "../../../intercom/src/test-support";
 import { getAgentDirPath } from "../../../intercom/src/broker/paths";
 import { IntercomClient, IntercomFederationClient } from "../../../intercom/src/broker/client";
+import { parseConfig } from "../config";
 import { FEDERATION_FEATURE } from "@spider/intercom/protocol";
 import { createClientFixture } from "../../../herdr/src/__tests__/testutil";
 import { openIntercomStore } from "../intercom-store";
@@ -22,6 +23,13 @@ const endpoint = { address: to, machineId: B, homeEpoch: 1, activationEpoch: "ac
 const peer = { machineId: A, alias: "source.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: "/fixture/global" };
 const clock = { now: () => Date.now(), later: (ms: number, fn: () => void) => { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
 let root: string, agentDir: string, broker: ChildProcess;
+async function startBridge(bridge: ReturnType<typeof createIntercomBridge>, globalRoot: string): Promise<void> {
+  mkdirSync(join(globalRoot, "roam"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(globalRoot, "roam", "config.json"), JSON.stringify(parseConfig({ enabled: false, role: "box", machineId: B, hubMachineId: A, coreUnit: "fixture.service",
+    intercom: { enabled: true, mode: "peers", machineAlias: "fixture-b.invalid" } })), { mode: 0o600 });
+  await bridge.start();
+}
+
 beforeAll(async () => {
   root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "ibb-")); agentDir = getAgentDirPath();
   await buildIntercom(join(root, "broker")); await buildRoamEntries(join(root, "roam-build"));
@@ -43,7 +51,7 @@ it("confirms a revocation notice only after a registered session processes it", 
     cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 };
   const receipt = { messageId: "notice-1", status: "cancelled" as const, timestamp: 1, detail: "peer-revoked" };
   try {
-    await bridge.connect({ feature: FEDERATION_FEATURE, agentDir, machineId: B, machineAlias: "fixture-b.invalid" }, adapter);
+    await bridge.connect({ feature: FEDERATION_FEATURE, agentDir, credential: authorizeTestBridge(agentDir, B), machineId: B, machineAlias: "fixture-b.invalid" }, adapter);
     expect(await bridge.deliverRevocationNotice(remote, address, receipt)).toBe(false);
     await session.connect({ address, cwd: "/fixture", model: "fixture", pid: process.pid, name: "origin", startedAt: 1, lastActivity: 1,
       activationEpoch: "origin-generation" }, "notice-origin");
@@ -65,7 +73,7 @@ it("publishes a private capability for the configured agent directory and serves
   const prior = process.env.PI_CODING_AGENT_DIR;
   try {
     process.env.PI_CODING_AGENT_DIR = join(globalRoot, "not-the-agent");
-    await bridge.start();
+    await startBridge(bridge, globalRoot);
     const file = join(globalRoot, "roam", "intercom", "helper.json");
     expect(existsSync(file)).toBe(true);
     expect(lstatSync(file).mode & 0o777).toBe(0o600);
@@ -100,7 +108,7 @@ it("records one missing-origin frame through the packaged helper without blockin
     edges: [{ peer, edgeEpoch: "edge-1", initiator: false }], store: inbox, clock, transport: {} as any,
     localPresence: () => [], authoritativeHome: () => null, broker: client, globalRoot, agentDir });
   try {
-    await bridge.start();
+    await startBridge(bridge, globalRoot);
     for (const id of ["bad-origin", "good-origin"]) source.acceptOutbound({ from, endpoint, nextHop: B,
       message: { id, timestamp: 1, content: { text: "synthetic" } } });
     const [first, second] = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 });
@@ -134,7 +142,7 @@ it("exchanges durable frames through fake hc, the packaged helper, and a fixture
   try {
     await fixture.configure({ machines: [machine], roamFixture: { executeIntercomFixture: true } });
     await fixture.writeRoamFile(target.alias, join(globalRoot, "roam", "machine.json"), Buffer.from(JSON.stringify({ machineId: B })));
-    await bridge.start();
+    await startBridge(bridge, globalRoot);
     const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [target] });
     const handle = await transport.resolve(target);
     source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "full-trip", timestamp: 1, content: { text: "synthetic private body" } } });
@@ -167,7 +175,7 @@ it("reconnects after a local broker restart and rotates the helper capability", 
     store, clock: manualClock, transport: {} as any, localPresence: () => [], authoritativeHome: () => null,
     broker: client, globalRoot, agentDir, onBrokerState: (ready: boolean) => { states.push(ready); if (ready && states.filter(Boolean).length === 2) readyAgain(); } } as any);
   try {
-    await bridge.start(); expect(states).toEqual([true]);
+    await startBridge(bridge, globalRoot); expect(states).toEqual([true]);
     const file = join(globalRoot, "roam", "intercom", "helper.json"), before = JSON.parse(readFileSync(file, "utf8")).token;
     const disconnected = once(client, "disconnected"); await stopTestBroker(broker); await disconnected;
     expect(states.at(-1)).toBe(false); expect(timers.size).toBe(1);
@@ -208,7 +216,7 @@ it("stops a real fixture hc and its held helper within three seconds", async () 
   try {
     await fixture.configure({ machines: [machine], roamFixture: { executeIntercomFixture: true } });
     await fixture.writeRoamFile(target.alias, join(globalRoot, "roam", "machine.json"), Buffer.from(JSON.stringify({ machineId: B })));
-    await receiver.start(); await sender.start(); await within(waiting);
+    await startBridge(receiver, globalRoot); await sender.start(); await within(waiting);
     const pids = JSON.parse(readFileSync(join(fixture.root, "helper-pids.jsonl"), "utf8").trim());
     expect(pids.pid).toBeGreaterThan(0); expect(pids.parentPid).toBeGreaterThan(0);
     const start = performance.now(); await sender.stop(); await within(remoteDone);

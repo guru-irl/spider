@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import "./test-support.js";
 import { EventEmitter } from "node:events";
 import { createIntercomDeliveryObserver, receiptReleasesPayload, type RemoteSessionInfo } from "./protocol.js";
-const state = vi.hoisted(() => ({ clients: [] as any[], sessions: [] as any[], delivery: "queued" as string }));
+const state = vi.hoisted(() => ({ clients: [] as any[], receipts: [] as any[], sessions: [] as any[], delivery: "queued" as string }));
 vi.mock("./broker/spawn.js", () => ({ spawnBrokerIfNeeded: async () => undefined }));
 vi.mock("./broker/client.js", async () => {
   const { EventEmitter } = await import("node:events");
@@ -18,7 +18,7 @@ vi.mock("./broker/client.js", async () => {
     onBrokerMessage(handler: any) { this.on("broker_message", handler); return () => this.off("broker_message", handler); }
     onMessageReceipt(handler: any) { this.on("message_receipt", handler); return () => this.off("message_receipt", handler); }
     onMessageControl(handler: any) { this.on("message_control", handler); return () => this.off("message_control", handler); }
-    sendMessageReceipt(receipt: any) { this.emit("receipt", receipt); }
+    sendMessageReceipt(receipt: any) { state.receipts.push(receipt); this.emit("receipt", receipt); }
     cancelAsk() {}
     async send(to: string, options: any) { this.emit("send", to, options); return { id: options.messageId ?? "reply", delivered: state.delivery === "queued", delivery: state.delivery, outcomeKnown: state.delivery !== "unknown", retryable: false, acceptance: { accepted: true, durable: true, location: "source" } }; }
   } };
@@ -27,13 +27,14 @@ import extension from "./local.js";
 import { ReplyTracker } from "./reply-tracker.js";
 const remote: RemoteSessionInfo = { remote: true, id: "peer", address: { sessionId: "peer", scopeId: null }, machineId: "machine-2", machineAlias: "box-1.invalid", homeEpoch: 1, activationEpoch: "remote-1", endpointEpoch: "remote-1", name: "helper", cwd: "/workspace", model: "fixture", startedAt: 1, lastActivity: 1 };
 const cleanups: (() => Promise<void>)[] = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); state.clients.length = 0; state.delivery = "queued"; vi.useRealTimers(); });
-async function fixture(restored: any[] = []) {
+afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); state.clients.length = 0; state.receipts.length = 0; state.delivery = "queued"; vi.useRealTimers(); });
+async function fixture(restored: any[] = [], host?: (request: any) => void) {
   vi.useFakeTimers();
   const handlers = new Map<string, any>(), tools: any[] = [], entries: any[] = restored, messages: any[] = [], events = new EventEmitter();
   const ctx = { cwd: "/workspace", hasUI: false, mode: "rpc", model: { id: "fixture" }, isIdle: () => true, sessionManager: { getSessionId: () => "own", getSessionFile: () => "fixture.jsonl", getEntries: () => entries }, ui: {}, getContextUsage: () => undefined };
   const pi = { on: (name: string, fn: any) => handlers.set(name, fn), events: { on: (name: string, fn: any) => { events.on(name, fn); return () => events.off(name, fn); }, emit: (name: string, payload: any) => events.emit(name, payload) }, registerTool: (tool: any) => tools.push(tool), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, getSessionName: () => "own", getActiveTools: () => [], sendMessage: (message: any) => messages.push(message), appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data, id: `entry-${entries.length}` }) };
   state.sessions = [{ id: "own", name: "own", cwd: "/workspace", model: "fixture", pid: 1, startedAt: 1, lastActivity: 1 }, remote];
+  if (host) events.on("spider:intercom-host", host);
   extension(pi as any); handlers.get("session_start")({}, ctx); await vi.advanceTimersByTimeAsync(0);
   const client = state.clients.at(-1), tool = tools.find(t => t.name === "intercom");
   cleanups.push(async () => { await handlers.get("session_shutdown")({ reason: "reload" }, ctx); });
@@ -138,7 +139,7 @@ it.each(["reload", "quit"])("shutdown intent without queue exclusion stays unkno
   expect(receipts.at(-1)).toMatchObject({ status: "unknown" });
 }, 5000);
 
-it("busy headless refusal emits not_injected and retries only after idle", async () => {
+it("busy headless refusal emits not_injected and never revives refused mail", async () => {
   const f = await fixture(), receipts: any[] = [];
   const replies: any[] = [];
   f.ctx.isIdle = () => false; f.client.on("receipt", (value: any) => receipts.push(value)); f.client.on("send", (...args: any[]) => replies.push(args));
@@ -150,7 +151,7 @@ it("busy headless refusal emits not_injected and retries only after idle", async
   expect(replies).toHaveLength(1);
   f.ctx.isIdle = () => true;
   f.client.emit("message", remote, message); f.client.emit("message", remote, message); await vi.advanceTimersByTimeAsync(0);
-  expect(f.messages).toHaveLength(1);
+  expect(f.messages).toHaveLength(0);
 }, 5000);
 
 it("proved old-queue exclusion retains source payload until one same-id entry", async () => {
@@ -217,7 +218,7 @@ it("every dispatch producer preserves one message id", async () => {
 }, 5000);
 it("not_injected retries on next idle or start without stale queue duplication", async () => {
   const f = await fixture(); f.ctx.isIdle = () => false;
-  f.client.emit("message", remote, { id: "idle-retry", timestamp: 1, content: { text: "synthetic" } });
+  f.client.emit("message", remote, { id: "idle-retry", replyTo: "previous", timestamp: 1, content: { text: "synthetic" } });
   await vi.advanceTimersByTimeAsync(0); expect(f.messages).toEqual([]);
   f.ctx.isIdle = () => true;
   f.handlers.get("agent_end")({}, f.ctx); await vi.advanceTimersByTimeAsync(0);
@@ -359,4 +360,107 @@ it("unsupported brokers cannot turn a remote send into legacy local delivery", a
   f.events.emit("intercom:outbox-request", { version: 1, requestId: "unsupported-outbox", extensionId: "fixture", extensionName: "Fixture", to: "peer", message: "synthetic" });
   await vi.advanceTimersByTimeAsync(0);
   expect(sent).toEqual([]); expect(outbox[0]).toMatchObject({ status: "failed", detail: "unsupported-broker" });
+}, 5000);
+
+it("a delivered headless refusal settles plain mail after idle", async () => {
+  const f = await fixture(); f.ctx.isIdle = () => false;
+  f.client.emit("message", remote, { id: "refused-plain", timestamp: 1, content: { text: "synthetic" } });
+  await vi.advanceTimersByTimeAsync(0);
+  f.ctx.isIdle = () => true;
+  f.handlers.get("agent_end")({}, f.ctx);
+  f.client.emit("message", remote, { id: "refused-plain", timestamp: 1, content: { text: "synthetic" } });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(f.messages).toEqual([]);
+}, 5000);
+it("cwd asks match a local stable broker id to the logical reply address", async () => {
+  const f = await fixture(); let ask: any;
+  const child = { ...state.sessions[0], id: "spider-child", name: "child", address: { sessionId: "logical-child", scopeId: null } };
+  state.sessions.push(child);
+  f.client.on("send", (_to: string, options: any) => { ask = options; });
+  const result = f.execute({ action: "ask", to: "child", cwd: "/workspace", message: "question" });
+  await vi.advanceTimersByTimeAsync(0);
+  f.client.emit("message", child, { id: "child-answer", replyTo: ask.messageId, timestamp: 2, content: { text: "stable answer" } });
+  await vi.advanceTimersByTimeAsync(600001);
+  expect((await result).content[0].text).toContain("stable answer");
+}, 5000);
+
+it.each([320, 1200])("acknowledged historical deliveries are not replayed or rescanned (%s)", async count => {
+  const history: any[] = [];
+  for (let i = 0; i < count; i++) {
+    history.push({ id: `pending-${i}`, type: "custom", customType: "intercom_pending", data: { messageId: `done-${i}`, sessionId: "own", activationEpoch: "old" } });
+    history.push({ id: `physical-${i}`, type: "custom_message", customType: "intercom_message", details: { message: { id: `done-${i}` }, intercom: { sessionId: "own", activationEpoch: "old" } } });
+    history.push({ id: `ack-${i}`, type: "custom", customType: "intercom_receipt_ack", data: { messageId: `done-${i}`, status: "injected" } });
+  }
+  const f = await fixture(history), receipts: any[] = [];
+  f.client.on("receipt", (r: any) => receipts.push(r));
+  let scans = 0; f.ctx.sessionManager.getEntries = () => { scans++; return history; };
+  f.handlers.get("message_end")({}, f.ctx);
+  expect(scans).toBeLessThan(5);
+  expect(state.receipts).toEqual([]);
+  f.client.connected = false; f.client.emit("disconnected", new Error("fixture"));
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(state.clients.at(-1).connected).toBe(true);
+  expect(receipts).toEqual([]);
+}, 5000);
+it("broker acknowledgement prevents receipt replay after reconnect and reload", async () => {
+  const f = await fixture(), receipts: any[] = [];
+  f.client.on("receipt", (r: any) => receipts.push(r));
+  f.client.emit("message", remote, { id: "ack-me", timestamp: 1, content: { text: "synthetic" } });
+  f.entries.push({ id: "physical-ack", type: "custom_message", customType: "intercom_message", details: f.messages[0].details });
+  f.handlers.get("message_end")({}, f.ctx);
+  const receipt = receipts.find(r => r.status === "injected");
+  f.client.emit("broker_message", { type: "receipt_ack", messageId: receipt.messageId, status: receipt.status, timestamp: receipt.timestamp });
+  expect(f.entries.some(e => e.customType === "intercom_receipt_ack" && e.data.messageId === "ack-me")).toBe(true);
+  const countBeforeReconnect = state.receipts.length;
+  f.client.connected = false; f.client.emit("disconnected", new Error("fixture"));
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(state.receipts).toHaveLength(countBeforeReconnect);
+  const replayed: any[] = []; state.clients.at(-1).on("receipt", (r: any) => replayed.push(r));
+  f.handlers.get("session_start")({}, f.ctx); await vi.advanceTimersByTimeAsync(0);
+  f.handlers.get("message_end")({}, f.ctx);
+  expect(replayed).toEqual([]);
+}, 5000);
+
+it("unobserved restored mail shares one physical scan per message end", async () => {
+  let reads = 0;
+  const history = Array.from({ length: 1200 }, (_, i) => ({ id: `pending-${i}`, get type() { reads++; return "custom"; }, customType: "intercom_pending", data: { messageId: `unseen-${i}`, sessionId: "own", activationEpoch: `old-${i}` } }));
+  const f = await fixture(history); reads = 0;
+  f.handlers.get("message_end")({}, f.ctx);
+  expect(reads).toBeLessThan(12_000);
+  expect(f.messages).toEqual([]);
+}, 5000);
+it("pending journal metadata stores no sender runtime details", async () => {
+  const f = await fixture();
+  f.client.emit("message", remote, { id: "metadata-only", timestamp: 1, content: { text: "synthetic" } });
+  expect(f.entries.find(entry => entry.customType === "intercom_pending").data.from).toEqual({ id: "peer", address: remote.address });
+}, 5000);
+
+it("unacknowledged receipts expire before a later broker reconnect", async () => {
+  const f = await fixture();
+  f.client.emit("message", remote, { id: "receipt-ttl", timestamp: 1, content: { text: "synthetic" } });
+  f.entries.push({ id: "ttl-entry", type: "custom_message", customType: "intercom_message", details: f.messages[0].details });
+  f.handlers.get("message_end")({}, f.ctx);
+  const before = state.receipts.length;
+  await vi.advanceTimersByTimeAsync(60 * 60 * 1000 + 1);
+  f.client.connected = false; f.client.emit("disconnected", new Error("fixture"));
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(state.receipts).toHaveLength(before);
+}, 5000);
+it("reload restores at most 1024 pending receipt records", async () => {
+  const history = Array.from({ length: 1200 }, (_, i) => ({ id: `pending-${i}`, type: "custom", customType: "intercom_pending", data: { messageId: `bounded-${i}`, sessionId: "own", activationEpoch: "old" } }));
+  const f = await fixture(history);
+  expect(state.receipts.length).toBeGreaterThan(0);
+  expect(state.receipts.length).toBeLessThanOrEqual(1024);
+  expect(f.client.isConnected()).toBe(true);
+}, 5000);
+
+it("host reconciliation restores only a bounded pending receipt batch", async () => {
+  const reconciled: string[] = [];
+  const f = await fixture([], request => {
+    request.pendingOwn = async () => Array.from({ length: 1200 }, (_, i) => ({ messageId: `host-pending-${i}`, owner: { address: { sessionId: "own", scopeId: null }, machineId: "local", homeEpoch: null, activationEpoch: "old" } }));
+    request.reconcile = async (id: string) => { reconciled.push(id); return { messageId: id, status: "unknown", timestamp: Date.now() }; };
+  });
+  expect(reconciled.length).toBeGreaterThan(0);
+  expect(reconciled.length).toBeLessThanOrEqual(1024);
+  expect(f.client.isConnected()).toBe(true);
 }, 5000);

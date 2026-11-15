@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
-import { startTestBroker, stopTestBroker, testTmpDir } from "../test-support.js";
+import { authorizeTestBridge, startTestBroker, stopTestBroker, testTmpDir } from "../test-support.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { type ChildProcess } from "node:child_process";
@@ -15,7 +15,7 @@ const adapter: FederationBridge = {
   receipt: (from, receipt) => { receipts.push({ from, receipt }); receiptEvents.emit("receipt", { from, receipt }); },
   control: () => {},
 };
-const registration = { feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" };
+const registration = { feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "machine-1"), machineId: "machine-1", machineAlias: "local.invalid" };
 beforeAll(async () => {
   fixtureHome = mkdtempSync(join(testTmpDir(), "h-"));
   broker = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], { env: { ...process.env, HOME: fixtureHome }, stdio: ["ignore", "pipe", "pipe"] }, "suite");

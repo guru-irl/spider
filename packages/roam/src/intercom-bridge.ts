@@ -626,7 +626,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     const broker = ports.broker!;
     await ports.ensureBroker?.();
     if (stopped) return bad("bridge-stopped");
-    await broker.connect({ feature: FEDERATION_FEATURE, agentDir: ports.agentDir!, machineId: ports.machineId, machineAlias: ports.machineAlias }, bridge);
+    await broker.connect({ feature: FEDERATION_FEATURE, agentDir: ports.agentDir!, machineId: ports.machineId, machineAlias: ports.machineAlias, credential: await routeLease!.authorizeBridge(ports.machineId) }, bridge);
     if (stopped) return bad("bridge-stopped");
     const token = randomBytes(32).toString("hex");
     await broker.enableHelpers(token, async (input, signal) => {

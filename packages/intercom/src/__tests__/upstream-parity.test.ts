@@ -273,3 +273,11 @@ it.each([
   expect(result.status).not.toBe(0);
   expect(result.stderr).toMatch(/(?:runtime|implementation).*broker\/spawn\.ts/i);
 }, 5000);
+
+it('requires a declaration for setup-only edits to upstream tests', () => {
+  const root = fixture(), file = join(root, 'broker/paths.test.ts');
+  writeFileSync(file, readFileSync(file, 'utf8') + '\n// Changed fixture setup.\n');
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/unlisted.*test.*broker\/paths\.test\.ts/i);
+}, 5000);

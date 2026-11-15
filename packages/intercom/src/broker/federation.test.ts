@@ -113,3 +113,18 @@ it("stale generations cannot receive and scoped names stay isolated", async () =
   await expect(f.federation.dispatch({ ...address, scopeId: "different" }, remote, { id: "mail", timestamp: 1, content: { text: "synthetic" } })).rejects.toThrow(/scope/);
   expect(f.dispatch).not.toHaveBeenCalled();
 }, 5000);
+
+it("unobserved federation metadata is bounded and expires without receipts", async () => {
+  let now = 1000;
+  const federation = createFederation({ agentDir: "/fixture", locals: () => [], now: () => now });
+  federation.registerBridge({ feature: FEDERATION_FEATURE, agentDir: "/fixture", machineId: "local", machineAlias: "local.invalid" }, {
+    async dispatch() { return { delivery: "queued", retryable: false, outcomeKnown: true, acceptance: { accepted: true, durable: true, location: "fixture" } }; }, receipt() {}, control() {},
+  });
+  const target = { remote: true as const, id: "target", address: { sessionId: "target", scopeId: null }, machineId: "remote", machineAlias: "box-1.invalid", homeEpoch: null, activationEpoch: "a", endpointEpoch: "a", cwd: "/workspace", model: "fixture", startedAt: 1, lastActivity: 1 };
+  federation.publishPresence([target]);
+  for (let i = 0; i < 4200; i++) await federation.dispatch({ sessionId: `source-${i}`, scopeId: null }, target, { id: `m-${i}`, timestamp: now, content: { text: "synthetic" } });
+  expect(federation.inspectBlockers(target.address).unobservedReceipts.length).toBeLessThanOrEqual(4096);
+  expect(federation.inspectBlockers(target.address).unobservedReceipts).toContain("m-4199");
+  now += 60 * 60 * 1000 + 1;
+  expect(federation.inspectBlockers(target.address).unobservedReceipts).toEqual([]);
+}, 5000);

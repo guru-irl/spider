@@ -172,6 +172,7 @@ export type ClientMessage =
 
 export type BrokerMessage =
   | { type: "registered"; sessionId: string; features?: string[] }
+  | { type: "receipt_ack"; messageId: string; status: MessageReceiptStatus; timestamp: number }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
   | { type: "message"; from: SessionInfo; message: Message }
   | { type: "presence_update"; session: SessionInfo }

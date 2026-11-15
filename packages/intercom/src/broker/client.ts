@@ -1,4 +1,4 @@
-import { FEDERATION_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
+import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
 import { isFederationDispatchResult, parseFederationBrokerMessage } from "./protocol.js";
 import { EventEmitter } from "events";
 import net from "net";
@@ -70,6 +70,9 @@ export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private _features = new Set<string>();
+  private receiptQueue = new Map<string, MessageReceipt>();
+  private receiptTimer: ReturnType<typeof setTimeout> | null = null;
+  private receiptBudget = 20;
   private pendingSends = new Map<string, { resolve: (r: SendResult) => void; reject: (e: Error) => void }>();
   private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
   private nextSenderSequence = 1;
@@ -220,6 +223,8 @@ export class IntercomClient extends EventEmitter {
         const disconnectError = this.disconnectError ?? new Error("Client disconnected");
         this.disconnecting = false;
         this.stopLivenessHeartbeat();
+        if (this.receiptTimer) clearTimeout(this.receiptTimer);
+        this.receiptTimer = null; this.receiptQueue.clear(); this.receiptBudget = 20;
         cleanupConnectionAttempt();
         cleanupSocketListeners();
         this.failPending(disconnectError);
@@ -289,7 +294,7 @@ export class IntercomClient extends EventEmitter {
         const scopeId = getIntercomScopeId();
         writeMessage(socket, {
           type: "register",
-          features: [FEDERATION_FEATURE],
+          features: [FEDERATION_FEATURE, RECEIPT_EVIDENCE_FEATURE, RECEIPT_ACK_FEATURE],
           session,
           ...(sessionId ? { sessionId } : {}),
           ...(scopeId ? { scopeId } : {}),
@@ -408,6 +413,12 @@ export class IntercomClient extends EventEmitter {
         break;
       }
 
+      case "receipt_ack": {
+        if (!this.supportsFeature(RECEIPT_ACK_FEATURE) || typeof brokerMessage.messageId !== "string" ||
+            !isMessageReceipt({ messageId: brokerMessage.messageId, status: brokerMessage.status, timestamp: brokerMessage.timestamp })) throw new Error("Invalid receipt acknowledgement");
+        this.emit("broker_message", brokerMessage as BrokerMessage);
+        break;
+      }
       case "message_receipt": {
         if (!isSessionInfo(brokerMessage.from) || !isMessageReceipt(brokerMessage.receipt)) {
           throw new Error("Invalid message_receipt event");
@@ -750,7 +761,25 @@ export class IntercomClient extends EventEmitter {
       return;
     }
 
-    writeMessage(socket, { type: "message_receipt", receipt });
+    const compatible = compatibleReceipt(receipt, this.supportsFeature(RECEIPT_EVIDENCE_FEATURE));
+    if (!compatible) return;
+    this.receiptQueue.set(receipt.messageId, compatible);
+    while (this.receiptQueue.size > 4096) this.receiptQueue.delete(this.receiptQueue.keys().next().value!);
+    this.flushReceipts();
+  }
+
+  private flushReceipts(): void {
+    if (!this.isConnected()) return;
+    while (this.receiptBudget > 0 && this.receiptQueue.size) {
+      const [id, receipt] = this.receiptQueue.entries().next().value!;
+      this.receiptQueue.delete(id);
+      this.receiptBudget--;
+      writeMessage(this.socket!, { type: "message_receipt", receipt });
+    }
+    if (!this.receiptTimer && this.receiptBudget < 20) {
+      this.receiptTimer = setTimeout(() => { this.receiptTimer = null; this.receiptBudget = 20; this.flushReceipts(); }, 250);
+      this.receiptTimer.unref?.();
+    }
   }
 
   cancelAsk(messageId: string): void {

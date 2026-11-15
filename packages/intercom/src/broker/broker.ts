@@ -1,9 +1,9 @@
 import { createFederation } from "./federation.js";
-import { FEDERATION_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
+import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
 import { isRemoteSessionInfo, isSessionAddress, isSessionEndpoint, isFederationDispatchResult, isMessageControl, isConsumptionReceipt } from "./protocol.js";
 import net from "net";
-import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "fs";
-import { join } from "path";
+import { constants, closeSync, fstatSync, lstatSync, openSync, realpathSync, chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "fs";
+import { isAbsolute, join, resolve } from "path";
 import { createHash, randomUUID, timingSafeEqual } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { isMessage, isMessageReceipt, isSessionId, isSessionRegistration } from "./protocol.js";
@@ -69,6 +69,8 @@ interface ConnectedSession {
   ownerOrder: number;
   extensions?: ExtensionCapability[];
   federation: boolean;
+  receiptEvidence: boolean;
+  receiptAck: boolean;
 }
 
 interface DeliveryRecord {
@@ -207,6 +209,36 @@ function ensurePendingAskRecordDir(): void {
 }
 
 class IntercomBroker {
+  private authorizeBridge(claim: Record<string, unknown>): void {
+    const privateDirectory = (directory: string) => {
+      const info = lstatSync(directory);
+      if (!info.isDirectory() || info.isSymbolicLink() || realpathSync(directory) !== directory ||
+          typeof process.getuid === "function" && info.uid !== process.getuid() || (info.mode & 0o7777) !== 0o700) throw new Error("bridge-unauthorized");
+    };
+    const privateJson = (file: string): Record<string, unknown> => {
+      const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        const info = fstatSync(fd);
+        if (!info.isFile() || info.nlink !== 1 || info.size > 1024 * 1024 || (info.mode & 0o7777) !== 0o600 ||
+            typeof process.getuid === "function" && info.uid !== process.getuid()) throw new Error("bridge-unauthorized");
+        const value: unknown = JSON.parse(readFileSync(fd, "utf8"));
+        if (!isRecord(value)) throw new Error("bridge-unauthorized");
+        return value;
+      } finally { closeSync(fd); }
+    };
+    try {
+      privateDirectory(INTERCOM_DIR);
+      const authority = privateJson(join(INTERCOM_DIR, "bridge-authority.json"));
+      if (authority.version !== 1 || authority.machineId !== claim.machineId || typeof authority.root !== "string" ||
+          !isAbsolute(authority.root) || resolve(authority.root) !== realpathSync(authority.root)) throw new Error("bridge-unauthorized");
+      privateDirectory(join(authority.root, "roam"));
+      const config = privateJson(join(authority.root, "roam", "config.json"));
+      if (config.machineId !== claim.machineId || !isRecord(config.intercom) || config.intercom.enabled !== true) throw new Error("federation-disabled");
+      if (typeof claim.credential !== "string" || !/^[0-9a-f]{64}$/.test(claim.credential) ||
+          typeof authority.credential !== "string" || !/^[0-9a-f]{64}$/.test(authority.credential) ||
+          !timingSafeEqual(Buffer.from(claim.credential), Buffer.from(authority.credential))) throw new Error("bridge-unauthorized");
+    } catch { throw new Error("bridge-unauthorized"); }
+  }
   private sessions = new Map<string, ConnectedSession>();
   private bridgeSocket: net.Socket | null = null;
   private bridgeMachineId: string | null = null;
@@ -218,10 +250,10 @@ class IntercomBroker {
   private helperNegotiated = new Set<net.Socket>();
   private helpers = new Set<net.Socket>();
   private helperPending = new Map<string, { socket: net.Socket; requestId: string; timer: NodeJS.Timeout }>();
-  private remoteRoutes = new Map<string, { from: SessionAddress; to: RemoteSessionInfo }>();
-  private inboundRemoteRoutes = new Map<string, { from: RemoteSessionInfo; to: SessionAddress }>();
+  private remoteRoutes = new Map<string, { createdAt: number; from: SessionAddress; to: RemoteSessionInfo }>();
+  private inboundRemoteRoutes = new Map<string, { createdAt: number; from: RemoteSessionInfo; to: SessionAddress }>();
   private restoredReceipts = new Map<string, { from: SessionAddress; receipt: MessageReceipt; at: number }>();
-  private unobservedLocalReceipts = new Map<string, { from: SessionAddress; to: SessionAddress; activationEpoch: string; unknown: boolean }>();
+  private unobservedLocalReceipts = new Map<string, { from: SessionAddress; to: SessionAddress; activationEpoch: string; unknown: boolean; createdAt: number }>();
   private federation = createFederation({ agentDir: getAgentDirPath(), locals: () => [...this.sessions.values()].map(session => sessionAddress(session.info, session.scopeId ?? null)), now: () => Date.now() });
   private askEdges = new Map<string, AskEdge>();
   private messageReceiptRoutes = new Map<string, MessageReceiptRoute>();
@@ -397,6 +429,7 @@ class IntercomBroker {
     this.writeBridge({ type: "federation_local_presence", sessions: [...this.sessions.values()].filter(session => session.federation).map(session => ({ address: sessionAddress(session.info, session.scopeId ?? null), startedAt: session.info.startedAt, lastActivity: session.info.lastActivity, homeEpoch: session.info.homeEpoch ?? null, activationEpoch: session.info.activationEpoch ?? session.info.endpointEpoch!, cwd: session.info.cwd, model: session.info.model, ...(session.info.name ? { name: session.info.name } : {}), ...(session.info.status ? { status: session.info.status } : {}) })) });
   }
   private inspectBlockers(address: SessionAddress) {
+    this.pruneMessageReceiptRoutes(); this.pruneAskEdges();
     const result = this.federation.inspectBlockers(address);
     const key = this.localForAddress(address)?.key ?? addressKey(address);
     return { ...result,
@@ -416,6 +449,7 @@ class IntercomBroker {
     return { sessionId, scopeId };
   }
   private handleBridgeMessage(socket: net.Socket, message: Record<string, unknown>): void {
+    this.pruneMessageReceiptRoutes();
     switch (message.type) {
       case "helper_authorize": {
         if (typeof message.requestId !== "string" || !message.requestId || typeof message.token !== "string" || !/^[0-9a-f]{64}$/.test(message.token)) throw new Error("invalid-helper-authorization");
@@ -464,7 +498,7 @@ class IntercomBroker {
         } else {
           try {
             this.federation.observeInbound(message.from.address, to.address, to.activationEpoch, message.message);
-            this.inboundRemoteRoutes.set(message.message.id, { from: message.from, to: to.address });
+            this.inboundRemoteRoutes.set(message.message.id, { createdAt: Date.now(), from: message.from, to: to.address });
             writeMessage(target.socket, { type: "message", from: message.from, message: message.message });
             result = { delivery: "socket_delivered", retryable: false, outcomeKnown: true, acceptance: { accepted: true, durable: false } };
           } catch (error) {
@@ -511,6 +545,7 @@ class IntercomBroker {
           if (route && (addressKey(route.from) !== addressKey(message.to) || addressKey(route.to.address) !== addressKey(message.from.address))) throw new Error("invalid-federation-receipt-route");
           // Apply evidence without reflecting the same receipt back to the bridge.
           this.federation.observeReceipt(message.from.address, message.receipt);
+          if (message.receipt.status === "expired" || isConsumptionReceipt(message.receipt)) this.remoteRoutes.delete(message.receipt.messageId);
           if (target?.federation) writeMessage(target.socket, { type: "message_receipt", from: message.from, receipt: message.receipt });
         } else {
           if (!isMessageControl(message.control)) throw new Error("invalid-federation-control");
@@ -605,6 +640,7 @@ class IntercomBroker {
 
     if (clientMessage.type === "federation_register") {
       if (currentKey || this.bridgeSocket === socket || typeof LISTEN_TARGET !== "string") throw new Error("federation-private-socket-required");
+      this.authorizeBridge(clientMessage);
       if (typeof clientMessage.agentDir !== "string" || typeof clientMessage.machineId !== "string" || !clientMessage.machineId || typeof clientMessage.machineAlias !== "string" || !clientMessage.machineAlias) throw new Error("invalid-bridge-registration");
       this.detachBridge = this.federation.registerBridge({ feature: String(clientMessage.feature), agentDir: clientMessage.agentDir, machineId: clientMessage.machineId, machineAlias: clientMessage.machineAlias }, {
         dispatch: frame => new Promise(resolve => {
@@ -729,6 +765,8 @@ class IntercomBroker {
           lastPresenceBroadcastAt: Date.now(),
           ownerOrder: previous?.ownerOrder ?? this.nextOwnerOrder++,
           extensions,
+          receiptAck: Array.isArray(clientMessage.features) && clientMessage.features.includes(RECEIPT_ACK_FEATURE),
+          receiptEvidence: Array.isArray(clientMessage.features) && clientMessage.features.includes(RECEIPT_EVIDENCE_FEATURE),
           federation: Array.isArray(clientMessage.features) && clientMessage.features.includes(FEDERATION_FEATURE),
         };
         this.sessions.set(key, connectedSession);
@@ -745,7 +783,7 @@ class IntercomBroker {
         writeMessage(socket, {
           type: "registered",
           sessionId: id,
-          features: [EXTENSION_BUS_FEATURE, EXACT_SEND_FEATURE, ...(typeof LISTEN_TARGET === "string" ? [FEDERATION_FEATURE] : [])],
+          features: [EXTENSION_BUS_FEATURE, EXACT_SEND_FEATURE, ...(connectedSession.receiptEvidence ? [RECEIPT_EVIDENCE_FEATURE] : []), ...(connectedSession.receiptAck ? [RECEIPT_ACK_FEATURE] : []), ...(typeof LISTEN_TARGET === "string" ? [FEDERATION_FEATURE] : [])],
         });
         this.broadcast({ type: "session_joined", session: info }, key, scopeId);
 
@@ -905,7 +943,7 @@ class IntercomBroker {
           const from = sessionAddress(fromSession.info, fromSession.scopeId ?? null);
           const inboundAsk = message.replyTo ? this.inboundRemoteRoutes.get(message.replyTo) : undefined;
           if (message.replyTo && inboundAsk && (inboundAsk.from.id !== target.id || addressKey(inboundAsk.to) !== addressKey(from))) { this.writeDeliveryFailure(socket, message.id, "Reply target does not match the pending ask", "E_REPLY_TARGET"); break; }
-          this.remoteRoutes.set(message.id, { from, to: target });
+          this.remoteRoutes.set(message.id, { createdAt: Date.now(), from, to: target });
           void (localHome ? this.federation.dispatchLocal(from, target, message) : this.federation.dispatch(from, target, message)).then(result => {
             if (fromSession.socket.destroyed) return;
             const success = result.delivery === "queued" || result.delivery === "socket_delivered";
@@ -999,7 +1037,7 @@ class IntercomBroker {
             this.removePendingAskRecord(message.replyTo, fromSession.scopeId);
           }
           this.messageReceiptRoutes.set(message.id, { from: currentKey, to: target.key, createdAt: brokerReceivedAt });
-          this.unobservedLocalReceipts.set(message.id, { from: sessionAddress(fromSession.info, fromSession.scopeId ?? null), to: sessionAddress(target.info, target.scopeId ?? null), activationEpoch: target.info.activationEpoch ?? target.info.endpointEpoch!, unknown: false });
+          this.unobservedLocalReceipts.set(message.id, { from: sessionAddress(fromSession.info, fromSession.scopeId ?? null), to: sessionAddress(target.info, target.scopeId ?? null), activationEpoch: target.info.activationEpoch ?? target.info.endpointEpoch!, unknown: false, createdAt: Date.now() });
           this.recordDelivery(currentKey, message.id, fingerprint, "socket_delivered");
           this.writeDeliverySuccess(socket, message.id, "socket_delivered");
           break;
@@ -1047,7 +1085,7 @@ class IntercomBroker {
               message: deliveredMessage,
             });
             this.messageReceiptRoutes.set(message.id, { from: currentKey, to: liveMailboxTarget.key, createdAt: brokerReceivedAt });
-            this.unobservedLocalReceipts.set(message.id, { from: sessionAddress(fromSession.info, fromSession.scopeId ?? null), to: sessionAddress(liveMailboxTarget.info, liveMailboxTarget.scopeId ?? null), activationEpoch: liveMailboxTarget.info.activationEpoch ?? liveMailboxTarget.info.endpointEpoch!, unknown: false });
+            this.unobservedLocalReceipts.set(message.id, { from: sessionAddress(fromSession.info, fromSession.scopeId ?? null), to: sessionAddress(liveMailboxTarget.info, liveMailboxTarget.scopeId ?? null), activationEpoch: liveMailboxTarget.info.activationEpoch ?? liveMailboxTarget.info.endpointEpoch!, unknown: false, createdAt: Date.now() });
           } else {
             this.queueMailboxMessage(fromSession, disconnectedTarget, message, brokerReceivedAt);
           }
@@ -1087,13 +1125,26 @@ class IntercomBroker {
           throw new Error("Invalid message_receipt message");
         }
         this.pruneMessageReceiptRoutes();
+        const acknowledgedReceipt = clientMessage.receipt;
+        const receiverForAck = this.sessions.get(currentKey);
+        const acknowledge = () => {
+          if (receiverForAck?.socket === socket && receiverForAck.receiptAck) writeMessage(socket, { type: "receipt_ack", messageId: acknowledgedReceipt.messageId, status: acknowledgedReceipt.status, timestamp: acknowledgedReceipt.timestamp });
+        };
         const remoteRoute = this.inboundRemoteRoutes.get(clientMessage.receipt.messageId);
         if (remoteRoute && this.localForAddress(remoteRoute.to)?.key === currentKey && this.sessions.get(currentKey)?.socket === socket) {
           this.forwardLocalReceipt(remoteRoute.to, clientMessage.receipt);
+          if (clientMessage.receipt.status === "expired" || isConsumptionReceipt(clientMessage.receipt)) this.inboundRemoteRoutes.delete(clientMessage.receipt.messageId);
+          acknowledge();
           break;
         }
-        const route = this.messageReceiptRoutes.get(clientMessage.receipt.messageId);
         const receiver = this.sessions.get(currentKey);
+        const retained = this.unobservedLocalReceipts.get(clientMessage.receipt.messageId);
+        const retainedSender = retained ? this.localForAddress(retained.from) : undefined;
+        // A reload can drain the previous Pi queue. Its physical proof still belongs
+        // to the old activation, whose bounded unknown marker keeps the return address.
+        const route = this.messageReceiptRoutes.get(clientMessage.receipt.messageId) ??
+          (retained && receiver && retainedSender && addressKey(sessionAddress(receiver.info, receiver.scopeId ?? null)) === addressKey(retained.to)
+            ? { from: retainedSender.key, to: currentKey, createdAt: retained.createdAt } : undefined);
         const sender = route ? this.sessions.get(route.from) : undefined;
         if (route?.to === currentKey && receiver?.socket === socket) {
           const pending = this.unobservedLocalReceipts.get(clientMessage.receipt.messageId);
@@ -1101,15 +1152,17 @@ class IntercomBroker {
             if (clientMessage.receipt.status === "unknown") pending.unknown = true;
             if (clientMessage.receipt.status === "expired" || isConsumptionReceipt(clientMessage.receipt) && clientMessage.receipt.evidence?.activationEpoch === pending.activationEpoch && clientMessage.receipt.evidence.sessionId === pending.to.sessionId) this.unobservedLocalReceipts.delete(clientMessage.receipt.messageId);
           }
-          if (sender) writeMessage(sender.socket, {
+          const compatible = sender && compatibleReceipt(clientMessage.receipt, sender.receiptEvidence);
+          if (sender && compatible) writeMessage(sender.socket, {
             type: "message_receipt",
             from: receiver.info,
-            receipt: clientMessage.receipt,
+            receipt: compatible,
           });
         } else if (!route && receiver?.socket === socket && receiver.federation && isConsumptionReceipt(clientMessage.receipt)) {
           const from = sessionAddress(receiver.info, receiver.scopeId ?? null);
           if (clientMessage.receipt.evidence?.sessionId === from.sessionId) this.forwardLocalReceipt(from, clientMessage.receipt);
         }
+        acknowledge();
         break;
       }
 
@@ -1482,7 +1535,7 @@ class IntercomBroker {
         to: session.key,
         createdAt: entry.message.brokerReceivedAt ?? entry.queuedAt,
       });
-      this.unobservedLocalReceipts.set(entry.message.id, { from: sessionAddress(entry.from, entry.fromScopeId ?? null), to: sessionAddress(session.info, session.scopeId ?? null), activationEpoch: session.info.activationEpoch ?? session.info.endpointEpoch!, unknown: false });
+      this.unobservedLocalReceipts.set(entry.message.id, { from: sessionAddress(entry.from, entry.fromScopeId ?? null), to: sessionAddress(session.info, session.scopeId ?? null), activationEpoch: session.info.activationEpoch ?? session.info.endpointEpoch!, unknown: false, createdAt: Date.now() });
       this.updateDeliveryRecord(entry.fromKey, entry.message.id, "socket_delivered");
     }
   }
@@ -1553,17 +1606,18 @@ class IntercomBroker {
   }
 
   private pruneMessageReceiptRoutes(now = Date.now()): void {
-    for (const [messageId, route] of this.messageReceiptRoutes) {
-      if (!this.unobservedLocalReceipts.has(messageId) && now - route.createdAt > MESSAGE_RECEIPT_ROUTE_RETENTION_MS) {
-        this.messageReceiptRoutes.delete(messageId);
-      }
+    for (const map of [this.messageReceiptRoutes, this.unobservedLocalReceipts, this.remoteRoutes, this.inboundRemoteRoutes]) {
+      for (const [id, route] of map) if (now - route.createdAt > MESSAGE_RECEIPT_ROUTE_RETENTION_MS) map.delete(id);
+      while (map.size > MAX_DELIVERY_RECORDS) map.delete(map.keys().next().value!);
     }
   }
 
   private clearMessageReceiptRoutesForSession(sessionKey: string): void {
     for (const [messageId, route] of this.messageReceiptRoutes) {
-      if (!this.unobservedLocalReceipts.has(messageId) && (route.from === sessionKey || route.to === sessionKey)) {
+      if (route.from === sessionKey || route.to === sessionKey) {
         this.messageReceiptRoutes.delete(messageId);
+        const pending = this.unobservedLocalReceipts.get(messageId);
+        if (pending) pending.unknown = true;
       }
     }
   }

@@ -54,13 +54,17 @@ export function sendIntercom(pi: any, globalDb: Db,
     pendingCalls.add(call);
     const dispatch = (resolved: IntercomRouteResolution) => {
       if (settled || route) return;
+      if (resolved.kind === "unknown" && resolved.reason === "broker-unavailable" && !m.to.includes("/") &&
+          !globalDb.prepare("SELECT 1 FROM session_homes WHERE session_id=? AND machine_id<>''").get(m.to)) {
+        resolved = { kind: "local", to: m.to, address: { sessionId: m.to, scopeId: null } };
+      }
       route = resolved;
       if (!("to" in resolved)) {
         finish({ ...unconfirmed(resolved.reason ?? `${resolved.kind}-target`), delivery: resolved.kind === "ambiguous" ? "failed" : "unknown", deliveryState: resolved.kind === "ambiguous" ? "failed" : "unknown", outcomeKnown: resolved.kind === "ambiguous" }); return;
       }
       try {
         const home = globalDb.prepare("SELECT machine_id FROM session_homes WHERE session_id=?").get(resolved.address.sessionId) as { machine_id: string } | undefined;
-        const bridge = resolved.kind === "bridge" || !!home;
+        const bridge = resolved.kind === "bridge" || !!home?.machine_id;
         if (!bridge) mirrorId = store.enqueue({ fromSession: m.fromSession, toSession: resolved.to, kind: m.kind ?? "message", body: m.message, route: { kind: "local", messageId: requestId } });
         else route = { ...resolved, kind: "bridge" };
         if (typeof pi?.events?.on !== "function" || typeof pi.events.emit !== "function") { finish(unconfirmed("No intercom broker available; delivery unconfirmed.")); return; }

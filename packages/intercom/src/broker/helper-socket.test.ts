@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, it } from "vitest";
 import { once } from "node:events";
 import net from "node:net";
 import type { ChildProcess } from "node:child_process";
-import { startTestBroker, stopTestBroker, testBrokerEnv } from "../test-support.js";
+import { authorizeTestBridge, startTestBroker, stopTestBroker, testBrokerEnv } from "../test-support.js";
 import { getAgentDirPath, getBrokerSocketPath } from "./paths.js";
 import { createMessageReader, writeMessage } from "./framing.js";
 import { IntercomFederationClient } from "./client.js";
@@ -52,7 +52,7 @@ it("advertises helper exchange in the existing private broker handshake", async 
 it("refuses an ordinary client's helper request without disconnecting its normal traffic", async () => {
   const client = connect(), service = connect();
   try {
-    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
+    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "fixture-machine"), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
     expect(await service.take("federation_registered")).not.toBeNull();
     writeMessage(service.socket, { type: "helper_authorize", requestId: "authorize", token: "a".repeat(64) });
     expect(await service.take("helper_authorized")).not.toBeNull();
@@ -68,7 +68,7 @@ it("refuses an ordinary client's helper request without disconnecting its normal
 it("a bridge-authorized helper sends one request to the registered bridge", async () => {
   const service = connect(), helper = connect(), token = "a".repeat(64);
   try {
-    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
+    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "fixture-machine"), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
     expect(await service.take("federation_registered")).not.toBeNull();
     writeMessage(service.socket, { type: "helper_authorize", requestId: "authorize", token });
     expect(await service.take("helper_authorized")).toMatchObject({ requestId: "authorize" });
@@ -90,7 +90,7 @@ it("the bridge client accepts helper exchanges only after it authorizes the help
   const callbacks: FederationBridge = { dispatch: async () => ({ delivery: "failed", retryable: false, outcomeKnown: true,
     acceptance: { accepted: false, durable: false } }), receipt: () => {}, control: () => {} };
   try {
-    await service.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" }, callbacks);
+    await service.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "fixture-machine"), machineId: "fixture-machine", machineAlias: "fixture.invalid" }, callbacks);
     const extended = service as IntercomFederationClient & { enableHelpers(token: string, handler: (input: unknown, signal: AbortSignal) => Promise<unknown>): Promise<void> };
     expect(typeof extended.enableHelpers).toBe("function");
     await extended.enableHelpers(token, async input => ({ answer: input }));
@@ -105,7 +105,7 @@ it("the bridge client accepts helper exchanges only after it authorizes the help
 it("a socket alone or a stale token cannot authorize a helper", async () => {
   const service = connect(), helper = connect(), token = "c".repeat(64);
   try {
-    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
+    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "fixture-machine"), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
     expect(await service.take("federation_registered")).not.toBeNull();
     writeMessage(service.socket, { type: "helper_authorize", requestId: "authorize", token });
     expect(await service.take("helper_authorized")).not.toBeNull();
@@ -122,7 +122,7 @@ it("a socket alone or a stale token cannot authorize a helper", async () => {
 it("deadline cancels the bridge request and ignores its late completion", async () => {
   const service = connect(), helper = connect(), token = "d".repeat(64);
   try {
-    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
+    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "fixture-machine"), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
     expect(await service.take("federation_registered")).not.toBeNull();
     writeMessage(service.socket, { type: "helper_authorize", requestId: "authorize", token }); await service.take("helper_authorized");
     writeMessage(helper.socket, { type: "health", requestId: "health" }); await helper.take("health_ok");
@@ -143,7 +143,7 @@ it("deadline cancels the bridge request and ignores its late completion", async 
 it("oversized helper requests are refused without forwarding or disconnecting", async () => {
   const service = connect(), helper = connect(), token = "e".repeat(64);
   try {
-    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
+    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "fixture-machine"), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
     expect(await service.take("federation_registered")).not.toBeNull();
     writeMessage(service.socket, { type: "helper_authorize", requestId: "authorize", token }); await service.take("helper_authorized");
     writeMessage(helper.socket, { type: "health", requestId: "health" }); await helper.take("health_ok");
@@ -159,7 +159,7 @@ it("oversized helper requests are refused without forwarding or disconnecting", 
 it("accepts a 512 KiB framed request exactly and refuses the next byte without disconnecting", async () => {
   const service = connect(), helper = connect(), token = "d".repeat(64), limit = 512 * 1024;
   try {
-    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
+    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "fixture-machine"), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
     expect(await service.take("federation_registered")).not.toBeNull();
     writeMessage(service.socket, { type: "helper_authorize", requestId: "authorize", token }); await service.take("helper_authorized");
     writeMessage(helper.socket, { type: "health", requestId: "health" }); await helper.take("health_ok");
@@ -185,7 +185,7 @@ it("returns a generic helper failure instead of leaking an unrecognized exceptio
   const bridge: FederationBridge = { dispatch: async () => ({ delivery: "failed", retryable: false, outcomeKnown: true,
     acceptance: { accepted: false, durable: false }, reason: "fixture" }), receipt() {}, control() {} };
   try {
-    await service.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" }, bridge);
+    await service.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "fixture-machine"), machineId: "fixture-machine", machineAlias: "fixture.invalid" }, bridge);
     await service.enableHelpers(token, async () => { throw Object.assign(new Error("synthetic confidential body"), { code: "synthetic confidential body" }); });
     writeMessage(helper.socket, { type: "health", requestId: "health" }); await helper.take("health_ok");
     writeMessage(helper.socket, { type: "helper_register", requestId: "register", token }); await helper.take("helper_registered");
@@ -200,7 +200,7 @@ it("returns a generic helper failure instead of leaking an unrecognized exceptio
 it("the broker sanitizes even a forged bridge error before replying to a helper", async () => {
   const service = connect(), helper = connect(), token = "d".repeat(64);
   try {
-    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
+    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "fixture-machine"), machineId: "fixture-machine", machineAlias: "fixture.invalid" });
     await service.take("federation_registered");
     writeMessage(service.socket, { type: "helper_authorize", requestId: "authorize", token }); await service.take("helper_authorized");
     writeMessage(helper.socket, { type: "health", requestId: "health" }); await helper.take("health_ok");
@@ -220,7 +220,7 @@ it("returns a named unsupported topology transition through the authorized helpe
   const bridge: FederationBridge = { dispatch: async () => ({ delivery: "failed", retryable: false, outcomeKnown: true,
     acceptance: { accepted: false, durable: false }, reason: "fixture" }), receipt() {}, control() {} };
   try {
-    await service.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "fixture-machine", machineAlias: "fixture.invalid" }, bridge);
+    await service.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "fixture-machine"), machineId: "fixture-machine", machineAlias: "fixture.invalid" }, bridge);
     await service.enableHelpers(capability, async () => { throw Object.assign(new Error("synthetic confidential body"), { code: "intercom-transition-unsupported" }); });
     writeMessage(helper.socket, { type: "health", requestId: "health" }); await helper.take("health_ok");
     writeMessage(helper.socket, { type: "helper_register", requestId: "register", token: capability }); await helper.take("helper_registered");
@@ -235,7 +235,7 @@ it("returns a named unsupported topology transition through the authorized helpe
 it("publishes a running origin's initial home epoch without replacing its registration", async () => {
   const session = connect(), service = connect();
   try {
-    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), machineId: "initial-home-machine", machineAlias: "initial.invalid" });
+    writeMessage(service.socket, { type: "federation_register", feature: "federation-v1", agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "initial-home-machine"), machineId: "initial-home-machine", machineAlias: "initial.invalid" });
     await service.take("federation_registered"); await service.take("federation_local_presence");
     writeMessage(session.socket, { type: "register", sessionId: "initial-home-session", features: [FEDERATION_FEATURE], session: {
       cwd: "/workspace", model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1, homeEpoch: null, activationEpoch: "same-process" } });

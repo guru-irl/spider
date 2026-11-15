@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { EventEmitter, once } from "node:events";
 import net from "node:net";
 import type { ChildProcess } from "node:child_process";
-import { startTestBroker, stopTestBroker, testTmpDir } from "../test-support.js";
+import { authorizeTestBridge, startTestBroker, stopTestBroker, testTmpDir } from "../test-support.js";
 import { FEDERATION_FEATURE, type FederationBridge, type RemoteSessionInfo } from "../protocol.js";
 import { IntercomClient, IntercomFederationClient } from "./client.js";
 import { getAgentDirPath, getBrokerSocketPath } from "./paths.js";
@@ -35,7 +35,7 @@ it.each(["helper-success", "helper-error", "dispatch-success", "dispatch-error"]
   process.on("unhandledRejection", onUnhandled);
   let helper: net.Socket | undefined, session: IntercomClient | undefined;
   try {
-    await bridge.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), machineId: "machine-1", machineAlias: "local.invalid" }, adapter);
+    await bridge.connect({ feature: FEDERATION_FEATURE, agentDir: getAgentDirPath(), credential: authorizeTestBridge(getAgentDirPath(), "machine-1"), machineId: "machine-1", machineAlias: "local.invalid" }, adapter);
     if (kind.startsWith("helper")) {
       const token = "a".repeat(64);
       await bridge.enableHelpers(token, async () => { enter(); return pending; });

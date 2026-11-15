@@ -25,10 +25,6 @@ export const SUPERVISED_QUERY = "SELECT 1 FROM run_events WHERE run_id=? AND typ
 export const CLAIM_COMPLETION_QUERY = `INSERT INTO run_events (run_id,session_id,ts,type)
             SELECT id,session_id,?,'completion_delivered' FROM runs WHERE id=?
             AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=? AND type='completion_delivered')`;
-export const CLAIM_CHAIN_COMPLETION_QUERY = `INSERT INTO run_events (run_id,session_id,ts,type)
-            SELECT id,session_id,?,'chain_completion_delivered' FROM runs WHERE id=?
-            AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=? AND type='chain_completion_delivered')`;
-
 
 // Kept local to avoid a subagents -> UI dependency. Host parity tests cover both formatters.
 function formatCompactionCount(compactionCount?: number): string {
@@ -37,13 +33,13 @@ function formatCompactionCount(compactionCount?: number): string {
 
 /** Async-completion notifier: injects a message the parent agent sees next turn (so it
  *  learns a background subagent finished) + a human toast. Best-effort; never throws. */
-export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { provider?: string; cost: number }[]) => string; [key: string]: any }): (run: any, status: string, result?: string, steps?: any[]) => void {
-  return (run, status, result, steps) => {
+export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { provider?: string; cost: number }[]) => string; [key: string]: any }): (run: any, status: string, result?: string) => void {
+  return (run, status, result) => {
     const local = (row: any): boolean => {
       if (row && hasOwnership(row)) return true;
       try { return !!row && !!ctx.db && isLocalRun(ctx.db, row.id); } catch { return false; }
     };
-    if (!local(run) || (steps && steps.some(step => !local(step)))) return;
+    if (!local(run)) return;
     // The caller's own kill result already reported this cancellation.
     const completion = result ?? run.result ?? "";
     if (status === "cancelled" && completion.startsWith("killed by spider kill from this session") && !/\d+ steer\(s\) (?:accepted but not confirmed|no reply yet, delivery unknown)\./.test(completion)) return;
@@ -57,95 +53,83 @@ export function makeAsyncNotifier(ctx: { formatRunCost?: (costs: readonly { prov
       // Compatibility notes are notification metadata, never stage deliverables.
       // Unknown versions stay in events/tool details only to avoid noisy completions.
       const notes = new Set<string>();
-      for (const [index, step] of (steps ?? [run]).entries()) {
-        let warnings: Array<{ payload: string }> = [];
-        try { warnings = ctx.db.prepare(WARNINGS_QUERY).all(step.id); }
-        catch { /* optional diagnostics cannot suppress the cancellation cause */ }
-        for (const warning of warnings) {
-          try {
-            const payload = JSON.parse(warning.payload);
-            if ((payload.thinkingNotice === true || payload.reload === true || (payload.launchWarning === true && payload.printFallback === true)) && typeof payload.message === "string") {
-              notes.add(steps ? `step ${index + 1}: ${payload.message}` : payload.message);
-            }
-          } catch { /* malformed diagnostics do not hide completion */ }
-        }
+      let interruption: string | undefined;
+      let warnings: Array<{ payload: string }> = [];
+      try { warnings = ctx.db.prepare(WARNINGS_QUERY).all(run.id); }
+      catch { /* optional diagnostics cannot suppress the cancellation cause */ }
+      for (const warning of warnings) {
+        try {
+          const payload = JSON.parse(warning.payload);
+          if ((payload.thinkingNotice === true || payload.reload === true || (payload.launchWarning === true && payload.printFallback === true)) && typeof payload.message === "string") {
+            notes.add(payload.message);
+            if (payload.chainInterrupted === true) interruption = payload.message;
+          }
+        } catch { /* malformed diagnostics do not hide completion */ }
       }
-      if (notes.size) output = [output, ...notes].filter(Boolean).join("\n\n");
       const name = run?.name ?? run?.agent ?? "subagent";
       const agent = run?.agent ?? "worker";
-      let failedChainStep: number | undefined;
-      if (!steps && status === "failed") {
-        try {
-          const event = ctx.db.prepare(CHAIN_STEPS_QUERY).get(run.id) as { payload: string } | undefined;
-          const phase = /^step-(\d+)$/.exec(run.phase ?? "");
-          // Older chains could continue after failure. Only new chains promise to stop here.
-          if (event && phase && JSON.parse(event.payload).stopOnFailure === true) failedChainStep = Number(phase[1]);
-        } catch { /* a missing diagnostic cannot suppress the step notice */ }
-      }
-      const headline = steps
-        ? `🕸 *chain* completed · ${steps.length} step(s) · *${status}*`
-        : `🕸 *subagent* "${name}" · ${agent} · *${status}*`;
+      let chain: { outcome: "complete" | "stopped"; step: number; total: number; notStarted: string[]; cause?: string } | undefined;
+      try {
+        const event = ctx.db.prepare(CHAIN_STEPS_QUERY).get(run.id) as { payload: string } | undefined;
+        const phase = /^step-(\d+)$/.exec(run.phase ?? "");
+        const metadata = event && JSON.parse(event.payload);
+        // Main's older chains could continue after failure and did not record the last step.
+        if (phase && metadata?.stopOnFailure === true && Array.isArray(metadata.remainingNames)
+          && metadata.remainingNames.every((name: unknown) => typeof name === "string")) {
+          const step = Number(phase[1]);
+          const notStarted: string[] = metadata.remainingNames;
+          const outcome = status === "done" ? (notStarted.length ? (interruption ? "stopped" : undefined) : "complete")
+            : status === "failed" || status === "cancelled" ? "stopped" : undefined;
+          if (outcome) {
+            const firstLine = ((status === "done" ? interruption : output) || status).split(/\r?\n/, 1)[0].trim() || status;
+            const cause = outcome === "stopped" ? (firstLine.length > 160 ? `${firstLine.slice(0, 157)}...` : firstLine) : undefined;
+            chain = { outcome, step, total: step + notStarted.length, notStarted, ...(cause ? { cause } : {}) };
+          }
+        }
+      } catch { /* missing chain metadata cannot suppress the step notice */ }
+      if (notes.size) output = [output, ...notes].filter(Boolean).join("\n\n");
+      const chainHeadline = chain?.outcome === "complete" ? "chain complete" : chain?.outcome === "stopped"
+        ? `chain stopped at step ${chain.step} of ${chain.total}: ${chain.cause}` : undefined;
+      const headline = `🕸 *subagent* "${name}" · ${agent} · *${status}*${chainHeadline ? ` · ${chainHeadline}` : ""}`;
       // Carry the COMPLETE curated output in the transcript; the registered renderer collapses
       // it and ctrl+o expands the whole thing. triggerTurn wakes an idle main agent so the
       // conversation continues automatically instead of waiting for the user to send a message.
-      const completed = steps ?? [run];
-      const tokenCount = completed.reduce((n, row) => n + (row.token_count ?? 0), 0);
+      const tokenCount = run.token_count ?? 0;
       let cost: number | undefined, costText: string | undefined, compactionCount: number | undefined;
       try {
-        const usage = completed.map(row => runUsageSummary(ctx.db, row.id));
-        const items = usage.flatMap(summary => summary.usage);
-        cost = sumUsage(items.map(r => r.usage)).cost.total;
-        costText = ctx.formatRunCost?.(items.map(r => ({ provider: r.provider, cost: r.usage.cost.total })));
-        for (const summary of usage) if (summary.compactionCount !== undefined) compactionCount = (compactionCount ?? 0) + summary.compactionCount;
+        const usage = runUsageSummary(ctx.db, run.id);
+        cost = sumUsage(usage.usage.map(item => item.usage)).cost.total;
+        costText = ctx.formatRunCost?.(usage.usage.map(item => ({ provider: item.provider, cost: item.usage.cost.total })));
+        compactionCount = usage.compactionCount;
       } catch { /* optional usage cannot suppress a completion or cancellation cause */ }
       const usageLine = `${tokenCount.toLocaleString("en-US")} tokens${costText !== undefined ? ` · ${costText}` : cost === undefined ? "" : ` · $${cost.toFixed(2)}`}${formatCompactionCount(compactionCount)}`;
       const content = `${headline}\n${usageLine}\n\n${output || "(no output)"}`;
       if (!ctx.pi?.sendMessage) return;
+      const delivery = shutdown ? { triggerTurn: false, deliverAs: "nextTurn" } : { triggerTurn: true };
       const deliver = () => ctx.pi.sendMessage(
         {
-          customType: steps ? "spider.chain_done" : "spider.subagent_done",
+          customType: "spider.subagent_done",
           content,
           display: true,
-          details: { runId: run?.id, name, agent: run?.agent, model: run?.model, thinking: run?.thinking, status, output, tokenCount, cost, ...(steps ? { steps: steps.length } : {}), ...(costText === undefined ? {} : { costText }), ...(compactionCount === undefined ? {} : { compactionCount }) },
+          details: { runId: run?.id, name, agent: run?.agent, model: run?.model, thinking: run?.thinking, status, output, tokenCount, cost, ...(chain ? { chain } : {}), ...(costText === undefined ? {} : { costText }), ...(compactionCount === undefined ? {} : { compactionCount }) },
         },
-        shutdown ? { triggerTurn: false, deliverAs: "nextTurn" } : { triggerTurn: true },
-      );
-      const deliverFailedChain = () => ctx.pi.sendMessage(
-        {
-          customType: "spider.chain_done",
-          content: `🕸 *chain* ended at step ${failedChainStep} "${name}" · *failed*\n\n${output || "(no output)"}`,
-          display: true,
-          details: { runId: run.id, name, agent: run.agent, status, step: failedChainStep, output },
-        },
-        { triggerTurn: true },
+        delivery,
       );
       let supervised = false;
       try { supervised = Boolean(ctx.db?.prepare(SUPERVISED_QUERY).get(run.id)); } catch { /* A closed optional DB cannot suppress a legacy shutdown notice. */ }
-      let delivered = false, chainDelivered = false;
       if (supervised) {
-        const claimAndDeliver = (query: string, send: () => void): boolean => ctx.db.transaction(() => {
+        const delivered = ctx.db.transaction(() => {
           // Write first so competing activations cannot both deliver the same notice.
-          if (!ctx.db.prepare(query).run(Date.now(), run.id, run.id).changes) return false;
-          send(); // A synchronous delivery failure rolls this claim back for the next resume.
+          if (!ctx.db.prepare(CLAIM_COMPLETION_QUERY).run(Date.now(), run.id, run.id).changes) return false;
+          deliver(); // A synchronous delivery failure rolls the claim back for the next resume.
           return true;
         })();
-        try { delivered = claimAndDeliver(steps ? CLAIM_CHAIN_COMPLETION_QUERY : CLAIM_COMPLETION_QUERY, deliver); }
-        catch { /* the other notice can still be sent */ }
-        if (failedChainStep !== undefined) {
-          try { chainDelivered = claimAndDeliver(CLAIM_CHAIN_COMPLETION_QUERY, deliverFailedChain); }
-          catch { /* retain the route so this notice can be retried */ }
-        }
         if (!ctx.db.prepare(UNDELIVERED_RUN_QUERY).get(run.id)) {
           ctx.db.afterCommit(() => ctx.globalDb?.prepare('DELETE FROM run_routes WHERE run_id=?').run(run.id));
         }
-      } else {
-        try { deliver(); delivered = true; } catch { /* the other notice can still be sent */ }
-        if (failedChainStep !== undefined) {
-          try { deliverFailedChain(); chainDelivered = true; } catch { /* best-effort */ }
-        }
-      }
-      if (!delivered && !chainDelivered) return;
-      if (delivered) ctx.ui?.notify?.(`subagent "${name}" ${status}`, status === "failed" ? "error" : "info");
+        if (!delivered) return;
+      } else deliver();
+      ctx.ui?.notify?.(`subagent "${name}" ${status}`, status === "failed" ? "error" : "info");
     } catch { /* best-effort; saved completions remain recoverable */ }
   };
 }
@@ -251,14 +235,9 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
       return { content: `pipeline ${pipelineId} started (${args.pipeline.length} stages), first run ${firstRunId}`, details: withWarning({ pipelineId, firstRunId }) };
     }
     if (Array.isArray(args.chain)) {
-      // Each foreground step reports on exit. A successful chain also reports its aggregate;
-      // a failed step reports the stopped chain without waiting for this continuation.
+      // Each foreground step reports on exit, including the final chain outcome when applicable.
       const chain = args.chain.map((c: any, index: number) => ({ ...c, ...resolveMT(c.model, c.thinking, c.agent ?? "worker", index + 1) }));
       void runChain(runner, chain, { task: args.task ?? "", context: args.context ?? "fresh", skill })
-        .then((rows: any[]) => {
-          const last = rows[rows.length - 1];
-          if (last?.status === "done") onComplete(last, last.status, last.result ?? undefined, rows);
-        })
         .catch(() => { /* best-effort */ });
       const first = chain[0] ?? {};
       return { content: [`chain started: ${chain.length} step(s)`, ...thinkingDiagnostics.map(info => `step ${info.step}: ${info.notice}`)].join("\n"), details: withWarning({ chain: chain.length, first: first.name ?? first.agent }) };

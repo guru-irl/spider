@@ -114,13 +114,12 @@ describe("subagents survive /reload", () => {
     expect(buildB.coords).not.toBe(buildA.coords);
     buildB.run.adoptReloadedChildren(B.ctx); await tick();
     buildB.run.adoptReloadedChildren(B.ctx); await tick();
-    const final = B.pi.sendMessage.mock.calls.filter(call => call[0]?.customType === "spider.chain_done");
     expect(launches).toBe(2);
     expect(done(A.pi)).toHaveLength(1);
     expect(done(B.pi)).toHaveLength(1);
-    expect(done(B.pi)[0]).toMatchObject([{ details: { name: "second", status: "failed" } }, { triggerTurn: true }]);
-    expect(final).toHaveLength(1);
-    expect(final[0]).toMatchObject([{ details: { name: "second", step: 2, status: "failed" } }, { triggerTurn: true }]);
+    expect(done(B.pi)[0]).toMatchObject([{ details: { name: "second", status: "failed",
+      chain: { outcome: "stopped", step: 2, total: 3, notStarted: ["third"] } } }, { triggerTurn: true }]);
+    expect(B.pi.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it("after adoption steering, kill handles and rebound events all target the new activation", async () => {

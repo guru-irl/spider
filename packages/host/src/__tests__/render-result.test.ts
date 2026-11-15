@@ -619,6 +619,16 @@ describe("renderSubagentDone transcript renderer (ctrl+o)", () => {
     expect(out).toContain("l8");
     expect(out).not.toContain("ctrl+o to expand");
   });
+  it.each([
+    [{ outcome: "complete", step: 3, total: 3, notStarted: [] }, "chain complete"],
+    [{ outcome: "stopped", step: 2, total: 3, notStarted: ["check"], cause: "provider failed" }, "chain stopped at step 2 of 3: provider failed"],
+  ])("renders the chain outcome in the header without expanding the step output", (chain, headline) => {
+    const out = renderSubagentDone({ ...msg, details: { ...msg.details, chain } }, { expanded: false }, th).render(200).join("\n");
+    expect(out).toContain(headline);
+    expect(out).toContain("bravo-worker");
+    expect(out).not.toContain("l8");
+    expect(out).toContain("ctrl+o to expand output");
+  });
 });
 
 describe("renderCommandOutput (slash-command transcript message)", () => {

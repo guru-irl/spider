@@ -444,7 +444,7 @@ it("run tool result carries the cap notice produced by model resolution", async 
 });
 
 
-it("delivers every chain step's thinking notice in dispatch text and the final completion", async () => {
+it("delivers each chain step's thinking notice and retains all dispatch diagnostics", async () => {
   const db = freshDb();
   const notices: any[] = [];
   let resolveCompletion!: () => void;
@@ -455,7 +455,7 @@ it("delivers every chain step's thinking notice in dispatch text and the final c
   });
   const ctx: any = { db, sessionId: "chain-notices", cwd: process.cwd(), childMode: "print",
     project: { dbPath: testScratchPath("chain-notices.db") },
-    pi: { sendMessage: (message: any) => { notices.push(message); if (message.customType === "spider.chain_done") resolveCompletion(); } },
+    pi: { sendMessage: (message: any) => { notices.push(message); if (message.details?.chain?.outcome === "complete") resolveCompletion(); } },
     modelRegistry: { find: (provider: string, id: string) => provider === "acme" && id === "model"
       ? { reasoning: true, thinkingLevelMap: { xhigh: "extra", max: null, minimal: null, low: null } } : undefined },
   };
@@ -471,12 +471,11 @@ it("delivers every chain step's thinking notice in dispatch text and the final c
     expect(steps[0].content).toMatch(/thinking capped: requested max.*xhigh/);
     expect(steps[1].content).toMatch(/thinking adjusted: requested low.*medium/);
     expect(steps[2].content).not.toMatch(/thinking (adjusted|capped)/);
-    const final = notices.find(message => message.customType === "spider.chain_done");
-    for (const text of [result.content, final.content]) {
-      expect(text).toMatch(/step 1: thinking capped: requested max.*xhigh/);
-      expect(text).toMatch(/step 2: thinking adjusted: requested low.*medium/);
-      expect(text).not.toMatch(/step 3: thinking/);
-    }
+    expect(result.content).toMatch(/step 1: thinking capped: requested max.*xhigh/);
+    expect(result.content).toMatch(/step 2: thinking adjusted: requested low.*medium/);
+    expect(result.content).not.toMatch(/step 3: thinking/);
+    expect(steps[2].details.chain).toMatchObject({ outcome: "complete", step: 3, total: 3, notStarted: [] });
+    expect(notices).toHaveLength(3);
   } finally { teardownAll(); db.close(); }
 });
 

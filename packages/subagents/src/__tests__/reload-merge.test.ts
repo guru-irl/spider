@@ -295,5 +295,6 @@ it("a chain killed on reload keeps each completed step's thinking notice without
   expect(spawned).toBe(2);
   expect(pi.sendMessage).toHaveBeenCalledTimes(2);
   expect(pi.sendMessage.mock.calls[1][0].content).toContain("thinking adjusted");
+  expect(pi.sendMessage.mock.calls[1][0].details.chain).toMatchObject({ outcome: "stopped", step: 2, total: 3, notStarted: ["worker"] });
   expect(pi.sendMessage.mock.calls[1][1]).toEqual({ triggerTurn: false, deliverAs: "nextTurn" });
 });

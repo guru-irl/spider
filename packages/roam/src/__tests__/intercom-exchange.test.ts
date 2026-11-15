@@ -1,3 +1,4 @@
+import { withHopExchange } from "./intercom-hop-fixture";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -19,8 +20,8 @@ function twoStores() {
   stores.push(source, inbox); return { root, source, inbox };
 }
 function batch(senderMachine = A, recipientMachine = B): IntercomExchange {
-  return { protocol: 4, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
-    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] };
+  return withHopExchange({ protocol: 5, senderMachine, recipientMachine, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
 }
 function receipt(): IntercomReceiptFrame {
   const frame = makeMessageFrame({ from, endpoint, originMachineId: A, sequence: 1, message: { id: "message-1", timestamp: 1, content: { text: "synthetic" } } });
@@ -30,8 +31,8 @@ function receipt(): IntercomReceiptFrame {
 
 it("round-trips explicit receipt acknowledgements without changing their attempt evidence", () => {
   const input = { ...batch(), receiptAcknowledgements: [receipt()] };
-  expect(() => encodeExchange(input)).not.toThrow();
-  expect(decodeExchange(encodeExchange(input))).toEqual(input);
+  expect(() => encodeExchange(withHopExchange(input))).not.toThrow();
+  expect(decodeExchange(encodeExchange(withHopExchange(input)))).toEqual(input);
 }, 5000);
 
 

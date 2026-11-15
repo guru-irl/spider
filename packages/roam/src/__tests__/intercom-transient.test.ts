@@ -1,3 +1,4 @@
+import { withHopExchange } from "./intercom-hop-fixture";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -18,8 +19,8 @@ it.each(["helper-unauthorized", "unsupported-broker", "invalid-reply", "invalid-
     calls++;
     if (!healthy) return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: false, reason }));
     const request = JSON.parse(opts!.stdinForTimeout!(opts!.remoteTimeoutMs!).toString());
-    return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value: { version: 1, exchange: { protocol: 4,
-      senderMachine: B, recipientMachine: A, generation: request.exchange.generation, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } } }));
+    return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value: { version: 1, exchange: withHopExchange({ protocol: 5,
+      senderMachine: B, recipientMachine: A, generation: request.exchange.generation, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] }) } }));
   } } as Transport;
   const make = () => createIntercomBridge({ machineId: A, machineAlias: "source.invalid", store, clock, transport,
     edges: [{ peer, edgeEpoch: "edge", initiator: true }], localPresence: () => [], authoritativeHome: () => null });
@@ -54,8 +55,8 @@ async function enrollmentFixture() {
     calls++;
     if (!healthy) return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: false, reason: "machine-not-enrolled" }));
     const request = JSON.parse(opts!.stdinForTimeout!(opts!.remoteTimeoutMs!).toString());
-    return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value: { version: 1, exchange: { protocol: 4,
-      senderMachine: B, recipientMachine: A, generation: request.exchange.generation, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } } }));
+    return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value: { version: 1, exchange: withHopExchange({ protocol: 5,
+      senderMachine: B, recipientMachine: A, generation: request.exchange.generation, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] }) } }));
   } } as Transport;
   const make = () => createIntercomBridge({ machineId: A, machineAlias: "source.invalid", store, clock, transport,
     edges: [{ peer, edgeEpoch: "edge", initiator: true }], localPresence: () => [], authoritativeHome: () => null });

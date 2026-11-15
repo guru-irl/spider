@@ -6,8 +6,8 @@ import {
 } from "@spider/intercom/protocol";
 import {
   INTERCOM_EXCHANGE_BYTES, INTERCOM_FEDERATION_VERSION, INTERCOM_MESSAGE_BYTES, INTERCOM_PAYLOAD_MS,
-  type ExchangeGeneration, type IntercomExchange, type IntercomFrame, type IntercomIdentity,
-  type IntercomMessageFrame, type IntercomPairResume, type MissingOriginFrame, type RebindProof,
+  type ExchangeGeneration, type AuthenticatedIntercomExchange, type IntercomExchange, type IntercomFrame, type IntercomIdentity,
+  type IntercomMessageFrame, type IntercomPairResume, type IntercomWireMissingOriginFrame, type RebindProof,
 } from "./intercom-contracts";
 import { isMachineId } from "./machine-id";
 
@@ -87,8 +87,8 @@ function askId(message: Message): string | null { return message.replyTo ?? (mes
 function validFrame(value: unknown, allowMissingOrigin = false): value is IntercomFrame {
   if (!record(value) || !validIdentity(value.identity) || !validEndpoint(value.endpoint) || !sameAddress(value.identity.to, value.endpoint.address) ||
       !(allowMissingOrigin && value.originMachineId === undefined) && !isMachineId(value.originMachineId)) return false;
-  if (value.kind === "tombstone") return keys(value, ["kind", "identity", "endpoint", "reason", "originMachineId"]) && (value.reason === "expired" || value.reason === "cancelled");
-  if (value.kind !== "message" || !keys(value, ["kind", "identity", "endpoint", "message", "remainingPayloadMs", "originMachineId"]) || !validMessage(value.message) ||
+  if (value.kind === "tombstone") return keys(value, ["kind", "identity", "endpoint", "reason", "originMachineId", "hopSequence"]) && (value.reason === "expired" || value.reason === "cancelled");
+  if (value.kind !== "message" || !keys(value, ["kind", "identity", "endpoint", "message", "remainingPayloadMs", "originMachineId", "hopSequence"]) || !validMessage(value.message) ||
       !integer(value.remainingPayloadMs, 1) || value.remainingPayloadMs > INTERCOM_PAYLOAD_MS) return false;
   if (value.identity.id !== value.message.id || value.identity.askId !== askId(value.message)) return false;
   if (value.message.expectsReply && value.message.remainingMs === undefined) return false;
@@ -144,6 +144,13 @@ function checkReceiptStreams(value: unknown): void {
     }
   }
 }
+function checkHopStreams(value: unknown): void {
+  if (!record(value)) return;
+  if (!record(value.streamStart) || !keys(value.streamStart, ["after"]) || value.streamStart.after !== 0) throw new Error("hop-stream-missing");
+  for (const field of ["frames", "acknowledgements", "refusals"]) {
+    if (Array.isArray(value[field]) && value[field].some(item => !record(item) || !integer(item.hopSequence, 1))) throw new Error("hop-stream-missing");
+  }
+}
 function validReceipt(value: unknown): boolean {
   if (!record(value) || !isMachineId(value.originMachineId) || !integer(value.sequence, 1) || !keys(value, ["from", "to", "digest", "receipt", "attempt", "originMachineId", "sequence"]) || !validEndpoint(value.from) || !isSessionAddress(value.to)
       || value.from.address.scopeId !== value.to.scopeId || !digest(value.digest) || !isMessageReceipt(value.receipt) || !integer(value.attempt)) return false;
@@ -160,16 +167,16 @@ function validReceipt(value: unknown): boolean {
   }
   return true;
 }
-function validExchange(value: unknown): value is IntercomExchange {
-  if (!record(value) || !keys(value, ["protocol", "senderMachine", "recipientMachine", "generation", "frames", "acknowledgements", "refusals", "receipts", "receiptAcknowledgements", "controls", "presence", "resumptions", "topology"])
+function validExchange(value: unknown): value is AuthenticatedIntercomExchange {
+  if (!record(value) || !keys(value, ["protocol", "senderMachine", "recipientMachine", "generation", "frames", "acknowledgements", "refusals", "receipts", "receiptAcknowledgements", "controls", "presence", "resumptions", "topology", "streamStart"])
       || value.protocol !== INTERCOM_FEDERATION_VERSION || !isMachineId(value.senderMachine) || !isMachineId(value.recipientMachine)
       || value.senderMachine === value.recipientMachine || !validGeneration(value.generation)) return false;
   if (value.topology !== undefined && (!record(value.topology) || !keys(value.topology, ["transitionId", "action"]) ||
       !isMachineId(value.topology.transitionId) || value.topology.action !== "switch" && value.topology.action !== "switched")) return false;
-  if (!Array.isArray(value.frames) || !value.frames.every(item => validFrame(item) && encode(item, INTERCOM_MESSAGE_BYTES).byteLength <= INTERCOM_MESSAGE_BYTES)) return false;
-  if (!Array.isArray(value.acknowledgements) || !value.acknowledgements.every(item => record(item) && keys(item, ["identity", "kind"])
+  if (!Array.isArray(value.frames) || !value.frames.every(item => validFrame(item) && integer(item.hopSequence, 1) && encode(item, INTERCOM_MESSAGE_BYTES).byteLength <= INTERCOM_MESSAGE_BYTES)) return false;
+  if (!Array.isArray(value.acknowledgements) || !value.acknowledgements.every(item => record(item) && keys(item, ["identity", "kind", "hopSequence"]) && integer(item.hopSequence, 1)
       && validIdentity(item.identity) && (item.kind === "message" || item.kind === "tombstone"))) return false;
-  if (value.refusals !== undefined && (!Array.isArray(value.refusals) || !value.refusals.every(item => record(item) && keys(item, ["identity", "reason"]) &&
+  if (value.refusals !== undefined && (!Array.isArray(value.refusals) || !value.refusals.every(item => record(item) && keys(item, ["identity", "reason", "hopSequence"]) && integer(item.hopSequence, 1) &&
       validIdentity(item.identity) && (item.reason === "queue-full" || item.reason === "message-too-large" || item.reason === "machine-not-enrolled" || item.reason === "link-down" || item.reason === "missing-origin" || item.reason === "peer-revoked" || item.reason === "intercom-topology-changing" || item.reason === "sender-unauthorized" || item.reason === "store-rejected")))) return false;
   if (!Array.isArray(value.receipts) || !value.receipts.every(validReceipt)) return false;
   if (value.receiptAcknowledgements !== undefined && (!Array.isArray(value.receiptAcknowledgements) || !value.receiptAcknowledgements.every(validReceipt))) return false;
@@ -207,29 +214,32 @@ export function encodeExchange(exchange: IntercomExchange): Buffer {
   checkVersion(clean);
   checkFirstHomePresence(clean);
   checkReceiptStreams(clean);
+  checkHopStreams(clean);
   if (!validExchange(clean)) return bad();
   return encode(clean, INTERCOM_EXCHANGE_BYTES);
 }
-export function decodeExchange(bytes: Uint8Array): IntercomExchange {
+export function decodeExchange(bytes: Uint8Array): AuthenticatedIntercomExchange {
   const value = cleanPresence(parse(bytes, INTERCOM_EXCHANGE_BYTES));
   checkVersion(value);
   checkFirstHomePresence(value);
   checkReceiptStreams(value);
+  checkHopStreams(value);
   if (!validExchange(value)) return bad();
   return value;
 }
 /** Decode a linked batch while isolating individually malformed origin-less frames. */
-export function decodeExchangeWithFrameErrors(bytes: Uint8Array): { exchange: IntercomExchange; missingOrigins: MissingOriginFrame[] } {
+export function decodeExchangeWithFrameErrors(bytes: Uint8Array): { exchange: AuthenticatedIntercomExchange; missingOrigins: IntercomWireMissingOriginFrame[] } {
   const value = cleanPresence(parse(bytes, INTERCOM_EXCHANGE_BYTES));
   checkVersion(value);
   checkFirstHomePresence(value);
   checkReceiptStreams(value);
+  checkHopStreams(value);
   if (!record(value) || !Array.isArray(value.frames)) return bad();
-  const frames: unknown[] = [], missingOrigins: MissingOriginFrame[] = [];
+  const frames: unknown[] = [], missingOrigins: IntercomWireMissingOriginFrame[] = [];
   value.frames.forEach((frame, index) => {
     if (record(frame) && frame.originMachineId === undefined && validFrame(frame, true)) {
       encode(frame, INTERCOM_MESSAGE_BYTES);
-      missingOrigins.push({ index, identity: frame.identity, endpoint: frame.endpoint, kind: frame.kind });
+      missingOrigins.push({ index, hopSequence: frame.hopSequence as number, identity: frame.identity, endpoint: frame.endpoint, kind: frame.kind });
     } else frames.push(frame);
   });
   const exchange: unknown = { ...value, frames };

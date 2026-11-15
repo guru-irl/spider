@@ -1,13 +1,15 @@
+import { createHopFixture } from "./intercom-hop-fixture";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { scratchDbPath } from "@spider/db-core/testutil";
+import { openDb } from "@spider/db-core";
 import type { Home } from "@spider/db-core/roam/types";
 import type { RemoteSessionInfo, SessionAddress } from "@spider/intercom/protocol";
 import { createIntercomBridge, type BridgePorts } from "../intercom-bridge";
 import { openIntercomStore } from "../intercom-store";
 import { makeMessageFrame } from "../intercom-codec";
-import type { IntercomExchange, IntercomReceiptFrame } from "../intercom-contracts";
+import type { IntercomExchange, IntercomReceiptFrame, IntercomWireFrame } from "../intercom-contracts";
 
 const B = "00000000-0000-4000-8000-000000000001", H = "00000000-0000-4000-8000-000000000002", C = "00000000-0000-4000-8000-000000000003";
 const victim = { sessionId: "owner", scopeId: "scope" }, target = { sessionId: "recipient", scopeId: "scope" };
@@ -28,25 +30,41 @@ async function fixture(overrides: Partial<BridgePorts> = {}) {
     sessionOrigin: address => origins.get(address.sessionId) ?? B,
     publishPresence: entries => { published = [...entries]; }, onInbound: entry => inbound.push(entry.id), ...overrides });
   let bridge = make(); resources.push(async () => { await bridge.stop(); store.close(); }); await bridge.start();
-  const generations = new Map<string, number>();
+  const generations = new Map<string, number>(), hops = createHopFixture();
   const send = async (machine: string, presence: RemoteSessionInfo[] = [], frames: IntercomExchange["frames"] = [], extra: Partial<IntercomExchange> = {}) => {
     const n = (generations.get(machine) ?? 0) + 1; generations.set(machine, n);
-    return bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine: machine, recipientMachine: H,
-      generation: { edgeEpoch: "edge", channel: "push", generation: n }, frames, acknowledgements: [], receipts: [], controls: [], presence, ...extra } });
+    return bridge.exchange(hops({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 5, senderMachine: machine, recipientMachine: H,
+      generation: { edgeEpoch: "edge", channel: "push", generation: n }, frames, acknowledgements: [], receipts: [], controls: [], presence, ...extra } }));
   };
   const frame = (origin: string, id: string, sequence = 1, from = victim) => makeMessageFrame({ from,
     endpoint: { address: target, machineId: H, homeEpoch: null, activationEpoch: "recipient" }, sequence, originMachineId: origin,
     message: { id, timestamp: 1, content: { text: "synthetic" } } });
-  return { homes, origins, inbound, frame, send, get store() { return store; }, get bridge() { return bridge; }, get published() { return published; },
-    async restart() { await bridge.stop(); store.close(); store = openIntercomStore({ file, machineId: H, clock }); bridge = make(); await bridge.start(); } };
+  return { homes, origins, inbound, frame, send, file, get store() { return store; }, get bridge() { return bridge; }, get published() { return published; },
+    async restart(limits?: { queueMessages: number }) { await bridge.stop(); store.close(); store = openIntercomStore({ file, machineId: H, clock, limits }); bridge = make(); await bridge.start(); } };
 }
+function receiveHop(file: string, frames: readonly IntercomWireFrame[]) {
+  const store = openIntercomStore({ file: `${file}.receiver`, machineId: C, clock: { now: () => 1000 } });
+  resources.push(async () => store.close()); store.openHop(H, 'edge');
+  for (const frame of frames) store.acceptInbound({ peer: H, frame, hop: { edgeEpoch: 'edge', sequence: frame.hopSequence } });
+  return store;
+}
+
+function consumeHop(store: ReturnType<typeof openIntercomStore>, frame: IntercomWireFrame) {
+  const dispatched = store.beginDispatch({ id: frame.identity.id, endpoint: frame.endpoint, readiness: `${frame.identity.id}-ready` });
+  store.settleReceipt({ queue: 'inbound', peer: H, frame: { from: frame.endpoint, to: frame.identity.from, digest: frame.identity.digest,
+    originMachineId: frame.originMachineId, sequence: frame.identity.sequence, attempt: 1,
+    receipt: { messageId: frame.identity.id, status: 'injected', timestamp: 1000,
+      evidence: { kind: 'entry', entryId: `${frame.identity.id}-entry`, sessionId: target.sessionId, activationEpoch: frame.endpoint.activationEpoch } } } });
+  return dispatched.message;
+}
+
 it.each([false, true])('propagates a retried relay receipt after an interrupted settlement (%s)', async interrupted => {
   const f = await fixture(), original = f.frame(B, 'relayed');
   const message = { ...original, endpoint: { ...original.endpoint, machineId: C } };
   expect((await f.send(B, [info(B)], [message])).exchange.refusals ?? []).toEqual([]);
-  const sent = f.store.pending({ kind: 'outbound', peer: C, hopBudgetMs: 100 })[0];
+  const sent = f.store.pending({ kind: 'outbound', peer: C, edgeEpoch: 'edge', hopBudgetMs: 100 })[0];
   expect(sent.identity).toEqual(message.identity);
-  await f.send(C, [], [], { acknowledgements: [{ identity: sent.identity, kind: 'message' }] });
+  await f.send(C, [], [], { acknowledgements: [{ identity: sent.identity, hopSequence: sent.identity.sequence, kind: 'message' }] });
   const receipt: IntercomReceiptFrame = { from: message.endpoint, to: victim, digest: message.identity.digest,
     originMachineId: B, sequence: 1, attempt: 1, receipt: { messageId: 'relayed', status: 'injected', timestamp: 1000,
       evidence: { kind: 'entry', entryId: 'relayed-entry', sessionId: target.sessionId, activationEpoch: 'recipient' } } };
@@ -59,11 +77,137 @@ it.each([false, true])('propagates a retried relay receipt after an interrupted 
   expect(f.store.pending({ kind: 'receipts', peer: B })).toContainEqual(receipt);
 }, 5000);
 
+it('continues relaying after refusing a departed sender without retaining the refused frame', async () => {
+  const f = await fixture(), endpoint = { ...f.frame(B, 'unused').endpoint, machineId: C };
+  const first = { ...f.frame(B, 'departed', 1), endpoint };
+  expect((await f.send(B, [], [first])).exchange.refusals).toContainEqual({ identity: first.identity, hopSequence: first.identity.sequence, reason: 'sender-unauthorized' });
+  expect(f.store.retained('inbound', 'departed')).toBeNull();
+  expect(f.store.retained('outbound', 'departed')).toBeNull();
+  await f.restart();
+  const later = ['returned', 'successor'].map((id, i) => ({ ...f.frame(B, id, i + 2), endpoint }));
+  expect((await f.send(B, [info(B)], later)).exchange.refusals ?? []).toEqual([]);
+  const forwarded = f.store.pending({ kind: 'outbound', peer: C, edgeEpoch: 'edge', hopBudgetMs: 100 });
+  expect(forwarded.map(frame => [frame.identity.id, frame.hopSequence, frame.identity.sequence])).toEqual([['returned', 1, 2], ['successor', 2, 3]]);
+  const recipient = receiveHop(f.file, forwarded);
+  expect(recipient.pending({ kind: 'inbound', address: target }).map(message => message.id)).toEqual(['returned']);
+  consumeHop(recipient, forwarded[0]);
+  expect(recipient.pending({ kind: 'inbound', address: target }).map(message => message.id)).toEqual(['successor']);
+  expect(recipient.retained('inbound', 'departed')).toBeNull();
+}, 5000);
+
+it('never masks accepted relay identity with a refused reused id and deduplicates the accepted resend', async () => {
+  const f = await fixture(), endpoint = { ...f.frame(B, 'unused').endpoint, machineId: C };
+  const original = { ...f.frame(B, 'accepted', 1), endpoint };
+  await f.send(B, [info(B)], [original]);
+  const conflict = makeMessageFrame({ from: victim, endpoint, sequence: 2, originMachineId: B,
+    message: { id: 'accepted', timestamp: 2, content: { text: 'rejected content' } } });
+  expect((await f.send(B, [info(B)], [conflict])).exchange.refusals).toContainEqual({ identity: conflict.identity, hopSequence: conflict.identity.sequence, reason: 'store-rejected' });
+  expect(f.store.retained('inbound', 'accepted')?.identity).toEqual(original.identity);
+  expect(f.store.retained('outbound', 'accepted')?.identity).toEqual(original.identity);
+  await f.restart();
+  expect((await f.send(B, [info(B)], [original])).exchange.refusals ?? []).toEqual([]);
+  const successor = { ...f.frame(B, 'after-conflict', 3), endpoint };
+  expect((await f.send(B, [info(B)], [successor])).exchange.refusals ?? []).toEqual([]);
+  const forwarded = f.store.pending({ kind: 'outbound', peer: C, edgeEpoch: 'edge', hopBudgetMs: 100 });
+  expect(forwarded.map(frame => frame.identity)).toEqual([original.identity, successor.identity]);
+  const recipient = receiveHop(f.file, forwarded);
+  expect(recipient.retained('inbound', 'accepted')?.identity).toEqual(original.identity);
+  const delivered = forwarded.map(frame => consumeHop(recipient, frame));
+  expect(delivered.map(message => [message.id, message.content?.text])).toEqual([['accepted', 'synthetic'], ['after-conflict', 'synthetic']]);
+}, 5000);
+
+it('rolls back relay inbox admission when forwarding cannot commit', async () => {
+  const f = await fixture(), endpoint = { ...f.frame(B, 'unused').endpoint, machineId: C };
+  const db = openDb(f.file);
+  try {
+    db.exec("CREATE TRIGGER fail_forward BEFORE INSERT ON intercom_copies WHEN NEW.direction='outbound' BEGIN SELECT RAISE(ABORT,'forward unavailable'); END");
+    const original = { ...f.frame(B, 'failed-forward', 1), endpoint };
+    expect((await f.send(B, [info(B)], [original])).exchange.refusals).toContainEqual({ identity: original.identity, hopSequence: original.identity.sequence, reason: 'store-rejected' });
+    expect(f.store.retained('inbound', 'failed-forward')).toBeNull();
+    expect(f.store.retained('outbound', 'failed-forward')).toBeNull();
+    db.exec('DROP TRIGGER fail_forward');
+    expect((await f.send(B, [info(B)], [{ ...f.frame(B, 'after-failed-forward', 2), endpoint }])).exchange.refusals ?? []).toEqual([]);
+  } finally { db.close(); }
+}, 5000);
+
+it('rolls back relay inbox and hop admission on quota refusal and accepts the same slot after capacity returns', async () => {
+  const f = await fixture(), endpoint = { ...f.frame(B, 'unused').endpoint, machineId: C };
+  await f.send(B, [info(B)], [{ ...f.frame(B, 'existing', 1), endpoint }]);
+  await f.restart({ queueMessages: 3 });
+  const frame = { ...f.frame(B, 'backpressure', 2), endpoint }, refused = await f.send(B, [info(B)], [frame]);
+  expect(f.store.retained('inbound', frame.identity.id)).toBeNull();
+  expect(f.store.retained('outbound', frame.identity.id)).toBeNull();
+  expect(refused.exchange.refusals).toContainEqual({ identity: frame.identity, hopSequence: 2, reason: 'queue-full' });
+  expect(refused.exchange.acknowledgements).toEqual([]);
+  await f.restart({ queueMessages: 4 });
+  expect((await f.send(B, [info(B)], [frame])).exchange.refusals ?? []).toEqual([]);
+  expect(f.store.retained('inbound', frame.identity.id)).toMatchObject({ state: 'queued', payloadRetained: true });
+  expect(f.store.retained('outbound', frame.identity.id)).toMatchObject({ state: 'queued', payloadRetained: true });
+}, 5000);
+
+it('relays a successor after its previously revoked next hop is re-enrolled', async () => {
+  const f = await fixture(); await f.bridge.revokePair(C, 'edge');
+  const endpoint = { ...f.frame(B, 'unused').endpoint, machineId: C }, first = { ...f.frame(B, 'revoked-relay', 1), endpoint };
+  expect((await f.send(B, [info(B)], [first])).exchange.refusals).toContainEqual({ identity: first.identity, hopSequence: first.identity.sequence, reason: 'peer-revoked' });
+  const fence = f.store.pairFence(C)!;
+  await f.bridge.enrollPair({ peer: peer(C), edgeEpoch: 'new-edge', initiator: false },
+    { operationId: 'relay-re-enroll', graphDigest: 'a'.repeat(64), expectedFenceId: fence.fenceId, edgeEpoch: 'new-edge' });
+  const second = { ...f.frame(B, 'reenrolled-successor', 2), endpoint };
+  expect((await f.send(B, [info(B)], [second])).exchange.refusals ?? []).toEqual([]);
+  expect(f.store.retained('outbound', 'reenrolled-successor')).toMatchObject({ peer: C });
+}, 5000);
+
+it('starts a fresh relay hop after re-enrollment while retaining the prior unknown outcome', async () => {
+  const f = await fixture(), endpoint = { ...f.frame(B, 'unused').endpoint, machineId: C };
+  const old = { ...f.frame(B, 'uncertain-old', 1), endpoint }; await f.send(B, [info(B)], [old]);
+  f.store.pending({ kind: 'outbound', peer: C, edgeEpoch: 'edge', hopBudgetMs: 100 });
+  const receipt: IntercomReceiptFrame = { from: endpoint, to: victim, digest: old.identity.digest, originMachineId: B, sequence: 1, attempt: 1,
+    receipt: { messageId: old.identity.id, status: 'unknown', timestamp: 1000 } };
+  f.store.settleReceipt({ queue: 'outbound', peer: C, frame: receipt });
+  await f.bridge.revokePair(C, 'edge'); const fence = f.store.pairFence(C)!;
+  await f.bridge.enrollPair({ peer: peer(C), edgeEpoch: 'fresh', initiator: false },
+    { operationId: 'fresh-hop', graphDigest: 'a'.repeat(64), expectedFenceId: fence.fenceId, edgeEpoch: 'fresh' });
+  const next = { ...f.frame(B, 'fresh-message', 2), endpoint };
+  expect((await f.send(B, [info(B)], [next])).exchange.refusals ?? []).toEqual([]);
+  const reply = await f.send(C, [], [], { generation: { edgeEpoch: 'fresh', channel: 'poll', generation: 1 } });
+  expect(reply.exchange.streamStart).toEqual({ after: 0 });
+  expect(reply.exchange.frames.map(frame => [frame.identity.id, frame.hopSequence, frame.kind])).toEqual([
+    ['uncertain-old', 1, 'tombstone'], ['fresh-message', 2, 'message'],
+  ]);
+  expect(f.store.inspectBlockers(victim).unknownOutcomes).toEqual(['uncertain-old']);
+  expect(f.store.retained('outbound', 'uncertain-old')?.state).toBe('cancelled');
+}, 5000);
+
+it('refuses missing physical starts and prior wire formats by name on every retry', async () => {
+  const f = await fixture();
+  for (const generation of [1, 2]) {
+    const request = { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 5, senderMachine: B, recipientMachine: H,
+      generation: { edgeEpoch: 'edge', channel: 'push', generation }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } };
+    await expect(f.bridge.exchange(request)).rejects.toMatchObject({ code: 'hop-stream-missing', retryable: true });
+    await expect(f.bridge.exchange({ ...request, exchange: { ...request.exchange, streamStart: { after: 0 },
+      frames: [f.frame(B, 'no-hop')], presence: [info(B)] } })).rejects.toMatchObject({ code: 'hop-stream-missing', retryable: true });
+    expect(f.store.retained('inbound', 'no-hop')).toBeNull();
+    await expect(f.bridge.exchange({ ...request, exchange: { ...request.exchange, protocol: 4 } })).rejects.toMatchObject({ code: 'peer-version-mismatch', retryable: true });
+  }
+  const gap = { ...f.frame(B, 'gap', 10), hopSequence: 2 };
+  const raw = { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 5, senderMachine: B, recipientMachine: H,
+    generation: { edgeEpoch: 'edge', channel: 'push', generation: 3 }, streamStart: { after: 0 },
+    frames: [gap], acknowledgements: [], receipts: [], controls: [], presence: [info(B)] } };
+  await expect(f.bridge.exchange({ ...raw, exchange: { ...raw.exchange, protocol: 4, frames: [] } })).rejects.toMatchObject({ code: 'peer-version-mismatch', retryable: true });
+  const reply = await f.bridge.exchange(raw);
+  expect(reply.exchange.refusals).toEqual([{ identity: gap.identity, hopSequence: 2, reason: 'hop-sequence-gap' }]);
+  expect(reply.exchange.acknowledgements).toEqual([]);
+  expect(f.store.retained('inbound', 'gap')).toBeNull();
+  const valid = { ...f.frame(B, 'first-physical', 12), hopSequence: 1 };
+  expect((await f.bridge.exchange({ ...raw, exchange: { ...raw.exchange, generation: { ...raw.exchange.generation, generation: 4 }, frames: [valid] } })).exchange.refusals ?? []).toEqual([]);
+  expect(f.store.retained('inbound', 'first-physical')?.identity).toEqual(valid.identity);
+}, 5000);
+
 it("rejects a box naming a local sender and acknowledges that frame without blocking valid mail", async () => {
   const f = await fixture({ localPresence: () => [info(H)] });
   const legitimate = { sessionId: "box-owner", scopeId: "scope" }, forged = f.frame(B, "forged"), valid = f.frame(B, "valid", 1, legitimate);
   const reply = await f.send(B, [info(B, legitimate)], [forged, valid]);
-  expect(reply.exchange.refusals).toContainEqual({ identity: forged.identity, reason: "sender-unauthorized" });
+  expect(reply.exchange.refusals).toContainEqual({ identity: forged.identity, hopSequence: forged.identity.sequence, reason: "sender-unauthorized" });
   expect(reply.exchange.acknowledgements.map(ack => ack.identity.id)).toEqual(["forged", "valid"]);
   expect(f.inbound).toEqual(["valid"]);
   expect(f.store.retained("inbound", "forged")).toBeNull();
@@ -72,8 +216,8 @@ it("rejects a box naming a local sender and acknowledges that frame without bloc
 it("authenticates the sender against its assigned home even without current presence", async () => {
   const f = await fixture(); f.homes.set(victim.sessionId, { sessionId: victim.sessionId, machineId: C, epoch: 2, moveId: null, updatedAt: 1 });
   const forged = f.frame(B, "forged"), valid = f.frame(C, "real");
-  expect((await f.send(B, [], [forged])).exchange.refusals).toContainEqual({ identity: forged.identity, reason: "sender-unauthorized" });
-  expect((await f.send(C, [], [valid])).exchange.acknowledgements).toContainEqual({ identity: valid.identity, kind: "message" });
+  expect((await f.send(B, [], [forged])).exchange.refusals).toContainEqual({ identity: forged.identity, hopSequence: forged.identity.sequence, reason: "sender-unauthorized" });
+  expect((await f.send(C, [], [valid])).exchange.acknowledgements).toContainEqual({ identity: valid.identity, hopSequence: valid.identity.sequence, kind: "message" });
   expect(f.inbound).toEqual(["real"]);
 }, 5000);
 it("records and isolates store errors per frame rather than aborting the link", async () => {
@@ -83,7 +227,7 @@ it("records and isolates store errors per frame rather than aborting the link", 
     message: { id: "same-id", timestamp: 2, content: { text: "changed" } } });
   const valid = f.frame(B, "other-pair", 1, other);
   const reply = await f.send(B, [info(B), info(B, other)], [conflicting, valid]);
-  expect(reply.exchange.refusals).toContainEqual({ identity: conflicting.identity, reason: "store-rejected" });
+  expect(reply.exchange.refusals).toContainEqual({ identity: conflicting.identity, hopSequence: conflicting.identity.sequence, reason: "store-rejected" });
   expect(reply.exchange.acknowledgements.map(ack => ack.identity.id)).toEqual(["same-id", "other-pair"]);
   expect(f.inbound).toEqual(["same-id", "other-pair"]);
   expect(f.bridge.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-store-rejected" }));
@@ -173,8 +317,8 @@ it("rechecks cached presence against offline durable owners before publishing af
 it("delivers later mail when a homeless sender exited before its first presence arrived", async () => {
   const f = await fixture(), first = f.frame(B, "departed", 1);
   const refused = await f.send(B, [], [first]);
-  expect(refused.exchange.refusals).toEqual([{ identity: first.identity, reason: "sender-unauthorized" }]);
-  expect(refused.exchange.acknowledgements).toContainEqual({ identity: first.identity, kind: "message" });
+  expect(refused.exchange.refusals).toEqual([{ identity: first.identity, hopSequence: first.identity.sequence, reason: "sender-unauthorized" }]);
+  expect(refused.exchange.acknowledgements).toContainEqual({ identity: first.identity, hopSequence: first.identity.sequence, kind: "message" });
   await f.restart();
   const second = f.frame(B, "returned", 2), third = f.frame(B, "next", 3);
   const reply = await f.send(B, [info(B)], [second, third]);
@@ -186,7 +330,7 @@ it("delivers successors after a lagging sender home catches up", async () => {
   const f = await fixture();
   f.homes.set(victim.sessionId, { sessionId: victim.sessionId, machineId: C, epoch: 1, moveId: null, updatedAt: 1 });
   const first = f.frame(B, "lagging", 1);
-  expect((await f.send(B, [], [first])).exchange.refusals).toContainEqual({ identity: first.identity, reason: "sender-unauthorized" });
+  expect((await f.send(B, [], [first])).exchange.refusals).toContainEqual({ identity: first.identity, hopSequence: first.identity.sequence, reason: "sender-unauthorized" });
   f.homes.set(victim.sessionId, { sessionId: victim.sessionId, machineId: B, epoch: 2, moveId: "move", updatedAt: 2 });
   const reply = await f.send(B, [info(B, victim, 2)], [f.frame(B, "caught-up", 2), f.frame(B, "later", 3)]);
   expect(reply.exchange.refusals ?? []).toEqual([]);
@@ -199,7 +343,7 @@ it("consumes a store-rejected slot without replacing the accepted message with t
   const conflict = makeMessageFrame({ from: victim, endpoint: first.endpoint, sequence: 2, originMachineId: B,
     message: { id: "original", timestamp: 2, content: { text: "conflict" } } });
   const refused = await f.send(B, [info(B)], [conflict]);
-  expect(refused.exchange.refusals).toEqual([{ identity: conflict.identity, reason: "store-rejected" }]);
+  expect(refused.exchange.refusals).toEqual([{ identity: conflict.identity, hopSequence: conflict.identity.sequence, reason: "store-rejected" }]);
   await f.restart();
   expect((await f.send(B, [info(B)], [f.frame(B, "successor", 3)])).exchange.refusals ?? []).toEqual([]);
   expect(f.inbound).toEqual(["original", "successor"]);
@@ -211,8 +355,8 @@ it("acknowledges a revoked next-hop slot and delivers successors after enrollmen
   await f.bridge.revokePair(C, "edge");
   const first = { ...f.frame(B, "revoked", 1), endpoint: { ...f.frame(B, "unused").endpoint, machineId: C } };
   const refused = await f.send(B, [info(B)], [first]);
-  expect(refused.exchange.refusals).toEqual([{ identity: first.identity, reason: "peer-revoked" }]);
-  expect(refused.exchange.acknowledgements).toContainEqual({ identity: first.identity, kind: "message" });
+  expect(refused.exchange.refusals).toEqual([{ identity: first.identity, hopSequence: first.identity.sequence, reason: "peer-revoked" }]);
+  expect(refused.exchange.acknowledgements).toContainEqual({ identity: first.identity, hopSequence: first.identity.sequence, kind: "message" });
   const fence = f.store.pairFence(C)!;
   await f.bridge.enrollPair({ peer: peer(C), edgeEpoch: "new-edge", initiator: false },
     { operationId: "re-enroll", graphDigest: "a".repeat(64), expectedFenceId: fence.fenceId, edgeEpoch: "new-edge" });
@@ -225,8 +369,8 @@ it("isolates a missing-origin slot in the middle of an authenticated sender stre
   const f = await fixture(); await f.send(B, [info(B)], [f.frame(B, "before", 1)]);
   const { originMachineId: _origin, ...missing } = f.frame(B, "bad-middle", 2), good = f.frame(B, "after", 3);
   const reply = await f.send(B, [info(B)], [missing as never, good]);
-  expect(reply.exchange.refusals).toEqual([{ identity: missing.identity, reason: "missing-origin" }]);
-  expect(reply.exchange.acknowledgements).toContainEqual({ identity: good.identity, kind: "message" });
+  expect(reply.exchange.refusals).toEqual([{ identity: missing.identity, hopSequence: missing.identity.sequence, reason: "missing-origin" }]);
+  expect(reply.exchange.acknowledgements).toContainEqual({ identity: good.identity, hopSequence: good.identity.sequence, kind: "message" });
   expect(f.inbound).toEqual(["before", "after"]);
 }, 5000);
 

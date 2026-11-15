@@ -1,3 +1,5 @@
+import { withHopRequest } from "./intercom-hop-fixture";
+import { withHopExchange } from "./intercom-hop-fixture";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -37,9 +39,9 @@ async function fixture() {
     }
     now = until; await flush();
   };
-  const exchange = (generation: number, holdMs = 0, frames: IntercomExchange["frames"] = []) => bridge.exchange({ version: 1, holdMs, deadlineMs: 30_000,
-    exchange: { protocol: 4, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "poll", generation },
-      frames, acknowledgements: [], receipts: [], controls: [], presence: [destination] } });
+  const exchange = (generation: number, holdMs = 0, frames: IntercomExchange["frames"] = []) => bridge.exchange(withHopRequest({ version: 1, holdMs, deadlineMs: 30_000,
+    exchange: withHopExchange({ protocol: 5, senderMachine: A, recipientMachine: B, generation: { edgeEpoch: "edge-1", channel: "poll", generation },
+      frames, acknowledgements: [], receipts: [], controls: [], presence: [destination] }) }));
   const ask = (id = "reverse-ask", remainingMs = 180_000) => bridge.dispatch({ from: to, to: destination,
     message: { id, timestamp: 1, expectsReply: true, remainingMs, content: { text: "synthetic reverse question" } } });
   return { bridge, store, clock, timers, exchange, ask, flush, advance, failures, expiries, arrivals, down, calls: () => calls };

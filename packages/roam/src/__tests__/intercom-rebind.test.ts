@@ -1,3 +1,5 @@
+import { withHopRequest } from "./intercom-hop-fixture";
+import { withHopExchange } from "./intercom-hop-fixture";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -11,8 +13,8 @@ const peer = (machineId: string) => ({ machineId, alias: `peer-${machineId.slice
 const resources: Array<{ stop(): Promise<void> }> = [], stores: Array<{ close(): void }> = [], roots: string[] = [];
 afterEach(async () => { for (const resource of resources.splice(0).reverse()) await resource.stop(); for (const store of stores.splice(0)) store.close(); for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
 function request(senderMachine: string, recipientMachine: string, channel: "push" | "poll", generation: number) {
-  return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine, recipientMachine, generation: { edgeEpoch: "edge", channel, generation },
-    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } };
+  return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: withHopExchange({ protocol: 5, senderMachine, recipientMachine, generation: { edgeEpoch: "edge", channel, generation },
+    frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] }) };
 }
 it("rebinds a never-dispatched recipient without an impossible absence receipt", () => {
   const root = mkdtempSync(join(resolve(".spider/scratch"), "rebind-no-proof-")); roots.push(root);
@@ -42,16 +44,16 @@ it("returns absence and later consumption to the original source after a local g
   resources.push(sender, receiver, sourceDelivery, destDelivery); await sender.start(); await receiver.start();
   source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "same-id", timestamp: 1, content: { text: "synthetic" } } });
   const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0], incoming = request(A, B, "push", 1);
-  (incoming.exchange.frames as unknown[]).push(frame); await receiver.exchange(incoming);
+  (incoming.exchange.frames as unknown[]).push(frame); await receiver.exchange(withHopRequest(incoming));
   await destDelivery.ready(to, "old-ready"); expect(ids).toEqual(["same-id"]);
   receiver.receipt(to, { messageId: "same-id", status: "not_injected", timestamp: 1000,
     evidence: { kind: "absence", sessionId: to.sessionId, activationEpoch: "old", excludedGeneration: "old", complete: true } });
   endpoint = { ...endpoint, activationEpoch: "new" }; await destDelivery.ready(to, "new-ready"); expect(ids).toEqual(["same-id", "same-id"]);
   receiver.receipt(to, { messageId: "same-id", status: "injected", timestamp: 1000,
     evidence: { kind: "entry", entryId: "physical", sessionId: to.sessionId, activationEpoch: "new" } });
-  const poll = await receiver.exchange(request(A, B, "poll", 1)); expect(poll.exchange.receipts.map(item => item.receipt.status)).toEqual(["not_injected", "injected"]);
+  const poll = await receiver.exchange(withHopRequest(request(A, B, "poll", 1))); expect(poll.exchange.receipts.map(item => item.receipt.status)).toEqual(["not_injected", "injected"]);
   const returned = request(B, A, "push", 1); (returned.exchange.receipts as unknown[]).push(...poll.exchange.receipts);
-  await sender.exchange(returned);
+  await sender.exchange(withHopRequest(returned));
   expect(source.retained("outbound", "same-id")).toMatchObject({ state: "injected", payloadRetained: false, endpoint: { activationEpoch: "new" } });
   expect(receipts).toMatchObject([{ messageId: "same-id", status: "not_injected" }, { messageId: "same-id", status: "injected" }]);
 }, 5000);
@@ -75,7 +77,7 @@ it("relays old-generation absence and new-generation consumption to the original
     store: relay, clock, transport: { resolve: async () => { throw new Error("offline"); }, exec: async () => { throw new Error("offline"); } } as never, localPresence: () => [], authoritativeHome: () => null });
   resources.push(bridge); await bridge.start();
   const incoming = request(C, B, "push", 1); (incoming.exchange.receipts as unknown[]).push(...dest.pending({ kind: "receipts", peer: B }));
-  await bridge.exchange(incoming);
+  await bridge.exchange(withHopRequest(incoming));
   expect(relay.pending({ kind: "receipts", peer: A }).map(item => item.receipt.status)).toEqual(["not_injected", "injected"]);
   expect(relay.retained("outbound", "relayed")).toMatchObject({ state: "injected", endpoint: { activationEpoch: "new" } });
 }, 5000);

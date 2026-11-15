@@ -9,7 +9,7 @@ import type { Home } from "@spider/db-core/roam/types";
 import type { Clock, Peer, Transport } from "./contracts";
 import { encodeExchange } from "./intercom-codec";
 import { INTERCOM_EXCHANGE_BYTES, INTERCOM_FEDERATION_VERSION, type ExchangeGeneration, type IntercomControlFrame, type IntercomExchange,
-  type IntercomIdentity, type IntercomLinkAck, type IntercomPairApproval, type IntercomReceiptFrame, type IntercomRefusal, type IntercomStore, type MissingOriginFrame } from "./intercom-contracts";
+  type IntercomIdentity, type IntercomLinkAck, type IntercomPairApproval, type IntercomReceiptFrame, type IntercomRefusal, type AuthenticatedIntercomExchange, type IntercomWireAck, type IntercomWireRefusal, type IntercomStore, type IntercomWireMissingOriginFrame } from "./intercom-contracts";
 import { ExchangeError, exchange as executeExchange, type EnrolledIntercomEdge } from "./intercom-exchange";
 import { parseHelperEnroll, parseHelperFence, parseHelperInspect, parseHelperRequest, parseHelperRevoke, parseHelperTopology, type HelperTopologyRequest, type HelperEnrollRequest, type HelperReply } from "./intercom-helper";
 import { acquireHelperRoute, type HelperRouteLease } from "./intercom-route";
@@ -81,9 +81,9 @@ interface EdgeRuntime {
   failedAsks: Set<string>;
   pollSent: Map<string, { at: number; until: number }>;
   pushIds: Set<string>;
-  acknowledgements: Map<string, IntercomLinkAck>;
+  acknowledgements: Map<string, IntercomWireAck>;
   receiptAcknowledgements: Map<string, IntercomReceiptFrame>;
-  refusals: Map<string, IntercomRefusal>;
+  refusals: Map<string, IntercomWireRefusal>;
   reportedRefusals: Set<string>;
   resolved: Peer | null;
   versionReady: boolean;
@@ -240,8 +240,8 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     if (deadline > now) edge.livenessCancel = ports.clock.later(deadline - now, () => { edge.livenessCancel = null; expirePassiveRoute(edge); publish(); wakeRelays(edge); armLiveness(edge); });
     else expirePassiveRoute(edge);
   };
-  const blank = (peer: string, generation: ExchangeGeneration): IntercomExchange => ({ protocol: INTERCOM_FEDERATION_VERSION, senderMachine: ports.machineId,
-    recipientMachine: peer, generation, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
+  const blank = (peer: string, generation: ExchangeGeneration): AuthenticatedIntercomExchange => ({ protocol: INTERCOM_FEDERATION_VERSION, senderMachine: ports.machineId,
+    recipientMachine: peer, generation, streamStart: { after: 0 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
   const build = (edge: EdgeRuntime, generation: ExchangeGeneration, acks: readonly IntercomLinkAck[], receiptAcks: readonly IntercomReceiptFrame[], hopBudgetMs: number,
     metadataOnly = false, skipIds: readonly string[] = [], refusals: readonly IntercomRefusal[] = []): IntercomExchange => {
     const peer = edge.config.peer.machineId, result = blank(peer, generation), max = INTERCOM_EXCHANGE_BYTES - 4096;
@@ -271,14 +271,14 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     }
     if (metadataOnly) return result;
     for (const control of edge.controls.values()) if (!add(result.controls, control)) break;
-    const resumptions = ports.store.outboundResumptions(peer);
+    const resumptions = ports.store.outboundResumptions(peer, edge.config.edgeEpoch);
     if (resumptions.length) {
       result.resumptions = [];
       for (const resume of resumptions) if (!add(result.resumptions, resume)) return bad("exchange-too-large");
     }
     const remaining = () => Math.max(0, Math.min(INTERCOM_EXCHANGE_BYTES - 1024, max - bytes(result) - 16));
     for (const receipt of ports.store.pending({ kind: "receipts", peer, maxBytes: remaining() })) result.receipts.push(receipt);
-    for (const frame of ports.store.pending({ kind: "outbound", peer, hopBudgetMs, maxBytes: remaining(), skipIds })) result.frames.push(frame);
+    for (const frame of ports.store.pending({ kind: "outbound", peer, edgeEpoch: edge.config.edgeEpoch, hopBudgetMs, maxBytes: remaining(), skipIds })) result.frames.push(frame);
     armExpiry();
     try { encodeExchange(result); } catch { return bad("exchange-too-large"); }
     return result;
@@ -295,16 +295,17 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     // also resume retained work; that push's reply cannot carry payload frames.
     if ((before.status === "down" || before.status === "recovering") && ports.store.hasPending(peer)) bridge.wake(peer);
   };
-  const apply = (edge: EdgeRuntime, incoming: IntercomExchange, missingOrigins: readonly MissingOriginFrame[] = []): { acks: IntercomLinkAck[]; receiptAcks: IntercomReceiptFrame[]; refusals: IntercomRefusal[] } => {
-    const peer = edge.config.peer.machineId, acks: IntercomLinkAck[] = [], receiptAcks: IntercomReceiptFrame[] = [], refusals: IntercomRefusal[] = [];
+  const apply = (edge: EdgeRuntime, incoming: AuthenticatedIntercomExchange, missingOrigins: readonly IntercomWireMissingOriginFrame[] = []): { acks: IntercomWireAck[]; receiptAcks: IntercomReceiptFrame[]; refusals: IntercomWireRefusal[] } => {
+    const peer = edge.config.peer.machineId, acks: IntercomWireAck[] = [], receiptAcks: IntercomReceiptFrame[] = [], refusals: IntercomWireRefusal[] = [];
     if (incoming.presence.some(entry => entry.machineId === ports.machineId || !(ports.authorizePresence?.(peer, entry) ?? entry.machineId === peer))) return bad("invalid-presence");
+    ports.store.openHop(peer, edge.config.edgeEpoch);
     const presence = acceptedPresence(edge, incoming.presence);
     for (const ack of incoming.acknowledgements) {
-      ports.store.acknowledge({ peer, ...ack }); edge.pollSent.delete(ack.identity.id); edge.reportedRefusals.delete(ack.identity.id);
+      ports.store.acknowledge({ peer, edgeEpoch: edge.config.edgeEpoch, ...ack }); edge.pollSent.delete(ack.identity.id); edge.reportedRefusals.delete(ack.identity.id);
     }
     for (const refusal of incoming.refusals ?? []) {
       const row = ports.store.retained("outbound", refusal.identity.id);
-      if (!row || !sameIdentity(row.identity, refusal.identity)) return bad("invalid-refusal");
+      if (!row || !sameIdentity(row.identity, refusal.identity) || ports.store.hopPosition("outbound", peer, edge.config.edgeEpoch, refusal.identity) !== refusal.hopSequence) return bad("invalid-refusal");
       if (refusal.reason === "intercom-topology-changing") {
         try { ports.store.recordTopologyRefusal({ peer, identity: refusal.identity }); } catch { return bad("invalid-refusal"); }
         edge.pollSent.delete(refusal.identity.id);
@@ -329,7 +330,8 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       }
       if (upstream && upstream.peer !== peer) {
         const previous = edges.get(upstream.peer);
-        if (previous) { previous.refusals.set(refusal.identity.id, refusal); bridge.wake(upstream.peer); }
+        if (previous) { const hopSequence = ports.store.hopPosition("inbound", upstream.peer, previous.config.edgeEpoch, refusal.identity);
+          if (hopSequence !== undefined) previous.refusals.set(String(hopSequence), { ...refusal, hopSequence }); bridge.wake(upstream.peer); }
       } else if (refusal.reason === "link-down") {
         if (!edge.failedAsks.has(refusal.identity.id) && ports.onAskFailed) {
           ports.onAskFailed({ peer, id: refusal.identity.id, from: refusal.identity.from, to: refusal.identity.to, reason: "link-down", outcomeKnown: false });
@@ -358,7 +360,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         const next = lookup(frame.from.machineId);
         if (!evidence || evidence.excludedGeneration !== outbound.endpoint.activationEpoch || !next) return bad("invalid-receipt");
         ports.store.rebindUndispatched(outbound.identity.to, frame.from, { owner: ports.authoritativeHome(outbound.identity.to),
-          exclusion: { owner: outbound.endpoint, excludedGeneration: evidence.excludedGeneration, kind: "generation-fenced" }, nextHop: next.config.peer.machineId });
+          exclusion: { owner: outbound.endpoint, excludedGeneration: evidence.excludedGeneration, kind: "generation-fenced" }, nextHop: next.config.peer.machineId }, next.config.edgeEpoch);
         outbound = ports.store.retained("outbound", frame.receipt.messageId);
         if (!outbound || outbound.peer !== peer) return bad("invalid-receipt");
       }
@@ -387,22 +389,39 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     for (let index = 0; index < incoming.frames.length + missingOrigins.length; index++) {
       const invalid = rejected.get(index);
       if (invalid) {
-        try { ports.store.rejectMissingOrigin({ peer, frame: invalid }); }
-        catch { ports.store.recordRejection(peer, invalid.identity.id, "missing-origin"); }
-        refusals.push({ identity: invalid.identity, reason: "missing-origin" });
+        try { ports.store.rejectHop({ peer, edgeEpoch: edge.config.edgeEpoch, sequence: invalid.hopSequence, identity: invalid.identity, reason: "missing-origin" }); }
+        catch (error) {
+          if (error instanceof Error && (error.message === "hop-sequence-gap" || error.message === "hop-slot-mismatch")) {
+            refusals.push({ identity: invalid.identity, hopSequence: invalid.hopSequence, reason: error.message }); continue;
+          }
+          return bad("invalid-request");
+        }
+        refusals.push({ identity: invalid.identity, hopSequence: invalid.hopSequence, reason: "missing-origin" });
+        acks.push({ identity: invalid.identity, hopSequence: invalid.hopSequence, kind: invalid.kind });
         continue;
       }
       const frame = incoming.frames[nextValid++];
+      const hop = { peer, edgeEpoch: edge.config.edgeEpoch, sequence: frame.hopSequence, identity: frame.identity, origin: frame.originMachineId };
+      let position: ReturnType<IntercomStore["inspectHop"]>;
+      try { position = ports.store.inspectHop(hop); }
+      catch (error) {
+        if (error instanceof Error && (error.message === "hop-sequence-gap" || error.message === "hop-slot-mismatch")) {
+          refusals.push({ identity: frame.identity, hopSequence: frame.hopSequence, reason: error.message }); continue;
+        }
+        return bad("invalid-request");
+      }
+      const ack = { identity: frame.identity, hopSequence: frame.hopSequence, kind: frame.kind };
+      if (position.kind === "refused") {
+        refusals.push({ identity: frame.identity, hopSequence: frame.hopSequence, reason: position.reason }); acks.push(ack); continue;
+      }
       const prior = ports.store.retained("inbound", frame.identity.id);
-      if (frame.kind === "message" && prior?.peer === peer && prior.failureReason === "missing-origin" && sameIdentity(prior.identity, frame.identity)) {
-        refusals.push({ identity: frame.identity, reason: "missing-origin" });
-        continue;
+      if (position.kind === "duplicate" && (!prior || prior.originMachineId !== frame.originMachineId || !sameIdentity(prior.identity, frame.identity))) {
+        acks.push(ack); continue;
       }
       const originAuthorized = ports.authorizeOrigin?.(peer, frame.originMachineId) ?? frame.originMachineId === peer;
       const reject = (reason: "sender-unauthorized" | "store-rejected" | "peer-revoked") => {
-        ports.store.rejectFrame({ peer, origin: originAuthorized ? frame.originMachineId : peer, identity: frame.identity, reason });
-        refusals.push({ identity: frame.identity, reason });
-        acks.push({ identity: frame.identity, kind: frame.kind });
+        ports.store.rejectHop({ ...hop, reason });
+        refusals.push({ identity: frame.identity, hopSequence: frame.hopSequence, reason }); acks.push(ack);
       };
       const home = ports.authoritativeHome(frame.identity.from), owner = ports.store.presenceOwner(frame.identity.from);
       const replay = prior && prior.originMachineId === frame.originMachineId && sameIdentity(prior.identity, frame.identity);
@@ -411,17 +430,17 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         reject("sender-unauthorized"); continue;
       }
       const remote = frame.endpoint.machineId !== ports.machineId, next = remote ? lookup(frame.endpoint.machineId, peer) : null;
-      if (remote && !next) { refusals.push({ identity: frame.identity, reason: "machine-not-enrolled" }); continue; }
+      if (remote && !next) { refusals.push({ identity: frame.identity, hopSequence: frame.hopSequence, reason: "machine-not-enrolled" }); continue; }
       if (next && fenced(next)) { reject("peer-revoked"); continue; }
       const resume = incoming.resumptions?.find(item => sameAddress(item.from, frame.identity.from) && sameAddress(item.to, frame.identity.to));
       try {
-      const accepted = ports.store.acceptInbound({ peer, frame, ...(resume ? { resume: { cursor: resume, owner: ports.authoritativeHome(frame.identity.to) } } : {}) });
-      if (accepted.kind === "refused") { refusals.push({ identity: frame.identity, reason: accepted.reason }); continue; }
+      const accepted = ports.store.acceptInbound({ peer, frame, hop: { edgeEpoch: edge.config.edgeEpoch, sequence: frame.hopSequence },
+        ...(next ? { forward: { peer: next.config.peer.machineId, edgeEpoch: next.config.edgeEpoch, firstHomePresence: firstHomePresence(frame.endpoint, next) } } : {}),
+        ...(resume ? { resume: { cursor: resume, owner: ports.authoritativeHome(frame.identity.to) } } : {}) });
+      if (accepted.kind === "refused") { refusals.push({ identity: frame.identity, hopSequence: frame.hopSequence, reason: accepted.reason }); continue; }
       const retained = ports.store.retained("inbound", frame.identity.id);
-      if (!retained) { acks.push({ identity: frame.identity, kind: frame.kind }); continue; }
+      if (!retained) { acks.push(ack); continue; }
       if (next) {
-        const forwarded = ports.store.acceptOutbound({ frame: { ...frame, endpoint: retained.endpoint }, nextHop: next.config.peer.machineId, firstHomePresence: firstHomePresence(retained.endpoint, next) });
-        if (forwarded.kind === "refused") { refusals.push({ identity: frame.identity, reason: forwarded.reason }); continue; }
         bridge.wake(next.config.peer.machineId);
       } else {
         if (frame.kind === "tombstone" && frame.reason === "cancelled" && !incoming.controls.some(item => item.control.messageId === frame.identity.id &&
@@ -430,8 +449,11 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         }
         ports.onInbound?.({ id: frame.identity.id, to: frame.identity.to });
       }
-      acks.push({ identity: frame.identity, kind: frame.kind });
-      } catch { reject("store-rejected"); }
+      acks.push(ack);
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("hop-")) return bad(error.message);
+        reject("store-rejected");
+      }
     }
     for (const control of incoming.controls) {
       const row = ports.store.retained("inbound", control.control.messageId);
@@ -535,7 +557,8 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       if (!stopped) sweep();
     });
   };
-  const ackKey = (ack: IntercomLinkAck): string => JSON.stringify([ack.identity.id, ack.kind]);
+  const ackKey = (ack: IntercomLinkAck): string => JSON.stringify([ack.hopSequence, ack.kind]);
+  const refusalKey = (refusal: IntercomRefusal): string => String(refusal.hopSequence);
   const receiptKey = (receipt: IntercomReceiptFrame): string => JSON.stringify(receipt);
   const failureCode = (error: unknown): string => {
     const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : null;
@@ -549,7 +572,8 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       const upstream = ports.store.retained("inbound", row.identity.id);
       if (upstream && upstream.peer !== peer) {
         const previous = edges.get(upstream.peer);
-        if (previous) { previous.refusals.set(row.identity.id, { identity: row.identity, reason: "link-down" }); bridge.wake(upstream.peer); }
+        if (previous) { const hopSequence = ports.store.hopPosition("inbound", upstream.peer, previous.config.edgeEpoch, row.identity);
+          if (hopSequence !== undefined) previous.refusals.set(String(hopSequence), { identity: row.identity, reason: "link-down", hopSequence }); bridge.wake(upstream.peer); }
       } else if (!edge.failedAsks.has(row.identity.id) && ports.onAskFailed) {
         ports.onAskFailed({ peer, id: row.identity.id, from: row.identity.from, to: row.identity.to, reason: "link-down", outcomeKnown: false });
         edge.failedAsks.add(row.identity.id);
@@ -637,10 +661,10 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         if (handshaking && ports.store.hasPending(peer)) edge.pushDirty = true;
         for (const ack of input.acknowledgements) edge.acknowledgements.delete(ackKey(ack));
         for (const ack of input.receiptAcknowledgements ?? []) edge.receiptAcknowledgements.delete(receiptKey(ack));
-        for (const refusal of input.refusals ?? []) edge.refusals.delete(refusal.identity.id);
+        for (const refusal of input.refusals ?? []) edge.refusals.delete(refusalKey(refusal));
         for (const ack of applied.acks) edge.acknowledgements.set(ackKey(ack), ack);
         for (const ack of applied.receiptAcks) edge.receiptAcknowledgements.set(receiptKey(ack), ack);
-        for (const refusal of applied.refusals) edge.refusals.set(refusal.identity.id, refusal);
+        for (const refusal of applied.refusals) edge.refusals.set(refusalKey(refusal), refusal);
         if (applied.acks.length || applied.receiptAcks.length || applied.refusals.length) edge.pushDirty = true;
         succeeded = true;
         return true;
@@ -909,7 +933,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       if (!started || stopped) return bad("bridge-unavailable");
       let input;
       try { if (bytes(raw) > INTERCOM_EXCHANGE_BYTES - 1024) return bad("exchange-too-large"); input = parseHelperRequest(raw); }
-      catch (error) { if (error instanceof ExchangeError) throw error; return bad(error instanceof Error && (error.message === "peer-version-mismatch" || error.message === "invalid-presence" || error.message === 'receipt-stream-missing') ? error.message : "invalid-request"); }
+      catch (error) { if (error instanceof ExchangeError) throw error; return bad(error instanceof Error && (error.message === "peer-version-mismatch" || error.message === "invalid-presence" || error.message === 'receipt-stream-missing' || error.message === "hop-stream-missing") ? error.message : "invalid-request"); }
       const incoming = input.exchange, edge = edges.get(incoming.senderMachine);
       if (!edge || incoming.recipientMachine !== ports.machineId) return bad("machine-not-enrolled");
       if (fenced(edge)) return bad("peer-revoked");
@@ -937,7 +961,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
           [...new Map([...edge.acknowledgements.values(), ...applied.acks].map(ack => [ackKey(ack), ack])).values()],
           [...new Map([...edge.receiptAcknowledgements.values(), ...applied.receiptAcks].map(ack => [receiptKey(ack), ack])).values()],
           hopBudgetMs, channel === "push", [...edge.pushIds],
-          [...new Map([...edge.refusals.values(), ...applied.refusals].map(refusal => [refusal.identity.id, refusal])).values()]);
+          [...new Map([...edge.refusals.values(), ...applied.refusals].map(refusal => [refusalKey(refusal), refusal])).values()]);
         let output = makeReply();
         if (input.holdMs > 0 && !hasData(output)) {
           await wait(active, input.holdMs, signal);
@@ -952,7 +976,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         reportExpiries(); armExpiry();
         for (const ack of output.acknowledgements) edge.acknowledgements.delete(ackKey(ack));
         for (const ack of output.receiptAcknowledgements ?? []) edge.receiptAcknowledgements.delete(receiptKey(ack));
-        for (const refusal of output.refusals ?? []) edge.refusals.delete(refusal.identity.id);
+        for (const refusal of output.refusals ?? []) edge.refusals.delete(refusalKey(refusal));
         if (channel === "poll") {
           const at = ports.clock.now();
           for (const frame of output.frames) edge.pollSent.set(frame.identity.id, { at, until: at + 45_000 });
@@ -1010,7 +1034,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       if (fenced(edge)) return failed("peer-revoked");
       if (!currentHome()) return failed("stale-home-epoch");
       const endpoint = { address: input.to.address, machineId: input.to.machineId, homeEpoch: input.to.homeEpoch, activationEpoch: input.to.activationEpoch };
-      const accepted = ports.store.acceptOutbound({ from: input.from, endpoint, message, nextHop: edge.config.peer.machineId, firstHomePresence: firstHomePresence(endpoint, edge) });
+      const accepted = ports.store.acceptOutbound({ from: input.from, endpoint, message, nextHop: edge.config.peer.machineId, edgeEpoch: edge.config.edgeEpoch, firstHomePresence: firstHomePresence(endpoint, edge) });
       if (accepted.kind === "refused") return failed(accepted.reason);
       armExpiry(); bridge.wake(edge.config.peer.machineId);
       return { delivery: "queued", retryable: false, outcomeKnown: true, acceptance: accepted.acceptance,

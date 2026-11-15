@@ -1,3 +1,5 @@
+import { withHopRequest } from "./intercom-hop-fixture";
+import { withHopExchange } from "./intercom-hop-fixture";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -31,9 +33,9 @@ async function fixture(machineId = H) {
     publishPresence: entries => { published = entries; }, onInbound: entry => inbound.push(entry.id) });
   let bridge = createIntercomBridge(ports()); resources.push(async () => { await bridge.stop(); store.close(); }); await bridge.start();
   let generation = 0;
-  const send = (entries: RemoteSessionInfo[] = [presence], frames: IntercomExchange["frames"] = []) => bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000,
-    exchange: { protocol: 4, senderMachine: B, recipientMachine: machineId, generation: { edgeEpoch: "edge", channel: "push", generation: ++generation },
-      presence: entries, frames, acknowledgements: [], receipts: [], controls: [] } });
+  const send = (entries: RemoteSessionInfo[] = [presence], frames: IntercomExchange["frames"] = []) => bridge.exchange(withHopRequest({ version: 1, holdMs: 0, deadlineMs: 5000,
+    exchange: withHopExchange({ protocol: 5, senderMachine: B, recipientMachine: machineId, generation: { edgeEpoch: "edge", channel: "push", generation: ++generation },
+      presence: entries, frames, acknowledgements: [], receipts: [], controls: [] }) }));
   const frame = (id: string, sequence: number) => makeMessageFrame({ from: address,
     endpoint: { address: target, machineId, homeEpoch: null, activationEpoch: "recipient" }, sequence, originMachineId: B,
     message: { id, timestamp: 1, content: { text: "synthetic" } } });
@@ -47,7 +49,7 @@ it.each([H, C])("refuses an unknown homeless claim at %s until its origin syncs"
   expect(f.published).toEqual([]);
   expect(f.store.presenceOwner(address)).toBeNull();
   expect(f.bridge.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-origin-unknown" }));
-  expect(refused.exchange.refusals).toContainEqual({ identity: first.identity, reason: "sender-unauthorized" });
+  expect(refused.exchange.refusals).toContainEqual({ identity: first.identity, reason: "sender-unauthorized" , hopSequence: first.identity.sequence });
   f.origins.set(address.sessionId, B);
   expect((await f.send([presence], [f.frame("after-sync", 2)])).exchange.refusals ?? []).toEqual([]);
   expect(f.published).toMatchObject([{ address, machineId: B }]);

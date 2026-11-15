@@ -1,3 +1,5 @@
+import { withHopRequest } from "./intercom-hop-fixture";
+import { withHopExchange } from "./intercom-hop-fixture";
 import { afterEach, expect, it, vi } from "vitest";
 import { EventEmitter, once } from "node:events";
 import { createServer, type Socket } from "node:net";
@@ -176,14 +178,14 @@ it("rebuilds first-home presence attestations from durable adoption after a brid
   const old = { address, machineId: HUB, homeEpoch: null, activationEpoch: activation };
   const first = await makeMachine({ ...f.options, config }); await first.start();
   f.broker.emit("presence", [{ ...localPresence(address, activation), homeEpoch: 1 }]);
-  const before = await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1), new AbortController().signal) as { exchange: { presence: RemoteSessionInfo[] } };
+  const before = await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1)), new AbortController().signal) as { exchange: { presence: RemoteSessionInfo[] } };
   expect(before.exchange.presence[0].firstHome).toBeUndefined();
   recordIntercomGeneration(f.global.db, { sessionId: address.sessionId, generation: activation, pid: process.pid });
   recordFirstHomeAdoption(f.global.db, old, { ...old, homeEpoch: 1 }, 1000);
   await first.stop();
   const second = await makeMachine({ ...f.options, config }); await second.start();
   f.broker.emit("presence", [{ ...localPresence(address, activation), homeEpoch: 1 }]);
-  const after = await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 2), new AbortController().signal) as { exchange: { presence: RemoteSessionInfo[] } };
+  const after = await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 2)), new AbortController().signal) as { exchange: { presence: RemoteSessionInfo[] } };
   expect(after.exchange.presence).toMatchObject([{ address, activationEpoch: activation, homeEpoch: 1,
     firstHome: { activation, fromEpoch: null, toEpoch: 1 } }]);
 }, 5000);
@@ -321,7 +323,7 @@ it("activates only a registered approved edge through the live authenticated hel
     operationId: "op-live", graphDigest: digest, expectedFenceId: null };
   await expect(f.broker.helper!(request, new AbortController().signal)).rejects.toThrow();
   await persistIntercomPairRoute(f.global.root, pair, "op-live", digest);
-  await expect(f.broker.helper!({ ...request, graphDigest: "b".repeat(64) }, new AbortController().signal)).rejects.toThrow();
+  await expect(f.broker.helper!(withHopRequest({ ...request, graphDigest: "b".repeat(64) }), new AbortController().signal)).rejects.toThrow();
   expect(await f.broker.helper!(request, new AbortController().signal)).toEqual({ machineId: HUB, peer: BOX, edgeEpoch: "edge-new", applied: true });
   expect(direct).toMatchObject([{ machineId: BOX }]);
   expect(await f.broker.helper!({ version: 1, action: "inspect-pair", machineId: HUB, peer: BOX, edgeEpoch: "edge-new" }, new AbortController().signal))
@@ -353,7 +355,7 @@ it("private setup and authenticated revocation serialize across the machine boun
         expect(message.token).toBe(route.token);
         writeMessage(socket, { type: "helper_registered", requestId: message.requestId });
       } else if (message.type === "helper_exchange") {
-        const task = broker.helper!(message.input, new AbortController().signal);
+        const task = broker.helper!(withHopRequest(message.input), new AbortController().signal);
         void task.then(output => { events.push("fenced"); writeMessage(socket, { type: "helper_result", requestId: message.requestId, output }); }, () => socket.destroy());
       }
     }, () => socket.destroy()));
@@ -467,17 +469,17 @@ it("delivers accepted mail even when its remote sender has left the roster", asy
     const frame = source.pending({ kind: "outbound", peer: HUB, hopBudgetMs: 1000 })[0];
     writeLocal(f.global.db, "observed-origin", JSON.stringify([from.sessionId, BOX]), { id: from.sessionId, origin: BOX });
     const request = helperRequest(BOX, HUB, "edge-1", 1, [remote(BOX, "box.invalid", from)]);
-    const reply = await f.broker.helper!({ ...request, exchange: { ...request.exchange, frames: [frame] } }, new AbortController().signal);
+    const reply = await f.broker.helper!(withHopRequest({ ...request, exchange: { ...request.exchange, frames: [frame] } }), new AbortController().signal);
     expect(reply).toMatchObject({ exchange: { acknowledgements: [{ identity: { id: "departed-id" } }] } });
     expect(f.broker.deliveries).toEqual([]);
-    await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 2), new AbortController().signal);
+    await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 2)), new AbortController().signal);
     expect(f.broker.published.at(-1)).toEqual([]);
     f.broker.emit("presence", [localPresence(to, "recipient-generation")]);
     expect(f.broker.deliveries).toMatchObject([{ from: { address: from, machineId: BOX }, message: { id: "departed-id" } }]);
     f.broker.bridge!.receipt(to, { messageId: "departed-id", status: "injected", timestamp: 1000,
       evidence: { kind: "entry", entryId: "entry-1", sessionId: to.sessionId, activationEpoch: "recipient-generation" } });
     const poll = helperRequest(BOX, HUB, "edge-1", 1); poll.exchange.generation.channel = "poll";
-    const result = await f.broker.helper!(poll, new AbortController().signal) as { exchange: { receipts: Array<Parameters<typeof source.settleReceipt>[0]["frame"]> } };
+    const result = await f.broker.helper!(withHopRequest(poll), new AbortController().signal) as { exchange: { receipts: Array<Parameters<typeof source.settleReceipt>[0]["frame"]> } };
     expect(result.exchange.receipts).toHaveLength(1);
     source.settleReceipt({ queue: "outbound", peer: HUB, frame: result.exchange.receipts[0] });
     expect(source.retained("outbound", "departed-id")?.state).toBe("injected");
@@ -496,7 +498,7 @@ it("rejects an origin claim a direct peer is not authorized to relay", async () 
     source.acceptOutbound({ from, endpoint: { address: to, machineId: HUB, homeEpoch: null, activationEpoch: "recipient-generation" }, nextHop: HUB,
       message: { id: "forged-origin", timestamp: 1, content: { text: "synthetic" } } });
     const frame = source.pending({ kind: "outbound", peer: HUB, hopBudgetMs: 1000 })[0], request = helperRequest(BOX, HUB, "edge-1", 1);
-    const rejected = await f.broker.helper!({ ...request, exchange: { ...request.exchange, frames: [{ ...frame, originMachineId: OTHER }] } }, new AbortController().signal);
+    const rejected = await f.broker.helper!(withHopRequest({ ...request, exchange: { ...request.exchange, frames: [{ ...frame, originMachineId: OTHER }] } }), new AbortController().signal);
     expect(rejected).toMatchObject({ exchange: { refusals: [{ identity: frame.identity, reason: "sender-unauthorized" }],
       acknowledgements: [{ identity: frame.identity, kind: "message" }] } });
     expect(f.broker.deliveries).toEqual([]);
@@ -529,7 +531,7 @@ it("the service-owned helper fences one live pair without restarting or affectin
   const signal = new AbortController().signal;
   await expect(f.broker.helper!({ version: 1, action: "revoke-pair", machineId: OTHER, peer: BOX, edgeEpoch: "edge-1" }, signal)).rejects.toMatchObject({ code: "machine-mismatch" });
   await expect(f.broker.helper!({ version: 1, action: "revoke-pair", machineId: HUB, peer: BOX, edgeEpoch: "edge-1", extra: true }, signal)).rejects.toMatchObject({ code: "invalid-request" });
-  expect(await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1), signal)).toMatchObject({ exchange: { senderMachine: HUB } });
+  expect(await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1)), signal)).toMatchObject({ exchange: { senderMachine: HUB } });
   const fenceId = "00000000-0000-4000-8000-000000000004";
   const proof = await f.broker.helper!({ version: 1, action: "revoke-pair", machineId: HUB, peer: BOX, edgeEpoch: "edge-1", fenceId }, signal);
   expect(proof).toMatchObject({ machineId: HUB, peer: BOX, edgeEpoch: "edge-1", fenceId, exchanges: "closed", inFlight: 0 });
@@ -537,8 +539,8 @@ it("the service-owned helper fences one live pair without restarting or affectin
     .toEqual({ machineId: HUB, peer: BOX, fence: { edgeEpoch: "edge-1", fenceId } });
   expect(await f.broker.helper!({ version: 1, action: "inspect-fence", machineId: HUB, peer: OTHER }, signal))
     .toEqual({ machineId: HUB, peer: OTHER, fence: null });
-  await expect(f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1), signal)).rejects.toMatchObject({ code: "peer-revoked" });
-  expect(await f.broker.helper!(helperRequest(OTHER, HUB, "edge-2", 1), signal)).toMatchObject({ exchange: { senderMachine: HUB } });
+  await expect(f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1)), signal)).rejects.toMatchObject({ code: "peer-revoked" });
+  expect(await f.broker.helper!(withHopRequest(helperRequest(OTHER, HUB, "edge-2", 1)), signal)).toMatchObject({ exchange: { senderMachine: HUB } });
   expect(service.readiness().state).toBe("ready"); expect(f.broker.closed).toBe(0);
 }, 5000);
 
@@ -549,7 +551,7 @@ it("the runtime keeps a revocation notice queued when broker delivery is unconfi
   const service = await makeMachine({ ...f.options, config }); await service.start();
   const address = { sessionId: "remote-recipient", scopeId: "scope" }, origin = { sessionId: "origin", scopeId: "scope" };
   const remoteInfo = remote(BOX, "box.invalid", address), signal = new AbortController().signal;
-  await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1, [remoteInfo]), signal);
+  await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1, [remoteInfo])), signal);
   expect(await f.broker.bridge!.dispatch({ from: origin, to: remoteInfo, message: { id: "notice-unconfirmed", timestamp: 1, content: { text: "test" } } })).toMatchObject({ acceptance: { durable: true } });
   await f.broker.helper!({ version: 1, action: "revoke-pair", machineId: HUB, peer: BOX, edgeEpoch: "edge-1" }, signal);
   for (let i = 0; i < 10; i++) await Promise.resolve();
@@ -570,15 +572,15 @@ it("configured peer edges preserve their full enrollment and shared epoch", asyn
   await service.start();
   expect(service.readiness()).toEqual({ state: "ready", reason: null });
   const signal = new AbortController().signal;
-  const reply = await f.broker.helper!({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine: BOX, recipientMachine: HUB,
-    generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } }, signal);
+  const reply = await f.broker.helper!(withHopRequest({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: withHopExchange({ protocol: 5, senderMachine: BOX, recipientMachine: HUB,
+    generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] }) }), signal);
   expect(reply).toMatchObject({ version: 1, exchange: { senderMachine: HUB, recipientMachine: BOX } });
   expect(resolved).toEqual([BOX]);
 }, 5000);
 
 function helperRequest(from: string, to: string, edgeEpoch: string, generation: number, presence: RemoteSessionInfo[] = []) {
-  return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 4, senderMachine: from, recipientMachine: to,
-    generation: { edgeEpoch, channel: "push", generation }, frames: [], acknowledgements: [], receipts: [], controls: [], presence } };
+  return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: withHopExchange({ protocol: 5, senderMachine: from, recipientMachine: to,
+    generation: { edgeEpoch, channel: "push", generation }, frames: [], acknowledgements: [], receipts: [], controls: [], presence }) };
 }
 function remote(machineId: string, alias: string, address: SessionAddress): RemoteSessionInfo {
   return { ...destination(address), machineId, machineAlias: alias };
@@ -594,11 +596,11 @@ it("hub-only mode advertises and queues an enrolled box through the hub", async 
   const target = { sessionId: "remote-recipient", scopeId: "scope" }, from = { sessionId: "sender", scopeId: "scope" };
   const entry = remote(OTHER, "other.invalid", target), signal = new AbortController().signal;
   writeLocal(f.global.db, "observed-origin", JSON.stringify([target.sessionId, OTHER]), { id: target.sessionId, origin: OTHER });
-  await f.broker.helper!(helperRequest(HUB, BOX, "hub-box", 1, [entry]), signal);
+  await f.broker.helper!(withHopRequest(helperRequest(HUB, BOX, "hub-box", 1, [entry])), signal);
   expect(f.broker.published.at(-1)).toMatchObject([{ address: target, machineId: OTHER }]);
   const accepted = await f.broker.bridge!.dispatch({ from, to: entry, message: { id: "relayed-id", timestamp: 1, content: { text: "synthetic" } } });
   expect(accepted).toMatchObject({ delivery: "queued", acceptance: { durable: true } });
-  await expect(f.broker.helper!(helperRequest(HUB, BOX, "hub-box", 2, [{ ...entry, machineAlias: "spoof.invalid" }]), signal)).rejects.toThrow(/invalid-presence/);
+  await expect(f.broker.helper!(withHopRequest(helperRequest(HUB, BOX, "hub-box", 2, [{ ...entry, machineAlias: "spoof.invalid" }])), signal)).rejects.toThrow(/invalid-presence/);
   await service.stop();
   const reopened = openIntercomStore({ file: join(f.global.root, "roam", "intercom", "queue.db"), machineId: BOX, clock: f.clock });
   try { expect(reopened.retained("outbound", "relayed-id")).toMatchObject({ state: "queued", peer: HUB, payloadRetained: true }); }
@@ -635,10 +637,10 @@ it("hub-only mode advertises one enrolled box to another, but not a spoofed peer
   const service = await makeMachine({ ...f.options, config }); await service.start();
   const address = { sessionId: "box-session", scopeId: "scope" }, signal = new AbortController().signal;
   writeLocal(f.global.db, "observed-origin", JSON.stringify([address.sessionId, BOX]), { id: address.sessionId, origin: BOX });
-  await f.broker.helper!(helperRequest(BOX, HUB, "hub-box", 1, [remote(BOX, "box.invalid", address)]), signal);
-  const reply = await f.broker.helper!(helperRequest(OTHER, HUB, "hub-other", 1), signal);
+  await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "hub-box", 1, [remote(BOX, "box.invalid", address)])), signal);
+  const reply = await f.broker.helper!(withHopRequest(helperRequest(OTHER, HUB, "hub-other", 1)), signal);
   expect(reply).toMatchObject({ exchange: { presence: [{ address, machineId: BOX }] } });
-  await expect(f.broker.helper!(helperRequest(BOX, HUB, "hub-box", 2, [remote(OTHER, "other.invalid", address)]), signal)).rejects.toThrow(/invalid-presence/);
+  await expect(f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "hub-box", 2, [remote(OTHER, "other.invalid", address)])), signal)).rejects.toThrow(/invalid-presence/);
 }, 5000);
 
 it("persists one link outage, updates its reason, and clears it on a valid exchange", async () => {
@@ -659,7 +661,7 @@ it("persists one link outage, updates its reason, and clears it on a valid excha
   await first.stop();
   const nextBroker = new FakeBroker(), second = await makeMachine({ ...f.options, config, transport, broker: nextBroker }); await second.start();
   expect(second.diagnostics()).toEqual([{ peer: BOX, status: "down", since: 1000, reason: "needs_login" }]);
-  await nextBroker.helper!(helperRequest(BOX, HUB, "edge-1", 1), new AbortController().signal);
+  await nextBroker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1)), new AbortController().signal);
   expect(second.diagnostics()).toEqual([]);
 }, 5000);
 
@@ -774,20 +776,20 @@ it("resumes a hub switch, reports an unreachable box, and advertises only its ow
   const initial = queue(); initial.startTopologyTransition({ transitionId: id, from: "hub-only", to: "peers", boxes: [BOX, OTHER] }); initial.close();
   let service = await makeMachine({ ...f.options, config }); await service.start();
   const address = { sessionId: "box-session", scopeId: "scope" };
-  const first = await f.broker.helper!(helperRequest(BOX, HUB, "hub-box", 1, [remote(BOX, "box.invalid", address)]), signal);
+  const first = await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "hub-box", 1, [remote(BOX, "box.invalid", address)])), signal);
   expect(first).toMatchObject({ exchange: { topology: { transitionId: id, action: "switch" }, presence: [] } });
   const ack = { ...helperRequest(BOX, HUB, "hub-box", 2), exchange: { ...helperRequest(BOX, HUB, "hub-box", 2).exchange,
     topology: { transitionId: id, action: "switched" } } };
-  await f.broker.helper!(ack, signal);
+  await f.broker.helper!(withHopRequest(ack), signal);
   expect(service.diagnostics().some(item => item.reason === `intercom-transition-pending ${OTHER}`)).toBe(true);
   await service.stop();
   const resumedBroker = new FakeBroker(); service = await makeMachine({ ...f.options, config, broker: resumedBroker }); await service.start();
-  const second = await resumedBroker.helper!(helperRequest(OTHER, HUB, "hub-other", 1), signal);
+  const second = await resumedBroker.helper!(withHopRequest(helperRequest(OTHER, HUB, "hub-other", 1)), signal);
   expect(second).toMatchObject({ exchange: { topology: { transitionId: id, action: "switch" }, presence: [] } });
   const otherAck = { ...helperRequest(OTHER, HUB, "hub-other", 2), exchange: { ...helperRequest(OTHER, HUB, "hub-other", 2).exchange,
     topology: { transitionId: id, action: "switched" } } };
-  await resumedBroker.helper!(otherAck, signal);
-  const final = await resumedBroker.helper!(helperRequest(BOX, HUB, "hub-box", 3, [remote(BOX, "box.invalid", address)]), signal);
+  await resumedBroker.helper!(withHopRequest(otherAck), signal);
+  const final = await resumedBroker.helper!(withHopRequest(helperRequest(BOX, HUB, "hub-box", 3, [remote(BOX, "box.invalid", address)])), signal);
   expect(final).toMatchObject({ exchange: { presence: [] } });
   expect(service.diagnostics().some(item => item.reason.startsWith("intercom-transition-pending"))).toBe(false);
   await service.stop(); const stored = queue();
@@ -807,7 +809,7 @@ it("applies only the enrolled hub's switch and keeps relay presence and origins 
     topology: { transitionId: id, action: "switch" } } };
   expect(await f.broker.helper!(request, signal)).toMatchObject({ exchange: { topology: { transitionId: id, action: "switched" } } });
   const target = { sessionId: "remote-recipient", scopeId: "scope" };
-  await expect(f.broker.helper!(helperRequest(HUB, BOX, "hub-box", 2, [remote(OTHER, "other.invalid", target)]), signal)).rejects.toThrow("invalid-presence");
+  await expect(f.broker.helper!(withHopRequest(helperRequest(HUB, BOX, "hub-box", 2, [remote(OTHER, "other.invalid", target)])), signal)).rejects.toThrow("invalid-presence");
   await service.stop();
   const stored = openIntercomStore({ file: join(f.global.root, "roam", "intercom", "queue.db"), machineId: BOX, clock: f.clock });
   try { expect(stored.topology()).toMatchObject({ mode: "peers", switched: id }); } finally { stored.close(); }
@@ -872,7 +874,7 @@ it.each(["session", "origin", "adoption", "generation", "box-origin", "version",
   const config = parseConfig({ ...f.options.config, peers: [target], intercom: { enabled: true, mode: "peers", machineAlias: "hub.invalid", routes: [{ kind: "direct", peer: target, edgeEpoch: "edge-1" }] } });
   const service = await makeMachine({ ...f.options, config }); await service.start();
   const entry = { ...remote(BOX, "box.invalid", address), homeEpoch: null };
-  await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1, [entry]), new AbortController().signal);
+  await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1, [entry])), new AbortController().signal);
   expect(f.broker.published.at(-1)).toEqual([]);
   expect(service.diagnostics()).toContainEqual(expect.objectContaining({ reason: kind === 'session' || kind === 'origin'
     ? "intercom-presence-origin-mismatch" : "intercom-presence-ambiguous" }));
@@ -919,14 +921,14 @@ it.each([[HUB, false], [HUB, true], [OTHER, false], [OTHER, true]] as const)(
     writeLocal(f.global.db, 'observed-origin', JSON.stringify([address.sessionId, owner]), { id: address.sessionId, origin: owner });
     const service = await makeMachine({ ...f.options, config }); await service.start();
     const signal = new AbortController().signal;
-    if (!disconnected) await f.broker.helper!(helperRequest(owner, receiver, 'edge-1', 1, [remote(owner, aliases.get(owner)!, address)]), signal);
-    await f.broker.helper!(helperRequest(attacker, receiver, 'edge-1', 1, [remote(attacker, aliases.get(attacker)!, address)]), signal);
+    if (!disconnected) await f.broker.helper!(withHopRequest(helperRequest(owner, receiver, 'edge-1', 1, [remote(owner, aliases.get(owner)!, address)])), signal);
+    await f.broker.helper!(withHopRequest(helperRequest(attacker, receiver, 'edge-1', 1, [remote(attacker, aliases.get(attacker)!, address)])), signal);
     const stored = openIntercomStore({ file: join(f.global.root, 'roam', 'intercom', 'queue.db'), machineId: receiver, clock: f.clock });
     try {
       expect(stored.presenceOwner(address)).toEqual(disconnected ? null : { machineId: owner, activation: 'recipient-generation', ambiguous: false });
     } finally { stored.close(); }
     expect(service.diagnostics()).toContainEqual(expect.objectContaining({ reason: 'intercom-presence-origin-mismatch' }));
-    await f.broker.helper!(helperRequest(owner, receiver, 'edge-1', 2, [remote(owner, aliases.get(owner)!, address)]), signal);
+    await f.broker.helper!(withHopRequest(helperRequest(owner, receiver, 'edge-1', 2, [remote(owner, aliases.get(owner)!, address)])), signal);
     expect(f.broker.published.at(-1)).toMatchObject([{ address, machineId: owner }]);
   }, 5000);
 
@@ -937,7 +939,7 @@ it.each(["observed-origin", "session-row"])("requires a synced %s before publish
     routes: [{ kind: "direct", peer: target, edgeEpoch: "edge-1" }] } });
   const service = await makeMachine({ ...f.options, config }); await service.start();
   const signal = new AbortController().signal;
-  await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1, [remote(BOX, "box.invalid", address)]), signal);
+  await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1, [remote(BOX, "box.invalid", address)])), signal);
   expect(f.broker.published.at(-1)).toEqual([]);
   expect(service.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-origin-unknown" }));
   if (kind === "observed-origin") {
@@ -948,6 +950,6 @@ it.each(["observed-origin", "session-row"])("requires a synced %s before publish
     f.global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES (?,?,?,1,1)")
       .run("synced-project", replica.root, replica.db.raw.name);
   }
-  await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 2, [remote(BOX, "box.invalid", address)]), signal);
+  await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 2, [remote(BOX, "box.invalid", address)])), signal);
   expect(f.broker.published.at(-1)).toMatchObject([{ address, machineId: BOX }]);
 }, 5000);

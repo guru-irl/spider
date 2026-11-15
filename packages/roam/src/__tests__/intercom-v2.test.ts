@@ -1,3 +1,4 @@
+import { withHopRequest } from "./intercom-hop-fixture";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -28,15 +29,15 @@ function request(protocol: number, frames: unknown[] = []) {
 it("requires origin in each encoded federation message frame", async () => {
   const { source } = await fixture();
   source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "one", timestamp: 1, content: { text: "synthetic" } } });
-  const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0], { originMachineId: _origin, ...missing } = frame;
+  const frame = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge", hopBudgetMs: 100 })[0], { originMachineId: _origin, ...missing } = frame;
   expect(frame.originMachineId).toBe(A);
   expect(() => encodeFrame(missing as never)).toThrow(/origin/i);
 }, 5000);
 
 it("refuses an older or different federation version with a named mismatch", async () => {
   const { bridge, inbox } = await fixture();
-  for (const version of [1, 2, 3, 5]) {
-    await expect(bridge.exchange(request(version))).rejects.toMatchObject({ code: "peer-version-mismatch" });
+  for (const version of [1, 2, 3, 4, 6]) {
+    await expect(bridge.exchange(withHopRequest(request(version)))).rejects.toMatchObject({ code: "peer-version-mismatch" });
     expect(() => decodeExchange(Buffer.from(JSON.stringify(request(version).exchange)))).toThrow(/peer-version-mismatch/);
   }
   expect(inbox.edgeState(A, "edge").inbound.push).toBe(0);
@@ -59,14 +60,14 @@ it("keeps messages queued across a version mismatch and sends them after a match
     if (calls.length === 1) { firstDone(); return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: false, reason: "peer-version-mismatch" })); }
     if (input.exchange.frames.some((frame: any) => frame.identity.id === "queued")) delivered();
     return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value: { version: 1, exchange: { ...input.exchange,
-      senderMachine: B, recipientMachine: A, frames: [], acknowledgements: input.exchange.frames.map((frame: any) => ({ identity: frame.identity, kind: frame.kind })), receipts: [], controls: [], presence: [] } } }));
+      senderMachine: B, recipientMachine: A, frames: [], acknowledgements: input.exchange.frames.map((frame: any) => ({ identity: frame.identity, hopSequence: frame.hopSequence, kind: frame.kind })), receipts: [], controls: [], presence: [] } } }));
   } };
   const bridge = createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer: target, edgeEpoch: "edge", initiator: true }],
     store, clock, transport: transport as never, localPresence: () => [], authoritativeHome: () => null }); resources.push(bridge);
   store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "queued", timestamp: 1, content: { text: "synthetic" } } });
   await bridge.start(); bridge.wake(B); await first;
   for (let i = 0; i < 10; i++) await Promise.resolve();
-  expect(calls[0].protocol).toBe(4); expect(calls[0].frames).toEqual([]);
+  expect(calls[0].protocol).toBe(5); expect(calls[0].frames).toEqual([]);
   expect(store.retained("outbound", "queued")).toMatchObject({ state: "queued", payloadRetained: true, linkAcknowledged: false });
   expect(bridge.diagnostics()).toEqual([expect.objectContaining({ peer: B, reason: "peer-version-mismatch" })]);
   const retry = timers.find(timer => timer.ms === 1000 && !timer.cancelled); expect(retry).toBeDefined(); retry!.fn();
@@ -81,30 +82,30 @@ it("keeps messages queued across a version mismatch and sends them after a match
 it("records and rejects one origin-less frame while later pair messages advance", async () => {
   const { source, inbox, bridge } = await fixture();
   for (const id of ["bad", "good"]) source.acceptOutbound({ from, endpoint, nextHop: B, message: { id, timestamp: 1, content: { text: id === "bad" ? "private-rejected-body" : "synthetic" } } });
-  const [first, second] = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 });
+  const [first, second] = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge", hopBudgetMs: 100 });
   const { originMachineId: _origin, ...missing } = first;
-  const responsePromise = bridge.exchange(request(4, [missing, second]));
+  const responsePromise = bridge.exchange(withHopRequest(request(5, [missing, second])));
   await expect(responsePromise).resolves.toBeDefined();
   const outcome = await responsePromise;
   expect(outcome.exchange.refusals).toMatchObject([{ identity: { id: "bad" }, reason: "missing-origin" }]);
-  expect(outcome.exchange.acknowledgements).toMatchObject([{ identity: { id: "good" }, kind: "message" }]);
-  expect(inbox.retained("inbound", "bad")).toMatchObject({ state: "cancelled", failureReason: "missing-origin", payloadRetained: false });
+  expect(outcome.exchange.acknowledgements).toMatchObject([{ identity: { id: "bad" }, kind: "message" }, { identity: { id: "good" }, kind: "message" }]);
+  expect(inbox.retained("inbound", "bad")).toBeNull();
   expect(inbox.pending({ kind: "inbound", address: to }).map(value => value.id)).toEqual(["good"]);
-  const retry = request(4, [first]); retry.exchange.generation.generation = 2;
-  const again = await bridge.exchange(retry);
+  const retry = request(5, [first]); retry.exchange.generation.generation = 2;
+  const again = await bridge.exchange(withHopRequest(retry));
   expect(again.exchange.acknowledgements).toEqual([]);
-  expect(again.exchange.refusals).toMatchObject([{ identity: { id: "bad" }, reason: "missing-origin" }]);
+  expect(again.exchange.refusals).toMatchObject([{ identity: { id: "bad" }, reason: "hop-slot-mismatch" }]);
   const events: unknown[] = [], clock = { now: () => 1_000_000, later: () => () => {} }, target = { ...peer, machineId: B };
   const sender = createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer: target, edgeEpoch: "edge", initiator: false }],
     store: source, clock, transport: { resolve: async () => { throw new Error("offline"); }, exec: async () => { throw new Error("offline"); } } as never,
     localPresence: () => [], authoritativeHome: () => null, onReceipt: frame => events.push(frame) });
   resources.push(sender); await sender.start();
-  const response = request(4); response.exchange.senderMachine = B; response.exchange.recipientMachine = A;
+  const response = request(5); response.exchange.senderMachine = B; response.exchange.recipientMachine = A;
   Object.assign(response.exchange, { refusals: outcome.exchange.refusals, acknowledgements: outcome.exchange.acknowledgements });
-  await sender.exchange(response);
+  await sender.exchange(withHopRequest(response));
   expect(source.retained("outbound", "bad")).toMatchObject({ state: "cancelled", failureReason: "missing-origin" });
   expect(source.retained("outbound", "good")?.linkAcknowledged).toBe(true);
   expect(events).toMatchObject([{ receipt: { messageId: "bad", detail: "missing-origin" } }]);
   source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "later", timestamp: 1, content: { text: "synthetic" } } });
-  expect(source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 }).map(frame => frame.identity.id)).toContain("later");
+  expect(source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge", hopBudgetMs: 100 }).map(frame => frame.identity.id)).toContain("later");
 }, 5000);

@@ -1,3 +1,4 @@
+import { withHopExchange } from "./intercom-hop-fixture";
 import { paths } from "@spider/db-core";
 import { afterEach, beforeAll, afterAll, expect, it } from "vitest";
 import { spawn } from "node:child_process";
@@ -23,8 +24,8 @@ function fixture() {
   return { root, token, socket: join(intercom, "broker.sock") };
 }
 function request(protocol: number, frames: unknown[] = []) {
-  return { version: 1, holdMs: 0, deadlineMs: 1000, exchange: { protocol, senderMachine: A, recipientMachine: B,
-    generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames, acknowledgements: [], receipts: [], controls: [], presence: [] } };
+  return { version: 1, holdMs: 0, deadlineMs: 1000, exchange: withHopExchange({ protocol, senderMachine: A, recipientMachine: B,
+    generation: { edgeEpoch: "edge", channel: "push", generation: 1 }, frames, acknowledgements: [], receipts: [], controls: [], presence: [] }) };
 }
 async function server(path: string, handler: (message: Record<string, unknown>, socket: Socket) => void): Promise<{ server: Server; clients: Set<Socket> }> {
   const clients = new Set<Socket>();
@@ -70,7 +71,7 @@ it("returns a named peer-revoked failure through the packaged helper", async () 
     else if (message.type === "helper_register" && message.token === f.token) writeMessage(socket, { type: "helper_registered", requestId: message.requestId });
     else if (message.type === "helper_exchange") writeMessage(socket, { type: "helper_error", requestId: message.requestId, reason: "peer-revoked" });
   });
-  try { const result = await run(f.root, request(4)); expect(result.code).toBe(0); expect(result.err).toBe("");
+  try { const result = await run(f.root, request(5)); expect(result.code).toBe(0); expect(result.err).toBe("");
     expect(JSON.parse(result.out)).toEqual({ version: 1, kind: "intercom-exchange", ok: false, reason: "peer-revoked" });
   } finally { await closeServer(stub); }
 }, 5000);
@@ -80,8 +81,8 @@ it("forwards a malformed v2 frame intact so the owning bridge can record its rej
   const from = { sessionId: "sender", scopeId: "scope" }, to = { sessionId: "recipient", scopeId: "scope" };
   const endpoint = { address: to, machineId: B, homeEpoch: null, activationEpoch: "recipient-1" };
   const full = makeMessageFrame({ from, endpoint, originMachineId: A, sequence: 1, message: { id: "bad", timestamp: 1, content: { text: "synthetic" } } });
-  const { originMachineId: _origin, ...missing } = full, input = request(4, [missing]);
-  const resultExchange = { ...input.exchange, senderMachine: B, recipientMachine: A, frames: [], refusals: [{ identity: full.identity, reason: "missing-origin" }] };
+  const { originMachineId: _origin, ...missing } = full, input = request(5, [missing]);
+  const resultExchange = { ...input.exchange, senderMachine: B, recipientMachine: A, frames: [], refusals: [{ identity: full.identity, hopSequence: 1, reason: "missing-origin" }] };
   const stub = await server(f.socket, (message, socket) => { seen.push(message);
     if (message.type === "health") writeMessage(socket, { type: "health_ok", requestId: message.requestId, protocol: "pi-intercom", version: 1, features: ["intercom-exchange-v1"] });
     else if (message.type === "helper_register" && message.token === f.token) writeMessage(socket, { type: "helper_registered", requestId: message.requestId });

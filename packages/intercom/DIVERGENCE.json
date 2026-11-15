@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "local.ts",
+      "task": "0.1",
+      "reason": "Keep registration recovery active across failed retries and stale contexts, fence old connection attempts, and warn once per outage.",
+      "upstreamHash": "b99325cd8cb80b4ed41ac4f1427791eb1df916a303ba5ce5b35197eba8972f1c"
+    },
+    {
+      "path": "test-support.ts",
+      "task": "0.1",
+      "reason": "Record fixture child process ownership, reject non-fixture roots, and stop only owned brokers.",
+      "upstreamHash": null
+    }
+  ]
+}

@@ -9,6 +9,7 @@ function fixture(): string {
   const scratch = resolve('.spider/scratch/intercom-parity'); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, 'case-')); roots.push(root);
   cpSync(resolve('packages/intercom/src'), join(root, 'src'), { recursive: true });
+  cpSync(resolve('packages/intercom/DIVERGENCE.json'), join(root, 'DIVERGENCE.json'));
   return join(root, 'src');
 }
 function check(fork?: string, manifest?: string) {
@@ -58,6 +59,53 @@ it('rejects a manifest whose source hash does not match the recorded origin', ()
   const result = check(root, file);
   expect(result.status).not.toBe(0);
   expect(result.stderr).toMatch(/provenance.*broker\/spawn\.test\.ts/i);
+}, 5000);
+
+it('rejects an undeclared local runtime change', () => {
+  const root = fixture(), file = join(root, '..', 'DIVERGENCE.json');
+  const divergence = JSON.parse(readFileSync(file, 'utf8'));
+  divergence.files = divergence.files.filter((entry: { path: string }) => entry.path !== 'local.ts');
+  writeFileSync(file, JSON.stringify(divergence));
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/unlisted runtime change.*index\.ts/i);
+}, 5000);
+
+it('rejects a divergence with the wrong upstream hash', () => {
+  const root = fixture(), file = join(root, '..', 'DIVERGENCE.json');
+  const divergence = JSON.parse(readFileSync(file, 'utf8'));
+  divergence.files[0].upstreamHash = '0'.repeat(64);
+  writeFileSync(file, JSON.stringify(divergence));
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/divergence upstream hash mismatch/i);
+}, 5000);
+
+it('rejects a stale divergence for an unchanged upstream file', () => {
+  const root = fixture(), file = join(root, '..', 'DIVERGENCE.json');
+  const divergence = JSON.parse(readFileSync(file, 'utf8'));
+  const manifest = JSON.parse(readFileSync(resolve('packages/intercom/upstream-assertions.json'), 'utf8'));
+  divergence.files.push({ path: 'broker/client.ts', task: '0.1', reason: 'Fixture declaration', upstreamHash: manifest.sources['broker/client.ts'].sourceSha256 });
+  writeFileSync(file, JSON.stringify(divergence));
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/stale divergence entry.*broker\/client\.ts/i);
+}, 5000);
+
+it('rejects an unlisted new runtime file', () => {
+  const root = fixture();
+  writeFileSync(join(root, 'undeclared.ts'), 'export const fixture = true;');
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/unlisted new runtime file.*undeclared\.ts/i);
+}, 5000);
+
+it('still checks the frozen host adapters outside upstream', () => {
+  const root = fixture();
+  writeFileSync(join(root, 'single-instance.ts'), 'export const fixture = true;');
+  const result = check(root);
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toMatch(/unlisted runtime change.*single-instance\.ts/i);
 }, 5000);
 
 it.each([

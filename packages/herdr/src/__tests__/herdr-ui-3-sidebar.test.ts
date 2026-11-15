@@ -41,7 +41,7 @@ async function currentClones(): Promise<HerdrClones> {
   return result;
 }
 function loadView(source: string, supplied: Record<string, unknown>): any {
-  const ports = { FEED_REFRESH_MS, middlePath, ...look, ...children, View: class {}, ...ui, ...supplied };
+  const ports = { FEED_REFRESH_MS, middlePath, ...look, ...children, machines: () => [], View: class {}, ...ui, ...supplied };
   const code = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)?import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);
@@ -828,12 +828,19 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
       const chip = contents.find(node => node.children.includes('Unreachable'))!;
       expect(chip).toBeDefined();
       expect(call(chip, 'text_color')).toEqual([palette.muted]);
+      expect(row.click).toBeUndefined();
+      expect(call(row, 'on_mouse_down')).toBeUndefined();
       row.click?.({}, { spawn: (fn: Function) => fn({ notify() {} }), notify() {} });
     }
     expect(commands).toEqual([]);
     expect(nodes.some(node => node.children.includes('alpha.invalid') && String(call(node, 'tooltip')?.[0]).includes('Agent console on alpha.invalid'))).toBe(true);
     state = 'ready'; nodes = render();
     expect(nodes.filter(node => node.children.includes('Unreachable'))).toHaveLength(0);
+    for (const id of ['sub-console:alpha.invalid/c1', 'sub-job', 'sub-run-one']) {
+      const row = nodes.find(node => node.id === id)!;
+      expect(row.click).toBeTypeOf('function');
+      expect(call(row, 'on_mouse_down')?.[0]).toBe('right');
+    }
   });
 
   it('excludes unavailable children from folded agent and space counts and restores them on reconnect', async () => {

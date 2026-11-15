@@ -73,6 +73,11 @@ test('console names identify machines even when agent names are long', () => {
   const terminals = [consoleTerminal('a', { 'spider.run': 'run' }), consoleTerminal('b', { 'spider.run': 'run', 'spider.machine': 'box-2.invalid' }), consoleTerminal('c', { 'spider.run': 'run', 'spider.machine': 'box-3.invalid' })];
   const consoles = projectAgentChildren(terminals, [f], 'agent', contract, { now: 2000 }).filter(row => row.kind === 'console');
   expect(consoles.map(row => row.name)).toEqual(['remote.invalid', 'box-2.invalid', 'box-3.invalid']);
+  expect(consoles.map(row => row.description)).toEqual([
+    'A very long worker name that would hide the machine console on remote.invalid',
+    'A very long worker name that would hide the machine console on box-2.invalid',
+    'A very long worker name that would hide the machine console on box-3.invalid',
+  ]);
 });
 
 test('unavailable terminal machines disable console, command, and viewer actions until ready', () => {
@@ -83,6 +88,8 @@ test('unavailable terminal machines disable console, command, and viewer actions
   for (const key of ['console:remote.invalid/main-console', 'main-job', 'run']) {
     expect(offline.find(row => row.key === key)).toMatchObject({ status: 'unreachable', action: null });
   }
+  const stale = projectAgentChildren(terminals, [feed()], 'agent', contract, { now: 12 * 60 * 60 * 1000, machines: [{ name: 'remote.invalid', layout: 'unavailable' }] });
+  expect(stale.find(row => row.kind === 'console')).toMatchObject({ status: 'unreachable', action: null });
   for (const layout of ['loading', 'ready'] as const) {
     const online = project(layout);
     expect(online.find(row => row.kind === 'console')).toMatchObject({ status: 'working', action: { kind: 'ipc' } });

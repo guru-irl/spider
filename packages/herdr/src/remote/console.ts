@@ -7,6 +7,7 @@ import { HERDR_KINDS, HERDR_LABELS, type Disposable, type HcClient, type JobHand
 import { encodeRuntimePublication, parseRuntimePublication, type ConsoleCommand } from './runtime.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HerdrError } from '../client/parse.js';
+import { createCleanupSweep } from '../jobs/cleanup.js';
 
 export type AgentConsoleOwner = Owner & { runId?: RunId };
 export interface AgentConsoleLaunch {
@@ -57,6 +58,18 @@ function ownsConsole(terminal: TerminalSummary, owner: AgentConsoleOwner, on?: M
   const labels = terminal.labels;
   return labels[HERDR_LABELS.kind] === HERDR_KINDS.remoteConsole && labels[HERDR_LABELS.session] === owner.sessionId &&
     (labels[HERDR_LABELS.run] ?? undefined) === owner.runId && (on === undefined || labels[HERDR_LABELS.machine] === on);
+}
+async function confirmConsoleMissing(hc: HcClient, address: TerminalSummary['address'], expectedMachine?: string): Promise<void> {
+  const slash = address.lastIndexOf('/');
+  if (slash < 0) throw new HerdrError('machine-unavailable', 'Console cleanup requires a qualified remote address');
+  const name = address.slice(0, slash), machines = await hc.machines();
+  if (!machines.some(machine => {
+    const matches = (value: string) => machine.name === value || machine.aliases.includes(value);
+    return machine.state === 'connected' && matches(name) && (!expectedMachine || matches(expectedMachine));
+  })) throw new HerdrError('machine-unavailable', 'Console cleanup requires the connected destination');
+  try { await hc.get(address); }
+  catch (error) { if (missing(error)) return; throw error; }
+  throw new HerdrError('console-outcome-unknown', 'Console terminal is still present');
 }
 async function commandCount(hc: HcClient, on: MachineName, directory: string): Promise<number> {
   const deadline = Date.now() + 5000;
@@ -201,13 +214,29 @@ export async function closeAgentConsoles(owner: AgentConsoleOwner, hc: HcClient)
   endedAgents.add(agentKey(owner));
   // Wait for in-flight appends and creations before taking the inventory.
   await Promise.all([...queues.entries()].filter(([key]) => JSON.parse(key)[0] === agentKey(owner)).map(([, pending]) => pending.catch(() => {})));
-  const addresses = new Set((await snapshot(hc)).filter(terminal => ownsConsole(terminal, owner)).map(terminal => terminal.address));
-  for (const [key, state] of consoles) if (agentKey(state.owner) === agentKey(owner)) { addresses.add(state.handle.address); consoles.delete(key); }
-  for (const address of addresses) {
-    try { const terminal = await hc.get(address); if (terminal.state === 'live') await hc.kill(address); }
-    catch (error) { if (!missing(error)) throw error; }
-    try { await hc.rm(address); } catch (error) { if (!missing(error)) throw error; }
+  const inventory = (await snapshot(hc)).filter(terminal => ownsConsole(terminal, owner));
+  // The same core can appear through multiple machine names. Prefer the entry on the labeled machine.
+  const addresses = new Map(inventory.filter(terminal => {
+    const slash = terminal.address.lastIndexOf('/'), machine = terminal.labels[HERDR_LABELS.machine];
+    if (slash < 0 || !machine || terminal.address.slice(0, slash) === machine) return true;
+    return !inventory.some(other => other.address === `${machine}/${terminal.address.slice(slash + 1)}` && other.labels[HERDR_LABELS.machine] === machine);
+  }).map(terminal => [terminal.address, terminal.labels[HERDR_LABELS.machine]]));
+  for (const [key, state] of consoles) if (agentKey(state.owner) === agentKey(owner)) addresses.set(state.handle.address, JSON.parse(key)[1]);
+  const failures: unknown[] = [];
+  for (const [address, machine] of addresses) {
+    try {
+      try {
+        const terminal = await hc.get(address);
+        if (ownsConsole(terminal, owner)) {
+          if (terminal.state === 'live') await hc.kill(address);
+          const latest = await hc.get(address);
+          if (ownsConsole(latest, owner)) await hc.rm(address);
+        }
+      } catch (error) { if (!missing(error)) throw error; await confirmConsoleMissing(hc, address, machine); }
+      for (const [key, state] of consoles) if (agentKey(state.owner) === agentKey(owner) && state.handle.address === address) consoles.delete(key);
+    } catch (error) { failures.push(error); }
   }
+  if (failures.length) throw failures[0];
 }
 function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, child: boolean): Disposable {
   const env = ports.env ?? process.env;
@@ -215,14 +244,15 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
   let previous: AgentConsoleOwner | null = null;
   let stopWatching = () => {};
   const pending = new Map<string, Promise<void>>();
-  const reap = (terminal: TerminalSummary): Promise<void> => {
-    const existing = pending.get(terminal.address); if (existing) return existing.then(() => reap(terminal));
+  const reap = (terminal: TerminalSummary, endedRunOnly = false): Promise<void> => {
+    const existing = pending.get(terminal.address); if (existing) return existing.then(() => reap(terminal, endedRunOnly));
     const operation = (async () => {
       if (terminal.labels[HERDR_LABELS.kind] !== HERDR_KINDS.remoteConsole) return;
       try {
         const ownerGone = await ports.ownerIsLive?.(terminal) === false;
         const runLive = terminal.labels[HERDR_LABELS.run] ? await ports.runIsLive?.(terminal) : null;
         const runEnded = runLive === false;
+        if (endedRunOnly && !runEnded) return;
         if (!runEnded && (!ownerGone || runLive === true)) return;
         if (ports.beforeReap && !await ports.beforeReap(terminal)) return;
         const latest = await ports.hc.get(terminal.address);
@@ -230,7 +260,7 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
           .some(key => latest.labels[key] !== terminal.labels[key])) return;
         if (latest.state === 'live') await ports.hc.kill(terminal.address);
         await ports.hc.rm(terminal.address);
-      } catch (error) { if (!missing(error)) ports.reportError?.(error); }
+      } catch (error) { if (!missing(error)) throw error; await confirmConsoleMissing(ports.hc, terminal.address, terminal.labels[HERDR_LABELS.machine]); }
     })().finally(() => { pending.delete(terminal.address); });
     pending.set(terminal.address, operation); return operation;
   };
@@ -249,18 +279,26 @@ function registerLifecycle(pi: ExtensionAPI, ports: AgentConsoleLifecyclePorts, 
       // A child can be killed before its first console launch replies or writes a job journal.
       // Watch both run completion and later console creation so neither ordering leaks a console.
       let watching = true;
+      const sweep = createCleanupSweep(Date.now, error => { if (watching) ports.reportError?.(error); });
+      sweep.start();
+      const reapOrRetry = async (terminal: TerminalSummary, endedRunOnly = false) => {
+        try { await reap(terminal, endedRunOnly); }
+        catch { if (watching) sweep.enqueue(terminal.address, () => reap(terminal, endedRunOnly)); }
+      };
       const stream = ports.hc.events();
       const offEvents = stream.subscribe(event => {
         if (!watching) return;
-        if ((event.type === 'created' || event.type === 'restarted') && event.data.labels[HERDR_LABELS.run]) void reap(event.data);
-        if (event.type === 'missed') for (const terminal of event.terminals) if (terminal.labels[HERDR_LABELS.run]) void reap(terminal);
+        if ((event.type === 'created' || event.type === 'restarted') && event.data.labels[HERDR_LABELS.run]) void reapOrRetry(event.data);
+        if (event.type === 'missed') for (const terminal of event.terminals) if (terminal.labels[HERDR_LABELS.run]) void reapOrRetry(terminal);
       });
       const offRuns = ports.subscribeRunEnds?.(owner, runId => {
-        void snapshot(ports.hc).then(terminals => watching ? Promise.all(terminals.filter(t => t.labels[HERDR_LABELS.session] === owner.sessionId && t.labels[HERDR_LABELS.run] === runId).map(reap)) : undefined).catch(error => { if (watching) ports.reportError?.(error); });
+        void snapshot(ports.hc).then(terminals => watching ? Promise.all(terminals.filter(t => t.labels[HERDR_LABELS.session] === owner.sessionId && t.labels[HERDR_LABELS.run] === runId).map(terminal => reapOrRetry(terminal))) : undefined).catch(error => { if (watching) ports.reportError?.(error); });
       }) ?? (() => {});
-      stopWatching = () => { watching = false; offEvents(); offRuns(); void stream.dispose(); };
+      stopWatching = () => { watching = false; offEvents(); offRuns(); void stream.dispose(); void sweep.dispose(); };
       await stream.ready;
-      if (_event?.reason !== 'reload') for (const terminal of await snapshot(ports.hc)) await reap(terminal);
+      for (const terminal of await snapshot(ports.hc)) {
+        if (_event?.reason !== 'reload' || terminal.labels[HERDR_LABELS.run]) await reapOrRetry(terminal, _event?.reason === 'reload');
+      }
     }),
     pi.on('session_shutdown', async (event, ctx) => {
       const reason = event?.reason;

@@ -28,6 +28,9 @@ export function filterTopLevelAgents(agents, terminals, { labels, kinds }) {
 export function projectAgentChildren(terminals, feeds, ownerAddress, labelContract, options = {}) {
   const { labels, kinds } = labelContract;
   const now = options.now ?? Date.now();
+  const unavailable = new Set((options.machines ?? []).filter(machine => machine.layout === 'unavailable').map(machine => machine.name));
+  const terminalMachine = t => t?.address?.includes('/') ? t.address.split('/')[0] : t?.labels?.[labels.machine] ?? null;
+  const isUnreachable = t => unavailable.has(terminalMachine(t));
   const feed = feeds.find(f => f.owner.terminal.address === ownerAddress);
   const rows = new Map(), visited = new Set([ownerAddress]);
   const currentOwner = t => feeds.find(f => f.sessionId === t.labels[labels.session])?.owner.terminal.address;
@@ -58,18 +61,21 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
       if (exitCode === 0 && t.signal == null && t.reason === 'exited') status = 'done';
     } else if (feed?.lifecycle === 'live' && now - feed.updatedAt > FEED_DISCONNECT_MS && (remote || subagent || console)) status = 'disconnected';
     else if (remote && ['done', 'idle'].includes(status)) status = 'working';
+    const unreachable = (remote || subagent || console) && isUnreachable(t);
+    if (unreachable) status = 'unreachable';
     const rowKind = remote ? 'remote' : subagent ? 'subagent' : console ? 'console' : 'native';
     const run = feed?.runs.rows.find(r => r.id === t.labels[labels.run] && r.ownerSessionId === feed.sessionId);
     const machine = t.labels[labels.machine] ?? null;
     // hc only takes slug names; the readable name rides on a display-only label.
     const display = t.labels[labels.displayName ?? 'spider.display-name'];
-    const name = console ? `${run?.name ?? feed?.owner.name ?? 'Agent'} · ${machine}` : display || (t.name ?? t.template ?? t.program?.name ?? key);
+    const name = console ? machine : display || (t.name ?? t.template ?? t.program?.name ?? key);
+    const description = console ? `${run?.name ?? feed?.owner.name ?? 'Agent'} console on ${machine}` : null;
     rows.set(key, {
       key, kind: rowKind, address: t.address, originalAddress: t.address,
-      name, status, outcome, completeness: 'unknown', machine,
+      name, description, status, outcome, completeness: 'unknown', machine,
       parentKey: rowKind === 'native' && depth > 0 ? t.parent : null,
       finishedAt: finish ? finishedAt : null, retained: finish, depth, terminal: t,
-      action: remote || subagent || console ? sessionAction(rowKind, key, sessionId, subagent ? t : null) : { kind: 'peek', terminal: t.address },
+      action: unreachable ? null : remote || subagent || console ? sessionAction(rowKind, key, sessionId, subagent ? t : null) : { kind: 'peek', terminal: t.address },
     });
     return true;
   };
@@ -90,14 +96,15 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     if (run.ownerSessionId !== feed.sessionId) continue;
     const native = terminals.find(t => t.labels[labels.kind] === kinds.subagentViewer && t.labels[labels.run] === run.id && t.labels[labels.session] === feed.sessionId);
     const done = ['done', 'failed', 'cancelled'].includes(run.status);
-    const status = run.status === 'running' ? (now - feed.updatedAt > FEED_DISCONNECT_MS && feed.lifecycle === 'live' ? 'disconnected' : 'working') : run.status === 'failed' ? 'error' : run.status;
+    const unreachable = isUnreachable(native ?? (run.viewer ? { address: run.viewer } : null));
+    const status = unreachable ? 'unreachable' : run.status === 'running' ? (now - feed.updatedAt > FEED_DISCONNECT_MS && feed.lifecycle === 'live' ? 'disconnected' : 'working') : run.status === 'failed' ? 'error' : run.status;
     const previous = rows.get(run.id);
     rows.set(run.id, {
       key: run.id, kind: 'subagent', address: run.viewer, originalAddress: native?.address ?? run.viewer,
-      name: run.name ?? run.id, status, outcome: done ? run.status : null, completeness: 'unknown',
+      name: run.name ?? run.id, description: null, status, outcome: done ? run.status : null, completeness: 'unknown',
       machine: null, parentKey: null,
       finishedAt: run.finishedAt, retained: done, depth: previous?.depth ?? 0, terminal: native ?? null,
-      action: sessionAction('subagent', run.id, feed.sessionId, native),
+      action: unreachable ? null : sessionAction('subagent', run.id, feed.sessionId, native),
     });
   }
   const all = [...rows.values()];

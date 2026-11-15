@@ -296,7 +296,7 @@ Each call reports the destination, size, mode, and SHA-256 digest. It preserves 
 
 ### Agent consoles
 
-Each session and each subagent run gets one console on each machine it uses. The first remote command creates it, and later commands reuse it. Its title is `<agent name> · <machine>`, where the agent name is the session name or the run's display name. A console opens no pane by default. It appears in the left sidebar under its agent.
+Each session and each subagent run gets one console on each machine it uses. The first remote command creates it, and later commands reuse it. The console title is `<agent name> · <machine>`, where the agent name is the session name or the run's display name. A console opens no pane by default. Its sidebar row appears under its agent and shows the machine name.
 
 The console shows each command's header, its stdout, its stderr with a label, and its exit code. When commands run at the same time, each line has a prefix for its job. A console cannot run commands or cancel jobs, and closing its pane leaves the jobs running.
 
@@ -343,6 +343,8 @@ To keep the full bar visible, add `"look": { "autoHideTabs": false }` to your He
 The left sidebar is Herdr's agents list, extended by setup. It lists each live pi session. Under a session, it lists active subagent runs by display name and the session's consoles. Under a run, it lists that run's consoles. Expand a console to see its live commands. Parked runs remain visible while they are active. A finished command leaves the list, and finished runs stay for `limits.completedHours`, up to `limits.completedRows` rows.
 
 Finished rows are hidden by default. Click **N finished** under a session to show them, and **Hide finished** to hide them again. A finished parent stays visible when it has a running child. Each session has its own toggle.
+
+When a machine is unavailable, its console, command, and viewer rows show **Unreachable** and cannot be opened. They do not count toward the live pills. The rows update when the machine reconnects.
 
 Use the chevron to the left of an agent icon to fold its children. The pill on a folded row counts active children and opens the list again. To pin or unpin an agent, hover over its icon and click the pin. The elapsed time stays visible.
 
@@ -455,7 +457,7 @@ Owner quit and replacement are exceptions. Those viewers stay open and read-only
 
 Opening an already-finished, failed, or cancelled run from the sidebar or the spider panel opens a saved read-only view until you close it. If the live viewer is still closing, spider waits for it to exit before opening the saved view. Viewers never start another subagent and never change how a child runs. Opening or closing a viewer does not change the agent pane.
 
-`hc` accepts only simple names for terminals. Spider names each viewer `run-<hash>`, each observer `obs-<hash>`, and each console `console-<hash>`, and keeps the readable name in the `spider.display-name` label. The sidebar, the pane headers, and the panel show the readable name.
+`hc` accepts only simple names for terminals. Spider names each viewer `run-<hash>`, each observer `obs-<hash>`, and each console `console-<hash>`, and keeps the readable name in the `spider.display-name` label. Pane headers and the panel show the readable name. Console rows in the sidebar show the machine name.
 
 ## Use the spider panel
 

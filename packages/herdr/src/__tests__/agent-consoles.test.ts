@@ -6,7 +6,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { ExtensionAPI, ExtensionContext, SessionShutdownEvent } from '@earendil-works/pi-coding-agent';
-import type { JobHandle, JobId, MachineName, Owner, RunId } from '../contracts.js';
+import type { JobHandle, JobId, MachineName, Owner, RunId, TerminalAddress } from '../contracts.js';
 import type { AgentConsoleLaunch } from '../remote/console.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createRemoteTestFixture } from './acceptance/c.js';
@@ -112,6 +112,38 @@ it('separates child run identities and machine identities while using the child 
   expect((await h.hc.get(top!.address)).state).toBe('live'); expect((await h.hc.get(otherRun!.address)).state).toBe('live');
   await module.closeAgentConsoles({ ...h.owner!, runId: 'run-one' as RunId }, h.hc); // idempotent handoff
 }, 20000);
+it('closes reachable consoles even when another machine needs a retry', async () => {
+  const { h, launch } = await fixture();
+  await h.cli(['machine', 'add', '--via', join(h.root, 'via'), '--name', 'other.invalid', '--session', 'r', '--json']);
+  const env = { ...h.localEnv, PI_SUBAGENT_CHILD: '1', PI_SUBAGENT_RUN_ID: 'partial-close-run' };
+  const offline = await consoleModule.ensureAgentConsole(await launch(), h.hc, env);
+  const reachable = await consoleModule.ensureAgentConsole(await launch(h.owner!, 'other.invalid' as MachineName), h.hc, env);
+  const owner = { ...h.owner!, runId: 'partial-close-run' as RunId };
+  let online = false;
+  const hc = { ...h.hc, get: async (address: TerminalAddress) => { if (!online && address === offline!.address) throw new Error('machine unavailable'); return h.hc.get(address); } };
+  await expect(consoleModule.closeAgentConsoles(owner, hc)).rejects.toThrow('machine unavailable');
+  expect((await h.hc.get(offline!.address)).state).toBe('live');
+  await expect(h.hc.get(reachable!.address)).rejects.toMatchObject({ code: 'not_found' });
+  online = true; await consoleModule.closeAgentConsoles(owner, hc);
+  await expect(h.hc.get(offline!.address)).rejects.toMatchObject({ code: 'not_found' });
+}, 30000);
+
+it('keeps a failed console close pending when inventory temporarily omits the machine', async () => {
+  const { h, launch } = await fixture();
+  const env = { ...h.localEnv, PI_SUBAGENT_CHILD: '1', PI_SUBAGENT_RUN_ID: 'inventory-retry-run' };
+  const console = await consoleModule.ensureAgentConsole(await launch(), h.hc, env);
+  const owner = { ...h.owner!, runId: 'inventory-retry-run' as RunId };
+  let online = false;
+  const hc = { ...h.hc, get: async (address: TerminalAddress) => { if (!online) throw new Error('machine unavailable'); return h.hc.get(address); },
+    events: () => { const stream = h.hc.events(); return { ...stream, subscribe: (listener: Parameters<typeof stream.subscribe>[0]) => stream.subscribe(event => listener(event.type === 'snapshot' || event.type === 'missed' ? { ...event, terminals: [] } : event)) }; },
+  };
+  await expect(consoleModule.closeAgentConsoles(owner, hc)).rejects.toThrow('machine unavailable');
+  await expect(consoleModule.closeAgentConsoles(owner, hc)).rejects.toThrow('machine unavailable');
+  expect((await h.hc.get(console!.address)).state).toBe('live');
+  online = true; await consoleModule.closeAgentConsoles(owner, hc);
+  await expect(h.hc.get(console!.address)).rejects.toMatchObject({ code: 'not_found' });
+}, 30000);
+
 it('reuses a console found by labels rather than creating a duplicate after a fresh activation', async () => {
   const { h, launch, remoteConsoles } = await fixture(); const module = api(); const request = await launch();
   const existing = await h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: request.on, name: 'existing-console', labels: { 'spider.kind': 'remote-console', 'spider.session': h.owner!.sessionId, 'spider.machine': 'remote.invalid' }, noNotify: true, background: true, outliveParent: true });

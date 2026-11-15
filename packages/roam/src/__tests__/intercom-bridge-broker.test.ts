@@ -68,7 +68,7 @@ it("publishes a private capability for the configured agent directory and serves
   const inbox = openIntercomStore({ file: join(globalRoot, "queue", "queue.db"), machineId: B, clock });
   const client = new IntercomFederationClient();
   const bridge = createIntercomBridge({ machineId: B, machineAlias: "fixture-b.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: false }],
-    store: inbox, clock, transport: {} as any, localPresence: () => [], authoritativeHome: () => null,
+    store: inbox, clock, transport: {} as any, localPresence: () => [], authoritativeHome: () => ({ sessionId: from.sessionId, machineId: A, epoch: 1, moveId: null, updatedAt: 1 }),
     broker: client, globalRoot, agentDir } as any);
   const prior = process.env.PI_CODING_AGENT_DIR;
   try {
@@ -106,7 +106,7 @@ it("records one missing-origin frame through the packaged helper without blockin
   const inbox = openIntercomStore({ file: join(globalRoot, "queue", "queue.db"), machineId: B, clock });
   const client = new IntercomFederationClient(), bridge = createIntercomBridge({ machineId: B, machineAlias: "fixture-b.invalid",
     edges: [{ peer, edgeEpoch: "edge-1", initiator: false }], store: inbox, clock, transport: {} as any,
-    localPresence: () => [], authoritativeHome: () => null, broker: client, globalRoot, agentDir });
+    localPresence: () => [], authoritativeHome: () => ({ sessionId: from.sessionId, machineId: A, epoch: 1, moveId: null, updatedAt: 1 }), broker: client, globalRoot, agentDir });
   try {
     await startBridge(bridge, globalRoot);
     for (const id of ["bad-origin", "good-origin"]) source.acceptOutbound({ from, endpoint, nextHop: B,
@@ -137,7 +137,7 @@ it("exchanges durable frames through fake hc, the packaged helper, and a fixture
   const inbox = openIntercomStore({ file: join(globalRoot, "queue", "queue.db"), machineId: B, clock });
   const client = new IntercomFederationClient();
   const bridge = createIntercomBridge({ machineId: B, machineAlias: "fixture-b.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: false }],
-    store: inbox, clock, transport: {} as any, localPresence: () => [], authoritativeHome: () => null,
+    store: inbox, clock, transport: {} as any, localPresence: () => [], authoritativeHome: () => ({ sessionId: from.sessionId, machineId: A, epoch: 1, moveId: null, updatedAt: 1 }),
     broker: client, globalRoot, agentDir } as any);
   try {
     await fixture.configure({ machines: [machine], roamFixture: { executeIntercomFixture: true } });
@@ -172,7 +172,7 @@ it("reconnects after a local broker restart and rotates the helper capability", 
   const reconnected = new Promise<void>(resolveReady => { readyAgain = resolveReady; });
   const manualClock = { now: () => Date.now(), later: (_ms: number, fn: () => void) => { timers.add(fn); return () => { timers.delete(fn); }; } };
   const bridge = createIntercomBridge({ machineId: B, machineAlias: "fixture-b.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: false }],
-    store, clock: manualClock, transport: {} as any, localPresence: () => [], authoritativeHome: () => null,
+    store, clock: manualClock, transport: {} as any, localPresence: () => [], authoritativeHome: () => ({ sessionId: from.sessionId, machineId: A, epoch: 1, moveId: null, updatedAt: 1 }),
     broker: client, globalRoot, agentDir, onBrokerState: (ready: boolean) => { states.push(ready); if (ready && states.filter(Boolean).length === 2) readyAgain(); } } as any);
   try {
     await startBridge(bridge, globalRoot); expect(states).toEqual([true]);
@@ -202,14 +202,14 @@ it("stops a real fixture hc and its held helper within three seconds", async () 
   const inbox = openIntercomStore({ file: join(globalRoot, "queue", "queue.db"), machineId: B, clock });
   const client = new IntercomFederationClient();
   const receiver = createIntercomBridge({ machineId: B, machineAlias: "fixture-b.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: false }],
-    store: inbox, clock, transport: {} as any, localPresence: () => [], authoritativeHome: () => null, broker: client, globalRoot, agentDir });
+    store: inbox, clock, transport: {} as any, localPresence: () => [], authoritativeHome: () => ({ sessionId: from.sessionId, machineId: A, epoch: 1, moveId: null, updatedAt: 1 }), broker: client, globalRoot, agentDir });
   let entered!: () => void, finished!: () => void;
   const waiting = new Promise<void>(resolveReady => { entered = resolveReady; }), remoteDone = new Promise<void>(resolveDone => { finished = resolveDone; });
   const receive = receiver.exchange.bind(receiver);
   receiver.exchange = async (input, signal) => { entered(); try { return await receive(input, signal); } finally { finished(); } };
   const transport = createTransport({ binary: fixture.hcBinary, env: fixture.localEnv, enrolled: [target] });
   const sender = createIntercomBridge({ machineId: A, machineAlias: "fixture-a.invalid", edges: [{ peer: target, edgeEpoch: "edge-1", initiator: true }],
-    store: source, clock, transport, localPresence: () => [], authoritativeHome: () => null });
+    store: source, clock, transport, localPresence: () => [], authoritativeHome: () => ({ sessionId: from.sessionId, machineId: A, epoch: 1, moveId: null, updatedAt: 1 }) });
   const within = async (promise: Promise<void>) => { let timer!: ReturnType<typeof setTimeout>; try {
     await Promise.race([promise, new Promise<void>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("fixture did not enter exchange")), 3500); })]);
   } finally { clearTimeout(timer); } };

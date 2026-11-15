@@ -214,6 +214,8 @@ it("authorizes the target key only on the exact approved target", async () => {
   const target = { ...f.ports, machineId: B, root: f.targetRoot };
   const pub = `ssh-ed25519 ${f.pair.hostKey.base64}`;
   await mod.runLocalPairOperation({ action: "authorize", pair: f.pair, approval: f.proof, publicKey: pub }, target);
-  expect(readFileSync(join(f.home, ".ssh", "authorized_keys"), "utf8")).toBe(`from="127.0.0.1",restrict ${pub} spider-intercom:pair-1\n`);
+  const line = readFileSync(join(f.home, ".ssh", "authorized_keys"), "utf8");
+  expect(line).toMatch(/^from="127\.0\.0\.1",restrict,command="/);
+  expect(line).toContain(`${pub} spider-intercom:pair-1\n`);
   expect(f.calls).toEqual([]);
 }, 5000);

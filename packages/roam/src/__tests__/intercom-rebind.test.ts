@@ -14,15 +14,15 @@ function request(senderMachine: string, recipientMachine: string, channel: "push
   return { version: 1, holdMs: 0, deadlineMs: 5000, exchange: { protocol: 3, senderMachine, recipientMachine, generation: { edgeEpoch: "edge", channel, generation },
     frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] } };
 }
-it("refuses recipient rebind when no absence receipt exists", () => {
+it("rebinds a never-dispatched recipient without an impossible absence receipt", () => {
   const root = mkdtempSync(join(resolve(".spider/scratch"), "rebind-no-proof-")); roots.push(root);
   const clock = { now: () => 1000 }, source = openIntercomStore({ file: join(root, "source.db"), machineId: A, clock });
   const dest = openIntercomStore({ file: join(root, "dest.db"), machineId: B, clock }); stores.push(source, dest);
   const old = { address: to, machineId: B, homeEpoch: null, activationEpoch: "old" }, next = { ...old, activationEpoch: "new" };
   source.acceptOutbound({ from, endpoint: old, nextHop: B, message: { id: "no-proof", timestamp: 1, content: { text: "synthetic" } } });
   dest.acceptInbound({ peer: A, frame: source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0] });
-  expect(() => dest.rebindInboundAfterAbsence("no-proof", next)).toThrow(/absence proof/);
-  expect(dest.retained("inbound", "no-proof")).toMatchObject({ state: "queued", endpoint: old, payloadRetained: true });
+  dest.rebindInboundAfterAbsence("no-proof", next);
+  expect(dest.retained("inbound", "no-proof")).toMatchObject({ state: "queued", endpoint: next, payloadRetained: true });
 }, 5000);
 
 it("returns absence and later consumption to the original source after a local generation change", async () => {
@@ -38,7 +38,7 @@ it("returns absence and later consumption to the original source after a local g
   sender = createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer: peer(B), edgeEpoch: "edge", initiator: false }], store: source, clock, transport,
     localPresence: () => [], authoritativeHome: () => null, onReceipt: frame => sourceDelivery.onReceipt(frame) });
   receiver = createIntercomBridge({ machineId: B, machineAlias: "target.invalid", edges: [{ peer: peer(A), edgeEpoch: "edge", initiator: false }], store: inbox, clock, transport,
-    localPresence: () => [], authoritativeHome: () => null });
+    localPresence: () => [], authoritativeHome: () => ({ sessionId: from.sessionId, machineId: A, epoch: 1, moveId: null, updatedAt: 1 }) });
   resources.push(sender, receiver, sourceDelivery, destDelivery); await sender.start(); await receiver.start();
   source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "same-id", timestamp: 1, content: { text: "synthetic" } } });
   const frame = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0], incoming = request(A, B, "push", 1);

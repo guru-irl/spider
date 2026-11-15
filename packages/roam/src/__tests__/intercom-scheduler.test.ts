@@ -52,7 +52,7 @@ async function fixture(options: { mode: "blocked" | "failure"; initiator?: boole
     },
   };
   const bridge = api.createIntercomBridge!({ machineId: A, machineAlias: "source.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: options.initiator ?? true }],
-    store, transport, clock, localPresence: () => [], authoritativeHome: () => null, onLinkDown: (_peer: string, reason: string) => downs.push(reason),
+    store, transport, clock, localPresence: () => [], authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : B, epoch: 1, moveId: null, updatedAt: 1 }), onLinkDown: (_peer: string, reason: string) => downs.push(reason),
     onAskFailed: (value: any) => failedAsks.push(value), onExpiry: (value: any) => expirations.push(value), publishPresence: (entries: RemoteSessionInfo[]) => rosters.push(entries) });
   bridges.push(bridge);
   return { root, bridge, clock, store, transport, calls, downs, failedAsks, expirations, rosters, setMode(value: typeof mode) { mode = value; }, setLive(value: boolean) { live = value; }, setFailureReason(value: string) { failureReason = value; } };
@@ -194,7 +194,7 @@ it("retains peer names, queued mail, and one diagnostic over ten minutes and ser
   await f.bridge.stop();
   const api = await vi.importActual("../intercom-bridge") as { createIntercomBridge: (ports: any) => any };
   const restarted = api.createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: true }],
-    store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: () => null });
+    store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : B, epoch: 1, moveId: null, updatedAt: 1 }) });
   bridges.push(restarted); await restarted.start();
   expect(restarted.diagnostics()).toEqual([{ ...first, status: "down" }]);
   expect(f.store.retained("outbound", "long-outage")).toMatchObject({ payloadRetained: true });
@@ -266,7 +266,7 @@ it("marks cached roster entries stale when the last-success lease expires", asyn
 }, 5000);
 
 
-it.each(["machine-mismatch", "endpoint-exited"])("proved %s fails active waits immediately without the one-second retry", async reason => {
+it.each(["machine-mismatch", "machine-not-enrolled"])("proved %s fails active waits immediately without the one-second retry", async reason => {
   const f = await fixture({ mode: "failure" }); f.setFailureReason(reason);
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "live-ask", timestamp: 1, expectsReply: true, remainingMs: 300_000, content: { text: "synthetic" } } });
   await f.bridge.start(); await flush();
@@ -279,7 +279,7 @@ it.each(["machine-mismatch", "endpoint-exited"])("proved %s fails active waits i
   await f.bridge.stop();
   const api = await vi.importActual("../intercom-bridge") as { createIntercomBridge: (ports: any) => any };
   const restarted = api.createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: true }],
-    store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: () => null });
+    store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : B, epoch: 1, moveId: null, updatedAt: 1 }) });
   bridges.push(restarted); await restarted.start(); await flush();
   expect(f.clock.tasks.size).toBe(1); expect(execs(f.calls)).toHaveLength(attempts);
   expect([...f.clock.tasks.values()][0].at - f.clock.now()).toBeGreaterThan(60_000);
@@ -302,7 +302,7 @@ it("isolates a failed Mac edge while another box edge stays live", async () => {
   } };
   const bridge = api.createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [
     { peer, edgeEpoch: "edge-1", initiator: true }, { peer: targetC, edgeEpoch: "edge-c", initiator: true }],
-    store, transport, clock, localPresence: () => [], authoritativeHome: () => null, onLinkDown: (machine: string) => downs.push(machine) });
+    store, transport, clock, localPresence: () => [], authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === remoteC.id ? c : address.sessionId === from.sessionId ? A : B, epoch: 1, moveId: null, updatedAt: 1 }), onLinkDown: (machine: string) => downs.push(machine) });
   bridges.push(bridge); await bridge.start(); await flush(); await clock.advance(1000);
   expect(store.edgeState(B, "edge-1").status).toBe("down");
   expect(store.edgeState(c, "edge-c").status).toBe("live"); expect(downs).toEqual([B]);
@@ -440,7 +440,7 @@ it("expires queued mail and reports it even when a fatal edge never retries", as
   const attempts = execs(f.calls).length; await f.bridge.stop();
   const api = await vi.importActual("../intercom-bridge") as { createIntercomBridge: (ports: any) => any };
   const restarted = api.createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: true }],
-    store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: () => null,
+    store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : B, epoch: 1, moveId: null, updatedAt: 1 }),
     onExpiry: (event: unknown) => f.expirations.push(event) });
   bridges.push(restarted); await restarted.start();
   await f.clock.advance(24 * 60 * 60 * 1000);
@@ -455,7 +455,7 @@ it("cleans expiry work after a failed start and can start again", async () => {
   f.store.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "startup-mail", timestamp: 1, content: { text: "synthetic" } } });
   let fail = true;
   const bridge = api.createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: false }],
-    store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: () => null,
+    store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : B, epoch: 1, moveId: null, updatedAt: 1 }),
     publishPresence: () => { if (fail) throw new Error("fixture start failure"); } });
   bridges.push(bridge);
   await expect(bridge.start()).rejects.toThrow("fixture start failure");
@@ -470,7 +470,7 @@ it("retries a failed local expiry notification without retrying a fatal edge", a
   const f = await fixture({ mode: "failure", deferPoll: true }), api = await vi.importActual("../intercom-bridge") as { createIntercomBridge: (ports: any) => any };
   f.setFailureReason("machine-mismatch"); let calls = 0; const notices: unknown[] = [];
   const bridge = api.createIntercomBridge({ machineId: A, machineAlias: "source.invalid", edges: [{ peer, edgeEpoch: "edge-1", initiator: true }],
-    store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: () => null,
+    store: f.store, transport: f.transport, clock: f.clock, localPresence: () => [], authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : B, epoch: 1, moveId: null, updatedAt: 1 }),
     onExpiry: (event: unknown) => { calls++; if (calls === 1) throw new Error("fixture notification failed"); notices.push(event); } });
   bridges.push(bridge); await bridge.start();
   await bridge.dispatch({ from, to: remote, message: { id: "notice-retry", timestamp: 1, content: { text: "synthetic" } } });

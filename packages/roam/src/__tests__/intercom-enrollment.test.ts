@@ -11,7 +11,7 @@ const FIRST = "00000000-0000-4000-8000-000000000002";
 const SECOND = "00000000-0000-4000-8000-000000000003";
 const THIRD = "00000000-0000-4000-8000-000000000004";
 const FOURTH = "00000000-0000-4000-8000-000000000005";
-const CONSENT = "Enrolling this pair lets the initiating box execute commands as your user on its peer. A compromised initiating box can access every peer enrolled to it. This approval is separate from copying pi authentication. Revoke the pair by removing its dedicated authorized key and hc machine route.";
+const CONSENT = "Enrolling this pair lets the initiating box execute commands as your user on its peer. A compromised initiating box can access every box reachable through enrolled pairs. This approval is separate from copying pi authentication. Pair keys verify their pair and epoch, but shared loopback SSH does not bind a key to one tunnel. Revoke with `spider roam intercom revoke <pair>` to stop the pair host and remove its key. Deleting the key alone does not close open connections.";
 const roots: string[] = [];
 
 function peer(machineId: string, alias: string): Peer {
@@ -181,8 +181,10 @@ it("one restricted key exists per pair", async () => {
   expect(result).toMatchObject({ code: 0, reason: "intercom-enrolled", value: { pairs: ["pair-1", "pair-2"] } });
   expect(f.state.keys.size).toBe(2);
   expect(new Set(f.state.keys.values()).size).toBe(2);
-  expect(f.state.authorized.get("pair-1")).toBe(`from="127.0.0.1",restrict ${f.state.keys.get("pair-1")} spider-intercom:pair-1`);
-  expect(f.state.authorized.get("pair-2")).toBe(`from="127.0.0.1",restrict ${f.state.keys.get("pair-2")} spider-intercom:pair-2`);
+  expect(f.state.authorized.get("pair-1")).toMatch(/^from="127\.0\.0\.1",restrict,command="/);
+  expect(f.state.authorized.get("pair-1")).toContain(`${f.state.keys.get("pair-1")} spider-intercom:pair-1`);
+  expect(f.state.authorized.get("pair-2")).toMatch(/^from="127\.0\.0\.1",restrict,command="/);
+  expect(f.state.authorized.get("pair-2")).toContain(`${f.state.keys.get("pair-2")} spider-intercom:pair-2`);
   expect(f.state.machines.get("pair-1")).toEqual(["machine", "add", "--via",
     "/home/fixture/.pi/agent/spider/roam/intercom/pairs/pair-1/edge-1/via", "--name", "spider-pair-pair-1", "--session", "default", "--json"]);
   expect(f.state.effects.indexOf("notify")).toBeLessThan(f.state.effects.indexOf(`check:${FIRST}`));
@@ -417,8 +419,30 @@ it("retries named pending cleanup after a lost cleanup reply", async () => {
   for (const stage of ["remove-key", "remove-machine"]) {
     const f = fixture(); f.state.allow = true; expect((await run(f.request, f.ports)).code).toBe(0);
     f.state.failAfter = stage;
-    expect(await revoke("pair-1", f.ports), stage).toMatchObject({ code: 0, value: { cleanupReason: "intercom-revocation-cleanup-pending" } });
+    expect(await revoke("pair-1", f.ports), stage).toMatchObject(stage === "remove-key"
+      ? { code: 3, reason: "intercom-revocation-unconfirmed" }
+      : { code: 0, value: { cleanupReason: "intercom-revocation-cleanup-pending" } });
     expect(await revoke("pair-1", f.ports), stage).toMatchObject({ code: 0, value: { cleanupReason: null } });
     expect(f.state.machines.has("pair-1"), stage).toBe(false);
   }
+}, 5000);
+
+it("never reports revocation success when authorized-key removal has no confirmation", async () => {
+  const f = fixture(); f.state.allow = true; expect((await run(f.request, f.ports)).code).toBe(0);
+  const remove = f.ports.removeAuthorizedKey;
+  f.ports.removeAuthorizedKey = async () => { throw new Error("key write failed"); };
+  expect(await revoke("pair-1", f.ports)).toMatchObject({ code: 3, reason: "intercom-revocation-unconfirmed" });
+  expect(f.state.authorized.has("pair-1")).toBe(true);
+  expect(f.state.pendingCleanup.get("pair-1")).toBe("intercom-revocation-unconfirmed");
+  f.ports.removeAuthorizedKey = remove;
+  expect(await revoke("pair-1", f.ports)).toMatchObject({ code: 0, reason: "intercom-revoked" });
+  expect(f.state.authorized.has("pair-1")).toBe(false);
+}, 5000);
+
+it("keeps revocation unconfirmed when key verification fails alongside route verification", async () => {
+  const f = fixture(); f.state.allow = true; expect((await run(f.request, f.ports)).code).toBe(0);
+  const verify = f.ports.verifyRevocation;
+  f.ports.verifyRevocation = async pair => ({ ...await verify(pair), keyAbsent: false, routeAbsent: false });
+  expect(await revoke("pair-1", f.ports)).toMatchObject({ code: 3, reason: "intercom-revocation-unconfirmed" });
+  expect(f.state.pendingCleanup.get("pair-1")).toBe("intercom-revocation-unconfirmed");
 }, 5000);

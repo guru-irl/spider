@@ -22,7 +22,7 @@ async function fixture() {
   const clock = { now: () => now, later: (ms: number, fn: () => void) => { const id = ++serial; timers.set(id, { at: now + ms, fn }); return () => { timers.delete(id); }; } };
   const store = openIntercomStore({ file: join(root, "queue.db"), machineId: B, clock });
   const failures: unknown[] = [], expiries: unknown[] = [], arrivals: unknown[] = [], down: unknown[] = [];
-  const bridge = createIntercomBridge({ machineId: B, machineAlias: "target.invalid", store, clock, localPresence: () => [], authoritativeHome: () => null,
+  const bridge = createIntercomBridge({ machineId: B, machineAlias: "target.invalid", store, clock, localPresence: () => [], authoritativeHome: address => ({ sessionId: address.sessionId, machineId: address.sessionId === from.sessionId ? A : B, epoch: 1, moveId: null, updatedAt: 1 }),
     edges: [{ edgeEpoch: "edge-1", initiator: false, peer: { machineId: A, alias: "source.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: "/fixture/global" } }],
     transport: { resolve: async () => { calls++; throw new Error("no reverse route by design"); }, exec: async () => { calls++; throw new Error("unexpected reverse call"); } } as never,
     onAskFailed: value => failures.push(value), onExpiry: value => expiries.push(value), onInbound: value => arrivals.push(value), onLinkDown: (...value) => down.push(value) });

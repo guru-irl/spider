@@ -70,9 +70,10 @@ it.each(["activation", "machine", "later-epoch", "missing-record", "record-activ
   }
   const live = mode === "ended" ? null : { ...adopted, ...(mode === "activation" ? { activationEpoch: "replacement" } : {}),
     ...(mode === "machine" ? { machineId: C } : {}), ...(mode === "later-epoch" ? { homeEpoch: 2 } : {}), ...(mode === "scope" ? { address: { ...to, scopeId: "other" } } : {}) };
+  if (mode === "activation") f.inbox.beginDispatch({ id: "before-adoption", endpoint: original, readiness: "old-process-received" });
   await f.start(live).ready(to, "not-equivalent");
   expect(f.deliveries).toEqual([]);
-  expect(f.inbox.retained("inbound", "before-adoption")).toMatchObject({ endpoint: original, state: "queued", latestAttempt: 0, payloadRetained: true });
+  expect(f.inbox.retained("inbound", "before-adoption")).toMatchObject({ endpoint: original, state: mode === "activation" ? "unknown" : "queued", latestAttempt: mode === "activation" ? 1 : 0, payloadRetained: true });
   expect(f.inbox.pending({ kind: "receipts", peer: A })).toEqual([]);
   if (live) expect(() => f.inbox.rebindInboundAfterAbsence("before-adoption", live)).toThrow();
 }, 5000);

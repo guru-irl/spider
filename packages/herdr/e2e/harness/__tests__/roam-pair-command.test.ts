@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect, it } from 'vitest';
+import { encodePairCommand } from '../../../../roam/src/intercom-pair-files.js';
 // @ts-ignore The same ESM fixture is loaded directly by the owned connector.
-import { acceptsConnectCommand } from '../../fixtures/roam-pair-command.mjs';
+import { acceptsConnectCommand, connectCommands, pairConnectCommand } from '../../fixtures/roam-pair-command.mjs';
 
 it('accepts only the exact connect probes for the owned session', () => {
   const posix = `sh -c 'p=$(command -v herdr-core) || p=$HOME/.local/bin/herdr-core; [ -x "$p" ] || { echo "herdr-core is not installed here" >&2; exit 127; }; HC_SESSION=c exec "$p" connect'`;
@@ -13,3 +14,16 @@ it('accepts only the exact connect probes for the owned session', () => {
   expect(acceptsConnectCommand(posix.replace('HC_SESSION=c', 'HC_SESSION=d'), 'c')).toBe(false);
   expect(acceptsConnectCommand(posix, 'c;evil')).toBe(false);
 });
+
+it('accepts the production pair envelope and refuses a different pair or epoch', () => {
+  expect(encodePairCommand).toBeTypeOf('function');
+  const pair = { pairId: 'fixture-pair', edgeEpoch: 'fixture-epoch' };
+  const commands = connectCommands('c').map((command: string) => ({ command, envelope: encodePairCommand(pair, command) }));
+  expect(commands).toHaveLength(2);
+  for (const { command, envelope } of commands) {
+    expect(pairConnectCommand(envelope, 'c', commands)).toBe(command);
+    expect(pairConnectCommand(encodePairCommand({ ...pair, pairId: 'wrong-pair' }, command), 'c', commands)).toBeNull();
+    expect(pairConnectCommand(encodePairCommand({ ...pair, edgeEpoch: 'wrong-epoch' }, command), 'c', commands)).toBeNull();
+    expect(pairConnectCommand(command, 'c', commands)).toBeNull();
+  }
+}, 5000);

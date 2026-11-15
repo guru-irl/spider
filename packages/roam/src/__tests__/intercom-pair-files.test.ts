@@ -52,8 +52,11 @@ it("pins the observed host key and the via process uses strict, isolated SSH arg
   const argv: string[] = JSON.parse(readFileSync(output, "utf8"));
   for (const option of ["IdentitiesOnly=yes", "StrictHostKeyChecking=yes", `HostKeyAlias=${f.pair.hostKeyAlias}`,
     `UserKnownHostsFile=${route.knownHosts}`, "ControlMaster=no", "ControlPath=none"]) expect(argv).toContain(option);
+  expect(argv.slice(0, 2)).toEqual(["-F", "/dev/null"]);
   expect(argv).toContain(route.privateKey); expect(argv).toContain("23222"); expect(argv).toContain("fixture@127.0.0.1");
-  expect(argv.at(-1)).toBe("fixture remote command");
+  expect(argv.at(-1)).toBe(`spider-intercom:pair-1:edge-1:${Buffer.from("fixture remote command").toString("base64")}`);
+  expect(argv.at(-1)).toBe(mod.encodePairCommand(f.pair, "fixture remote command"));
+  expect(Buffer.from(argv.at(-1)!.split(":").at(-1)!, "base64").toString("utf8")).toBe("fixture remote command");
   expect(() => mod.writePairRoute({ ...f.pair, hostKey: key(9) }, { node: process.execPath, ssh, localPort: 23222 })).toThrow("host-key-changed");
   expect(readFileSync(route.knownHosts, "utf8")).toContain(f.pair.hostKey.base64);
 }, 5000);
@@ -64,7 +67,8 @@ it("authorizes and removes only the exact restricted pair key while preserving o
   const unrelated = `ssh-ed25519 ${key(3).base64} other\n`; writeFileSync(file, unrelated, { mode: 0o600 });
   const pub = `${key(4).type} ${key(4).base64}`;
   await mod.authorizePairKey(f.home, f.pair, pub); await mod.authorizePairKey(f.home, f.pair, pub);
-  const line = `from="127.0.0.1",restrict ${pub} spider-intercom:pair-1`;
+  const line = mod.authorizedPairLine(f.pair, pub);
+  expect(line).toMatch(/^from="127\.0\.0\.1",restrict,command="/);
   expect(readFileSync(file, "utf8")).toBe(`${unrelated}${line}\n`);
   await mod.removePairKey(f.home, f.pair, pub); await mod.removePairKey(f.home, f.pair, pub);
   expect(readFileSync(file, "utf8")).toBe(unrelated); expect(lstatSync(file).mode & 0o777).toBe(0o600);
@@ -79,4 +83,22 @@ it("refuses symlinked or unsafe key destinations without modifying their targets
   rmSync(join(dir, "authorized_keys")); writeFileSync(join(dir, "authorized_keys"), "untouched\n", { mode: 0o644 });
   await expect(mod.authorizePairKey(f.home, f.pair, `${key(4).type} ${key(4).base64}`)).rejects.toThrow();
   expect(readFileSync(join(dir, "authorized_keys"), "utf8")).toBe("untouched\n");
+}, 5000);
+
+it("binds a pair key's forced command to its own pair and epoch and refuses a revoked registration", async () => {
+  const f = fixture(), mod = await api(); f.pair.target.node = process.execPath;
+  const { createIntercomRegistry } = await import("../intercom-registry");
+  const registry = createIntercomRegistry(f.pair.target.globalRoot);
+  await registry.register(f.pair, "approval", "a".repeat(64)); await registry.bind(f.pair, "approval");
+  const pub = `${key(4).type} ${key(4).base64}`;
+  await mod.authorizePairKey(f.home, f.pair, pub);
+  const line = readFileSync(join(f.home, ".ssh", "authorized_keys"), "utf8");
+  expect(line).toMatch(/restrict,command="/);
+  const gate = join(f.pair.target.globalRoot, "roam", "intercom", "pairs", f.pair.pairId, f.pair.edgeEpoch, "command.mjs");
+  const env = (pair = f.pair.pairId, epoch = f.pair.edgeEpoch) => ({ ...process.env, SSH_ORIGINAL_COMMAND: `spider-intercom:${pair}:${epoch}:${Buffer.from("printf pair-ok").toString("base64")}` });
+  expect(execFileSync(process.execPath, [gate], { env: env(), timeout: 2000, encoding: "utf8" })).toBe("pair-ok");
+  expect(() => execFileSync(process.execPath, [gate], { env: env("other-pair"), timeout: 2000 })).toThrow();
+  expect(() => execFileSync(process.execPath, [gate], { env: env(f.pair.pairId, "other-epoch"), timeout: 2000 })).toThrow();
+  await registry.beginRevocation(f.pair.pairId, "00000000-0000-4000-8000-000000000009");
+  expect(() => execFileSync(process.execPath, [gate], { env: env(), timeout: 2000 })).toThrow();
 }, 5000);

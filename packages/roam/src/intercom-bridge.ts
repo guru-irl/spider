@@ -175,13 +175,17 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       if (home && (home.machineId !== entry.machineId || home.epoch !== entry.homeEpoch) || !home && entry.homeEpoch !== null) {
         ports.store.recordRejection(peer, "presence", "presence-home-mismatch"); return false;
       }
+      const origin = home ? null : ports.sessionOrigin?.(entry.address);
+      if (origin && origin !== entry.machineId) {
+        ports.store.recordRejection(peer, "presence", "presence-origin-mismatch"); return false;
+      }
       const local = [...ports.localPresence(), ...brokerLocal].filter(item => sameAddress(item.address, entry.address));
       const others = [...edges.values()].filter(other => other !== edge).flatMap(other => state(other).roster)
         .concat([...entries]).filter(item => sameAddress(item.address, entry.address) &&
           (item.machineId !== entry.machineId || item.activationEpoch !== entry.activationEpoch));
       const context = { assigned: home !== null, competing: local.length + others.length > 0,
         knownMachines: [...local, ...others].map(item => item.machineId).concat(ports.knownSessionMachines?.(entry.address) ?? []) };
-      const originMatches = home !== null || ports.sessionOrigin?.(entry.address) === entry.machineId;
+      const originMatches = home !== null || origin === entry.machineId;
       if (!originMatches && !ports.store.presenceOwner(entry.address) && !context.competing && context.knownMachines.every(machine => machine === entry.machineId)) {
         ports.store.recordRejection(peer, "presence", "presence-origin-unknown"); return false;
       }
@@ -977,7 +981,8 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         return !home || home.sessionId === input.to.address.sessionId && home.machineId === input.to.machineId && home.epoch === input.to.homeEpoch;
       };
       if (!currentHome()) return failed("stale-home-epoch");
-      if (!ports.authoritativeHome(input.to.address) && ports.store.presenceOwner(input.to.address)?.ambiguous) return failed("presence-ambiguous");
+      const owner = ports.store.presenceOwner(input.to.address);
+      if (!ports.authoritativeHome(input.to.address) && owner && (owner.ambiguous || owner.machineId !== input.to.machineId)) return failed("presence-ambiguous");
       if (local) {
         const endpoint = { address: input.to.address, machineId: ports.machineId, homeEpoch: input.to.homeEpoch, activationEpoch: input.to.activationEpoch };
         const accepted = ports.store.acceptLocal({ from: input.from, endpoint, message: input.message, firstHomePresence: firstHomePresence(endpoint, null) });

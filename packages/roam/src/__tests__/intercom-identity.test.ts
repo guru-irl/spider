@@ -119,16 +119,17 @@ it.each([H, C])("refuses a home-less claim when durable session records name %s"
   expect(f.published).toEqual([]);
   expect(f.bridge.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-ambiguous" }));
 }, 5000);
-it("persists the first null-epoch claim and treats another machine's later claim as ambiguous after restart", async () => {
+it("preserves the first null-epoch owner when another machine contradicts its synced origin after restart", async () => {
   const f = await fixture(); f.origins.set(victim.sessionId, C); await f.send(C, [info(C)]);
   expect(f.published).toMatchObject([{ address: victim, machineId: C }]);
   await f.send(C); await f.restart();
   await f.send(B, [info(B)]);
+  expect(f.store.presenceOwner(victim)).toEqual({ machineId: C, activation: 'activation', ambiguous: false });
   expect(f.published).toEqual([]);
   const result = await f.bridge.dispatch({ from: target, to: info(B), message: { id: "do-not-route", timestamp: 1, content: { text: "x" } } });
   expect(result).toMatchObject({ delivery: "failed", reason: "presence-ambiguous", outcomeKnown: true });
   expect(f.store.retained("outbound", "do-not-route")).toBeNull();
-  expect(f.bridge.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-ambiguous" }));
+  expect(f.bridge.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-origin-mismatch" }));
 }, 5000);
 it("rejects a non-null epoch with no authoritative home rather than trusting its size", async () => {
   const f = await fixture(); await f.send(B, [info(B, victim, 999)]);

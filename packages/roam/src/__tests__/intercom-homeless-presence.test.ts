@@ -26,7 +26,7 @@ async function fixture(machineId = H) {
   const ports = (): BridgePorts => ({ machineId, machineAlias: "receiver.invalid", store, clock,
     edges: [B, H, C].filter(id => id !== machineId).map(id => ({ peer: peer(id), edgeEpoch: "edge", initiator: false })),
     transport: { resolve: async () => { throw new Error("offline"); }, exec: async () => { throw new Error("offline"); } } as never,
-    localPresence: () => [], authoritativeHome: () => null, knownSessionMachines: () => [],
+    localPresence: () => [], authoritativeHome: () => null,
     sessionOrigin: (address: SessionAddress) => origins.get(address.sessionId) ?? null,
     publishPresence: entries => { published = entries; }, onInbound: entry => inbound.push(entry.id) });
   let bridge = createIntercomBridge(ports()); resources.push(async () => { await bridge.stop(); store.close(); }); await bridge.start();
@@ -59,7 +59,7 @@ it("refuses a homeless claim whose synced origin names another machine", async (
   await f.send();
   expect(f.published).toEqual([]);
   expect(f.store.presenceOwner(address)).toBeNull();
-  expect(f.bridge.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-origin-unknown" }));
+  expect(f.bridge.diagnostics()).toContainEqual(expect.objectContaining({ reason: "intercom-presence-origin-mismatch" }));
 }, 5000);
 
 it("keeps unknown homeless claims unreachable while the hub link is down", async () => {

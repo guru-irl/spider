@@ -28,7 +28,7 @@ it("migrates a version-1 queue without losing payload or pair ordering", () => {
     expect(next).toMatchObject({ kind: "accepted", identity: { sequence: 2 } });
     expect(store.edgeState(B, "edge-1")).toMatchObject({ inbound: { poll: 0, push: 0 }, outbound: { poll: 0, push: 0 } });
   } finally { store.close(); }
-  const verify = openDb(file); try { expect(verify.prepare("SELECT version FROM intercom_meta WHERE id=1").get()).toEqual({ version: 8 }); } finally { verify.close(); }
+  const verify = openDb(file); try { expect(verify.prepare("SELECT version FROM intercom_meta WHERE id=1").get()).toEqual({ version: 9 }); } finally { verify.close(); }
 }, 5000);
 
 it("migrates a version-2 queue while preserving existing edge state", () => {

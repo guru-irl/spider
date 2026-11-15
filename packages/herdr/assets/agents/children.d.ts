@@ -8,3 +8,6 @@ export interface AgentFeedPorts { listSessionIds(root: string): Promise<readonly
 export function loadAgentFeeds(root: string, ports: AgentFeedPorts): Promise<{ feeds: SessionFeed[]; errors: string[]; truncated: boolean }>;
 export function filterTopLevelAgents<T extends { address: string }>(agents: readonly T[], terminals: readonly AgentTerminal[], contract: HerdrLabelContract): T[];
 export function selectAgentChildren(rows: readonly ChildRow[], expandedConsoles?: readonly string[]): ChildRow[];
+export type AgentRenderInputKind = 'agents' | 'terminals' | 'panes' | 'spaces' | 'machines' | 'feeds';
+export function agentRenderInputs(input: Record<AgentRenderInputKind, unknown>, rejected: (kind: string) => void): Record<AgentRenderInputKind, Record<string, unknown>[]>;
+export function agentChildRows(rows: unknown, rejected: (kind: string) => void): (Record<string, unknown> & Pick<ChildRow, 'key' | 'name' | 'kind' | 'depth'>)[];

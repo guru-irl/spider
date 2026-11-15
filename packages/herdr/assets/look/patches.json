@@ -98,7 +98,7 @@
       {
         "id": "style-2",
         "anchor": "    if (a.status === \"blocked\" && compact) ",
-        "replacement": "    const core = a.status === \"blocked\" ? terminals().find((x) => x.address === a.address) : null;\n    const coreState = core && (typeof core.status === \"string\" ? core.status : core.status?.state);\n    if (a.status === \"error\" || coreState === \"error\") {\n      const red = t.ansi1, label = a.outcome ?? (compact ? null : \"Error\");\n      return h_flex().flex_none().gap(4).items_center().tooltip(a.outcome ?? \"Failed\")\n        .when(Boolean(label), el => el.child(div().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_size(10.5).text_color(red).child(label)))\n        .child(svg(\"mods/workspace-chrome/x.svg\").size(12).mx(1).flex_none().text_color(red));\n    }\n    if (a.status === \"done\") return svg(\"mods/workspace-chrome/check.svg\").size(12).mx(1).flex_none().text_color(t.dim);\n    if (a.status === \"blocked\" && compact) "
+        "replacement": "    const core = a.status === \"blocked\" ? (this.spiderRenderSnapshot?.terminals ?? terminals()).find((x) => x?.address === a.address) : null;\n    const coreState = core && (typeof core.status === \"string\" ? core.status : core.status?.state);\n    if (a.status === \"error\" || coreState === \"error\") {\n      const red = t.ansi1, label = a.outcome ?? (compact ? null : \"Error\");\n      return h_flex().flex_none().gap(4).items_center().tooltip(a.outcome ?? \"Failed\")\n        .when(Boolean(label), el => el.child(div().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_size(10.5).text_color(red).child(label)))\n        .child(svg(\"mods/workspace-chrome/x.svg\").size(12).mx(1).flex_none().text_color(red));\n    }\n    if (a.status === \"done\") return svg(\"mods/workspace-chrome/check.svg\").size(12).mx(1).flex_none().text_color(t.dim);\n    if (a.status === \"blocked\" && compact) "
       },
       {
         "id": "style-3",
@@ -113,7 +113,7 @@
       {
         "id": "children-imports",
         "anchor": "import { View, div, image, svg } from \"gpui-kit\";",
-        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }"
+        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }"
       },
       {
         "id": "combined-tree",
@@ -123,7 +123,7 @@
       {
         "id": "filter-replay",
         "anchor": "    let list = agents();",
-        "replacement": "    let list = filterTopLevelAgents(agents(), terminals(), spiderProps().labelContract);"
+        "replacement": "    this.spiderRowDiagnostics = new Set();\n    const snapshot = agentRenderInputs({\n      agents: this.spiderRows(\"agent\", agents), terminals: this.spiderRows(\"terminal\", terminals),\n      spaces: this.spiderRows(\"space\", spaces), panes: this.spiderRows(\"pane\", panes),\n      machines: this.spiderRows(\"machine\", machines), feeds: this.spiderFeeds ?? [],\n    }, kind => this.spiderRowDiagnostics.add(kind));\n    let list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, spiderProps().labelContract);"
       },
       {
         "id": "child-status",
@@ -173,7 +173,7 @@
       {
         "id": "feed-and-actions",
         "anchor": "  peek(addr) {\n",
-        "replacement": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const rows = projectAgentChildren(all, this.spiderFeeds ?? [], addr, p.labelContract, { ...p.retention, machines: machines() });\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n"
+        "replacement": "  spiderRows(kind, build) {\n    try { return build(); }\n    catch { (this.spiderRowDiagnostics ??= new Set()).add(kind); return []; }\n  }\n\n  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const snapshot = this.spiderRenderSnapshot;\n    const rows = this.spiderRows(\"projection\", () => agentChildRows(\n      projectAgentChildren(all, snapshot?.feeds ?? this.spiderFeeds ?? [], addr, p.labelContract, { ...p.retention, machines: snapshot?.machines ?? machines() }),\n      kind => (this.spiderRowDiagnostics ??= new Set()).add(kind)));\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n"
       },
       {
         "id": "child-action",
@@ -183,7 +183,7 @@
       {
         "id": "feed-diagnostic",
         "anchor": ".child(v_flex().id(\"ag-list\").flex_1().min_h(0).px(collapsed ? 0 : 8).overflow_y_scrollbar().mode(\"always\").children(rows))",
-        "replacement": ".when(Boolean(this.spiderFeedError) && !collapsed, el => el.child(div().px(12).text_size(11).text_color(t.dim).child(this.spiderFeedError)))\n      .child(v_flex().relative().flex_1().min_h(0).w_full()\n        .child(v_flex().id(\"ag-list\").size_full().px(collapsed ? 0 : 8).overflow_y_scroll().children(rows))\n        .child(Scrollbar.vertical(\"ag-list\").absolute().inset_0().mode(\"scrolling\")))"
+        "replacement": ".when(Boolean(this.spiderFeedError) && !collapsed, el => el.child(div().px(12).text_size(11).text_color(t.dim).child(this.spiderFeedError)))\n      .when(this.spiderRowDiagnostics.size > 0 && !collapsed, el => el.child(div().px(12).text_size(11).text_color(t.dim)\n        .child(`Some agent rows unavailable (${[...this.spiderRowDiagnostics].sort().join(\", \")})`)))\n      .child(v_flex().relative().flex_1().min_h(0).w_full()\n        .when(this.spiderRowDiagnostics.size > 0 && !collapsed, el => el.child(div().px(12).text_size(11).text_color(t.dim)\n        .child(`Some agent rows unavailable (${[...this.spiderRowDiagnostics].sort().join(\", \")})`)))\n      .child(v_flex().id(\"ag-list\").size_full().px(collapsed ? 0 : 8).overflow_y_scroll().children(rows))\n        .child(Scrollbar.vertical(\"ag-list\").absolute().inset_0().mode(\"scrolling\")))"
       },
       {
         "id": "console-fold",
@@ -198,12 +198,12 @@
       {
         "id": "render-projection-begin",
         "anchor": "    const all = terminals();",
-        "replacement": "    const all = terminals();\n    this.spiderRenderRows = new Map();\n    try {\n"
+        "replacement": "    const all = snapshot.terminals;\n    this.spiderRenderSnapshot = snapshot;\n    this.spiderRenderRows = new Map();\n    try {\n"
       },
       {
         "id": "render-projection-end",
         "anchor": "      .when(collapsed, (el) =>\n        el.child(\n          h_flex()\n            .h(28)\n            .items_center()\n            .justify_center()\n            .child(\n              div()\n                .id(\"collapse\")\n                .text_size(13)\n                .text_color(t.dim)\n                .hover((s) => s.text_color(t.foreground))\n                .on_click(toggleSidebar)\n                .child(\"»\"),\n            ),\n        ),\n      );\n  }",
-        "replacement": ";\n    } finally { this.spiderRenderRows = null; }\n  }"
+        "replacement": ";\n    } finally { this.spiderRenderRows = null; this.spiderRenderSnapshot = null; }\n  }"
       },
       {
         "id": "copy-sort-popup",
@@ -233,12 +233,12 @@
       {
         "id": "one-list",
         "anchor": ": groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);",
-        "replacement": ": byPriority ? list.flatMap((a, i) => withKids(a, i)) : groups.flatMap((g) => [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap((a, i) => withKids(a, i, i === g.members.length - 1 ? \"└\" : \"├\")))]);"
+        "replacement": ": byPriority ? list.flatMap((a, i) => withKids(a, i)) : groups.flatMap((g) => [...this.spiderRows(\"group\", () => [header(g)]), ...(this.folded.has(g.id) ? [] : g.members.flatMap((a, i) => withKids(a, i, i === g.members.length - 1 ? \"└\" : \"├\")))]);"
       },
       {
         "id": "agent-row-name",
         "anchor": "    const label = (a) => {\n      const tab = tabs.find(tab => tab.id === a.tab);\n      return tab ? title(tab, lead(tab)) : a.title || a.program?.name || \"\";\n    };",
-        "replacement": "    const sessionName = a => (this.spiderFeeds ?? []).find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const sharedTab = id => panes().filter(p => p.tab === id && p.terminal && p.program?.agent).length > 1;\n    const label = (a) => {\n      const session = sessionName(a);\n      if (session) return session;\n      const tab = tabs.find(tab => tab.id === a.tab);\n      if (tab && sharedTab(tab.id)) return clean(a.title) || a.program?.name || title(tab, lead(tab));\n      return tab ? title(tab, lead(tab)) : a.title || a.program?.name || \"\";\n    };"
+        "replacement": "    const sessionName = a => snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const sharedTab = id => snapshot.panes.filter(p => p.tab === id && p.terminal && p.program?.agent).length > 1;\n    const label = (a) => {\n      const session = sessionName(a);\n      if (session) return session;\n      const tab = tabs.find(tab => tab.id === a.tab);\n      if (tab && sharedTab(tab.id)) return clean(a.title) || a.program?.name || title(tab, lead(tab, snapshot.panes));\n      return tab ? title(tab, lead(tab, snapshot.panes)) : a.title || a.program?.name || \"\";\n    };"
       },
       {
         "id": "session-name-detail",
@@ -268,7 +268,7 @@
       {
         "id": "finished-toggle-row",
         "anchor": "      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority))];",
-        "replacement": "      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority)), ...this.finishedToggle(t, a.address, groupLine)];"
+        "replacement": "      return [r, ...subs.flatMap(s => this.spiderRows(\"child\", () => [this.subRow(t, s, shown, byPriority)])), ...this.spiderRows(\"finished\", () => this.finishedToggle(t, a.address, groupLine))];"
       },
       {
         "id": "fold-pill-style",
@@ -318,12 +318,12 @@
       {
         "id": "pi-agent-mark-colour",
         "anchor": "      const pic = icon(a.program, 16, t.foreground);",
-        "replacement": "      const pic = icon(a.program, 14, (a.program?.key ?? a.program?.name)?.toLowerCase() === \"pi\" ? t.muted : t.foreground);"
+        "replacement": "      const pic = icon(a.program, 14, (a.program?.key ?? a.program?.name)?.toLowerCase() === \"pi\" ? t.muted : t.foreground) ?? svg(\"mods/workspace-chrome/terminal.svg\").size(14).flex_none().text_color(t.muted);"
       },
       {
         "id": "agent-name-text",
         "anchor": "    const row = (a, i, subs = []) => {",
-        "replacement": "    const spaceIdentities = assignSpaceIdentities(spaces());\n    const spaceIcon = (id, name) => {\n      const identity = spaceIdentities.get(id);\n      return svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t.muted).tooltip(name);\n    };\n    const nameText = (name, idle) => div().min_w(0).max_w(200).truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(idle ? t.muted : t.foreground).child(name);\n    const row = (a, i, subs = [], groupLine = null) => {"
+        "replacement": "    const spaceIdentities = assignSpaceIdentities(snapshot.spaces);\n    const spaceIcon = (id, name) => {\n      const identity = spaceIdentities.get(id);\n      return svg(`mods/spider-agents/space-${identity.shape}.svg`).size(14).flex_none().text_color(t.muted).tooltip(name);\n    };\n    const nameText = (name, idle) => div().min_w(0).max_w(200).truncate().font_family(spiderProps().fonts?.paths ?? \"JetBrains Mono\").text_color(idle ? t.muted : t.foreground).child(name);\n    const row = (a, i, subs = [], groupLine = null) => {"
       },
       {
         "id": "priority-name-text",
@@ -348,7 +348,7 @@
       {
         "id": "grouped-tree",
         "anchor": "    const withKids = (a, i) => {\n      const subs = collapsed ? [] : this.tree(all, a.address);\n      const r = row(a, i, subs);",
-        "replacement": "    const withKids = (a, i, groupLine = null) => {\n      const subs = collapsed ? [] : this.tree(all, a.address, groupLine ? [groupLine === \"├\" ? \"│\" : \"\"] : []).map(s => ({ ...s, grouped: Boolean(groupLine) }));\n      const r = row(a, i, subs, groupLine);"
+        "replacement": "    const withKids = (a, i, groupLine = null) => {\n      const subs = collapsed ? [] : this.spiderRows(\"projection\", () => this.tree(all, a.address, groupLine ? [groupLine === \"├\" ? \"│\" : \"\"] : [])).map(s => ({ ...s, grouped: Boolean(groupLine) }));\n      const r = this.spiderRows(\"agent\", () => [row(a, i, subs, groupLine)])[0];\n      if (!r) return [];"
       },
       {
         "id": "collapsed-tree",
@@ -364,6 +364,11 @@
         "id": "group-heading-counts",
         "anchor": "      const top = g.members.reduce((m, a) => ((RANK[a.status] ?? 0) > (RANK[m] ?? 0) ? a.status : m), null);\n      return h_flex()",
         "replacement": "      const counts = !byPriority && !open ? g.members.map(a => childCounts(a.address)) : [];\n      const states = [...g.members.map(a => a.status), ...counts.flatMap(count => count.states)];\n      const top = states.reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);\n      const status = states.includes(\"working\") ? \"working\" : top;\n      const childTop = counts.flatMap(count => count.states).reduce((m, s) => ((RANK[s] ?? 0) > (RANK[m] ?? 0) ? s : m), null);\n      const bots = counts.flatMap(count => count.bots), consoles = counts.flatMap(count => count.consoles);\n      const toggle = cx => { open ? this.folded.add(g.id) : this.folded.delete(g.id); cx.notify(); };\n      const pill = (kind, count, icon, color = t.dim) => h_flex().id(`group-count-${kind}-${g.id}`).h(18).px(6).gap(4).flex_none().items_center().rounded(999).bg(t.hover).text_size(11).text_color(color).cursor_pointer()\n        .tooltip(`${count} ${kind === \"agents\" ? (count === 1 ? \"agent\" : \"agents\") : kind === \"subagents\" ? (count === 1 ? \"subagent\" : \"subagents\") : (count === 1 ? \"console\" : \"consoles\")}`)\n        .hover(s => s.bg(t.selected).text_color(t.foreground)).on_click((_e, cx) => { cx.stop_propagation(); toggle(cx); })\n        .child(svg(icon).size(11).flex_none()).child(String(count));\n      return h_flex()"
+      },
+      {
+        "id": "render-tab-snapshot",
+        "anchor": "const tabs = spaces().flatMap(s => s.tabs);",
+        "replacement": "const tabs = snapshot.spaces.flatMap(s => s.tabs);"
       }
     ],
     "spaces": [

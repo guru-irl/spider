@@ -68,4 +68,16 @@ describe("makeAsyncNotifier", () => {
     notifier({ id, name: "beta", agent: "worker" } as any, "failed", undefined);
     expect(sendMessage).toHaveBeenCalled();
   });
+
+  it.each(["unrelated step label", "legacy chain"])("does not invent a stopped chain for a failed %s", kind => {
+    const db = freshDb(), store = new RunStore(db), sendMessage = vi.fn();
+    const { id } = store.create({ sessionId: "s", agent: "worker", phase: "step-1" });
+    if (kind === "legacy chain") appendRunEvent(db, { runId: id, sessionId: "s", ts: Date.now(), type: "chain_steps", payload: { remaining: ["a later step"] } });
+    store.finish(id, { status: "failed", result: "failed" });
+    makeAsyncNotifier({ db, pi: { sendMessage } })(store.get(id), "failed", "failed");
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage.mock.calls[0][0].customType).toBe("spider.subagent_done");
+    expect(sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: true });
+    db.close();
+  });
 });

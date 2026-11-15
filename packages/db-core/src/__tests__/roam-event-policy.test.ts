@@ -28,7 +28,7 @@ describe("portable run-event history", () => {
     expect(JSON.stringify(encoded)).not.toContain("remaining");
   }, 5000);
 
-  it.each(["completion_delivered", "spider_usage_reported"])("exports %s as inert history", type => {
+  it.each(["completion_delivered", "chain_completion_delivered", "spider_usage_reported"])("exports %s as inert history", type => {
     const body = event(type, { marker: true });
     expect(EVENT_POLICIES[type]).toBe("inert");
     expect(policy.encode("run_events", body, A)).toEqual(body);

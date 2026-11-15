@@ -38,8 +38,8 @@ test('handing over a durable chain stage stops its old continuation but delivers
   await teardownAllAsync(); db.close();
 });
 
-// Break caught: each saved chain stage was re-delivered after the chain already reported its result.
-test('a completed chain is not delivered again as individual stages on resume', async () => {
+// Break: completed step notices or the chain summary are delivered again on resume.
+test('a completed chain delivers each step once and does not repeat on resume', async () => {
   const db = freshDb(), notices: any[] = [];
   const ctx = { db, sessionId: 'planner', cwd: process.cwd(), runDbPath: db.raw.name, pi: { sendMessage: (message: any) => notices.push(message) } };
   try {
@@ -51,10 +51,11 @@ test('a completed chain is not delivered again as individual stages on resume', 
       return { durable: true, wait: () => Promise.resolve(exit), kill() {}, detach() {} };
     } });
     await run({ chain: [{ agent: 'worker', task: 'first' }, { agent: 'worker', task: 'second' }] }, ctx);
-    await vi.waitFor(() => expect(notices).toHaveLength(1), { timeout: 10000 });
-    expect(notices).toHaveLength(1);
-    expect(notices[0].content).not.toContain('did not start');
+    await vi.waitFor(() => expect(notices).toHaveLength(3), { timeout: 10000 });
+    expect(notices.map(message => message.customType)).toEqual(['spider.subagent_done', 'spider.subagent_done', 'spider.chain_done']);
+    expect(notices[0].details.runId).not.toBe(notices[1].details.runId);
+    expect(notices[2].content).not.toContain('did not start');
     await adoptReloadedChildren(ctx); await new Promise(r => setTimeout(r, 50));
-    expect(notices).toHaveLength(1);
+    expect(notices).toHaveLength(3);
   } finally { await teardownAllAsync(); db.close(); }
 });

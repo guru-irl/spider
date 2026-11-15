@@ -93,6 +93,36 @@ describe("subagents survive /reload", () => {
     expect(done(A.pi)).toHaveLength(0);
   });
 
+  it("delivers an in-flight chain failure once from a fresh build when the child exits in the reload gap", async () => {
+    const db = freshDb(), first = fakeChild(), second = fakeChild();
+    first.handle.durable = true; second.handle.durable = true;
+    const A = activation(db), buildA = await loadBuild();
+    let launches = 0;
+    buildA.index.registerSubagentActions({ registerAction: () => {} }, A.pi);
+    await buildA.run.makeRunHandler({ spawner: () => [first, second][launches++].handle })({ chain: [
+      { name: "first", task: "one" }, { name: "second", task: "two" }, { name: "third", task: "must not start" },
+    ] }, A.ctx);
+    first.resolve({ exitCode: 0, result: "first result" }); await tick();
+    expect(launches).toBe(2);
+    expect(done(A.pi)).toHaveLength(1);
+    expect(done(A.pi)[0][1]).toEqual({ triggerTurn: true });
+    await A.hooks.get("session_shutdown")!({ type: "session_shutdown", reason: "reload" }, { sessionManager: { getSessionId: () => "sess" } });
+    second.resolve({ exitCode: 1, result: "second failed" }); await tick();
+    expect(done(A.pi)).toHaveLength(1);
+
+    const B = activation(db), buildB = await loadBuild();
+    expect(buildB.coords).not.toBe(buildA.coords);
+    buildB.run.adoptReloadedChildren(B.ctx); await tick();
+    buildB.run.adoptReloadedChildren(B.ctx); await tick();
+    const final = B.pi.sendMessage.mock.calls.filter(call => call[0]?.customType === "spider.chain_done");
+    expect(launches).toBe(2);
+    expect(done(A.pi)).toHaveLength(1);
+    expect(done(B.pi)).toHaveLength(1);
+    expect(done(B.pi)[0]).toMatchObject([{ details: { name: "second", status: "failed" } }, { triggerTurn: true }]);
+    expect(final).toHaveLength(1);
+    expect(final[0]).toMatchObject([{ details: { name: "second", step: 2, status: "failed" } }, { triggerTurn: true }]);
+  });
+
   it("after adoption steering, kill handles and rebound events all target the new activation", async () => {
     const db = freshDb();
     const child = fakeChild();

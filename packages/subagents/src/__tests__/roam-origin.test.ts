@@ -281,15 +281,17 @@ it("shutdown notice after db close delivers for a locally spawned run", async ()
   expect(sendMessage.mock.calls[0][1]).toEqual({ triggerTurn: false, deliverAs: "nextTurn" });
 }, 5000);
 
-it("chain stage failing before spawn still notifies after db close", async () => {
+it("a chain launch failure reports the step and chain once before the db closes", async () => {
   const db = freshDb(), sendMessage = vi.fn();
   const ctx = { db, sessionId: "failed-chain", cwd: testScratchPath("cwd"), runDbPath: db.raw.name, pi: { sendMessage } };
   const action = makeRunHandler({ spawner: () => { throw new Error("launch unavailable"); } });
   const started = action({ chain: [{ agent: "worker", task: "work" }] }, ctx);
-  expect(sendMessage).toHaveBeenCalledTimes(1);
+  expect(sendMessage).toHaveBeenCalledTimes(2);
+  expect(sendMessage.mock.calls.map(call => call[0].customType)).toEqual(["spider.subagent_done", "spider.chain_done"]);
+  expect(sendMessage.mock.calls[1][0].details.output).toContain("launch unavailable");
   coordinators.teardownAll();
   db.close();
   await started;
-  await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2), { timeout: 500 });
-  expect(sendMessage.mock.calls[1][0].details.output).toContain("launch unavailable");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(sendMessage).toHaveBeenCalledTimes(2);
 }, 5000);

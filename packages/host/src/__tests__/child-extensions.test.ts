@@ -183,7 +183,7 @@ it("diagnoses invalid ignored local extension lists without blocking runs", () =
 const shapes = [
   { name: "single", args: { agent: "worker", task: "work" }, children: 1, notices: 1 },
   { name: "parallel", args: { tasks: [{ agent: "worker", task: "one" }, { agent: "worker", task: "two" }] }, children: 2, notices: 2 },
-  { name: "chain", args: { chain: [{ agent: "worker", task: "one" }, { agent: "worker", task: "{previous}" }] }, children: 2, notices: 1 },
+  { name: "chain", args: { chain: [{ agent: "worker", task: "one" }, { agent: "worker", task: "{previous}" }] }, children: 2, notices: 3 },
   { name: "pipeline", args: { pipeline: [{ agent: "worker", task: "one" }, { agent: "worker", task: "{previous}" }] }, children: 2, notices: 2 },
 ];
 for (const childMode of ["rpc", "print"] as const) {

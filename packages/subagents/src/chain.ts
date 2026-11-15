@@ -29,7 +29,7 @@ export async function runChain(
       async: true, // Foreground within the chain, but the dispatch tool already returned.
     });
     out.push(row);
-    if (row.status === "cancelled") break;
+    if (row.status !== "done") break;
     previous = row.result ?? "";
   }
   return out;

@@ -12,10 +12,11 @@ import { isHandledPrompt, PERSISTED_EVENT_TYPES } from "./rpc-child";
 import { publishLiveRunEvent } from "./live-events";
 import { recordRunUsage, safelyReportUsage, warnUsage } from "./usage";
 import { isLocalRun, rememberOwnedRun } from "./roam-origin";
+import { PENDING_COMPLETION } from "./completion-delivery";
 
-export const UNDELIVERED_RUN_QUERY = `SELECT 1 FROM runs r WHERE r.id=? AND r.status!='cancelled'
+export const UNDELIVERED_RUN_QUERY: string = `SELECT 1 FROM runs r WHERE r.id=? AND r.status!='cancelled'
         AND EXISTS (SELECT 1 FROM run_events WHERE run_id=r.id AND type='child_supervisor')
-        AND NOT EXISTS (SELECT 1 FROM run_events WHERE run_id=r.id AND type='completion_delivered')`;
+        AND ${PENDING_COMPLETION}`;
 
 
 export { NO_DELIVERABLE_RESULT };
@@ -90,7 +91,7 @@ export class Runner {
       // queued row once its owning host exits. No child has been spawned yet.
       hostPid: process.pid,
     });
-    if (opts.remainingSteps?.length) appendRunEvent(this.db, { runId: id, sessionId: this.sessionId, ts: Date.now(), type: 'chain_steps', payload: { remaining: opts.remainingSteps } });
+    if (opts.remainingSteps) appendRunEvent(this.db, { runId: id, sessionId: this.sessionId, ts: Date.now(), type: 'chain_steps', payload: { remaining: opts.remainingSteps, stopOnFailure: true } });
     if (thinking?.notice) appendRunEvent(this.db, { runId: id, sessionId: this.sessionId, ts: Date.now(), type: "warning", summary: thinking.notice, payload: { thinkingNotice: true, ...thinking, message: thinking.notice } });
     return this.deps.store.get(id)!;
   }
@@ -343,7 +344,7 @@ export class Runner {
       if (handle.relinquished) throw new Error('Parent session released this chain step. Remaining steps were not started.');
       this.finalize(run, exitCode, result, handle.cancellationReason);
       const finished = this.deps.store.get(run.id)!;
-      if (!opts.async && finished.status === "cancelled") this.deps.onComplete?.(finished, finished.status, finished.result ?? undefined);
+      if (opts.async || finished.status === "cancelled") this.deps.onComplete?.(finished, finished.status, finished.result ?? undefined);
       return finished;
     } catch (error) {
       if (handle.relinquished) throw error;

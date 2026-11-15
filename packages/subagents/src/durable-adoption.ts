@@ -5,6 +5,7 @@ import { getShared, registerShared } from './child-registry';
 import { connectDurableChild, readSupervisorState, supervisorIsAlive } from './durable-child';
 import { checkProcessIdentity } from './process-identity';
 import { isProcessAlive } from './kill-process';
+import { PENDING_COMPLETION } from './completion-delivery';
 
 interface DurableContext { db: Db; globalDb?: Db; sessionId?: string; runDbPath?: string; project?: { dbPath: string } }
 function currentDbPath(ctx: DurableContext): string {
@@ -34,7 +35,7 @@ export function discoverDurableChildren(ctx: DurableContext & { sessionId: strin
       if (!db) continue; // Removed worktrees can leave old routing records.
       const rows = db.prepare(`SELECT r.id,r.child_mode,e.payload FROM runs r JOIN run_events e ON e.run_id=r.id AND e.type='child_supervisor'
         WHERE r.session_id=? AND r.status!='cancelled' AND ${localRunPredicate(db)}
-        AND NOT EXISTS (SELECT 1 FROM run_events delivered WHERE delivered.run_id=r.id AND delivered.type='completion_delivered')
+        AND ${PENDING_COMPLETION}
         ORDER BY e.id`).all(ctx.sessionId) as Array<{ id: string; child_mode: 'rpc' | 'print'; payload: string }>;
       for (const row of rows) {
         if (getShared(row.id)) continue;

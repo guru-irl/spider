@@ -4,19 +4,23 @@ import type { JsonObject, Readiness, StoreKey } from "@spider/db-core/roam/types
 import { parseReadiness } from "@spider/db-core/roam/readiness";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { readSessionHeader } from "@spider/herdr/sessions/launcher";
+import { localBootId } from "@spider/herdr/sessions/id-lock";
+import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
 import { createIntentStore } from "./intent";
 import { sessionHome } from "./homes";
 import type { AgentPorts, Operation, Outcome } from "./contracts";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority, readReadiness, recordReadiness, startParticipant } from "./session-control";
 import { readLocalIdentity } from "./runtime";
-import { runLocalDoctor } from "./local-diagnostics";
+import { createLocalDiagnosticPorts, runLocalDoctor } from "./local-diagnostics";
+import { adoptedOwnerExited } from "./launcher";
 
 export function wakeSupervisor(systemctl: (argv: readonly string[]) => Promise<void> = argv => new Promise((done, reject) => {
   execFile("systemctl", [...argv], { timeout: 5000, maxBuffer: 4096 }, error => error ? reject(new Error("supervisor-wake-failed")) : done());
 })): Promise<void> { return systemctl(["--user", "start", "spider-roam-supervisor.service"]); }
 
 /** Enrollment is loaded independently of the request. hc provides access control; these checks reject misrouting. */
-export async function handleSessionOperation(operation: Operation, ports: AgentPorts, options: { wake?(): Promise<void> } = {}): Promise<Outcome<JsonObject>> {
+export async function handleSessionOperation(operation: Operation, ports: AgentPorts, options: { wake?(): Promise<void>;
+  launchRecovery?: { bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe> } } = {}): Promise<Outcome<JsonObject>> {
   const result = (code: 0 | 1 | 2 | 3, reason: string): Outcome<JsonObject> => ({ code, reason, operationId: operation?.id ?? "", home: null, epoch: null, repairCommand: null, value: null });
   if (!operation || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operation.id) || !operation.args ||
       Object.keys(operation.args).sort().join() !== "sessionId,sourceMachine" || typeof operation.args.sessionId !== "string" || !operation.args.sessionId ||
@@ -40,7 +44,7 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
     if (existing && !authority.authorized(id, pinned.hubMachineId, pinned.machineId)) return result(1, "participant-intent-untrusted");
     if (existing && (existing.epoch !== home.epoch || existing.moveId !== home.moveId)) return result(1, "participant-intent-home-mismatch");
     let checked: Promise<Awaited<ReturnType<typeof runLocalDoctor>>> | undefined;
-    const doctor = async () => (await (checked ??= runLocalDoctor({ root }))).diagnostics;
+    const doctor = async () => (await (checked ??= runLocalDoctor({ root, launchRecovery: options.launchRecovery }))).diagnostics;
     if (operation.kind === "session-resume") {
       try { if ((await doctor()).some(row => row.severity === "block")) return result(1, "participant-doctor-refused"); }
       catch { return result(1, "participant-doctor-unavailable"); }
@@ -55,10 +59,17 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
     }
     if (operation.kind === "session-stop") await authority.stop(id);
     else {
-      await authority.resume(id, doctor);
       const intents = createIntentStore(root), current = await intents.get(id);
+      if (current?.value.supervision.kind === "launching") {
+        const local = { machineId: pinned.machineId, label: "local machine", peer: null };
+        const recovery = options.launchRecovery ?? { bootId: localBootId, probe: (pid: number) => createLocalDiagnosticPorts(root, []).probeProcess(local, pid) };
+        let exited = false;
+        try { exited = await adoptedOwnerExited({ root: join(root, "herdr"), sessionId: id, operationId: current.value.supervision.operationId,
+          file: current.value.intent.file, leases: createSessionLeases(join(root, "herdr")), ...recovery }); } catch { /* Unavailable proof keeps the reservation. */ }
+        if (!exited) return result(3, "launch-reconciliation-required");
+      }
+      await authority.resume(id, doctor);
       if (current) {
-        if (current.value.supervision.kind === "launching") return result(3, "launch-reconciliation-required");
         const intent = await authority.get(id);
         if (!intent || (await intents.update(id, current.version, { intent, failures: [], supervision: { kind: "idle", nextAttemptAt: null } })).kind !== "updated") return result(3, "intent-reconciliation-required");
       }

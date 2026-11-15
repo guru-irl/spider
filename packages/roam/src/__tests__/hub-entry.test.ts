@@ -171,6 +171,7 @@ it.each(["lock.json.guard", "startup.json", "replace-intent.json", "replace-inte
     const result = await command(f, ["roam", "enable"]);
     expect(result.code, result.err).toBe(1);
     expect(result.err).toMatch(/usage worker/i);
+    expect(result.err).not.toContain("Cannot verify the control process identity");
     expect(existsSync(call)).toBe(false);
     const db = openDb(join(f.root, "spider.db"));
     try { expect(db.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 0 }); }

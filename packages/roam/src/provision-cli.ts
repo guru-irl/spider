@@ -116,6 +116,20 @@ export async function stageProvisionRelease(input: { root: string; operationId: 
     return { file, sha256: pinned.sha256 };
   } finally { await rm(work, { recursive: true, force: true }); }
 }
+async function removeProvisionSource(root: string, operationId: string): Promise<void> {
+  const base = join(root, "roam", "provision-source"), directory = join(base, operationId);
+  assertTestConfigPath(directory);
+  try {
+    for (const path of [base, directory]) {
+      const info = lstatSync(path);
+      if (!info.isDirectory() || info.isSymbolicLink() || realpathSync(path) !== path ||
+          typeof process.getuid === "function" && info.uid !== process.getuid() || (info.mode & 0o7777) !== 0o700) {
+        throw new Error("release-source-unsafe");
+      }
+    }
+    await rm(directory, { recursive: true, force: true });
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
 const safe = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, "?");
 function presentInventory(preview: ProvisionPreview, out: (text: string) => void): void {
   const value = preview.inventory;
@@ -126,7 +140,7 @@ function presentInventory(preview: ProvisionPreview, out: (text: string) => void
   for (const warning of preview.warnings) out(`${safe(warning)}\n`);
 }
 export interface ProvisionCliRequest { root: string; target: string; release?: string; yes: boolean; consent: string | null; operationId?: string;
-  skills?: readonly string[]; consentedProviders?: readonly string[] }
+  skills?: readonly string[]; consentedProviders?: readonly string[]; noSettings?: boolean }
 export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text: string): void; err(text: string): void }, options: {
   bundleUrl?: URL; tty?: boolean; ask?(text: string): Promise<string>;
 } = {}): Promise<number> {
@@ -148,6 +162,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     }
     finally { auth.fill(0); }
     const selected = ["settings.json", "models.json", "keybindings.json", "themes", "AGENTS.md"].filter(name => {
+      if (name === "settings.json" && input.noSettings) return false;
       try { lstatSync(join(agentRoot, name)); return true; }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
     });
@@ -163,20 +178,42 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     }
     const operationId = input.operationId ?? randomUUID();
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(operationId)) throw new Error("invalid-provision-operation");
-    const pinned = await stageProvisionRelease({ root: input.root, operationId, release: input.release, maximum: config.limits.agentBytes, bundleUrl: options.bundleUrl });
+    const journal = openJournal(join(input.root, "roam", "journal.db"));
+    const completed = journal.read(operationId).find(row => row.action === "provision-completed")?.result;
+    const done = journal.read(`${operationId}-install`).find(row => row.action === "done")?.result;
+    const consent = journal.read(operationId).find(row => row.action === "human-consent")?.result;
+    if (completed && (typeof completed.releaseHash !== "string" || !/^[a-f0-9]{64}$/.test(completed.releaseHash) ||
+        typeof completed.contextDigest !== "string" || !/^[a-f0-9]{64}$/.test(completed.contextDigest) ||
+        completed.installOperationId !== `${operationId}-install` || consent?.releaseHash !== completed.releaseHash ||
+        done?.code !== 0 || done.operationId !== `${operationId}-install` || !["installed", "installed-hosting-disabled"].includes(String(done.reason)) ||
+        !done.value || typeof done.value !== "object" || Array.isArray(done.value) || typeof done.value.hostingReady !== "boolean")) throw new Error("invalid-journal-result");
+    const pinned = completed ? { file: join(input.root, "roam", "provision-source", operationId, "release.tgz"), sha256: completed.releaseHash as string }
+      : await stageProvisionRelease({ root: input.root, operationId, release: input.release, maximum: config.limits.agentBytes, bundleUrl: options.bundleUrl });
+    if (completed && input.release) {
+      const supplied = await pinProvisionRelease(input.release, config.limits.agentBytes);
+      try { if (supplied.sha256 !== pinned.sha256) throw new Error("release-arguments-changed"); }
+      finally { supplied.bytes.fill(0); }
+    }
     const npmPrefix = posix.dirname(posix.dirname(configured.pi));
     if (posix.basename(npmPrefix) !== ".local" || configured.pi !== posix.join(npmPrefix, "bin", "pi")) throw new Error("provision-destination-unavailable");
     const home = posix.dirname(npmPrefix), agentDir = posix.join(home, ".pi", "agent");
     const releaseRoot = posix.join(npmPrefix, "spider-releases", pinned.sha256, "node_modules", "@guru-irl", "spider");
     const peer = { ...configured, cli: posix.join(releaseRoot, "dist", "roam", "cli.mjs") };
     const destination = { home, agentDir, npmPrefix, supervisor: posix.join(releaseRoot, "dist", "roam", "supervisor.mjs") };
-    const journal = openJournal(join(input.root, "roam", "journal.db")), herdr = loadHerdrConfig(input.root);
+    const contextDigest = createHash("sha256").update(JSON.stringify({ peer, destination, hubMachineId: config.machineId,
+      agentRoot, limits: config.limits, coreUnit: config.coreUnit })).digest("hex");
     const files = [{ path: "auth.json", size, mode: 0o600 }, ...selectedFiles];
     io.out(`Operation: ${operationId}\nRelease SHA-256: ${pinned.sha256}\n`);
     for (const file of files) io.out(`Selected ${safe(file.path)}: ${file.size} bytes, mode ${file.mode.toString(8)}. Destination: ${safe(posix.join(agentDir, file.path))}\n`);
     const request: ConsentRequest = { operationId, target: peer.alias, machineId: peer.machineId, hubMachineId: config.machineId, files, releaseHash: pinned.sha256, providers, selectionDigest };
     // Reserve the byte identity before any remote observation. Consent itself is recorded after inventory.
     journal.begin(consentOperation(request));
+    if (completed) {
+      if (completed.contextDigest !== contextDigest) throw new Error("Operation ID already has different arguments");
+      await removeProvisionSource(input.root, operationId);
+      io.out(`${safe(done!.reason as string)}\n`); return 0;
+    }
+    const herdr = loadHerdrConfig(input.root);
     const transport = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: [peer] }, journal);
     let shownSettings: { fingerprint: string | null; keys: readonly string[] } = { fingerprint: null, keys: [] };
     const ports = createProductionProvisionPorts({ root: input.root, hubMachineId: config.machineId, peer, operationId: `${operationId}-install`, transport, journal, limits: config.limits,
@@ -191,6 +228,10 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     });
     const result = await provision({ operation: { id: `${operationId}-install`, kind: "provision", machineId: peer.machineId, expectedEpoch: null, args: {} },
       peer, selected, includeAuth: true, confirmedProviders: providers, expectedAuthBytes: size, expectedFiles: selectedFiles, expectedSelectionDigest: selectionDigest }, ports);
+    if (result.code === 0 && journal.read(`${operationId}-install`).some(row => row.action === "done" && row.result.code === 0)) {
+      journal.record(operationId, "provision-completed", { installOperationId: `${operationId}-install`, releaseHash: pinned.sha256, contextDigest });
+      await removeProvisionSource(input.root, operationId);
+    }
     (result.code === 0 ? io.out : io.err)(`${safe(result.reason)}\n`); return result.code;
   } catch (error) {
     if (error instanceof SelectedFilesError) {

@@ -13,6 +13,7 @@ export interface IdLockHandoff { operationId: string; nonce: string; file?: stri
 export interface IdLockObservation {
   identity: ProcessIdentity; bootId: string; pendingOperationId: string | null; pendingFile: string | null; pendingCoreId: string | null; operationId: string | null;
 }
+export interface ReleasedIdLock { sessionId: string; operationId: string; identity: ProcessIdentity; bootId: string }
 export interface IdLockHandle {
   release(): Promise<void>;
   transfer(next: ProcessIdentity): Promise<void>;
@@ -91,6 +92,24 @@ export async function inspectIdLock(root: string, sessionId: string): Promise<Id
   const record = parseRecord(value, sessionId);
   return { identity: { ...record.identity }, bootId: record.bootId, pendingOperationId: record.handoff?.operationId ?? null,
     pendingFile: record.handoff?.file ?? null, pendingCoreId: record.handoff?.coreId ?? null, operationId: record.operationId ?? null };
+}
+
+/** The last released adoption is retained per session so a clean exit is distinguishable from no launch. */
+export async function inspectReleasedIdLock(root: string, sessionId: string, operationId: string): Promise<ReleasedIdLock | null> {
+  if (typeof sessionId !== 'string' || !sessionId || sessionId.includes('\0') || !operationIdValid(operationId)) {
+    throw new HerdrError('invalid-session-id-lock', 'Session and operation identities are required');
+  }
+  const stateRoot = resolve(root), directory = join(stateRoot, 'id-lock-releases'), file = join(directory, `${hash(sessionId)}.json`);
+  try { await checkPrivate(stateRoot, true); await checkPrivate(directory, true); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
+  const value = await readPrivateJson(file) as (ReleasedIdLock & { version: number }) | null;
+  if (value === null) return null;
+  await checkPrivate(file, false);
+  if (value.version !== 1 || value.sessionId !== sessionId || !operationIdValid(value.operationId) || !validIdentity(value.identity) ||
+      typeof value.bootId !== 'string' || !value.bootId || value.bootId !== value.bootId.trim()) {
+    throw new HerdrError('invalid-session-id-lock', 'Released session ownership record is invalid');
+  }
+  return value.operationId === operationId ? { sessionId, operationId, identity: { ...value.identity }, bootId: value.bootId } : null;
 }
 
 /** Inspect pending handoffs without returning their nonce, token, or file contents. */
@@ -191,6 +210,12 @@ export async function claimIdLock(root: string, sessionId: string, identity: Pro
         const current = await read();
         if (current?.token === token) {
           if (current.handoff) throw new HerdrError('session-id-owner', 'Session ID handoff is pending');
+          if (current.operationId) {
+            const releases = join(stateRoot, 'id-lock-releases');
+            await privateDirectory(releases); await checkPrivate(releases, true);
+            await writePrivateJson(join(releases, `${hash(sessionId)}.json`), { version: 1, sessionId,
+              operationId: current.operationId, identity: current.identity, bootId: current.bootId });
+          }
           await unlink(file);
         }
       });

@@ -127,6 +127,16 @@ function fixture() {
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
+it("names the earlier operation that blocks provisioning", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.cleanupSecrets = async () => { throw Object.assign(new Error("blocked"), {
+    code: "release-in-progress", details: { blockingOperationId: "previous-op" },
+  }); };
+  expect(await provision!(f.request("blocked-operation"), f.ports)).toMatchObject({
+    reason: "release-in-progress (previous-op)",
+  });
+}, 5000);
+
 it("persists box enrollment between identity claim and release launch", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
   expect(await provision!(f.request("enrollment-order"), f.ports)).toMatchObject({ code: 0 });

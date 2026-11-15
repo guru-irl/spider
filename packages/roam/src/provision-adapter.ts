@@ -31,7 +31,11 @@ function failure(error: unknown, action: string): HerdrError {
     "release-in-progress", "process-identity-unavailable", "release-launch-uncertain", "operation-arguments-changed", "short-write-pending"]);
   const candidate = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "";
   const code = safe.has(candidate) ? candidate : "provision-failed";
-  return new HerdrError(code, `Provisioning ${action} failed (${code})`);
+  const details = error && typeof error === "object" && "details" in error ? error.details : undefined;
+  const blocking = code === "release-in-progress" && details && typeof details === "object" && "blockingOperationId" in details &&
+    typeof details.blockingOperationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(details.blockingOperationId)
+    ? { blockingOperationId: details.blockingOperationId } : undefined;
+  return new HerdrError(code, `Provisioning ${action} failed (${code})`, blocking);
 }
 function samePeer(expected: Peer, actual: Peer): boolean {
   return expected.machineId === actual.machineId && expected.alias === actual.alias && expected.node === actual.node &&

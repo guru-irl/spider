@@ -45,6 +45,7 @@ async function releaseCli(suite: Suite): Promise<string> {
   await mkdir(roam, { recursive: true });
   const cli = join(roam, 'cli.mjs');
   await copyFile(suite.packed.roamCli, cli);
+  await copyFile(join(suite.packed.root, 'dist', 'roam', 'cli-main.mjs'), join(roam, 'cli-main.mjs'));
   await writeFile(join(root, 'extension.js'), '// SPIDER_BUILD_ID=abcdef1@2026-01-01T00:00:00.000Z v1.2.3\n');
   return cli;
 }

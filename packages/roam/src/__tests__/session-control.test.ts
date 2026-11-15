@@ -82,6 +82,26 @@ it.each([
   expect(result).toMatchObject({ code: 1, reason }); expect(effects).toBe(0); expect(f.journal.read(f.operation.id)).toEqual([]);
 }, 5000);
 
+it.each(["stopped", "suspended"])("does not replace a %s authority with running at the same epoch", async kind => {
+  const f = fixture(), authority = control.createRunningIntentAuthority(f.db);
+  await authority.set(kind === "stopped" ? { ...f.intent, desired: "stopped" } : { ...f.intent, suspended: "review required" }, f.operation.id);
+  await expect(authority.set(f.intent, "another-start")).rejects.toThrow(/stopped or suspended/i);
+  expect(await control.createRunningIntentAuthority(f.db).get("session-1")).toMatchObject(
+    kind === "stopped" ? { desired: "stopped", epoch: f.intent.epoch } : { suspended: "review required", epoch: f.intent.epoch });
+}, 5000);
+
+it("keeps a stop generation across retries but changes it after resume", async () => {
+  const f = fixture(), authority = control.createRunningIntentAuthority(f.db) as control.RunningIntentAuthority & { stopToken?: (id: string) => string | null };
+  expect(authority.stopToken).toBeTypeOf("function");
+  await authority.set(f.intent, f.operation.id); expect(authority.stopToken!("session-1")).toBeNull();
+  await authority.stop("session-1"); const first = authority.stopToken!("session-1"); expect(first).toBeTypeOf("string");
+  const reopened = control.createRunningIntentAuthority(f.db) as typeof authority;
+  expect(reopened.stopToken!("session-1")).toBe(first);
+  await authority.stop("session-1"); expect(authority.stopToken!("session-1")).toBe(first);
+  await authority.resume("session-1", async () => []); expect(authority.stopToken!("session-1")).toBeNull();
+  await authority.stop("session-1"); expect(authority.stopToken!("session-1")).not.toBe(first);
+}, 5000);
+
 it("stopped authority survives reopening and failed doctor cannot resume", async () => {
   const f = fixture(), authority = control.createRunningIntentAuthority(f.db);
   await authority.set(f.intent, f.operation.id);

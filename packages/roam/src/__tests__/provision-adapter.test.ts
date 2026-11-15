@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { build } from "vite";
@@ -61,8 +61,9 @@ function fixture() {
         timeout: request.action === "verify" ? 4900 : 4000,
         env: { ...process.env, HOME: home, PATH: bin, SPIDER_GLOBAL_ROOT: globalRoot } });
       if (child.status !== 0) throw new Error("fixture remote program failed");
-      const reply = JSON.parse(child.stdout) as { error?: string; value?: unknown };
-      if (reply.error) throw Object.assign(new Error("remote request failed"), { code: reply.error });
+      const reply = JSON.parse(child.stdout) as { error?: string; operationId?: string; value?: unknown };
+      if (reply.error) throw Object.assign(new Error("remote request failed"), { code: reply.error,
+        ...(reply.operationId ? { details: { blockingOperationId: reply.operationId } } : {}) });
       return reply.value;
     },
     async launchRelease(_peer: Peer, _operationId: string, requestFile: string) {
@@ -129,6 +130,7 @@ it("reconciles a lost release-launch reply and never runs a duplicate installati
   expect(calls[1].args.some(arg => arg.endsWith("release.tgz"))).toBe(true);
   expect(JSON.stringify(calls)).not.toContain("npm:pi-intercom");
   expect(f.writes.every(item => item.bytes.length <= 32)).toBe(true);
+  expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1")).filter(name => /^release-[a-f0-9]{32}-\d+$/.test(name))).toEqual([]);
   expect(await adapter.installRelease(f.peer, f.input)).toEqual(installed);
   expect(f.launches).toHaveLength(1);
   expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
@@ -189,6 +191,41 @@ it("blocks another operation while a prior background release is unresolved", as
   expect(f.launches).toHaveLength(1);
 }, 5000);
 
+it("abandons an old prepared release only after its deadline and an absent terminal observation", async () => {
+  const f = fixture(), first = create!(f.options), second = create!({ ...f.options, operationId: "op-2" });
+  const delayedLaunch = f.remote.launchRelease.bind(f.remote);
+  f.remote.launchRelease = async () => { throw Object.assign(new Error("refused"), { code: "core-changed" }); };
+  await expect(first.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "core-changed" });
+  const stage = join(f.globalRoot, "roam", "provision", "op-1"), requestFile = join(stage, "release-request");
+  expect(existsSync(join(stage, "release-receipt.json"))).toBe(false);
+  const old = new Date(Date.now() - 120_000); utimesSync(requestFile, old, old);
+  await second.cleanupSecrets(f.peer);
+  expect(JSON.parse(readFileSync(join(stage, "release-receipt.json"), "utf8"))).toMatchObject({ state: "failed", reason: "release-abandoned" });
+  expect(readdirSync(stage).filter(name => /^release-[a-f0-9]{32}-\d+$/.test(name))).toEqual([]);
+  await delayedLaunch(f.peer, "op-1", requestFile);
+  expect(JSON.parse(readFileSync(join(stage, "release-receipt.json"), "utf8"))).toMatchObject({ state: "failed", reason: "release-abandoned" });
+  f.remote.launchRelease = delayedLaunch; const log = releaseNpm(f);
+  expect(await second.installRelease(f.peer, f.input)).toEqual({ pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor });
+  expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
+}, 5000);
+
+it("retains an expired prepared release when a labelled terminal or its core evidence is uncertain", async () => {
+  const f = fixture(), first = create!(f.options), second = create!({ ...f.options, operationId: "op-2" });
+  f.remote.launchRelease = async () => { throw Object.assign(new Error("refused"), { code: "core-changed" }); };
+  await expect(first.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "core-changed" });
+  const stage = join(f.globalRoot, "roam", "provision", "op-1"), requestFile = join(stage, "release-request");
+  await expect(second.cleanupSecrets(f.peer)).rejects.toMatchObject({ code: "release-in-progress", details: { blockingOperationId: "op-1" } });
+  const old = new Date(Date.now() - 120_000); utimesSync(requestFile, old, old);
+  for (const state of ["live", "finished"]) {
+    writeFileSync(f.terminalFile, JSON.stringify({ terminals: [{ state, labels: { "spider.operation": "op-1", "spider.machine": f.peer.machineId } }] }));
+    await expect(second.cleanupSecrets(f.peer)).rejects.toMatchObject({ code: "release-in-progress", details: { blockingOperationId: "op-1" } });
+    expect(existsSync(join(stage, "release-receipt.json"))).toBe(false);
+  }
+  writeFileSync(join(f.bin, "hc"), `#!${process.execPath}\nconsole.log(JSON.stringify({core:{id:'replacement-core'}}));\n`, { mode: 0o700 });
+  await expect(second.cleanupSecrets(f.peer)).rejects.toMatchObject({ code: "release-in-progress", details: { blockingOperationId: "op-1" } });
+  expect(existsSync(join(stage, "release-receipt.json"))).toBe(false);
+}, 5000);
+
 it("turns an interrupted started receipt into failure when the labelled terminal finished", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
   const f = fixture(), adapter = create!({ ...f.options, limits: { ...f.options.limits, importMs: 150, retryDelaysMs: [1] } });
@@ -201,7 +238,9 @@ it("turns an interrupted started receipt into failure when the labelled terminal
   };
   await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "installer-interrupted" });
   expect(f.launches).toHaveLength(1);
-  expect(JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"))).toMatchObject({ state: "failed" });
+  const stage = join(f.globalRoot, "roam", "provision", "op-1");
+  expect(JSON.parse(readFileSync(join(stage, "release-receipt.json"), "utf8"))).toMatchObject({ state: "failed" });
+  expect(readdirSync(stage).filter(name => /^release-[a-f0-9]{32}-\d+$/.test(name))).toEqual([]);
 }, 5000);
 
 it("records a failed installer and does not repeat it for the same operation", async () => {
@@ -211,6 +250,7 @@ it("records a failed installer and does not repeat it for the same operation", a
   await expect(adapter.installRelease(f.peer, f.input)).rejects.toThrow();
   const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
   expect(receipt.state).toBe("failed");
+  expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1")).filter(name => /^release-[a-f0-9]{32}-\d+$/.test(name))).toEqual([]);
   await expect(adapter.installRelease(f.peer, f.input)).rejects.toThrow();
   expect(f.launches).toHaveLength(1);
 }, 5000);
@@ -239,6 +279,19 @@ it("waits for a live short writer before repeating the same operation", async ()
   await adapter.systemd.writeUnit(unit, "fixture unit");
   expect(readFileSync(join(f.unitDir, unit), "utf8")).toBe("fixture unit");
 }, 5000);
+
+it("the destination refuses a direct attempt to overwrite the core unit", async () => {
+  const f = fixture(), core = join(f.unitDir, "herdr-core.service"); writeFileSync(core, "original core unit", { mode: 0o600 });
+  await expect(f.remote.executeProvision(f.peer, { action: "unit-write", operationId: "op-1", machineId: f.peer.machineId,
+    home: f.home, globalRoot: f.globalRoot, agentDir: f.agentDir, npmPrefix: f.npmPrefix, unitDir: f.unitDir,
+    maximum: f.options.limits.agentBytes, chunkBytes: f.options.limits.chunkBytes,
+    unit: "herdr-core.service", contents: "replacement" })).rejects.toMatchObject({ code: "invalid-unit" });
+  expect(readFileSync(core, "utf8")).toBe("original core unit");
+}, 5000);
+
+it("keeps the single remote program argument below Linux's conservative limit", () => {
+  expect(Buffer.byteLength(remoteProgram!)).toBeLessThan(120 * 1024);
+});
 
 it("installs a valid thinking level through the generated destination program", async () => {
   const f = fixture(), adapter = create!(f.options);

@@ -203,6 +203,23 @@ it.each(["../auth.json", "/etc/passwd", "auth.json", "trust.json", "sessions/x",
   }, 5000,
 );
 
+it.each(["path", "command"])("ignores %s in settings keys that are not copied", kind => {
+  const f = fixture(), foreign = ["", "Users", "example", "extension"].join("/");
+  const ignored = kind === "path" ? { packages: [foreign], retry: { enabled: true, unknown: { path: foreign } } }
+    : { apiKey: "!private-command", retry: { enabled: true, unknown: { token: "!private-command" } } };
+  f.write(f.sourceRoot, "settings.json", JSON.stringify({ theme: "sample", ...ignored }));
+  const result = f.run(["settings.json"]);
+  expect(result.credentialFiles).toEqual([]);
+  expect(result.providers).toEqual([]);
+  expect(JSON.parse(result.files[0].bytes.toString("utf8"))).toEqual({ theme: "sample", retry: { enabled: true } });
+}, 5000);
+
+it("still refuses a Mac path in a copied settings key", () => {
+  const f = fixture(), foreign = ["", "Users", "example", "theme.json"].join("/");
+  f.write(f.sourceRoot, "settings.json", JSON.stringify({ theme: foreign, packages: ["safe"] }));
+  expect(() => f.run(["settings.json"])).toThrow(expect.objectContaining({ code: "unsupported-path", files: ["settings.json"] }));
+}, 5000);
+
 it("reports selected files with Mac absolute paths without exposing their values", () => {
   expect(prepare).toBeTypeOf("function");
   const f = fixture(), foreign = ["", "Users", "example", "private"].join("/");

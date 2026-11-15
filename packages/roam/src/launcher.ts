@@ -6,7 +6,7 @@ import { createHcClient, invokeCli as invokeHcCli, observeCoreIdentity } from "@
 import { invokeCli as invokeTransport } from "@spider/herdr/client/cli-transport";
 import { requireCoreAvailable } from "@spider/herdr/client/liveness";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
-import { inspectIdLock } from "@spider/herdr/sessions/id-lock";
+import { bootIdChanged, inspectIdLock, inspectReleasedIdLock } from "@spider/herdr/sessions/id-lock";
 import { launchHandoffPath } from "@spider/herdr/sessions/launch-handoff";
 import type { SessionId } from "@spider/herdr";
 import { launchExactSession } from "@spider/herdr/sessions/launcher";
@@ -156,12 +156,38 @@ export function createProductionLocalExactHc(input: {
   return { ...local, async dispose() { await client.dispose(); } };
 }
 
+export async function adoptedOwnerExited(input: {
+  root: string; sessionId: string; operationId: string; file: string;
+  bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe>;
+  leases: Pick<ExactSessionLaunchPorts["leases"], "get">;
+}): Promise<boolean> {
+  const first = await inspectIdLock(input.root, input.sessionId);
+  const adopted = first?.operationId === input.operationId && first.pendingOperationId === null ? first
+    : first ? null : await inspectReleasedIdLock(input.root, input.sessionId, input.operationId);
+  if (!adopted) return false;
+  const boot = await input.bootId();
+  if (!boot || !adopted.bootId) return false;
+  const gone = async (identity: { pid: number; startIdentity: string }, priorBoot: string) => {
+    if (bootIdChanged(priorBoot, boot)) return true;
+    const process = await input.probe(identity.pid);
+    return process.kind === "absent" || process.kind === "live" && process.startIdentity !== identity.startIdentity;
+  };
+  if (!await gone(adopted.identity, adopted.bootId)) return false;
+  const lease = await input.leases.get(input.file);
+  if (lease && !await gone(lease, lease.bootId ?? "")) return false;
+  const last = await inspectIdLock(input.root, input.sessionId);
+  if (!first) return last === null;
+  return last?.operationId === first.operationId && last.pendingOperationId === null && last.bootId === first.bootId &&
+    last.identity.pid === first.identity.pid && last.identity.startIdentity === first.identity.startIdentity;
+}
+
+export type ExactLaunchResult = SessionLaunchResult | { kind: "adopted-exited"; operationId: string };
 export function createExactLaunchAdapter(input: {
   base: Omit<ExactSessionLaunchPorts, "spawnPi" | "reconcileLaunch">;
   journal: Journal;
   hc: LocalExactHc;
   clock: LaunchReconcilePorts["clock"];
-}): { launch(request: ExactSessionLaunchRequest, options?: { mode: "fresh" | "reconcile" }): Promise<SessionLaunchResult> } {
+}): { launch(request: ExactSessionLaunchRequest, options?: { mode: "fresh" | "reconcile" }): Promise<ExactLaunchResult> } {
   const { base, journal, hc, clock } = input;
   return {
     async launch(request, options = { mode: "fresh" }) {
@@ -173,6 +199,8 @@ export function createExactLaunchAdapter(input: {
       }
       const previous = await inspectIdLock(root, request.sessionId), bootId = await base.bootId();
       if (options.mode === "reconcile") {
+        if (await adoptedOwnerExited({ root, sessionId: request.sessionId, operationId, file: request.file, bootId: base.bootId,
+          probe: base.processInventory.probe, leases: base.leases })) return { kind: "adopted-exited", operationId };
         if (previous?.operationId === operationId && previous.pendingOperationId === null) {
           const lease = await base.leases.get(request.file);
           const probe = await base.processInventory.probe(previous.identity.pid);
@@ -235,7 +263,7 @@ async function abortable<T>(signal: AbortSignal, operation: () => Promise<T>): P
   });
 }
 
-/** A missing receipt, a timed-out call, or one absent snapshot never proves no start. */
+/** A missing receipt or timeout alone never proves no start. */
 export function createLaunchReconciler(ports: LaunchReconcilePorts): (operationId: string, options: { signal: AbortSignal }) => Promise<LaunchEvidence> {
   return async (operationId, { signal }) => {
     try {
@@ -254,9 +282,10 @@ export function createLaunchReconciler(ports: LaunchReconcilePorts): (operationI
       };
       const has = (action: string) => actions.some(item => item.action === action);
       const core = one("exact-core"), started = one("exact-hc-started"), exited = one("exact-hc-exited");
-      if (!core || core.coreId !== lock.pendingCoreId) return unknown();
+      const pinnedCore = lock.pendingCoreId;
+      if (allActions.some(item => item.action === "exact-core" && item.result.coreId !== pinnedCore) || !core && has("exact-core")) return unknown();
       const failure = one("exact-prelaunch-error");
-      if (failure && !has("exact-hc-started") && !has("exact-hc-exited") && !has("exact-terminal")) {
+      if (core && failure && !has("exact-hc-started") && !has("exact-hc-exited") && !has("exact-terminal")) {
         if ((failure.errorCode === "core-unavailable" || failure.errorCode === "core-mismatch") && failure.hcPid === undefined) {
           return { receipt: "unknown", terminal: "unknown", proof: { kind: "prelaunch-error", operationId, beforeLaunch: true, errorCode: failure.errorCode } };
         }
@@ -265,11 +294,11 @@ export function createLaunchReconciler(ports: LaunchReconcilePorts): (operationI
         }
       }
       const receipt = has("exact-terminal") ? "started" as const : "unknown" as const;
-      const sample = async () => {
-        if (await abortable(signal, () => ports.coreId(signal)) !== core.coreId) return null;
+      const sample = async (allAttempts = false) => {
+        if (await abortable(signal, () => ports.coreId(signal)) !== pinnedCore) return null;
         const issuedAt = ports.clock.now();
-        const result = await abortable(signal, () => ports.terminals(operationId, { signal, includeFinished: true, ...(typeof attemptId === "string" ? { attemptId } : {}) }));
-        if (await abortable(signal, () => ports.coreId(signal)) !== core.coreId || !result.complete ||
+        const result = await abortable(signal, () => ports.terminals(operationId, { signal, includeFinished: true, ...(!allAttempts && typeof attemptId === "string" ? { attemptId } : {}) }));
+        if (await abortable(signal, () => ports.coreId(signal)) !== pinnedCore || !result.complete ||
             !Array.isArray(result.terminals) || result.terminals.some(item => !item || !text(item.id) || !["live", "finished"].includes(item.state))) return null;
         return { issuedAt, terminals: result.terminals };
       };
@@ -282,6 +311,20 @@ export function createLaunchReconciler(ports: LaunchReconcilePorts): (operationI
         return { receipt, terminal: "present", proof: { kind: "terminal-exited-without-adoption", operationId,
           coreId: lock.pendingCoreId!, terminalId: terminals[0].id, terminalExited: true, lockNeverAdopted: true } };
       };
+      const currentBoot = await abortable(signal, () => ports.bootId(signal));
+      if (bootIdChanged(lock.bootId, currentBoot)) {
+        const first = await sample(true);
+        if (!first) return unknown();
+        if (first.terminals.length) return { receipt, terminal: "present" };
+        const current = await abortable(signal, () => ports.inspectLock());
+        if (!current || current.pendingOperationId !== operationId || current.pendingCoreId !== lock.pendingCoreId ||
+            current.pendingFile !== lock.pendingFile || current.bootId !== lock.bootId || current.identity.pid !== lock.identity.pid ||
+            current.identity.startIdentity !== lock.identity.startIdentity || await abortable(signal, () => ports.bootId(signal)) !== currentBoot ||
+            ports.journal.read(operationId).length !== allActions.length) return unknown();
+        return { receipt, terminal: "absent", proof: { kind: "boot-changed-no-terminal", operationId,
+          coreId: lock.pendingCoreId!, previousBootId: lock.bootId, currentBootId: currentBoot, terminal: "absent" } };
+      }
+      if (!core) return unknown();
       const startedIndex = actions.findIndex(item => item.action === "exact-hc-started");
       const exitedIndex = actions.findIndex(item => item.action === "exact-hc-exited");
       const coreIndex = actions.findIndex(item => item.action === "exact-core");

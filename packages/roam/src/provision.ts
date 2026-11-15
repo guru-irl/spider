@@ -62,13 +62,18 @@ function safeReason(error: unknown): string {
     return files.length ? `${error.code} (${files.join(", ")})` : error.code;
   }
   const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  const details = error && typeof error === "object" && "details" in error ? error.details : undefined;
+  if (code === "release-in-progress" && details && typeof details === "object" && "blockingOperationId" in details &&
+      typeof details.blockingOperationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(details.blockingOperationId)) {
+    return `release-in-progress (${details.blockingOperationId})`;
+  }
   const allowed = new Set(["missing-prerequisite", "machine-mismatch", "unsafe-identity", "core-changed", "core-unavailable", "machine-not-found",
     "machine-ambiguous", "cli-timeout", "consent-required", "invalid-auth", "unsafe-auth", "provider-unavailable", "unsupported-credential-command",
     "auth-cleanup-pending", "auth-install-failed", "auth-preview-changed", "invalid-destination-settings", "settings-preview-changed", "settings-preview-failed", "invalid-settings-preview", "unsafe-destination",
     "release-digest-mismatch", "invalid-release-path", "core-unit-required", "provider-consent-required", "credential-file-requires-consent",
     "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",
     "release-pending", "release-launch-failed", "release-arguments-changed", "operation-arguments-changed", "short-write-pending", "release-evidence-unavailable", "release-in-progress",
-    "installer-interrupted", "release-install-failed", "command-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch"]);
+    "installer-interrupted", "release-abandoned", "release-install-failed", "command-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch"]);
   if (typeof code === "string" && allowed.has(code)) return code;
   const message = error instanceof Error ? error.message : "";
   if (message === "Operation ID already has different arguments") return "operation-arguments-changed";

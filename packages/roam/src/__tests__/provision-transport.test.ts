@@ -194,6 +194,18 @@ it("reconciles an uncertain launch using a validated core-fenced receipt", async
   await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
 }, 5000);
 
+it("reports only a valid blocking operation from a release-in-progress reply", async () => {
+  const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "clear-secrets", operationId: "op-1", machineId: bootstrapPeer.machineId,
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi };
+  f.state.provisionReply = { version: 1, kind: "provision", error: "release-in-progress", operationId: "previous-op" };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "release-in-progress", details: { blockingOperationId: "previous-op" } });
+  f.state.provisionReply = { version: 1, kind: "provision", error: "release-in-progress", operationId: "unsafe\nvalue" };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+  f.state.provisionReply = { version: 1, kind: "provision", error: "command-failed", operationId: "previous-op" };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+}, 5000);
+
 it("fences an enrolled installer and sends sensitive request data only on stdin", async () => {
   const f = fixture(), port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   const request = { action: "secret-chunk", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,

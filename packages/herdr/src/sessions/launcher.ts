@@ -8,7 +8,7 @@ import { HERDR_LABELS, type SessionId } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { canonicalSessionFile, launchEnvironment, refuseExplicitExtensions, type LaunchEnvironment } from './registry.js';
 import { assessSessionLiveness, recordedSessionLiveness, type SessionLeasePolicy, type ProcessIdentity, type ProcessInventoryPorts, type SessionLeases } from './lease.js';
-import { claimIdLock, inspectIdLock } from './id-lock.js';
+import { bootIdChanged, claimIdLock, inspectIdLock } from './id-lock.js';
 import { exactLaunchArgv } from './launch-limits.js';
 import { launchHandoffPath, removeLaunchHandoff, writeLaunchHandoff } from './launch-handoff.js';
 export interface SessionLaunchRequest { sessionFile: string; sessionId: SessionId; cwd: string; environment: LaunchEnvironment }
@@ -63,11 +63,12 @@ export type LaunchNoStartProof =
       ({ errorCode: 'core-unavailable' | 'core-mismatch' } | { errorCode: 'missing-hc' | 'spawn-error'; hcPid: null }))
   | { kind: 'no-terminal-after-hc-exit'; operationId: string; coreIdBefore: string; hcExitedAt: number;
       first: { coreId: string; issuedAt: number; terminal: 'absent' }; second: { coreId: string; issuedAt: number; terminal: 'absent' }; confirmationBoundMs: number }
-  | { kind: 'terminal-exited-without-adoption'; operationId: string; coreId: string; terminalId: string; terminalExited: true; lockNeverAdopted: true };
+  | { kind: 'terminal-exited-without-adoption'; operationId: string; coreId: string; terminalId: string; terminalExited: true; lockNeverAdopted: true }
+  | { kind: 'boot-changed-no-terminal'; operationId: string; coreId: string; previousBootId: string; currentBootId: string; terminal: 'absent' };
 export interface LaunchEvidence {
   receipt: 'absent' | 'started' | 'finished' | 'unknown'; terminal: 'absent' | 'present' | 'unknown'; proof?: LaunchNoStartProof;
 }
-function provedNoStart(value: LaunchEvidence, operationId: string, coreId: string): boolean {
+function provedNoStart(value: LaunchEvidence, operationId: string, coreId: string, expectedBootId: string): boolean {
   const proof = value.proof;
   if (!proof || proof.operationId !== operationId) return false;
   if (proof.kind === 'prelaunch-error') {
@@ -80,6 +81,10 @@ function provedNoStart(value: LaunchEvidence, operationId: string, coreId: strin
     return proof.coreId === coreId && typeof proof.terminalId === 'string' && proof.terminalId.length > 0 &&
       proof.terminalId.length <= 256 && !/[\x00-\x1f\x7f/]/.test(proof.terminalId) &&
       proof.terminalExited === true && proof.lockNeverAdopted === true;
+  }
+  if (proof.kind === 'boot-changed-no-terminal') {
+    return value.terminal === 'absent' && proof.terminal === 'absent' && proof.coreId === coreId && proof.previousBootId === expectedBootId &&
+      bootIdChanged(proof.previousBootId, proof.currentBootId);
   }
   if (proof.kind === 'no-terminal-after-hc-exit') {
     const { first, second, hcExitedAt, confirmationBoundMs } = proof;
@@ -175,7 +180,7 @@ export async function launchExactSession(request: ExactSessionLaunchRequest, por
     if (previous?.pendingOperationId) {
       if (request.operationId !== undefined && previous.pendingOperationId !== request.operationId) throw new HerdrError('launch-pending', 'A different exact launch is pending');
       const evidence = await launchEvidence(ports, previous.pendingOperationId);
-      if (!provedNoStart(evidence, previous.pendingOperationId, ports.core.coreId) ||
+      if (!provedNoStart(evidence, previous.pendingOperationId, ports.core.coreId, previous.bootId) ||
           evidence.proof?.kind !== 'prelaunch-error' && previous.pendingCoreId !== ports.core.coreId || !previous.pendingFile ||
           await canonicalSessionFile(previous.pendingFile) !== previous.pendingFile) throw new HerdrError('launch-pending', 'Exact session launch needs reconciliation');
       recoverPending = previous.pendingOperationId;
@@ -247,10 +252,10 @@ export async function launchExactSession(request: ExactSessionLaunchRequest, por
       const evidence = await launchEvidence(ports, operationId);
       const result = await adopted();
       if (result) return result;
-      if (provedNoStart(evidence, operationId, ports.core.coreId) && ports.retainProvedHandoff) {
+      if (provedNoStart(evidence, operationId, ports.core.coreId, boot) && ports.retainProvedHandoff) {
         throw new HerdrError('launch-pending', 'Proved no-start handoff awaits reconciliation');
       }
-      if (provedNoStart(evidence, operationId, ports.core.coreId) && await id.cancelHandoff(operationId)) {
+      if (provedNoStart(evidence, operationId, ports.core.coreId, boot) && await id.cancelHandoff(operationId)) {
         try { await removeLaunchHandoff(root, operationId); }
         finally { await ports.leases.release(file, lease.token, { mode: 'cutover' }); }
         throw new HerdrError('launch-not-started', 'Exact session did not acquire ownership');

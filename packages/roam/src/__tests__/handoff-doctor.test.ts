@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { lstat, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { claimIdLock } from "@spider/herdr/sessions/id-lock";
 import { writeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
@@ -37,6 +37,36 @@ it.each([
   expect(JSON.stringify(report)).not.toContain(pending.nonce);
   expect(JSON.stringify(report)).not.toContain("a".repeat(64));
   expect(await snapshot()).toEqual(before);
+}, 5000);
+
+it("names the resume command for a crash-suspended session", async () => {
+  const parent = resolve(".spider/scratch/roam-handoff-doctor");
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const root = await mkdtemp(join(parent, "suspended-")); roots.push(root);
+  const store = createIntentStore(root), id = "session-1";
+  await store.update(id, null, { intent: { sessionId: id, epoch: 1, desired: "running", suspended: "Repeated session crashes need review",
+    file: join(root, "session.jsonl"), cwd: root, moveId: null }, failures: [1, 2, 3, 4, 5], supervision: { kind: "idle", nextAttemptAt: null } });
+  const report = await runLocalDoctor({ root });
+  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/session-1.*crashes/i),
+    repairCommand: "spider roam resume session-1" })]));
+}, 5000);
+
+it("offers resume for a pending reservation whose adopted owner is proved absent", async () => {
+  const parent = resolve(".spider/scratch/roam-handoff-doctor");
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const root = await mkdtemp(join(parent, "adopted-")); roots.push(root);
+  const file = join(root, "session.jsonl"), stateRoot = join(root, "herdr");
+  await writeFile(file, "session\n", { mode: 0o600 });
+  await createIntentStore(root).update("session-1", null, { intent: { sessionId: "session-1", epoch: 1, desired: "stopped", suspended: null,
+    file, cwd: root, moveId: null }, failures: [], supervision: { kind: "launching", operationId: "launch-1", phase: "invoking" } });
+  const owner = { pid: 201, startIdentity: "launcher" }, child = { pid: 202, startIdentity: "child" };
+  const lock = await claimIdLock(stateRoot, "session-1", owner, async () => ({ kind: "live", startIdentity: owner.startIdentity }), { bootId: async () => "boot-1" });
+  const handoff = await lock.prepareHandoff("launch-1", file, "core-1");
+  const adopted = await claimIdLock(stateRoot, "session-1", child, async () => ({ kind: "live", startIdentity: child.startIdentity }), { bootId: async () => "boot-1", handoff });
+  await adopted.release();
+  const report = await runLocalDoctor({ root, launchRecovery: { bootId: async () => "boot-1", probe: async () => ({ kind: "absent" }) } });
+  expect(report.diagnostics).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/session-1.*launch-1.*exited/i),
+    repairCommand: "spider roam resume session-1" })]));
 }, 5000);
 
 it("reports a reserved launch with no handoff without changing its state", async () => {

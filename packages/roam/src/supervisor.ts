@@ -36,6 +36,7 @@ export interface SupervisorPorts {
   inspect(sessionId: string): Promise<SupervisorObservation>;
   launch(request: SupervisorLaunch): Promise<Outcome<HubOperationReadiness>>;
   stop(sessionId: string): Promise<Probe>;
+  cancelStop?(sessionId: string): void;
   notify(sessionId: string, reason: string): Promise<void>;
 }
 
@@ -118,6 +119,22 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       await ports.notify(id, reason);
     }
   }
+  async function recordCrash(id: string, current: VersionedIntent, stableSince?: number): Promise<void> {
+    const state = current.value, now = ports.clock.now();
+    if (stableSince !== undefined && now < stableSince || state.failures.some(at => at > now)) {
+      await suspend(id, current, "Cannot verify the crash history clock"); return;
+    }
+    const failures = [...state.failures.filter(at => now - at <= 600_000), now];
+    if (failures.length >= 5) {
+      const reason = "Repeated session crashes need review";
+      if (await save(id, current, { ...state, failures, intent: { ...state.intent, suspended: reason },
+        supervision: { kind: "idle", nextAttemptAt: null } })) await ports.notify(id, reason);
+    } else {
+      const delay = [5_000, 15_000, 60_000, 300_000][failures.length - 1];
+      const nextAttemptAt = now + delay;
+      if (await save(id, current, { ...state, failures, supervision: { kind: "idle", nextAttemptAt } })) retryAt(id, nextAttemptAt);
+    }
+  }
   async function visit(id: string): Promise<void> {
     const authoritative = await ports.runningIntents.get(id);
     if (!authoritative || authoritative.sessionId !== id) return;
@@ -145,8 +162,10 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
     if (state.intent.desired === "stopped") {
       cancelRetry(id);
       if (observation.owner.kind === "live") await ports.stop(id);
+      else if (observation.owner.kind === "absent") ports.cancelStop?.(id);
       return;
     }
+    ports.cancelStop?.(id);
     if (state.intent.suspended !== null) { cancelRetry(id); return; }
     if (observation.unfinishedFreeze) { await suspend(id, current, "An unfinished freeze needs review"); return; }
     if (observation.owner.kind === "uncertain") { await suspend(id, current, "Cannot prove the session owner absent"); return; }
@@ -162,20 +181,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       return;
     }
     if (state.supervision.kind === "live") {
-      const now = ports.clock.now();
-      if (now < state.supervision.stableSince || state.failures.some(at => at > now)) {
-        await suspend(id, current, "Cannot verify the crash history clock"); return;
-      }
-      const failures = [...state.failures.filter(at => now - at <= 600_000), now];
-      if (failures.length >= 5) {
-        const reason = "Repeated session crashes need review";
-        if (await save(id, current, { ...state, failures, intent: { ...state.intent, suspended: reason },
-          supervision: { kind: "idle", nextAttemptAt: null } })) await ports.notify(id, reason);
-      } else {
-        const delay = [5_000, 15_000, 60_000, 300_000][failures.length - 1];
-        const nextAttemptAt = now + delay;
-        if (await save(id, current, { ...state, failures, supervision: { kind: "idle", nextAttemptAt } })) retryAt(id, nextAttemptAt);
-      }
+      await recordCrash(id, current, state.supervision.stableSince);
       return;
     }
     if (state.supervision.kind === "idle" && state.supervision.nextAttemptAt !== null && state.supervision.nextAttemptAt > ports.clock.now()) {
@@ -195,6 +201,13 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       const outcome = await ports.launch(request);
       const latest = await ports.intents.get(id);
       if (!latest || !sameIntent(latest.value.intent, state.intent) || latest.value.supervision.kind !== "launching") return;
+      if (request.mode === "reconcile" && outcome.code === 1 && outcome.reason === "adopted-exited" &&
+          outcome.operationId === latest.value.supervision.operationId) {
+        const after = await ports.inspect(id), authorityAfter = await ports.runningIntents.get(id);
+        if (after.owner.kind === "absent" && authorityAfter && authorityAfter.suspended === null && after.intent.suspended === null &&
+            sameAuthority(latest.value.intent, authorityAfter) && sameAuthority(latest.value.intent, after.intent)) await recordCrash(id, latest);
+        return;
+      }
       if (outcome.code === 1 && ["missing-auth", "session-file-invalid", "process-identity-unavailable", "session-may-be-live"].includes(outcome.reason)) {
         await suspend(id, latest, "Hosting prerequisites need review"); return;
       }

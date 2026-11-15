@@ -11,7 +11,7 @@ vi.mock("./broker/client.js", async () => {
     sessionId = "own"; connected = false;
     constructor() { super(); state.clients.push(this); }
     async connect() { this.connected = true; } isConnected() { return this.connected; } supportsFeature() { return true; }
-    async listSessions() { return state.sessions; } async disconnect() { this.connected = false; } updatePresence() {}
+    async listSessions() { return state.sessions; } async disconnect() { this.connected = false; } updatePresence(value: unknown) { this.emit("presence-update", value); }
     onBrokerMessage(handler: any) { this.on("broker_message", handler); return () => this.off("broker_message", handler); }
     onMessageReceipt(handler: any) { this.on("message_receipt", handler); return () => this.off("message_receipt", handler); }
     onMessageControl(handler: any) { this.on("message_control", handler); return () => this.off("message_control", handler); }
@@ -91,4 +91,18 @@ it("replies by session ID after its sender moves to a different machine", async 
   state.sessions = [state.sessions[0], { ...remote, machineId: "machine-new", machineAlias: "new.invalid", homeEpoch: 2, activationEpoch: "new-generation", endpointEpoch: "new-generation" }];
   const result = await f.execute({ action: "reply", replyTo: "original-ask", message: "answer" });
   expect(result.details.delivered).toBe(true); expect(sent.at(-1)[0]).toBe("peer"); expect(sent.at(-1)[1].replyTo).toBe("original-ask");
+}, 5000);
+
+
+it("promptly republishes the original session after its owner formalizes the first home", async () => {
+  let firstHome = false;
+  const f = await fixture([], request => {
+    const endpoint = { address: { sessionId: "own", scopeId: null }, machineId: "local-machine", homeEpoch: null, activationEpoch: request.activationEpoch };
+    request.endpoint = endpoint;
+    request.refreshInitialHome = async () => firstHome ? { ...endpoint, homeEpoch: 1 } : undefined;
+  });
+  const updates: unknown[] = []; f.client.on("presence-update", (value: unknown) => updates.push(value));
+  firstHome = true;
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(updates).toContainEqual(expect.objectContaining({ homeEpoch: 1 }));
 }, 5000);

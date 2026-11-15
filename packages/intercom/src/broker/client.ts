@@ -770,7 +770,7 @@ export class IntercomClient extends EventEmitter {
     }
   }
 
-  updatePresence(updates: { name?: string; runtimeFallbackAlias?: boolean; status?: string; model?: string; contextPct?: number | null; contextTokens?: number | null; contextWindow?: number | null }): void {
+  updatePresence(updates: { homeEpoch?: number; name?: string; runtimeFallbackAlias?: boolean; status?: string; model?: string; contextPct?: number | null; contextTokens?: number | null; contextWindow?: number | null }): void {
     if (this.disconnecting) {
       return;
     }
@@ -845,7 +845,7 @@ export class IntercomFederationClient extends EventEmitter {
           if (registered || !Array.isArray(value.features) || !value.features.includes(FEDERATION_FEATURE)) throw new Error("federation-feature-required");
           registered = true; this.ready = true; this.features = new Set(value.features); clearTimeout(timer); resolve();
         } else if (!registered) throw new Error("federation-unavailable");
-        else this.handleMessage(value);
+        else this.handleMessage(value, socket);
       }, error => { if (!registered) reject(error); socket.destroy(); }));
       writeMessage(socket, { type: "federation_register", ...registration });
     });
@@ -854,14 +854,19 @@ export class IntercomFederationClient extends EventEmitter {
     if (!this.socket || !this.ready || this.socket.destroyed) throw new Error("federation-disconnected");
     writeMessage(this.socket, message);
   }
-  private handleMessage(message: FederationBrokerMessage): void {
+  /** Late results belong only to the connection that received the request. */
+  private sendCompletion(socket: net.Socket, message: FederationClientMessage): void {
+    if (this.socket !== socket || !this.ready || socket.destroyed) return;
+    try { writeMessage(socket, message); } catch { socket.destroy(); }
+  }
+  private handleMessage(message: FederationBrokerMessage, socket: net.Socket): void {
     if (message.type === "federation_dispatch") {
       const requestId = message.requestId;
       void this.bridge!.dispatch(message.dispatch).then(result => {
         if (!isFederationDispatchResult(result)) throw new Error("invalid-federation-result");
-        if (this.ready) this.send({ type: "federation_result", requestId, result });
+        this.sendCompletion(socket, { type: "federation_result", requestId, result });
       }).catch(() => {
-        if (this.ready) this.send({ type: "federation_result", requestId, result: { delivery: "unknown", retryable: false, outcomeKnown: false, acceptance: { accepted: false, durable: false }, reason: "bridge-dispatch-unknown" } });
+        this.sendCompletion(socket, { type: "federation_result", requestId, result: { delivery: "unknown", retryable: false, outcomeKnown: false, acceptance: { accepted: false, durable: false }, reason: "bridge-dispatch-unknown" } });
       });
     } else if (message.type === "federation_local_presence") {
       this.emit("presence", message.sessions);
@@ -877,12 +882,12 @@ export class IntercomFederationClient extends EventEmitter {
       }
       this.helperRequests.set(message.requestId, aborter);
       void Promise.resolve().then(() => handler(message.input, aborter.signal)).then(output => {
-        if (this.ready && !aborter.signal.aborted) this.send({ type: "federation_helper_result", requestId: message.requestId, output });
+        if (!aborter.signal.aborted) this.sendCompletion(socket, { type: "federation_helper_result", requestId: message.requestId, output });
       }).catch((error: unknown) => {
         const code = error && typeof error === "object" && "code" in error ? error.code : null;
-        if (this.ready && !aborter.signal.aborted) this.send({ type: "federation_helper_result", requestId: message.requestId,
+        if (!aborter.signal.aborted) this.sendCompletion(socket, { type: "federation_helper_result", requestId: message.requestId,
           error: isHelperExchangeError(code) ? code : "bridge-exchange-failed" });
-      }).finally(() => { this.helperRequests.delete(message.requestId); });
+      }).finally(() => { if (this.helperRequests.get(message.requestId) === aborter) this.helperRequests.delete(message.requestId); });
     } else if (message.type === "federation_helper_cancel") {
       this.helperRequests.get(message.requestId)?.abort();
       this.helperRequests.delete(message.requestId);

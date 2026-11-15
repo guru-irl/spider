@@ -50,7 +50,7 @@ function fixture(initial = snapshot(), id = sessionId) {
     }
     return result;
   }
-  return { gate, ports, calls, ctx, messages, warnings, emit, handlers,
+  return { gate, ports, calls, ctx, messages, warnings, emit, handlers, pi: host.pi,
     setSnapshot(value: Snapshot) { current = value; },
     failRead(error: Error, alreadyKnown: boolean) { readError = error; known = alreadyKnown; },
     failIdentity(error: Error) { identityError = error; },
@@ -464,4 +464,78 @@ it("a conflicting initial home and incompatible epoch never admit", async () => 
   f.setSnapshot(snapshot({ captureSafe: false }));
   await f.emit("session_start", { reason: "reload" });
   expect(f.gate.inspect().kind).toBe("blocked");
+}, 5000);
+
+
+it("formalizes a running origin's first home through ownership readiness without reacquiring its lock", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const initial = snapshot({ home: null, states: [{ ...active, epoch: 1 }] });
+  const f = fixture(initial), ready = vi.fn(async () => {}); f.ports.ready = ready;
+  await f.emit("session_start");
+  const firstHome = { ...home, epoch: 1 };
+  f.setSnapshot({ ...initial, home: firstHome });
+  await f.gate.refreshInitialHome();
+  expect(f.gate.inspect()).toEqual({ kind: "ordinary", home: firstHome, blockers: [] });
+  expect(ready).toHaveBeenLastCalledWith(sessionId, "/fixture/session.jsonl", 1, firstHome);
+  expect(f.calls.lock).toBe(1); expect(f.calls.released).toBe(0);
+  await f.gate.freeze("move-after-formalization", 1);
+  expect(f.gate.inspect().kind).toBe("control-only");
+}, 5000);
+
+it.each(["different-machine", "higher-epoch", "already-homed", "frozen"] as const)("does not silently refresh ownership for %s", async mode => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const firstHome = { ...home, epoch: 1 };
+  const initial = snapshot({ home: mode === "already-homed" ? firstHome : null, states: [{ ...active, epoch: 1 }] });
+  const f = fixture(initial), ready = vi.fn(async () => {}); f.ports.ready = ready;
+  await f.emit("session_start");
+  if (mode === "frozen") await f.gate.freeze("in-progress-move", 1);
+  const before = f.gate.inspect(); ready.mockClear();
+  f.setSnapshot({ ...initial, home: { ...firstHome, machineId: mode === "different-machine" ? "other.invalid" : local,
+    epoch: mode === "higher-epoch" || mode === "already-homed" ? 2 : 1 } });
+  await f.gate.refreshInitialHome();
+  expect(f.gate.inspect()).toEqual(before);
+  expect(ready).not.toHaveBeenCalled();
+}, 5000);
+
+it("a concurrent freeze wins over first-home readiness", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const initial = snapshot({ home: null, states: [{ ...active, epoch: 1 }] }), f = fixture(initial);
+  await f.emit("session_start");
+  let entered!: () => void, finish!: () => void;
+  const waiting = new Promise<void>(resolve => { entered = resolve; }), complete = new Promise<void>(resolve => { finish = resolve; });
+  f.ports.ready = async () => { entered(); await complete; };
+  f.setSnapshot({ ...initial, home: { ...home, epoch: 1 } });
+  const refreshing = f.gate.refreshInitialHome(); await waiting;
+  const freezing = f.gate.freeze("concurrent-move", 1); finish();
+  await Promise.all([refreshing, freezing]);
+  expect(f.gate.inspect().kind).toBe("control-only");
+  expect(f.gate.inspect().home).toBeNull();
+}, 5000);
+
+
+it("refreshes the original intercom endpoint through the admission gate after first sync", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const { registerRoamIntercom, createHostIntercomPorts } = await import("../roam/intercom");
+  const { INTERCOM_HOST_EVENT } = await import("@spider/intercom/protocol");
+  const initial = snapshot({ home: null, states: [{ ...active, epoch: 1 }] }), f = fixture(initial);
+  let currentHome: Home | null = null;
+  const { createReplica } = await import("@spider/db-core/testutil");
+  const { readLocal } = await import("@spider/db-core/roam/local-state");
+  const replica = createReplica("global", local);
+  const registration = registerRoamIntercom(f.pi as unknown as ExtensionAPI, { ...createHostIntercomPorts(f.gate, { db: replica.db,
+    pid: 12345, probe: () => ({ kind: "live", startIdentity: "fixture-start" }) }), machineId: async () => local,
+    home: () => currentHome });
+  try {
+  await f.emit("session_start");
+  const request: import("@spider/intercom/protocol").IntercomHostRequest = { sessionId, scopeId: null, activationEpoch: "original-process" };
+  f.pi.events.emit(INTERCOM_HOST_EVENT, request);
+  expect(request.endpoint).toMatchObject({ machineId: local, homeEpoch: null, activationEpoch: "original-process" });
+  currentHome = { ...home, epoch: 1 }; f.setSnapshot({ ...initial, home: currentHome });
+  const refreshed = await request.refreshInitialHome!();
+  expect(refreshed).toMatchObject({ machineId: local, homeEpoch: 1, activationEpoch: "original-process" });
+  expect(f.gate.inspect().home).toEqual(currentHome);
+  expect(readLocal(replica.db, "intercom-first-home", JSON.stringify([sessionId, "original-process", local]))).toEqual({
+    sessionId, activation: "original-process", machine: local, fromEpoch: null, toEpoch: 1, adoptedAt: expect.any(Number),
+  });
+  } finally { registration.dispose(); replica.close(); }
 }, 5000);

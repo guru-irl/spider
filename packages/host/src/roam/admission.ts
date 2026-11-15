@@ -17,6 +17,7 @@ import { productionParticipantAdmission } from "./readiness.js";
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[] }
 export interface AdmissionGate {
   inspect(): Admission;
+  refreshInitialHome(): Promise<Admission>;
   whenSettled(): Promise<Admission>;
   close(): Promise<void>;
   freeze(moveId: string, epoch: number): Promise<void>;
@@ -52,7 +53,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   let handoffRequired = process.env.SPIDER_HERDR_HANDOFF_FILE !== undefined;
   if (process.env.PI_SUBAGENT_CHILD === "1" && !handoffRequired) {
     const child: Admission = { kind: "ordinary", home: null, blockers: [] };
-    return { inspect: () => child, whenSettled: async () => child, close: async () => {}, freeze: async () => { throw new Error(VERIFY); }, unfreeze: async () => { throw new Error(VERIFY); } };
+    return { inspect: () => child, refreshInitialHome: async () => child, whenSettled: async () => child, close: async () => {}, freeze: async () => { throw new Error(VERIFY); }, unfreeze: async () => { throw new Error(VERIFY); } };
   }
   let admission: Admission = { kind: "ordinary", home: null, blockers: [] };
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission);
@@ -177,6 +178,25 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
 
   return {
     inspect: () => admission,
+    async refreshInitialHome() {
+      const eligible = () => participating && held?.valid && ordinaryWorkAllowed() && admission.home === null && !freeze && epoch !== null;
+      const ownedEpoch = epoch;
+      if (!eligible() || ownedEpoch === null) return admission;
+      const ticket = generation;
+      await sequence(async () => {
+        if (ticket !== generation || !eligible()) return;
+        const state = await ports.load(sessionId), home = state.home;
+        if (!home || home.sessionId !== sessionId || home.epoch !== ownedEpoch || home.moveId !== null || !state.participating || !state.captureSafe ||
+            state.initialConflict || state.unfinishedFreeze || !state.states.length || state.states.some(row => row.sessionId !== sessionId || row.state !== "active" || row.epoch !== ownedEpoch)) return;
+        const machine = await ports.localMachine();
+        if (ticket !== generation || !eligible() || home.machineId !== machine || state.origin !== machine) return;
+        // The process already holds this epoch and lock. Formalizing its origin
+        // must pass the same readiness/ownership path, not advance its fence.
+        await ports.ready?.(sessionId, sessionFile, ownedEpoch, home);
+        if (ticket === generation && eligible()) publish("ordinary", home);
+      });
+      return admission;
+    },
     async whenSettled() {
       for (;;) {
         const current = transition;

@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 import type { IntercomFederationClient } from "../../intercom/src/broker/client";
 import {
-  FEDERATION_FEATURE, addressKey, isConsumptionReceipt, isRemoteSessionInfo, receiptReleasesPayload, sameAddress,
+  FEDERATION_FEATURE, addressKey, isHelperExchangeError, isConsumptionReceipt, isRemoteSessionInfo, receiptReleasesPayload, sameAddress,
   type FederationBlockers, type FederationBridge, type FederationDispatch, type FederationDispatchResult,
-  type LocalPresence, type MessageControl, type MessageReceipt, type RemoteSessionInfo, type SessionAddress,
+  type FirstHomeAttestation, type LocalPresence, type MessageControl, type MessageReceipt, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint,
 } from "@spider/intercom/protocol";
 import type { Home } from "@spider/db-core/roam/types";
 import type { Clock, Peer, Transport } from "./contracts";
@@ -11,7 +11,7 @@ import { encodeExchange } from "./intercom-codec";
 import { INTERCOM_EXCHANGE_BYTES, INTERCOM_FEDERATION_VERSION, type ExchangeGeneration, type IntercomControlFrame, type IntercomExchange,
   type IntercomIdentity, type IntercomLinkAck, type IntercomPairApproval, type IntercomReceiptFrame, type IntercomRefusal, type IntercomStore, type MissingOriginFrame } from "./intercom-contracts";
 import { ExchangeError, exchange as executeExchange, type EnrolledIntercomEdge } from "./intercom-exchange";
-import { parseHelperEnroll, parseHelperFence, parseHelperInspect, parseHelperRequest, parseHelperRevoke, type HelperEnrollRequest, type HelperReply } from "./intercom-helper";
+import { parseHelperEnroll, parseHelperFence, parseHelperInspect, parseHelperRequest, parseHelperRevoke, parseHelperTopology, type HelperTopologyRequest, type HelperEnrollRequest, type HelperReply } from "./intercom-helper";
 import { acquireHelperRoute, type HelperRouteLease } from "./intercom-route";
 import { isMachineId } from "./machine-id";
 
@@ -34,12 +34,16 @@ export interface BridgePorts {
   routeLease?: HelperRouteLease;
   ensureBroker?(): Promise<void>;
   localPresence(): readonly RemoteSessionInfo[];
+  firstHomeAttestation?(endpoint: SessionEndpoint): FirstHomeAttestation | undefined;
   authorizeLocalPresence?(session: LocalPresence): boolean;
   authoritativeHome(address: SessionAddress): Home | null;
   nextHop?(destinationMachine: string, previousPeer?: string): string | null;
   authorizePresence?(peer: string, entry: RemoteSessionInfo): boolean;
   authorizeOrigin?(peer: string, originMachineId: string): boolean;
   advertiseRelay?(peer: string, entry: RemoteSessionInfo): boolean;
+  topology?(peer: string): IntercomExchange["topology"];
+  onTopology?(peer: string, control: IntercomExchange["topology"]): void;
+  onTopologyRequest?(request: HelperTopologyRequest): Promise<{ machineId: string; transitionId: string; state: "draining" | "switching" | "complete" }>;
   publishPresence?(entries: readonly RemoteSessionInfo[]): void;
   onInbound?(identity: { id: string; to: SessionAddress }): void;
   onReceipt?(frame: IntercomReceiptFrame): void;
@@ -90,7 +94,7 @@ interface EdgeRuntime {
 }
 const bad = (code: string): never => { throw new ExchangeError(code); };
 const hasData = (value: IntercomExchange): boolean => value.frames.length > 0 || value.acknowledgements.length > 0 || (value.refusals?.length ?? 0) > 0 || value.receipts.length > 0 ||
-  (value.receiptAcknowledgements?.length ?? 0) > 0 || value.controls.length > 0;
+  (value.receiptAcknowledgements?.length ?? 0) > 0 || value.controls.length > 0 || value.topology !== undefined;
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 const sameIdentity = (a: IntercomIdentity, b: IntercomIdentity): boolean => a.id === b.id && a.sequence === b.sequence && a.digest === b.digest &&
   a.askId === b.askId && sameAddress(a.from, b.from) && sameAddress(a.to, b.to);
@@ -146,6 +150,14 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     const reachability = link !== "live" ? link : entry.stale && (!entry.reachability || entry.reachability === "live") ? "unknown" : entry.reachability ?? "live";
     return { ...entry, stale: reachability !== "live", reachability };
   };
+  const firstHomePresence = (endpoint: SessionEndpoint, edge: EdgeRuntime | null): RemoteSessionInfo | undefined => {
+    if (edge && !routeLive(edge)) return undefined;
+    const entries = edge ? state(edge).roster : [...ports.localPresence(), ...brokerLocal];
+    return entries.find(entry => sameAddress(entry.address, endpoint.address) && entry.machineId === endpoint.machineId &&
+      entry.homeEpoch === endpoint.homeEpoch && entry.activationEpoch === endpoint.activationEpoch &&
+      (edge ? (ports.authorizePresence?.(edge.config.peer.machineId, entry) ?? entry.machineId === edge.config.peer.machineId) && !projectPresence(edge, entry).stale
+        : entry.machineId === ports.machineId));
+  };
   const wakeRelays = (edge: EdgeRuntime, entries = state(edge).roster): void => {
     if (!ports.advertiseRelay) return;
     for (const other of edges.values()) if (other !== edge && entries.some(entry => ports.advertiseRelay!(other.config.peer.machineId, entry))) {
@@ -171,6 +183,13 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     ports.publishPresence?.(roster);
     if (brokerReady) ports.broker!.publishPresence(roster);
   };
+  const expirePassiveRoute = (edge: EdgeRuntime): void => {
+    const current = state(edge);
+    if (stopped || fenced(edge) || edge.config.initiator || current.lastSuccess === null || current.status === "down" || routeLive(edge)) return;
+    ports.store.updateEdgeState(edge.config.peer.machineId, edge.config.edgeEpoch, old => ({ ...old, status: "down",
+      outageSince: old.outageSince ?? ports.clock.now(), reason: "cli-timeout", failures: old.failures + 1 }));
+    publish(); wakeRelays(edge); ports.onLinkDown?.(edge.config.peer.machineId, "cli-timeout");
+  };
   const armLiveness = (edge: EdgeRuntime): void => {
     edge.livenessCancel?.(); edge.livenessCancel = null;
     if (stopped || fenced(edge)) return;
@@ -178,13 +197,15 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     if (current.status === "down" || current.status === "recovering") return;
     const successUntil = current.lastSuccess !== null && current.lastSuccess <= now ? current.lastSuccess + 35_000 : 0;
     const deadline = Math.max(successUntil, edge.outgoing.get("poll")?.connectedUntil ?? 0);
-    if (deadline > now) edge.livenessCancel = ports.clock.later(deadline - now, () => { edge.livenessCancel = null; publish(); wakeRelays(edge); armLiveness(edge); });
+    if (deadline > now) edge.livenessCancel = ports.clock.later(deadline - now, () => { edge.livenessCancel = null; expirePassiveRoute(edge); publish(); wakeRelays(edge); armLiveness(edge); });
+    else expirePassiveRoute(edge);
   };
   const blank = (peer: string, generation: ExchangeGeneration): IntercomExchange => ({ protocol: INTERCOM_FEDERATION_VERSION, senderMachine: ports.machineId,
     recipientMachine: peer, generation, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] });
   const build = (edge: EdgeRuntime, generation: ExchangeGeneration, acks: readonly IntercomLinkAck[], receiptAcks: readonly IntercomReceiptFrame[], hopBudgetMs: number,
     metadataOnly = false, skipIds: readonly string[] = [], refusals: readonly IntercomRefusal[] = []): IntercomExchange => {
     const peer = edge.config.peer.machineId, result = blank(peer, generation), max = INTERCOM_EXCHANGE_BYTES - 4096;
+    const topology = ports.topology?.(peer); if (topology) result.topology = topology;
     const local = [...new Map([...ports.localPresence(), ...brokerLocal].map(entry => [addressKey(entry.address), entry])).values()];
     if (local.some(entry => !isRemoteSessionInfo(entry) || entry.machineId !== ports.machineId)) return bad("invalid-presence");
     const advertised = new Map(local.map(entry => [addressKey(entry.address), entry]));
@@ -230,6 +251,9 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     edge.retryCancel?.(); edge.retryCancel = null;
     for (const waiter of [...edge.admissionWaiters]) waiter.finish(true);
     publish(); armLiveness(edge);
+    // An incoming metadata-only recovery push cancels our retry timer. It must
+    // also resume retained work; that push's reply cannot carry payload frames.
+    if ((before.status === "down" || before.status === "recovering") && ports.store.hasPending(peer)) bridge.wake(peer);
   };
   const apply = (edge: EdgeRuntime, incoming: IntercomExchange, missingOrigins: readonly MissingOriginFrame[] = []): { acks: IntercomLinkAck[]; receiptAcks: IntercomReceiptFrame[]; refusals: IntercomRefusal[] } => {
     const peer = edge.config.peer.machineId, acks: IntercomLinkAck[] = [], receiptAcks: IntercomReceiptFrame[] = [], refusals: IntercomRefusal[] = [];
@@ -240,7 +264,13 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     }
     for (const refusal of incoming.refusals ?? []) {
       const row = ports.store.retained("outbound", refusal.identity.id);
-      if (!row || row.peer !== peer || !sameIdentity(row.identity, refusal.identity)) return bad("invalid-refusal");
+      if (!row || !sameIdentity(row.identity, refusal.identity)) return bad("invalid-refusal");
+      if (refusal.reason === "intercom-topology-changing") {
+        try { ports.store.recordTopologyRefusal({ peer, identity: refusal.identity }); } catch { return bad("invalid-refusal"); }
+        edge.pollSent.delete(refusal.identity.id);
+        continue;
+      }
+      if (row.peer !== peer) return bad("invalid-refusal");
       if (refusal.reason === "link-down") {
         if (refusal.identity.askId !== refusal.identity.id) return bad("invalid-refusal");
         if (!ports.store.openAsks(peer).some(item => item.identity.id === refusal.identity.id)) continue;
@@ -319,7 +349,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       const accepted = ports.store.acceptInbound({ peer, frame, ...(resume ? { resume: { cursor: resume, owner: ports.authoritativeHome(frame.identity.to) } } : {}) });
       if (accepted.kind === "refused") { refusals.push({ identity: frame.identity, reason: accepted.reason }); continue; }
       if (next) {
-        const forwarded = ports.store.acceptOutbound({ frame, nextHop: next.config.peer.machineId });
+        const forwarded = ports.store.acceptOutbound({ frame, nextHop: next.config.peer.machineId, firstHomePresence: firstHomePresence(frame.endpoint, next) });
         if (forwarded.kind === "refused") { refusals.push({ identity: frame.identity, reason: forwarded.reason }); continue; }
         bridge.wake(next.config.peer.machineId);
       } else {
@@ -345,6 +375,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         }
       }
     }
+    ports.onTopology?.(peer, incoming.topology);
     observe(edge, incoming.presence); armExpiry();
     return { acks, receiptAcks, refusals };
   };
@@ -356,14 +387,16 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   });
 
   const reportExpiries = (): void => {
-    if (!ports.onExpiry) { expiryNoticeRetry = false; return; }
+    if (!ports.onExpiry && !ports.onAskFailed) { expiryNoticeRetry = false; return; }
     let retry = false;
     for (const edge of edges.values()) {
       const peer = edge.config.peer.machineId;
       for (const { identity, outcomeKnown } of ports.store.expiredOutbounds(peer)) {
         if (edge.reportedExpiries.has(identity.id)) continue;
         try {
-          ports.onExpiry({ peer, id: identity.id, from: identity.from, to: identity.to, outcomeKnown });
+          if (!edge.config.initiator && !routeLive(edge) && identity.askId === identity.id && ports.onAskFailed) {
+            ports.onAskFailed({ peer, id: identity.id, from: identity.from, to: identity.to, reason: "link-down", outcomeKnown: false });
+          } else ports.onExpiry?.({ peer, id: identity.id, from: identity.from, to: identity.to, outcomeKnown });
           edge.reportedExpiries.add(identity.id);
         } catch { retry = true; }
       }
@@ -448,7 +481,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   };
   const retryDelay = (failures: number): number => [2000, 4000, 8000, 15_000, 30_000][Math.min(4, Math.max(0, failures - 2))];
   const scheduleRecovery = (edge: EdgeRuntime, delay: number): void => {
-    if (stopped || fenced(edge) || edge.retryCancel) return;
+    if (stopped || fenced(edge) || !edge.config.initiator || edge.retryCancel) return;
     edge.retryCancel = ports.clock.later(delay, () => {
       edge.retryCancel = null;
       if (stopped || fenced(edge)) return;
@@ -491,7 +524,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     edge.pushCancel = ports.clock.later(delay, () => { edge.pushCancel = null; bridge.wake(edge.config.peer.machineId); });
   };
   const transfer = (edge: EdgeRuntime, channel: "poll" | "push", probe: boolean, maximumMs?: number): Promise<boolean> => {
-    if (fenced(edge)) return Promise.resolve(false);
+    if (fenced(edge) || !edge.config.initiator) return Promise.resolve(false);
     const existing = edge.outgoing.get(channel);
     if (existing) return existing.promise;
     const peer = edge.config.peer.machineId;
@@ -576,10 +609,14 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   };
 
   const onLocalPresence = (sessions: LocalPresence[]): void => {
-    const next = sessions.filter(session => ports.authorizeLocalPresence?.(session) ?? true).map(session => ({ remote: true as const, id: session.address.sessionId, address: session.address, machineId: ports.machineId,
-      machineAlias: ports.machineAlias, homeEpoch: session.homeEpoch, activationEpoch: session.activationEpoch, endpointEpoch: session.activationEpoch,
-      cwd: session.cwd, model: session.model, startedAt: session.startedAt, lastActivity: session.lastActivity,
-      ...(session.name === undefined ? {} : { name: session.name }), ...(session.status === undefined ? {} : { status: session.status }) }));
+    const next = sessions.filter(session => ports.authorizeLocalPresence?.(session) ?? true).map(session => {
+      const info: RemoteSessionInfo = { remote: true, id: session.address.sessionId, address: session.address, machineId: ports.machineId,
+        machineAlias: ports.machineAlias, homeEpoch: session.homeEpoch, activationEpoch: session.activationEpoch, endpointEpoch: session.activationEpoch,
+        cwd: session.cwd, model: session.model, startedAt: session.startedAt, lastActivity: session.lastActivity,
+        ...(session.name === undefined ? {} : { name: session.name }), ...(session.status === undefined ? {} : { status: session.status }) };
+      const attestation = ports.firstHomeAttestation?.({ address: info.address, machineId: info.machineId, homeEpoch: info.homeEpoch, activationEpoch: info.activationEpoch });
+      return attestation ? { ...info, firstHome: attestation } : info;
+    });
     if (JSON.stringify(next) === JSON.stringify(brokerLocal)) return;
     brokerLocal = next;
     publish();
@@ -609,6 +646,14 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         const fence = ports.store.pairFence(request.peer), current = state(edge);
         return { machineId: ports.machineId, peer: request.peer, edgeEpoch: request.edgeEpoch,
           status: fence ? "down" : current.status, reason: fence ? "peer-revoked" : current.reason };
+      }
+      if (input && typeof input === "object" && !Array.isArray(input) && (input as { action?: unknown }).action === "transition-topology") {
+        let request;
+        try { request = parseHelperTopology(input); } catch { return bad("invalid-request"); }
+        if (request.machineId !== ports.machineId || !ports.onTopologyRequest) return bad("invalid-request");
+        if (signal.aborted) return bad("cli-aborted");
+        try { return await ports.onTopologyRequest(request); }
+        catch (error) { return bad(error instanceof Error && isHelperExchangeError(error.message) ? error.message : "bridge-exchange-failed"); }
       }
       if (input && typeof input === "object" && !Array.isArray(input) && (input as { action?: unknown }).action === "enroll-pair") {
         let request;
@@ -642,7 +687,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       const task = (async () => {
         try {
           await connectBroker(); publish();
-          for (const edge of edges.values()) if (state(edge).status === "down") failAsks(edge);
+          for (const edge of edges.values()) if (edge.config.initiator && state(edge).status === "down") failAsks(edge);
         } catch {
           brokerReady = false; await ports.broker?.close();
           if (!stopped) scheduleBrokerReconnect();
@@ -691,7 +736,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
             if (fenced(edge)) continue;
             const current = state(edge); armLiveness(edge);
             if (current.status === "down" || current.status === "recovering") {
-              if (current.status === "down") { try { failAsks(edge); } catch { /* Keep open for the next recovery. */ } }
+              if (edge.config.initiator && current.status === "down") { try { failAsks(edge); } catch { /* Keep open for the next recovery. */ } }
               if (!current.reason || new ExchangeError(current.reason).retryable) {
                 scheduleRecovery(edge, current.status === "recovering" ? 1000 : retryDelay(current.failures));
               }
@@ -779,7 +824,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       if (!started || stopped) return bad("bridge-unavailable");
       let input;
       try { if (bytes(raw) > INTERCOM_EXCHANGE_BYTES - 1024) return bad("exchange-too-large"); input = parseHelperRequest(raw); }
-      catch (error) { if (error instanceof ExchangeError) throw error; return bad(error instanceof Error && error.message === "peer-version-mismatch" ? "peer-version-mismatch" : "invalid-request"); }
+      catch (error) { if (error instanceof ExchangeError) throw error; return bad(error instanceof Error && (error.message === "peer-version-mismatch" || error.message === "invalid-presence") ? error.message : "invalid-request"); }
       const incoming = input.exchange, edge = edges.get(incoming.senderMachine);
       if (!edge || incoming.recipientMachine !== ports.machineId) return bad("machine-not-enrolled");
       if (fenced(edge)) return bad("peer-revoked");
@@ -853,7 +898,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       if (!currentHome()) return failed("stale-home-epoch");
       if (local) {
         const endpoint = { address: input.to.address, machineId: ports.machineId, homeEpoch: input.to.homeEpoch, activationEpoch: input.to.activationEpoch };
-        const accepted = ports.store.acceptLocal({ from: input.from, endpoint, message: input.message });
+        const accepted = ports.store.acceptLocal({ from: input.from, endpoint, message: input.message, firstHomePresence: firstHomePresence(endpoint, null) });
         if (accepted.kind === "refused") return failed(accepted.reason);
         ports.onInbound?.({ id: accepted.identity.id, to: accepted.identity.to });
         armExpiry();
@@ -878,7 +923,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       if (fenced(edge)) return failed("peer-revoked");
       if (!currentHome()) return failed("stale-home-epoch");
       const endpoint = { address: input.to.address, machineId: input.to.machineId, homeEpoch: input.to.homeEpoch, activationEpoch: input.to.activationEpoch };
-      const accepted = ports.store.acceptOutbound({ from: input.from, endpoint, message, nextHop: edge.config.peer.machineId });
+      const accepted = ports.store.acceptOutbound({ from: input.from, endpoint, message, nextHop: edge.config.peer.machineId, firstHomePresence: firstHomePresence(endpoint, edge) });
       if (accepted.kind === "refused") return failed(accepted.reason);
       armExpiry(); bridge.wake(edge.config.peer.machineId);
       return { delivery: "queued", retryable: false, outcomeKnown: true, acceptance: accepted.acceptance,

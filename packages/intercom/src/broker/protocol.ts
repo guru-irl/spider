@@ -65,10 +65,14 @@ export function isConsumptionReceipt(receipt: MessageReceipt): boolean {
     || receipt.status === "not_injected" && receipt.evidence.kind === "absence";
 }
 
+export function isFirstHomeAttestation(value: unknown): value is import("../types.js").FirstHomeAttestation {
+  return isRecord(value) && Object.keys(value).length === 3 && typeof value.activation === "string" && value.activation.length > 0 &&
+    value.fromEpoch === null && Number.isSafeInteger(value.toEpoch) && Number(value.toEpoch) >= 1;
+}
 const remoteSessionFields = new Set([
   "remote", "id", "address", "machineId", "machineAlias", "homeEpoch", "activationEpoch", "endpointEpoch",
   "name", "cwd", "model", "startedAt", "lastActivity", "status", "reachability", "stale",
-  "contextPct", "contextTokens", "contextWindow",
+  "contextPct", "contextTokens", "contextWindow", "firstHome",
 ]);
 export function isRemoteSessionInfo(value: unknown): value is RemoteSessionInfo {
   if (!isRecord(value) || Object.keys(value).some(key => !remoteSessionFields.has(key))) return false;
@@ -77,6 +81,7 @@ export function isRemoteSessionInfo(value: unknown): value is RemoteSessionInfo 
   if (typeof value.machineId !== "string" || !value.machineId || typeof value.machineAlias !== "string" || !value.machineAlias) return false;
   if (value.homeEpoch !== null && (!Number.isSafeInteger(value.homeEpoch) || Number(value.homeEpoch) < 1)) return false;
   if (typeof value.activationEpoch !== "string" || !value.activationEpoch || value.endpointEpoch !== value.activationEpoch) return false;
+  if (value.firstHome !== undefined && (!isFirstHomeAttestation(value.firstHome) || value.firstHome.activation !== value.activationEpoch || value.firstHome.toEpoch !== value.homeEpoch)) return false;
   if (typeof value.cwd !== "string" || typeof value.model !== "string" || !Number.isSafeInteger(value.startedAt) || !Number.isSafeInteger(value.lastActivity)) return false;
   if (value.name !== undefined && typeof value.name !== "string" || value.status !== undefined && typeof value.status !== "string") return false;
   if (value.stale !== undefined && typeof value.stale !== "boolean") return false;

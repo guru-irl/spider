@@ -7,6 +7,7 @@ export interface IntercomHostRequest {
   scopeId: string | null;
   activationEpoch: string;
   endpoint?: SessionEndpoint;
+  refreshInitialHome?(): Promise<SessionEndpoint | undefined>;
   exclusion?(owner: SessionEndpoint): { excludedGeneration: string; complete: true } | undefined;
   reconcile?(messageId: string, owner: SessionEndpoint): Promise<MessageReceipt>;
   pendingOwn?(): Promise<readonly { messageId: string; owner: SessionEndpoint }[]>;

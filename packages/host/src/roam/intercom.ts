@@ -8,6 +8,7 @@ import type { SessionGenerationExclusion } from "@spider/roam/intercom-contracts
 import type { ReconcileProof } from "@spider/roam/intercom-delivery";
 import { intercomExclusion, probeIntercomProcess, recordIntercomGeneration, type NativeProcess } from "@spider/roam/intercom-exclusion";
 import { readLocalIdentity } from "@spider/roam/runtime";
+import { recordFirstHomeAdoption } from "@spider/roam/intercom-first-home";
 export { createHostIntercomDelivery, type HostIntercomDelivery, type HostIntercomDeliveryPorts, type ReconcileProof } from "@spider/roam/intercom-delivery";
 import type { Admission, AdmissionGate } from "./admission.js";
 import { ordinaryWorkAllowed } from "./activation.js";
@@ -15,17 +16,19 @@ import { ordinaryWorkAllowed } from "./activation.js";
 export interface Disposable { dispose(): void }
 export interface HostIntercomPorts {
   admission(): Admission;
+  refreshInitialHome?(): Promise<Admission>;
   machineId(): Promise<string | undefined>;
   home(address: SessionAddress): Home | null | "unknown";
   exclusion?(owner: SessionEndpoint): SessionGenerationExclusion | undefined;
   recordGeneration?(owner: SessionEndpoint): void;
+  recordFirstHome?(previous: SessionEndpoint, current: SessionEndpoint): void;
   reconcile?(ctx: ExtensionContext, requests: readonly ReconcileRequest[]): Promise<readonly ReconcileProof[]>;
   pendingOwn?(sessionId: string, scopeId: string | null): readonly { messageId: string; owner: SessionEndpoint }[];
 }
 export interface ReconcileRequest { messageId: string; owner: SessionEndpoint; exclusion?: SessionGenerationExclusion }
 export function createHostIntercomPorts(gate: AdmissionGate, options: { db?: Db; root?: string; pid?: number; probe?: (pid: number) => NativeProcess } = {}): HostIntercomPorts {
   const withDb = <T>(run: (db: Db) => T): T => { const db = options.db ?? openGlobal(); try { return run(db); } finally { if (!options.db) db.close(); } };
-  return { admission: () => gate.inspect(), machineId: async () => {
+  return { admission: () => gate.inspect(), refreshInitialHome: () => gate.refreshInitialHome(), machineId: async () => {
     const admission = gate.inspect();
     if (!ordinaryWorkAllowed(admission)) return undefined;
     if (admission.home) return admission.home.machineId;
@@ -33,6 +36,7 @@ export function createHostIntercomPorts(gate: AdmissionGate, options: { db?: Db;
   },
   recordGeneration(owner) { withDb(db => recordIntercomGeneration(db, { sessionId: owner.address.sessionId, generation: owner.activationEpoch, pid: options.pid ?? process.pid }, options.probe ?? probeIntercomProcess)); },
   exclusion(owner) { return withDb(db => intercomExclusion(db, owner, options.probe ?? probeIntercomProcess)); },
+  recordFirstHome(previous, current) { withDb(db => recordFirstHomeAdoption(db, previous, current)); },
   reconcile: reconcileOwnIntercom,
   pendingOwn(sessionId, scopeId) {
     const root = options.root ?? paths.globalRoot, file = join(root, "roam", "intercom", "queue.db");
@@ -87,6 +91,16 @@ export function registerRoamIntercom(pi: ExtensionAPI, ports: HostIntercomPorts)
     if (!machineId || !ordinaryWorkAllowed(admission)) return;
     const endpoint = { address: { sessionId, scopeId: request.scopeId }, machineId, homeEpoch: admission.home?.epoch ?? null, activationEpoch: request.activationEpoch };
     try { ports.recordGeneration?.(endpoint); request.endpoint = endpoint; } catch { /* Without durable identity, delivery stays unadmitted. */ }
+    request.refreshInitialHome = async () => {
+      if (!ports.refreshInitialHome || !ports.recordFirstHome || request.endpoint?.homeEpoch !== null) return undefined;
+      const home = ports.home(endpoint.address);
+      if (!home || home === "unknown") return undefined;
+      const refreshed = await ports.refreshInitialHome();
+      if (disposed || ownGeneration !== generation || !ordinaryWorkAllowed(refreshed) || !refreshed.home) return undefined;
+      const current = { ...endpoint, homeEpoch: refreshed.home.epoch };
+      ports.recordFirstHome(endpoint, current);
+      return current;
+    };
   });
   const dispose = () => { if (disposed) return; disposed = true; generation++; machineId = undefined; context = undefined; off(); };
   pi.on("session_start", async (_event, ctx) => {

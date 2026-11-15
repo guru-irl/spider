@@ -148,14 +148,16 @@ function validReceipt(value: unknown): boolean {
   return true;
 }
 function validExchange(value: unknown): value is IntercomExchange {
-  if (!record(value) || !keys(value, ["protocol", "senderMachine", "recipientMachine", "generation", "frames", "acknowledgements", "refusals", "receipts", "receiptAcknowledgements", "controls", "presence", "resumptions"])
+  if (!record(value) || !keys(value, ["protocol", "senderMachine", "recipientMachine", "generation", "frames", "acknowledgements", "refusals", "receipts", "receiptAcknowledgements", "controls", "presence", "resumptions", "topology"])
       || value.protocol !== INTERCOM_FEDERATION_VERSION || !isMachineId(value.senderMachine) || !isMachineId(value.recipientMachine)
       || value.senderMachine === value.recipientMachine || !validGeneration(value.generation)) return false;
+  if (value.topology !== undefined && (!record(value.topology) || !keys(value.topology, ["transitionId", "action"]) ||
+      !isMachineId(value.topology.transitionId) || value.topology.action !== "switch" && value.topology.action !== "switched")) return false;
   if (!Array.isArray(value.frames) || !value.frames.every(item => validFrame(item) && encode(item, INTERCOM_MESSAGE_BYTES).byteLength <= INTERCOM_MESSAGE_BYTES)) return false;
   if (!Array.isArray(value.acknowledgements) || !value.acknowledgements.every(item => record(item) && keys(item, ["identity", "kind"])
       && validIdentity(item.identity) && (item.kind === "message" || item.kind === "tombstone"))) return false;
   if (value.refusals !== undefined && (!Array.isArray(value.refusals) || !value.refusals.every(item => record(item) && keys(item, ["identity", "reason"]) &&
-      validIdentity(item.identity) && (item.reason === "queue-full" || item.reason === "message-too-large" || item.reason === "machine-not-enrolled" || item.reason === "link-down" || item.reason === "missing-origin" || item.reason === "peer-revoked")))) return false;
+      validIdentity(item.identity) && (item.reason === "queue-full" || item.reason === "message-too-large" || item.reason === "machine-not-enrolled" || item.reason === "link-down" || item.reason === "missing-origin" || item.reason === "peer-revoked" || item.reason === "intercom-topology-changing")))) return false;
   if (!Array.isArray(value.receipts) || !value.receipts.every(validReceipt)) return false;
   if (value.receiptAcknowledgements !== undefined && (!Array.isArray(value.receiptAcknowledgements) || !value.receiptAcknowledgements.every(validReceipt))) return false;
   if (!Array.isArray(value.controls) || !value.controls.every(item => record(item) && keys(item, ["from", "to", "control"])
@@ -168,14 +170,20 @@ function validExchange(value: unknown): value is IntercomExchange {
 function checkVersion(value: unknown): void {
   if (record(value) && Number.isSafeInteger(value.protocol) && value.protocol !== INTERCOM_FEDERATION_VERSION) throw new Error("peer-version-mismatch");
 }
+function checkFirstHomePresence(value: unknown): void {
+  if (record(value) && Array.isArray(value.presence) && value.presence.some(entry =>
+    record(entry) && "firstHome" in entry && !isRemoteSessionInfo(entry))) throw new Error("invalid-presence");
+}
 export function encodeExchange(exchange: IntercomExchange): Buffer {
   checkVersion(exchange);
+  checkFirstHomePresence(exchange);
   if (!validExchange(exchange)) return bad();
   return encode(exchange, INTERCOM_EXCHANGE_BYTES);
 }
 export function decodeExchange(bytes: Uint8Array): IntercomExchange {
   const value = parse(bytes, INTERCOM_EXCHANGE_BYTES);
   checkVersion(value);
+  checkFirstHomePresence(value);
   if (!validExchange(value)) return bad();
   return value;
 }
@@ -183,6 +191,7 @@ export function decodeExchange(bytes: Uint8Array): IntercomExchange {
 export function decodeExchangeWithFrameErrors(bytes: Uint8Array): { exchange: IntercomExchange; missingOrigins: MissingOriginFrame[] } {
   const value = parse(bytes, INTERCOM_EXCHANGE_BYTES);
   checkVersion(value);
+  checkFirstHomePresence(value);
   if (!record(value) || !Array.isArray(value.frames)) return bad();
   const frames: unknown[] = [], missingOrigins: MissingOriginFrame[] = [];
   value.frames.forEach((frame, index) => {

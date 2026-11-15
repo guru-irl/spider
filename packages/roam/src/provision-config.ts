@@ -36,13 +36,18 @@ export async function persistIntercomPairRoute(root: string, pair: IntercomEnrol
   if (!remote || (local === pair.source.machineId ? pair.source.globalRoot : pair.target.globalRoot) !== root) throw new Error("machine-mismatch");
   await withProcessLock(directory, "roam-configuration", async () => {
     const current = readLocalIdentity(root), record = await createIntercomRegistry(root).get(pair.pairId);
-    if (current.machineId !== local || !current.intercom.enabled || current.intercom.mode !== "peers") throw new Error("intercom-mode-not-peers");
+    if (current.machineId !== local || !current.intercom.enabled || !(current.intercom.mode === "peers" || current.role === "box" && current.intercom.mode === "hub-only")) throw new Error("intercom-mode-not-peers");
     const registered = record?.pair as Partial<IntercomEnrollmentPair> | undefined;
     if (!record || !["pending", "active"].includes(record.state) || record.operationId !== operationId || record.graphDigest !== graphDigest ||
         registered?.edgeEpoch !== pair.edgeEpoch || registered?.source?.machineId !== pair.source.machineId || registered?.target?.machineId !== pair.target.machineId ||
         registered?.sshUser !== pair.sshUser || registered?.hostKeyAlias !== pair.hostKeyAlias || registered?.hostKey?.type !== pair.hostKey.type ||
         registered?.hostKey?.base64 !== pair.hostKey.base64) throw new Error("peer-consent-required");
     const previous = current.intercom.routes.find(route => route.peer.machineId === remote.machineId);
+    if (current.intercom.mode === "hub-only") {
+      if (!previous || previous.kind !== "relay" || previous.via !== current.hubMachineId) throw new Error("intercom-route-missing");
+      // The approved registry holds the staged direct edge. Only the durable hub switch changes routing mode.
+      return;
+    }
     if (previous && (previous.kind !== "direct" || previous.edgeEpoch !== pair.edgeEpoch) && !record.fenceId) throw new Error("intercom-edge-must-be-revoked");
     const transportPeer = local === pair.source.machineId && record.resources ? { ...remote, alias: record.resources.route.name } : remote;
     const route = { kind: "direct" as const, peer: transportPeer, edgeEpoch: pair.edgeEpoch };

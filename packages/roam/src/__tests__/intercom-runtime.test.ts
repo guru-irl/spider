@@ -138,6 +138,70 @@ it("does not deliver to a session until its process generation is durably record
   expect(f.broker.deliveries).toMatchObject([{ message: { id: "record-first" } }]);
 }, 5000);
 
+it("a restarted bridge delivers pre-adoption mail using durable adoption and preserves its receipt owner", async () => {
+  const { recordFirstHomeAdoption } = await import("../intercom-first-home");
+  const { openDbReadOnly } = await import("@spider/db-core");
+  const f = machineFixture(), from = { sessionId: "sender", scopeId: "scope" }, to = { sessionId: "recipient", scopeId: "scope" };
+  const old = { address: to, machineId: HUB, homeEpoch: null, activationEpoch: "recipient-generation" };
+  const first = await makeMachine(f.options); await first.start();
+  await f.broker.bridge!.dispatch({ from, to: destination(to), message: { id: "local-first-home", timestamp: 1, content: { text: "synthetic" } } });
+  expect(f.broker.deliveries).toEqual([]);
+  recordIntercomGeneration(f.global.db, { sessionId: to.sessionId, generation: old.activationEpoch, pid: process.pid });
+  recordFirstHomeAdoption(f.global.db, old, { ...old, homeEpoch: 1 }, 1000);
+  await first.stop();
+  const second = await makeMachine(f.options); await second.start();
+  f.broker.emit("presence", [{ ...localPresence(to, old.activationEpoch), homeEpoch: 1 }]);
+  await vi.waitFor(() => expect(f.broker.deliveries).toHaveLength(1), { timeout: 1000, interval: 10 });
+  expect(f.broker.deliveries[0]).toMatchObject({ to: { ...old, homeEpoch: 1 }, message: { id: "local-first-home" } });
+  f.broker.bridge!.receipt(to, { messageId: "local-first-home", status: "injected", timestamp: 1000,
+    evidence: { kind: "entry", entryId: "first-home-entry", sessionId: to.sessionId, activationEpoch: old.activationEpoch } });
+  expect(f.broker.receipts).toMatchObject([{ to: from, receipt: { messageId: "local-first-home", status: "injected" } }]);
+  f.broker.emit("presence", [{ ...localPresence(to, old.activationEpoch), homeEpoch: 1 }]);
+  expect(f.broker.deliveries).toHaveLength(1);
+  const db = openDbReadOnly(join(f.global.root, "roam", "intercom", "queue.db"))!;
+  try {
+    const rows = db.prepare("SELECT endpoint_json,state,payload_json FROM intercom_copies WHERE id=?").all("local-first-home") as Array<{ endpoint_json: string; state: string; payload_json: string | null }>;
+    expect(rows).toHaveLength(2);
+    for (const row of rows) { expect(JSON.parse(row.endpoint_json)).toEqual(old); expect(row.state).toBe("injected"); expect(row.payload_json).toBeNull(); }
+  } finally { db.close(); }
+}, 5000);
+
+it("rebuilds first-home presence attestations from durable adoption after a bridge restart", async () => {
+  const { recordFirstHomeAdoption } = await import("../intercom-first-home");
+  const f = machineFixture(), target = peer(BOX, "box.invalid");
+  const config = parseConfig({ ...f.options.config, peers: [target], intercom: { enabled: true, mode: "peers", machineAlias: "hub.invalid",
+    routes: [{ kind: "direct", peer: target, edgeEpoch: "edge-1" }] } });
+  const address = { sessionId: "adopting-origin", scopeId: "scope" }, activation = "original-adopting-process";
+  const old = { address, machineId: HUB, homeEpoch: null, activationEpoch: activation };
+  const first = await makeMachine({ ...f.options, config }); await first.start();
+  f.broker.emit("presence", [{ ...localPresence(address, activation), homeEpoch: 1 }]);
+  const before = await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 1), new AbortController().signal) as { exchange: { presence: RemoteSessionInfo[] } };
+  expect(before.exchange.presence[0].firstHome).toBeUndefined();
+  recordIntercomGeneration(f.global.db, { sessionId: address.sessionId, generation: activation, pid: process.pid });
+  recordFirstHomeAdoption(f.global.db, old, { ...old, homeEpoch: 1 }, 1000);
+  await first.stop();
+  const second = await makeMachine({ ...f.options, config }); await second.start();
+  f.broker.emit("presence", [{ ...localPresence(address, activation), homeEpoch: 1 }]);
+  const after = await f.broker.helper!(helperRequest(BOX, HUB, "edge-1", 2), new AbortController().signal) as { exchange: { presence: RemoteSessionInfo[] } };
+  expect(after.exchange.presence).toMatchObject([{ address, activationEpoch: activation, homeEpoch: 1,
+    firstHome: { activation, fromEpoch: null, toEpoch: 1 } }]);
+}, 5000);
+
+it.each([
+  { role: "hub" as const, local: OTHER, hub: OTHER, remote: BOX, opens: true },
+  { role: "box" as const, local: HUB, hub: OTHER, remote: OTHER, opens: false },
+  { role: "box" as const, local: BOX, hub: HUB, remote: OTHER, opens: true },
+  { role: "box" as const, local: OTHER, hub: HUB, remote: BOX, opens: false },
+])("opens exchanges only on the enrolled initiating side for $role $local to $remote", async ({ role, local, hub, remote, opens }) => {
+  const f = machineFixture(local), target = peer(remote, "peer.invalid"), attempted: string[] = [];
+  const config = parseConfig({ ...f.options.config, role, machineId: local, hubMachineId: hub, peers: role === "hub" ? [target] : [],
+    intercom: { enabled: true, mode: "peers", machineAlias: "local.invalid", routes: [{ kind: "direct", peer: target, edgeEpoch: "edge-1" }] } });
+  const service = await makeMachine({ ...f.options, config, transport: { ...f.options.transport,
+    async resolve(peer) { attempted.push(peer.machineId); throw new Error("synthetic transport outage"); } } });
+  await service.start();
+  expect(attempted).toEqual(opens ? [remote] : []);
+}, 5000);
+
 it("a bridge startup failure drains and releases the hub lock", async () => {
   const f = fixture();
   const broken = { ...f.ports, intercom: { ...f.bridge, async start() { f.order.push("bridge-start"); throw new Error("fixture bridge failure"); } } };
@@ -296,7 +360,8 @@ it("private setup and authenticated revocation serialize across the machine boun
   let setup: Promise<number> | undefined, revoke: ReturnType<typeof requestHelperRevoke> | undefined;
   let restoreLockProbe: (() => void) | undefined;
   try {
-    expect((await provisionPair()).code).toBe(0);
+    const provisioned = await provisionPair();
+    expect(provisioned.code, JSON.stringify(provisioned)).toBe(0);
     mkdirSync(join(f.agentDir, "intercom"), { mode: 0o700 });
     server.listen(join(f.agentDir, "intercom", "broker.sock")); await once(server, "listening"); chmodSync(join(f.agentDir, "intercom", "broker.sock"), 0o600);
     await service.start();
@@ -690,4 +755,96 @@ it("refuses an overlong broker socket path before starting a broker", async () =
   expect(f.calls).toEqual([]);
   expect(f.broker.registrations).toEqual([]);
   expect(existsSync(join(f.global.root, "roam", "intercom"))).toBe(false);
+}, 5000);
+
+
+it("resumes a hub switch, reports an unreachable box, and advertises only its own presence", async () => {
+  const f = machineFixture(), config = parseConfig({ role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture",
+    intercom: { enabled: true, mode: "hub-only", machineAlias: "hub.invalid", routes: [
+      { kind: "direct", peer: peer(BOX, "box.invalid"), edgeEpoch: "hub-box" },
+      { kind: "direct", peer: peer(OTHER, "other.invalid"), edgeEpoch: "hub-other" },
+    ] } });
+  const id = "00000000-0000-4000-8000-000000000004", signal = new AbortController().signal;
+  const queue = () => openIntercomStore({ file: join(f.global.root, "roam", "intercom", "queue.db"), machineId: HUB, clock: f.clock });
+  const initial = queue(); initial.startTopologyTransition({ transitionId: id, from: "hub-only", to: "peers", boxes: [BOX, OTHER] }); initial.close();
+  let service = await makeMachine({ ...f.options, config }); await service.start();
+  const address = { sessionId: "box-session", scopeId: "scope" };
+  const first = await f.broker.helper!(helperRequest(BOX, HUB, "hub-box", 1, [remote(BOX, "box.invalid", address)]), signal);
+  expect(first).toMatchObject({ exchange: { topology: { transitionId: id, action: "switch" }, presence: [] } });
+  const ack = { ...helperRequest(BOX, HUB, "hub-box", 2), exchange: { ...helperRequest(BOX, HUB, "hub-box", 2).exchange,
+    topology: { transitionId: id, action: "switched" } } };
+  await f.broker.helper!(ack, signal);
+  expect(service.diagnostics().some(item => item.reason === `intercom-transition-pending ${OTHER}`)).toBe(true);
+  await service.stop();
+  const resumedBroker = new FakeBroker(); service = await makeMachine({ ...f.options, config, broker: resumedBroker }); await service.start();
+  const second = await resumedBroker.helper!(helperRequest(OTHER, HUB, "hub-other", 1), signal);
+  expect(second).toMatchObject({ exchange: { topology: { transitionId: id, action: "switch" }, presence: [] } });
+  const otherAck = { ...helperRequest(OTHER, HUB, "hub-other", 2), exchange: { ...helperRequest(OTHER, HUB, "hub-other", 2).exchange,
+    topology: { transitionId: id, action: "switched" } } };
+  await resumedBroker.helper!(otherAck, signal);
+  const final = await resumedBroker.helper!(helperRequest(BOX, HUB, "hub-box", 3, [remote(BOX, "box.invalid", address)]), signal);
+  expect(final).toMatchObject({ exchange: { presence: [] } });
+  expect(service.diagnostics().some(item => item.reason.startsWith("intercom-transition-pending"))).toBe(false);
+  await service.stop(); const stored = queue();
+  try { expect(stored.topology()).toMatchObject({ mode: "peers", transition: { state: "complete", boxes: { [BOX]: "switched", [OTHER]: "switched" } } }); }
+  finally { stored.close(); }
+}, 5000);
+
+it("applies only the enrolled hub's switch and keeps relay presence and origins fail-closed afterwards", async () => {
+  const f = machineFixture(BOX), config = parseConfig({ role: "box", machineId: BOX, hubMachineId: HUB, coreUnit: "fixture",
+    intercom: { enabled: true, mode: "hub-only", machineAlias: "box.invalid", routes: [
+      { kind: "direct", peer: peer(HUB, "hub.invalid"), edgeEpoch: "hub-box" },
+      { kind: "relay", peer: peer(OTHER, "other.invalid"), via: HUB },
+    ] } });
+  const service = await makeMachine({ ...f.options, config }); await service.start();
+  const id = "00000000-0000-4000-8000-000000000004", signal = new AbortController().signal;
+  const request = { ...helperRequest(HUB, BOX, "hub-box", 1), exchange: { ...helperRequest(HUB, BOX, "hub-box", 1).exchange,
+    topology: { transitionId: id, action: "switch" } } };
+  expect(await f.broker.helper!(request, signal)).toMatchObject({ exchange: { topology: { transitionId: id, action: "switched" } } });
+  const target = { sessionId: "remote-recipient", scopeId: "scope" };
+  await expect(f.broker.helper!(helperRequest(HUB, BOX, "hub-box", 2, [remote(OTHER, "other.invalid", target)]), signal)).rejects.toThrow("invalid-presence");
+  await service.stop();
+  const stored = openIntercomStore({ file: join(f.global.root, "roam", "intercom", "queue.db"), machineId: BOX, clock: f.clock });
+  try { expect(stored.topology()).toMatchObject({ mode: "peers", switched: id }); } finally { stored.close(); }
+}, 5000);
+
+
+it("refuses an unapproved local request to activate the topology transition", async () => {
+  const f = machineFixture(), config = parseConfig({ ...f.options.config, intercom: { ...f.options.config.intercom, mode: "hub-only" } });
+  const service = await makeMachine({ ...f.options, config }); await service.start();
+  await expect(f.broker.helper!({ version: 1, action: "transition-topology", machineId: HUB,
+    transitionId: "00000000-0000-4000-8000-000000000004", operationId: "unapproved", graphDigest: "a".repeat(64), from: "hub-only", to: "peers" }, new AbortController().signal))
+    .rejects.toThrow("peer-consent-required");
+}, 5000);
+
+
+it("the original running sessions send and receive after first-home presence is refreshed", async () => {
+  const f = machineFixture(), service = await makeMachine(f.options); await service.start();
+  const addresses = [{ sessionId: "first-origin", scopeId: null }, { sessionId: "second-origin", scopeId: null }];
+  const presence = (homeEpoch: number | null) => addresses.map((address, i) => ({ address, homeEpoch, activationEpoch: `original-generation-${i}`,
+    cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1, status: "idle" }));
+  f.broker.emit("presence", presence(null));
+  for (const address of addresses) f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,1,NULL,1)").run(address.sessionId, HUB);
+  f.broker.emit("presence", presence(1));
+  for (const [i, j] of [[0, 1], [1, 0]]) {
+    const result = await f.broker.bridge!.dispatch({ from: addresses[i], to: { ...destination(addresses[j]), homeEpoch: 1, activationEpoch: `original-generation-${j}` },
+      message: { id: `after-first-home-${i}`, timestamp: 1, content: { text: "synthetic" } } });
+    expect(result.acceptance).toMatchObject({ accepted: true, durable: true });
+  }
+  await vi.waitFor(() => expect(f.broker.deliveries).toHaveLength(2));
+  expect(f.broker.deliveries.map(row => row.to)).toMatchObject([
+    { address: addresses[1], homeEpoch: 1, activationEpoch: "original-generation-1" },
+    { address: addresses[0], homeEpoch: 1, activationEpoch: "original-generation-0" },
+  ]);
+}, 5000);
+
+it.each(["different-machine", "epoch-bump"] as const)("keeps stale-home-epoch for %s on an original registration", async mode => {
+  const f = machineFixture(), service = await makeMachine(f.options); await service.start();
+  const to = { sessionId: "original-before-home-change", scopeId: null };
+  f.global.db.prepare("INSERT INTO session_homes(session_id,machine_id,epoch,move_id,updated_at) VALUES(?,?,?,NULL,1)")
+    .run(to.sessionId, mode === "different-machine" ? BOX : HUB, mode === "epoch-bump" ? 2 : 1);
+  const result = await f.broker.bridge!.dispatch({ from: { sessionId: "sender", scopeId: null }, to: { ...destination(to), homeEpoch: 1 },
+    message: { id: `must-refuse-${mode}`, timestamp: 1, content: { text: "synthetic" } } });
+  expect(result).toMatchObject({ reason: "stale-home-epoch", acceptance: { accepted: false, durable: false } });
+  expect(f.broker.deliveries).toEqual([]);
 }, 5000);

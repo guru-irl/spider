@@ -7,6 +7,7 @@ import * as runtimeModule from "../runtime";
 import * as hubModule from "../production-hub";
 import * as localDiagnostics from "../local-diagnostics";
 import * as intercomRuntime from "../intercom-runtime";
+import * as intercomProduction from "../intercom-production";
 import * as participantSupervisor from "../participant-supervisor";
 import * as hcModule from "@spider/herdr/client/hc";
 import { claimIdLock } from "@spider/herdr/sessions/id-lock";
@@ -82,6 +83,14 @@ it.each(["not-roamable", "importing", "trigger-drift"])("refuses %s global captu
   expect(f.worktree.db.prepare("SELECT state FROM roam_sessions").get()).toEqual({ state: "retired" }); expect(wakes).toBe(0);
 }, 5000);
 
+it.each(["root", "machine"])('refuses mismatched pair platform %s before deferred startup', async mismatch => {
+  const f = fixture(), platform = { root: mismatch === 'root' ? join(f.global.root, 'other') : f.global.root,
+    machineId: mismatch === 'machine' ? HUB : BOX };
+  const outcome = await startProductionSupervisor(f.global.root, { intercomLocalPorts: platform as never }).then(
+    async service => { await service.stop(); return 'accepted'; }, error => (error as Error).message);
+  expect(outcome).toBe('machine-mismatch');
+}, 5000);
+
 it("uninitialized production capture keeps an enrolled service inert", async () => {
   const f = fixture(), file = join(f.global.root, "roam", "config.json"), config = readLocalIdentity(f.global.root);
   writeFileSync(file, JSON.stringify({ ...config, enabled: false, intercom: { ...config.intercom, enabled: true, machineAlias: "box.invalid" } }), { mode: 0o600 });
@@ -115,6 +124,31 @@ it.each([false, true])("production box owns its bridge with hub scheduling enabl
     expect(order).toEqual(["bridge-start", "supervisor-start"]);
   } finally { await service.stop(); }
   expect(order).toEqual(["bridge-start", "supervisor-start", "supervisor-stop", "bridge-stop", "runtime-close"]);
+}, 5000);
+
+it('passes only pair platform ports to maintenance, never bridge overrides', async () => {
+  const f = fixture(), agentDir = join(f.global.root, 'agent'); mkdirSync(agentDir, { mode: 0o700 });
+  const config = { ...f.ports.config, intercom: { ...disabledIntercom(), enabled: true as const, machineAlias: 'box.invalid' } };
+  writeFileSync(join(f.global.root, 'roam', 'config.json'), JSON.stringify(config), { mode: 0o600 });
+  await f.global.db.raw.backup(join(f.global.root, 'spider.db'));
+  const bridge = { async start() {}, async stop() {}, diagnostics() { return []; }, readiness() { return { state: 'ready' as const, reason: null }; } };
+  vi.spyOn(intercomRuntime, 'createMachineIntercom').mockReturnValue(bridge);
+  vi.spyOn(runtimeModule, 'openLocalRuntime').mockReturnValue({ config, db: f.global.db, journal: f.ports.journal, agent: { ...f.ports, config }, close() {} } as never);
+  vi.spyOn(hubModule, 'loadHerdrConfig').mockReturnValue({ agentDirectory: agentDir, core: { binary: '/fixture/hc' } } as never);
+  vi.spyOn(hcModule, 'createHcClient').mockReturnValue({ async identity() { return { coreId: 'fixture-core', sessionNamespace: 'fixture', socket: '/fixture/socket' }; },
+    events() { return { subscribe() { return () => {}; }, dispose() {} }; }, async dispose() {} } as never);
+  vi.spyOn(participantSupervisor, 'createParticipantSupervisor').mockReturnValue({ reconcile: async () => {}, start() {}, async stop() {} });
+  const maintenance = vi.spyOn(intercomProduction, 'createProductionIntercomMaintenance');
+  const platform = { root: f.global.root, machineId: BOX, home: agentDir, node: '/fixture/node', ssh: '/fixture/ssh', keygen: '/fixture/keygen',
+    run: vi.fn(), enrollBridge: vi.fn(), inspectBridge: vi.fn(), inspectFence: vi.fn() };
+  const system = { inventory: { async probe() { return { kind: 'live' as const, startIdentity: 'fixture-process' }; } } } as never;
+  const service = await startProductionSupervisor(f.global.root, { system, intercomLocalPorts: platform });
+  try {
+    expect(maintenance).toHaveBeenCalledOnce();
+    const passed = maintenance.mock.calls[0][0].localPorts;
+    expect(passed).toMatchObject({ root: f.global.root, machineId: BOX, run: platform.run });
+    for (const key of ['enrollBridge', 'inspectBridge', 'inspectFence']) expect(passed).not.toHaveProperty(key);
+  } finally { await service.stop(); }
 }, 5000);
 
 it.each(["missing", "mode", "hub"])("refuses %s enrollment before effects", async kind => {

@@ -95,7 +95,7 @@ export async function exchange(peer: Peer, input: ExchangeRequest, ports: Exchan
       !exact(envelope.value, ["version", "exchange"]) || envelope.value.version !== 1) return bad("invalid-reply");
   let received: IntercomExchange, missingOrigins: MissingOriginFrame[];
   try { ({ exchange: received, missingOrigins } = decodeExchangeWithFrameErrors(Buffer.from(JSON.stringify(envelope.value.exchange)))); }
-  catch (error) { return bad(error instanceof Error && error.message === "peer-version-mismatch" ? "peer-version-mismatch" : "invalid-reply"); }
+  catch (error) { return bad(error instanceof Error && (error.message === "peer-version-mismatch" || error.message === "invalid-presence") ? error.message : "invalid-reply"); }
   if (received.senderMachine !== peer.machineId || received.recipientMachine !== ports.machineId) return bad("machine-mismatch");
   if (!sameGeneration(received.generation, outgoing.generation)) return bad("invalid-reply");
   return { version: 1, exchange: received, ...(missingOrigins.length ? { missingOrigins } : {}) };

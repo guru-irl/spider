@@ -49,6 +49,7 @@ export interface LocalSessionInfo {
   tmuxPane?: string;
 }
 
+export interface FirstHomeAttestation { activation: string; fromEpoch: null; toEpoch: number }
 export interface RemoteSessionInfo {
   remote: true;
   pid?: never;
@@ -66,6 +67,7 @@ export interface RemoteSessionInfo {
   homeEpoch: number | null;
   activationEpoch: string;
   endpointEpoch: string;
+  firstHome?: FirstHomeAttestation;
   name?: string;
   cwd: string;
   model: string;
@@ -151,7 +153,7 @@ export type ClientMessage =
   | { type: "notice_ack"; noticeId: string }
   | { type: "cancel_message"; messageId: string }
   | { type: "cancel_ask"; messageId: string }
-  | { type: "presence"; name?: string; runtimeFallbackAlias?: boolean; status?: string; model?: string; contextPct?: number | null; contextTokens?: number | null; contextWindow?: number | null }
+  | { type: "presence"; homeEpoch?: number; name?: string; runtimeFallbackAlias?: boolean; status?: string; model?: string; contextPct?: number | null; contextTokens?: number | null; contextWindow?: number | null }
   | {
       type: "extension_publish";
       namespace: string;

@@ -13,7 +13,8 @@ import { createProvisionTransport, type ProvisionTransport } from "./transport";
 import { createProductionIntercomEnrollmentPorts, createProductionIntercomRevocationPorts, type IntercomRevocationTransport } from "./intercom-production";
 import { provisionIntercomEnrollment, revokeIntercomPair } from "./intercom-enrollment";
 import { createIntercomRegistry } from "./intercom-registry";
-import { requestHelperRevoke } from "./intercom-helper";
+import { topologyTransitionId } from "./intercom-topology";
+import { requestHelperRevoke, requestHelperTopology } from "./intercom-helper";
 import { runForeground, runLocalPairCleanup } from "./intercom-local-ops";
 import { invokeCli } from "@spider/herdr/client/hc";
 import { parseCore, selectedSocket } from "@spider/herdr/client/parse";
@@ -57,7 +58,7 @@ export async function runIntercomEnrollCli(input: { root: string; graphFile: str
     const transport = options.transport ?? createProvisionTransport({ binary: loadHerdrConfig(input.root).core.binary, env: process.env, enrolled: config.peers }, journal);
     io.out(`Operation: ${operationId}\n`);
     const ports = createProductionIntercomEnrollmentPorts({ root: input.root, request, journal, transport, actor: userInfo().username, now: Date.now,
-      async present(preview) { io.out(`${preview.consent}\n${JSON.stringify(preview.pairs, null, 2)}\n`); },
+      async present(preview) { io.out(`${preview.consent}\n${config.intercom.mode === "hub-only" ? "Approval also activates peer mode on every configured box after the hub drains accepted relay mail.\n" : ""}${JSON.stringify(preview.pairs, null, 2)}\n`); },
       async approve() {
         const question = "Approve this exact intercom graph? Type approve: ";
         if (options.ask) return (await options.ask(question)).trim() === "approve";
@@ -67,12 +68,20 @@ export async function runIntercomEnrollCli(input: { root: string; graphFile: str
       async notify() {}, async warn(_machineId, reason) { io.err(`${reason}\n`); },
     });
     const result = await provisionIntercomEnrollment(request, ports);
+    if (result.code === 0 && config.intercom.mode === "hub-only") {
+      const history = journal.read(operationId), consent = history.find(row => row.action === "intercom-peer-consent" && row.result.approved === true);
+      if (!consent || typeof consent.result.graphDigest !== "string") throw new Error("peer-consent-required");
+      const transitionId = topologyTransitionId(config.machineId, operationId, consent.result.graphDigest);
+      const transition = await requestHelperTopology(input.root, { version: 1, action: "transition-topology", machineId: config.machineId,
+        transitionId, operationId, graphDigest: consent.result.graphDigest, from: "hub-only", to: "peers" });
+      io.out(`intercom-transition-${transition.state} ${transition.transitionId}\n`);
+    }
     (result.code === 0 ? io.out : io.err)(`${result.reason}\n`);
     if (result.value?.pending) for (const pending of result.value.pending) io.err(`${pending.pairId}: ${pending.reason}\n`);
     return result.code;
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
-    const reason = /^(?:peer-consent-required|intercom-requires-hub|invalid-intercom-graph|invalid-intercom-enrollment)$/.test(message) ? message : "intercom-enrollment-unavailable";
+    const reason = /^(?:peer-consent-required|intercom-requires-hub|invalid-intercom-graph|invalid-intercom-enrollment|intercom-transition-unsupported|intercom-transition-conflict)$/.test(message) ? message : "intercom-enrollment-unavailable";
     io.err(`${reason}\n`); return 1;
   }
 }

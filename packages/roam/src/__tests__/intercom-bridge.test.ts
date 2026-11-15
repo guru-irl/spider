@@ -49,6 +49,62 @@ it("acks only durable acceptance and never treats a link ack as consumption", as
   expect(source.retained("outbound", "m1")).toMatchObject({ linkAcknowledged: true, payloadRetained: true });
 }, 5000);
 
+it("replays topology refusals after restart without claiming custody or blocking later hub traffic", async () => {
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "topology-replay-")); roots.push(root);
+  const source = openIntercomStore({ file: join(root, "source.db"), machineId: A, clock });
+  let hub = openIntercomStore({ file: join(root, "hub.db"), machineId: B, clock }); stores.push(source, hub);
+  const edges = [{ peer: peer(A), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: false }];
+  const inbound: string[] = [], overrides = { edges, onInbound: ({ id }: { id: string }) => inbound.push(id) };
+  const sender = await create(A, B, source); let receiver = await create(B, A, hub, overrides);
+  const transitionId = "00000000-0000-4000-8000-000000000004";
+  hub.startTopologyTransition({ transitionId, from: "hub-only", to: "peers", boxes: [A, C] });
+  source.acceptOutbound({ from, endpoint: { ...endpoint, machineId: C }, nextHop: B,
+    message: { id: "rerouted", timestamp: 1, content: { text: "synthetic" } } });
+  const [frame] = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 });
+  const first = batch(A, B, 1); first.frames.push(frame);
+  const refused = await receiver.exchange(request(first));
+  const refusal = { identity: frame.identity, hopSequence: 1, reason: "intercom-topology-changing" };
+  expect(refused.exchange.refusals).toEqual([refusal]);
+  expect(refused.exchange.acknowledgements).toEqual([]);
+  const report = batch(B, A, 1); report.refusals = refused.exchange.refusals;
+  await sender.exchange(request(report));
+
+  await receiver.stop(); hub.close();
+  hub = openIntercomStore({ file: join(root, "hub.db"), machineId: B, clock }); stores.push(hub);
+  receiver = await create(B, A, hub, overrides);
+  const retry = batch(A, B, 2); retry.frames.push(frame);
+  const replay = await receiver.exchange(request(retry));
+  expect(replay.exchange.refusals).toEqual([refusal]);
+  expect(replay.exchange.acknowledgements).toEqual([]);
+  const replayReport = batch(B, A, 2); replayReport.refusals = replay.exchange.refusals; replayReport.acknowledgements = replay.exchange.acknowledgements;
+  await sender.exchange(request(replayReport));
+  expect(source.retained("outbound", "rerouted")).toMatchObject({ peer: B, payloadRetained: true, linkAcknowledged: false });
+  expect(source.switchTopology({ transitionId, hubMachineId: B, directPeers: [C] })).toEqual({ rebound: 1, missing: [] });
+  expect(hub.retained("inbound", "rerouted")).toBeNull();
+  expect(hub.retained("outbound", "rerouted")).toBeNull();
+  expect(inbound).toEqual([]);
+  hub.advanceTopologyTransition(); hub.acknowledgeTopologySwitch(transitionId, A); hub.acknowledgeTopologySwitch(transitionId, C);
+
+  const hubEndpoint = { ...endpoint, address: { ...to, sessionId: "hub-recipient" } };
+  source.acceptOutbound({ from, endpoint: hubEndpoint, nextHop: B, message: { id: "to-hub", timestamp: 1, content: { text: "synthetic" } } });
+  const [local] = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 });
+  const next = batch(A, B, 3); next.frames.push(local);
+  const accepted = await receiver.exchange(request(next));
+  expect(accepted.exchange.refusals ?? []).toEqual([]);
+  expect(accepted.exchange.acknowledgements).toEqual([{ identity: local.identity, hopSequence: 2, kind: "message" }]);
+  expect(inbound).toEqual(["to-hub"]);
+  expect(hub.pending({ kind: "inbound", address: hubEndpoint.address })).toEqual([local.identity]);
+  const delayed = batch(A, B, 4); delayed.frames.push(frame);
+  const late = await receiver.exchange(request(delayed));
+  expect(late.exchange.refusals).toEqual([refusal]);
+  expect(late.exchange.acknowledgements).toEqual([]);
+  const lateReport = batch(B, A, 3); lateReport.refusals = late.exchange.refusals; lateReport.acknowledgements = late.exchange.acknowledgements;
+  await sender.exchange(request(lateReport));
+  expect(source.retained("outbound", "rerouted")).toMatchObject({ identity: frame.identity, peer: C, payloadRetained: true, linkAcknowledged: false });
+  expect(hub.retained("inbound", "rerouted")).toBeNull();
+  expect(inbound).toEqual(["to-hub"]);
+}, 5000);
+
 it("forwards a durable receipt and stops replay only after its explicit acknowledgement", async () => {
   const { source, inbox } = pair(), a = await create(A, B, source), b = await create(B, A, inbox);
   source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "m2", timestamp: 1, content: { text: "synthetic" } } });

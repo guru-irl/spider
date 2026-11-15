@@ -99,6 +99,53 @@ it("durably fences new relay custody before acceptance and rebinds a proved refu
   expect(source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0]).toMatchObject({ identity, originMachineId: A });
 }, 5000);
 
+it("keeps the hub stream usable after a restarted drain refuses and reroutes a relay", () => {
+  const f = fixture(), source = f.open(A), target = f.open(B); let hub = f.open(H);
+  const held = send(source, "hub-custody");
+  const [heldFrame] = source.pending({ kind: "outbound", peer: H, edgeEpoch: "hub-edge", hopBudgetMs: 100 });
+  hub.openHop(A, "hub-edge");
+  hub.acceptInbound({ peer: A, frame: heldFrame, hop: { edgeEpoch: "hub-edge", sequence: heldFrame.hopSequence },
+    forward: { peer: B, edgeEpoch: "target-edge" } });
+  source.acknowledge({ peer: H, edgeEpoch: "hub-edge", hopSequence: heldFrame.hopSequence, identity: held, kind: "message" });
+  start(hub); hub = f.restart(hub, H);
+  expect(hub.advanceTopologyTransition().state).toBe("draining");
+
+  const refused = send(source, "source-custody");
+  const [refusedFrame] = source.pending({ kind: "outbound", peer: H, edgeEpoch: "hub-edge", hopBudgetMs: 100 });
+  expect(hub.acceptInbound({ peer: A, frame: refusedFrame, hop: { edgeEpoch: "hub-edge", sequence: refusedFrame.hopSequence },
+    forward: { peer: B, edgeEpoch: "target-edge" } })).toEqual({ kind: "refused", reason: "intercom-topology-changing" });
+  expect(hub.retained("inbound", refused.id)).toBeNull();
+  expect(hub.retained("outbound", refused.id)).toBeNull();
+  expect(source.retained("outbound", refused.id)).toMatchObject({ state: "queued", linkAcknowledged: false, payloadRetained: true });
+  source.recordTopologyRefusal({ peer: H, identity: refused });
+
+  target.openHop(H, "target-edge");
+  const [drained] = hub.pending({ kind: "outbound", peer: B, edgeEpoch: "target-edge", hopBudgetMs: 100 });
+  expect(target.acceptInbound({ peer: H, frame: drained, hop: { edgeEpoch: "target-edge", sequence: drained.hopSequence } }).kind).toBe("accepted");
+  const receipt = consume(target, held.id, H);
+  hub.settleReceipt({ queue: "outbound", peer: B, frame: receipt });
+  hub.settleReceipt({ queue: "inbound", peer: A, frame: receipt });
+  const [relayedReceipt] = hub.pending({ kind: "receipts", peer: A });
+  source.settleReceipt({ queue: "outbound", peer: H, frame: relayedReceipt });
+  hub.acknowledgeReceipt({ peer: A, frame: relayedReceipt });
+  expect(hub.advanceTopologyTransition().state).toBe("switching");
+  expect(switchBox(source)).toEqual({ rebound: 1, missing: [] });
+  hub.acknowledgeTopologySwitch(transitionId, A); hub.acknowledgeTopologySwitch(transitionId, B);
+  hub = f.restart(hub, H);
+
+  const [direct] = source.pending({ kind: "outbound", peer: B, edgeEpoch: "direct-edge", hopBudgetMs: 100 });
+  target.openHop(A, "direct-edge");
+  expect(target.acceptInbound({ peer: A, frame: direct, hop: { edgeEpoch: "direct-edge", sequence: direct.hopSequence } }).kind).toBe("accepted");
+  expect(target.retained("inbound", refused.id)).toMatchObject({ identity: refused, originMachineId: A, peer: A });
+  const hubEndpoint = { ...endpoint, address: { ...to, sessionId: "hub-recipient" }, machineId: H };
+  const local = send(source, "after-switch-to-hub", H, hubEndpoint);
+  const [localFrame] = source.pending({ kind: "outbound", peer: H, edgeEpoch: "hub-edge", hopBudgetMs: 100 });
+  expect(hub.acceptInbound({ peer: A, frame: localFrame, hop: { edgeEpoch: "hub-edge", sequence: localFrame.hopSequence } }).kind).toBe("accepted");
+  expect(hub.pending({ kind: "inbound", address: hubEndpoint.address })).toEqual([local]);
+  expect(hub.retained("inbound", held.id)).toMatchObject({ state: "injected", payloadRetained: false });
+  expect(hub.retained("inbound", refused.id)).toBeNull();
+}, 5000);
+
 it.each(["custody", "unknown"] as const)("refuses %s by name without changing mode, any route, or the audit", kind => {
   const f = fixture(), source = f.open(A);
   send(source, "safe-first");

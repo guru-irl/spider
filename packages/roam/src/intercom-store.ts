@@ -1296,6 +1296,9 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         return accepted("accepted", frame.identity);
         };
         const outcome = admit();
+        if (outcome.kind === "refused" && outcome.reason === "intercom-topology-changing" && input.hop) {
+          saveHop("inbound", input.peer, input.hop.edgeEpoch, input.hop.sequence, frame.identity, frame.originMachineId, outcome.reason);
+        }
         if (outcome.kind !== "refused") {
           const retained = copy("inbound", frame.identity.id);
           if (input.forward && retained) {

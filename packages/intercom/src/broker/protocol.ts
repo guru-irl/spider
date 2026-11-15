@@ -79,6 +79,11 @@ export function isRemoteSessionInfo(value: unknown): value is RemoteSessionInfo 
   if (!isRecord(value) || value.remote !== true || !isSessionAddress(value.address) || value.id !== value.address.sessionId) return false;
   if (["pid", "peerUid", "trustedLocal", "tmuxPane", "runtimeFallbackAlias"].some(key => key in value)) return false;
   if (typeof value.machineId !== "string" || !value.machineId || typeof value.machineAlias !== "string" || !value.machineAlias) return false;
+  const safeText = (text: unknown, limit: number) => typeof text === "string" && text.length <= limit && !/[\u0000-\u001f\u007f-\u009f]/.test(text);
+  for (const [field, limit] of [["name", 256], ["machineAlias", 255], ["cwd", 4096], ["model", 256], ["status", 512]] as const) {
+    if (value[field] !== undefined && !safeText(value[field], limit)) return false;
+  }
+  if (!safeText(value.id, 256) || value.address.scopeId !== null && !safeText(value.address.scopeId, 1024) || !safeText(value.activationEpoch, 256)) return false;
   if (value.homeEpoch !== null && (!Number.isSafeInteger(value.homeEpoch) || Number(value.homeEpoch) < 1)) return false;
   if (typeof value.activationEpoch !== "string" || !value.activationEpoch || value.endpointEpoch !== value.activationEpoch) return false;
   if (value.firstHome !== undefined && (!isFirstHomeAttestation(value.firstHome) || value.firstHome.activation !== value.activationEpoch || value.firstHome.toEpoch !== value.homeEpoch)) return false;

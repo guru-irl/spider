@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { stripVTControlCharacters } from "node:util";
 import {
   isConsumptionReceipt, isMessage, isMessageControl, isMessageReceipt, isRemoteSessionInfo, isSessionAddress, isSessionEndpoint, sameAddress,
   type Message, type SessionAddress, type SessionEndpoint,
@@ -157,7 +158,7 @@ function validExchange(value: unknown): value is IntercomExchange {
   if (!Array.isArray(value.acknowledgements) || !value.acknowledgements.every(item => record(item) && keys(item, ["identity", "kind"])
       && validIdentity(item.identity) && (item.kind === "message" || item.kind === "tombstone"))) return false;
   if (value.refusals !== undefined && (!Array.isArray(value.refusals) || !value.refusals.every(item => record(item) && keys(item, ["identity", "reason"]) &&
-      validIdentity(item.identity) && (item.reason === "queue-full" || item.reason === "message-too-large" || item.reason === "machine-not-enrolled" || item.reason === "link-down" || item.reason === "missing-origin" || item.reason === "peer-revoked" || item.reason === "intercom-topology-changing")))) return false;
+      validIdentity(item.identity) && (item.reason === "queue-full" || item.reason === "message-too-large" || item.reason === "machine-not-enrolled" || item.reason === "link-down" || item.reason === "missing-origin" || item.reason === "peer-revoked" || item.reason === "intercom-topology-changing" || item.reason === "sender-unauthorized" || item.reason === "store-rejected")))) return false;
   if (!Array.isArray(value.receipts) || !value.receipts.every(validReceipt)) return false;
   if (value.receiptAcknowledgements !== undefined && (!Array.isArray(value.receiptAcknowledgements) || !value.receiptAcknowledgements.every(validReceipt))) return false;
   if (!Array.isArray(value.controls) || !value.controls.every(item => record(item) && keys(item, ["from", "to", "control"])
@@ -174,14 +175,30 @@ function checkFirstHomePresence(value: unknown): void {
   if (record(value) && Array.isArray(value.presence) && value.presence.some(entry =>
     record(entry) && "firstHome" in entry && !isRemoteSessionInfo(entry))) throw new Error("invalid-presence");
 }
+function cleanPresence(value: unknown): unknown {
+  if (!record(value) || !Array.isArray(value.presence)) return value;
+  return { ...value, presence: value.presence.map(entry => {
+    if (!record(entry)) return entry;
+    const clean = { ...entry };
+    for (const [field, limit] of [["name", 256], ["machineAlias", 255], ["cwd", 4096], ["model", 256], ["status", 512]] as const) {
+      const text = clean[field];
+      if (typeof text === "string") {
+        if (text.length > limit) throw new Error("invalid-presence");
+        clean[field] = stripVTControlCharacters(text).replace(/[\u0000-\u001f\u007f-\u009f]/g, "");
+      }
+    }
+    return clean;
+  }) };
+}
 export function encodeExchange(exchange: IntercomExchange): Buffer {
-  checkVersion(exchange);
-  checkFirstHomePresence(exchange);
-  if (!validExchange(exchange)) return bad();
-  return encode(exchange, INTERCOM_EXCHANGE_BYTES);
+  const clean = cleanPresence(exchange);
+  checkVersion(clean);
+  checkFirstHomePresence(clean);
+  if (!validExchange(clean)) return bad();
+  return encode(clean, INTERCOM_EXCHANGE_BYTES);
 }
 export function decodeExchange(bytes: Uint8Array): IntercomExchange {
-  const value = parse(bytes, INTERCOM_EXCHANGE_BYTES);
+  const value = cleanPresence(parse(bytes, INTERCOM_EXCHANGE_BYTES));
   checkVersion(value);
   checkFirstHomePresence(value);
   if (!validExchange(value)) return bad();
@@ -189,7 +206,7 @@ export function decodeExchange(bytes: Uint8Array): IntercomExchange {
 }
 /** Decode a linked batch while isolating individually malformed origin-less frames. */
 export function decodeExchangeWithFrameErrors(bytes: Uint8Array): { exchange: IntercomExchange; missingOrigins: MissingOriginFrame[] } {
-  const value = parse(bytes, INTERCOM_EXCHANGE_BYTES);
+  const value = cleanPresence(parse(bytes, INTERCOM_EXCHANGE_BYTES));
   checkVersion(value);
   checkFirstHomePresence(value);
   if (!record(value) || !Array.isArray(value.frames)) return bad();

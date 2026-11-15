@@ -109,8 +109,9 @@ A durable acceptance means the bridge stored a message. It does not mean Pi
 injected the message. The sender retains the payload until a receipt identifies
 a physical entry in the recipient's own session or a matching reply waiter,
 or until the payload expires. An uncertain delivery stays `unknown` across
-reload. A same-ID retry requires an own-session entry scan and proof that the
-old generation cannot inject. Later messages can advance while an earlier
+reload. After a socket handoff, a same-ID retry requires an own-session entry scan
+and proof that the old generation cannot inject. A copy with no dispatch
+attempt can bind to the next local activation without that impossible scan. Later messages can advance while an earlier
 outcome remains unknown.
 
 The delivery and reconciliation code is in `packages/roam/src/intercom-store.ts`,
@@ -122,7 +123,21 @@ keeps active asks waiting. If its retry fails, the bridge reports `link-down`
 and emits one diagnostic for the outage. An ask to a known-down edge fails
 immediately. A late reply remains a message after the original waiter ends.
 The payload lifetime is capped at 24 hours. The store removes expired payloads
-when it processes expiry.
+when it processes expiry. A backward clock step preserves ordinary mail and
+expires only undelivered asks without elapsed-time proof. Already injected
+asks keep their consumption evidence.
+
+The queue limits each recipient to 256 retained payloads and 64 MiB. It also
+limits each origin to 4,096 message records and 256 MiB of payload, and the
+machine to 16,384 message records and 1 GiB. Message counts include terminal
+history and tombstones. A full queue refuses before custody with `queue-full`.
+Terminal history is eligible for pruning 24 hours after its original payload
+deadline, once required receipts, tombstones, and local notices are acknowledged.
+Unacknowledged evidence remains retained and counts against the limits. The
+store keeps pair cursors after pruning so an old replay cannot become new mail.
+Expiry notices are durable and do not repeat after a bridge restart. Exited,
+unreferenced generation and adoption records reduce to compact ownership
+records. Live process evidence and queue references prevent that pruning.
 
 Hub-only routing depends on the hub and cannot deliver between boxes while the
 hub is off. Approved peer enrollment adds a dedicated connector, key, and route
@@ -144,6 +159,9 @@ sends message frames on a new edge. The version and validation are defined in
 `packages/roam/src/intercom-contracts.ts`, `packages/roam/src/intercom-codec.ts`,
 `packages/roam/src/intercom-helper.ts`, and `packages/roam/src/intercom-bridge.ts`.
 Replication batch validation is in `packages/db-core/src/roam/codec.ts`.
+Proved `machine-mismatch`, `machine-not-enrolled`, and `peer-revoked` errors
+stop retries for the current edge epoch. Helper startup, authorization, protocol-version, and reply
+errors keep queued mail and retry with backoff, including after a restart.
 
 ### Origin authentication
 
@@ -176,7 +194,18 @@ The revocation process fences the other endpoint when reachable and checks
 pair-owned access and connection cleanup. If the pair host is unreachable or
 required closure evidence is missing, cleanup remains unconfirmed. The pair
 host can remove its key even when the connecting box is unreachable, but other
-cleanup can remain pending. Shared jobs can also leave cleanup pending.
+cleanup can remain pending. Missing key-removal evidence returns exit code 3
+and `intercom-revocation-unconfirmed`; recovery retries the same cleanup.
+Shared jobs can also leave cleanup pending.
+
+Enrollment grants command access as the peer user, including access through
+that peer's enrolled pairs. SSH ignores user configuration with `-F /dev/null`.
+Each key has a forced command that verifies its pair, edge epoch, and current
+registration before executing the approved user's command. This is not a
+physical tunnel boundary. A key can reach the same loopback SSH service through
+another open tunnel, and deleting a key does not close an existing connection.
+Consent states this remaining reach. Pair revocation stops its owned host and
+removes its key rather than claiming closure from key deletion alone.
 Re-enrollment needs fresh consent for the recorded fence and a new edge epoch.
 The implementation is in `packages/roam/src/intercom-store.ts`,
 `packages/roam/src/intercom-bridge.ts`, and
@@ -230,7 +259,10 @@ The source rebind is separate from endpoint-move reconciliation. Hub custody
 refuses with `intercom-topology-hub-custody`. An uncertain transmission refuses
 with `intercom-topology-outcome-unknown`. Neither refusal changes the mode,
 routes, or audit. Missing enrolled routes leave mail queued and report
-`intercom-route-missing <peer>` rather than relaying in peers mode.
+`intercom-route-missing <peer>` rather than relaying in peers mode. Later
+enrollment retries those source rebinds under the original transition ID and
+writes one audit row per copy. Stranded relay copies do not wake the old hub
+route. Receipts fenced by a revoked pair do not block the topology drain.
 
 An unreachable box remains pending with `intercom-transition-pending <box>`.
 A hub restart resumes the durable transition. A box restart restores its mode
@@ -268,6 +300,18 @@ session. The original process refreshes its advertisement through admission
 and ownership readiness, without a reload, a new activation, or another lock.
 Foreign homes, epoch bumps, freezes, and unsafe capture do not qualify.
 
+A home-less remote presence claim is accepted only when no other current
+claim exists, including hub-local sessions. No durable home, session origin,
+first-home adoption, or past-presence record may name another machine. This
+includes offline local sessions. The first accepted machine and activation
+persist across restarts. A later different-machine claim makes the address
+ambiguous, even after the first machine goes offline. Ambiguous addresses
+refuse sends with `presence-ambiguous`, and doctor reports
+`intercom-presence-ambiguous`. A known home requires an exact machine and epoch
+match. Cached rosters undergo these checks again before publication after a
+restart. Display fields have per-field length limits, and the codec removes
+ANSI and C0/C1 escapes before broker publication.
+
 Before advertising the first epoch, the owner persists a machine-local
 adoption record with the session ID, activation, machine, null previous epoch,
 new epoch, and adoption time. It uses the global database's existing local
@@ -285,13 +329,26 @@ routes the receipt to the persisted origin, even if the sender has left.
 A bridge restart reads the durable record and current registration again.
 A missing or mismatched record, another machine or activation, a later epoch,
 or a non-null previous epoch is not equivalent. Ending the activation ends
-this match. These cases keep the existing absent-endpoint and exclusion rules.
-Adoption is not a general endpoint alias or move permission.
+this match. Never-dispatched mail can rebind to the next activation on the same
+machine, including a null-to-first-home epoch change. A prior socket handoff
+still requires complete old-generation exclusion and absence evidence.
+Consumption evidence from the replacement activation settles the same message
+at its original source. Bounded endpoint aliases acknowledge lost-link-ack
+replays without changing the new endpoint or dispatching twice. Adoption is
+not a general move permission.
+
+Concurrent readiness calls share one in-flight drain per address. New inbound
+mail or a later readiness transition requests another serialized pass. Only a
+client connection preflight failure, before any socket write, restores the
+matching endpoint and dispatch attempt to queued state for a later readiness
+event. Write errors, disconnects after a write and timeouts remain unknown;
+they never authorize a retry without physical exclusion evidence.
 
 For subsequent sends and asks, the recipient rebuilds a first-home attestation
 from that durable record: `{ activation: A, fromEpoch: null, toEpoch: N }`.
 Presence accepts it only in this exact form, bound to the advertised activation
-and epoch, from an edge authorized for the recipient machine. Malformed
+and epoch, from an edge authorized for the recipient machine. The persisted attestation
+remains usable while that edge is down. Malformed
 attestations fail with `invalid-presence`; dispatch arguments cannot supply
 this authority.
 
@@ -302,8 +359,9 @@ and the attestation in the same transaction as the new message. A quota refusal
 writes neither. Sequence numbers continue without a gap, and old retained
 copies keep their original endpoints and receipt owners. This local record is
 not sent as an exclusion proof and cannot authorize a cursor jump elsewhere.
-Every other endpoint change still requires the existing authoritative rebind
-proof; `stale-home-epoch` and strict inbound exclusion checks remain intact.
+Other endpoint changes require authoritative rebind proof, except the
+never-dispatched local activation change described above. `stale-home-epoch`
+and strict post-handoff exclusion checks remain intact.
 The adoption and delivery checks are in `packages/roam/src/intercom-first-home.ts`,
 `packages/roam/src/intercom-store.ts`, and `packages/roam/src/intercom-delivery.ts`.
 

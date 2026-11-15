@@ -1,3 +1,4 @@
+import { authorizedPairLine } from "./intercom-pair-files";
 import { createHash, randomUUID } from "node:crypto";
 import { join, posix } from "node:path";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
@@ -122,9 +123,8 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
     },
     async writeKnownHost(pair, pins) { await call(pair.source, pins.source, "write-route", pair); },
     async authorize(pair, line, pins) {
-      const prefix = 'from="127.0.0.1",restrict ', suffix = ` spider-intercom:${pair.pairId}`;
-      if (!line.startsWith(prefix) || !line.endsWith(suffix)) throw new Error("unsafe-pair-key");
-      const publicKey = line.slice(prefix.length, -suffix.length); if (!validPublicKey(publicKey)) throw new Error("unsafe-pair-key");
+      const publicKey = (await registry.get(pair.pairId))?.resources?.publicKey;
+      if (!publicKey || !validPublicKey(publicKey) || line !== authorizedPairLine(pair, publicKey)) throw new Error("unsafe-pair-key");
       await call(pair.target, pins.target, "authorize", pair, { publicKey });
     },
     async addMachine(pair, argv, pins) {

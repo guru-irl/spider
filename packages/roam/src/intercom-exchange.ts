@@ -28,8 +28,7 @@ export class ExchangeError extends Error {
   readonly exitCode?: number;
   constructor(code: string, exitCode?: number) {
     super(code); this.name = "ExchangeError"; this.code = code;
-    this.retryable = !["machine-mismatch", "machine-not-enrolled", "peer-revoked", "unsupported-broker", "helper-unauthorized", "invalid-request", "invalid-presence",
-      "invalid-refusal", "invalid-receipt", "invalid-reply", "endpoint-exited"].includes(code);
+    this.retryable = !["machine-not-enrolled", "peer-revoked", "machine-mismatch"].includes(code);
     if (exitCode !== undefined) this.exitCode = exitCode;
   }
 }

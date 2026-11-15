@@ -20,6 +20,30 @@ export function createIntercomTopologyStore(db: Db, machineId: string, initialMo
   };
   const write = (value: IntercomTopologyTransition) => db.prepare("UPDATE intercom_topology SET transition_json=? WHERE id=1").run(JSON.stringify(value));
   const validId = (id: string) => { if (!isMachineId(id)) throw new Error("intercom-topology-invalid"); };
+  const rebindRoutes = (input: { hubMachineId: string; directPeers: readonly string[] }, transitionId: string) => {
+        const rows = db.prepare(`SELECT c.id,c.peer,c.state,c.transmitted,c.ack_kind,c.unknown_outcome,
+          json_extract(c.endpoint_json,'$.machineId') AS destination,
+          EXISTS(SELECT 1 FROM intercom_topology_refusals r WHERE r.id=c.id AND r.peer=c.peer) AS refused
+          FROM intercom_copies c JOIN intercom_messages m ON m.id=c.id
+          WHERE c.direction='outbound' AND c.peer=? AND json_extract(c.endpoint_json,'$.machineId')!=?
+          AND (c.payload_json IS NOT NULL OR c.state IN ('expired','cancelled') AND coalesce(c.ack_kind,'') NOT IN ('message','tombstone'))
+          AND json_extract(m.identity_json,'$.originMachineId')=? ORDER BY c.rowid`)
+          .all(input.hubMachineId, input.hubMachineId, machineId) as Array<{
+            id: string; peer: string; state: string; transmitted: number; ack_kind: string | null; unknown_outcome: number; destination: string; refused: number;
+          }>;
+        // Validate the entire set before changing even its first route.
+        if (rows.some(row => row.ack_kind === "message")) throw new Error("intercom-topology-hub-custody");
+        if (rows.some(row => row.unknown_outcome || row.state === "unknown" || row.transmitted && !row.refused)) throw new Error("intercom-topology-outcome-unknown");
+        const peers = new Set(input.directPeers), missing = new Set<string>(); let rebound = 0;
+        for (const row of rows) {
+          if (!peers.has(row.destination)) { missing.add(row.destination); continue; }
+          db.prepare("UPDATE intercom_copies SET peer=?,transmitted=0,sent_kind=NULL,ack_kind=NULL WHERE direction='outbound' AND id=?").run(row.destination, row.id);
+          db.prepare("INSERT INTO intercom_topology_audit(id,transition_id,old_next_hop,new_next_hop,at) VALUES(?,?,?,?,?)")
+            .run(row.id, transitionId, row.peer, row.destination, now());
+          rebound++;
+        }
+        return { rebound, missing: [...missing].sort() };
+  };
   return {
     topology,
     startTopologyTransition(input) {
@@ -48,7 +72,8 @@ export function createIntercomTopologyStore(db: Db, machineId: string, initialMo
         // Custody includes unresolved delivery and the return receipt until its origin acknowledges it.
         const pending = db.prepare(`SELECT 1 FROM intercom_copies c JOIN intercom_messages m ON m.id=c.id
           WHERE c.direction='inbound' AND json_extract(c.endpoint_json,'$.machineId')!=?
-          AND (c.payload_json IS NOT NULL OR EXISTS (SELECT 1 FROM intercom_receipts r WHERE r.id=c.id AND r.acknowledged=0)) LIMIT 1`).get(machineId);
+          AND (c.payload_json IS NOT NULL OR EXISTS (SELECT 1 FROM intercom_receipts r WHERE r.id=c.id AND r.acknowledged=0
+            AND NOT EXISTS (SELECT 1 FROM intercom_pair_fences f WHERE f.peer=r.peer))) LIMIT 1`).get(machineId);
         if (pending) return current;
         const next = { ...current, state: "switching" as const }; write(next); return next;
       }).immediate();
@@ -71,29 +96,18 @@ export function createIntercomTopologyStore(db: Db, machineId: string, initialMo
         const current = topology();
         if (current.switched === input.transitionId) return { rebound: 0, missing: [] };
         if (current.switched !== null || current.mode !== "hub-only") throw new Error("intercom-transition-conflict");
-        const rows = db.prepare(`SELECT c.id,c.peer,c.state,c.transmitted,c.ack_kind,c.unknown_outcome,
-          json_extract(c.endpoint_json,'$.machineId') AS destination,
-          EXISTS(SELECT 1 FROM intercom_topology_refusals r WHERE r.id=c.id AND r.peer=c.peer) AS refused
-          FROM intercom_copies c JOIN intercom_messages m ON m.id=c.id
-          WHERE c.direction='outbound' AND c.peer=? AND json_extract(c.endpoint_json,'$.machineId')!=?
-          AND (c.payload_json IS NOT NULL OR c.state IN ('expired','cancelled') AND coalesce(c.ack_kind,'') NOT IN ('message','tombstone'))
-          AND json_extract(m.identity_json,'$.originMachineId')=? ORDER BY c.rowid`)
-          .all(input.hubMachineId, input.hubMachineId, machineId) as Array<{
-            id: string; peer: string; state: string; transmitted: number; ack_kind: string | null; unknown_outcome: number; destination: string; refused: number;
-          }>;
-        // Validate the entire set before changing even its first route.
-        if (rows.some(row => row.ack_kind === "message")) throw new Error("intercom-topology-hub-custody");
-        if (rows.some(row => row.unknown_outcome || row.state === "unknown" || row.transmitted && !row.refused)) throw new Error("intercom-topology-outcome-unknown");
-        const peers = new Set(input.directPeers), missing = new Set<string>(); let rebound = 0;
-        for (const row of rows) {
-          if (!peers.has(row.destination)) { missing.add(row.destination); continue; }
-          db.prepare("UPDATE intercom_copies SET peer=?,transmitted=0,sent_kind=NULL,ack_kind=NULL WHERE direction='outbound' AND id=?").run(row.destination, row.id);
-          db.prepare("INSERT INTO intercom_topology_audit(id,transition_id,old_next_hop,new_next_hop,at) VALUES(?,?,?,?,?)")
-            .run(row.id, input.transitionId, row.peer, row.destination, now());
-          rebound++;
-        }
+        const result = rebindRoutes(input, input.transitionId);
         db.prepare("UPDATE intercom_topology SET mode='peers',switched=? WHERE id=1").run(input.transitionId);
-        return { rebound, missing: [...missing].sort() };
+        return result;
+      }).immediate();
+    },
+    rebindTopologyRoutes(input) {
+      validId(input.hubMachineId);
+      if (input.directPeers.some(id => !isMachineId(id) || id === input.hubMachineId)) throw new Error("intercom-topology-invalid");
+      return db.raw.transaction(() => {
+        const current = topology();
+        if (current.mode !== "peers" || !current.switched) return { rebound: 0, missing: [] };
+        return rebindRoutes(input, current.switched);
       }).immediate();
     },
     recordTopologyRefusal(input) {

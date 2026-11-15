@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
+import { authorizedPairLine } from "./intercom-pair-files";
 import { posix } from "node:path";
 import type { Outcome, Peer } from "./contracts";
 import { isMachineId } from "./machine-id";
 import type { IntercomEnrollmentPair, IntercomEnrollmentPlan, IntercomEnrollmentPorts, IntercomEnrollmentPreview, IntercomEnrollmentRequest, IntercomMachinePin, IntercomRevocationCleanupReason, IntercomRevocationPorts, IntercomSshHostKey } from "./provision-contracts";
 
-export const INTERCOM_CONSENT = "Enrolling this pair lets the initiating box execute commands as your user on its peer. A compromised initiating box can access every peer enrolled to it. This approval is separate from copying pi authentication. Revoke the pair by removing its dedicated authorized key and hc machine route.";
+export const INTERCOM_CONSENT = "Enrolling this pair lets the initiating box execute commands as your user on its peer. A compromised initiating box can access every box reachable through enrolled pairs. This approval is separate from copying pi authentication. Pair keys verify their pair and epoch, but shared loopback SSH does not bind a key to one tunnel. Revoke with `spider roam intercom revoke <pair>` to stop the pair host and remove its key. Deleting the key alone does not close open connections.";
 
 export interface EnrollmentResult { pairs: readonly string[]; pending?: readonly { pairId: string; reason: string }[] }
 
@@ -179,7 +180,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           if (!validPublicKey(key.publicKey) || key.privateMode !== 0o600 || key.privateOwned !== true || keys.has(key.publicKey)) return "unsafe-pair-key";
           keys.add(key.publicKey); record(pair.pairId, "key");
           await ports.writeKnownHost(pair, pairPins); record(pair.pairId, "known-host");
-          await ports.authorize(pair, `from="127.0.0.1",restrict ${key.publicKey} spider-intercom:${pair.pairId}`, pairPins);
+          await ports.authorize(pair, authorizedPairLine(pair, key.publicKey), pairPins);
           record(pair.pairId, "authorized");
           await ports.addMachine(pair, machineArgs(pair), pairPins); record(pair.pairId, "machine");
           const transport = await ports.verifyTransport(pair, pairPins);
@@ -265,8 +266,9 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
             cleanupReason = "intercom-revocation-unconfirmed";
           }
         } catch { cleanupReason = "intercom-revocation-unconfirmed"; }
+        if (!cleanupReason) try { await ports.removeAuthorizedKey(pair, pins); }
+        catch { cleanupReason = "intercom-revocation-unconfirmed"; }
         if (!cleanupReason) try {
-          await ports.removeAuthorizedKey(pair, pins);
           if (ports.stopPairConnect && !await ports.stopPairConnect(pair, pins, closure.fenceId)) throw new Error("intercom-revocation-cleanup-pending");
           const route = await ports.removeMachineIfIdle(pair, pins);
           if (route === "shared-jobs") cleanupReason = "intercom-revocation-cleanup-pending";
@@ -274,9 +276,11 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
           else {
             const evidence = await ports.verifyRevocation(pair, pins);
             if (!evidence || evidence.sourceMachineId !== pair.source.machineId || evidence.targetMachineId !== pair.target.machineId ||
-                evidence.edgeEpoch !== pair.edgeEpoch || evidence.keyAbsent !== true || evidence.routeAbsent !== true || evidence.exchanges !== "closed") {
+                evidence.edgeEpoch !== pair.edgeEpoch) {
               cleanupReason = "intercom-revocation-verification-pending";
-            } else if (evidence.authenticatedConnections !== "closed") cleanupReason = "intercom-revocation-access-open";
+            } else if (evidence.keyAbsent !== true) cleanupReason = "intercom-revocation-unconfirmed";
+            else if (evidence.routeAbsent !== true || evidence.exchanges !== "closed") cleanupReason = "intercom-revocation-verification-pending";
+            else if (evidence.authenticatedConnections !== "closed") cleanupReason = "intercom-revocation-access-open";
           }
         } catch { cleanupReason = "intercom-revocation-cleanup-pending"; }
       }

@@ -8,6 +8,7 @@ import {
   type ConsumptionEvidence, type FederationBlockers, type Message, type MessageReceipt, type SessionAddress, type SessionEndpoint,
 } from "@spider/intercom/protocol";
 import {
+  INTERCOM_DEDUPE_MS, INTERCOM_MACHINE_BYTES, INTERCOM_MACHINE_MESSAGES, INTERCOM_ORIGIN_BYTES, INTERCOM_ORIGIN_MESSAGES,
   INTERCOM_EXCHANGE_BYTES, INTERCOM_HOP_ALLOWANCE_MS, INTERCOM_PAYLOAD_MS, INTERCOM_QUEUE_BYTES, INTERCOM_QUEUE_MESSAGES,
   type IntercomAcceptance, type IntercomEdgeState, type IntercomFrame, type IntercomIdentity, type IntercomMessageFrame, type IntercomQueue,
   type IntercomPairFence, type IntercomPairResume, type IntercomReceiptFrame, type IntercomReceiptInput, type IntercomState, type IntercomStore, type IntercomStoreOptions, type OutboundMessage,
@@ -35,8 +36,14 @@ const schemaColumns: Readonly<Record<string, readonly string[]>> = {
   intercom_topology: ["id", "mode", "transition_json", "switched"],
   intercom_topology_refusals: ["id", "peer"],
   intercom_topology_audit: ["id", "transition_id", "old_next_hop", "new_next_hop", "at"],
+  intercom_presence_claims: ["address_key", "machine_id", "activation", "home_epoch", "ambiguous"],
+  intercom_rejections: ["peer", "id", "reason", "at"],
+  intercom_notices: ["id", "kind"],
+  intercom_endpoint_aliases: ["direction", "id", "endpoint_json"],
 };
 const schemaKeys: Readonly<Record<string, readonly (readonly string[])[]>> = {
+  intercom_endpoint_aliases: [["direction", "id", "endpoint_json"]],
+  intercom_notices: [["id", "kind"]], intercom_presence_claims: [["address_key"]], intercom_rejections: [["peer", "id"]],
   intercom_messages: [["id"], ["from_key", "to_key", "pair_sequence"]],
   intercom_copies: [["direction", "id"]], intercom_cursors: [["direction", "from_key", "to_key"]],
   intercom_topology_refusals: [["id"]], intercom_topology_audit: [["id", "transition_id"]],
@@ -45,7 +52,7 @@ const schemaKeys: Readonly<Record<string, readonly (readonly string[])[]>> = {
 };
 function validateSchema(db: Db, tables: readonly { name: string }[], version: number): void {
   const names = new Set(tables.map(row => row.name));
-  const introduced = (name: string) => name.startsWith("intercom_topology") ? 4 : name === "intercom_edge_state" ? 2 :
+  const introduced = (name: string) => ["intercom_presence_claims", "intercom_rejections", "intercom_notices", "intercom_endpoint_aliases"].includes(name) ? 5 : name.startsWith("intercom_topology") ? 4 : name === "intercom_edge_state" ? 2 :
     name === "intercom_pair_fences" || name === "intercom_pair_approvals" || name === "intercom_revocation_notices" ? 3 : 1;
   if (tables.some(row => !(row.name in schemaColumns)) || Object.keys(schemaColumns).some(name => names.has(name) !== (version >= introduced(name)))) {
     throw new Error("Invalid or incomplete intercom store schema");
@@ -115,7 +122,7 @@ function prepareFile(file: string, machineId: string): void {
     if (tables.length) {
       const meta = probe.prepare("SELECT machine_id, version FROM intercom_meta WHERE id=1").get() as { machine_id: string; version: number } | undefined;
       if (!meta || meta.machine_id !== machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4) throw new Error("Unsupported intercom store version");
+      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 && meta.version !== 5) throw new Error("Unsupported intercom store version");
       validateSchema(probe, tables, meta.version);
     }
   } finally { probe.close(); }
@@ -155,19 +162,25 @@ function parseStored<T>(value: string): T {
 }
 function nonempty(value: unknown): value is string { return typeof value === "string" && value.length > 0; }
 function safeInteger(value: unknown, min = 0): value is number { return Number.isSafeInteger(value) && Number(value) >= min; }
+// Stream keys qualify the portable sender by the machine that first accepted the message.
+function streamKey(origin: string | undefined, address: SessionAddress): string { return JSON.stringify([origin ?? "", addressKey(address)]); }
 function readOrigin(row: IdentityRow): string | undefined {
   const value = parseStored<IntercomIdentity & { originMachineId?: unknown }>(row.identity_json).originMachineId;
   if (value !== undefined && !isMachineId(value)) throw new Error("Invalid intercom origin metadata");
   return value;
 }
 function readIdentity(row: IdentityRow): IntercomIdentity {
-  const { originMachineId: _origin, ...identity } = parseStored<IntercomIdentity & { originMachineId?: unknown }>(row.identity_json);
+  const { originMachineId: _origin, rejectedBy, rejectionUsed, ...identity } = parseStored<IntercomIdentity & {
+    originMachineId?: unknown; rejectedBy?: unknown; rejectionUsed?: unknown;
+  }>(row.identity_json);
+  if (rejectedBy !== undefined && (!isMachineId(rejectedBy) || _origin !== undefined || typeof rejectionUsed !== "boolean") ||
+      rejectedBy === undefined && rejectionUsed !== undefined) throw new Error("Invalid intercom rejection metadata");
   readOrigin(row);
   if (!identity || !nonempty(identity.id) || !isSessionAddress(identity.from) || !isSessionAddress(identity.to) ||
       !/^[0-9a-f]{64}$/.test(identity.digest) || !safeInteger(identity.sequence, 1) ||
       !(identity.askId === null || nonempty(identity.askId)) || identity.id !== row.id || identity.digest !== row.digest ||
       identity.sequence !== row.pair_sequence || identity.askId !== row.ask_id ||
-      addressKey(identity.from) !== row.from_key || addressKey(identity.to) !== row.to_key) throw new Error("Invalid intercom identity metadata");
+      streamKey(typeof rejectedBy === "string" ? `rejected:${rejectedBy}:${identity.id}` : readOrigin(row), identity.from) !== row.from_key || addressKey(identity.to) !== row.to_key) throw new Error("Invalid intercom identity metadata");
   return identity;
 }
 function readEndpoint(row: CopyRow): SessionEndpoint {
@@ -238,10 +251,22 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
   if (!safeInteger(queueMessages, 1) || queueMessages > INTERCOM_QUEUE_MESSAGES || !safeInteger(queueBytes, 1) || queueBytes > INTERCOM_QUEUE_BYTES) {
     throw new Error("Invalid intercom queue limits");
   }
+  let highWater = 0, lastReading: number | undefined, rollbackPending = false;
+  const caps = { originMessages: INTERCOM_ORIGIN_MESSAGES, originBytes: INTERCOM_ORIGIN_BYTES, machineMessages: INTERCOM_MACHINE_MESSAGES, machineBytes: INTERCOM_MACHINE_BYTES };
+  for (const key of Object.keys(caps) as Array<keyof typeof caps>) {
+    const value = options.limits?.[key];
+    if (value !== undefined) { if (!safeInteger(value, 1) || value > caps[key]) throw new Error("Invalid intercom queue limits"); caps[key] = value; }
+  }
   const now = (): number => {
     const value = options.clock.now();
     if (!safeInteger(value)) throw new Error("Invalid intercom clock");
-    return value;
+    if (lastReading === undefined) highWater = value;
+    else {
+      if (value < lastReading) rollbackPending = true;
+      highWater = plus(highWater, Math.max(0, value - lastReading));
+    }
+    lastReading = value;
+    return highWater;
   };
   const firstNow = now();
   prepareFile(options.file, options.machineId);
@@ -311,6 +336,20 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           id TEXT NOT NULL REFERENCES intercom_messages(id), transition_id TEXT NOT NULL,
           old_next_hop TEXT NOT NULL, new_next_hop TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(id,transition_id)
         );
+        CREATE TABLE IF NOT EXISTS intercom_presence_claims (
+          address_key TEXT PRIMARY KEY, machine_id TEXT NOT NULL, activation TEXT NOT NULL, home_epoch INTEGER, ambiguous INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS intercom_rejections (
+          peer TEXT NOT NULL, id TEXT NOT NULL, reason TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(peer,id)
+        );
+        CREATE TABLE IF NOT EXISTS intercom_notices (id TEXT NOT NULL REFERENCES intercom_messages(id),kind TEXT NOT NULL,PRIMARY KEY(id,kind));
+        CREATE INDEX IF NOT EXISTS intercom_message_recipient ON intercom_messages(to_key);
+        CREATE TABLE IF NOT EXISTS intercom_endpoint_aliases (
+          direction TEXT NOT NULL, id TEXT NOT NULL, endpoint_json TEXT NOT NULL,
+          PRIMARY KEY(direction,id,endpoint_json), FOREIGN KEY(direction,id) REFERENCES intercom_copies(direction,id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS intercom_copy_expiry ON intercom_copies(deadline_at,state);
+        CREATE INDEX IF NOT EXISTS intercom_message_origin ON intercom_messages(json_extract(identity_json,'$.originMachineId'));
         CREATE INDEX IF NOT EXISTS intercom_copy_peer ON intercom_copies(direction,peer,state);
         CREATE INDEX IF NOT EXISTS intercom_message_pair ON intercom_messages(from_key,to_key,pair_sequence);
         CREATE INDEX IF NOT EXISTS intercom_receipt_peer ON intercom_receipts(peer,acknowledged);
@@ -318,8 +357,28 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       db.prepare("INSERT OR IGNORE INTO intercom_meta(id,machine_id,version,last_clock) VALUES(1,?,4,?)").run(options.machineId, firstNow);
       const meta = db.prepare("SELECT machine_id,version,last_clock FROM intercom_meta WHERE id=1").get() as MetaRow;
       if (!meta || meta.machine_id !== options.machineId) throw new Error("Intercom store machine identity mismatch");
-      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
-      if (meta.version < 4) db.prepare("UPDATE intercom_meta SET version=4 WHERE id=1").run();
+      if (meta.version !== 1 && meta.version !== 2 && meta.version !== 3 && meta.version !== 4 && meta.version !== 5 || !safeInteger(meta.last_clock)) throw new Error("Unsupported intercom store version");
+      rollbackPending ||= firstNow < meta.last_clock;
+      highWater = Math.max(highWater, meta.last_clock);
+      if (meta.version < 5) {
+        db.prepare(`UPDATE intercom_messages SET identity_json=json_set(identity_json,'$.rejectedBy',
+          (SELECT c.peer FROM intercom_copies c WHERE c.id=intercom_messages.id AND c.direction='inbound'),'$.rejectionUsed',json('false'))
+          WHERE json_extract(identity_json,'$.originMachineId') IS NULL AND EXISTS (SELECT 1 FROM intercom_copies c
+            WHERE c.id=intercom_messages.id AND c.direction='inbound' AND json_extract(c.receipt_json,'$.detail')='missing-origin')`).run();
+        db.prepare(`UPDATE intercom_cursors SET from_key=json_array(coalesce((SELECT json_extract(m.identity_json,'$.originMachineId')
+          FROM intercom_messages m WHERE m.from_key=intercom_cursors.from_key AND m.to_key=intercom_cursors.to_key
+          ORDER BY m.pair_sequence DESC LIMIT 1),''),from_key)`).run();
+        db.prepare(`UPDATE intercom_resumptions SET from_key=json_array(coalesce((SELECT json_extract(m.identity_json,'$.originMachineId')
+          FROM intercom_messages m WHERE m.from_key=intercom_resumptions.from_key AND m.to_key=intercom_resumptions.to_key
+          ORDER BY m.pair_sequence DESC LIMIT 1),''),from_key)`).run();
+        db.prepare(`UPDATE intercom_messages SET from_key=json_array(CASE WHEN json_extract(identity_json,'$.rejectedBy') IS NOT NULL
+          THEN 'rejected:'||json_extract(identity_json,'$.rejectedBy')||':'||id ELSE coalesce(json_extract(identity_json,'$.originMachineId'),'') END,from_key)`).run();
+        db.prepare(`INSERT INTO intercom_cursors(direction,from_key,to_key,sequence)
+          SELECT c.direction,m.from_key,m.to_key,max(m.pair_sequence) FROM intercom_messages m JOIN intercom_copies c ON c.id=m.id
+          WHERE json_extract(m.identity_json,'$.originMachineId') IS NOT NULL GROUP BY c.direction,m.from_key,m.to_key
+          ON CONFLICT(direction,from_key,to_key) DO UPDATE SET sequence=max(sequence,excluded.sequence)`).run();
+        db.prepare("UPDATE intercom_meta SET version=5 WHERE id=1").run();
+      }
     }).immediate();
     checkpoint();
   } catch (error) { db.close(); throw error; }
@@ -329,26 +388,33 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     db.prepare(`${selectCopy} WHERE c.direction=? AND c.id=?`).get(direction, id) as CopyRow | undefined;
   const identityRow = (id: string): IdentityRow | undefined =>
     db.prepare("SELECT * FROM intercom_messages WHERE id=?").get(id) as IdentityRow | undefined;
-  const cursor = (direction: IntercomQueue, identity: IntercomIdentity): number => {
+  const cursor = (direction: IntercomQueue, identity: IntercomIdentity, origin: string | undefined): number => {
     const row = db.prepare("SELECT sequence FROM intercom_cursors WHERE direction=? AND from_key=? AND to_key=?")
-      .get(direction, addressKey(identity.from), addressKey(identity.to)) as { sequence: number } | undefined;
+      .get(direction, streamKey(origin, identity.from), addressKey(identity.to)) as { sequence: number } | undefined;
     return row?.sequence ?? 0;
   };
-  const writeCursor = (direction: IntercomQueue, identity: IntercomIdentity): void => {
+  const writeCursor = (direction: IntercomQueue, identity: IntercomIdentity, origin: string | undefined): void => {
     db.prepare(`INSERT INTO intercom_cursors(direction,from_key,to_key,sequence) VALUES(?,?,?,?)
       ON CONFLICT(direction,from_key,to_key) DO UPDATE SET sequence=excluded.sequence`)
-      .run(direction, addressKey(identity.from), addressKey(identity.to), identity.sequence);
+      .run(direction, streamKey(origin, identity.from), addressKey(identity.to), identity.sequence);
   };
   const acceptance = (): Extract<import("@spider/intercom/protocol").AcceptanceEvidence, { durable: true }> =>
     ({ accepted: true, durable: true, location: `intercom:${options.machineId}` });
   const accepted = (kind: "accepted" | "duplicate", identity: IntercomIdentity, row?: CopyRow): IntercomAcceptance => ({
     kind, identity, acceptance: acceptance(), ...(row?.receipt_json ? { receipt: parseStored<MessageReceipt>(row.receipt_json) } : {}),
   });
-  const room = (to: SessionAddress, bytes: number): boolean => {
+  const room = (to: SessionAddress, bytes: number, origin: string, id: string): boolean => {
     const row = db.prepare(`SELECT count(*) AS count,coalesce(sum(c.payload_bytes),0) AS bytes
       FROM intercom_copies c JOIN intercom_messages m ON m.id=c.id WHERE m.to_key=? AND c.payload_json IS NOT NULL`)
       .get(addressKey(to)) as { count: number; bytes: number };
-    return row.count < queueMessages && row.bytes + bytes <= queueBytes;
+    if (row.count >= queueMessages || row.bytes + bytes > queueBytes) return false;
+    const originUsage = db.prepare(`SELECT count(DISTINCT m.id) AS count,coalesce(sum(c.payload_bytes),0) AS bytes
+      FROM intercom_messages m JOIN intercom_copies c ON c.id=m.id WHERE coalesce(json_extract(m.identity_json,'$.originMachineId'),'')=?`).get(origin) as { count: number; bytes: number };
+    const machineUsage = db.prepare(`SELECT count(DISTINCT m.id) AS count,coalesce(sum(c.payload_bytes),0) AS bytes
+      FROM intercom_messages m JOIN intercom_copies c ON c.id=m.id`).get() as { count: number; bytes: number };
+    const additional = identityRow(id) ? 0 : 1;
+    return originUsage.count + additional <= caps.originMessages && originUsage.bytes + bytes <= caps.originBytes &&
+      machineUsage.count + additional <= caps.machineMessages && machineUsage.bytes + bytes <= caps.machineBytes;
   };
   const saveReceipt = (row: CopyRow, frame: IntercomReceiptInput): void => {
     const clean: IntercomReceiptFrame = { ...cleanReceiptFrame(frame), attempt: frame.attempt ?? row.attempt }, key = receiptKey(clean);
@@ -381,21 +447,45 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     const expired = db.raw.transaction(() => {
       const meta = db.prepare("SELECT machine_id,version,last_clock FROM intercom_meta WHERE id=1").get() as MetaRow;
       if (!meta || !safeInteger(meta.last_clock)) throw new Error("Invalid intercom clock metadata");
-      const rolledBack = at < meta.last_clock;
-      if (at !== meta.last_clock) db.prepare("UPDATE intercom_meta SET last_clock=? WHERE id=1").run(at);
+      // A rollback supplies no elapsed-time proof for an undelivered ask.
+      const rolledBack = rollbackPending;
+      if (at > meta.last_clock) db.prepare("UPDATE intercom_meta SET last_clock=? WHERE id=1").run(at);
       const result: Array<{ queue: IntercomQueue; id: string }> = [];
-      const rows = db.prepare(`${selectCopy} WHERE (c.deadline_at<=? OR ?=1)
-        AND (c.payload_json IS NOT NULL OR (m.is_ask=1 AND m.ask_state='open'))`).all(at, rolledBack ? 1 : 0) as CopyRow[];
+      const rows = db.prepare(`${selectCopy} WHERE (c.deadline_at<=? OR (?=1 AND m.is_ask=1 AND m.ask_state='open'))
+        AND c.payload_json IS NOT NULL`).all(at, rolledBack ? 1 : 0) as CopyRow[];
       for (const row of rows) {
         if (row.is_ask) db.prepare("UPDATE intercom_messages SET ask_state='expired' WHERE id=? AND ask_state='open'").run(row.id);
         if (expireRow(row, at)) { deleted = true; result.push({ queue: row.direction, id: row.id }); }
       }
+      const terminal = db.prepare(`SELECT m.id FROM intercom_messages m WHERE
+        NOT (json_extract(m.identity_json,'$.rejectedBy') IS NOT NULL AND coalesce(json_extract(m.identity_json,'$.rejectionUsed'),0)=0) AND
+        NOT EXISTS (SELECT 1 FROM intercom_copies c WHERE c.id=m.id AND (c.payload_json IS NOT NULL OR c.deadline_at>? OR
+          c.state NOT IN ('injected','matched_waiter','answered','expired','cancelled') OR
+          c.direction='outbound' AND c.state IN ('expired','cancelled') AND coalesce(c.ack_kind,'')!='tombstone'
+            AND NOT EXISTS (SELECT 1 FROM intercom_pair_fences f WHERE f.peer=c.peer)))
+        AND NOT EXISTS (SELECT 1 FROM intercom_receipts r WHERE r.id=m.id AND r.acknowledged=0
+          AND NOT EXISTS (SELECT 1 FROM intercom_pair_fences f WHERE f.peer=r.peer))
+        AND NOT EXISTS (SELECT 1 FROM intercom_revocation_notices n WHERE n.id=m.id)
+        AND NOT EXISTS (SELECT 1 FROM intercom_copies c WHERE c.id=m.id AND c.direction='outbound' AND c.state='expired'
+          AND NOT EXISTS (SELECT 1 FROM intercom_copies i WHERE i.id=c.id AND i.direction='inbound')
+          AND NOT EXISTS (SELECT 1 FROM intercom_notices n WHERE n.id=c.id AND n.kind='expiry'))`).all(at - INTERCOM_DEDUPE_MS) as { id: string }[];
+      for (const { id } of terminal) {
+        for (const table of ["intercom_notices", "intercom_receipts", "intercom_topology_refusals", "intercom_topology_audit", "intercom_copies", "intercom_messages"]) {
+          db.prepare(`DELETE FROM ${table} WHERE id=?`).run(id);
+        }
+        deleted = true;
+      }
+      db.prepare("DELETE FROM intercom_rejections WHERE at<?").run(at - 2 * INTERCOM_PAYLOAD_MS);
+      db.prepare(`DELETE FROM intercom_resumptions WHERE json_extract(resume_json,'$.reason')='first-home-adoption'
+        AND NOT EXISTS (SELECT 1 FROM intercom_messages m WHERE m.from_key=intercom_resumptions.from_key AND m.to_key=intercom_resumptions.to_key)`).run();
       return result;
     }).immediate();
+    rollbackPending = false;
     if (deleted) checkpointDeletion();
     return expired;
   };
-  const insertIdentity = (identity: IntercomIdentity, isAsk: boolean, tombstone?: "expired" | "cancelled", originMachineId?: string): void => {
+  const insertIdentity = (identity: IntercomIdentity, isAsk: boolean, tombstone?: "expired" | "cancelled", originMachineId?: string, rejectedBy?: string): void => {
+    const originKey = rejectedBy ? `rejected:${rejectedBy}:${identity.id}` : originMachineId;
     const known = identityRow(identity.id);
     if (known) {
       if (!sameIdentity(readIdentity(known), identity)) throw new Error("Intercom message ID or digest conflict");
@@ -406,11 +496,11 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       return;
     }
     const collision = db.prepare("SELECT id FROM intercom_messages WHERE from_key=? AND to_key=? AND pair_sequence=?")
-      .get(addressKey(identity.from), addressKey(identity.to), identity.sequence) as { id: string } | undefined;
+      .get(streamKey(originKey, identity.from), addressKey(identity.to), identity.sequence) as { id: string } | undefined;
     if (collision) throw new Error("Intercom pair sequence conflict");
     db.prepare(`INSERT INTO intercom_messages(id,from_key,to_key,digest,pair_sequence,ask_id,identity_json,is_ask,ask_state)
-      VALUES(?,?,?,?,?,?,?,?,?)`).run(identity.id, addressKey(identity.from), addressKey(identity.to), identity.digest, identity.sequence,
-        identity.askId, JSON.stringify({ ...identity, ...(originMachineId ? { originMachineId } : {}) }), isAsk ? 1 : 0, isAsk ? tombstone ?? "open" : "none");
+      VALUES(?,?,?,?,?,?,?,?,?)`).run(identity.id, streamKey(originKey, identity.from), addressKey(identity.to), identity.digest, identity.sequence,
+        identity.askId, JSON.stringify({ ...identity, ...(originMachineId ? { originMachineId } : {}), ...(rejectedBy ? { rejectedBy, rejectionUsed: false } : {}) }), isAsk ? 1 : 0, isAsk ? tombstone ?? "open" : "none");
   };
   const insertCopy = (direction: IntercomQueue, frame: IntercomFrame, peer: string, at: number): void => {
     const message = frame.kind === "message" ? frame.message : null;
@@ -524,7 +614,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       db.prepare("UPDATE intercom_messages SET ask_state=? WHERE id=? AND ask_state='open'").run(receipt.status, row.id);
     }
     if (receipt.status === "matched_waiter" && row.ask_id !== null) {
-      const settled = db.prepare("UPDATE intercom_messages SET ask_state='settled' WHERE id=? AND from_key=? AND to_key=? AND ask_state='open'")
+      const settled = db.prepare("UPDATE intercom_messages SET ask_state='settled' WHERE id=? AND json_extract(from_key,'$[1]')=? AND to_key=? AND ask_state='open'")
         .run(row.ask_id, addressKey(frame.from.address), addressKey(frame.to));
       if (settled.changes) db.prepare("UPDATE intercom_copies SET state='answered' WHERE id=? AND state IN ('queued','unknown','not_injected')")
         .run(row.ask_id);
@@ -568,20 +658,20 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     const budget = input.maxBytes ?? INTERCOM_EXCHANGE_BYTES - 1024, skipped = new Set(input.skipIds ?? []);
     const at = now(); let deleted = false;
     const result = db.raw.transaction(() => {
-      const rows = db.prepare(`${selectCopy} WHERE c.direction='outbound' AND c.peer=? AND (
+      const rows = db.prepare(`${selectCopy} WHERE c.direction='outbound' AND c.peer=?
+        AND (?='hub-only' OR json_extract(c.endpoint_json,'$.machineId')=c.peer) AND (
         (c.state='queued' AND c.payload_json IS NOT NULL AND coalesce(c.ack_kind,'')!='message') OR
         (c.state IN ('expired','cancelled') AND coalesce(c.ack_kind,'')!='tombstone'))
-        ORDER BY m.from_key,m.to_key,m.pair_sequence LIMIT 1024`).all(input.peer) as CopyRow[];
+        ORDER BY m.from_key,m.to_key,m.pair_sequence LIMIT 1024`).all(input.peer, topology.topology().mode) as CopyRow[];
       const frames: IntercomFrame[] = [], blocked = new Set<string>(); let bytes = 0;
       for (const row of rows) {
-        if (topology.topology().mode === "peers" && readEndpoint(row).machineId !== row.peer) continue;
         const pair = JSON.stringify([row.from_key, row.to_key]);
         if (blocked.has(pair)) continue;
         if (skipped.has(row.id)) { blocked.add(pair); continue; }
         let next = row, expires = false;
         if (row.state === "queued") {
           const lifetime = row.deadline_at - at - input.hopBudgetMs - INTERCOM_HOP_ALLOWANCE_MS;
-          const elapsed = at < row.last_clock ? row.remaining_ms ?? 0 : at - row.last_clock;
+          const elapsed = Math.max(0, at - row.last_clock);
           const remaining = row.is_ask && row.remaining_ms !== null ? row.remaining_ms - elapsed - input.hopBudgetMs - INTERCOM_HOP_ALLOWANCE_MS : null;
           if (lifetime <= 0 || remaining !== null && remaining <= 0) { next = { ...row, state: "expired" }; expires = true; }
           else next = { ...row, deadline_at: at + lifetime, remaining_ms: remaining, last_clock: at };
@@ -637,8 +727,54 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     return { peer: row.peer, edgeEpoch: row.edge_epoch, fenceId: row.fence_id, fencedAt: row.fenced_at };
   };
 
+  const aliasEndpoint = (row: CopyRow): void => {
+    db.prepare("INSERT OR IGNORE INTO intercom_endpoint_aliases(direction,id,endpoint_json) VALUES(?,?,?)").run(row.direction, row.id, row.endpoint_json);
+    // Preserve the original sender endpoint and the 15 most recent local rebinds.
+    db.prepare(`DELETE FROM intercom_endpoint_aliases WHERE direction=? AND id=? AND rowid NOT IN (
+      SELECT rowid FROM intercom_endpoint_aliases WHERE direction=? AND id=? ORDER BY rowid DESC LIMIT 15)
+      AND rowid<>(SELECT min(rowid) FROM intercom_endpoint_aliases WHERE direction=? AND id=?)`).run(row.direction,row.id,row.direction,row.id,row.direction,row.id);
+  };
+  const knownEndpoint = (row: CopyRow, endpoint: SessionEndpoint): boolean =>
+    (db.prepare("SELECT endpoint_json FROM intercom_endpoint_aliases WHERE direction=? AND id=?").all(row.direction,row.id) as { endpoint_json: string }[])
+      .some(alias => sameEndpoint(parseStored<SessionEndpoint>(alias.endpoint_json), endpoint));
   const store: IntercomStore = {
     ...topology,
+    presenceOwner(address) {
+      const row = db.prepare("SELECT machine_id,activation,ambiguous FROM intercom_presence_claims WHERE address_key=?").get(addressKey(address)) as
+        { machine_id: string; activation: string; ambiguous: number } | undefined;
+      return row ? { machineId: row.machine_id, activation: row.activation, ambiguous: row.ambiguous === 1 } : null;
+    },
+    claimPresence(entry, { knownMachines, assigned, competing }) {
+      return db.raw.transaction(() => {
+        const key = addressKey(entry.address);
+        const prior = db.prepare("SELECT machine_id,activation,home_epoch,ambiguous FROM intercom_presence_claims WHERE address_key=?").get(key) as
+          { machine_id: string; activation: string; home_epoch: number | null; ambiguous: number } | undefined;
+        if (assigned) {
+          db.prepare(`INSERT INTO intercom_presence_claims(address_key,machine_id,activation,home_epoch,ambiguous) VALUES(?,?,?,?,0)
+            ON CONFLICT(address_key) DO UPDATE SET machine_id=excluded.machine_id,activation=excluded.activation,home_epoch=excluded.home_epoch,ambiguous=0`)
+            .run(key, entry.machineId, entry.activationEpoch, entry.homeEpoch);
+          return true;
+        }
+        const past = db.prepare(`SELECT json_extract(p.value,'$.machineId') AS machine FROM intercom_edge_state e,
+          json_each(e.state_json,'$.roster') p WHERE json_extract(p.value,'$.address.sessionId')=?
+          AND json_extract(p.value,'$.address.scopeId') IS ?`).all(entry.address.sessionId, entry.address.scopeId) as { machine: string }[];
+        const conflict = [...knownMachines, ...past.map(row => row.machine)].find(machine => machine !== entry.machineId);
+        const ambiguous = competing || !!conflict || !!prior && (prior.machine_id !== entry.machineId || prior.ambiguous === 1 || prior.home_epoch !== null);
+        if (!prior) db.prepare("INSERT INTO intercom_presence_claims(address_key,machine_id,activation,home_epoch,ambiguous) VALUES(?,?,?,NULL,?)")
+          .run(key, conflict ?? entry.machineId, entry.activationEpoch, ambiguous ? 1 : 0);
+        else if (ambiguous) db.prepare("UPDATE intercom_presence_claims SET ambiguous=1 WHERE address_key=?").run(key);
+        return !ambiguous;
+      }).immediate();
+    },
+    recordRejection(peer, id, reason) {
+      if (!isMachineId(peer) || !nonempty(id) || !/^[a-z0-9-]{1,64}$/.test(reason)) throw new Error("Invalid intercom rejection");
+      db.prepare(`INSERT INTO intercom_rejections(peer,id,reason,at) VALUES(?,?,?,?)
+        ON CONFLICT(peer,id) DO UPDATE SET reason=excluded.reason`).run(peer, reason, reason, now());
+    },
+    rejectionDiagnostics() {
+      return (db.prepare("SELECT peer,reason,min(at) AS since FROM intercom_rejections GROUP BY peer,reason ORDER BY peer,reason").all() as
+        { peer: string; reason: string; since: number }[]).map(row => ({ ...row, status: "blocked", reason: `intercom-${row.reason}` }));
+    },
     pairFence,
     fencePair(peer, edgeEpoch, fenceId) {
       edgeKey(peer, edgeEpoch);
@@ -788,33 +924,33 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           }
         } else if (known) throw new Error("Intercom message ID already belongs to an inbox");
         const previous = db.prepare(`${selectCopy} WHERE c.direction='outbound' AND m.from_key=? AND m.to_key=?
-          ORDER BY m.pair_sequence DESC LIMIT 1`).get(addressKey(candidate.identity.from), addressKey(candidate.identity.to)) as CopyRow | undefined;
+          ORDER BY m.pair_sequence DESC LIMIT 1`).get(streamKey(candidate.originMachineId, candidate.identity.from), addressKey(candidate.identity.to)) as CopyRow | undefined;
         let continuity: FirstHomePairResume | undefined;
         if (previous && !sameEndpoint(readEndpoint(previous), candidate.endpoint)) {
           continuity = createFirstHomePairResume(candidate.identity.from, readEndpoint(previous), candidate.endpoint,
             input.firstHomePresence, previous.pair_sequence, at);
           if (!continuity) {
             const saved = db.prepare("SELECT peer,resume_json FROM intercom_resumptions WHERE from_key=? AND to_key=?")
-              .get(addressKey(candidate.identity.from), addressKey(candidate.identity.to)) as { peer: string; resume_json: string } | undefined;
+              .get(streamKey(candidate.originMachineId, candidate.identity.from), addressKey(candidate.identity.to)) as { peer: string; resume_json: string } | undefined;
             const resume: unknown = saved ? parseStored<unknown>(saved.resume_json) : null;
             if (!saved || saved.peer !== input.nextHop || !isIntercomPairResume(resume) || !sameEndpoint(resume.endpoint, candidate.endpoint)) {
               throw new Error("Intercom route requires authoritative rebind proof");
             }
           }
         }
-        const seq = "frame" in input ? candidate.identity.sequence : cursor("outbound", candidate.identity) + 1;
-        if (!safeInteger(seq, 1) || seq !== cursor("outbound", candidate.identity) + 1) throw new Error("Intercom outbound sequence gap");
+        const seq = "frame" in input ? candidate.identity.sequence : cursor("outbound", candidate.identity, candidate.originMachineId) + 1;
+        if (!safeInteger(seq, 1) || seq !== cursor("outbound", candidate.identity, candidate.originMachineId) + 1) throw new Error("Intercom outbound sequence gap");
         if (!("frame" in input)) candidate = makeMessageFrame({ from: input.from, endpoint: input.endpoint, sequence: seq, message: input.message, originMachineId: options.machineId });
         const bytes = candidate.kind === "message" ? encodeFrame(candidate).byteLength : 0;
-        if (candidate.kind === "message" && !room(candidate.identity.to, bytes)) return { kind: "refused", reason: "queue-full" } as const;
+        if (!room(candidate.identity.to, bytes, candidate.originMachineId, candidate.identity.id)) return { kind: "refused", reason: "queue-full" } as const;
         if (continuity) {
           db.prepare(`INSERT INTO intercom_resumptions(from_key,to_key,peer,resume_json) VALUES(?,?,?,?)
             ON CONFLICT(from_key,to_key) DO UPDATE SET peer=excluded.peer,resume_json=excluded.resume_json`)
-            .run(addressKey(candidate.identity.from), addressKey(candidate.identity.to), input.nextHop, JSON.stringify(continuity));
+            .run(streamKey(candidate.originMachineId, candidate.identity.from), addressKey(candidate.identity.to), input.nextHop, JSON.stringify(continuity));
         }
         insertIdentity(candidate.identity, candidate.kind === "message" ? candidate.message.expectsReply === true : candidate.identity.askId === candidate.identity.id,
           candidate.kind === "tombstone" ? candidate.reason : undefined, candidate.originMachineId);
-        insertCopy("outbound", candidate, input.nextHop, at); writeCursor("outbound", candidate.identity);
+        insertCopy("outbound", candidate, input.nextHop, at); writeCursor("outbound", candidate.identity, candidate.originMachineId);
         return accepted("accepted", candidate.identity);
       }).immediate();
       if (deleted) checkpointDeletion();
@@ -840,7 +976,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         }
         if (prior) {
           const oldEndpoint = readEndpoint(prior);
-          if (prior.peer !== input.peer || !sameEndpoint(oldEndpoint, frame.endpoint)) {
+          if (prior.peer !== input.peer || !sameEndpoint(oldEndpoint, frame.endpoint) && !knownEndpoint(prior, frame.endpoint)) {
             if (!input.resume || sameEndpoint(oldEndpoint, frame.endpoint)) throw new Error("Intercom inbox route mismatch");
             validateResume(input.resume, frame);
             if (prior.state !== "queued" || prior.unknown_outcome || prior.payload_json === null) throw new Error("Intercom inbox rebind lacks non-injection proof");
@@ -874,25 +1010,38 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           }
           return accepted("duplicate", frame.identity, copy("inbound", frame.identity.id));
         }
-        const previous = cursor("inbound", frame.identity);
+        const previous = cursor("inbound", frame.identity, frame.originMachineId);
+        if (!known && frame.identity.sequence <= previous) return accepted("duplicate", frame.identity);
         if (frame.identity.sequence !== previous + 1) {
+          const rejected = db.prepare(`SELECT m.id,m.pair_sequence FROM intercom_messages m JOIN intercom_copies c ON c.id=m.id
+            WHERE c.direction='inbound' AND c.peer=? AND json_extract(m.identity_json,'$.rejectedBy')=?
+            AND coalesce(json_extract(m.identity_json,'$.rejectionUsed'),0)=0
+            AND json_extract(m.identity_json,'$.from.sessionId')=? AND json_extract(m.identity_json,'$.from.scopeId') IS ?
+            AND m.to_key=? AND m.pair_sequence>? AND m.pair_sequence<?`).all(input.peer, input.peer,
+              frame.identity.from.sessionId, frame.identity.from.scopeId, addressKey(frame.identity.to), previous, frame.identity.sequence) as { id: string; pair_sequence: number }[];
+          if (new Set(rejected.map(row => row.pair_sequence)).size === frame.identity.sequence - previous - 1) {
+            // Advance only proven rejected slots, never an accepted message or an inferred frame origin.
+            for (const row of rejected) db.prepare("UPDATE intercom_messages SET identity_json=json_set(identity_json,'$.rejectionUsed',json('true')) WHERE id=?").run(row.id);
+            writeCursor("inbound", { ...frame.identity, sequence: frame.identity.sequence - 1 }, frame.originMachineId);
+          } else {
           if (!input.resume) throw new Error("Intercom inbound sequence gap");
           const resume = validateResume(input.resume, frame);
           if (resume.through !== frame.identity.sequence - 1 || resume.through < previous) throw new Error("Intercom inbound sequence gap");
           const unfinished = db.prepare(`SELECT 1 FROM intercom_copies c JOIN intercom_messages m ON m.id=c.id
             WHERE c.direction='inbound' AND m.from_key=? AND m.to_key=? AND
               (c.unknown_outcome=1 OR c.state IN ('queued','unknown','not_injected')) LIMIT 1`)
-            .get(addressKey(resume.from), addressKey(resume.to));
+            .get(streamKey(frame.originMachineId, resume.from), addressKey(resume.to));
           const unobserved = db.prepare(`SELECT 1 FROM intercom_receipts r JOIN intercom_messages m ON m.id=r.id
             WHERE r.acknowledged=0 AND m.from_key=? AND m.to_key=? LIMIT 1`)
-            .get(addressKey(resume.from), addressKey(resume.to));
+            .get(streamKey(frame.originMachineId, resume.from), addressKey(resume.to));
           if (unfinished || unobserved) throw new Error("Intercom pair resume has unresolved evidence");
+          }
         }
         const bytes = frame.kind === "message" ? encodeFrame(frame).byteLength : 0;
-        if (frame.kind === "message" && !room(frame.identity.to, bytes)) return { kind: "refused", reason: "queue-full" } as const;
+        if (!room(frame.identity.to, bytes, frame.originMachineId, frame.identity.id)) return { kind: "refused", reason: "queue-full" } as const;
         insertIdentity(frame.identity, frame.kind === "message" ? frame.message.expectsReply === true : frame.identity.askId === frame.identity.id,
           frame.kind === "tombstone" ? frame.reason : undefined, frame.originMachineId);
-        insertCopy("inbound", frame, input.peer, at); writeCursor("inbound", frame.identity);
+        insertCopy("inbound", frame, input.peer, at); writeCursor("inbound", frame.identity, frame.originMachineId);
         if (frame.kind === "tombstone") {
           const received = copy("inbound", frame.identity.id)!;
           const terminal: MessageReceipt = { messageId: frame.identity.id, status: frame.reason, timestamp: at };
@@ -918,13 +1067,12 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           if (existing.peer !== peer || !sameIdentity(readIdentity(existing), identity) || !sameEndpoint(readEndpoint(existing), endpoint)) throw new Error("Intercom rejection conflict");
           return;
         }
-        if (identity.sequence !== cursor("inbound", identity) + 1) throw new Error("Intercom inbound sequence gap");
-        insertIdentity(identity, identity.askId === identity.id, "cancelled");
+        if (!room(identity.to, 0, "", identity.id)) throw new Error("Intercom rejection quota reached");
+        insertIdentity(identity, identity.askId === identity.id, "cancelled", undefined, peer);
         const receipt: MessageReceipt = { messageId: identity.id, status: "cancelled", timestamp: at, detail: "missing-origin" };
         db.prepare(`INSERT INTO intercom_copies(direction,id,endpoint_json,peer,payload_json,payload_bytes,state,deadline_at,remaining_ms,last_clock,receipt_json)
           VALUES('inbound',?,?,?,?,0,'cancelled',?,NULL,?,?)`).run(identity.id, JSON.stringify(endpoint), peer, null,
           plus(at, INTERCOM_PAYLOAD_MS), at, JSON.stringify(receipt));
-        writeCursor("inbound", identity);
         const row = copy("inbound", identity.id)!;
         saveReceipt(row, { from: endpoint, to: identity.from, digest: identity.digest, receipt });
       }).immediate();
@@ -990,6 +1138,32 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         return frame;
       }).immediate();
     },
+    retryKnownNotSent(input): void {
+      expire();
+      db.raw.transaction(() => {
+        const row = copy("inbound", input.id);
+        if (!row || row.state !== "unknown" || !row.unknown_outcome || row.payload_json === null ||
+            !sameEndpoint(readEndpoint(row), input.endpoint) || row.observed_attempt !== input.attempt) {
+          throw new Error("Intercom not-sent proof does not match dispatch");
+        }
+        db.prepare("UPDATE intercom_copies SET state='queued',unknown_outcome=0,readiness=NULL WHERE direction='inbound' AND id=?").run(row.id);
+      }).immediate();
+    },
+    followConsumption(input): void {
+      db.raw.transaction(() => {
+        const row = copy(input.queue, input.frame.receipt.messageId), endpoint = input.frame.from;
+        if (!row || row.peer !== input.peer || !receiptReleasesPayload(input.frame.receipt) ||
+            !["injected", "matched_waiter"].includes(input.frame.receipt.status) || ["injected", "matched_waiter"].includes(row.state)) {
+          throw new Error("Intercom consumption rebind requires physical evidence");
+        }
+        const old = readEndpoint(row);
+        if (!sameAddress(old.address, endpoint.address) || old.machineId !== endpoint.machineId || old.activationEpoch === endpoint.activationEpoch ||
+            old.homeEpoch !== endpoint.homeEpoch && !(old.homeEpoch === null && endpoint.homeEpoch !== null)) throw new Error("Intercom consumption rebind route mismatch");
+        validReceipt({ ...row, endpoint_json: JSON.stringify(endpoint) }, input.frame);
+        aliasEndpoint(row);
+        db.prepare("UPDATE intercom_copies SET endpoint_json=? WHERE direction=? AND id=?").run(JSON.stringify(endpoint), input.queue, row.id);
+      }).immediate();
+    },
     settleReceipt(input): void {
       ensureCheckpoint();
       if (!isMachineId(input.peer)) throw new Error("Invalid intercom receipt peer");
@@ -1051,17 +1225,18 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
     nextExpiry(): number | null {
       ensureCheckpoint();
       const row = db.prepare(`SELECT min(c.deadline_at) AS deadline FROM intercom_copies c JOIN intercom_messages m ON m.id=c.id
-        WHERE c.payload_json IS NOT NULL OR (m.is_ask=1 AND m.ask_state='open')`).get() as { deadline: number | null };
+        WHERE c.payload_json IS NOT NULL`).get() as { deadline: number | null };
       if (row.deadline !== null && !safeInteger(row.deadline)) throw new Error("Invalid intercom deadline metadata");
       return row.deadline;
     },
     hasPending(peer): boolean {
       if (!isMachineId(peer)) throw new Error("Invalid intercom peer");
       expire();
-      const row = db.prepare(`SELECT EXISTS(SELECT 1 FROM intercom_copies WHERE direction='outbound' AND peer=? AND
+      const row = db.prepare(`SELECT EXISTS(SELECT 1 FROM intercom_copies WHERE direction='outbound' AND peer=?
+        AND (?='hub-only' OR json_extract(endpoint_json,'$.machineId')=peer) AND
         ((state='queued' AND payload_json IS NOT NULL AND coalesce(ack_kind,'')!='message') OR
          (state IN ('expired','cancelled') AND coalesce(ack_kind,'')!='tombstone'))) OR
-        EXISTS(SELECT 1 FROM intercom_receipts WHERE peer=? AND acknowledged=0) AS pending`).get(peer, peer) as { pending: number };
+        EXISTS(SELECT 1 FROM intercom_receipts WHERE peer=? AND acknowledged=0) AS pending`).get(peer, topology.topology().mode, peer) as { pending: number };
       return row.pending === 1;
     },
     openAsks(peer): readonly RetainedIntercom[] {
@@ -1071,9 +1246,16 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         WHERE c.direction='outbound' AND c.peer=? AND m.is_ask=1 AND m.ask_state='open' ORDER BY c.id`).all(peer) as { id: string }[];
       return rows.map(row => store.retained("outbound", row.id)).filter((row): row is RetainedIntercom => row !== null);
     },
+    hasGenerationReferences(sessionId, generation) {
+      return !!db.prepare(`SELECT 1 FROM intercom_copies WHERE json_extract(endpoint_json,'$.address.sessionId')=?
+        AND json_extract(endpoint_json,'$.activationEpoch')=? LIMIT 1`).get(sessionId, generation);
+    },
+    noticeReported(id, kind) { return !!db.prepare("SELECT 1 FROM intercom_notices WHERE id=? AND kind=?").get(id, kind); },
+    markNoticeReported(id, kind) { db.prepare("INSERT OR IGNORE INTO intercom_notices(id,kind) VALUES(?,?)").run(id, kind); },
     expiredOutbounds(peer) {
       if (!isMachineId(peer)) throw new Error("Invalid intercom peer");
       const rows = db.prepare(`${selectCopy} WHERE c.direction='outbound' AND c.peer=? AND c.state='expired'
+        AND NOT EXISTS (SELECT 1 FROM intercom_notices n WHERE n.id=c.id AND n.kind='expiry')
         AND NOT EXISTS (SELECT 1 FROM intercom_copies i WHERE i.direction='inbound' AND i.id=c.id) ORDER BY c.id`).all(peer) as CopyRow[];
       return rows.map(row => ({ identity: readIdentity(row), outcomeKnown: row.unknown_outcome === 0 }));
     },
@@ -1081,7 +1263,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       ensureCheckpoint();
       if (!isSessionAddress(address)) throw new Error("Invalid intercom address");
       const key = addressKey(address);
-      const rows = db.prepare(`${selectCopy} WHERE m.from_key=? OR m.to_key=? ORDER BY m.from_key,m.to_key,m.pair_sequence,c.direction`).all(key, key) as CopyRow[];
+      const rows = db.prepare(`${selectCopy} WHERE json_extract(m.from_key,'$[1]')=? OR m.to_key=? ORDER BY m.from_key,m.to_key,m.pair_sequence,c.direction`).all(key, key) as CopyRow[];
       const asks = new Map<string, FederationBlockers["asks"][number]>(), pendingIds = new Set<string>(), unknownIds = new Set<string>(), receiptIds = new Set<string>();
       for (const row of rows) {
         const identity = readIdentity(row);
@@ -1091,7 +1273,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         if (row.direction === "outbound" && row.state === "queued" && row.ack_kind === "message") receiptIds.add(row.id);
       }
       const receipts = db.prepare(`SELECT DISTINCT r.id FROM intercom_receipts r JOIN intercom_messages m ON m.id=r.id
-        WHERE r.acknowledged=0 AND (m.from_key=? OR m.to_key=?) ORDER BY r.id`).all(key, key) as { id: string }[];
+        WHERE r.acknowledged=0 AND (json_extract(m.from_key,'$[1]')=? OR m.to_key=?) ORDER BY r.id`).all(key, key) as { id: string }[];
       for (const row of receipts) receiptIds.add(row.id);
       return { asks: [...asks.values()], pendingDispatch: [...pendingIds], unknownOutcomes: [...unknownIds], unobservedReceipts: [...receiptIds] };
     },
@@ -1102,10 +1284,13 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         const incoming = copy("inbound", id);
         if (!incoming || incoming.state !== "queued" || incoming.unknown_outcome || incoming.payload_json === null) throw new Error("Intercom rebind lacks absence proof");
         const previous = readEndpoint(incoming), receipt = incoming.reconciliation_json ? parseStored<MessageReceipt>(incoming.reconciliation_json) : null;
-        if (!sameAddress(previous.address, endpoint.address) || previous.machineId !== endpoint.machineId || previous.homeEpoch !== endpoint.homeEpoch ||
-            previous.activationEpoch === endpoint.activationEpoch || receipt?.status !== "not_injected" || receipt.evidence?.kind !== "absence" ||
-            receipt.evidence.sessionId !== previous.address.sessionId || receipt.evidence.activationEpoch !== previous.activationEpoch ||
-            receipt.evidence.excludedGeneration !== previous.activationEpoch || receipt.evidence.complete !== true) throw new Error("Intercom rebind lacks absence proof");
+        const neverDispatched = incoming.readiness === null;
+        const absent = receipt?.status === "not_injected" && receipt.evidence?.kind === "absence" &&
+          receipt.evidence.sessionId === previous.address.sessionId && receipt.evidence.activationEpoch === previous.activationEpoch &&
+          receipt.evidence.excludedGeneration === previous.activationEpoch && receipt.evidence.complete === true;
+        if (!sameAddress(previous.address, endpoint.address) || previous.machineId !== endpoint.machineId ||
+            previous.homeEpoch !== endpoint.homeEpoch && !(previous.homeEpoch === null && endpoint.homeEpoch !== null) ||
+            previous.activationEpoch === endpoint.activationEpoch || !neverDispatched && !absent) throw new Error("Intercom rebind lacks absence proof");
         const outbound = copy("outbound", id);
         if (endpoint.machineId !== options.machineId && (!outbound || outbound.peer === options.machineId || !sameEndpoint(readEndpoint(outbound), endpoint))) {
           throw new Error("Intercom relay route lacks rebind proof");
@@ -1113,13 +1298,14 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         if (outbound && outbound.peer === options.machineId) {
           const proof = outbound.reconciliation_json ? parseStored<MessageReceipt>(outbound.reconciliation_json) : null;
           if (outbound.state !== "queued" || outbound.unknown_outcome || !sameEndpoint(readEndpoint(outbound), previous) ||
-              proof?.status !== "not_injected" || proof.evidence?.kind !== "absence" || proof.evidence.excludedGeneration !== previous.activationEpoch) {
+              !neverDispatched && (proof?.status !== "not_injected" || proof.evidence?.kind !== "absence" || proof.evidence.excludedGeneration !== previous.activationEpoch)) {
             throw new Error("Intercom local source lacks absence proof");
           }
           db.prepare(`UPDATE intercom_copies SET endpoint_json=?,ack_kind='message',sent_kind='message',transmitted=1,readiness=NULL,
             attempt=0,observed_attempt=0,reconciliation_json=NULL,reconciliation_attempt=NULL,pending_proof_json=NULL,pending_proof_attempt=NULL
             WHERE direction='outbound' AND id=?`).run(JSON.stringify(endpoint), id);
         }
+        aliasEndpoint(incoming);
         db.prepare(`UPDATE intercom_copies SET endpoint_json=?,readiness=NULL,attempt=0,observed_attempt=0,reconciliation_json=NULL,
           reconciliation_attempt=NULL,pending_proof_json=NULL,pending_proof_attempt=NULL WHERE direction='inbound' AND id=?`).run(JSON.stringify(endpoint), id);
       }).immediate();
@@ -1141,22 +1327,22 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
           if (row.transmitted || row.ack_kind === "message") throw new Error("Intercom dispatch lacks proof of non-injection");
           encodeFrame(frameFor({ ...row, endpoint_json: JSON.stringify(endpoint), deadline_at: plus(at, INTERCOM_PAYLOAD_MS) }, at));
         }
-        const pairs = new Map<string, { identity: IntercomIdentity; last: number; firstPending: number | null }>();
+        const pairs = new Map<string, { identity: IntercomIdentity; origin: string | undefined; last: number; firstPending: number | null }>();
         for (const row of rows) {
           const current = pairs.get(row.from_key), identity = readIdentity(row);
           const pendingSequence = candidates.includes(row) ? row.pair_sequence : null;
-          if (!current) pairs.set(row.from_key, { identity, last: row.pair_sequence, firstPending: pendingSequence });
+          if (!current) pairs.set(row.from_key, { identity, origin: readOrigin(row), last: row.pair_sequence, firstPending: pendingSequence });
           else {
             current.last = Math.max(current.last, row.pair_sequence);
             if (pendingSequence !== null) current.firstPending = current.firstPending === null ? pendingSequence : Math.min(current.firstPending, pendingSequence);
           }
         }
-        for (const { identity, last, firstPending } of pairs.values()) {
+        for (const { identity, origin, last, firstPending } of pairs.values()) {
           const resume: IntercomPairResume = { from: identity.from, to: identity.to, through: firstPending === null ? last : firstPending - 1, endpoint, proof };
           if (Buffer.byteLength(JSON.stringify(resume), "utf8") + 1 > INTERCOM_EXCHANGE_BYTES - 1024) throw new Error("Intercom resume size limit exceeded");
           db.prepare(`INSERT INTO intercom_resumptions(from_key,to_key,peer,resume_json) VALUES(?,?,?,?)
             ON CONFLICT(from_key,to_key) DO UPDATE SET peer=excluded.peer,resume_json=excluded.resume_json`)
-            .run(addressKey(identity.from), addressKey(identity.to), proof.nextHop, JSON.stringify(resume));
+            .run(streamKey(origin, identity.from), addressKey(identity.to), proof.nextHop, JSON.stringify(resume));
         }
         for (const row of candidates) db.prepare("UPDATE intercom_copies SET endpoint_json=?,peer=?,ack_kind=NULL,sent_kind=NULL,reconciliation_attempt=NULL,observed_attempt=0 WHERE direction='outbound' AND id=?")
           .run(JSON.stringify(endpoint), proof.nextHop, row.id);

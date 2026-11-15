@@ -121,6 +121,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `ui.footer` | `true` | Footer and run selector. Takes effect next session. |
+| `reload.auto` | `true` | Reload idle interactive parent sessions after a bundle update. Wait for chains and pipelines to finish. Changes apply live. |
 | `usage.footer` | `true` | Global-only. Footer with corrected credits in parent TUI sessions. Changes apply live. |
 | `usage.counter.poll` | `true` | Global-only. Read-only account polling every ten minutes, in parent sessions only. Changes apply live. |
 | `usage.calibration` | `auto` | Global-only, `auto` or `off`. `auto` uses the trailing seven days of counter evidence when there is enough of it. `off` shows published estimates and turns off factor history. Changes apply live. |
@@ -167,6 +168,7 @@ The live footer shows corrected credits without basis markers, then the cache hi
 - The organism rereads configuration each time it resolves its runtime for a request or drain.
 - The agents UI reads `ui.footer` when it mounts at session start, not during a running session.
 - `tools.structured` changes need `/reload`. The setting does not change the interactive `spider` tool.
+- `reload.auto` applies live. Set it to `false` to stop automatic reloads.
 - `usage.footer`, `usage.counter.poll`, `usage.calibration` and `usage.monthlyBudget` apply live. The usage alert thresholds are registered but do nothing yet.
 - `subagents.childMode`, `subagents.extensions` and `subagents.profiles.reviewer.excludeTools` apply to new dispatches. Existing runs keep the settings they launched with.
 - Reviewer settings apply to new reviews. They do not restart a review that is already running.

@@ -52,6 +52,9 @@ export const CONFIG_SCHEMA: ConfigGroup[] = [
 		{ key: "skills.reviewer.thinking", label: "Reviewer thinking", type: "enum", default: "xhigh", enum: [], description: "Reasoning level for this reviewer, independent of learner and session thinking." },
 		{ key: "skills.reviewer.timeoutMs", label: "Reviewer timeout (ms)", type: "number", default: 180000, min: 1000, max: 600000, description: "Maximum skill review wait. Deterministic failures always reject." },
 	]},
+	{ id: "reload", label: "Reload", fields: [
+		{ key: "reload.auto", label: "Automatic reload", type: "boolean", default: true, description: "Reload idle interactive sessions after an update. Changes apply live." },
+	]},
 	{ id: "tools", label: "Tools", fields: [
 		{ key: "tools.structured", label: "Structured results", type: "boolean", default: false, restart: true, description: "Register optional typed search, recall and exec adapters after reload. Leaves the interactive spider tool unchanged." },
 	]},

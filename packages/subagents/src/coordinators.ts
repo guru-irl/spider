@@ -5,12 +5,14 @@ import type { PipelineCoordinator } from "./pipeline";
 import type { ChildHandle } from "./runner";
 import type { RunStatus, RunStore } from "./run-store";
 import { cancelPendingIntercom } from "./intercom";
-import { disposeSessionRegistries, killSharedEntry, parkSession, releaseShared, sharedRegistry, sharedSessionIds } from "./child-registry";
+import { disposeSessionRegistries, hasReloadDoomedChildren, killSharedEntry, parkSession, releaseShared, sharedRegistry, sharedSessionIds } from "./child-registry";
 import { shutdownReason } from "./shutdown-reason";
 
 export interface SessionCoordinators {
   tailer: RunEventTailer;
   pipelines: PipelineCoordinator[];
+  /** Chains stay active between their child steps. */
+  activeChains?: number;
   /** Live child handles by runId for explicit stops and lifecycle cleanup.
    *  Ordinary shutdown stops legacy handles and preserves supervised children. */
   children: Map<string, ChildHandle>;
@@ -60,6 +62,24 @@ function slot(sessionId: string): SessionCoordinators {
   }
   c.children ??= new Map();
   return c;
+}
+
+export function trackChain(sessionId: string): () => void {
+  const c = slot(sessionId);
+  c.activeChains = (c.activeChains ?? 0) + 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    c.activeChains!--;
+  };
+}
+
+/** Read only the state that this session's reload would interrupt. */
+export function reloadWouldInterrupt(sessionId: string): boolean {
+  const c = registry.get(sessionId);
+  return hasReloadDoomedChildren(sessionId) || (c?.activeChains ?? 0) > 0 ||
+    (c?.pipelines.some(pipeline => pipeline.isActive()) ?? false);
 }
 
 const CHILD_WARMING_SILENCE_LIMIT_MS = 60 * 60_000;

@@ -23,6 +23,14 @@ function fixture(): string {
 afterEach(() => { for (const dir of fixtures.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
 describe("applyConfigEdit round-trip", () => {
+  it("enables automatic reload by default and applies an editable override", () => {
+    const dir = fixture();
+    expect(controlConfig("get", dir, "reload.auto")).toBe(true);
+    expect(applyConfigEdit(dir, "reload.auto", "false").ok).toBe(true);
+    expect(controlConfig("get", dir, "reload.auto")).toBe(false);
+    expect(applyConfigEdit(dir, "reload.auto", "true").ok).toBe(true);
+    expect(controlConfig("get", dir, "reload.auto")).toBe(true);
+  });
   it("coerces, writes and reads back a boolean", () => {
     const dir = fixture();
     const r = applyConfigEdit(dir, "ui.footer", "false");

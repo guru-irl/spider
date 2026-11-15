@@ -867,6 +867,49 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(nodes().find(node => node.id === 'fold-t1')?.children).toContain('1');
   });
 
+  it('opens the saved view and its right-click menu when the old viewer machine is unavailable', async () => {
+    const opened: any[] = [], requests: any[] = [];
+    const now = Date.now(), viewer = { address: 'alpha.invalid/v1', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 'session', 'spider.run': 'run-one' } };
+    const feed = { sessionId: 'session', generation: 'gen', lifecycle: 'live', updatedAt: now, owner: { terminal: { address: 't1' } }, ipc: { address: '/fixture/socket', capabilityFile: '/fixture/cap' },
+      runs: { rows: [{ id: 'run-one', ownerSessionId: 'session', name: 'Worker', status: 'done', viewer: viewer.address, finishedAt: now - 1 }] } };
+    const { view } = await agentsView({ agents: () => [{ address: 't1', status: 'idle', seq: 1, title: 'alpha' }], terminals: () => [viewer],
+      machines: () => [{ name: 'alpha.invalid', layout: 'unavailable' }], props: () => ({ ...props, nodePath: 'node', cliPath: 'cli' }),
+      openOverlay: (spec: unknown) => opened.push(spec), exec: async (_binary: string, args: string[]) => { const request = JSON.parse(args[args.indexOf('--request') + 1]); requests.push(request); return { code: 0, stdout: JSON.stringify({ ok: true, op: request.op }), stderr: '' }; } });
+    view.spiderFeeds = [feed]; view.spiderShowFinished = new Set(['t1']);
+    const row = all(view.render({})).find(node => node.id === 'sub-run-one')!;
+    expect(row.click).toBeTypeOf('function');
+    expect(call(row, 'on_mouse_down')?.[0]).toBe('right');
+    (call(row, 'on_mouse_down')![1] as Function)({}, { stop_propagation() {} });
+    expect(opened[0].props.moveMenu).toMatchObject({ kind: 'subagent', key: 'run-one', retained: true, action: { kind: 'ipc' } });
+    await row.click!({}, { spawn: (fn: Function) => fn({ notify() {} }), notify() {} });
+    expect(requests).toMatchObject([{ op: 'openRun', runId: 'run-one' }]);
+  });
+
+  it('ignores a listed unreachable viewer for fold colour and priority until its machine is ready', async () => {
+    let state: 'unavailable' | 'ready' = 'unavailable';
+    const order: string[][] = [];
+    const mains = [
+      { address: 't1', space: 's1', space_name: 'work', status: 'idle', seq: 1, title: 'parent' },
+      { address: 't3', space: 's1', space_name: 'work', status: 'done', seq: 2, title: 'other' },
+      // A stale viewer can remain in agents() when it is absent from terminals().
+      { address: 'alpha.invalid/v1', space: 's1', space_name: 'work', status: 'blocked', seq: 3, title: 'stale viewer' },
+    ];
+    const terminals = [{ address: 't2', parent: 't1', state: 'live', status: 'working', labels: {} }];
+    const feed = { sessionId: 'session', generation: 'gen', lifecycle: 'live', updatedAt: Date.now(), owner: { terminal: { address: 't1' } }, ipc: { address: '/fixture/socket', capabilityFile: '/fixture/cap' },
+      runs: { rows: [{ id: 'run-one', ownerSessionId: 'session', name: 'Worker', status: 'running', viewer: 'alpha.invalid/v1', finishedAt: null }] } };
+    const store = new Map<string, unknown>([['agents.sort', 'grouped']]);
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => [{ id: 's1', name: 'work', tabs: [] }],
+      machines: () => [{ name: 'alpha.invalid', layout: state }], setAgentOrder: (value: string[]) => order.push(value) }, store);
+    view.spiderFeeds = [feed]; view.folded.add('t1');
+    const foldColor = () => call(all(view.render({})).find(node => node.id === 'fold-t1')!, 'text_color');
+    expect(foldColor()).toEqual([palette.working]);
+    state = 'ready'; expect(foldColor()).toEqual([palette.blocked]);
+    store.set('agents.sort', 'priority'); state = 'unavailable'; view.render({});
+    expect(order.at(-1)!.indexOf('t3')).toBeLessThan(order.at(-1)!.indexOf('t1'));
+    state = 'ready'; view.render({});
+    expect(order.at(-1)!.indexOf('t1')).toBeLessThan(order.at(-1)!.indexOf('t3'));
+  });
+
   it('counts a subagent and native child separately from a console and its commands', async () => {
     const terminals: any[] = [
       { address: 't2', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-one' } },

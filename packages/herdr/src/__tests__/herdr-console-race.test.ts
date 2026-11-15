@@ -45,9 +45,11 @@ it('retries closing an ended run console after the machine reconnects without cl
   const callbacks = new Map<string, Function>();
   const pi = { on: (name: string, handler: Function) => { callbacks.set(name, handler); return () => callbacks.delete(name); } } as unknown as ExtensionAPI;
   let notifyRunEnd: (run: RunId) => void = () => {};
-  let online = false, running = true;
+  let online = false, running = true, deliver: (event: HcEvent) => void = () => {};
+  let subscriptions = 0;
   const errors: unknown[] = [];
   const hc: HcClient = { ...h.hc,
+    events: () => { const stream = h.hc.events(); return { ...stream, subscribe: listener => { if (++subscriptions === 1) deliver = listener; return stream.subscribe(listener); } }; },
     machines: async () => (await h.hc.machines()).map(machine => online ? machine : { ...machine, state: 'disconnected' }),
     get: async address => {
       if (!online && address.startsWith('remote.invalid/')) throw Object.assign(new Error('machine unavailable'), { code: 'not_found' });
@@ -55,7 +57,7 @@ it('retries closing an ended run console after the machine reconnects without cl
     },
   };
   const life = registerAgentConsoleLifecycle(pi, { hc, env: h.localEnv, currentOwner: () => h.owner, ownerIsLive: async () => true,
-    runIsLive: async () => running, subscribeRunEnds: (_owner, listener) => { notifyRunEnd = listener; return () => {}; }, reportError: error => errors.push(error),
+    runIsLive: async () => running, subscribeRunEnds: (_owner, listener) => { notifyRunEnd = listener; return () => {}; }, reportCleanupError: error => errors.push(error),
   });
   try {
     await callbacks.get('session_start')!({ reason: 'startup' }, {} as ExtensionContext);
@@ -66,11 +68,11 @@ it('retries closing an ended run console after the machine reconnects without cl
     running = false; notifyRunEnd(run);
     await expect.poll(() => errors.length, { timeout: 8000 }).toBeGreaterThan(0);
     expect((await h.hc.get(console.address)).state).toBe('live');
-    online = true;
-    await expect.poll(async () => { try { await h.hc.get(console.address); return false; } catch (error) { if ((error as { code?: string }).code === 'not_found') return true; throw error; } }, { timeout: 45000 }).toBe(true);
+    online = true; deliver({ type: 'missed', seq: 100, terminals: [] });
+    await expect.poll(async () => { try { await h.hc.get(console.address); return false; } catch (error) { if ((error as { code?: string }).code === 'not_found') return true; throw error; } }, { timeout: 3500, interval: 50 }).toBe(true);
     expect((await h.hc.get(unrelated.address)).state).toBe('live');
   } finally { life.dispose(); }
-}, 60000);
+}, 10000);
 
 it.each(['unavailable', 'not_found'] as const)('the journal handoff retries a real ended-run close after %s', async failure => {
   const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();

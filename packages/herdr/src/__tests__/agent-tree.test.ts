@@ -98,11 +98,19 @@ test('unavailable terminal machines disable console, command, and viewer actions
   }
 });
 
-test('an unavailable finished run viewer remains unreachable and cannot be opened', () => {
-  const f = feed(); Object.assign(f.runs.rows[0], { status: 'done', finishedAt: 1500 });
+test.each([['done', 'done'], ['failed', 'error'], ['cancelled', 'cancelled']] as const)('an unavailable viewer keeps the local saved view of a %s run', (runStatus, status) => {
+  const f = feed(); Object.assign(f.runs.rows[0], { status: runStatus, finishedAt: 1500, viewer: 'remote.invalid/viewer' });
+  const viewer = terminal('remote.invalid/viewer', 'subagent-viewer', { 'spider.run': 'run' });
+  const project = (terminals: AgentTerminal[]) => projectAgentChildren(terminals, [f], 'agent', contract, { now: 2000, machines: [{ name: 'remote.invalid', layout: 'unavailable' }] }).find(row => row.key === 'run');
+  for (const terminals of [[viewer], []]) expect(project(terminals)).toMatchObject({ status, outcome: runStatus, retained: true, action: { kind: 'ipc', request: { op: 'openRun', runId: 'run' } } });
+});
+
+test('a finished run without a local endpoint cannot open an unavailable surviving viewer', () => {
+  const f = feed(); Object.assign(f.runs.rows[0], { status: 'done', finishedAt: 1500, viewer: 'remote.invalid/viewer' });
+  f.lifecycle = 'closed'; f.ipc = null;
   const viewer = terminal('remote.invalid/viewer', 'subagent-viewer', { 'spider.run': 'run' });
   const row = projectAgentChildren([viewer], [f], 'agent', contract, { now: 2000, machines: [{ name: 'remote.invalid', layout: 'unavailable' }] }).find(row => row.key === 'run');
-  expect(row).toMatchObject({ status: 'unreachable', retained: true, action: null });
+  expect(row).toMatchObject({ status: 'unreachable', action: null });
 });
 
 test('finished jobs disappear from the sidebar while their machine console keeps history', () => {

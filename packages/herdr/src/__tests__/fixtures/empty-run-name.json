@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "sessionId": "planner",
+  "generation": "fixture-generation",
+  "revision": 1,
+  "updatedAt": 2000,
+  "owner": {
+    "sessionId": "planner", "generation": "fixture-generation",
+    "terminal": { "coreId": "fixture-core", "terminalId": "t1", "address": "t1", "socket": "/fixture/core.sock", "sessionNamespace": "fixture" },
+    "cwd": "/fixture", "sessionFile": null, "name": null
+  },
+  "placement": null,
+  "lifecycle": "live",
+  "status": { "native": "working", "effective": "working", "message": null },
+  "runs": {
+    "rows": [{ "id": "empty-run", "ownerSessionId": "planner", "name": "", "status": "running", "childMode": "print", "canSteer": false, "startedAt": 1000, "finishedAt": null, "viewer": null, "result": null }],
+    "total": 1, "truncated": false
+  },
+  "todos": { "rows": [], "total": 0, "truncated": false },
+  "triggers": [],
+  "pace": { "scope": "shared", "used": null, "budget": null, "projected": null, "remaining": null, "periodStart": null, "periodEnd": null, "updatedAt": null, "unavailableReason": "fixture" },
+  "approvals": [],
+  "notifications": [],
+  "ipc": null,
+  "errors": []
+}

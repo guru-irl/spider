@@ -4,21 +4,29 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import shippedPatches from '../../assets/look/patches.json' with { type: 'json' };
+import emptyRunName from './fixtures/empty-run-name.json' with { type: 'json' };
 import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
 import * as children from '../../assets/agents/children.js';
 import { HerdrLabelContract } from '../contracts.js';
-import { FEED_REFRESH_MS, middlePath, panelIpcArgv, parseSessionIpcReply } from '../../assets/shared/feed.js';
+import { FEED_REFRESH_MS, middlePath, panelIpcArgv, parseSessionIpcReply, parseFeed } from '../../assets/shared/feed.js';
 import * as look from '../../assets/shared/look.js';
 
 // A recording stand-in for gpui elements: every call is kept with its arguments.
 interface Node { calls: [string, unknown[]][]; children: unknown[]; svg?: string; id?: string; kind: 'div' | 'row' | 'column'; click?: (...args: unknown[]) => unknown }
 const data = new WeakMap<object, Node>();
-function element(svgPath?: string, kind: Node['kind'] = 'div'): any {
+function element(svgPath?: string, kind: Node['kind'] = 'div', strictChildren = false): any {
   const node: Node = { calls: [], children: [], svg: svgPath, kind };
+  // Herdr v0.1.13, gpui-shell engine/quickjs/mod.rs childId: null is not a child.
+  const add = (value: unknown) => {
+    if (strictChildren && !data.has(value as object) && !['string', 'number', 'boolean'].includes(typeof value)) {
+      throw new TypeError('child(value) expects an element, a string, or an entity from cx.new(Class, props)');
+    }
+    node.children.push(value);
+  };
   const proxy: any = new Proxy(node, { get(_o, key: string) {
     if (key === 'when') return (on: boolean, fn: (el: unknown) => unknown) => { if (on) fn(proxy); return proxy; };
-    if (key === 'child') return (value: unknown) => { node.children.push(value); return proxy; };
-    if (key === 'children') return (values: unknown[]) => { node.children.push(...values); return proxy; };
+    if (key === 'child') return (value: unknown) => { add(value); return proxy; };
+    if (key === 'children') return (values: unknown[]) => { values.forEach(add); return proxy; };
     if (key === 'hover') return () => proxy;
     return (...args: unknown[]) => { node.calls.push([key, args]); if (key === 'id') node.id = args[0] as string; if (key === 'on_click') node.click = args[0] as Node['click']; return proxy; };
   } });
@@ -49,6 +57,197 @@ function loadView(source: string, supplied: Record<string, unknown>): any {
 const palette = { chrome: '#101012', foreground: '#ececed', muted: '#b4b4b5', dim: '#969697', hover: '#262628', selected: '#29292a', raised: '#303031', input: '#242426', ansi1: '#ff5555', blocked: '#ffcb6b', working: '#ececed', idle: '#969697', done: '#969697', border: '#2f2f32' };
 const configured = [{ name: 'alpha.invalid' }, { name: 'beta.invalid' }, { name: 'gamma.invalid' }, { name: 'delta.invalid' }];
 const inventory = [{ name: 'alpha.invalid', state: 'connected' }, { name: 'beta.invalid', state: 'disconnected' }, { name: 'gamma.invalid', state: 'stopped' }];
+
+describe('sidebar render recovery', () => {
+  it.each([null, undefined, { key: 'custom', name: 'Custom', icon: null, tint: true, tile: null, color: null, shell: false, agent: true }])('keeps grouped agents renderable when program metadata becomes %j', async missing => {
+    const patched = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const strictUi = {
+      div: () => element(undefined, 'div', true), h_flex: () => element(undefined, 'row', true),
+      v_flex: () => element(undefined, 'column', true), image: () => element(undefined, 'div', true),
+      svg: (path: string) => element(path, 'div', true),
+    };
+    const known = { key: 'pi', name: 'Pi', agent: true };
+    let program: unknown = known;
+    const actions: unknown[] = [];
+    const Agents = loadView(patched.agents.files['main.js'], { ...strictUi,
+      props: () => ({ labelContract: HerdrLabelContract }), theme: () => palette,
+      layout: () => ({ id: 'sidebar', size: { px: 268 } }),
+      spaces: () => [{ id: 's1', name: 'Fixture', tabs: [{ id: 'tab1', name: 'Task', named: true }] }],
+      agents: () => [{ address: 't1', pane: 'p1', space: 's1', space_name: 'Fixture', tab: 'tab1', status: 'working', seq: 1, program }],
+      terminals: () => [], panes: () => [], focused: () => null,
+      shared: (key: string) => key === 'agents.sort' ? 'grouped' : null,
+      setShared() {}, setAgentOrder() {}, run: (...args: unknown[]) => actions.push(args),
+      localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    });
+    const cx = { notify() {}, timer: { every() {} } };
+    const view = new Agents(); view.init({}, cx);
+    for (const current of [known, missing, known]) {
+      program = current;
+      // A rejected child here makes Herdr cover the last valid tree with its error strip.
+      const tree = view.render(cx);
+      expect(texts(tree)).toEqual(expect.arrayContaining(['Agents', 'Fixture', 'Task']));
+      const row = all(tree).find(node => node.id === 'ag-t1')!;
+      row.click?.({}, cx);
+      expect(all(tree).some(node => call(node, 'text_color')?.[0] === palette.blocked || call(node, 'bg')?.[0] === palette.blocked)).toBe(false);
+    }
+    expect(actions).toEqual(Array(3).fill(['pane.focus', { pane: 'p1' }]));
+  });
+});
+
+describe('sidebar malformed-record isolation', () => {
+  const valid = { address: 't1', pane: 'p1', space: 's1', space_name: 'Fixture', tab: 'tab1', title: 'Task', status: 'working', seq: 1, program: { key: 'pi', name: 'Pi', agent: true } };
+  async function fixture(overrides: Record<string, unknown> = {}) {
+    const patched = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
+    const strictUi = { div: () => element(undefined, 'div', true), h_flex: () => element(undefined, 'row', true), v_flex: () => element(undefined, 'column', true), image: () => element(undefined, 'div', true), svg: (path: string) => element(path, 'div', true) };
+    const Agents = loadView(patched.agents.files['main.js'], { ...strictUi,
+      props: () => ({ labelContract: HerdrLabelContract }), theme: () => palette,
+      layout: () => ({ id: 'sidebar', size: { px: 268 } }),
+      spaces: () => [{ id: 's1', name: 'Fixture', tabs: [{ id: 'tab1', name: 'Task', named: true }] }],
+      agents: () => [valid], terminals: () => [], panes: () => [], focused: () => null,
+      shared: (key: string) => key === 'agents.sort' ? 'grouped' : null,
+      setShared() {}, setAgentOrder() {}, run() {},
+      localStorage: { getItem: () => null, setItem() {}, removeItem() {} }, ...overrides,
+    });
+    const cx = { notify() {}, timer: { every() {} } }, view = new Agents(); view.init({}, cx);
+    return { view, cx };
+  }
+  const badAgent = [null, {}, { address: null }, { address: 5 }, { title: {} }, { space_name: {} }, { program: { key: {} } }, { status: {} }, { status: "__proto__" }, { seq: { toString: null } }];
+  it.each(badAgent)('isolates malformed agent %j and keeps its neighbor', async bad => {
+    const record = bad === null || Object.keys(bad).length === 0 ? bad : { ...valid, address: 'bad', ...bad };
+    const { view, cx } = await fixture({ agents: () => [record, valid] });
+    const tree = view.render(cx);
+    expect(all(tree).some(node => node.id === 'ag-t1')).toBe(true);
+    expect(all(tree).some(node => node.id === 'ag-bad')).toBe(false);
+    expect(texts(tree).join(' ')).toContain('Some agent rows unavailable');
+    expect(view.spiderRenderRows).toBeNull();
+  });
+  it('rejects a malformed sequence before the priority sort can throw', async () => {
+    const { view, cx } = await fixture({ agents: () => [{ ...valid, address: 'bad', seq: { toString: null } }, valid], shared: (key: string) => key === 'agents.sort' ? 'priority' : null });
+    const tree = view.render(cx);
+    expect(all(tree).some(node => node.id === 'ag-t1')).toBe(true);
+    expect(all(tree).some(node => node.id === 'ag-bad')).toBe(false);
+  });
+  it.each([null, { address: 'bad', labels: null }, { address: 'bad', labels: [] }, { address: 'bad', name: {} }, { address: 'bad', status: {} }])('isolates malformed terminal %j before projection', async bad => {
+    const { view, cx } = await fixture({ terminals: () => [bad] });
+    expect(all(view.render(cx)).some(node => node.id === 'ag-t1')).toBe(true);
+    expect(texts(view.render(cx)).join(' ')).toContain('Some agent rows unavailable');
+  });
+  const projected = { key: 'ok', kind: 'native', address: 't2', parentKey: null, depth: 0, status: 'working', name: 'Child', outcome: null, retained: false, terminal: null, action: null };
+  it.each([null, { key: null }, { depth: -1 }, { depth: Infinity }, { depth: Number.MAX_SAFE_INTEGER }, { name: {} }, { description: {} }, { address: {} }, { outcome: {} }, { terminal: {} }])('isolates malformed projected child %j, including count paths', async bad => {
+    const broken = bad === null ? null : { ...projected, key: 'bad', ...bad };
+    const { view, cx } = await fixture({ projectAgentChildren: () => [broken, projected] });
+    const tree = view.render(cx);
+    expect(all(tree).some(node => node.id === 'sub-ok')).toBe(true);
+    expect(all(tree).some(node => node.id === 'sub-bad')).toBe(false);
+    view.folded.add('sp-s1');
+    expect(texts(view.render(cx))).toContain('Fixture');
+    expect(texts(tree).join(' ')).toContain('Some agent rows unavailable');
+  });
+  it('keeps optional child text/address/outcome null through unreachable and replacement transitions', async () => {
+    let rows = [{ ...projected, kind: 'console', name: null, description: null, address: null, outcome: null, status: 'unreachable' }];
+    const { view, cx } = await fixture({ projectAgentChildren: () => rows });
+    for (const next of [rows, [], [{ ...projected, kind: 'console', name: null, description: null, address: null, outcome: null, status: 'working' }], rows]) {
+      rows = next;
+      const tree = view.render(cx);
+      expect(all(tree).some(node => node.id === 'ag-t1')).toBe(true);
+      if (rows.length) expect(texts(tree)).toContain('ok');
+      expect(view.spiderRenderRows).toBeNull();
+    }
+  });
+  it.each([null, {}, { owner: null }, { owner: { terminal: null } }, { owner: { terminal: { address: 't1' }, name: {} } }, { owner: { terminal: { address: 't1' } }, runs: null }])('drops partial feed %j without dropping valid agents', async bad => {
+    const { view, cx } = await fixture(); view.spiderFeeds = [bad];
+    const tree = view.render(cx);
+    expect(all(tree).some(node => node.id === 'ag-t1')).toBe(true);
+    expect(texts(tree).join(' ')).toContain('Some agent rows unavailable');
+  });
+  it('isolates an unexpected child renderer throw without printing record/error content', async () => {
+    const { view, cx } = await fixture({ projectAgentChildren: () => [projected, { ...projected, key: 'bad' }] });
+    const render = view.subRow.bind(view);
+    view.subRow = (...args: any[]) => { if (args[1].t.key === 'bad') throw Error('SECRET record text'); return render(...args); };
+    const tree = view.render(cx);
+    expect(all(tree).some(node => node.id === 'sub-ok')).toBe(true);
+    expect(all(tree).some(node => node.id === 'sub-bad')).toBe(false);
+    expect(texts(tree).join(' ')).toContain('Some agent rows unavailable');
+    expect(texts(tree).join(' ')).not.toContain('SECRET');
+  });
+  it('clears a projection failure on the next good render and clears both caches', async () => {
+    let failed = true;
+    const { view, cx } = await fixture({ projectAgentChildren: () => { if (failed) throw Error('SECRET'); return [projected]; } });
+    expect(all(view.render(cx)).some(node => node.id === 'ag-t1')).toBe(true);
+    failed = false;
+    const good = view.render(cx);
+    expect(all(good).some(node => node.id === 'sub-ok')).toBe(true);
+    expect(texts(good).join(' ')).not.toContain('Some agent rows unavailable');
+    expect(view.spiderRenderRows).toBeNull(); expect(view.spiderRenderSnapshot).toBeNull();
+  });
+  it('renders a schema-valid empty run name before its viewer exists', async () => {
+    const feed = parseFeed(JSON.stringify({ ...emptyRunName, updatedAt: Date.now() }));
+    expect(feed).not.toBeNull();
+    const { view, cx } = await fixture(); view.spiderFeeds = [feed];
+    const tree = view.render(cx);
+    expect(all(tree).some(node => node.id === 'sub-empty-run')).toBe(true);
+    expect(texts(tree)).toContain('empty-run');
+    expect(texts(tree).join(' ')).not.toContain('Some agent rows unavailable');
+  });
+  it.each(['{', '{"version":1,"owner":', '{"version":1}'])('rejects a partial feed file %s before rendering', async text => {
+    expect(parseFeed(text)).toBeNull();
+    const { view, cx } = await fixture(); view.spiderFeeds = [];
+    expect(all(view.render(cx)).some(node => node.id === 'ag-t1')).toBe(true);
+  });
+  it.each([null, {}, { id: 5 }, { name: {} }, { viewer: {} }, { status: "done", finishedAt: { toString: null } }])('drops one malformed run %j but preserves a valid sibling', async bad => {
+    const run = { id: 'good-run', ownerSessionId: 'planner', name: 'Sibling', viewer: null, status: 'running', finishedAt: null };
+    const { view, cx } = await fixture();
+    view.spiderFeeds = [{ sessionId: 'planner', updatedAt: Date.now(), lifecycle: 'live', ipc: null, owner: { terminal: { address: 't1' }, name: null }, runs: { rows: [bad === null || Object.keys(bad).length === 0 ? bad : { ...run, id: 'bad', ...bad }, run] } }];
+    const tree = view.render(cx);
+    expect(all(tree).some(node => node.id === 'sub-good-run')).toBe(true);
+    expect(all(tree).some(node => node.id === 'sub-bad')).toBe(false);
+    expect(texts(tree).join(' ')).toContain('Some agent rows unavailable');
+  });
+  it('does not let a malformed terminal finish poison other child projections', async () => {
+    const good = { address: 't2', parent: 't1', state: 'live', labels: {}, status: 'working', name: 'Good' };
+    const bad = { address: 'bad', parent: 't1', state: 'finished', labels: { [HerdrLabelContract.labels.kind]: HerdrLabelContract.kinds.subagentViewer, [HerdrLabelContract.labels.run]: 'bad-run' }, status: 'error', signal: { toString: null }, exitCode: null, reason: 'exited', finishedAt: Date.now() };
+    const { view, cx } = await fixture({ terminals: () => [bad, good] });
+    const tree = view.render(cx);
+    expect(all(tree).some(node => node.id === 'sub-t2')).toBe(true);
+    expect(texts(tree).join(' ')).toContain('Some agent rows unavailable');
+  });
+  it('drops an unexpected root-row failure without dropping another agent', async () => {
+    const { view, cx } = await fixture({ agents: () => [{ ...valid, address: 'bad' }, valid] });
+    const status = view.status.bind(view);
+    view.status = (...args: any[]) => { if (args[1].address === 'bad') throw Error('SECRET'); return status(...args); };
+    const tree = view.render(cx);
+    expect(all(tree).some(node => node.id === 'ag-t1')).toBe(true);
+    expect(all(tree).some(node => node.id === 'ag-bad')).toBe(false);
+    expect(texts(tree).join(' ')).not.toContain('SECRET');
+  });
+  it('drops a failed group heading but keeps the group members', async () => {
+    const { view, cx } = await fixture({ svg: (path: string) => { if (path.includes('/space-')) throw Error('SECRET'); return element(path, 'div', true); } });
+    const tree = view.render(cx);
+    expect(all(tree).some(node => node.id === 'ag-t1')).toBe(true);
+    expect(texts(tree)).toContain('Agents');
+    expect(texts(tree).join(' ')).toContain('Some agent rows unavailable');
+  });
+  it('recomputes folded counts when an address leaves and returns', async () => {
+    let mains: unknown[] = [valid];
+    const { view, cx } = await fixture({ agents: () => mains, projectAgentChildren: () => [projected] });
+    view.folded.add('sp-s1');
+    expect(all(view.render(cx)).some(node => node.id === 'group-count-agents-sp-s1')).toBe(true);
+    mains = [];
+    expect(all(view.render(cx)).some(node => node.id === 'sp-s1')).toBe(false);
+    expect(view.spiderRenderRows).toBeNull();
+    mains = [valid];
+    const recovered = view.render(cx);
+    expect(all(recovered).some(node => node.id === 'group-count-agents-sp-s1')).toBe(true);
+    expect(texts(recovered).join(' ')).not.toContain('Some agent rows unavailable');
+  });
+  it('uses one terminal snapshot when a member vanishes on a subsequent read', async () => {
+    let calls = 0;
+    const { view, cx } = await fixture({ agents: () => [{ ...valid, status: 'blocked' }], terminals: () => ++calls === 1 ? [{ address: 't1', state: 'live', labels: {}, status: 'working' }] : [null] });
+    view.folded.add('sp-s1');
+    expect(texts(view.render(cx))).toContain('Fixture');
+    expect(calls).toBe(1);
+  });
+});
 
 describe('space identity assignment', () => {
   it.each([1, 7, 8, 37])('assigns stable space shapes for %s spaces', count => {

@@ -130,7 +130,7 @@ it('rechecks a file changed after an earlier successful verification', () => {
 }, 5000);
 
 it('rechecks runtime normalization after a changed file is re-hashed', () => {
-  const root = fixture();
+  const root = fixture(); pristineSpawn(root);
   expect(check(root).status).toBe(0);
   mutate(root, 'broker/spawn.ts', 'command: getNodeCommand(nodePath),', 'command: nodePath,');
   const manifest = JSON.parse(readFileSync(resolve('packages/intercom/upstream-assertions.json'), 'utf8'));
@@ -200,6 +200,9 @@ it('rejects a stale divergence for an unchanged upstream file', () => {
   const root = fixture(), file = join(root, '..', 'DIVERGENCE.json');
   const divergence = JSON.parse(readFileSync(file, 'utf8'));
   const manifest = JSON.parse(readFileSync(resolve('packages/intercom/upstream-assertions.json'), 'utf8'));
+  const legacy = JSON.parse(readFileSync(resolve('packages/intercom/src/__tests__/fixtures/legacy-a54638af.json'), 'utf8'));
+  writeFileSync(join(root, 'broker/client.ts'), legacy.files['broker/client.ts'].source);
+  divergence.files = divergence.files.filter((entry: { path: string }) => entry.path !== 'broker/client.ts');
   divergence.files.push({ path: 'broker/client.ts', task: '0.1', reason: 'Fixture declaration', upstreamHash: manifest.sources['broker/client.ts'].sourceSha256 });
   writeFileSync(file, JSON.stringify(divergence));
   const result = check(root);
@@ -257,7 +260,10 @@ it('rejects a stale divergence for a restored host adapter', () => {
 }, 5000);
 
 it('still checks the frozen host adapters outside upstream', () => {
-  const root = fixture();
+  const root = fixture(), file = resolve(root, '../DIVERGENCE.json');
+  const divergence = JSON.parse(readFileSync(file, 'utf8'));
+  divergence.files = divergence.files.filter((entry: { path: string }) => entry.path !== 'single-instance.ts');
+  writeFileSync(file, JSON.stringify(divergence));
   writeFileSync(join(root, 'single-instance.ts'), 'export const fixture = true;');
   const result = check(root);
   expect(result.status).not.toBe(0);

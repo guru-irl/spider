@@ -28,6 +28,7 @@ export const DEFAULTS: Readonly<Record<string, unknown>> = {
   "embeddings.drain": true,
   "subagents.childMode": "rpc",
   "subagents.keepCacheWarm": true,
+  "subagents.keepCacheWarmMaxIdleMinutes": 60,
   "subagents.extensions": Object.freeze([]),
   "subagents.profiles.reviewer.excludeTools": Object.freeze(["edit", "write"]),
   "memory.reviewer.enabled": true,

@@ -45,7 +45,7 @@ test('session and run consoles own only the same agent and machine jobs', () => 
   expect(r.find(row => row.key === 'main-job')).toMatchObject({ parentKey: 'console:remote.invalid/main-console', depth: 1, machine: 'remote.invalid' });
   expect(r.find(row => row.key === 'child-job')).toMatchObject({ parentKey: 'console:remote.invalid/child-console', depth: 2 });
   expect(r.find(row => row.key === 'other-machine')).toMatchObject({ parentKey: 'run', depth: 1 });
-  expect(r.find(row => row.key === 'console:remote.invalid/child-console')).toMatchObject({ kind: 'console', parentKey: 'run', depth: 1, name: 'Builder · remote.invalid',
+  expect(r.find(row => row.key === 'console:remote.invalid/child-console')).toMatchObject({ kind: 'console', parentKey: 'run', depth: 1, name: 'remote.invalid',
     action: { kind: 'ipc', request: { op: 'openJob', jobId: 'console:remote.invalid/child-console' } } });
   const visible = selectAgentChildren(r, []);
   expect(visible.some(row => row.key === 'main-job' || row.key === 'child-job')).toBe(false);
@@ -66,6 +66,36 @@ test('a machine console shows working while one of its commands runs, and idle o
 test('a disconnected session keeps its machine console disconnected even while a command runs', () => {
   const stale = projectAgentChildren([idle(job('main-job')), idle(consoleTerminal('main-console'))], [feed()], 'agent', contract, { now: 2000 + 60 * 60 * 1000 });
   expect(stale.find(row => row.kind === 'console')).toMatchObject({ status: 'disconnected' });
+});
+
+test('console names identify machines even when agent names are long', () => {
+  const f = feed(); f.runs.rows[0].name = 'A very long worker name that would hide the machine';
+  const terminals = [consoleTerminal('a', { 'spider.run': 'run' }), consoleTerminal('b', { 'spider.run': 'run', 'spider.machine': 'box-2.invalid' }), consoleTerminal('c', { 'spider.run': 'run', 'spider.machine': 'box-3.invalid' })];
+  const consoles = projectAgentChildren(terminals, [f], 'agent', contract, { now: 2000 }).filter(row => row.kind === 'console');
+  expect(consoles.map(row => row.name)).toEqual(['remote.invalid', 'box-2.invalid', 'box-3.invalid']);
+});
+
+test('unavailable terminal machines disable console, command, and viewer actions until ready', () => {
+  const viewer = terminal('remote.invalid/viewer', 'subagent-viewer', { 'spider.run': 'run' });
+  const terminals = [consoleTerminal('main-console'), job('main-job'), viewer];
+  const project = (layout: 'unavailable' | 'loading' | 'ready') => projectAgentChildren(terminals, [feed()], 'agent', contract, { now: 2000, machines: [{ name: 'remote.invalid', layout }] });
+  const offline = project('unavailable');
+  for (const key of ['console:remote.invalid/main-console', 'main-job', 'run']) {
+    expect(offline.find(row => row.key === key)).toMatchObject({ status: 'unreachable', action: null });
+  }
+  for (const layout of ['loading', 'ready'] as const) {
+    const online = project(layout);
+    expect(online.find(row => row.kind === 'console')).toMatchObject({ status: 'working', action: { kind: 'ipc' } });
+    expect(online.find(row => row.kind === 'remote')).toMatchObject({ status: 'working', action: { kind: 'ipc' } });
+    expect(online.find(row => row.kind === 'subagent')).toMatchObject({ status: 'working', action: { kind: 'ipc' } });
+  }
+});
+
+test('an unavailable finished run viewer remains unreachable and cannot be opened', () => {
+  const f = feed(); Object.assign(f.runs.rows[0], { status: 'done', finishedAt: 1500 });
+  const viewer = terminal('remote.invalid/viewer', 'subagent-viewer', { 'spider.run': 'run' });
+  const row = projectAgentChildren([viewer], [f], 'agent', contract, { now: 2000, machines: [{ name: 'remote.invalid', layout: 'unavailable' }] }).find(row => row.key === 'run');
+  expect(row).toMatchObject({ status: 'unreachable', retained: true, action: null });
 });
 
 test('finished jobs disappear from the sidebar while their machine console keeps history', () => {

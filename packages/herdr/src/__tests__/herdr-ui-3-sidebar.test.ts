@@ -808,6 +808,58 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     }
   });
 
+  it('renders unreachable rows dim and disables opening until the machine is ready', async () => {
+    let state: 'unavailable' | 'ready' = 'unavailable';
+    const commands: unknown[] = [];
+    const terminals = [
+      { address: 'alpha.invalid/c1', parent: 't1', state: 'live', status: 'idle', labels: { 'spider.kind': 'remote-console', 'spider.machine': 'alpha.invalid' } },
+      { address: 'alpha.invalid/job', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'exec', 'spider.job': 'job', 'spider.machine': 'alpha.invalid' } },
+      { address: 'alpha.invalid/v1', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-one' } },
+    ];
+    const { view } = await agentsView({ agents: () => [{ address: 't1', status: 'idle', seq: 1, title: 'alpha' }], terminals: () => terminals,
+      machines: () => [{ name: 'alpha.invalid', layout: state }], run: (...args: unknown[]) => commands.push(args) });
+    view.expandedConsoles = new Set(['console:alpha.invalid/c1']);
+    const render = () => all(view.render({}));
+    let nodes = render();
+    for (const id of ['sub-console:alpha.invalid/c1', 'sub-job', 'sub-run-one']) {
+      const row = nodes.find(node => node.id === id)!;
+      expect(row).toBeDefined();
+      const contents = row.children.flatMap(all);
+      const chip = contents.find(node => node.children.includes('Unreachable'))!;
+      expect(chip).toBeDefined();
+      expect(call(chip, 'text_color')).toEqual([palette.muted]);
+      row.click?.({}, { spawn: (fn: Function) => fn({ notify() {} }), notify() {} });
+    }
+    expect(commands).toEqual([]);
+    expect(nodes.some(node => node.children.includes('alpha.invalid') && String(call(node, 'tooltip')?.[0]).includes('Agent console on alpha.invalid'))).toBe(true);
+    state = 'ready'; nodes = render();
+    expect(nodes.filter(node => node.children.includes('Unreachable'))).toHaveLength(0);
+  });
+
+  it('excludes unavailable children from folded agent and space counts and restores them on reconnect', async () => {
+    let state: 'unavailable' | 'ready' = 'unavailable';
+    const spaces = [{ id: 's1', name: 'work', tabs: [] }];
+    const mains = [{ address: 't1', pane: 'p1', space: 's1', space_name: 'work', status: 'idle', seq: 1, title: 'alpha' }];
+    const terminals = [
+      { address: 'alpha.invalid/c1', parent: 't1', state: 'live', status: 'idle', labels: { 'spider.kind': 'remote-console', 'spider.machine': 'alpha.invalid' } },
+      { address: 'alpha.invalid/v1', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-one' } },
+    ];
+    const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces, machines: () => [{ name: 'alpha.invalid', layout: state }] }, new Map([['agents.sort', 'grouped']]));
+    view.folded.add('t1');
+    const nodes = () => all(view.render({}));
+    expect(nodes().find(node => node.id === 'console-count-t1')).toBeUndefined();
+    expect(nodes().find(node => node.id === 'fold-t1')).toBeUndefined();
+    view.folded.add('sp-s1');
+    expect(nodes().find(node => node.id === 'group-count-consoles-sp-s1')).toBeUndefined();
+    expect(nodes().find(node => node.id === 'group-count-subagents-sp-s1')).toBeUndefined();
+    state = 'ready';
+    expect(nodes().find(node => node.id === 'group-count-consoles-sp-s1')?.children).toContain('1');
+    expect(nodes().find(node => node.id === 'group-count-subagents-sp-s1')?.children).toContain('1');
+    view.folded.delete('sp-s1');
+    expect(nodes().find(node => node.id === 'console-count-t1')?.children).toContain('1');
+    expect(nodes().find(node => node.id === 'fold-t1')?.children).toContain('1');
+  });
+
   it('counts a subagent and native child separately from a console and its commands', async () => {
     const terminals: any[] = [
       { address: 't2', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-one' } },

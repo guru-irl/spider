@@ -38,6 +38,35 @@ it('rechecks a console when the run finishes during an earlier liveness check', 
   } finally { releaseCheck(); life.dispose(); }
 }, 30000);
 
+it('retries closing an ended run console after the machine reconnects without closing other terminals', async () => {
+  const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
+  const callbacks = new Map<string, Function>();
+  const pi = { on: (name: string, handler: Function) => { callbacks.set(name, handler); return () => callbacks.delete(name); } } as unknown as ExtensionAPI;
+  let notifyRunEnd: (run: RunId) => void = () => {};
+  let online = false, running = true;
+  const errors: unknown[] = [];
+  const hc: HcClient = { ...h.hc, get: async address => {
+    if (!online && address.startsWith('remote.invalid/')) throw new Error('machine unavailable');
+    return h.hc.get(address);
+  } };
+  const life = registerAgentConsoleLifecycle(pi, { hc, env: h.localEnv, currentOwner: () => h.owner, ownerIsLive: async () => true,
+    runIsLive: async () => running, subscribeRunEnds: (_owner, listener) => { notifyRunEnd = listener; return () => {}; }, reportError: error => errors.push(error),
+  });
+  try {
+    await callbacks.get('session_start')!({ reason: 'startup' }, {} as ExtensionContext);
+    const run = 'retry-run' as RunId, owner = h.owner!;
+    const launch = (kind: string) => h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: 'remote.invalid' as MachineName,
+      labels: { 'spider.kind': kind, 'spider.session': owner.sessionId, 'spider.machine': 'remote.invalid', 'spider.owner-core': owner.terminal.coreId, 'spider.owner-terminal': owner.terminal.terminalId, 'spider.run': run }, noNotify: true, background: true, outliveParent: true });
+    const console = await launch('remote-console'), unrelated = await launch('exec');
+    running = false; notifyRunEnd(run);
+    await expect.poll(() => errors.length, { timeout: 8000 }).toBeGreaterThan(0);
+    expect((await h.hc.get(console.address)).state).toBe('live');
+    online = true;
+    await expect.poll(async () => { try { await h.hc.get(console.address); return false; } catch (error) { if ((error as { code?: string }).code === 'not_found') return true; throw error; } }, { timeout: 12000 }).toBe(true);
+    expect((await h.hc.get(unrelated.address)).state).toBe('live');
+  } finally { life.dispose(); }
+}, 30000);
+
 it('reaps a finished run console recovered in a missed-event snapshot', async () => {
   const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
   const callbacks = new Map<string, Function>();

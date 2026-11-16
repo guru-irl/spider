@@ -26,15 +26,34 @@ function feed(generation = 'gen-1', name = 'Writer') {
 function flatten(root: any): any[] { return root && typeof root === 'object' ? [root, ...(root.items ?? []).flatMap(flatten)] : []; }
 function text(root: any): string[] { return root && typeof root === 'object' ? (root.items ?? []).flatMap(text) : typeof root === 'string' ? [root] : []; }
 function id(root: any, value: string): any { return flatten(root).find(item => item.styles?.id?.[0] === value); }
+function inheritedStyle(root: any, matches: (node: any) => boolean): any {
+  function visit(node: any, inherited: any): any {
+    if (!node || typeof node !== 'object') return undefined;
+    const style = { ...inherited };
+    for (const [key, value] of Object.entries(node.styles ?? {}) as [string, any[]][]) {
+      if (key === 'font_family' || key === 'text_size' || key === 'text_color') style[key] = value[0];
+      if (key === 'font_normal') style.weight = 400;
+      if (key === 'font_medium') style.weight = 500;
+      if (key === 'font_semibold') style.weight = 600;
+      if (key === 'font_bold') style.weight = 700;
+      if (key === 'font_weight') style.weight = value[0];
+    }
+    if (matches(node)) return style;
+    for (const child of node.items ?? []) { const found = visit(child, style); if (found) return found; }
+    return undefined;
+  }
+  return visit(root, { weight: 400 });
+}
+const textStyle = (root: any, label: string) => inheritedStyle(root, node => node.items?.includes(label));
 
-function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missing' | 'invalid'; parked?: boolean; feeds?: any[]; status?: string } = {}) {
+function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missing' | 'invalid'; parked?: boolean; feeds?: any[]; status?: string; snapshotGate?: Promise<void>; fonts?: { body: string; label: string; paths: string } } = {}) {
   const modules = createUiModules(), kit = modules['gpui-kit'], base = modules['gpui-base'];
   const inputs: any[] = [], calls: any[] = [], timers = new Set<any>(), watches = new Set<any>();
   let closed!: () => void;
   const state: any = { feeds: options.feeds ?? [feed()], spaces: [localSpace, remoteSpace], terms: [terminal()], agents: options.parked ? [] : [agent()],
     panes: options.parked ? [] : [{ pane: 'p1', terminal: 't1', tab: 'tb1', cwd: '/fixture' }], focus: { space: 's1', tab: 'tb1', pane: 'p1' }, closedReaders: 0, ipcReply: null, failSnapshot: false,
     closed: new Promise<void>(resolve => { closed = resolve; }) };
-  const config = { version: 1, modId: 'spider-picker', feedRoot: '/fixture/feed', cliPath: '/fixture/cli.mjs', nodePath: '/fixture/node', labelContract: HerdrLabelContract, retention: { completedRows: 50, completedHours: 24 } };
+  const config = { version: 1, modId: 'spider-picker', feedRoot: '/fixture/feed', cliPath: '/fixture/cli.mjs', nodePath: '/fixture/node', labelContract: HerdrLabelContract, retention: { completedRows: 50, completedHours: 24 }, ...(options.fonts ? { fonts: options.fonts } : {}) };
   const inputState = { new() { const handlers: Record<string, Function> = {}; const input = { handlers, valueText: '', on(name: string, fn: Function) { handlers[name] = fn; }, value() { return this.valueText; }, focus() {} }; inputs.push(input); return input; } };
   const timer = { every(ms: number, fn: Function) { const handle = { ms, fn, cancel() { timers.delete(handle); } }; timers.add(handle); calls.push(['timer', ms]); return handle; }, after(ms: number, fn: Function) { return this.every(ms, fn); } };
   const cx: any = { timer, notify() {}, stop_propagation() {}, focus_handle: () => ({ focus() {} }), spawn(fn: Function) { const work: any = Promise.resolve().then(() => fn(cx)); work.cancel = () => {}; work.catch(() => {}); return work; } };
@@ -45,7 +64,7 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
     appHome: () => '/fixture/app', readTextFile: async (path: string) => { calls.push(['readTextFile', path]); return options.config === 'file' ? JSON.stringify(config) : null; },
     spaces: () => state.spaces, agents: () => state.agents, terminals: () => state.terms, panes: () => state.panes,
     machines: () => [{ name: null, layout: 'ready' }, { name: 'box-1.invalid', layout: 'ready' }], focused: () => state.focus,
-    theme: () => ({ foreground: '#eeeeee', muted: '#aaaaaa', dim: '#888888', hover: '#ffffff12', working: '#aaaaaa', blocked: '#f2c063', done: '#aaaaaa', error: '#ff6b6b' }),
+    theme: () => ({ foreground: '#ececed', muted: '#b4b4b5', dim: '#969697', hover: '#262628', working: '#d0d0d2', blocked: '#ffcb6b', done: '#969697', ansi1: '#ff5555' }),
     settings: () => ({ zoom: 1 }), closeOverlay: (overlay: string) => { calls.push(['closeOverlay', overlay]); closed(); }, run: (name: string, args: unknown) => calls.push(['run', name, args]),
     hc: async (args: string[]) => { calls.push(['hc', args]); return { code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [] }) }; },
     exec: async (command: string, args: string[], options?: unknown) => {
@@ -63,11 +82,12 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
   const fetch = async (url: string) => {
     calls.push(['fetch', url]);
     if (url.endsWith('/close')) { state.closedReaders++; return { ok: true, json: async () => ({}) }; }
+    if (options.snapshotGate) await options.snapshotGate;
     if (state.failSnapshot) throw new Error('offline');
     const entries = state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, updatedAt: Date.now() }));
     return { ok: true, json: async () => ({ version: 1, entries, changes: state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, feed: item })), errors: [] }) };
   };
-  const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => kit.div() }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, describeOpenFailure, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply };
+  const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => Object.assign(kit.div(), { inputElement: true }) }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, describeOpenFailure, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply };
   const body = readFileSync(source, 'utf8').replace(/^import .*;\s*$/gm, '').replace(/export default class Picker/, 'class Picker').replace(/export class Picker/, 'class Picker').replace(/export default Picker;?/g, '');
   const Picker = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${body}; return Picker;`)(api);
   const view = new Picker(); view.init({}, cx);
@@ -77,7 +97,7 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
 it('renders neutral shape rows and named sessions without an input border or shadow', async () => {
   const h = host(); await h.view.ready;
   const root = h.view.render();
-  expect(root.styles.rounded?.[0]).toBe(12); expect(root.styles.bg?.[0]).toBe('#161618f0');
+  expect(root.styles.rounded?.[0]).toBe(12); expect(root.styles.bg?.[0]).toBe('#161618fe');
   expect(text(root)).toContain('Writer'); expect(text(root)).not.toContain('Pi · Pi · Pi');
   expect(flatten(root).some(node => Object.keys(node.styles ?? {}).some(key => key.startsWith('border') || key.startsWith('shadow')))).toBe(false);
   expect(flatten(root).some(node => node.svgPath === 'mods/spider-picker/space-triangle.svg')).toBe(true);
@@ -86,14 +106,14 @@ it('renders neutral shape rows and named sessions without an input border or sha
   await h.view.close();
 });
 
-it.each([['blocked', 'needs you', '#f2c063'], ['error', 'error', '#ff6b6b']])('styles %s status without coloring the machine pill', async (status, label, color) => {
+it.each([['blocked', 'needs you', '#ffcb6b'], ['error', 'error', '#ff5555']])('styles %s status without coloring the machine pill', async (status, label, color) => {
   const value = feed(); value.status.effective = status;
   const h = host({ feeds: [value] }); await h.view.ready;
   h.state.agents.push({ ...agent('box-1.invalid/t2', 'remote-pane', 'Remote'), space: remoteSpace.id, tab: remoteSpace.tabs[0].id });
-  h.state.terms.push(terminal('box-1.invalid/t2')); h.state.panes.push({ pane: 'remote-pane', terminal: 'box-1.invalid/t2', tab: remoteSpace.tabs[0].id, cwd: null });
+  h.state.terms.push({ ...terminal('box-1.invalid/t2'), labels: { 'spider.display-name': 'Remote' } }); h.state.panes.push({ pane: 'remote-pane', terminal: 'box-1.invalid/t2', tab: remoteSpace.tabs[0].id, cwd: null });
   const nodes = flatten(h.view.render());
   expect(nodes.find(node => text(node).includes(label) && node.styles?.text_color?.[0] === color)).toBeDefined();
-  expect(nodes.find(node => text(node).includes('box-1.invalid') && node.styles?.bg?.[0] === '#ffffff0d' && node.styles?.text_color?.[0] === '#a0a0a4')).toBeDefined();
+  expect(nodes.find(node => text(node).includes('box-1.invalid') && node.styles?.bg?.[0] === '#ffffff0d' && node.styles?.text_color?.[0] === '#969697')).toBeDefined();
   await h.view.close();
 });
 
@@ -106,7 +126,7 @@ it('uses the shared space identity even when filtering changes row positions', a
   await h.view.close();
 });
 
-it('indents child identities and uses the intended label and monospace fonts', async () => {
+it('indents child identities and uses the sidebar body and name fonts', async () => {
   const value = feed(); (value.runs.rows as any[]).push({ id: 'run-a', ownerSessionId: 'session', name: 'Child', status: 'running', childMode: 'rpc', canSteer: true, startedAt: Date.now(), finishedAt: null, viewer: null, result: null }); value.runs.total = 1;
   const h = host({ feeds: [value] }); await h.view.ready; const root = h.view.render();
   const parent = id(root, 'pk-session:session'), child = id(root, 'pk-run:session:run-a');
@@ -115,6 +135,54 @@ it('indents child identities and uses the intended label and monospace fonts', a
   expect(flatten(child).some(node => node.svgPath === 'mods/spider-agents/bot.svg')).toBe(true);
   expect(root.styles.font_family?.[0]).toBe('Google Sans Flex');
   expect(flatten(parent).find(node => node.items?.includes('Writer'))?.styles.font_family?.[0]).toBe('JetBrains Mono');
+  await h.view.close();
+});
+
+it('uses the same regular sidebar name style for every kind of row', async () => {
+  const value = feed();
+  (value.runs.rows as any[]).push({ id: 'run-a', ownerSessionId: 'session', name: 'Child', status: 'running', childMode: 'rpc', canSteer: true, startedAt: Date.now(), finishedAt: null, viewer: null, result: null }); value.runs.total = 1;
+  const h = host({ feeds: [value], fonts: { body: 'Fixture Body', label: 'Fixture Heavy', paths: 'Fixture Mono' } }); await h.view.ready;
+  h.state.terms.push({ ...terminal('view1'), parent: 't1', labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 'session', 'spider.run': 'run-a' } },
+    { ...terminal('box-1.invalid/console'), parent: 'view1', labels: { 'spider.kind': 'remote-console', 'spider.session': 'session', 'spider.run': 'run-a', 'spider.machine': 'box-1.invalid' } });
+  const root = h.view.render();
+  for (const label of ['Work', 'Coding', 'Writer', 'Child', 'Child console', 'New tab', 'New space']) {
+    expect.soft(textStyle(root, label), label).toMatchObject({ font_family: 'Fixture Mono', text_size: 13, weight: 400, text_color: '#ececed' });
+  }
+  await h.view.close();
+});
+
+it('matches sidebar headings, input, path and machine metadata', async () => {
+  const value = feed(); value.status.effective = 'blocked';
+  const h = host({ feeds: [value], fonts: { body: 'Fixture Body', label: 'Fixture Heavy', paths: 'Fixture Mono' } }); await h.view.ready;
+  h.state.agents.push({ ...agent('box-1.invalid/t2', 'remote-pane', 'Remote agent'), space: remoteSpace.id, tab: remoteSpace.tabs[0].id });
+  h.state.terms.push({ ...terminal('box-1.invalid/t2'), labels: { 'spider.display-name': 'Remote agent' } }); h.state.panes.push({ pane: 'remote-pane', terminal: 'box-1.invalid/t2', tab: remoteSpace.tabs[0].id, cwd: null });
+  const root = h.view.render();
+  expect.soft(textStyle(root, 'Go to…')).toMatchObject({ font_family: 'Fixture Body', text_size: 11.5, weight: 500, text_color: '#969697' });
+  expect.soft(textStyle(root, 'Agents without a local tab')).toMatchObject({ font_family: 'Fixture Body', text_size: 11.5, weight: 500, text_color: '#969697' });
+  expect.soft(textStyle(root, 'Esc')).toMatchObject({ font_family: 'Fixture Body', text_size: 11, weight: 400, text_color: '#969697' });
+  expect.soft(inheritedStyle(root, node => node.inputElement)).toMatchObject({ font_family: 'Fixture Body', text_size: 13, weight: 400, text_color: '#ececed' });
+  expect.soft(textStyle(root, '/fixture')).toMatchObject({ font_family: 'Fixture Mono', text_size: 10, weight: 400, text_color: '#969697' });
+  expect.soft(textStyle(root, 'box-1.invalid')).toMatchObject({ font_family: 'Fixture Body', text_size: 10, weight: 400, text_color: '#969697' });
+  expect.soft(textStyle(root, 'needs you')).toMatchObject({ font_family: 'Fixture Body', text_size: 10.5, weight: 600, text_color: '#ffcb6b' });
+  await h.view.close();
+});
+
+it('matches the sidebar error metadata style', async () => {
+  const value = feed(); value.status.effective = 'error';
+  const h = host({ feeds: [value], fonts: { body: 'Fixture Body', label: 'Fixture Heavy', paths: 'Fixture Mono' } }); await h.view.ready;
+  expect(textStyle(h.view.render(), 'error')).toMatchObject({ font_family: 'Fixture Mono', text_size: 10.5, weight: 400, text_color: '#ff5555' });
+  await h.view.close();
+});
+
+it.each([1, 25])('covers all picker content with the near-solid neutral surface (%i tabs)', async count => {
+  const h = host({ config: 'missing' }); await h.view.ready;
+  h.state.spaces = [{ ...localSpace, tabs: Array.from({ length: count }, (_, index) => ({ id: `tab-${index}`, name: `Tab ${index}`, active: index === 0 })) }];
+  const root = h.view.render();
+  expect(root.styles.bg?.[0]).toBe('#161618fe');
+  expect(root.styles.w_full).toBeDefined();
+  expect(id(root, 'pk-list')).toBeDefined();
+  expect(flatten(root).some(node => node.styles?.opacity)).toBe(false);
+  expect(flatten(root).some(node => Object.keys(node.styles ?? {}).some(key => key.startsWith('border') || key.startsWith('shadow')))).toBe(false);
   await h.view.close();
 });
 
@@ -139,9 +207,10 @@ it('keeps wheel scrolling instead of snapping back until selection changes', asy
   await h.view.close();
 });
 
-it('falls back to named native rows when the picker config is absent', async () => {
-  const h = host({ config: 'missing' }); await h.view.ready;
-  expect(h.view.rows().map((row: any) => row.label)).toContain('Pi · Pi · Pi');
+it('falls back to labelled native rows when the picker config is absent', async () => {
+  const h = host({ config: 'missing' }); h.state.terms[0].labels['spider.display-name'] = 'Linter'; await h.view.ready;
+  expect(h.view.rows().map((row: any) => row.label)).toContain('Linter');
+  expect(h.view.rows().map((row: any) => row.label)).not.toContain('Pi · Pi · Pi');
   expect(h.calls.filter(call => call[0] === 'exec')).toEqual([]);
   await h.view.close();
 });
@@ -153,19 +222,109 @@ it('disposes the feed reader and every folder watch when the overlay closes', as
   expect(h.state.closedReaders).toBe(1); expect(h.watches.size).toBe(0); expect(h.timers.size).toBe(0);
 });
 
-it('rejects malformed label contracts in props and keeps native rows', async () => {
-  const h = host({ config: 'invalid' }); await h.view.ready;
-  expect(h.view.rows().map((row: any) => row.label)).toContain('Pi · Pi · Pi');
+it('rejects malformed label contracts in props and keeps labelled native rows', async () => {
+  const h = host({ config: 'invalid' }); h.state.terms[0].labels['spider.display-name'] = 'Linter'; await h.view.ready;
+  expect(h.view.rows().map((row: any) => row.label)).toContain('Linter');
+  expect(h.view.rows().map((row: any) => row.label)).not.toContain('Pi · Pi · Pi');
   expect(h.calls.filter(call => call[0] === 'exec')).toEqual([]);
   expect(h.calls).toContainEqual(['readTextFile', '/fixture/app/mods/spider-picker/config.json']);
   await h.view.close();
 });
 
-it('keeps native rows visible while feed initialization is pending', async () => {
-  const h = host();
-  expect(text(h.view.render())).toContain('Pi · Pi · Pi');
-  await h.view.ready; expect(text(h.view.render())).toContain('Writer');
+it.each(['props', 'file'] as const)('first frame hides raw targets while %s config and feed load', async config => {
+  let release!: () => void;
+  const snapshotGate = new Promise<void>(resolve => { release = resolve; });
+  const h = host({ config, snapshotGate });
+  h.state.agents[0].title = 'π - raw terminal title'; h.state.panes[0].cwd = '/fixture/raw-terminal-path';
+  try {
+    const first = h.view.render();
+    expect(text(first)).toContain('Work');
+    expect.soft(text(first)).not.toContain('Coding');
+    expect.soft(text(first)).not.toContain('π - raw terminal title');
+    expect.soft(text(first)).not.toContain('/fixture/raw-terminal-path');
+    expect.soft(flatten(first).some(node => node.svgPath === 'mods/workspace-chrome/terminal.svg')).toBe(false);
+    await vi.waitFor(() => expect(h.calls.some(call => call[0] === 'fetch' && call[1].endsWith('/snapshot'))).toBe(true));
+    const pending = h.view.render();
+    expect(text(pending)).toContain('Work');
+    expect(text(pending)).not.toContain('π - raw terminal title');
+    expect(text(pending)).not.toContain('/fixture/raw-terminal-path');
+    release(); await h.view.ready;
+    const settled = h.view.render();
+    expect(text(settled)).toContain('Coding');
+    expect(text(settled)).toContain('Writer');
+    expect(text(settled)).not.toContain('π - raw terminal title');
+  } finally { release(); await h.view.close(); }
+});
+
+it('first frame and missing config never reveal an unlabelled terminal title', async () => {
+  const h = host({ config: 'missing' });
+  h.state.agents[0].title = 'π - raw terminal title'; h.state.panes[0].cwd = '/fixture/raw-terminal-path';
+  const first = h.view.render();
+  expect(text(first)).toContain('Work');
+  expect(text(first)).not.toContain('π - raw terminal title');
+  expect(text(first)).not.toContain('/fixture/raw-terminal-path');
+  await h.view.ready;
+  expect(text(h.view.render())).not.toContain('π - raw terminal title');
+  h.state.terms[0].labels['spider.display-name'] = 'Linter';
+  expect(text(h.view.render())).toContain('Linter');
   await h.view.close();
+});
+
+it('does not expose raw terminal names or paths when no feed identifies an agent', async () => {
+  const h = host({ feeds: [] });
+  h.state.agents[0].title = 'π - raw terminal title'; h.state.panes[0].cwd = '/fixture/raw-terminal-path';
+  await h.view.ready;
+  const noName = h.view.render();
+  expect(text(noName)).not.toContain('π - raw terminal title');
+  expect(text(noName)).not.toContain('/fixture/raw-terminal-path');
+  h.state.terms[0].labels['spider.display-name'] = 'Linter';
+  expect(text(h.view.render())).toContain('Linter');
+  await h.view.close();
+});
+
+it('uses only display labels on an initial feed failure and restores feed names after recovery', async () => {
+  const h = host(); h.state.failSnapshot = true;
+  h.state.agents[0].title = 'π - raw terminal title'; h.state.panes[0].cwd = '/fixture/raw-terminal-path';
+  h.state.terms[0].labels['spider.display-name'] = 'Linter';
+  try {
+    await h.view.ready;
+    const failed = h.view.render();
+    expect(text(failed)).toContain('Linter');
+    expect(text(failed)).not.toContain('π - raw terminal title');
+    expect(text(failed)).not.toContain('/fixture/raw-terminal-path');
+    expect(text(failed)).toContain('Session information is unavailable');
+    h.state.failSnapshot = false;
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 6000);
+    expect(await h.view.refresh()).toBe(true);
+    expect(text(h.view.render())).toContain('Writer');
+    expect(text(h.view.render())).not.toContain('Linter');
+  } finally { vi.restoreAllMocks(); await h.view.close(); }
+});
+
+it('hides an unnamed feed owner and its children until a display name is available', async () => {
+  const value = feed(); (value.owner as any).name = null;
+  (value.runs.rows as any[]).push({ id: 'run-a', ownerSessionId: 'session', name: 'Child', status: 'running', childMode: 'rpc', canSteer: true, startedAt: Date.now(), finishedAt: null, viewer: null, result: null }); value.runs.total = 1;
+  const h = host({ feeds: [value] }); h.state.agents[0].title = 'π - raw terminal title'; await h.view.ready;
+  expect(text(h.view.render())).not.toContain('π - raw terminal title');
+  expect(text(h.view.render())).not.toContain('Child');
+  h.state.terms[0].labels['spider.display-name'] = 'Linter';
+  expect(text(h.view.render())).toContain('Linter');
+  expect(text(h.view.render())).toContain('Child');
+  await h.view.close();
+});
+
+it('keeps the current tab as the default after an initial spaces-only frame', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const h = host({ snapshotGate: gate });
+  try {
+    expect(text(h.view.render())).toContain('Work');
+    await vi.waitFor(() => expect(h.calls.some(call => call[0] === 'fetch' && call[1].endsWith('/snapshot'))).toBe(true));
+    release(); await h.view.ready; h.view.render();
+    expect(h.view.selectedId).toBe('tab:s1:tb1');
+    h.inputs[0].handlers.submit({}, h.cx); await h.state.closed;
+    expect(h.calls.filter(call => call[0] === 'run')).toEqual([['run', 'tab.select', { id: 'tb1' }]]);
+  } finally { release(); await h.view.close(); }
 });
 
 it('reads the installed versioned config when overlay props do not contain it', async () => {

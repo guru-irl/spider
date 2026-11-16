@@ -410,8 +410,8 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         const evidence = outbound.reconciliation?.status === "not_injected" && outbound.reconciliation.evidence?.kind === "absence" ? outbound.reconciliation.evidence : null;
         const next = lookup(frame.from.machineId);
         if (!evidence || evidence.excludedGeneration !== outbound.endpoint.activationEpoch || !next) return bad("invalid-receipt");
-        ports.store.rebindUndispatched(outbound.identity.to, frame.from, { owner: ports.authoritativeHome(outbound.identity.to),
-          exclusion: { owner: outbound.endpoint, excludedGeneration: evidence.excludedGeneration, kind: "generation-fenced" }, nextHop: next.config.peer.machineId }, next.config.edgeEpoch);
+        ports.store.followResumedReceipt({ queue: "outbound", peer, frame, proof: { owner: ports.authoritativeHome(outbound.identity.to),
+          exclusion: { owner: outbound.endpoint, excludedGeneration: evidence.excludedGeneration, kind: "generation-fenced" }, nextHop: next.config.peer.machineId } });
         outbound = ports.store.retained("outbound", frame.receipt.messageId);
         if (!outbound || outbound.peer !== peer) return bad("invalid-receipt");
       }

@@ -1474,9 +1474,28 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         const old = readEndpoint(row);
         if (!sameAddress(old.address, endpoint.address) || old.machineId !== endpoint.machineId || old.activationEpoch === endpoint.activationEpoch ||
             old.homeEpoch !== endpoint.homeEpoch && !(old.homeEpoch === null && endpoint.homeEpoch !== null)) throw new Error("Intercom consumption rebind route mismatch");
+        if (knownEndpoint(row, endpoint)) throw new Error("Conflicting intercom consumption evidence");
         validReceipt({ ...row, endpoint_json: JSON.stringify(endpoint) }, input.frame);
         aliasEndpoint(row);
         db.prepare("UPDATE intercom_copies SET endpoint_json=? WHERE direction=? AND id=?").run(JSON.stringify(endpoint), input.queue, row.id);
+      }).immediate();
+    },
+    followResumedReceipt(input): void {
+      ensureCheckpoint();
+      db.raw.transaction(() => {
+        const row = copy(input.queue, input.frame.receipt.messageId), endpoint = input.frame.from;
+        if (!row || row.peer !== input.peer || row.state !== "queued" || row.unknown_outcome || row.payload_json === null ||
+            receiptReleasesPayload(input.frame.receipt)) throw new Error("Intercom resumed receipt lacks absence proof");
+        const old = readEndpoint(row), evidence = row.reconciliation_json ? parseStored<MessageReceipt>(row.reconciliation_json) : null;
+        if (row.reconciliation_attempt === null || evidence?.status !== "not_injected" || evidence.evidence?.kind !== "absence" ||
+            evidence.evidence.sessionId !== old.address.sessionId || evidence.evidence.activationEpoch !== old.activationEpoch ||
+            evidence.evidence.excludedGeneration !== old.activationEpoch || evidence.evidence.complete !== true ||
+            !isRebindProof(input.proof, old.address, endpoint) || !sameEndpoint(input.proof.exclusion.owner, old) ||
+            input.proof.nextHop !== input.peer || knownEndpoint(row, endpoint)) throw new Error("Intercom resumed receipt lacks absence proof");
+        validReceipt({ ...row, endpoint_json: JSON.stringify(endpoint) }, input.frame);
+        aliasEndpoint(row);
+        db.prepare(`UPDATE intercom_copies SET endpoint_json=?,observed_attempt=0,reconciliation_attempt=NULL,
+          pending_proof_json=NULL,pending_proof_attempt=NULL WHERE direction=? AND id=?`).run(JSON.stringify(endpoint), input.queue, row.id);
       }).immediate();
     },
     settleReceipt(input): void {
@@ -1497,12 +1516,17 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       if (original && (readOrigin(original) !== frame.originMachineId || readIdentity(original).sequence !== frame.sequence)) throw new Error('receipt-stream-mismatch');
       const live = copy('outbound', frame.receipt.messageId);
       if (live) {
-        if (live.peer !== peer || !['injected', 'matched_waiter', 'answered'].includes(live.state)) return false;
-        if (isSessionEndpoint(frame.from) && !sameEndpoint(readEndpoint(live), frame.from) &&
-            knownEndpoint(live, frame.from) && !receiptReleasesPayload(frame.receipt)) {
+        if (live.peer !== peer) return false;
+        const finished = ['injected', 'matched_waiter', 'answered'].includes(live.state);
+        const prior = live.reconciliation_json ? parseStored<MessageReceipt>(live.reconciliation_json) : null;
+        const excluded = prior?.status === 'not_injected' && prior.evidence?.kind === 'absence' && prior.evidence.complete === true &&
+          prior.evidence.excludedGeneration === frame.from?.activationEpoch;
+        if (isSessionEndpoint(frame.from) && !sameEndpoint(readEndpoint(live), frame.from) && knownEndpoint(live, frame.from) &&
+            !receiptReleasesPayload(frame.receipt) && (finished || excluded)) {
           validReceipt({ ...live, endpoint_json: JSON.stringify(frame.from) }, frame);
           return true;
         }
+        if (!finished) return false;
         validReceipt(live, frame);
       }
       const from = streamKey(frame.originMachineId, frame.to), to = addressKey(frame.from.address);

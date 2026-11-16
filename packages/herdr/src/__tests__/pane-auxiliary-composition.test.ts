@@ -7,8 +7,9 @@ import { HerdrError } from '../client/parse.js';
 import { createPresentedAuxiliaryPanes } from '../panes/auxiliary.js';
 import { createAuxiliaryPanes } from '../jobs/placement.js';
 import { connectPaneService, servePaneRequests } from '../panes/socket.js';
-import { registerHerdrViewers } from '../viewers/register.js';
+import { createViewerLauncher, registerHerdrViewers } from '../viewers/register.js';
 import * as hostPorts from '../../../host/src/herdr/ports.js';
+import { openRunView } from '../../../host/src/herdr/ports.js';
 import type { PanePresentation, PaneServiceRequest, PaneTarget } from '../panes/types.js';
 import type { AppClient, AppPaneInspection, ConsoleId, CoreId, HcClient, HcEvent, HcRunRequest, Owner, OwnerPlacement, RunId, TerminalAddress, TerminalSummary } from '../contracts.js';
 
@@ -360,6 +361,55 @@ test('native registration uses the same local viewer for automatic and explicit 
     await native.panes.park(run1);
     expect(f.layout.has(visible!)).toBe(false);
   } finally { await registration.dispose(); await native.panes.dispose(); await f.close(); }
+});
+
+test('native user opens reuse one viewer when automatic panes are disabled', async () => {
+  const f = await fixture(), owner = nativeOwner(f);
+  const hc = { ...f.hc, events: () => ({
+    ready: Promise.resolve(), lookup: async (address: TerminalAddress) => f.terminals.get(address) ?? null,
+    subscribe: (listener: (event: HcEvent) => void) => {
+      let active = true;
+      queueMicrotask(() => { if (active) listener({ type: 'snapshot', seq: 1, terminals: [...f.terminals.values()] }); });
+      return () => { active = false; };
+    },
+    dispose: async () => {},
+  }) } as HcClient;
+  const launcher = createViewerLauncher({ hc, owner: () => owner, viewerExecutable: '/fixture/viewer', feedRoot: '/fixture',
+    ipcDescriptor: () => ({ version: 1, sessionId: owner.sessionId, generation: owner.generation, address: '/fixture/ipc', capabilityFile: '/fixture/capability' }) });
+  const panes = createAuxiliaryPanes({ hc, app: f.app, placementRoot: f.files.root, appIdentity: 'mac-app', limit: 1,
+    automaticSubagentPanes: false, clock: Date.now, subagentViewer: launcher, discardSubagentViewer: launcher.discard });
+  const hooks = new Map<string, () => Promise<void>>();
+  const route = localRoute(owner, panes), signal = new AbortController().signal;
+  let automaticSettled = false, automaticResult: Awaited<ReturnType<typeof openRunView>> | undefined;
+  const originalOpen = hostPorts.openRunView;
+  const observer = vi.spyOn(hostPorts, 'openRunView').mockImplementation(async input => {
+    const result = await originalOpen(input);
+    if (input.automatic) { automaticResult = result; automaticSettled = true; }
+    return result;
+  });
+  const open = (id: RunId, current: Owner, request: { automatic: boolean; signal: AbortSignal }) => openRunView({
+    owner: current, id, ...request, automaticEnabled: false, localCore: owner.terminal.coreId, isCurrent: () => true, route,
+  });
+  const registration = registerHerdrViewers({ on: (name: string, handler: () => Promise<void>) => { hooks.set(name, handler); } } as never, {
+    owner: () => owner, hc, panes, viewerLauncher: launcher, viewerExecutable: '/fixture/viewer', feedRoot: '/fixture', ipcDescriptor: () => null,
+    presentedView: open,
+    ownedRunEvents: { list: async () => [run1], subscribe: () => () => {} },
+  });
+  try {
+    await hooks.get('session_start')!();
+    await vi.waitFor(() => expect(automaticSettled).toBe(true));
+    expect(automaticResult).toBeNull();
+    expect(f.hc.run).not.toHaveBeenCalled();
+    const first = await open(run1, owner, { automatic: false, signal });
+    expect(first).not.toBeNull();
+    const placement = await f.app.ownerPlacement(first!.address);
+    expect(placement).toMatchObject({ space: 'mac-space', tab: 'mac-tab' });
+    expect((await f.app.tabPanes(placement)).map(pane => pane.terminal).slice(0, 2)).toEqual([owner.terminal.address, first!.address]);
+    const second = await open(run1, owner, { automatic: false, signal });
+    expect(second).toEqual(first);
+    expect(await f.app.ownerPlacement(second!.address)).toEqual(placement);
+    expect(vi.mocked(f.hc.run).mock.calls.filter(([request]) => request.labels['spider.kind'] === 'subagent-viewer')).toHaveLength(1);
+  } finally { observer.mockRestore(); await registration.dispose(); await panes.dispose(); await f.close(); }
 });
 
 test('explicit open uses the adjacent tab when the owner tab is full', async () => {

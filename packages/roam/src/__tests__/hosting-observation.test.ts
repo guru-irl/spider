@@ -177,7 +177,7 @@ it.each([
   { state: "finished" as const, reason: "stopped_by_restart", want: "unexpected-exit" },
   { state: "finished" as const, reason: null, want: "unknown" },
 ])("classifies a matching execution as $want", async ({ state, reason, want }) => {
-  const f = await executionFixture(), terminal = executionTerminal(f.ready, { state, reason });
+  const f = await executionFixture(), terminal = executionTerminal(f.ready, { state, reason, signal: reason === "signaled" ? 9 : null });
   const reader = outcomeReader(fakeHc(f.ready.core, { [f.ready.terminal]: terminal }));
   expect(await reader(f.ready)).toBe(want);
 }, 5000);
@@ -341,7 +341,7 @@ it("a native stop cancels a pending crash retry before another launch", async ()
 }, 5000);
 
 it.each(["exited", "signaled", "stopped_by_restart", "server_stop", "host_shutdown", "holder_lost", null])("production restart policy is unchanged for %s", async reason => {
-  const f = await executionFixture(), runtime = await productionFixture(f, executionTerminal(f.ready, { reason }));
+  const f = await executionFixture(), runtime = await productionFixture(f, executionTerminal(f.ready, { reason, signal: reason === "signaled" ? 9 : null }));
   try {
     await runtime.supervisor.reconcile();
     expect(runtime.restart).toHaveBeenCalled();

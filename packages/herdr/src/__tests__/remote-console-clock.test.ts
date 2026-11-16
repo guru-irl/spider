@@ -2,13 +2,13 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { encodeRuntimePublication, runRemoteConsole } from '../remote/runtime.js';
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 test.each([3000, -3000])('console stays alive across a %i ms source clock skew and ends after expiry', async skew => {
-  const base = resolve('.spider/scratch/console-clocks'); await mkdir(base, { recursive: true });
-  const root = await mkdtemp(join(base, 'r-')); roots.push(root);
+  const root = await mkdtemp(join(tmpdir(), 'console-clock-')); roots.push(root);
   const directory = join(root, '.consoles', 'store'); await mkdir(directory, { recursive: true });
   const lease = join(root, 'lease.json'), start = Date.now();
   await writeFile(lease, JSON.stringify({ version: 1, sessionId: 'session-1', generation: 'generation-1', consoleId: 'console-1', expiresAt: start + skew + 20000 }), { mode: 0o600 });

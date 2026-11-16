@@ -172,13 +172,13 @@ test('production facts skip ended history and read live presentations with bound
   });
   const service = runtime.createService(), running = service.reconcile();
   await vi.waitFor(() => expect(read.length).toBeGreaterThan(0));
-  const firstWave = read.length;
+  const firstBatch = read.length;
   while (read.length < 8 || active) {
     releases.splice(0).forEach(release => release());
     await new Promise(resolve => setImmediate(resolve));
   }
   await running;
-  expect(firstWave).toBeGreaterThan(1); expect(maximum).toBeLessThanOrEqual(4);
+  expect(firstBatch).toBeGreaterThan(1); expect(maximum).toBeLessThanOrEqual(4);
   expect(read.sort()).toEqual(live.map(p => p.id).sort());
   boundary.facts.mockImplementation(async target => facts(live.find(p => p.target.terminalId === target.terminalId)!));
   expect(await service.request({ version: 1, op: 'snapshot', operationId: 'facts' })).toMatchObject({ targetFacts: { 'core-remote/live-0': { title: 'live-0' }, 'core-remote/live-7': { title: 'live-7' } } });

@@ -1,4 +1,5 @@
 import { storeScope } from "@spider/db-core/roam/codec";
+import { safeError } from "@spider/organism";
 import { readSessionState } from "@spider/db-core/roam/state";
 import type { Home, JsonObject, StoreKey } from "@spider/db-core/roam/types";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -101,6 +102,21 @@ function validateTarget(operation: Operation, ports: FreezePorts): void {
       ports.expectedStores.some(key => !keys.has(key))) throw new Error("Participant store roster changed");
 }
 
+function controlFailure(operation: Operation, ports: FreezePorts, error: unknown): JsonObject {
+  const rawCode = error && typeof error === "object" && "code" in error ? error.code : null;
+  const diagnostic = { code: typeof rawCode === "string" && /^[A-Za-z0-9_.-]{1,128}$/.test(rawCode) ||
+    typeof rawCode === "number" && Number.isSafeInteger(rawCode) ? rawCode : null,
+    message: safeError(error instanceof Error || typeof error === "string" ? error : "Unknown session control failure") };
+  const evidence: JsonObject = { diagnostic };
+  try {
+    const moveId = operation.args.moveId;
+    const id = typeof moveId === "string" && ports.journal.lookupOperation(moveId)?.state === "pending" ? moveId : operation.id;
+    if (id === operation.id) ports.journal.begin(operation);
+    ports.journal.record(id, "session-control-refused", { operationId: operation.id, diagnostic });
+  } catch (journalError) { evidence.journalError = safeError(journalError); }
+  return evidence;
+}
+
 /** The caller owns the session's ID and canonical-file locks before starting this service. */
 export async function serveSessionControl(input: { sessionId: string; runtimeRoot: string; ports: LiveFreezePorts }): Promise<{ close(): Promise<void> }> {
   const { sessionId, runtimeRoot, ports } = input;
@@ -133,7 +149,7 @@ export async function serveSessionControl(input: { sessionId: string; runtimeRoo
     } catch (error) {
       if (error instanceof FreezeBlockedError || error instanceof IntercomFenceError) return result(3, "freeze-blocked", { blockers: error.blockers as unknown as JsonObject[] });
       if (error instanceof AbortAuthorizationPendingError) return result(3, error.message);
-      return result(1, "session-control-refused");
+      return result(1, "session-control-refused", controlFailure(operation, ports, error));
     }
   });
   return { async close() { disposeFreezePorts(ports); await socket.close(); } };

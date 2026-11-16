@@ -87,6 +87,24 @@ it("freezes through the private socket and refuses shutdown for another move", a
   } finally { await server.close(); rmSync(join(root, path.split("/").at(-2)!), { recursive: true, force: true }); }
 }, 10000);
 
+it("keeps the original control failure in the reply and the pending move journal", async () => {
+  const f = fixture();
+  const operation = { ...f.operation, id: "freeze-failed", kind: "session-freeze" };
+  f.ports.journal.begin({ ...operation, id: "move-1", kind: "move" });
+  f.ports.gate.refreshInitialHome = async () => {
+    throw Object.assign(new Error("fixture freeze failed, token=private-value"), { code: "FIXTURE_FREEZE", path: "/private/fixture", secret: "private-value" });
+  };
+  const server = await serveSessionControl({ sessionId: f.id, runtimeRoot: root, ports: f.ports });
+  try {
+    const diagnostic = { code: "FIXTURE_FREEZE", message: "fixture freeze failed, token=[redacted]" };
+    const reply = await requestSessionControl(root, operation);
+    expect(reply).toMatchObject({ code: 1, reason: "session-control-refused", value: { diagnostic } });
+    expect(f.ports.journal.read("move-1")).toContainEqual({ action: "session-control-refused", result: { operationId: operation.id, diagnostic } });
+    expect(JSON.stringify(reply) + JSON.stringify(f.ports.journal.read("move-1"))).not.toMatch(/private-value|\/private\/fixture|stack|secret/);
+    expect(readSessionState(f.db, f.id)?.state).toBe("active");
+  } finally { await server.close(); }
+}, 5000);
+
 it("dormant freeze holds both locks and uses the physical leaf; retirement needs committed-home proof", async () => {
   const f = fixture(), lockRoot = join(f.root, "ownership");
   appendFileSync(f.file, JSON.stringify({ type: "message", id: "physical-last", parentId: "leaf-1", timestamp: "2026-01-02T00:00:00Z", message: { role: "user", content: "later" } }) + "\n");

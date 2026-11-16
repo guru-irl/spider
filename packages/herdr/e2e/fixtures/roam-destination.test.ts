@@ -9,7 +9,8 @@ it('prepares an isolated agent and routes the packaged CLI through the destinati
   const root = await mkdtemp(join(tmpdir(), 'roam-destination-'));
   try {
     const sourceAgent = join(root, 'source'), box = join(root, 'box'), home = join(root, 'home');
-    const release = join(root, 'release'), sdk = join(root, 'pi-sdk'), cli = join(release, 'dist/roam/cli.mjs');
+    const release = join(root, 'release'), checkout = join(root, 'checkout');
+    const sdk = join(checkout, 'node_modules/@earendil-works/pi-coding-agent'), cli = join(release, 'dist/roam/cli.mjs');
     for (const dir of [sourceAgent, box, home, join(release, 'dist/roam'), join(release, 'scripts'), join(sdk, 'dist')]) await mkdir(dir, { recursive: true });
     await writeFile(join(sourceAgent, 'settings.json'), JSON.stringify({ packages: [release] }));
     await writeFile(join(release, 'dist/extension.js'), 'fixture release');
@@ -17,7 +18,7 @@ it('prepares an isolated agent and routes the packaged CLI through the destinati
     await writeFile(join(release, 'scripts/extension-shim.mjs'), '');
     await writeFile(join(sdk, 'dist/index.js'), 'fixture sdk');
     await writeFile(cli, 'console.log(JSON.stringify({home:process.env.HOME,agent:process.env.PI_CODING_AGENT_DIR,arg:process.argv[2]}));');
-    const staged = await stageRoamDestination({ root, sourceAgent, box, home, release, sdk, cli });
+    const staged = await stageRoamDestination({ root, sourceAgent, box, home, release, checkout, cli });
     expect(staged.agent).not.toBe(sourceAgent);
     expect(JSON.parse(await readFile(join(staged.agent, 'settings.json'), 'utf8'))).toEqual({ packages: [release] });
     expect(JSON.parse(await readFile(join(box, 'roam/active-release.json'), 'utf8'))).toBe(release);
@@ -26,6 +27,6 @@ it('prepares an isolated agent and routes the packaged CLI through the destinati
     expect(run.status, run.stderr).toBe(0);
     expect(JSON.parse(run.stdout)).toEqual({ home, agent: staged.agent, arg: 'probe' });
     await rm(join(release, 'scripts/extension-shim.mjs'));
-    await expect(stageRoamDestination({ root, sourceAgent, box, home, release, sdk, cli })).rejects.toThrow();
+    await expect(stageRoamDestination({ root, sourceAgent, box, home, release, checkout, cli })).rejects.toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }
 });

@@ -5,8 +5,9 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 /** Install only fixture-owned state; the CLI, SDK and release remain the actual packaged artifacts. */
-export async function stageRoamDestination(input: { root: string; sourceAgent: string; box: string; home: string; release: string; sdk: string; cli: string }): Promise<{ agent: string; cli: string }> {
-  const { root, sourceAgent, box, home, release, sdk, cli } = input;
+export async function stageRoamDestination(input: { root: string; sourceAgent: string; box: string; home: string; release: string; checkout: string; cli: string }): Promise<{ agent: string; cli: string }> {
+  const { root, sourceAgent, box, home, release, checkout, cli } = input;
+  const sdk = join(checkout, 'node_modules/@earendil-works/pi-coding-agent');
   await Promise.all(['dist/extension.js', 'scripts/intercom-switchover.mjs', 'scripts/extension-shim.mjs'].map(path => access(join(release, path))));
   await access(join(sdk, 'dist/index.js')); await access(cli);
   const agent = join(root, 'ba'), wrapper = join(root, 'box-cli.mjs');

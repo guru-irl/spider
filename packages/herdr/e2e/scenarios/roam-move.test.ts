@@ -67,6 +67,16 @@ Object.assign(process.env, machine.env);
 const record = value => appendFileSync(descriptor.effects, JSON.stringify(value) + '\\n');
 const moveFactory = async input => {
   const runtime = await createHostMoveBindings(input);
+  const check = runtime.ports.check;
+  runtime.ports.check = async request => {
+    try { return await check(request); }
+    catch (error) { record({ effect: 'move-check-failed', machineId: machine.id, error: String(error.stack ?? error) }); throw error; }
+  };
+  const dispatch = runtime.dispatch;
+  runtime.dispatch = async operation => {
+    try { return await dispatch(operation); }
+    catch (error) { record({ effect: 'move-dispatch-failed', machineId: machine.id, kind: operation.kind, error: String(error.stack ?? error) }); throw error; }
+  };
   runtime.bindings.power = { pid: process.pid, onExit: () => () => {}, notice: () => {}, async spawn(argv) {
     record({ effect: 'power-acquire', argv }); let done; const exited = new Promise(resolve => { done = resolve; });
     return { exited, async stop() { record({ effect: 'power-release' }); done(); } };

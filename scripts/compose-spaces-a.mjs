@@ -45,6 +45,9 @@ for (const version of ['0.1.13', '0.1.16']) {
     derived.push({ mod: 'agents', file: 'mod.json', sourceMod: 'agents', sourceFile: 'mod.json', sourceHash: hashes['mods/agents/mod.json'], contents, outputHash: createHash('sha256').update(contents).digest('hex'), asset: 'look/spaces-a-sidebar/agents-mod.json' });
   }
   const recipe = composeSpacesARecipe(version, fragments, derived);
+  for (const [mod, patches] of Object.entries(recipe.mods)) for (const patch of patches) {
+    if (typeof patch.replacement !== 'string' || patch.replacement.length === 0) throw new Error(`${version} ${mod}/${patch.id}: empty patch replacement`);
+  }
   const { retainedMods, aFragments, ...record } = recipe;
   record.derivedFiles = derived.map(({ contents, ...entry }) => entry);
   (manifest.spacesA ??= {})[version] = record;

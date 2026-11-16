@@ -51,7 +51,7 @@
     "id": "a-agents-order",
     "file": "main.js",
     "anchor": "    setAgentOrder(list.map((a) => a.address));",
-    "replacement": ""
+    "replacement": " "
   },
   {
     "id": "a-agents-groups",

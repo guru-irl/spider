@@ -1200,7 +1200,7 @@
             "id": "a-agents-order",
             "file": "main.js",
             "anchor": "    setAgentOrder(list.map((a) => a.address));",
-            "replacement": ""
+            "replacement": " "
           },
           {
             "id": "a-agents-groups",
@@ -1700,7 +1700,7 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "917ce3247f727aeb8905bb0d62c044e314d31bbafaff81a21bad9f77ed6d7cc5",
+        "agents/main.js": "08a145b63f1f5e5d43e84b9c1f461c5adcce77af63a203d66f796b2a768044e6",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "f9c0799068984fe289df2b8aa50231435977c7269ee15cea4544d52f31d3bd25",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
@@ -2559,7 +2559,7 @@
             "id": "a-agents-order",
             "file": "main.js",
             "anchor": "    setAgentOrder(list.map((a) => a.address));",
-            "replacement": ""
+            "replacement": " "
           },
           {
             "id": "a-agents-groups",
@@ -3077,7 +3077,7 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "fe1ed8d19931c17b8cd8420be5a87bf03e48f5327275f5d704d6ee50bc2d03b2",
+        "agents/main.js": "6f6b8d763a15c0cd1423ebe39a7c0ba279347a8829afb5e9639fd111e58d91e9",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "1c27a92ca6378feb166a34adef317aaa2a4f4ee0e969d2fd3737cc3850ac84eb",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",

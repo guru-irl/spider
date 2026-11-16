@@ -56,8 +56,9 @@ test('doctor reports mod loading not verified with fenced headless commands', as
   for (const item of ['mods', 'clones'] as const) {
     const report = await parts.inspect(item, f.request);
     expect(report.failures).toEqual([]);
-    expect(report.warnings?.length).toBe(item === 'mods' ? 2 : 5);
+    expect(report.warnings?.length).toBe(item === 'mods' ? 2 : 6);
     if (item === 'mods') expect(report.warnings?.[1]?.message).toContain('spider-picker');
+    else expect(report.warnings?.some(warning => warning.message.includes('spider-picker'))).toBe(true);
     for (const warning of report.warnings ?? []) {
       expect(warning.message).toContain('not verified');
       expect(warning.code).toBe('inspection-unavailable');

@@ -71,7 +71,9 @@ it('refuses mismatched agent directories before writes and installs to the match
     cpSync(resolve('packages/herdr/assets'), assets, { recursive: true });
     mkdirSync(join(h.root, 'dist/herdr'), { recursive: true });
     cpSync(resolve('dist/herdr/remote-runtime.mjs'), join(h.root, 'dist/herdr/remote-runtime.mjs'));
-    const matched = { enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'rc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: [], runtime: { cwd: h.directories.remote, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }] };
+    const versionedApp = join(h.root, 'versioned-app');
+    writeFileSync(versionedApp, `#!/bin/sh\nif [ "$1" = '--version' ]; then echo 'herdr-app 0.1.12'; else exec '${h.appBinary}' "$@"; fi\n`, { mode: 0o700 });
+    const matched = { enabled: true, app: { binary: versionedApp, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'rc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: [], runtime: { cwd: h.directories.remote, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }] };
     const matchedPath = join(h.directories.global, 'herdr/config.json'); mkdirSync(join(h.directories.global, 'herdr'), { recursive: true });
     writeFileSync(matchedPath, JSON.stringify(matched));
     writeFileSync(matched.core.config, 'notes = true\n');

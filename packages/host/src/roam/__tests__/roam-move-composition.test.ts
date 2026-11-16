@@ -11,7 +11,7 @@ import { createHostMoveBindings, moveBindingDiagnostics } from "../move-runtime"
 import * as hostConfig from "@spider/roam/host-config";
 import * as presentationPorts from "../../herdr/ports";
 import * as sessionSocket from "@spider/roam/session-socket";
-import { parsePaneTarget } from "@spider/herdr/panes/codec";
+import { parsePaneTarget, parsePaneSlot } from "@spider/herdr/panes/codec";
 import { createPanePlacementStore } from "@spider/herdr/panes/store";
 import { createRoamPresentationOperations } from "@spider/herdr/roam-placement";
 import * as runtime from "@spider/roam/runtime";
@@ -200,7 +200,7 @@ it.each(['box-to-box without a Mac view', 'app closed', 'service down', 'core-on
   const source = parsePaneTarget({ coreId: home.machineId === BOX ? 'box-core' : 'core-a', terminalId: 't1', address: home.machineId === BOX ? 'box-core/t1' : 't1', createdMs: 10, identityLabels: { 'spider.session': 'session-a', 'spider.generation': 'gen-1' }, alias: home.machineId === BOX ? 'box-1.invalid' : null, machineId: home.machineId, kind: 'session', sessionId: 'session-a', generation: 'gen-1', homeEpoch: 1, runId: null, consoleId: null, name: null, cwd: '/example' });
   const stateRoot = join(global.root, 'roam', 'placement'), calls: string[] = [];
   if (scenario === 'app closed') await createPanePlacementStore(stateRoot).update(state => ({ ...state,
-    presentations: [{ id: 'presentation-a', revision: 1, mode: 'native', role: 'agent', target: source, proxy: null, slot: { space: 'space-1', tab: 'tab-1', pane: 'pane-1' }, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null }] }));
+    presentations: [{ id: 'presentation-a', revision: 1, mode: 'native', role: 'agent', target: source, proxy: null, slot: parsePaneSlot({ space: 'space-1', tab: 'tab-1', pane: 'pane-1' }), visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null }] }));
   const operations = createRoamPresentationOperations({ stateRoot, hc: { identity: async () => ({ coreId: 'core-a' }) } as never,
     app: scenario === 'core-only' ? null : { ownerPlacement: async () => { calls.push('placement'); if (scenario === 'app closed') throw Error('app disconnected'); return { space: 'space-1', tab: 'tab-1', pane: 'pane-1' }; } } as never,
     request: async () => { calls.push('service'); throw Error('service unavailable'); } });

@@ -175,8 +175,10 @@ test('an uncertain first proxy launch recovers its live display without a duplic
   h.ports.findProxy = async () => launched ? 'new-proxy' as never : null;
   await expect(presentExistingPane(h.state().presentations[0], h.selected, 'lost-launch', h.ports, h.reserve)).rejects.toMatchObject({ code: 'proxy-launch-uncertain' });
   expect(h.state().presentations[0]).toMatchObject({ launch: 'uncertain', proxy: null });
+  expect(h.state().choices).toEqual([]);
   expect(await presentExistingPane(h.state().presentations[0], h.selected, 'retry-launch', h.ports, h.reserve)).toMatchObject({ proxy: 'new-proxy', launch: 'acknowledged' });
   expect(h.ports.launchProxy).toHaveBeenCalledTimes(1);
+  expect(h.state().choices).toMatchObject([{ session: 'writer', space: 's1', tab: 'tb2' }]);
 });
 test('a proved absent uncertain proxy launch can be retried', async () => {
   const h = unplacedProxyPorts(), launch = vi.mocked(h.ports.launchProxy).getMockImplementation()!;

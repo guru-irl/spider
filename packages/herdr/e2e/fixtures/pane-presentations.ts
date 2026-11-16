@@ -246,11 +246,11 @@ export async function preparePanePresentations(suite: Suite, options: { disconne
   await writeFile(sourceNode, `#!/bin/sh\n${Object.entries({ ...remoteEnv, SHELL: sourceShell }).map(([key, value]) => `${key}=${quote(value)}; export ${key}`).join('\n')}\nexec ${quote(process.execPath)} "$@"\n`, { mode: 0o700 });
   const socket = assertSocketPath(suite.root, join(suite.root, 'pa.s')), appDescriptor = join(suite.root, 'pane-app.json');
   const appBinary = join(bin, 'pane-app'), appModule = join(suite.root, 'pane-app.mjs');
+  const appEntry = join(suite.root, 'pane-app-entry.ts');
+  await writeFile(appEntry, `import {presentationAppMain} from ${JSON.stringify(fileURLToPath(import.meta.url))};await presentationAppMain(process.argv[2],process.argv.slice(3));`, { mode: 0o600 });
   const { build } = await import('vite');
   await build({ configFile: false, logLevel: 'silent', build: { write: true, emptyOutDir: false, outDir: suite.root,
-    lib: { entry: 'presentation-app-entry', formats: ['es'], fileName: () => 'pane-app.mjs' }, rolldownOptions: { external: id => id.startsWith('node:') } },
-    plugins: [{ name: 'presentation-app-entry', resolveId: id => id === 'presentation-app-entry' ? '\0presentation-app-entry' : undefined,
-      load: id => id === '\0presentation-app-entry' ? `import {presentationAppMain} from ${JSON.stringify(fileURLToPath(import.meta.url))};await presentationAppMain(process.argv[2],process.argv.slice(3));` : undefined }] });
+    lib: { entry: appEntry, formats: ['es'], fileName: () => 'pane-app.mjs' }, rolldownOptions: { external: id => id.startsWith('node:') } } });
   await writeFile(appBinary, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(appModule)} ${quote(appDescriptor)} "$@"\n`, { mode: 0o700 });
   const env = { ...cores.local.env, HC_SOCKET: cores.local.socket, SPIDER_GLOBAL_ROOT: global };
   await writeFile(appDescriptor, JSON.stringify({ socket, hc, env, trace: join(suite.root, 'pane-app-calls.jsonl') }), { mode: 0o600 });

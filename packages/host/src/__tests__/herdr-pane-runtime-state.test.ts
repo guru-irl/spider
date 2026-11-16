@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
-import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { paths } from '@spider/db-core';
+import { createProductionRoamPresentationPorts, type RoamPresentationPorts } from '../herdr/ports.js';
+import * as paneSocket from '../../../herdr/src/panes/socket.js';
 import { createPaneRuntime, type PaneRuntime } from '../herdr/pane-runtime.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
@@ -12,8 +15,8 @@ import type { HerdrConfig, HcClient, TerminalSummary } from '../../../herdr/src/
 import type { PresentedAuxiliaryOptions } from '../../../herdr/src/panes/auxiliary.js';
 import type { PaneAgentRow, PanePresentation, PaneTerminalFacts } from '../../../herdr/src/panes/types.js';
 import { createRoamPlacement, createRoamPresentationOperations } from '../../../herdr/src/roam-placement.js';
-const boundary = vi.hoisted(() => ({ facts: vi.fn(), app: {} as Record<string, unknown>, rows: [] as PaneAgentRow[], remote: vi.fn(), auxiliary: null as PresentedAuxiliaryOptions | null, terminals: new Map<string, TerminalSummary>(), layout: { spaces: [] } as unknown }));
-vi.mock('../../../herdr/src/client/hc.js', () => ({ invokeCli: vi.fn(async (_binary, args) => {
+const boundary = vi.hoisted(() => ({ client: null as HcClient | null, facts: vi.fn(), app: {} as Record<string, unknown>, rows: [] as PaneAgentRow[], remote: vi.fn(), auxiliary: null as PresentedAuxiliaryOptions | null, terminals: new Map<string, TerminalSummary>(), layout: { spaces: [] } as unknown }));
+vi.mock('../../../herdr/src/client/hc.js', () => ({ createHcClient: () => boundary.client, invokeCli: vi.fn(async (_binary, args) => {
   if (args[0] === 'machine') return { machines: [{ name: 'box-1.invalid', aliases: [], id: 'core-remote', machine_id: 'machine-1', state: 'connected' }, { name: 'box-2.invalid', aliases: [], id: 'core-second', machine_id: 'machine-2', state: 'connected' }] };
   if (args[0] === 'read') return { text: 'Ready', how: 'screen', complete: true };
   if (args[0] === 'get') {
@@ -35,8 +38,9 @@ vi.mock('../../../herdr/src/panes/auxiliary.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../../herdr/src/panes/auxiliary.js')>();
   return { ...actual, createPresentedAuxiliaryPanes: (options: PresentedAuxiliaryOptions) => { boundary.auxiliary = options; return actual.createPresentedAuxiliaryPanes(options); } };
 });
+const productionPorts: RoamPresentationPorts[] = [];
 const resources: { root: string; runtime: PaneRuntime }[] = [];
-afterEach(async () => { for (const { root, runtime } of resources.splice(0)) { await runtime.dispose(); await rm(root, { recursive: true, force: true }); } vi.clearAllMocks(); });
+afterEach(async () => { for (const ports of productionPorts.splice(0)) await ports.dispose(); for (const { root, runtime } of resources.splice(0)) { await runtime.dispose(); await rm(root, { recursive: true, force: true }); } vi.restoreAllMocks(); vi.clearAllMocks(); });
 async function fixture(spaces: HerdrConfig['spaces'] = []) {
   const base = join(paths.scratch('worktree', process.cwd()), 'pane-runtime-state'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'f-'));
   boundary.rows = []; boundary.terminals.clear(); boundary.app = {}; boundary.layout = { spaces: [] }; boundary.remote.mockImplementation(async (_machine, request) => {
@@ -50,11 +54,12 @@ async function fixture(spaces: HerdrConfig['spaces'] = []) {
     run: vi.fn(async request => { const address = 'proxy-1'; boundary.terminals.set(address, { address: address as never, state: 'live', labels: request.labels, parent: null, status: null, exitCode: null, reason: null, signal: null, finishedAt: null, cols: 80, rows: 24 }); return { address, coreId: 'core-local' }; }),
     events: () => ({ ready: Promise.resolve(), subscribe: (listener: Parameters<ReturnType<HcClient['events']>['subscribe']>[0]) => { listener({ type: 'snapshot', seq: 1, terminals: [...boundary.terminals.values()] }); return () => {}; }, dispose() {} }),
     kill: vi.fn(async address => { const terminal = boundary.terminals.get(String(address)); if (terminal) terminal.state = 'finished'; }),
-    rm: vi.fn(async address => { boundary.terminals.delete(String(address)); }), setLabels: vi.fn() } as unknown as HcClient;
+    rm: vi.fn(async address => { boundary.terminals.delete(String(address)); }), dispose: async () => {}, setLabels: vi.fn() } as unknown as HcClient;
+  boundary.client = hc;
   boundary.facts.mockImplementation(async target => facts({ target, id: target.terminalId } as PanePresentation));
   const input = { config, hc, env: {}, packageRoot: process.cwd(), endpointBytes: Buffer.from('synthetic endpoint') };
   const runtime = createPaneRuntime(input), resource = { root, runtime };
-  resources.push(resource); return { root, runtime, hc, restart: async () => { await resource.runtime.dispose(); resource.runtime = createPaneRuntime(input); return resource.runtime; } };
+  resources.push(resource); return { root, runtime, hc, config, restart: async () => { await resource.runtime.dispose(); resource.runtime = createPaneRuntime(input); return resource.runtime; } };
 }
 function presentation(id: string, visibility: PanePresentation['visibility'] = 'visible'): PanePresentation {
   return parsePanePresentation({ id, revision: 1, mode: 'proxy', role: 'shell', target: { coreId: 'core-remote', terminalId: id, address: `core-remote/${id}`, createdMs: 17, identityLabels: { 'spider.pane-operation': id }, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'terminal', sessionId: null, generation: null, homeEpoch: null, runId: null, consoleId: null, name: id, cwd: '/home/example' }, proxy: null, slot: null, visibility, launch: 'none', closeOperationId: null, conversion: null });
@@ -373,4 +378,43 @@ test.each(['app closed', 'unfocused pane', 'hosting restart'] as const)('a pendi
   expect((await runtime.store.read()).presentations).toHaveLength(1);
   expect(hc.run).toHaveBeenCalledTimes(scenario === 'hosting restart' ? 0 : 1);
   expect(commands.mock.calls.filter(([name]) => name === 'pane.focus')).toEqual([]);
+});
+
+
+test.each(['no Mac view', 'app closed', 'service down', 'core-only'] as const)('real production presentation ports preserve capture with %s', async scenario => {
+  const { root, runtime, hc, config } = await fixture();
+  execFileSync('git', ['init', '-q', root]); vi.spyOn(process, 'cwd').mockReturnValue(root);
+  await mkdir(join(root, 'herdr'), { recursive: true });
+  await mkdir(join(root, 'dist', 'herdr'), { recursive: true });
+  await writeFile(join(root, 'dist', 'herdr', 'pane-endpoint.mjs'), 'export {};');
+  await writeFile(join(root, 'herdr', 'installation.json'), JSON.stringify({ version: 1, packageRoot: root }), { mode: 0o600 });
+  await writeFile(join(root, 'herdr', 'config.json'), JSON.stringify({ ...config, mode: scenario === 'core-only' ? 'core-only' : 'full' }), { mode: 0o600 });
+  const row = sessionRow();
+  row.target = { ...row.target, homeEpoch: 1, ...(scenario === 'no Mac view' ? {} : { coreId: 'core-local' as never, address: 'core-local/execution' as never, alias: null, machineId: null }) };
+  row.machineKey = row.target.coreId;
+  row.owner = { ...row.owner, terminal: { ...row.owner.terminal, coreId: row.target.coreId, address: row.target.address } };
+  boundary.rows = [row];
+  const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never };
+  const commands = vi.fn(async () => ({}));
+  Object.assign(boundary.app, { ownerPlacement: async () => { throw new HerdrError('app-disconnected', 'App is absent'); }, focusedPane: async () => { throw new HerdrError('app-disconnected', 'App is absent'); }, command: commands });
+  if (scenario === 'app closed' || scenario === 'service down') await runtime.store.update(state => ({ ...state, presentations: [{ ...presentation('captured'), target: row.target, role: 'agent', mode: 'native', slot, launch: 'acknowledged' }] }));
+  const service = runtime.createService();
+  // Only the socket boundary is replaced. Both the client and service use their real composition.
+  const connect = vi.spyOn(paneSocket, 'connectPaneService').mockImplementation(async () => {
+    if (scenario === 'service down') throw new HerdrError('service-unavailable', 'Service is absent');
+    return { request: request => service.request(request), reconcile: () => service.reconcile(), stop: async () => {} };
+  });
+  const ports = createProductionRoamPresentationPorts(root); productionPorts.push(ports);
+  const outcome = await ports.prepareHandoff(row.sessionId, row.target);
+  expect(outcome).toMatchObject({ status: 'pending', reason: scenario === 'app closed' ? 'app-unavailable' : scenario === 'no Mac view' ? 'source-view-unavailable' : 'presentation-unavailable' });
+  const state = await runtime.store.read();
+  expect(state.slots).toEqual(['app closed', 'service down'].includes(scenario) ? [{ session: 'session-1', space: 's1', tab: 'tb1' }] : []);
+  expect(state.presentations).toHaveLength(['app closed', 'service down'].includes(scenario) ? 1 : 0);
+  if (scenario === 'core-only') { expect(await ports.resolveTarget({ sessionId: row.sessionId, machineId: 'machine-1', homeEpoch: 1, local: true })).toBeNull(); expect(connect).not.toHaveBeenCalled(); }
+  if (scenario === 'app closed') {
+    const { readPaneHandoff } = await import('../herdr/pane-handoff.js');
+    expect(await readPaneHandoff(join(root, 'herdr', 'panes'), state.presentations[0])).toEqual({ source: slot, sourceFocused: false });
+  }
+  expect(hc.run).not.toHaveBeenCalled();
+  expect(commands).not.toHaveBeenCalled();
 });

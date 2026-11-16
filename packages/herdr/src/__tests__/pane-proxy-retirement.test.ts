@@ -14,7 +14,7 @@ afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, {
 async function fixture(state: 'live' | 'finished', changed: Record<string, string> = {}) {
   const scratch = paths.scratch('worktree', process.cwd()); await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(join(scratch, 'retire-')); roots.push(root);
-  const store = createPanePlacementStore(root);
+  const store = createPanePlacementStore(join(root, 'roam', 'placement'));
   const target = parsePaneTarget({ coreId: 'core-remote', terminalId: 't2', address: 'core-remote/t2', createdMs: 12, identityLabels: { 'spider.session': 'session-1', 'spider.generation': 'gen-1' }, alias: 'box-1.invalid', machineId: null, kind: 'session', sessionId: 'session-1', generation: 'gen-1', homeEpoch: 1, runId: null, consoleId: null, name: null, cwd: null });
   const destination = parsePaneTarget({ ...target, coreId: 'core-local', terminalId: 't5', address: 'core-local/t5', createdMs: 15, generation: 'gen-2', homeEpoch: 2, alias: null, identityLabels: { 'spider.session': 'session-1', 'spider.generation': 'gen-2' } });
   const slot = { space: 'space-1', tab: 'tab-1', pane: 'pane-1' } as OwnerPlacement;

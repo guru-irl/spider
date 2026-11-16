@@ -68,6 +68,14 @@ test('a disconnected session keeps its machine console disconnected even while a
   expect(stale.find(row => row.kind === 'console')).toMatchObject({ status: 'disconnected' });
 });
 
+test('a console without a machine label remains a console and is not a top-level agent', () => {
+  const local = terminal('local-console', 'remote-console');
+  local.parent = 'agent';
+  const result = rows([local]);
+  expect(result.find(row => row.key === 'console:local-console')).toMatchObject({ kind: 'console', machine: null });
+  expect(filterTopLevelAgents([{ address: 'agent' }, { address: 'local-console' }], [local], contract)).toEqual([{ address: 'agent' }]);
+});
+
 test('console names identify machines even when agent names are long', () => {
   const f = feed(); f.runs.rows[0].name = 'A very long worker name that would hide the machine';
   const terminals = [consoleTerminal('a', { 'spider.run': 'run' }), consoleTerminal('b', { 'spider.run': 'run', 'spider.machine': 'box-2.invalid' }), consoleTerminal('c', { 'spider.run': 'run', 'spider.machine': 'box-3.invalid' })];

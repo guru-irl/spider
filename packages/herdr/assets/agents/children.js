@@ -79,7 +79,7 @@ export function agentChildRows(values, rejected) {
 
 const state = t => typeof t.status === 'string' ? t.status : t.status?.state ?? 'idle';
 const isJob = (t, labels, kinds) => Boolean(t.labels[labels.job]) && [kinds.exec, kinds.execFile, kinds.batch].includes(t.labels[labels.kind]);
-const isConsole = (t, labels, kinds) => t.labels[labels.kind] === kinds.remoteConsole && Boolean(t.labels[labels.machine]);
+const isConsole = (t, labels, kinds) => t.labels[labels.kind] === kinds.remoteConsole;
 
 export function filterTopLevelAgents(agents, terminals, { labels, kinds }) {
   const hidden = new Set(terminals.filter(t => t.labels[labels.kind] === kinds.remoteObserver || t.labels[labels.kind] === kinds.subagentViewer || isJob(t, labels, kinds) || isConsole(t, labels, kinds)).map(t => t.address));
@@ -130,8 +130,8 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     const machine = t.labels[labels.machine] ?? null;
     // hc only takes slug names; the readable name rides on a display-only label.
     const display = t.labels[labels.displayName ?? 'spider.display-name'];
-    const name = console ? machine : display || (t.name ?? t.template ?? t.program?.name ?? key);
-    const description = console ? `${run?.name ?? feed?.owner.name ?? 'Agent'} console on ${machine}` : null;
+    const name = console ? (machine || 'This computer') : display || (t.name ?? t.template ?? t.program?.name ?? key);
+    const description = console ? `${run?.name ?? feed?.owner.name ?? 'Agent'} console on ${machine || 'This computer'}` : null;
     rows.set(key, {
       key, kind: rowKind, address: t.address, originalAddress: t.address,
       name, description, status, outcome, completeness: 'unknown', machine,

@@ -104,6 +104,17 @@ it('leaves raw console rows available outside sidebar folds', () => {
   expect(before).toEqual(['nested-console', 'console-a', 'console-b']);
 });
 
+it('places consoles after all other siblings at each depth', () => {
+  const rows = [child('root-console', 'console'), child('run', 'subagent'),
+    child('nested-console', 'console', { parentKey: 'run', depth: 1 }),
+    child('nested-child', 'native', { parentKey: 'run', depth: 1 }), child('root-child', 'native')];
+  const closed = projectConsoleGroups(rows, 'owner', new Set());
+  const expanded = new Set([group(closed, null).key, group(closed, 'run').key]);
+  const visible = projectConsoleGroups(rows, 'owner', expanded);
+  expect(visible.map(item => item.kind === 'console-group' ? `group:${item.parentKey}` : item.row.key))
+    .toEqual(['run', 'nested-child', 'group:run', 'nested-console', 'root-child', 'group:null', 'root-console']);
+});
+
 it('keeps interleaved sibling consoles and their descendants contiguous', () => {
   const rows = [child('c1', 'console'), child('job1', 'remote', { parentKey: 'c1', depth: 1 }),
     child('s1', 'subagent'), child('nested', 'console', { parentKey: 's1', depth: 1 }),
@@ -111,7 +122,7 @@ it('keeps interleaved sibling consoles and their descendants contiguous', () => 
   const initial = projectConsoleGroups(rows, 'owner', new Set());
   const projected = projectConsoleGroups(rows, 'owner', new Set([group(initial, null).key]));
   expect(projected.map(item => item.kind === 'console-group' ? `group:${item.parentKey}` : item.row.key))
-    .toEqual(['group:null', 'c1', 'job1', 'c2', 'job2', 's1', 'group:s1']);
+    .toEqual(['s1', 'group:s1', 'group:null', 'c1', 'job1', 'c2', 'job2']);
   expect(group(projected, null).count).toBe(2);
   expect(group(projected, 's1').expanded).toBe(false);
 });

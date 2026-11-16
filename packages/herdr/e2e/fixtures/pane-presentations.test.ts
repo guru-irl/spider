@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { describe, expect, it } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { createPresentationApp, presentationRows, requirePaneHeadless, stableTerminal, paneHeaderFunctions, paneActionFunctions, paneNavigation, type PaneFixture, type PresentationDocument } from './pane-presentations.js';
+import { createPresentationApp, presentationAppCommand, presentationRows, requirePaneHeadless, stableTerminal, paneHeaderFunctions, paneActionFunctions, paneNavigation, type PaneFixture, type PresentationDocument } from './pane-presentations.js';
 
 describe('cross-machine presentation fixtures', () => {
   it('reserves an explicit mod slot without launching an execution terminal', async () => {
@@ -65,6 +65,9 @@ describe('cross-machine presentation fixtures', () => {
     expect(presentationRows(await app('ls', {}) as PresentationDocument)).toEqual([{ space: owner.space, tab: owner.tab, pane: owner.pane, terminal: 't1' }]);
     expect((await app('ls', {})).spaces[0].tabs[0].panes).not.toContainEqual({ id: shown.pane });
     expect(calls.some(args => args[0] === 'kill' || args[0] === 'rm')).toBe(false);
+  });
+  it('decodes the external tab movement index as a number', () => {
+    expect(presentationAppCommand(['do', 'tab.move', '--id', 'tab-1', '--index', '2'])).toEqual({ name: 'tab.move', args: { id: 'tab-1', index: 2 } });
   });
   it('moves an owned fallback tab by its one-based index while retaining pane focus', async () => {
     const app = createPresentationApp(async () => ({ address: 't1' }));

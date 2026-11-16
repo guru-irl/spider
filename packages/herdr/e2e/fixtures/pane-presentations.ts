@@ -198,15 +198,20 @@ export function requirePaneHeadless(tier: Tier): void {
 }
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
+export function presentationAppCommand(argv: readonly string[]): { name: string; args: Record<string, unknown> } {
+  const name = argv[0] === 'do' ? argv[1]! : argv[0]!, args: Record<string, unknown> = {};
+  if (argv[0] === 'do') for (let i = 2; i < argv.length; i += 2) {
+    const key = argv[i]!.replace(/^--/, ''), value = argv[i + 1]!;
+    args[key] = ['props', 'argv', 'confirmed', 'focus', 'index'].includes(key) ? JSON.parse(value) : value;
+  }
+  return { name, args };
+}
+
 /** This process is an external app boundary, not a substitute for the packed pane service. */
 export async function presentationAppMain(descriptor: string, argv: readonly string[]): Promise<void> {
   const input = JSON.parse(await readFile(descriptor, 'utf8')) as { socket: string; hc: string; env: Record<string, string>; trace: string };
   if (argv[0] !== 'serve') {
-    const name = argv[0] === 'do' ? argv[1] : argv[0]!, args: Record<string, unknown> = {};
-    if (argv[0] === 'do') for (let i = 2; i < argv.length; i += 2) {
-      const key = argv[i]!.replace(/^--/, ''), value = argv[i + 1]!;
-      args[key] = ['props', 'argv', 'confirmed', 'focus'].includes(key) ? JSON.parse(value) : value;
-    }
+    const { name, args } = presentationAppCommand(argv);
     const result = await appSocket(input.socket, { name, args });
     process.stdout.write(JSON.stringify(result) + '\n'); return;
   }

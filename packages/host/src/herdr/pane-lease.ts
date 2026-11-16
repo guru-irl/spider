@@ -8,6 +8,7 @@ if(!path.isAbsolute(root)||fs.realpathSync(root)!==root||!/^[A-Za-z0-9][A-Za-z0-
 const dir=path.join(root,'.view-leases');try{fs.mkdirSync(dir,{mode:0o700})}catch(e){if(e.code!=='EEXIST')throw e}check(dir,true);
 const bytes=fs.readFileSync(0);if(bytes.length>65536)fail();const value=JSON.parse(bytes);if(value.version!==1||value.leaseId!==id||!Number.isSafeInteger(value.expiresAt)||value.expiresAt<0)fail();
 const file=path.join(dir,id+'.json');try{check(file,false)}catch(e){if(e.code!=='ENOENT')throw e}
-const temporary=file+'.'+crypto.randomUUID()+'.new';const fd=fs.openSync(temporary,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL,0o600);try{fs.writeFileSync(fd,bytes);fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(temporary,file);
+if(value.state==='stopped'){if(value.expiresAt!==0)fail();try{fs.unlinkSync(file)}catch(e){if(e.code!=='ENOENT')throw e}}
+else{const temporary=file+'.'+crypto.randomUUID()+'.new';const fd=fs.openSync(temporary,fs.constants.O_WRONLY|fs.constants.O_CREAT|fs.constants.O_EXCL,0o600);try{fs.writeFileSync(fd,bytes);fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(temporary,file)}
 }catch(error){process.stderr.write('pane-lease-unsafe\n');process.exitCode=1}
 `;

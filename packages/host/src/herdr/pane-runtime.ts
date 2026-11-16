@@ -6,7 +6,7 @@ import { reconcilePaneRegistrations } from './pane-registration.js';
 import { readPaneScreen } from './pane-screen.js';
 import { createHash } from 'node:crypto';
 import { watch } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { openDbReadOnly } from '@spider/db-core';
@@ -17,7 +17,7 @@ import { invokeCli } from '../../../herdr/src/client/hc.js';
 import { invokeCli as invokeAppCli } from '../../../herdr/src/client/cli-transport.js';
 import { isCoreAvailable } from '../../../herdr/src/client/liveness.js';
 import { HerdrError, object } from '../../../herdr/src/client/parse.js';
-import type { CoreIdentity, HcClient, HerdrConfig, MachineName, OwnerPlacement, TerminalAddress, TerminalHandle } from '../../../herdr/src/contracts.js';
+import type { CoreIdentity, HcClient, HerdrConfig, MachineName, Owner, OwnerPlacement, RunId, ConsoleId, TerminalAddress, TerminalHandle } from '../../../herdr/src/contracts.js';
 import { createPresentedAuxiliaryPanes } from '../../../herdr/src/panes/auxiliary.js';
 import { readAppPaneCapabilities } from '../../../herdr/src/panes/capabilities.js';
 import { paneAddress, paneId, parsePaneTerminal, parsePaneTarget, parseMachineChoices } from '../../../herdr/src/panes/codec.js';
@@ -197,23 +197,46 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
     if (config.mode === 'core-only') throw new HerdrError('view-on-mac', 'View on Mac');
     return withProcessLock(root, `${config.app.home}:${(await identity()).coreId}:focus`, () => presentExistingPane(p, slot, operationId, openPorts, reserveExistingSlot), { timeoutMs: 20000 });
   };
+  const withWaitingClaim = async <T>(kind: 'subagent' | 'console', id: RunId | ConsoleId, owner: Owner, work: (operationId: string, path: string, inspect: () => Promise<TerminalHandle | 'absent'>) => Promise<T>): Promise<T> => {
+    const operationId = 'aux-' + hash(JSON.stringify([kind, id, owner.sessionId, owner.generation]));
+    await privateDirectory(join(root, 'waiting'));
+    return withProcessLock(root, operationId, async () => {
+      const path = join(root, 'waiting', `${operationId}.json`), selected = await identity();
+      await readPrivateJson(path);
+      const inspect = async (): Promise<TerminalHandle | 'absent'> => {
+        const found = (await terminals()).filter(row => row.labels['spider.pane-id'] === operationId && row.labels['spider.kind'] === 'pane-proxy'
+          && (!row.address.includes('/') || row.address.startsWith(`${selected.coreId}/`)));
+        const bound = (await store.read()).presentations.find(p => p.id === operationId && p.target.sessionId === owner.sessionId && p.target.generation === owner.generation);
+        if (found.some(row => {
+          const target = bound?.proxy === row.address ? bound.target : owner.terminal;
+          return row.labels['spider.target-core'] !== target.coreId || row.labels['spider.target-terminal'] !== target.terminalId;
+        })) throw new HerdrError('pane-view-identity', 'Waiting display identity changed');
+        const live = found.filter(row => row.state === 'live');
+        if (live.length > 1) throw new HerdrError('auxiliary-launch-uncertain', 'Multiple waiting displays match this view');
+        if (live.length) return { address: live[0].address, coreId: selected.coreId };
+        for (const terminal of found) await hc.rm(terminal.address);
+        await unlink(path).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+        return 'absent';
+      };
+      return work(operationId, path, inspect);
+    });
+  };
   const auxiliary = app ? createPresentedAuxiliaryPanes({ hc, app, subagentViewer: async () => { throw new HerdrError('presented-view-required', 'Use the acknowledged presentation path'); }, discardSubagentViewer: async () => {}, placementRoot: root, appIdentity: config.mode === 'full' ? config.app.home : '', automaticSubagentPanes: config.automaticSubagentPanes, limit: config.limits.auxiliaryPanes, clock: Date.now,
-    ownerPresentation: async owner => { const p = (await store.read()).presentations.find(p => p.target.sessionId === owner.sessionId && p.target.generation === owner.generation && p.visibility === 'visible'); return p ? p.mode === 'native' ? paneAddress(p.target.terminalId) : p.proxy : null; },
-    waitingPresentation: async (kind, id, owner) => {
-      const operationId = 'aux-' + hash(JSON.stringify([kind, id, owner.sessionId, owner.generation]));
-      await privateDirectory(join(root, 'waiting'));
-      return withProcessLock(root, operationId, async () => {
-        const path = join(root, 'waiting', `${operationId}.json`), claim = await readPrivateJson(path);
-        if (claim !== null) {
-          const found = (await terminals()).filter(row => row.labels['spider.pane-id'] === operationId && row.labels['spider.kind'] === 'pane-proxy');
-          if (found.length === 1 && found[0].state === 'live') return { address: found[0].address, coreId: (await identity()).coreId };
-          throw new HerdrError('auxiliary-launch-uncertain', 'Waiting display launch is uncertain');
-        }
-        await writePrivateJson(path, { version: 1, operationId, coreId: (await identity()).coreId });
-        const p = { id: operationId, target: { coreId: owner.terminal.coreId, terminalId: owner.terminal.terminalId } } as PanePresentation;
-        return { address: await launchProxy(p), coreId: (await identity()).coreId };
-      });
-    },
+    ownerPresentation: async owner => { const p = (await store.read()).presentations.find(p => p.role === 'agent' && p.target.sessionId === owner.sessionId && p.target.generation === owner.generation && p.visibility === 'visible'); return p ? p.mode === 'native' ? paneAddress(p.target.terminalId) : p.proxy : null; },
+    waitingPresentation: (kind, id, owner) => withWaitingClaim(kind, id, owner, async (operationId, path, inspect) => {
+      const existing = await inspect(); if (existing !== 'absent') return existing;
+      await writePrivateJson(path, { version: 1, operationId, coreId: (await identity()).coreId });
+      const p = { id: operationId, target: { coreId: owner.terminal.coreId, terminalId: owner.terminal.terminalId } } as PanePresentation;
+      try {
+        const address = await launchProxy(p), coreId = (await identity()).coreId;
+        await writePrivateJson(path, { version: 1, operationId, coreId, address }); return { address, coreId };
+      } catch (error) {
+        const recovered = await inspect(); if (recovered !== 'absent') return recovered;
+        throw error;
+      }
+    }),
+    recoverWaitingPresentation: (kind, id, owner) => withWaitingClaim(kind, id, owner, (_operationId, _path, inspect) => inspect()),
+    releaseWaitingPresentation: async (kind, id, owner) => { await withWaitingClaim(kind, id, owner, (_operationId, _path, inspect) => inspect()); },
     observed: async reservation => { try { const placement = await app.ownerPlacement(reservation.viewer); return placement.pane === reservation.pane; } catch (error) { return error instanceof HerdrError && error.code === 'owner-unplaced' ? false : null; } },
     targetIsLive: async target => { try { await validateTarget(target, 'open'); return (await hc.get(target.address)).state === 'live'; } catch { return null; } },
     leaseMachine: owner => owner.terminal.coreId,

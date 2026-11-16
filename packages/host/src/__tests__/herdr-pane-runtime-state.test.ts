@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createPaneRuntime, type PaneRuntime } from '../herdr/pane-runtime.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { parsePanePresentation } from '../../../herdr/src/panes/codec.js';
 import type { HerdrConfig, HcClient, TerminalSummary } from '../../../herdr/src/contracts.js';
+import type { PresentedAuxiliaryOptions } from '../../../herdr/src/panes/auxiliary.js';
 import type { PaneAgentRow, PanePresentation, PaneTerminalFacts } from '../../../herdr/src/panes/types.js';
-const boundary = vi.hoisted(() => ({ facts: vi.fn(), app: {} as Record<string, unknown>, rows: [] as PaneAgentRow[], remote: vi.fn(), terminals: new Map<string, TerminalSummary>(), layout: { spaces: [] } as unknown }));
+const boundary = vi.hoisted(() => ({ facts: vi.fn(), app: {} as Record<string, unknown>, rows: [] as PaneAgentRow[], remote: vi.fn(), auxiliary: null as PresentedAuxiliaryOptions | null, terminals: new Map<string, TerminalSummary>(), layout: { spaces: [] } as unknown }));
 vi.mock('../../../herdr/src/client/hc.js', () => ({ invokeCli: vi.fn(async (_binary, args) => {
   if (args[0] === 'machine') return { machines: [{ name: 'box-1.invalid', aliases: [], id: 'core-remote', machine_id: 'machine-1', state: 'connected' }] };
   if (args[0] === 'read') return { text: 'Ready', how: 'screen', complete: true };
@@ -28,6 +29,10 @@ vi.mock('../../../herdr/src/client/liveness.js', () => ({ isCoreAvailable: async
 vi.mock('../herdr/bin/pane-endpoint.js', () => ({ createProductionPaneEndpointPorts: () => ({}) }));
 vi.mock('../herdr/pane-endpoint.js', () => ({ handleRemotePaneRequest: async () => ({ version: 1, op: 'list', page: { version: 1, rows: [], complete: true, next: null } }) }));
 vi.mock('../herdr/pane-transport.js', () => ({ createPaneRemoteRequest: () => boundary.remote }));
+vi.mock('../../../herdr/src/panes/auxiliary.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../../herdr/src/panes/auxiliary.js')>();
+  return { ...actual, createPresentedAuxiliaryPanes: (options: PresentedAuxiliaryOptions) => { boundary.auxiliary = options; return actual.createPresentedAuxiliaryPanes(options); } };
+});
 const resources: { root: string; runtime: PaneRuntime }[] = [];
 afterEach(async () => { for (const { root, runtime } of resources.splice(0)) { await runtime.dispose(); await rm(root, { recursive: true, force: true }); } vi.clearAllMocks(); });
 async function fixture(spaces: HerdrConfig['spaces'] = []) {
@@ -41,10 +46,12 @@ async function fixture(spaces: HerdrConfig['spaces'] = []) {
   const hc = { identity: async () => ({ coreId: 'core-local', socket: '/owned/core.sock', sessionNamespace: 'fixture' }),
     get: vi.fn(async address => boundary.terminals.get(String(address).split('/').at(-1)!) ?? { address, state: 'live' }),
     run: vi.fn(async request => { const address = 'proxy-1'; boundary.terminals.set(address, { address: address as never, state: 'live', labels: request.labels, parent: null, status: null, exitCode: null, reason: null, signal: null, finishedAt: null, cols: 80, rows: 24 }); return { address, coreId: 'core-local' }; }),
-    events: () => ({ ready: Promise.resolve(), subscribe: listener => { listener({ type: 'snapshot', seq: 1, terminals: [...boundary.terminals.values()] }); return () => {}; }, dispose() {} }), kill: vi.fn(), rm: vi.fn(), setLabels: vi.fn() } as unknown as HcClient;
+    events: () => ({ ready: Promise.resolve(), subscribe: listener => { listener({ type: 'snapshot', seq: 1, terminals: [...boundary.terminals.values()] }); return () => {}; }, dispose() {} }),
+    kill: vi.fn(async address => { const terminal = boundary.terminals.get(String(address)); if (terminal) terminal.state = 'finished'; }),
+    rm: vi.fn(async address => { boundary.terminals.delete(String(address)); }), setLabels: vi.fn() } as unknown as HcClient;
   boundary.facts.mockImplementation(async target => facts({ target, id: target.terminalId } as PanePresentation));
   const runtime = createPaneRuntime({ config, hc, env: {}, packageRoot: process.cwd(), endpointBytes: Buffer.from('synthetic endpoint') });
-  resources.push({ root, runtime }); return { runtime, hc };
+  resources.push({ root, runtime }); return { root, runtime, hc };
 }
 function presentation(id: string, visibility: PanePresentation['visibility'] = 'visible'): PanePresentation {
   return parsePanePresentation({ id, revision: 1, mode: 'proxy', role: 'shell', target: { coreId: 'core-remote', terminalId: id, address: `core-remote/${id}`, createdMs: 17, identityLabels: { 'spider.pane-operation': id }, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'terminal', sessionId: null, generation: null, homeEpoch: null, runId: null, consoleId: null, name: id, cwd: '/home/example' }, proxy: null, slot: null, visibility, launch: 'none', closeOperationId: null, conversion: null });
@@ -90,6 +97,39 @@ test('a discovered remote session without a slot opens in its configured space',
   expect(await service.request({ version: 1, op: 'move', operationId: 'move-reloaded', presentationId: current.id, expectedRevision: current.revision, slot: { space: 's1' as never, tab: 'tb1' as never, pane: null } }))
     .toMatchObject({ outcome: { status: 'complete', presentation: { target: { generation: 'gen-2' } } } });
   expect((await runtime.store.read()).presentations).toHaveLength(1); expect(hc.run).toHaveBeenCalledTimes(1);
+});
+test('production waiting claims are removed on release and do not block the same view from reopening', async () => {
+  const { root, runtime, hc } = await fixture(); const owner = sessionRow().owner; runtime.createService();
+  const first = await boundary.auxiliary!.waitingPresentation!('subagent', 'run-1' as never, owner);
+  await hc.kill(first.address); await hc.rm(first.address);
+  await boundary.auxiliary!.releaseWaitingPresentation?.('subagent', 'run-1' as never, owner, first.address);
+  expect(await readdir(join(root, 'herdr/panes/waiting'))).toEqual([]);
+  const second = await boundary.auxiliary!.waitingPresentation!('subagent', 'run-1' as never, owner);
+  expect(second).toMatchObject({ address: 'proxy-1', coreId: 'core-local' }); expect(hc.run).toHaveBeenCalledTimes(2);
+});
+test('production recovers a dead waiting claim even after helper state was lost', async () => {
+  const { runtime, hc } = await fixture(); const owner = sessionRow().owner; runtime.createService();
+  const first = await boundary.auxiliary!.waitingPresentation!('console', 'console-1' as never, owner);
+  await hc.kill(first.address); await hc.rm(first.address);
+  expect(await boundary.auxiliary!.waitingPresentation!('console', 'console-1' as never, owner)).toMatchObject({ address: 'proxy-1' });
+  expect(hc.run).toHaveBeenCalledTimes(2);
+});
+test('production waiting launch failure releases the claim and lost replies reuse the labelled display', async () => {
+  const { root, runtime, hc } = await fixture(); const owner = sessionRow().owner; runtime.createService();
+  const launch = vi.mocked(hc.run).getMockImplementation()!;
+  vi.mocked(hc.run).mockRejectedValueOnce(new Error('launch failed'));
+  await expect(boundary.auxiliary!.waitingPresentation!('subagent', 'run-1' as never, owner)).rejects.toThrow('launch failed');
+  expect(await readdir(join(root, 'herdr/panes/waiting'))).toEqual([]);
+  vi.mocked(hc.run).mockImplementationOnce(async input => { await launch(input); throw new Error('reply lost'); });
+  expect(await boundary.auxiliary!.waitingPresentation!('subagent', 'run-1' as never, owner)).toMatchObject({ address: 'proxy-1' });
+  expect(hc.run).toHaveBeenCalledTimes(2);
+});
+test('only the agent presentation can anchor auxiliary panes', async () => {
+  const { runtime } = await fixture(); const row = sessionRow(); runtime.createService();
+  const agent = { ...presentation('agent'), role: 'agent' as const, target: row.target, proxy: 'agent-proxy' as never };
+  const console = { ...agent, id: 'console', role: 'console' as const, proxy: 'console-proxy' as never, target: { ...row.target, kind: 'console' as const, consoleId: ('console-' + 'a'.repeat(64)) as never } };
+  await runtime.store.update(s => ({ ...s, presentations: [console, agent] }));
+  expect(await boundary.auxiliary!.ownerPresentation(row.owner)).toBe('agent-proxy');
 });
 test('production facts skip ended history and read live presentations with bounded concurrency', async () => {
   const { runtime } = await fixture(); const live = Array.from({ length: 8 }, (_, i) => presentation(`live-${i}`));

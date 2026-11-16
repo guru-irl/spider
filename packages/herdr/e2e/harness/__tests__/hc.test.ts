@@ -15,6 +15,36 @@ const roots: string[] = [];
 afterAll(() => { for (const r of roots) rmSync(r, { recursive: true, force: true }); });
 
 describe('via transport fences', () => {
+  for (const route of ['explicit owned local', 'implicit local', 'another run', 'default core'] as const) it(`checks ${route} before running a local transport`, async () => {
+    const root = await createFixtureRoot(); roots.push(root);
+    const ledgers = join(root, '..', '_test-ledgers', root.split('/').at(-1)!); mkdirSync(ledgers, { recursive: true }); roots.push(ledgers);
+    const ledger = openLedger(ledgers, root);
+    const env = buildEnvironment(process.env, await createFencedDirectories(root), { binDirectory: join(root, 'bin') });
+    const namespace = route === 'default core' ? 'default' : 'l';
+    const socket = assertSocketPath(root, join(root, 'local-test.sock'));
+    const directory = join(root, 'via-processes'); mkdirSync(directory, { mode: 0o700 });
+    const server = createServer(client => client.end());
+    ledger.update(l => { l.viaDirectory = directory; l.cores.push({ side: 'local', namespace, socket, coreId: 'owned-local', hcBinary: join(root, 'not-used'), env }); });
+    const descriptor = join(root, 'via-local.json'), marker = join(root, 'local-effect');
+    const localDestination = route === 'implicit local' ? undefined : { ledgerId: route === 'another run' ? 'another-run' : ledger.id, coreId: 'owned-local' };
+    writeFileSync(descriptor, JSON.stringify({ root, env: { ...env, HC_SESSION: namespace }, log: join(root, 'via-test.log'), ledgerPath: ledger.path, socket, viaDirectory: directory, localDestination }));
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socket, resolve); });
+    const via = fileURLToPath(new URL('../../fixtures/via.mjs', import.meta.url));
+    const transport = spawnOwned(ledger, { label: 'local-via', command: process.execPath, args: [via, descriptor, `printf fixture > '${marker}'`], env, cwd: root, stdio: 'pipe' });
+    transport.child.stdin!.end(); transport.child.stdout!.resume(); transport.child.stderr!.resume();
+    try {
+      const result = await transport.exited;
+      expect(result.code).toBe(route === 'explicit owned local' ? 0 : 94);
+      expect(existsSync(marker)).toBe(route === 'explicit owned local');
+      if (route === 'explicit owned local') expect(readFileSync(marker, 'utf8')).toBe('fixture');
+      expect(readdirSync(directory).filter(name => name.endsWith('.json'))).toEqual([]);
+    } finally {
+      if (identityAlive(transport.identity)) await transport.stop();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      expect((await cleanupLedger(ledger.path, 'local-via-test')).clean).toBe(true);
+    }
+  });
+
   it('records concurrent via identities independently and removes them on exit', async () => {
     const root = await createFixtureRoot(); roots.push(root);
     const ledgers = join(root, '..', '_test-ledgers', root.split('/').at(-1)!); mkdirSync(ledgers, { recursive: true }); roots.push(ledgers);

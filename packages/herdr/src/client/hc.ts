@@ -97,7 +97,10 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
     const route = matches.length === 1 ? matches[0] : null;
     const coreId = route?.id ?? local?.coreId;
     const terminal = parseTerminal(await call(['get', address, '--json'], undefined, callOptions));
-    if (identityError) throw identityError;
+    if (identityError) {
+      if (terminal.address !== address) throw identityError;
+      return terminal;
+    }
     if (local && parts[0] !== local.coreId && !route) throw new HerdrError('caller-mismatch', 'Requested terminal route is not uniquely verified');
     if (!local) {
       if (terminal.address !== address) throw new HerdrError('caller-mismatch', 'Returned terminal address differs from the requested address', { expectedAddress: address, actualAddress: terminal.address });

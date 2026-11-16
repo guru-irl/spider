@@ -244,7 +244,7 @@ async function manual(suite: Suite): Promise<void> {
     removePlaceholder: async (slot: any) => f.app('pane.close', { pane: slot.pane }),
     movePlain: () => { throw new Error('remote execution terminal cannot be moved'); }, ipc: () => { throw new Error('presentation must use the packed pane service'); } };
   const target = () => paneNavigation(f).then(rows => rows.find(row => row.sessionId === owner.row.sessionId && row.kind === 'agent'));
-  const initial = await target(); expect(initial).toMatchObject({ name: 'Hand started', disabledReason: null, action: { kind: 'pane' } });
+  const initial = await target(); expect(initial).toMatchObject({ name: 'Hand started', disabledReason: undefined, action: { kind: 'pane' } });
   expect(await actions.moveTarget({ kind: 'session', pane: false, navigation: initial }, { kind: 'tab', tab: f.anchor.tab }, ports)).toMatchObject({ status: 'complete' });
   const first = (await f.state()).presentations.find(row => row.target.sessionId === owner.row.sessionId)!;
   expect(first.target).toEqual(owner.row.target); expect(first.proxy).not.toContain('/');

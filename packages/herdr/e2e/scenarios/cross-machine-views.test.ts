@@ -12,6 +12,7 @@ import type { Suite } from '../harness/suite.js';
 import { CHILD_MODEL, parentTurns, held, scripts } from '../fixtures/child-scripts.js';
 import { preparePanePresentations, launchPaneOwner, presentationRows, stopPaneHelper, paneProcesses, paneHeaderFunctions, stableTerminal, type PaneFixture, type PaneOwner, type PresentationDocument } from '../fixtures/pane-presentations.js';
 import type { PaneAgentRow, PanePresentation, PaneServiceRequest, PaneTarget } from '../../src/panes/types.js';
+import { parseTerminal } from '../../src/client/parse.js';
 
 async function ownerPresentation(f: PaneFixture, owner: PaneOwner): Promise<PanePresentation> {
   const reply = await f.request({ version: 1, op: 'open-existing', operationId: randomUUID(), sessionId: owner.row.sessionId, generation: owner.row.generation, slot: { ...f.anchor } });
@@ -151,7 +152,7 @@ async function consoleView(suite: Suite): Promise<void> {
   const row = await sourceRow(f, owner, row => row.consoles.length === 1), console = row.consoles[0]!;
   expect(row.consoles).toHaveLength(1);
   const inventory = (await suite.hc(['ls', '--all', '--json'], 'dest')).json as { terminals: { address: string; labels: Record<string, string>; state: string }[] };
-  const jobRows = inventory.terminals.filter(terminal => terminal.labels['spider.kind'] === 'exec' && terminal.labels['spider.session'] === owner.row.sessionId);
+  const jobRows = inventory.terminals.map(parseTerminal).filter(terminal => terminal.labels['spider.kind'] === 'exec' && terminal.labels['spider.session'] === owner.row.sessionId);
   expect(jobRows).toHaveLength(2);
   const before = await Promise.all(jobRows.map(job => f.terminal(job.address, 'dest')));
   expect(before.every(job => job.state === 'live')).toBe(true);
@@ -192,7 +193,13 @@ async function ready(f: PaneFixture, p: PanePresentation, target: PaneTarget): P
   return result;
 }
 async function handoff(suite: Suite): Promise<void> {
-  const f = await preparePanePresentations(suite), local = await launchPaneOwner(f, 'local');
+  const f = await preparePanePresentations(suite);
+  await writeScript(suite.pi.scriptPath, { story: suite.story, scripts: { save: [{ steps: [{ text: 'Session saved.' }] }] } });
+  const local = await launchPaneOwner(f, 'local');
+  await local.pi.prompt('[[e2e:save]]');
+  await waitFor('source session transcript persists its first response', async () => {
+    try { return await readFile(local.file, 'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return ''; throw error; }
+  }, text => text.includes('Session saved.'), deadline(5000));
   const first = await ownerPresentation(f, local);
   expect(first.mode).toBe('native'); expect(first.proxy).toBeNull();
   expect(await machineText(f, first)).toBe('This computer');

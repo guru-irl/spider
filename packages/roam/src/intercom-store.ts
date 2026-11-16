@@ -1420,10 +1420,11 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       if (!isMachineId(input.peer)) throw new Error("Invalid intercom peer");
       const row = copy("inbound", input.frame.receipt.messageId);
       if (!row || row.peer !== input.peer) throw new Error("Intercom receipt peer mismatch");
-      validReceipt(row, input.frame);
       const key = receiptKey(cleanReceiptFrame(input.frame));
       const receiptRow = db.prepare("SELECT peer,frame_json,receipt_key,acknowledged,sent FROM intercom_receipts WHERE receipt_key=?").get(key) as ReceiptRow | undefined;
       if (!receiptRow || receiptRow.peer !== input.peer || !receiptRow.sent) throw new Error("Intercom receipt acknowledgement has no matching handoff");
+      const sent = parseStored<IntercomReceiptFrame>(receiptRow.frame_json);
+      validReceipt({ ...row, endpoint_json: JSON.stringify(sent.from) }, input.frame);
       db.prepare("UPDATE intercom_receipts SET acknowledged=1 WHERE receipt_key=?").run(key);
     },
     beginDispatch(input): IntercomMessageFrame {
@@ -1497,6 +1498,11 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
       const live = copy('outbound', frame.receipt.messageId);
       if (live) {
         if (live.peer !== peer || !['injected', 'matched_waiter', 'answered'].includes(live.state)) return false;
+        if (isSessionEndpoint(frame.from) && !sameEndpoint(readEndpoint(live), frame.from) &&
+            knownEndpoint(live, frame.from) && !receiptReleasesPayload(frame.receipt)) {
+          validReceipt({ ...live, endpoint_json: JSON.stringify(frame.from) }, frame);
+          return true;
+        }
         validReceipt(live, frame);
       }
       const from = streamKey(frame.originMachineId, frame.to), to = addressKey(frame.from.address);

@@ -156,6 +156,59 @@ it("acknowledges an old absence receipt after the receiver resumes and proves de
   } finally { await bridge.stop(); source.close(); inbox.close(); fixture.close(); }
 }, 5000);
 
+it("settles resumed delivery after the old message was retransmitted", async () => {
+  const fixture = createReplica("global", A), root = fixture.root;
+  const clock = { now: () => 1000, later: () => () => {} }, source = openIntercomStore({ file: join(root, "s.db"), machineId: A, clock }), inbox = openIntercomStore({ file: join(root, "i.db"), machineId: B, clock });
+  const old = { address: to, machineId: B, homeEpoch: null, activationEpoch: "ended" }, next = { ...old, activationEpoch: "replacement" };
+  const bridge = createIntercomBridge({ machineId: A, machineAlias: "source.invalid", store: source, clock, transport: {} as never,
+    edges: [{ peer: { machineId: B, alias: "peer.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/core", globalRoot: "/fixture/global" }, edgeEpoch: "edge", initiator: false }],
+    localPresence: () => [], authoritativeHome: () => null });
+  try {
+    source.acceptOutbound({ from, endpoint: old, nextHop: B, message: { id: "retry", timestamp: 1, content: { text: "delivered once" } } });
+    const original = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 })[0];
+    source.acknowledge({ peer: B, identity: original.identity, kind: "message" });
+    inbox.acceptInbound({ peer: A, frame: original });
+    inbox.beginDispatch({ id: "retry", endpoint: old, readiness: "old-ready" });
+    inbox.resolveUnknown({ queue: "inbound", id: "retry", digest: original.identity.digest, proof: { from: old, to: from, digest: original.identity.digest, attempt: 1,
+      receipt: { messageId: "retry", status: "not_injected", timestamp: 1000, evidence: { kind: "absence", sessionId: to.sessionId,
+        activationEpoch: "ended", excludedGeneration: "ended", complete: true } } } });
+    await bridge.start();
+    const exchange = async (generation: number, receipts = inbox.pending({ kind: "receipts", peer: A })) => bridge.exchange(withHopRequest({ version: 1, holdMs: 0, deadlineMs: 5000,
+      exchange: withHopExchange({ protocol: 5, senderMachine: B, recipientMachine: A, generation: { edgeEpoch: "edge", channel: "push", generation },
+        frames: [], acknowledgements: [], receipts, controls: [], presence: [] }) }));
+    await exchange(1); // The absence acknowledgement is lost.
+    const [resent] = source.pending({ kind: "outbound", peer: B, hopBudgetMs: 100 });
+    source.acknowledge({ peer: B, identity: resent.identity, kind: "message" });
+    const [absence] = inbox.pending({ kind: "receipts", peer: A });
+    await expect(exchange(2, [{ ...absence, from: next, digest: 'f'.repeat(64),
+      receipt: { messageId: "retry", status: "receiver_received", timestamp: 1001 } }])).rejects.toThrow(/digest|identity/);
+    await expect(exchange(3, [{ ...absence, from: { ...next, address: { ...to, sessionId: 'other-session' } },
+      receipt: { messageId: "retry", status: "receiver_received", timestamp: 1001 } }])).rejects.toThrow(/route|proof|endpoint/);
+    expect(source.retained("outbound", "retry")).toMatchObject({ state: "queued", endpoint: old });
+    inbox.rebindInboundAfterAbsence("retry", next);
+    inbox.beginDispatch({ id: "retry", endpoint: next, readiness: "new-ready" });
+    inbox.settleReceipt({ queue: "inbound", peer: A, frame: { from: next, to: from, digest: original.identity.digest, attempt: 1,
+      receipt: { messageId: "retry", status: "receiver_received", timestamp: 1001 } } });
+    const progress = await exchange(4);
+    expect(progress.exchange.receiptAcknowledgements?.map(item => item.receipt.status)).toEqual(expect.arrayContaining(["not_injected", "receiver_received"]));
+    expect(source.retained("outbound", "retry")).toMatchObject({ state: "queued", endpoint: next, reconciliation: { status: "not_injected" } });
+    const prior = inbox.pending({ kind: "receipts", peer: A }).find(item => item.from.activationEpoch === "ended")!;
+    await expect(exchange(5, [{ ...prior, receipt: { messageId: "retry", status: "injected", timestamp: 1002,
+      evidence: { kind: "entry", entryId: "conflicting", sessionId: to.sessionId, activationEpoch: "ended" } } }])).rejects.toThrow(/Conflicting/);
+    await exchange(6); // Replaying both receipts is safe before delivery completes.
+    inbox.settleReceipt({ queue: "inbound", peer: A, frame: { from: next, to: from, digest: original.identity.digest, attempt: 1,
+      receipt: { messageId: "retry", status: "unknown", timestamp: 1002 } } });
+    await exchange(7);
+    expect(source.retained("outbound", "retry")).toMatchObject({ state: "unknown", payloadRetained: true, endpoint: next });
+    inbox.settleReceipt({ queue: "inbound", peer: A, frame: { from: next, to: from, digest: original.identity.digest, attempt: 1,
+      receipt: { messageId: "retry", status: "injected", timestamp: 1003, evidence: { kind: "entry", entryId: "physical", sessionId: to.sessionId, activationEpoch: "replacement" } } } });
+    const settled = await exchange(8);
+    expect(source.retained("outbound", "retry")).toMatchObject({ state: "injected", payloadRetained: false, endpoint: next, reconciliation: { status: "not_injected" } });
+    for (const receipt of settled.exchange.receiptAcknowledgements ?? []) inbox.acknowledgeReceipt({ peer: A, frame: receipt });
+    expect(inbox.pending({ kind: "receipts", peer: A })).toEqual([]);
+  } finally { await bridge.stop(); source.close(); inbox.close(); fixture.close(); }
+}, 5000);
+
 it("acknowledges a lost-link-ack replay of the original endpoint after a safe local activation rebind", async () => {
   const root = mkdtempSync(join(resolve(".spider/scratch"), "recovery-replay-")); roots.push(root);
   const clock = { now: () => 1000, later: () => () => {} }, source = openIntercomStore({ file: join(root, "s.db"), machineId: A, clock }), inbox = openIntercomStore({ file: join(root, "i.db"), machineId: B, clock });

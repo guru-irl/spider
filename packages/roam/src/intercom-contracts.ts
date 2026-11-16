@@ -229,6 +229,7 @@ export interface IntercomStore extends IntercomTopologyStore {
   /** Call only with client proof that this exact dispatch never reached a socket write. */
   retryKnownNotSent(input: { id: string; endpoint: SessionEndpoint; attempt: number }): void;
   followConsumption(input: { queue: IntercomQueue; peer: MachineId; frame: IntercomReceiptInput }): void;
+  followResumedReceipt(input: { queue: IntercomQueue; peer: MachineId; frame: IntercomReceiptInput; proof: RebindProof }): void;
   settleReceipt(input: { queue: IntercomQueue; peer: MachineId; frame: IntercomReceiptInput }): void;
   isSettledReceipt(input: { peer: MachineId; frame: IntercomReceiptFrame }): boolean;
   resolveUnknown(input: { queue: IntercomQueue; id: string; digest: string; proof: IntercomReceiptInput }): void;

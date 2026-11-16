@@ -57,6 +57,9 @@ import { createProcessPresence } from ${source('../../src/sessions/presence.ts')
 import { createSessionLeases } from ${source('../../src/sessions/lease.ts')};
 import { createLocalDiagnosticPorts } from ${source('../../../roam/src/local-diagnostics.ts')};
 import { fixtureProcessDomain } from ${source('../../../host/src/herdr/fixture-process-domain.ts')};
+import { snapshotWorkspace } from ${source('../../../roam/src/workspace.ts')};
+import { openLocalCore } from ${source('../../../roam/src/runtime.ts')};
+import { openFreezeJournal } from ${source('../../../roam/src/journal.ts')};
 
 const descriptor = JSON.parse(readFileSync(${JSON.stringify(join(suite.root, 'move-machines.json'))}, 'utf8'));
 const args = process.argv.slice(2);
@@ -126,6 +129,19 @@ if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id &&
 } else if (args[0] === 'fixture-status') {
   const status = await requestHubControl(join(root, 'roam', 'hub.sock'), { op: 'status' });
   process.exitCode = status.code; process.stdout.write(JSON.stringify(status) + '\\n');
+} else if (args[0] === 'fixture-baseline') {
+  const core = openLocalCore(root), journal = openFreezeJournal(join(root, 'roam', 'journal.db'));
+  let runtime;
+  try {
+    runtime = await createHostMoveBindings({ root, globalDb: core.db, config: core.config, journal, sessionId: args[1], transport: {} as never });
+    const participant = runtime.bindings.participant!, moveId = 'baseline-' + machine.id;
+    journal.begin({ id: moveId, kind: 'workspace-snapshot', machineId: machine.id, expectedEpoch: null, args: {} });
+    const snapshot = await snapshotWorkspace({ root: machine.cwd, cwd: machine.cwd, repoKey: ${JSON.stringify(REPO)}, workspaceId: ${JSON.stringify(WORKSPACE)}, moveId, stage: 'final', writers: await participant.writers(machine.cwd) },
+      { ...participant.git, journal, limits: core.config.limits });
+    const changed = core.db.prepare('UPDATE roam_workspace_maps SET snapshot_json=? WHERE repo_key=? AND workspace_id=? AND path=?').run(JSON.stringify(snapshot), snapshot.repoKey, snapshot.workspaceId, machine.cwd).changes;
+    if (changed !== 1) throw Error('fixture baseline mapping unavailable');
+    process.stdout.write(JSON.stringify({ code: 0 }) + '\\n');
+  } finally { await runtime?.close(); core.close(); }
 } else if (args[0] === 'fixture-ingest') {
   await createUsageIngestThrough({ registryDb: join(root, 'spider.db'), ledgerFile: join(root, 'usage.db'), sessionsDir: join(machine.agent, 'sessions'),
     authPath: join(machine.agent, 'auth.json'), leaseDir: join(root, 'usage-leases') }, args[1], machine.id)(args[2], Number(args[3]));
@@ -304,6 +320,10 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
     services.push({ stop: () => presentation.close() });
     await writeFile(descriptor, JSON.stringify({ root: suite.root, pi: suite.pi.launcher, effects, faults, cli: join(suite.packed.root, 'dist/roam/cli-main.mjs'),
       supervisor: suite.packed.roamSupervisor, presentationSocket: presentation.socket, machines }), { mode: 0o600 });
+    for (const machine of machines) {
+      const baseline = await suite.invoke(process.execPath, [cli, 'fixture-baseline', sessionId], machine.env);
+      expect(baseline.exitCode, baseline.stderr + baseline.stdout).toBe(0);
+    }
     const systemctl = suite.ownPath(join(suite.root, 'bin', 'systemctl'));
     await writeFile(systemctl, `#!/bin/sh\ncase "$*" in '--user start spider-roam-supervisor.service') printf '%s\\n' "$*" >> ${quote(effects)} ;; *) exit 94 ;; esac\n`, { mode: 0o700 });
     for (const machine of machines) {

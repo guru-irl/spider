@@ -10,6 +10,7 @@ export interface MachineConnectionManager {
   readonly machines: readonly MachineRecord[];
   readonly snapshot: readonly { name: string | null; state: string }[];
   readonly coreId: string | null;
+  readonly observed: boolean;
   repair(name: string): MachineRepair | null;
   refresh(): Promise<void>;
   reconnect(name: string): Promise<void>;

@@ -133,6 +133,10 @@ it("production activation inspects the route-owning store and still blocks real 
   await inspectProductionActivation(true);
 }, 5000);
 
+it("production activation initializes first-use scratch roots and still blocks real local jobs", async () => {
+  await inspectProductionActivation(false);
+}, 5000);
+
 it("the real participant auth port blocks missing pi auth and warns that tools were not checked", async () => {
   const global = createReplica("global", HUB); fixtures.push(global);
   const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };

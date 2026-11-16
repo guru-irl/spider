@@ -145,17 +145,23 @@ function consoleOwner(request: AgentConsoleLaunch, env: Readonly<NodeJS.ProcessE
   if (env.PI_SUBAGENT_CHILD === '1' && !runId) return null;
   return { ...request.owner, ...(runId ? { runId } : {}) };
 }
-async function retireOlderConsole(terminal: TerminalSummary, request: AgentConsoleLaunch, owner: AgentConsoleOwner, hc: HcClient): Promise<'reuse' | 'replace' | 'foreign'> {
-  if (terminal.labels[HERDR_LABELS.ownerCore] !== owner.terminal.coreId || terminal.labels[HERDR_LABELS.ownerTerminal] !== owner.terminal.terminalId ||
-    terminal.labels[HERDR_LABELS.runtime] === request.target.runtimeSha256 || !request.isConsoleIdle) return 'reuse';
-  try { if (!await request.isConsoleIdle()) return 'reuse'; }
-  catch (error) { request.reportError?.(error); return 'reuse'; }
+async function retireConsole(terminal: TerminalSummary, request: AgentConsoleLaunch, owner: AgentConsoleOwner, hc: HcClient): Promise<'reuse' | 'replace' | 'foreign'> {
+  const finishedCurrent = terminal.state === 'finished' && terminal.labels[HERDR_LABELS.runtime] === request.target.runtimeSha256;
+  if (terminal.labels[HERDR_LABELS.ownerCore] !== owner.terminal.coreId || terminal.labels[HERDR_LABELS.ownerTerminal] !== owner.terminal.terminalId) return 'reuse';
+  if (!finishedCurrent) {
+    if (terminal.labels[HERDR_LABELS.runtime] === request.target.runtimeSha256 || !request.isConsoleIdle) return 'reuse';
+    try { if (!await request.isConsoleIdle()) return 'reuse'; }
+    catch (error) { request.reportError?.(error); return 'reuse'; }
+  }
   try {
     const latest = await hc.get(terminal.address);
     if (!ownsConsole(latest, owner, request.on)) return 'foreign';
     if ([HERDR_LABELS.kind, HERDR_LABELS.session, HERDR_LABELS.ownerCore, HERDR_LABELS.ownerTerminal, HERDR_LABELS.machine, HERDR_LABELS.run, HERDR_LABELS.runtime]
       .some(key => latest.labels[key] !== terminal.labels[key])) return 'reuse';
-    if (latest.state === 'live') await hc.kill(terminal.address);
+    if (latest.state === 'live') {
+      if (finishedCurrent) return 'reuse';
+      await hc.kill(terminal.address);
+    }
     await hc.rm(terminal.address);
     return 'replace';
   } catch (error) {
@@ -164,7 +170,7 @@ async function retireOlderConsole(terminal: TerminalSummary, request: AgentConso
     try {
       const latest = await hc.get(terminal.address);
       if (!ownsConsole(latest, owner, request.on)) return 'foreign';
-      return latest.state === 'live' ? 'reuse' : 'replace';
+      return latest.state === 'live' || finishedCurrent ? 'reuse' : 'replace';
     } catch (lookupError) { return missing(lookupError) ? 'replace' : 'reuse'; }
   }
 }
@@ -262,7 +268,7 @@ export async function openAgentConsoleView(request: AgentConsoleLaunch & { displ
       throw new HerdrError('console-identity-mismatch', 'Console view does not match its source owner');
     let existing: TerminalSummary | undefined = found;
     if (existing && (existing.state !== 'live' || existing.labels[HERDR_LABELS.runtime] !== request.target.runtimeSha256)) {
-      const retirement = await retireOlderConsole(existing, request, owner, hc);
+      const retirement = await retireConsole(existing, request, owner, hc);
       if (retirement !== 'replace') throw new HerdrError('console-runtime-unavailable', 'Console runtime must be updated before opening a leased view');
       existing = undefined;
       const metadata = parseRuntimePublication(await hc.fileRead(request.on, join(store.directory, 'console.json')));

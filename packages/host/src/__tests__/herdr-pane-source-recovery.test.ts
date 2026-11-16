@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { paths } from '@spider/db-core';
 import { createPaneSourceEffects } from '../herdr/pane-source.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import type { HcClient, Owner, TerminalAddress, TerminalSummary } from '../../../herdr/src/contracts.js';
@@ -22,7 +23,7 @@ vi.mock('../../../herdr/src/client/hc.js', () => ({ invokeCli: async (_binary: s
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); boundary.terminals.clear(); });
 async function fixture(failure: 'absent' | 'lost-reply') {
-  const base = resolve('.spider/scratch/pane-source-recovery'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'f-')); roots.push(root);
+  const base = join(paths.scratch('worktree', process.cwd()), 'pane-source-recovery'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'f-')); roots.push(root);
   const owner = { sessionId: 'session-1', generation: 'gen-1', cwd: root, sessionFile: null, name: 'Builder', terminal: { coreId: 'core-local', terminalId: 'owner', address: 'owner', socket: '/owned/core.sock', sessionNamespace: 'fixture' } } as Owner;
   let attempts = 0;
   const hc = { identity: async () => ({ coreId: 'core-local', socket: '/owned/core.sock', sessionNamespace: 'fixture' }), machines: async () => [],

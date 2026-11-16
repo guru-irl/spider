@@ -2,11 +2,12 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, stat, readFile, symlink } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { paths } from '@spider/db-core';
 import { expect, test } from 'vitest';
 import { PANE_LEASE_WRITER } from '../herdr/pane-lease.js';
 test('a stopped console lease removes its mirror and repeated removal is safe', async () => {
-  const base = resolve('.spider/scratch/pane-lease-tests'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'r-'));
+  const base = join(paths.scratch('worktree', process.cwd()), 'pane-lease-tests'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'r-'));
   try {
     const run = (state: string, expiresAt: number) => spawnSync(process.execPath, ['-e', PANE_LEASE_WRITER, root, 'lease-1'], { input: JSON.stringify({ version: 1, leaseId: 'lease-1', expiresAt, state }), encoding: 'utf8' });
     expect(run('active', Date.now() + 20000).status).toBe(0);
@@ -16,7 +17,7 @@ test('a stopped console lease removes its mirror and repeated removal is safe', 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 test('qualified console lease mirror is private, atomic and refuses a symlink', async () => {
-  const base = resolve('.spider/scratch/pane-lease-tests'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'r-'));
+  const base = join(paths.scratch('worktree', process.cwd()), 'pane-lease-tests'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'r-'));
   try {
     const lease = { version: 1, leaseId: 'lease-1', expiresAt: Date.now() + 20000 };
     const run = () => spawnSync(process.execPath, ['-e', PANE_LEASE_WRITER, root, lease.leaseId], { input: JSON.stringify(lease), encoding: 'utf8' });

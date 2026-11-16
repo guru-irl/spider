@@ -304,7 +304,11 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     try { result = request.op === 'park' ? await parkPresentation(request.presentationId, request.expectedRevision, lifecycle)
       : request.op === 'close-confirmed' ? await confirmPresentationClose({ id: request.presentationId, expectedRevision: request.expectedRevision, operationId: request.operationId, target: request.target }, lifecycle)
       : await ports.dispatch(request, beforeLaunch, privateInventory());
-    } catch (error) { if (error instanceof HerdrError) return outcome(error.code); throw error; }
+    } catch (error) {
+      if (request.op === 'prepare-handoff') return { version: 1, kind: 'outcome', outcome: { status: 'pending', reason: 'handoff-unavailable', presentation: state.presentations.find(p => p.id === request.presentationId) ?? null } };
+      if (error instanceof HerdrError) return outcome(error.code);
+      throw error;
+    }
     if (request.op === 'present-ready' && result.status === 'complete' && result.presentation) {
       const directory = join(ports.root, 'ready-outcomes'); await privateDirectory(directory);
       await writePrivateJson(join(directory, hash(request.presentationId) + '.json'), { operationId: request.operationId, request, digest: hash(encodePaneServiceRequest(request)), outcome: result });

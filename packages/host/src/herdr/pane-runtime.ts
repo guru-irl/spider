@@ -361,8 +361,7 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
               if (!source || !p.slot || source.space !== p.slot.space || source.tab !== p.slot.tab || source.pane !== p.slot.pane) return { status: 'pending', reason: 'source-view-unavailable', presentation: p };
               const focused = await app.focusedPane();
               sourceFocused = focused?.space === source.space && focused.tab === source.tab && focused.pane === source.pane;
-            } catch (error) {
-              if (!(error instanceof HerdrError) || !['app-disconnected', 'cli-exit', 'missing-app', 'pane-timeout'].includes(error.code)) throw error;
+            } catch {
               return { status: 'pending', reason: 'app-unavailable', presentation: p };
             }
           }
@@ -381,8 +380,7 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
             if (!source || !p.slot || source.space !== p.slot.space || source.tab !== p.slot.tab || source.pane !== p.slot.pane) return { status: 'pending', reason: 'source-view-unavailable', presentation: p };
             const focused = await app.focusedPane();
             sourceFocused = focused?.space === source.space && focused.tab === source.tab && focused.pane === source.pane;
-          } catch (error) {
-            if (!(error instanceof HerdrError) || !['app-disconnected', 'cli-exit', 'missing-app', 'pane-timeout'].includes(error.code)) throw error;
+          } catch {
             available = false;
           }
         }

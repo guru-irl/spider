@@ -11,7 +11,7 @@ import { parseMachineChoice, parsePaneOpenIntent, parsePaneTarget } from '../pan
 import type { AppClient, AppPaneInspection, OwnerPlacement, TerminalAddress, HcClient } from '../contracts.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-async function paneOpenFixture(local = false, split: 'right' | 'down' | null = null) {
+async function paneOpenFixture(local = false, split: 'right' | 'down' | null = null, proxyOperation = 'pane-op1') {
   const base = join(paths.scratch('worktree', process.cwd()), 'b3', 'open'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 's-')); roots.push(root);
   const store = createPanePlacementStore(join(root, 'roam', 'placement'));
   const anchor = { space: 'space-1', tab: 'tab-1', pane: 'anchor-1' } as OwnerPlacement;
@@ -39,7 +39,7 @@ async function paneOpenFixture(local = false, split: 'right' | 'down' | null = n
       return {};
     }),
   } as AppClient & AppPaneInspection;
-  const hc = { identity: async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' }), setLabels: vi.fn(async () => {}), get: vi.fn(async address => ({ address, parent: null, labels: address === 'core-local/t8' ? { 'spider.kind': 'pane-proxy', 'spider.pane-id': 'pane-op1', 'spider.target-core': target.coreId, 'spider.target-terminal': target.terminalId } : target.identityLabels, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null })), kill: vi.fn() } as unknown as HcClient;
+  const hc = { identity: async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' }), setLabels: vi.fn(async () => {}), get: vi.fn(async address => ({ address, parent: null, labels: address === 'core-local/t8' ? { 'spider.kind': 'pane-proxy', 'spider.pane-id': 'pane-op1', 'spider.pane-operation': proxyOperation, 'spider.target-core': target.coreId, 'spider.target-terminal': target.terminalId } : target.identityLabels, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null })), kill: vi.fn() } as unknown as HcClient;
   const ports: PaneOpenPorts = {
     store, hc, app, placeholderMod: 'synthetic-waiting',
     launchTarget: vi.fn(async () => { expect((await store.read()).launches[0].state).toBe('claimed'); return target; }),
@@ -101,6 +101,24 @@ test('lost proxy reply is reconciled without a second proxy launch', async () =>
   expect((await openPane(input, f.ports)).status).toBe('pending'); expect((await openPane(input, f.ports)).status).toBe('pending');
   vi.mocked(f.ports.findProxy).mockResolvedValue('core-local/t8' as TerminalAddress);
   expect((await openPane(input, f.ports)).status).toBe('complete'); expect(f.ports.launchProxy).toHaveBeenCalledTimes(1);
+});
+test('a new proxy launch with a different operation is not acknowledged', async () => {
+  const f = await paneOpenFixture(false, null, 'other-operation');
+  const input = { intent: f.intent, machine: f.machine, folder: { cwd: null, reason: 'home' as const } };
+  expect((await openPane(input, f.ports)).status).toBe('pending');
+  expect((await f.ports.store.read()).presentations[0]).toMatchObject({ proxy: null, launch: 'uncertain' });
+  expect(f.calls.filter(call => call.name === 'terminal.keep')).toEqual([]);
+});
+test('an uncertain proxy launch never adopts a different operation', async () => {
+  const f = await paneOpenFixture(false, null, 'other-operation');
+  vi.mocked(f.ports.launchProxy).mockRejectedValueOnce(Error('lost proxy reply'));
+  const input = { intent: f.intent, machine: f.machine, folder: { cwd: null, reason: 'home' as const } };
+  expect((await openPane(input, f.ports)).status).toBe('pending');
+  vi.mocked(f.ports.findProxy).mockResolvedValue('core-local/t8' as TerminalAddress);
+  expect((await openPane(input, f.ports)).status).toBe('pending');
+  expect((await f.ports.store.read()).presentations[0].proxy).toBeNull();
+  expect(f.calls.filter(call => call.name === 'terminal.keep')).toEqual([]);
+  expect(f.ports.launchProxy).toHaveBeenCalledTimes(1);
 });
 test('reused creation operation with changed input refuses rather than launching', async () => {
   const f = await paneOpenFixture(); const input = { intent: f.intent, machine: f.machine, folder: { cwd: null, reason: 'home' as const } }; await openPane(input, f.ports);

@@ -10,7 +10,7 @@ import { parsePanePresentation, parsePaneTarget } from '../panes/codec.js';
 import type { AppClient, AppPaneInspection, HcClient, OwnerPlacement, TerminalAddress } from '../contracts.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-async function fixture(toLocal = false, focused = true) {
+async function fixture(toLocal = false, focused = true, proxyOperation = 'p1') {
   const base = join(paths.scratch('worktree', process.cwd()), 'b3', 'conversion'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 's-')); roots.push(root);
   const store = createPanePlacementStore(join(root, 'roam', 'placement'));
   const target = (coreId: string, terminalId: string, epoch: number) => parsePaneTarget({ coreId, terminalId, address: `${coreId}/${terminalId}`, createdMs: epoch + 10, identityLabels: { 'spider.session': 'session-1', 'spider.generation': 'gen-1' }, alias: coreId === 'core-local' ? null : 'box-1.invalid', machineId: null, kind: 'session', sessionId: 'session-1', generation: 'gen-1', homeEpoch: epoch, runId: null, consoleId: null, name: 'Example', cwd: '/home/example/work' });
@@ -33,7 +33,7 @@ async function fixture(toLocal = false, focused = true) {
       return {};
     }),
   } as unknown as AppClient & AppPaneInspection;
-  const hc = { identity: async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' }), get: vi.fn(async address => ({ address, parent: null, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': 'p1', 'spider.target-core': address === 't8' ? p.target.coreId : destination.coreId, 'spider.target-terminal': address === 't8' ? p.target.terminalId : destination.terminalId }, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null })), kill: vi.fn(async () => {}), setLabels: vi.fn(async () => {}) } as unknown as HcClient;
+  const hc = { identity: async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' }), get: vi.fn(async address => ({ address, parent: null, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': 'p1', 'spider.pane-operation': proxyOperation, 'spider.target-core': address === 't8' ? p.target.coreId : destination.coreId, 'spider.target-terminal': address === 't8' ? p.target.terminalId : destination.terminalId }, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null })), kill: vi.fn(async () => {}), setLabels: vi.fn(async () => {}) } as unknown as HcClient;
   const ports: PaneOpenPorts = {
     store, hc, app, placeholderMod: 'synthetic-waiting',
     launchTarget: vi.fn(async () => { throw Error('conversion cannot launch a target'); }),
@@ -52,6 +52,13 @@ test('conversion acknowledges remote proxy beside native view before removal', a
   const f = await fixture(); const result = await convertNativePresentation(f.input, f.ports);
   expect(result).toMatchObject({ status: 'complete', presentation: { mode: 'proxy', target: f.destination, proxy: 't10', slot: { space: 'space-1', tab: 'tab-1' }, conversion: null } });
   expect(f.calls.indexOf('acknowledged')).toBeLessThan(f.calls.indexOf('terminal.park')); expect(f.placements.has('t7' as TerminalAddress)).toBe(false); expect(f.ports.hc.kill).not.toHaveBeenCalled(); expect(f.ports.launchTarget).not.toHaveBeenCalled();
+});
+test('conversion does not acknowledge a proxy with a different launch identity', async () => {
+  const f = await fixture(false, true, 'other-operation');
+  expect(await convertNativePresentation(f.input, f.ports)).toMatchObject({ status: 'pending', reason: 'conversion-proxy-uncertain' });
+  expect((await f.ports.store.read()).presentations[0]).toMatchObject({ proxy: null, launch: 'uncertain' });
+  expect(f.placements.has('t7' as TerminalAddress)).toBe(true);
+  expect(f.calls).not.toContain('terminal.keep');
 });
 test('return to Mac creates native pane not local proxy', async () => {
   const f = await fixture(true); const result = await convertNativePresentation(f.input, f.ports);

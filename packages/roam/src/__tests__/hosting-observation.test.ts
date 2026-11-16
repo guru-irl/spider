@@ -173,6 +173,8 @@ it.each([
   { state: "live" as const, reason: null, want: "live" },
   { state: "finished" as const, reason: "killed", want: "killed" },
   { state: "finished" as const, reason: "exited", want: "unexpected-exit" },
+  { state: "finished" as const, reason: "signaled", want: "unexpected-exit" },
+  { state: "finished" as const, reason: "stopped_by_restart", want: "unexpected-exit" },
   { state: "finished" as const, reason: null, want: "unknown" },
 ])("classifies a matching execution as $want", async ({ state, reason, want }) => {
   const f = await executionFixture(), terminal = executionTerminal(f.ready, { state, reason });
@@ -338,7 +340,7 @@ it("a native stop cancels a pending crash retry before another launch", async ()
   } finally { await runtime.service.stop(); }
 }, 5000);
 
-it.each(["exited", "server_stop", null])("production restart policy is unchanged for %s", async reason => {
+it.each(["exited", "signaled", "stopped_by_restart", "server_stop", "host_shutdown", "holder_lost", null])("production restart policy is unchanged for %s", async reason => {
   const f = await executionFixture(), runtime = await productionFixture(f, executionTerminal(f.ready, { reason }));
   try {
     await runtime.supervisor.reconcile();

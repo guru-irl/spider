@@ -98,6 +98,7 @@ async function fixture() {
     close: (p: PanePresentation) => confirmPresentationClose({ id: p.id, expectedRevision: p.revision, target: p.target, operationId: 'stale-close' }, { store, hc, app, validateTarget: open.validateTarget, closeSession: async () => { throw Error('cannot close a successor'); } }), stop: () => service.stop(),
     focus: (value: boolean) => { focused = value; }, absent: () => { appPresent = false; open.app = null; },
     replaceSource: () => { open.readNativeTarget = async () => ({ ...source, createdMs: source.createdMs + 1, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null }); },
+    nativeTarget: (value: PaneTarget) => { open.readNativeTarget = async () => ({ ...value, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null }); },
     loseReadyReply: () => { loseReadyReply = true; },
     screen: (value: boolean) => { screenReady = value; }, loseLaunch: () => { launchLost = true; },
   };
@@ -389,6 +390,25 @@ test('a new ready target has its own spawn budget after proven no-start failures
     expect((await f.operations().presentReadyTarget(f.remote)).reason).toBe('conversion-proxy-exhausted');
     const next = target('core-remote', 't4', 3);
     expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete', presentation: { target: next, launch: 'acknowledged' } });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(3);
+    expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
+  } finally { await f.stop(); }
+});
+
+
+test('a completed parked binding clears the previous spawn budget', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source); f.failSpawns(2);
+    await f.operations().presentReadyTarget(f.remote); await f.operations().presentReadyTarget(f.remote);
+    await f.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, visibility: 'parked', revision: p.revision + 1 })) }));
+    const local = target('core-local', 't5', 3);
+    expect(await f.operations().presentReadyTarget(local)).toMatchObject({ status: 'complete', presentation: { visibility: 'parked', target: local } });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(2);
+    expect(f.events.filter(value => value === 'terminal.park')).toEqual([]);
+    f.nativeTarget(local); f.placements.delete('t1' as TerminalAddress); f.placements.set('t5' as TerminalAddress, f.slot);
+    await f.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, visibility: 'visible', launch: 'acknowledged', revision: p.revision + 1 })) }));
+    await f.operations().prepareHandoff(local.sessionId!, local);
+    expect(await f.operations().presentReadyTarget(target('core-remote', 't6', 4))).toMatchObject({ status: 'complete' });
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(3);
     expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
   } finally { await f.stop(); }

@@ -215,7 +215,7 @@ export async function convertNativePresentation(input: { presentation: PanePrese
     catch { return outcome('pending', 'destination-screen-pending', p); }
   }
   if (p.visibility === 'parked') {
-    p = await updatePresentation(p, { target: destination, mode: native ? 'native' : 'proxy', proxy: null, launch: 'none', conversion: null }, ports);
+    p = await updatePresentation(p, { target: destination, mode: native ? 'native' : 'proxy', proxy: null, launch: 'none', proxyLaunchAttempts: 0, conversion: null }, ports);
     return outcome('complete', 'parked-binding-updated', p);
   }
   if (!source) return outcome('pending', 'source-view-unavailable', p);

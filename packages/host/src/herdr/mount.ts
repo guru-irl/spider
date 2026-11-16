@@ -1,3 +1,5 @@
+import { recordPaneInstallation } from './pane-installation.js';
+import { stopPaneHosting } from './pane-stop.js';
 import { existsSync, constants } from 'node:fs';
 import { readFile, access, writeFile, realpath, stat, open, readdir } from 'node:fs/promises';
 import { join, dirname, resolve, basename, isAbsolute } from 'node:path';
@@ -36,6 +38,8 @@ import { runtimeInstallPath, standardHerdrConfigPath as installedHerdrConfigPath
 import { createTerminalRegistry } from '@spider/herdr/sessions/registry';
 import { moveOwnedSession } from '@spider/herdr/spaces/move';
 import { openOwnedSession } from '@spider/herdr/spaces/open';
+import { createPanePlacementStore } from '../../../herdr/src/panes/store.js';
+import { connectPaneService } from '../../../herdr/src/panes/socket.js';
 import { createMachineCache, type MachineCache } from '@spider/herdr/ssh/cache';
 import { createTransportPolicy } from '@spider/herdr/ssh/admin';
 import { createSshPolicy, type SshPolicy } from '@spider/herdr/ssh/policy';
@@ -502,6 +506,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         app = createAppClient(appOptions, undefined, available);
         panes = createAuxiliaryPanes({ hc, app, automaticSubagentPanes: config.automaticSubagentPanes, placementRoot: join(config.globalRoot, 'herdr/panes'), appIdentity: config.app.home, appForSignal: signal => createAppClient(appOptions, signal, available), subagentViewer: launcher, discardSubagentViewer: launcher.discard, remoteObserver: openJobObserver, limit: config.limits.auxiliaryPanes, clock: Date.now, reportError: report });
       }
+      await recordPaneInstallation(config.globalRoot, options.packageRoot);
       const aliases = Object.fromEntries(config.machines.map(m => [m.name, m.aliases]));
       cache = createMachineCache({ hc, identity: terminal, directory: join(config.globalRoot, 'herdr/ssh'), aliases, reportFailure: report }); await cache.ready;
       policy = createTransportPolicy(createSshPolicy(cache), () => env);
@@ -649,7 +654,17 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       openSession: async (destination, signal, openOptions) => {
         if (owner !== current || stopped) throw new HerdrError('wrong-generation', 'Session owner is no longer active');
         const selected = needAppConfig(), activeSignal = AbortSignal.any([observerAbort.signal, ...(signal ? [signal] : [])]);
+        const state = await createPanePlacementStore(join(selected.globalRoot, 'roam', 'placement')).read();
+        const managed = state.presentations.some(p => p.target.sessionId === current.sessionId && p.target.generation === current.generation);
         const opening = openOwnedSession(current, destination, { hc: need(client),
+          ...(managed ? { paneRequest: async (request: import('../../../herdr/src/panes/types.js').PaneServiceRequest) => {
+            if (!await isCoreAvailable(need(activationEnv))) throw new HerdrError('core-unavailable', 'Selected core is unavailable');
+            const hc = need(client), identity = await hc.identity();
+            const connection = await connectPaneService({ root: join(selected.globalRoot, 'herdr/panes'), identity, startIfMissing: true,
+              launchHelper: async operationId => (await hc.run({ argv: [process.execPath, join(options.packageRoot, 'dist/herdr/cli.mjs'), 'panes', 'serve'], cwd: null, parent: null, outliveParent: true, background: true, noNotify: true, labels: { 'spider.kind': 'pane-service', 'spider.pane-operation': operationId } })).address,
+              probeHelper: address => hc.get(address) });
+            try { return await connection.request(request); } finally { await connection.stop(); }
+          } } : {}),
           app: createAppClient({ binary: selected.app.binary, env: need(activationEnv) }, activeSignal, availabilityReporter(need(context))),
           placementRoot: join(selected.globalRoot, 'herdr/panes'), appIdentity: selected.app.home,
           limit: selected.limits.auxiliaryPanes, clock: Date.now, signal: activeSignal,
@@ -675,6 +690,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         });
       },
       prepareSessionStop: async () => {
+        stopPaneHosting(need(config).globalRoot, current, () => !stopped && owner?.sessionId === current.sessionId && owner.generation === current.generation);
         await teardownSessionAsync(current.sessionId, { reason: 'Session explicitly killed from the pane menu.' });
       },
       killSessionTerminal: async () => {

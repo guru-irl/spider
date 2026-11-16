@@ -101,13 +101,18 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
     });
   };
   const machineValidations = new Map<MachineName, { promise: Promise<MachineSummary>; expiresAt: number | null }>();
+  const selectedMachine = (rows: MachineSummary[], on: MachineName) => {
+    const matches = rows.filter(row => row.name === on || String(row.id) === String(on));
+    if (matches.length !== 1) throw new HerdrError('machine-not-found', 'No unique configured machine matches on');
+    return matches[0];
+  };
   const machine = (on: MachineName, callOptions?: HcCallOptions): Promise<MachineSummary> => {
-    if (callOptions) return machines(callOptions).then(rows => { const match = rows.find(row => row.name === on); if (!match) throw new HerdrError('machine-not-found', 'No configured machine matches on'); return match; });
+    if (callOptions) return machines(callOptions).then(rows => selectedMachine(rows, on));
     const now = Date.now(), cached = machineValidations.get(on);
     if (cached && (cached.expiresAt === null || now < cached.expiresAt)) return cached.promise;
     for (const [name, entry] of machineValidations) if (entry.expiresAt !== null && now >= entry.expiresAt) machineValidations.delete(name);
     const promise = machines().then(rows => {
-      const m = rows.find(m => m.name === on); if (!m) throw new HerdrError('machine-not-found', 'No configured machine matches on');
+      const m = selectedMachine(rows, on);
       const entry = machineValidations.get(on); if (entry?.promise === promise) entry.expiresAt = Date.now() + 5000;
       return m;
     }).catch(error => { if (machineValidations.get(on)?.promise === promise) machineValidations.delete(on); throw error; });

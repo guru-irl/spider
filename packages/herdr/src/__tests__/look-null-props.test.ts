@@ -45,9 +45,15 @@ async function load(mod: 'agents' | 'spaces', supplied: null | undefined | Recor
     menu = menu.replace(pattern, `from '${url(module)}'`);
   }
   menu = menu.replace("'./move.js'", JSON.stringify(new URL('../../assets/agents/move.js', import.meta.url).href))
-    .replace("'./shared/feed.js'", JSON.stringify(new URL('../../assets/shared/feed.js', import.meta.url).href));
+    .replace("'./shared/feed.js'", JSON.stringify(new URL('../../assets/shared/feed.js', import.meta.url).href))
+    .replace("'./shared/navigation.js'", JSON.stringify(new URL('../../assets/shared/navigation.js', import.meta.url).href));
   const sharedUrl = new URL('../../assets/shared/feed.js', import.meta.url).href;
   const childSource = (await readFile(new URL('../../assets/agents/children.js', import.meta.url), 'utf8')).replace("'./shared/feed.js'", JSON.stringify(sharedUrl));
+  const navigationSource = (await readFile(new URL('../../assets/shared/navigation.js', import.meta.url), 'utf8'))
+    .replace("'../agents/children.js'", JSON.stringify(url(childSource)))
+    .replace("'./feed.js'", JSON.stringify(sharedUrl))
+    .replace("'./presentations.js'", JSON.stringify(new URL('../../assets/shared/presentations.js', import.meta.url).href));
+  menu = menu.replace(JSON.stringify(new URL('../../assets/shared/navigation.js', import.meta.url).href), JSON.stringify(url(navigationSource)));
   code = code.replace('"./move-menu.js"', JSON.stringify(url(menu)))
     .replace('"./spider-children.js"', JSON.stringify(url(childSource)))
     .replace('"./shared/feed.js"', JSON.stringify(new URL('../../assets/shared/feed.js', import.meta.url).href))

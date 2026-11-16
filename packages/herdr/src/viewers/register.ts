@@ -16,6 +16,7 @@ export interface ViewerRegistrationPorts {
   ownedRunEvents: { list(owner: Owner): Promise<readonly RunId[]>; subscribe(owner: Owner, listener: (id: RunId) => void): () => void };
   ipcDescriptor(): IpcDescriptor | null;
   panes: Pick<AuxiliaryPaneActor, 'acquire' | 'release' | 'park' | 'dispose' | 'reconcile'>; hc: HcClient; viewerExecutable: string; feedRoot: string;
+  presentedView?(runId: RunId, owner: Owner, options: { automatic: boolean; signal: AbortSignal }): Promise<TerminalHandle | null>;
   viewerLauncher?: ViewerLauncher; reportError?(error: unknown): void;
 }
 export interface ViewerRegistration extends Disposable { peek(runId: RunId): Promise<TerminalHandle | null>; launcher: ViewerLauncher }
@@ -24,9 +25,9 @@ export interface ManagedViewerLauncher extends ViewerLauncher {
   discard(runId: RunId, owner: Owner, address: TerminalAddress): Promise<void>;
 }
 /** Shared with the pane actor so concurrent opens reuse one local viewer. */
-export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' | 'ipcDescriptor' | 'viewerExecutable' | 'owner' | 'feedRoot'> & { piPackageRoot?: string; runInfo?(id: RunId, owner: Owner): ViewerRunInfo | Promise<ViewerRunInfo> }): ManagedViewerLauncher {
+export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' | 'ipcDescriptor' | 'viewerExecutable' | 'owner' | 'feedRoot'> & { piPackageRoot?: string; displayLeaseFile?: string; runInfo?(id: RunId, owner: Owner): ViewerRunInfo | Promise<ViewerRunInfo> }): ManagedViewerLauncher {
   const launches = new Map<string, { promise: Promise<TerminalAddress>; claim: { retained: boolean }; discard?: Promise<void> }>();
-  const keyFor = (runId: RunId, owner: Owner) => JSON.stringify([owner.sessionId, owner.terminal.coreId, owner.terminal.terminalId, runId]);
+  const keyFor = (runId: RunId, owner: Owner) => JSON.stringify([owner.sessionId, owner.terminal.coreId, owner.terminal.terminalId, runId, ports.displayLeaseFile ?? null]);
   const current = (owner: Owner, signal?: AbortSignal) => {
     const active = ports.owner(); const descriptor = ports.ipcDescriptor();
     return !signal?.aborted && active?.sessionId === owner.sessionId && active.generation === owner.generation
@@ -34,6 +35,7 @@ export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' |
       && descriptor?.sessionId === owner.sessionId && descriptor.generation === owner.generation;
   };
   async function recoverViewer(terminal: TerminalSummary, owner: Owner, runId: RunId, signal?: AbortSignal): Promise<boolean> {
+    if (ports.displayLeaseFile && terminal.labels['spider.display-lease'] !== ports.displayLeaseFile) return false;
     return recoverOwnedViewer(terminal, owner, runId, ports.hc, () => {
       if (!current(owner, signal)) throw new HerdrError('wrong-generation', 'Viewer owner is no longer current');
     });
@@ -100,9 +102,9 @@ export function createViewerLauncher(ports: Pick<ViewerRegistrationPorts, 'hc' |
       if (!current(owner, signal)) throw new HerdrError('wrong-generation', 'Viewer owner is no longer current');
       const parentName = (info.parentName || owner.name || 'Agent').replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 160);
       const displayName = (info.name || runId).replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, 120);
-      const handle = await ports.hc.run({ name: `run-${createHash('sha256').update(key).digest('hex').slice(0, 28)}`, argv: [process.execPath, ports.viewerExecutable, '--run', runId, '--session', owner.sessionId, '--feed-root', ports.feedRoot, '--intent', intent, ...(info.status ? ['--initial-status', info.status] : []), ...(info.dbPath && isAbsolute(info.dbPath) ? ['--run-db', info.dbPath] : []), ...(ports.piPackageRoot ? ['--pi-root', ports.piPackageRoot] : [])],
+      const handle = await ports.hc.run({ name: `run-${createHash('sha256').update(key).digest('hex').slice(0, 28)}`, argv: [process.execPath, ports.viewerExecutable, '--run', runId, '--session', owner.sessionId, '--feed-root', ports.feedRoot, '--intent', intent, ...(ports.displayLeaseFile ? ['--display-lease', ports.displayLeaseFile, '--generation', owner.generation] : []), ...(info.status ? ['--initial-status', info.status] : []), ...(info.dbPath && isAbsolute(info.dbPath) ? ['--run-db', info.dbPath] : []), ...(ports.piPackageRoot ? ['--pi-root', ports.piPackageRoot] : [])],
         cwd, parent: owner.terminal.address, labels: { [labels.session]: owner.sessionId, [labels.ownerCore]: owner.terminal.coreId,
-          [labels.ownerTerminal]: owner.terminal.terminalId, [labels.kind]: kinds.subagentViewer, [labels.run]: runId, [labels.parentName]: parentName, [labels.steer]: info.steer ?? 'headless', [labels.displayName]: displayName, [labels.viewerLifetime]: intent === 'automatic' || info.status && !isFinal(info.status) ? 'live' : 'saved' },
+          [labels.ownerTerminal]: owner.terminal.terminalId, ...(ports.displayLeaseFile ? { 'spider.display-lease': ports.displayLeaseFile, 'spider.view-generation': owner.generation } : {}), [labels.kind]: kinds.subagentViewer, [labels.run]: runId, [labels.parentName]: parentName, [labels.steer]: info.steer ?? 'headless', [labels.displayName]: displayName, [labels.viewerLifetime]: intent === 'automatic' || info.status && !isFinal(info.status) ? 'live' : 'saved' },
         background: true, noNotify: true, outliveParent: true });
       if (!current(owner, signal)) { await ports.hc.kill(handle.address); await ports.hc.rm(handle.address); throw new HerdrError('wrong-generation', 'Viewer owner changed during launch'); }
       return handle.address;
@@ -143,6 +145,7 @@ export function registerHerdrViewers(pi: ExtensionAPI, ports: ViewerRegistration
     };
     try {
       if (!(await ports.ownedRunEvents.list(owner)).includes(runId) || !current(owner, version)) return null;
+      if (ports.presentedView) { const shown = await ports.presentedView(runId, owner, { automatic, signal }); return current(owner, version) ? shown : null; }
       reservation = await ports.panes.acquire('subagent', runId, owner, { signal, timeoutMs: 10000, automatic }) ?? undefined;
       if (!current(owner, version)) { if (reservation) await ports.panes.release(reservation); return null; }
       if (reservation) reservations.set(runId, reservation);

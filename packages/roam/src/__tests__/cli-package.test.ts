@@ -299,14 +299,14 @@ it("the package gate refuses a missing roaming executable or link script", () =>
   const files = ["dist/extension.js", "dist/extension.js.ready", "dist/intercom/broker.mjs", "dist/dashboard/index.html", "dist/dashboard/assets/app-aaaaaaaa.js", "dist/dashboard/assets/app-aaaaaaaa.css",
     "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", ...skills,
     "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/intercom-switchover.mjs",
-    "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs"];
+    "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs", "packages/herdr/assets/shared/presentations.js"];
   const gate = (present: string[]) => spawnSync(process.execPath, ["scripts/check-package-files.cjs"], {
     input: JSON.stringify([{ files: present.map(path => ({ path })) }]), encoding: "utf8", timeout: 2000,
   });
   expect(gate(files).status).toBe(0);
   for (const missing of ["dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "scripts/link.mjs", "scripts/dev-link.mjs",
     "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs", "dist/intercom/broker.mjs",
-    "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "packages/intercom/skills/pi-intercom/SKILL.md"]) {
+    "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "packages/intercom/skills/pi-intercom/SKILL.md", "packages/herdr/assets/shared/presentations.js"]) {
     const result = gate(files.filter(file => file !== missing));
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(missing);

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'vite';
 import { createHerdrHarness } from './isolated.js';
+import { writeFixturePaneEndpoint } from './endpoint-fixture.js';
 import { createProductionHerdrCliPorts } from '../../../host/src/herdr/ports.js';
 import { readJournal, saveJournal } from '../setup/backup.js';
 import { rollbackHerdr } from '../setup/installer.js';
@@ -144,7 +145,7 @@ if(a[0]==='terminal-shell') {
       const value = JSON.parse(await fs.readFile(file, 'utf8'));
       if (value.kind === __KIND__) { value.seen = (value.seen ?? 0) + 1; await fs.writeFile(file, JSON.stringify(value)); if (value.seen === value.at) { value.kind = 'spent'; await fs.writeFile(file, JSON.stringify(value)); process.kill(process.pid, 'SIGKILL'); } }
     }`;
-  await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false' }, ssr: { noExternal: true }, plugins: [{ name: 'journal-faults', transform(code, id) {
+  await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, ssr: { noExternal: true }, plugins: [{ name: 'journal-faults', transform(code, id) {
     if (id.endsWith('/host/src/herdr/ports.ts')) {
       const site = "const child = spawn(spawnRequest.argv[0], spawnRequest.argv.slice(1),";
       if (!code.includes(site)) throw new Error('Session launcher site not found');
@@ -158,6 +159,7 @@ if(a[0]==='terminal-shell') {
       return code.replace(site, match => match + fault.replace('__KIND__', "'installer'"));
     }
   } }], build: { ssr: source, outDir: root, emptyOutDir: false, rollupOptions: { external: id => id.startsWith('node:') || ['@earendil-works/', 'better-sqlite3', 'sqlite-vec', 'onnxruntime-', 'fastembed', '@huggingface/', '@xenova/', 'turndown', 'typebox'].some(prefix => id.startsWith(prefix)), output: { entryFileNames: 'cli.mjs' } } } });
+  await writeFixturePaneEndpoint(root);
   const cli = join(root, 'cli.mjs'), app = join(bin, 'app');
   await mkdir(join(root, 'dist/herdr'), { recursive: true }); await copyFile(cli, join(root, 'dist/herdr/cli.mjs'));
   for (const [name, command] of [['pi', 'pi-stub'], ['app', 'app']] as const) { await writeFile(join(bin, name), `#!/bin/sh\nexec ${shellQuote(h.nodeBinary)} ${shellQuote(cli)} ${command} "$@"\n`); await chmod(join(bin, name), 0o700); }

@@ -4,6 +4,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { HerdrError } from '../client/parse.js';
 import { HERDR_KINDS, HERDR_LABELS, type AppClient, type AppPaneInspection, type AppSpaceInfo, type Destination, type HcClient, type Owner, type OwnerPlacement, type TerminalAddress, type TerminalSummary } from '../contracts.js';
 import { withProcessLock } from '../sessions/registry.js';
+import { paneAddress } from '../panes/codec.js';
+import { randomUUID } from 'node:crypto';
+import type { PaneServiceReply, PaneServiceRequest } from '../panes/types.js';
 
 export interface SessionOpenPorts {
   hc: HcClient;
@@ -16,6 +19,7 @@ export interface SessionOpenPorts {
   returnFocus?: OwnerPlacement;
   backgroundKeep?: boolean;
   cleanupApp?: AppClient & AppPaneInspection;
+  paneRequest?(request: PaneServiceRequest): Promise<PaneServiceReply>;
 }
 const openTimeoutMs = 20_000;
 const minimum = { cols: 60, rows: 8 };
@@ -26,6 +30,20 @@ const errorCode = (error: unknown) => error && typeof error === 'object' && 'cod
 export async function openOwnedSession(owner: Owner, destination: Destination, ports: SessionOpenPorts): Promise<TerminalAddress> {
   const { hc, app, signal } = ports;
   const address = owner.terminal.address;
+  if (signal?.aborted) throw new HerdrError('aborted', 'Session opening was cancelled');
+  if (ports.paneRequest) {
+    const snapshot = await ports.paneRequest({ version: 1, op: 'snapshot', operationId: randomUUID() });
+    const managed = snapshot.kind === 'snapshot' && snapshot.presentations.some(p => p.target.sessionId === owner.sessionId && p.target.generation === owner.generation);
+    if (managed || address.includes('/') || (await hc.identity()).coreId !== owner.terminal.coreId) {
+      if (signal?.aborted) throw new HerdrError('aborted', 'Session opening was cancelled');
+      const reply = await ports.paneRequest({ version: 1, op: 'open-existing', operationId: randomUUID(), sessionId: owner.sessionId, generation: owner.generation, slot: destination ? { ...destination, pane: null } : null });
+      if (reply.kind !== 'outcome' || reply.outcome.status !== 'complete' || !reply.outcome.presentation) throw new HerdrError('pane-unavailable', reply.kind === 'outcome' ? reply.outcome.reason : 'Pane service is unavailable');
+      const p = reply.outcome.presentation;
+      const display = p.mode === 'proxy' ? p.proxy : paneAddress(p.target.terminalId);
+      if (!display || display.includes('/')) throw new HerdrError('pane-unavailable', 'Mac presentation is unavailable');
+      return display;
+    }
+  }
   if (address.includes('/')) throw new HerdrError('view-on-mac', 'This needs the Herdr app on this Mac');
   const check = () => { if (signal?.aborted) throw new HerdrError('aborted', 'Session opening was cancelled'); };
   const command = async (name: string, args: Readonly<Record<string, unknown>>) => {

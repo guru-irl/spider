@@ -66,6 +66,19 @@ describe('external run viewer', () => {
     expect(page.text).toBe('firstsecond'); expect(JSON.stringify(page.events)).not.toContain('\\u001b');
     expect(page.events[0].summary).toBe('ESCALATION[blocked]: Stop'); expect(page.events[1].tool).toBe('tool');
   });
+  it('uses the acknowledged presentation path without a legacy viewer fallback', async () => {
+    const handlers = new Map<string, () => Promise<void>>(), owner = feed().owner;
+    const legacy = vi.fn(async () => { throw new Error('Legacy viewer must not launch'); });
+    const presented = vi.fn(async () => null);
+    const registration = registerHerdrViewers({ on: (name: string, handler: () => Promise<void>) => handlers.set(name, handler) } as unknown as ExtensionAPI, {
+      owner: () => owner, hc: {} as import('../contracts.js').HcClient, viewerExecutable: '/unused', feedRoot: '/unused', ipcDescriptor: () => null,
+      viewerLauncher: legacy, presentedView: presented,
+      ownedRunEvents: { list: async () => [runId], subscribe: () => () => {} },
+      panes: { reconcile: async () => {}, acquire: legacy, release: async () => {}, park: async () => {}, dispose: () => {} },
+    });
+    try { await handlers.get('session_start')!(); expect(await registration.peek(runId)).toBeNull(); expect(presented).toHaveBeenCalled(); expect(legacy).not.toHaveBeenCalled(); }
+    finally { await registration.dispose(); }
+  });
   it('creates one parented placed viewer for a queued run and reuses it on peek', async () => {
     const h = await createHerdrHarness('fake'); await h.start();
     const executable = join(h.root, 'viewer-fixture.mjs'); writeFileSync(executable, 'setInterval(() => {}, 1000);');

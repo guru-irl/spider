@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import type { TerminalAddress } from '../contracts.js';
 import type { PresenceRecord } from '../sessions/presence.js';
 import { assessSessionLiveness, inventorySnapshot } from '../sessions/lease.js';
 import type { SessionLaunchResult } from '../sessions/launcher.js';
 import { refuseExplicitExtensions } from '../sessions/registry.js';
 import { HerdrError } from '../client/parse.js';
 import { discoverSessions, selectedProcessInventory, type SessionDiscoveryPorts, type SessionManifest, type SessionSelection, type ResolvedSession } from './discovery.js';
-export type LaunchedSession = Omit<SessionLaunchResult, 'token'>;
+export type LaunchedSession = Omit<SessionLaunchResult, 'token'> & { presentationTerminal?: TerminalAddress };
 export interface CutoverPorts extends SessionDiscoveryPorts {
   signal?: AbortSignal;
   excludeFiles?: ReadonlySet<string>;

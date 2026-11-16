@@ -12,6 +12,9 @@ import { setupHerdr, rollbackHerdr, type SetupParts, type SetupRequest, type Ins
 import { DOCTOR_ITEMS, doctorHerdr, type DoctorParts, type DoctorFailure } from '../setup/doctor.js';
 import { runHerdrCli, type HerdrCliPorts } from '../setup/cli.js';
 import { readJournal, withSetupLock } from '../setup/backup.js';
+import { createProductionHerdrCliPorts } from '../../../host/src/herdr/ports.js';
+import { writePrivateJson } from '../sessions/registry.js';
+import { forgetCutoverTabs, readCutoverRecovery, recordSessionMove, type LayoutSnapshot } from '../spaces/setup.js';
 import { fixture, hash, realFs, registerSetupCleanup } from './setup-fixture.js';
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -55,3 +58,49 @@ test.each(publicationCases)('verified backup recovery resumes %s installed file 
   await f.h.close();
   expect(await f.h.remainingOwnedResources()).toEqual([]);
 }, 30000);
+
+test('B layout close ownership survives restart and preserves a later user close binding', async () => {
+  const f = await fixture(), path = join(f.request.config.app.home, 'keys.json');
+  const baseline = { global: { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down', 'cmd-shift-w': 'pane.close' }, terminal: { 'ctrl-v': 'terminal.paste_image' } };
+  await writeFile(path, JSON.stringify(baseline)); const keys = JSON.parse(await readFile(new URL('../../assets/keys.json', import.meta.url), 'utf8')), install = f.parts.installFiles;
+  f.parts.installFiles = async (request, context) => [...await install(request, context), { path, expected: hash(await readFile(path)), bytes: Buffer.alloc(0), keys }];
+  await setupHerdr(f.request, f.parts); const installed = JSON.parse(await readFile(path, 'utf8'));
+  expect(installed['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close'); installed['layout:spider-glass']['cmd-shift-w'] = 'my.close'; await writeFile(path, JSON.stringify(installed));
+  await readJournal(f.request.journalRoot); await rollbackHerdr(f.request, f.parts);
+  const restored = JSON.parse(await readFile(path, 'utf8')); expect(restored.global).toEqual(baseline.global); expect(restored.terminal).toEqual(baseline.terminal); expect(restored['layout:spider-glass']).toEqual({ 'cmd-shift-w': 'my.close' });
+});
+
+test('rollback preserves an unproved remote owner after the display disappears', async () => {
+  const f = await fixture(), journalRoot = join(f.request.config.globalRoot, 'herdr', 'spaces');
+  const file = join(f.h.root, 'session.jsonl');
+  await writeFile(file, JSON.stringify({ type: 'session', id: 'session-1', cwd: f.h.root }) + '\n');
+  const target = { file, cwd: f.h.root, sessionId: 'session-1', name: 'Session', spaceName: 'Space', spaceOrder: 0, sessionOrder: 0, extensionArguments: [] };
+  const result = { pid: 2147483000, startIdentity: 'old-start', sessionId: 'session-1', sessionFile: file, cwd: f.h.root, presentationTerminal: 'proxy-1' };
+  const path = join(journalRoot, 'spaces.json');
+  await writePrivateJson(path, { version: 1, focused: true, spaces: [{ name: 'Space', id: 'space-1', adopted: false }], tabs: [{ target, placement: { space: 'space-1', tab: 'tab-1', terminal: 'core-remote/t7' }, result, failure: null }] });
+  const before = await readFile(path, 'utf8');
+  const production = createProductionHerdrCliPorts(f.h.root, f.h.localEnv);
+  try {
+    const parts = await production.setupParts(f.request);
+    await expect(parts.rollback({ terminals: ['core-remote/t7' as never], identities: { 'session-1': 'old-start' } })).rejects.toMatchObject({ code: 'cutover-owner-live' });
+    expect(await readFile(path, 'utf8')).toBe(before);
+    expect((await readCutoverRecovery(journalRoot)).entries[0]).toMatchObject({ placement: { terminal: 'core-remote/t7' }, result: { presentationTerminal: 'proxy-1' } });
+  } finally { await production.dispose(); }
+});
+
+test('setup recovery preserves a moved remote presentation and its real owner', async () => {
+  const f = await fixture(), journalRoot = join(f.request.config.globalRoot, 'herdr', 'spaces');
+  const file = join(f.h.root, 'session.jsonl');
+  const target = { file, cwd: f.h.root, sessionId: 'session-1', name: 'Session', spaceName: 'Space', spaceOrder: 0, sessionOrder: 0, extensionArguments: [] };
+  const result = { pid: 101, startIdentity: 'start-101', sessionId: 'session-1', sessionFile: file, cwd: f.h.root, presentationTerminal: 'proxy-1' };
+  await writePrivateJson(join(journalRoot, 'spaces.json'), { version: 1, focused: true, spaces: [{ name: 'Space', id: 'space-1', adopted: false }], tabs: [{ target, placement: { space: 'space-1', tab: 'tab-1', terminal: 'core-remote/t7' }, result, failure: null }] });
+  const snapshot = { spaces: [{ id: 'other-space', name: 'Other', tabs: [{ id: 'other-tab', name: 'User tab', terminal: 'proxy-1', ownerSessionId: 'session-1' }] }] } as LayoutSnapshot;
+  expect(await recordSessionMove(journalRoot, { sessionId: 'session-1', terminal: 'core-remote/t7' as never }, snapshot)).toBe(true);
+  const recovered = await readCutoverRecovery(journalRoot);
+  expect(recovered.entries[0]).toMatchObject({ placement: { space: 'other-space', tab: 'other-tab', terminal: 'core-remote/t7' }, result: { presentationTerminal: 'proxy-1' }, manuallyMoved: true });
+  await expect(forgetCutoverTabs(journalRoot, recovered.createdTabs, snapshot)).rejects.toMatchObject({ code: 'cutover-tab-still-exists' });
+  const bytes = await readFile(join(journalRoot, 'spaces.json'), 'utf8');
+  expect(await recordSessionMove(journalRoot, { sessionId: 'session-1', terminal: 'core-remote/t7' as never }, snapshot)).toBe(true);
+  expect(await readFile(join(journalRoot, 'spaces.json'), 'utf8')).toBe(bytes);
+  expect((await readCutoverRecovery(journalRoot)).entries[0].placement.terminal).toBe('core-remote/t7');
+});

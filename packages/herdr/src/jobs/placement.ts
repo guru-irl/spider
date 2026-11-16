@@ -5,7 +5,7 @@ import { writePlacementRepair, clearPlacementRepair } from './placement-repairs.
 import { randomUUID } from 'node:crypto';
 import { withProcessLock } from '../sessions/registry.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import type { AppClient, AppPaneInspection, AuxiliaryPanes, HcClient, JobId, Owner, OwnerPlacement, PaneReservation, RunId, TerminalAddress, ViewerLauncher } from '../contracts.js';
+import type { AppClient, AppPaneInspection, AuxiliaryPanes, HcClient, JobId, Owner, OwnerPlacement, PaneReservation, RunId, ConsoleId, CoreId, PresentedAuxiliaryActor, TerminalHandle, TerminalAddress, ViewerLauncher } from '../contracts.js';
 import type { JobSlot } from './monitor.js';
 import { HerdrError } from '../client/parse.js';
 import { herdrErrorNotice } from '../notices.js';
@@ -23,6 +23,9 @@ export interface AuxiliaryPaneOptions {
   subagentViewer: ViewerLauncher;
   discardSubagentViewer(runId: RunId, owner: Owner, viewer: TerminalAddress): Promise<void>;
   remoteObserver?(id: JobId, owner: Owner, signal?: AbortSignal): Promise<TerminalAddress>;
+  ownerPresentation?(owner: Owner): Promise<TerminalAddress | null>;
+  /** Starts only a bindable waiting display on the selected local core. */
+  waitingPresentation?(kind: 'subagent' | 'console', id: RunId | ConsoleId, owner: Owner, signal?: AbortSignal): Promise<TerminalHandle>;
   limit?: number;
   /** Automatic subagent viewers open only when explicitly enabled. */
   automaticSubagentPanes?: boolean;
@@ -32,7 +35,7 @@ export interface AuxiliaryPaneOptions {
   clock(): number;
   reportError?(error: unknown): void;
 }
-export interface AuxiliaryPaneActor extends AuxiliaryPanes {
+export interface AuxiliaryPaneActor extends AuxiliaryPanes, PresentedAuxiliaryActor {
   reconcile(owner: Owner, signal?: AbortSignal): Promise<void>;
   acquire(kind: 'remote' | 'subagent', id: JobId | RunId, owner: Owner, options: PaneAcquireOptions): Promise<PaneReservation | null>;
   moveRun(id: RunId, owner: Owner, destination: MoveDestination, options: PaneAcquireOptions): Promise<PaneReservation | null>;
@@ -44,9 +47,12 @@ export interface AuxiliaryPaneActor extends AuxiliaryPanes {
 }
 interface Slot {
   token: JobSlot;
-  id: JobId | RunId;
+  id: JobId | RunId | ConsoleId;
   owner: Owner;
-  kind: 'remote' | 'subagent';
+  kind: 'remote' | 'subagent' | 'console';
+  presentationOwner?: { address: TerminalAddress; coreId: CoreId };
+  waitingDisplay?: TerminalAddress;
+  waitingClaimed?: boolean;
   placement: OwnerPlacement;
   reservation: PaneReservation | null;
   displayedAt: number;
@@ -108,12 +114,15 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     try { await Promise.race([previous.catch(() => {}), canceled]); }
     finally { signal.removeEventListener('abort', abort); }
   }
-  const focusKey = (owner: Owner) => `${options.appIdentity ?? 'app'}:${owner.terminal.coreId}:focus`;
+  const focusKey = (owner: Owner, coreId = owner.terminal.coreId) => `${options.appIdentity ?? 'app'}:${coreId}:focus`;
+  const ownerAddress = (s: Pick<Slot, 'owner' | 'presentationOwner'>) => s.presentationOwner?.address ?? s.owner.terminal.address;
+  const placementCore = (s: Pick<Slot, 'owner' | 'presentationOwner'>) => s.presentationOwner?.coreId ?? s.owner.terminal.coreId;
   const slots = new Map<string, Slot>();
   const displays = new Map<string, Promise<unknown>>();
   const automaticOpens = new Map<string, Promise<PaneReservation | null>>();
+  const presentedOpens = new Map<string, Promise<PaneReservation | null>>();
   const explicitRemoteOpens = new Map<string, number>();
-  const openKey = (id: JobId | RunId, owner: Owner) => JSON.stringify([id, owner.sessionId, owner.generation]);
+  const openKey = (id: JobId | RunId | ConsoleId, owner: Owner) => JSON.stringify([id, owner.sessionId, owner.generation]);
   const userOpens = new Map<string, { active: number; revision: number }>();
   function userOpen<T>(id: RunId, owner: Owner, perform: () => Promise<T>): Promise<T> {
     const key = openKey(id, owner), state = userOpens.get(key) ?? { active: 0, revision: 0 };
@@ -126,15 +135,15 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
   // Lifecycle ownership only. The launcher is the sole viewer identity cache.
   const viewers = new Map<TerminalAddress, { owner: Owner; runId: RunId }>();
   const terminals = new Map<TerminalAddress, TerminalSummary>();
-  const group = (s: Pick<Slot, 'owner' | 'placement'>) => `${s.owner.terminal.coreId}:${s.placement.space}:${s.placement.tab}`;
+  const group = (s: Pick<Slot, 'owner' | 'placement' | 'presentationOwner'>) => `${placementCore(s)}:${s.placement.space}:${s.placement.tab}`;
   const displayed = (g: string) => [...slots.values()].filter(s => group(s) === g && s.reservation !== null);
-  async function occupied(s: Pick<Slot, 'owner' | 'placement'>): Promise<number> {
+  async function occupied(s: Pick<Slot, 'owner' | 'placement' | 'presentationOwner'>): Promise<number> {
     const addresses = await app.tabTerminals(s.placement);
     // Native closes and manual moves may arrive before the core event stream.
     for (const local of displayed(group(s))) if (local.reservation && !addresses.includes(local.reservation.viewer)) local.reservation = null;
     let count = 0;
     for (const address of addresses) {
-      if (address === s.owner.terminal.address) continue;
+      if (address === ownerAddress(s)) continue;
       if ([...slots.values()].some(slot => slot.reservation?.viewer === address)) { count++; continue; }
       const terminal = await options.hc.get(address).catch(error => { if (code(error) === 'not_found') return null; throw error; });
       // A pane can briefly outlive its core terminal. Reserve its capacity until the app removes it.
@@ -146,7 +155,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     if (disposed) throw new HerdrError('disposed', 'Placement actor is closed');
     if (signal?.aborted) throw new HerdrError('aborted', 'Pane acquisition aborted');
   };
-  async function reserve(id: JobId | RunId, owner: Owner, kind: Slot['kind'], signal?: AbortSignal, observed?: OwnerPlacement): Promise<Slot> {
+  async function reserve(id: JobId | RunId | ConsoleId, owner: Owner, kind: Slot['kind'], signal?: AbortSignal, observed?: OwnerPlacement): Promise<Slot> {
     check(signal);
     const find = () => [...slots.values()].find(s => s.id === id && s.owner.sessionId === owner.sessionId && !(s.kind === 'subagent' && s.removedTerminal));
     const existing = find();
@@ -200,7 +209,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
   }
   async function ownerTabFallback(s: Slot, viewer: TerminalAddress, displayOptions: PaneAcquireOptions, displayName: string | undefined, changed: (value: boolean) => void): Promise<PaneReservation> {
     if (!app.tabIndex) throw new HerdrError('unavailable', 'Tab position is unavailable');
-    const owner = await app.ownerPlacement(s.owner.terminal.address);
+    const owner = await app.ownerPlacement(ownerAddress(s));
     if (owner.space !== s.placement.space || owner.tab !== s.placement.tab) throw new HerdrError('owner-tab-changed', 'Owner moved before pane acknowledgement');
     const reply = await app.command('tab.new', { space: owner.space, mod: 'pane', ...(displayName ? { name: displayName } : {}) });
     if (reply.error) throw new HerdrError(reply.error.code, reply.error.message);
@@ -224,7 +233,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       await focus(viewer);
       return acknowledged(s, viewer, { ...target, pane });
     } catch (error) {
-      if (adopted) await repair(viewer, target, s.owner.terminal.coreId).catch(report);
+      if (adopted) await repair(viewer, target, placementCore(s)).catch(report);
       changed(false);
       if (!placeholderClosed) await operation.run(undefined, async () => {
         const cleanup = await options.app.command('pane.close', { pane: target.pane });
@@ -235,7 +244,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
   }
   async function showBelowOwner(s: Slot, viewer: TerminalAddress, displayOptions: PaneAcquireOptions, displayName: string | undefined, changed: (value: boolean) => void): Promise<PaneReservation> {
     if (!app.focusedPane || !app.tabPanes || !app.tabIndex) return ownerTabFallback(s, viewer, displayOptions, displayName, changed);
-    const owner = await app.ownerPlacement(s.owner.terminal.address);
+    const owner = await app.ownerPlacement(ownerAddress(s));
     if (owner.space !== s.placement.space || owner.tab !== s.placement.tab) throw new HerdrError('owner-tab-changed', 'Owner moved before pane acknowledgement');
     const same = (a: OwnerPlacement | null, b: OwnerPlacement) => a?.space === b.space && a.tab === b.tab && a.pane === b.pane;
     const select = async (target: OwnerPlacement) => {
@@ -257,12 +266,14 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       if (!row) return null;
       const terminal = await options.hc.get(row.terminal).catch(error => { if (code(error) === 'not_found') return null; throw error; });
       const labels = terminal?.labels;
-      return labels?.[HERDR_LABELS.kind] === HERDR_KINDS.subagentViewer && labels[HERDR_LABELS.session] === s.owner.sessionId
+      const reservedViewer = [...slots.values()].some(slot => slot.kind === 'subagent' && slot.reservation?.viewer === row.terminal
+        && slot.owner.sessionId === s.owner.sessionId && slot.owner.generation === s.owner.generation);
+      return (labels?.[HERDR_LABELS.kind] === HERDR_KINDS.subagentViewer || reservedViewer) && labels?.[HERDR_LABELS.session] === s.owner.sessionId
         && labels[HERDR_LABELS.ownerCore] === s.owner.terminal.coreId && labels[HERDR_LABELS.ownerTerminal] === s.owner.terminal.terminalId ? row.terminal : null;
     };
-    let anchorTerminal = s.owner.terminal.address;
+    let anchorTerminal = ownerAddress(s);
     const panes = await app.tabPanes(owner);
-    const existing = new Set<TerminalAddress>([s.owner.terminal.address]);
+    const existing = new Set<TerminalAddress>([ownerAddress(s)]);
     let pastOwner = false;
     for (const row of panes) {
       if (row.pane === owner.pane) pastOwner = true;
@@ -308,7 +319,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     }
     const adjacent = placed.space === owner.space && placed.tab === owner.tab ? await neighbor(anchor, direction) : { safe: false, pane: null };
     if (!fits || !adjacent.safe || adjacent.pane !== placed.pane) {
-      await repair(viewer, anchor, s.owner.terminal.coreId, placed); changed(false);
+      await repair(viewer, anchor, placementCore(s), placed); changed(false);
       return ownerTabFallback(s, viewer, displayOptions, displayName, changed);
     }
     await focus(viewer);
@@ -316,7 +327,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
   }
   async function show(token: JobSlot, viewer: TerminalAddress, displayOptions: PaneAcquireOptions, onRetained?: () => void): Promise<PaneReservation | null> {
     const s = slot(token);
-    if (viewer === s.owner.terminal.address) throw new HerdrError('agent-pane-protected', 'An agent terminal cannot be an auxiliary pane');
+    if (viewer === s.owner.terminal.address || viewer === ownerAddress(s)) throw new HerdrError('agent-pane-protected', 'An agent terminal cannot be an auxiliary pane');
     const viewerLabels = (await options.hc.get(viewer)).labels;
     const protection = protectedKind(viewerLabels);
     if (protection) throw new HerdrError(protection, 'Session and payload terminals cannot be auxiliary panes');
@@ -324,7 +335,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     if (s.displaying) { const pending = s.displaying; onRetained?.(); await turn(pending, displayOptions.signal); return pending; }
     if (s.reservation && !explicit) { onRetained?.(); return s.reservation; }
     const g = group(s);
-    const key = focusKey(s.owner);
+    const key = focusKey(s.owner, placementCore(s));
     const previous = displays.get(key) ?? Promise.resolve();
     const display = async () => {
       let placementChanged = false;
@@ -340,10 +351,10 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
         if (s.kind === 'subagent' && displayOptions.automatic && !options.automaticSubagentPanes) {
           await abandon(token); return null;
         }
-        const current = await app.ownerPlacement(s.owner.terminal.address);
+        const current = await app.ownerPlacement(ownerAddress(s));
         if (current.space !== s.placement.space || current.tab !== s.placement.tab) throw new HerdrError('owner-tab-changed', 'Owner moved before pane acknowledgement');
         for (const ended of displayed(g)) if (ended.removedTerminal) await removeSlot(ended);
-        if (explicit && s.kind === 'subagent' && displayOptions.ownerRelative) return await showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName], changed);
+        if (explicit && (s.kind === 'subagent' || s.kind === 'console') && displayOptions.ownerRelative) return await showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName], changed);
         let occupancy = await occupied(s);
         if (displayOptions.automatic && occupancy >= limit) {
           await awaitAbsent(viewer, true);
@@ -369,7 +380,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       try { const result = await perform(); check(displayOptions.signal); return result; }
       catch (error) {
         if (placementChanged && (disposed || displayOptions.signal?.aborted)) {
-          await repair(viewer, s.placement, s.owner.terminal.coreId).catch(report); s.reservation = null;
+          await repair(viewer, s.placement, placementCore(s)).catch(report); s.reservation = null;
         }
         throw error;
       }
@@ -435,7 +446,10 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     const s = [...slots.values()].find(s => s.reservation === reservation); if (!s) return;
     return s.releasing ??= (async () => {
       await awaitAbsent(reservation.viewer, true);
-      if (s.kind === 'subagent') await stopViewer(reservation.viewer, s.owner, s.id as RunId);
+      if (s.waitingDisplay === reservation.viewer) {
+        await options.hc.kill(reservation.viewer);
+        await options.hc.rm(reservation.viewer);
+      } else if (s.kind === 'subagent') await stopViewer(reservation.viewer, s.owner, s.id as RunId);
       slots.delete(s.token.id);
     })().catch(error => { s.releasing = undefined; throw error; });
   }
@@ -469,7 +483,12 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
   async function removeSlot(s: Slot): Promise<void> {
     const terminal = s.removedTerminal; if (!terminal) return;
     return s.removing ??= (async () => {
-      if (s.kind === 'subagent') {
+      if (s.waitingDisplay === terminal) {
+        try { await app.ownerPlacement(terminal); return; }
+        catch (error) { if (code(error) !== 'owner-unplaced') throw error; }
+        const ended = await options.hc.get(terminal).catch(error => { if (code(error) === 'not_found') return null; throw error; });
+        if (ended?.state === 'finished' && !protectedKind(ended.labels)) await options.hc.rm(terminal);
+      } else if (s.kind === 'subagent') {
         // Native pane removal can lag the viewer's exit. Count its occupancy
         // without making new viewers wait for that acknowledgement.
         try { await app.ownerPlacement(terminal); return; }
@@ -587,7 +606,62 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     try { return await operation; }
     finally { s.displaying = undefined; if (displays.get(groupKey) === operation) displays.delete(groupKey); }
   }
+  async function reservePresented(kind: 'subagent' | 'console', id: RunId | ConsoleId, owner: Owner, request: PaneAcquireOptions): Promise<PaneReservation | null> {
+    const key = JSON.stringify([kind, id, owner.sessionId, owner.generation, owner.terminal.coreId, owner.terminal.terminalId]);
+    const pending = presentedOpens.get(key);
+    if (pending) { await turn(pending, request.signal); return pending; }
+    const opening = budget(request, async displayOptions => {
+      check(displayOptions.signal);
+      if (limit < 1 || !options.ownerPresentation || !options.waitingPresentation) return null;
+      const address = await options.ownerPresentation(owner);
+      check(displayOptions.signal);
+      if (!address) return null;
+      const placement = await app.ownerPlacement(address).catch(error => { if (code(error) === 'owner-unplaced') return null; throw error; });
+      if (!placement) return null;
+      const core = await options.hc.identity();
+      const ownerSize = await options.hc.get(address, { signal: displayOptions.signal }).catch(error => { if (code(error) === 'not_found') return null; throw error; });
+      if (!ownerSize || ownerSize.state !== 'live' || (ownerSize.cols ?? 0) < minimumPaneSize.cols || (ownerSize.rows ?? 0) < minimumPaneSize.rows) return null;
+      let s = [...slots.values()].find(slot => slot.kind === kind && slot.id === id && slot.owner.sessionId === owner.sessionId
+        && slot.owner.generation === owner.generation && slot.owner.terminal.coreId === owner.terminal.coreId
+        && slot.owner.terminal.terminalId === owner.terminal.terminalId && slot.presentationOwner && !slot.removedTerminal);
+      if (!s) {
+        s = { token: { id: randomUUID() }, id, kind, owner, placement, reservation: null, displayedAt: 0,
+          presentationOwner: { address, coreId: core.coreId } };
+        slots.set(s.token.id, s);
+      }
+      try {
+        if (!s.waitingDisplay) {
+          if (s.waitingClaimed) throw new HerdrError('presentation-uncertain', 'Waiting display launch is still unacknowledged');
+          s.waitingClaimed = true;
+          const waiting = await options.waitingPresentation(kind, id, owner, displayOptions.signal);
+          if (waiting.coreId !== core.coreId || waiting.address === owner.terminal.address || waiting.address === address)
+            throw new HerdrError('pane-not-owned', 'Waiting display must belong to the local presentation core');
+          s.waitingDisplay = waiting.address;
+        }
+        check(displayOptions.signal);
+        const reservation = await show(s.token, s.waitingDisplay, { ...displayOptions, automatic: false,
+          userInitiated: displayOptions.userInitiated ?? !displayOptions.automatic });
+        if (!reservation) {
+          await options.hc.kill(s.waitingDisplay); await options.hc.rm(s.waitingDisplay);
+          slots.delete(s.token.id); return null;
+        }
+        const size = await options.hc.get(reservation.viewer, { signal: displayOptions.signal });
+        if ((size.cols ?? 0) < minimumPaneSize.cols || (size.rows ?? 0) < minimumPaneSize.rows) {
+          await release(reservation); return null;
+        }
+        return reservation;
+      } catch (error) {
+        // A dispatched display remains claimed until its placement is repaired.
+        if (!s.waitingClaimed) slots.delete(s.token.id);
+        throw error;
+      }
+    });
+    presentedOpens.set(key, opening);
+    try { return await opening; }
+    finally { if (presentedOpens.get(key) === opening) presentedOpens.delete(key); }
+  }
   return {
+    reservePresented,
     reconcile: async (owner, signal) => {
       await stream.ready; check(signal);
       for (const candidate of [...terminals.values()]) {
@@ -728,7 +802,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
     dispose: async () => {
       if (disposed) return;
       disposed = true; unsubscribe();
-      try { for (const s of [...slots.values()]) if (s.kind !== 'subagent') await abandon(s.token); }
+      try { for (const s of [...slots.values()]) if (s.kind !== 'subagent' || s.waitingDisplay) await abandon(s.token); }
       finally { slots.clear(); viewers.clear(); userOpens.clear(); await stream.dispose(); }
     },
   };

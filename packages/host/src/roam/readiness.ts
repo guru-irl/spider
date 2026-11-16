@@ -15,6 +15,7 @@ import { unfinishedFreeze } from "@spider/roam/participant-supervisor";
 import { openLocalCore, readLocalIdentity } from "@spider/roam/runtime";
 import { participantCaptureReady } from "@spider/roam/production-supervisor";
 import { openJournal } from "@spider/roam/journal";
+export { createNativeHostingOutcomeReader } from "@spider/roam/hosting";
 export interface ParticipantAdmissionHooks {
   prepare(sessionId: string, file: string): Promise<void>;
   ready(sessionId: string, file: string, epoch: number, home: Home | null): Promise<void>;

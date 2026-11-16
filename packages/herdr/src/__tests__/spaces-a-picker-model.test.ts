@@ -89,13 +89,13 @@ describe('Go to navigation projections', () => {
     expect(targetLabels(pickerRows(inputs.spaces, targets, 'Native child'))).toEqual(['Writer', 'Native child']);
   });
 
-  it('shows local spaces but keeps native remote agent focus', () => {
+  it('shows local spaces and refuses native remote agent focus', () => {
     const inputs = snapshot({ agents: [agent('box-1.invalid/t2', 'box-1.invalid/p2', 'Remote agent', 's2', 'tb2')],
       terminals: [terminal('box-1.invalid/t2')], panes: [{ pane: 'box-1.invalid/p2', terminal: 'box-1.invalid/t2', tab: 'tb2', cwd: null }] });
     const targets = projectNavigation(inputs);
     const rows = pickerRows(inputs.spaces, targets, '');
     expect(rows.filter(row => row.kind === 'space').map(row => row.label)).toEqual(['Work']);
-    expect(targets.find(target => target.name === 'Remote agent')?.action).toEqual({ kind: 'focus', pane: 'box-1.invalid/p2' });
+    expect(targets.find(target => target.name === 'Remote agent')?.action).toBeNull();
     expect(targets.find(target => target.name === 'Remote agent')?.machine).toBe('box-1.invalid');
   });
 
@@ -246,25 +246,25 @@ describe('Go to navigation projections', () => {
     const inputs = snapshot({ agents: [agent('box-1.invalid/t1', 'box-1.invalid/p1', 'Native', 's2', 'tb2')],
       terminals: [terminal('box-1.invalid/t1')], feeds: [remoteFeed] });
     const targets = projectNavigation(inputs);
-    expect(targets.find(target => target.id === 'session:remote')).toMatchObject({ name: 'Remote', action: { kind: 'focus', pane: 'box-1.invalid/p1' } });
-    expect(targets.find(target => target.id === 'run:remote:r1')).toMatchObject({ action: { kind: 'ipc', request: { op: 'openRun', generation: 'gen-remote' } } });
+    expect(targets.find(target => target.id === 'session:remote')).toMatchObject({ name: 'Remote', action: { kind: 'pane', request: { op: 'open-existing', sessionId: 'remote', generation: 'gen-remote' } } });
+    expect(targets.find(target => target.id === 'run:remote:r1')).toMatchObject({ action: { kind: 'pane', request: { op: 'open-auxiliary', generation: 'gen-remote', view: { kind: 'subagent', runId: 'r1' } } } });
   });
 
   it.each([{ name: 'missing', coreId: undefined }, { name: 'replaced', coreId: 'new-core' }])(
-    'keeps native remote focus and drops feed actions when the remote core is $name', ({ coreId }) => {
+    'refuses native remote focus and drops feed actions when the remote core is $name', ({ coreId }) => {
       const remoteFeed = feed(owner('remote', 'box-1.invalid/t1', 'Old name', 'remote-core'), [run('r1', 'remote', 'Child')]);
       const inputs = snapshot({ agents: [agent('box-1.invalid/t1', 'box-1.invalid/p1', 'Native', 's2', 'tb2')],
         terminals: [terminal('box-1.invalid/t1')], feeds: [remoteFeed],
         machines: [{ name: 'box-1.invalid', layout: 'ready', ...(coreId ? { coreId } : {}) }] });
-      expect(projectNavigation(inputs)).toMatchObject([{ id: 'agent:box-1.invalid/t1', name: 'Native', action: { kind: 'focus', pane: 'box-1.invalid/p1' } }]);
+      expect(projectNavigation(inputs)).toMatchObject([{ id: 'agent:box-1.invalid/t1', name: 'Native', action: null }]);
       expect(projectNavigation(inputs)).toHaveLength(1);
     });
 
-  it('keeps native remote focus but disables feed capabilities without a local core identity', () => {
+  it('refuses native remote focus and disables feed capabilities without a local core identity', () => {
     const remoteFeed = feed(owner('remote', 'box-1.invalid/t1', 'Old name', 'remote-core'), [run('r1', 'remote', 'Child')]);
     const inputs = snapshot({ coreId: '', agents: [agent('box-1.invalid/t1', 'box-1.invalid/p1', 'Native', 's2', 'tb2')],
       terminals: [terminal('box-1.invalid/t1')], feeds: [remoteFeed] });
-    expect(projectNavigation(inputs)).toMatchObject([{ id: 'agent:box-1.invalid/t1', name: 'Native', action: { kind: 'focus', pane: 'box-1.invalid/p1' } }]);
+    expect(projectNavigation(inputs)).toMatchObject([{ id: 'agent:box-1.invalid/t1', name: 'Native', action: null }]);
     expect(projectNavigation(inputs)).toHaveLength(1);
   });
 

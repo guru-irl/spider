@@ -21,5 +21,5 @@ it('refuses to park a local roaming proxy with no local reopening feed', () => {
     (name, args) => { commands.push([name, args]); return null; }, message => { notices.push(message); });
   expect(parked).toBe(false);
   expect(commands).toEqual([]);
-  expect(notices).toEqual(["Send back works only for this computer's panes for now"]);
+  expect(notices).toEqual(["Pane target is unavailable"]);
 });

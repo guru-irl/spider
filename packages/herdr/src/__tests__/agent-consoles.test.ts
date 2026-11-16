@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { createHash } from 'node:crypto';
+import { openRetainedConsole } from './console-view-fixture.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -23,7 +25,7 @@ afterEach(async () => {
   }
 });
 type Launch = AgentConsoleLaunch;
-function api() { return consoleModule; }
+function api() { return { ...consoleModule, ensureAgentConsole: openRetainedConsole }; }
 async function fixture(mode: 'fake' | 'hc' = 'fake') {
   const h = await createHerdrHarness(mode); harnesses.push(h); await h.start();
   const remote = await createRemoteTestFixture(h); let counter = 0;
@@ -60,14 +62,14 @@ it.each(['batch', 'exec_file'] as const)('publishes the %s tool for the console 
   const withTool = tool === 'batch'
     ? { ...request, kind: 'batch' as const }
     : { ...request, source: { kind: 'file' as const, language: 'shell' as const, path: '/fixture/script.sh', code: 'echo file' } };
-  const console = await consoleModule.ensureAgentConsole(withTool, h.hc, h.localEnv);
+  const console = await openRetainedConsole(withTool, h.hc, h.localEnv);
   const envelope = JSON.parse((await h.hc.fileRead(request.on, join(console!.directory, 'command-0.json'))).toString());
   expect(JSON.parse(envelope.body)).toMatchObject({ jobId: request.job!.id, tool });
 }, 20000);
 it.skipIf(process.env.SPIDER_HERDR_E2E !== '1' || !existsSync(process.env.SPIDER_HERDR_HC_BINARY || join(homedir(), '.local/bin/hc')))('real isolated hc serializes parallel console creation (requires installed hc and SPIDER_HERDR_E2E=1)', async () => {
   const { h, launch } = await fixture('hc');
   const requests = await Promise.all(Array.from({ length: 8 }, () => launch()));
-  const handles = await Promise.all(requests.map(request => consoleModule.ensureAgentConsole(request, h.hc, h.localEnv)));
+  const handles = await Promise.all(requests.map(request => openRetainedConsole(request, h.hc, h.localEnv)));
   expect(new Set(handles.map(handle => handle!.address)).size).toBe(1);
   const terminal = await h.hc.get(handles[0]!.address);
   expect(terminal.labels).toMatchObject({ 'spider.kind': 'remote-console', 'spider.session': h.owner!.sessionId, 'spider.machine': 'remote.invalid' });
@@ -116,8 +118,8 @@ it('closes reachable consoles even when another machine needs a retry', async ()
   const { h, launch } = await fixture();
   await h.cli(['machine', 'add', '--via', join(h.root, 'via'), '--name', 'other.invalid', '--session', 'r', '--json']);
   const env = { ...h.localEnv, PI_SUBAGENT_CHILD: '1', PI_SUBAGENT_RUN_ID: 'partial-close-run' };
-  const offline = await consoleModule.ensureAgentConsole(await launch(), h.hc, env);
-  const reachable = await consoleModule.ensureAgentConsole(await launch(h.owner!, 'other.invalid' as MachineName), h.hc, env);
+  const offline = await openRetainedConsole(await launch(), h.hc, env);
+  const reachable = await openRetainedConsole(await launch(h.owner!, 'other.invalid' as MachineName), h.hc, env);
   const owner = { ...h.owner!, runId: 'partial-close-run' as RunId };
   let online = false;
   const hc = { ...h.hc, get: async (address: TerminalAddress) => { if (!online && address === offline!.address) throw new Error('machine unavailable'); return h.hc.get(address); } };
@@ -131,7 +133,7 @@ it('closes reachable consoles even when another machine needs a retry', async ()
 it('keeps a failed console close pending when inventory temporarily omits the machine', async () => {
   const { h, launch } = await fixture();
   const env = { ...h.localEnv, PI_SUBAGENT_CHILD: '1', PI_SUBAGENT_RUN_ID: 'inventory-retry-run' };
-  const console = await consoleModule.ensureAgentConsole(await launch(), h.hc, env);
+  const console = await openRetainedConsole(await launch(), h.hc, env);
   const owner = { ...h.owner!, runId: 'inventory-retry-run' as RunId };
   let online = false;
   const hc = { ...h.hc, get: async (address: TerminalAddress) => { if (!online) throw new Error('machine unavailable'); return h.hc.get(address); },
@@ -146,7 +148,7 @@ it('keeps a failed console close pending when inventory temporarily omits the ma
 
 it('reuses a console found by labels rather than creating a duplicate after a fresh activation', async () => {
   const { h, launch, remoteConsoles } = await fixture(); const module = api(); const request = await launch();
-  const existing = await h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: request.on, name: 'existing-console', labels: { 'spider.kind': 'remote-console', 'spider.session': h.owner!.sessionId, 'spider.machine': 'remote.invalid' }, noNotify: true, background: true, outliveParent: true });
+  const existing = await h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: request.on, name: 'existing-console', labels: { 'spider.kind': 'remote-console', 'spider.session': h.owner!.sessionId, 'spider.machine': 'remote.invalid', 'spider.owner-core': h.owner!.terminal.coreId, 'spider.owner-terminal': h.owner!.terminal.terminalId, 'spider.view-generation': h.owner!.generation, 'spider.runtime': request.target.runtimeSha256, 'spider.console-key': JSON.stringify([JSON.stringify([h.owner!.sessionId, null]), request.on]), 'spider.console-id': 'console-' + createHash('sha256').update(JSON.stringify([JSON.stringify([h.owner!.sessionId, null]), request.on])).digest('hex') }, noNotify: true, background: true, outliveParent: true });
   const found = await module.ensureAgentConsole(request, h.hc, h.localEnv);
   expect(found!.address).toBe(existing.address); expect(await remoteConsoles()).toHaveLength(1);
 }, 20000);
@@ -155,7 +157,8 @@ it('keeps the console journal attached to agent identity when the owning core ch
   const first = await consoleModule.ensureAgentConsole(request, h.hc, h.localEnv);
   const movedOwner = { ...h.owner!, terminal: { ...h.owner!.terminal, coreId: 'reconnected-core' as Owner['terminal']['coreId'] } };
   const second = await consoleModule.ensureAgentConsole(await launch(movedOwner), h.hc, h.localEnv);
-  expect(second!.address).toBe(first!.address); expect(second!.directory).toBe(first!.directory);
+  expect(second!.consoleId).toBe(first!.consoleId); expect(second!.directory).toBe(first!.directory);
+  expect(first).not.toHaveProperty('address'); expect(second).not.toHaveProperty('address');
   const head = JSON.parse(JSON.parse((await h.hc.fileRead('remote.invalid' as MachineName, join(first!.directory, 'head.json'))).toString()).body); expect(head.count).toBe(2);
 }, 20000);
 it('drops a stale preparation hold link when no console was ensured', async () => {

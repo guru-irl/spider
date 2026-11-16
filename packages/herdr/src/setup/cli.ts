@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { encodePaneServiceReply, encodeRemotePaneReply, paneId, parsePaneServiceRequest, parseRemotePaneRequest, PANE_REPLY_LIMIT } from '../panes/codec.js';
+import type { PaneServiceRequest, PaneServiceReply, RemotePaneRequest, RemotePaneReply } from '../panes/types.js';
 import { isAbsolute } from 'node:path';
 import { setupHerdr, rollbackHerdr, assertPlainShell, CoreOnlySetupError, type SetupParts, type SetupRequest } from './installer.js';
 import { readJournal } from './backup.js';
@@ -13,6 +15,10 @@ import { runAdminCli, ADMIN_USAGE } from '../ssh/admin-cli.js';
 export interface MemoryReviewTarget { scope: 'global' | 'repo'; repoKey: string | null; uuid: string }
 export type MemoryReviewReply = { ok: true; [key: string]: unknown } | { ok: false; code: string; message: string };
 export interface HerdrCliPorts {
+  panes?(request: PaneServiceRequest): Promise<PaneServiceReply>;
+  servePanes?(): Promise<void>;
+  proxyPane?(input: { id: string; bindingRoot: string; hcBinary: string }): Promise<number>;
+  remotePane?(request: RemotePaneRequest): Promise<RemotePaneReply>;
   request(configPath?: string): Promise<SetupRequest>;
   assertAgentDirectory?(request: SetupRequest): Promise<void>;
   setupParts(request: SetupRequest): Promise<SetupParts>;
@@ -34,7 +40,7 @@ async function readCoreRequest(ports: HerdrCliPorts, path?: string): Promise<Set
   try { return await ports.request(path); }
   catch (error) { if (error instanceof CoreOnlySetupError) return error.request; throw error; }
 }
-const USAGE = 'usage: node <installed-package>/dist/herdr/cli.mjs <command>\nCommands:\n  setup [--dry-run] [--replace-changed] [--config <absolute-user-file>] [--overwrite-unowned-keys] [--merge-native-keys | --decline-native-keys] [--allow-staging-app] [--adopt-existing-space <name>]\n  doctor [--config <absolute-user-file>]\n  rollback [--config <absolute-user-file>]\n  resume-offer --config <absolute-user-file>\n  resume --config <absolute-user-file> --file <absolute-session-file> --session-id <id> --cwd <absolute-directory>\n  ipc --descriptor <json> --request <json>\n  memory pending [--repo <absolute-repo-key>]...\n  memory approve|reject --scope global|repo [--repo <absolute-repo-key>] --uuid <uuid>\n  --ssh-shim <ssh-arguments>\n  --remote-observer --observe <address> --hc <absolute-binary> --nonce <nonce> --exit-file <absolute-file>\n  --help, -h' + `\n  ${ADMIN_USAGE}\n    Approve {path, sha256} in admin.wrappers. Reason: nonblank, at most 2048 characters, no controls.\n    Wrapper argv: destination first, then argv after --. Stdio and exit code pass through.\n    Audit: <globalRoot>/herdr/admin/audit.jsonl before launch. Children may use PI_SPIDER_SESSION_ID.\nSetup/doctor/rollback exit codes: 0 success; 1 failure; 2 usage error; 3 incomplete rollback.`;
+const USAGE = 'usage: node <installed-package>/dist/herdr/cli.mjs <command>\nCommands:\n  panes request|remote --json <request>\n  panes serve\n  panes proxy --id <id> --binding-root <absolute-path> --hc <absolute-path>\n  setup [--dry-run] [--replace-changed] [--config <absolute-user-file>] [--overwrite-unowned-keys] [--merge-native-keys | --decline-native-keys] [--allow-staging-app] [--adopt-existing-space <name>]\n  doctor [--config <absolute-user-file>]\n  rollback [--config <absolute-user-file>]\n  resume-offer --config <absolute-user-file>\n  resume --config <absolute-user-file> --file <absolute-session-file> --session-id <id> --cwd <absolute-directory>\n  ipc --descriptor <json> --request <json>\n  memory pending [--repo <absolute-repo-key>]...\n  memory approve|reject --scope global|repo [--repo <absolute-repo-key>] --uuid <uuid>\n  --ssh-shim <ssh-arguments>\n  --remote-observer --observe <address> --hc <absolute-binary> --nonce <nonce> --exit-file <absolute-file>\n  --help, -h' + `\n  ${ADMIN_USAGE}\n    Approve {path, sha256} in admin.wrappers. Reason: nonblank, at most 2048 characters, no controls.\n    Wrapper argv: destination first, then argv after --. Stdio and exit code pass through.\n    Audit: <globalRoot>/herdr/admin/audit.jsonl before launch. Children may use PI_SPIDER_SESSION_ID.\nSetup/doctor/rollback exit codes: 0 success; 1 failure; 2 usage error; 3 incomplete rollback.`;
 function verificationFailures(details: unknown): readonly DoctorFailure[] {
   if (!details || typeof details !== 'object' || !('failures' in details) || !Array.isArray(details.failures)) return [];
   return details.failures.filter((issue): issue is DoctorFailure => issue !== null && typeof issue === 'object'
@@ -65,6 +71,27 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
   const stderr = ports?.stderr ?? (text => process.stderr.write(text));
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) { stdout(USAGE + '\n'); return 0; }
   try {
+    if (argv[0] === 'panes') {
+      const unavailable = () => new HerdrError('setup-composition-unavailable', 'Pane composition is required');
+      const usage = () => new HerdrError('cli-usage', 'Expected panes request|remote --json <request>, panes serve, or panes proxy --id <id> --binding-root <absolute-path> --hc <absolute-path>');
+      if (argv[1] === 'serve' && argv.length === 2) { if (!ports?.servePanes) throw unavailable(); await ports.servePanes(); return 0; }
+      if (argv[1] === 'proxy') {
+        if (argv.length !== 8 || argv[2] !== '--id' || argv[4] !== '--binding-root' || argv[6] !== '--hc' || !isAbsolute(argv[5]) || !isAbsolute(argv[7])) throw usage();
+        let id: string; try { id = paneId(argv[3]); } catch { throw usage(); }
+        if (!ports?.proxyPane) throw unavailable();
+        return await ports.proxyPane({ id, bindingRoot: argv[5], hcBinary: argv[7] });
+      }
+      if (!['request', 'remote'].includes(argv[1]) || argv.length !== 4 || argv[2] !== '--json' || Buffer.byteLength(argv[3]) > PANE_REPLY_LIMIT) throw usage();
+      let value: unknown; try { value = JSON.parse(argv[3]); } catch { throw usage(); }
+      if (argv[1] === 'request') {
+        let request: PaneServiceRequest; try { request = parsePaneServiceRequest(value); } catch { throw usage(); }
+        if (!ports?.panes) throw unavailable(); stdout(encodePaneServiceReply(await ports.panes(request)) + '\n');
+      } else {
+        let request: RemotePaneRequest; try { request = parseRemotePaneRequest(value); } catch { throw usage(); }
+        if (!ports?.remotePane) throw unavailable(); stdout(encodeRemotePaneReply(await ports.remotePane(request)) + '\n');
+      }
+      return 0;
+    }
     if (argv[0] === 'admin') return await runAdminCli(argv.slice(1), process.env, async () => {
       if (!ports) throw new HerdrError('setup-composition-unavailable', 'Administration requires the host-resolved user policy');
       return (await readCoreRequest(ports)).config;

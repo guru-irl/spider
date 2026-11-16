@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { filterTopLevelAgents, projectAgentChildren } from '../agents/children.js';
 import { FEED_DISCONNECT_MS } from './feed.js';
+import { projectPanePresentations } from './presentations.js';
 
 const machineOfAddress = address => address?.includes('/') ? address.slice(0, address.indexOf('/')) : null;
 const statusOf = terminal => typeof terminal?.status === 'string' ? terminal.status : terminal?.status?.state ?? 'idle';
-const isProxy = (terminal, labels) => terminal?.labels?.[labels.kind] === 'roam-proxy';
+const isProxy = (terminal, labels) => Boolean(terminal && !terminal.address.includes('/') && ['roam-proxy', 'pane-proxy'].includes(terminal.labels?.[labels.kind]));
 
 function proxyMatches(terminal, feed, labels) {
   const values = terminal.labels;
@@ -58,6 +59,7 @@ export function sessionDisplayName(agent, terminal, feeds) {
 
 /** Use public snapshots and current feed capabilities to produce one row per identity. */
 export function projectNavigation(snapshot) {
+  if (snapshot.paneSnapshot) return presentedNavigation(snapshot);
   const { labels } = snapshot.contract;
   const feeds = snapshot.feeds.map(feed => verifiedFeed(feed, snapshot)).filter(Boolean);
   const top = filterTopLevelAgents(snapshot.agents, snapshot.terminals, snapshot.contract);
@@ -83,7 +85,8 @@ export function projectNavigation(snapshot) {
     const machine = machineFor(proxy ?? ownerTerminal ?? shown);
     const id = `session:${feed.sessionId}`;
     const fallback = visibleAgent ?? { address: shown.address, title: '', program: { name: '' } };
-    const action = proxy && pane ? { kind: 'focus', pane } : !available(machine) ? null : pane ? { kind: 'focus', pane } : feed.ipc ? {
+    const localPane = pane && !pane.includes('/') ? pane : null;
+    const action = proxy && localPane ? { kind: 'focus', pane: localPane } : machine ? { kind: 'pane', request: { op: 'open-existing', sessionId: feed.sessionId, generation: feed.generation, slot: null } } : !available(machine) ? null : localPane ? { kind: 'focus', pane: localPane } : feed.ipc ? {
       kind: 'ipc', descriptor: { version: 1, sessionId: feed.sessionId, generation: feed.generation, ...feed.ipc },
       request: { op: 'openSession', generation: feed.generation, destination: snapshot.destination },
     } : null;
@@ -121,8 +124,9 @@ export function projectNavigation(snapshot) {
       const childAvailable = available(childMachine), ownerAvailable = available(machine);
       const savedRun = child.kind === 'subagent' && child.retained && child.action?.kind === 'ipc' && ownerAvailable;
       let childAction = null;
-      if (ownerAvailable && childAvailable && childPane) childAction = { kind: 'focus', pane: childPane };
-      else if (ownerAvailable && (childAvailable || savedRun) && child.action?.kind === 'ipc') childAction = child.action;
+      if (ownerAvailable && childAvailable && !address?.includes('/') && childPane && !childPane.includes('/')) childAction = { kind: 'focus', pane: childPane };
+      else if (ownerAvailable && machine && child.kind === 'subagent') childAction = { kind: 'pane', request: { op: 'open-auxiliary', sessionId: feed.sessionId, generation: feed.generation, view: { kind: 'subagent', runId: child.key } } };
+      else if (!machine && ownerAvailable && (childAvailable || savedRun) && child.action?.kind === 'ipc') childAction = child.action;
       targets.push({ id: childId, kind: child.kind === 'native' ? 'agent' : child.kind, ownerId: parentId, sessionId: feed.sessionId,
         terminal: address, pane: childPane, space, tab,
         name: child.kind === 'console' ? `${parent.name} console` : nativeAgent ? sessionDisplayName(nativeAgent, child.terminal, []) : child.name,
@@ -146,13 +150,13 @@ export function projectNavigation(snapshot) {
     targets.push({ id: `agent:${agent.address}`, kind: 'agent', ownerId: null, sessionId: null, terminal: agent.address,
       pane, space: agent.space ?? null, tab: agent.tab ?? null, name: sessionDisplayName(agent, terminal ?? null, []),
       path: paneFor(agent.address)?.cwd ?? null, status: agent.status, machine, retained: false,
-      action: pane && (isProxy(terminal, labels) || available(machine)) ? { kind: 'focus', pane } : null });
+      action: pane && !pane.includes('/') && (isProxy(terminal, labels) || !machine && available(machine)) ? { kind: 'focus', pane } : null });
     claimedAgents.add(agent.address);
   }
   for (const terminal of snapshot.terminals) {
     if (!isProxy(terminal, labels) || terminal.state !== 'live' || claimedAgents.has(terminal.address)) continue;
     const pane = paneFor(terminal.address);
-    if (!pane) continue;
+    if (!pane || pane.pane.includes('/')) continue;
     const space = snapshot.spaces.find(item => item.tabs.some(tab => tab.id === pane.tab));
     const fallback = { address: terminal.address, title: '', program: { name: '' } };
     targets.push({ id: `agent:${terminal.address}`, kind: 'agent', ownerId: null, sessionId: null, terminal: terminal.address,
@@ -160,4 +164,57 @@ export function projectNavigation(snapshot) {
       path: pane.cwd, status: statusOf(terminal), machine: machineFor(terminal), retained: false, action: { kind: 'focus', pane: pane.pane } });
   }
   return targets;
+}
+
+function presentedNavigation(snapshot) {
+  const service = snapshot.paneSnapshot;
+  const native = snapshot.agents.filter(agent => !agent.address.includes('/')).map(agent => {
+    const terminal = snapshot.terminals.find(value => value.address === agent.address);
+    const pane = snapshot.panes.find(value => value.terminal === agent.address);
+    const space = snapshot.spaces.find(value => (value.machine ?? null) === null && value.tabs.some(tab => tab.id === (pane?.tab ?? agent.tab)));
+    return { address: agent.address, name: sessionDisplayName(agent, terminal, snapshot.feeds), isAgent: true,
+      labels: terminal?.labels ?? {}, space: space?.id ?? null, tab: pane?.tab ?? agent.tab ?? null };
+  });
+  const projected = projectPanePresentations({ agents: service.rows, presentations: service.presentations, native, localCoreId: snapshot.coreId });
+  const targets = [];
+  function add(row, parent = null) {
+    const source = service.rows.find(value => value.sessionId === row.sessionId);
+    const p = row.presentationId && service.presentations.find(value => value.id === row.presentationId);
+    const display = row.displayTerminal?.startsWith(snapshot.coreId + '/') ? row.displayTerminal.slice(snapshot.coreId.length + 1) : row.displayTerminal;
+    const pane = display && !display.includes('/') ? snapshot.panes.find(value => value.terminal === display) : null;
+    const fallback = display && !display.includes('/') ? snapshot.agents.find(value => value.address === display) : null;
+    const paneId = pane?.pane ?? fallback?.pane ?? null;
+    const generation = row.generation ?? parent?.generation ?? source?.generation;
+    const id = row.kind === 'subagent' ? `run:${row.sessionId}:${row.runId}` : row.kind === 'console' ? `console:${row.sessionId}:${row.consoleId}`
+      : row.sessionId ? `session:${row.sessionId}` : p ? `presentation:${p.id}` : `agent:${row.displayTerminal}`;
+    let action = null;
+    if (!row.unavailableReason) {
+      if (paneId && !paneId.includes('/')) action = { kind: 'focus', pane: paneId };
+      else if (row.kind === 'subagent' && generation) action = { kind: 'pane', request: { op: 'open-auxiliary', sessionId: row.sessionId, generation, view: { kind: 'subagent', runId: row.runId } } };
+      else if (row.kind === 'console' && generation) action = { kind: 'pane', request: { op: 'open-auxiliary', sessionId: row.sessionId, generation, view: { kind: 'console', consoleId: row.consoleId, machineKey: row.machineKey } } };
+      else if (row.sessionId && generation) action = { kind: 'pane', request: { op: 'open-existing', sessionId: row.sessionId, generation, slot: p ? null : snapshot.destination ? { ...snapshot.destination, pane: null } : null } };
+      else if (p?.role === 'shell') action = { kind: 'pane', request: { op: 'open-existing', presentationId: p.id, expectedRevision: p.revision,
+        targetIncarnation: { coreId: p.target.coreId, terminalId: p.target.terminalId, createdMs: p.target.createdMs } } };
+    }
+    const target = { id, kind: row.kind === 'session' ? 'agent' : row.kind, ownerId: parent?.id ?? null, sessionId: row.sessionId,
+      generation, presentationId: p?.id ?? null, expectedRevision: p?.revision ?? null,
+      terminal: row.execution?.address ?? row.displayTerminal, pane: paneId, space: row.space, tab: row.tab, name: row.name, path: row.cwd,
+      status: row.status, machine: row.machineLabel === 'This computer' ? null : row.machineLabel,
+      retained: row.kind === 'subagent' && ['done', 'failed', 'cancelled'].includes(row.status), action,
+      disabledReason: row.unavailableReason === 'not-in-hc' ? 'Not in an hc terminal' : row.unavailableReason || (!action ? 'Owning session unavailable' : undefined) };
+    targets.push(target);
+    for (const child of row.children) add(child, target);
+  }
+  for (const row of projected) add(row);
+  return targets;
+}
+
+/** Adapt the shared rows to the native sidebar's sorting and fold model. */
+export function navigationAgents(snapshot) {
+  return projectNavigation(snapshot).filter(target => target.ownerId === null && target.kind === 'agent').map(target => {
+    const native = snapshot.agents.find(agent => agent.address === target.terminal || agent.pane === target.pane && target.pane);
+    return { ...native, address: target.terminal ?? target.id, pane: target.pane, space: target.space, tab: target.tab,
+      space_name: snapshot.spaces.find(space => space.id === target.space)?.name ?? 'Unplaced', title: target.name,
+      program: native?.program ?? { name: 'pi' }, status: target.status, focused: native?.focused ?? false, pinned: native?.pinned ?? false, navigation: target };
+  });
 }

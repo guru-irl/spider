@@ -21,7 +21,7 @@ import { loadHerdrConfig } from "./production-hub";
 import { createParticipantSupervisor } from "./participant-supervisor";
 import { openLocalRuntime, readLocalIdentity } from "./runtime";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority, readReadiness } from "./session-control";
-import { observeHosting } from "./hosting";
+import { createNativeHostingOutcomeReader, observeHosting } from "./hosting";
 import { readPrivateBytes } from "./selected-files";
 import { createMachineIntercom } from "./intercom-runtime";
 import { createProductionIntercomMaintenance } from "./intercom-production";
@@ -161,6 +161,7 @@ export async function observeLocalHosting(root: string, options: { system?: Supe
     const client = createHcClient({ binary: herdr.core.binary, env: process.env }); hc = client;
     return await observeHosting({ db: runtime.db, journal: runtime.journal, authority: createRunningIntentAuthority(runtime.db), intents: createIntentStore(root),
     machineId: runtime.config.machineId, hubMachineId: runtime.config.hubMachineId,
+    terminalOutcome: createNativeHostingOutcomeReader(client),
     async live(ready) {
       const authoritative = await createRunningIntentAuthority(runtime.db).get(ready.sessionId);
       const intent: HostIntent = authoritative ?? { sessionId: ready.sessionId, epoch: ready.epoch, file: ready.file, cwd: ready.cwd, desired: "running", suspended: null, moveId: null };
@@ -263,9 +264,14 @@ export async function startProductionSupervisor(root: string, options: { system?
       },
       signal(pid, signal) { process.kill(pid, signal); },
     });
+    const hosting = { db: runtime.db, journal: runtime.journal, authority, intents: createIntentStore(root),
+      machineId: runtime.config.machineId, hubMachineId: runtime.config.hubMachineId,
+      // Owner liveness is probed separately; every inspection must classify the execution terminal.
+      live: async () => false, terminalOutcome: createNativeHostingOutcomeReader(eventClient) };
     const supervisor = createParticipantSupervisor({ root, agent: runtime.agent, clock, diagnostics,
       async identityCurrent() { const current = readLocalIdentity(root); return current.role === "box" && current.machineId === runtime.config.machineId && current.hubMachineId === runtime.config.hubMachineId && participantCaptureReady(root, current.machineId); },
       events: createSupervisorEvents(runtime.db.raw.name, eventClient),
+      async beforeInspect(sessionId) { await observeHosting({ ...hosting, sessionId }); },
       owner: intent => owner(root, intent, system),
       async launch(intent, operationId, mode) {
         const currentCore = await hc.coreId(new AbortController().signal);

@@ -8,7 +8,7 @@ import { runPanelScene } from './acceptance/i.js';
 import { HerdrLabelContract, type IntentionalNotification, type SessionFeed } from '../contracts.js';
 import { projectNavigation } from '../../assets/shared/navigation.js';
 import { describeOpenFailure } from '../../assets/shared/open-failure.js';
-import { FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply } from '../../assets/shared/feed.js';
+import { FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService } from '../../assets/shared/feed.js';
 import * as data from '../../assets/mods/spider/data.js';
 import * as sound from '../../assets/mods/spider/sound.js';
 
@@ -137,11 +137,11 @@ function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boo
     hc: async (args: string[]) => { calls.push(['hc', args]); return { code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [] }) }; },
     watchFolder: () => { let finish!: (paths: string[]) => void; const promise: any = new Promise(resolve => { finish = resolve; }); promise.cancel = () => { calls.push(['cancelWatch']); finish([]); }; state.watch = promise; calls.push(['watch']); return promise; },
     nextCommand: () => new Promise(resolve => { state.command = resolve; }),
-    exec: async (command: string, args: string[]) => { calls.push(['exec', command, args]); const request = JSON.parse(args[args.indexOf('--request') + 1]);
+    exec: async (command: string, args: string[]) => { calls.push(['exec', command, args]); if (args.includes('panes')) return { code: 0, stdout: JSON.stringify({ version: 1, kind: 'outcome', outcome: { status: 'complete', reason: 'presented', presentation: null } }) }; const request = JSON.parse(args[args.indexOf('--request') + 1]);
       return state.reply ? state.reply(request) : { code: 0, stdout: JSON.stringify({ ok: true, op: request.op, ...(request.op === 'openSession' ? { terminal: 'owner' } : { viewer: 'viewer' }) }) }; },
   };
   const createFeedReader = () => ({ read: async () => { calls.push(['read']); if (state.failRead) throw new Error('offline'); return { feeds: structuredClone(state.feeds), errors: structuredClone(state.snapshotErrors ?? []) }; }, close: async () => { calls.push(['closeReader']); } });
-  const api = { ...kit, ...base, ...data, ...sound, ...herdr, herdr, createFeedReader, projectNavigation, describeOpenFailure, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply };
+  const api = { ...kit, ...base, ...data, ...sound, ...herdr, herdr, createFeedReader, projectNavigation, describeOpenFailure, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService };
   const text = readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8').replace(/^import .*;\s*$/gm, '').replace('export default class SpiderPanel', 'class SpiderPanel');
   const Panel = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${text}; return SpiderPanel;`)(api);
   const view = new Panel(); view.init({}, cx);
@@ -549,7 +549,12 @@ it.each([['matching', 'remote-core', true], ['replaced', 'new-core', false], ['m
   await h.ready; await h.drain(); expect(h.calls.filter(call => call[0] === 'hc')).toEqual([]);
   byId(h.view.render(h.cx), 'need-intentional:owner:notice-1').events.on_click({}, h.cx); await h.drain();
   expect(h.calls.filter(call => call[0] === 'hc')).toEqual([['hc', ['server', 'status', '--json']], ['hc', ['machine', 'ls', '--json']]]);
-  if (enabled) expect(h.calls).toContainEqual(['run', 'pane.focus', { pane: 'box-1.invalid/pane' }]);
+  if (enabled) {
+    expect(h.calls.filter(call => call[0] === 'run')).toEqual([]);
+    const request = h.calls.find(call => call[0] === 'exec' && call[2].includes('panes'));
+    expect(request).toBeDefined();
+    expect(JSON.parse(request![2].at(-1))).toMatchObject({ op: 'open-existing', sessionId: 'owner', generation: remote.generation });
+  }
   else {
     expect(h.calls.filter(call => call[0] === 'run')).toEqual([]);
     expect(h.view.errors.some((error: any) => error.message === "box-1.invalid was rebuilt or can't be verified")).toBe(true);

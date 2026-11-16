@@ -16,7 +16,7 @@ beforeAll(async () => {
   root = await mkdtemp(resolve('.spider/scratch/admin-cli-')); cli = join(root, 'cli.mjs');
   execFileSync('git', ['init', '-q', root]);
   const external = [/^node:/, /^@earendil-works\//, /^better-sqlite3(?:\/|$)/, /^sqlite-vec(?:\/|$)/, /^fastembed(?:\/|$)/, /^onnxruntime-/, /^turndown(?:\/|$)/];
-  await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false' },
+  await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' },
     ssr: { noExternal: [/^@spider\//] }, build: { ssr: true, outDir: root, emptyOutDir: false, minify: false,
       rollupOptions: { input: resolve('packages/herdr/src/bin/cli.ts'), external, output: { entryFileNames: 'cli.mjs', codeSplitting: false } } } });
 });

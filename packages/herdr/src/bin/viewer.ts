@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { createViewerPorts } from '../viewers/ports.js';
 import { bundleDirectoryOf, piPackageRoot, piVersion, resolvePiFrom, supportedPiVersion } from '../viewers/pi-loader.js';
 import { TranscriptSanitizer } from '../viewers/transcript.js';
-import { runViewer } from '../viewers/program.js';
+import { readViewerDisplayLease, runViewer } from '../viewers/program.js';
 import { herdrErrorNotice } from '../notices.js';
 
 const controller = new AbortController();
@@ -15,6 +15,13 @@ let code = 0;
 try {
   const ports = createViewerPorts(process.argv.slice(2), { stdin: process.stdin, stdout: process.stdout, signal: controller.signal });
   if (ports) {
+    let starting = true;
+    const leaseTimer = ports.displayLeaseFile ? setInterval(() => {
+      void readViewerDisplayLease(ports.displayLeaseFile!, { sessionId: ports.sessionId, generation: ports.generation!, runId: ports.runId }).then(valid => {
+        if (!valid) { stop(); if (starting) process.exit(0); }
+      });
+    }, 1000) : undefined;
+    leaseTimer?.unref();
     let presentation: Awaited<ReturnType<typeof import('../viewers/pi-main.js').startPiViewer>> | undefined;
     try {
       const root = piPackageRoot(ports.piPackageRoot ?? process.env.SPIDER_VIEWER_PI_ROOT);
@@ -29,8 +36,9 @@ try {
       const reason = new TranscriptSanitizer().push(error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 300);
       ports.stdout.write(`Pi view unavailable. ${reason} Using the text view.\n`);
     }
+    starting = false;
     try { await runViewer({ ...ports, presenter: presentation?.presenter }); }
-    finally { presentation?.dispose(); }
+    finally { clearInterval(leaseTimer); presentation?.dispose(); }
   }
 } catch (error) {
   process.stderr.write(`${herdrErrorNotice(error)}\n`); code = 1;

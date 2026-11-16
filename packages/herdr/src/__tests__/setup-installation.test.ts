@@ -135,6 +135,7 @@ test('a second setup writes nothing and preserves unrelated settings', async () 
   expect(JSON.parse(await readFile(f.paths.props, 'utf8')).labelContract).toEqual({ version: 1, labels: {
     session: 'spider.session', ownerCore: 'spider.owner-core', ownerTerminal: 'spider.owner-terminal',
     kind: 'spider.kind', job: 'spider.job', run: 'spider.run', space: 'herdr.space', tab: 'herdr.tab', machine: 'spider.machine',
+    paneId: 'spider.pane-id', paneOperation: 'spider.pane-operation', targetCore: 'spider.target-core', targetTerminal: 'spider.target-terminal',
     parentName: 'spider.parent-name', steer: 'spider.steer', displayName: 'spider.display-name', viewerLifetime: 'spider.viewer-lifetime',
   }, kinds: HERDR_KINDS });
   expect(JSON.parse(await readFile(f.paths.props, 'utf8')).mods.map((mod: { props: { appBinary: string } }) => mod.props.appBinary)).toEqual(Array(5).fill(f.request.config.app.binary));
@@ -184,7 +185,8 @@ test('doctor asks every read-only inspector and reports an absent live status in
   expect(inspected).toContain('runtime-digest');
   expect(inspected).toContain('mappings-leases');
   expect(inspected).toContain('bypass-stripping');
-  expect(inspected).toHaveLength(26);
+  expect(inspected).toHaveLength(30);
+  for (const item of ['pane-core', 'pane-capabilities', 'pane-helper', 'pane-installation']) expect(inspected).toContain(item);
   expect(report.failures).toContainEqual({ item: 'status-instance', code: 'status-instance-unavailable', message: 'No live terminal', repair: 'Reload a TUI owner' });
   expect(report.warnings[0].code).toBe('tree-view-key-collision');
 });
@@ -690,8 +692,8 @@ test('doctor does not inspect app or core placement when no repair record exists
 });
 
 const sectionKeys = {
-  global: { 'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } } },
-  'layout:spider-glass': { 'cmd-shift-e': 'spider-pane.park' },
+  global: { 'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } }, 'cmd-t': 'mod.open:spider-machine-picker', 'cmd-d': 'mod.open:spider-machine-picker-right', 'cmd-shift-d': 'mod.open:spider-machine-picker-down' },
+  'layout:spider-glass': { 'cmd-shift-e': 'spider-pane.park', 'cmd-shift-w': 'spider-pane.close' },
 } as const;
 const legacyTerminalKeys = { 'cmd-shift-a': 'send:\u001b[97;6u' };
 
@@ -717,7 +719,8 @@ test('setup composes legacy and section keys in one write and records ownership'
   const first = await setupHerdr(f.request, f.parts);
   expect(first.writes.filter(p => p === path)).toEqual([path]);
   const keys = JSON.parse(await readFile(path, 'utf8'));
-  expect(keys.global).toEqual({ 'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } }, 'cmd-shift-w': 'pane.close' });
+  expect(keys.global).toEqual({ ...sectionKeys.global, 'cmd-shift-w': 'pane.close' });
+  expect(keys['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close');
   expect(keys.terminal).toEqual({ 'ctrl-v': 'terminal.paste_image', 'cmd-shift-a': legacyTerminalKeys['cmd-shift-a'] });
   expect(keys['layout:spider-glass']['cmd-shift-e']).toBe('spider-pane.park');
   const saved = await readJournal(f.request.journalRoot);

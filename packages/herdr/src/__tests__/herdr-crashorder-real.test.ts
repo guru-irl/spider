@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import { openRetainedConsole as ensureAgentConsole } from './console-view-fixture.js';
 import { expect, it, vi } from 'vitest';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -12,7 +13,7 @@ import { createJobMonitor, type JobNotice } from '../jobs/monitor.js';
 import { createHcClient } from '../client/hc.js';
 import { createJobStore } from '../jobs/store.js';
 import { processStartIdentity } from '../jobs/handoff.js';
-import { ensureAgentConsole, closeAgentConsoles } from '../remote/console.js';
+import { closeAgentConsoles } from '../remote/console.js';
 import { sha256 } from '../remote/runtime.js';
 import { parseHerdrConfig } from '../config.js';
 import { setupHerdr, runtimeInstallPath } from '../setup/installer.js';
@@ -54,7 +55,7 @@ it.skipIf(!enabled)('console closure after child SIGKILL guarantees foreground c
     const config = parseHerdrConfig(JSON.parse(await readFile(configFile, 'utf8'))), runtimeFile = resolve('dist/herdr/remote-runtime.mjs'), runtime = await readFile(runtimeFile);
     const runtimePath = runtimeInstallPath(config.machines[0].runtime.directory, runtime);
     expect((await h.hc.fileRead('remote.invalid' as never, runtimePath)).equals(runtime)).toBe(true);
-    await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false' }, ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('./herdr-crashfg-owner.ts', import.meta.url)), outDir: join(h.root, 'bundle'), emptyOutDir: false, minify: false,
+    await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('./herdr-crashfg-owner.ts', import.meta.url)), outDir: join(h.root, 'bundle'), emptyOutDir: false, minify: false,
       rollupOptions: { external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: 'owner.mjs' } },
     } });
     const gate = join(h.root, 'release'), foregroundEffect = join(h.root, 'foreground-effect'), backgroundEffect = join(h.root, 'background-effect');

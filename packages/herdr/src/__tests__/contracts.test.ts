@@ -191,6 +191,14 @@ export type RetiredHcIsolationProof = Actual.HcIsolationProof;
 
 test('fixed foundation contracts compile for their callers', () => {});
 
+export type PresentedContractChecks = [
+  Assert<Equal<Actual.PaneReservation['id'], JobId | RunId | Actual.ConsoleId>>,
+  Assert<Equal<Actual.PaneReservation['kind'], 'remote' | 'subagent' | 'console'>>,
+  Assert<Equal<Actual.PresentedAuxiliaryActor['reservePresented'], (kind: 'subagent' | 'console', id: RunId | Actual.ConsoleId, owner: Owner, options: import('../jobs/placement.js').PaneAcquireOptions) => Promise<PaneReservation | null>>>,
+  Assert<Equal<Actual.JobRecord['id'], JobId>>,
+];
+test('presented console reservations do not change job payload ids', () => {});
+
 declare namespace Wire {
   export type RunCursor = string & { readonly __kind: 'run-cursor' };
   export interface RunViewEvent { runId: RunId; id: number; type: string; text?: string; summary?: string; tool?: string; messageId?: string; streamed?: boolean }

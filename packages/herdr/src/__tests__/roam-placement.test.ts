@@ -7,6 +7,7 @@ import { createAppClient } from '../client/app.js';
 import { createHcClient } from '../client/hc.js';
 import { HerdrError } from '../client/parse.js';
 import { createTerminalRegistry } from '../sessions/registry.js';
+import { createPanePlacementStore } from '../panes/store.js';
 import { createRoamPlacement, rememberRoamSlot } from '../roam-placement.js';
 import { createClientFixture } from './testutil.js';
 import type { AppClient, HcClient, Owner, SpaceId, TabId } from '../contracts.js';
@@ -15,7 +16,7 @@ const ready = (terminal: string) => ({ origin: "hub-operation" as const, opId: '
 const slot = { space: 's1' as SpaceId, tab: 'tb1' as TabId };
 async function fixture() {
   const f = await createClientFixture();
-  const stateRoot = join(f.root, 'herdr');
+  const stateRoot = join(f.root, 'roam', 'placement');
   const hc = createHcClient({ binary: f.hcBinary, env: f.localEnv });
   const app = createAppClient({ binary: f.appBinary, env: f.localEnv });
   const registry = createTerminalRegistry(stateRoot);
@@ -494,3 +495,28 @@ test('refuses symlinked state without changing the target', async () => {
     expect(await readFile(target, 'utf8')).toBe('untouched');
   } finally { await h.close(); }
 }, 5000);
+
+test('roaming compatibility writes preserve generic placement state and revisions', async () => {
+  const h = await fixture();
+  try {
+    const store = createPanePlacementStore(h.stateRoot);
+    const choice = { session: 'session-1' as Owner['sessionId'], space: slot.space, tab: slot.tab, revision: 1 };
+    await store.update(state => ({ ...state, choices: [choice] }));
+    const before = await store.read();
+    await rememberRoamSlot(h.stateRoot, 'session-1', slot);
+    const after = await store.read();
+    expect(after.choices).toEqual([choice]);
+    expect(after.slots).toEqual([{ session: 'session-1', ...slot }]);
+    expect(after.version).toBe(2); expect(after.revision).toBeGreaterThan(before.revision);
+  } finally { await h.close(); }
+});
+
+test('compatibility reconciliation preserves a slot saved concurrently by the pane service', async () => {
+  const h = await fixture();
+  try {
+    const store = createPanePlacementStore(h.stateRoot), original = h.app.ownerPlacement;
+    h.app.ownerPlacement = async terminal => { await store.update(state => ({ ...state, slots: [...state.slots.filter(s => s.session !== 'session-other'), { session: 'session-other', ...slot }] })); return original(terminal); };
+    await h.create().reconcile([]);
+    expect((await store.read()).slots).toContainEqual({ session: 'session-other', ...slot });
+  } finally { await h.close(); }
+});

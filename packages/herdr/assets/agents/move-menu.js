@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { div } from 'gpui-kit';
 import { v_flex, h_flex, Scrollbar } from 'gpui-base';
-import { props, theme, spaces, panes, terminals, focused, run, exec, hc, readTextFile, openOverlay, closeOverlay, notify } from 'herdr';
-import { panelIpcArgv, parseSessionIpcReply, FEED_DISCONNECT_MS } from './shared/feed.js';
+import { props, theme, agents, spaces, panes, terminals, focused, run, exec, hc, readTextFile, openOverlay, closeOverlay, notify } from 'herdr';
+import { panelIpcArgv, parseSessionIpcReply, FEED_DISCONNECT_MS, requestPaneService } from './shared/feed.js';
+import { projectNavigation } from './shared/navigation.js';
 import { classifyPane, menuItems, moveTarget, killTarget, stopSessionTarget, moveTerminal, journalOwnsTerminal } from './move.js';
 
 export function initMoveMenu(view, cx) {
@@ -26,6 +27,19 @@ export function initMoveMenu(view, cx) {
 
 function targetFor(view) {
   const p = props() ?? {}, source = p.moveMenu ?? {};
+  if (source.navigationId && !view.spiderPaneSnapshot) return null;
+  if (view.spiderPaneSnapshot) {
+    const service = view.spiderPaneSnapshot, current = focused();
+    const targets = projectNavigation({ coreId: service.machines.find(machine => machine.alias === null)?.coreId,
+      destination: current?.space && current?.tab ? { space: current.space, tab: current.tab } : null, paneSnapshot: service,
+      agents: agents(), terminals: terminals(), panes: panes(), spaces: spaces(), feeds: [], machines: [], contract: p.labelContract, now: Date.now(), completedHours: 24, completedRows: 50 });
+    const presentation = service.presentations.find(item => item.proxy === source.terminal || item.mode === 'native' && item.target.terminalId === source.terminal);
+    const navigation = source.navigationId ? targets.find(item => item.id === source.navigationId)
+      : presentation ? targets.find(item => item.presentationId === presentation.id) : null;
+    const unmanagedNative = navigation && navigation.machine === null && navigation.kind === 'agent' && navigation.pane && !navigation.presentationId && !navigation.generation;
+    if (navigation && !unmanagedNative) return { kind: navigation.kind === 'agent' ? 'session' : navigation.kind === 'terminal' ? 'terminal' : 'subagent', navigation, terminal: navigation.terminal, pane: Boolean(navigation.pane), machine: null };
+    if (!unmanagedNative && (source.navigationId || presentation)) return null;
+  }
   if (source.kind === 'subagent') {
     const matches = (view.spiderFeeds ?? []).filter(feed => feed.runs?.rows?.some(row => row.id === source.key && row.ownerSessionId === feed.sessionId));
     const feed = matches.length === 1 ? matches[0] : null;
@@ -146,7 +160,22 @@ function choose(view, target, item, cx) {
       if (item.id === 'kill') await killTarget(target, { ipc: callOwner, run, confirm: spec => { view.moveConfirm = { ...spec, pending: false }; cx.notify(); } });
       else {
         const destination = item.id === 'hide' ? { kind: 'hide' } : item.tab ? { kind: 'tab', tab: item.tab } : { kind: 'new' };
-        await moveTarget(target, destination, { ipc: callOwner, movePlain: (terminal, dest) => movePlain(terminal, dest, cx, target.pane === false) });
+        await moveTarget(target, destination, { ipc: callOwner, movePlain: (terminal, dest) => movePlain(terminal, dest, cx, target.pane === false),
+          pane: request => requestPaneService(props() ?? {}, exec, request), spaces: spaces(),
+          createTab: async space => {
+            const p = props() ?? {}, operationId = Date.now().toString(36) + Math.random().toString(36).slice(2);
+            if (!p.appBinary) throw new Error('The app executable is unavailable');
+            const reply = await exec(p.appBinary, ['do', 'tab.new', '--space', space, '--mod', 'spider-pane-waiting', '--props', JSON.stringify({ operationId, presentationId: 'move-' + operationId })]);
+            if (reply.code !== 0) throw new Error('The Mac tab could not be created');
+            const result = JSON.parse(reply.stdout);
+            if (!result.tab || !result.pane) throw new Error('The Mac tab is unacknowledged');
+            return { space: result.space ?? space, tab: result.tab, pane: result.pane, operationId };
+          },
+          removePlaceholder: async placeholder => {
+            const current = panes().find(pane => pane.pane === placeholder.pane && pane.tab === placeholder.tab);
+            if (current?.mod === 'spider-pane-waiting' && current.props?.operationId === placeholder.operationId) run('pane.close', { pane: placeholder.pane });
+          },
+        });
       }
       if (!view.moveConfirm) closeOverlay(props().overlay);
     } catch (error) {
@@ -217,6 +246,6 @@ export function renderMoveMenu(view, cx) {
         .child(div().flex_1().truncate().child(item.label));
     })))
     .child(Scrollbar.vertical('move-menu-items').absolute().inset_0().mode('scrolling')))
-    .when(target.kind !== 'terminal' && !target.descriptor && !target.unmanaged,
+    .when(!target.navigation && target.kind !== 'terminal' && !target.descriptor && !target.unmanaged,
     el => el.child(div().px(8).pt(6).pb(4).text_size(11).text_color(t.muted).child('Owner unavailable')));
 }

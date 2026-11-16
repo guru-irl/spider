@@ -9,7 +9,7 @@ import { pickerRows, selectPickerRow } from '../../assets/picker/model.js';
 import { projectNavigation } from '../../assets/shared/navigation.js';
 import { describeOpenFailure } from '../../assets/shared/open-failure.js';
 import { assignSpaceIdentities } from '../../assets/shared/look.js';
-import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from '../../assets/shared/feed.js';
+import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService } from '../../assets/shared/feed.js';
 
 const source = resolve('packages/herdr/assets/picker/main.js');
 const localSpace = { id: 's1', index: 1, name: 'Work', machine: null, active: true, tabs: [{ id: 'tb1', name: 'Coding', active: true, status: null }] };
@@ -61,6 +61,7 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
     props: () => options.config === 'invalid' ? { ...config, labelContract: { version: 1, labels: {}, kinds: {} }, overlay: 'overlay' }
       : options.config === 'props' || !options.config ? { ...config, overlay: 'overlay' } : { overlay: 'overlay' },
     checking: options.checking ? () => true : undefined,
+    openOverlay: (spec: unknown) => calls.push(['openOverlay', spec]),
     appHome: () => '/fixture/app', readTextFile: async (path: string) => { calls.push(['readTextFile', path]); return options.config === 'file' ? JSON.stringify(config) : null; },
     spaces: () => state.spaces, agents: () => state.agents, terminals: () => state.terms, panes: () => state.panes,
     machines: () => [{ name: null, layout: 'ready' }, { name: 'box-1.invalid', layout: 'ready' }], focused: () => state.focus,
@@ -69,6 +70,11 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
     hc: async (args: string[]) => { calls.push(['hc', args]); return { code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [] }) }; },
     exec: async (command: string, args: string[], options?: unknown) => {
       calls.push(['exec', command, args, options]);
+      if (args.includes('panes')) {
+        const request = JSON.parse(args.at(-1)!);
+        if (request.op === 'snapshot') return { code: state.paneSnapshot ? 0 : 1, stdout: JSON.stringify(state.paneSnapshot ?? null) };
+        return { code: 0, stdout: JSON.stringify({ version: 1, kind: 'outcome', outcome: { status: 'complete' } }) };
+      }
       if (args.includes('ipc')) return state.ipcReply ? await state.ipcReply(JSON.parse(args[args.indexOf('--request') + 1]), options) : { code: 0, stdout: JSON.stringify({ ok: true, op: 'openSession', terminal: 't1' }) };
       return { code: 0, stdout: JSON.stringify({ version: 1, port: 1234, pid: 123, token: 'a'.repeat(64) }) };
     },
@@ -87,12 +93,50 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
     const entries = state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, updatedAt: Date.now() }));
     return { ok: true, json: async () => ({ version: 1, entries, changes: state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, feed: item })), errors: [] }) };
   };
-  const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => Object.assign(kit.div(), { inputElement: true }) }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, describeOpenFailure, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply };
+  const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => Object.assign(kit.div(), { inputElement: true }) }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, describeOpenFailure, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService };
   const body = readFileSync(source, 'utf8').replace(/^import .*;\s*$/gm, '').replace(/export default class Picker/, 'class Picker').replace(/export class Picker/, 'class Picker').replace(/export default Picker;?/g, '');
   const Picker = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${body}; return Picker;`)(api);
   const view = new Picker(); view.init({}, cx);
   return { view, cx, state, calls, inputs, timers, watches, config, herdr };
 }
+
+function sourceSnapshot(name: string | null) {
+  const target = { coreId: 'remote-core', terminalId: 'remote-owner', address: 'remote-core/remote-owner', createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'remote-session', generation: 'remote-generation', homeEpoch: 1, runId: null, consoleId: null, name, cwd: '/project' };
+  return { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, presentations: [], rows: [{ sessionId: target.sessionId, generation: target.generation, owner: { terminal: { address: target.address } }, target, name, status: 'working', machineKey: 'box-1.invalid', updatedAt: Date.now(), children: [{ runId: 'remote-child', name: 'Source child', status: 'working' }], consoles: [], unavailableReason: null }] };
+}
+
+it('keeps source-owned names and child actions without a local feed or remote app layout', async () => {
+  const h = host({ feeds: [] });
+  h.state.paneSnapshot = sourceSnapshot('Source writer');
+  try {
+    await h.view.ready;
+    const root = h.view.render();
+    expect(text(root)).toContain('Source writer');
+    expect(text(root)).toContain('Source child');
+    expect(text(root)).not.toContain('Pi · Pi · Pi');
+    expect(textStyle(root, 'Source writer')).toMatchObject({ font_family: 'JetBrains Mono', text_size: 13, weight: 400 });
+    expect(root.styles.bg?.[0]).toBe('#161618fe');
+    await h.view.activate('session:remote-session');
+    const requests = h.calls.filter(call => call[0] === 'exec' && call[2].includes('panes')).map(call => JSON.parse(call[2].at(-1)));
+    expect(requests.filter(request => request.op === 'snapshot')).toHaveLength(2);
+    expect(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'remote-session', generation: 'remote-generation', slot: { space: 's1', tab: 'tb1', pane: null } }));
+    expect(h.calls.filter(call => call[0] === 'run' && call[1] === 'pane.focus')).toEqual([]);
+  } finally { await h.view.close(); }
+});
+
+it('hides an unnamed source owner and its children rather than using a generic agent name', async () => {
+  const h = host({ feeds: [] });
+  h.state.paneSnapshot = sourceSnapshot(null);
+  try {
+    await h.view.ready;
+    expect(text(h.view.render())).not.toContain('Agent');
+    expect(text(h.view.render())).not.toContain('Source child');
+    h.state.paneSnapshot.rows[0].name = 'Source writer';
+    await h.view.refresh();
+    expect(text(h.view.render())).toContain('Source writer');
+    expect(text(h.view.render())).toContain('Source child');
+  } finally { await h.view.close(); }
+});
 
 it('renders neutral shape rows and named sessions without an input border or shadow', async () => {
   const h = host(); await h.view.ready;
@@ -480,12 +524,12 @@ it('surfaces an uncertain IPC result without retrying it', async () => {
   await h.view.close();
 });
 
-it('uses local creation commands after a remote focus and never passes machine to tab.new', async () => {
+it('opens the machine picker in a Mac space after remote focus and keeps new space local', async () => {
   const tab = host({ config: 'missing' }); await tab.view.ready;
   tab.state.spaces = [{ ...localSpace, active: false }, { ...remoteSpace, active: true }]; tab.state.focus = { space: remoteSpace.id, tab: remoteSpace.tabs[0].id, pane: 'remote-pane' };
   await tab.view.activate('new-tab');
-  expect(tab.calls).toContainEqual(['run', 'tab.new', { space: 's1' }]);
-  expect(tab.calls.find(call => call[0] === 'run' && call[1] === 'tab.new')[2]).not.toHaveProperty('machine');
+  expect(tab.calls.find(call => call[0] === 'openOverlay')?.[1]).toMatchObject({ mod: 'spider-machine-picker', props: { continuation: 'menu', intent: { space: 's1', place: 'tab', anchor: null } } });
+  expect(tab.calls.filter(call => call[0] === 'run' && call[1] === 'tab.new')).toEqual([]);
   const space = host({ config: 'missing' }); await space.view.ready;
   space.state.spaces = [{ ...localSpace, active: false }, { ...remoteSpace, active: true }]; space.state.focus = tab.state.focus;
   await space.view.activate('new-space');

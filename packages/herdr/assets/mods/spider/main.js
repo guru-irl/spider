@@ -4,7 +4,7 @@ import { View, div, svg } from 'gpui-kit';
 import { v_flex, h_flex, Button } from 'gpui-base';
 import { exec, run, theme, watchFolder, panes, spaces, shared, setShared, props } from 'herdr';
 import * as herdr from 'herdr';
-import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from './shared/feed.js';
+import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService } from './shared/feed.js';
 import { panelSessionState, projectSpacePanel, projectNotifications, pruneDismissed, readDismissed, notificationBadge, panelIsShown, projectMemoryReview, projectSessionView, selectedSpace, notificationText, panelConfigProblem, soundPreference, describePanelProblems, describeFeedError, doctorCommand } from './data.js';
 import { projectNavigation } from './shared/navigation.js';
 import { describeOpenFailure } from './shared/open-failure.js';
@@ -357,6 +357,7 @@ export default class SpiderPanel extends View {
       const target = this.navigationTargets().find(row => row.id === (fresh.runId ? `run:${fresh.sessionId}:${fresh.runId}` : `session:${fresh.sessionId}`)), action = target?.action;
       if (!action) throw new Error(target?.disabledReason || 'Owner unavailable');
       if (action.kind === 'focus') run('pane.focus', { pane: action.pane });
+      else if (action.kind === 'pane') await requestPaneService(this.config, exec, action.request);
       else if (action.kind === 'keep') run('terminal.keep', { terminal: action.terminal, place: 'tab' });
       else {
         const feed = this.feeds.find(row => row.sessionId === current.sessionId);

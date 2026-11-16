@@ -5,9 +5,9 @@ import { dirname, join, resolve } from "node:path";
 export function createFixtureHerdr(checkout: string): void {
   const entries = join(checkout, "dist/herdr");
   mkdirSync(entries, { recursive: true });
-  for (const entry of ["cli", "viewer", "viewer-pi", "feed-reader", "remote-runtime", "subagent-supervisor"]) {
+  for (const entry of ["cli", "viewer", "viewer-pi", "feed-reader", "remote-runtime", "subagent-supervisor", "pane-endpoint"]) {
     const remote = entry === "remote-runtime", supervisor = entry === "subagent-supervisor";
-    writeFileSync(join(entries, `${entry}.mjs`), `// SPIDER_HERDR_RUNTIME_ENTRY=${remote}\n${remote ? "// A runtime request file is required\n" : ""}${supervisor ? "// A subagent supervisor request file is required.\n" : ""}export {};\n`);
+    writeFileSync(join(entries, `${entry}.mjs`), `// SPIDER_HERDR_RUNTIME_ENTRY=${remote}\n// SPIDER_PANE_ENDPOINT_ENTRY=${entry === "pane-endpoint"}\n${remote ? "// A runtime request file is required\n" : ""}${supervisor ? "// A subagent supervisor request file is required.\n" : ""}export {};\n`);
   }
   const intercom = join(checkout, "dist/intercom");
   mkdirSync(intercom, { recursive: true });

@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 export const storyIds = Array.from({ length: 56 }, (_, i) => `S${String(i + 1).padStart(2, '0')}`);
 export const roamStoryIds = ['R01', 'R02', 'R03', 'R04', 'R05', 'R11', 'R12', 'R13', 'R14', 'R14local'];
 const allStoryIds = [...storyIds, ...roamStoryIds];
-const validStoryId = id => typeof id === 'string' && (allStoryIds.includes(id) || /^H-[a-z0-9-]+$/.test(id));
+const validStoryId = id => typeof id === 'string' && (allStoryIds.includes(id) || id === 'B00' || /^H-[a-z0-9-]+$/.test(id));
 export const profileIds = {
   headless: [...storyIds.filter(id => id !== 'S53'), 'R01', 'R02', 'R03', 'R04', 'R05', 'R11', 'R12', 'R13', 'R14'],
   ci: ['S03', 'S04', 'S14', 'S27', 'S45', 'S46', 'S47', 'S48', 'S49', 'S51', 'S55', 'S56'],
@@ -53,7 +53,12 @@ export function parseOptions(argv, env = process.env) {
     if (!env.SPIDER_HERDR_REAL_MACHINE?.trim()) throw new Error('prerequisite: explicit remote machine required');
     options.machine = env.SPIDER_HERDR_REAL_MACHINE;
   }
-  if (options.tier === 'app') {
+  const proxyPrerequisite = options.tier === 'app' && options.ids.length === 1 && options.ids[0] === 'B00';
+  if (proxyPrerequisite) {
+    options.displayUuid = env.SPIDER_HERDR_TEST_DISPLAY_UUID || 'isolated-proxy-no-capture';
+    options.consent = true;
+  }
+  if (options.tier === 'app' && !proxyPrerequisite) {
     if (env.SPIDER_HERDR_APP_TESTS !== '1') throw new Error('prerequisite: native app consent required');
     if (!env.SPIDER_HERDR_TEST_DISPLAY_UUID?.trim()) throw new Error('prerequisite: owned built-in display UUID required');
     options.displayUuid = env.SPIDER_HERDR_TEST_DISPLAY_UUID;
@@ -104,7 +109,7 @@ export function buildMatrix(tier, selected, reports) {
     if (typeof report.evidence !== 'string' || !report.evidence) throw new Error('missing report evidence');
     seen.add(report.id);
   }
-  const harnessIds = [...new Set([...selected, ...reports.map(x => x.id)].filter(id => id.startsWith('H-')))].sort();
+  const harnessIds = [...new Set([...selected, ...reports.map(x => x.id)].filter(id => id.startsWith('H-') || id === 'B00'))].sort();
   return [...allStoryIds, ...harnessIds].map(id => {
     const report = reports.find(x => x.id === id) ?? {
       id, tier, result: selected.includes(id) ? 'failed' : 'not exercised', evidence: 'invocation.json',
@@ -152,6 +157,7 @@ export function storyWorkerEnvironment(fenced, caller, tier) {
     ...(caller.SPIDER_HERDR_E2E_HC ? { SPIDER_HERDR_E2E_HC: caller.SPIDER_HERDR_E2E_HC } : {}),
     ...(tier === 'app' && caller.SPIDER_HERDR_E2E_APP ? { SPIDER_HERDR_E2E_APP: caller.SPIDER_HERDR_E2E_APP } : {}),
     ...(tier === 'app' && caller.SPIDER_SPACES_A_SCREENSHOTS_013 === '1' ? { SPIDER_SPACES_A_SCREENSHOTS_013: '1' } : {}),
+    ...(tier === 'app' && caller.SPIDER_HERDR_PROXY_APP_SOURCE ? { SPIDER_HERDR_PROXY_APP_SOURCE: caller.SPIDER_HERDR_PROXY_APP_SOURCE } : {}),
     ...(tier === 'headless' && base && upstream ? { SPIDER_HERDR_E2E_R14_BASE: base, SPIDER_HERDR_E2E_R14_UPSTREAM: upstream } : {}) };
 }
 export function storyWorkers(options) {

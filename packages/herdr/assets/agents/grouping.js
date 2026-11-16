@@ -7,8 +7,9 @@ const addressMachine = address => {
 };
 
 export function agentMachine(agent, terminals, contract, terminalIndex) {
+  if (agent.navigation) return agent.navigation.machine;
   const labels = (terminalIndex ? terminalIndex.get(agent.address) : terminals.find(terminal => terminal.address === agent.address))?.labels;
-  if (labels?.[contract.labels.kind] === 'roam-proxy') {
+  if (['roam-proxy', 'pane-proxy'].includes(labels?.[contract.labels.kind])) {
     return labels[contract.labels.machine] || addressMachine(labels[contract.labels.ownerTerminal]) || addressMachine(agent.address);
   }
   return addressMachine(agent.address);

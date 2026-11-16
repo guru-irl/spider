@@ -7,7 +7,7 @@ import { pickerRows, selectPickerRow } from './model.js';
 import { projectNavigation } from '../shared/navigation.js';
 import { describeOpenFailure } from '../shared/open-failure.js';
 import { assignSpaceIdentities } from '../shared/look.js';
-import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from '../shared/feed.js';
+import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService } from '../shared/feed.js';
 
 const BG = '#161618fe', SELECTED = '#ffffff14', HOVER = '#ffffff12', FAINT = '#ffffff0d';
 const absolute = value => typeof value === 'string' && (/^\//.test(value) || /^[a-zA-Z]:[\\/]/.test(value)) && !value.includes('\0');
@@ -27,7 +27,7 @@ function nativeTargets(agents, terminals, panes) {
     return [{ id: `agent:${agent.address}`, kind: 'agent', ownerId: null, sessionId: null, terminal: agent.address, pane,
       space: agent.space ?? null, tab: agent.tab ?? null, name,
       path: null, status: agent.status ?? 'idle', machine: agent.address.includes('/') ? agent.address.split('/')[0] : null,
-      retained: false, action: pane ? { kind: 'focus', pane } : null }];
+      retained: false, action: pane && !pane.includes('/') && !agent.address.includes('/') ? { kind: 'focus', pane } : null }];
   });
 }
 
@@ -36,7 +36,7 @@ export class Picker extends View {
     this.cx = cx; this.handle = cx.focus_handle(); this.closed = false; this.filter = ''; this.selectedId = null; this.scroll = 0;
     const focus = herdr.focused?.();
     this.returnFocus = focus?.space && focus?.tab && focus?.pane ? { space: focus.space, tab: focus.tab, pane: focus.pane } : null;
-    this.feeds = []; this.targetSource = 'pending'; this.coreId = ''; this.machineIds = new Map(); this.identityAt = null; this.pending = new Set(); this.problem = null;
+    this.paneSnapshot = null; this.feeds = []; this.targetSource = 'pending'; this.coreId = ''; this.machineIds = new Map(); this.identityAt = null; this.pending = new Set(); this.problem = null;
     const props = herdr.props() ?? {}; this.overlay = props.overlay; this.config = validConfig(props) ? props : null;
     this.input = InputState.new({ placeholder: 'Go to a space, tab, or agent' });
     this.input.on('change', (_event, current) => { this.filter = this.input.value(); this.selectedId = selectPickerRow(this.rows(), null, 0); current.notify(); });
@@ -113,7 +113,8 @@ export class Picker extends View {
     if (this.closed || !this.reader) return false;
     let success = false;
     try {
-      const [snapshot] = await Promise.all([this.reader.read(), this.refreshIdentity()]);
+      const [snapshot, paneSnapshot] = await Promise.all([this.reader.read(), requestPaneService(this.config, herdr.exec, { op: 'snapshot' }).catch(() => null), this.refreshIdentity()]);
+      this.paneSnapshot = paneSnapshot;
       if (this.closed) return false;
       this.feeds = snapshot.feeds; this.targetSource = 'feed'; this.problem = null; success = true;
     } catch { if (!this.closed) { if (this.targetSource === 'pending') this.targetSource = 'native'; this.problem = 'Session information is unavailable'; } }
@@ -129,7 +130,7 @@ export class Picker extends View {
     const machines = herdr.machines().map(machine => ({ ...machine, ...(this.machineIds.has(machine.name) ? { coreId: this.machineIds.get(machine.name) } : {}) }));
     if (this.targetSource === 'pending') return pickerRows(spaces, [], this.filter).filter(row => row.kind === 'space');
     let targets = this.targetSource === 'feed' ? projectNavigation({ spaces, agents, terminals, panes, feeds: this.feeds, coreId: this.coreId,
-      destination, machines, contract: this.config.labelContract, now: Date.now(), completedHours: this.config.retention?.completedHours ?? 24,
+      destination, paneSnapshot: this.paneSnapshot, machines, contract: this.config.labelContract, now: Date.now(), completedHours: this.config.retention?.completedHours ?? 24,
       completedRows: this.config.retention?.completedRows ?? 50 }) : nativeTargets(agents, terminals, panes);
     if (this.targetSource === 'feed') {
       const labels = this.config.labelContract.labels, visible = new Set();
@@ -139,7 +140,9 @@ export class Picker extends View {
           const feedName = this.feeds.some(feed => feed.sessionId === target.sessionId && feed.owner.name && feed.owner.name === target.name);
           const labelName = terminals.some(terminal => (terminal.address === target.terminal || target.sessionId && terminal.labels?.[labels.session] === target.sessionId)
             && terminal.labels?.[labels.displayName] === target.name && typeof target.name === 'string' && target.name.trim());
-          if (!feedName && !labelName) return false;
+          const sourceName = this.paneSnapshot?.rows.some(row => row.sessionId === target.sessionId && row.generation === target.generation
+            && [row.name, row.target?.name].some(name => typeof name === 'string' && name.trim() && name === target.name));
+          if (!feedName && !labelName && !sourceName) return false;
         }
         visible.add(target.id); return true;
       }).map(target => target.sessionId ? target : { ...target, path: null });
@@ -157,7 +160,7 @@ export class Picker extends View {
     try {
       let row = this.rows().find(item => item.id === id && item.enabled);
       if (!row) { if (/^(session|run|console|agent):/.test(id)) this.problem = 'Owning session unavailable'; return; }
-      if (row.kind === 'target' && row.target.action?.kind === 'ipc') {
+      if (row.kind === 'target' && ['ipc', 'pane'].includes(row.target.action?.kind)) {
         if (!this.reader || !await this.refresh() || this.closed) return;
         row = this.rows().find(item => item.id === id && item.enabled);
         if (!row) { this.problem = 'Owning session unavailable'; return; }
@@ -168,12 +171,14 @@ export class Picker extends View {
       else if (row.kind === 'new-tab') {
         const local = herdr.spaces().find(space => space.id === row.space && space.machine === null);
         if (!local) { this.problem = 'No local space is available'; return; }
-        herdr.run('tab.new', { space: local.id });
+        const operationId = Date.now().toString(36) + Math.random().toString(36).slice(2);
+        herdr.openOverlay({ mod: 'spider-machine-picker', kind: 'dialog', width: 440, height: 480, frame: 'none', props: { continuation: 'menu', machineKey: null, intent: { operationId, space: local.id, place: 'tab', anchor: null, program: { kind: 'shell' } } } });
       } else if (row.kind === 'new-space') herdr.run('space.new', { machine: '' });
       else if (row.kind === 'target') {
         const action = row.target.action;
         if (!action) return;
         if (action.kind === 'focus') herdr.run('pane.focus', { pane: action.pane });
+        else if (action.kind === 'pane') await requestPaneService(this.config, herdr.exec, action.request);
         else {
           const requestId = Date.now().toString(36).padStart(10, '0') + Math.random().toString(36).slice(2).padEnd(13, '0') + Math.random().toString(36).slice(2).padEnd(13, '0');
           const keep = herdr.commands?.().find(command => command.name === 'terminal.keep');

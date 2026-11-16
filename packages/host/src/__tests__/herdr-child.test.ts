@@ -13,6 +13,10 @@ import { execFileSync } from 'node:child_process';
 import { setupHerdr, runtimeInstallPath, standardHerdrConfigPath } from '../../../herdr/src/setup/installer.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
+import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
+import { readRetainedAgentConsole, type AgentConsoleLaunch } from '../../../herdr/src/remote/console.js';
+import { openRetainedConsole } from '../../../herdr/src/__tests__/console-view-fixture.js';
+import { sha256 } from '../../../herdr/src/remote/runtime.js';
 
 afterEach(() => vi.unstubAllEnvs());
 async function childFixture(location: 'standard' | 'relative' = 'standard') {
@@ -23,6 +27,7 @@ async function childFixture(location: 'standard' | 'relative' = 'standard') {
   const config = { enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: ['managed.invalid', 'box.invalid', 'MyBox.invalid'], runtime: { cwd: h.directories.remote, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
   const runtime = Buffer.from(stripTypeScriptTypes(await readFile(fileURLToPath(new URL('../../../herdr/src/remote/runtime.ts', import.meta.url)), 'utf8')));
   await mkdir(join(h.root, 'dist/herdr'), { recursive: true }); await writeFile(join(h.root, 'dist/herdr/remote-runtime.mjs'), runtime);
+  await writeFixturePaneEndpoint(h.root);
   execFileSync('git', ['init', '-q', h.root]);
   globalConfig.set('herdr.enabled', true);
   const configPath = location === 'standard' ? standardHerdrConfigPath(config.globalRoot) : join(config.globalRoot, 'relative-config.json');
@@ -46,7 +51,11 @@ async function childFixture(location: 'standard' | 'relative' = 'standard') {
   const ctx = { cwd: h.root, mode: 'rpc', hasUI: false, ui: { notify() {}, setWidget(name: string) { widgets.push(name); } }, sessionManager: { getSessionId: () => 'child-session', getSessionFile: () => undefined, getBranch: () => [] } };
   const mount = mountHerdr(pi as never, { packageRoot: h.root, actionContext: () => { throw new Error('child action context'); }, reportError: error => errors.push(error), views: { agents: { open: async () => { throw new Error('child agents'); } }, todos: { handler: async () => {} }, usage: { handler: async () => {} }, memory: async () => {}, loop: { handler: async () => {} } }, dataSource: { resolveRunDb: () => { throw new Error('child feed'); }, openApprovalDbs: () => { throw new Error('child approvals'); }, readUsage: async () => { throw new Error('child usage'); }, scheduler: { listTriggers: () => [], subscribe: () => () => {} } } });
   const emit = async (name: string, event: unknown) => { for (const fn of hooks.get(name) ?? []) await fn(event, ctx); };
-  return { h, mount, ctx, pi, hooks, config, globalConfig, configPath, runtimePath: runtimeInstallPath(config.machines[0].runtime.directory, runtime), setupCallCount, sent, widgets, errors, protectedFiles, emit, async close() { await emit('session_shutdown', { reason: 'quit' }); await mount.dispose(); globalConfig.restore(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); } };
+  const on = 'remote.invalid' as import('../../../herdr/src/contracts.js').MachineName;
+  const consoleRequest: AgentConsoleLaunch = { owner: h.owner!, on,
+    target: { ...config.machines[0].runtime, on, environment: {}, nodePath: process.execPath, runtimePath: runtimeInstallPath(config.machines[0].runtime.directory, runtime), runtimeSha256: sha256(runtime) },
+    source: { kind: 'code', language: 'javascript', code: 'explicit console view' } };
+  return { h, mount, ctx, pi, hooks, config, globalConfig, configPath, consoleRequest, runtimePath: runtimeInstallPath(config.machines[0].runtime.directory, runtime), setupCallCount, sent, widgets, errors, protectedFiles, emit, async close() { await emit('session_shutdown', { reason: 'quit' }); await mount.dispose(); globalConfig.restore(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); } };
 }
 it('child host starts only its own remote execution and job monitor, never parent resources', async () => {
   const f = await childFixture();
@@ -63,17 +72,20 @@ it('child host starts only its own remote execution and job monitor, never paren
     expect(f.widgets).toEqual([]); expect(f.sent).toEqual([]); expect(f.errors).toEqual([]);
     for (const path of f.protectedFiles) expect(await readFile(path, 'utf8')).toBe('parent-owned bytes');
     const herdrFiles = await readdir(join(f.h.directories.global, 'herdr'));
-    expect(herdrFiles.sort()).toEqual(['config.json', 'jobs', 'processes', 'sessions', 'setup']);
+    expect(herdrFiles.sort()).toEqual(['config.json', 'installation.json', 'jobs', 'locks', 'processes', 'sessions', 'setup']);
     const calls = (await f.h.calls()).slice(f.setupCallCount);
     expect(calls.filter(c => ['label', 'set-labels'].includes(c.argv[0]))).toEqual([]);
     const launches = calls.filter(call => call.argv[0] === 'run' && call.argv.includes('--on'));
     const labels = launches.map(call => Object.fromEntries(call.argv.flatMap((arg, index) => arg === '--label' ? [call.argv[index + 1]!.split('=', 2)] : [])));
     expect(labels.map(label => [label['spider.kind'], label['spider.job'] ?? null])).toEqual([
-      ['remote-console', null], ['exec', exec.details.remote?.jobId], ['exec-file', file.details.remote?.jobId], ...batch.details.map(result => ['batch', result.remote?.jobId]),
+      ['exec', exec.details.remote?.jobId], ['exec-file', file.details.remote?.jobId], ...batch.details.map(result => ['batch', result.remote?.jobId]),
     ]);
     for (const label of labels) expect(label).toMatchObject({ 'spider.session': f.h.owner!.sessionId, 'spider.owner-core': f.h.owner!.terminal.coreId, 'spider.owner-terminal': f.h.owner!.terminal.terminalId, 'spider.machine': 'remote.invalid', 'spider.run': 'child-run' });
-    const consoleCall = launches[0];
-    const metadata = JSON.parse(JSON.parse((await f.h.hc.fileRead('remote.invalid' as never, join(consoleCall.argv[consoleCall.argv.indexOf('--console') + 1]!, 'console.json'))).toString()).body);
+    const retained = await readRetainedAgentConsole(f.consoleRequest, f.h.hc);
+    expect(retained).toMatchObject({ runId: 'child-run', name: 'worker · remote.invalid' });
+    const metadata = JSON.parse(JSON.parse((await f.h.hc.fileRead('remote.invalid' as never, join(retained!.directory, 'console.json'))).toString()).body);
+    const head = JSON.parse(JSON.parse((await f.h.hc.fileRead('remote.invalid' as never, join(retained!.directory, 'head.json'))).toString()).body);
+    expect(head.count).toBe(4);
     expect(metadata.title).toBe('worker · remote.invalid');
     expect(await readFile(join(f.h.directories.local, 'app-calls.jsonl'), 'utf8')).toBe('');
     expect(await f.mount.guard({ toolName: 'spider', input: { action: 'exec', language: 'shell', code: 'echo fine', on: 'remote.invalid' } })).toBeUndefined();
@@ -87,8 +99,11 @@ it('child console lifecycle keeps reload alive and closes the run console on qui
     await f.emit('session_start', { reason: 'startup' });
     await runExec({ on: 'remote.invalid', language: 'javascript', code: "console.log('console entry')" }, { cwd: f.h.root, ...f.mount.execution() });
     const rows = (await f.h.cli(['ls', '--all', '--json'], 'remote') as { terminals: { address: string; labels: Record<string, string> }[] }).terminals;
-    const consoles = rows.filter(row => row.labels['spider.kind'] === 'remote-console'); expect(consoles).toHaveLength(1);
-    const address = `remote.invalid/${consoles[0].address}` as import('../../../herdr/src/contracts.js').TerminalAddress;
+    const consoles = rows.filter(row => row.labels['spider.kind'] === 'remote-console'); expect(consoles).toHaveLength(0);
+    const retained = await readRetainedAgentConsole(f.consoleRequest, f.h.hc); expect(retained).not.toBeNull();
+    const view = await openRetainedConsole(f.consoleRequest, f.h.hc); expect(view).not.toBeNull();
+    expect(view!.consoleId).toBe(retained!.consoleId);
+    const address = view!.address;
     await f.emit('session_shutdown', { reason: 'reload' }); expect(await f.h.hc.get(address)).toMatchObject({ state: 'live' });
     await f.emit('session_start', { reason: 'reload' }); await f.emit('session_shutdown', { reason: 'quit' });
     await expect(f.h.hc.get(address)).rejects.toMatchObject({ code: 'not_found' });
@@ -206,7 +221,7 @@ it('the parent opens a child job from its run journal with session and owner che
     const journal = createJobStore(join(f.config.globalRoot, 'herdr/jobs'), f.h.owner!.sessionId, run.id as never), before = await readFile(journal.path, 'utf8');
     store.finish(run.id, { status: 'done', result: 'child journal output' });
     vi.stubEnv('PI_SUBAGENT_CHILD', '0');
-    await build({ define: { 'import.meta.spiderHerdrRuntimeEntry': 'false' }, configFile: false, logLevel: 'silent', ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/bin/cli.ts', import.meta.url)), outDir: join(f.h.root, 'dist/herdr'), emptyOutDir: false, minify: false, rollupOptions: { external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: 'cli.mjs' } } } });
+    await build({ define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, configFile: false, logLevel: 'silent', ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/bin/cli.ts', import.meta.url)), outDir: join(f.h.root, 'dist/herdr'), emptyOutDir: false, minify: false, rollupOptions: { external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: 'cli.mjs' } } } });
     parent = mountHerdr(pi as never, { packageRoot: f.h.root, actionContext: () => ({}), reportError: error => f.errors.push(error),
       views: { agents: { open: async () => {} }, todos: { handler: async () => {} }, usage: { handler: async () => {} }, memory: async () => {}, loop: { handler: async () => {} } },
       dataSource: { resolveRunDb: () => ({ db: openDbAt(resolvedPath, 'worktree'), dbPath: resolvedPath }), openApprovalDbs: () => ({ global: openDbAt(globalPath, 'global'), repo: null }), readUsage: async () => ({ snapshots: [], budget: undefined, correctedMonth: null, correctedWindow: null, updatedAt: null }), scheduler: { listTriggers: () => [], subscribe: () => () => {} } },

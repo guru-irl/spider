@@ -141,10 +141,11 @@ console.log(JSON.stringify({ spaces: [{ id: 's1', name: 'work', tabs: [{ id: 'tb
     const appBinary = join(h.root, 'app-port'); await writeFile(appBinary, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(appScript)} "$@"\n`); await chmod(appBinary, 0o700); config.app.binary = appBinary;
     if (launches) {
       const { build } = await import('vite');
-      await build({ define: { 'import.meta.spiderHerdrRuntimeEntry': 'false' }, configFile: false, logLevel: 'silent', ssr: { noExternal: [/^@spider\//] }, build: { ssr: true, outDir: join(h.root, 'dist/herdr'), emptyOutDir: false, minify: false, rollupOptions: { input: { cli: fileURLToPath(new URL('../../../herdr/src/bin/cli.ts', import.meta.url)), 'viewer-main': fileURLToPath(new URL('../../../herdr/src/bin/viewer.ts', import.meta.url)) }, external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: '[name].mjs' } } } });
+      await build({ define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, configFile: false, logLevel: 'silent', ssr: { noExternal: [/^@spider\//] }, build: { ssr: true, outDir: join(h.root, 'dist/herdr'), emptyOutDir: false, minify: false, rollupOptions: { input: { cli: fileURLToPath(new URL('../../../herdr/src/bin/cli.ts', import.meta.url)), 'viewer-main': fileURLToPath(new URL('../../../herdr/src/bin/viewer.ts', import.meta.url)) }, external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: '[name].mjs' } } } });
       const { stripTypeScriptTypes } = await import('node:module');
       const runtime = Buffer.from(stripTypeScriptTypes(await readFile(fileURLToPath(new URL('../../../herdr/src/remote/runtime.ts', import.meta.url)), 'utf8')));
       await writeFile(join(h.root, 'dist/herdr/remote-runtime.mjs'), runtime);
+      await writeFile(join(h.root, 'dist/herdr/pane-endpoint.mjs'), 'export const createProductionPaneEndpointPorts = digest => ({protocol:1,buildDigest:digest}); export const runPaneEndpointCli = async (args, create) => {const p = await create(); return JSON.stringify({version:1,op:"handshake",protocol:p.protocol,buildDigest:p.buildDigest})};');
       if (mode === 'fake') await writeFile(join(h.root, 'dist/herdr/viewer.mjs'), `import { spawn } from 'node:child_process';
 const child = spawn(process.execPath, [${JSON.stringify(join(h.root, 'dist/herdr/viewer-main.mjs'))}, ...process.argv.slice(2)], { stdio: ['pipe', 'inherit', 'inherit'] });
 for (const signal of ['SIGINT','SIGTERM','SIGHUP']) process.once(signal, () => child.kill(signal)); child.once('exit', code => { child.stdin.destroy(); process.exit(code ?? 1); });`);
@@ -315,6 +316,18 @@ export async function closePaneScenario(mode: 'fake' | 'hc', pane: 'observer' | 
   try {
     await installed;
     let target: { address: string; labels: Readonly<Record<string, string>> } | undefined;
+    if (pane === 'console') {
+      await vi.waitFor(() => access(started), { timeout: 10000 });
+      const { readJournal } = await import('../../../herdr/src/setup/backup.js');
+      const { openRetainedConsole } = await import('../../../herdr/src/__tests__/console-view-fixture.js');
+      const { readRetainedAgentConsole } = await import('../../../herdr/src/remote/console.js');
+      expect((await inventory()).filter(terminal => terminal.labels['spider.kind'] === 'remote-console')).toEqual([]);
+      const installed = (await readJournal(join(f.config.globalRoot, 'herdr/setup'))).runtimes[0];
+      const on = 'remote.invalid' as never;
+      const request = { owner: f.owner!, on, target: { on, ...f.config.machines[0].runtime, environment: {}, nodePath: f.h.nodeBinary, runtimePath: installed.path, runtimeSha256: installed.after }, source: { kind: 'code' as const, language: 'shell' as const, code: 'explicit console view' } };
+      const retained = await readRetainedAgentConsole(request, f.h.hc, f.h.localEnv); expect(retained).not.toBeNull();
+      expect(await openRetainedConsole(request, f.h.hc, f.h.localEnv)).toMatchObject({ consoleId: retained!.consoleId });
+    }
     await vi.waitFor(async () => {
       target = (await inventory()).find(t => t.labels['spider.kind'] === (pane === 'console' ? 'remote-console' : 'exec'));
       expect(target).toBeDefined();

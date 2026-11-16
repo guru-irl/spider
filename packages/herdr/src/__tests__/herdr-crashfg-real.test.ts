@@ -52,7 +52,7 @@ it.skipIf(!enabled).each(['session', 'child'] as const)('real hc stops crashed %
     const config = parseHerdrConfig(JSON.parse(await readFile(configFile, 'utf8'))), runtimeFile = resolve('dist/herdr/remote-runtime.mjs'), runtime = await readFile(runtimeFile);
     const runtimePath = runtimeInstallPath(config.machines[0].runtime.directory, runtime);
     expect((await h.hc.fileRead('remote.invalid' as never, runtimePath)).equals(runtime)).toBe(true);
-    await build({ configFile: false, logLevel: 'silent', ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('./herdr-crashfg-owner.ts', import.meta.url)), outDir: join(h.root, 'bundle'), emptyOutDir: false, minify: false,
+    await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderPaneEndpointEntry': 'false' }, ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('./herdr-crashfg-owner.ts', import.meta.url)), outDir: join(h.root, 'bundle'), emptyOutDir: false, minify: false,
       rollupOptions: { external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: 'owner.mjs' } },
     } });
     const gate = join(h.root, 'release'), foregroundEffect = join(h.root, 'foreground-effect'), backgroundEffect = join(h.root, 'background-effect');

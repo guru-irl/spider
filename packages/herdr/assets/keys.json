@@ -1,10 +1,19 @@
 {
   "global": {
     "cmd-p": "mod.open:spider-picker",
-    "cmd-n": { "command": "space.new", "args": { "machine": "" } }
+    "cmd-n": {
+      "command": "space.new",
+      "args": {
+        "machine": ""
+      }
+    },
+    "cmd-t": "mod.open:spider-machine-picker",
+    "cmd-d": "mod.open:spider-machine-picker-right",
+    "cmd-shift-d": "mod.open:spider-machine-picker-down"
   },
   "layout:spider-glass": {
-    "cmd-shift-e": "spider-pane.park"
+    "cmd-shift-e": "spider-pane.park",
+    "cmd-shift-w": "spider-pane.close"
   },
   "terminal": {
     "cmd-shift-a": "send:\u001b[97;6u",

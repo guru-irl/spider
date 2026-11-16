@@ -8,4 +8,5 @@ export function parkFocusedTerminal(
   contract: HerdrLabelContract,
   run: (name: string, args: Record<string, unknown>) => null,
   report?: (message: string) => void,
-): boolean;
+  service?: { snapshot: import('../../src/panes/types.js').PaneServiceSnapshot; request(request: import('../shared/feed.js').PaneUiMutationRequest): Promise<import('../../src/panes/types.js').PaneActionOutcome> },
+): boolean | Promise<import('../../src/panes/types.js').PaneActionOutcome>;

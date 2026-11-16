@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import type { HerdrLabelContract } from '../../src/contracts.js';
+import type { NavigationTarget } from '../shared/navigation.js';
 import type { AgentTerminal, ChildRow } from './children.js';
 
 export type NativeAgent = {
-  address: string; pane: string; space: string; space_name: string; tab: string; title: string;
+  address: string; pane: string | null; space: string | null; space_name: string; tab: string | null; title: string; navigation?: NavigationTarget;
   program: { name: string; key?: string }; status: string; pinned: boolean; focused: boolean;
 };
 export type MachineGroup = { id: string; machine: string | null; label: string; members: NativeAgent[] };

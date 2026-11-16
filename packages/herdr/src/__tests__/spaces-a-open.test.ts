@@ -10,6 +10,7 @@ import { createHcClient } from '../client/hc.js';
 import { createClientFixture, terminal as fakeTerminal } from './testutil.js';
 import { HERDR_KINDS, HERDR_LABELS, type AppClient, type AppPaneInspection, type AppSpaceInfo, type CoreId, type Destination, type HcClient, type MachineSummary, type Owner, type OwnerPlacement, type PaneId, type SpaceId, type TabId, type TerminalAddress, type TerminalSummary } from '../contracts.js';
 import { withProcessLock } from '../sessions/registry.js';
+import type { PaneServiceReply, PaneServiceRequest } from '../panes/types.js';
 import { openOwnedSession } from '../spaces/open.js';
 import { startSessionEndpoint } from '../feed/ipc-server.js';
 import { createSessionIpcClient } from '../feed/ipc-client.js';
@@ -486,5 +487,15 @@ it.each(['disconnected', 'replaced'] as const)('refuses a parked remote session 
   f.addSpace('box-1.invalid/first', 'box-1.invalid', ['a']);
   f.setMachines([{ id: (reason === 'replaced' ? 'other-core' : 'core-remote') as CoreId, name: 'box-1.invalid' as MachineSummary['name'], aliases: [], state: reason === 'replaced' ? 'connected' : 'disconnected', sessionNamespace: 'fixture', runtime: null }]);
   await expect(open(f.owner, null, f.ports)).rejects.toMatchObject({ code: 'view-on-mac' });
+  expect(f.calls).toEqual([]); expect(f.launched).not.toHaveBeenCalled();
+});
+
+it('delegates a managed parked session to source-owned open-existing without target keep', async () => {
+  const f = fixture(true);
+  const target = { coreId: 'core-remote', terminalId: 't1', sessionId: 'session', generation: 'generation' };
+  const p = { id: 'pres-1', revision: 1, mode: 'proxy', target, proxy: 'proxy', visibility: 'visible', slot: { space: 's1', tab: 'tb1', pane: 'p1' } };
+  const paneRequest = vi.fn(async (request: PaneServiceRequest): Promise<PaneServiceReply> => (request.op === 'snapshot' ? { version: 1, kind: 'snapshot', presentations: [p] } : { version: 1, kind: 'outcome', outcome: { status: 'complete', presentation: p } }) as PaneServiceReply);
+  expect(await openOwnedSession(f.owner, { space: spaceId('s1'), tab: tabId('tb1') }, { ...f.ports, paneRequest })).toBe('proxy');
+  expect(paneRequest).toHaveBeenLastCalledWith(expect.objectContaining({ op: 'open-existing', sessionId: 'session', generation: 'generation' }));
   expect(f.calls).toEqual([]); expect(f.launched).not.toHaveBeenCalled();
 });

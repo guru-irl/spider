@@ -121,6 +121,7 @@ export interface IntercomLifecycle {
   readiness?(): { state: "disabled" | "pending" | "ready"; reason: string | null };
 }
 export interface Diagnostic { reason: string; severity: "warning" | "block"; repairCommand: string | null; writerEpoch?: number }
+export type NativeHostingOutcome = "live" | "killed" | "core-loss" | "unexpected-exit" | "unknown";
 export interface HostIntent {
   sessionId: string; epoch: number; desired: "running" | "stopped"; suspended: string | null;
   file: string; cwd: string; moveId: string | null;

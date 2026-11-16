@@ -28,6 +28,10 @@ test('ships picker and local new-space bindings with layout-scoped send back', a
   const keys = JSON.parse(await readFile(new URL('../../assets/keys.json', import.meta.url), 'utf8'));
   expect(keys.global['cmd-p']).toBe('mod.open:spider-picker');
   expect(keys.global['cmd-n']).toEqual({ command: 'space.new', args: { machine: '' } });
+  expect(keys.global['cmd-t']).toBe('mod.open:spider-machine-picker');
+  expect(keys.global['cmd-d']).toBe('mod.open:spider-machine-picker-right');
+  expect(keys.global['cmd-shift-d']).toBe('mod.open:spider-machine-picker-down');
+  expect(keys['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close');
   expect(keys['layout:spider-glass']['cmd-shift-e']).toBe('spider-pane.park');
   expect(keys.global['cmd-shift-e']).toBeUndefined();
   expect(Object.keys(keys.terminal)).toEqual(['cmd-shift-a', 'cmd-shift-o', 'cmd-shift-u', 'cmd-shift-m', 'cmd-shift-k']);

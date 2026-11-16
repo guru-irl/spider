@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash, randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { mkdir, lstat, realpath } from 'node:fs/promises';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { HERDR_KINDS, HERDR_LABELS, type Disposable, type HcClient, type JobHandle, type JobPort, type MachineName, type Owner, type PreparedProgram, type RemoteSource, type RunId, type RuntimeTarget, type TerminalHandle, type TerminalSummary } from '../contracts.js';
-import { encodeRuntimePublication, parseRuntimePublication, type ConsoleCommand } from './runtime.js';
+import { HERDR_KINDS, HERDR_LABELS, type ConsoleId, type CoreId, type Disposable, type HcClient, type JobHandle, type JobPort, type MachineName, type Owner, type PreparedProgram, type RemoteSource, type RunId, type RuntimeTarget, type TerminalHandle, type TerminalAddress, type TerminalSummary } from '../contracts.js';
+import { atomicRuntimeFile, readBoundedFile, encodeRuntimePublication, parseRuntimePublication, type ConsoleCommand } from './runtime.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { HerdrError } from '../client/parse.js';
 import { createCleanupSweep } from '../jobs/cleanup.js';
+import { paneId, paneText, parseConsoleId, parsePaneTarget } from '../panes/codec.js';
+import type { PaneTarget, PaneTerminalFacts } from '../panes/types.js';
 import { herdrErrorNotice } from '../notices.js';
 
 export type AgentConsoleOwner = Owner & { runId?: RunId };
@@ -26,16 +29,62 @@ export interface AgentConsoleLifecyclePorts {
   reportError?(error: unknown): void;
   reportCleanupError?(error: unknown): void;
 }
-export interface AgentConsoleHandle extends TerminalHandle { directory: string }
+export interface AgentConsoleStore { directory: string; consoleId: ConsoleId }
+export interface AgentConsoleHandle extends TerminalHandle, AgentConsoleStore {}
 export interface AgentConsoleStart extends AgentConsoleLaunch {
   program: () => Promise<PreparedProgram>; jobs: JobPort & { consoleIdle?(owner: Owner, on: MachineName, runId?: RunId): Promise<boolean>; consoleError?(error: unknown): void }; hc: HcClient; options: Parameters<JobPort['start']>[3];
 }
-interface ConsoleState { owner: AgentConsoleOwner; handle: AgentConsoleHandle; directory: string; count: number }
+interface ConsoleState { owner: AgentConsoleOwner; handle: AgentConsoleHandle; directory: string }
 const queues = new Map<string, Promise<unknown>>();
 const consoles = new Map<string, ConsoleState>();
 const endedAgents = new Set<string>();
 const agentKey = (owner: AgentConsoleOwner) => JSON.stringify([owner.sessionId, owner.runId ?? null]);
 const consoleKey = (owner: AgentConsoleOwner, on: MachineName) => JSON.stringify([agentKey(owner), on]);
+const consoleIdentities = new Map<ConsoleId, string>();
+function consoleIdAtSource(key: string, owner: AgentConsoleOwner, on: MachineName): ConsoleId {
+  paneId(owner.sessionId); paneId(owner.generation); if (owner.runId) paneId(owner.runId); paneText(on);
+  if (key !== consoleKey(owner, on)) throw new HerdrError('console-identity-mismatch', 'Console key differs from its source owner');
+  const id = parseConsoleId('console-' + createHash('sha256').update(key).digest('hex'));
+  const previous = consoleIdentities.get(id);
+  if (previous !== undefined && previous !== key) throw new HerdrError('console-identity-collision', 'Console identifier collision');
+  consoleIdentities.set(id, key); return id;
+}
+export interface RetainedAgentConsole extends AgentConsoleStore { machineKey: string; name: string | null; runId: RunId | null }
+/** Read-only source discovery. The opaque ID is recomputed from the private owner key. */
+export async function readRetainedAgentConsole(request: AgentConsoleLaunch, hc: HcClient, env: Readonly<NodeJS.ProcessEnv> = process.env): Promise<RetainedAgentConsole | null> {
+  const owner = consoleOwner(request, env); if (!owner) return null;
+  const key = consoleKey(owner, request.on), consoleId = consoleIdAtSource(key, owner, request.on);
+  const directory = join(request.target.directory, '.consoles', createHash('sha256').update(key).digest('hex').slice(0, 32));
+  let bytes: Buffer; try { bytes = await hc.fileRead(request.on, join(directory, 'console.json')); } catch (error) { if (missing(error)) return null; throw error; }
+  if (bytes.length > 65536) throw new HerdrError('console-metadata-limit', 'Console metadata exceeded its bound');
+  const record = parseRuntimePublication(bytes);
+  if (record.consoleKey !== key || record.consoleId !== consoleId) throw new HerdrError('console-identity-collision', 'Console source identity differs');
+  return { directory, consoleId, machineKey: request.on, name: typeof record.title === 'string' ? paneText(record.title) : null, runId: owner.runId ?? null };
+}
+async function retainedStore(request: AgentConsoleLaunch, hc: HcClient, env: Readonly<NodeJS.ProcessEnv>, owner: AgentConsoleOwner, key: string): Promise<AgentConsoleStore> {
+  const consoleId = consoleIdAtSource(key, owner, request.on);
+  const directory = join(request.target.directory, '.consoles', createHash('sha256').update(key).digest('hex').slice(0, 32));
+  let previous: Record<string, unknown> | null = null;
+  try { previous = parseRuntimePublication(await hc.fileRead(request.on, join(directory, 'console.json'))); }
+  catch (error) { if (!missing(error)) throw error; }
+  if (previous && (previous.consoleKey !== undefined && previous.consoleKey !== key || previous.consoleId !== undefined && previous.consoleId !== consoleId))
+    throw new HerdrError('console-identity-collision', 'Console directory belongs to another source key');
+  const count = await commandCount(hc, request.on, directory), name = owner.runId ? env.PI_SUBAGENT_RUN_NAME || owner.runId : owner.name || owner.sessionId;
+  const suffix = ` · ${request.on}`.replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+  const title = name.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, Math.max(0, 512 - suffix.length)) + suffix;
+  await hc.fileWrite(request.on, join(directory, 'console.json'), encodeRuntimePublication({ ...previous, version: 1, title, consoleKey: key, consoleId,
+    sessionId: owner.sessionId, generation: owner.generation, ownerCore: owner.terminal.coreId, ownerTerminal: owner.terminal.terminalId, runId: owner.runId ?? null, machine: request.on }));
+  await hc.fileWrite(request.on, join(directory, 'head.json'), encodeRuntimePublication({ version: 1, count }));
+  if (request.job) {
+    const kind = request.kind ?? (request.source.kind === 'file' ? 'exec-file' : 'exec');
+    const command = encodeRuntimePublication({ version: 1, jobId: request.job.id, directory: request.job.remoteDirectory, command: request.source.code.split('\n')[0].slice(0, 1024),
+      startedAt: request.startedAt ?? Date.now(), tool: kind === 'exec-file' ? 'exec_file' : kind });
+    if (command.length > 8192) throw new HerdrError('console-command-invalid', 'Console descriptor exceeded its bound');
+    await hc.fileWrite(request.on, join(directory, `command-${count}.json`), command);
+    await hc.fileWrite(request.on, join(directory, 'head.json'), encodeRuntimePublication({ version: 1, count: count + 1 }));
+  }
+  return { directory, consoleId };
+}
 function serialize<T>(key: string, work: () => Promise<T>): Promise<T> {
   const next = (queues.get(key) ?? Promise.resolve()).catch(() => {}).then(work);
   queues.set(key, next);
@@ -90,20 +139,6 @@ async function commandCount(hc: HcClient, on: MachineName, directory: string): P
     } catch (error) { if (Date.now() >= deadline) throw error; await delay(25); }
   }
 }
-async function waitForHeartbeat(hc: HcClient, on: MachineName, directory: string, instance: string): Promise<void> {
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    try {
-      const bytes = await hc.fileRead(on, join(directory, 'heartbeat.json'));
-      if (bytes.length <= 1024) {
-        const heartbeat = JSON.parse(bytes.toString());
-        if (heartbeat.version === 1 && heartbeat.instance === instance) return;
-      }
-    } catch { /* The remote console has not published its first atomic heartbeat yet. */ }
-    await delay(25);
-  }
-  throw new HerdrError('console-ready-timeout', 'Console did not publish its heartbeat');
-}
 function consoleOwner(request: AgentConsoleLaunch, env: Readonly<NodeJS.ProcessEnv>): AgentConsoleOwner | null {
   if (request.enabled === false || !env.HC_TERMINAL_ID) return null;
   const runId = env.PI_SUBAGENT_CHILD === '1' ? env.PI_SUBAGENT_RUN_ID as RunId | undefined : undefined;
@@ -133,63 +168,122 @@ async function retireOlderConsole(terminal: TerminalSummary, request: AgentConso
     } catch (lookupError) { return missing(lookupError) ? 'replace' : 'reuse'; }
   }
 }
-async function ensureInQueue(request: AgentConsoleLaunch, hc: HcClient, env: Readonly<NodeJS.ProcessEnv>, owner: AgentConsoleOwner, key: string): Promise<AgentConsoleHandle | null> {
-  if (endedAgents.has(agentKey(owner))) return null;
-  let state = consoles.get(key);
-  let terminal: TerminalSummary | undefined;
-  if (state) {
-    try { const latest = await hc.get(state.handle.address); if (latest.state === 'live' && ownsConsole(latest, owner, request.on)) terminal = latest; }
-    catch (error) { if (!missing(error)) throw error; }
-    if (!terminal) { consoles.delete(key); state = undefined; }
-  }
-  if (!state) terminal = (await snapshot(hc)).find(item => item.state === 'live' && ownsConsole(item, owner, request.on));
-  let replacement = false;
-  if (terminal) {
-    const retirement = await retireOlderConsole(terminal, request, owner, hc);
-    if (retirement !== 'reuse') {
-      replacement = retirement === 'replace';
-      terminal = undefined; state = undefined; consoles.delete(key);
-    }
-  }
-  if (!state) try {
-    const digest = createHash('sha256').update(key).digest('hex');
-    const directory = join(request.target.directory, '.consoles', digest.slice(0, 32));
-    const count = await commandCount(hc, request.on, directory);
-    const runId = owner.runId;
-    const name = runId ? env.PI_SUBAGENT_RUN_NAME || runId : owner.name || owner.sessionId;
-    const suffix = ` · ${request.on}`.replace(/[\x00-\x1f\x7f-\x9f]/g, '');
-    const title = name.replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, Math.max(0, 512 - suffix.length)) + suffix;
-    await hc.fileWrite(request.on, join(directory, 'console.json'), encodeRuntimePublication({ version: 1, title, ...(replacement ? { start: count } : {}) }));
-    await hc.fileWrite(request.on, join(directory, 'head.json'), encodeRuntimePublication({ version: 1, count }));
-    const instance = randomUUID();
-    const handle = terminal ? { address: terminal.address, coreId: (await hc.machines()).find(machine => machine.name === request.on)!.id } : await hc.run({
-      name: `console-${digest.slice(0, 20)}`, argv: [request.target.nodePath, request.target.runtimePath, '--console', directory, instance], cwd: null, on: request.on, parent: null,
-      labels: { [HERDR_LABELS.kind]: HERDR_KINDS.remoteConsole, [HERDR_LABELS.session]: owner.sessionId, [HERDR_LABELS.ownerCore]: owner.terminal.coreId,
-        [HERDR_LABELS.ownerTerminal]: owner.terminal.terminalId, [HERDR_LABELS.machine]: request.on, [HERDR_LABELS.runtime]: request.target.runtimeSha256, [HERDR_LABELS.displayName]: title.slice(0, -suffix.length) + ' @ ' + request.on, ...(runId ? { [HERDR_LABELS.run]: runId } : {}) },
-      background: true, outliveParent: true, noNotify: true,
-    });
-    if (!terminal) await waitForHeartbeat(hc, request.on, directory, instance);
-    state = { owner, handle: { ...handle, directory }, directory, count }; consoles.set(key, state);
-  } catch (error) {
-    if (replacement) request.reportError?.(error);
-    throw error;
-  }
-  if (!request.job) return state.handle;
-  const kind = request.kind ?? (request.source.kind === 'file' ? 'exec-file' : 'exec');
-  const tool = kind === 'exec-file' ? 'exec_file' : kind;
-  const command: ConsoleCommand = { version: 1, jobId: request.job.id, directory: request.job.remoteDirectory, command: request.source.code.split('\n')[0].slice(0, 1024), startedAt: request.startedAt ?? Date.now(), tool };
-  const bytes = encodeRuntimePublication({ ...command });
-  if (bytes.length > 8192) throw new HerdrError('console-command-invalid', 'Console descriptor exceeded its bound');
-  await hc.fileWrite(request.on, join(state.directory, `command-${state.count}.json`), bytes);
-  await hc.fileWrite(request.on, join(state.directory, 'head.json'), encodeRuntimePublication({ version: 1, count: state.count + 1 }));
-  state.count++;
-  return state.handle;
-}
-/** Called only from the active Herdr remote executor. Each payload remains in its supervised job. */
-export async function ensureAgentConsole(request: AgentConsoleLaunch, hc: HcClient, env: Readonly<NodeJS.ProcessEnv> = process.env): Promise<AgentConsoleHandle | null> {
-  const owner = consoleOwner(request, env); if (!owner) return null;
+/** Retain output for supervised commands. A view requires an acknowledged display lease. */
+export async function ensureAgentConsole(request: AgentConsoleLaunch, hc: HcClient, env: Readonly<NodeJS.ProcessEnv> = process.env): Promise<AgentConsoleStore | null> {
+  const owner = consoleOwner(request, env); if (!owner || endedAgents.has(agentKey(owner))) return null;
   const key = consoleKey(owner, request.on);
-  return serialize(key, () => ensureInQueue(request, hc, env, owner, key));
+  return serialize(key, () => endedAgents.has(agentKey(owner)) ? Promise.resolve(null) : retainedStore(request, hc, env, owner, key));
+}
+export interface PaneConsoleDiscoveryPorts {
+  hc: HcClient;
+  validateOwner(owner: Owner): Promise<boolean>;
+  ownsRun(owner: Owner, runId: RunId): Promise<boolean>;
+  /** Read bounded terminal facts through the selected immutable core identity. */
+  readFacts(address: TerminalAddress): Promise<PaneTerminalFacts>;
+}
+/** The inventory's exact readConsoles(owner) adapter. Null means unavailable. */
+export function createPaneConsoleDiscovery(ports: PaneConsoleDiscoveryPorts): (owner: Owner) => Promise<readonly PaneTarget[] | null> {
+  return async owner => {
+    try {
+      if (!await ports.validateOwner(owner)) return null;
+      const [machines, identity, terminals] = await Promise.all([ports.hc.machines(), ports.hc.identity(), snapshot(ports.hc)]);
+      const result = new Map<string, PaneTarget>(); const ids = new Map<ConsoleId, string>();
+      for (const candidate of terminals) {
+        const labels = candidate.labels;
+        if (labels[HERDR_LABELS.kind] !== HERDR_KINDS.remoteConsole || labels[HERDR_LABELS.session] !== owner.sessionId || candidate.state !== 'live') continue;
+        const runId = labels[HERDR_LABELS.run] as RunId | undefined, on = labels[HERDR_LABELS.machine] as MachineName;
+        if (runId && !await ports.ownsRun(owner, runId)) return null;
+        const actualOwner = { ...owner, ...(runId ? { runId } : {}) };
+        const key = consoleKey(actualOwner, on), consoleId = consoleIdAtSource(key, actualOwner, on);
+        if (labels['spider.console-key'] !== key || labels['spider.console-id'] !== consoleId || labels['spider.view-generation'] !== owner.generation
+          || labels[HERDR_LABELS.ownerCore] !== owner.terminal.coreId || labels[HERDR_LABELS.ownerTerminal] !== owner.terminal.terminalId) return null;
+        const slash = candidate.address.lastIndexOf('/'), terminalId = candidate.address.slice(slash + 1), prefix = slash < 0 ? null : candidate.address.slice(0, slash);
+        const local = prefix === null || prefix === identity.coreId;
+        const machine = local ? null : machines.find(machine => machine.state === 'connected' && (machine.name === on || machine.aliases.includes(on)));
+        if (!local && (!machine || prefix !== machine.id && prefix !== machine.name && !machine.aliases.includes(prefix!))) return null;
+        const coreId = local ? identity.coreId : machine!.id;
+        const address = `${coreId}/${terminalId}` as TerminalAddress;
+        const facts = await ports.readFacts(address);
+        if (facts.terminal.address !== address || facts.terminal.state !== 'live' || Object.entries(labels).some(([key, value]) => facts.identityLabels[key] !== value)) return null;
+        const previous = ids.get(consoleId); if (previous !== undefined && previous !== key) return null; ids.set(consoleId, key);
+        const identityLabels = Object.fromEntries(Object.entries(facts.identityLabels).filter(([name]) => name !== 'spider.console-key'));
+        const target = parsePaneTarget({ coreId, terminalId, address, createdMs: facts.createdMs, identityLabels, alias: coreId === identity.coreId ? null : machine!.name,
+          machineId: null, kind: 'console', sessionId: owner.sessionId, generation: owner.generation, homeEpoch: null, runId: runId ?? null, consoleId, name: facts.title, cwd: facts.currentCwd });
+        const targetKey = JSON.stringify([target.coreId, target.terminalId]);
+        if ([...result.values()].some(previous => previous.consoleId === consoleId && (previous.coreId !== target.coreId || previous.terminalId !== target.terminalId))) return null;
+        result.set(targetKey, target);
+      }
+      if (!await ports.validateOwner(owner)) return null;
+      return [...result.values()];
+    } catch { return null; }
+  };
+}
+/** Reuse the same view operation on its selected source, without a self alias. */
+export async function openSourceAgentConsoleView(request: AgentConsoleLaunch & { displayLeaseFile: string }, hc: HcClient, expectedCoreId: CoreId, env: Readonly<NodeJS.ProcessEnv> = process.env): Promise<AgentConsoleHandle | null> {
+  const identity = await hc.identity();
+  if (identity.coreId !== expectedCoreId) throw new HerdrError('console-core-mismatch', 'Console source core changed');
+  const root = resolve(request.target.directory);
+  if (!isAbsolute(request.target.directory) || await realpath(root) !== root || process.platform !== 'win32' && ((await lstat(root)).mode & 0o077))
+    throw new HerdrError('console-store-invalid', 'Console runtime root must be private and real');
+  const sourcePath = async (on: MachineName, file: string): Promise<string> => {
+    if (on !== request.on) throw new HerdrError('console-core-mismatch', 'Console file route changed');
+    const path = resolve(file), rel = relative(root, path);
+    if (!rel.startsWith('.consoles' + sep) || rel.split(sep).length !== 3 || !/^[a-f0-9]{32}$/.test(rel.split(sep)[1])) throw new HerdrError('console-store-invalid', 'Console file escaped its runtime root');
+    for (const directory of [join(root, '.consoles'), dirname(path)]) {
+      try { const info = await lstat(directory); if (!info.isDirectory() || info.isSymbolicLink() || process.platform !== 'win32' && (info.mode & 0o077)) throw new HerdrError('console-store-invalid', 'Console directory must be private and real'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; await mkdir(directory, { mode: 0o700 }); }
+    }
+    return path;
+  };
+  const source: HcClient = { ...hc,
+    // This is an explicit transport adapter for an already verified local core,
+    // not a machine registry publication or an alias routing fallback.
+    machines: async () => [{ id: identity.coreId, name: request.on, aliases: [], state: 'connected', sessionNamespace: identity.sessionNamespace, runtime: null }],
+    run: async input => {
+      if (input.on !== request.on || (await hc.identity()).coreId !== expectedCoreId) throw new HerdrError('console-core-mismatch', 'Console launch route changed');
+      const { on: _on, ...local } = input; return hc.run(local);
+    },
+    fileRead: async (on, file) => readBoundedFile(await sourcePath(on, file), 65536),
+    fileWrite: async (on, file, bytes) => { await atomicRuntimeFile(await sourcePath(on, file), bytes); },
+  };
+  return openAgentConsoleView(request, source, env);
+}
+export async function openAgentConsoleView(request: AgentConsoleLaunch & { displayLeaseFile: string }, hc: HcClient, env: Readonly<NodeJS.ProcessEnv> = process.env): Promise<AgentConsoleHandle | null> {
+  const owner = consoleOwner(request, env); if (!owner) return null;
+  if (!request.displayLeaseFile.startsWith('/') && !/^[A-Za-z]:[\\\\/]/.test(request.displayLeaseFile) || request.displayLeaseFile.includes('\0')) throw new HerdrError('console-lease-invalid', 'Console display lease must be absolute');
+  const key = consoleKey(owner, request.on);
+  return serialize(key, async () => {
+    const store = await retainedStore({ ...request, job: undefined }, hc, env, owner, key);
+    const candidates = (await snapshot(hc)).filter(terminal => ownsConsole(terminal, owner, request.on));
+    if (candidates.length > 1) throw new HerdrError('console-identity-collision', 'Multiple source console views');
+    const found = candidates[0];
+    if (found && (found.labels['spider.console-id'] !== store.consoleId || found.labels['spider.console-key'] !== key
+      || found.labels[HERDR_LABELS.ownerCore] !== owner.terminal.coreId || found.labels[HERDR_LABELS.ownerTerminal] !== owner.terminal.terminalId))
+      throw new HerdrError('console-identity-mismatch', 'Console view does not match its source owner');
+    let existing: TerminalSummary | undefined = found;
+    if (existing && (existing.state !== 'live' || existing.labels[HERDR_LABELS.runtime] !== request.target.runtimeSha256)) {
+      const retirement = await retireOlderConsole(existing, request, owner, hc);
+      if (retirement !== 'replace') throw new HerdrError('console-runtime-unavailable', 'Console runtime must be updated before opening a leased view');
+      existing = undefined;
+      const metadata = parseRuntimePublication(await hc.fileRead(request.on, join(store.directory, 'console.json')));
+      await hc.fileWrite(request.on, join(store.directory, 'console.json'), encodeRuntimePublication({ ...metadata, start: await commandCount(hc, request.on, store.directory) }));
+    }
+    await hc.fileWrite(request.on, join(store.directory, 'view-lease.json'), encodeRuntimePublication({ version: 1, file: request.displayLeaseFile,
+      sessionId: owner.sessionId, generation: owner.generation, consoleId: store.consoleId }));
+    const machine = (await hc.machines()).find(machine => machine.state === 'connected' && (machine.name === request.on || machine.aliases.includes(request.on)));
+    if (!machine) throw new HerdrError('machine-unavailable', 'Console execution machine is unavailable');
+    if (existing) { const handle = { ...store, address: existing.address, coreId: machine.id }; consoles.set(key, { owner, handle, directory: store.directory }); return handle; }
+    const handle = await hc.run({ name: 'console-' + createHash('sha256').update(key).digest('hex').slice(0, 20),
+      argv: [request.target.nodePath, request.target.runtimePath, '--console', store.directory, randomUUID(), '--display-lease', request.displayLeaseFile,
+        '--session', owner.sessionId, '--generation', owner.generation, '--console-id', store.consoleId], cwd: null, on: request.on, parent: null,
+      labels: { [HERDR_LABELS.kind]: HERDR_KINDS.remoteConsole, [HERDR_LABELS.session]: owner.sessionId, [HERDR_LABELS.ownerCore]: owner.terminal.coreId,
+        [HERDR_LABELS.ownerTerminal]: owner.terminal.terminalId, [HERDR_LABELS.machine]: request.on, [HERDR_LABELS.runtime]: request.target.runtimeSha256,
+        [HERDR_LABELS.displayName]: (owner.runId ? env.PI_SUBAGENT_RUN_NAME || owner.runId : owner.name || owner.sessionId).replace(/[\x00-\x1f\x7f-\x9f]/g, '').slice(0, Math.max(0, 512 - (' · ' + request.on).length)) + ' @ ' + request.on,
+        'spider.console-key': key, 'spider.console-id': store.consoleId, 'spider.view-generation': owner.generation, ...(owner.runId ? { [HERDR_LABELS.run]: owner.runId } : {}) },
+      background: true, outliveParent: true, noNotify: true });
+    if (handle.coreId !== machine.id) throw new HerdrError('console-core-mismatch', 'Console source core changed during launch');
+    const view = { ...handle, ...store }; consoles.set(key, { owner, handle: view, directory: store.directory }); return view;
+  });
 }
 /** Console failure is optional; the payload is still launched once through the supervised job port. */
 export async function startWithAgentConsole(request: AgentConsoleStart): Promise<JobHandle> {
@@ -200,7 +294,8 @@ export async function startWithAgentConsole(request: AgentConsoleStart): Promise
       reportError: request.jobs.consoleError,
     };
     const key = owner ? consoleKey(owner, request.on) : '';
-    const console = owner ? await ensureInQueue(launch, request.hc, env, owner, key).catch(() => null) : null;
+    const ensure = () => retainedStore(launch, request.hc, env, owner!, key);
+    const console = owner ? await ensure().catch(() => null) : null;
     const prepare = async () => {
       const program = { ...await request.program() };
       if (console) program.consoleDirectory = console.directory;
@@ -208,7 +303,7 @@ export async function startWithAgentConsole(request: AgentConsoleStart): Promise
       return program;
     };
     const job = await request.jobs.start(prepare, request.owner, request.on, request.options);
-    if (console && owner) await ensureInQueue({ ...launch, job }, request.hc, env, owner, key).catch(() => {});
+    if (console && owner) await retainedStore({ ...launch, job }, request.hc, env, owner, key).catch(() => {});
     return job;
   };
   return owner ? serialize(consoleKey(owner, request.on), work) : work();

@@ -11,6 +11,7 @@ export type SessionId = Id<'session'>;
 export type MachineName = Id<'machine'>;
 export type JobId = Id<'job'>;
 export type RunId = Id<'run'>;
+export type ConsoleId = Id<'console'>;
 export type Generation = Id<'generation'>;
 export type SpaceId = Id<'space'>;
 export type TabId = Id<'tab'>;
@@ -237,7 +238,12 @@ export interface JobHandle {
 	finished: Promise<JobFinish>;
 	cancel(reason: "abort" | "timeout" | "viewer-closed" | "shutdown"): Promise<void>;
 }
-export interface PaneReservation { id: JobId | RunId; owner: Owner; kind: 'remote' | 'subagent'; viewer: TerminalAddress; pane: PaneId }
+export interface PaneReservation { id: JobId | RunId | ConsoleId; owner: Owner; kind: 'remote' | 'subagent' | 'console'; viewer: TerminalAddress; pane: PaneId }
+/** A reservation acknowledges a local waiting pane before any source view launches. */
+export interface PresentedAuxiliaryActor {
+  reservePresented(kind: 'subagent' | 'console', id: RunId | ConsoleId, owner: Owner,
+    options: import('./jobs/placement.js').PaneAcquireOptions): Promise<PaneReservation | null>;
+}
 export interface AuxiliaryPanes extends Disposable {
 	acquire(kind: "remote" | "subagent", id: JobId | RunId,
 		owner: Owner, options: { signal?: AbortSignal; timeoutMs: number }): Promise<PaneReservation | null>;
@@ -316,13 +322,14 @@ export type CoreOnlyHerdrConfig = HerdrConfigBase & { mode: 'core-only'; app?: n
 export type HerdrConfig = FullHerdrConfig | CoreOnlyHerdrConfig;
 
 const MOD_LABELS = {
+  paneId: 'spider.pane-id', paneOperation: 'spider.pane-operation', targetCore: 'spider.target-core', targetTerminal: 'spider.target-terminal',
   session: 'spider.session', ownerCore: 'spider.owner-core', ownerTerminal: 'spider.owner-terminal',
   kind: 'spider.kind', job: 'spider.job', run: 'spider.run', space: 'herdr.space', tab: 'herdr.tab', machine: 'spider.machine',
   parentName: 'spider.parent-name', steer: 'spider.steer', displayName: 'spider.display-name', viewerLifetime: 'spider.viewer-lifetime',
 } as const;
 export const HERDR_LABELS: typeof MOD_LABELS & { readonly runtime: 'spider.runtime' } = { ...MOD_LABELS, runtime: 'spider.runtime' };
 export const HERDR_KINDS = {
-  exec: 'exec', execFile: 'exec-file', batch: 'batch', remoteObserver: 'remote-observer',
+  paneProxy: 'pane-proxy', paneService: 'pane-service', exec: 'exec', execFile: 'exec-file', batch: 'batch', remoteObserver: 'remote-observer',
   subagentViewer: 'subagent-viewer', setupProbe: 'setup-probe', session: 'session', remoteConsole: 'remote-console',
 } as const;
 export type HerdrKind = typeof HERDR_KINDS[keyof typeof HERDR_KINDS];

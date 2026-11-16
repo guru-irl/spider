@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export async function buildHerdrEntries() {
-  for (const mode of ['cli', 'viewer', 'viewer-pi', 'feed-reader', 'remote-runtime', 'subagent-supervisor']) {
+  for (const mode of ['cli', 'pane-endpoint', 'viewer', 'viewer-pi', 'feed-reader', 'remote-runtime', 'subagent-supervisor']) {
     await build({ configFile: fileURLToPath(new URL('../vite.herdr.config.mjs', import.meta.url)), mode });
   }
 }

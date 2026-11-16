@@ -29,6 +29,7 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = f
   await cp(resolve('packages/herdr/assets'), join(root, 'packages/herdr/assets'), { recursive: true });
   await mkdir(join(root, 'dist/herdr'), { recursive: true });
   await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), stripTypeScriptTypes(await readFile(resolve('packages/herdr/src/remote/runtime.ts'), 'utf8')));
+  await writeFile(join(root, 'dist/herdr/pane-endpoint.mjs'), 'export const createProductionPaneEndpointPorts = digest => ({protocol:1,buildDigest:digest}); export const runPaneEndpointCli = async (args, create) => {const p = await create(); return JSON.stringify({version:1,op:"handshake",protocol:p.protocol,buildDigest:p.buildDigest})};');
   await mkdir(join(h.directories.agent, 'sessions'), { recursive: true });
   for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome']) {
     await cp(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.12/mods', kind), join(h.directories.app, 'mods', kind), { recursive: true });

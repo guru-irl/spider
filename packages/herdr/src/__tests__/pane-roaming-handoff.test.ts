@@ -161,12 +161,28 @@ test.each(['before-write', 'lost-reply'] as const)('a remote retarget retries a 
       throw Error('label update unavailable');
     });
     expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'pending', reason: 'destination-screen-pending' });
-    expect((await f.store.read()).presentations[0]).toMatchObject({ id: before.id, proxy: before.proxy, target: next, conversion: { state: 'waiting-readiness' } });
+    expect((await f.store.read()).presentations[0]).toMatchObject({ id: before.id, proxy: before.proxy, target: f.remote, conversion: null });
     expect(f.events.filter(value => value === 'screen')).toHaveLength(1);
     expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete', presentation: { proxy: before.proxy, target: next, conversion: null } });
     expect((await f.hc.get(before.proxy!)).labels).toMatchObject({ 'spider.target-core': 'core-next', 'spider.target-terminal': 't4' });
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
     expect(f.events.filter(value => value === 'screen')).toHaveLength(2);
+  } finally { await f.stop(); }
+});
+
+test('a parked remote proxy retries a failed target label update before completing', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source);
+    await f.operations().presentReadyTarget(f.remote);
+    await f.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, visibility: 'parked', revision: p.revision + 1 })) }));
+    const before = (await f.store.read()).presentations[0];
+    const next = parsePaneTarget({ ...target('core-next', 't4', 3), alias: 'box-2.invalid', machineId: 'machine-next' });
+    vi.spyOn(f.hc, 'setLabels').mockRejectedValueOnce(Error('label update unavailable'));
+    expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'pending', reason: 'destination-screen-pending' });
+    expect((await f.store.read()).presentations[0]).toMatchObject({ proxy: before.proxy, target: f.remote, visibility: 'parked' });
+    expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete', presentation: { proxy: before.proxy, target: next, visibility: 'parked' } });
+    expect((await f.hc.get(before.proxy!)).labels).toMatchObject({ 'spider.target-core': 'core-next', 'spider.target-terminal': 't4' });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
   } finally { await f.stop(); }
 });
 

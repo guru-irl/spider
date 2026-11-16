@@ -93,8 +93,11 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
     let identityError: unknown;
     const local = parts.length === 2 ? await identity().catch(error => { identityError = error; return null; }) : null;
     const routes = local && parts[0] !== local.coreId ? await machines(callOptions).catch(error => { identityError = error; return []; }) : [];
-    const matches = routes.filter(row => row.id === parts[0] || row.name === parts[0] || row.aliases.includes(parts[0]));
-    const route = matches.length === 1 ? matches[0] : null;
+    const matching = (rows: readonly MachineSummary[], prefix: string) => rows.filter(row => row.id === prefix || row.name === prefix || row.aliases.includes(prefix));
+    const sameCore = (rows: readonly MachineSummary[]) => rows.length > 0 && rows.every(row => row.id === rows[0].id && row.sessionNamespace === rows[0].sessionNamespace);
+    const routeSignature = (rows: readonly MachineSummary[]) => rows.map(row => JSON.stringify([row.id, row.name, [...row.aliases].sort(), row.sessionNamespace])).sort().join('\n');
+    const matches = matching(routes, parts[0]);
+    const route = sameCore(matches) ? matches[0] : null;
     const coreId = route?.id ?? local?.coreId;
     const terminal = parseTerminal(await call(['get', address, '--json'], undefined, callOptions));
     if (identityError) {
@@ -107,21 +110,17 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
       return terminal;
     }
     const reply = terminal.address.split('/');
-    const replyRoutes = routes.filter(row => row.name === reply[0] || row.aliases.includes(reply[0]));
+    const replyRoutes = matching(routes, reply[0]);
     const prefix = reply.length === 1 ? coreId : reply[0] === coreId ? coreId
-      : route && replyRoutes.length === 1 && replyRoutes[0].id === route.id ? route.id : null;
+      : route && sameCore(replyRoutes) && replyRoutes[0].id === route.id && replyRoutes[0].sessionNamespace === route.sessionNamespace ? route.id : null;
     if (reply.length > 2 || prefix === null || `${prefix}/${reply.at(-1)}` !== `${coreId}/${parts[1]}`)
       throw new HerdrError('caller-mismatch', 'Returned terminal address differs from the requested address', { expectedAddress: address, actualAddress: terminal.address });
     const after = await identity();
     if (after.socket !== local.socket || after.sessionNamespace !== local.sessionNamespace) throw new HerdrError('core-mismatch', 'Selected terminal core changed during lookup');
     if (route) {
-      const currentRoutes = await machines(callOptions), current = currentRoutes.filter(row => row.id === route.id);
+      const currentRoutes = await machines(callOptions);
       const prefixes = [parts[0], ...(reply.length === 2 ? [reply[0]] : [])];
-      const changed = prefixes.some(prefix => {
-        const matching = currentRoutes.filter(row => row.id === prefix || row.name === prefix || row.aliases.includes(prefix));
-        return matching.length !== 1 || matching[0].id !== route.id;
-      });
-      if (changed || current.length !== 1 || JSON.stringify(current[0]) !== JSON.stringify(route)) throw new HerdrError('caller-mismatch', 'Terminal route changed during lookup');
+      if (prefixes.some(prefix => routeSignature(matching(currentRoutes, prefix)) !== routeSignature(matching(routes, prefix)))) throw new HerdrError('caller-mismatch', 'Terminal route changed during lookup');
     }
     return { ...terminal, address };
   };

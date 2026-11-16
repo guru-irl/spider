@@ -506,7 +506,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         app = createAppClient(appOptions, undefined, available);
         panes = createAuxiliaryPanes({ hc, app, automaticSubagentPanes: config.automaticSubagentPanes, placementRoot: join(config.globalRoot, 'herdr/panes'), appIdentity: config.app.home, appForSignal: signal => createAppClient(appOptions, signal, available), subagentViewer: launcher, discardSubagentViewer: launcher.discard, remoteObserver: openJobObserver, limit: config.limits.auxiliaryPanes, clock: Date.now, reportError: report });
       }
-      await recordPaneInstallation(config.globalRoot, options.packageRoot);
+      await recordPaneInstallation(config.globalRoot, options.packageRoot, report);
       const aliases = Object.fromEntries(config.machines.map(m => [m.name, m.aliases]));
       cache = createMachineCache({ hc, identity: terminal, directory: join(config.globalRoot, 'herdr/ssh'), aliases, reportFailure: report }); await cache.ready;
       policy = createTransportPolicy(createSshPolicy(cache), () => env);

@@ -6,7 +6,6 @@ import { assertTestConfigPath, openDb, type Db } from "@spider/db-core";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { resumePendingMappings } from "@spider/db-core/roam/repo-map";
 import type { ApplyReceipt, JsonObject, Readiness } from "@spider/db-core/roam/types";
-import { createRoamPlacement } from "@spider/herdr/roam-placement";
 import { hash, withProcessLock } from "@spider/herdr/sessions/registry";
 import type { ProcessIdentity, ProcessProbe } from "@spider/herdr/sessions/lease";
 import { createAgentPorts } from "./agent";
@@ -19,7 +18,6 @@ import { createSync, type SyncAdapter, type SyncPorts } from "./sync";
 import { isRevoked } from "./revocation";
 import { recoverWorkspaceRestores } from "./move-recovery";
 import type { WorkspaceRestore } from "./contracts";
-import { removedPlacementSessions } from "./placement-inventory";
 import { openFreezeJournal, type ArtifactJournal } from "./journal";
 import { createMoveRuntimeService } from "./move-runtime-service";
 import type { MoveRuntimeFactory } from "./move-runtime-contracts";
@@ -69,7 +67,7 @@ export interface StandaloneHubPorts {
   retireOnly?: SyncPorts["retireOnly"];
   mirrors?: SyncPorts["mirrors"];
   workspaceRestores?(): Promise<readonly WorkspaceRestore[]>;
-  placement: PlacementPort | Omit<Parameters<typeof createRoamPlacement>[0], "removedSessions">;
+  placement?: PlacementPort;
   runtimeRoot: string; socketPath: string; identity: ProcessIdentity;
   probe(pid: number): Promise<ProcessProbe>;
   observe(peer: Peer, results: PeerResult): Promise<HubObservation>;
@@ -358,9 +356,7 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
     sync(machine) { if (!sync) throw new Error("Hub synchronization is not prepared"); return sync.sync(machine); },
     barriers(machine, required) { if (!sync) throw new Error("Hub synchronization is not prepared"); return sync.barriers(machine, required); },
   };
-  const placement = "reconcile" in ports.placement ? ports.placement : createRoamPlacement({ ...ports.placement,
-    async removedSessions(sessions) { return removedPlacementSessions(ports.globalDb, sessions); },
-  });
+  const placement: PlacementPort = ports.placement ?? { async reconcile(rows) { return { pending: rows.map(row => row.terminal) }; } };
   const hub = await runHub({ ...ports, placement, sync: delegated,
     get revocationDb() { return revocationDb; },
     moveControl: ports.moveControl ?? (request => moves ? moves.control(request) : Promise.resolve({ code: 1, reason: "adapter-unbound:moveControl", value: null })),

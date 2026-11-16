@@ -12,12 +12,10 @@ import { execFile } from "node:child_process";
 import { lstatSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
-import { createAppClient } from "@spider/herdr/client/app";
 import { createHcClient, invokeCli } from "@spider/herdr/client/hc";
 
 import { VIEW_ON_MAC_MESSAGE } from "@spider/herdr/notices";
 
-import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
 import { runStandaloneHub, type HubNotice, type HubObservation } from "./hub";
 import { createLocalDiagnosticPorts } from "./local-diagnostics";
 import { openJournal } from "./journal";
@@ -27,7 +25,7 @@ import { openLocalCore, readLocalIdentity } from "./runtime";
 import { createTransport } from "./transport";
 import { createMachineIntercom } from "./intercom-runtime";
 import { createProductionIntercomMaintenance } from "./intercom-production";
-import type { Clock, Peer } from "./contracts";
+import type { Clock, Peer, PlacementFactory } from "./contracts";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
 export function createHubProcessProbe(probe: (pid: number) => Promise<ProcessProbe>, alive: (pid: number) => void = pid => { process.kill(pid, 0); }) {
   return async (pid: number): Promise<ProcessProbe> => {
@@ -88,9 +86,10 @@ export function homeChangeInProgress(file: string): boolean | null {
   } catch { return null; }
 }
 
-export async function startProductionHub(root: string, options: { intercomClock?: Clock; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory } = {}): Promise<{ stop(): Promise<void> }> {
+export async function startProductionHub(root: string, options: { intercomClock?: Clock; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: PlacementFactory } = {}): Promise<{ stop(): Promise<void> }> {
   const core = openLocalCore(root);
   let hc: ReturnType<typeof createHcClient> | undefined;
+  let placement: ReturnType<PlacementFactory> | undefined;
   try {
     if (!core.config.enabled || core.config.role !== "hub") throw new Error("Hub synchronization is disabled");
     const herdr = loadHerdrConfig(root), env = Object.freeze({ ...process.env });
@@ -131,9 +130,9 @@ export async function startProductionHub(root: string, options: { intercomClock?
         catch { return { reachability, readiness: null, suspensions: null }; }
       } catch { return { reachability: "unknown", readiness: null, suspensions: null }; }
     };
+    placement = options.placementFactory?.({ root, globalDb: core.db, config: core.config });
     const hub = await runStandaloneHub({ config: core.config, globalDb: core.db, journal, transport, clock, intercom,
-      placement: { app: createAppClient({ binary: herdr.app.binary, env }), hc: client,
-        registry: createTerminalRegistry(join(root, "herdr")), hcBinary: herdr.core.binary, stateRoot: join(root, "roam", "placement") },
+      placement,
       runtimeRoot: join(root, "roam"), socketPath: join(root, "roam", "hub.sock"),
       identity: { pid: process.pid, startIdentity: self.startIdentity }, probe, observe,
       notices: { publish: notice => nativeNotice("publish", notice.id, noticeText(notice)), clear: id => nativeNotice("clear", id) },
@@ -144,8 +143,8 @@ export async function startProductionHub(root: string, options: { intercomClock?
       ...createProductionRecoveryPorts({ root, config: core.config, globalDb: core.db, journal, transport }),
     });
     let stopped: Promise<void> | undefined;
-    return { stop() { return stopped ??= (async () => { try { await hub.stop(); } finally { await client.dispose(); core.close(); } })(); } };
-  } catch (error) { await hc?.dispose(); core.close(); throw error; }
+    return { stop() { return stopped ??= (async () => { try { await hub.stop(); } finally { await placement?.dispose(); await client.dispose(); core.close(); } })(); } };
+  } catch (error) { await placement?.dispose(); await hc?.dispose(); core.close(); throw error; }
 }
 
 /** The hub obtains exact session bytes using the same authenticated artifact transfer as moves. */

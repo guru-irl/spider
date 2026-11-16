@@ -116,6 +116,73 @@ test('in-flight actions retain replay protection beyond the replay window', asyn
   expect(f.ports.dispatch).toHaveBeenCalledTimes(1);
   await service.stop();
 });
+test('identical readiness replay after a service restart does not retarget twice', async () => {
+  const f = await fixture();
+  const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'durable-ready', presentationId: 'p1', expectedRevision: 1, target: { ...f.presentation.target, homeEpoch: 3 } };
+  f.ports.dispatch = vi.fn(async () => {
+    const presentation = { ...f.presentation, target: request.target, revision: 2 };
+    await f.ports.store.update(state => ({ ...state, presentations: [presentation] }));
+    return { status: 'complete' as const, reason: 'proxy-retargeted', presentation };
+  });
+  const service = createPaneService(f.ports), result = await service.request(request); await service.stop();
+  const restarted = createPaneService(f.ports);
+  try { expect(await restarted.request(request)).toEqual(result); expect(f.ports.dispatch).toHaveBeenCalledTimes(1); }
+  finally { await restarted.stop(); }
+});
+test('a changed readiness request cannot reuse completed operation evidence', async () => {
+  const f = await fixture();
+  const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'durable-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
+  const service = createPaneService(f.ports); await service.request(request); await service.stop();
+  const restarted = createPaneService(f.ports);
+  try {
+    expect(await restarted.request({ ...request, target: { ...request.target, homeEpoch: 3 } })).toMatchObject({ outcome: { status: 'refused' } });
+    expect(f.ports.dispatch).toHaveBeenCalledTimes(1);
+  } finally { await restarted.stop(); }
+});
+test('a superseded generation cannot replay an old completed readiness', async () => {
+  const f = await fixture();
+  const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'durable-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
+  const service = createPaneService(f.ports); await service.request(request); await service.stop();
+  await f.ports.store.update(state => ({ ...state, presentations: [{ ...f.presentation, revision: 2, target: { ...f.presentation.target, generation: 'gen-2' as never, homeEpoch: 3 } }] }));
+  const restarted = createPaneService(f.ports);
+  try { expect(await restarted.request(request)).toMatchObject({ outcome: { status: 'refused', reason: 'stale-presentation' } }); expect(f.ports.dispatch).toHaveBeenCalledTimes(1); }
+  finally { await restarted.stop(); }
+});
+test('an in-memory readiness reply cannot outlive its generation', async () => {
+  const f = await fixture();
+  const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'durable-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
+  const service = createPaneService(f.ports);
+  try {
+    await service.request(request);
+    await f.ports.store.update(state => ({ ...state, presentations: [{ ...f.presentation, revision: 2, target: { ...f.presentation.target, generation: 'gen-2' as never, homeEpoch: 3 } }] }));
+    expect(await service.request(request)).toMatchObject({ outcome: { status: 'refused', reason: 'stale-presentation' } });
+    expect(f.ports.dispatch).toHaveBeenCalledTimes(1);
+  } finally { await service.stop(); }
+});
+test('incomplete readiness never earns a durable replay', async () => {
+  const f = await fixture();
+  const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'unfinished-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
+  f.ports.dispatch = vi.fn(async () => {
+    const presentation = { ...f.presentation, revision: 2 };
+    await f.ports.store.update(state => ({ ...state, presentations: [presentation] }));
+    return { status: 'pending' as const, reason: 'destination-screen-pending', presentation };
+  });
+  const service = createPaneService(f.ports); await service.request(request); await service.stop();
+  const restarted = createPaneService(f.ports);
+  try { expect(await restarted.request(request)).toMatchObject({ outcome: { status: 'refused', reason: 'stale-presentation' } }); expect(f.ports.dispatch).toHaveBeenCalledTimes(1); }
+  finally { await restarted.stop(); }
+});
+
+test('completed readiness evidence never bypasses another action revision check', async () => {
+  const f = await fixture();
+  const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'durable-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
+  const service = createPaneService(f.ports); await service.request(request); await service.stop();
+  await f.ports.store.update(state => ({ ...state, presentations: [{ ...f.presentation, revision: 2 }] }));
+  const restarted = createPaneService(f.ports);
+  try { expect(await restarted.request({ version: 1, op: 'park', operationId: request.operationId, presentationId: 'p1', expectedRevision: 1 })).toMatchObject({ outcome: { status: 'refused', reason: 'stale-presentation' } }); expect((await f.ports.store.read()).presentations[0].visibility).toBe('visible'); }
+  finally { await restarted.stop(); }
+});
+
 test('changed readiness target refuses before dispatch', async () => {
   const f = await fixture(); vi.mocked(f.ports.validateTarget).mockResolvedValue({ ...f.presentation.target, homeEpoch: 4 }); const service = createPaneService(f.ports);
   const result = await service.request({ version: 1, op: 'present-ready', operationId: 'ready1', presentationId: 'p1', expectedRevision: 1, target: { ...f.presentation.target, homeEpoch: 3 } });

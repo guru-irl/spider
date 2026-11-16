@@ -9,8 +9,16 @@ import { openFreezeJournal } from "@spider/roam/journal";
 import { unboundMoveEffects, moveEffectReason } from "@spider/roam/move-ports";
 import { createHostMoveBindings, moveBindingDiagnostics } from "../move-runtime";
 import * as hostConfig from "@spider/roam/host-config";
+import * as presentationPorts from "../../herdr/ports";
+import * as sessionSocket from "@spider/roam/session-socket";
+import { parsePaneTarget } from "@spider/herdr/panes/codec";
+import { createPanePlacementStore } from "@spider/herdr/panes/store";
+import { createRoamPresentationOperations } from "@spider/herdr/roam-placement";
 import * as runtime from "@spider/roam/runtime";
 import { createMoveActivation } from "../move-activation";
+import { createHostRoamPresentationPorts } from "../readiness";
+import { openDb } from "@spider/db-core";
+import { revokeMachine } from "@spider/roam/revocation";
 const HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const fixture of fixtures.splice(0)) fixture.close(); });
@@ -144,6 +152,78 @@ it("the hub obtains a box presentation target from that box's guarded readiness"
   const runtime = await createHostMoveBindings({ root: global.root, globalDb: global.db, config, journal, sessionId: "session-a", transport });
   try { expect(await runtime.bindings.handoff!.readyTarget(home)).toEqual(target); expect(calls).toEqual(["move-ready-target"]); }
   finally { await runtime.close(); }
+}, 5000);
+
+it("production handoff captures before freeze and presents only a current ready target", async () => {
+  const global = createReplica("global", HUB); fixtures.push(global);
+  const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+  mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+  const journal = openFreezeJournal(join(global.root, "roam", "journal.db"));
+  const home = { sessionId: "session-a", machineId: HUB, epoch: 1, moveId: null, updatedAt: 1 };
+  global.db.prepare("INSERT INTO session_homes VALUES(?,?,?,?,?)").run(home.sessionId, HUB, 1, null, 1);
+  const source = parsePaneTarget({ coreId: "core-a", terminalId: "t1", address: "core-a/t1", createdMs: 10, identityLabels: { "spider.session": "session-a", "spider.generation": "gen-1" }, alias: null, machineId: HUB, kind: "session", sessionId: "session-a", generation: "gen-1", homeEpoch: 1, runId: null, consoleId: null, name: null, cwd: "/example" });
+  const store = createPanePlacementStore(join(global.root, "roam", "placement")), calls: string[] = [];
+  let captureAvailable = false;
+  const operations = createRoamPresentationOperations({ stateRoot: join(global.root, "roam", "placement"), hc: { identity: async () => ({ coreId: "core-a" }) } as never,
+    app: { ownerPlacement: async () => ({ space: "space-1", tab: "tab-1", pane: "pane-1" }) } as never,
+    async request(request) { calls.push(request.op); if (request.op === 'prepare-handoff' && !captureAvailable) throw Error('service unavailable'); return { version: 1, kind: "outcome", outcome: { status: "complete", reason: request.op, presentation: (await store.read()).presentations[0] } }; },
+  });
+  const open = vi.spyOn(presentationPorts, "createProductionRoamPresentationPorts").mockReturnValue({ ...operations, resolveTarget: async () => source, dispose: async () => {} });
+  vi.spyOn(sessionSocket, "requestSessionControl").mockImplementation(async (_root, operation) => { calls.push(operation.kind); return { code: 0, reason: "frozen", operationId: operation.id, epoch: 1, home, repairCommand: null, value: { operationId: operation.id, sessionId: home.sessionId, epoch: 1 } } as never; });
+  const runtime = await createHostMoveBindings({ root: global.root, globalDb: global.db, config, journal, sessionId: home.sessionId, transport: {} as never });
+  try {
+    global.db.prepare("INSERT INTO roam_locations(session_id,stores_json,home_json,file,cwd) VALUES(?,?,?,?,?)").run(home.sessionId, '["global"]', JSON.stringify(home), "/example/session.jsonl", "/example");
+    runtime.bindings.participant!.probe = async () => ({ kind: "live", identity: { pid: 123, bootId: "source-boot", startTime: "source-start" } });
+    journal.begin({ id: "move-a", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: home.sessionId, moveId: "move-a" } });
+    await expect(runtime.ports.freeze(home, { id: "move-a", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: home.sessionId, moveId: "move-a" } })).rejects.toThrow('handoff-capture-unavailable');
+    expect(calls).toEqual(['prepare-handoff']);
+    captureAvailable = true; calls.length = 0;
+    await runtime.ports.freeze(home, { id: "move-a", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: home.sessionId, moveId: "move-a" } });
+    expect(calls).toEqual(["prepare-handoff", "session-freeze"]);
+    expect(open).toHaveBeenCalledWith(global.root);
+    const locator = { machineId: HUB, alias: null, sessionId: home.sessionId, homeEpoch: 2, coreId: "core-a", terminalId: "t1" } as const;
+    expect(await runtime.bindings.handoff!.presentReadyTarget(locator)).toMatchObject({ status: "refused", reason: "presentation-home-changed" });
+    expect(calls).toEqual(["prepare-handoff", "session-freeze"]);
+    global.db.prepare("UPDATE session_homes SET epoch=2,move_id='move-a' WHERE session_id=?").run(home.sessionId);
+    expect(await runtime.bindings.handoff!.presentReadyTarget({ ...locator, homeEpoch: 1 })).toMatchObject({ status: "refused" });
+    expect(calls).toEqual(["prepare-handoff", "session-freeze"]);
+    const resolved = { ...source, homeEpoch: 2 };
+    vi.mocked(open).mock.results[0].value.resolveTarget = async () => resolved;
+    expect(await runtime.bindings.handoff!.presentReadyTarget(locator)).toMatchObject({ status: "complete" });
+    expect(calls).toEqual(["prepare-handoff", "session-freeze", "present-ready"]);
+  } finally { await runtime.close(); }
+}, 5000);
+
+it("revoked alias reuse and a home change during readiness cannot reach presentation effects", async () => {
+  const BOX = '00000000-0000-4000-8000-000000000002', global = createReplica('global', HUB); fixtures.push(global);
+  mkdirSync(join(global.root, 'roam'), { mode: 0o700 });
+  const config: RoamConfig = { enabled: true, role: 'hub', machineId: HUB, hubMachineId: HUB, peers: [{ machineId: BOX, alias: 'reused.invalid', core: 'core-remote', node: '/bin/node', pi: '/bin/pi', cli: '/bin/spider', globalRoot: '/example' }], discoveryRoots: [], coreUnit: 'synthetic', syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+  openFreezeJournal(join(global.root, 'roam', 'journal.db'));
+  const revocationDb = openDb(join(global.root, 'roam', 'journal.db'));
+  const target = parsePaneTarget({ coreId: 'core-remote', terminalId: 't1', address: 'core-remote/t1', createdMs: 10, identityLabels: { 'spider.session': 'session-a' }, alias: 'reused.invalid', machineId: null, kind: 'session', sessionId: 'session-a', generation: 'gen-2', homeEpoch: 2, runId: null, consoleId: null, name: null, cwd: '/example' });
+  const calls: unknown[] = [];
+  const concrete = { prepareHandoff: async () => { calls.push('capture'); return { status: 'complete' as const, reason: 'captured', presentation: null }; },
+    presentReadyTarget: async () => { calls.push('present'); return { status: 'complete' as const, reason: 'presented', presentation: null }; },
+    resolveTarget: async () => { global.db.prepare("UPDATE session_homes SET epoch=3 WHERE session_id='session-a'").run(); return target; }, dispose: async () => {} };
+  vi.spyOn(presentationPorts, 'createProductionRoamPresentationPorts').mockReturnValue(concrete);
+  const ports = createHostRoamPresentationPorts({ root: global.root, globalDb: global.db, revocationDb, config });
+  const locator = { machineId: BOX, alias: null, sessionId: 'session-a', homeEpoch: 2, coreId: 'core-remote', terminalId: 't1' } as const;
+  global.db.prepare('INSERT INTO session_homes VALUES(?,?,?,?,?)').run('session-a', BOX, 2, 'move-a', 1);
+  try {
+    expect(await ports.presentReadyTarget(locator)).toMatchObject({ status: 'pending', reason: 'presentation-readiness-unavailable' });
+    expect(calls).toEqual([]);
+    global.db.prepare("UPDATE session_homes SET epoch=2 WHERE session_id='session-a'").run();
+    revokeMachine(revocationDb, BOX);
+    expect(await ports.presentReadyTarget(locator)).toMatchObject({ status: 'refused', reason: 'presentation-home-changed' });
+    expect(await ports.prepareHandoff({ sessionId: 'session-a', machineId: BOX, epoch: 2, moveId: 'move-a', updatedAt: 1 })).toMatchObject({ status: 'refused', reason: 'presentation-home-changed' });
+    expect(calls).toEqual([]);
+    expect((global.db.prepare("SELECT epoch FROM session_homes WHERE session_id='session-a'").get() as { epoch: number }).epoch).toBe(2);
+    const unknown = '00000000-0000-4000-8000-000000000003';
+    global.db.prepare("UPDATE session_homes SET machine_id=? WHERE session_id='session-a'").run(unknown);
+    concrete.resolveTarget = async () => target;
+    expect(await ports.prepareHandoff({ sessionId: 'session-a', machineId: unknown, epoch: 2, moveId: 'move-a', updatedAt: 1 })).toMatchObject({ status: 'refused' });
+    expect(calls).toEqual([]);
+  } finally { await ports.dispose(); revocationDb.close(); }
 }, 5000);
 
 it("source cleanup rejects a replacement lock token even for the same process identity", async () => {

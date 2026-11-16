@@ -28,8 +28,7 @@ import { inspectIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { processStartTime } from "../../../subagents/src/process-identity";
 import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
 import { createHcClient } from "@spider/herdr/client/hc";
-import { createAppClient } from "@spider/herdr/client/app";
-import { createRoamPlacement, rememberRoamSlot } from "@spider/herdr/roam-placement";
+import { createHostRoamPresentationPorts } from "./readiness";
 import { IntercomFederationClient } from "@spider/intercom/broker/client";
 import { createDormantControl } from "./control";
 import { createBlockerPorts } from "./evidence";
@@ -70,6 +69,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   const { root, globalDb, config, journal, sessionId, transport } = input;
   const pi = resolveParticipantPi();
   const privateDb = openDb(join(root, "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
+  const presentations = createHostRoamPresentationPorts({ root, globalDb, revocationDb: privateDb, config });
   const stores = createStorePort(config, globalDb, { allowUnassignedGlobal: true });
   const keys = listStoreKeys(globalDb);
   const known = globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(sessionId) as { stores_json: string } | undefined;
@@ -288,17 +288,11 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       rollback: { currentFence: async (id, moveId) => journal.readIntercomFence(id, moveId), reopen: machine.releaseRollbackFence } },
     handoff: {
       async prepareHandoff({ source, operation, placementRoot }) {
-        const registry = createTerminalRegistry(join(root, "herdr")), records = (await registry.list()).filter(row => row.owner.sessionId === source.sessionId);
-        if (!records.length) { journal.record(operation.id, "host-handoff-captured", { kind: "nothing-to-capture" }); return { capture: "durable", presentation: { status: "pending", reason: "app-absent", presentation: null } }; }
-        try {
-          const herdr = loadHerdrConfig(root), app = createAppClient({ binary: herdr.app!.binary, env: process.env });
-          const slot = await app.ownerPlacement(records[0].owner.terminal.address); await rememberRoamSlot(placementRoot, source.sessionId, slot);
-          journal.record(operation.id, "host-handoff-captured", { kind: "slot", space: slot.space, tab: slot.tab });
-          return { capture: "durable", presentation: { status: "complete", reason: "captured", presentation: null } };
-        } catch {
-          journal.record(operation.id, "host-handoff-captured", { kind: "app-absent" });
-          return { capture: "durable", presentation: { status: "pending", reason: "app-absent", presentation: null } };
-        }
+        if (placementRoot !== join(root, "roam", "placement")) return { capture: "refused", reason: "presentation-root-changed" };
+        const presentation = await presentations.prepareHandoff(source);
+        if (!presentation.presentation || presentation.status === "refused" || presentation.status === "pending" && presentation.reason !== "app-unavailable") return { capture: "refused", reason: presentation.reason };
+        journal.record(operation.id, "host-handoff-captured", { kind: "service", presentationStatus: presentation.status });
+        return { capture: "durable", presentation };
       },
       async readyTarget(home) {
         if (home.machineId !== config.machineId) return evidenceCall<import("@spider/roam/contracts").PaneTarget>("move-ready-target", {
@@ -307,17 +301,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
         const ready = await operationReadiness(home.sessionId, `${home.moveId}-session-start-${home.machineId}`) ?? await operationReadiness(home.sessionId, String(home.moveId));
         return ready ? { machineId: home.machineId, alias: null, sessionId: home.sessionId, homeEpoch: home.epoch, coreId: ready.core, terminalId: ready.terminal } : null;
       },
-      async presentReadyTarget(target) {
-        const herdr = loadHerdrConfig(root), hc = createHcClient({ binary: herdr.core.binary, env: process.env }), app = createAppClient({ binary: herdr.app!.binary, env: process.env });
-        try {
-          const ready = { origin: "hub-operation" as const, opId: "presentation", sessionId: target.sessionId, epoch: target.homeEpoch, cwd: location(target.sessionId)?.cwd ?? "", file: location(target.sessionId)?.file ?? "", core: target.coreId, terminal: target.terminalId };
-          const placed = await createRoamPlacement({ app, hc, hcBinary: herdr.core.binary, registry: createTerminalRegistry(join(root, "herdr")), stateRoot: join(root, "roam", "placement") }).reconcile([ready]);
-          if (placed.pending.length) return { status: "pending", reason: "app-absent", presentation: null };
-          await app.ownerPlacement(target.terminalId as import("@spider/herdr").TerminalAddress);
-          return { status: "complete", reason: "presented", presentation: null };
-        } catch { return { status: "pending", reason: "app-absent", presentation: null }; }
-        finally { await hc.dispose(); }
-      },
+      presentReadyTarget: target => presentations.presentReadyTarget(target),
     },
     recovery: { ...createProductionRecoveryPorts({ root, config, globalDb, journal, transport }), mirrorRoot: join(root, "roam", "mirrors"),
       async restoreWorkspace(home, mirror) {
@@ -378,5 +362,5 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       return handleMoveParticipantOperation(operation, journal, bindings);
     },
     control: createMoveControlHandler({ config, globalDb, journal, transport, ports }),
-    async close() { if (!input.sync) { const adapter = sync as ReturnType<typeof createSync>; adapter.stop(); await adapter.drain(); } broker.close(); stores.close(); privateDb.close(); } };
+    async close() { await presentations.dispose(); if (!input.sync) { const adapter = sync as ReturnType<typeof createSync>; adapter.stop(); await adapter.drain(); } broker.close(); stores.close(); privateDb.close(); } };
 }

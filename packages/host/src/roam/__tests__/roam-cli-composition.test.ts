@@ -5,6 +5,7 @@ import * as productionHub from "@spider/roam/production-hub";
 import type { DisabledForgetResult } from "@spider/roam/disabled-forget-contract";
 import * as disabledForget from "../disabled-forget";
 import { main, startProductionHub } from "../cli-main";
+import { createHostRoamPlacement } from "../readiness";
 import { createHostMoveBindings } from "../move-runtime";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -53,16 +54,16 @@ it("explicit CLI recovery dependencies override production defaults", async () =
 it("the CLI passes its production move factory to hub startup", async () => {
   const f = command(), start = vi.spyOn(productionHub, "startProductionHub").mockRejectedValue(new Error("service not started in this test"));
   expect(await main(["roam", "hub"], f.io)).toBe(1);
-  expect(start).toHaveBeenCalledWith(expect.any(String), { moveFactory: createHostMoveBindings });
+  expect(start).toHaveBeenCalledWith(expect.any(String), { moveFactory: createHostMoveBindings, placementFactory: createHostRoamPlacement });
 });
 it("the packaged hub export supplies host recovery bindings by default", async () => {
   const stop = vi.fn(async () => {}), start = vi.spyOn(productionHub, "startProductionHub").mockResolvedValue({ stop });
   expect(await startProductionHub("/fixture/global")).toEqual({ stop });
-  expect(start).toHaveBeenCalledExactlyOnceWith("/fixture/global", { moveFactory: createHostMoveBindings });
+  expect(start).toHaveBeenCalledExactlyOnceWith("/fixture/global", { moveFactory: createHostMoveBindings, placementFactory: createHostRoamPlacement });
 });
 it("the packaged hub export retains an explicit move factory", async () => {
   const factory: typeof createHostMoveBindings = async () => { throw new Error("must not mount a runtime"); };
   const stop = vi.fn(async () => {}), start = vi.spyOn(productionHub, "startProductionHub").mockResolvedValue({ stop });
   expect(await startProductionHub("/fixture/global", { moveFactory: factory })).toEqual({ stop });
-  expect(start).toHaveBeenCalledExactlyOnceWith("/fixture/global", { moveFactory: factory });
+  expect(start).toHaveBeenCalledExactlyOnceWith("/fixture/global", { moveFactory: factory, placementFactory: createHostRoamPlacement });
 });

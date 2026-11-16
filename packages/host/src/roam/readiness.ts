@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { getBinding, openDbAt, paths, type Db } from "@spider/db-core";
+import { getBinding, openDb, openDbAt, paths, type Db } from "@spider/db-core";
 import { mapWorkspace, resolveRepositoryKey } from "@spider/db-core/roam/repo-map";
 import { createHcClient } from "@spider/herdr/client/hc";
 import { inspectIdLock } from "@spider/herdr/sessions/id-lock";
@@ -9,12 +9,92 @@ import { loadHerdrConfig } from "@spider/roam/production-hub";
 import type { Home, HubOperationReadiness, Readiness, StoreKey } from "@spider/db-core/roam/types";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { readSessionHeader } from "@spider/herdr/sessions/launcher";
-import type { Journal, RoamConfig } from "@spider/roam/contracts";
+import type { Journal, RoamConfig, PlacementPort } from "@spider/roam/contracts";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority, recordReadiness, seedNewParticipant, type BoxLocalOrigin, type RunningIntentAuthority } from "@spider/roam/session-control";
 import { unfinishedFreeze } from "@spider/roam/participant-supervisor";
 import { openLocalCore, readLocalIdentity } from "@spider/roam/runtime";
 import { participantCaptureReady } from "@spider/roam/production-supervisor";
 import { openJournal } from "@spider/roam/journal";
+import { sessionHome } from "@spider/roam/homes";
+import { isRevoked } from "@spider/roam/revocation";
+import type { PaneTarget } from "@spider/roam/contracts";
+import type { PaneTarget as HerdrPaneTarget, PaneActionOutcome } from "@spider/herdr/panes/types";
+import { createProductionRoamPresentationPorts } from "../herdr/ports";
+import { createAppClient } from "@spider/herdr/client/app";
+import { createRoamPlacement } from "@spider/herdr/roam-placement";
+import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
+import { removedPlacementSessions } from "@spider/roam/placement-inventory";
+
+export function createHostRoamPlacement(input: { root: string; globalDb: Db; config: RoamConfig }): PlacementPort & { dispose(): Promise<void> } {
+  const herdr = loadHerdrConfig(input.root), env = { ...process.env, SPIDER_GLOBAL_ROOT: input.root };
+  const hc = createHcClient({ binary: herdr.core.binary, env });
+  const revocationDb = openDb(join(input.root, "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
+  const presentations = createHostRoamPresentationPorts({ ...input, revocationDb });
+  const placement = createRoamPlacement({ stateRoot: join(input.root, "roam", "placement"), hc, hcBinary: herdr.core.binary,
+    app: herdr.mode === "core-only" ? null : createAppClient({ binary: herdr.app.binary, env: { ...env, HERDR_APP_HOME: herdr.app.home } }), registry: createTerminalRegistry(join(input.root, "herdr")),
+    removedSessions: async sessions => removedPlacementSessions(input.globalDb, sessions),
+    presentation: { async resolveTarget(ready) {
+      const home = sessionHome(input.globalDb, ready.sessionId);
+      if (!home || home === "unknown" || home.epoch !== ready.epoch) return null;
+      const peer = input.config.peers.find(peer => peer.machineId === home.machineId), parts = ready.terminal.split("/");
+      if (parts.length > 2 || !parts.at(-1) || peer && (peer.core !== ready.core || parts.length === 2 && ![peer.alias, peer.core].includes(parts[0]))) return null;
+      return presentations.resolveTarget({ machineId: home.machineId, alias: null, sessionId: ready.sessionId, homeEpoch: ready.epoch, coreId: ready.core, terminalId: parts.at(-1)! });
+    }, presentReadyTarget: target => presentations.presentVerifiedTarget(target) },
+  });
+  return { reconcile: placement.reconcile, async dispose() { try { await presentations.dispose(); await hc.dispose(); } finally { revocationDb.close(); } } };
+}
+
+export interface HostRoamPresentationPorts {
+  resolveTarget(locator: PaneTarget): Promise<HerdrPaneTarget | null>;
+  presentVerifiedTarget(target: HerdrPaneTarget): Promise<PaneActionOutcome>;
+  prepareHandoff(source: Home): Promise<PaneActionOutcome>;
+  presentReadyTarget(locator: PaneTarget): Promise<PaneActionOutcome>;
+  dispose(): Promise<void>;
+}
+export function createHostRoamPresentationPorts(input: { root: string; globalDb: Db; revocationDb: Db; config: RoamConfig }): HostRoamPresentationPorts {
+  const ports = createProductionRoamPresentationPorts(input.root);
+  const current = (session: string, machine: string, epoch: number) => {
+    const home = sessionHome(input.globalDb, session);
+    return !!home && home !== "unknown" && home.machineId === machine && home.epoch === epoch && !isRevoked(input.revocationDb, machine);
+  };
+  const unavailable = (reason: string): PaneActionOutcome => ({ status: "pending", reason, presentation: null });
+  const resolveTarget = async (locator: PaneTarget): Promise<HerdrPaneTarget | null> => {
+    if (!current(locator.sessionId, locator.machineId, locator.homeEpoch)) return null;
+    const peer = input.config.peers.find(peer => peer.machineId === locator.machineId);
+    if (peer && peer.core !== locator.coreId || !peer && locator.machineId !== input.config.machineId) return null;
+    const target = await ports.resolveTarget({ ...locator, local: locator.machineId === input.config.machineId });
+    return target && target.sessionId === locator.sessionId && target.coreId === locator.coreId && target.terminalId === locator.terminalId && target.homeEpoch === locator.homeEpoch && current(locator.sessionId, locator.machineId, locator.homeEpoch) ? target : null;
+  };
+  return {
+    resolveTarget,
+    async presentVerifiedTarget(target: HerdrPaneTarget): Promise<PaneActionOutcome> {
+      if (!target.sessionId) return unavailable("presentation-readiness-unavailable");
+      const home = sessionHome(input.globalDb, target.sessionId);
+      if (!home || home === "unknown" || home.epoch !== target.homeEpoch || !current(home.sessionId, home.machineId, home.epoch)) return { status: "refused", reason: "presentation-home-changed", presentation: null };
+      return ports.presentReadyTarget(target);
+    },
+    async prepareHandoff(source: Home): Promise<PaneActionOutcome> {
+      if (!current(source.sessionId, source.machineId, source.epoch)) return { status: "refused", reason: "presentation-home-changed", presentation: null };
+      const peer = input.config.peers.find(peer => peer.machineId === source.machineId);
+      if (!peer && source.machineId !== input.config.machineId) return { status: "refused", reason: "presentation-machine-unavailable", presentation: null };
+      try {
+        const target = await ports.resolveTarget({ sessionId: source.sessionId, machineId: source.machineId, homeEpoch: source.epoch,
+          coreId: peer?.core, local: source.machineId === input.config.machineId });
+        if (!target || target.sessionId !== source.sessionId || target.homeEpoch !== source.epoch || !current(source.sessionId, source.machineId, source.epoch)) return unavailable("presentation-source-unavailable");
+        return await ports.prepareHandoff(target.sessionId!, target);
+      } catch { return unavailable("presentation-unavailable"); }
+    },
+    async presentReadyTarget(locator: PaneTarget): Promise<PaneActionOutcome> {
+      if (!current(locator.sessionId, locator.machineId, locator.homeEpoch)) return { status: "refused", reason: "presentation-home-changed", presentation: null };
+      try {
+        const target = await resolveTarget(locator);
+        if (!target || target.sessionId !== locator.sessionId || target.coreId !== locator.coreId || target.terminalId !== locator.terminalId || target.homeEpoch !== locator.homeEpoch || !current(locator.sessionId, locator.machineId, locator.homeEpoch)) return unavailable("presentation-readiness-unavailable");
+        return await ports.presentReadyTarget(target);
+      } catch { return unavailable("presentation-unavailable"); }
+    },
+    dispose: () => ports.dispose(),
+  };
+}
 export { createNativeHostingOutcomeReader } from "@spider/roam/hosting";
 export interface ParticipantAdmissionHooks {
   prepare(sessionId: string, file: string): Promise<void>;

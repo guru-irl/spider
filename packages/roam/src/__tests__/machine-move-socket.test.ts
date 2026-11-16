@@ -10,7 +10,7 @@ it("machine socket exposes named operations and refuses malformed and disabled r
   const effects: unknown[] = [], address = { sessionId: "session-a", scopeId: "scope-a" };
   const unavailable = async (...args: unknown[]): Promise<never> => { effects.push(args); throw new Error("move-rollback-proof-missing"); };
   const port: MachineMovePort = { bridge: async input => { effects.push(input); return { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] }; },
-    endpoint: unavailable, settlement: unavailable, releaseRollbackFence: unavailable,
+    broker: unavailable, endpoint: unavailable, settlement: unavailable, releaseRollbackFence: unavailable,
     intake: { close: unavailable, drain: unavailable, inspect: unavailable, checkGeneration: unavailable, abort: unavailable, ready: unavailable } };
   let enabled = true;
   servers.push(await startMachineMoveSocket(root, () => enabled, port));
@@ -23,5 +23,6 @@ it("machine socket exposes named operations and refuses malformed and disabled r
   expect(effects).toHaveLength(1);
   effects.length = 0; enabled = false;
   await expect(machineMoveProxy(root).bridge(address)).rejects.toThrow("roaming-disabled");
+  await expect(machineMoveProxy(root).broker(address)).rejects.toThrow("roaming-disabled");
   expect(effects).toEqual([]);
 }, 5000);

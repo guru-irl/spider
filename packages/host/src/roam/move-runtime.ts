@@ -29,7 +29,6 @@ import { processStartTime } from "../../../subagents/src/process-identity";
 import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
 import { createHcClient } from "@spider/herdr/client/hc";
 import { createHostRoamPresentationPorts } from "./readiness";
-import { IntercomFederationClient } from "@spider/intercom/broker/client";
 import { createDormantControl } from "./control";
 import { createBlockerPorts } from "./evidence";
 import { createUsageIngestThrough } from "./usage-ingest";
@@ -80,7 +79,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   const clock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); timer.unref(); return () => clearTimeout(timer); } };
   const sync = input.sync ?? createSync({ config, globalDb, journal, transport, clock, stores });
   const inventory = createProcessInventory(join(root, "herdr"));
-  const machine = machineMoveProxy(root), broker = new IntercomFederationClient();
+  const machine = machineMoveProxy(root), broker = { inspectFreezeBlockers: machine.broker };
   const runtimeRoot = join(root, "roam", "s");
   const location = (id: string) => globalDb.prepare("SELECT file,cwd,stores_json FROM roam_locations WHERE session_id=?").get(id) as { file: string; cwd: string; stores_json: string } | undefined;
   const target = async (id: string): Promise<string> => {
@@ -363,5 +362,5 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       return handleMoveParticipantOperation(operation, journal, bindings);
     },
     control: createMoveControlHandler({ config, globalDb, journal, transport, ports }),
-    async close() { await presentations.dispose(); if (!input.sync) { const adapter = sync as ReturnType<typeof createSync>; adapter.stop(); await adapter.drain(); } broker.close(); stores.close(); privateDb.close(); } };
+    async close() { await presentations.dispose(); if (!input.sync) { const adapter = sync as ReturnType<typeof createSync>; adapter.stop(); await adapter.drain(); } stores.close(); privateDb.close(); } };
 }

@@ -538,6 +538,78 @@ test('a finished subagent target reconnects its existing view to a new target', 
   expect(launches).toBe(2);
 });
 
+test.each([
+  ['recovers a claimed proxy after the destination changes', 'claimed'],
+  ['recovers an uncertain proxy that appears after the destination changes', 'uncertain'],
+  ['resumes recovery after a proxy label update fails', 'interrupted'],
+  ['does not adopt ambiguous proxy launches', 'duplicate'],
+  ['does not adopt a proxy with a different launch identity', 'foreign'],
+] as const)('%s', async (_description, launch) => {
+  const { root, runtime, hc } = await fixture();
+  const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never };
+  let focused = slot;
+  const placements = new Map<string, typeof slot>([['execution', slot]]);
+  const commands: string[] = [];
+  Object.assign(boundary.app, {
+    focusedPane: async () => focused,
+    ownerPlacement: async (address: string) => { const found = placements.get(address); if (!found) throw new HerdrError('owner-unplaced', 'Not placed'); return found; },
+    tabTerminals: async () => [...placements.keys()],
+    command: async (name: string, args: Record<string, string>) => {
+      commands.push(name);
+      if (name === 'terminal.keep') { focused = { ...slot, pane: 'replacement' as never }; placements.set(args.terminal, focused); }
+      if (name === 'terminal.park') placements.delete(args.terminal);
+      return {};
+    },
+  });
+  let interrupted = launch === 'interrupted';
+  vi.mocked(hc.setLabels).mockImplementation(async (address, labels) => {
+    if (interrupted) { interrupted = false; throw new Error('Label update interrupted'); }
+    const terminal = boundary.terminals.get(String(address)); if (terminal) terminal.labels = { ...terminal.labels, ...labels };
+  });
+  const source = sessionRow(), first = sessionRow('gen-2'), second = sessionRow('gen-3');
+  source.target = { ...source.target, coreId: 'core-local' as never, address: 'core-local/execution' as never, alias: null, machineId: null, homeEpoch: 1 };
+  first.target = { ...first.target, terminalId: 'first' as never, address: 'core-remote/first' as never, homeEpoch: 2 };
+  second.target = { ...second.target, coreId: 'core-second' as never, terminalId: 'second' as never, address: 'core-second/second' as never, alias: 'box-2.invalid', machineId: 'machine-2', homeEpoch: 3 };
+  for (const row of [source, first, second]) {
+    row.machineKey = row.target.coreId;
+    row.owner = { ...row.owner, terminal: { ...row.owner.terminal, coreId: row.target.coreId, terminalId: row.target.terminalId, address: row.target.address } };
+  }
+  boundary.rows = [second];
+  const p: PanePresentation = { ...presentation('old-launch'), mode: 'native', role: 'agent', target: source.target, slot, launch: launch === 'claimed' ? 'claimed' : 'uncertain',
+    conversion: { state: 'waiting-focus', source: slot, sourceFocused: true, destination: first.target } };
+  await runtime.store.update(state => ({ ...state, presentations: [p] }));
+  boundary.terminals.set('execution', { ...facts(p).terminal, address: 'execution' as never });
+  const addProxy = (address = 'old-proxy', operation = p.id) => boundary.terminals.set(address, { ...facts(p).terminal, address: address as never,
+    labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.pane-operation': operation, 'spider.target-core': first.target.coreId, 'spider.target-terminal': first.target.terminalId } });
+  if (launch !== 'uncertain') addProxy('old-proxy', launch === 'foreign' ? 'other-operation' : p.id);
+  if (launch === 'duplicate') addProxy('another-proxy');
+  const service = runtime.createService();
+  const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
+  if (launch === 'duplicate' || launch === 'foreign') {
+    expect(await operations.presentReadyTarget(second.target)).toMatchObject({ status: 'pending' });
+    expect(placements.has('execution')).toBe(true);
+    expect(hc.setLabels).not.toHaveBeenCalled();
+    expect(hc.run).not.toHaveBeenCalled();
+    expect(commands).toEqual([]);
+    return;
+  }
+  if (launch === 'uncertain') {
+    expect(await operations.presentReadyTarget(second.target)).toMatchObject({ status: 'pending', reason: 'conversion-proxy-uncertain' });
+    expect(placements.has('execution')).toBe(true);
+    addProxy();
+  }
+  if (launch === 'interrupted') {
+    expect(await operations.presentReadyTarget(second.target)).toMatchObject({ status: 'pending' });
+    expect((await runtime.store.read()).presentations[0]).toMatchObject({ proxy: 'old-proxy', launch: 'acknowledged' });
+    expect(placements.has('execution')).toBe(true);
+  }
+  expect(await operations.presentReadyTarget(second.target)).toMatchObject({ status: 'complete', presentation: { target: second.target, proxy: 'old-proxy', conversion: null } });
+  expect(boundary.terminals.get('old-proxy')?.labels).toMatchObject({ 'spider.target-core': second.target.coreId, 'spider.target-terminal': second.target.terminalId });
+  expect(placements.has('execution')).toBe(false);
+  expect(commands).toEqual(['terminal.keep', 'terminal.park']);
+  expect(hc.run).not.toHaveBeenCalled();
+});
+
 test('opening a pane succeeds when the focused program has finished', async () => {
   const { runtime, hc } = await fixture();
   const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never };

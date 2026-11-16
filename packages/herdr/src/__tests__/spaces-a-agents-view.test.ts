@@ -54,6 +54,19 @@ function all(root: unknown): Node[] {
 const texts = (root: unknown): string[] => all(root).flatMap(node => node.children.filter((value): value is string => typeof value === 'string'));
 const call = (node: Node, name: string) => node.calls.find(([key]) => key === name)?.[1];
 const byId = (root: unknown, id: string): Node | undefined => all(root).find(node => node.id === id);
+function svgColumn(row: Node, path: string): { x: number; size: unknown[] | undefined } {
+  let x = Number(call(row, 'pl')?.[0] ?? 0);
+  const gap = Number(call(row, 'gap')?.[0] ?? 0);
+  for (const child of row.children) {
+    const node = recorded.get(child as object);
+    if (!node) continue;
+    const icon = all(child).find(item => item.svg === path);
+    const absolute = call(node, 'absolute') !== undefined;
+    if (icon) return { x: absolute ? Number(call(node, 'left')?.[0]) : x, size: call(icon, 'size') };
+    if (!absolute) x += Number(call(node, 'size')?.[0] ?? 0) + gap;
+  }
+  throw new Error(`Missing ${path} in row ${row.id}`);
+}
 const palette = { chrome: '#161618', foreground: '#ececed', muted: '#b4b4b5', dim: '#969697', hover: '#262628', selected: '#29292a', raised: '#303031', popover: '#222224', ansi1: '#ff5555', ansi2: '#50fa7b', blocked: '#ffcb6b', working: '#ececed', idle: '#969697', done: '#969697', border: '#2f2f32' };
 const ok = (value: unknown = {}) => ({ code: 0, stdout: JSON.stringify(value), stderr: '' });
 function agent(address: string, pane: string, pinned = false) {
@@ -236,13 +249,100 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     }
   });
 
-  it(`${version}: places the console icon and count after the inline chevron`, async () => {
+  it(`${version}: counts all visible consoles, including unreachable and retained rows`, async () => {
+    const test = fixture(version);
+    seedConsoles(test);
+    test.nativeTerminals.push({ ...terminal('box-4.invalid/old', { 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid' }), parent: 'local', state: 'finished', finishedAt: Date.now(), exitCode: 0, reason: 'exited' });
+    await test.ready();
+    let root = test.view.render(test.cx);
+    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 2, collapsed']);
+    byId(root, consoleId('local'))!.events.on_click({}, test.cx);
+    root = test.view.render(test.cx);
+    expect(byId(root, 'sub-console:box-4.invalid/console-a')).toBeDefined();
+    expect(byId(root, 'sub-console:box-5.invalid/console-away')).toBeDefined();
+    expect(byId(root, 'sub-console:box-4.invalid/old')).toBeUndefined();
+    byId(root, 'finished-toggle-local')!.events.on_click({}, test.cx);
+    root = test.view.render(test.cx);
+    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 3, expanded']);
+    expect(byId(root, 'sub-console:box-4.invalid/old')).toBeDefined();
+  });
+
+  it(`${version}: places the root group before finished children and their toggle`, async () => {
+    const make = (key: string, kind: string, parentKey: string | null, depth: number, retained = false) => ({
+      key, kind, parentKey, depth, retained, name: key, address: key, originalAddress: key,
+      status: retained ? 'done' : 'working', finishedAt: retained ? Date.now() : null,
+      terminal: { ...terminal(key), state: retained ? 'finished' : 'live' }, action: null,
+    });
+    const rows = [make('console', 'console', null, 0), make('live', 'subagent', null, 0),
+      make('nested-console', 'console', 'live', 1), make('nested-finished', 'native', 'live', 1, true),
+      make('finished', 'subagent', null, 0, true), make('finished-child', 'native', 'finished', 1, true)];
+    const test = fixture(version, { ports: { projectAgentChildren: () => rows } });
+    await test.ready();
+    test.view.expandedConsoleGroups.add(consoleKey('local'));
+    test.view.expandedConsoleGroups.add(consoleKey('local', 'live'));
+    const shape = () => test.view.tree(test.nativeTerminals, 'local').map((entry: any) => [entry.group ? `group:${entry.group.parentKey}` : entry.t.key, entry.lines]);
+    expect(shape()).toEqual([['live', ['├']], ['group:live', ['│', '└']], ['nested-console', ['│', '', '└']], ['group:null', ['├']], ['console', ['│', '└']]]);
+    let root = test.view.render(test.cx);
+    byId(root, 'finished-toggle-local')!.events.on_click({}, test.cx);
+    expect(shape()).toEqual([['live', ['├']], ['nested-finished', ['│', '├']], ['group:live', ['│', '└']], ['nested-console', ['│', '', '└']], ['group:null', ['├']], ['console', ['│', '└']], ['finished', ['├']], ['finished-child', ['│', '└']]]);
+    root = test.view.render(test.cx);
+    const ids = byId(root, 'ag-list')!.children.flatMap(all).map(node => node.id);
+    expect(ids.indexOf('sub-console')).toBeLessThan(ids.indexOf('sub-finished'));
+    expect(ids.indexOf('sub-finished-child')).toBeLessThan(ids.indexOf('finished-toggle-local'));
+  });
+
+  it(`${version}: aligns console groups and their children with sibling subagent columns`, async () => {
+    const make = (key: string, kind: string, parentKey: string | null, depth: number) => ({
+      key, kind, parentKey, depth, retained: false, name: key, address: key, originalAddress: key,
+      status: 'working', finishedAt: null, terminal: terminal(key), action: null,
+    });
+    const rows = [make('peer', 'subagent', null, 0), make('peer-child', 'subagent', 'peer', 1),
+      make('parent', 'subagent', null, 0), make('nested-peer', 'subagent', 'parent', 1),
+      make('peer-grandchild', 'subagent', 'nested-peer', 2), make('nested-console', 'console', 'parent', 1),
+      make('root-console', 'console', null, 0)];
+    const test = fixture(version, { ports: { projectAgentChildren: () => rows } });
+    await test.ready();
+    test.view.folded.add('peer');
+    test.view.folded.add('nested-peer');
+    let root = test.view.render(test.cx);
+    const compareGroup = (parent: string | null, sibling: string, open: boolean) => {
+      const group = byId(root, consoleId('local', parent))!, peer = byId(root, `sub-${sibling}`)!;
+      const chevron = `mods/workspace-chrome/chevron-${open ? 'down' : 'right'}.svg`;
+      expect(svgColumn(group, chevron)).toEqual(svgColumn(peer, chevron));
+      expect(svgColumn(group, 'mods/spider-agents/list.svg')).toEqual(svgColumn(peer, 'mods/spider-agents/bot.svg'));
+    };
+    compareGroup(null, 'peer', false);
+    compareGroup('parent', 'nested-peer', false);
+    test.view.folded.delete('peer');
+    test.view.folded.delete('nested-peer');
+    byId(root, consoleId('local'))!.events.on_click({}, test.cx);
+    byId(root, consoleId('local', 'parent'))!.events.on_click({}, test.cx);
+    root = test.view.render(test.cx);
+    compareGroup(null, 'peer', true);
+    compareGroup('parent', 'nested-peer', true);
+    expect(svgColumn(byId(root, 'sub-root-console')!, 'mods/spider-agents/list.svg'))
+      .toEqual(svgColumn(byId(root, 'sub-peer-child')!, 'mods/spider-agents/bot.svg'));
+    expect(svgColumn(byId(root, 'sub-nested-console')!, 'mods/spider-agents/list.svg'))
+      .toEqual(svgColumn(byId(root, 'sub-peer-grandchild')!, 'mods/spider-agents/bot.svg'));
+    for (const [parent, child] of [[null, 'root-console'], ['parent', 'nested-console']] as const) {
+      const group = byId(root, consoleId('local', parent))!, consoleRow = byId(root, `sub-${child}`)!;
+      const continuation = group.children.flatMap(all).find(node => call(node, 'top')?.[0] === 20 && call(node, 'bottom')?.[0] === 0)!;
+      expect(continuation).toBeDefined();
+      const branch = consoleRow.children.flatMap(all).find(node => call(node, 'border_b') !== undefined && call(node, 'left')?.[0] === call(continuation, 'left')?.[0]);
+      expect(branch).toBeDefined();
+    }
+    const shape = test.view.tree(test.nativeTerminals, 'local').map((entry: any) => [entry.group ? `group:${entry.group.parentKey}` : entry.t.key, entry.lines]);
+    expect(shape.find((entry: any) => entry[0] === 'nested-console')).toEqual(['nested-console', ['│', '', '└']]);
+    expect(shape.find((entry: any) => entry[0] === 'root-console')).toEqual(['root-console', ['', '└']]);
+  });
+
+  it(`${version}: places the console icon in the subagent icon column`, async () => {
     const test = fixture(version);
     seedConsoles(test);
     await test.ready();
     const group = byId(test.view.render(test.cx), consoleId('local'))!;
     expect(group.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/terminal.svg')).toBe(false);
-    expect(call(group, 'pl')).toEqual([71]); // Finished-toggle padding plus two 26 px tree levels.
+    expect(call(group, 'pl')).toEqual([92]); // Subagent padding plus two 26 px tree levels.
     expect(group.children.flatMap(all).some(node => node.svg === 'mods/spider-agents/list.svg')).toBe(true);
   });
 
@@ -254,10 +354,10 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const root = test.view.render(test.cx);
     const group = byId(root, consoleId('local'))!;
     const finished = byId(root, 'finished-toggle-local')!;
-    expect(call(group, 'h')).toEqual([24]);
+    expect(call(group, 'h')).toEqual([26]);
     expect(call(group, 'text_size')).toEqual([11.5]);
     expect(call(group, 'text_color')).toEqual([palette.dim]);
-    expect(call(group, 'h')).toEqual(call(finished, 'h'));
+    expect(call(group, 'h')).toEqual(call(byId(root, 'sub-run-local')!, 'h'));
     expect(call(group, 'text_size')).toEqual(call(finished, 'text_size'));
     expect(call(group, 'text_color')).toEqual(call(finished, 'text_color'));
     const hover = element();
@@ -371,30 +471,30 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(tree.find((entry: any) => entry.t?.key === 'console-a').lines).toEqual(['', '└']);
   });
 
-  it(`${version}: uses the finished toggle chevron and a console icon with the unchanged count pill`, async () => {
+  it(`${version}: uses the subagent chevron and a console icon with the count pill`, async () => {
     const test = fixture(version);
     seedConsoles(test);
     test.nativeTerminals.push({ ...terminal('box-4.invalid/old', { 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid' }), parent: 'local', state: 'finished', finishedAt: Date.now(), exitCode: 0, reason: 'exited' });
     await test.ready();
     let root = test.view.render(test.cx);
     const check = (open: boolean) => {
-      const group = byId(root, consoleId('local'))!, finished = byId(root, 'finished-toggle-local')!;
-      const icon = open ? 'mods/spider-agents/chevron-up.svg' : 'mods/workspace-chrome/chevron-right.svg';
+      const group = byId(root, consoleId('local'))!, sibling = byId(root, 'sub-run-local')!;
+      const icon = `mods/workspace-chrome/chevron-${open ? 'down' : 'right'}.svg`;
       const caret = group.children.flatMap(all).find(node => node.svg === icon)!;
-      const reference = finished.children.flatMap(all).find(node => node.svg === icon)!;
+      const reference = sibling.children.flatMap(all).find(node => node.svg === 'mods/workspace-chrome/chevron-down.svg')!;
       expect(caret).toBeDefined();
       expect(reference).toBeDefined();
-      expect(call(caret, 'size')).toEqual([10]);
-      expect(call(caret, 'absolute')).toBeUndefined();
-      expect(call(group, 'pl')).toEqual(call(finished, 'pl'));
-      expect(call(group, 'gap')).toEqual(call(finished, 'gap'));
+      expect(call(caret, 'size')).toEqual([11]);
+      expect(svgColumn(group, icon).x).toEqual(svgColumn(sibling, 'mods/workspace-chrome/chevron-down.svg').x);
+      expect(call(group, 'pl')).toEqual(call(sibling, 'pl'));
+      expect(call(group, 'gap')).toEqual(call(sibling, 'gap'));
       expect(group.children.flatMap(all).some(node => node.svg === 'mods/spider-agents/list.svg')).toBe(true);
       expect(group.children.flatMap(all).flatMap(node => node.children)).not.toContain('Consoles');
       const pill = byId(root, `console-group-count:${encodeURIComponent(consoleKey('local'))}`)!;
-      expect(pill.children).toContain('1');
+      expect(pill.children).toContain(open ? '3' : '2');
       expect(call(pill, 'h')).toEqual([16]);
       expect(call(pill, 'bg')).toEqual([palette.hover]);
-      expect(call(group, 'accessibility_label')).toEqual([`Consoles, 1, ${open ? 'expanded' : 'collapsed'}`]);
+      expect(call(group, 'accessibility_label')).toEqual([`Consoles, ${open ? 3 : 2}, ${open ? 'expanded' : 'collapsed'}`]);
       expect(call(group, 'tooltip')).toEqual([open ? 'Hide consoles' : 'Show consoles']);
     };
     check(false);
@@ -412,7 +512,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const parts = group.children.flatMap(all);
     expect(parts.some(node => node.svg === 'mods/spider-agents/list.svg')).toBe(true);
     expect(parts.flatMap(node => node.children)).not.toContain('Consoles');
-    expect(parts.flatMap(node => node.children)).toContain('1');
+    expect(parts.flatMap(node => node.children)).toContain('2');
   });
 
   it(`${version}: keeps the descriptive count and tooltip for multiple consoles`, async () => {
@@ -425,10 +525,10 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     await test.ready();
     let root = test.view.render(test.cx);
     const closed = byId(root, consoleId('local'))!;
-    expect(call(closed, 'accessibility_label')).toEqual(['Consoles, 3, collapsed']);
+    expect(call(closed, 'accessibility_label')).toEqual(['Consoles, 4, collapsed']);
     expect(call(closed, 'tooltip')).toEqual(['Show consoles']);
     const pill = byId(root, `console-group-count:${encodeURIComponent(consoleKey('local'))}`)!;
-    expect(pill.children).toContain('3');
+    expect(pill.children).toContain('4');
     expect(call(pill, 'px')).toEqual([6]);
     expect(call(pill, 'h')).toEqual([16]);
     expect(call(pill, 'rounded')).toEqual([999]);
@@ -436,18 +536,18 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(call(pill, 'bg')).toEqual([palette.hover]);
     closed.events.on_click({}, test.cx);
     root = test.view.render(test.cx);
-    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 3, expanded']);
+    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 4, expanded']);
     expect(call(byId(root, consoleId('local'))!, 'tooltip')).toEqual(['Hide consoles']);
   });
 
-  it(`${version}: uses the finished toggle open chevron for expanded consoles`, async () => {
+  it(`${version}: uses the subagent open chevron for expanded consoles`, async () => {
     const test = fixture(version);
     seedConsoles(test);
     await test.ready();
     let root = test.view.render(test.cx);
     byId(root, consoleId('local'))!.events.on_click({}, test.cx);
     root = test.view.render(test.cx);
-    expect(byId(root, consoleId('local'))!.children.flatMap(all).some(node => node.svg === 'mods/spider-agents/chevron-up.svg')).toBe(true);
+    expect(byId(root, consoleId('local'))!.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-down.svg')).toBe(true);
   });
 
   it(`${version}: puts the machine pill immediately after each console icon and keeps the status at the end`, async () => {
@@ -668,10 +768,10 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     byId(root, 'console-count-local')!.events.on_click({}, test.cx);
     root = test.view.render(test.cx);
     expect(byId(root, 'sub-console:box-4.invalid/console-a')).toBeDefined();
-    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 1, expanded']);
+    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 2, expanded']);
   });
 
-  it(`${version}: the consoles caret is inline with the finished-toggle padding`, async () => {
+  it(`${version}: the consoles caret shares the subagent column in priority sort`, async () => {
     const test = fixture(version);
     seedConsoles(test);
     await test.ready();
@@ -680,9 +780,10 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const group = byId(root, consoleId('local'))!;
     const caret = group.children.flatMap(all).find(node => node.svg === 'mods/workspace-chrome/chevron-right.svg')!;
     const icon = group.children.flatMap(all).find(node => node.svg === 'mods/spider-agents/list.svg');
-    expect(call(caret, 'absolute')).toBeUndefined();
+    expect(call(caret, 'size')).toEqual([11]);
     expect(icon).toBeDefined();
-    expect(call(group, 'pl')).toEqual([45]);
+    expect(svgColumn(group, 'mods/workspace-chrome/chevron-right.svg').x).toEqual(svgColumn(byId(root, 'sub-run-local')!, 'mods/workspace-chrome/chevron-down.svg').x);
+    expect(call(group, 'pl')).toEqual([66]);
     expect(group.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/terminal.svg')).toBe(false);
   });
 
@@ -1202,8 +1303,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       expect(byId(root, 'sub-console:box-4.invalid/console-a')).toBeUndefined();
       expect(group.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-right.svg')).toBe(true);
       expect(group.children.flatMap(all).some(node => node.svg === 'mods/spider-agents/list.svg')).toBe(true);
-      expect(group.children.flatMap(all).flatMap(node => node.children)).toContain('1');
-      expect(call(group, 'accessibility_label')).toEqual(['Consoles, 1, collapsed']);
+      expect(group.children.flatMap(all).flatMap(node => node.children)).toContain('2');
+      expect(call(group, 'accessibility_label')).toEqual(['Consoles, 2, collapsed']);
       expect(call(group, 'tab_index')).toEqual([0]);
     }
   });
@@ -1218,8 +1319,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(test.commands.filter(([name]) => name === 'pane.focus' || name === 'terminal.peek')).toEqual([]);
     root = test.view.render(test.cx);
     const open = byId(root, consoleId('local'))!;
-    expect(open.children.flatMap(all).some(node => node.svg === 'mods/spider-agents/chevron-up.svg')).toBe(true);
-    expect(call(open, 'accessibility_label')).toEqual(['Consoles, 1, expanded']);
+    expect(open.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-down.svg')).toBe(true);
+    expect(call(open, 'accessibility_label')).toEqual(['Consoles, 2, expanded']);
     expect(byId(root, 'sub-console:box-4.invalid/console-a')).toBeDefined();
     const machinePill = byId(root, 'child-machine:console:box-4.invalid/console-a')!;
     expect(machinePill.children).toContain('box-4.invalid');
@@ -1359,7 +1460,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     byId(root, 'console-fold-console:box-4.invalid/console-a')!.events.on_click({}, test.cx);
     root = test.view.render(test.cx);
     expect(byId(root, 'sub-job-a')).toBeDefined();
-    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 1, expanded']);
+    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 2, expanded']);
     expect(test.execCalls).toEqual([]);
   });
 
@@ -1387,7 +1488,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(byId(root, 'sub-console:box-4.invalid/old')).toBeUndefined();
     byId(root, 'finished-toggle-local')!.events.on_click({}, test.cx);
     root = test.view.render(test.cx);
-    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 0, collapsed']);
+    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 1, collapsed']);
     byId(root, consoleId('local'))!.events.on_click({}, test.cx);
     expect(byId(test.view.render(test.cx), 'sub-console:box-4.invalid/old')).toBeDefined();
   });

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 
-export function projectConsoleGroups(rows, ownerId, expandedGroups) {
+export function projectConsoleGroups(rows, ownerId, expandedGroups, liveKeys) {
   const groups = new Map();
   for (const row of rows) {
     if (row.kind !== 'console') continue;
@@ -9,7 +9,7 @@ export function projectConsoleGroups(rows, ownerId, expandedGroups) {
       const key = `console-group:${JSON.stringify([ownerId, row.parentKey])}`;
       groups.set(row.parentKey, { kind: 'console-group', key, parentKey: row.parentKey, depth: row.depth, count: 0, expanded: expandedGroups.has(key) });
     }
-    if (!row.retained && row.status !== 'unreachable' && row.terminal?.state === 'live') groups.get(row.parentKey).count++;
+    groups.get(row.parentKey).count++;
   }
   // Virtual parent keys must not collide with real child keys.
   const occupied = new Set(rows.map(row => row.key)), groupParents = new Map();
@@ -32,8 +32,9 @@ export function projectConsoleGroups(rows, ownerId, expandedGroups) {
   };
   const visit = parent => {
     const children = siblings.get(parent) ?? [];
-    for (const row of children) if (row.kind !== 'console') append(row);
+    for (const row of children) if (row.kind !== 'console' && (parent !== null || !liveKeys || liveKeys.has(row.key))) append(row);
     for (const row of children) if (row.kind === 'console') append(row);
+    if (parent === null && liveKeys) for (const row of children) if (row.kind !== 'console' && !liveKeys.has(row.key)) append(row);
   };
   visit(null);
   rows.forEach(append);

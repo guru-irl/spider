@@ -74,22 +74,22 @@ it('keeps command history folded after group expansion', () => {
   expect(expanded.has(group(initial, null).key)).toBe(true);
 });
 
-it('counts live reachable consoles not jobs and updates when consoles disappear', () => {
+it('counts all consoles, not jobs, and updates when consoles disappear', () => {
   const rows = exampleRows();
   rows.push(child('console-unreachable', 'console', { status: 'unreachable' }));
   rows.push(child('console-retained', 'console', { retained: true, terminal: terminal('console-retained', 'finished') }));
   rows.push(child('console-finished', 'console', { terminal: terminal('console-finished', 'finished') }));
 
-  expect(group(projectConsoleGroups(rows, 'owner', new Set()), null).count).toBe(2);
-  expect(group(projectConsoleGroups(rows.filter(row => row.key !== 'console-a'), 'owner', new Set()), null).count).toBe(1);
-  expect(group(projectConsoleGroups(rows.filter(row => !['console-a', 'console-b'].includes(row.key)), 'owner', new Set()), null).count).toBe(0);
+  expect(group(projectConsoleGroups(rows, 'owner', new Set()), null).count).toBe(5);
+  expect(group(projectConsoleGroups(rows.filter(row => row.key !== 'console-a'), 'owner', new Set()), null).count).toBe(4);
+  expect(group(projectConsoleGroups(rows.filter(row => !['console-a', 'console-b'].includes(row.key)), 'owner', new Set()), null).count).toBe(3);
 });
 
-it('keeps a zero-count group for unavailable consoles', () => {
+it('counts unavailable and retained consoles in their group', () => {
   const rows = [child('away', 'console', { status: 'unreachable' }), child('old', 'console', { retained: true })];
   const projected = projectConsoleGroups(rows, 'owner', new Set());
   const unavailable = group(projected, null);
-  expect(unavailable).toMatchObject({ count: 0, expanded: false });
+  expect(unavailable).toMatchObject({ count: 2, expanded: false });
   expect(visibleChildren(projected)).toEqual([]);
   expect(visibleChildren(projectConsoleGroups(rows, 'owner', toggleConsoleGroup(new Set(), unavailable.key))).map(row => row.key)).toEqual(['away', 'old']);
   expect(projectConsoleGroups([], 'owner', new Set())).toEqual([]);

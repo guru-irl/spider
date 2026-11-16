@@ -11,6 +11,7 @@ import { parsePanePresentation } from '../../../herdr/src/panes/codec.js';
 import type { HerdrConfig, HcClient, TerminalSummary } from '../../../herdr/src/contracts.js';
 import type { PresentedAuxiliaryOptions } from '../../../herdr/src/panes/auxiliary.js';
 import type { PaneAgentRow, PanePresentation, PaneTerminalFacts } from '../../../herdr/src/panes/types.js';
+import { createRoamPlacement, createRoamPresentationOperations } from '../../../herdr/src/roam-placement.js';
 const boundary = vi.hoisted(() => ({ facts: vi.fn(), app: {} as Record<string, unknown>, rows: [] as PaneAgentRow[], remote: vi.fn(), auxiliary: null as PresentedAuxiliaryOptions | null, terminals: new Map<string, TerminalSummary>(), layout: { spaces: [] } as unknown }));
 vi.mock('../../../herdr/src/client/hc.js', () => ({ invokeCli: vi.fn(async (_binary, args) => {
   if (args[0] === 'machine') return { machines: [{ name: 'box-1.invalid', aliases: [], id: 'core-remote', machine_id: 'machine-1', state: 'connected' }] };
@@ -147,6 +148,55 @@ test('app absence captures durable handoff intent and a screen retry resumes the
   expect(await service.request({ ...ready, operationId: 'ready-screen', expectedRevision: waiting.revision })).toMatchObject({ outcome: { status: 'complete', presentation: { target: destination.target, proxy: 'proxy-1', slot, conversion: null } } });
   expect(hc.run).not.toHaveBeenCalled();
   expect(commands).not.toHaveBeenCalled();
+});
+
+test.each(['moved proxy', 'closed moved proxy', 'new native terminal'])('the production slot store places the next terminal after a %s', async previous => {
+  const { root, runtime, hc } = await fixture();
+  const slot = { space: 's2' as never, tab: 'tb2' as never, pane: 'old-pane' as never };
+  let focused = slot;
+  const placements = new Map<string, typeof slot>([[previous === 'new native terminal' ? 'native-2' : 'legacy-proxy', slot]]);
+  const spaces = [{ id: 's2', name: 'Moved', machine: null, tabs: [{ id: 'tb2', name: 'Moved' }] }];
+  Object.assign(boundary.app, { listSpaces: async () => spaces, focusedPane: async () => focused,
+    tabPanes: async () => [...placements].map(([terminal, p]) => ({ terminal, pane: p.pane })),
+    ownerPlacement: async (address: string) => { const p = placements.get(address); if (!p) throw new HerdrError('owner-unplaced', 'Not placed'); return p; },
+    tabTerminals: async () => [...placements.keys()],
+    command: async (name: string, args: Record<string, string>) => {
+      if (name === 'pane.split') return { pane: 'placeholder' };
+      if (name === 'pane.focus') focused = { ...slot, pane: args.pane as never };
+      if (name === 'terminal.keep') { focused = { ...slot, pane: 'new-pane' as never }; placements.set(args.terminal, focused); }
+      if (name === 'terminal.park') placements.delete(args.terminal);
+      return {};
+    } });
+  let placeholder = false;
+  boundary.layout = { spaces: [{ id: 's2', machine: null, tabs: [{ id: 'tb2', panes: [{ id: 'old-pane' }] }] }] };
+  const command = boundary.app.command as (name: string, args: Record<string, string>) => Promise<Record<string, unknown>>;
+  boundary.app.command = async (name: string, args: Record<string, string> & { props?: { operationId: string } }) => {
+    const reply = await command(name, args);
+    if (name === 'pane.split') placeholder = true;
+    if (name === 'pane.close') placeholder = false;
+    boundary.layout = { spaces: [{ id: 's2', machine: null, tabs: [{ id: 'tb2', panes: [{ id: 'old-pane' }, ...(placeholder ? [{ id: 'placeholder', mod: 'spider-pane-waiting', props: { operationId: args.props?.operationId ?? 'open-next' } }] : [])] }] }] };
+    return reply;
+  };
+  const owner = { ...sessionRow().owner, terminal: { ...sessionRow().owner.terminal, coreId: 'core-local' as never, terminalId: 'native-2' as never, address: 'native-2' as never } };
+  const legacy = { address: 'legacy-proxy' as never, state: 'live' as const, labels: { 'spider.kind': 'roam-proxy', 'spider.session': 'session-1', 'spider.owner-core': 'core-remote', 'spider.owner-terminal': 'box-1.invalid/old' }, parent: null, status: null, exitCode: null, reason: null, signal: null, finishedAt: null };
+  boundary.terminals.set(previous === 'new native terminal' ? 'native-2' : 'legacy-proxy', previous === 'new native terminal' ? { ...legacy, address: 'native-2' as never, labels: {} } : legacy);
+  await runtime.store.update(state => ({ ...state, slots: [{ session: 'session-1', space: 's1', tab: 'tb1' }], attempts: previous === 'new native terminal' ? [] : [{ session: 'session-1', remote: 'box-1.invalid/old', core: 'core-remote', proxy: 'legacy-proxy', closed: false, localOwners: [] }] }));
+  const service = runtime.createService(), stateRoot = join(root, 'roam', 'placement');
+  const operations = createRoamPresentationOperations({ stateRoot, hc, app: boundary.app as never, request: request => service.request(request) });
+  const row = sessionRow('gen-2'); row.target = { ...row.target, terminalId: 'next' as never, address: 'core-remote/next' as never };
+  boundary.rows = [row];
+  const placement = createRoamPlacement({ stateRoot, hc, hcBinary: '/owned/hc', app: boundary.app as never,
+    registry: { list: async () => previous === 'new native terminal' ? [{ owner, recordedAt: 1 }] : [] } as never,
+    presentation: { resolveTarget: async () => row.target, presentReadyTarget: target => operations.presentReadyTarget(target) } });
+  await placement.reconcile([]);
+  expect((await runtime.store.read()).slots).toEqual([{ session: 'session-1', space: 's2', tab: 'tb2' }]);
+  if (previous === 'closed moved proxy') { boundary.terminals.set('legacy-proxy', { ...legacy, state: 'finished' }); placements.delete('legacy-proxy'); }
+  await placement.reconcile([]);
+  await service.reconcile();
+  expect(await service.request({ version: 1, op: 'open-existing', operationId: 'open-next', sessionId: row.sessionId, generation: row.generation, slot: null }))
+    .toMatchObject({ outcome: { status: 'complete', presentation: { slot: { space: 's2', tab: 'tb2' }, target: { terminalId: 'next' } } } });
+  expect(hc.run).toHaveBeenCalledTimes(1);
+  expect((await runtime.store.read()).presentations).toHaveLength(1);
 });
 
 test('production waiting claims are removed on release and do not block the same view from reopening', async () => {

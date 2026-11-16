@@ -16,6 +16,7 @@ import { createPaneService } from '../panes/service.js';
 import { createPanePlacementStore } from '../panes/store.js';
 import type { PanePresentation, PaneServiceRequest, PaneTarget } from '../panes/types.js';
 import { createRoamPlacement, createRoamPresentationOperations } from '../roam-placement.js';
+import { HerdrError } from '../client/parse.js';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -32,7 +33,7 @@ async function fixture() {
   const source = target(), remote = target('core-remote', 't2', 2);
   const slot = { space: 'space-1', tab: 'tab-1', pane: 'pane-1' } as OwnerPlacement;
   let focusSlot = slot;
-  let focused = true, appPresent = true, screenReady = true, launchLost = false;
+  let focused = true, appPresent = true, screenReady = true, launchLost = false, recoverLaunch = false, spawnFailures = 0;
   const placements = new Map<TerminalAddress, OwnerPlacement>([['t1' as TerminalAddress, slot]]), events: string[] = [];
   const displays = new Map<string, PanePresentation>();
   const app = {
@@ -43,14 +44,16 @@ async function fixture() {
   } as unknown as AppClient & AppPaneInspection;
   const hc = {
     identity: async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' }),
-    get: async (address: TerminalAddress) => { const p = displays.get(address); return { address, state: 'live', labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p?.id, 'spider.target-core': p?.target.coreId, 'spider.target-terminal': p?.target.terminalId } }; },
+    get: async (address: TerminalAddress) => { const p = displays.get(address); return { address, state: 'live', labels: { 'spider.kind': p?.id === 'legacy' ? 'roam-proxy' : 'pane-proxy', 'spider.session': 'session-1', 'spider.owner-core': p?.target.coreId, 'spider.owner-terminal': 'box-1.invalid/' + p?.target.terminalId, 'spider.pane-id': p?.id, 'spider.target-core': p?.target.coreId, 'spider.target-terminal': p?.target.terminalId } }; },
     kill: async () => { events.push('kill'); },
+    rm: async (address: string) => { displays.delete(address); events.push('remove'); },
+    events: () => ({ ready: Promise.resolve(), subscribe: (listener: (event: unknown) => void) => { listener({ type: 'snapshot', terminals: [...displays].map(([address, p]) => ({ address, state: 'live', labels: { 'spider.kind': p.id === 'legacy' ? 'roam-proxy' : 'pane-proxy', 'spider.session': 'session-1', 'spider.owner-core': p.target.coreId, 'spider.owner-terminal': 'box-1.invalid/' + p.target.terminalId } })) }); return () => {}; } }),
   } as unknown as HcClient;
   const open: PaneOpenPorts = {
     store, hc, app, placeholderMod: 'synthetic-waiting',
     launchTarget: async () => { throw Error('must not launch pi'); },
-    launchProxy: async p => { events.push('proxy'); displays.set('t3', p); if (launchLost) throw Error('reply lost'); return 't3' as TerminalAddress; },
-    findProxy: async () => null, findTargetLaunch: async () => null, agentArgv: async () => [],
+    launchProxy: async p => { events.push('proxy'); if (spawnFailures-- > 0) throw new HerdrError('spawn-error', 'Could not start', { pid: undefined }); displays.set('t3', p); if (launchLost) throw Error('reply lost'); return 't3' as TerminalAddress; },
+    findProxy: async p => recoverLaunch && [...displays.values()].some(display => display.id === p.id && display.target.terminalId === p.target.terminalId) ? 't3' as TerminalAddress : null, findTargetLaunch: async () => null, agentArgv: async () => [],
     readNativeTarget: async () => ({ ...source, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null }), validateTarget: async value => value,
     verifyPlaceholder: async () => false, findPlaceholder: async () => null,
     deferSourceView: async () => false,
@@ -72,7 +75,12 @@ async function fixture() {
   });
   let loseReadyReply = false;
   const operations = () => createRoamPresentationOperations({ stateRoot, hc, app: appPresent ? app : null, request: async request => { requests.push(request); const result = await service.request(request); if (request.op === 'present-ready' && loseReadyReply) { loseReadyReply = false; throw Error('reply lost'); } return result; } });
-  return { root, stateRoot, hc, source, remote, slot, store, events, placements, operations, requests,
+  const placement = () => createRoamPlacement({ stateRoot, hc, app, hcBinary: '/unused/hc', registry: { list: async () => [] } as never,
+    presentation: { resolveTarget: async () => remote, presentReadyTarget: value => operations().presentReadyTarget(value) } });
+  return { root, stateRoot, hc, source, remote, slot, store, events, placements, operations, requests, placement,
+    recoverLaunch: () => { recoverLaunch = true; }, failSpawns: (count: number) => { spawnFailures = count; },
+    lateLegacy: () => { displays.set('legacy-proxy', { ...(displays.get('t3') ?? { target: remote }), id: 'legacy' } as PanePresentation); placements.set('legacy-proxy' as TerminalAddress, slot); },
+    displays,
     close: (p: PanePresentation) => confirmPresentationClose({ id: p.id, expectedRevision: p.revision, target: p.target, operationId: 'stale-close' }, { store, hc, app, validateTarget: open.validateTarget, closeSession: async () => { throw Error('cannot close a successor'); } }), stop: () => service.stop(),
     focus: (value: boolean) => { focused = value; }, absent: () => { appPresent = false; open.app = null; },
     replaceSource: () => { open.readNativeTarget = async () => ({ ...source, createdMs: source.createdMs + 1, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null }); },
@@ -234,5 +242,49 @@ test('uncertain launch never starts another proxy on readiness retry', async () 
     expect((await f.operations().presentReadyTarget(f.remote)).status).toBe('pending');
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
     expect((await f.store.read()).presentations[0].launch).toBe('uncertain');
+  } finally { await f.stop(); }
+});
+
+
+test('a lost conversion launch reply recovers through the service without another launch', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source); f.loseLaunch();
+    const row = { origin: 'hub-operation' as const, opId: 'move-1', sessionId: 'session-1', epoch: 2, core: 'core-remote', terminal: 'box-1.invalid/t2', cwd: '/example', file: '/example/session.jsonl' };
+    expect(await f.placement().reconcile([row])).toEqual({ pending: [row.terminal] });
+    f.recoverLaunch();
+    expect(await f.placement().reconcile([row])).toEqual({ pending: [] });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
+    expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
+    expect((await f.store.read()).presentations).toMatchObject([{ target: f.remote, proxy: 't3', launch: 'acknowledged' }]);
+  } finally { await f.stop(); }
+});
+test.each([1, 2])('conversion spawn failures are retried at most twice: %i failure(s)', async failures => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source); f.failSpawns(failures);
+    const row = { origin: 'hub-operation' as const, opId: 'move-1', sessionId: 'session-1', epoch: 2, core: 'core-remote', terminal: 'box-1.invalid/t2', cwd: '/example', file: '/example/session.jsonl' };
+    expect(await f.placement().reconcile([row])).toEqual({ pending: [row.terminal] });
+    expect(await f.placement().reconcile([row])).toEqual({ pending: failures === 1 ? [] : [row.terminal] });
+    expect(await f.placement().reconcile([row])).toEqual({ pending: failures === 1 ? [] : [row.terminal] });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(2);
+    expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(failures === 1 ? 1 : 0);
+    expect((await f.store.read()).presentations[0].launch).not.toBe('uncertain');
+  } finally { await f.stop(); }
+});
+test('an uncertain legacy claim with the service present cannot create a second view', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source);
+    const attempt = { session: 'session-1', remote: 'box-1.invalid/t2', core: 'core-remote', proxy: null, closed: false, localOwners: [], failure: { attempts: 1, retryable: false } };
+    await f.store.update(state => ({ ...state, attempts: [attempt] }));
+    const row = { origin: 'hub-operation' as const, opId: 'move-1', sessionId: 'session-1', epoch: 2, core: 'core-remote', terminal: 'box-1.invalid/t2', cwd: '/example', file: '/example/session.jsonl' };
+    expect(await f.placement().reconcile([row])).toEqual({ pending: [row.terminal] });
+    expect(f.events.filter(value => value === 'proxy')).toEqual([]);
+    expect((await f.store.read()).attempts).toEqual([attempt]);
+    f.lateLegacy();
+    expect(await f.placement().reconcile([row])).toEqual({ pending: [] });
+    expect(f.displays.size).toBe(1);
+    expect(f.placements.has('legacy-proxy' as TerminalAddress)).toBe(false);
+    expect((await f.store.read()).attempts[0]).toMatchObject({ closed: true, failure: { attempts: 1, retryable: false } });
+    expect((await f.store.read()).presentations).toHaveLength(1);
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
   } finally { await f.stop(); }
 });

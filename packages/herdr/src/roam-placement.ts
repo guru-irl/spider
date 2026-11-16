@@ -23,13 +23,7 @@ type Options = { app: AppClient | null; hc: HcClient; registry: TerminalRegistry
   removedSessions?: (sessions: readonly string[]) => Promise<ReadonlySet<string>>;
   presentation?: { resolveTarget(ready: Readiness): Promise<PaneTarget | null>; presentReadyTarget(target: PaneTarget): Promise<PaneActionOutcome> } };
 const errorCode = (error: unknown) => error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-export function launchNotStarted(error: unknown): boolean {
-  if (!(error instanceof HerdrError)) return false;
-  if (['core-unavailable', 'core-mismatch'].includes(error.code) && error.details === undefined) return true;
-  const details = error.details;
-  return ['missing-hc', 'spawn-error'].includes(error.code) && !!details && typeof details === 'object' &&
-    Object.hasOwn(details, 'pid') && (details as { pid?: unknown }).pid === undefined;
-}
+export { launchNotStarted } from './client/launch-outcome.js';
 const appUnavailable = (error: unknown) => ['owner-unplaced', 'app-disconnected', 'cli-exit', 'missing-app', 'pane-timeout'].includes(String(errorCode(error)));
 const localSlot = (slot: { space: string; tab: string }) => !!slot.space && !!slot.tab && !slot.space.includes('/') && !slot.tab.includes('/');
 const ownerKey = (owner: Owner) => hash(JSON.stringify([owner.terminal.coreId, owner.terminal.terminalId, owner.terminal.socket, owner.terminal.sessionNamespace]));
@@ -186,7 +180,7 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
           for (const terminal of await snapshot(hc)) {
             if (terminal.address.includes('/') || terminal.labels[HERDR_LABELS.kind] !== 'roam-proxy') continue;
             const attempt = state.attempts.find(a => !a.proxy && !a.closed && a.session === terminal.labels[HERDR_LABELS.session] && a.remote === terminal.labels[HERDR_LABELS.ownerTerminal] && a.core === terminal.labels[HERDR_LABELS.ownerCore]);
-            if (attempt) { attempt.proxy = terminal.address; delete attempt.failure; }
+            if (attempt) { attempt.proxy = terminal.address; if (!options.presentation || attempt.failure?.retryable) delete attempt.failure; }
           }
         }
         const records = (await registry.list()).sort((a, b) => a.recordedAt - b.recordedAt);
@@ -210,6 +204,15 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
           catch (error) { if (errorCode(error) !== 'not_found') throw error; attempt.closed = true; continue; }
           if (terminal.labels[HERDR_LABELS.kind] !== 'roam-proxy' || terminal.labels[HERDR_LABELS.session] !== attempt.session || terminal.labels[HERDR_LABELS.ownerTerminal] !== attempt.remote || terminal.labels[HERDR_LABELS.ownerCore] !== attempt.core) continue;
           if (terminal.state === 'finished') { await hc.rm(address); attempt.closed = true; continue; }
+          if (options.presentation && attempt.failure?.retryable === false && app) {
+            const slot = await app.ownerPlacement(address).catch(() => null);
+            if (!slot) continue;
+            const reply = await app.command('terminal.park', { terminal: address });
+            if (reply.error || (await app.tabTerminals(slot)).includes(address)) continue;
+            const current = await hc.get(address);
+            if (current.labels[HERDR_LABELS.kind] !== 'roam-proxy' || current.labels[HERDR_LABELS.session] !== attempt.session || current.labels[HERDR_LABELS.ownerTerminal] !== attempt.remote || current.labels[HERDR_LABELS.ownerCore] !== attempt.core) continue;
+            await hc.kill(address); await hc.rm(address); attempt.closed = true; continue;
+          }
           if (app) {
             try { const observed = await app.ownerPlacement(address); if (localSlot(observed)) setSlot(state, attempt.session, observed); }
             catch (error) { if (!appUnavailable(error)) throw error; }
@@ -235,7 +238,7 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
         await saveState();
         const pending: string[] = [];
         for (const row of rows) {
-          if (!options.presentation) { pending.push(row.terminal); continue; }
+          if (!options.presentation || state.attempts.some(attempt => !attempt.closed && attempt.session === row.sessionId && attempt.core === row.core && attempt.remote.split('/').at(-1) === row.terminal.split('/').at(-1) && attempt.failure?.retryable === false)) { pending.push(row.terminal); continue; }
           try {
             const target = await options.presentation.resolveTarget(row);
             if (!target || target.kind !== 'session' || target.sessionId !== row.sessionId || target.coreId !== row.core || target.terminalId !== row.terminal.split('/').at(-1) || target.homeEpoch !== row.epoch || !target.generation || target.createdMs <= 0) { pending.push(row.terminal); continue; }

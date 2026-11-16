@@ -106,7 +106,7 @@ test('prunes only proven-removed slots and retains active or unknown sessions', 
     await rememberRoamSlot(h.stateRoot, 'removed-session', slot);
     await rememberRoamSlot(h.stateRoot, 'unknown-session', slot);
     await rememberRoamSlot(h.stateRoot, 'pending-session', slot);
-    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot,
+    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot, presentation: { ...h.presentation, resolveTarget: async () => null },
       removedSessions: async sessions => new Set(sessions.filter(session => session !== 'unknown-session')) });
     expect(await p.reconcile([{ ...ready('unresolved'), sessionId: 'pending-session' }])).toEqual({ pending: ['unresolved'] });
     const state = JSON.parse(await readFile(join(h.stateRoot, 'roam-placement.json'), 'utf8')) as { slots: Array<{ session: string }> };
@@ -120,7 +120,7 @@ test('prunes a proven-removed slot with a stale terminal association', async () 
   try {
     await rememberRoamSlot(h.stateRoot, 'session-1', slot);
     await h.hc.rm(h.f.address('t1'));
-    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot,
+    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot, presentation: { ...h.presentation, resolveTarget: async () => null },
       removedSessions: async sessions => new Set(sessions) });
     expect(await p.reconcile([])).toEqual({ pending: [] });
     const state = JSON.parse(await readFile(join(h.stateRoot, 'roam-placement.json'), 'utf8')) as { slots: Array<{ session: string }> };
@@ -135,7 +135,7 @@ test('retains a slot when its associated terminal cannot be observed', async () 
   try {
     await rememberRoamSlot(h.stateRoot, 'session-1', slot);
     const hc: HcClient = { ...h.hc, async get() { throw new HerdrError('core-unavailable', 'fixture unavailable'); } };
-    const p = createRoamPlacement({ hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot,
+    const p = createRoamPlacement({ hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot, presentation: { ...h.presentation, resolveTarget: async () => null },
       removedSessions: async sessions => new Set(sessions) });
     expect(await p.reconcile([])).toEqual({ pending: [] });
     const state = JSON.parse(await readFile(join(h.stateRoot, 'roam-placement.json'), 'utf8')) as { slots: Array<{ session: string }> };
@@ -149,7 +149,7 @@ test('pruning a removed slot preserves the closed proxy claim for that terminal'
   try {
     await rememberRoamSlot(h.stateRoot, 'removed-session', slot);
     const row = { ...ready('box-1.invalid/t5'), sessionId: 'removed-session' };
-    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot,
+    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot, presentation: { ...h.presentation, resolveTarget: async () => null },
       removedSessions: async sessions => new Set(sessions) });
     expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
     await h.legacy();
@@ -331,31 +331,11 @@ test('requires the resolved absolute hc binary', async () => {
   const h = await fixture();
   try {
     const registry = createTerminalRegistry(h.stateRoot);
-    expect(() => createRoamPlacement({ hc: h.hc, app: null, registry, hcBinary: 'hc', stateRoot: h.stateRoot })).toThrow();
+    expect(() => createRoamPlacement({ hc: h.hc, app: null, registry, hcBinary: 'hc', stateRoot: h.stateRoot, presentation: h.presentation })).toThrow();
     expect(await h.f.calls()).toEqual([]);
   } finally { await h.close(); }
 }, 5000);
 
-
-test('uncertain legacy replies remain pending when the event stream is already open', async () => {
-  const h = await fixture();
-  try {
-    await rememberRoamSlot(h.stateRoot, 'session-1', slot);
-    const store = createPanePlacementStore(h.stateRoot);
-    const attempt = { session: 'session-1', remote: 'box-1.invalid/t5', core: 'remote-core', proxy: null, closed: false, localOwners: [], failure: { attempts: 1, retryable: false } };
-    await store.update(state => ({ ...state, attempts: [attempt] }));
-    const before = (await store.read()).attempts;
-    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot });
-    const row = ready('box-1.invalid/t5');
-    expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
-    expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
-    expect(h.delegations).toEqual([]);
-    expect(await h.runs()).toEqual([]);
-    expect((await store.read()).attempts).toEqual(before);
-    expect(await inspectRoamPlacement(h.stateRoot)).toEqual([{ session: 'session-1', remote: 'box-1.invalid/t5', status: 'uncertain' }]);
-    expect((await store.read()).slots).toEqual([{ session: 'session-1', ...slot }]);
-  } finally { await h.close(); }
-}, 5000);
 
 test('a retryable legacy claim awaits service adoption instead of a legacy retry', async () => {
   const h = await fixture();
@@ -365,7 +345,7 @@ test('a retryable legacy claim awaits service adoption instead of a legacy retry
     const attempt = { session: 'session-1', remote: 'box-1.invalid/t5', core: 'remote-core', proxy: null, closed: false, localOwners: [], failure: { attempts: 1, retryable: true } };
     await store.update(state => ({ ...state, attempts: [attempt] }));
     const before = (await store.read()).attempts;
-    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot });
+    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot, presentation: { ...h.presentation, resolveTarget: async () => null } });
     const row = ready('box-1.invalid/t5');
     expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
     expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
@@ -385,7 +365,7 @@ test('an exhausted legacy claim stays exhausted across placement instances', asy
     const attempt = { session: 'session-1', remote: 'box-1.invalid/t5', core: 'remote-core', proxy: null, closed: false, localOwners: [], failure: { attempts: 2, retryable: true } };
     await store.update(state => ({ ...state, attempts: [attempt] }));
     const before = (await store.read()).attempts;
-    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot });
+    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot, presentation: { ...h.presentation, resolveTarget: async () => null } });
     const row = ready('box-1.invalid/t5');
     expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
     expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
@@ -393,46 +373,6 @@ test('an exhausted legacy claim stays exhausted across placement instances', asy
     expect(await h.runs()).toEqual([]);
     expect((await store.read()).attempts).toEqual(before);
     expect(await inspectRoamPlacement(h.stateRoot)).toEqual([{ session: 'session-1', remote: 'box-1.invalid/t5', status: 'exhausted' }]);
-    expect((await store.read()).slots).toEqual([{ session: 'session-1', ...slot }]);
-  } finally { await h.close(); }
-}, 5000);
-
-test('a lost legacy reply cannot become a safe spawn retry', async () => {
-  const h = await fixture();
-  try {
-    await rememberRoamSlot(h.stateRoot, 'session-1', slot);
-    const store = createPanePlacementStore(h.stateRoot);
-    const attempt = { session: 'session-1', remote: 'box-1.invalid/t5', core: 'remote-core', proxy: null, closed: false, localOwners: [], failure: { attempts: 1, retryable: false } };
-    await store.update(state => ({ ...state, attempts: [attempt] }));
-    const before = (await store.read()).attempts;
-    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot });
-    const row = ready('box-1.invalid/t5');
-    expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
-    expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
-    expect(h.delegations).toEqual([]);
-    expect(await h.runs()).toEqual([]);
-    expect((await store.read()).attempts).toEqual(before);
-    expect(await inspectRoamPlacement(h.stateRoot)).toEqual([{ session: 'session-1', remote: 'box-1.invalid/t5', status: 'uncertain' }]);
-    expect((await store.read()).slots).toEqual([{ session: 'session-1', ...slot }]);
-  } finally { await h.close(); }
-}, 5000);
-
-test('an uncertain launch with no observable proxy remains pending without retrying', async () => {
-  const h = await fixture();
-  try {
-    await rememberRoamSlot(h.stateRoot, 'session-1', slot);
-    const store = createPanePlacementStore(h.stateRoot);
-    const attempt = { session: 'session-1', remote: 'box-1.invalid/t5', core: 'remote-core', proxy: null, closed: false, localOwners: [], failure: { attempts: 1, retryable: false } };
-    await store.update(state => ({ ...state, attempts: [attempt] }));
-    const before = (await store.read()).attempts;
-    const p = createRoamPlacement({ hc: h.hc, app: null, registry: h.registry, hcBinary: h.f.hcBinary, stateRoot: h.stateRoot });
-    const row = ready('box-1.invalid/t5');
-    expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
-    expect(await p.reconcile([row])).toEqual({ pending: [row.terminal] });
-    expect(h.delegations).toEqual([]);
-    expect(await h.runs()).toEqual([]);
-    expect((await store.read()).attempts).toEqual(before);
-    expect(await inspectRoamPlacement(h.stateRoot)).toEqual([{ session: 'session-1', remote: 'box-1.invalid/t5', status: 'uncertain' }]);
     expect((await store.read()).slots).toEqual([{ session: 'session-1', ...slot }]);
   } finally { await h.close(); }
 }, 5000);

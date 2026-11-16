@@ -142,7 +142,7 @@ export function createRoamPresentationOperations(options: {
     async presentReadyTarget(target) {
       if (target.kind !== 'session' || !target.sessionId || !target.generation || target.homeEpoch === null || target.createdMs <= 0) return result('refused', 'readiness-unverified');
       const matches = await presentations(target.sessionId);
-      if (matches.length !== 1) return result(matches.length ? 'refused' : 'pending', matches.length ? 'presentation-ambiguous' : 'source-view-unavailable');
+      if (matches.length !== 1) return result(matches.length ? 'refused' : 'complete', matches.length ? 'presentation-ambiguous' : 'nothing-to-present');
       const p = matches[0];
       if (p.visibility === 'closing') return result('refused', 'Session changed. Close again.', p);
       return withProcessLock(options.stateRoot, 'ready-' + hash(p.id), async () => {

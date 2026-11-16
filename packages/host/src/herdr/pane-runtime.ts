@@ -351,6 +351,7 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
       if (!p) return refused('stale-presentation');
       if (value.op === 'present-ready') {
         let prepared = await readPaneHandoff(root, p) ?? (p.conversion?.state === 'waiting-readiness' && samePaneTarget(p.target, value.target) ? { source: p.conversion.source, sourceFocused: p.conversion.sourceFocused } : null);
+        if (!prepared && !p.slot && !p.proxy) prepared = { source: null, sourceFocused: false };
         if (!prepared && !samePaneTarget(p.target, value.target)) {
           let source: OwnerPlacement | null = null, sourceFocused = false;
           if (p.visibility !== 'parked') {

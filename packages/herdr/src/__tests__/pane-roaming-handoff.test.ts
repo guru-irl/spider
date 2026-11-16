@@ -6,6 +6,9 @@ import { paths } from '@spider/db-core';
 import { createReplica } from '@spider/db-core/testutil';
 import { runHub, type HubRuntimePorts } from '@spider/roam/hub';
 import { openJournal } from '@spider/roam/journal';
+import { createMovePorts, createHubMoveEvidencePorts, presentationTaskId, recoverMovePresentation } from '@spider/roam/move-ports';
+import type { MoveAdapterBindings } from '@spider/roam/move-ports';
+import type { Operation, RoamConfig } from '@spider/roam/contracts';
 import { DEFAULT_LIMITS, disabledIntercom } from '@spider/roam/contracts';
 import { afterEach, expect, test, vi } from 'vitest';
 import type { AppClient, AppPaneInspection, HcClient, OwnerPlacement, TerminalAddress } from '../contracts.js';
@@ -36,7 +39,7 @@ async function fixture() {
   let focusSlot = slot;
   let focused = true, appPresent = true, screenReady = true, launchLost = false, recoverLaunch = false, spawnFailures = 0;
   const placements = new Map<TerminalAddress, OwnerPlacement>([['t1' as TerminalAddress, slot]]), events: string[] = [];
-  const displays = new Map<string, PanePresentation>();
+  const displays = new Map<string, PanePresentation>(), proxyLabels = new Map<string, Record<string, string>>();
   const app = {
     ownerPlacement: async (address: TerminalAddress) => { if (!appPresent) throw Error('app absent'); const found = placements.get(address); if (!found) throw Error('unplaced'); return found; },
     focusedPane: async () => focused ? focusSlot : { ...slot, pane: 'other-pane' },
@@ -45,7 +48,8 @@ async function fixture() {
   } as unknown as AppClient & AppPaneInspection;
   const hc = {
     identity: async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' }),
-    get: async (address: TerminalAddress) => { const p = displays.get(address); return { address, state: 'live', labels: { 'spider.kind': p?.id === 'legacy' ? 'roam-proxy' : 'pane-proxy', 'spider.session': 'session-1', 'spider.owner-core': p?.target.coreId, 'spider.owner-terminal': 'box-1.invalid/' + p?.target.terminalId, 'spider.pane-id': p?.id, 'spider.target-core': p?.target.coreId, 'spider.target-terminal': p?.target.terminalId } }; },
+    get: async (address: TerminalAddress) => { const p = displays.get(address); return { address, state: 'live', labels: { 'spider.kind': p?.id === 'legacy' ? 'roam-proxy' : 'pane-proxy', 'spider.session': 'session-1', 'spider.owner-core': p?.target.coreId, 'spider.owner-terminal': 'box-1.invalid/' + p?.target.terminalId, 'spider.pane-id': p?.id, 'spider.target-core': p?.target.coreId, 'spider.target-terminal': p?.target.terminalId, ...proxyLabels.get(address) } }; },
+    setLabels: async (address: string, values: Record<string, string>) => { proxyLabels.set(address, { ...proxyLabels.get(address), ...values }); },
     kill: async () => { events.push('kill'); },
     rm: async (address: string) => { displays.delete(address); events.push('remove'); },
     events: () => ({ ready: Promise.resolve(), subscribe: (listener: (event: unknown) => void) => { listener({ type: 'snapshot', terminals: [...displays].map(([address, p]) => ({ address, state: 'live', labels: { 'spider.kind': p.id === 'legacy' ? 'roam-proxy' : 'pane-proxy', 'spider.session': 'session-1', 'spider.owner-core': p.target.coreId, 'spider.owner-terminal': 'box-1.invalid/' + p.target.terminalId } })) }); return () => {}; } }),
@@ -247,7 +251,7 @@ test('handoff removal cannot create a replacement presentation', async () => {
   const f = await fixture(); try {
     await f.operations().prepareHandoff(f.source.sessionId!, f.source);
     await f.store.update(state => ({ ...state, presentations: [] }));
-    expect(await f.operations().presentReadyTarget(f.remote)).toMatchObject({ status: 'pending', reason: 'source-view-unavailable' });
+    expect(await f.operations().presentReadyTarget(f.remote)).toMatchObject({ status: 'complete', reason: 'nothing-to-present', presentation: null });
     expect((await f.store.read()).presentations).toEqual([]);
     expect(f.events).toEqual(['capture']);
   } finally { await f.stop(); }
@@ -437,4 +441,49 @@ test('a changed revision and destination query the saved operation without actin
     expect((await f.store.read()).presentations).toMatchObject([{ target: next, mode: 'proxy' }]);
     expect((await f.store.read()).presentations).toHaveLength(1);
   } finally { await f.stop(); }
+});
+
+
+test('box-to-box cleanup without a Mac view retires the source once after current home proof', async () => {
+  const f = await fixture(), hubId = '00000000-0000-4000-8000-000000000001', sourceId = '00000000-0000-4000-8000-000000000002', destinationId = '00000000-0000-4000-8000-000000000003';
+  const global = createReplica('global', hubId);
+  try {
+    const source = { sessionId: 'session-1', machineId: sourceId, epoch: 2, moveId: 'previous', updatedAt: 1 };
+    const home = { ...source, machineId: destinationId, epoch: 3, moveId: 'move-no-view' };
+    const destination = target('core-destination', 't4', 3);
+    const locator = { machineId: destinationId, alias: null, sessionId: 'session-1', homeEpoch: 3, coreId: 'core-destination', terminalId: 't4' };
+    const config: RoamConfig = { enabled: true, role: 'hub', machineId: hubId, hubMachineId: hubId,
+      peers: [sourceId, destinationId].map((machineId, i) => ({ machineId, alias: `box-${i + 1}.invalid`, core: i ? 'core-destination' : 'core-remote', node: '/bin/node', pi: '/bin/pi', cli: '/bin/spider', globalRoot: '/example' })), discoveryRoots: [], coreUnit: 'synthetic', syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+    const journal = openJournal(join(f.root, 'cleanup.db'));
+    const operation: Operation = { id: 'move-no-view', kind: 'move', machineId: hubId, expectedEpoch: 2, args: { moveId: 'move-no-view', sessionId: 'session-1' } };
+    journal.begin(operation);
+    const taskId = presentationTaskId(operation.id);
+    journal.record(operation.id, 'handoff-presentation-start', { target: locator, sourceFence: { machineId: sourceId, sessionId: 'session-1', scopeId: null, epoch: 2, moveId: operation.id, brokerGeneration: 'source' } });
+    journal.begin({ id: taskId, kind: 'move-presentation', machineId: hubId, expectedEpoch: 3, args: { moveId: operation.id, sessionId: 'session-1' } });
+    const proof = { source, stopped: { kind: 'absent' }, destination: { home, owner: { kind: 'live', identity: { bootId: 'boot', pid: 42, startTime: 'start' } }, readiness: { origin: 'hub-operation', opId: operation.id, sessionId: 'session-1', epoch: 3, file: '/example/session.jsonl', cwd: '/example', core: 'core-destination', terminal: 't4' }, retired: false, launchFailure: null } };
+    journal.record(taskId, 'source-view-request', JSON.parse(JSON.stringify({ operation, check: { source, destinationMachine: destinationId }, proof })));
+    global.db.prepare('INSERT INTO session_homes VALUES(?,?,?,?,?)').run('session-1', destinationId, 4, 'newer-move', 1);
+    let cleanupCalls = 0, presentationCalls = 0;
+    const bindings: MoveAdapterBindings = { globalDb: global.db, participant: { config } as never,
+      handoff: { prepareHandoff: async () => ({ capture: 'durable', presentation: await f.operations().prepareHandoff(f.remote.sessionId!, f.remote) }), readyTarget: async () => locator,
+        presentReadyTarget: async () => { presentationCalls++; return f.operations().presentReadyTarget(destination); } }, evidence: {} };
+    const ports = createMovePorts(config, { resolve: async (peer: RoamConfig['peers'][number]) => peer, async exec(peer: RoamConfig['peers'][number], argv: readonly string[]) {
+      const request = JSON.parse(argv[2]);
+      expect(peer.machineId).toBe(sourceId); expect(request.kind).toBe('move-cleanup-terminal');
+      expect(request.args.proof).toEqual(proof); expect(request.args.presentation).toMatchObject({ status: 'complete', target: locator });
+      cleanupCalls++;
+      return Buffer.from(JSON.stringify({ operationId: request.id, code: 0, epoch: 2, value: {} }));
+    } } as never, journal, bindings);
+    bindings.evidence!.presentation = createHubMoveEvidencePorts(ports, bindings.evidence!).presentation;
+    await recoverMovePresentation(ports, operation.id);
+    expect(cleanupCalls).toBe(0); expect(presentationCalls).toBe(0);
+    global.db.prepare('UPDATE session_homes SET epoch=3,move_id=? WHERE session_id=?').run(operation.id, 'session-1');
+    await recoverMovePresentation(ports, operation.id);
+    expect(cleanupCalls).toBe(1); expect(presentationCalls).toBe(1);
+    expect(journal.lookupOperation(taskId)?.state).toBe('done');
+    await recoverMovePresentation(ports, operation.id); await recoverMovePresentation(ports, operation.id);
+    expect(cleanupCalls).toBe(1); expect(presentationCalls).toBe(1);
+    expect((await f.store.read()).presentations).toEqual([]);
+    expect(f.events).toEqual([]);
+  } finally { await f.stop(); global.close(); }
 });

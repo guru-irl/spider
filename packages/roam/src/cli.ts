@@ -111,7 +111,7 @@ async function readArtifactInput(limit: number, supplied?: Buffer): Promise<Buff
 }
 
 /** Parse before loading configuration, a database, or a transport. */
-export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory }): Promise<number> {
+export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory }): Promise<number> {
   let root = process.env.SPIDER_GLOBAL_ROOT || join(homedir(), ".pi", "agent", "spider");
   const privateRoot = argv[0] === "--global-root";
   if (privateRoot) {
@@ -278,7 +278,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   }
   if (argv[0] === "roam" && argv[1] === "hub" && argv.length === 2) {
     try {
-      const hub = await startProductionHub(root, { moveFactory: options?.moveFactory });
+      const hub = await startProductionHub(root, { moveFactory: options?.moveFactory, placementFactory: options?.placementFactory });
       try {
         await new Promise<void>(done => {
           const stop = () => { process.off("SIGINT", stop); process.off("SIGTERM", stop); done(); };

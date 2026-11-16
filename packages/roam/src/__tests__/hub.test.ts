@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { openDb } from "@spider/db-core";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { exportBatch } from "@spider/db-core/roam/export";
+import { removedPlacementSessions } from "../placement-inventory";
 import { catalogReplica } from "@spider/db-core/roam/catalog";
 import { handleAgentOperation } from "../agent";
 import { stageArtifact } from "../artifacts";
@@ -13,7 +14,7 @@ import { runHub, runStandaloneHub } from "../hub";
 import { requestHubControl } from "../control-socket";
 import type { Clock } from "../contracts";
 import * as staging from "../staging";
-import { rememberRoamSlot } from "@spider/herdr/roam-placement";
+import { createRoamPlacement, rememberRoamSlot } from "@spider/herdr/roam-placement";
 import type { HcClient } from "@spider/herdr/contracts";
 import type { TerminalRegistry } from "@spider/herdr/sessions/registry";
 import { hash } from "@spider/herdr/sessions/registry";
@@ -341,13 +342,24 @@ it("keeps an unknown placement outcome pending for the next reconciliation", asy
   expect((await h.request("status")).value).toMatchObject({ pending: [{ sessionId: "session-1", terminal: ready.terminal }] });
 }, 5000);
 
-it("real placement never relaunches an unknown proxy after hub restart", async () => {
+it("a hub without presentation composition retains readiness as pending", async () => {
+  const h = fixture(); h.home(); h.setReadiness([ready]);
+  const hub = await runStandaloneHub({ ...h.ports, placement: undefined }); handles.push(hub);
+  await h.request("sync");
+  expect((await h.request("status")).value).toMatchObject({ pending: [{ sessionId: "session-1", terminal: "box-1.invalid/t1" }] });
+  expect(h.placements).toEqual([]);
+}, 5000);
+
+it("a legacy unknown proxy claim remains pending without relaunch after hub restart", async () => {
   const h = fixture(); h.home(); h.setReadiness([ready]);
   const lock = registryApi.withProcessLock;
   vi.spyOn(registryApi, "withProcessLock").mockImplementation((root, key, operation, options) => lock(root, key, operation,
     key === "roam-placement" ? { ...options, identity: h.ports.identity, probe: h.ports.probe } : options));
   const stateRoot = join(h.runtimeRoot, "placement");
   await rememberRoamSlot(stateRoot, "session-1", { space: "s1", tab: "tb1" } as Parameters<typeof rememberRoamSlot>[2]);
+  const stateFile = join(stateRoot, 'roam-placement.json'), state = JSON.parse(readFileSync(stateFile, 'utf8'));
+  state.attempts = [{ session: 'session-1', remote: 'box-1.invalid/t1', core: 'remote-core', proxy: null, closed: false, localOwners: [], failure: { attempts: 1, retryable: false } }];
+  writeFileSync(stateFile, JSON.stringify(state), { mode: 0o600 });
   let launches = 0;
   const hc = {
     async identity() { return { coreId: "local-core" }; },
@@ -357,15 +369,19 @@ it("real placement never relaunches an unknown proxy after hub restart", async (
     } }; },
   } as unknown as HcClient;
   const registry = { async list() { return []; } } as unknown as TerminalRegistry;
-  const placement = { app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot };
+  const placement = createRoamPlacement({ app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot, removedSessions: async sessions => removedPlacementSessions(h.f.global.db, sessions) });
   const first = await runStandaloneHub({ ...h.ports, placement }); handles.push(first);
   await h.request("sync");
-  expect(launches).toBe(1);
+  expect(launches).toBe(0);
+  expect(h.placements).toEqual([]);
+  expect(JSON.parse(readFileSync(stateFile, 'utf8')).attempts).toEqual(state.attempts);
   expect((await h.request("status")).value).toMatchObject({ pending: [{ terminal: ready.terminal }] });
   await first.stop();
   const second = await runStandaloneHub({ ...h.ports, placement }); handles.push(second);
   await h.request("sync");
-  expect(launches).toBe(1);
+  expect(launches).toBe(0);
+  expect(h.placements).toEqual([]);
+  expect(JSON.parse(readFileSync(stateFile, 'utf8')).attempts).toEqual(state.attempts);
   expect((await h.request("status")).value).toMatchObject({ pending: [{ terminal: ready.terminal }] });
 }, 5000);
 
@@ -385,7 +401,7 @@ it("prunes a removed session from durable placement state and retains existing a
   for (const session of ["removed-session", "kept-session", "homed-session", "unknown-session"]) await rememberRoamSlot(stateRoot, session, slot);
   const hc = { async identity() { return { coreId: "local-core" }; } } as unknown as HcClient;
   const registry = { async list() { return []; } } as unknown as TerminalRegistry;
-  const placement = { app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot };
+  const placement = createRoamPlacement({ app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot, removedSessions: async sessions => removedPlacementSessions(h.f.global.db, sessions) });
   const hub = await runStandaloneHub({ ...h.ports, placement }); handles.push(hub);
   await h.request("sync");
   const state = JSON.parse(readFileSync(join(stateRoot, "roam-placement.json"), "utf8")) as { slots: Array<{ session: string }> };
@@ -405,7 +421,7 @@ it("keeps a recreated session even when its catalog still says the store is empt
   await rememberRoamSlot(stateRoot, "recreated", { space: "s1", tab: "tb1" } as Parameters<typeof rememberRoamSlot>[2]);
   const hc = { async identity() { return { coreId: "local-core" }; } } as unknown as HcClient;
   const registry = { async list() { return []; } } as unknown as TerminalRegistry;
-  const hub = await runStandaloneHub({ ...h.ports, placement: { app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot } }); handles.push(hub);
+  const hub = await runStandaloneHub({ ...h.ports, placement: createRoamPlacement({ app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot, removedSessions: async sessions => removedPlacementSessions(h.f.global.db, sessions) }) }); handles.push(hub);
   worktree.prepare("INSERT INTO sessions(id,name,started_at) VALUES ('recreated','after',2)").run();
   expect(h.f.global.db.prepare("SELECT stores_json FROM roam_locations WHERE session_id='recreated'").get()).toEqual({ stores_json: "[]" });
   await h.request("sync");
@@ -427,7 +443,7 @@ it("retains a deleted-session slot while a mapped store is unavailable", async (
   await rememberRoamSlot(stateRoot, "possibly-removed", { space: "s1", tab: "tb1" } as Parameters<typeof rememberRoamSlot>[2]);
   const hc = { async identity() { return { coreId: "local-core" }; } } as unknown as HcClient;
   const registry = { async list() { return []; } } as unknown as TerminalRegistry;
-  const hub = await runStandaloneHub({ ...h.ports, placement: { app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot } }); handles.push(hub);
+  const hub = await runStandaloneHub({ ...h.ports, placement: createRoamPlacement({ app: null, hc, registry, hcBinary: join(h.runtimeRoot, "fixture-hc"), stateRoot, removedSessions: async sessions => removedPlacementSessions(h.f.global.db, sessions) }) }); handles.push(hub);
   await h.request("sync");
   const state = JSON.parse(readFileSync(join(stateRoot, "roam-placement.json"), "utf8")) as { slots: Array<{ session: string }> };
   expect(state.slots.map(slot => slot.session)).toEqual(["possibly-removed"]);

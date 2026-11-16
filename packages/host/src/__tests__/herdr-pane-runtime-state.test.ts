@@ -100,6 +100,55 @@ test('a discovered remote session without a slot opens in its configured space',
     .toMatchObject({ outcome: { status: 'complete', presentation: { target: { generation: 'gen-2' } } } });
   expect((await runtime.store.read()).presentations).toHaveLength(1); expect(hc.run).toHaveBeenCalledTimes(1);
 });
+test('completed handoff replays after restart but a different operation cannot capture it', async () => {
+  const { runtime, hc, restart } = await fixture();
+  Object.assign(boundary.app, { focusedPane: async () => null });
+  const source = sessionRow(), destination = sessionRow('gen-2');
+  destination.target = { ...destination.target, terminalId: 'moved' as never, address: 'core-remote/moved' as never, homeEpoch: 1 };
+  boundary.rows = [source];
+  const p = { ...presentation('handoff'), role: 'agent' as const, target: source.target, visibility: 'parked' as const, slot: { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never } };
+  await runtime.store.update(state => ({ ...state, presentations: [p] }));
+  const service = runtime.createService();
+  expect(await service.request({ version: 1, op: 'prepare-handoff', operationId: 'capture-1', presentationId: p.id, expectedRevision: 1, sessionId: source.sessionId, generation: source.generation, homeEpoch: 0 })).toMatchObject({ outcome: { status: 'complete' } });
+  boundary.rows = [destination];
+  const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'ready-1', presentationId: p.id, expectedRevision: 1, target: destination.target };
+  const completed = await service.request(request);
+  expect(completed).toMatchObject({ outcome: { status: 'complete', presentation: { visibility: 'parked', target: destination.target } } });
+  const restarted = await restart(), next = restarted.createService();
+  expect(await next.request(request)).toEqual(completed);
+  const current = (await restarted.store.read()).presentations[0];
+  expect(await next.request({ ...request, operationId: 'different-ready', expectedRevision: current.revision })).toMatchObject({ outcome: { status: 'refused' } });
+  expect((await restarted.store.read()).presentations[0]).toEqual(current);
+  expect(hc.run).not.toHaveBeenCalled();
+});
+
+test('app absence captures durable handoff intent and a screen retry resumes the same proxy', async () => {
+  const { runtime, hc } = await fixture();
+  let absent = true;
+  const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never };
+  const commands = vi.fn(async () => ({}));
+  Object.assign(boundary.app, { ownerPlacement: async () => { if (absent) throw new HerdrError('app-disconnected', 'App is absent'); return slot; },
+    focusedPane: async () => { if (absent) throw new HerdrError('app-disconnected', 'App is absent'); return null; }, command: commands });
+  const source = sessionRow(), destination = sessionRow('gen-2');
+  destination.target = { ...destination.target, terminalId: 'moved' as never, address: 'core-remote/moved' as never, homeEpoch: 1 };
+  boundary.rows = [source];
+  const p = { ...presentation('handoff'), role: 'agent' as const, target: source.target, visibility: 'visible' as const, slot, proxy: 'proxy-1' as never, launch: 'acknowledged' as const };
+  boundary.terminals.set('proxy-1', { ...facts(p).terminal, address: 'proxy-1' as never });
+  const service = runtime.createService();
+  await runtime.store.update(state => ({ ...state, presentations: [{ ...p, slot: null }] }));
+  expect(await service.request({ version: 1, op: 'prepare-handoff', operationId: 'capture-no-slot', presentationId: p.id, expectedRevision: 1, sessionId: source.sessionId, generation: source.generation, homeEpoch: 0 })).toMatchObject({ outcome: { status: 'pending', reason: 'source-view-unavailable', presentation: { slot: null } } });
+  await runtime.store.update(state => ({ ...state, presentations: [p] }));
+  expect(await service.request({ version: 1, op: 'prepare-handoff', operationId: 'capture-absent', presentationId: p.id, expectedRevision: 1, sessionId: source.sessionId, generation: source.generation, homeEpoch: 0 })).toMatchObject({ outcome: { status: 'pending', presentation: { slot } } });
+  boundary.rows = [destination];
+  const ready = { version: 1 as const, op: 'present-ready' as const, operationId: 'ready-absent', presentationId: p.id, expectedRevision: 1, target: destination.target };
+  expect(await service.request(ready)).toMatchObject({ outcome: { status: 'pending', presentation: { target: destination.target, conversion: { state: 'waiting-readiness' } } } });
+  const waiting = (await runtime.store.read()).presentations[0];
+  absent = false;
+  expect(await service.request({ ...ready, operationId: 'ready-screen', expectedRevision: waiting.revision })).toMatchObject({ outcome: { status: 'complete', presentation: { target: destination.target, proxy: 'proxy-1', slot, conversion: null } } });
+  expect(hc.run).not.toHaveBeenCalled();
+  expect(commands).not.toHaveBeenCalled();
+});
+
 test('production waiting claims are removed on release and do not block the same view from reopening', async () => {
   const { root, runtime, hc } = await fixture(); const owner = sessionRow().owner; runtime.createService();
   const first = await boundary.auxiliary!.waitingPresentation!('subagent', 'run-1' as never, owner);

@@ -8,6 +8,8 @@ import { writeLocal } from "@spider/db-core/roam/local-state";
 import { enableMemoryCapture, seedSession } from "@spider/db-core/roam/seed";
 import { HerdrError } from "@spider/herdr/client/parse";
 import type { HcClient } from "@spider/herdr/contracts";
+import { parsePaneTarget } from "@spider/herdr/panes/codec";
+import { createPanePlacementStore } from "@spider/herdr/panes/store";
 import { createRoamPlacement, rememberRoamSlot } from "@spider/herdr/roam-placement";
 import type { TerminalRegistry } from "@spider/herdr/sessions/registry";
 import { main } from "../cli";
@@ -256,15 +258,26 @@ it("doctor shows an actual failed proxy launch and clears it after a successful 
     } }; },
   } as unknown as HcClient;
   const registry = { async list() { return []; } } as unknown as TerminalRegistry;
-  const placement = createRoamPlacement({ hc, app: null, registry, hcBinary: join(root, "fixture-hc"), stateRoot: directory });
+  const store = createPanePlacementStore(directory);
+  await store.update(state => ({ ...state, attempts: [{ session: "session-a", remote: "box-1.invalid/t1", core: "remote-core", proxy: null, closed: false, localOwners: [], failure: { attempts: 1, retryable: true } }] }));
+  const delegated: unknown[] = [];
+  let available = false;
+  const target = parsePaneTarget({ coreId: "remote-core", terminalId: "t1", address: "remote-core/t1", createdMs: 10, identityLabels: { "spider.session": "session-a", "spider.generation": "gen-1" }, alias: "box-1.invalid", machineId: null, kind: "session", sessionId: "session-a", generation: "gen-1", homeEpoch: 1, runId: null, consoleId: null, name: null, cwd: "/fixture" });
+  const placement = createRoamPlacement({ hc, app: null, registry, hcBinary: join(root, "fixture-hc"), stateRoot: directory, presentation: {
+    resolveTarget: async () => target,
+    async presentReadyTarget(target) { delegated.push({ target, slot: (await store.read()).slots[0] }); return { status: available ? "complete" : "pending", reason: "service", presentation: null }; },
+  } });
   const row = { origin: "hub-operation" as const, opId: "op-1", sessionId: "session-a", epoch: 1, cwd: "/fixture", file: "/fixture/session.jsonl", core: "remote-core", terminal: "box-1.invalid/t1" };
-  await expect(placement.reconcile([row])).rejects.toMatchObject({ code: "missing-hc" });
+  expect(await placement.reconcile([row])).toEqual({ pending: ["box-1.invalid/t1"] });
+  expect(delegated).toEqual([{ target, slot: { session: "session-a", space: "s1", tab: "tb1" } }]);
+  expect(calls).toBe(0);
   const before = snapshot(root), output: string[] = [];
   expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(1);
   expect(output.join("")).toMatch(/session-a.*proxy.*retry/i);
   expect(snapshot(root)).toEqual(before);
+  available = true;
   expect(await placement.reconcile([row])).toEqual({ pending: [] });
-  expect(calls).toBe(2);
+  expect(delegated).toEqual([{ target, slot: { session: "session-a", space: "s1", tab: "tb1" } }, { target, slot: { session: "session-a", space: "s1", tab: "tb1" } }]);
   output.length = 0;
   expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(1);
   expect(output.join("")).not.toMatch(/session-a.*proxy/i);

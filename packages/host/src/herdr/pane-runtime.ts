@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { presentExistingPane } from '../../../herdr/src/spaces/move.js';
+import { samePaneTarget } from '../../../herdr/src/panes/lifecycle.js';
 import { capturePaneHandoff, readPaneHandoff } from './pane-handoff.js';
 import { reconcilePaneRegistrations } from './pane-registration.js';
 import { readPaneScreen } from './pane-screen.js';
@@ -348,17 +349,28 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
       }
       if (!p) return refused('stale-presentation');
       if (value.op === 'present-ready') {
-        const prepared = await readPaneHandoff(root, p);
-        if (!prepared) return { status: 'pending', reason: 'handoff-not-prepared', presentation: p };
+        const prepared = await readPaneHandoff(root, p) ?? (p.conversion?.state === 'waiting-readiness' && samePaneTarget(p.target, value.target) ? { source: p.conversion.source, sourceFocused: p.conversion.sourceFocused } : null);
+        if (!prepared) return { status: samePaneTarget(p.target, value.target) ? 'refused' : 'pending', reason: 'handoff-not-prepared', presentation: p };
         return convertNativePresentation({ presentation: p, destination: value.target, ...prepared }, openPorts);
       }
       if (value.op === 'prepare-handoff') {
         const display = p.mode === 'native' ? paneAddress(p.target.terminalId) : p.proxy;
-        const source = p.visibility === 'parked' ? null : display ? await app.ownerPlacement(display) : null;
-        if (p.visibility !== 'parked' && (!source || !p.slot || source.space !== p.slot.space || source.tab !== p.slot.tab || source.pane !== p.slot.pane)) return { status: 'pending', reason: 'source-view-unavailable', presentation: p };
-        const focused = await app.focusedPane();
-        await capturePaneHandoff(root, p, source, !!source && focused?.space === source.space && focused.tab === source.tab && focused.pane === source.pane);
-        return { status: 'complete', reason: 'handoff-prepared', presentation: p };
+        let source: OwnerPlacement | null = p.visibility !== 'parked' && p.slot?.pane ? { ...p.slot, pane: p.slot.pane } : null;
+        let sourceFocused = false, available = true;
+        if (p.visibility !== 'parked') {
+          try {
+            source = display ? await app.ownerPlacement(display) : null;
+            if (!source || !p.slot || source.space !== p.slot.space || source.tab !== p.slot.tab || source.pane !== p.slot.pane) return { status: 'pending', reason: 'source-view-unavailable', presentation: p };
+            const focused = await app.focusedPane();
+            sourceFocused = focused?.space === source.space && focused.tab === source.tab && focused.pane === source.pane;
+          } catch (error) {
+            if (!(error instanceof HerdrError) || !['app-disconnected', 'cli-exit', 'missing-app', 'pane-timeout'].includes(error.code)) throw error;
+            available = false;
+          }
+        }
+        if (p.visibility !== 'parked' && !source) return { status: 'pending', reason: 'source-view-unavailable', presentation: p };
+        await capturePaneHandoff(root, p, source, sourceFocused);
+        return { status: available ? 'complete' : 'pending', reason: available ? 'handoff-prepared' : 'app-unavailable', presentation: p };
       }
       if (value.op === 'move' || value.op === 'open-existing') {
         await validateTarget(p.target, 'open');

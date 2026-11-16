@@ -129,6 +129,7 @@ export interface SyncService {
   barriers(peer: MachineId, required: readonly StoreBarrier[]): Promise<boolean>;
 }
 export interface PlacementPort { reconcile(rows: readonly Readiness[]): Promise<{ pending: readonly string[] }> }
+export type PlacementFactory = (input: { root: string; globalDb: Db; config: RoamConfig }) => PlacementPort & { dispose(): Promise<void> };
 export interface HubPorts { config: RoamConfig; sync: SyncService; journal: Journal; clock: Clock; placement: PlacementPort }
 export interface IntercomDiagnostic { peer: MachineId; status: string; since: number; reason: string }
 export interface IntercomLifecycle {

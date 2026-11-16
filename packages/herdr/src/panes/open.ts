@@ -204,12 +204,13 @@ export async function convertNativePresentation(input: { presentation: PanePrese
   } catch { return outcome('pending', 'readiness-unavailable', p); }
   const local = await ports.hc.identity(); const native = destination.coreId === local.coreId;
   const source = p.conversion?.source ?? input.source;
-  if (p.slot && (!source || p.slot.space !== source.space || p.slot.tab !== source.tab)) return outcome('refused', 'captured-slot-changed', p);
+  if (p.visibility !== 'parked' && p.slot && (!source || p.slot.space !== source.space || p.slot.tab !== source.tab)) return outcome('refused', 'captured-slot-changed', p);
   if (samePaneTarget(p.target, destination) && p.mode === (native ? 'native' : 'proxy') && !p.conversion) return outcome('complete', 'already-presented', p);
   if (p.mode === 'proxy' && !native) {
-    p = await updatePresentation(p, { target: destination, conversion: null }, ports);
+    const conversion: PanePresentation['conversion'] = p.visibility !== 'parked' && source ? { state: 'waiting-readiness', source, sourceFocused: input.sourceFocused, destination: null } : null;
+    p = await updatePresentation(p, { target: destination, conversion }, ports);
     if (p.visibility === 'parked' || !ports.app || !p.proxy || !p.slot) return outcome(p.visibility === 'parked' ? 'complete' : 'pending', 'proxy-retargeted', p);
-    try { await ports.awaitPresented(p.proxy, destination, p.slot); return outcome('complete', 'proxy-retargeted', p); }
+    try { await ports.awaitPresented(p.proxy, destination, p.slot); p = await updatePresentation(p, { conversion: null }, ports); return outcome('complete', 'proxy-retargeted', p); }
     catch { return outcome('pending', 'destination-screen-pending', p); }
   }
   if (p.visibility === 'parked') {
@@ -273,7 +274,7 @@ export async function convertNativePresentation(input: { presentation: PanePrese
     p = await updatePresentation(p, { target: destination, mode: native ? 'native' : 'proxy', proxy: native ? null : replacement, slot: actual, launch: 'acknowledged', conversion: null }, ports);
     if (original.mode === 'native') {
       const stillSource = await ports.readNativeTarget(oldDisplay);
-      if (!samePaneTarget(stillSource, original.target)) return outcome('pending', 'source-retirement-unverified', p);
+      if (stillSource.coreId !== original.target.coreId || stillSource.terminalId !== original.target.terminalId || stillSource.address !== original.target.address || stillSource.createdMs !== original.target.createdMs || !Object.entries(original.target.identityLabels).every(([key, value]) => stillSource.identityLabels[key] === value)) return outcome('pending', 'source-retirement-unverified', p);
       await command(app, 'terminal.park', { terminal: oldDisplay });
       return outcome('complete', 'native-view-converted', p);
     }

@@ -3,12 +3,15 @@
 import { isDeepStrictEqual } from 'node:util';
 import { lstat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
-import type { AppClient, HcClient, Owner, OwnerPlacement, SpaceId, TabId, TerminalAddress, TerminalSummary } from './contracts.js';
+import type { AppClient, HcClient, Owner, OwnerPlacement, SessionId, SpaceId, TabId, TerminalAddress, TerminalSummary } from './contracts.js';
+import type { PaneActionOutcome, PanePresentation, PaneServiceReply, PaneServiceRequest, PaneTarget } from './panes/types.js';
+import { samePaneTarget } from './panes/lifecycle.js';
 import { HERDR_LABELS } from './contracts.js';
 import { HerdrError } from './client/parse.js';
 import { placePaneWithoutFocus } from './jobs/placement.js';
 import { createPanePlacementStore, inspectPanePlacement } from './panes/store.js';
-import { hash, privateDirectory, withProcessLock, type TerminalRegistry } from './sessions/registry.js';
+import { parsePaneServiceRequest } from './panes/codec.js';
+import { hash, privateDirectory, readPrivateJson, writePrivateJson, withProcessLock, type TerminalRegistry } from './sessions/registry.js';
 
 type Slot = Pick<OwnerPlacement, 'space' | 'tab'>;
 import type { Readiness } from "@spider/db-core/roam/types";
@@ -17,7 +20,8 @@ type Attempt = { session: string; remote: string; core: string; proxy: string | 
 type State = { slots: { session: string; space: string; tab: string }[]; attempts: Attempt[] };
 const MAX_LAUNCH_ATTEMPTS = 2;
 type Options = { app: AppClient | null; hc: HcClient; registry: TerminalRegistry; hcBinary: string; stateRoot: string;
-  removedSessions?: (sessions: readonly string[]) => Promise<ReadonlySet<string>> };
+  removedSessions?: (sessions: readonly string[]) => Promise<ReadonlySet<string>>;
+  presentation?: { resolveTarget(ready: Readiness): Promise<PaneTarget | null>; presentReadyTarget(target: PaneTarget): Promise<PaneActionOutcome> } };
 const errorCode = (error: unknown) => error && typeof error === 'object' && 'code' in error ? error.code : undefined;
 export function launchNotStarted(error: unknown): boolean {
   if (!(error instanceof HerdrError)) return false;
@@ -62,10 +66,6 @@ function setSlot(state: State, session: string, slot: Slot): void {
   if (previous) { previous.space = slot.space; previous.tab = slot.tab; }
   else state.slots.push({ session, space: slot.space, tab: slot.tab });
 }
-function getSlot(state: State, session: string): Slot | null {
-  const slot = state.slots.find(s => s.session === session);
-  return slot ? { space: slot.space as SpaceId, tab: slot.tab as TabId } : null;
-}
 function mergeChanges<T>(current: T[], before: T[], next: T[], key: (value: T) => string): T[] {
   const old = new Map(before.map(row => [key(row), row])), desired = new Map(next.map(row => [key(row), row]));
   const result = current.filter(row => desired.has(key(row)) || !old.has(key(row)) || !isDeepStrictEqual(row, old.get(key(row))));
@@ -99,6 +99,76 @@ export async function rememberRoamSlot(stateRoot: string, session: string, slot:
   await withProcessLock(stateRoot, 'roam-placement-effects', async () => {
     await createPanePlacementStore(stateRoot).update(state => { setSlot(state, session, slot); return state; });
   });
+}
+
+export interface RoamPresentationOperations {
+  prepareHandoff(sessionId: SessionId, source: PaneTarget): Promise<PaneActionOutcome>;
+  presentReadyTarget(target: PaneTarget): Promise<PaneActionOutcome>;
+}
+/** Presentation effects belong to the existing service, never to the execution owner. */
+export function createRoamPresentationOperations(options: {
+  stateRoot: string; hc: HcClient; app: AppClient | null;
+  request(request: PaneServiceRequest): Promise<PaneServiceReply>;
+}): RoamPresentationOperations {
+  const store = createPanePlacementStore(options.stateRoot);
+  const result = (status: PaneActionOutcome['status'], reason: string, presentation: PanePresentation | null = null): PaneActionOutcome => ({ status, reason, presentation });
+  const presentations = async (session: SessionId) => (await store.read()).presentations.filter(p => p.role === 'agent' && p.target.sessionId === session && p.visibility !== 'ended');
+  const request = async (input: PaneServiceRequest, p: PanePresentation): Promise<PaneActionOutcome> => {
+    try { const reply = await options.request(input); return reply.kind === 'outcome' ? reply.outcome : result('refused', 'presentation-reply-mismatch', p); }
+    catch { return result('pending', 'presentation-unavailable', p); }
+  };
+  return {
+    async prepareHandoff(session, source) {
+      if (source.sessionId !== session || source.kind !== 'session' || !source.generation || source.homeEpoch === null || source.createdMs <= 0) return result('refused', 'handoff-unverified');
+      let matches = await presentations(session);
+      if (matches.length > 1) return result('refused', 'presentation-ambiguous');
+      if (!matches.length) {
+        if (source.coreId !== (await options.hc.identity()).coreId || !options.app) return result('pending', 'source-view-unavailable');
+        let slot: OwnerPlacement;
+        try { slot = await options.app.ownerPlacement(source.terminalId as unknown as TerminalAddress); }
+        catch { return result('pending', 'source-view-unavailable'); }
+        if (!localSlot(slot)) return result('refused', 'invalid-placement-slot');
+        const seeded: PanePresentation = { id: 'session-' + hash(JSON.stringify([session, source.generation])), revision: 1, mode: 'native', role: 'agent', target: source,
+          proxy: null, slot, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null };
+        await store.update(state => {
+          if (state.presentations.some(p => p.role === 'agent' && p.target.sessionId === session && p.visibility !== 'ended')) return state;
+          setSlot(state, session, slot); return { ...state, presentations: [...state.presentations, seeded] };
+        });
+        matches = await presentations(session);
+      }
+      if (matches.length !== 1) return result('refused', 'presentation-ambiguous');
+      const p = matches[0];
+      if (p.visibility === 'closing') return result('refused', 'Session changed. Close again.', p);
+      if (!samePaneTarget(p.target, source)) return result('refused', 'handoff-unverified', p);
+      if (p.slot) await rememberRoamSlot(options.stateRoot, session, p.slot);
+      return request({ version: 1, operationId: 'handoff-' + hash(JSON.stringify([p.id, p.revision, source])), op: 'prepare-handoff', presentationId: p.id,
+        expectedRevision: p.revision, sessionId: session, generation: source.generation, homeEpoch: source.homeEpoch }, p);
+    },
+    async presentReadyTarget(target) {
+      if (target.kind !== 'session' || !target.sessionId || !target.generation || target.homeEpoch === null || target.createdMs <= 0) return result('refused', 'readiness-unverified');
+      const matches = await presentations(target.sessionId);
+      if (matches.length !== 1) return result(matches.length ? 'refused' : 'pending', matches.length ? 'presentation-ambiguous' : 'source-view-unavailable');
+      const p = matches[0];
+      if (p.visibility === 'closing') return result('refused', 'Session changed. Close again.', p);
+      return withProcessLock(options.stateRoot, 'ready-' + hash(p.id), async () => {
+        const directory = join(options.stateRoot, 'ready-requests'); await privateDirectory(directory);
+        const file = join(directory, hash(p.id) + '.json');
+        const saved = await readPrivateJson(file) as { request?: unknown; retry?: boolean } | null;
+        let previous: Extract<PaneServiceRequest, { op: 'present-ready' }> | null = null;
+        if (saved?.request) { const parsed = parsePaneServiceRequest(saved.request); if (parsed.op === 'present-ready') previous = parsed; }
+        const input: Extract<PaneServiceRequest, { op: 'present-ready' }> = previous && !saved?.retry && isDeepStrictEqual(previous.target, target) ? previous : {
+          version: 1, operationId: 'ready-' + hash(JSON.stringify([p.id, p.revision, target, previous?.operationId ?? null])), op: 'present-ready', presentationId: p.id, expectedRevision: p.revision, target,
+        };
+        await writePrivateJson(file, { request: input, retry: false });
+        try {
+          const reply = await options.request(input);
+          const outcome = reply.kind === 'outcome' ? reply.outcome : result('refused', 'presentation-reply-mismatch', p);
+          await writePrivateJson(file, { request: input, retry: outcome.status !== 'complete' });
+          return outcome;
+        } catch { return result('pending', 'presentation-unavailable', p); }
+      });
+    },
+  };
 }
 
 export function createRoamPlacement(options: Options): { reconcile(rows: readonly Readiness[]): Promise<{ pending: readonly string[] }> } {
@@ -165,52 +235,18 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
         await saveState();
         const pending: string[] = [];
         for (const row of rows) {
-          let remote = row.terminal;
-          if (!remote.includes('/')) {
-            const matches = (await hc.machines()).filter(machine => machine.id === row.core && machine.state === 'connected');
-            if (matches.length !== 1 || !remote) { pending.push(row.terminal); continue; }
-            remote = `${matches[0].name}/${remote}`;
-          }
-          if (!remote || remote.startsWith('/') || remote.endsWith('/') || remote.split('/').length !== 2) { pending.push(row.terminal); continue; }
-          const terminalId = remote.slice(remote.indexOf('/') + 1);
-          let attempt = state.attempts.find(a => a.core === row.core && a.remote.slice(a.remote.indexOf('/') + 1) === terminalId);
-          if (attempt) {
-            if (attempt.session !== row.sessionId) { pending.push(row.terminal); continue; }
-            if (attempt.proxy || attempt.closed) continue;
-            if (!attempt.failure?.retryable || attempt.failure.attempts >= MAX_LAUNCH_ATTEMPTS) { pending.push(row.terminal); continue; }
-          }
-          const slot = getSlot(state, row.sessionId);
-          if (!slot) { pending.push(row.terminal); continue; }
-          const localOwners = records.filter(record => record.owner.sessionId === row.sessionId && record.owner.terminal.coreId === identity.coreId && !record.owner.terminal.address.includes('/')).map(record => ownerKey(record.owner));
-          if (!attempt) {
-            attempt = { session: row.sessionId, core: row.core, remote, proxy: null, closed: false, localOwners };
-            state.attempts.push(attempt);
-          } else { attempt.remote = remote; attempt.localOwners = localOwners; }
-          // A crash or lost reply leaves an uncertain claim, not permission to relaunch.
-          attempt.failure = { attempts: (attempt.failure?.attempts ?? 0) + 1, retryable: false };
-          await saveState();
-          let launched;
+          if (!options.presentation) { pending.push(row.terminal); continue; }
           try {
-            launched = await hc.run({ argv: [hcBinary, 'attach', '--history', '100', ...(remote.startsWith('-') ? ['--'] : []), remote], cwd: null, labels: {
-              [HERDR_LABELS.kind]: 'roam-proxy', [HERDR_LABELS.session]: row.sessionId, [HERDR_LABELS.ownerTerminal]: remote, [HERDR_LABELS.ownerCore]: row.core,
-              [HERDR_LABELS.space]: slot.space, [HERDR_LABELS.tab]: slot.tab,
-            }, parent: null, outliveParent: true, background: true, noNotify: true });
-            if (launched.address.includes('/') || launched.coreId !== identity.coreId) throw new HerdrError('invalid-proxy', 'Proxy terminal must belong to the local core');
-          } catch (error) {
-            // These transport errors prove the hc run process did not start.
-            attempt.failure.retryable = launchNotStarted(error);
-            await saveState();
-            throw error;
-          }
-          attempt.proxy = launched.address;
-          delete attempt.failure;
-          await saveState();
-          if (app) {
-            // Label adoption uses the space and tab. The helper does not use the anchor pane.
-            try { await placePaneWithoutFocus(hc, app, launched.address, { ...slot, pane: '' as OwnerPlacement['pane'] }, { timeoutMs: 1000 }); }
-            catch (error) { if (!appUnavailable(error)) throw error; }
-          }
+            const target = await options.presentation.resolveTarget(row);
+            if (!target || target.kind !== 'session' || target.sessionId !== row.sessionId || target.coreId !== row.core || target.terminalId !== row.terminal.split('/').at(-1) || target.homeEpoch !== row.epoch || !target.generation || target.createdMs <= 0) { pending.push(row.terminal); continue; }
+            const result = await options.presentation.presentReadyTarget(target);
+            if (result.status !== 'complete') pending.push(row.terminal);
+            else for (const attempt of state.attempts) {
+              if (attempt.session === row.sessionId && attempt.core === target.coreId && attempt.remote.split('/').at(-1) === target.terminalId && !attempt.proxy && attempt.failure?.retryable) attempt.closed = true;
+            }
+          } catch { pending.push(row.terminal); }
         }
+        await saveState();
         return { pending };
       });
     },

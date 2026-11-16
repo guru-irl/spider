@@ -222,7 +222,8 @@ it("production hub composes intercom independently from replication peers", asyn
   writeFileSync(join(f.root, "herdr", "config.json"), JSON.stringify({ mode: "full", agentDirectory: agentDir, globalRoot: f.root,
     core: { binary: "/fixture/hc", config: "/fixture/core" }, app: { binary: "/fixture/app", home: "/fixture/home" }, shellRc: "/fixture/rc", spaces: [], machines: [] }), { mode: 0o600 });
   vi.spyOn(localDiagnostics, "createLocalDiagnosticPorts").mockReturnValue({ async probeProcess() { return { kind: "live", startIdentity: "fixture-process" }; } } as never);
-  vi.spyOn(hcModule, "createHcClient").mockReturnValue({ async dispose() {} } as never);
+  const legacyLaunch = vi.fn();
+  vi.spyOn(hcModule, "createHcClient").mockReturnValue({ run: legacyLaunch, async dispose() {} } as never);
   const app = vi.spyOn(appModule, "createAppClient").mockReturnValue({} as never);
   const transport = vi.spyOn(transportModule, "createTransport").mockReturnValue({} as never);
   const hub = vi.spyOn(hubRuntime, "runStandaloneHub").mockImplementation(async ports => {
@@ -242,7 +243,9 @@ it("production hub composes intercom independently from replication peers", asyn
     expect(transport.mock.calls.map(([input]) => input.enrolled.map(peer => peer.machineId))).toEqual([[BOX], [other.machineId]]);
     expect(hub.mock.calls[0][0].intercom).toMatchObject({ move: bridge.move });
     expect(hub.mock.calls[0][0].intercom?.readiness?.()).toEqual(bridge.readiness?.());
-    expect(app).toHaveBeenCalledOnce();
+    expect(app).not.toHaveBeenCalled();
+    expect(legacyLaunch).not.toHaveBeenCalled();
+    expect(hub.mock.calls[0][0].placement).toBeUndefined();
     expect(order).toEqual(["bridge-start"]);
   } finally { await service.stop(); }
   expect(order).toEqual(["bridge-start", "bridge-stop", "core-close"]);

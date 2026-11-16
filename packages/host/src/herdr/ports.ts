@@ -21,6 +21,8 @@ import { runRemoteObserver, observerMarker } from '@spider/herdr/jobs/observer';
 import { createJobStore, type JournalJob } from '@spider/herdr/jobs/store';
 import { preflightSpaces, setupSpaces, readCutoverRecovery, reconcileSpaceJournal, planSpaceCutover, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
 import { inspectPanePlacement } from '@spider/herdr/panes/store';
+import { createRoamPresentationOperations, type RoamPresentationOperations } from '@spider/herdr/roam-placement';
+import type { PaneTarget } from '@spider/herdr/panes/types';
 import { offerResume, resumeOfferShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
 import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces/discovery';
 import { launchSession } from '@spider/herdr/sessions/launcher';
@@ -350,7 +352,28 @@ function pendingNativeKeys(release: string, bytes: Buffer | null): KeySections {
   }));
 }
 
-export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly<NodeJS.ProcessEnv> = process.env, additionalPatches: AdditionalLookPatches = {}): HerdrCliPorts & { spacePorts(request: SetupRequest): SpaceSetupPorts; dispose(): Promise<void> } {
+export interface RoamPresentationPorts extends RoamPresentationOperations {
+  resolveTarget(locator: { sessionId: string; machineId: string; homeEpoch: number; coreId?: string; terminalId?: string; local?: boolean }): Promise<PaneTarget | null>;
+  dispose(): Promise<void>;
+}
+export function createProductionRoamPresentationPorts(globalRoot: string): RoamPresentationPorts {
+  let cli: ReturnType<typeof createProductionHerdrCliPorts> | undefined;
+  let opened: Promise<RoamPresentationPorts> | undefined;
+  const open = () => opened ??= (async () => {
+    const installed = object(await readPrivateJson(join(globalRoot, 'herdr', 'installation.json')));
+    if (installed.version !== 1 || typeof installed.packageRoot !== 'string' || !isAbsolute(installed.packageRoot)) throw new HerdrError('pane-installation-missing', 'Presentation installation is unavailable');
+    cli = createProductionHerdrCliPorts(installed.packageRoot, { ...process.env, SPIDER_GLOBAL_ROOT: globalRoot });
+    return cli.roamPresentations();
+  })().catch(async error => { await cli?.dispose(); cli = undefined; opened = undefined; throw error; });
+  return {
+    resolveTarget: async locator => (await open()).resolveTarget(locator),
+    prepareHandoff: async (session, source) => (await open()).prepareHandoff(session, source),
+    presentReadyTarget: async target => (await open()).presentReadyTarget(target),
+    async dispose() { await cli?.dispose(); },
+  };
+}
+
+export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly<NodeJS.ProcessEnv> = process.env, additionalPatches: AdditionalLookPatches = {}): HerdrCliPorts & { spacePorts(request: SetupRequest): SpaceSetupPorts; roamPresentations(): Promise<RoamPresentationPorts>; dispose(): Promise<void> } {
   const globalRoot = env.SPIDER_GLOBAL_ROOT ?? paths.globalRoot;
   let panes: Promise<PaneRuntime> | undefined;
   const paneRuntime = () => panes ??= (async () => {
@@ -943,6 +966,22 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   };
   return {
     spacePorts,
+    async roamPresentations() {
+      const runtime = await paneRuntime(), selected = await readRequest();
+      const call: Parameters<typeof createRoamPresentationOperations>[0]['request'] = async request => {
+        const connection = await runtime.connect(); try { return await connection.request(request); } finally { await connection.stop(); }
+      };
+      const operations = createRoamPresentationOperations({ stateRoot: join(globalRoot, 'roam', 'placement'), hc: client(selected),
+        app: selected.config.mode === 'core-only' ? null : createAppClient({ binary: selected.config.app.binary, env: { ...env, HERDR_APP_HOME: selected.config.app.home } }), request: call });
+      return { ...operations, dispose: async () => {}, async resolveTarget(locator) {
+        const reply = await call({ version: 1, op: 'snapshot', operationId: randomBytes(16).toString('hex') });
+        if (reply.kind !== 'snapshot') return null;
+        const localCore = reply.machines.find(machine => machine.alias === null)?.coreId;
+        const targets = [...reply.rows.flatMap(row => row.target ? [row.target] : []), ...reply.presentations.map(p => p.target)].filter(target => target.kind === 'session' && (!locator.local || target.coreId === localCore) && target.sessionId === locator.sessionId && target.homeEpoch === locator.homeEpoch && target.generation !== null && target.createdMs > 0 && (!locator.coreId || target.coreId === locator.coreId) && (!locator.terminalId || target.terminalId === locator.terminalId));
+        const unique = [...new Map(targets.map(target => [JSON.stringify([target.coreId, target.terminalId, target.createdMs, target.generation]), target])).values()];
+        return unique.length === 1 ? unique[0] : null;
+      } };
+    },
     panes: async request => { const runtime = await paneRuntime(); const connection = await runtime.connect(); try { return await connection.request(request); } finally { await connection.stop(); } },
     servePanes: async () => (await paneRuntime()).serve(),
     proxyPane: async input => (await paneRuntime()).proxy(input),

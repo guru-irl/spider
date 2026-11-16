@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import type { AppClient, HcClient } from '../contracts.js';
+import { join } from 'node:path';
+import { hash, privateDirectory, readPrivateJson, writePrivateJson } from '../sessions/registry.js';
 import { HerdrError } from '../client/parse.js';
 import { withHcOperation } from '../client/operation.js';
 import { paneSnapshot } from './snapshot.js';
 import { prunePaneHistory } from './retention.js';
-import { encodePaneServiceRequest, parsePaneServiceRequest } from './codec.js';
+import { encodePaneServiceRequest, parsePaneServiceRequest, parsePanePresentation } from './codec.js';
 import { createPaneServiceInventory } from './inventory.js';
 import { confirmPresentationClose, parkPresentation, reconcilePendingClose, reconcilePresentationExit, samePaneTarget, type PaneLifecyclePorts } from './lifecycle.js';
 import type { AppPaneCapabilities, FolderMapPort, MachineChoice, PaneActionOutcome, PaneAgentRow, PaneInventoryPage, PanePlacementStore, PanePresentation, PaneServiceReply, PaneServiceRequest, PaneTerminalFacts } from './types.js';
@@ -230,6 +232,25 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
       return paneSnapshot(state, machines, privateInventory(), facts);
     }
     const state = await ports.store.read();
+    if (request.op === 'present-ready') {
+      const saved = await readPrivateJson(join(ports.root, 'ready-outcomes', hash(request.presentationId) + '.json'));
+      if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+        const evidence = saved as Record<string, unknown>;
+        if (evidence.operationId === request.operationId) {
+          const bytes = encodePaneServiceRequest(request);
+          if (evidence.digest !== hash(bytes) || evidence.digest !== hash(encodePaneServiceRequest(parsePaneServiceRequest(evidence.request)))) return outcome('operation-reused');
+          try {
+            const recorded = evidence.outcome as PaneActionOutcome;
+            const p = parsePanePresentation(recorded.presentation);
+            const current = state.presentations.find(item => item.id === request.presentationId);
+            if (recorded.status === 'complete' && typeof recorded.reason === 'string' && current?.revision === p.revision && current.visibility !== 'closing' && current.visibility !== 'ended' && samePaneTarget(current.target, request.target) && samePaneTarget(current.target, p.target)) {
+              const verified = await bounded(() => ports.validateTarget(request.target, 'handoff'));
+              if (samePaneTarget(verified, request.target)) return { version: 1, kind: 'outcome', outcome: { status: 'complete', reason: recorded.reason, presentation: p } };
+            }
+          } catch { /* Missing current source authority never authorizes a replay. */ }
+        }
+      }
+    }
     if ('presentationId' in request) {
       const current = state.presentations.find(p => p.id === request.presentationId);
       if (!current || current.revision !== request.expectedRevision) return outcome('stale-presentation');
@@ -264,6 +285,10 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
       : request.op === 'close-confirmed' ? await confirmPresentationClose({ id: request.presentationId, expectedRevision: request.expectedRevision, operationId: request.operationId, target: request.target }, lifecycle)
       : await ports.dispatch(request, beforeLaunch, privateInventory());
     } catch (error) { if (error instanceof HerdrError) return outcome(error.code); throw error; }
+    if (request.op === 'present-ready' && result.status === 'complete' && result.presentation) {
+      const directory = join(ports.root, 'ready-outcomes'); await privateDirectory(directory);
+      await writePrivateJson(join(directory, hash(request.presentationId) + '.json'), { operationId: request.operationId, request, digest: hash(encodePaneServiceRequest(request)), outcome: result });
+    }
     requestRefresh();
     return { version: 1, kind: 'outcome', outcome: result };
   }
@@ -322,7 +347,11 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
       if (request.op === 'snapshot') return applyOperation(request);
       pruneReplay();
       const previous = replay.get(request.operationId);
-      if (previous) return previous.bytes === bytes ? response(previous.reply) : Promise.resolve(outcome('operation-reused'));
+      if (previous) {
+        if (previous.bytes !== bytes) return Promise.resolve(outcome('operation-reused'));
+        if (request.op !== 'present-ready' || previous.settledAt === null) return response(previous.reply);
+        replay.delete(request.operationId);
+      }
       // In-flight and recent actions must retain their replay evidence.
       if (replay.size >= 4096) return Promise.resolve(outcome('service-operation-limit'));
       const reply = request.op === 'open-auxiliary' || request.op === 'open-existing' && 'sessionId' in request

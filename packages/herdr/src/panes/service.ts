@@ -328,7 +328,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     if (initialized && (!refreshing || activeRequests)) requestRefresh();
   });
   const cancelTimer = ports.schedule(() => {
-    if (initialized && !stopped && !refreshing) void reconcile().catch(() => {});
+    if (initialized && !stopped && !refreshing) requestRefresh();
   }, 5000);
   const applyOperation = async (request: Exclude<PaneServiceRequest, { op: 'ready-outcome' }>, deadline?: LookupDeadline) => {
     initialized = true; activeRequests++;

@@ -6,6 +6,7 @@ import type { PaneOpenPorts } from '../panes/open.js';
 import { expect, test, vi } from 'vitest';
 import { parsePaneAgentRow, parsePaneTarget, parsePanePresentation, parsePaneSlot } from '../panes/codec.js';
 import { HerdrLabelContract } from '../contracts.js';
+import { HerdrError } from '../client/parse.js';
 import { indexPaneNavigation, projectNavigation, navigationAgents, type NavigationSnapshot } from '../../assets/shared/navigation.js';
 import { moveTarget, beginPresentationDrag, dropPresentation, menuItems } from '../../assets/agents/move.js';
 import { requestPaneService } from '../../assets/shared/feed.js';
@@ -184,6 +185,40 @@ function unplacedProxyPorts() {
   } as unknown as PaneOpenPorts;
   return { ports, events, selected, state: () => state, reserve: async () => { events.push('reserve'); return selected; } };
 }
+test('parked presentation with a removed proxy reopens the same real target in its saved tab', async () => {
+  const h = unplacedProxyPorts(), get = h.ports.hc.get;
+  await h.ports.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, visibility: 'parked', proxy: 'removed-proxy' as never, slot: h.selected })) }));
+  const saved = h.state().presentations[0], target = saved.target;
+  h.ports.hc.get = async (address, options) => {
+    if (address === 'removed-proxy') throw new HerdrError('not_found', 'Terminal no longer exists');
+    return get(address, options);
+  };
+  const result = await presentExistingPane(saved, saved.slot!, 'reopen-removed', h.ports, h.reserve);
+  expect(result).toMatchObject({ visibility: 'visible', proxy: 'new-proxy', launch: 'acknowledged', slot: { space: 's1', tab: 'tb2', pane: 'shown' } });
+  expect(result.target).toEqual(target);
+  expect(h.state().presentations[0]).toEqual(result);
+  expect(h.ports.launchProxy).toHaveBeenCalledTimes(1);
+  expect(h.state().presentations.filter(p => p.target.terminalId === target.terminalId)).toHaveLength(1);
+});
+test.each(['core-unavailable', 'invalid-reply'])('a parked saved proxy %s error cannot authorize a replacement', async code => {
+  const h = unplacedProxyPorts();
+  await h.ports.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, visibility: 'parked', proxy: 'saved-proxy' as never, slot: h.selected })) }));
+  const before = structuredClone(h.state());
+  h.ports.hc.get = async () => { throw new HerdrError(code, 'Inspection unavailable'); };
+  await expect(presentExistingPane(h.state().presentations[0], h.selected, 'unavailable-reopen', h.ports, h.reserve)).rejects.toMatchObject({ code });
+  expect(h.ports.launchProxy).not.toHaveBeenCalled();
+  expect(h.state()).toEqual(before);
+  expect(h.events).not.toContain('reserve');
+});
+test('a missing visible proxy is not mistaken for a parked or ended target', async () => {
+  const h = unplacedProxyPorts();
+  await h.ports.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, proxy: 'missing-proxy' as never })) }));
+  h.ports.hc.get = async () => { throw new HerdrError('not_found', 'Terminal no longer exists'); };
+  await expect(presentExistingPane(h.state().presentations[0], h.selected, 'visible-missing', h.ports, h.reserve)).rejects.toMatchObject({ code: 'not_found' });
+  expect(h.ports.launchProxy).not.toHaveBeenCalled();
+  expect(h.state().presentations[0].visibility).toBe('visible');
+});
+
 test('first proxy placement proves the Mac placeholder before a durable display launch claim', async () => {
   const h = unplacedProxyPorts();
   const result = await presentExistingPane(h.state().presentations[0], { ...h.selected, pane: null }, 'first-move', h.ports, h.reserve);

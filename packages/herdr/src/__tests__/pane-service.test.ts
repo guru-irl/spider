@@ -200,6 +200,48 @@ test('expected target and folder refusals are returned instead of looking like a
     }
   } finally { await service.stop(); }
 });
+test('257 ended presentations cannot exhaust snapshots or retain their placement rows', async () => {
+  const f = await fixture();
+  let state = await f.ports.store.read();
+  const history = Array.from({ length: 257 }, (_, i) => ({ ...f.presentation, id: `ended-${i}`, visibility: 'ended' as const,
+    target: { ...f.presentation.target, sessionId: `gone-${i}` as never, terminalId: `old-${i}` as never, address: `core-remote/old-${i}` as never } }));
+  state = { ...state, presentations: [...history, f.presentation],
+    slots: [{ session: 'gone-0', space: 's1', tab: 'tb1' }], choices: [{ session: 'gone-0' as never, space: 's1' as never, tab: 'tb1' as never, revision: 1 }],
+    attempts: [{ session: 'gone-0', remote: 'box-1.invalid/t1', core: 'core-remote', proxy: 't8', closed: true, localOwners: [] }],
+    launches: [{ operationId: 'old-open', coreId: 'core-remote' as never, machineKey: 'box-1.invalid', intent: { ...identityOpen.intent, operationId: 'old-open' }, folder: { cwd: null, reason: 'home' }, state: 'observed', target: history[0].target, failure: null }] };
+  f.ports.store = { read: async () => state, update: async change => state = change(state) };
+  const service = createPaneService(f.ports);
+  try {
+    await service.reconcile();
+    expect(await service.request({ version: 1, op: 'snapshot', operationId: 'after-history' })).toMatchObject({ kind: 'snapshot', presentations: [{ id: 'p1' }] });
+    expect(state).toMatchObject({ presentations: [{ id: 'p1' }], slots: [], attempts: [], choices: [], launches: [] });
+  } finally { await service.stop(); }
+});
+test('complete source evidence prunes finished and absent targets but keeps unavailable and live targets', async () => {
+  const f = await fixture(); let state = await f.ports.store.read();
+  state = { ...state, presentations: ['finished', 'absent', 'unavailable', 'live'].map(id => ({ ...f.presentation, id, mode: 'native', target: { ...f.presentation.target, terminalId: id as never, address: `core-remote/${id}` as never } })) };
+  f.ports.store = { read: async () => state, update: async change => state = change(state) };
+  vi.mocked(f.hc.get).mockImplementation(async address => {
+    if (address === 'core-remote/absent') throw new HerdrError('not_found', 'No terminal');
+    if (address === 'core-remote/unavailable') throw new HerdrError('unreachable', 'Source unavailable');
+    return { address, state: address === 'core-remote/finished' ? 'finished' : 'live' } as never;
+  });
+  const service = createPaneService(f.ports);
+  try { await service.reconcile(); expect(state.presentations.map(p => p.id)).toEqual(['unavailable', 'live']); }
+  finally { await service.stop(); }
+});
+test('snapshot trims live presentations and terminal facts without raising codec bounds', async () => {
+  const f = await fixture(); let state = await f.ports.store.read();
+  state = { ...state, presentations: Array.from({ length: 257 }, (_, i) => ({ ...f.presentation, id: `live-${i}` })) };
+  f.ports.store = { read: async () => state, update: async change => state = change(state) };
+  const service = createPaneService(f.ports);
+  try {
+    const reply = await service.request({ version: 1, op: 'snapshot', operationId: 'live-cap' });
+    expect(reply).toMatchObject({ kind: 'snapshot', complete: false });
+    if (reply.kind !== 'snapshot') throw new Error('Expected snapshot');
+    expect(reply.presentations).toHaveLength(256); expect(state.presentations).toHaveLength(257);
+  } finally { await service.stop(); }
+});
 test('capped display snapshots retain the full private placement inventory', async () => {
   const f = await fixture();
   const owner = { sessionId: 'session-0', generation: 'gen-1', terminal: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', socket: '/unused', sessionNamespace: 'test' }, cwd: '/home/example', sessionFile: null, name: 'Builder' };

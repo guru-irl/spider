@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { lstat } from 'node:fs/promises';
+import { lstat, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { CoreId, SessionId, TerminalAddress, TerminalId } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
@@ -106,6 +106,13 @@ export function createPanePlacementStore(root: string): PanePlacementStore {
       for (const presentation of next.presentations) {
         await checkPrivate(join(panesRoot, 'bindings', `${presentation.id}.json`), false, true);
         await prepareRoot(panesRoot, `pane-binding:${presentation.id}`);
+      }
+      for (const retired of state.presentations.filter(p => !next.presentations.some(current => current.id === p.id))) {
+        const key = `pane-binding:${retired.id}`, path = join(panesRoot, 'bindings', `${retired.id}.json`);
+        await prepareRoot(panesRoot, key);
+        await withProcessLock(panesRoot, key, async () => {
+          if (await checkPrivate(path, false, true)) await unlink(path);
+        });
       }
       if (before.version === 1 && !await checkPrivate(backupPath(root), false, true)) await writePrivateJson(backupPath(root), before);
       if (change || before.version === 1) await writePrivateJson(statePath(root), next);

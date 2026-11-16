@@ -6,7 +6,7 @@ import type { PaneOpenPorts } from '../panes/open.js';
 import { expect, test, vi } from 'vitest';
 import { parsePaneAgentRow, parsePaneTarget, parsePanePresentation, parsePaneSlot } from '../panes/codec.js';
 import { HerdrLabelContract } from '../contracts.js';
-import { projectNavigation, navigationAgents, type NavigationSnapshot } from '../../assets/shared/navigation.js';
+import { indexPaneNavigation, projectNavigation, navigationAgents, type NavigationSnapshot } from '../../assets/shared/navigation.js';
 import { moveTarget, beginPresentationDrag, dropPresentation, menuItems } from '../../assets/agents/move.js';
 import { requestPaneService } from '../../assets/shared/feed.js';
 import { parkFocusedTerminal } from '../../assets/pane/park.js';
@@ -28,6 +28,30 @@ test('box layout agent appears once and never focuses a remote pane', () => {
   expect(targets.filter(target => target.ownerId === null)).toHaveLength(1);
   expect(targets[0]).toMatchObject({ id: 'session:writer', name: 'Writer', machine: 'box-1.invalid', action: { kind: 'focus', pane: 'p1' } });
   expect(targets.some(target => target.action?.kind === 'focus' && target.action.pane.includes('/'))).toBe(false);
+});
+test('owner-only pane navigation never walks child or console history', () => {
+  const input = snapshot(), service = input.paneSnapshot!;
+  let reads = 0;
+  const watch = <T>(values: readonly T[]) => new Proxy(values, { get(target, key, receiver) {
+    if (key === Symbol.iterator || typeof key === 'string' && /^\d+$/.test(key)) reads++;
+    return Reflect.get(target, key, receiver);
+  } });
+  input.paneSnapshot = { ...service, rows: [{ ...service.rows[0], children: watch(service.rows[0].children),
+    consoles: watch(service.rows[0].consoles) } as PaneAgentRow] };
+  const owners = projectNavigation({ ...input, includeChildren: false });
+  expect(owners.map(target => target.id)).toEqual(['session:writer']);
+  expect(navigationAgents(input).map(agent => agent.navigation.id)).toEqual(['session:writer']);
+  expect(reads).toBe(0);
+});
+test('indexed pane navigation changes when a newer duplicate session wins', () => {
+  const input = snapshot(), service = input.paneSnapshot!;
+  const older = { ...row, name: 'Older owner', updatedAt: 50 };
+  const current = { ...row, name: 'Current owner', updatedAt: 100 };
+  const first = indexPaneNavigation({ ...service, rows: [older, current] });
+  const second = indexPaneNavigation({ ...service, rows: [{ ...older, updatedAt: 101 }, current] });
+  expect(projectNavigation({ ...input, paneSnapshot: first.snapshot })[0].name).toBe('Current owner');
+  expect(projectNavigation({ ...input, paneSnapshot: second.snapshot })[0].name).toBe('Older owner');
+  expect(second.key).not.toBe(first.key);
 });
 test('parked proxy reopens via service not target terminal keep', () => {
   const targets = projectNavigation(snapshot([{ ...presentation, visibility: 'parked', proxy: null, launch: 'none' }]));

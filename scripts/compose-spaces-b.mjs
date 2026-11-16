@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import ts from 'typescript';
 
 // B records stay separate from the production manifest until native admission.
@@ -19,10 +19,20 @@ function helperUrl(name, imports = {}) {
 const aUrl = helperUrl('spaces-a-fixture');
 const { loadSpacesAFiles } = await import(aUrl);
 const { replaySpacesBRecipe } = await import(helperUrl('spaces-b-fixture', { './spaces-a-fixture.js': aUrl }));
-const records = JSON.parse(readFileSync(new URL('../packages/herdr/assets/look/cross-machine-patches.json', import.meta.url), 'utf8'));
-assert.equal(records.version, 1);
-assert.deepEqual(Object.keys(records.versions).sort(), ['0.1.13', '0.1.16']);
-for (const version of Object.keys(records.versions)) {
+const args = process.argv.slice(2);
+if (args.some(arg => !['--check', '--write'].includes(arg)) || new Set(args).size !== args.length || args.length > 1)
+  throw new Error('Expected --check or --write');
+const check = args.includes('--check');
+const manifestPath = new URL('../packages/herdr/assets/look/cross-machine-patches.json', import.meta.url);
+const original = check ? readFileSync(manifestPath, 'utf8') : null;
+const versions = ['0.1.13', '0.1.16'];
+const agents = JSON.parse(readFileSync(new URL('./spaces-b-fragments/agents.json', import.meta.url), 'utf8'));
+const records = { version: 1, versions: Object.fromEntries(versions.map(version => {
+  const fragments = JSON.parse(readFileSync(new URL(`./spaces-b-fragments/${version}.json`, import.meta.url), 'utf8'));
+  assert.equal(Object.hasOwn(fragments, 'agents'), false, `${version} duplicates shared Agents fragments`);
+  return [version, { ...fragments, agents }];
+})) };
+for (const version of versions) {
   const fragments = records.versions[version];
   const output = replaySpacesBRecipe(version, loadSpacesAFiles(version), fragments);
   assert.deepEqual(replaySpacesBRecipe(version, output, fragments), output);
@@ -42,4 +52,12 @@ for (const version of Object.keys(records.versions)) {
   }
   const digest = createHash('sha256').update(JSON.stringify(hashes)).digest('hex');
   console.log(`${version}: ${Object.values(fragments).flat().length} B records, ${Object.keys(hashes).length} files, ${digest}`);
+}
+const output = JSON.stringify(records, null, 2) + '\n';
+if (check) {
+  assert.equal(output, original, 'Published Spaces B recipes differ from composed output');
+  console.log('Published Spaces B recipes match composed output');
+} else {
+  writeFileSync(manifestPath, output);
+  console.log('Wrote Spaces B recipes');
 }

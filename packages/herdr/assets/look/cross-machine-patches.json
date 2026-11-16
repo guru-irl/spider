@@ -231,31 +231,61 @@
           "id": "b-navigation-imports",
           "file": "main.js",
           "anchor": "import { projectNavigation } from \"./shared/navigation.js\";",
-          "replacement": "import { projectNavigation, navigationAgents } from \"./shared/navigation.js\";\nimport { requestPaneService } from \"./shared/feed.js\";\nimport { beginPresentationDrag } from \"./move.js\";"
+          "replacement": "import { projectNavigation, navigationAgents, indexPaneNavigation } from \"./shared/navigation.js\";\nimport { requestPaneService } from \"./shared/feed.js\";\nimport { beginPresentationDrag } from \"./move.js\";"
         },
         {
           "id": "b-navigation-refresh",
           "file": "main.js",
           "anchor": "const loaded = await this.spiderReader.read();",
-          "replacement": "const [loaded, paneSnapshot] = await Promise.all([this.spiderReader.read(), requestPaneService(p, exec, { op: \"snapshot\" }).catch(() => null)]);\n      this.spiderPaneSnapshot = paneSnapshot;"
+          "replacement": "const [loaded, paneSnapshot] = await Promise.all([this.spiderReader.read(), requestPaneService(p, exec, { op: \"snapshot\" }).catch(() => null)]);\n      if (this.spiderClosed) return;\n      let paneIndex = null, paneError = null;\n      try { paneIndex = paneSnapshot ? indexPaneNavigation(paneSnapshot) : null; }\n      catch { paneError = \"Pane service unavailable; run doctor\"; }\n      if (paneIndex?.key !== this.spiderPaneIndex?.key) this.spiderPaneRevision = (this.spiderPaneRevision ?? 0) + 1;\n      this.spiderPaneIndex = paneIndex;\n      this.spiderPaneSnapshot = paneIndex ? paneSnapshot : null;"
+        },
+        {
+          "id": "b-navigation-feed-error",
+          "file": "main.js",
+          "anchor": "this.spiderFeedError = loaded.errors[0]?.message ?? null;",
+          "replacement": "this.spiderFeedError = loaded.errors[0]?.message ?? paneError;"
+        },
+        {
+          "id": "b-navigation-model-key",
+          "file": "main.js",
+          "anchor": "const now = Date.now(), inputKey = agentModelInputKey(input, now, p.retention?.completedHours ?? 24, this.spiderFeedKeys ??= new Map());",
+          "replacement": "const now = Date.now(), inputKey = agentModelInputKey(input, now, p.retention?.completedHours ?? 24, this.spiderFeedKeys ??= new Map());\n    const paneIndex = this.spiderPaneIndex, paneRevision = this.spiderPaneRevision ?? 0;"
+        },
+        {
+          "id": "b-navigation-model-unchanged",
+          "file": "main.js",
+          "anchor": "if (inputKey !== null && inputKey === this.spiderModel?.inputKey) {",
+          "replacement": "if (inputKey !== null && inputKey === this.spiderModel?.inputKey && paneRevision === this.spiderModel?.paneRevision) {"
+        },
+        {
+          "id": "b-navigation-model-job",
+          "file": "main.js",
+          "anchor": "const job = { inputKey, now, snapshot, list, listed, rows, parked, layouts, diagnostics,",
+          "replacement": "const job = { inputKey, paneRevision, now, snapshot, list, listed, rows, parked, layouts, diagnostics,"
         },
         {
           "id": "b-navigation-list",
           "file": "main.js",
-          "anchor": "let list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, spiderProps().labelContract);",
-          "replacement": "const current = focused(), manager = this.spiderConnections;\n    const navigationSnapshot = { ...snapshot, paneSnapshot: this.spiderPaneSnapshot, coreId: manager?.coreId,\n      destination: current?.space && current?.tab ? { space: current.space, tab: current.tab } : null,\n      contract: spiderProps().labelContract, now: Date.now(), completedHours: spiderProps().retention?.completedHours ?? 24, completedRows: spiderProps().retention?.completedRows ?? 50 };\n    let list = this.spiderPaneSnapshot ? navigationAgents(navigationSnapshot) : filterTopLevelAgents(snapshot.agents, snapshot.terminals, spiderProps().labelContract).filter(a => !a.address.includes(\"/\"));\n    this.spiderNavigation = new Map(list.filter(a => a.navigation).map(a => [a.address, a.navigation]));"
+          "anchor": "const list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract);",
+          "replacement": "const paneNavigation = paneIndex ? this.spiderProjectNavigation(snapshot, paneIndex, input.focus, now) : null;\n    if (paneNavigation) snapshot.paneNavigation = paneNavigation;\n    const list = paneNavigation?.list ?? filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract).filter(a => !a.address.includes(\"/\"));"
+        },
+        {
+          "id": "b-navigation-collapse",
+          "file": "main.js",
+          "anchor": "const model = this.spiderModel;\n    if (!model?.rows.has(owner)) return;\n    if (this.spiderShowFinished?.has(owner) && model.hiddenFinished.has(owner)) {",
+          "replacement": "const model = this.spiderModel;\n    if (!model?.rows.has(owner)) return;\n    if (model.snapshot.paneNavigation && !this.spiderShowFinished?.has(owner) && !model.hiddenFinished.has(owner)) {\n      for (const row of model.rows.get(owner)) {\n        const owners = model.childOwners.get(row.key);\n        owners?.delete(owner);\n        if (owners?.size === 0) model.childOwners.delete(row.key);\n        if (row.kind === \"console\") {\n          const key = `console-group:${JSON.stringify([owner, row.parentKey])}`, groups = model.groupOwners.get(key);\n          groups?.delete(owner);\n          if (groups?.size === 0) model.groupOwners.delete(key);\n        }\n      }\n      this.spiderRenderSnapshot = model.snapshot;\n      this.spiderRenderSummaries = model.hiddenFinished;\n      try {\n        const rows = this.projectChildren(model.snapshot.terminals, owner);\n        model.rows.set(owner, rows);\n        model.rowKeys.set(owner, agentModelRowKey(rows));\n        model.stats.set(owner, { ...agentModelChildStats(rows, model.listed, RANK), machine: machineGroupCounts(rows) });\n        this.spiderIndexTreeOwner(model, owner, rows);\n        model.outputKey = agentModelOutputKey(model);\n      } finally {\n        this.spiderRenderSnapshot = null;\n        this.spiderRenderSummaries = null;\n      }\n    }\n    if (this.spiderShowFinished?.has(owner) && model.hiddenFinished.has(owner)) {"
         },
         {
           "id": "b-navigation-parked",
           "file": "main.js",
           "anchor": "  parkedSessions() {",
-          "replacement": "  parkedSessions() {\n    if (this.spiderPaneSnapshot) return [];"
+          "replacement": "  parkedSessions() {\n    if (this.spiderRenderSnapshot?.paneNavigation || !this.spiderRenderSnapshot && this.spiderPaneIndex) return [];"
         },
         {
           "id": "b-navigation-name",
           "file": "main.js",
-          "anchor": "const sessionName = a => snapshot.feeds.find",
-          "replacement": "const sessionName = a => a.navigation?.name || snapshot.feeds.find"
+          "anchor": "const sessionName = a => this.spiderModel ? this.spiderModel.sessionNames.get(a.address) : snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;",
+          "replacement": "const sessionName = a => a.navigation?.name || (this.spiderModel ? this.spiderModel.sessionNames.get(a.address) : snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name);"
         },
         {
           "id": "b-navigation-focus-authority",
@@ -291,13 +321,19 @@
           "id": "b-navigation-peek",
           "file": "main.js",
           "anchor": "  peek(addr) {",
-          "replacement": "  async peek(addr) {\n    const target = this.spiderNavigation?.get(addr);\n    if (target) {\n      if (target.action?.kind === \"focus\") { run(\"pane.focus\", { pane: target.action.pane }); return; }\n      if (target.action?.kind !== \"pane\") return;\n      try { await requestPaneService(spiderProps(), exec, target.action.request); this.spiderReloadAt = null; await this.reloadSpiderFeeds(); }\n      catch (error) { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); }\n      return;\n    }\n    if (addr.includes(\"/\")) return;"
+          "replacement": "  async peek(addr) {\n    const context = this.spiderCurrentNavigation(terminals());\n    if (context) {\n      const target = context.owners.get(addr);\n      if (target?.action?.kind === \"focus\") { run(\"pane.focus\", { pane: target.action.pane }); return; }\n      if (target?.action?.kind !== \"pane\") return;\n      try { await requestPaneService(spiderProps(), exec, target.action.request); this.spiderReloadAt = null; await this.reloadSpiderFeeds(); }\n      catch (error) { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); }\n      return;\n    }\n    if (this.spiderModel?.snapshot?.paneNavigation || addr.includes(\"/\")) return;"
         },
         {
           "id": "b-navigation-children",
           "file": "main.js",
-          "anchor": "  projectChildren(all, addr) {",
-          "replacement": "  projectChildren(all, addr) {\n    if (this.spiderPaneSnapshot) {\n      const owner = this.spiderNavigation?.get(addr);\n      if (owner) {\n        const snapshot = this.spiderRenderSnapshot;\n        const current = focused();\n        return projectNavigation({ ...snapshot, agents: snapshot?.agents ?? agents(), terminals: all, panes: snapshot?.panes ?? panes(), spaces: snapshot?.spaces ?? spaces(), feeds: snapshot?.feeds ?? this.spiderFeeds ?? [],\n          paneSnapshot: this.spiderPaneSnapshot, coreId: this.spiderConnections?.coreId, destination: current?.space && current?.tab ? { space: current.space, tab: current.tab } : null,\n          contract: spiderProps().labelContract, now: Date.now(), completedHours: spiderProps().retention?.completedHours ?? 24, completedRows: spiderProps().retention?.completedRows ?? 50 })\n          .filter(row => row.ownerId === owner.id).map(row => ({ kind: row.kind, key: row.id, name: row.name, status: row.status, address: row.terminal ?? row.id,\n            originalAddress: row.terminal, machine: row.machine, retained: row.retained, action: row.action, terminal: null, parentKey: null, depth: 0, navigationId: row.id }));\n      }\n      return [];\n    }"
+          "anchor": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);",
+          "replacement": "  spiderProjectNavigation(snapshot, index, focus, now) {\n    const p = spiderProps();\n    const input = { ...snapshot, paneSnapshot: index.snapshot, coreId: this.spiderConnections?.coreId,\n      destination: focus?.space && focus?.tab ? { space: focus.space, tab: focus.tab } : null,\n      contract: p.labelContract, now, completedHours: p.retention?.completedHours ?? 24,\n      completedRows: p.retention?.completedRows ?? 50, includeRetained: false };\n    const targets = projectNavigation(input), list = navigationAgents(input, targets);\n    const owners = new Map(list.filter(a => a.navigation).map(a => [a.address, a.navigation]));\n    const children = new Map();\n    for (const target of targets) if (target.ownerId) {\n      if (!children.has(target.ownerId)) children.set(target.ownerId, []);\n      children.get(target.ownerId).push(target);\n    }\n    return { input, index, list, owners, children };\n  }\n\n  spiderCurrentNavigation(all) {\n    if (!this.spiderPaneIndex) return null;\n    const snapshot = { agents: agents(), terminals: all, panes: panes(), spaces: spaces(), machines: machines(), feeds: this.spiderFeeds ?? [] };\n    return this.spiderProjectNavigation(snapshot, this.spiderPaneIndex, focused(), Date.now());\n  }\n\n  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const context = this.spiderRenderSnapshot?.paneNavigation ?? (!this.spiderRenderSnapshot ? this.spiderCurrentNavigation(all) : null);\n    if (context) {\n      const owner = context.owners.get(addr), shown = this.spiderShowFinished?.has(addr);\n      let targets = owner ? context.children.get(owner.id) ?? [] : [];\n      if (owner?.sessionId && shown && context.index.hidden.get(owner.sessionId)) {\n        const source = context.index.sources.get(owner.sessionId);\n        targets = projectNavigation({ ...context.input, paneSnapshot: { ...context.index.snapshot, rows: [source] }, includeRetained: true })\n          .filter(row => row.ownerId === owner.id);\n      }\n      const rows = targets.map(row => ({ kind: row.kind, key: row.id, name: row.name, status: row.status === \"running\" ? \"working\" : row.status === \"failed\" ? \"error\" : row.status, address: row.terminal ?? row.id,\n        originalAddress: row.terminal, machine: row.machine, retained: row.retained || row.kind === \"console\" && row.status === \"retained, not open\",\n        action: row.action, terminal: row.kind === \"console\" ? { state: row.status === \"open\" ? \"live\" : \"finished\" } : null,\n        parentKey: null, depth: 0, navigationId: row.id }));\n      if (this.spiderRenderSummaries && !shown) this.spiderRenderSummaries.set(addr, context.index.hidden.get(owner?.sessionId) ?? 0);\n      cache?.set(addr, rows);\n      return rows;\n    }"
+        },
+        {
+          "id": "b-navigation-console-owners",
+          "file": "main.js",
+          "anchor": "const owners = new Set([...filterTopLevelAgents(agents(), all, contract).map(agent => agent.address),\n      ...this.parkedSessions().map(target => target.terminal).filter(Boolean)]);",
+          "replacement": "const owners = this.spiderModel?.groupOwners.get(key) ?? new Set([...(this.spiderModel?.list ?? filterTopLevelAgents(agents(), all, contract)).map(agent => agent.address),\n      ...this.parkedSessions().map(target => target.terminal).filter(Boolean)]);"
         },
         {
           "id": "b-navigation-child-menu",
@@ -537,31 +573,61 @@
           "id": "b-navigation-imports",
           "file": "main.js",
           "anchor": "import { projectNavigation } from \"./shared/navigation.js\";",
-          "replacement": "import { projectNavigation, navigationAgents } from \"./shared/navigation.js\";\nimport { requestPaneService } from \"./shared/feed.js\";\nimport { beginPresentationDrag } from \"./move.js\";"
+          "replacement": "import { projectNavigation, navigationAgents, indexPaneNavigation } from \"./shared/navigation.js\";\nimport { requestPaneService } from \"./shared/feed.js\";\nimport { beginPresentationDrag } from \"./move.js\";"
         },
         {
           "id": "b-navigation-refresh",
           "file": "main.js",
           "anchor": "const loaded = await this.spiderReader.read();",
-          "replacement": "const [loaded, paneSnapshot] = await Promise.all([this.spiderReader.read(), requestPaneService(p, exec, { op: \"snapshot\" }).catch(() => null)]);\n      this.spiderPaneSnapshot = paneSnapshot;"
+          "replacement": "const [loaded, paneSnapshot] = await Promise.all([this.spiderReader.read(), requestPaneService(p, exec, { op: \"snapshot\" }).catch(() => null)]);\n      if (this.spiderClosed) return;\n      let paneIndex = null, paneError = null;\n      try { paneIndex = paneSnapshot ? indexPaneNavigation(paneSnapshot) : null; }\n      catch { paneError = \"Pane service unavailable; run doctor\"; }\n      if (paneIndex?.key !== this.spiderPaneIndex?.key) this.spiderPaneRevision = (this.spiderPaneRevision ?? 0) + 1;\n      this.spiderPaneIndex = paneIndex;\n      this.spiderPaneSnapshot = paneIndex ? paneSnapshot : null;"
+        },
+        {
+          "id": "b-navigation-feed-error",
+          "file": "main.js",
+          "anchor": "this.spiderFeedError = loaded.errors[0]?.message ?? null;",
+          "replacement": "this.spiderFeedError = loaded.errors[0]?.message ?? paneError;"
+        },
+        {
+          "id": "b-navigation-model-key",
+          "file": "main.js",
+          "anchor": "const now = Date.now(), inputKey = agentModelInputKey(input, now, p.retention?.completedHours ?? 24, this.spiderFeedKeys ??= new Map());",
+          "replacement": "const now = Date.now(), inputKey = agentModelInputKey(input, now, p.retention?.completedHours ?? 24, this.spiderFeedKeys ??= new Map());\n    const paneIndex = this.spiderPaneIndex, paneRevision = this.spiderPaneRevision ?? 0;"
+        },
+        {
+          "id": "b-navigation-model-unchanged",
+          "file": "main.js",
+          "anchor": "if (inputKey !== null && inputKey === this.spiderModel?.inputKey) {",
+          "replacement": "if (inputKey !== null && inputKey === this.spiderModel?.inputKey && paneRevision === this.spiderModel?.paneRevision) {"
+        },
+        {
+          "id": "b-navigation-model-job",
+          "file": "main.js",
+          "anchor": "const job = { inputKey, now, snapshot, list, listed, rows, parked, layouts, diagnostics,",
+          "replacement": "const job = { inputKey, paneRevision, now, snapshot, list, listed, rows, parked, layouts, diagnostics,"
         },
         {
           "id": "b-navigation-list",
           "file": "main.js",
-          "anchor": "let list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, spiderProps().labelContract);",
-          "replacement": "const current = focused(), manager = this.spiderConnections;\n    const navigationSnapshot = { ...snapshot, paneSnapshot: this.spiderPaneSnapshot, coreId: manager?.coreId,\n      destination: current?.space && current?.tab ? { space: current.space, tab: current.tab } : null,\n      contract: spiderProps().labelContract, now: Date.now(), completedHours: spiderProps().retention?.completedHours ?? 24, completedRows: spiderProps().retention?.completedRows ?? 50 };\n    let list = this.spiderPaneSnapshot ? navigationAgents(navigationSnapshot) : filterTopLevelAgents(snapshot.agents, snapshot.terminals, spiderProps().labelContract).filter(a => !a.address.includes(\"/\"));\n    this.spiderNavigation = new Map(list.filter(a => a.navigation).map(a => [a.address, a.navigation]));"
+          "anchor": "const list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract);",
+          "replacement": "const paneNavigation = paneIndex ? this.spiderProjectNavigation(snapshot, paneIndex, input.focus, now) : null;\n    if (paneNavigation) snapshot.paneNavigation = paneNavigation;\n    const list = paneNavigation?.list ?? filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract).filter(a => !a.address.includes(\"/\"));"
+        },
+        {
+          "id": "b-navigation-collapse",
+          "file": "main.js",
+          "anchor": "const model = this.spiderModel;\n    if (!model?.rows.has(owner)) return;\n    if (this.spiderShowFinished?.has(owner) && model.hiddenFinished.has(owner)) {",
+          "replacement": "const model = this.spiderModel;\n    if (!model?.rows.has(owner)) return;\n    if (model.snapshot.paneNavigation && !this.spiderShowFinished?.has(owner) && !model.hiddenFinished.has(owner)) {\n      for (const row of model.rows.get(owner)) {\n        const owners = model.childOwners.get(row.key);\n        owners?.delete(owner);\n        if (owners?.size === 0) model.childOwners.delete(row.key);\n        if (row.kind === \"console\") {\n          const key = `console-group:${JSON.stringify([owner, row.parentKey])}`, groups = model.groupOwners.get(key);\n          groups?.delete(owner);\n          if (groups?.size === 0) model.groupOwners.delete(key);\n        }\n      }\n      this.spiderRenderSnapshot = model.snapshot;\n      this.spiderRenderSummaries = model.hiddenFinished;\n      try {\n        const rows = this.projectChildren(model.snapshot.terminals, owner);\n        model.rows.set(owner, rows);\n        model.rowKeys.set(owner, agentModelRowKey(rows));\n        model.stats.set(owner, { ...agentModelChildStats(rows, model.listed, RANK), machine: machineGroupCounts(rows) });\n        this.spiderIndexTreeOwner(model, owner, rows);\n        model.outputKey = agentModelOutputKey(model);\n      } finally {\n        this.spiderRenderSnapshot = null;\n        this.spiderRenderSummaries = null;\n      }\n    }\n    if (this.spiderShowFinished?.has(owner) && model.hiddenFinished.has(owner)) {"
         },
         {
           "id": "b-navigation-parked",
           "file": "main.js",
           "anchor": "  parkedSessions() {",
-          "replacement": "  parkedSessions() {\n    if (this.spiderPaneSnapshot) return [];"
+          "replacement": "  parkedSessions() {\n    if (this.spiderRenderSnapshot?.paneNavigation || !this.spiderRenderSnapshot && this.spiderPaneIndex) return [];"
         },
         {
           "id": "b-navigation-name",
           "file": "main.js",
-          "anchor": "const sessionName = a => snapshot.feeds.find",
-          "replacement": "const sessionName = a => a.navigation?.name || snapshot.feeds.find"
+          "anchor": "const sessionName = a => this.spiderModel ? this.spiderModel.sessionNames.get(a.address) : snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;",
+          "replacement": "const sessionName = a => a.navigation?.name || (this.spiderModel ? this.spiderModel.sessionNames.get(a.address) : snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name);"
         },
         {
           "id": "b-navigation-focus-authority",
@@ -597,13 +663,19 @@
           "id": "b-navigation-peek",
           "file": "main.js",
           "anchor": "  peek(addr) {",
-          "replacement": "  async peek(addr) {\n    const target = this.spiderNavigation?.get(addr);\n    if (target) {\n      if (target.action?.kind === \"focus\") { run(\"pane.focus\", { pane: target.action.pane }); return; }\n      if (target.action?.kind !== \"pane\") return;\n      try { await requestPaneService(spiderProps(), exec, target.action.request); this.spiderReloadAt = null; await this.reloadSpiderFeeds(); }\n      catch (error) { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); }\n      return;\n    }\n    if (addr.includes(\"/\")) return;"
+          "replacement": "  async peek(addr) {\n    const context = this.spiderCurrentNavigation(terminals());\n    if (context) {\n      const target = context.owners.get(addr);\n      if (target?.action?.kind === \"focus\") { run(\"pane.focus\", { pane: target.action.pane }); return; }\n      if (target?.action?.kind !== \"pane\") return;\n      try { await requestPaneService(spiderProps(), exec, target.action.request); this.spiderReloadAt = null; await this.reloadSpiderFeeds(); }\n      catch (error) { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); }\n      return;\n    }\n    if (this.spiderModel?.snapshot?.paneNavigation || addr.includes(\"/\")) return;"
         },
         {
           "id": "b-navigation-children",
           "file": "main.js",
-          "anchor": "  projectChildren(all, addr) {",
-          "replacement": "  projectChildren(all, addr) {\n    if (this.spiderPaneSnapshot) {\n      const owner = this.spiderNavigation?.get(addr);\n      if (owner) {\n        const snapshot = this.spiderRenderSnapshot;\n        const current = focused();\n        return projectNavigation({ ...snapshot, agents: snapshot?.agents ?? agents(), terminals: all, panes: snapshot?.panes ?? panes(), spaces: snapshot?.spaces ?? spaces(), feeds: snapshot?.feeds ?? this.spiderFeeds ?? [],\n          paneSnapshot: this.spiderPaneSnapshot, coreId: this.spiderConnections?.coreId, destination: current?.space && current?.tab ? { space: current.space, tab: current.tab } : null,\n          contract: spiderProps().labelContract, now: Date.now(), completedHours: spiderProps().retention?.completedHours ?? 24, completedRows: spiderProps().retention?.completedRows ?? 50 })\n          .filter(row => row.ownerId === owner.id).map(row => ({ kind: row.kind, key: row.id, name: row.name, status: row.status, address: row.terminal ?? row.id,\n            originalAddress: row.terminal, machine: row.machine, retained: row.retained, action: row.action, terminal: null, parentKey: null, depth: 0, navigationId: row.id }));\n      }\n      return [];\n    }"
+          "anchor": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);",
+          "replacement": "  spiderProjectNavigation(snapshot, index, focus, now) {\n    const p = spiderProps();\n    const input = { ...snapshot, paneSnapshot: index.snapshot, coreId: this.spiderConnections?.coreId,\n      destination: focus?.space && focus?.tab ? { space: focus.space, tab: focus.tab } : null,\n      contract: p.labelContract, now, completedHours: p.retention?.completedHours ?? 24,\n      completedRows: p.retention?.completedRows ?? 50, includeRetained: false };\n    const targets = projectNavigation(input), list = navigationAgents(input, targets);\n    const owners = new Map(list.filter(a => a.navigation).map(a => [a.address, a.navigation]));\n    const children = new Map();\n    for (const target of targets) if (target.ownerId) {\n      if (!children.has(target.ownerId)) children.set(target.ownerId, []);\n      children.get(target.ownerId).push(target);\n    }\n    return { input, index, list, owners, children };\n  }\n\n  spiderCurrentNavigation(all) {\n    if (!this.spiderPaneIndex) return null;\n    const snapshot = { agents: agents(), terminals: all, panes: panes(), spaces: spaces(), machines: machines(), feeds: this.spiderFeeds ?? [] };\n    return this.spiderProjectNavigation(snapshot, this.spiderPaneIndex, focused(), Date.now());\n  }\n\n  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const context = this.spiderRenderSnapshot?.paneNavigation ?? (!this.spiderRenderSnapshot ? this.spiderCurrentNavigation(all) : null);\n    if (context) {\n      const owner = context.owners.get(addr), shown = this.spiderShowFinished?.has(addr);\n      let targets = owner ? context.children.get(owner.id) ?? [] : [];\n      if (owner?.sessionId && shown && context.index.hidden.get(owner.sessionId)) {\n        const source = context.index.sources.get(owner.sessionId);\n        targets = projectNavigation({ ...context.input, paneSnapshot: { ...context.index.snapshot, rows: [source] }, includeRetained: true })\n          .filter(row => row.ownerId === owner.id);\n      }\n      const rows = targets.map(row => ({ kind: row.kind, key: row.id, name: row.name, status: row.status === \"running\" ? \"working\" : row.status === \"failed\" ? \"error\" : row.status, address: row.terminal ?? row.id,\n        originalAddress: row.terminal, machine: row.machine, retained: row.retained || row.kind === \"console\" && row.status === \"retained, not open\",\n        action: row.action, terminal: row.kind === \"console\" ? { state: row.status === \"open\" ? \"live\" : \"finished\" } : null,\n        parentKey: null, depth: 0, navigationId: row.id }));\n      if (this.spiderRenderSummaries && !shown) this.spiderRenderSummaries.set(addr, context.index.hidden.get(owner?.sessionId) ?? 0);\n      cache?.set(addr, rows);\n      return rows;\n    }"
+        },
+        {
+          "id": "b-navigation-console-owners",
+          "file": "main.js",
+          "anchor": "const owners = new Set([...filterTopLevelAgents(agents(), all, contract).map(agent => agent.address),\n      ...this.parkedSessions().map(target => target.terminal).filter(Boolean)]);",
+          "replacement": "const owners = this.spiderModel?.groupOwners.get(key) ?? new Set([...(this.spiderModel?.list ?? filterTopLevelAgents(agents(), all, contract)).map(agent => agent.address),\n      ...this.parkedSessions().map(target => target.terminal).filter(Boolean)]);"
         },
         {
           "id": "b-navigation-child-menu",

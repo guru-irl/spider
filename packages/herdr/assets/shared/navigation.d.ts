@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import type { Generation, HerdrLabelContract, IpcDescriptor, SessionFeed, SessionIpcRequest, SpaceId, TabId } from '../../src/contracts.js';
-import type { PaneServiceSnapshot } from '../../src/panes/types.js';
+import type { PaneAgentRow, PaneServiceSnapshot } from '../../src/panes/types.js';
 import type { PaneUiRequest } from './feed.js';
 import type { AgentTerminal } from '../agents/children.js';
 
@@ -20,7 +20,7 @@ export interface NavigationSnapshot {
   coreId: string; destination: Destination; agents: readonly NativeAgent[]; terminals: readonly AgentTerminal[];
   panes: readonly PaneSnapshot[]; spaces: readonly SpaceSnapshot[]; feeds: readonly SessionFeed[];
   contract: HerdrLabelContract; machines: readonly { name: string | null; layout: string; coreId?: string }[];
-  now: number; completedHours: number; completedRows: number; includeChildren?: boolean;
+  now: number; completedHours: number; completedRows: number; includeChildren?: boolean; includeRetained?: boolean;
 }
 export type NavigationAction =
   | { kind: 'pane'; request: PaneUiRequest }
@@ -33,7 +33,11 @@ export interface NavigationTarget {
   space: string | null; tab: string | null; name: string; path: string | null;
   status: string; machine: string | null; retained: boolean; action: NavigationAction | null; disabledReason?: string;
 }
+export interface PaneNavigationIndex {
+  snapshot: PaneServiceSnapshot; sources: ReadonlyMap<string, PaneAgentRow>; hidden: ReadonlyMap<string, number>; key: string;
+}
+export function indexPaneNavigation(snapshot: PaneServiceSnapshot): PaneNavigationIndex;
 export function projectNavigation(snapshot: NavigationSnapshot): NavigationTarget[];
 export function sessionDisplayName(agent: NativeAgent, terminal: AgentTerminal | null, feeds: readonly SessionFeed[]): string;
 
-export function navigationAgents(snapshot: NavigationSnapshot): (Omit<NativeAgent, "pane" | "space" | "tab"> & { pane: string | null; space: string | null; tab: string | null; navigation: NavigationTarget })[];
+export function navigationAgents(snapshot: NavigationSnapshot, targets?: readonly NavigationTarget[]): (Omit<NativeAgent, "pane" | "space" | "tab"> & { pane: string | null; space: string | null; tab: string | null; navigation: NavigationTarget })[];

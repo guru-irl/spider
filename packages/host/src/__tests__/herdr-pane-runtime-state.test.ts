@@ -29,7 +29,7 @@ vi.mock('../../../herdr/src/client/cli-transport.js', () => ({ invokeCli: vi.fn(
 vi.mock('../../../herdr/src/panes/hc.js', () => ({ readPaneTerminal: (...args: unknown[]) => boundary.facts(...args) }));
 vi.mock('../../../herdr/src/client/liveness.js', () => ({ isCoreAvailable: async () => true }));
 vi.mock('../herdr/bin/pane-endpoint.js', () => ({ createProductionPaneEndpointPorts: () => ({}) }));
-vi.mock('../herdr/pane-endpoint.js', () => ({ handleRemotePaneRequest: async () => ({ version: 1, op: 'list', page: { version: 1, rows: [], complete: true, next: null } }) }));
+vi.mock('../herdr/pane-endpoint.js', () => ({ handleRemotePaneRequest: async () => ({ version: 1, op: 'list', page: { version: 1, rows: boundary.rows.filter(row => row.target?.coreId === 'core-local'), complete: true, next: null } }) }));
 vi.mock('../herdr/pane-transport.js', () => ({ createPaneRemoteRequest: () => boundary.remote }));
 vi.mock('../../../herdr/src/panes/auxiliary.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../../herdr/src/panes/auxiliary.js')>();
@@ -41,7 +41,7 @@ async function fixture(spaces: HerdrConfig['spaces'] = []) {
   const base = join(paths.scratch('worktree', process.cwd()), 'pane-runtime-state'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'f-'));
   boundary.rows = []; boundary.terminals.clear(); boundary.app = {}; boundary.layout = { spaces: [] }; boundary.remote.mockImplementation(async (_machine, request) => {
     if (request.op !== 'list') throw new Error('Unexpected remote effect');
-    return { version: 1, op: 'list', page: { version: 1, rows: boundary.rows, complete: true, next: null } };
+    return { version: 1, op: 'list', page: { version: 1, rows: boundary.rows.filter(row => row.target?.coreId !== 'core-local'), complete: true, next: null } };
   });
   const config = parseHerdrConfig({ mode: 'full', app: { binary: '/owned/app', home: join(root, 'app') }, core: { binary: '/owned/hc', config: join(root, 'core.toml') }, globalRoot: root, agentDirectory: join(root, 'agent'), shellRc: join(root, 'shellrc'),
     machines: [{ name: 'box-1.invalid', nodePath: '/usr/bin/node', runtime: { directory: '/home/example/runtime', commands: {} } }], spaces });
@@ -148,6 +148,53 @@ test('app absence captures durable handoff intent and a screen retry resumes the
   expect(await service.request({ ...ready, operationId: 'ready-screen', expectedRevision: waiting.revision })).toMatchObject({ outcome: { status: 'complete', presentation: { target: destination.target, proxy: 'proxy-1', slot, conversion: null } } });
   expect(hc.run).not.toHaveBeenCalled();
   expect(commands).not.toHaveBeenCalled();
+});
+
+test.each(['restored home', 'parked restored home', 'hosting restart', 'box start', 'unplaced session', 'closing presentation', 'stale generation', 'stale epoch'] as const)('production readiness without a handoff handles %s', async scenario => {
+  const { root, runtime, hc } = await fixture();
+  const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never };
+  const placements = new Map<string, typeof slot>([['old-proxy', slot]]);
+  let focused = slot;
+  const commands = vi.fn(async (name: string, args: Record<string, string>) => {
+    if (name === 'terminal.keep') { focused = { ...slot, pane: 'replacement' as never }; placements.set(args.terminal, focused); }
+    if (name === 'terminal.park') placements.delete(args.terminal);
+    return {};
+  });
+  Object.assign(boundary.app, { focusedPane: async () => focused,
+    ownerPlacement: async (address: string) => { const p = placements.get(address); if (!p) throw new HerdrError('owner-unplaced', 'Not placed'); return p; },
+    tabTerminals: async () => [...placements.keys()], command: commands });
+  const source = sessionRow(), destination = sessionRow('gen-2');
+  const restored = scenario.includes('restored');
+  destination.target = { ...destination.target, terminalId: 'ready' as never, address: `${restored ? 'core-local' : 'core-remote'}/ready` as never,
+    coreId: (restored ? 'core-local' : 'core-remote') as never, alias: restored ? null : 'box-1.invalid', machineId: restored ? null : 'machine-1', homeEpoch: restored ? 1 : 0 };
+  destination.machineKey = destination.target.coreId;
+  destination.owner = { ...destination.owner, terminal: { ...destination.owner.terminal, coreId: destination.target.coreId, terminalId: destination.target.terminalId, address: destination.target.address } };
+  boundary.rows = [destination];
+  const p = { ...presentation('existing'), target: source.target, role: 'agent' as const, proxy: 'old-proxy' as never, slot,
+    visibility: scenario === 'parked restored home' ? 'parked' as const : scenario === 'closing presentation' ? 'closing' as const : 'visible' as const, closeOperationId: scenario === 'closing presentation' ? 'close-1' : null, launch: 'acknowledged' as const };
+  boundary.terminals.set('old-proxy', { ...facts(p).terminal, address: 'old-proxy' as never, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.target-core': source.target.coreId, 'spider.target-terminal': source.target.terminalId } });
+  if (scenario !== 'unplaced session') await runtime.store.update(state => ({ ...state, presentations: [p] }));
+  const service = runtime.createService();
+  const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
+  const readyTarget = { ...destination.target, ...(scenario === 'stale generation' ? { generation: 'gen-stale' as never } : {}), ...(scenario === 'stale epoch' ? { homeEpoch: 99 } : {}) };
+  let outcome = await operations.presentReadyTarget(readyTarget);
+  while (outcome.status === 'pending' && outcome.reason === 'operation-in-progress') outcome = await operations.presentReadyTarget(readyTarget);
+  if (scenario === 'closing presentation' || scenario.startsWith('stale ')) {
+    expect(outcome).toMatchObject({ status: scenario === 'closing presentation' ? 'refused' : 'pending', reason: scenario === 'closing presentation' ? 'Session changed. Close again.' : 'readiness-unavailable' });
+    expect((await runtime.store.read()).presentations[0]).toEqual(p);
+    expect(commands).not.toHaveBeenCalled();
+  } else if (scenario === 'unplaced session') {
+    expect(outcome).toMatchObject({ status: 'pending', reason: 'source-view-unavailable' });
+    expect((await runtime.store.read()).presentations).toEqual([]);
+    expect(commands).not.toHaveBeenCalled();
+  } else {
+    expect(outcome).toMatchObject({ status: 'complete', presentation: { id: 'existing', target: destination.target, mode: restored ? 'native' : 'proxy',
+      proxy: restored ? null : 'old-proxy', slot: { space: 's1', tab: 'tb1' }, visibility: scenario === 'parked restored home' ? 'parked' : 'visible' } });
+    expect((await runtime.store.read()).presentations).toHaveLength(1);
+    expect(commands.mock.calls.map(([name]) => name)).toEqual(scenario === 'restored home' ? ['terminal.keep', 'terminal.park'] : []);
+  }
+  expect(hc.run).not.toHaveBeenCalled();
+  expect(hc.kill).toHaveBeenCalledTimes(scenario === 'restored home' ? 1 : 0);
 });
 
 test.each(['moved proxy', 'closed moved proxy', 'new native terminal'])('the production slot store places the next terminal after a %s', async previous => {

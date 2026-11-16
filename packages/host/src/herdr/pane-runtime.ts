@@ -349,7 +349,23 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
       }
       if (!p) return refused('stale-presentation');
       if (value.op === 'present-ready') {
-        const prepared = await readPaneHandoff(root, p) ?? (p.conversion?.state === 'waiting-readiness' && samePaneTarget(p.target, value.target) ? { source: p.conversion.source, sourceFocused: p.conversion.sourceFocused } : null);
+        let prepared = await readPaneHandoff(root, p) ?? (p.conversion?.state === 'waiting-readiness' && samePaneTarget(p.target, value.target) ? { source: p.conversion.source, sourceFocused: p.conversion.sourceFocused } : null);
+        if (!prepared && !samePaneTarget(p.target, value.target)) {
+          let source: OwnerPlacement | null = null, sourceFocused = false;
+          if (p.visibility !== 'parked') {
+            const display = p.mode === 'native' ? paneAddress(p.target.terminalId) : p.proxy;
+            try {
+              source = display ? await app.ownerPlacement(display) : null;
+              if (!source || !p.slot || source.space !== p.slot.space || source.tab !== p.slot.tab || source.pane !== p.slot.pane) return { status: 'pending', reason: 'source-view-unavailable', presentation: p };
+              const focused = await app.focusedPane();
+              sourceFocused = focused?.space === source.space && focused.tab === source.tab && focused.pane === source.pane;
+            } catch (error) {
+              if (!(error instanceof HerdrError) || !['app-disconnected', 'cli-exit', 'missing-app', 'pane-timeout'].includes(error.code)) throw error;
+              return { status: 'pending', reason: 'app-unavailable', presentation: p };
+            }
+          }
+          prepared = { source, sourceFocused };
+        }
         if (!prepared) return { status: samePaneTarget(p.target, value.target) ? 'refused' : 'pending', reason: 'handoff-not-prepared', presentation: p };
         return convertNativePresentation({ presentation: p, destination: value.target, ...prepared }, openPorts);
       }

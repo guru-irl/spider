@@ -11,7 +11,7 @@ import { mapRepository, mapWorkspace } from '@spider/db-core/roam/repo-map';
 import { recordLocation } from '@spider/db-core/roam/catalog';
 import { text, mark, held, scripts } from '../fixtures/child-scripts.js';
 import type { StoryPresentation } from './roam-recovery.test.js';
-import { seedSession } from '@spider/db-core/roam/seed';
+import { enableMemoryCapture, seedSession } from '@spider/db-core/roam/seed';
 import { parseConfig } from '@spider/roam/config';
 import { inspectSession } from '@spider/roam/session-file';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
@@ -304,7 +304,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       const db = openDb(join(machine.root, 'spider.db'));
       try {
         migrate(db, 'global', { machineId: machine.id, globalRoot: machine.root });
-        db.prepare("UPDATE roam_meta SET store_key='global',capture_enabled=1 WHERE id=1").run();
+        enableMemoryCapture(db, 'global');
         await mapRepository(db, { repoKey: REPO, path: machine.cwd });
         await mapWorkspace(db, { repoKey: REPO, workspaceId: WORKSPACE, path: machine.cwd });
         for (const [scope, file, key] of [
@@ -313,7 +313,11 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
         ] as const) {
           await mkdir(dirname(file), { recursive: true, mode: 0o700 });
           const store = openDb(file);
-          try { migrate(store, scope, { machineId: machine.id, globalRoot: machine.root }); store.prepare('UPDATE roam_meta SET store_key=? WHERE id=1').run(key); }
+          try {
+            migrate(store, scope, { machineId: machine.id, globalRoot: machine.root });
+            if (scope === 'repo') enableMemoryCapture(store, key);
+            else store.prepare('UPDATE roam_meta SET store_key=?,capture_enabled=1 WHERE id=1').run(key);
+          }
           finally { store.close(); }
         }
         db.prepare('INSERT INTO projects(project_key,real_path,db_path,git_common_dir,created_at,last_seen_at) VALUES(?,?,?,?,1,1)')

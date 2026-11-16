@@ -1520,8 +1520,11 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       routingDbs.clear();
       currentContext = undefined;
       currentSessionId = "";
-      // /reload hands the exact same process identity to the next activation.
-      if (event?.reason !== "reload") await admission.close();
+      // /reload retains process-owned locks, not the old control service.
+      if (event?.reason === "reload") {
+        const mounted = moveActivation; moveActivation = null;
+        await mounted?.close();
+      } else await admission.close();
     }
   });
 }

@@ -22,7 +22,7 @@ import { createJobStore, type JournalJob } from '@spider/herdr/jobs/store';
 import { preflightSpaces, setupSpaces, readCutoverRecovery, reconcileSpaceJournal, planSpaceCutover, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
 import { inspectPanePlacement } from '@spider/herdr/panes/store';
 import { createRoamPresentationOperations, type RoamPresentationOperations } from '@spider/herdr/roam-placement';
-import type { PaneTarget } from '@spider/herdr/panes/types';
+import type { PaneTarget, PaneActionOutcome } from '@spider/herdr/panes/types';
 import { offerResume, resumeOfferShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
 import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces/discovery';
 import { launchSession } from '@spider/herdr/sessions/launcher';
@@ -967,12 +967,17 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   return {
     spacePorts,
     async roamPresentations() {
-      const runtime = await paneRuntime(), selected = await readRequest();
+      const selected = await readRequest();
+      if (selected.config.mode === 'core-only') {
+        const pending = async (): Promise<PaneActionOutcome> => ({ status: 'pending', reason: 'presentation-unavailable', presentation: null });
+        return { resolveTarget: async () => null, prepareHandoff: pending, presentReadyTarget: pending, dispose: async () => {} };
+      }
+      const runtime = await paneRuntime();
       const call: Parameters<typeof createRoamPresentationOperations>[0]['request'] = async request => {
-        const connection = await runtime.connect(); try { return await connection.request(request); } finally { await connection.stop(); }
+        const connection = await runtime.connect(false); try { return await connection.request(request); } finally { await connection.stop(); }
       };
       const operations = createRoamPresentationOperations({ stateRoot: join(globalRoot, 'roam', 'placement'), hc: client(selected),
-        app: selected.config.mode === 'core-only' ? null : createAppClient({ binary: selected.config.app.binary, env: { ...env, HERDR_APP_HOME: selected.config.app.home } }), request: call });
+        app: createAppClient({ binary: selected.config.app.binary, env: { ...env, HERDR_APP_HOME: selected.config.app.home } }), request: call });
       return { ...operations, dispose: async () => {}, async resolveTarget(locator) {
         const reply = await call({ version: 1, op: 'snapshot', operationId: randomBytes(16).toString('hex') });
         if (reply.kind !== 'snapshot') return null;

@@ -15,7 +15,7 @@ import { confirmPresentationClose } from '../panes/lifecycle.js';
 import { createPaneService } from '../panes/service.js';
 import { createPanePlacementStore } from '../panes/store.js';
 import type { PanePresentation, PaneServiceRequest, PaneTarget } from '../panes/types.js';
-import { createRoamPlacement, createRoamPresentationOperations } from '../roam-placement.js';
+import { createRoamPlacement, createRoamPresentationOperations, rememberRoamSlot } from '../roam-placement.js';
 import { HerdrError } from '../client/parse.js';
 
 const roots: string[] = [];
@@ -342,5 +342,41 @@ test('a restart between conversion commit and outcome write recovers the origina
     expect(requests[1]).toEqual(requests[0]);
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
     expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
+  } finally { await f.stop(); }
+});
+
+
+test('freeze slot capture is not held behind a reconciling presentation service', async () => {
+  const f = await fixture(), gate = f.blockReady(), order: string[] = []; let reconciling: Promise<unknown> | undefined;
+  try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source);
+    const row = { origin: 'hub-operation' as const, opId: 'move-1', sessionId: 'session-1', epoch: 2, core: 'core-remote', terminal: 'box-1.invalid/t2', cwd: '/example', file: '/example/session.jsonl' };
+    reconciling = f.placement().reconcile([row]).then(result => { order.push('reconciled'); return result; });
+    await gate.started;
+    await rememberRoamSlot(f.stateRoot, 'captured-session', f.slot); order.push('captured');
+    gate.release(); await gate.done; await reconciling;
+    expect(order[0]).toBe('captured');
+    expect((await f.store.read()).slots).toContainEqual({ session: 'captured-session', space: 'space-1', tab: 'tab-1' });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
+  } finally { gate.release(); await reconciling; await f.stop(); }
+});
+
+
+test('delegated completion revalidates the presentation before closing a legacy claim', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source);
+    const attempt = { session: 'session-1', remote: 'box-1.invalid/t2', core: 'core-remote', proxy: null, closed: false, localOwners: [], failure: { attempts: 1, retryable: true } };
+    await f.store.update(state => ({ ...state, attempts: [attempt] }));
+    const placement = createRoamPlacement({ stateRoot: f.stateRoot, hc: f.hc, app: null, hcBinary: '/unused/hc', registry: { list: async () => [] } as never,
+      presentation: { resolveTarget: async () => f.remote, async presentReadyTarget(target) {
+        const outcome = await f.operations().presentReadyTarget(target);
+        await f.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, visibility: 'closing', closeOperationId: 'close-new', revision: p.revision + 1 })) }));
+        return outcome;
+      } } });
+    const row = { origin: 'hub-operation' as const, opId: 'move-1', sessionId: 'session-1', epoch: 2, core: 'core-remote', terminal: 'box-1.invalid/t2', cwd: '/example', file: '/example/session.jsonl' };
+    await placement.reconcile([row]);
+    expect((await f.store.read()).attempts).toEqual([attempt]);
+    expect((await f.store.read()).presentations[0]).toMatchObject({ visibility: 'closing', closeOperationId: 'close-new' });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
   } finally { await f.stop(); }
 });

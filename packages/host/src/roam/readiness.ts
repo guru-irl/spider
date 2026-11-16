@@ -27,11 +27,12 @@ import { removedPlacementSessions } from "@spider/roam/placement-inventory";
 
 export function createHostRoamPlacement(input: { root: string; globalDb: Db; config: RoamConfig }): PlacementPort & { dispose(): Promise<void> } {
   const herdr = loadHerdrConfig(input.root), env = { ...process.env, SPIDER_GLOBAL_ROOT: input.root };
+  if (herdr.mode === "core-only") return { reconcile: async rows => ({ pending: rows.map(row => row.terminal) }), dispose: async () => {} };
   const hc = createHcClient({ binary: herdr.core.binary, env });
   const revocationDb = openDb(join(input.root, "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
   const presentations = createHostRoamPresentationPorts({ ...input, revocationDb });
   const placement = createRoamPlacement({ stateRoot: join(input.root, "roam", "placement"), hc, hcBinary: herdr.core.binary,
-    app: herdr.mode === "core-only" ? null : createAppClient({ binary: herdr.app.binary, env: { ...env, HERDR_APP_HOME: herdr.app.home } }), registry: createTerminalRegistry(join(input.root, "herdr")),
+    app: createAppClient({ binary: herdr.app.binary, env: { ...env, HERDR_APP_HOME: herdr.app.home } }), registry: createTerminalRegistry(join(input.root, "herdr")),
     removedSessions: async sessions => removedPlacementSessions(input.globalDb, sessions),
     presentation: { async resolveTarget(ready) {
       const home = sessionHome(input.globalDb, ready.sessionId);

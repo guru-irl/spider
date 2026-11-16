@@ -191,10 +191,9 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
     async reconcile(rows) {
       const identity = await hc.identity();
       await prepareRoot(stateRoot);
-      return withProcessLock(stateRoot, 'roam-placement-effects', async () => {
+      const work = await withProcessLock(stateRoot, 'roam-placement-effects', async () => {
         const state = await load(stateRoot);
-        let committed = structuredClone(state);
-        const saveState = async () => { await save(stateRoot, state, committed); committed = structuredClone(state); };
+        const committed = structuredClone(state);
         if (state.attempts.some(attempt => !attempt.proxy && !attempt.closed)) {
           for (const terminal of await snapshot(hc)) {
             if (terminal.address.includes('/') || terminal.labels[HERDR_LABELS.kind] !== 'roam-proxy') continue;
@@ -254,23 +253,28 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
             } catch { /* An incomplete session inventory cannot prove a slot is removable. */ }
           }
         }
-        await saveState();
-        const pending: string[] = [];
-        for (const row of rows) {
-          if (!options.presentation || state.attempts.some(attempt => !attempt.closed && attempt.session === row.sessionId && attempt.core === row.core && attempt.remote.split('/').at(-1) === row.terminal.split('/').at(-1) && attempt.failure?.retryable === false)) { pending.push(row.terminal); continue; }
-          try {
-            const target = await options.presentation.resolveTarget(row);
-            if (!target || target.kind !== 'session' || target.sessionId !== row.sessionId || target.coreId !== row.core || target.terminalId !== row.terminal.split('/').at(-1) || target.homeEpoch !== row.epoch || !target.generation || target.createdMs <= 0) { pending.push(row.terminal); continue; }
-            const result = await options.presentation.presentReadyTarget(target);
-            if (result.status !== 'complete') pending.push(row.terminal);
-            else for (const attempt of state.attempts) {
-              if (attempt.session === row.sessionId && attempt.core === target.coreId && attempt.remote.split('/').at(-1) === target.terminalId && !attempt.proxy && attempt.failure?.retryable) attempt.closed = true;
-            }
-          } catch { pending.push(row.terminal); }
-        }
-        await saveState();
-        return { pending };
+        await save(stateRoot, state, committed);
+        return rows.map(row => ({ row, blocked: state.attempts.some(attempt => !attempt.closed && attempt.session === row.sessionId && attempt.core === row.core && attempt.remote.split('/').at(-1) === row.terminal.split('/').at(-1) && attempt.failure?.retryable === false) }));
       });
+      const pending: string[] = [], completed: { target: PaneTarget; presentation: PanePresentation | null }[] = [];
+      for (const { row, blocked } of work) {
+        if (!options.presentation || blocked) { pending.push(row.terminal); continue; }
+        try {
+          const target = await options.presentation.resolveTarget(row);
+          if (!target || target.kind !== 'session' || target.sessionId !== row.sessionId || target.coreId !== row.core || target.terminalId !== row.terminal.split('/').at(-1) || target.homeEpoch !== row.epoch || !target.generation || target.createdMs <= 0) { pending.push(row.terminal); continue; }
+          const result = await options.presentation.presentReadyTarget(target);
+          if (result.status !== 'complete') pending.push(row.terminal);
+          else completed.push({ target, presentation: result.presentation });
+        } catch { pending.push(row.terminal); }
+      }
+      if (completed.length) await withProcessLock(stateRoot, 'roam-placement-effects', () => createPanePlacementStore(stateRoot).update(state => ({ ...state,
+        attempts: state.attempts.map(attempt => {
+          const confirmed = completed.some(({ target, presentation }) => attempt.session === target.sessionId && attempt.core === target.coreId && attempt.remote.split('/').at(-1) === target.terminalId &&
+            (!presentation || state.presentations.some(current => current.id === presentation.id && current.visibility !== 'closing' && current.visibility !== 'ended' && samePaneTarget(current.target, target))));
+          return confirmed && !attempt.closed && !attempt.proxy && attempt.failure?.retryable ? { ...attempt, closed: true } : attempt;
+        }),
+      })));
+      return { pending };
     },
   };
 }

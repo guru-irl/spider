@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
 type Step = { name?: string; uses?: string; run?: string; if?: string; env?: Record<string, string>; with?: Record<string, string> };
-type Job = { name?: string; uses?: string; needs?: string[] | string; permissions?: Record<string, string>; if?: string; steps: Step[]; 'timeout-minutes'?: number; strategy?: { matrix: Record<string, (string | number)[]> } };
+type Job = { name?: string; uses?: string; needs?: string[] | string; permissions?: Record<string, string>; if?: string; outputs?: Record<string, string>; steps: Step[]; 'timeout-minutes'?: number | string; strategy?: { matrix: any; 'fail-fast'?: boolean } };
 type Workflow = { on: Record<string, unknown>; permissions?: Record<string, string>; jobs: Record<string, Job>; concurrency?: unknown };
 const source = (name: string): string => readFileSync(join(process.cwd(), '.github/workflows', `${name}.yml`), 'utf8');
 const workflow = (name: string): Workflow => parse(source(name)) as Workflow;
@@ -84,6 +84,49 @@ describe('release installation contract', () => {
     expect(source('release')).not.toContain('NPM_TOKEN');
     expect(source('release')).not.toContain('npm publish');
     expect(source('release')).not.toContain('secrets.');
+  });
+});
+
+describe('headless story matrix', () => {
+  const select = (input: string) => spawnSync(process.execPath, ['packages/herdr/e2e/controls/ci-matrix.mjs', input], { cwd: process.cwd(), encoding: 'utf8' });
+
+  it('runs each default or explicitly requested story exactly once', () => {
+    const config = JSON.parse(readFileSync(join(process.cwd(), 'packages/herdr/e2e/controls/ci-stories.json'), 'utf8'));
+    const defaults = select('');
+    expect(defaults.status, defaults.stderr).toBe(0);
+    const matrix = JSON.parse(defaults.stdout) as { include: { story: string; timeout: number }[] };
+    expect(matrix.include.map(row => row.story)).toEqual(config.stories);
+    expect(new Set(matrix.include.map(row => row.story)).size).toBe(config.stories.length);
+    expect(matrix.include.every(row => Number.isInteger(row.timeout) && row.timeout > 0 && row.timeout <= 5)).toBe(true);
+    const selected = select(' R03, S01, R13 ');
+    expect(selected.status, selected.stderr).toBe(0);
+    const explicit = JSON.parse(selected.stdout) as typeof matrix;
+    expect(explicit.include.map(row => row.story)).toEqual(['R03', 'S01', 'R13']);
+    expect(explicit.include.find(row => row.story === 'R13')!.timeout).toBe(matrix.include.find(row => row.story === 'R13')!.timeout);
+    for (const invalid of ['R09,,R13', 'R09,R09', 'R99', 'R09;echo']) expect(select(invalid).status).not.toBe(0);
+  });
+
+  it('shares one build and keeps each matrix story independently bounded', () => {
+    const definition = workflow('herdr-stories'), prepare = definition.jobs.prepare!, story = definition.jobs.stories!;
+    expect(definition.on).toHaveProperty('pull_request');
+    expect(definition.on).toHaveProperty('workflow_dispatch');
+    expect(prepare.outputs?.matrix).toBe('${{ steps.selection.outputs.matrix }}');
+    expect(step(prepare, 'Select stories').run).toContain('ci-matrix.mjs');
+    expect(step(prepare, 'Install and build').run).toContain('npm ci');
+    expect(step(prepare, 'Install the pinned Linux core').run).toContain('sha256sum --check');
+    expect(step(prepare, 'Upload shared build').uses).toBe('actions/upload-artifact@v4');
+    expect(story.needs).toBe('prepare');
+    expect(story.strategy?.matrix).toBe('${{ fromJSON(needs.prepare.outputs.matrix) }}');
+    expect(story.strategy?.['fail-fast']).toBe(false);
+    expect(story['timeout-minutes']).toBe('${{ matrix.timeout }}');
+    expect(step(story, 'Download shared build').uses).toBe('actions/download-artifact@v4');
+    expect(story.steps.some(item => item.run?.includes('npm ci'))).toBe(false);
+    const run = step(story, 'Run headless story');
+    expect(run.env?.STORY).toBe('${{ matrix.story }}');
+    expect(run.run).toContain('--built --tier headless --story "$stories"');
+    const artifacts = step(story, 'Upload failure artifacts');
+    expect(artifacts.if).toBe('failure()');
+    expect(artifacts.with?.name).toBe('herdr-headless-failures-${{ matrix.story }}');
   });
 });
 

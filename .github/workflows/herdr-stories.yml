@@ -18,10 +18,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  stories:
-    name: Headless stories with a real core
+  prepare:
+    name: Prepare headless stories
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.selection.outputs.matrix }}
+      hc: ${{ steps.bundle.outputs.hc }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,6 +34,15 @@ jobs:
 
       - name: Prepare temporary directories
         run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/e2" "$PWD/.spider/scratch/herdr-ci"
+
+      - name: Select stories
+        id: selection
+        env:
+          REQUESTED_STORIES: ${{ inputs.stories }}
+        run: |
+          set -euo pipefail
+          matrix=$(node packages/herdr/e2e/controls/ci-matrix.mjs "$REQUESTED_STORIES")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
       # The root prepare script runs npm run build once during npm ci.
       - name: Install and build
@@ -53,6 +65,65 @@ jobs:
           test "$("$directory/hc" --version)" = "hc $version"
           echo "SPIDER_HERDR_E2E_HC=$directory/hc" >> "$GITHUB_ENV"
 
+      - name: Bundle shared build
+        id: bundle
+        run: |
+          set -euo pipefail
+          case "$SPIDER_HERDR_E2E_HC" in "$GITHUB_WORKSPACE"/*) ;; *) exit 1 ;; esac
+          echo "hc=${SPIDER_HERDR_E2E_HC#"$GITHUB_WORKSPACE"/}" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/ci-core"
+          cp "$SPIDER_HERDR_E2E_HC" "$RUNNER_TEMP/ci-core/hc"
+          cp "$(dirname "$SPIDER_HERDR_E2E_HC")/herdr-core" "$RUNNER_TEMP/ci-core/herdr-core"
+          node --version > "$RUNNER_TEMP/ci-core/node-version"
+          tar -czf "$RUNNER_TEMP/herdr-build.tar.gz" -C "$GITHUB_WORKSPACE" node_modules dist -C "$RUNNER_TEMP" ci-core
+
+      - name: Upload shared build
+        uses: actions/upload-artifact@v4
+        with:
+          name: herdr-headless-build
+          path: ${{ runner.temp }}/herdr-build.tar.gz
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  stories:
+    name: Headless story ${{ matrix.story }}
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+
+      - name: Download shared build
+        uses: actions/download-artifact@v4
+        with:
+          name: herdr-headless-build
+          path: ${{ runner.temp }}
+
+      - name: Restore shared build
+        env:
+          HC_RELATIVE_PATH: ${{ needs.prepare.outputs.hc }}
+        run: |
+          set -euo pipefail
+          case "$HC_RELATIVE_PATH" in .spider/*/herdr-ci/hc) ;; *) exit 1 ;; esac
+          tar -xzf "$RUNNER_TEMP/herdr-build.tar.gz" -C "$GITHUB_WORKSPACE"
+          test "$(node --version)" = "$(<ci-core/node-version)"
+          directory="$(dirname "$GITHUB_WORKSPACE/$HC_RELATIVE_PATH")"
+          parent="$(dirname "$directory")"
+          mkdir -p "$directory" "$parent/tmp" "$parent/e2"
+          install -m 755 ci-core/hc "$directory/hc"
+          install -m 755 ci-core/herdr-core "$directory/herdr-core"
+          rm -r ci-core
+          checksum=$(node -p "require('./packages/herdr/e2e/controls/ci-stories.json').binarySha256")
+          printf '%s  %s\n' "$checksum" "$directory/hc" | sha256sum --check
+          echo "SPIDER_HERDR_E2E_HC=$directory/hc" >> "$GITHUB_ENV"
+
       # hc otherwise selects /run/user/<uid> instead of each fixture's state home.
       - name: Remove runner runtime directory
         run: |
@@ -61,18 +132,12 @@ jobs:
           sudo rm -rf "$rundir"
           test ! -e "$rundir"
 
-      - name: Run headless stories
+      - name: Run headless story
         env:
-          REQUESTED_STORIES: ${{ inputs.stories }}
+          STORY: ${{ matrix.story }}
         run: |
           set -euo pipefail
-          stories=$(node -e '
-            const config = require("./packages/herdr/e2e/controls/ci-stories.json");
-            const input = (process.env.REQUESTED_STORIES || "").trim();
-            const ids = input ? input.split(",").map(id => id.trim()) : config.stories;
-            if (ids.some(id => !id)) throw new Error("Story IDs cannot be empty");
-            process.stdout.write(ids.join(","));
-          ')
+          stories="$STORY"
           env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID XDG_RUNTIME_DIR= TMPDIR="$PWD/.spider/scratch/tmp" npm run test:herdr:e2e -- --built --tier headless --story "$stories"
 
       - name: Archive failure artifacts
@@ -87,7 +152,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: herdr-headless-failures
+          name: herdr-headless-failures-${{ matrix.story }}
           path: .spider/scratch/herdr-ci/e2.tar.gz
           include-hidden-files: true
           if-no-files-found: ignore

@@ -15,6 +15,7 @@ import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { setupHerdr, type SetupRequest } from '../../../herdr/src/setup/installer.js';
 import { installRuntimeDirectory } from '../../../herdr/src/remote/runtime.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
+import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 import { mountHerdr } from '../herdr/mount.js';
 import type { HcClient, MachineName, TerminalAddress, TerminalHandle } from '../../../herdr/src/contracts.js';
 
@@ -35,6 +36,7 @@ async function fixture(mode: 'fake' | 'hc' = 'fake', reportErrors = true, hasUI 
   const packageRoot = join(h.root, 'package'); await mkdir(join(packageRoot, 'dist/herdr'), { recursive: true });
   await writeFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'), await readFile(resolve('dist/herdr/remote-runtime.mjs')));
   await writeFile(join(packageRoot, 'dist/herdr/viewer.mjs'), await readFile(resolve('dist/herdr/viewer.mjs')));
+  await writeFixturePaneEndpoint(packageRoot);
   const request: SetupRequest = { config, configPath: file, packageRoot, journalRoot: join(h.root, 'journal') };
   const setup = createProductionHerdrCliPorts(packageRoot, h.localEnv);
   let runtime: Awaited<ReturnType<Awaited<ReturnType<typeof setup.setupParts>>['ensureRuntime']>>[number];

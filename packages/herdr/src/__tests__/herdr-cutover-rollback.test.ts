@@ -7,6 +7,7 @@ import { configFixtureCwd } from '../../../host/src/__tests__/herdr-config-fixtu
 import { setupHerdr, rollbackHerdr } from '../setup/installer.js';
 import { readJournal } from '../setup/backup.js';
 import { HerdrError } from '../client/parse.js';
+import { writeFixturePaneEndpoint } from './endpoint-fixture.js';
 
 let root = '';
 afterEach(() => { vi.unstubAllEnvs(); if (root) rmSync(root, { recursive: true, force: true }); });
@@ -19,6 +20,7 @@ it('reports the exact rollback command and restores managed parts without losing
   for (const dir of [agent, app, global, join(packageRoot, 'packages/herdr'), join(packageRoot, 'dist/herdr')]) mkdirSync(dir, { recursive: true });
   cpSync(resolve('packages/herdr/assets'), join(packageRoot, 'packages/herdr/assets'), { recursive: true });
   cpSync(resolve('dist/herdr/remote-runtime.mjs'), join(packageRoot, 'dist/herdr/remote-runtime.mjs'));
+  await writeFixturePaneEndpoint(packageRoot);
   vi.stubEnv('PI_CODING_AGENT_DIR', agent); vi.stubEnv('SPIDER_GLOBAL_ROOT', global); vi.stubEnv('HC_SOCKET', join(root, 'fixture.sock'));
   const configPath = join(root, "config 'quoted $name'.json"), core = join(root, 'core.toml'), shellRc = join(root, 'shellrc');
   const config = { enabled: true, app: { binary: '/nonexistent/app', home: app }, core: { binary: '/nonexistent/hc', config: core }, agentDirectory: agent, globalRoot: global, shellRc, spaces: [], machines: [] };

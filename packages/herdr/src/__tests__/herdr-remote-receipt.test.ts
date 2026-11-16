@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createProductionHerdrCliPorts } from '../../../host/src/herdr/ports.js';
+import { writeFixturePaneEndpoint } from './endpoint-fixture.js';
 import { setupHerdr, type SetupParts, type SetupRequest } from '../setup/installer.js';
 import { parseHerdrConfig } from '../config.js';
 import { installRuntimeDirectory, sha256 } from '../remote/runtime.js';
@@ -30,6 +31,7 @@ async function fixture(mode: 'fake' | 'hc') {
   const config = parseHerdrConfig({ app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: coreConfig }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: on, nodePath: h.nodeBinary, runtime: { directory: root, cwd: h.root, commands: { javascript: [h.nodeBinary], shell: ['/bin/sh'] } } }] });
   const packageRoot = join(h.root, 'package'); await mkdir(join(packageRoot, 'dist/herdr'), { recursive: true });
   await writeFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'), await readFile(resolve('dist/herdr/remote-runtime.mjs')));
+  await writeFixturePaneEndpoint(packageRoot);
   const request: SetupRequest = { config, configPath: join(h.root, 'config.json'), packageRoot, journalRoot: join(h.root, 'journal') };
   const production = createProductionHerdrCliPorts(request.packageRoot, h.localEnv);
   try {

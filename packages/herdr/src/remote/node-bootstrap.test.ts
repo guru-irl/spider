@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile, chmod, stat, rm, symlink } from 'node:fs/pr
 import { join, resolve } from 'node:path';
 import { createHerdrHarness } from '../__tests__/testutil.js';
 import { createProductionHerdrCliPorts } from '../../../host/src/herdr/ports.js';
+import { writeFixturePaneEndpoint } from '../__tests__/endpoint-fixture.js';
 import { parseHerdrConfig } from '../config.js';
 import { setupHerdr, type SetupRequest } from '../setup/installer.js';
 import { doctorHerdr } from '../setup/doctor.js';
@@ -23,6 +24,7 @@ async function withBootstrap(version: string, check: (request: SetupRequest, pro
     await writeFile(nodePath, `#!/bin/sh\nexec ${quote(process.execPath)} --import ${quote(preload)} "$@"\n`); await chmod(nodePath, 0o700);
     await mkdir(join(h.root, 'dist/herdr'), { recursive: true });
     await writeFile(join(h.root, 'dist/herdr/remote-runtime.mjs'), await readFile(resolve('dist/herdr/remote-runtime.mjs')));
+    await writeFixturePaneEndpoint(h.root);
     const runtimeDirectory = join(h.directories.remote, 'programs');
     const config = parseHerdrConfig({ app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') },
       agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [],

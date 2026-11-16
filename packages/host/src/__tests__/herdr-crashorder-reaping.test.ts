@@ -17,6 +17,7 @@ import { openDbAt } from '@spider/db-core';
 import { scratchDbPath } from '@spider/db-core/testutil';
 import { RunStore } from '../../../subagents/src/run-store.js';
 import { createHerdrHarness, type HerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
+import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { setupHerdr, type SetupRequest } from '../../../herdr/src/setup/installer.js';
 import { installRuntimeDirectory } from '../../../herdr/src/remote/runtime.js';
@@ -51,6 +52,7 @@ async function fixture(mode: 'fake' | 'hc' = 'fake', wrap?: (client: HcClient) =
   const file = join(h.directories.global, 'herdr/config.json'); await mkdir(join(h.directories.global, 'herdr'), { recursive: true }); await writeFile(file, JSON.stringify(config));
   const packageRoot = join(h.root, 'package'); await mkdir(join(packageRoot, 'dist/herdr'), { recursive: true });
   await writeFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'), await readFile(resolve('dist/herdr/remote-runtime.mjs')));
+  await writeFixturePaneEndpoint(packageRoot);
   const request: SetupRequest = { config, configPath: file, packageRoot, journalRoot: join(h.root, 'journal') };
   const setup = createProductionHerdrCliPorts(packageRoot, h.localEnv);
   try {

@@ -6,6 +6,7 @@ import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createHerdrHarness, proveSocketPaths } from './testutil.js';
+import { writeFixturePaneEndpoint } from './endpoint-fixture.js';
 import { parseHerdrConfig } from '../config.js';
 import { setupHerdr, runtimeInstallPath } from '../setup/installer.js';
 import { createJobMonitor } from '../jobs/monitor.js';
@@ -35,6 +36,7 @@ it.skipIf(!enabled)('the first remote command after runtime-root loss returns th
     const runtime = await readFile(resolve('dist/herdr/remote-runtime.mjs'));
     await mkdir(join(packageRoot, 'dist/herdr'), { recursive: true });
     await writeFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'), runtime);
+    await writeFixturePaneEndpoint(packageRoot);
     expect(h.localSocket).not.toBe(join(homedir(), '.local/state/herdr-core/default/default.sock'));
     expect(h.localCoreId).not.toBe(h.remoteCoreId);
     Object.assign(evidence, { localCoreId: h.localCoreId, remoteCoreId: h.remoteCoreId });

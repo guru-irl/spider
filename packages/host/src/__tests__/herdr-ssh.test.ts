@@ -9,6 +9,7 @@ import { setupHerdr, standardHerdrConfigPath } from '../../../herdr/src/setup/in
 import { SSH_DESCRIPTOR_ENV } from '../../../herdr/src/ssh/shim.js';
 import { CACHE_VALID_MS } from '../../../herdr/src/ssh/cache.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
+import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 import { configFixtureCwd } from './herdr-config-fixture.js';
 import { readJournal } from '../../../herdr/src/setup/backup.js';
 import { mountHerdr, type HerdrMount } from '../herdr/mount.js';
@@ -30,6 +31,7 @@ async function twoSessions(mode: 'fake' | 'hc') {
     await mkdir(join(h.root, 'dist/herdr'), { recursive: true });
     await copyFile(resolve('dist/herdr/cli.mjs'), join(h.root, 'dist/herdr/cli.mjs'));
     await copyFile(resolve('dist/herdr/remote-runtime.mjs'), join(h.root, 'dist/herdr/remote-runtime.mjs'));
+    await writeFixturePaneEndpoint(h.root);
     await cp(resolve('packages/herdr/assets'), join(h.root, 'packages/herdr/assets'), { recursive: true });
     // Both sessions use the real global lookup. Their core machine inventories differ.
     const configPath = standardHerdrConfigPath(h.directories.global);

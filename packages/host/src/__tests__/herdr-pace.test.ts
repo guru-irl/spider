@@ -8,6 +8,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ModelRegistry } from '@earendil-works/pi-coding-agent';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
+import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 import { configFixtureCwd } from './herdr-config-fixture.js';
 import { createHerdrHarness, type HerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
@@ -34,6 +35,7 @@ describe.skipIf(!mods)('production pace feed', () => {
     await cp(resolve('packages/herdr/assets'), join(root, 'packages/herdr/assets'), { recursive: true });
     await mkdir(join(root, 'dist/herdr'), { recursive: true });
     await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), stripTypeScriptTypes(await readFile(resolve('packages/herdr/src/remote/runtime.ts'), 'utf8')));
+    await writeFixturePaneEndpoint(root);
     await mkdir(join(h.directories.agent, 'sessions'), { recursive: true });
     for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome']) {
       const target = join(h.directories.app, 'mods', kind);

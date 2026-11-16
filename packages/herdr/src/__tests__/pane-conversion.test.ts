@@ -94,3 +94,27 @@ test('remote to remote retarget keeps proxy and parked intent without launch', a
   expect(await convertNativePresentation({ ...f.input, presentation: p, destination }, f.ports)).toMatchObject({ status: 'complete', presentation: { proxy: 't8', mode: 'proxy', visibility: 'parked', target: destination, slot: f.p.slot } });
   expect(f.ports.launchProxy).not.toHaveBeenCalled(); expect(f.ports.hc.kill).not.toHaveBeenCalled();
 });
+
+
+test('a proxy launched before focus changes follows the successor conversion destination', async () => {
+  const f = await fixture(false, false);
+  const next = { ...f.destination, terminalId: 't11' as never, address: 'core-remote/t11' as never, homeEpoch: 4 };
+  let labels = { 'spider.kind': 'pane-proxy', 'spider.pane-id': f.p.id, 'spider.target-core': f.destination.coreId, 'spider.target-terminal': f.destination.terminalId };
+  vi.mocked(f.ports.hc.get).mockImplementation(async address => ({ address, parent: null, labels, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null }));
+  vi.mocked(f.ports.hc.setLabels).mockImplementation(async (_address, values) => { labels = { ...labels, ...values }; });
+  vi.mocked(f.ports.awaitPresented).mockImplementation(async (address, target) => {
+    if (labels['spider.target-core'] !== target.coreId || labels['spider.target-terminal'] !== target.terminalId) throw Error('Proxy is still showing its previous target');
+    return f.ports.app!.ownerPlacement(address);
+  });
+  const waiting = { ...f.p, revision: 2, proxy: 't10' as TerminalAddress, conversion: { state: 'waiting-focus' as const, source: f.source, sourceFocused: false, destination: f.destination } };
+  await f.ports.store.update(state => ({ ...state, presentations: [waiting] }));
+  expect(await convertNativePresentation({ ...f.input, presentation: waiting, destination: next }, f.ports)).toMatchObject({ status: 'pending', presentation: { conversion: { destination: next } } });
+  expect(f.focus()?.pane).toBe('unrelated');
+  f.focusSource();
+  const current = (await f.ports.store.read()).presentations[0];
+  expect(await convertNativePresentation({ ...f.input, presentation: current, destination: next }, f.ports)).toMatchObject({ status: 'complete', presentation: { target: next, proxy: 't10', conversion: null } });
+  expect((await f.ports.store.read()).presentations).toHaveLength(1);
+  expect(f.ports.launchProxy).not.toHaveBeenCalled();
+  expect(f.ports.launchTarget).not.toHaveBeenCalled();
+  expect(f.ports.hc.kill).not.toHaveBeenCalled();
+});

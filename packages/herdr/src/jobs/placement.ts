@@ -649,6 +649,10 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
         if (!s.waitingDisplay) {
           const recovered = s.waitingClaimed ? await options.recoverWaitingPresentation?.(kind, id, owner, displayOptions.signal) : 'absent';
           if (!recovered) throw new HerdrError('presentation-uncertain', 'Waiting display launch is still unacknowledged');
+          if (recovered === 'absent' && displayOptions.automatic && await occupied({ owner, placement, presentationOwner: { address, coreId: core.coreId } }) >= limit) {
+            slots.delete(s.token.id); return null;
+          }
+          check(displayOptions.signal);
           s.waitingClaimed = true;
           const waiting = recovered === 'absent' ? await options.waitingPresentation(kind, id, owner, displayOptions.signal) : recovered;
           if (waiting.coreId !== core.coreId || waiting.address === owner.terminal.address || waiting.address === address)

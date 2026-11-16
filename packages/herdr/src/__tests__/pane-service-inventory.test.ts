@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
-import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createPaneServiceInventory } from '../panes/inventory.js';
 import type { MachineChoice, PaneAgentRow, PaneInventoryPage } from '../panes/types.js';
 const machine: MachineChoice = { key: 'box-1.invalid', alias: 'box-1.invalid', label: 'box-1.invalid', coreId: 'core-1' as never, machineId: null, state: 'connected' };
@@ -10,7 +11,7 @@ const row: PaneAgentRow = { sessionId: 'session-1' as never, generation: null, n
 const page: PaneInventoryPage = { version: 1, rows: [row], next: null, complete: true };
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
-async function root() { const base = resolve('.spider/scratch/service-inventory'); await mkdir(base, { recursive: true }); const path = await mkdtemp(join(base, 'r-')); roots.push(path); return path; }
+async function root() { const path = await mkdtemp(join(tmpdir(), 'pane-service-inventory-')); roots.push(path); return path; }
 test('service inventory survives restart and marks a disconnected machine unreachable without a read', async () => {
   const path = await root(), readPage = vi.fn(async () => page), signal = new AbortController().signal;
   const read = createPaneServiceInventory({ root: path, readPage, clock: () => 100 });

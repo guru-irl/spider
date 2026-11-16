@@ -159,6 +159,25 @@ test('inventory refresh is single flight and unreachable machines back off', asy
   expect(f.ports.inventory).toHaveBeenCalledTimes(1); expect(f.ports.renewLeases).toHaveBeenCalledTimes(1); await service.stop();
 });
 
+test('a slow inventory source does not delay another machine\'s lease renewal', async () => {
+  const f = await fixture(), first = (await f.ports.machines())[0];
+  const second = parseMachineChoice({ key: 'box-2.invalid', alias: 'box-2.invalid', label: 'box-2.invalid', coreId: 'core-other', machineId: null, state: 'connected' });
+  vi.mocked(f.ports.machines).mockResolvedValue([first, second]);
+  let release: (() => void) | undefined, started!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; }), renewed: string[] = [];
+  f.ports.inventory = vi.fn(async machine => {
+    if (machine.key === 'box-1.invalid') { started(); await new Promise<void>(resolve => { release = resolve; }); }
+    return { version: 1 as const, rows: [], next: null, complete: true };
+  });
+  f.ports.renewLeases = vi.fn(async machine => { renewed.push(machine.key); });
+  const service = createPaneService(f.ports), reconciling = service.reconcile();
+  try {
+    await entered;
+    await vi.waitFor(() => expect(renewed).toContain('box-2.invalid'));
+    expect(renewed).not.toContain('box-1.invalid');
+  } finally { release?.(); await reconciling; await service.stop(); }
+});
+
 const identityOpen = { version: 1 as const, op: 'open' as const, operationId: 'identity-open', machineKey: 'box-1.invalid', coreId: 'core-remote' as never, machineId: null,
   intent: { operationId: 'identity-open', space: 'space-1' as never, place: 'tab' as const, anchor: null, program: { kind: 'shell' as const } } };
 test.each(['coreId', 'machineId'] as const)('open refuses a changed %s before dispatch', async field => {
@@ -355,22 +374,129 @@ test('concurrent cold owner lookups share one in-flight inventory refresh', asyn
   } finally { release?.(); await service.stop(); }
 });
 
-test('a slow cold inventory refresh returns pending and replays its eventual result', async () => {
+test('a slow cold inventory lookup returns pending before the transport deadline and never launches later', async () => {
   const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
-  let state = await f.ports.store.read(), release: (() => void) | undefined;
+  let state = await f.ports.store.read(), release: (() => void) | undefined, started!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
   f.ports.store = { read: async () => state, update: async change => state = change(state) };
-  f.ports.inventory = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); return { version: 1 as const, rows: [row] as never, next: null, complete: true }; });
+  f.ports.inventory = vi.fn(async () => {
+    started(); await new Promise<void>(resolve => { release = resolve; });
+    return { version: 1 as const, rows: [row] as never, next: null, complete: true };
+  });
   vi.useFakeTimers(); const service = createPaneService(f.ports);
   try {
     const first = service.request(coldAuxiliary);
-    await vi.advanceTimersByTimeAsync(4000);
-    expect(await first).toMatchObject({ outcome: { status: 'pending', reason: 'operation-in-progress' } });
+    await entered; await vi.advanceTimersByTimeAsync(3500);
+    expect(await Promise.race([first, Promise.resolve('blocked')])).toMatchObject({ outcome: { status: 'pending', reason: 'inventory-unavailable' } });
     expect(launch).not.toHaveBeenCalled();
     expect(release).toBeTypeOf('function');
     release?.(); vi.useRealTimers();
-    expect(await service.request(coldAuxiliary)).toMatchObject({ outcome: { status: 'complete', reason: 'view-presented' } });
-    expect(launch).toHaveBeenCalledOnce();
+    await service.reconcile();
+    expect(await service.request(coldAuxiliary)).toMatchObject({ outcome: { status: 'pending', reason: 'inventory-unavailable' } });
+    await service.stop();
+    expect(launch).not.toHaveBeenCalled();
   } finally { release?.(); vi.useRealTimers(); await service.stop(); }
+});
+
+test('a timed-out owner lookup does not dispatch after its inventory finishes', async () => {
+  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  let state = await f.ports.store.read(), release: (() => void) | undefined, started!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  f.ports.store = { read: async () => state, update: async change => state = change(state) };
+  f.ports.inventory = vi.fn(async () => {
+    started(); await new Promise<void>(resolve => { release = resolve; });
+    return { version: 1 as const, rows: [row] as never, next: null, complete: true };
+  });
+  vi.useFakeTimers(); const service = createPaneService(f.ports);
+  try {
+    const first = service.request(coldAuxiliary);
+    await entered; await vi.advanceTimersByTimeAsync(4000);
+    expect(await first).toMatchObject({ outcome: { status: 'pending' } });
+    release?.(); vi.useRealTimers();
+    await service.reconcile(); await service.stop();
+    expect(launch).not.toHaveBeenCalled();
+  } finally { release?.(); vi.useRealTimers(); await service.stop(); }
+});
+
+test('an owner lookup in retry backoff returns pending without waiting for machines', async () => {
+  const f = await fixture(), launch = observeOwnerLookup(f), machine = (await f.ports.machines())[0];
+  let state = await f.ports.store.read(), release: (() => void) | undefined;
+  f.ports.store = { read: async () => state, update: async change => state = change(state) };
+  f.ports.inventory = vi.fn(async () => { throw new Error('source unavailable'); });
+  const service = createPaneService(f.ports);
+  try {
+    await service.reconcile();
+    vi.mocked(f.ports.machines).mockImplementation(() => new Promise(resolve => { release = () => resolve([machine]); }));
+    vi.useFakeTimers();
+    const request = service.request(coldAuxiliary);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await Promise.race([request, Promise.resolve('blocked')])).toMatchObject({ outcome: { status: 'pending', reason: 'inventory-unavailable' } });
+    expect(f.ports.inventory).toHaveBeenCalledTimes(1);
+    expect(launch).not.toHaveBeenCalled();
+  } finally { release?.(); vi.useRealTimers(); await service.stop(); }
+});
+
+test('another mutation proceeds while a cold owner inventory refresh is pending', async () => {
+  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  const ownerDispatch = f.ports.dispatch;
+  let state = await f.ports.store.read(), release: (() => void) | undefined, started!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  f.ports.store = { read: async () => state, update: async change => state = change(state) };
+  f.ports.inventory = vi.fn(async () => {
+    started(); await new Promise<void>(resolve => { release = resolve; });
+    return { version: 1 as const, rows: [row] as never, next: null, complete: true };
+  });
+  f.ports.dispatch = vi.fn((request, beforeLaunch, inventory) => request.op === 'move'
+    ? Promise.resolve({ status: 'complete', reason: 'moved', presentation: f.presentation })
+    : ownerDispatch(request, beforeLaunch, inventory));
+  vi.useFakeTimers(); const service = createPaneService(f.ports);
+  try {
+    const first = service.request(coldAuxiliary); await entered;
+    const other = service.request({ version: 1, op: 'move', operationId: 'independent-move', presentationId: 'p1', expectedRevision: 1, slot: { space: 's1' as never, tab: 'tb1' as never, pane: null } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await Promise.race([other, Promise.resolve('blocked')])).toMatchObject({ outcome: { status: 'complete', reason: 'moved' } });
+    expect(launch).not.toHaveBeenCalled();
+    release?.(); vi.useRealTimers(); await Promise.all([first, other]);
+  } finally { release?.(); vi.useRealTimers(); await service.stop(); }
+});
+
+test('a cold owner lookup cannot launch after its deadline while another mutation holds the queue', async () => {
+  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  const ownerDispatch = f.ports.dispatch;
+  let state = await f.ports.store.read(), release: (() => void) | undefined, started!: () => void;
+  const entered = new Promise<void>(resolve => { started = resolve; });
+  f.ports.store = { read: async () => state, update: async change => state = change(state) };
+  f.ports.inventory = vi.fn(async () => ({ version: 1 as const, rows: [row] as never, next: null, complete: true }));
+  f.ports.dispatch = vi.fn(async (request, beforeLaunch, inventory) => {
+    if (request.op !== 'move') return ownerDispatch(request, beforeLaunch, inventory);
+    started(); await new Promise<void>(resolve => { release = resolve; });
+    return { status: 'complete', reason: 'moved', presentation: f.presentation };
+  });
+  vi.useFakeTimers(); const service = createPaneService(f.ports);
+  try {
+    const first = service.request({ version: 1, op: 'move', operationId: 'blocking-move', presentationId: 'p1', expectedRevision: 1, slot: { space: 's1' as never, tab: 'tb1' as never, pane: null } });
+    await entered;
+    const lookup = service.request(coldAuxiliary);
+    await vi.advanceTimersByTimeAsync(0); await service.reconcile();
+    await vi.advanceTimersByTimeAsync(3500);
+    expect(await Promise.race([lookup, Promise.resolve('blocked')])).toMatchObject({ outcome: { status: 'pending', reason: 'inventory-unavailable' } });
+    release?.(); vi.useRealTimers(); await first; await service.stop();
+    expect(launch).not.toHaveBeenCalled();
+  } finally { release?.(); vi.useRealTimers(); await service.stop(); }
+});
+
+test('a warm owner dispatches without a new inventory refresh', async () => {
+  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  f.ports.inventory = vi.fn(async () => ({ version: 1 as const, rows: [row] as never, next: null, complete: true }));
+  const service = createPaneService(f.ports);
+  try {
+    await service.reconcile(); vi.mocked(f.ports.inventory).mockClear();
+    const ownerDispatch = f.ports.dispatch; let readsAtDispatch = -1;
+    f.ports.dispatch = async (...args) => { readsAtDispatch = vi.mocked(f.ports.inventory).mock.calls.length; return ownerDispatch(...args); };
+    expect(await service.request(coldAuxiliary)).toMatchObject({ outcome: { status: 'complete', reason: 'view-presented' } });
+    expect(readsAtDispatch).toBe(0);
+    expect(launch).toHaveBeenCalledOnce();
+  } finally { await service.stop(); }
 });
 
 test('an absent owner is not-in-hc only after a completed cold refresh', async () => {

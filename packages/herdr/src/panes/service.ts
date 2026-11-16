@@ -46,6 +46,8 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     for (const [id, entry] of replay) if (entry.settledAt !== null && entry.settledAt <= cutoff) replay.delete(id);
   };
   let queue = Promise.resolve();
+  interface InventoryLoad { ready: Promise<readonly { machine: MachineChoice; refreshed: Promise<void> }[]>; done: Promise<void> }
+  let loading: InventoryLoad | null = null;
   let refreshing: Promise<void> | null = null;
   let activeRequests = 0;
   let initialized = false;
@@ -96,6 +98,25 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     })();
     pending.set(machine.key, operation); return operation;
   }
+  function loadInventory(): InventoryLoad {
+    if (loading) return loading;
+    // Lease renewal can follow each machine's refresh without waiting for the others.
+    let resolveReady!: (entries: readonly { machine: MachineChoice; refreshed: Promise<void> }[]) => void;
+    let rejectReady!: (error: unknown) => void;
+    const ready = new Promise<readonly { machine: MachineChoice; refreshed: Promise<void> }[]>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+    const flight: InventoryLoad = { ready, done: Promise.resolve() };
+    loading = flight;
+    flight.done = withHcOperation(async () => {
+      try {
+        machines = await ports.machines();
+        const entries = machines.map(machine => ({ machine, refreshed: refresh(machine) }));
+        resolveReady(entries);
+        await Promise.all(entries.map(entry => entry.refreshed));
+      } catch (error) { rejectReady(error); throw error; }
+    }).finally(() => { loading = null; });
+    void ready.catch(() => {}); void flight.done.catch(() => {});
+    return flight;
+  }
   async function pruneHistory(checkTargets: boolean) {
     const state = await ports.store.read(), removed: PanePresentation[] = [];
     if (checkTargets) {
@@ -138,13 +159,14 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     if (refreshing) return refreshing;
     initialized = true;
     refreshing = withHcOperation(async () => {
-      await live(); await pruneHistory(false); machines = await ports.machines();
+      await live(); await pruneHistory(false);
+      const inventory = loadInventory(), entries = await inventory.ready;
       const renew = ports.clock() - leaseTick >= 5000;
       if (renew) leaseTick = ports.clock();
-      await Promise.all(machines.map(async machine => {
-        await refresh(machine);
+      await Promise.all([inventory.done, ...entries.map(async ({ machine, refreshed }) => {
+        await refreshed;
         if (renew && machine.state === 'connected') await bounded(signal => ports.renewLeases(machine, signal)).catch(() => {});
-      }));
+      })]);
       await ports.reconcileInventory?.(privateInventory());
       try { facts = await ports.targetFacts((await ports.store.read()).presentations.filter(p => p.visibility === 'visible'), abort.signal); } catch { /* Keep the last verified display facts. */ }
       const before = await ports.store.read();
@@ -182,7 +204,24 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     if (matches.some(row => !machines.some(machine => machine.key === row.machineKey && authoritative(machine)))) return false;
     return matches.some(row => row.owner !== null) || inventory.complete;
   }
-  async function apply(request: PaneServiceRequest): Promise<PaneServiceReply> {
+  function needsOwner(request: PaneServiceRequest, state: Awaited<ReturnType<PanePlacementStore['read']>>): boolean {
+    return request.op === 'open-auxiliary' || request.op === 'open-existing' && 'sessionId' in request && (() => {
+      const existing = state.presentations.find(p => p.target.sessionId === request.sessionId && p.target.generation === request.generation);
+      return !existing || !(request.slot ?? existing.slot);
+    })();
+  }
+  function ownerInBackoff(request: Extract<PaneServiceRequest, { sessionId: unknown }>, inventory: PrivatePaneInventory): boolean {
+    const blocked = (machine: MachineChoice) => (retry.get(machine.key)?.after ?? 0) > ports.clock();
+    const matches = inventory.rows.filter(row => row.sessionId === request.sessionId && row.generation === request.generation);
+    if (matches.some(row => machines.some(machine => machine.key === row.machineKey && !authoritative(machine) && blocked(machine)))) return true;
+    const candidates = machines.filter(machine => machine.state === 'connected' && !authoritative(machine));
+    return candidates.length > 0 && candidates.every(blocked);
+  }
+  const inventoryUnavailable = (): PaneServiceReply => ({ version: 1, kind: 'outcome', outcome: { status: 'pending', reason: 'inventory-unavailable', presentation: null } });
+  interface LookupDeadline { at: number; expired: boolean; timer?: ReturnType<typeof setTimeout> }
+  const lookupExpired = (deadline: LookupDeadline) => deadline.expired || Date.now() >= deadline.at;
+  async function apply(request: PaneServiceRequest, deadline?: LookupDeadline): Promise<PaneServiceReply> {
+    if (deadline && lookupExpired(deadline)) return inventoryUnavailable();
     await live();
     if (request.op === 'snapshot') {
       if (!machines.length) machines = await ports.machines();
@@ -209,20 +248,17 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
         } catch { return { version: 1, kind: 'outcome', outcome: { status: 'pending', reason: 'handoff-unavailable', presentation: current } }; }
       }
     }
-    const needsOwner = request.op === 'open-auxiliary' || request.op === 'open-existing' && 'sessionId' in request && (() => {
-      const existing = state.presentations.find(p => p.target.sessionId === request.sessionId && p.target.generation === request.generation);
-      return !existing || !(request.slot ?? existing.slot);
-    })();
-    if (needsOwner && 'sessionId' in request && !ownerLookupReady(request, privateInventory())) {
-      try { await reconcile(); } catch { /* An unavailable source is not proof that the owner is absent. */ }
-      if (!ownerLookupReady(request, privateInventory())) return { version: 1, kind: 'outcome', outcome: { status: 'pending', reason: 'inventory-unavailable', presentation: null } };
-    }
+    if (needsOwner(request, state) && 'sessionId' in request && !ownerLookupReady(request, privateInventory())) return inventoryUnavailable();
     const beforeLaunch = async () => {
       if (request.op !== 'open') return;
       const current = (await ports.machines()).find(machine => machine.key === request.machineKey);
       if (!current || current.state !== 'connected' || current.coreId !== request.coreId || current.machineId !== request.machineId) throw new HerdrError('machine-changed', 'Selected machine changed');
     };
     try { await beforeLaunch(); } catch { return outcome('machine-changed'); }
+    if (deadline) {
+      if (lookupExpired(deadline)) return inventoryUnavailable();
+      clearTimeout(deadline.timer);
+    }
     let result: PaneActionOutcome;
     try { result = request.op === 'park' ? await parkPresentation(request.presentationId, request.expectedRevision, lifecycle)
       : request.op === 'close-confirmed' ? await confirmPresentationClose({ id: request.presentationId, expectedRevision: request.expectedRevision, operationId: request.operationId, target: request.target }, lifecycle)
@@ -245,13 +281,43 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   const cancelTimer = ports.schedule(() => {
     if (initialized && !stopped && !refreshing) void reconcile().catch(() => {});
   }, 5000);
-  const applyOperation = async (request: PaneServiceRequest) => {
+  const applyOperation = async (request: PaneServiceRequest, deadline?: LookupDeadline) => {
     initialized = true; activeRequests++;
-    try { return await withHcOperation(() => apply(request)); }
+    try { return await withHcOperation(() => apply(request, deadline)); }
     finally { activeRequests--; kickRefresh(); }
   };
+  function enqueue(request: PaneServiceRequest, deadline?: LookupDeadline): Promise<PaneServiceReply> {
+    const reply = queue.then(() => applyOperation(request, deadline));
+    queue = reply.then(() => {}, () => {});
+    return reply;
+  }
+  function prepareOwner(request: Extract<PaneServiceRequest, { sessionId: unknown }>, arrival: number): Promise<PaneServiceReply> {
+    if (ownerLookupReady(request, privateInventory())) return enqueue(request);
+    initialized = true; activeRequests++;
+    const deadline: LookupDeadline = { at: arrival + 3500, expired: false };
+    const timeout = new Promise<PaneServiceReply>(resolve => {
+      deadline.timer = setTimeout(() => { deadline.expired = true; resolve(inventoryUnavailable()); }, Math.max(0, deadline.at - Date.now()));
+    });
+    const work = (async () => {
+      await live();
+      if (stopped || lookupExpired(deadline)) return inventoryUnavailable();
+      const state = await ports.store.read();
+      if (stopped || lookupExpired(deadline)) return inventoryUnavailable();
+      if (!needsOwner(request, state)) {
+        clearTimeout(deadline.timer);
+        return enqueue(request);
+      }
+      if (ownerLookupReady(request, privateInventory())) return enqueue(request, deadline);
+      if (ownerInBackoff(request, privateInventory())) return inventoryUnavailable();
+      try { await loadInventory().done; } catch { /* An unavailable source is not proof that the owner is absent. */ }
+      if (stopped || lookupExpired(deadline) || !ownerLookupReady(request, privateInventory())) return inventoryUnavailable();
+      return enqueue(request, deadline);
+    })().finally(() => { clearTimeout(deadline.timer); activeRequests--; kickRefresh(); });
+    return Promise.race([work, timeout]);
+  }
   return {
     request(input) {
+      const arrival = Date.now();
       const request = parsePaneServiceRequest(input); const bytes = encodePaneServiceRequest(request);
       if (request.op === 'snapshot') return applyOperation(request);
       pruneReplay();
@@ -259,12 +325,13 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
       if (previous) return previous.bytes === bytes ? response(previous.reply) : Promise.resolve(outcome('operation-reused'));
       // In-flight and recent actions must retain their replay evidence.
       if (replay.size >= 4096) return Promise.resolve(outcome('service-operation-limit'));
-      const reply = queue.then(() => applyOperation(request)); queue = reply.then(() => {}, () => {});
+      const reply = request.op === 'open-auxiliary' || request.op === 'open-existing' && 'sessionId' in request
+        ? prepareOwner(request, arrival) : enqueue(request);
       const entry = { bytes, reply, settledAt: null as number | null };
       replay.set(request.operationId, entry);
       void reply.then(() => { entry.settledAt = ports.clock(); }, () => { entry.settledAt = ports.clock(); });
       return response(reply);
     }, reconcile,
-    async stop() { if (stopped) return; stopped = true; abort.abort(); unsubscribe(); cancelTimer(); await queue; await refreshing?.catch(() => {}); },
+    async stop() { if (stopped) return; stopped = true; abort.abort(); unsubscribe(); cancelTimer(); await queue; await refreshing?.catch(() => {}); await loading?.done.catch(() => {}); },
   };
 }

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import type { AppClient, AppPaneInspection, HcClient, OwnerPlacement, TerminalAddress } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
+import { launchNotStarted } from '../client/launch-outcome.js';
 import { samePaneTarget } from './lifecycle.js';
 import { paneAddress } from './codec.js';
 import type { AppPaneCapabilities, FolderChoice, MachineChoice, PaneActionOutcome, PaneOpenIntent, PanePlacementStore, PanePresentation, PaneSlot, PaneTarget, PaneTargetLaunch } from './types.js';
@@ -246,12 +247,17 @@ export async function convertNativePresentation(input: { presentation: PanePrese
           const recovered = await ports.findProxy(desired); if (!recovered) return outcome('pending', 'conversion-proxy-uncertain', p);
           await verifyProxy(recovered, desired, ports); p = await updatePresentation(p, { proxy: recovered, launch: 'acknowledged' }, ports);
         } else {
-          p = await updatePresentation(p, { launch: 'claimed' }, ports);
+          if ((p.proxyLaunchAttempts ?? 0) >= 2) return outcome('pending', 'conversion-proxy-exhausted', p);
+          p = await updatePresentation(p, { launch: 'claimed', proxyLaunchAttempts: (p.proxyLaunchAttempts ?? 0) + 1 }, ports);
           try {
             const proxy = await ports.launchProxy({ ...p, target: destination, mode: 'proxy', conversion: null });
             await verifyProxy(proxy, { ...p, target: destination }, ports);
             p = await updatePresentation(p, { proxy, launch: 'acknowledged' }, ports);
-          } catch { p = await updatePresentation(p, { launch: 'uncertain' }, ports); return outcome('pending', 'conversion-proxy-uncertain', p); }
+          } catch (error) {
+            const retryable = launchNotStarted(error);
+            p = await updatePresentation(p, { launch: retryable ? 'none' : 'uncertain' }, ports);
+            return outcome('pending', retryable ? (p.proxyLaunchAttempts! < 2 ? 'conversion-proxy-retryable' : 'conversion-proxy-exhausted') : 'conversion-proxy-uncertain', p);
+          }
         }
       }
       replacement = p.proxy!;
@@ -271,7 +277,7 @@ export async function convertNativePresentation(input: { presentation: PanePrese
     if (actual.space !== source.space || actual.tab !== source.tab) return outcome('pending', 'replacement-outside-captured-tab', p);
     // Publish the acknowledged binding before retiring the old proxy. Its watcher then exits
     // rather than treating a deliberate handoff as an unexplained process close.
-    p = await updatePresentation(p, { target: destination, mode: native ? 'native' : 'proxy', proxy: native ? null : replacement, slot: actual, launch: 'acknowledged', conversion: null }, ports);
+    p = await updatePresentation(p, { target: destination, mode: native ? 'native' : 'proxy', proxy: native ? null : replacement, slot: actual, launch: 'acknowledged', proxyLaunchAttempts: 0, conversion: null }, ports);
     if (original.mode === 'native') {
       const stillSource = await ports.readNativeTarget(oldDisplay);
       if (stillSource.coreId !== original.target.coreId || stillSource.terminalId !== original.target.terminalId || stillSource.address !== original.target.address || stillSource.createdMs !== original.target.createdMs || !Object.entries(original.target.identityLabels).every(([key, value]) => stillSource.identityLabels[key] === value)) return outcome('pending', 'source-retirement-unverified', p);

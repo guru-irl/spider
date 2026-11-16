@@ -219,15 +219,17 @@ export async function convertNativePresentation(input: { presentation: PanePrese
     return outcome('complete', 'parked-binding-updated', p);
   }
   if (!source) return outcome('pending', 'source-view-unavailable', p);
-  let focused = false; let noFocus = false;
+  let focused = false; let noFocus = false; let appAvailable = !!ports.app;
   if (ports.app) {
-    const current = await ports.app.focusedPane(); focused = current?.space === source.space && current.tab === source.tab && current.pane === source.pane;
-    const caps = await ports.appCapabilities(); noFocus = caps.noFocusConversion && caps.explicitTargetSwap && !!ports.placeWithoutFocus;
+    try {
+      const current = await ports.app.focusedPane(); focused = current?.space === source.space && current.tab === source.tab && current.pane === source.pane;
+      const caps = await ports.appCapabilities(); noFocus = caps.noFocusConversion && caps.explicitTargetSwap && !!ports.placeWithoutFocus;
+    } catch { appAvailable = false; }
   }
   const conversion: PanePresentation['conversion'] = { state: 'waiting-focus', source, sourceFocused: focused, destination };
   const nextLaunch = p.launch === 'none' && p.conversion?.state === 'waiting-focus' && !samePaneTarget(p.conversion.destination, destination);
   if (!p.conversion || p.conversion.state !== 'waiting-focus' || !samePaneTarget(p.conversion.destination, destination) || p.conversion.sourceFocused !== focused) p = await updatePresentation(p, { conversion, ...(nextLaunch ? { proxyLaunchAttempts: 0 } : {}) }, ports);
-  if (!ports.app) return outcome('pending', 'app-unavailable', p);
+  if (!ports.app || !appAvailable) return outcome('pending', 'app-unavailable', p);
   if (!focused && !noFocus) {
     let proved = false;
     try { proved = await ports.deferSourceView(source, destination); } catch { /* Unsupported remains unproved. */ }

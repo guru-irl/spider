@@ -133,8 +133,9 @@ export function createRoamPresentationOperations(options: {
       if (matches.length !== 1) return result('refused', 'presentation-ambiguous');
       const p = matches[0];
       if (p.visibility === 'closing') return result('refused', 'Session changed. Close again.', p);
-      if (!samePaneTarget(p.target, source)) return result('refused', 'handoff-unverified', p);
+      if (p.target.sessionId !== session || p.target.homeEpoch !== null && p.target.homeEpoch > source.homeEpoch) return result('refused', 'handoff-unverified', p);
       if (p.slot) await rememberRoamSlot(options.stateRoot, session, p.slot);
+      if (!samePaneTarget(p.target, source)) return result('pending', 'presentation-conversion-pending', p);
       return request({ version: 1, operationId: 'handoff-' + hash(JSON.stringify([p.id, p.revision, source])), op: 'prepare-handoff', presentationId: p.id,
         expectedRevision: p.revision, sessionId: session, generation: source.generation, homeEpoch: source.homeEpoch }, p);
     },

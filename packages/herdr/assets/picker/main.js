@@ -5,6 +5,7 @@ import { v_flex, h_flex, InputState, Input } from 'gpui-base';
 import * as herdr from 'herdr';
 import { pickerRows, selectPickerRow } from './model.js';
 import { projectNavigation } from '../shared/navigation.js';
+import { describeOpenFailure } from '../shared/open-failure.js';
 import { assignSpaceIdentities } from '../shared/look.js';
 import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from '../shared/feed.js';
 
@@ -32,6 +33,8 @@ function nativeTargets(agents, terminals, panes) {
 export class Picker extends View {
   init(_props, cx) {
     this.cx = cx; this.handle = cx.focus_handle(); this.closed = false; this.filter = ''; this.selectedId = null; this.scroll = 0;
+    const focus = herdr.focused?.();
+    this.returnFocus = focus?.space && focus?.tab && focus?.pane ? { space: focus.space, tab: focus.tab, pane: focus.pane } : null;
     this.feeds = []; this.coreId = ''; this.machineIds = new Map(); this.identityAt = null; this.pending = new Set(); this.problem = null;
     const props = herdr.props() ?? {}; this.overlay = props.overlay; this.config = validConfig(props) ? props : null;
     this.input = InputState.new({ placeholder: 'Go to a space, tab, or agent' });
@@ -127,19 +130,22 @@ export class Picker extends View {
       destination, machines, contract: this.config.labelContract, now: Date.now(), completedHours: this.config.retention?.completedHours ?? 24,
       completedRows: this.config.retention?.completedRows ?? 50 }) : nativeTargets(agents, terminals, panes);
     const rows = pickerRows(spaces, targets, this.filter);
-    if (!rows.some(row => row.id === this.selectedId && row.enabled)) this.selectedId = selectPickerRow(rows, null, 0);
+    if (!rows.some(row => row.id === this.selectedId && row.enabled)) {
+      const current = `tab:${focus?.space}:${focus?.tab}`;
+      this.selectedId = this.selectedId === null && rows.some(row => row.id === current && row.enabled) ? current : selectPickerRow(rows, null, 0);
+    }
     return rows;
   }
   async activate(id) {
-    if (!id || this.closed || this.pending.has(id)) return;
+    if (!id || this.closed || this.pending.size) return;
     this.pending.add(id); this.cx.notify();
     try {
       let row = this.rows().find(item => item.id === id && item.enabled);
-      if (!row) return;
+      if (!row) { if (/^(session|run|console|agent):/.test(id)) this.problem = 'Owning session unavailable'; return; }
       if (row.kind === 'target' && row.target.action?.kind === 'ipc') {
         if (!this.reader || !await this.refresh() || this.closed) return;
         row = this.rows().find(item => item.id === id && item.enabled);
-        if (!row) return;
+        if (!row) { this.problem = 'Owning session unavailable'; return; }
       }
       if (this.closed) return;
       if (row.kind === 'space') herdr.run('space.select', { id: row.space });
@@ -153,13 +159,19 @@ export class Picker extends View {
         const action = row.target.action;
         if (!action) return;
         if (action.kind === 'focus') herdr.run('pane.focus', { pane: action.pane });
-        else if (action.kind === 'keep') herdr.run('terminal.keep', { terminal: action.terminal, place: 'tab' });
         else {
-          const [node, ...args] = panelIpcArgv(this.config.nodePath, this.config.cliPath, action.descriptor, action.request);
-          const result = await herdr.exec(node, args), reply = parseSessionIpcReply(result.stdout);
+          const requestId = Date.now().toString(36).padStart(10, '0') + Math.random().toString(36).slice(2).padEnd(13, '0') + Math.random().toString(36).slice(2).padEnd(13, '0');
+          const keep = herdr.commands?.().find(command => command.name === 'terminal.keep');
+          const request = { ...action.request, requestId, ...(action.request.op === 'openSession' ? {
+            ...(this.returnFocus ? { returnFocus: this.returnFocus } : {}),
+            backgroundKeep: Boolean(keep?.args?.some(arg => arg.name === 'focus')),
+          } : {}) };
+          this.opening = { descriptor: action.descriptor, requestId, generation: request.generation };
+          const [node, ...args] = panelIpcArgv(this.config.nodePath, this.config.cliPath, action.descriptor, request);
+          const result = await herdr.exec(node, args, { timeout: 65000 }), reply = parseSessionIpcReply(result.stdout);
+          this.opening = null;
           if (!reply || result.code !== 0 || !reply.ok || reply.op !== action.request.op) {
-            if (reply && !reply.ok && reply.code === 'unknown-op' && action.request.op === 'openSession') throw new Error('Run /reload to enable session reopening');
-            throw new Error(reply && !reply.ok ? reply.message : 'Session action failed');
+            throw new Error(describeOpenFailure(reply));
           }
           const terminal = reply.op === 'openSession' ? reply.terminal : reply.op === 'openRun' || reply.op === 'openJob' ? reply.viewer : null;
           if (terminal && !this.closed) herdr.run('pane.focus', { terminal });
@@ -167,11 +179,16 @@ export class Picker extends View {
       } else return;
       await this.close();
     } catch (error) { if (!this.closed) this.problem = String(error?.message ?? 'Session action failed'); }
-    finally { this.pending.delete(id); if (!this.closed) this.cx.notify(); }
+    finally { this.opening = null; this.pending.delete(id); if (!this.closed) this.cx.notify(); }
   }
   async close() {
     if (this.closed) return;
     this.closed = true; this.watch?.cancel?.(); this.watch = null; this.watchTask?.cancel?.(); this.commandTask?.cancel?.(); this.timer?.cancel?.();
+    if (this.opening) {
+      const { descriptor, requestId, generation } = this.opening;
+      const [node, ...args] = panelIpcArgv(this.config.nodePath, this.config.cliPath, descriptor, { op: 'cancelOpen', requestId, generation });
+      void herdr.exec(node, args, { timeout: 10000 }).catch(() => {});
+    }
     await this.reader?.close();
     if (this.overlay) herdr.closeOverlay(this.overlay);
   }
@@ -222,6 +239,7 @@ export class Picker extends View {
         .child(svg('mods/workspace-chrome/search.svg').size(15).text_color(MUTED))
         .child(Input.new(this.input).flex_1().h_full().text_size(13).text_color(INK)))
       .when(Boolean(this.problem), element => element.child(div().text_size(11).text_color(RED).child(this.problem)))
+      .when(this.pending.size > 0, element => element.child(div().text_size(11).text_color(MUTED).child('Opening…')))
       .child(v_flex().id('pk-list').h(Math.min(320, total || 32)).min_h(0).overflow_hidden()
         .on_size_change((size, current) => { this.listHeight = size.height / (herdr.settings().zoom || 1); current.notify(); })
         .when(fixed, element => element.on_scroll_wheel((event, current) => { this.scroll = Math.max(0, Math.min(this.scroll - event.delta.y, maxScroll)); current.notify(); }))

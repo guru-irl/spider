@@ -6,6 +6,7 @@ import * as children from '../../assets/agents/children.js';
 import emptyRunName from './fixtures/empty-run-name.json' with { type: 'json' };
 import * as look from '../../assets/shared/look.js';
 import * as feed from '../../assets/shared/feed.js';
+import { describeOpenFailure } from '../../assets/shared/open-failure.js';
 import * as grouping from '../../assets/agents/grouping.js';
 import * as connections from '../../assets/agents/connections.js';
 import * as consoleGroups from '../../assets/agents/console-groups.js';
@@ -109,7 +110,7 @@ function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMen
   if (options.clipboard === false) delete cx.write_to_clipboard;
   const props = { modId: 'spider-agents', labelContract: HerdrLabelContract, retention: { completedHours: 24, completedRows: 50 }, machines: [{ name: 'box-5.invalid' }], nodePath: 'node', cliPath: 'cli', feedRoot: options.feedRoot ? '/fixture/feeds' : undefined, sortMenu: options.sortMenu ?? false };
   const host = {
-    ...children, ...look, ...feed, ...grouping, ...connections, ...consoleGroups,
+    ...children, ...look, ...feed, ...grouping, ...connections, ...consoleGroups, describeOpenFailure,
     createFeedReader: () => ({ read: async () => ({ feeds: [], errors: [] }), close: async () => { readerClosed++; } }),
     View: class {}, div: () => element(), h_flex: () => element(), v_flex: () => element(), image: () => element(), svg: (path: string) => element(path),
     Scrollbar: { vertical: () => element() }, TextView: { html: (id: string, value: string) => element(undefined, textViewMethods).id(id).child(value) },
@@ -798,6 +799,16 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     await settled;
     expect(test.view.spiderFeedError).toBe('Run /reload to enable session reopening');
     expect(test.execCalls).toHaveLength(1);
+  });
+
+  it(`${version}: explains a timed out session open in plain words`, async () => {
+    const test = fixture(version);
+    test.targets.push({ id: 'session:one', kind: 'agent', ownerId: null, sessionId: 'one', terminal: 'local', pane: null, space: 's1', tab: 'tab', name: 'Parked', status: 'idle', machine: null, retained: false,
+      action: { kind: 'ipc', descriptor: { sessionId: 'one' }, request: { op: 'openSession', generation: 'gen', destination: null } } });
+    test.setExec(async () => ok({ ok: false, code: 'unavailable', message: 'pane-timeout' }));
+    await test.ready();
+    await test.view.activateSession('one');
+    expect(test.view.spiderFeedError).toBe('Timed out opening the pane');
   });
 
   it(`${version}: ignores stale or malformed parked commands and handles the three sort commands`, async () => {

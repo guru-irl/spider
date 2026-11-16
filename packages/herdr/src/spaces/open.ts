@@ -13,6 +13,9 @@ export interface SessionOpenPorts {
   limit: number;
   clock(): number;
   signal?: AbortSignal;
+  returnFocus?: OwnerPlacement;
+  backgroundKeep?: boolean;
+  cleanupApp?: AppClient & AppPaneInspection;
 }
 const openTimeoutMs = 20_000;
 const minimum = { cols: 60, rows: 8 };
@@ -23,8 +26,7 @@ const errorCode = (error: unknown) => error && typeof error === 'object' && 'cod
 export async function openOwnedSession(owner: Owner, destination: Destination, ports: SessionOpenPorts): Promise<TerminalAddress> {
   const { hc, app, signal } = ports;
   const address = owner.terminal.address;
-  const slash = address.indexOf('/');
-  const machine = slash < 0 ? null : address.slice(0, slash);
+  if (address.includes('/')) throw new HerdrError('view-on-mac', 'This needs the Herdr app on this Mac');
   const check = () => { if (signal?.aborted) throw new HerdrError('aborted', 'Session opening was cancelled'); };
   const command = async (name: string, args: Readonly<Record<string, unknown>>) => {
     check(); const reply = await app.command(name, args);
@@ -34,13 +36,7 @@ export async function openOwnedSession(owner: Owner, destination: Destination, p
   const verify = async () => {
     check();
     const local = await hc.identity();
-    if (machine) {
-      let found;
-      try { found = (await hc.machines({ signal })).find(item => item.name === machine); }
-      catch { throw new HerdrError('machine-unreachable', `${machine} is unreachable`); }
-      if (!found || found.state !== 'connected' || found.id !== owner.terminal.coreId)
-        throw new HerdrError('machine-unreachable', `${machine} is unreachable`);
-    } else if (local.coreId !== owner.terminal.coreId || local.socket !== owner.terminal.socket || local.sessionNamespace !== owner.terminal.sessionNamespace) {
+    if (local.coreId !== owner.terminal.coreId || local.socket !== owner.terminal.socket || local.sessionNamespace !== owner.terminal.sessionNamespace) {
       throw new HerdrError('core-mismatch', 'The session belongs to a different core');
     }
     let terminal: TerminalSummary;
@@ -67,6 +63,17 @@ export async function openOwnedSession(owner: Owner, destination: Destination, p
   };
   const ensureLive = async () => { await verify(); };
   const focus = async () => { await command('pane.focus', { terminal: address }); };
+  const cleanup = ports.cleanupApp ?? app;
+  const restoreFocus = async (previous: OwnerPlacement | null | undefined) => {
+    if (!previous) return;
+    let exists = false;
+    try { exists = (await cleanup.tabPanes(previous)).some(row => row.pane === previous.pane); }
+    catch (failure) { if (errorCode(failure) !== 'tab-unplaced') throw failure; }
+    if (exists) {
+      const restored = await cleanup.command('pane.focus', { pane: previous.pane });
+      if (restored.error) throw new HerdrError(restored.error.code, restored.error.message);
+    }
+  };
   const settle = async () => { try { await delay(50, undefined, { signal }); } catch { throw new HerdrError('aborted', 'Session opening was cancelled'); } };
   const park = async () => {
     await command('terminal.park', { terminal: address });
@@ -78,21 +85,24 @@ export async function openOwnedSession(owner: Owner, destination: Destination, p
   };
   const perform = async () => {
     await ensureLive();
-    if (await placement()) { await focus(); return address; }
+    if (await placement()) {
+      const previous = ports.returnFocus ?? await app.focusedPane();
+      check();
+      try { await focus(); check(); }
+      catch (error) { if (signal?.aborted) await restoreFocus(previous); throw error; }
+      return address;
+    }
     if (!app.listSpaces) throw new HerdrError('app-unavailable', 'Space inventory is unavailable');
     const inventory = await app.listSpaces();
-    const eligible = inventory.filter(space => space.machine === machine);
-    if (!eligible.length) {
-      if (machine) throw new HerdrError('no-space-on-machine', `No space on ${machine} to reopen it in`);
-      throw new HerdrError('no-local-space', 'No local space is available to reopen the session');
-    }
+    const eligible = inventory.filter(space => space.machine === null);
+    if (!eligible.length) throw new HerdrError('no-local-space', 'No local space is available to reopen the session');
     const focused = await app.focusedPane();
     const chosen = destination && eligible.find(space => space.id === destination.space && space.tabs.some(tab => tab.id === destination.tab));
     const active = eligible.find(space => space.id === focused?.space) ?? eligible.find(space => space.active === true);
     const targetSpace = chosen || active || eligible[0];
     const targetTab = chosen ? destination!.tab : active && focused?.space === active.id && active.tabs.some(tab => tab.id === focused.tab) ? focused.tab : null;
     let split: { anchor: OwnerPlacement; direction: 'right' | 'down'; existing: TerminalAddress[] } | null = null;
-    if (!machine && targetTab) {
+    if (targetTab) {
       const target = { space: targetSpace.id, tab: targetTab };
       const panes = await app.tabPanes(target);
       const rows = await Promise.all(panes.map(async row => {
@@ -109,52 +119,76 @@ export async function openOwnedSession(owner: Owner, destination: Destination, p
         if (right || down) split = { anchor: { ...target, pane: anchor.pane }, direction: right ? 'right' : 'down', existing: rows.map(row => row.terminal) };
       }
     }
-    if (split) {
-      await command('pane.focus', { pane: split.anchor.pane });
-      const actual = await app.focusedPane();
-      if (!actual || actual.space !== split.anchor.space || actual.tab !== split.anchor.tab || actual.pane !== split.anchor.pane)
-        throw new HerdrError('focus-changed', 'The target pane changed before opening');
-    } else {
-      // For a remote primary the selected space must be on its own verified machine.
-      await command('space.select', { id: targetSpace.id });
-      const actual = await app.focusedPane();
-      if (actual && actual.space !== targetSpace.id) throw new HerdrError('focus-changed', 'The target space changed before opening');
-    }
-    await ensureLive();
-    const result = await command('terminal.keep', { terminal: address, place: split?.direction ?? 'tab' });
-    const opened = await waitForPlacement(targetSpace.id, split ? targetTab : null);
-    if (result.pane && result.pane !== opened.pane) throw new HerdrError('placement-mismatch', 'The terminal pane changed before acknowledgement');
-    let newTab = !split;
-    if (split) {
-      // Verify the settled result, not only the predicted split. A known-bad split can be
-      // parked safely and reopened in a tab; never kill or recreate its primary process.
-      await settle();
-      const sizes = await Promise.all([...split.existing, address].map(id => hc.get(id, { signal }).catch(() => null)));
-      if (sizes.some(size => !size || (size.cols ?? 0) < minimum.cols || (size.rows ?? 0) < minimum.rows)) {
-        await park();
+    check();
+    try {
+      if (split) {
+        await command('pane.focus', { pane: split.anchor.pane });
+        const actual = await app.focusedPane();
+        if (!actual || actual.space !== split.anchor.space || actual.tab !== split.anchor.tab || actual.pane !== split.anchor.pane)
+          throw new HerdrError('focus-changed', 'The target pane changed before opening');
+      } else {
         await command('space.select', { id: targetSpace.id });
         const actual = await app.focusedPane();
         if (actual && actual.space !== targetSpace.id) throw new HerdrError('focus-changed', 'The target space changed before opening');
-        await ensureLive();
-        const fallback = await command('terminal.keep', { terminal: address, place: 'tab' });
-        const placed = await waitForPlacement(targetSpace.id, null);
-        if (fallback.pane && fallback.pane !== placed.pane) throw new HerdrError('placement-mismatch', 'The terminal pane changed before acknowledgement');
-        newTab = true;
       }
+      await ensureLive();
+    } catch (error) {
+      if (signal?.aborted) await restoreFocus(ports.returnFocus ?? focused);
+      throw error;
     }
-    if (newTab) {
-      await settle();
-      const size = await verify();
-      if ((size.cols ?? 0) < minimum.cols || (size.rows ?? 0) < minimum.rows) {
-        await park();
-        throw new HerdrError('geometry-too-small', 'The session needs at least 60 columns and 8 rows');
+    let keepDispatched = false;
+    try {
+      check(); keepDispatched = true;
+      const result = await command('terminal.keep', { terminal: address, place: split?.direction ?? 'tab', ...(ports.backgroundKeep ? { focus: false } : {}) });
+      const opened = await waitForPlacement(targetSpace.id, split ? targetTab : null);
+      if (result.pane && result.pane !== opened.pane) throw new HerdrError('placement-mismatch', 'The terminal pane changed before acknowledgement');
+      if (split) {
+        // Verify the settled result, not only the predicted split. A known-bad split can be
+        // parked safely and reopened in a tab; never kill or recreate its primary process.
+        await settle();
+        const sizes = await Promise.all([...split.existing, address].map(id => hc.get(id, { signal }).catch(() => null)));
+        if (sizes.some(size => !size || (size.cols ?? 0) < minimum.cols || (size.rows ?? 0) < minimum.rows)) {
+          await park();
+          keepDispatched = false;
+          await command('space.select', { id: targetSpace.id });
+          const actual = await app.focusedPane();
+          if (actual && actual.space !== targetSpace.id) throw new HerdrError('focus-changed', 'The target space changed before opening');
+          await ensureLive();
+          check(); keepDispatched = true;
+          const fallback = await command('terminal.keep', { terminal: address, place: 'tab', ...(ports.backgroundKeep ? { focus: false } : {}) });
+          const placed = await waitForPlacement(targetSpace.id, null);
+          if (fallback.pane && fallback.pane !== placed.pane) throw new HerdrError('placement-mismatch', 'The terminal pane changed before acknowledgement');
+        }
       }
+      await focus(); check(); return address;
+    } catch (error) {
+      if (signal?.aborted) {
+        // Older apps can focus a keep before cancellation arrives. Park it and restore the original pane.
+        if (keepDispatched) {
+          const observe = async () => {
+            try { return await cleanup.ownerPlacement(address); }
+            catch (failure) { if (errorCode(failure) === 'owner-unplaced') return null; throw failure; }
+          };
+          const deadline = ports.clock() + openTimeoutMs;
+          let observed = await observe();
+          while (!observed && ports.clock() < deadline) { await delay(50); observed = await observe(); }
+          if (observed) {
+            const result = await cleanup.command('terminal.park', { terminal: address });
+            if (result.error) throw new HerdrError(result.error.code, result.error.message);
+            const parkedDeadline = ports.clock() + openTimeoutMs;
+            while (await observe()) {
+              if (ports.clock() >= parkedDeadline) throw new HerdrError('pane-timeout', 'The cancelled session pane was not parked');
+              await delay(50);
+            }
+          }
+        }
+        await restoreFocus(ports.returnFocus ?? focused);
+      }
+      throw error;
     }
-    await focus(); return address;
   };
   check();
   const local = await hc.identity();
-  // Remote and local owners can target the same app; hold both established focus keys.
   const keys = [...new Set([`${ports.appIdentity}:${owner.terminal.coreId}:focus`, `${ports.appIdentity}:${local.coreId}:focus`])].sort();
   const locked = (index: number): Promise<TerminalAddress> => index === keys.length ? perform()
     : withProcessLock(ports.placementRoot, keys[index], () => locked(index + 1), { timeoutMs: openTimeoutMs, signal });

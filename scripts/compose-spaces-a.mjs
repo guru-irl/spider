@@ -25,8 +25,9 @@ for (const version of ['0.1.13', '0.1.16']) {
     const park = pane.find(p => p.id === 'a-pane-park');
     fragments.pane = [
       { ...imports, replacement: imports.anchor.replace('from "herdr";', 'from "herdr";\nimport * as herdrApi from "herdr";\nimport { parkFocusedTerminal } from "./park.js";') },
-      { ...park, replacement: park.anchor + '\n          if (command === "park" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run);' },
+      { ...park, replacement: park.anchor + '\n          if (command === "park" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run, title => herdrApi.notify({ title, level: "warning" }));' },
     ];
+    fragments.menu = JSON.parse(readFileSync(new URL(`../packages/herdr/assets/look/spaces-a-goto/menu-${version}.json`, import.meta.url), 'utf8'));
   }
   const derived = [];
   if (through === 'full') {

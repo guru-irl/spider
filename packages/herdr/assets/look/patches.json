@@ -1151,7 +1151,7 @@
           {
             "id": "a-agents-imports",
             "anchor": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
-            "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar, TextView } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";\nimport * as herdr from \"herdr\";\nimport { hc, nextCommand } from \"herdr\";\nimport { groupAgentsByMachine, machineGroupCounts } from \"./grouping.js\";\nimport { createMachineConnections, machineConnection, machineRebuilt } from \"./connections.js\";\nimport { projectConsoleGroups, toggleConsoleGroup } from \"./console-groups.js\";\nimport { projectNavigation } from \"./shared/navigation.js\";",
+            "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar, TextView } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";\nimport * as herdr from \"herdr\";\nimport { hc, nextCommand } from \"herdr\";\nimport { groupAgentsByMachine, machineGroupCounts } from \"./grouping.js\";\nimport { createMachineConnections, machineConnection, machineRebuilt } from \"./connections.js\";\nimport { projectConsoleGroups, toggleConsoleGroup } from \"./console-groups.js\";\nimport { projectNavigation } from \"./shared/navigation.js\";\nimport { describeOpenFailure } from \"./shared/open-failure.js\";",
             "file": "main.js"
           },
           {
@@ -1170,7 +1170,7 @@
             "id": "a-agents-close",
             "file": "main.js",
             "anchor": "async close() { this.spiderClosed = true; this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }",
-            "replacement": "async close() { this.spiderClosed = true; this.spiderConnections?.close(); this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }\n\n  machineLayouts(all) {\n    const manager = this.spiderConnections, snapshot = manager?.snapshot ?? null;\n    const layouts = (this.spiderRenderSnapshot?.machines ?? machines()).map(machine => ({ ...machine }));\n    const known = new Set(layouts.map(machine => machine.name));\n    const machineLabel = spiderProps().labelContract?.labels.machine ?? \"spider.machine\";\n    for (const terminal of all) {\n      const address = terminal.address;\n      const name = typeof address === \"string\" && address.includes(\"/\") ? address.split(\"/\")[0] : terminal.labels?.[machineLabel];\n      if (name && !known.has(name)) { known.add(name); layouts.push({ name, layout: \"ready\" }); }\n    }\n    return layouts.map(machine => {\n      const record = manager?.machines.find(item => item.name === machine.name);\n      const state = machineConnection(machine.name, snapshot);\n      return { ...machine, layout: machine.name !== null && manager?.observed && state !== \"connected\" ? \"unavailable\" : machine.layout,\n        ...(machine.name !== null && state !== \"unknown\" && record?.id ? { coreId: record.id } : {}) };\n    });\n  }\n\n  currentChild(owner, key) {\n    const all = this.spiderRenderSnapshot?.terminals ?? terminals();\n    const row = this.projectChildren(all, owner).find(item => item.key === key);\n    if (!row || row.status === \"unreachable\" || !row.action) return null;\n    const address = row.originalAddress ?? row.address;\n    if (row.kind === \"native\" && typeof address === \"string\" && address.includes(\"/\")) {\n      const name = address.split(\"/\")[0];\n      if (this.machineLayouts(all).find(machine => machine.name === name)?.layout === \"unavailable\") return null;\n    }\n    return row;\n  }\n\n  parkedSessions() {\n    const p = spiderProps(), manager = this.spiderConnections;\n    if (!p.labelContract || !manager?.coreId) return [];\n    const current = focused(), snapshot = this.spiderRenderSnapshot, all = snapshot?.terminals ?? terminals(), layouts = this.machineLayouts(all);\n    return projectNavigation({ coreId: manager.coreId, destination: current?.space && current?.tab ? { space: current.space, tab: current.tab } : null,\n      agents: snapshot?.agents ?? agents(), terminals: all, panes: snapshot?.panes ?? panes(), spaces: snapshot?.spaces ?? spaces(), feeds: snapshot?.feeds ?? this.spiderFeeds ?? [], contract: p.labelContract,\n      machines: layouts, now: Date.now(), completedHours: p.retention?.completedHours ?? 24, completedRows: p.retention?.completedRows ?? 50 })\n      .filter(target => target.kind === \"agent\" && target.ownerId === null && target.sessionId && target.pane === null && !target.retained);\n  }\n\n  async activateSession(sessionId) {\n    if (this.spiderOpening.has(sessionId)) return;\n    const target = this.parkedSessions().find(item => item.sessionId === sessionId && item.action?.kind === \"ipc\" && item.action.request?.op === \"openSession\");\n    if (!target) return;\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Session view unavailable; run doctor\"; return; }\n    this.spiderOpening.add(sessionId);\n    try {\n      const argv = panelIpcArgv(p.nodePath, p.cliPath, target.action.descriptor, target.action.request);\n      const reply = await exec(argv[0], argv.slice(1));\n      const result = parseSessionIpcReply(reply.stdout);\n      this.spiderFeedError = result?.ok === false && result.code === \"unknown-op\" ? \"Run /reload to enable session reopening\"\n        : reply.code !== 0 || result?.ok !== true || result.op !== \"openSession\" ? (result?.message || \"Session view unavailable; run doctor\") : null;\n    } catch { this.spiderFeedError = \"Session view unavailable; run doctor\"; }\n    finally { this.spiderOpening.delete(sessionId); }\n  }\n\n  toggleCurrentConsoleGroup(key) {\n    const contract = spiderProps().labelContract;\n    if (!contract) return;\n    const all = terminals();\n    const owners = new Set([...filterTopLevelAgents(agents(), all, contract).map(agent => agent.address),\n      ...this.parkedSessions().map(target => target.terminal).filter(Boolean)]);\n    for (const owner of owners) if (this.tree(all, owner).some(row => row.group?.key === key)) {\n      this.expandedConsoleGroups = toggleConsoleGroup(this.expandedConsoleGroups, key);\n      return;\n    }\n  }"
+            "replacement": "async close() { this.spiderClosed = true; this.spiderConnections?.close(); this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }\n\n  machineLayouts(all) {\n    const manager = this.spiderConnections, snapshot = manager?.snapshot ?? null;\n    const layouts = (this.spiderRenderSnapshot?.machines ?? machines()).map(machine => ({ ...machine }));\n    const known = new Set(layouts.map(machine => machine.name));\n    const machineLabel = spiderProps().labelContract?.labels.machine ?? \"spider.machine\";\n    for (const terminal of all) {\n      const address = terminal.address;\n      const name = typeof address === \"string\" && address.includes(\"/\") ? address.split(\"/\")[0] : terminal.labels?.[machineLabel];\n      if (name && !known.has(name)) { known.add(name); layouts.push({ name, layout: \"ready\" }); }\n    }\n    return layouts.map(machine => {\n      const record = manager?.machines.find(item => item.name === machine.name);\n      const state = machineConnection(machine.name, snapshot);\n      return { ...machine, layout: machine.name !== null && manager?.observed && state !== \"connected\" ? \"unavailable\" : machine.layout,\n        ...(machine.name !== null && state !== \"unknown\" && record?.id ? { coreId: record.id } : {}) };\n    });\n  }\n\n  currentChild(owner, key) {\n    const all = this.spiderRenderSnapshot?.terminals ?? terminals();\n    const row = this.projectChildren(all, owner).find(item => item.key === key);\n    if (!row || row.status === \"unreachable\" || !row.action) return null;\n    const address = row.originalAddress ?? row.address;\n    if (row.kind === \"native\" && typeof address === \"string\" && address.includes(\"/\")) {\n      const name = address.split(\"/\")[0];\n      if (this.machineLayouts(all).find(machine => machine.name === name)?.layout === \"unavailable\") return null;\n    }\n    return row;\n  }\n\n  parkedSessions() {\n    const p = spiderProps(), manager = this.spiderConnections;\n    if (!p.labelContract || !manager?.coreId) return [];\n    const current = focused(), snapshot = this.spiderRenderSnapshot, all = snapshot?.terminals ?? terminals(), layouts = this.machineLayouts(all);\n    return projectNavigation({ coreId: manager.coreId, destination: current?.space && current?.tab ? { space: current.space, tab: current.tab } : null,\n      agents: snapshot?.agents ?? agents(), terminals: all, panes: snapshot?.panes ?? panes(), spaces: snapshot?.spaces ?? spaces(), feeds: snapshot?.feeds ?? this.spiderFeeds ?? [], contract: p.labelContract,\n      machines: layouts, now: Date.now(), completedHours: p.retention?.completedHours ?? 24, completedRows: p.retention?.completedRows ?? 50 })\n      .filter(target => target.kind === \"agent\" && target.ownerId === null && target.sessionId && target.pane === null && !target.retained);\n  }\n\n  async activateSession(sessionId) {\n    if (this.spiderOpening.has(sessionId)) return;\n    const target = this.parkedSessions().find(item => item.sessionId === sessionId && item.action?.kind === \"ipc\" && item.action.request?.op === \"openSession\");\n    if (!target) return;\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Session view unavailable; run doctor\"; return; }\n    this.spiderOpening.add(sessionId);\n    try {\n      const argv = panelIpcArgv(p.nodePath, p.cliPath, target.action.descriptor, target.action.request);\n      const reply = await exec(argv[0], argv.slice(1), { timeout: 65000 });\n      const result = parseSessionIpcReply(reply.stdout);\n      this.spiderFeedError = result?.ok === false ? describeOpenFailure(result) : reply.code !== 0 || result?.ok !== true || result.op !== \"openSession\" ? \"Session view unavailable; run doctor\" : null;\n    } catch { this.spiderFeedError = \"Session view unavailable; run doctor\"; }\n    finally { this.spiderOpening.delete(sessionId); }\n  }\n\n  toggleCurrentConsoleGroup(key) {\n    const contract = spiderProps().labelContract;\n    if (!contract) return;\n    const all = terminals();\n    const owners = new Set([...filterTopLevelAgents(agents(), all, contract).map(agent => agent.address),\n      ...this.parkedSessions().map(target => target.terminal).filter(Boolean)]);\n    for (const owner of owners) if (this.tree(all, owner).some(row => row.group?.key === key)) {\n      this.expandedConsoleGroups = toggleConsoleGroup(this.expandedConsoleGroups, key);\n      return;\n    }\n  }"
           },
           {
             "id": "a-agents-check-render",
@@ -1515,7 +1515,7 @@
           {
             "id": "a-pane-park",
             "anchor": "if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }",
-            "replacement": "if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }\n          if (command === \"park\" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run);",
+            "replacement": "if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }\n          if (command === \"park\" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run, title => herdrApi.notify({ title, level: \"warning\" }));",
             "file": "main.js"
           }
         ],
@@ -1654,6 +1654,20 @@
             "replacement": "h_flex().id(id).h(28).pl(11).pr(8).gap(9)",
             "file": "main.js"
           }
+        ],
+        "menu": [
+          {
+            "id": "a-menu-notify",
+            "file": "main.js",
+            "anchor": "import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec } from \"herdr\";",
+            "replacement": "import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec, notify } from \"herdr\";"
+          },
+          {
+            "id": "a-menu-remote-park",
+            "file": "main.js",
+            "anchor": "else run(it[1], it[2]);",
+            "replacement": "else if (it[1] === \"terminal.park\" && (it[2]?.terminal?.includes(\"/\") || terminals().find(t => t.address === it[2]?.terminal)?.labels?.[\"spider.kind\"] === \"roam-proxy\")) notify({ title: \"Send back works only for this computer's panes for now\", level: \"warning\" });\n    else run(it[1], it[2]);"
+          }
         ]
       },
       "derivedFiles": [
@@ -1663,7 +1677,7 @@
           "sourceMod": "picker",
           "sourceFile": "main.js",
           "sourceHash": "6dfde109b9321e8bc7f0e081db964960195748915eb7ff73e75688dd853b6dc3",
-          "outputHash": "9df1cc7167440f5a526090d36583d29f93a1cdfd213015b290fdec91179ce4a4",
+          "outputHash": "f0bda91c8a36842ecf6ee78e5acd1645ce3bcdf1acfbfa6095487d88d80df97d",
           "asset": "picker/main.js"
         },
         {
@@ -1686,14 +1700,14 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "21536ba4dd9270dc9b11c43f904399bb5c16e0113174ee8c199aeaaf1070b6c0",
+        "agents/main.js": "4d7cdf327adae5a0c6eda651a1cb41cbb904c6a2a5b7d098eafc1aa93e1cf5c6",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
-        "menu/main.js": "9a83d113ab40342aa07beb5d655f1a6d038bb2af4fc3f29ac932f035915a3b7d",
+        "menu/main.js": "f9c0799068984fe289df2b8aa50231435977c7269ee15cea4544d52f31d3bd25",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "new-menu/main.js": "394ec4218f24263735083b90dc7a7c5f607ab58f9a7a74b823707509e806cb1a",
         "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
-        "pane/main.js": "a3380e47e8860583541409c509447365e0d2fd705c2a34110c4da2ec9394675e",
+        "pane/main.js": "4c0f1162fafa86e28b9bafbd44f6239c93ebf70d94a6699b961ceb5214bea1cc",
         "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
         "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
         "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
@@ -1744,7 +1758,7 @@
         "workspace-chrome/square.svg": "e475514f8a336eaa799db562ec89a87eacc5e9202c1b1f0e0ab387b6334b0d1b",
         "workspace-chrome/terminal.svg": "a6f93e62a6ec412e6a214849be5b566cd21cff81d5570891c2e04e96c4dd964e",
         "workspace-chrome/x.svg": "c1e53fc9bbe1a0a0b8183bcacf5ab7dbf160fd1f082594de3dcbba1cd5a71614",
-        "spider-picker/main.js": "9df1cc7167440f5a526090d36583d29f93a1cdfd213015b290fdec91179ce4a4",
+        "spider-picker/main.js": "f0bda91c8a36842ecf6ee78e5acd1645ce3bcdf1acfbfa6095487d88d80df97d",
         "spider-picker/mod.json": "8250cbc0abca573439818f00293abf999b4e516984d1dcae6ff7dccb978ef355"
       },
       "markers": {
@@ -1832,7 +1846,10 @@
           "render-projection-end"
         ],
         "agents/mod.json": [],
-        "menu/main.js": [],
+        "menu/main.js": [
+          "a-menu-notify",
+          "a-menu-remote-park"
+        ],
         "menu/mod.json": [],
         "new-menu/main.js": [],
         "new-menu/mod.json": [],
@@ -2487,7 +2504,7 @@
           {
             "id": "a-agents-imports",
             "anchor": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
-            "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar, TextView } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";\nimport * as herdr from \"herdr\";\nimport { hc, nextCommand } from \"herdr\";\nimport { groupAgentsByMachine, machineGroupCounts } from \"./grouping.js\";\nimport { createMachineConnections, machineConnection, machineRebuilt } from \"./connections.js\";\nimport { projectConsoleGroups, toggleConsoleGroup } from \"./console-groups.js\";\nimport { projectNavigation } from \"./shared/navigation.js\";",
+            "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar, TextView } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";\nimport * as herdr from \"herdr\";\nimport { hc, nextCommand } from \"herdr\";\nimport { groupAgentsByMachine, machineGroupCounts } from \"./grouping.js\";\nimport { createMachineConnections, machineConnection, machineRebuilt } from \"./connections.js\";\nimport { projectConsoleGroups, toggleConsoleGroup } from \"./console-groups.js\";\nimport { projectNavigation } from \"./shared/navigation.js\";\nimport { describeOpenFailure } from \"./shared/open-failure.js\";",
             "file": "main.js"
           },
           {
@@ -2506,7 +2523,7 @@
             "id": "a-agents-close",
             "file": "main.js",
             "anchor": "async close() { this.spiderClosed = true; this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }",
-            "replacement": "async close() { this.spiderClosed = true; this.spiderConnections?.close(); this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }\n\n  machineLayouts(all) {\n    const manager = this.spiderConnections, snapshot = manager?.snapshot ?? null;\n    const layouts = (this.spiderRenderSnapshot?.machines ?? machines()).map(machine => ({ ...machine }));\n    const known = new Set(layouts.map(machine => machine.name));\n    const machineLabel = spiderProps().labelContract?.labels.machine ?? \"spider.machine\";\n    for (const terminal of all) {\n      const address = terminal.address;\n      const name = typeof address === \"string\" && address.includes(\"/\") ? address.split(\"/\")[0] : terminal.labels?.[machineLabel];\n      if (name && !known.has(name)) { known.add(name); layouts.push({ name, layout: \"ready\" }); }\n    }\n    return layouts.map(machine => {\n      const record = manager?.machines.find(item => item.name === machine.name);\n      const state = machineConnection(machine.name, snapshot);\n      return { ...machine, layout: machine.name !== null && manager?.observed && state !== \"connected\" ? \"unavailable\" : machine.layout,\n        ...(machine.name !== null && state !== \"unknown\" && record?.id ? { coreId: record.id } : {}) };\n    });\n  }\n\n  currentChild(owner, key) {\n    const all = this.spiderRenderSnapshot?.terminals ?? terminals();\n    const row = this.projectChildren(all, owner).find(item => item.key === key);\n    if (!row || row.status === \"unreachable\" || !row.action) return null;\n    const address = row.originalAddress ?? row.address;\n    if (row.kind === \"native\" && typeof address === \"string\" && address.includes(\"/\")) {\n      const name = address.split(\"/\")[0];\n      if (this.machineLayouts(all).find(machine => machine.name === name)?.layout === \"unavailable\") return null;\n    }\n    return row;\n  }\n\n  parkedSessions() {\n    const p = spiderProps(), manager = this.spiderConnections;\n    if (!p.labelContract || !manager?.coreId) return [];\n    const current = focused(), snapshot = this.spiderRenderSnapshot, all = snapshot?.terminals ?? terminals(), layouts = this.machineLayouts(all);\n    return projectNavigation({ coreId: manager.coreId, destination: current?.space && current?.tab ? { space: current.space, tab: current.tab } : null,\n      agents: snapshot?.agents ?? agents(), terminals: all, panes: snapshot?.panes ?? panes(), spaces: snapshot?.spaces ?? spaces(), feeds: snapshot?.feeds ?? this.spiderFeeds ?? [], contract: p.labelContract,\n      machines: layouts, now: Date.now(), completedHours: p.retention?.completedHours ?? 24, completedRows: p.retention?.completedRows ?? 50 })\n      .filter(target => target.kind === \"agent\" && target.ownerId === null && target.sessionId && target.pane === null && !target.retained);\n  }\n\n  async activateSession(sessionId) {\n    if (this.spiderOpening.has(sessionId)) return;\n    const target = this.parkedSessions().find(item => item.sessionId === sessionId && item.action?.kind === \"ipc\" && item.action.request?.op === \"openSession\");\n    if (!target) return;\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Session view unavailable; run doctor\"; return; }\n    this.spiderOpening.add(sessionId);\n    try {\n      const argv = panelIpcArgv(p.nodePath, p.cliPath, target.action.descriptor, target.action.request);\n      const reply = await exec(argv[0], argv.slice(1));\n      const result = parseSessionIpcReply(reply.stdout);\n      this.spiderFeedError = result?.ok === false && result.code === \"unknown-op\" ? \"Run /reload to enable session reopening\"\n        : reply.code !== 0 || result?.ok !== true || result.op !== \"openSession\" ? (result?.message || \"Session view unavailable; run doctor\") : null;\n    } catch { this.spiderFeedError = \"Session view unavailable; run doctor\"; }\n    finally { this.spiderOpening.delete(sessionId); }\n  }\n\n  toggleCurrentConsoleGroup(key) {\n    const contract = spiderProps().labelContract;\n    if (!contract) return;\n    const all = terminals();\n    const owners = new Set([...filterTopLevelAgents(agents(), all, contract).map(agent => agent.address),\n      ...this.parkedSessions().map(target => target.terminal).filter(Boolean)]);\n    for (const owner of owners) if (this.tree(all, owner).some(row => row.group?.key === key)) {\n      this.expandedConsoleGroups = toggleConsoleGroup(this.expandedConsoleGroups, key);\n      return;\n    }\n  }"
+            "replacement": "async close() { this.spiderClosed = true; this.spiderConnections?.close(); this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }\n\n  machineLayouts(all) {\n    const manager = this.spiderConnections, snapshot = manager?.snapshot ?? null;\n    const layouts = (this.spiderRenderSnapshot?.machines ?? machines()).map(machine => ({ ...machine }));\n    const known = new Set(layouts.map(machine => machine.name));\n    const machineLabel = spiderProps().labelContract?.labels.machine ?? \"spider.machine\";\n    for (const terminal of all) {\n      const address = terminal.address;\n      const name = typeof address === \"string\" && address.includes(\"/\") ? address.split(\"/\")[0] : terminal.labels?.[machineLabel];\n      if (name && !known.has(name)) { known.add(name); layouts.push({ name, layout: \"ready\" }); }\n    }\n    return layouts.map(machine => {\n      const record = manager?.machines.find(item => item.name === machine.name);\n      const state = machineConnection(machine.name, snapshot);\n      return { ...machine, layout: machine.name !== null && manager?.observed && state !== \"connected\" ? \"unavailable\" : machine.layout,\n        ...(machine.name !== null && state !== \"unknown\" && record?.id ? { coreId: record.id } : {}) };\n    });\n  }\n\n  currentChild(owner, key) {\n    const all = this.spiderRenderSnapshot?.terminals ?? terminals();\n    const row = this.projectChildren(all, owner).find(item => item.key === key);\n    if (!row || row.status === \"unreachable\" || !row.action) return null;\n    const address = row.originalAddress ?? row.address;\n    if (row.kind === \"native\" && typeof address === \"string\" && address.includes(\"/\")) {\n      const name = address.split(\"/\")[0];\n      if (this.machineLayouts(all).find(machine => machine.name === name)?.layout === \"unavailable\") return null;\n    }\n    return row;\n  }\n\n  parkedSessions() {\n    const p = spiderProps(), manager = this.spiderConnections;\n    if (!p.labelContract || !manager?.coreId) return [];\n    const current = focused(), snapshot = this.spiderRenderSnapshot, all = snapshot?.terminals ?? terminals(), layouts = this.machineLayouts(all);\n    return projectNavigation({ coreId: manager.coreId, destination: current?.space && current?.tab ? { space: current.space, tab: current.tab } : null,\n      agents: snapshot?.agents ?? agents(), terminals: all, panes: snapshot?.panes ?? panes(), spaces: snapshot?.spaces ?? spaces(), feeds: snapshot?.feeds ?? this.spiderFeeds ?? [], contract: p.labelContract,\n      machines: layouts, now: Date.now(), completedHours: p.retention?.completedHours ?? 24, completedRows: p.retention?.completedRows ?? 50 })\n      .filter(target => target.kind === \"agent\" && target.ownerId === null && target.sessionId && target.pane === null && !target.retained);\n  }\n\n  async activateSession(sessionId) {\n    if (this.spiderOpening.has(sessionId)) return;\n    const target = this.parkedSessions().find(item => item.sessionId === sessionId && item.action?.kind === \"ipc\" && item.action.request?.op === \"openSession\");\n    if (!target) return;\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Session view unavailable; run doctor\"; return; }\n    this.spiderOpening.add(sessionId);\n    try {\n      const argv = panelIpcArgv(p.nodePath, p.cliPath, target.action.descriptor, target.action.request);\n      const reply = await exec(argv[0], argv.slice(1), { timeout: 65000 });\n      const result = parseSessionIpcReply(reply.stdout);\n      this.spiderFeedError = result?.ok === false ? describeOpenFailure(result) : reply.code !== 0 || result?.ok !== true || result.op !== \"openSession\" ? \"Session view unavailable; run doctor\" : null;\n    } catch { this.spiderFeedError = \"Session view unavailable; run doctor\"; }\n    finally { this.spiderOpening.delete(sessionId); }\n  }\n\n  toggleCurrentConsoleGroup(key) {\n    const contract = spiderProps().labelContract;\n    if (!contract) return;\n    const all = terminals();\n    const owners = new Set([...filterTopLevelAgents(agents(), all, contract).map(agent => agent.address),\n      ...this.parkedSessions().map(target => target.terminal).filter(Boolean)]);\n    for (const owner of owners) if (this.tree(all, owner).some(row => row.group?.key === key)) {\n      this.expandedConsoleGroups = toggleConsoleGroup(this.expandedConsoleGroups, key);\n      return;\n    }\n  }"
           },
           {
             "id": "a-agents-check-render",
@@ -2857,7 +2874,7 @@
           {
             "id": "a-pane-park",
             "anchor": "if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }",
-            "replacement": "if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }\n          if (command === \"park\" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run);",
+            "replacement": "if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }\n          if (command === \"park\" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run, title => herdrApi.notify({ title, level: \"warning\" }));",
             "file": "main.js"
           }
         ],
@@ -2996,6 +3013,20 @@
             "replacement": "h_flex().id(id).h(28).pl(11).pr(8).gap(9)",
             "file": "main.js"
           }
+        ],
+        "menu": [
+          {
+            "id": "a-menu-notify",
+            "file": "main.js",
+            "anchor": "import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec } from \"herdr\";",
+            "replacement": "import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec, notify } from \"herdr\";"
+          },
+          {
+            "id": "a-menu-remote-park",
+            "file": "main.js",
+            "anchor": "else run(it[1], it[2]);",
+            "replacement": "else if (it[1] === \"terminal.park\" && (it[2]?.terminal?.includes(\"/\") || terminals().find(t => t.address === it[2]?.terminal)?.labels?.[\"spider.kind\"] === \"roam-proxy\")) notify({ title: \"Send back works only for this computer's panes for now\", level: \"warning\" });\n    else run(it[1], it[2]);"
+          }
         ]
       },
       "derivedFiles": [
@@ -3005,7 +3036,7 @@
           "sourceMod": "picker",
           "sourceFile": "main.js",
           "sourceHash": "d016a63eb7263ad4478152caa6521b218501bcc3539b7c42e13cfca1806b05c2",
-          "outputHash": "9df1cc7167440f5a526090d36583d29f93a1cdfd213015b290fdec91179ce4a4",
+          "outputHash": "f0bda91c8a36842ecf6ee78e5acd1645ce3bcdf1acfbfa6095487d88d80df97d",
           "asset": "picker/main.js"
         },
         {
@@ -3046,14 +3077,14 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "464096387db6af90c5f921f8971f725df6adccf391be197be925fd253ce929f5",
+        "agents/main.js": "fe1ed8d19931c17b8cd8420be5a87bf03e48f5327275f5d704d6ee50bc2d03b2",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
-        "menu/main.js": "f3e8572888e47b9398b2fbd6e384315becc117558a873235550ca19757dbfb34",
+        "menu/main.js": "1c27a92ca6378feb166a34adef317aaa2a4f4ee0e969d2fd3737cc3850ac84eb",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "new-menu/main.js": "2fcc80ed1486c35816f662db2a619cdee1ec1d82997991ca4feb64c1212d2688",
         "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
-        "pane/main.js": "f0b504ff29209d9fa3dc3e6f4c22028bc4587fce30730e2da0b11ef6d8835662",
+        "pane/main.js": "ee55839a86756eef7f95feaf1dbb0fa1d211b59c375a43ab80a5db5dc4f1f64a",
         "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
         "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
         "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
@@ -3104,7 +3135,7 @@
         "workspace-chrome/square.svg": "e475514f8a336eaa799db562ec89a87eacc5e9202c1b1f0e0ab387b6334b0d1b",
         "workspace-chrome/terminal.svg": "a6f93e62a6ec412e6a214849be5b566cd21cff81d5570891c2e04e96c4dd964e",
         "workspace-chrome/x.svg": "c1e53fc9bbe1a0a0b8183bcacf5ab7dbf160fd1f082594de3dcbba1cd5a71614",
-        "spider-picker/main.js": "9df1cc7167440f5a526090d36583d29f93a1cdfd213015b290fdec91179ce4a4",
+        "spider-picker/main.js": "f0bda91c8a36842ecf6ee78e5acd1645ce3bcdf1acfbfa6095487d88d80df97d",
         "spider-picker/mod.json": "8250cbc0abca573439818f00293abf999b4e516984d1dcae6ff7dccb978ef355",
         "spider-toast/main.js": "5ea6fdd73c4aee61d7973b0d9811a6ac0db8fd7ff95fbcdcc73107dc02b193d6",
         "spider-toast/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d"
@@ -3195,7 +3226,10 @@
           "render-projection-end"
         ],
         "agents/mod.json": [],
-        "menu/main.js": [],
+        "menu/main.js": [
+          "a-menu-notify",
+          "a-menu-remote-park"
+        ],
         "menu/mod.json": [],
         "new-menu/main.js": [],
         "new-menu/mod.json": [],

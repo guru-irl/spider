@@ -395,14 +395,15 @@ export type Destination = { space: SpaceId; tab: TabId } | null;
 export type SessionIpcRequest =
   | { op: 'ping'; generation: Generation }
   | { op: 'openView'; view: ViewName; generation: Generation }
-  | { op: 'openSession'; generation: Generation; destination: Destination }
-  | { op: 'openRun'; runId: RunId; generation: Generation }
+  | { op: 'openSession'; generation: Generation; destination: Destination; requestId?: string; returnFocus?: OwnerPlacement; backgroundKeep?: boolean }
+  | { op: 'cancelOpen'; generation: Generation; requestId: string }
+  | { op: 'openRun'; runId: RunId; generation: Generation; requestId?: string }
   | { op: 'killRun'; runId: RunId; generation: Generation }
   | { op: 'killSession'; generation: Generation }
   | { op: 'moveRun'; runId: RunId; destination: IpcMoveDestination; generation: Generation }
   | { op: 'moveSession'; destination: Exclude<IpcMoveDestination, { kind: 'hide' }>; generation: Generation }
   /** The owning session acquires the job's local observer with AuxiliaryPanes.acquire('remote', jobId, owner, options). */
-  | { op: 'openJob'; jobId: JobId; generation: Generation }
+  | { op: 'openJob'; jobId: JobId; generation: Generation; requestId?: string }
   | { op: 'killJob'; jobId: JobId; generation: Generation }
   | { op: 'moveJob'; jobId: JobId; viewer: TerminalAddress; destination: Exclude<IpcMoveDestination, { kind: 'hide' }>; generation: Generation }
   | { op: 'steerRun'; runId: RunId; text: string; generation: Generation }
@@ -419,6 +420,7 @@ export type SessionIpcReply =
   | { ok: true; op: 'ping'; status: { native: ProgramState | null; effective: ProgramState | null } }
   | { ok: true; op: 'openView' }
   | { ok: true; op: 'openSession'; terminal: TerminalAddress }
+  | { ok: true; op: 'cancelOpen' }
   | { ok: true; op: 'killRun' }
   | { ok: true; op: 'killSession' }
   | { ok: true; op: 'moveSession' }

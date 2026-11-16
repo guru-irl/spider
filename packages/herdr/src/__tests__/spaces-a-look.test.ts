@@ -57,6 +57,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) describe(`Spaces A recipe $
     const layout = JSON.parse(readFileSync(new URL('../../assets/look/layout-edits.json', import.meta.url), 'utf8'));
     expect(layout.root.toast).toBeUndefined();
     expect(layout.spacesA?.[version]?.root?.toast).toBe(version === '0.1.16' ? 'spider-toast' : undefined);
+    expect(layout.spacesA?.[version]?.root?.terminal_menu).toBe('spider-menu');
     for (const [mod, entries] of Object.entries(final)) {
       const checked = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: entries['main.js'], encoding: 'utf8' });
       expect(checked.status, `${mod}: ${checked.stderr}`).toBe(0);

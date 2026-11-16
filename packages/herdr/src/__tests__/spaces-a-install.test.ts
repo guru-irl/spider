@@ -67,6 +67,7 @@ test('installs a standalone picker with private config and resolved helper impor
     const root = join(mods, name), nav = join(root, 'shared/navigation.js'), children = join(root, 'spider-children.js');
     expect(await readFile(nav, 'utf8')).toContain("from '../spider-children.js'");
     expect(await exists(children)).toBe(true);
+    expect(await exists(join(root, 'shared/open-failure.js'))).toBe(true);
     imports.push(nav, children);
   }
   imports.push(join(picker, 'main.js'), join(picker, 'model.js'));
@@ -90,6 +91,7 @@ test('installs the packaged picker View and manifest with resolvable imports', a
   expect(main).toContain("from './shared/navigation.js'");
   expect(main).toContain("from './shared/look.js'");
   expect(main).toContain("from './shared/feed.js'");
+  expect(main).toContain("from './shared/open-failure.js'");
   expect(await readFile(join(root, 'mod.json'))).toEqual(await readFile(join(f.root, 'packages/herdr/assets/picker/mod.json')));
   expect(JSON.parse(await readFile(join(root, 'mod.json'), 'utf8'))).toMatchObject({ place: 'none', overlay: { kind: 'popup' } });
   expect(await unresolvedImports(mods, ['main.js', 'model.js', 'shared/navigation.js', 'shared/look.js', 'shared/feed.js', 'spider-children.js'].map(file => join(root, file)))).toEqual([]);

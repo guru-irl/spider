@@ -7,4 +7,5 @@ export function parkFocusedTerminal(
   terminals: readonly AgentTerminal[],
   contract: HerdrLabelContract,
   run: (name: string, args: Record<string, unknown>) => null,
+  report?: (message: string) => void,
 ): boolean;

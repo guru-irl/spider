@@ -17,10 +17,12 @@ export async function stageSpacesAFiles(destination: string, version: SpacesAVer
   const composed = replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe);
   const payload = new Map<string, { bytes: Buffer; source: string }>();
   const put = (path: string, bytes: string | Buffer, source: string) => payload.set(path, { bytes: Buffer.from(bytes), source });
-  for (const name of ['layouts/main.json', 'keys.json']) {
-    put(name, await readFile(new URL(`../../src/__tests__/fixtures/herdr-${version}/${name}`, import.meta.url)), `stock:${version}/${name}`);
-  }
-  const clones = { agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', 'workspace-chrome': 'spider-chrome' };
+  const layout = JSON.parse(await readFile(new URL(`../../src/__tests__/fixtures/herdr-${version}/layouts/main.json`, import.meta.url), 'utf8'));
+  const edits = JSON.parse(await readFile(join(assetRoot, 'look/layout-edits.json'), 'utf8'));
+  Object.assign(layout, edits.spacesA?.[version]?.root ?? {});
+  put('layouts/main.json', JSON.stringify(layout, null, 2) + '\n', `stock:${version}/layouts/main.json+asset:look/layout-edits.json`);
+  put('keys.json', await readFile(new URL(`../../src/__tests__/fixtures/herdr-${version}/keys.json`, import.meta.url)), `stock:${version}/keys.json`);
+  const clones = { agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', 'workspace-chrome': 'spider-chrome', menu: 'spider-menu' };
   for (const [mod, clone] of Object.entries(clones)) {
     for (const [file, contents] of Object.entries(composed[mod]!)) put(`mods/${clone}/${file}`, contents, `recipe:${version}/${mod}/${file}`);
   }

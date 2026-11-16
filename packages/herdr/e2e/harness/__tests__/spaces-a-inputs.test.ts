@@ -14,6 +14,12 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(staged.unresolved).toEqual([]);
     expect(staged.files.map(file => file.path)).toContain('mods/spider-picker/shared/navigation.js');
     expect(staged.files.map(file => file.path)).toContain('mods/spider-panel/sound.js');
+    expect(staged.files.map(file => file.path)).toContain('mods/spider-menu/main.js');
+    const menu = readFileSync(join(root, 'mods/spider-menu/main.js'), 'utf8');
+    expect(menu).toContain('spider-look:a-menu-remote-park');
+    expect(menu).toContain('roam-proxy');
+    expect(JSON.parse(readFileSync(join(root, 'mods/spider-menu/mod.json'), 'utf8'))).toHaveProperty('place');
+    expect(JSON.parse(readFileSync(join(root, 'layouts/main.json'), 'utf8')).terminal_menu).toBe('spider-menu');
     expect(staged.files.some(file => file.path.startsWith('mods/toast/'))).toBe(false);
     expect(staged.files.some(file => file.path === 'mods/spider-toast/main.js')).toBe(version === '0.1.16');
     const pane = readFileSync(join(root, 'mods/spider-pane/main.js'), 'utf8');

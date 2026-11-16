@@ -646,13 +646,15 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         const result = await makeMessageHandler()({ to: id, message: text }, options.actionContext(need(context)));
         return result.details as SteerReply;
       }, openView: view => { needAppConfig(); return views[view](need(context)); },
-      openSession: async (destination, signal) => {
+      openSession: async (destination, signal, openOptions) => {
         if (owner !== current || stopped) throw new HerdrError('wrong-generation', 'Session owner is no longer active');
         const selected = needAppConfig(), activeSignal = AbortSignal.any([observerAbort.signal, ...(signal ? [signal] : [])]);
         const opening = openOwnedSession(current, destination, { hc: need(client),
           app: createAppClient({ binary: selected.app.binary, env: need(activationEnv) }, activeSignal, availabilityReporter(need(context))),
           placementRoot: join(selected.globalRoot, 'herdr/panes'), appIdentity: selected.app.home,
-          limit: selected.limits.auxiliaryPanes, clock: Date.now, signal: activeSignal });
+          limit: selected.limits.auxiliaryPanes, clock: Date.now, signal: activeSignal,
+          cleanupApp: createAppClient({ binary: selected.app.binary, env: need(activationEnv) }, observerAbort.signal, availabilityReporter(need(context))),
+          returnFocus: openOptions?.returnFocus, backgroundKeep: openOptions?.backgroundKeep });
         pendingSessionOpens.add(opening);
         try { return await opening; }
         finally { pendingSessionOpens.delete(opening); }

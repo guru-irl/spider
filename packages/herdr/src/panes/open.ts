@@ -229,6 +229,15 @@ export async function convertNativePresentation(input: { presentation: PanePrese
   const conversion: PanePresentation['conversion'] = { state: 'waiting-focus', source, sourceFocused: focused, destination };
   const nextLaunch = p.launch === 'none' && p.conversion?.state === 'waiting-focus' && !samePaneTarget(p.conversion.destination, destination);
   if (!p.conversion || p.conversion.state !== 'waiting-focus' || !samePaneTarget(p.conversion.destination, destination) || p.conversion.sourceFocused !== focused) p = await updatePresentation(p, { conversion, ...(nextLaunch ? { proxyLaunchAttempts: 0 } : {}) }, ports);
+  if (p.proxy && !native) {
+    try {
+      const proxy = await ports.hc.get(p.proxy);
+      if (p.proxy.includes('/') && !p.proxy.startsWith(`${local.coreId}/`) || proxy.address !== p.proxy || proxy.state !== 'live' || proxy.labels['spider.kind'] !== 'pane-proxy' || proxy.labels['spider.pane-id'] !== p.id) return outcome('pending', 'conversion-proxy-unverified', p);
+      // The durable binding retargets the attach loop. Keep its discovery facts in step.
+      if (proxy.labels['spider.target-core'] !== destination.coreId || proxy.labels['spider.target-terminal'] !== destination.terminalId)
+        await ports.hc.setLabels(p.proxy, { 'spider.target-core': destination.coreId, 'spider.target-terminal': destination.terminalId });
+    } catch { return outcome('pending', 'conversion-proxy-unavailable', p); }
+  }
   if (!ports.app || !appAvailable) return outcome('pending', 'app-unavailable', p);
   if (!focused && !noFocus) {
     let proved = false;

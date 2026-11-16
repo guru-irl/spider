@@ -221,8 +221,21 @@ export async function convertNativePresentation(input: { presentation: PanePrese
   if (p.mode === 'proxy' && !native) {
     const conversion: PanePresentation['conversion'] = p.visibility !== 'parked' && source ? { state: 'waiting-readiness', source, sourceFocused: input.sourceFocused, destination: null } : null;
     try {
-      if (p.proxy) await ports.hc.setLabels(p.proxy, proxyTargetLabels(destination));
-      p = await updatePresentation(p, { target: destination, conversion }, ports);
+      let removedProxy = false;
+      if (p.visibility === 'parked' && p.proxy) {
+        try {
+          const proxy = await ports.hc.get(p.proxy);
+          removedProxy = proxy.state === 'finished' && proxy.labels['spider.kind'] === 'pane-proxy' && proxy.labels['spider.pane-id'] === p.id;
+        } catch (error) {
+          if (!(error instanceof HerdrError) || error.code !== 'not_found') throw error;
+          removedProxy = true;
+        }
+      }
+      if (p.proxy && !removedProxy) {
+        await verifyProxy(p.proxy, p, ports, 'launch');
+        await ports.hc.setLabels(p.proxy, proxyTargetLabels(destination));
+      }
+      p = await updatePresentation(p, { target: destination, conversion, ...(removedProxy ? { proxy: null, launch: 'none', proxyLaunchAttempts: 0 } : {}) }, ports);
       if (p.visibility === 'parked' || !ports.app || !p.proxy || !p.slot) return outcome(p.visibility === 'parked' ? 'complete' : 'pending', 'proxy-retargeted', p);
       await ports.awaitPresented(p.proxy, destination, p.slot); p = await updatePresentation(p, { conversion: null }, ports); return outcome('complete', 'proxy-retargeted', p);
     } catch { return outcome('pending', 'destination-screen-pending', p); }

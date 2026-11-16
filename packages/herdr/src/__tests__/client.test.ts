@@ -5,6 +5,7 @@ import { afterEach, test, expect } from 'vitest';
 import { parseHerdrConfig } from '../config.js';
 import type { MachineName, CoreId, HcRunRequest } from '../contracts.js';
 import { createHcClient } from '../client/hc.js';
+import { withHcOperation } from '../client/operation.js';
 import { createAppClient } from '../client/app.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -14,6 +15,19 @@ import { createClientFixture, terminal, type ClientFixture } from './testutil.js
 const fixtures: ClientFixture[] = [];
 afterEach(async () => { for (const h of fixtures.splice(0)) await h.close(); });
 async function fixture(): Promise<ClientFixture> { const h = await createClientFixture(); fixtures.push(h); return h; }
+test('one operation shares status observations but the next operation reads again', async () => {
+  const h = await fixture(); const hc = createHcClient({ binary: h.hcBinary, env: h.localEnv });
+  const operation = () => withHcOperation(async () => {
+    await Promise.all([hc.identity(), hc.identity()]);
+    await withHcOperation(async () => { await hc.identity(); await hc.machines(); await hc.machines(); });
+  });
+  await operation();
+  expect((await h.calls()).filter(c => c.argv[0] === 'server')).toHaveLength(1);
+  expect((await h.calls()).filter(c => c.argv[0] === 'machine')).toHaveLength(2);
+  await operation();
+  expect((await h.calls()).filter(c => c.argv[0] === 'server')).toHaveLength(2);
+  expect((await h.calls()).filter(c => c.argv[0] === 'machine')).toHaveLength(4);
+});
 test('app placements and viewer acknowledgements accept documented native string statuses', async () => {
   const h = await fixture();
   await writeFile(join(h.root, 'app.json'), JSON.stringify({ spaces: [{ id: 'sp1', name: 'Fixture', tabs: [{ id: 'tb1', name: 'Owner', terminals: [

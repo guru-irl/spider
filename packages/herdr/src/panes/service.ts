@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import type { AppClient, HcClient } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
+import { withHcOperation } from '../client/operation.js';
 import { paneSnapshot } from './snapshot.js';
 import { prunePaneHistory } from './retention.js';
 import { encodePaneServiceRequest, parsePaneServiceRequest } from './codec.js';
@@ -46,6 +47,9 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   };
   let queue = Promise.resolve();
   let refreshing: Promise<void> | null = null;
+  let activeRequests = 0;
+  let initialized = false;
+  let refreshRequested = false;
   let leaseTick = -Infinity;
   const abort = new AbortController();
   const readInventory = createPaneServiceInventory({ root: ports.root, readPage: ports.inventory, clock: ports.clock });
@@ -120,9 +124,20 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     }
     if (removed.length || state.presentations.some(p => p.visibility === 'ended')) await ports.store.update(current => prunePaneHistory(current, removed));
   }
+  function kickRefresh() {
+    if (!initialized || stopped || activeRequests || refreshing || !refreshRequested) return;
+    refreshRequested = false;
+    void reconcile().catch(() => {});
+  }
+  function requestRefresh() {
+    if (!initialized || stopped) return;
+    refreshRequested = true;
+    kickRefresh();
+  }
   function reconcile(): Promise<void> {
     if (refreshing) return refreshing;
-    refreshing = (async () => {
+    initialized = true;
+    refreshing = withHcOperation(async () => {
       await live(); await pruneHistory(false); machines = await ports.machines();
       const renew = ports.clock() - leaseTick >= 5000;
       if (renew) leaseTick = ports.clock();
@@ -150,7 +165,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
         }
       }
       await pruneHistory(true);
-    })().finally(() => { refreshing = null; });
+    }).finally(() => { refreshing = null; kickRefresh(); });
     return refreshing;
   }
   const privateInventory = (): PrivatePaneInventory => {
@@ -163,7 +178,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     if (request.op === 'snapshot') {
       if (!machines.length) machines = await ports.machines();
       const state = await ports.store.read();
-      void reconcile().catch(() => {});
+      requestRefresh();
       return paneSnapshot(state, machines, privateInventory(), facts);
     }
     const state = await ports.store.read();
@@ -196,7 +211,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
       : request.op === 'close-confirmed' ? await confirmPresentationClose({ id: request.presentationId, expectedRevision: request.expectedRevision, operationId: request.operationId, target: request.target }, lifecycle)
       : await ports.dispatch(request, beforeLaunch, privateInventory());
     } catch (error) { if (error instanceof HerdrError) return outcome(error.code); throw error; }
-    void reconcile().catch(() => {});
+    requestRefresh();
     return { version: 1, kind: 'outcome', outcome: result };
   }
   async function response(reply: Promise<PaneServiceReply>): Promise<PaneServiceReply> {
@@ -207,18 +222,27 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
       })]);
     } finally { clearTimeout(timer); }
   }
-  const unsubscribe = ports.subscribe(() => { void reconcile().catch(() => {}); });
-  const cancelTimer = ports.schedule(() => { void reconcile().catch(() => {}); }, 5000);
+  const unsubscribe = ports.subscribe(() => {
+    if (initialized && (!refreshing || activeRequests)) requestRefresh();
+  });
+  const cancelTimer = ports.schedule(() => {
+    if (initialized && !stopped && !refreshing) void reconcile().catch(() => {});
+  }, 5000);
+  const applyOperation = async (request: PaneServiceRequest) => {
+    initialized = true; activeRequests++;
+    try { return await withHcOperation(() => apply(request)); }
+    finally { activeRequests--; kickRefresh(); }
+  };
   return {
     request(input) {
       const request = parsePaneServiceRequest(input); const bytes = encodePaneServiceRequest(request);
-      if (request.op === 'snapshot') return apply(request);
+      if (request.op === 'snapshot') return applyOperation(request);
       pruneReplay();
       const previous = replay.get(request.operationId);
       if (previous) return previous.bytes === bytes ? response(previous.reply) : Promise.resolve(outcome('operation-reused'));
       // In-flight and recent actions must retain their replay evidence.
       if (replay.size >= 4096) return Promise.resolve(outcome('service-operation-limit'));
-      const reply = queue.then(() => apply(request)); queue = reply.then(() => {}, () => {});
+      const reply = queue.then(() => applyOperation(request)); queue = reply.then(() => {}, () => {});
       const entry = { bytes, reply, settledAt: null as number | null };
       replay.set(request.operationId, entry);
       void reply.then(() => { entry.settledAt = ports.clock(); }, () => { entry.settledAt = ports.clock(); });

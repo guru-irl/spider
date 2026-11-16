@@ -33,6 +33,30 @@ async function fixture() {
   };
   return { ports, hc, presentation, tick: () => tick?.() };
 }
+test('subscription readiness does not start inventory before the first operation', async () => {
+  const f = await fixture();
+  f.ports.subscribe = changed => { changed(); return () => {}; };
+  const service = createPaneService(f.ports);
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.ports.inventory).not.toHaveBeenCalled();
+    await service.request({ version: 1, op: 'snapshot', operationId: 'initial' });
+    await vi.waitFor(() => expect(f.ports.inventory).toHaveBeenCalledTimes(1));
+    expect(f.ports.inventory).toHaveBeenCalledTimes(1);
+  } finally { await service.stop(); }
+});
+test('one mutation reconciles once even when its own effects emit core events', async () => {
+  const f = await fixture(); let changed = () => {};
+  f.ports.subscribe = listener => { changed = listener; return () => {}; };
+  f.ports.dispatch = async () => { changed(); await Promise.resolve(); changed(); return { status: 'complete', reason: 'applied', presentation: f.presentation }; };
+  const service = createPaneService(f.ports);
+  try {
+    await service.request({ version: 1, op: 'move', operationId: 'one-scan', presentationId: 'p1', expectedRevision: 1, slot: { space: 's1' as never, tab: 'tb1' as never, pane: null } });
+    await vi.waitFor(() => expect(f.ports.inventory).toHaveBeenCalledTimes(1));
+    await service.stop();
+    expect(f.ports.inventory).toHaveBeenCalledTimes(1);
+  } finally { await service.stop(); }
+});
 test('absent core makes zero hc calls', async () => {
   const f = await fixture(); vi.mocked(f.ports.coreAvailable).mockResolvedValue(false);
   const service = createPaneService(f.ports);

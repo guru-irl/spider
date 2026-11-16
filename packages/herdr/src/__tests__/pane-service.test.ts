@@ -7,6 +7,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { HerdrError } from '../client/parse.js';
 import { selectRemoteSessionSlot } from '../spaces/remote-placement.js';
 import { createPaneService, type PaneServicePorts } from '../panes/service.js';
+import { createPaneInventoryCache } from '../panes/inventory.js';
 import { createPanePlacementStore } from '../panes/store.js';
 import { parseMachineChoice, parsePanePresentation } from '../panes/codec.js';
 import type { HcClient } from '../contracts.js';
@@ -293,6 +294,127 @@ test('a complete inventory prunes a superseded terminal incarnation without stop
   try { await service.reconcile(); expect((await f.ports.store.read()).presentations).toEqual([]); expect(f.hc.kill).not.toHaveBeenCalled(); }
   finally { await service.stop(); }
 });
+const coldAuxiliary = { version: 1 as const, op: 'open-auxiliary' as const, operationId: 'cold-auxiliary', sessionId: 'session-1' as never, generation: 'gen-1' as never, view: { kind: 'subagent' as const, runId: 'run-1' as never } };
+function availableOwnerRow(presentation: Awaited<ReturnType<typeof fixture>>['presentation']) {
+  const target = presentation.target;
+  return { sessionId: 'session-1', generation: 'gen-1', name: 'Example', status: 'working', updatedAt: 1, machineKey: 'box-1.invalid', unavailableReason: null, target,
+    owner: { sessionId: 'session-1', generation: 'gen-1', terminal: { coreId: target.coreId, terminalId: target.terminalId, address: target.address, socket: '/unused', sessionNamespace: 'test' }, cwd: '/home/example', sessionFile: null, name: 'Example' }, children: [], consoles: [] };
+}
+function observeOwnerLookup(f: Awaited<ReturnType<typeof fixture>>) {
+  const launch = vi.fn();
+  f.ports.dispatch = vi.fn(async (request, _beforeLaunch, inventory) => {
+    if (request.op !== 'open-auxiliary' && !(request.op === 'open-existing' && 'sessionId' in request)) throw new Error('Unexpected request');
+    const matches = inventory.rows.filter(row => row.sessionId === request.sessionId && row.generation === request.generation && row.unavailableReason === null);
+    if (matches.length !== 1 || !matches[0].owner) return { status: 'refused', reason: 'not-in-hc', presentation: null };
+    launch(matches[0].owner);
+    return { status: 'complete', reason: 'view-presented', presentation: null };
+  });
+  return launch;
+}
+
+test('cold auxiliary lookup refreshes and finds an existing owner before launch', async () => {
+  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  f.ports.inventory = vi.fn(async () => ({ version: 1, rows: [row] as never, next: null, complete: true }));
+  const service = createPaneService(f.ports);
+  try {
+    expect(await service.request(coldAuxiliary)).toMatchObject({ outcome: { status: 'complete', reason: 'view-presented' } });
+    expect(launch).toHaveBeenCalledOnce();
+    expect(launch).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 'session-1', terminal: expect.objectContaining({ coreId: 'core-remote' }) }));
+  } finally { await service.stop(); }
+});
+
+test('persisted owner rows cannot authorize a launch when refresh fails', async () => {
+  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  f.ports.inventory = vi.fn(async () => ({ version: 1, rows: [row] as never, next: null, complete: true }));
+  const original = createPaneService(f.ports);
+  await original.reconcile(); await original.stop();
+  expect(await createPaneInventoryCache(f.ports.root).readCache('box-1.invalid')).not.toBeNull();
+  f.ports.inventory = vi.fn(async () => { throw new Error('source unavailable'); });
+  const restarted = createPaneService(f.ports);
+  try {
+    await restarted.reconcile();
+    expect(await restarted.request(coldAuxiliary)).toMatchObject({ outcome: { status: 'pending' } });
+    expect(launch).not.toHaveBeenCalled();
+  } finally { await restarted.stop(); }
+});
+
+test('concurrent cold owner lookups share one in-flight inventory refresh', async () => {
+  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  let release!: () => void;
+  f.ports.inventory = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); return { version: 1, rows: [row] as never, next: null, complete: true }; });
+  const service = createPaneService(f.ports);
+  const first = service.request(coldAuxiliary);
+  const second = service.request({ ...coldAuxiliary, operationId: 'cold-auxiliary-2' });
+  try {
+    await vi.waitFor(() => expect(f.ports.inventory).toHaveBeenCalledTimes(1));
+    expect(launch).not.toHaveBeenCalled();
+    release();
+    expect(await Promise.all([first, second])).toMatchObject([{ outcome: { status: 'complete' } }, { outcome: { status: 'complete' } }]);
+    expect(f.ports.inventory).toHaveBeenCalledTimes(1);
+    expect(launch).toHaveBeenCalledTimes(2);
+  } finally { release?.(); await service.stop(); }
+});
+
+test('a slow cold inventory refresh returns pending and replays its eventual result', async () => {
+  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  let state = await f.ports.store.read(), release: (() => void) | undefined;
+  f.ports.store = { read: async () => state, update: async change => state = change(state) };
+  f.ports.inventory = vi.fn(async () => { await new Promise<void>(resolve => { release = resolve; }); return { version: 1, rows: [row] as never, next: null, complete: true }; });
+  vi.useFakeTimers(); const service = createPaneService(f.ports);
+  try {
+    const first = service.request(coldAuxiliary);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(await first).toMatchObject({ outcome: { status: 'pending', reason: 'operation-in-progress' } });
+    expect(launch).not.toHaveBeenCalled();
+    expect(release).toBeTypeOf('function');
+    release?.(); vi.useRealTimers();
+    expect(await service.request(coldAuxiliary)).toMatchObject({ outcome: { status: 'complete', reason: 'view-presented' } });
+    expect(launch).toHaveBeenCalledOnce();
+  } finally { release?.(); vi.useRealTimers(); await service.stop(); }
+});
+
+test('an absent owner is not-in-hc only after a completed cold refresh', async () => {
+  const f = await fixture(), launch = observeOwnerLookup(f), service = createPaneService(f.ports);
+  try {
+    expect(await service.request(coldAuxiliary)).toMatchObject({ outcome: { status: 'refused', reason: 'not-in-hc' } });
+    expect(f.ports.inventory).toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  } finally { await service.stop(); }
+});
+
+test('an absent owner stays pending when any possible source is unavailable', async () => {
+  const f = await fixture(), launch = observeOwnerLookup(f);
+  f.ports.inventory = vi.fn(async () => { throw new Error('source unavailable'); });
+  const service = createPaneService(f.ports);
+  try {
+    expect(await service.request(coldAuxiliary)).toMatchObject({ outcome: { status: 'pending' } });
+    expect(launch).not.toHaveBeenCalled();
+  } finally { await service.stop(); }
+});
+
+test('a refreshed owner remains available when an unrelated machine is disconnected', async () => {
+  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  const machine = (await f.ports.machines())[0];
+  vi.mocked(f.ports.machines).mockResolvedValue([machine, parseMachineChoice({ key: 'box-2.invalid', alias: 'box-2.invalid', label: 'box-2.invalid', coreId: 'core-offline', machineId: null, state: 'disconnected' })]);
+  f.ports.inventory = vi.fn(async () => ({ version: 1, rows: [row] as never, next: null, complete: true }));
+  const service = createPaneService(f.ports);
+  try {
+    expect(await service.request(coldAuxiliary)).toMatchObject({ outcome: { status: 'complete', reason: 'view-presented' } });
+    expect(launch).toHaveBeenCalledOnce();
+  } finally { await service.stop(); }
+});
+
+test('a cold open-existing owner lookup also waits for source inventory', async () => {
+  const f = await fixture(), row = availableOwnerRow(f.presentation), launch = observeOwnerLookup(f);
+  f.ports.inventory = vi.fn(async () => ({ version: 1, rows: [row] as never, next: null, complete: true }));
+  const service = createPaneService(f.ports);
+  try {
+    expect(await service.request({ version: 1, op: 'open-existing', operationId: 'cold-existing', sessionId: 'session-1' as never, generation: 'gen-1' as never, slot: null }))
+      .toMatchObject({ outcome: { status: 'complete', reason: 'view-presented' } });
+    expect(launch).toHaveBeenCalledOnce();
+  } finally { await service.stop(); }
+});
+
 test('snapshot trims live presentations and terminal facts without raising codec bounds', async () => {
   const f = await fixture(); let state = await f.ports.store.read();
   state = { ...state, presentations: Array.from({ length: 257 }, (_, i) => ({ ...f.presentation, id: `live-${i}` })) };

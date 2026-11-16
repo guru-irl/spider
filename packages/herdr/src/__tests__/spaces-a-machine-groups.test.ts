@@ -124,9 +124,9 @@ it('pins an agent once inside its machine group', () => {
 
 it('discovers idle and temporary machines and dims remote dots after a failed refresh', async () => {
   const inventory = [
-    { name: 'box-1.invalid', id: 'remote-1', state: 'connected', target: 'ssh-one' },
-    { name: 'box-2.invalid', id: 'remote-2', state: 'disconnected', target: 'ssh-two', temporary: true },
-    { name: 'box-3.invalid', id: 'remote-3', state: 'needs_login', target: 'ssh-three' },
+    { name: 'box-1.invalid', id: 'remote-1', state: 'connected', target: 'ssh-one.invalid' },
+    { name: 'box-2.invalid', id: 'remote-2', state: 'disconnected', target: 'ssh-two.invalid', temporary: true },
+    { name: 'box-3.invalid', id: 'remote-3', state: 'needs_login', target: 'ssh-three.invalid' },
   ];
   const calls: string[][] = [], store = journal();
   let failed = false;

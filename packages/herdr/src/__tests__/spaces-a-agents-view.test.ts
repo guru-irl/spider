@@ -82,10 +82,10 @@ function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMen
   const nativeTerminals: any[] = [terminal('box-1.invalid/unpinned'), terminal('local'), terminal('box-1.invalid/pinned'),
     terminal('proxy', { 'spider.kind': 'roam-proxy', 'spider.machine': 'box-2.invalid', 'spider.owner-terminal': 'box-2.invalid/owner' })];
   const inventory = [
-    { name: 'box-1.invalid', id: 'core-1', state: 'connected', target: 'ssh-one' },
-    { name: 'box-2.invalid', id: 'core-2', state: 'disconnected', target: 'ssh-two', temporary: true },
-    { name: 'box-3.invalid', id: 'core-3', state: 'needs_login', target: 'ssh-three' },
-    { name: 'box-4.invalid', id: 'core-4', state: 'connected', target: 'ssh-four' },
+    { name: 'box-1.invalid', id: 'core-1', state: 'connected', target: 'ssh-one.invalid' },
+    { name: 'box-2.invalid', id: 'core-2', state: 'disconnected', target: 'ssh-two.invalid', temporary: true },
+    { name: 'box-3.invalid', id: 'core-3', state: 'needs_login', target: 'ssh-three.invalid' },
+    { name: 'box-4.invalid', id: 'core-4', state: 'connected', target: 'ssh-four.invalid' },
   ];
   const layouts = [null, ...inventory.map(machine => machine.name)].map(name => ({ name, layout: 'ready' }));
   const spaces = [{ id: 's1', index: 1, name: 'Work', machine: null, active: true, tabs: [{ id: 'tab', name: 'Writer', active: true, named: true, status: null }] }];
@@ -175,18 +175,212 @@ function seedConsoles(test: ReturnType<typeof fixture>) {
 const consoleKey = (owner: string, parent: string | null = null) => `console-group:${JSON.stringify([owner, parent])}`;
 const consoleId = (owner: string, parent: string | null = null) => `console-group:${encodeURIComponent(consoleKey(owner, parent))}`;
 
-it('0.1.13: defers machine process work until the first refresh and then fills idle headings', async () => {
+it('0.1.13: refreshes machines at mount and allows remote focus before observation', async () => {
   const test = fixture('0.1.13');
-  expect(test.hcCalls).toEqual([]);
-  const refresh = test.timers.find(timer => timer.delay === 15000)!;
-  await refresh.callback(test.cx);
+  const root = test.view.render(test.cx);
   expect(test.hcCalls).toEqual([['server', 'status', '--json'], ['machine', 'ls', '--json']]);
-  const rendered = test.view.render(test.cx);
-  expect(texts(rendered)).toContain('This computer');
-  expect(byId(rendered, 'machine:box-4.invalid')).toBeDefined();
+  expect(byId(root, 'ag-box-1.invalid/unpinned')!.events.on_click).toBeDefined();
+  byId(root, 'ag-box-1.invalid/unpinned')!.events.on_click?.();
+  expect(test.commands).toContainEqual(['pane.focus', { pane: 'p1' }]);
+  await test.ready();
+  expect(byId(test.view.render(test.cx), 'machine:box-4.invalid')).toBeDefined();
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  it(`${version}: keeps remote focus available when the first machine observation fails`, async () => {
+    const test = fixture(version, { ports: { hc: async () => ({ code: 1, stdout: '', stderr: 'offline' }) } });
+    await test.ready();
+    const row = byId(test.view.render(test.cx), 'ag-box-1.invalid/unpinned')!;
+    expect(row.events.on_click).toBeDefined();
+    row.events.on_click?.();
+    expect(test.commands).toContainEqual(['pane.focus', { pane: 'p1' }]);
+  });
+
+  it(`${version}: restores the space and pinned heading caret, glyph slot, inset and thread stem`, async () => {
+    const test = fixture(version);
+    await test.ready();
+    test.state.set('agents.sort', 'grouped');
+    const root = test.view.render(test.cx);
+    for (const id of ['sp-s1', 'pinned']) {
+      const heading = byId(root, id)!;
+      const parts = heading.children.flatMap(all);
+      expect(call(heading, 'pl')).toEqual([40]);
+      expect(call(byId(root, `group-fold-${id}`) ?? { calls: [] } as any, 'left')).toEqual([4]);
+      expect(parts.some(node => node.svg === 'mods/workspace-chrome/chevron-down.svg')).toBe(true);
+      const stem = parts.find(node => call(node, 'top')?.[0] === 26 && call(node, 'w')?.[0] === 1);
+      expect(stem && call(stem, 'left')).toEqual([23.5]);
+      expect(stem && call(stem, 'bottom')).toEqual([0]);
+    }
+    const glyph = byId(root, 'sp-s1')!.children.flatMap(all).find(node => node.svg?.startsWith('mods/spider-agents/space-'));
+    expect(glyph && call(glyph, 'left')).toEqual([17]);
+    expect(glyph && call(glyph, 'size')).toEqual([14]);
+  });
+
+  it(`${version}: restores all folded space pills and blocked-child attention`, async () => {
+    const test = fixture(version);
+    seedConsoles(test);
+    test.nativeTerminals.find(row => row.address === 'subviewer').status = 'blocked';
+    await test.ready();
+    test.state.set('agents.sort', 'grouped');
+    test.view.folded.add('sp-s1');
+    const root = test.view.render(test.cx);
+    for (const [kind, count, icon] of [
+      ['agents', '3', 'mods/spider-tabs/spider.svg'],
+      ['subagents', '1', 'mods/spider-agents/bot.svg'],
+      ['consoles', '2', 'mods/workspace-chrome/terminal.svg'],
+    ]) {
+      const pill = byId(root, `group-count-${kind}-sp-s1`);
+      expect(pill?.children).toContain(count);
+      expect(pill?.children.flatMap(all).some(node => node.svg === icon)).toBe(true);
+      expect(pill && call(pill, 'bg')).toEqual([palette.hover]);
+    }
+    expect(call(byId(root, 'group-count-subagents-sp-s1') ?? { calls: [] } as any, 'text_color')).toEqual([palette.blocked]);
+    expect(byId(root, 'sp-s1')!.children.flatMap(all).some(node => call(node, 'bg')?.[0] === palette.blocked + '26')).toBe(true);
+    expect(byId(root, 'sp-s1')!.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-right.svg')).toBe(true);
+    expect(byId(root, 'ag-local')).toBeUndefined();
+  });
+
+  it(`${version}: a folded machine signals blocked members and children`, async () => {
+    const test = fixture(version);
+    seedConsoles(test);
+    test.nativeAgents[1].status = 'blocked';
+    test.nativeTerminals.find(row => row.address === 'subviewer').status = 'blocked';
+    await test.ready();
+    test.view.foldedMachines.add('machine:');
+    const root = test.view.render(test.cx);
+    expect(call(byId(root, 'machine-subagents-local')!, 'text_color')).toEqual([palette.blocked]);
+    expect(call(byId(root, 'machine-agents-local')!, 'text_color')).toEqual([palette.blocked]);
+    expect(byId(root, 'machine:')!.children.flatMap(all).some(node => call(node, 'bg')?.[0] === palette.blocked + '26')).toBe(true);
+  });
+
+  it(`${version}: folded machine attention includes blocked and failed agents without children`, async () => {
+    const test = fixture(version);
+    await test.ready();
+    test.view.foldedMachines.add('machine:');
+    for (const status of ['blocked', 'error']) {
+      test.nativeAgents[1].status = status;
+      const root = test.view.render(test.cx);
+      expect(call(byId(root, 'machine-agents-local')!, 'text_color')).toEqual([palette.blocked]);
+      expect(byId(root, 'machine:')!.children.flatMap(all).some(node => call(node, 'bg')?.[0] === palette.blocked + '26')).toBe(true);
+    }
+  });
+
+  it(`${version}: a stale Reconnect control cannot tear down a newly connected machine`, async () => {
+    const test = fixture(version);
+    await test.ready();
+    const reconnect = byId(test.view.render(test.cx), 'machine-reconnect-box-2.invalid')!;
+    test.inventory[1].state = 'connected';
+    await test.view.spiderConnections.refresh();
+    await reconnect.events.on_click({}, test.cx);
+    expect(test.hcCalls.filter(args => args[1] === 'rm' || args[1] === 'add')).toEqual([]);
+  });
+
+  it(`${version}: each folded space count pill opens the group in one click`, async () => {
+    const test = fixture(version);
+    seedConsoles(test);
+    await test.ready();
+    test.state.set('agents.sort', 'grouped');
+    for (const kind of ['agents', 'subagents', 'consoles']) {
+      test.view.folded.add('sp-s1');
+      const root = test.view.render(test.cx);
+      byId(root, `group-count-${kind}-sp-s1`)!.events.on_click({}, test.cx);
+      expect(byId(test.view.render(test.cx), 'ag-local')).toBeDefined();
+    }
+  });
+
+  it(`${version}: offers Reconnect only for disconnected or rebuilt machines`, async () => {
+    const test = fixture(version);
+    await test.ready();
+    let root = test.view.render(test.cx);
+    expect(byId(root, 'machine-reconnect-box-1.invalid')).toBeUndefined();
+    expect(byId(root, 'machine-reconnect-box-3.invalid')).toBeUndefined();
+    expect(byId(root, 'machine-reconnect-box-2.invalid')).toBeDefined();
+    test.inventory[1].state = 'unreachable';
+    await test.view.spiderConnections.refresh();
+    root = test.view.render(test.cx);
+    expect(byId(root, 'machine-reconnect-box-2.invalid')).toBeDefined();
+  });
+
+  it(`${version}: a saved repair never offers Reconnect on a needs-login machine`, async () => {
+    const saved = new Map([['machines.reconnecting', JSON.stringify({ 'box-3.invalid': {
+      machine: { name: 'box-3.invalid', state: 'needs_login', target: 'ssh-three.invalid' }, removed: true, busy: false, error: 'login required',
+    } })]]);
+    const test = fixture(version, { ports: { localStorage: {
+      getItem: (key: string) => saved.get(key) ?? null,
+      setItem: (key: string, value: string) => saved.set(key, value), removeItem: (key: string) => saved.delete(key),
+    } } });
+    await test.ready();
+    const root = test.view.render(test.cx);
+    expect(Boolean(byId(root, 'machine-reconnect-box-3.invalid'))).toBe(false);
+    expect(byId(root, 'machine-login-copy-box-3.invalid')).toBeDefined();
+  });
+
+  it(`${version}: checks clipboard support on the event context, not the render context`, async () => {
+    const test = fixture(version);
+    await test.ready();
+    const renderCx = { ...test.cx, write_to_clipboard: undefined };
+    const root = test.view.render(renderCx);
+    expect(texts(root)).not.toContain("Copy isn't available in this Herdr version");
+    const copy = byId(root, 'machine-login-copy-box-3.invalid');
+    expect(copy).toBeDefined();
+    copy?.events.on_click({}, test.cx);
+    expect(test.copied).toEqual(['hc machine login box-3.invalid']);
+  });
+
+  it(`${version}: native next and previous navigation follows the visible grouping`, async () => {
+    const orders: string[][] = [];
+    const test = fixture(version, { ports: { setAgentOrder: (order: string[]) => orders.push(order) } });
+    await test.ready();
+    for (const sort of ['machine', 'grouped', 'priority']) {
+      test.state.set('agents.sort', sort);
+      const root = test.view.render(test.cx);
+      const visible = all(root).filter(node => node.id?.startsWith('ag-') && node.id !== 'ag-list' && node.id !== 'ag-sort').map(node => node.id!.slice(3));
+      expect(orders.at(-1)).toEqual(visible);
+    }
+  });
+
+  it(`${version}: a machine named local does not collide with This computer element ids`, async () => {
+    const test = fixture(version);
+    test.inventory.push({ name: 'local', id: 'remote-local', state: 'connected', target: 'ssh-local.invalid' });
+    test.layouts.push({ name: 'local', layout: 'ready' });
+    test.nativeAgents.push(agent('local/owner', 'remote-local-pane'));
+    test.nativeTerminals.push(terminal('local/owner'));
+    await test.ready();
+    test.view.foldedMachines.add('machine:');
+    test.view.foldedMachines.add('machine:local');
+    const root = test.view.render(test.cx);
+    const ids = all(root).flatMap(node => node.id ? [node.id] : []);
+    expect(ids.length).toBe(new Set(ids).size);
+    expect(byId(root, 'machine-dot-local')).toBeDefined();
+    expect(byId(root, 'machine-dot-remote:local')).toBeDefined();
+    expect(byId(root, 'machine-agents-remote:local')?.children).toContain('1');
+  });
+
+  it(`${version}: one click on the folded agent consoles pill reveals its consoles group`, async () => {
+    const test = fixture(version);
+    seedConsoles(test);
+    await test.ready();
+    test.view.folded.add('local');
+    let root = test.view.render(test.cx);
+    byId(root, 'console-count-local')!.events.on_click({}, test.cx);
+    root = test.view.render(test.cx);
+    expect(byId(root, 'sub-console:box-4.invalid/console-a')).toBeDefined();
+    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 1, expanded']);
+  });
+
+  it(`${version}: the consoles caret and icon use the same columns as child rows`, async () => {
+    const test = fixture(version);
+    seedConsoles(test);
+    await test.ready();
+    test.state.set('agents.sort', 'priority');
+    const root = test.view.render(test.cx);
+    const group = byId(root, consoleId('local'))!;
+    const caret = group.children.flatMap(all).find(node => node.svg === 'mods/workspace-chrome/chevron-right.svg')!;
+    const icon = group.children.flatMap(all).find(node => node.svg === 'mods/workspace-chrome/terminal.svg');
+    expect(call(caret, 'left')).toEqual([30]);
+    expect(icon && call(icon, 'left')).toEqual([43]);
+  });
+
   it(`${version}: replays malformed agent rows as a muted diagnostic and recovers`, async () => {
     const test = fixture(version);
     await test.ready();
@@ -377,11 +571,11 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     await test.ready();
     let root = test.view.render(test.cx);
     expect(call(byId(root, 'machine-dot-local')!, 'bg')).toEqual([palette.ansi2]);
-    expect(call(byId(root, 'machine-dot-box-1.invalid')!, 'bg')).toEqual([palette.ansi2]);
-    expect(call(byId(root, 'machine-dot-box-2.invalid')!, 'bg')).toEqual([palette.dim]);
-    expect(call(byId(root, 'machine-dot-box-3.invalid')!, 'bg')).toEqual([palette.dim]);
-    expect(call(byId(root, 'machine-dot-box-4.invalid')!, 'bg')).toEqual([palette.ansi2]);
-    expect(call(byId(root, 'machine-dot-box-5.invalid')!, 'bg')).toEqual([palette.dim]);
+    expect(call(byId(root, 'machine-dot-remote:box-1.invalid')!, 'bg')).toEqual([palette.ansi2]);
+    expect(call(byId(root, 'machine-dot-remote:box-2.invalid')!, 'bg')).toEqual([palette.dim]);
+    expect(call(byId(root, 'machine-dot-remote:box-3.invalid')!, 'bg')).toEqual([palette.dim]);
+    expect(call(byId(root, 'machine-dot-remote:box-4.invalid')!, 'bg')).toEqual([palette.ansi2]);
+    expect(call(byId(root, 'machine-dot-remote:box-5.invalid')!, 'bg')).toEqual([palette.dim]);
     const localHeading = byId(root, 'machine:')!, remoteHeading = byId(root, 'machine:box-3.invalid')!;
     expect(localHeading.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/monitor.svg')).toBe(true);
     expect(remoteHeading.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/server.svg')).toBe(true);
@@ -393,7 +587,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     test.failRemote();
     await test.view.spiderConnections.refresh();
     root = test.view.render(test.cx);
-    expect(call(byId(root, 'machine-dot-box-1.invalid')!, 'bg')).toEqual([palette.dim]);
+    expect(call(byId(root, 'machine-dot-remote:box-1.invalid')!, 'bg')).toEqual([palette.dim]);
     expect(call(byId(root, 'machine-dot-local')!, 'bg')).toEqual([palette.ansi2]);
     expect(test.snapshots.at(-1).machines.find((item: any) => item.name === 'box-1.invalid')).toEqual({ name: 'box-1.invalid', layout: 'unavailable' });
     expect(test.hcCalls.filter(args => args[1] === 'rm' || args[1] === 'add')).toEqual([]);
@@ -402,12 +596,14 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: offers selectable login guidance when clipboard support is absent`, async () => {
     const test = fixture(version, { clipboard: false });
     await test.ready();
-    const root = test.view.render(test.cx);
+    let root = test.view.render(test.cx);
+    byId(root, 'machine-login-copy-box-3.invalid')?.events.on_click({}, test.cx);
+    root = test.view.render(test.cx);
     const login = byId(root, 'machine-login-text-box-3.invalid')!;
     expect(call(login, 'selectable')).toEqual([true]);
     expect(login.children).toContain('hc machine login box-3.invalid');
     expect(texts(root)).toContain("Copy isn't available in this Herdr version");
-    expect(byId(root, 'machine-login-copy-box-3.invalid')).toBeUndefined();
+    expect(byId(root, 'machine-login-copy-box-3.invalid')).toBeDefined();
     expect(test.copied).toEqual([]);
   });
 
@@ -425,11 +621,12 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
 
   it(`${version}: escapes untrusted machine names in selectable login guidance`, async () => {
     const test = fixture(version, { clipboard: false });
-    test.inventory.push({ name: 'box<&', id: 'core-unsafe', state: 'needs_login', target: 'ssh-unsafe' } as any);
+    test.inventory.push({ name: 'box<&', id: 'core-unsafe', state: 'needs_login', target: 'ssh-unsafe.invalid' } as any);
     test.layouts.push({ name: 'box<&', layout: 'ready' });
     await test.ready();
     const root = test.view.render(test.cx);
-    const login = byId(root, 'machine-login-text-box<&')!;
+    byId(root, 'machine-login-copy-box<&')?.events.on_click({}, test.cx);
+    const login = byId(test.view.render(test.cx), 'machine-login-text-box<&')!;
     expect(call(login, 'selectable')).toEqual([true]);
     expect(login.children).toContain('hc machine login &#39;box&lt;&amp;&#39;');
   });
@@ -447,12 +644,12 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
 
   it(`${version}: keeps a disconnected temporary idle machine as a heading`, async () => {
     const test = fixture(version);
-    test.inventory.push({ name: 'box-6.invalid', id: 'core-6', state: 'disconnected', target: 'ssh-six', temporary: true } as any);
+    test.inventory.push({ name: 'box-6.invalid', id: 'core-6', state: 'disconnected', target: 'ssh-six.invalid', temporary: true } as any);
     test.layouts.push({ name: 'box-6.invalid', layout: 'unavailable' });
     await test.ready();
     const root = test.view.render(test.cx);
     expect(byId(root, 'machine:box-6.invalid')).toBeDefined();
-    expect(call(byId(root, 'machine-dot-box-6.invalid')!, 'bg')).toEqual([palette.dim]);
+    expect(call(byId(root, 'machine-dot-remote:box-6.invalid')!, 'bg')).toEqual([palette.dim]);
   });
 
   it(`${version}: counts only live reachable children when a machine group is folded`, async () => {
@@ -484,7 +681,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     await byId(root, 'machine-reconnect-box-2.invalid')!.events.on_click({}, test.cx);
     expect(test.hcCalls.filter(args => args[1] === 'rm' || args[1] === 'add')).toEqual([
       ['machine', 'rm', 'box-2.invalid', '--json'],
-      ['machine', 'add', 'ssh-two', '--name', 'box-2.invalid', '--temp', '--json'],
+      ['machine', 'add', 'ssh-two.invalid', '--name', 'box-2.invalid', '--temp', '--json'],
     ]);
   });
 
@@ -685,7 +882,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       const group = byId(root, consoleId('local'))!;
       expect(group).toBeDefined();
       expect(byId(root, consoleId('local', 'run-local'))).toBeDefined();
-      expect(byId(root, consoleId('box-1.invalid/pinned'))).toBeDefined();
+      expect(byId(root, consoleId('box-1.invalid/pinned'))).toBeUndefined();
       expect(byId(root, 'sub-run-local')).toBeDefined();
       expect(byId(root, 'sub-console:box-4.invalid/console-a')).toBeUndefined();
       expect(group.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/chevron-right.svg')).toBe(true);
@@ -794,8 +991,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     oldConsole.events.on_click({}, test.cx);
     expect(test.execCalls).toEqual([]);
     root = test.view.render(test.cx);
-    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 0, expanded']);
-    expect(byId(root, 'sub-console:box-4.invalid/console-a')!.events.on_click).toBeUndefined();
+    expect(byId(root, consoleId('local'))).toBeUndefined();
+    expect(byId(root, 'sub-console:box-4.invalid/console-a')).toBeUndefined();
   });
 
   it(`${version}: excludes an unavailable remote native child from focus and live counts`, async () => {
@@ -832,8 +1029,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     oldConsole.events.on_click({}, test.cx);
     expect(test.execCalls).toEqual([]);
     root = test.view.render(test.cx);
-    expect(call(byId(root, consoleId('box-1.invalid/pinned'))!, 'accessibility_label')).toEqual(['Consoles, 0, expanded']);
-    expect(byId(root, 'sub-console:box-4.invalid/remote-owner-console')!.events.on_click).toBeUndefined();
+    expect(byId(root, consoleId('box-1.invalid/pinned'))).toBeUndefined();
+    expect(byId(root, 'sub-console:box-4.invalid/remote-owner-console')).toBeUndefined();
   });
 
   it(`${version}: leaves command history folded until its individual console is opened`, async () => {
@@ -866,18 +1063,18 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(raw()).toEqual(before);
   });
 
-  it(`${version}: keeps a zero-count retained console group within finished-row controls`, async () => {
+  it(`${version}: hides a retained-only console group until finished rows are requested`, async () => {
     const test = fixture(version);
     test.nativeTerminals.push({ ...terminal('box-4.invalid/old', { 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid' }), parent: 'local', state: 'finished', finishedAt: Date.now(), exitCode: 0, reason: 'exited' });
     await test.ready();
     let root = test.view.render(test.cx);
-    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 0, collapsed']);
-    byId(root, consoleId('local'))!.events.on_click({}, test.cx);
-    root = test.view.render(test.cx);
+    expect(byId(root, consoleId('local'))).toBeUndefined();
     expect(byId(root, 'sub-console:box-4.invalid/old')).toBeUndefined();
     byId(root, 'finished-toggle-local')!.events.on_click({}, test.cx);
     root = test.view.render(test.cx);
-    expect(byId(root, 'sub-console:box-4.invalid/old')).toBeDefined();
+    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 0, collapsed']);
+    byId(root, consoleId('local'))!.events.on_click({}, test.cx);
+    expect(byId(test.view.render(test.cx), 'sub-console:box-4.invalid/old')).toBeDefined();
   });
 
   it(`${version}: keeps a parked primary's children and consoles under that owner`, async () => {
@@ -917,7 +1114,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(test.execCalls).toEqual([]);
   });
 
-  it(`${version}: validates console commands and keeps a zero-count unavailable group`, async () => {
+  it(`${version}: validates console commands and hides a group with no live consoles`, async () => {
     const test = fixture(version);
     seedConsoles(test);
     await test.ready();
@@ -929,9 +1126,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(byId(test.view.render(test.cx), 'sub-console:box-4.invalid/console-a')).toBeDefined();
     test.nativeTerminals.splice(test.nativeTerminals.findIndex(item => item.address === 'box-4.invalid/console-a'), 1);
     let root = test.view.render(test.cx);
-    const group = byId(root, consoleId('local'))!;
-    expect(call(group, 'accessibility_label')).toEqual(['Consoles, 0, expanded']);
-    expect(group.children.flatMap(all).flatMap(node => node.children)).toContain('0');
+    expect(byId(root, consoleId('local'))).toBeUndefined();
+    expect(byId(root, 'sub-console:box-5.invalid/console-away')).toBeUndefined();
     const [away] = test.nativeTerminals.splice(test.nativeTerminals.findIndex(item => item.address === 'box-5.invalid/console-away'), 1);
     root = test.view.render(test.cx);
     expect(byId(root, consoleId('local'))).toBeUndefined();
@@ -939,7 +1135,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(byId(test.view.render(test.cx), consoleId('local'))).toBeUndefined();
     test.nativeTerminals.push(away);
     root = test.view.render(test.cx);
-    expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 0, expanded']);
+    expect(byId(root, consoleId('local'))).toBeUndefined();
     expect(test.execCalls).toEqual([]);
   });
 

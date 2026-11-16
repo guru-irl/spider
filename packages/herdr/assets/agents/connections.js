@@ -18,7 +18,7 @@ const validMachine = machine => machine && typeof machine.name === 'string' && m
 const machineList = value => Array.isArray(value?.machines) && value.machines.every(validMachine) ? value.machines : null;
 
 export function createMachineConnections({ hc, storage, notify }) {
-  let inventory = [], snapshot = [], coreId = null, serial = 0, closed = false;
+  let inventory = [], snapshot = [], coreId = null, serial = 0, closed = false, observedOnce = false;
   const repairs = new Map(), pending = new Map();
   try {
     const saved = JSON.parse(storage.getItem(JOURNAL) ?? '{}');
@@ -46,7 +46,10 @@ export function createMachineConnections({ hc, storage, notify }) {
     if (closed || generation !== serial) return;
     coreId = typeof local?.core?.id === 'string' && local.core.id ? local.core.id : null;
     const observed = machineList(remote);
-    if (observed) inventory = [...new Map(observed.map(machine => [machine.name, machine])).values()];
+    if (observed) {
+      observedOnce = true;
+      inventory = [...new Map(observed.map(machine => [machine.name, machine])).values()];
+    }
     snapshot = [
       ...(coreId ? [{ name: null, state: 'connected' }] : []),
       ...(observed ?? []).map(machine => ({ name: machine.name, state: machine.state })),
@@ -108,6 +111,7 @@ export function createMachineConnections({ hc, storage, notify }) {
       return [...known.values()];
     },
     get snapshot() { return snapshot; },
+    get observed() { return observedOnce; },
     get coreId() { return coreId; },
     repair: name => repairs.get(name) ?? null,
     refresh,

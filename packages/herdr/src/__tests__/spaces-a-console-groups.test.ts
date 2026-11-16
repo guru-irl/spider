@@ -103,3 +103,15 @@ it('leaves raw console rows available outside sidebar folds', () => {
   expect(rows.filter(row => row.kind === 'console').map(row => row.key)).toEqual(before);
   expect(before).toEqual(['nested-console', 'console-a', 'console-b']);
 });
+
+it('keeps interleaved sibling consoles and their descendants contiguous', () => {
+  const rows = [child('c1', 'console'), child('job1', 'remote', { parentKey: 'c1', depth: 1 }),
+    child('s1', 'subagent'), child('nested', 'console', { parentKey: 's1', depth: 1 }),
+    child('c2', 'console'), child('job2', 'remote', { parentKey: 'c2', depth: 1 })];
+  const initial = projectConsoleGroups(rows, 'owner', new Set());
+  const projected = projectConsoleGroups(rows, 'owner', new Set([group(initial, null).key]));
+  expect(projected.map(item => item.kind === 'console-group' ? `group:${item.parentKey}` : item.row.key))
+    .toEqual(['group:null', 'c1', 'job1', 'c2', 'job2', 's1', 'group:s1']);
+  expect(group(projected, null).count).toBe(2);
+  expect(group(projected, 's1').expanded).toBe(false);
+});

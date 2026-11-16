@@ -11,8 +11,33 @@ export function projectConsoleGroups(rows, ownerId, expandedGroups) {
     }
     if (!row.retained && row.status !== 'unreachable' && row.terminal?.state === 'live') groups.get(row.parentKey).count++;
   }
-  const projected = [], emitted = new Set(), hidden = new Set();
+  const siblings = new Map();
   for (const row of rows) {
+    if (!siblings.has(row.parentKey)) siblings.set(row.parentKey, []);
+    siblings.get(row.parentKey).push(row);
+  }
+  const ordered = [], visited = new Set();
+  const append = row => {
+    if (visited.has(row.key)) return;
+    visited.add(row.key);
+    ordered.push(row);
+    visit(row.key);
+  };
+  const visit = parent => {
+    const children = siblings.get(parent) ?? [];
+    let consolesEmitted = false;
+    for (const row of children) {
+      if (row.kind !== 'console') append(row);
+      else if (!consolesEmitted) {
+        consolesEmitted = true;
+        children.filter(child => child.kind === 'console').forEach(append);
+      }
+    }
+  };
+  visit(null);
+  rows.forEach(append);
+  const projected = [], emitted = new Set(), hidden = new Set();
+  for (const row of ordered) {
     if (hidden.has(row.parentKey)) { hidden.add(row.key); continue; }
     if (row.kind === 'console') {
       const group = groups.get(row.parentKey);

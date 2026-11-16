@@ -145,6 +145,20 @@ function renderFixture(version: SpacesAVersion, options: { width?: number; check
 }
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  it(`${version}: uses overflow-only scrollbars and 14 pixel shapes in wide and narrow lists`, () => {
+    for (const width of [268, 76]) {
+      const fixture = renderFixture(version, { width });
+      const rendered = all(fixture.view.render());
+      const shapes = rendered.filter(node => node.svg?.startsWith('mods/spider-agents/space-'));
+      expect(shapes.map(node => node.calls.find(([name]) => name === 'size')?.[1])).toEqual([[14], [14]]);
+      expect(rendered.filter(node => node.calls.some(([name]) => name === 'mode')).map(node => node.calls.find(([name]) => name === 'mode')?.[1])).toEqual([['scrolling']]);
+      expect(rendered.some(node => node.calls.some(([name]) => name === 'overflow_y_scrollbar'))).toBe(false);
+      if (version === '0.1.16' && width === 268) {
+        expect(rendered.find(node => node.id === 'spaces-list')?.calls.some(([name]) => name === 'track_scroll')).toBe(true);
+      }
+    }
+  });
+
   it(`${version}: renders flat local shapes in stored order without machine activity or automatic moves`, async () => {
     const fixture = renderFixture(version);
     await fixture.flush();

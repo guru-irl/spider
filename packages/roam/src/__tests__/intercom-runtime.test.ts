@@ -267,6 +267,22 @@ const destination = (address: SessionAddress): RemoteSessionInfo => ({ remote: t
   machineAlias: "hub.invalid", homeEpoch: null, activationEpoch: "recipient-generation", endpointEpoch: "recipient-generation",
   cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 });
 
+it("a live local presence can close its move intake without leaking roster fields into its endpoint", async () => {
+  const f = machineFixture(), address = { sessionId: "moving-session", scopeId: null };
+  f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,2,NULL,1)").run(address.sessionId, HUB);
+  let owns = true;
+  f.options.moveOwns = async () => owns;
+  Object.assign(f.broker, { async intake(_action: string, fence: { generation: string }) { return fence.generation; } });
+  const service = await makeMachine(f.options); await service.start();
+  f.broker.emit("presence", [{ ...localPresence(address, "source-generation"), homeEpoch: 2 }]);
+  const fence = await service.move.intake.close(address, "move-a", 2, "closure-generation");
+  expect(fence).toEqual({ address, moveId: "move-a", expectedEpoch: 2, generation: "closure-generation" });
+  expect(await service.move.endpoint(address)).toEqual({ address, machineId: HUB, homeEpoch: 2, activationEpoch: "source-generation" });
+  owns = false;
+  await expect(service.move.intake.close(address, "move-a", 2, "closure-generation")).rejects.toMatchObject({
+    blockers: [{ kind: "intercom-owner-unknown", id: address.sessionId }] });
+}, 5000);
+
 it("a ready roaming bridge exposes strict move blocker snapshots", async () => {
   const f = machineFixture(), service = await makeMachine(f.options);
   await service.start();

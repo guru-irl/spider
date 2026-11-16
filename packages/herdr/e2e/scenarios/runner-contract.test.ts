@@ -1,13 +1,42 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
 import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers } from '../../../../scripts/herdr-e2e.mjs';
+import { verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
 
 vi.mock('../harness/scenario.js', async importOriginal => ({
   ...await importOriginal<typeof import('../harness/scenario.js')>(), registerScenarios: () => {},
 }));
 describe('runner boundary and report', () => {
+  it('pins the Linux release and selects registered headless stories for CI', async () => {
+    const file = resolve('packages/herdr/e2e/controls/ci-stories.json');
+    expect(existsSync(file)).toBe(true);
+    const config = JSON.parse(readFileSync(file, 'utf8')) as {
+      version: string; url: string; sha256: string; binarySha256: string; stories: string[];
+    };
+    expect(config).toMatchObject({
+      version: '0.1.16',
+      url: 'https://releases.herdr.dev/core/0.1.16/herdr-core-linux-x86_64.tar.gz',
+      sha256: '58d6861176dc6fe905b58880d5bff07a9959be613a98e5d66b4583b04b6cfa45',
+      binarySha256: '8c4c0930974e2b31978cbbb14b892cd29d5ace917f4c04ce6dfdd5573e1fe193',
+    });
+    expect(config.stories).toEqual(expect.arrayContaining(['R01', 'R03', 'R04', 'R05', 'R09', 'R11', 'R12', 'R13', 'R14']));
+    expect(new Set(config.stories).size).toBe(config.stories.length);
+    expect(config.stories.every(id => profileIds.headless.includes(id))).toBe(true);
+    // @ts-ignore Vite provides import.meta.glob during test transformation.
+    const definitions = await discoverScenarios(import.meta.glob('./*.test.ts'));
+    const selected = selectScenarios(definitions, parseOptions(['--tier', 'headless', '--story', config.stories.join(',')], {}));
+    expect(selected.map((definition: { id: string }) => definition.id)).toEqual([...config.stories].sort());
+  }, 5000);
+  it('accepts the pinned Linux hc executable and rejects unknown binaries', () => {
+    expect(verifyHcBinaryPin('0.1.16', '8c4c0930974e2b31978cbbb14b892cd29d5ace917f4c04ce6dfdd5573e1fe193')).toBe('0.1.16');
+    expect(verifyHcBinaryPin('0.1.16', 'c617feeb4d1b5f59b30e4ab6b4e9e7f7ac114d0681d207d9f41efa12c813b922')).toBe('0.1.16');
+    expect(() => verifyHcBinaryPin('0.1.16', '0'.repeat(64))).toThrow(/digest mismatch/);
+    expect(() => verifyHcBinaryPin('0.1.17', '8c4c0930974e2b31978cbbb14b892cd29d5ace917f4c04ce6dfdd5573e1fe193')).toThrow(/unlisted/);
+  });
   it('forwards an explicit native clone only to the app worker environment', () => {
     const input = { SPIDER_HERDR_E2E_APP: '/owned/native.app/Contents/MacOS/Herdr' };
     expect(storyWorkerEnvironment({}, input, 'app')).toHaveProperty('SPIDER_HERDR_E2E_APP', input.SPIDER_HERDR_E2E_APP);

@@ -168,4 +168,18 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     await expect(setupHerdr(f.request, f.parts)).rejects.toThrow();
     await expect(readFile(join(f.h.directories.app, 'mods/spider-menu/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  test(`${version} reports a missing built-in directory before installing`, async () => {
+    const f = await releaseFixture(version);
+    await rm(join(f.h.directories.app, 'mods/new-menu'), { recursive: true });
+    await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'upstream-source-unknown', message: expect.stringContaining('new-menu') });
+    await expect(readFile(join(f.h.directories.app, 'mods/spider-menu/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test(`${version} rejects changes to a stock mod even when it is not cloned`, async () => {
+    const f = await releaseFixture(version), manifest = join(f.h.directories.app, 'mods/new-menu/mod.json');
+    await writeFile(manifest, (await readFile(manifest, 'utf8')) + '\n');
+    await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'upstream-source-unknown', message: expect.stringContaining('new-menu') });
+    await expect(readFile(join(f.h.directories.app, 'mods/spider-menu/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 }

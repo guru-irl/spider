@@ -529,7 +529,13 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     const stock: Record<string, Record<string, string>> = {};
     const stockKinds = patches.recipe ? [...new Set(Object.keys(patches.recipe.sourceHashes).filter(name => name.startsWith('mods/')).map(name => name.split('/')[1]!))] : kinds;
     for (const kind of stockKinds) {
-      const files = Object.fromEntries((await assetFiles(join(request.config.app.home, 'mods', kind))).map(file => [file.relative, file.bytes.toString()]));
+      let sources: Awaited<ReturnType<typeof assetFiles>>;
+      try { sources = await assetFiles(join(request.config.app.home, 'mods', kind)); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new HerdrError('upstream-source-unknown', `Unverified ${appVersion} built-in: ${kind}`);
+        throw error;
+      }
+      const files = Object.fromEntries(sources.map(file => [file.relative, file.bytes.toString()]));
       if (patches.recipe) {
         const known = Object.fromEntries(Object.entries(patches.recipe.sourceHashes).filter(([name]) => name.startsWith(`mods/${kind}/`)).map(([name, hash]) => [name.slice(`mods/${kind}/`.length), hash]));
         if (Object.keys(files).length !== Object.keys(known).length || Object.entries(files).some(([name, bytes]) => digest(Buffer.from(bytes)) !== known[name])) throw new HerdrError('upstream-source-unknown', `Unverified ${appVersion} built-in: ${kind}`);

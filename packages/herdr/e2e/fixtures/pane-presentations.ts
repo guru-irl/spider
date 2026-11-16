@@ -82,7 +82,8 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
         if (!Array.isArray(inventory.terminals)) throw new Error('owned core inventory is unavailable');
         // window.rs checked_closed removes a pane only on a proved exit or kill.
         for (const address of [...proxyDisplays]) {
-          if (!inventory.terminals.some(row => row.address === address && row.state === 'finished')) continue;
+          const listed = inventory.terminals.find(row => row.address === address);
+          if (listed && listed.state !== 'finished') continue;
           const proof = await hc(['get', address, '--json']);
           if (proof.address !== address || proof.state !== 'finished' || !['exited', 'killed'].includes(proof.reason)) continue;
           const pane = spaces.flatMap(space => space.tabs).flatMap(tab => tab.terminals).find(row => row.terminal === address)?.pane;

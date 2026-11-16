@@ -56,9 +56,9 @@ describe('cross-machine presentation fixtures', () => {
     expect((await app('status', {})).focused_pane).toBe(owner.pane);
     expect(presentationRows(await app('ls', {}) as PresentationDocument)).toEqual(rows);
   });
-  it('removes a proxy pane only after the core proves it exited and leaves the execution program alone', async () => {
+  it.each([true, false])('removes only a proved exited proxy, with finished inventory rows=%s', async includesFinished => {
     let state = 'live', reason: string | null = null; const calls: string[][] = [];
-    const app = createPresentationApp(async args => { calls.push([...args]); return args[0] === 'run' ? { address: 't1' } : args[0] === 'ls' ? { terminals: [{ address: 't1', state: 'live' }, { address: 't2', state }] } : { address: args[1], state, reason, labels: { 'spider.kind': 'pane-proxy' } }; });
+    const app = createPresentationApp(async args => { calls.push([...args]); return args[0] === 'run' ? { address: 't1' } : args[0] === 'ls' ? { terminals: [{ address: 't1', state: 'live' }, ...(includesFinished || state === 'live' ? [{ address: 't2', state }] : [])] } : { address: args[1], state, reason, labels: { 'spider.kind': 'pane-proxy' } }; });
     const owner = await app('space.new', { argv: ['/bin/cat'] });
     const shown = await app('terminal.keep', { terminal: 't2', place: 'down' });
     state = 'finished'; reason = 'exited';

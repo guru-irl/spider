@@ -157,6 +157,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   async function apply(request: PaneServiceRequest): Promise<PaneServiceReply> {
     await live();
     if (request.op === 'snapshot') {
+      if (!machines.length) machines = await ports.machines();
       const state = await ports.store.read();
       void reconcile().catch(() => {});
       return paneSnapshot(state, machines, privateInventory(), facts);

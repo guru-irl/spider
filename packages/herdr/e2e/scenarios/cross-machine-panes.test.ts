@@ -42,6 +42,12 @@ async function mutate(f: PaneFixture, p: PanePresentation, operation: 'park' | '
 
 async function picker(suite: Suite): Promise<void> {
   const f = await preparePanePresentations(suite, { disconnectedChoice: true });
+  const presented = async (id: string) => {
+    const p = (await f.state()).presentations.find(row => row.id === id);
+    if (!p?.proxy || !p.slot) return null;
+    const rows = presentationRows(await f.app('ls', {}) as PresentationDocument);
+    return rows.some(row => row.terminal === p.proxy && row.space === p.slot!.space && row.tab === p.slot!.tab && row.pane === p.slot!.pane) ? p : null;
+  };
   const snapshot = await f.snapshot(), local = snapshot.machines.find(row => row.alias === null)!;
   expect(local).toMatchObject({ key: suite.cores!.local.coreId, label: 'This computer', state: 'connected' });
   expect(snapshot.machines.find(row => row.key === 'box-2.invalid')).toMatchObject({ state: 'disconnected', coreId: null });
@@ -65,7 +71,7 @@ async function picker(suite: Suite): Promise<void> {
     await ui.view.activate('box-2.invalid');
     expect((await f.state()).launches).toHaveLength(before);
     await ui.select(suite.cores!.machine, method);
-    const p = await waitFor('chosen-machine operation acknowledges its presentation', async () => (await f.state()).presentations.find(row => row.id === `pane-${operationId}`), row => Boolean(row?.launch === 'acknowledged' && row.visibility === 'visible' && row.slot?.pane), deadline(20000));
+    const p = await waitFor('chosen-machine operation acknowledges its presentation', () => presented(`pane-${operationId}`), row => Boolean(row?.launch === 'acknowledged' && row.visibility === 'visible' && row.slot?.pane), deadline(20000));
     expect(p).toBeDefined(); if (!p) throw new Error('chosen-machine presentation missing');
     await observed(f, p);
     expect(targetFacts(await f.terminal(p.target.address)).currentCwd).toBe(f.remoteEnv.HOME);
@@ -82,7 +88,7 @@ async function picker(suite: Suite): Promise<void> {
   expect(menu.overlays[0].mod).toBe('spider-new-menu');
   await actions.chooseMenuProgram(menu.overlays[0].props.machineTicket, { kind: 'agent', key: 'pi' }, f.anchor.space, menu.host);
   expect(menu.notices).toEqual([]);
-  const agent = await waitFor('menu operation acknowledges its agent presentation', async () => (await f.state()).presentations.find(row => row.id === `pane-${menuIntent.operationId}`), row => Boolean(row?.launch === 'acknowledged' && row.visibility === 'visible' && row.slot?.pane), deadline(20000));
+  const agent = await waitFor('menu operation acknowledges its agent presentation', () => presented(`pane-${menuIntent.operationId}`), row => Boolean(row?.launch === 'acknowledged' && row.visibility === 'visible' && row.slot?.pane), deadline(20000));
   if (!agent) throw new Error('agent presentation missing');
   expect(agent.role).toBe('agent'); await observed(f, agent);
   const once = (await f.state()).launches.length;
@@ -115,7 +121,8 @@ async function shell(suite: Suite): Promise<void> {
   expect(attaches.some(record => record.argv.join(' ') === `attach --history 100 ${p.target.coreId}/${p.target.terminalId}`)).toBe(true);
   const target = await f.terminal(p.target.address), proxy = await f.terminal(p.proxy!);
   const headers = await paneHeaderFunctions(f.packageRoot), facts = targetFacts(target);
-  expect(headers.resolvePaneHeaderFacts({ address: p.proxy, labels: proxy.labels, programIsAgent: false, nativeTitle: 'Local proxy', nativeStatus: null, nativeCwd: '/wrong-local-folder' }, [p], { [p.target.address]: facts })).toMatchObject({ name: facts.title || 'Terminal', cwd, machine: { label: suite.cores!.machine, known: true } });
+  const snapshot = await waitFor('packed snapshot publishes canonical current-folder facts', () => f.snapshot(), value => value.targetFacts[p.target.address]?.currentCwd === cwd, deadline(5000));
+  expect(headers.resolvePaneHeaderFacts({ address: p.proxy, labels: proxy.labels, programIsAgent: false, nativeTitle: 'Local proxy', nativeStatus: null, nativeCwd: '/wrong-local-folder' }, [p], snapshot.targetFacts)).toMatchObject({ name: facts.title || 'Terminal', cwd, machine: { label: suite.cores!.machine, known: true } });
   expect({ cols: proxy.cols, rows: proxy.rows }).toEqual({ cols: target.cols, rows: target.rows });
   expect(target.cols).toBeGreaterThanOrEqual(60); expect(target.rows).toBeGreaterThanOrEqual(8);
   await suite.evidence('B02-coverage.json', { cwd, initialHistory: 'attach --history 100', text: 'UTF-8 input and multiline output observed on the execution core', nativeClipboardAndMouseSelection: 'blocked: owned native input unavailable', interactiveResize: 'blocked: no fixture resize API' });

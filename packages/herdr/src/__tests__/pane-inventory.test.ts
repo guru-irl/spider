@@ -3,6 +3,7 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { chmod, mkdtemp, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { PANE_ENDPOINT_BOOTSTRAP } from '../../../host/src/herdr/pane-installation.js';
 import { tmpdir } from 'node:os';
 import type { CoreId } from '../contracts.js';
 import type { MachineChoice, PaneInventoryPage } from '../panes/types.js';
@@ -152,7 +153,7 @@ test('aggregate byte limit includes the machine key and stale-row expansion', as
 });
 test('inventory uses configured Node and endpoint with a build handshake and bounded argv', async () => {
   const digest = 'a'.repeat(64), exec = vi.fn(async (_on: string, argv: readonly string[]) => {
-    const request = JSON.parse(argv[3]);
+    const request = JSON.parse(argv.at(-1)!);
     return Buffer.from(JSON.stringify(request.op === 'handshake' ? { version: 1, op: 'handshake', protocol: 1, buildDigest: digest } : { version: 1, op: 'list', page }));
   });
   const resolveMachine = vi.fn(async () => ({ on: 'box-1.invalid', coreId: machine.coreId!, nodePath: '/home/example/bin/node', endpointPath: '/home/example/runtime/pane-endpoint.mjs' }));
@@ -160,9 +161,9 @@ test('inventory uses configured Node and endpoint with a build handshake and bou
   expect(await read(machine, null)).toEqual(page);
   expect(exec).toHaveBeenCalledTimes(2);
   expect(exec.mock.calls[0][0]).toBe('box-1.invalid');
-  expect(exec.mock.calls[0][1].slice(0, 3)).toEqual(['/home/example/bin/node', '/home/example/runtime/pane-endpoint.mjs', '--json']);
-  expect(JSON.parse(exec.mock.calls[0][1][3])).toEqual({ version: 1, op: 'handshake', protocol: 1, buildDigest: digest });
-  expect(JSON.parse(exec.mock.calls[1][1][3])).toEqual({ version: 1, op: 'list', cursor: null });
+  expect(exec.mock.calls[0][1].slice(0, 3)).toEqual(['/home/example/bin/node', '-e', PANE_ENDPOINT_BOOTSTRAP]);
+  expect(JSON.parse(exec.mock.calls[0][1].at(-1)!)).toEqual({ version: 1, op: 'handshake', protocol: 1, buildDigest: digest });
+  expect(JSON.parse(exec.mock.calls[1][1].at(-1)!)).toEqual({ version: 1, op: 'list', cursor: null });
   expect(resolveMachine).toHaveBeenCalledTimes(2);
 });
 test('changed machine identity or incompatible handshake refuses without local fallback', async () => {

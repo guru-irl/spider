@@ -8,6 +8,7 @@ import { openDbReadOnly } from '@spider/db-core';
 import { mapWorkspace } from '@spider/db-core/roam/repo-map';
 import type { CoreId } from '../../../herdr/src/contracts.js';
 import type { MachineChoice, PaneTarget, RemotePaneRequest } from '../../../herdr/src/panes/types.js';
+import { PANE_ENDPOINT_BOOTSTRAP } from '../herdr/pane-installation.js';
 import { choosePaneFolder, createPaneFolderMap, createPaneFolderPorts, createPaneFolderRemoteRequest, createSourcePaneFolderPorts, type PaneFolderMapPorts } from '../herdr/pane-folders.js';
 
 const source = { coreId: 'core-1', terminalId: 't7', address: 'core-1/t7', createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'session-1', generation: 'gen-1', homeEpoch: null, runId: null, consoleId: null, name: 'Builder', cwd: '/home/example/work/src' } as PaneTarget;
@@ -98,15 +99,15 @@ test('remote folder requests use endpoint argv, handshake, and core checks', asy
   const digest = 'a'.repeat(64), identity = { coreId: 'core-2' as CoreId, alias: 'box-2.invalid', machineId: 'machine-2' };
   const resolveMachine = vi.fn(async () => ({ on: 'box-2.invalid', coreId: identity.coreId, nodePath: '/usr/bin/node', endpointPath: '/home/example/pane-endpoint.cjs' }));
   const exec = vi.fn(async (_on: string, args: string[]) => {
-    const request = JSON.parse(args[3]);
+    const request = JSON.parse(args.at(-1)!);
     return Buffer.from(JSON.stringify(request.op === 'handshake' ? { version: 1, op: 'handshake', protocol: 1, buildDigest: digest } : { version: 1, op: 'resolve-folder', result: { status: 'no-mapping', cwd: null, exists: null } }));
   });
   const request = createPaneFolderRemoteRequest({ exec, resolveMachine, buildDigest: digest });
   expect(await request(identity, { version: 1, op: 'resolve-folder', repoKey: 'https://example.invalid/team/repo.git', workspaceId: 'workspace-1', relativeCwd: 'src' })).toMatchObject({ result: { status: 'no-mapping' } });
   expect(exec).toHaveBeenCalledTimes(2);
   expect(exec.mock.calls[1][0]).toBe('box-2.invalid');
-  expect(exec.mock.calls[1][1].slice(0, 3)).toEqual(['/usr/bin/node', '/home/example/pane-endpoint.cjs', '--json']);
-  expect(JSON.parse(exec.mock.calls[1][1][3])).toMatchObject({ op: 'resolve-folder', repoKey: 'https://example.invalid/team/repo.git' });
+  expect(exec.mock.calls[1][1].slice(0, 3)).toEqual(['/usr/bin/node', '-e', PANE_ENDPOINT_BOOTSTRAP]);
+  expect(JSON.parse(exec.mock.calls[1][1].at(-1)!)).toMatchObject({ op: 'resolve-folder', repoKey: 'https://example.invalid/team/repo.git' });
   expect(resolveMachine).toHaveBeenCalledTimes(2);
   resolveMachine.mockResolvedValueOnce({ on: 'box-2.invalid', coreId: 'different-core' as CoreId, nodePath: '/usr/bin/node', endpointPath: '/home/example/pane-endpoint.cjs' });
   await expect(request(identity, { version: 1, op: 'locate-folder', cwd: '/home/example/work' })).rejects.toThrow();

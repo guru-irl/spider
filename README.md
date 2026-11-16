@@ -82,7 +82,9 @@ npm run link
 `npm run link` writes `~/.pi/agent/extensions/spider.ts`, a loader file that points at the clone's `dist/extension.js`. It also removes an existing development loader and links `~/.local/bin/spider` to the built roaming CLI. It refuses to replace an unrelated command. Add `~/.local/bin` to your shell's `PATH` if needed.
 Run `/reload` in pi or start a new process, then run `/doctor` to check the bundle, native modules, databases, and config.
 
-`spider roam --help` describes the shell controls. Roaming is disabled by default. Keep production replication and hosting disabled until phase 4 acceptance succeeds. After a Windows restart, agents hosted on a box stay stopped until someone signs in to that machine's desktop. See [Roaming replication](docs/architecture/roaming.md).
+`spider roam --help` describes the shell controls. Roaming is disabled by default. Keep production replication and hosting disabled until phase 4 acceptance succeeds. After a Windows restart, agents hosted on a box stay stopped until someone signs in to that machine's desktop.
+
+With roaming configured, use `/move box-1.invalid` on the Mac to move an idle persistent session. From the Mac shell, use `spider move <session> mac` to return it. The session keeps its ID, conversation branch, triggers, and staged and working changes. Its Mac tab becomes a remote presentation and returns to a native agent on the way back. A pending move keeps the source paused until recovery proves which machine owns it. Do not copy a transcript to bypass that pause. See [idle moves and recovery](docs/architecture/roaming.md#idle-moves) for requirements, warnings, and version 1 exclusions.
 
 Keep the clone at its linked path. See [Linked shims](docs/architecture/runtime-lifecycle.md#linked-shims) for loading precautions and fallback behavior.
 Direct `pi install git:` installs are not supported. Pi omits development dependencies, which spider needs to build the unbundled source.

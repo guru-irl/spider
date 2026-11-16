@@ -117,6 +117,67 @@ core and checks one exact-file owner and one restored trigger delivery. R05
 checks crash suspension and a durable stop. They do not prove actual systemd or
 real-box behavior; phase 4 owns those checks.
 
+## Idle moves
+
+On the Mac, `/move box-1.invalid` moves the current persistent top-level
+session. `spider move <session> box-1.invalid` also accepts an unambiguous
+session name or ID prefix. Use `mac` as the destination to return home.
+Box-side commands direct you to the Mac without creating a move request.
+Children, transient sessions, and busy sessions cannot move.
+
+The destination needs its own Pi sign-in and a mapped equivalent Git checkout.
+The move preserves the session ID, selected conversation branch, triggers,
+HEAD, staged changes, working changes, and nonignored untracked files. It maps
+the session's working directory to the destination checkout. Historical usage
+stays on its execution machine, and each machine charges only its local segment.
+Missing tool sign-ins produce warnings rather than permission to copy credentials.
+The result includes the new machine-qualified intercom address and actual route
+warnings.
+
+The hub freezes the source before it changes the home. A timeout does not
+unfreeze the source or prove that the destination never started. Use
+`spider roam recover <operation-id>` to reconcile a pending move. Cancellation
+cannot return ownership after destination readiness. Rollback requires proved
+launch failure and retirement, then a higher home epoch. Opening a copied
+participating transcript never grants ordinary work to a nonowner.
+
+A local agent stays native. Outward moves convert its remembered Mac space and
+tab to a remote presentation, and return moves convert that tab back to native.
+An unfocused pane waits for safe conversion instead of moving focus. A remote
+retarget retains its proxy identity. Machine text is `This computer` locally
+and the destination alias remotely. An unavailable app delays presentation,
+not the ownership change.
+
+Confirmed destroyed-machine recovery restores only the last validated mirrored
+prefix at a higher epoch. It keeps the remembered Mac slot and visible or parked
+intent. A reused routing alias cannot claim the restored presentation or turn a
+stale close into permission to stop its new owner. Revocation remains permanent.
+Conversation and workspace changes absent from the mirror are not recovered.
+
+Version 1 does not transfer running tools or in-flight work, copy authentication
+implicitly, enqueue box-side move requests, synchronize skills continuously,
+or orchestrate remote upgrades and uninstallations. Moves and sync require an
+awake Mac. An already active box home can continue offline.
+
+### Isolated move acceptance
+
+The Linux headless stories use the packaged CLI, extension, supervisor, and real
+Pi on owned cores. An injected host adapter supplies fake power, service, and
+limit effects. A synthetic app document observes the real presentation service
+and terminal identities. Presentation-only proxy terminals do not certify
+attach rendering or native window behavior.
+
+| Story | Required observations |
+| --- | --- |
+| R06 | Outward identity, mapped cwd, one active owner, equal Git trees, source index bytes, local usage, deferred same-tab conversion, and remote machine text. |
+| R07 | Return to the original checkout and file, higher epoch, retained history, native same-tab conversion, and local machine text. |
+| R08 | Busy-source exclusion, dropped readiness replies without unsafe rollback, same-operation recovery, and rollback only after proved launch failure. |
+| R09 | Existing mirror and revoked reconnect assertions, mirrored-prefix restoration, visible and parked intent, and reused-alias refusal. |
+| R10 | A copied participating file refuses prompts and tool work without acquiring ownership. |
+
+Native window appearance and real-box survival remain separate observations.
+A blocked observation is not a pass and does not authorize enablement.
+
 ## Move launch and cleanup
 
 Move participants launch one exact session with `wake({ sessionId, operationId })`.

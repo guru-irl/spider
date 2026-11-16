@@ -11,6 +11,7 @@ import { setupHerdr, standardHerdrConfigPath, type SetupRequest } from '../../..
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { createAppClient } from '../../../herdr/src/client/app.js';
 import * as paneModule from '../../../herdr/src/jobs/placement.js';
+import * as hostPorts from '../herdr/ports.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { mountHerdr } from '../herdr/mount.js';
 import { openSessionRunDb } from '../session-run-db.js';
@@ -194,12 +195,14 @@ it.skipIf(!real)('real hc: the mounted viewer stays displayed and read-only afte
 }, 45000);
 
 it.each([false, true])('mounted automatic viewers follow automaticSubagentPanes=%s and user opens reuse them', async automaticSubagentPanes => {
-  const createPanes = paneModule.createAuxiliaryPanes;
+  const createPanes = paneModule.createAuxiliaryPanes, openRunView = hostPorts.openRunView;
   let viewer: import('../../../herdr/src/contracts.js').TerminalAddress | undefined, settled = false;
-  vi.spyOn(paneModule, 'createAuxiliaryPanes').mockImplementation(options => {
-    const actor = createPanes({ ...options, subagentViewer: async (...args) => { viewer = await options.subagentViewer(...args); return viewer; } });
-    return { ...actor, acquire: async (...args: Parameters<typeof actor.acquire>) => { try { return await actor.acquire(...args); } finally { if (args[3].automatic) settled = true; } } };
+  vi.spyOn(hostPorts, 'openRunView').mockImplementation(async input => {
+    try { return await openRunView(input); }
+    finally { if (input.automatic) settled = true; }
   });
+  vi.spyOn(paneModule, 'createAuxiliaryPanes').mockImplementation(options =>
+    createPanes({ ...options, subagentViewer: async (...args) => { viewer = await options.subagentViewer(...args); return viewer; } }));
   const f = await fixture('fake', true, automaticSubagentPanes);
   try {
     await vi.waitFor(() => expect(settled).toBe(true), { timeout: 10000 });
@@ -220,7 +223,11 @@ it.each([false, true])('mounted automatic viewers follow automaticSubagentPanes=
     expect(opened.space).toBe(owner.space);
     if (automaticSubagentPanes) expect(opened.tab).toBe(owner.tab);
     else { expect(opened.tab).toBe(owner.tab); expect(opened.pane).not.toBe(owner.pane); }
+    const ordered = (await f.app.tabPanes(owner)).map(pane => pane.terminal);
+    expect(ordered).toContain(f.h.owner!.terminal.address);
+    expect(ordered.indexOf(viewer)).toBe(ordered.indexOf(f.h.owner!.terminal.address) + 1);
     expect(await f.ipc.openRun(f.activeRun!)).toMatchObject({ ok: true, op: 'openRun', viewer });
+    expect((await f.h.calls()).filter(call => call.argv[0] === 'run' && call.argv.includes('spider.kind=subagent-viewer'))).toHaveLength(1);
     expect(f.errors).toEqual([]);
   } finally { await f.close(); }
 }, 30000);

@@ -186,6 +186,45 @@ test('a parked remote proxy retries a failed target label update before completi
   } finally { await f.stop(); }
 });
 
+test.each(['missing', 'finished', 'unknown'] as const)('a parked remote retarget reconciles its %s proxy', async state => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source);
+    await f.operations().presentReadyTarget(f.remote);
+    await f.store.update(value => ({ ...value, presentations: value.presentations.map(p => ({ ...p, visibility: 'parked', revision: p.revision + 1 })) }));
+    const before = (await f.store.read()).presentations[0], terminal = await f.hc.get(before.proxy!);
+    vi.spyOn(f.hc, 'get').mockImplementationOnce(async () => {
+      if (state === 'missing') throw new HerdrError('not_found', 'Terminal is gone');
+      if (state === 'unknown') throw Error('Cannot inspect the proxy');
+      return { ...terminal, state: 'finished' };
+    });
+    const next = parsePaneTarget({ ...target('core-next', 't4', 3), alias: 'box-2.invalid', machineId: 'machine-next' });
+    if (state === 'unknown') {
+      expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'pending', reason: 'destination-screen-pending' });
+      expect((await f.store.read()).presentations[0]).toMatchObject({ proxy: before.proxy, target: f.remote });
+      expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete', presentation: { proxy: before.proxy, target: next, visibility: 'parked' } });
+    } else {
+      expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete', presentation: {
+        proxy: null, target: next, visibility: 'parked', slot: before.slot, launch: 'none' } });
+    }
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
+  } finally { await f.stop(); }
+});
+
+test('a remote retarget cannot relabel a reused proxy terminal', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source);
+    await f.operations().presentReadyTarget(f.remote);
+    const before = (await f.store.read()).presentations[0];
+    f.displays.set(before.proxy!, { ...f.displays.get(before.proxy!)!, id: 'unrelated-presentation' });
+    const next = parsePaneTarget({ ...target('core-next', 't4', 3), alias: 'box-2.invalid', machineId: 'machine-next' });
+    expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'pending', reason: 'destination-screen-pending' });
+    expect((await f.store.read()).presentations[0]).toMatchObject({ target: f.remote, proxy: before.proxy });
+    expect((await f.hc.get(before.proxy!)).labels).toMatchObject({ 'spider.pane-id': 'unrelated-presentation',
+      'spider.target-core': 'core-remote', 'spider.target-terminal': 't2' });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
+  } finally { await f.stop(); }
+});
+
 test('one readiness through the hub and move paths has exactly one presentation owner', async () => {
   const f = await fixture(), hubId = '00000000-0000-4000-8000-000000000001', boxId = '00000000-0000-4000-8000-000000000002';
   const global = createReplica('global', hubId);

@@ -8,6 +8,7 @@ import { mkdir, writeFile, chmod, readFile, stat } from 'node:fs/promises';
 import { join, dirname, resolve, isAbsolute } from 'node:path';
 import { userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import linuxCi from '../controls/ci-stories.json' with { type: 'json' };
 import { assertSocketPath, defaultCoreSocket, HarnessError, ownedPath, scratchRoot, type OwnedPath } from './environment.js';
 import { identityOf, type LedgerHandle } from './resources.js';
 
@@ -25,7 +26,7 @@ export interface Cores {
 }
 
 const provedHcDigests: Readonly<Record<string, readonly string[]>> = {
-  '0.1.16': ['c617feeb4d1b5f59b30e4ab6b4e9e7f7ac114d0681d207d9f41efa12c813b922'],
+  [linuxCi.version]: ['c617feeb4d1b5f59b30e4ab6b4e9e7f7ac114d0681d207d9f41efa12c813b922', linuxCi.binarySha256],
   '0.1.18': ['a4aff19a5af4beea754db8e41f854ce541e5f059d14c39cb402f7b615a2f0ec7'],
 };
 export function verifyHcBinaryPin(version: string, digest: string): string {

@@ -39,6 +39,13 @@ test('completed park removes only the finished display terminal record', async (
   await expect(f.hc.get(f.p.proxy!)).rejects.toMatchObject({ code: 'not_found' });
   expect(await f.hc.get(f.p.target.address)).toMatchObject({ state: 'live' });
 });
+test('park completes when another display owner removes the verified proxy after unplacement', async () => {
+  const f = await fixture(), command = vi.mocked(f.app.command).getMockImplementation()!;
+  vi.mocked(f.app.command).mockImplementation(async (...args) => { const reply = await command(...args); await f.hc.kill(f.p.proxy!); await f.hc.rm(f.p.proxy!); return reply; });
+  expect(await parkPresentation(f.p.id, 1, f.ports)).toMatchObject({ status: 'complete', reason: 'parked' });
+  expect(f.hc.kill).toHaveBeenCalledExactlyOnceWith(f.p.proxy);
+  expect(f.state().targetState).toBe('live');
+});
 test('park records intent before proxy removal and retains target', async () => {
   const f = await fixture(); const result = await parkPresentation(f.p.id, 1, f.ports);
   expect(result).toMatchObject({ status: 'complete', presentation: { visibility: 'parked' } }); expect(f.order).toEqual(['parked:core-local/t8']); expect(f.state().targetState).toBe('live');

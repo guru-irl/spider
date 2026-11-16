@@ -229,7 +229,22 @@ test('sets and removes canonical labels using separate hc argv entries', async (
   ]);
 });
 
-const invalidLabelMaps: Readonly<Record<string, string | null>>[] = [{ 'unknown.key': 'value' }, {}];
+test('sets canonical pane identities and waiting-display ownership in one call', async () => {
+  const h = await fixture(); await h.configure({ reply: '{}' });
+  const client = createHcClient({ binary: h.hcBinary, env: h.localEnv });
+  await client.setLabels(h.address('t1'), { 'spider.pane-id': 'pane-1', 'spider.pane-operation': 'operation-1', 'spider.target-core': 'core-1', 'spider.target-terminal': 't2', 'spider.pane-role': 'subagent', 'spider.owner-generation': 'generation-1' });
+  await client.setLabels(h.address('t1'), { 'spider.pane-role': 'console' });
+  await client.setLabels(h.address('t1'), { 'spider.pane-id': null, 'spider.pane-operation': null, 'spider.target-core': null, 'spider.target-terminal': null, 'spider.pane-role': null, 'spider.owner-generation': null });
+  expect((await h.calls()).map(c => c.argv)).toEqual([
+    ['label', 't1', 'spider.pane-id=pane-1', 'spider.pane-operation=operation-1', 'spider.target-core=core-1', 'spider.target-terminal=t2', 'spider.pane-role=subagent', 'spider.owner-generation=generation-1', '--json'],
+    ['label', 't1', 'spider.pane-role=console', '--json'],
+    ['label', 't1', 'spider.pane-id=', 'spider.pane-operation=', 'spider.target-core=', 'spider.target-terminal=', 'spider.pane-role=', 'spider.owner-generation=', '--json'],
+  ]);
+});
+const invalidPaneLabelMaps = ['spider.pane-id', 'spider.pane-operation', 'spider.target-core', 'spider.target-terminal', 'spider.owner-generation']
+  .flatMap(key => ['', ' ', 'other/t1', '\u0000', 'x'.repeat(257)].map(value => ({ [key]: value })));
+const invalidLabelMaps: Readonly<Record<string, string | null>>[] = [{ 'unknown.key': 'value' }, {}, ...invalidPaneLabelMaps,
+  { 'spider.pane-role': '' }, { 'spider.pane-role': 'shell' }, { 'spider.pane-role': 'subagent\n' }];
 test.each(invalidLabelMaps)('refuses invalid or empty label maps before any hc call %#', async labels => {
   const h = await fixture(); const client = createHcClient({ binary: h.hcBinary, env: h.localEnv });
   await expect(Promise.resolve().then(() => client.setLabels(h.address('t1'), labels))).rejects.toMatchObject({ code: 'invalid-labels' });

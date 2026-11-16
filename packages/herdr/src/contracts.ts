@@ -323,6 +323,7 @@ export type HerdrConfig = FullHerdrConfig | CoreOnlyHerdrConfig;
 
 const MOD_LABELS = {
   paneId: 'spider.pane-id', paneOperation: 'spider.pane-operation', targetCore: 'spider.target-core', targetTerminal: 'spider.target-terminal',
+  paneRole: 'spider.pane-role', ownerGeneration: 'spider.owner-generation',
   session: 'spider.session', ownerCore: 'spider.owner-core', ownerTerminal: 'spider.owner-terminal',
   kind: 'spider.kind', job: 'spider.job', run: 'spider.run', space: 'herdr.space', tab: 'herdr.tab', machine: 'spider.machine',
   parentName: 'spider.parent-name', steer: 'spider.steer', displayName: 'spider.display-name', viewerLifetime: 'spider.viewer-lifetime',

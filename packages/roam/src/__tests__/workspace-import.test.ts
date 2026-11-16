@@ -378,6 +378,47 @@ it.each(["staged", "working"] as const)("refuses a missing LFS object present on
   expect(existsSync(join(f.destination, "lfs.dat"))).toBe(false);
 }, 5000);
 
+it.each([
+  ["base", true], ["base", false], ["completed-unrecorded", true], ["completed-unrecorded", false],
+] as const)("%s import excludes machine state (ignored: %s)", async (state, ignored) => {
+  const { prepareWorkspace, verifyWorkspace } = await import("../workspace-import");
+  const f = fixture(state);
+  if (ignored) appendFileSync(join(f.destination, ".git", "info", "exclude"), "\n.spider/\n.pi-subagents/\n");
+  const localFiles = [".spider/state.db", ".pi-subagents/run.json", "nested/.spider/state.db", "nested/.pi-subagents/run.json"];
+  for (const relative of localFiles) {
+    const file = join(f.destination, relative);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "machine-local\n");
+  }
+  const index = join(f.destination, ".git", "index"), before = digest(index);
+  const prepared = await prepareWorkspace(f.snapshot, f.destination, f.ports);
+  await verifyWorkspace(prepared, f.ports);
+  expect(git(f.destination, "write-tree")).toBe(f.snapshot.indexTree);
+  expect(git(f.destination, "ls-files").split("\n").filter(path => localFiles.includes(path))).toEqual([]);
+  expect(command(f.destination, ["git", "show", ":binary.bin"])).toEqual(Buffer.from([0, 127, 128, 255, 4]));
+  for (const relative of localFiles) expect(readFileSync(join(f.destination, relative), "utf8")).toBe("machine-local\n");
+  const installed = digest(index);
+  await verifyWorkspace(prepared, f.ports);
+  expect(digest(index)).toBe(installed);
+  if (state === "base") expect(installed).not.toBe(before);
+});
+
+it("propagates a real Git staging error instead of accepting an incomplete tree", async () => {
+  const f = fixture(), run = f.ports.run;
+  f.ports.run = async (cwd, argv, options) => {
+    if (argv.includes("add") && options?.env?.GIT_INDEX_FILE) {
+      writeFileSync(`${options.env.GIT_INDEX_FILE}.lock`, "occupied\n", { flag: "wx" });
+    }
+    return run(cwd, argv, options);
+  };
+  const index = join(f.destination, ".git", "index"), before = digest(index);
+  const { prepareWorkspace } = await import("../workspace-import");
+  await expect(prepareWorkspace(f.snapshot, f.destination, f.ports)).rejects.toThrow(/index\.lock.*File exists/s);
+  expect(f.calls.some(argv => argv.includes("add"))).toBe(true);
+  expect(digest(index)).toBe(before);
+  expect(git(f.destination, "rev-parse", "HEAD")).toBe(f.previous.head);
+});
+
 it("uses a destination LFS object only after its content hash is verified", async () => {
   const f = fixture();
   const { snapshot, object, bytes } = withLfs(f);

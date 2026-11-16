@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect, test, vi } from 'vitest';
+import { parsePaneTarget } from '../../../herdr/src/panes/codec.js';
 import { confirmPresentationClose } from '../../../herdr/src/panes/lifecycle.js';
 import { projectPanePresentations } from '../../../herdr/assets/shared/presentations.js';
 import { reconcilePaneRegistrations } from '../herdr/pane-registration.js';
 import type { PaneAgentRow, PanePresentation, PaneTarget, PlacementState } from '../../../herdr/src/panes/types.js';
-const target = { coreId: 'core-mac', terminalId: 't1', address: 'core-mac/t1', createdMs: 10, identityLabels: { 'spider.session': 'session-1', 'spider.pane-operation': 'open-1' }, alias: null, machineId: null, kind: 'session', sessionId: 'session-1', generation: 'gen-1', homeEpoch: 0, runId: null, consoleId: null, name: 'Example', cwd: '/home/example' } as const;
+const target = parsePaneTarget({ coreId: 'core-mac', terminalId: 't1', address: 'core-mac/t1', createdMs: 10, identityLabels: { 'spider.session': 'session-1', 'spider.pane-operation': 'open-1' }, alias: null, machineId: null, kind: 'session', sessionId: 'session-1', generation: 'gen-1', homeEpoch: 0, runId: null, consoleId: null, name: 'Example', cwd: '/home/example' });
 const row = { sessionId: 'session-1', generation: 'gen-1', target, unavailableReason: null, owner: { sessionId: 'session-1', generation: 'gen-1', terminal: { coreId: 'core-mac', terminalId: 't1', address: 'core-mac/t1', socket: '/owned/core.sock', sessionNamespace: 'fixture' }, cwd: '/home/example', sessionFile: null, name: 'Example' } } as unknown as Extract<PaneAgentRow, { unavailableReason: null }>;
 const empty = (): PlacementState => ({ version: 2, revision: 0, presentations: [], slots: [], attempts: [], choices: [], launches: [] });
 function fixture(state = empty()) { const store = { read: async () => state, update: async (change: (s: PlacementState) => PlacementState) => state = { ...change(state), revision: state.revision + 1 } }; const nativePlacement = vi.fn(async () => ({ space: 's1', tab: 'tb1', pane: 'p1' } as never)); return { store, nativePlacement }; }
@@ -30,7 +31,7 @@ test('reload carries the same remote execution into its new generation without a
   const state = await f.store.read(), current = state.presentations[0];
   expect(state.presentations).toHaveLength(1);
   expect(current).toMatchObject({ id: 'existing', revision: 5, proxy: 'proxy-1', slot: p.slot, target: { generation: 'gen-2' } });
-  expect(projectPanePresentations({ agents: [reloaded], presentations: state.presentations, native: [], localCoreId: 'core-local' })[0])
+  expect(projectPanePresentations({ agents: [reloaded], presentations: state.presentations, native: [], localCoreId: 'core-local' as PaneTarget['coreId'] })[0])
     .toMatchObject({ presentationId: 'existing', generation: 'gen-2', displayTerminal: 'proxy-1', tab: 'tb1' });
   const closeSession = vi.fn(async () => 'ended' as const);
   const ports = { store: f.store, app: null, hc: { get: async () => ({ address: current.target.address, state: 'live', labels: current.target.identityLabels }) } as never,

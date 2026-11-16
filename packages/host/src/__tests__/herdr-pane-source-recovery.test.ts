@@ -34,8 +34,8 @@ async function fixture(failure: 'absent' | 'lost-reply') {
       if (attempts === 1 && failure === 'lost-reply') throw new Error('launch reply lost');
       return { address, coreId: 'core-local' };
     }),
-    get: async address => boundary.terminals.get(String(address).split('/').at(-1)!),
-    events: () => ({ ready: Promise.resolve(), subscribe: listener => { listener({ type: 'snapshot', seq: 1, terminals: [...boundary.terminals.values()] }); return () => {}; }, dispose() {} }),
+    get: async (address: TerminalAddress) => boundary.terminals.get(String(address).split('/').at(-1)!),
+    events: () => ({ ready: Promise.resolve(), subscribe: (listener: Parameters<ReturnType<HcClient['events']>['subscribe']>[0]) => { listener({ type: 'snapshot', seq: 1, terminals: [...boundary.terminals.values()] }); return () => {}; }, dispose() {} }),
     kill: vi.fn(async address => { const terminal = boundary.terminals.get(String(address).split('/').at(-1)!); if (terminal) terminal.state = 'finished'; }),
     rm: vi.fn(async address => { boundary.terminals.delete(String(address).split('/').at(-1)!); }),
   } as unknown as HcClient;

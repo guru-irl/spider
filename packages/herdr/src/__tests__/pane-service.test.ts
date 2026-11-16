@@ -240,7 +240,7 @@ test('complete source evidence prunes finished and absent targets but keeps unav
 });
 test('finished facts from another incarnation cannot retire the current live target', async () => {
   const f = await fixture();
-  f.ports.targetFacts = async () => ({ 'core-remote/t7': { terminal: { address: 'core-remote/t7' as never, parent: null, labels: {}, state: 'finished', status: null, exitCode: 0, reason: 'exited', signal: null, finishedAt: 1 }, createdMs: 16, identityLabels: {}, currentCwd: null, title: null, app: null, status: null } });
+  f.ports.targetFacts = async () => ({ 'core-remote/t7': { terminal: { address: 'core-remote/t7' as never, parent: null, labels: {}, state: 'finished', status: null, exitCode: 0, reason: 'exited', signal: null, finishedAt: 1 }, createdMs: 16, identityLabels: {}, currentCwd: null, title: 'Previous incarnation', app: null, status: null } });
   const service = createPaneService(f.ports);
   try { await service.reconcile(); expect((await f.ports.store.read()).presentations).toMatchObject([{ id: 'p1', target: { createdMs: 17 } }]); }
   finally { await service.stop(); }

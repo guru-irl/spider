@@ -55,6 +55,20 @@ it('attributes a local roaming proxy to its remote owner', () => {
   expect(agentMachine(proxy, [terminal('proxy', { 'spider.kind': 'roam-proxy', 'spider.owner-terminal': 'owner' })], HerdrLabelContract)).toBeNull();
 });
 
+it('groups pane proxies by indexed execution machine or navigation authority', () => {
+  const proxy = agent('proxy');
+  const projected: NativeAgent = { ...agent('shown'), navigation: { id: 'session:one', kind: 'agent', ownerId: null,
+    sessionId: 'one', terminal: 'box-2.invalid/owner', pane: null, space: null, tab: null, name: 'Owner', path: null,
+    status: 'working', machine: 'box-2.invalid', retained: false, action: null } };
+  const terminals = new Map([
+    ['proxy', terminal('proxy', { 'spider.kind': 'pane-proxy', 'spider.machine': 'box-1.invalid' })],
+    ['shown', terminal('shown', { 'spider.kind': 'pane-proxy', 'spider.machine': 'box-1.invalid' })],
+  ]);
+  const groups = groupAgentsByMachine([proxy, projected], [], HerdrLabelContract, [], terminals);
+  expect(groups.find(group => group.machine === 'box-1.invalid')?.members.map(member => member.address)).toEqual(['proxy']);
+  expect(groups.find(group => group.machine === 'box-2.invalid')?.members.map(member => member.address)).toEqual(['shown']);
+});
+
 it('counts only live reachable children in folded pills', () => {
   const runningRun = child('run', 'subagent');
   const unreachableRun = child('unreachable', 'subagent', { status: 'unreachable' });

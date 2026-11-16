@@ -75,10 +75,11 @@ export function projectPanePresentations(input) {
       if (fact) { row.displayTerminal = fact.address; row.space = fact.space; row.tab = fact.tab; knownAddresses.add(fact.address); }
     }
     rows.push(row); rowBySession.set(agent.sessionId, row);
-    if (agent.unavailableReason) continue;
+    if (agent.unavailableReason || input.includeChildren === false) continue;
     const childIds = new Set();
     for (const child of agent.children) {
       if (childIds.has(child.runId)) continue; childIds.add(child.runId);
+      if (input.includeRetained === false && ['done', 'failed', 'cancelled'].includes(child.status)) continue;
       const view = newest(presentations.filter(presentation => presentation.role === 'subagent' && presentation.target.sessionId === agent.sessionId
         && presentation.target.generation === agent.generation && presentation.target.runId === child.runId));
       const entry = base('subagent', view?.target ?? null, view, input, row.machineLabel);
@@ -90,6 +91,7 @@ export function projectPanePresentations(input) {
     for (const view of presentations) if (view.role === 'console' && view.visibility !== 'ended' && view.target.sessionId === agent.sessionId
       && view.target.generation === agent.generation && view.target.consoleId && !consoles.has(view.target.consoleId)) consoles.set(view.target.consoleId, { consoleId: view.target.consoleId, machineKey: view.target.alias || view.target.coreId, name: view.target.name, target: view.target });
     for (const console of consoles.values()) {
+      if (input.includeRetained === false && !console.target) continue;
       const target = console.target, view = target ? presentationFor(target) : null;
       const entry = base('console', target, view, input, console.machineKey);
       entry.name = console.name || 'Console'; entry.generation = agent.generation; entry.machineKey = console.machineKey; entry.consoleId = console.consoleId; entry.sessionId = agent.sessionId;

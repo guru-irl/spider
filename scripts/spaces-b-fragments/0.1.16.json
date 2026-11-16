@@ -1,0 +1,220 @@
+{
+  "pane": [
+    {
+      "id": "b-pane-entry-imports",
+      "file": "main.js",
+      "anchor": "import { identityPill } from \"./shared/look.js\";",
+      "replacement": "import { identityPill } from \"./shared/look.js\";\nimport { openPickerFromHost } from \"./machines/actions.js\";"
+    },
+    {
+      "id": "b-pane-split-entry",
+      "file": "main.js",
+      "anchor": "/* spider-look:confirm-session-close */        if (command === \"pane.close\") this.closePane(args);\n        else run(command, args);",
+      "replacement": "/* spider-look:confirm-session-close */        if (command === \"pane.close\") this.closePane(args);\n        else if (command === \"pane.split\") openPickerFromHost({ place: args.direction, program: { kind: \"shell\" }, pane: args.pane }, herdrApi);\n        else run(command, args);"
+    },
+    {
+      "id": "b-pane-machine-import",
+      "file": "main.js",
+      "anchor": "import { middlePath } from \"./shared/feed.js\";",
+      "replacement": "import { middlePath } from \"./shared/feed.js\";\nimport { panePresentation, paneTargetFacts, resolvePaneHeaderFacts, renderMachinePill, initPaneHeaderProjection, closePaneHeaderProjection } from \"./machine.js\";"
+    },
+    {
+      "id": "b-pane-machine-init",
+      "file": "main.js",
+      "anchor": "    this.hovered = false;",
+      "replacement": "    this.hovered = false;\n    initPaneHeaderProjection(this, cx, herdrApi);"
+    },
+    {
+      "id": "b-pane-machine-close",
+      "file": "main.js",
+      "anchor": "  me() {",
+      "replacement": "  close() { closePaneHeaderProjection(this); }\n\n  me() {"
+    },
+    {
+      "id": "b-pane-target-projection",
+      "file": "main.js",
+      "anchor": "    const name = ((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || \"shell\";\n/* spider-look:spider-header-facts */    const spiderLabels = props()?.labelContract?.labels ?? {};\n    const own = terminals().find((x) => x.address === p.terminal)?.labels ?? {};",
+      "replacement": "    const proxyLabels = terminals().find((x) => x.address === p.terminal)?.labels ?? {};\n    const headerFacts = { address: p.terminal ?? null, programIsAgent: Boolean(p.program?.agent || p.app), nativeTitle: p.title ?? \"\", nativeStatus: p.status ?? null, nativeCwd: p.cwd ?? null, labels: proxyLabels };\n    const snapshot = this.machineSnapshot ?? { presentations: [], targetFacts: {} };\n    const binding = panePresentation(headerFacts, snapshot.presentations);\n    const targetFacts = paneTargetFacts(headerFacts, snapshot.presentations, snapshot.targetFacts);\n    const projected = resolvePaneHeaderFacts(headerFacts, snapshot.presentations, snapshot.targetFacts);\n    const isProxy = proxyLabels[\"spider.kind\"] === \"pane-proxy\" || proxyLabels[\"spider.kind\"] === \"roam-proxy\" || Boolean(proxyLabels[\"spider.target-core\"] || proxyLabels[\"spider.target-terminal\"]) || snapshot.presentations.some(row => row.mode === \"proxy\" && row.proxy === p.terminal && p.terminal);\n    const name = isProxy ? projected.name : (((p.program?.agent || p.program?.shell) && p.program.name) || p.title || p.program?.name || \"shell\");\n/* spider-look:spider-header-facts */    const spiderLabels = props()?.labelContract?.labels ?? {};\n    const own = targetFacts?.identityLabels ?? proxyLabels;"
+    },
+    {
+      "id": "b-pane-session-name",
+      "file": "main.js",
+      "anchor": "    const sessionName = spiderRow ? null : piSessionName(p.title);",
+      "replacement": "    const sessionName = spiderRow ? null : isProxy ? (binding?.role === \"agent\" ? projected.name : null) : piSessionName(p.title);"
+    },
+    {
+      "id": "b-pane-target-icon",
+      "file": "main.js",
+      "anchor": "    const pic = icon(p.program, 14, t.dim, spiderKind);",
+      "replacement": "    const pic = icon(isProxy && targetFacts?.app === \"pi\" ? { key: \"pi\" } : p.program, 14, t.dim, spiderKind);"
+    },
+    {
+      "id": "b-pane-target-status",
+      "file": "main.js",
+      "anchor": "    const st = core && (typeof core.status === \"string\" ? core.status : core.status?.state) === \"error\" ? \"error\" : p.status;",
+      "replacement": "    const st = isProxy ? projected.status : core && (typeof core.status === \"string\" ? core.status : core.status?.state) === \"error\" ? \"error\" : p.status;"
+    },
+    {
+      "id": "b-pane-machine-pill",
+      "file": "main.js",
+      "anchor": "/* spider-look:style-2 */.when(Boolean(spiderParent)",
+      "replacement": ".when(Boolean(projected.machine), el => el.child(renderMachinePill(projected.machine, t, mono)))\n      /* spider-look:style-2 */.when(Boolean(spiderParent)"
+    },
+    {
+      "id": "b-pane-name-shrink",
+      "file": "main.js",
+      "anchor": "div().flex_none().min_w(0).max_w(220)",
+      "replacement": "div().flex_shrink_1().min_w(0).max_w(220)"
+    },
+    {
+      "id": "b-pane-parent-shrink",
+      "file": "main.js",
+      "anchor": "div().flex_none().min_w(0).max_w(180)",
+      "replacement": "div().flex_shrink_1().min_w(0).max_w(180)"
+    },
+    {
+      "id": "b-pane-title-shrink",
+      "file": "main.js",
+      "anchor": "div().flex_none().truncate().max_w(260)",
+      "replacement": "div().flex_shrink_1().min_w(0).truncate().max_w(260)"
+    },
+    {
+      "id": "b-pane-path-tooltip",
+      "file": "main.js",
+      "anchor": ".tooltip(folder(p.cwd))",
+      "replacement": ".tooltip(folder(isProxy ? projected.cwd : p.cwd))"
+    },
+    {
+      "id": "b-pane-path-display",
+      "file": "main.js",
+      "anchor": ".child(middlePath(folder(p.cwd),",
+      "replacement": ".child(middlePath(folder(isProxy ? projected.cwd : p.cwd),"
+    },
+    {
+      "id": "b-pane-action-import",
+      "file": "main.js",
+      "anchor": "import { identityPill } from \"./shared/look.js\";",
+      "replacement": "import { identityPill } from \"./shared/look.js\";\nimport { capturePaneAction, handlePaneCommand, paneActionPorts } from \"./actions.js\";"
+    },
+    {
+      "id": "b-pane-action-loop",
+      "file": "main.js",
+      "anchor": "/* spider-look:a-pane-park */if (command === \"close\" && p?.focused) { this.closePane({ pane: p.pane }); cx.notify(); }\n          if (command === \"park\" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run, title => herdrApi.notify({ title, level: \"warning\" }));",
+      "replacement": "/* spider-look:a-pane-park */if (command.startsWith(\"confirm-\")) { void this.executePaneAction(command); cx.notify(); }\n          else if ((command === \"close\" || command === \"park\") && p?.focused) { void this.executePaneAction(command); cx.notify(); }"
+    },
+    {
+      "id": "b-pane-captured-action",
+      "file": "main.js",
+      "anchor": "  closePane(args) {",
+      "replacement": "  executePaneAction(command) {\n    const p = this.me();\n    const context = p ? capturePaneAction(herdrApi, p.pane, this.machineSnapshot ?? null) : null;\n    const actionPorts = paneActionPorts(herdrApi, captured => this.closePane({ pane: captured.pane.pane }), captured => {\n      const contract = props()?.labelContract;\n      if (contract) parkFocusedTerminal({ pane: captured.pane.pane, terminal: captured.header.address }, herdrApi.terminals(), contract, run, title => herdrApi.notify({ title, level: \"warning\" }));\n    });\n    return handlePaneCommand(command, context, actionPorts);\n  }\n\n  closePane(args) {"
+    },
+    {
+      "id": "b-pane-close-button",
+      "file": "main.js",
+      "anchor": "/* spider-look:confirm-session-close */        if (command === \"pane.close\") this.closePane(args);",
+      "replacement": "/* spider-look:confirm-session-close */        if (command === \"pane.close\") { void this.executePaneAction(\"close\"); }"
+    }
+  ],
+  "tabs": [
+    {
+      "id": "b-tabs-entry-imports",
+      "file": "main.js",
+      "anchor": "import { initTabAutoHide, renderTabAutoHide, closeTabAutoHide } from \"./autohide.js\";",
+      "replacement": "import { initTabAutoHide, renderTabAutoHide, closeTabAutoHide } from \"./autohide.js\";\nimport * as machineHerdr from \"herdr\";\nimport { openPickerFromHost } from \"./machines/actions.js\";"
+    },
+    {
+      "id": "b-tabs-plus-entry",
+      "file": "main.js",
+      "anchor": "this.tabAuto ? this.tabAuto.newMenu(cx) : openOverlay({ mod: \"new-menu\", kind: \"popup\", width: 250, height: 512 })",
+      "replacement": "openPickerFromHost({ place: \"tab\", program: \"menu\", space: space?.id }, machineHerdr)"
+    },
+    {
+      "id": "b-navigation-drop-import",
+      "file": "main.js",
+      "anchor": "import { View, div, svg, image } from \"gpui-kit\";",
+      "replacement": "import { View, div, svg, image } from \"gpui-kit\";\nimport { dropPresentation } from \"./presentation-move.js\";\nimport { requestPaneService } from \"./shared/feed.js\";\nimport * as presentationHost from \"herdr\";"
+    },
+    {
+      "id": "b-navigation-drop",
+      "file": "main.js",
+      "anchor": ".on_mouse_up(\"left\", () => {\n          const from = this.pressed;",
+      "replacement": ".on_mouse_up(\"left\", (_event, cx) => {\n          if (presentationHost.shared(\"spider.presentation-drag\") && this.pressed === null) {\n            this.pressed = null; cx.stop_propagation();\n            cx.spawn(async cx => {\n              try { await dropPresentation({ space: space.id, tab: c.id }, { shared: presentationHost.shared, setShared: presentationHost.setShared,\n                pane: body => requestPaneService(props() ?? {}, presentationHost.exec, body) }); }\n              catch (error) { presentationHost.notify({ title: String(error?.message ?? \"Move failed\"), level: \"warning\" }); }\n              cx.notify();\n            }); return;\n          }\n          if (presentationHost.shared(\"spider.presentation-drag\")) presentationHost.setShared(\"spider.presentation-drag\", null);\n          const from = this.pressed;"
+    }
+  ],
+  "menu": [
+    {
+      "id": "b-menu-entry-imports",
+      "file": "main.js",
+      "anchor": "/* spider-look:a-menu-notify */import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec, notify } from \"herdr\";",
+      "replacement": "/* spider-look:a-menu-notify */import { run, props, closeOverlay, openOverlay, theme, keys, terminals, spaces, panes, exec, notify } from \"herdr\";\nimport * as machineHerdr from \"herdr\";\nimport { openPickerFromHost } from \"./machines/actions.js\";"
+    },
+    {
+      "id": "b-menu-creation-entry",
+      "file": "main.js",
+      "anchor": "    if (it[1] === \"worktree\") openOverlay(",
+      "replacement": "    if (it[1] === \"pane.split\") openPickerFromHost({ place: it[2].direction, program: { kind: \"shell\" }, pane: it[2].pane }, machineHerdr);\n    else if (it[1] === \"tab.new\") openPickerFromHost({ place: \"tab\", program: { kind: \"shell\" }, space: it[2].space }, machineHerdr);\n    else if (it[1] === \"worktree\") openOverlay("
+    },
+    {
+      "id": "b-menu-action-import",
+      "file": "main.js",
+      "anchor": "import { v_flex, h_flex } from \"gpui-base\";",
+      "replacement": "import { v_flex, h_flex } from \"gpui-base\";\nimport { routeMenuPaneCommand } from \"./actions.js\";"
+    },
+    {
+      "id": "b-menu-proxy-park-row",
+      "file": "main.js",
+      "anchor": "        ...(parent ? [[`Send back to ${parent.name || parent.address}`, \"terminal.park\", { terminal: term.address }]] : []),",
+      "replacement": "        ...(term?.labels?.[\"spider.kind\"] === \"pane-proxy\" ? [[\"Send back\", \"terminal.park\", { terminal: term.address }]] : parent ? [[`Send back to ${parent.name || parent.address}`, \"terminal.park\", { terminal: term.address }]] : []),"
+    },
+    {
+      "id": "b-menu-captured-action",
+      "file": "main.js",
+      "anchor": "/* spider-look:a-menu-remote-park */else if (it[1] === \"terminal.park\" && (it[2]?.terminal?.includes(\"/\") || terminals().find(t => t.address === it[2]?.terminal)?.labels?.[\"spider.kind\"] === \"roam-proxy\")) notify({ title: \"Send back works only for this computer's panes for now\", level: \"warning\" });",
+      "replacement": "/* spider-look:a-menu-remote-park */else if ((it[1] === \"pane.close\" || it[1] === \"terminal.park\") && clickedTab === \"pane\") void routeMenuPaneCommand(it[1] === \"pane.close\" ? \"close\" : \"park\", clickedTarget, machineHerdr);"
+    },
+    {
+      "id": "b-menu-context-capture",
+      "file": "main.js",
+      "anchor": "    closeOverlay(props()?.overlay);",
+      "replacement": "    const clickedTab = props()?.tab, clickedTarget = { ...(props()?.target ?? {}) };\n    closeOverlay(props()?.overlay);"
+    }
+  ],
+  "new-menu": [
+    {
+      "id": "b-new-menu-entry-imports",
+      "file": "main.js",
+      "anchor": "import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared } from \"herdr\";",
+      "replacement": "import { theme, spaces, panes, knownAgents, run, openOverlay, closeOverlay, props, window, keys, shared, setShared } from \"herdr\";\nimport * as machineHerdr from \"herdr\";\nimport { peekMenuTicket, chooseMenuProgram } from \"./machines/actions.js\";"
+    },
+    {
+      "id": "b-new-menu-destination",
+      "file": "main.js",
+      "anchor": "    const machine = spaces().find(s => s.active)?.machine;",
+      "replacement": "    const ticket = props()?.machineTicket;\n    const selection = ticket ? peekMenuTicket(ticket, machineHerdr) : null;\n    const machine = selection ? selection.alias : spaces().find(s => s.active)?.machine;"
+    },
+    {
+      "id": "b-new-menu-invalid-ticket",
+      "file": "main.js",
+      "anchor": "    this.handle.focus();\n    cx.spawn(async cx => {",
+      "replacement": "    this.handle.focus();\n    if (ticket && !selection) { this.agents = []; this.failed = true; return; }\n    cx.spawn(async cx => {"
+    },
+    {
+      "id": "b-new-menu-keyboard-entry",
+      "file": "main.js",
+      "anchor": "run(\"tab.new\", { name: agent.name, space: space?.id, argv: agent.run });",
+      "replacement": "void chooseMenuProgram(props()?.machineTicket, { kind: \"agent\", key: agent.key }, space?.id, machineHerdr);"
+    },
+    {
+      "id": "b-new-menu-terminal-entry",
+      "file": "main.js",
+      "anchor": "() => run(\"tab.new\", { space: space?.id })",
+      "replacement": "() => { void chooseMenuProgram(props()?.machineTicket, { kind: \"shell\" }, space?.id, machineHerdr); }"
+    },
+    {
+      "id": "b-new-menu-agent-entry",
+      "file": "main.js",
+      "anchor": "() => run(\"tab.new\", { name: a.name, space: space?.id, argv: a.run })",
+      "replacement": "() => { void chooseMenuProgram(props()?.machineTicket, { kind: \"agent\", key: a.key }, space?.id, machineHerdr); }"
+    }
+  ]
+}

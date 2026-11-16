@@ -18,5 +18,7 @@ export interface PanePresentationProjectionInput {
   agents: readonly PaneAgentRow[]; presentations: readonly PanePresentation[]; native: readonly NativePresentationFact[];
   /** Selected local core; null or omitted preserves an unavailable row's machine key. */
   localCoreId?: CoreId | null;
+  includeChildren?: boolean;
+  includeRetained?: boolean;
 }
 export function projectPanePresentations(input: PanePresentationProjectionInput): NavigationPresentation[];

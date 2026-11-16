@@ -1607,20 +1607,36 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: B sidebar uses source inventory in all sorts without box layout focus`, async () => {
     const h = fixture(version, { presented: true, ports: { projectNavigation: navigation.projectNavigation } }); await h.ready();
     const target = { coreId: 'core-1', terminalId: 'unlisted', address: 'core-1/unlisted', createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'source-session', generation: 'source-gen', homeEpoch: 1, runId: null, consoleId: null, name: 'Source writer', cwd: '/project' };
-    h.view.spiderPaneSnapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'source-session', generation: 'source-gen', owner: { terminal: { address: 'core-1/unlisted' } }, target, name: 'Source writer', status: 'working', machineKey: 'box-1.invalid', children: [{ runId: 'child-one', name: 'Source child', status: 'working' }], consoles: [], unavailableReason: null }], presentations: [] };
+    const consoleTarget = { ...target, coreId: 'core-2', terminalId: 'console', address: 'core-2/console', alias: 'box-2.invalid',
+      kind: 'console', consoleId: 'console-one', name: 'Remote console' };
+    h.view.spiderPaneSnapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'source-session', generation: 'source-gen', owner: { terminal: { address: 'core-1/unlisted' } }, target, name: 'Source writer', status: 'working', machineKey: 'box-1.invalid', children: [{ runId: 'child-one', name: 'Source child', status: 'running' }], consoles: [{ consoleId: 'console-one', machineKey: 'box-2.invalid', name: 'Remote console', target: consoleTarget }], unavailableReason: null }], presentations: [] };
+    h.view.spiderPaneIndex = navigation.indexPaneNavigation(h.view.spiderPaneSnapshot);
     for (const sort of ['priority', 'grouped', 'machine']) {
       h.state.set('agents.sort', sort);
       const root = h.view.render(h.cx);
       expect(texts(root).filter(text => text === 'Source writer')).toHaveLength(1);
       expect(texts(root)).not.toContain('box-1.invalid/unpinned');
     }
+    byId(h.view.render(h.cx), 'machine:box-1.invalid')!.events.on_click({}, h.cx);
+    const folded = h.view.render(h.cx);
+    expect(byId(folded, 'machine-subagents-remote:box-1.invalid')).toBeDefined();
+    expect(byId(folded, 'machine-consoles-remote:box-1.invalid')).toBeDefined();
+    byId(folded, 'machine:box-1.invalid')!.events.on_click({}, h.cx);
     h.state.set('agents.sort', 'priority');
     const menuRows = all(h.view.render(h.cx)).filter(node => node.events['on_mouse_down:right']);
     const childMenu = menuRows.find(node => node.id?.includes('child-one'));
     expect(childMenu).toBeDefined();
     childMenu!.events['on_mouse_down:right']({}, h.cx);
     expect((h.overlays.at(-1) as any).props.moveMenu.navigationId).toBe('run:source-session:child-one');
+    const groupKey = `console-group:${JSON.stringify(['core-1/unlisted', null])}`;
+    byId(h.view.render(h.cx), `console-group:${encodeURIComponent(groupKey)}`)!.events.on_click({}, h.cx);
+    const consoleRow = byId(h.view.render(h.cx), 'sub-console:source-session:console-one')!;
+    expect(consoleRow).toBeDefined();
+    consoleRow.events['on_mouse_down:right']({}, h.cx);
+    expect((h.overlays.at(-1) as any).props.moveMenu.navigationId).toBe('console:source-session:console-one');
     h.setExec(async () => ok({ version: 1, kind: 'outcome', outcome: { status: 'complete', reason: 'presented', presentation: null } }));
+    consoleRow.events.on_click({}, h.cx); await Promise.resolve();
+    expect(h.execCalls.some(args => { const request = JSON.parse((args[1] as string[]).at(-1)!); return request.op === 'open-auxiliary' && request.view.consoleId === 'console-one'; })).toBe(true);
     await h.view.peek('core-1/unlisted');
     expect(h.execCalls.some(args => JSON.parse((args[1] as string[]).at(-1)!).op === 'open-existing')).toBe(true);
     expect(h.commands.filter(([name, args]) => ['pane.focus', 'terminal.keep', 'terminal.peek'].includes(name) && String(args?.terminal ?? args?.pane).includes('/'))).toEqual([]);

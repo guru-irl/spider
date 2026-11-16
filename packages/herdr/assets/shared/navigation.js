@@ -57,6 +57,32 @@ export function sessionDisplayName(agent, terminal, feeds) {
   return feed?.owner.name || terminal?.labels?.['spider.display-name'] || agent.title || agent.program?.name || agent.address;
 }
 
+/** Keep finished pane inventory as source records until a sidebar owner is expanded. */
+export function indexPaneNavigation(snapshot) {
+  const sources = new Map();
+  for (const row of snapshot.rows) {
+    const prior = sources.get(row.sessionId);
+    if (!prior || row.updatedAt > prior.updatedAt) sources.set(row.sessionId, row);
+  }
+  const rows = [], hidden = new Map();
+  for (const row of sources.values()) {
+    const seen = new Set(), children = [];
+    let count = 0;
+    for (const child of row.children) {
+      if (seen.has(child.runId)) continue;
+      seen.add(child.runId);
+      if (['done', 'failed', 'cancelled'].includes(child.status)) count++;
+      else children.push(child);
+    }
+    const consoles = new Map(row.consoles.map(console => [console.consoleId, console]));
+    for (const console of consoles.values()) if (!console.target) count++;
+    rows.push({ ...row, children });
+    hidden.set(row.sessionId, count);
+  }
+  const content = [...sources.values()].map(({ updatedAt, ...row }) => row);
+  return { snapshot: { ...snapshot, rows }, sources, hidden, key: JSON.stringify([snapshot.presentations, content]) };
+}
+
 /** Use public snapshots and current feed capabilities to produce one row per identity. */
 export function projectNavigation(snapshot) {
   if (snapshot.paneSnapshot) return presentedNavigation(snapshot);
@@ -175,7 +201,8 @@ function presentedNavigation(snapshot) {
     return { address: agent.address, name: sessionDisplayName(agent, terminal, snapshot.feeds), isAgent: true,
       labels: terminal?.labels ?? {}, space: space?.id ?? null, tab: pane?.tab ?? agent.tab ?? null };
   });
-  const projected = projectPanePresentations({ agents: service.rows, presentations: service.presentations, native, localCoreId: snapshot.coreId });
+  const projected = projectPanePresentations({ agents: service.rows, presentations: service.presentations, native, localCoreId: snapshot.coreId,
+    includeChildren: snapshot.includeChildren, includeRetained: snapshot.includeRetained });
   const targets = [];
   function add(row, parent = null) {
     const source = service.rows.find(value => value.sessionId === row.sessionId);
@@ -210,8 +237,8 @@ function presentedNavigation(snapshot) {
 }
 
 /** Adapt the shared rows to the native sidebar's sorting and fold model. */
-export function navigationAgents(snapshot) {
-  return projectNavigation(snapshot).filter(target => target.ownerId === null && target.kind === 'agent').map(target => {
+export function navigationAgents(snapshot, targets = projectNavigation({ ...snapshot, includeChildren: false })) {
+  return targets.filter(target => target.ownerId === null && target.kind === 'agent').map(target => {
     const native = snapshot.agents.find(agent => agent.address === target.terminal || agent.pane === target.pane && target.pane);
     return { ...native, address: target.terminal ?? target.id, pane: target.pane, space: target.space, tab: target.tab,
       space_name: snapshot.spaces.find(space => space.id === target.space)?.name ?? 'Unplaced', title: target.name,

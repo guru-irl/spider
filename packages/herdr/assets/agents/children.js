@@ -405,7 +405,8 @@ export function agentModelOutputKey(model) {
   try {
     const { snapshot, list, rows, parked, layouts, diagnostics, connections, error } = model;
     const owners = new Set(list.map(agent => agent.address)), labels = model.contract.labels;
-    const agents = list.map(a => [a.address, a.pane, a.space, a.space_name, a.tab, a.title, a.name, a.status, a.pinned, a.focused, a.seq, modelProgram(a.program)]);
+    const agents = list.map(a => [a.address, a.pane, a.space, a.space_name, a.tab, a.title, a.name, a.status, a.pinned, a.focused, a.seq, modelProgram(a.program),
+      a.navigation && [a.navigation.id, a.navigation.machine, a.navigation.action, a.navigation.disabledReason, a.navigation.generation, a.navigation.presentationId, a.navigation.expectedRevision]]);
     const terminals = snapshot.terminals.filter(t => owners.has(t.address)).map(t => [t.address, t.state,
       typeof t.status === 'string' ? t.status : t.status?.state, t.labels[labels.kind], t.labels[labels.machine], t.labels[labels.ownerTerminal], t.labels['herdr.pinned']]);
     const panes = snapshot.panes.map(p => [p.pane, p.terminal, p.tab, p.title, p.focused, modelProgram(p.program)]);

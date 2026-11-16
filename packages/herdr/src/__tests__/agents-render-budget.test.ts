@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { readFileSync } from 'node:fs';
 import { afterEach, expect, it, vi } from 'vitest';
 import * as children from '../../assets/agents/children.js';
 import * as grouping from '../../assets/agents/grouping.js';
@@ -7,19 +8,21 @@ import * as connections from '../../assets/agents/connections.js';
 import * as consoleGroups from '../../assets/agents/console-groups.js';
 import * as look from '../../assets/shared/look.js';
 import * as feed from '../../assets/shared/feed.js';
-import { projectNavigation } from '../../assets/shared/navigation.js';
+import * as navigation from '../../assets/shared/navigation.js';
+import { beginPresentationDrag } from '../../assets/agents/move.js';
 import { describeOpenFailure } from '../../assets/shared/open-failure.js';
 import { HerdrLabelContract } from '../contracts.js';
 import { createUiModules } from './strict-mod-api.mjs';
 import { loadPublishedSpacesARecipe, loadSpacesAFiles, replaySpacesARecipe, type SpacesAVersion } from './spaces-a-fixture.js';
+import { replaySpacesBRecipe } from './spaces-b-fixture.js';
 
 afterEach(() => vi.restoreAllMocks());
 
-function fixture(version: SpacesAVersion, count: number, finished: number) {
+function fixture(version: SpacesAVersion, count: number, finished: number, presented = false) {
   const now = Date.now(), contract = HerdrLabelContract;
   const state: any = { agents: [], terminals: [], panes: [], spaces: [{ id: 'space', name: 'Work', tabs: [] }], feeds: [], errors: [],
     focus: { space: 'space', tab: 'tab0', pane: 'pane0', agent: 't0' }, machines: [{ name: null, layout: 'ready' }], inventory: [] };
-  let rendering = false, historyReads = 0, allHistoryReads = 0, notifications = 0, agentReads = 0, projections = 0, projectedFinished = 0;
+  let rendering = false, historyReads = 0, allHistoryReads = 0, notifications = 0, agentReads = 0, projections = 0, projectedFinished = 0, navigationProjections = 0;
   for (let i = 0; i < count; i++) {
     const address = `t${i}`, sessionId = `s${i}`, tab = `tab${i}`, pane = `pane${i}`, live = `live${i}`;
     const program = { key: 'agent', name: 'Agent', icon: null, agent: true };
@@ -55,9 +58,13 @@ function fixture(version: SpacesAVersion, count: number, finished: number) {
   const config = { modId: 'spider-agents', feedRoot: 'feeds', nodePath: 'node', cliPath: 'cli', labelContract: contract, retention: { completedRows: 50, completedHours: 24 } };
   const storage = new Map<string, string>();
   const host: Record<string, any> = {
-    ...children, ...grouping, ...connections, ...consoleGroups, ...look, ...feed, ...kit, ...base,
+    ...children, ...grouping, ...connections, ...consoleGroups, ...look, ...feed, ...navigation, ...kit, ...base, beginPresentationDrag,
     projectAgentChildren: (...args: Parameters<typeof children.projectAgentChildren>) => { const rows = children.projectAgentChildren(...args); projections++; projectedFinished += rows.filter(row => row.retained).length; return rows; },
-    projectNavigation: (snapshot: Parameters<typeof projectNavigation>[0]) => { if (state.throwNavigation) { state.throwNavigation = false; throw new Error('projection failed'); } return projectNavigation(snapshot); }, describeOpenFailure,
+    projectNavigation: (snapshot: Parameters<typeof navigation.projectNavigation>[0]) => { navigationProjections++; if (state.throwNavigation) { state.throwNavigation = false; throw new Error('projection failed'); } return navigation.projectNavigation(snapshot); }, describeOpenFailure,
+    requestPaneService: async (_config: unknown, _exec: unknown, request: any) => {
+      if (request.op === 'snapshot') return state.paneSnapshot ?? null;
+      (state.paneRequests ??= []).push(request); return { status: 'complete' };
+    },
     createFeedReader: () => ({ read: async () => ({ feeds: state.feeds, errors: state.errors }), stamps: () => new Map(state.feeds.map((item: any) => [item.sessionId, String(item.stamp ?? item.revision)])), close: async () => {} }),
     initMoveMenu() {}, renderMoveMenu() {}, herdr: { checking: () => false }, props: () => config,
     agents: () => { agentReads++; return structuredClone(state.agents); }, terminals: () => structuredClone(state.terminals), panes: () => structuredClone(state.panes), spaces: () => structuredClone(state.spaces), machines: () => structuredClone(state.machines),
@@ -73,7 +80,10 @@ function fixture(version: SpacesAVersion, count: number, finished: number) {
     localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
   };
   const recipe = loadPublishedSpacesARecipe(version);
-  let source = replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe).agents!['main.js']!;
+  const files = presented
+    ? replaySpacesBRecipe(version, loadSpacesAFiles(version), JSON.parse(readFileSync(new URL('../../assets/look/cross-machine-patches.json', import.meta.url), 'utf8')).versions[version])
+    : replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe);
+  let source = files.agents!['main.js']!;
   source = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace('export default class ', 'class ');
   const name = /class (\w+) extends View/.exec(source)![1];
   const Agents = new Function('host', `const { ${Object.keys(host).join(', ')} } = host; ${source}; return ${name};`)(host);
@@ -95,6 +105,7 @@ function fixture(version: SpacesAVersion, count: number, finished: number) {
     get agentReads() { return agentReads; },
     get projections() { return projections; },
     get projectedFinished() { return projectedFinished; },
+    get navigationProjections() { return navigationProjections; },
     async send(command: string) { const resolve = commands.shift(); if (!resolve) throw new Error('No command waiter'); resolve(command); await flush(); },
     async ready() { await flush(); await view.spiderConnections.refresh(); view.spiderRequestRefresh(); await flush(); },
   };
@@ -212,13 +223,171 @@ it('can resolve parked owners without projecting their children', () => {
   h.state.panes = [];
   const snapshot = { ...h.state, coreId: 'core', destination: null, contract: HerdrLabelContract,
     machines: [{ name: null, layout: 'ready' }], now: Date.now(), completedRows: 50, completedHours: 24 };
-  const owners = projectNavigation({ ...snapshot, includeChildren: false });
+  const owners = navigation.projectNavigation({ ...snapshot, includeChildren: false });
   expect(owners).toHaveLength(1);
   expect(owners[0]).toMatchObject({ kind: 'agent', sessionId: 's0', pane: null, name: 'Owner 0' });
   void h.view.close();
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  it(`${version}: B navigation keeps finished history out of render and opens console rows`, async () => {
+    const h = fixture(version, 100, 48, true);
+    let drawing = false, historyReads = 0, finishedNameReads = 0;
+    const rows = h.state.feeds.map((item: any, i: number) => {
+      const address = `t${i}`, sessionId = `s${i}`;
+      const target = { coreId: 'core', terminalId: address, address, createdMs: i + 1, identityLabels: {}, alias: null,
+        machineId: null, kind: 'session', sessionId, generation: 'gen', homeEpoch: null, runId: null, consoleId: null, name: `Owner ${i}`, cwd: '/fixture' };
+      const runs = [{ runId: `live${i}`, name: `Active ${i}`, status: 'running' },
+        ...Array.from({ length: 48 }, (_, j) => ({ runId: `run${i}-${j}`, get name() { finishedNameReads++; return `Finished ${i}-${j}`; }, status: j === 0 ? 'failed' : 'done' }))];
+      const tracked = new Proxy(runs, { get(value, key, receiver) {
+        if (drawing && (key === Symbol.iterator || typeof key === 'string' && /^\d+$/.test(key))) historyReads++;
+        return Reflect.get(value, key, receiver);
+      } });
+      const consoleTarget = { ...target, coreId: 'remote-core', terminalId: `c${i}`, address: `box-1.invalid/c${i}`,
+        alias: 'box-1.invalid', kind: 'console', consoleId: `console-live-${i}`, name: `Remote console ${i}` };
+      return { sessionId, generation: 'gen', owner: item.owner, target, name: `Owner ${i}`, status: 'working', updatedAt: 1,
+        machineKey: 'core', unavailableReason: null, children: tracked, consoles: [
+          { consoleId: `console-live-${i}`, machineKey: 'box-1.invalid', name: `Remote console ${i}`, target: consoleTarget },
+          { consoleId: `console-saved-${i}`, machineKey: 'box-1.invalid', name: `Saved console ${i}`, target: null },
+        ] };
+    });
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    const hasStyle = (node: any, name: string, value: unknown): boolean => node?.styles?.[name]?.[0] === value || Boolean(node?.items?.some((item: any) => hasStyle(item, name, value)));
+    const render = () => { drawing = true; try { return h.render(); } finally { drawing = false; } };
+    try {
+      const first = h.text(render());
+      expect(first).toContain('Task 0');
+      expect(first).not.toContain('Loading agent status…');
+      await h.ready();
+      h.state.paneSnapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, revision: 1,
+        machines: [], presentations: [], rows, targetFacts: {} };
+      h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds();
+      finishedNameReads = 0;
+      h.view.spiderRequestRefresh(); await h.flush();
+      expect(finishedNameReads).toBe(0);
+      historyReads = 0;
+      const navigationBeforeRender = h.navigationProjections;
+      const root = render();
+      expect(h.text(root)).toContain('Owner 0');
+      expect(h.text(root)).toContain('Owner 99');
+      expect(h.text(root)).toContain('Active 0');
+      expect(hasStyle(find(root, 'sub-run:s0:live0'), 'spin', 900)).toBe(true);
+      expect(h.text(root).filter(value => value === '49 finished')).toHaveLength(100);
+      expect(h.text(root)).not.toContain('Finished 0-0');
+      expect(h.view.spiderModel.rows.get('t0').filter((row: any) => row.retained)).toHaveLength(0);
+      render(); await h.flush(); render();
+      expect(historyReads).toBe(0);
+      expect(finishedNameReads).toBe(0);
+      expect(h.navigationProjections).toBe(navigationBeforeRender);
+      const lastGroup = `console-group:${JSON.stringify(['t99', null])}`;
+      const beforeToggle = h.navigationProjections;
+      find(root, `console-group:${encodeURIComponent(lastGroup)}`).events.on_click({}, h.cx);
+      expect(h.navigationProjections - beforeToggle).toBeLessThan(3);
+      find(root, 'finished-toggle-t0').events.on_click({}, h.cx);
+      const withHistory = render();
+      expect(h.text(withHistory)).toContain('Finished 0-0');
+      expect(hasStyle(find(withHistory, 'sub-run:s0:run0-0'), 'tooltip', 'Failed')).toBe(true);
+      const key = `console-group:${JSON.stringify(['t0', null])}`;
+      find(render(), `console-group:${encodeURIComponent(key)}`).events.on_click({}, h.cx);
+      const expanded = render();
+      expect(find(expanded, 'sub-console:s0:console-live-0')).toBeDefined();
+      expect(find(expanded, 'sub-console:s0:console-saved-0')).toBeDefined();
+      find(expanded, 'sub-console:s0:console-live-0').events.on_click({}, h.cx);
+      await Promise.resolve();
+      expect(h.state.paneRequests).toContainEqual({ op: 'open-auxiliary', sessionId: 's0', generation: 'gen',
+        view: { kind: 'console', consoleId: 'console-live-0', machineKey: 'box-1.invalid' } });
+      find(expanded, 'finished-toggle-t0').events.on_click({}, h.cx);
+      expect(h.text(render())).toContain('49 finished');
+      expect(h.view.spiderModel.rows.get('t0').filter((row: any) => row.retained)).toHaveLength(0);
+      const staleOwner = find(expanded, 'ag-t0'), validSnapshot = h.state.paneSnapshot;
+      h.state.paneSnapshot = { ...validSnapshot, rows: [{ ...rows[0], children: null }] };
+      h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds();
+      const beforeInvalid = h.runCalls.length;
+      staleOwner.events.on_click({}, h.cx); await Promise.resolve();
+      expect(h.runCalls).toHaveLength(beforeInvalid);
+      expect(h.view.spiderFeedError).toBe('Pane service unavailable; run doctor');
+      h.state.paneSnapshot = validSnapshot;
+      h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+      h.state.paneSnapshot = { ...h.state.paneSnapshot, rows: rows.map((row: any, i: number) => i ? row :
+        { ...row, name: 'Unavailable owner', owner: null, target: null, generation: null, unavailableReason: 'not-in-hc', children: [], consoles: [] }) };
+      h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh();
+      expect(h.text(render())).toContain('Owner 0');
+      const runsBefore = h.runCalls.length, requestsBefore = h.state.paneRequests.length;
+      staleOwner.events.on_click({}, h.cx); await Promise.resolve();
+      expect(h.runCalls).toHaveLength(runsBefore);
+      expect(h.state.paneRequests).toHaveLength(requestsBefore);
+      await h.flush();
+      expect(h.text(render())).toContain('Unavailable owner');
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: B first frame uses indexed visible rows without reading hidden history`, async () => {
+    const h = fixture(version, 1, 40, true), source = h.state.feeds[0];
+    let drawing = false, reads = 0, keyReads = 0;
+    const target = { coreId: 'core', terminalId: 't0', address: 't0', createdMs: 1, identityLabels: {}, alias: null,
+      machineId: null, kind: 'session', sessionId: 's0', generation: 'gen', homeEpoch: null, runId: null, consoleId: null, name: 'Owner 0', cwd: '/fixture' };
+    const children = new Proxy([{ runId: 'live0', name: 'Active 0', status: 'running' },
+      ...Array.from({ length: 40 }, (_, i) => ({ runId: `done-${i}`, name: `Saved ${i}`, status: 'done' }))], {
+      get(value, key, receiver) {
+        if (drawing && (key === Symbol.iterator || typeof key === 'string' && /^\d+$/.test(key))) reads++;
+        return Reflect.get(value, key, receiver);
+      },
+    });
+    h.state.paneSnapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, revision: 1, machines: [], presentations: [], targetFacts: {},
+      rows: [{ sessionId: 's0', generation: 'gen', owner: source.owner, target, name: 'Owner 0', status: 'working', updatedAt: 1,
+        machineKey: 'core', unavailableReason: null, children, consoles: [] }] };
+    try {
+      await h.view.reloadSpiderFeeds();
+      expect(h.view.spiderModel).toBeUndefined();
+      const index = h.view.spiderPaneIndex, key = index.key;
+      Object.defineProperty(index, 'key', { get() { if (drawing) keyReads++; return key; } });
+      drawing = true;
+      const first = h.text(h.render());
+      drawing = false;
+      expect(first).toContain('Owner 0');
+      expect(first).toContain('Active 0');
+      expect(first).toContain('40 finished');
+      expect(first).not.toContain('Loading agent status…');
+      expect(reads).toBe(0);
+      expect(keyReads).toBe(0);
+    } finally { drawing = false; await h.view.close(); }
+  });
+
+  it(`${version}: B refreshes drag authority when only a presentation revision changes`, async () => {
+    const h = fixture(version, 1, 0, true), source = h.state.feeds[0];
+    const target = { coreId: 'core', terminalId: 't0', address: 't0', createdMs: 1, identityLabels: {}, alias: null,
+      machineId: null, kind: 'session', sessionId: 's0', generation: 'gen', homeEpoch: null, runId: null, consoleId: null, name: 'Owner 0', cwd: '/fixture' };
+    const presentation = { id: 'pres-0', revision: 1, mode: 'proxy', role: 'agent', target, proxy: 't0',
+      slot: { space: 'space', tab: 'tab0', pane: 'pane0' }, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null };
+    const row = { sessionId: 's0', generation: 'gen', owner: source.owner, target, name: 'Owner 0', status: 'working', updatedAt: 1,
+      machineKey: 'core', unavailableReason: null, children: [{ runId: 'live0', name: 'Active 0', status: 'working' }], consoles: [] };
+    const service = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, revision: 1,
+      machines: [], presentations: [presentation], rows: [row], targetFacts: {} };
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    try {
+      await h.ready();
+      h.state.paneSnapshot = service; h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+      h.render(); await h.flush();
+      const before = h.notifications, beforeProjection = h.navigationProjections;
+      h.state.paneSnapshot = { ...service, rows: [{ ...row, updatedAt: 2 }] };
+      h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+      expect(h.navigationProjections).toBe(beforeProjection);
+      expect(h.notifications).toBe(before);
+      h.state.paneSnapshot = { ...service, presentations: [{ ...presentation, revision: 2 }] };
+      h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+      expect(h.notifications).toBe(before + 1);
+      find(h.render(), 'ag-t0').mouseEvents['on_mouse_down:left']({}, h.cx);
+      expect(h.sharedState.get('spider.presentation-drag')).toMatchObject({ presentationId: 'pres-0', expectedRevision: 2 });
+    } finally { await h.view.close(); }
+  });
+
   it(`${version}: renders actual rows in the first frame`, async () => {
     const h = fixture(version, 2, 4);
     h.view.spiderFeeds = h.state.feeds;

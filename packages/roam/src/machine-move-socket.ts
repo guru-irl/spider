@@ -16,7 +16,7 @@ function parse(bytes: Buffer): Request | null {
     const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Request;
     if (!value || typeof value !== "object" || Object.keys(value).sort().join() !== "action,args" || !Array.isArray(value.args)) return null;
     const args = value.args;
-    if (["bridge", "endpoint"].includes(value.action) && args.length === 1 && isSessionAddress(args[0])) return value;
+    if (["broker", "bridge", "endpoint"].includes(value.action) && args.length === 1 && isSessionAddress(args[0])) return value;
     if (value.action === "settlement" && args.length === 1) {
       const query = args[0] as Record<string, unknown>;
       if (query && Object.keys(query).sort().join() === "fromSessionId,messageId,scopeId,toSessionId" && typeof query.messageId === "string" &&
@@ -36,7 +36,8 @@ export function startMachineMoveSocket(root: string, enabled: () => boolean, por
     try {
       const action = request.action, args = request.args;
       let result: unknown;
-      if (action === "bridge") result = await port.bridge(args[0] as Parameters<MachineMovePort["bridge"]>[0]);
+      if (action === "broker") result = await port.broker(args[0] as Parameters<MachineMovePort["broker"]>[0]);
+      else if (action === "bridge") result = await port.bridge(args[0] as Parameters<MachineMovePort["bridge"]>[0]);
       else if (action === "endpoint") result = await port.endpoint(args[0] as Parameters<MachineMovePort["endpoint"]>[0]);
       else if (action === "settlement") result = await port.settlement(args[0] as Parameters<MachineMovePort["settlement"]>[0]);
       else if (action === "releaseRollbackFence") result = await port.releaseRollbackFence(args[0] as IntercomIntakeFence, args[1] as Home, args[2] as Home);
@@ -61,7 +62,7 @@ export async function requestMachineMove(root: string, input: unknown): Promise<
 export function machineMoveProxy(root: string): MachineMovePort {
   const call = <T>(action: string, args: unknown[]) => requestMachineMove(root, { action, args }) as Promise<T>;
   return {
-    bridge: (...args) => call("bridge", args), endpoint: (...args) => call("endpoint", args), settlement: (...args) => call("settlement", args),
+    broker: (...args) => call("broker", args), bridge: (...args) => call("bridge", args), endpoint: (...args) => call("endpoint", args), settlement: (...args) => call("settlement", args),
     releaseRollbackFence: (...args) => call("releaseRollbackFence", args),
     intake: { close: (...args) => call("close", args.filter(value => value !== undefined)), drain: (...args) => call("drain", args), inspect: (...args) => call("inspect", args),
       checkGeneration: (...args) => call("checkGeneration", args), abort: (...args) => call("abort", args), ready: (...args) => call("ready", args) },

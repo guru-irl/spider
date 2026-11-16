@@ -51,6 +51,7 @@ export interface MachineIntercomOptions {
 }
 export interface MachineMovePort {
   intake: import("./contracts").IntercomMovePorts;
+  broker(address: SessionAddress): Promise<FederationBlockers>;
   bridge(address: SessionAddress): Promise<FederationBlockers>;
   settlement: NonNullable<MoveEvidenceBindings["settlement"]>;
   endpoint(address: SessionAddress): Promise<SessionEndpoint>;
@@ -487,6 +488,12 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
     });
   };
   const move: MachineMovePort = {
+    async broker(address) {
+      moveAvailable();
+      const port = (broker as IntercomBroker & Partial<Pick<IntercomFederationClient, "inspectFreezeBlockers">>).inspectFreezeBlockers;
+      if (!port) throw new Error("intercom-blocker-source-unavailable");
+      return port.call(broker, address);
+    },
     intake: {
       async close(...args) { return intake().close(...args); }, async drain(...args) { return intake().drain(...args); },
       async inspect(...args) { return intake().inspect(...args); }, async checkGeneration(...args) { return intake().checkGeneration(...args); },

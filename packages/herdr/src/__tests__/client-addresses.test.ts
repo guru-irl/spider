@@ -39,6 +39,18 @@ test.each(['core-other/t2', 'unknown.invalid/t2', 'other.invalid/t2', 'box-1.inv
   try { await expect(hc.get('core-remote/t2' as TerminalAddress)).rejects.toMatchObject({ code: 'caller-mismatch' }); }
   finally { await hc.dispose(); }
 });
+test.each(['core-remote/t2', 'other.invalid/t2'])('equivalent configured aliases do not make %s ambiguous', async requested => {
+  boundary.routes = [remote(), { ...remote(), name: 'other.invalid', target: 'other.invalid' }]; boundary.reply = 'box-1.invalid/t2';
+  const hc = await client();
+  try { expect((await hc.get(requested as TerminalAddress)).address).toBe(requested); }
+  finally { await hc.dispose(); }
+});
+test('an advisory connection status change does not change a verified core route', async () => {
+  boundary.routes = [remote()]; boundary.onGet = () => { boundary.routes[0].state = 'disconnected'; };
+  const hc = await client();
+  try { expect((await hc.get('core-remote/t2' as TerminalAddress)).address).toBe('core-remote/t2'); }
+  finally { await hc.dispose(); }
+});
 test('a short reply cannot turn an unknown requested core into the selected local core', async () => {
   const hc = await client();
   try { await expect(hc.get('core-other/t2' as TerminalAddress)).rejects.toMatchObject({ code: 'caller-mismatch' }); }

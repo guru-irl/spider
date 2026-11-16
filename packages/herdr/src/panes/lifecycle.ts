@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import type { AppClient, HcClient, TerminalAddress, TerminalSummary } from '../contracts.js';
+import { HerdrError } from '../client/parse.js';
 import type { PaneActionOutcome, PanePlacementStore, PanePresentation, PaneTarget } from './types.js';
 export interface PaneLifecyclePorts {
   store: PanePlacementStore; hc: HcClient; app: AppClient | null;
@@ -92,11 +93,16 @@ export async function parkPresentation(id: string, expectedRevision: number, por
     if (reply.error || !p.slot || (await ports.app.tabTerminals(p.slot)).includes(p.proxy)) return result('pending', 'park-removal-pending', parked);
     // A late revision or a reopened pane cancels cleanup of its new presentation.
     const current = await read(id, ports); if (!current || current.revision !== parked.revision || current.visibility !== 'parked') return result('pending', 'presentation-changed', current);
-    const again = await ownedProxy(parked, ports);
-    if (again?.state === 'live') await ports.hc.kill(p.proxy);
-    const finished = await ownedProxy(parked, ports);
-    if (finished?.state !== 'finished') return result('pending', 'park-removal-pending', parked);
-    await ports.hc.rm(p.proxy);
+    try {
+      const again = await ownedProxy(parked, ports);
+      if (again?.state === 'live') await ports.hc.kill(p.proxy);
+      const finished = await ownedProxy(parked, ports);
+      if (finished?.state !== 'finished') return result('pending', 'park-removal-pending', parked);
+      await ports.hc.rm(p.proxy);
+    } catch (error) {
+      // The auxiliary actor can finish removal after our ownership and unplacement proofs.
+      if (!(error instanceof HerdrError) || error.code !== 'not_found') throw error;
+    }
     return result('complete', 'parked', parked);
   } catch { return result('pending', 'park-removal-pending', parked); }
 }

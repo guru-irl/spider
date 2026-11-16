@@ -1,16 +1,28 @@
 # Herdr user-driven acceptance
 
-Run from the repository root. No dependency installation is needed beyond the existing checkout dependencies.
+Run headless stories on GitHub Actions, not on a developer Mac. The commands below run from the repository root and use the checkout dependencies.
 
 | Command | Coverage |
 | --- | --- |
-| `npm run test:herdr:e2e` | Packed extension, real pi, owned local hc cores, strict fake app boundary. No native window or real SSH. |
+| `npm run test:herdr:e2e` | Linux workflow: packed extension, real pi, owned local hc cores, strict fake app boundary. No native window or real SSH. |
 | `npm run test:herdr:e2e:ci` | Explicit no-hc, no-app, no-SSH subset. Active-core and native stories are **not exercised**. |
 | `npm run typecheck:herdr:e2e` | Acceptance TypeScript, including fixtures and configuration, with repo strictness and isolated declarations. Runs in both CI workflows. |
 | `SPIDER_HERDR_REAL_MACHINE=<explicit-alias> npm run test:herdr:e2e:remote` | Opted-in Linux destination with owned namespaces and independent cleanup. |
 | `SPIDER_HERDR_APP_TESTS=1 SPIDER_HERDR_TEST_DISPLAY_UUID=<chosen-display> SPIDER_HERDR_E2E_APP=<owned-clone-executable> npm run test:herdr:e2e:app` | An owned native copy for each serial story. Missing ownership or interaction capabilities are **blocked**. |
 
 The runner builds once, packs once, and supplies `SPIDER_HERDR_E2E_PACKED_ROOT` to `createSuite`. The foundation validates containment and required entries before reusing that root. It packs independently only when no runner root is supplied. `--built` uses the existing build, for CI immediately after its build step; packed-entry digests still must match.
+
+## Run a headless story on GitHub Actions
+
+The `Herdr headless stories` workflow runs on pull requests and accepts a `stories` input for manual runs. Once the workflow is on the default branch, use the Actions page or run:
+
+```sh
+gh workflow run herdr-stories.yml --ref <branch> -f stories=R03
+```
+
+Separate multiple story IDs with commas. Leave `stories` empty to run the default set in `controls/ci-stories.json`. The workflow verifies the pinned Linux core archive and executable, then uses a regular copy of the core executable as `hc`. The harness requires an owned executable rather than a symbolic link. `npm ci` runs `npm run build` through the root `prepare` script, and the story runner reuses that build.
+
+The workflow exercises the packed extension and real, isolated local cores without a display. It does not certify the native app, native windows, SSH, or real remote machines. R02 covers app placement with a fixture owner and is outside the default set. R14local needs separately supplied local fixtures.
 
 ## Run an isolated native copy
 
@@ -55,7 +67,7 @@ Use `StoryId` as required by the foundation's type declarations. `scenario` and 
 
 Selection is dynamic by tier and ID. `--story S52,S54` and `--task setup|remote|subagents|lifecycle|panels|ssh|runner|roam` select stories; a missing requested ID, duplicate ID, wrong-tier selection, or malformed export fails. `--shuffle --seed fixture` changes execution order reproducibly. `--harness` also runs foundation, native utility, confidence, and `fixtures/**/*.test.ts` tests. Configuration fails with the filename if a harness test falls outside those include patterns.
 
-R01 exercises sync through the packed CLI and two isolated cores in the headless tier. R02 exercises admission, the packaged box observer and hub, and proxy placement with a fixture owner and a closed app. R02 does not start the native app or a pi owner. Both stories run serially and are not exercised in CI.
+R01 exercises sync through the packed CLI and two isolated cores in the headless tier. R02 exercises admission, the packaged box observer and hub, and proxy placement with a fixture owner and a closed app. R02 does not start the native app or a pi owner. The headless workflow runs the default stories serially.
 
 ## Results
 
@@ -71,4 +83,4 @@ S56 in CI repeats the actual runtime probe, mod-helper import, and runtime exit/
 
 Tier 1 UI claims cover only the strict app boundary or real installed-mod render host. They do not certify GPUI rendering, control bounds, notification display, or native Cmd-key translation. On app 0.1.11, `uiSnapshot`, `activate`, and `keyToOwnedWindow` require a missing fenced rendered-UI/input hook and must fail before any input is posted. Screenshots and headless checks cannot substitute for that hook.
 
-Never use a default core, live app home, existing user session, system SSH transport, or inherited credentials. Every process launch and cleanup goes through the independent foundation supervisor. Known-bad controls operate only on disposable packed-artifact copies under scratch, never in a writer checkout. CI installs neither hc nor an app and uploads only its own synthetic failure artifacts.
+Never use a default core, live app home, existing user session, system SSH transport, or inherited credentials. Every process launch and cleanup goes through the independent foundation supervisor. Known-bad controls operate only on disposable packed-artifact copies under scratch, never in a writer checkout. The no-core CI tier installs neither hc nor an app. The separate headless workflow installs the pinned core but no app, and uploads its failure artifacts.

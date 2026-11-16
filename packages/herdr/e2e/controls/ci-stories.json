@@ -3,6 +3,6 @@
   "url": "https://releases.herdr.dev/core/0.1.16/herdr-core-linux-x86_64.tar.gz",
   "sha256": "58d6861176dc6fe905b58880d5bff07a9959be613a98e5d66b4583b04b6cfa45",
   "binarySha256": "8c4c0930974e2b31978cbbb14b892cd29d5ace917f4c04ce6dfdd5573e1fe193",
-  "stories": ["R09", "R13", "R14"],
-  "timeouts": { "R09": 2, "R13": 5, "R14": 2 }
+  "stories": ["R03", "R04", "R09", "R12", "R13", "R14"],
+  "timeouts": { "R03": 2, "R04": 3, "R09": 2, "R12": 2, "R13": 4, "R14": 2 }
 }

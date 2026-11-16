@@ -270,7 +270,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       await copyFile(join(suite.directories.SPIDER_GLOBAL_ROOT, 'config.json'), join(machine.root, 'config.json'));
       await writeFile(join(machine.root, 'roam', 'machine.json'), JSON.stringify({ machineId: machine.id }), { mode: 0o600 });
       const others = peers.filter(peer => peer.machineId !== machine.id);
-      const config = parseConfig({ enabled: i === 0, role: i ? 'box' : 'hub', machineId: machine.id, hubMachineId: HUB,
+      const config = parseConfig({ enabled: true, role: i ? 'box' : 'hub', machineId: machine.id, hubMachineId: HUB,
         peers: i === 0 ? others : [], discoveryRoots: [], coreUnit: 'fixture.service',
         intercom: { enabled: true, mode: 'hub-only', machineAlias: machine.alias, routes: others.map(peer => i && peer.machineId !== HUB
           ? { kind: 'relay', via: HUB, peer } : { kind: 'direct', peer, edgeEpoch: 'fixture-edge' }) } });

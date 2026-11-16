@@ -220,10 +220,12 @@ export async function convertNativePresentation(input: { presentation: PanePrese
   }
   if (p.mode === 'proxy' && !native) {
     const conversion: PanePresentation['conversion'] = p.visibility !== 'parked' && source ? { state: 'waiting-readiness', source, sourceFocused: input.sourceFocused, destination: null } : null;
-    p = await updatePresentation(p, { target: destination, conversion }, ports);
-    if (p.visibility === 'parked' || !ports.app || !p.proxy || !p.slot) return outcome(p.visibility === 'parked' ? 'complete' : 'pending', 'proxy-retargeted', p);
-    try { await ports.hc.setLabels(p.proxy, proxyTargetLabels(destination)); await ports.awaitPresented(p.proxy, destination, p.slot); p = await updatePresentation(p, { conversion: null }, ports); return outcome('complete', 'proxy-retargeted', p); }
-    catch { return outcome('pending', 'destination-screen-pending', p); }
+    try {
+      if (p.proxy) await ports.hc.setLabels(p.proxy, proxyTargetLabels(destination));
+      p = await updatePresentation(p, { target: destination, conversion }, ports);
+      if (p.visibility === 'parked' || !ports.app || !p.proxy || !p.slot) return outcome(p.visibility === 'parked' ? 'complete' : 'pending', 'proxy-retargeted', p);
+      await ports.awaitPresented(p.proxy, destination, p.slot); p = await updatePresentation(p, { conversion: null }, ports); return outcome('complete', 'proxy-retargeted', p);
+    } catch { return outcome('pending', 'destination-screen-pending', p); }
   }
   if (p.visibility === 'parked') {
     p = await updatePresentation(p, { target: destination, mode: native ? 'native' : 'proxy', proxy: null, launch: 'none', proxyLaunchAttempts: 0, conversion: null }, ports);

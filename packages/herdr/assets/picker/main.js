@@ -9,8 +9,7 @@ import { describeOpenFailure } from '../shared/open-failure.js';
 import { assignSpaceIdentities } from '../shared/look.js';
 import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from '../shared/feed.js';
 
-const BG = '#161618f0', SELECTED = '#ffffff14', HOVER = '#ffffff12', FAINT = '#ffffff0d';
-const INK = '#eeeeee', MUTED = '#a0a0a4', AMBER = '#f2c063', RED = '#ff6b6b';
+const BG = '#161618fe', SELECTED = '#ffffff14', HOVER = '#ffffff12', FAINT = '#ffffff0d';
 const absolute = value => typeof value === 'string' && (/^\//.test(value) || /^[a-zA-Z]:[\\/]/.test(value)) && !value.includes('\0');
 function validConfig(value) {
   const contract = value?.labelContract, labels = contract?.labels, kinds = contract?.kinds;
@@ -21,12 +20,14 @@ function validConfig(value) {
 }
 function nativeTargets(agents, terminals, panes) {
   const known = new Map(terminals.map(item => [item.address, item]));
-  return agents.map(agent => {
-    const terminal = known.get(agent.address), pane = panes.find(item => item.terminal === agent.address)?.pane ?? agent.pane ?? null;
-    return { id: `agent:${agent.address}`, kind: 'agent', ownerId: null, sessionId: null, terminal: agent.address, pane,
-      space: agent.space ?? null, tab: agent.tab ?? null, name: terminal?.labels?.['spider.display-name'] || agent.title || agent.program?.name || agent.address,
+  return agents.flatMap(agent => {
+    const terminal = known.get(agent.address), name = terminal?.labels?.['spider.display-name'];
+    if (typeof name !== 'string' || !name.trim()) return [];
+    const pane = panes.find(item => item.terminal === agent.address)?.pane ?? agent.pane ?? null;
+    return [{ id: `agent:${agent.address}`, kind: 'agent', ownerId: null, sessionId: null, terminal: agent.address, pane,
+      space: agent.space ?? null, tab: agent.tab ?? null, name,
       path: null, status: agent.status ?? 'idle', machine: agent.address.includes('/') ? agent.address.split('/')[0] : null,
-      retained: false, action: pane ? { kind: 'focus', pane } : null };
+      retained: false, action: pane ? { kind: 'focus', pane } : null }];
   });
 }
 
@@ -35,12 +36,12 @@ export class Picker extends View {
     this.cx = cx; this.handle = cx.focus_handle(); this.closed = false; this.filter = ''; this.selectedId = null; this.scroll = 0;
     const focus = herdr.focused?.();
     this.returnFocus = focus?.space && focus?.tab && focus?.pane ? { space: focus.space, tab: focus.tab, pane: focus.pane } : null;
-    this.feeds = []; this.coreId = ''; this.machineIds = new Map(); this.identityAt = null; this.pending = new Set(); this.problem = null;
+    this.feeds = []; this.targetSource = 'pending'; this.coreId = ''; this.machineIds = new Map(); this.identityAt = null; this.pending = new Set(); this.problem = null;
     const props = herdr.props() ?? {}; this.overlay = props.overlay; this.config = validConfig(props) ? props : null;
     this.input = InputState.new({ placeholder: 'Go to a space, tab, or agent' });
     this.input.on('change', (_event, current) => { this.filter = this.input.value(); this.selectedId = selectPickerRow(this.rows(), null, 0); current.notify(); });
     this.input.on('submit', () => { void this.activate(this.selectedId); });
-    if (herdr.checking?.()) { this.ready = Promise.resolve(); return; }
+    if (herdr.checking?.()) { this.targetSource = 'native'; this.ready = Promise.resolve(); return; }
     this.input.focus();
     this.ready = new Promise(resolve => {
       cx.spawn(async current => {
@@ -59,7 +60,7 @@ export class Picker extends View {
             if (this.closed) return;
             this.startWatch(current);
             this.timer = current.timer.every(FEED_REFRESH_MS, next => { if (!this.closed) next.spawn(async () => this.refresh()); });
-          }
+          } else this.targetSource = 'native';
           this.startCommands(current);
         } finally { resolve(); current.notify(); }
       });
@@ -114,8 +115,8 @@ export class Picker extends View {
     try {
       const [snapshot] = await Promise.all([this.reader.read(), this.refreshIdentity()]);
       if (this.closed) return false;
-      this.feeds = snapshot.feeds; this.problem = null; success = true;
-    } catch { if (!this.closed) this.problem = 'Session information is unavailable'; }
+      this.feeds = snapshot.feeds; this.targetSource = 'feed'; this.problem = null; success = true;
+    } catch { if (!this.closed) { if (this.targetSource === 'pending') this.targetSource = 'native'; this.problem = 'Session information is unavailable'; } }
     if (!this.closed) this.cx.notify();
     return success;
   }
@@ -126,9 +127,23 @@ export class Picker extends View {
     const active = spaces.find(space => space.machine === null && space.id === focus?.space && space.tabs.some(tab => tab.id === focus.tab));
     const destination = active ? { space: active.id, tab: focus.tab } : null;
     const machines = herdr.machines().map(machine => ({ ...machine, ...(this.machineIds.has(machine.name) ? { coreId: this.machineIds.get(machine.name) } : {}) }));
-    const targets = this.config ? projectNavigation({ spaces, agents, terminals, panes, feeds: this.feeds, coreId: this.coreId,
+    if (this.targetSource === 'pending') return pickerRows(spaces, [], this.filter).filter(row => row.kind === 'space');
+    let targets = this.targetSource === 'feed' ? projectNavigation({ spaces, agents, terminals, panes, feeds: this.feeds, coreId: this.coreId,
       destination, machines, contract: this.config.labelContract, now: Date.now(), completedHours: this.config.retention?.completedHours ?? 24,
       completedRows: this.config.retention?.completedRows ?? 50 }) : nativeTargets(agents, terminals, panes);
+    if (this.targetSource === 'feed') {
+      const labels = this.config.labelContract.labels, visible = new Set();
+      targets = targets.filter(target => {
+        if (target.ownerId && !visible.has(target.ownerId)) return false;
+        if (target.kind === 'agent') {
+          const feedName = this.feeds.some(feed => feed.sessionId === target.sessionId && feed.owner.name && feed.owner.name === target.name);
+          const labelName = terminals.some(terminal => (terminal.address === target.terminal || target.sessionId && terminal.labels?.[labels.session] === target.sessionId)
+            && terminal.labels?.[labels.displayName] === target.name && typeof target.name === 'string' && target.name.trim());
+          if (!feedName && !labelName) return false;
+        }
+        visible.add(target.id); return true;
+      }).map(target => target.sessionId ? target : { ...target, path: null });
+    }
     const rows = pickerRows(spaces, targets, this.filter);
     if (!rows.some(row => row.id === this.selectedId && row.enabled)) {
       const current = `tab:${focus?.space}:${focus?.tab}`;
@@ -205,12 +220,12 @@ export class Picker extends View {
       if (tops[selectedIndex] + heights[selectedIndex] > this.scroll + height) this.scroll = tops[selectedIndex] + heights[selectedIndex] - height;
     }
     this.followKey = followKey;
-    const mono = this.config?.fonts?.paths ?? 'JetBrains Mono', labels = this.config?.fonts?.label ?? 'Google Sans Flex';
+    const mono = this.config?.fonts?.paths ?? 'JetBrains Mono', body = this.config?.fonts?.body ?? 'Google Sans Flex', t = herdr.theme();
     const rowView = (row, index) => {
       const status = row.kind === 'target' ? row.target.status : null;
-      const shape = row.kind === 'space' ? svg(`mods/spider-picker/space-${this.spaceIdentities.get(row.space)?.shape ?? 'triangle'}.svg`).size(14).text_color(MUTED)
-        : row.kind === 'target' ? svg(row.target.kind === 'subagent' ? 'mods/spider-agents/bot.svg' : 'mods/workspace-chrome/terminal.svg').size(14).text_color(MUTED)
-        : div().w(14).text_color(MUTED).child(row.kind === 'new-tab' || row.kind === 'new-space' ? '+' : '');
+      const shape = row.kind === 'space' ? svg(`mods/spider-picker/space-${this.spaceIdentities.get(row.space)?.shape ?? 'triangle'}.svg`).size(14).text_color(t.muted)
+        : row.kind === 'target' ? svg(row.target.kind === 'subagent' ? 'mods/spider-agents/bot.svg' : 'mods/workspace-chrome/terminal.svg').size(14).text_color(t.muted)
+        : div().w(14).text_color(t.muted).child(row.kind === 'new-tab' || row.kind === 'new-space' ? '+' : '');
       const item = h_flex().id(`pk-${row.id}`).mx(4).px(10).pl(10 + (row.kind === 'target' ? row.depth * 16 : 0)).h(32).rounded(7).gap(8).items_center()
         .when(row.id === this.selectedId, element => element.bg(SELECTED))
         .when(row.enabled, element => element.cursor_pointer().hover(style => style.bg(HOVER))
@@ -218,13 +233,17 @@ export class Picker extends View {
           .on_click(() => { void this.activate(row.id); }))
         .when(row.kind === 'new-tab' && !row.enabled, element => element.tooltip('No local space is available'))
         .when(row.kind === 'target' && !row.enabled && Boolean(row.target.disabledReason), element => element.tooltip(row.target.disabledReason))
-        .child(shape).child(div().flex_1().min_w(0).truncate().when(row.kind === 'target', element => element.font_family(mono)).text_color(row.enabled ? INK : MUTED).child(row.label));
-      if (row.kind === 'target' && row.target.path) item.child(div().max_w(140).truncate().font_family(mono).text_size(10).text_color(MUTED).child(row.target.path));
-      if (status === 'blocked' || status === 'error') item.child(div().text_size(11).text_color(status === 'blocked' ? AMBER : RED).child(status === 'blocked' ? 'needs you' : 'error'));
-      if (row.kind === 'target' && row.target.machine) item.child(div().px(5).rounded(999).bg(FAINT).font_family(mono).text_color(MUTED).text_size(11).child(row.target.machine));
+        .child(shape).child(div().flex_1().min_w(0).truncate()
+          .when(row.kind === 'heading', element => element.font_family(body).text_size(11.5).font_medium().text_color(t.dim))
+          .when(row.kind !== 'heading', element => element.font_family(mono).text_size(13).font_normal().text_color(row.enabled ? t.foreground : t.muted))
+          .child(row.label));
+      if (row.kind === 'target' && row.target.path) item.child(div().max_w(140).truncate().font_family(mono).font_normal().text_size(10).text_color(t.dim).child(row.target.path));
+      if (status === 'blocked') item.child(div().font_family(body).text_size(10.5).font_semibold().text_color(t.blocked).child('needs you'));
+      if (status === 'error') item.child(div().font_family(mono).font_normal().text_size(10.5).text_color(t.ansi1).child('error'));
+      if (row.kind === 'target' && row.target.machine) item.child(div().px(5).rounded(999).bg(FAINT).font_family(body).font_normal().text_color(t.dim).text_size(10).child(row.target.machine));
       return fixed ? item.absolute().left(0).right(0).top(tops[index] - this.scroll).bottom(height - tops[index] - heights[index] + this.scroll) : item;
     };
-    return v_flex().id('picker').track_focus(this.handle).w_full().min_h(0).p(18).gap(10).rounded(12).bg(BG).font_family(labels).text_size(13)
+    return v_flex().id('picker').track_focus(this.handle).w_full().min_h(0).p(18).gap(10).rounded(12).bg(BG).font_family(body).font_normal().text_size(13)
       .on_key_down((event, current) => {
         const key = event.key;
         if (key === 'escape') { void this.close(); current.stop_propagation(); return; }
@@ -233,18 +252,18 @@ export class Picker extends View {
         else return;
         current.stop_propagation(); current.notify();
       })
-      .child(h_flex().items_center().child(div().flex_1().text_size(15).font_semibold().text_color(INK).child('Go to…'))
-        .child(div().id('picker-esc').px(6).py(2).rounded(5).text_size(11).text_color(MUTED).cursor_pointer().hover(style => style.bg(HOVER)).on_click(() => { void this.close(); }).child('Esc')))
+      .child(h_flex().items_center().child(div().flex_1().text_size(11.5).font_medium().text_color(t.dim).child('Go to…'))
+        .child(div().id('picker-esc').px(6).py(2).rounded(5).text_size(11).text_color(t.dim).cursor_pointer().hover(style => style.bg(HOVER)).on_click(() => { void this.close(); }).child('Esc')))
       .child(h_flex().h(36).flex_none().px(10).gap(8).items_center().rounded(9).bg(FAINT)
-        .child(svg('mods/workspace-chrome/search.svg').size(15).text_color(MUTED))
-        .child(Input.new(this.input).flex_1().h_full().text_size(13).text_color(INK)))
-      .when(Boolean(this.problem), element => element.child(div().text_size(11).text_color(RED).child(this.problem)))
-      .when(this.pending.size > 0, element => element.child(div().text_size(11).text_color(MUTED).child('Opening…')))
+        .child(svg('mods/workspace-chrome/search.svg').size(15).text_color(t.dim))
+        .child(Input.new(this.input).flex_1().h_full().font_family(body).font_normal().text_size(13).text_color(t.foreground)))
+      .when(Boolean(this.problem), element => element.child(div().text_size(11).text_color(t.ansi1).child(this.problem)))
+      .when(this.pending.size > 0, element => element.child(div().text_size(11).text_color(t.dim).child('Opening…')))
       .child(v_flex().id('pk-list').h(Math.min(320, total || 32)).min_h(0).overflow_hidden()
         .on_size_change((size, current) => { this.listHeight = size.height / (herdr.settings().zoom || 1); current.notify(); })
         .when(fixed, element => element.on_scroll_wheel((event, current) => { this.scroll = Math.max(0, Math.min(this.scroll - event.delta.y, maxScroll)); current.notify(); }))
         .children(rows.length ? rows.map((row, index) => !fixed || tops[index] + heights[index] > this.scroll && tops[index] < this.scroll + height ? rowView(row, index) : null).filter(Boolean)
-          : [div().px(10).text_color(MUTED).child('No results')]));
+          : [div().px(10).text_color(t.dim).child('No results')]));
   }
 }
 export default Picker;

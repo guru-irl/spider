@@ -1689,7 +1689,7 @@
           "sourceMod": "picker",
           "sourceFile": "main.js",
           "sourceHash": "6dfde109b9321e8bc7f0e081db964960195748915eb7ff73e75688dd853b6dc3",
-          "outputHash": "f0bda91c8a36842ecf6ee78e5acd1645ce3bcdf1acfbfa6095487d88d80df97d",
+          "outputHash": "3f8508d1130e975b4f8aef8f1e50ddd5eb58316cf118277874f66030aedc002a",
           "asset": "picker/main.js"
         },
         {
@@ -1770,7 +1770,7 @@
         "workspace-chrome/square.svg": "e475514f8a336eaa799db562ec89a87eacc5e9202c1b1f0e0ab387b6334b0d1b",
         "workspace-chrome/terminal.svg": "a6f93e62a6ec412e6a214849be5b566cd21cff81d5570891c2e04e96c4dd964e",
         "workspace-chrome/x.svg": "c1e53fc9bbe1a0a0b8183bcacf5ab7dbf160fd1f082594de3dcbba1cd5a71614",
-        "spider-picker/main.js": "f0bda91c8a36842ecf6ee78e5acd1645ce3bcdf1acfbfa6095487d88d80df97d",
+        "spider-picker/main.js": "3f8508d1130e975b4f8aef8f1e50ddd5eb58316cf118277874f66030aedc002a",
         "spider-picker/mod.json": "8250cbc0abca573439818f00293abf999b4e516984d1dcae6ff7dccb978ef355"
       },
       "markers": {
@@ -3062,7 +3062,7 @@
           "sourceMod": "picker",
           "sourceFile": "main.js",
           "sourceHash": "d016a63eb7263ad4478152caa6521b218501bcc3539b7c42e13cfca1806b05c2",
-          "outputHash": "f0bda91c8a36842ecf6ee78e5acd1645ce3bcdf1acfbfa6095487d88d80df97d",
+          "outputHash": "3f8508d1130e975b4f8aef8f1e50ddd5eb58316cf118277874f66030aedc002a",
           "asset": "picker/main.js"
         },
         {
@@ -3161,7 +3161,7 @@
         "workspace-chrome/square.svg": "e475514f8a336eaa799db562ec89a87eacc5e9202c1b1f0e0ab387b6334b0d1b",
         "workspace-chrome/terminal.svg": "a6f93e62a6ec412e6a214849be5b566cd21cff81d5570891c2e04e96c4dd964e",
         "workspace-chrome/x.svg": "c1e53fc9bbe1a0a0b8183bcacf5ab7dbf160fd1f082594de3dcbba1cd5a71614",
-        "spider-picker/main.js": "f0bda91c8a36842ecf6ee78e5acd1645ce3bcdf1acfbfa6095487d88d80df97d",
+        "spider-picker/main.js": "3f8508d1130e975b4f8aef8f1e50ddd5eb58316cf118277874f66030aedc002a",
         "spider-picker/mod.json": "8250cbc0abca573439818f00293abf999b4e516984d1dcae6ff7dccb978ef355",
         "spider-toast/main.js": "5ea6fdd73c4aee61d7973b0d9811a6ac0db8fd7ff95fbcdcc73107dc02b193d6",
         "spider-toast/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d"

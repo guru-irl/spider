@@ -10,6 +10,10 @@ import { HostEmbeddingRuntime } from "../embedding-runtime";
 import * as admission from "../roam/admission";
 import * as moveActivations from "../roam/move-activation";
 import { createReplica } from "@spider/db-core/testutil";
+import { claimIdLock, inspectIdLock } from "@spider/herdr/sessions/id-lock";
+import { createSessionLeases, type ProcessInventoryPorts } from "@spider/herdr/sessions/lease";
+import { createProcessPresence } from "@spider/herdr/sessions/presence";
+import { writeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
 import * as roamCli from "@spider/roam/cli";
 
 const trace = vi.hoisted(() => ({ startupCalls: [] as string[] }));
@@ -239,6 +243,52 @@ it("a second host session cannot reopen or close another session's gate", async 
   } finally {
     await allowed.emit("session_shutdown", { reason: "quit" });
     global.close(); worktree.close();
+  }
+}, 5000);
+
+it("adopts a launcher handoff using the supplied boot identity", async () => {
+  const replica = createReplica("global", "00000000-0000-4000-8000-000000000001");
+  root = replica.root;
+  paths.globalRoot = root; vi.stubEnv("SPIDER_GLOBAL_ROOT", root); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  setGlobalDbPathForTests(join(root, "spider.db"));
+  const lockRoot = join(root, "herdr"), file = join(root, "session.jsonl"), bootId = async () => "test-boot-identity";
+  mkdirSync(lockRoot, { recursive: true, mode: 0o700 });
+  writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "own", cwd: root }) + "\n", { mode: 0o600 });
+  const launcherIdentity = { pid: 4241, startIdentity: "launcher-start" }, probe = async () => ({ kind: "absent" as const });
+  const leases = createSessionLeases(lockRoot);
+  const inventory: ProcessInventoryPorts = { leases, presence: createProcessPresence(lockRoot), processes: async () => [], probe };
+  const launcher = await claimIdLock(lockRoot, "own", launcherIdentity, probe, { bootId });
+  const lease = await leases.claim(file, launcherIdentity, inventory);
+  const handoff = await launcher.prepareHandoff("launch-1", file);
+  const handoffFile = await writeLaunchHandoff(lockRoot, { version: 1, operationId: handoff.operationId, sessionId: "own",
+    sessionFile: file, nonce: handoff.nonce, leaseToken: lease.token });
+  vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE", handoffFile);
+  const createPorts = admission.createAdmissionPorts;
+  vi.spyOn(admission, "createAdmissionPorts").mockImplementation(options => {
+    const ports = createPorts(options);
+    ports.prepare = async () => {}; ports.ready = async () => {}; ports.localMachine = async () => "hub.invalid";
+    ports.load = async () => ({ home: null, states: [{ sessionId: "own", epoch: 1, state: "active", moveId: null, freezeSeq: null }],
+      origin: "hub.invalid", participating: true, captureSafe: true, unfinishedFreeze: false, initialConflict: false });
+    return ports;
+  });
+  vi.spyOn(moveActivations, "createMoveActivation").mockResolvedValue(null);
+  const hooks = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+  const pi = { on(name: string, handler: (event: any, ctx: any) => unknown) { hooks.set(name, [...hooks.get(name) ?? [], handler]); return () => {}; },
+    registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
+    sendMessage() {}, sendUserMessage() {}, appendEntry() {} };
+  const ctx = { cwd: root, mode: "tui", hasUI: true, ui: { notify() {} }, abort() {}, isIdle: () => true,
+    sessionManager: { getSessionId: () => "own", getSessionFile: () => file, getSessionName: () => null, getEntries: () => [], getBranch: () => [] } };
+  spiderExtension(withPiEvents(pi as never), { ...hostUnitPorts, bootId } as never);
+  try {
+    await hooks.get("session_start")![0]({}, ctx);
+    expect(await hooks.get("input")![0]({}, ctx)).toBeUndefined();
+    expect(await inspectIdLock(lockRoot, "own")).toMatchObject({ bootId: "test-boot-identity", identity: { pid: process.pid }, pendingOperationId: null });
+    expect(await leases.get(file)).toMatchObject({ pid: process.pid });
+  } finally {
+    const handlers = hooks.get("session_shutdown")!;
+    await handlers[0]({ reason: "quit" }, ctx); await handlers.at(-1)!({ reason: "quit" }, ctx);
+    await launcher.cancelHandoff("launch-1"); await launcher.release(); await leases.release(file, lease.token);
+    replica.close();
   }
 }, 5000);
 

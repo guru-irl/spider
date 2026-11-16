@@ -9,7 +9,7 @@ import { createSessionLeases, type ProcessInventoryPorts } from "@spider/herdr/s
 import { processStartTime } from "../../../../subagents/src/process-identity.js";
 import { MessageStore } from "../../../../subagents/src/message-store.js";
 import { IntercomFederationClient } from "@spider/intercom/broker/client";
-import { createLiveFreezePorts } from "../live.js";
+import { createLiveFreezePorts, inspectLiveOwner } from "../live.js";
 import type { AdmissionGate } from "../admission.js";
 
 const roots: string[] = [], replicas: ReturnType<typeof createReplica>[] = [];
@@ -18,6 +18,20 @@ afterEach(() => { for (const f of replicas.splice(0)) f.close(); for (const root
 it("refuses a freeze blocker query without negotiated broker support", async () => {
   const client = new IntercomFederationClient();
   await expect(client.inspectFreezeBlockers({ sessionId: "session-1", scopeId: null })).rejects.toThrow(/unsupported/);
+});
+
+it("verifies a live owner using the supplied boot identity", async () => {
+  const fixture = createReplica("global", "00000000-0000-4000-8000-000000000001"); replicas.push(fixture);
+  const file = join(fixture.root, "session.jsonl"), root = join(fixture.root, "herdr");
+  mkdirSync(root, { mode: 0o700 }); writeFileSync(file, "{}");
+  const startIdentity = processStartTime(process.pid)!, bootId = async () => "test-boot-identity";
+  const leases = createSessionLeases(root), inventory: ProcessInventoryPorts = { presence: createProcessPresence(root), leases,
+    processes: async () => [], probe: async pid => pid === process.pid ? { kind: "live", startIdentity } : { kind: "absent" } };
+  const locks = createBothLocks({ root, file: async () => file, inventory, identity: { pid: process.pid, startIdentity }, bootId });
+  await locks("session-1", async () => {
+    expect(await inspectLiveOwner(root, "session-1", file, bootId)).toEqual({ pid: process.pid, startTime: startIdentity, bootId: "test-boot-identity" });
+    await expect(inspectLiveOwner(root, "session-1", file, async () => "different-boot")).rejects.toThrow(/ownership/);
+  });
 });
 
 it("uses held ID and file leases and blocks when broker or bridge evidence is unavailable", async () => {

@@ -889,9 +889,9 @@ async function dispatchWithDoctorSnapshot(
   }
 }
 
-export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort } = {}): void {
+export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort; bootId?: () => Promise<string> } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
-  const admissionPorts = createAdmissionPorts();
+  const admissionPorts = createAdmissionPorts(ports.bootId ? { bootId: ports.bootId } : {});
   let activationContext: ExtensionContext | undefined;
   let moveActivation: Awaited<ReturnType<typeof createMoveActivation>>;
   const setAdmissionContext = admissionPorts.setContext.bind(admissionPorts), lockAdmission = admissionPorts.lock.bind(admissionPorts), readyAdmission = admissionPorts.ready?.bind(admissionPorts);
@@ -901,7 +901,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     const release = await lockAdmission(sessionId, file);
     try {
       moveActivation = await createMoveActivation({ root: paths.globalRoot, sessionId, file, context: () => activationContext, gate: admission,
-        usage: usageService, embeddings, organism,
+        ...(ports.bootId ? { bootId: ports.bootId } : {}), usage: usageService, embeddings, organism,
         activity: { busy: () => activity.ordinaryCommandActive!() || activity.overlayActive(), bashRunning: () => { const ctx = activationContext; if (!ctx) throw new Error("context-unavailable"); return autoReload.activity.bashRunning(ctx); }, promptOpen: () => autoReload.activity.promptOpen() },
         others: [{ async pause() { if (!herdr?.drainRoamFeeds) throw new Error("producer-evidence-unavailable"); await herdr.drainRoamFeeds(); }, async resume() {} }] });
       const mounted = moveActivation;

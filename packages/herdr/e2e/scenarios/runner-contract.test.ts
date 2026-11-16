@@ -23,7 +23,7 @@ describe('runner boundary and report', () => {
       sha256: '58d6861176dc6fe905b58880d5bff07a9959be613a98e5d66b4583b04b6cfa45',
       binarySha256: '8c4c0930974e2b31978cbbb14b892cd29d5ace917f4c04ce6dfdd5573e1fe193',
     });
-    expect(config.stories).toEqual(['R03', 'R04', 'R09', 'R12', 'R13', 'R14']);
+    expect(config.stories).toEqual(['R03', 'R04', 'R09', 'R11', 'R12', 'R13', 'R14']);
     expect(new Set(config.stories).size).toBe(config.stories.length);
     expect(config.stories.every(id => profileIds.headless.includes(id))).toBe(true);
     // @ts-ignore Vite provides import.meta.glob during test transformation.

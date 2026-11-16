@@ -123,7 +123,7 @@ describe('headless story matrix', () => {
     expect(story.steps.some(item => item.run?.includes('npm ci'))).toBe(false);
     const run = step(story, 'Run headless story');
     expect(run.env?.STORY).toBe('${{ matrix.story }}');
-    expect(run['timeout-minutes']).toBe("${{ matrix.story == 'R05' && 4 || matrix.timeout }}");
+    expect(run['timeout-minutes']).toBe("${{ matrix.story == 'R05' && 1 || matrix.timeout }}");
     expect(run.run).toContain('--built --tier headless --story "$stories"');
     const artifacts = step(story, 'Upload failure artifacts');
     expect(artifacts.if).toBe('failure()');

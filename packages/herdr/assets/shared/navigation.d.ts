@@ -17,7 +17,7 @@ export interface NavigationSnapshot {
   coreId: string; destination: Destination; agents: readonly NativeAgent[]; terminals: readonly AgentTerminal[];
   panes: readonly PaneSnapshot[]; spaces: readonly SpaceSnapshot[]; feeds: readonly SessionFeed[];
   contract: HerdrLabelContract; machines: readonly { name: string | null; layout: string; coreId?: string }[];
-  now: number; completedHours: number; completedRows: number;
+  now: number; completedHours: number; completedRows: number; includeChildren?: boolean;
 }
 export type NavigationAction =
   | { kind: 'focus'; pane: string }

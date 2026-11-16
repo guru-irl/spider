@@ -6,15 +6,15 @@ const addressMachine = address => {
   return slash > 0 && slash < address.length - 1 ? address.slice(0, slash) : null;
 };
 
-export function agentMachine(agent, terminals, contract) {
-  const labels = terminals.find(terminal => terminal.address === agent.address)?.labels;
+export function agentMachine(agent, terminals, contract, terminalIndex) {
+  const labels = (terminalIndex ? terminalIndex.get(agent.address) : terminals.find(terminal => terminal.address === agent.address))?.labels;
   if (labels?.[contract.labels.kind] === 'roam-proxy') {
     return labels[contract.labels.machine] || addressMachine(labels[contract.labels.ownerTerminal]) || addressMachine(agent.address);
   }
   return addressMachine(agent.address);
 }
 
-export function groupAgentsByMachine(agents, terminals, contract, knownMachines) {
+export function groupAgentsByMachine(agents, terminals, contract, knownMachines, terminalIndex) {
   const groups = new Map();
   const addMachine = machine => {
     if (!groups.has(machine)) groups.set(machine, {
@@ -24,7 +24,7 @@ export function groupAgentsByMachine(agents, terminals, contract, knownMachines)
   };
   addMachine(null);
   for (const { name } of knownMachines) addMachine(name);
-  for (const agent of agents) addMachine(agentMachine(agent, terminals, contract)).members.push(agent);
+  for (const agent of agents) addMachine(agentMachine(agent, terminals, contract, terminalIndex)).members.push(agent);
   const ordered = [...groups.values()].sort((a, b) => a.machine === null ? -1 : b.machine === null ? 1 : a.machine < b.machine ? -1 : a.machine > b.machine ? 1 : 0);
   for (const group of ordered) {
     group.members = [...group.members.filter(agent => agent.pinned), ...group.members.filter(agent => !agent.pinned)];

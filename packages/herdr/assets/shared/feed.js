@@ -170,6 +170,7 @@ export function createFeedReader(config, ports) {
         throw error;
       }
     },
+    stamps() { return new Map([...cache].map(([source, value]) => [source, value.stamp])); },
     close() {
       if (closing) return closing;
       closed = true; cache.clear();

@@ -48,17 +48,17 @@ async function fixture() {
   } as unknown as AppClient & AppPaneInspection;
   const hc = {
     identity: async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' }),
-    get: async (address: TerminalAddress) => { const p = displays.get(address); return { address, state: 'live', labels: { 'spider.kind': p?.id === 'legacy' ? 'roam-proxy' : 'pane-proxy', 'spider.session': 'session-1', 'spider.owner-core': p?.target.coreId, 'spider.owner-terminal': 'box-1.invalid/' + p?.target.terminalId, 'spider.pane-id': p?.id, 'spider.target-core': p?.target.coreId, 'spider.target-terminal': p?.target.terminalId, ...proxyLabels.get(address) } }; },
+    get: async (address: TerminalAddress) => { const p = displays.get(address); return { address, state: 'live', labels: { 'spider.kind': p?.id === 'legacy' ? 'roam-proxy' : 'pane-proxy', 'spider.session': 'session-1', 'spider.owner-core': p?.target.coreId, 'spider.owner-terminal': 'box-1.invalid/' + p?.target.terminalId, 'spider.pane-id': p?.id, 'spider.pane-operation': p?.id, 'spider.target-core': p?.target.coreId, 'spider.target-terminal': p?.target.terminalId, ...proxyLabels.get(address) } }; },
     setLabels: async (address: string, values: Record<string, string>) => { proxyLabels.set(address, { ...proxyLabels.get(address), ...values }); },
     kill: async () => { events.push('kill'); },
     rm: async (address: string) => { displays.delete(address); events.push('remove'); },
-    events: () => ({ ready: Promise.resolve(), subscribe: (listener: (event: unknown) => void) => { listener({ type: 'snapshot', terminals: [...displays].map(([address, p]) => ({ address, state: 'live', labels: { 'spider.kind': p.id === 'legacy' ? 'roam-proxy' : 'pane-proxy', 'spider.session': 'session-1', 'spider.owner-core': p.target.coreId, 'spider.owner-terminal': 'box-1.invalid/' + p.target.terminalId } })) }); return () => {}; } }),
+    events: () => ({ ready: Promise.resolve(), subscribe: (listener: (event: unknown) => void) => { listener({ type: 'snapshot', terminals: [...displays].map(([address, p]) => ({ address, state: 'live', labels: { 'spider.kind': p.id === 'legacy' ? 'roam-proxy' : 'pane-proxy', 'spider.session': 'session-1', 'spider.owner-core': p.target.coreId, 'spider.owner-terminal': 'box-1.invalid/' + p.target.terminalId, 'spider.pane-id': p.id, 'spider.pane-operation': p.id, 'spider.target-core': p.target.coreId, 'spider.target-terminal': p.target.terminalId } })) }); return () => {}; } }),
   } as unknown as HcClient;
   const open: PaneOpenPorts = {
     store, hc, app, placeholderMod: 'synthetic-waiting',
     launchTarget: async () => { throw Error('must not launch pi'); },
     launchProxy: async p => { events.push('proxy'); if (spawnFailures-- > 0) throw new HerdrError('spawn-error', 'Could not start', { pid: undefined }); displays.set('t3', p); if (launchLost) throw Error('reply lost'); return 't3' as TerminalAddress; },
-    findProxy: async p => recoverLaunch && [...displays.values()].some(display => display.id === p.id && display.target.terminalId === p.target.terminalId) ? 't3' as TerminalAddress : null, findTargetLaunch: async () => null, agentArgv: async () => [],
+    findProxy: async (p, match) => recoverLaunch && [...displays.values()].some(display => display.id === p.id && (match === 'launch' || display.target.terminalId === p.target.terminalId)) ? 't3' as TerminalAddress : null, findTargetLaunch: async () => null, agentArgv: async () => [],
     readNativeTarget: async () => ({ ...source, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null }), validateTarget: async value => value,
     verifyPlaceholder: async () => false, findPlaceholder: async () => null,
     deferSourceView: async () => false,

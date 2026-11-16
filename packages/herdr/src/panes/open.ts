@@ -58,12 +58,15 @@ async function updatePresentation(p: PanePresentation, fields: Partial<PanePrese
   }) }));
   if (!changed) throw new HerdrError('stale-presentation', 'Presentation changed before acknowledgment'); return changed;
 }
-async function verifyProxy(address: TerminalAddress, p: PanePresentation, ports: PaneOpenPorts, match: 'target' | 'launch' = 'target') {
+async function verifyProxy(address: TerminalAddress, p: PanePresentation, ports: PaneOpenPorts, match: 'target' | 'launch' | 'both' = 'target') {
   const core = await ports.hc.identity();
   if (address.includes('/') && !address.startsWith(`${core.coreId}/`)) throw new HerdrError('proxy-identity', 'Presentation proxy is not on the selected local core');
   const terminal = await ports.hc.get(address); const labels = terminal.labels;
-  const matches = match === 'launch' ? labels['spider.pane-operation'] === p.id : labels['spider.target-core'] === p.target.coreId && labels['spider.target-terminal'] === p.target.terminalId;
+  const targetMatches = labels['spider.target-core'] === p.target.coreId && labels['spider.target-terminal'] === p.target.terminalId;
+  const launchMatches = labels['spider.pane-operation'] === p.id;
+  const matches = match === 'launch' ? launchMatches : targetMatches && (match === 'target' || launchMatches);
   if (terminal.address !== address || terminal.state !== 'live' || labels['spider.kind'] !== 'pane-proxy' || labels['spider.pane-id'] !== p.id || !matches) throw new HerdrError('proxy-identity', 'Presentation proxy identity is unproved');
+  return terminal;
 }
 export async function presentProxy(p: PanePresentation, operationId: string, ports: PaneOpenPorts): Promise<PanePresentation> {
   const app = ports.app!; const proxy = p.proxy; if (!proxy || !p.slot) throw new HerdrError('unplaced-target', 'Target has no acknowledged presentation claim');
@@ -150,7 +153,7 @@ export async function openPane(input: { intent: PaneOpenIntent; machine: Machine
       p = state.presentations.find(item => item.id === candidate.id)!;
       if (!native && inserted) {
         try {
-          const proxy = await ports.launchProxy(p); await verifyProxy(proxy, p, ports);
+          const proxy = await ports.launchProxy(p); await verifyProxy(proxy, p, ports, 'both');
           await ports.hc.setLabels(proxy, { 'herdr.space': slot.space, 'herdr.tab': slot.tab });
           p = await updatePresentation(p, { proxy, launch: 'acknowledged' }, ports);
         } catch { p = await updatePresentation(p, { launch: 'uncertain' }, ports); return outcome('pending', 'proxy-launch-uncertain', p); }
@@ -162,8 +165,8 @@ export async function openPane(input: { intent: PaneOpenIntent; machine: Machine
       return outcome('complete', 'native-presented', p);
     }
     if (!p.proxy) {
-      const proxy = await ports.findProxy(p); if (!proxy) return outcome('pending', 'proxy-launch-uncertain', p);
-      await verifyProxy(proxy, p, ports); p = await updatePresentation(p, { proxy, launch: 'acknowledged' }, ports);
+      const proxy = await ports.findProxy(p, 'launch'); if (!proxy) return outcome('pending', 'proxy-launch-uncertain', p);
+      await verifyProxy(proxy, p, ports, 'both'); p = await updatePresentation(p, { proxy, launch: 'acknowledged' }, ports);
     }
     return outcome('complete', 'proxy-presented', await presentProxy(p, operationId, ports));
   } catch (error) {
@@ -261,22 +264,18 @@ export async function convertNativePresentation(input: { presentation: PanePrese
       const desired = { ...p, target: destination, mode: 'proxy' as const, conversion: null };
       if (!p.proxy) {
         if (p.launch === 'claimed' || p.launch === 'uncertain') {
-          let recovered = await ports.findProxy(desired);
-          if (recovered) {
-            await verifyProxy(recovered, desired, ports); p = await updatePresentation(p, { proxy: recovered, launch: 'acknowledged' }, ports);
-          } else {
-            recovered = await ports.findProxy(desired, 'launch'); if (!recovered) return outcome('pending', 'conversion-proxy-uncertain', p);
-            await verifyProxy(recovered, desired, ports, 'launch');
-            p = await updatePresentation(p, { proxy: recovered, launch: 'acknowledged' }, ports);
+          const recovered = await ports.findProxy(desired, 'launch'); if (!recovered) return outcome('pending', 'conversion-proxy-uncertain', p);
+          const proxy = await verifyProxy(recovered, desired, ports, 'launch');
+          p = await updatePresentation(p, { proxy: recovered, launch: 'acknowledged' }, ports);
+          if (proxy.labels['spider.target-core'] !== destination.coreId || proxy.labels['spider.target-terminal'] !== destination.terminalId)
             await ports.hc.setLabels(recovered, { 'spider.target-core': destination.coreId, 'spider.target-terminal': destination.terminalId });
-            await verifyProxy(recovered, desired, ports);
-          }
+          await verifyProxy(recovered, desired, ports, 'both');
         } else {
           if ((p.proxyLaunchAttempts ?? 0) >= 2) return outcome('pending', 'conversion-proxy-exhausted', p);
           p = await updatePresentation(p, { launch: 'claimed', proxyLaunchAttempts: (p.proxyLaunchAttempts ?? 0) + 1 }, ports);
           try {
             const proxy = await ports.launchProxy({ ...p, target: destination, mode: 'proxy', conversion: null });
-            await verifyProxy(proxy, { ...p, target: destination }, ports);
+            await verifyProxy(proxy, { ...p, target: destination }, ports, 'both');
             p = await updatePresentation(p, { proxy, launch: 'acknowledged' }, ports);
           } catch (error) {
             const retryable = launchNotStarted(error);

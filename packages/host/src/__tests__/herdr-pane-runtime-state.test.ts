@@ -550,6 +550,8 @@ test.each([
   ['resumes recovery after a proxy label update fails', 'interrupted'],
   ['does not adopt ambiguous proxy launches', 'duplicate'],
   ['does not adopt a proxy with a different launch identity', 'foreign'],
+  ['does not adopt a foreign launch with matching destination labels', 'foreign-current'],
+  ['recovers the unique launch beside a foreign destination match', 'foreign-and-valid'],
 ] as const)('%s', async (_description, launch) => {
   const { root, runtime, hc } = await fixture();
   const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never };
@@ -587,11 +589,16 @@ test.each([
   boundary.terminals.set('execution', { ...facts(p).terminal, address: 'execution' as never });
   const addProxy = (address = 'old-proxy', operation = p.id) => boundary.terminals.set(address, { ...facts(p).terminal, address: address as never,
     labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.pane-operation': operation, 'spider.target-core': first.target.coreId, 'spider.target-terminal': first.target.terminalId } });
-  if (launch !== 'uncertain') addProxy('old-proxy', launch === 'foreign' ? 'other-operation' : p.id);
+  if (launch !== 'uncertain') addProxy('old-proxy', launch === 'foreign' || launch === 'foreign-current' ? 'other-operation' : p.id);
+  if (launch === 'foreign-current') updateTerminalLabels('old-proxy', { 'spider.target-core': second.target.coreId, 'spider.target-terminal': second.target.terminalId });
+  if (launch === 'foreign-and-valid') {
+    addProxy('foreign-proxy', 'other-operation');
+    updateTerminalLabels('foreign-proxy', { 'spider.target-core': second.target.coreId, 'spider.target-terminal': second.target.terminalId });
+  }
   if (launch === 'duplicate') addProxy('another-proxy');
   const service = runtime.createService();
   const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
-  if (launch === 'duplicate' || launch === 'foreign') {
+  if (launch === 'duplicate' || launch === 'foreign' || launch === 'foreign-current') {
     expect(await operations.presentReadyTarget(second.target)).toMatchObject({ status: 'pending' });
     expect(placements.has('execution')).toBe(true);
     expect(hc.setLabels).not.toHaveBeenCalled();
@@ -614,6 +621,7 @@ test.each([
   expect(placements.has('execution')).toBe(false);
   expect(commands).toEqual(['terminal.keep', 'terminal.park']);
   expect(hc.run).not.toHaveBeenCalled();
+  if (launch === 'foreign-and-valid') expect(boundary.terminals.get('foreign-proxy')?.labels['spider.pane-operation']).toBe('other-operation');
 });
 
 test('opening a pane succeeds when the focused program has finished', async () => {

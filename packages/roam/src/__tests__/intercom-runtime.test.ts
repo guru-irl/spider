@@ -110,10 +110,13 @@ it("does not replay a locally observed receipt after the bridge restarts", async
   f.broker.emit("presence", [localPresence(to, "recipient-generation")]);
   await f.broker.bridge!.dispatch({ from, to: destination(to), message: { id: "local-observed", timestamp: 1, content: { text: "synthetic" } } });
   expect(f.broker.deliveries).toHaveLength(1);
-  f.broker.bridge!.receipt(to, { messageId: "local-observed", status: "injected", timestamp: 1000,
-    evidence: { kind: "entry", entryId: "entry-1", sessionId: to.sessionId, activationEpoch: "recipient-generation" } });
+  const evidence = { messageId: "local-observed", status: "injected" as const, timestamp: 1000,
+    evidence: { kind: "entry" as const, entryId: "entry-1", sessionId: to.sessionId, activationEpoch: "recipient-generation" } };
+  f.broker.bridge!.receipt(to, evidence);
   expect(f.broker.receipts).toHaveLength(1);
   await first.stop(); const second = await makeMachine(f.options); await second.start();
+  expect(f.broker.receipts).toHaveLength(1);
+  f.broker.bridge!.receipt(to, evidence);
   expect(f.broker.receipts).toHaveLength(1);
 }, 5000);
 

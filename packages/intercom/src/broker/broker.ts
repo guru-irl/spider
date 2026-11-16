@@ -418,12 +418,13 @@ class IntercomBroker {
     if (this.bridgeSocket && !this.bridgeSocket.destroyed) writeMessage(this.bridgeSocket, message);
   }
   private forwardLocalReceipt(from: SessionAddress, receipt: MessageReceipt): void {
-    if (this.bridgeSocket) { this.federation.receipt(from, receipt); return; }
-    if (!isConsumptionReceipt(receipt) || receipt.evidence?.sessionId !== from.sessionId) return;
-    const safe: MessageReceipt = { messageId: receipt.messageId, status: receipt.status, timestamp: receipt.timestamp, evidence: receipt.evidence };
-    const key = JSON.stringify([addressKey(from), safe.messageId, safe.status, safe.evidence?.activationEpoch]);
-    this.restoredReceipts.set(key, { from: { ...from }, receipt: safe, at: Date.now() });
-    while (this.restoredReceipts.size > MAX_DELIVERY_RECORDS) this.restoredReceipts.delete(this.restoredReceipts.keys().next().value!);
+    if (isConsumptionReceipt(receipt) && receipt.evidence?.sessionId === from.sessionId) {
+      const safe: MessageReceipt = { messageId: receipt.messageId, status: receipt.status, timestamp: receipt.timestamp, evidence: receipt.evidence };
+      const key = JSON.stringify([addressKey(from), safe.messageId, safe.status, safe.evidence?.activationEpoch]);
+      this.restoredReceipts.set(key, { from: { ...from }, receipt: safe, at: Date.now() });
+      while (this.restoredReceipts.size > MAX_DELIVERY_RECORDS) this.restoredReceipts.delete(this.restoredReceipts.keys().next().value!);
+    }
+    if (this.bridgeSocket) this.federation.receipt(from, receipt);
   }
   private publishLocalPresence(): void {
     this.writeBridge({ type: "federation_local_presence", sessions: [...this.sessions.values()].filter(session => session.federation).map(session => ({ address: sessionAddress(session.info, session.scopeId ?? null), startedAt: session.info.startedAt, lastActivity: session.info.lastActivity, homeEpoch: session.info.homeEpoch ?? null, activationEpoch: session.info.activationEpoch ?? session.info.endpointEpoch!, cwd: session.info.cwd, model: session.info.model, ...(session.info.name ? { name: session.info.name } : {}), ...(session.info.status ? { status: session.info.status } : {}) })) });
@@ -657,8 +658,11 @@ class IntercomBroker {
       if (this.shutdownTimer) { clearTimeout(this.shutdownTimer); this.shutdownTimer = null; }
       this.writeBridge({ type: "federation_registered", features: [FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE] });
       this.publishLocalPresence();
-      const restored = [...this.restoredReceipts.values()]; this.restoredReceipts.clear();
-      for (const item of restored) if (Date.now() - item.at <= DISCONNECTED_SESSION_RETENTION_MS) this.federation.receipt(item.from, item.receipt);
+      // A socket write does not prove that the bridge handled the evidence.
+      for (const [key, item] of this.restoredReceipts) {
+        if (Date.now() - item.at > DISCONNECTED_SESSION_RETENTION_MS) this.restoredReceipts.delete(key);
+        else this.federation.receipt(item.from, item.receipt);
+      }
       return;
     }
     if (this.bridgeSocket === socket) { this.handleBridgeMessage(socket, clientMessage); return; }

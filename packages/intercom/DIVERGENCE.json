@@ -4,7 +4,7 @@
     {
       "path": "broker/broker.ts",
       "task": "3.6f",
-      "reason": "Route durable mail and confirm pair-revocation notices only after the addressed session acknowledges processing. Publish first-home adoption on the existing local registration; refuse later epoch changes.",
+      "reason": "Route durable mail and confirm pair-revocation notices only after the addressed session acknowledges processing. Publish first-home adoption on the existing local registration; refuse later epoch changes. Retain physical receipt evidence across bridge reconnects.",
       "upstreamHash": "65d9ec1dbed5368ea952a1c7c3f978c83b44cd092e1922509085aa070f06829b"
     },
     {

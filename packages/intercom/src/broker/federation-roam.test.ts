@@ -4,9 +4,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { getAgentDirPath } from "./paths.js";
+import net from "node:net";
+import { getAgentDirPath, getBrokerSocketPath } from "./paths.js";
+import { createMessageReader, writeMessage } from "./framing.js";
 import { IntercomClient, IntercomFederationClient } from "./client.js";
-import { FEDERATION_FEATURE, type FederationBridge } from "../protocol.js";
+import { FEDERATION_FEATURE, type FederationBridge, type RemoteSessionInfo } from "../protocol.js";
 
 let broker: ChildProcess, fixtureHome: string, bridge: IntercomFederationClient;
 const clients: IntercomClient[] = [], receipts: any[] = [], receiptEvents = new EventEmitter();
@@ -75,7 +77,10 @@ it("retains restored evidence that arrives before the bridge reconnects", async 
   let delay: ReturnType<typeof setTimeout> | undefined;
   const delayedAdapter: FederationBridge = {
     ...adapter,
-    receipt(from, value) { delay = setTimeout(() => adapter.receipt(from, value), 1100); },
+    receipt(from, value) {
+      if (value.messageId === id) delay = setTimeout(() => adapter.receipt(from, value), 1100);
+      else adapter.receipt(from, value);
+    },
   };
   try {
     bridge = new IntercomFederationClient(); await bridge.connect(registration, delayedAdapter);
@@ -89,4 +94,49 @@ it("retains restored evidence that arrives before the bridge reconnects", async 
     vi.useRealTimers();
     receiptEvents.off("receipt", handler);
   }
+}, 5000);
+
+it("replays evidence when bridges disconnect before handling it", async () => {
+  const receiver = await session("unread-recipient"), id = "unread-evidence";
+  const receipt = { messageId: id, status: "injected" as const, timestamp: 2,
+    evidence: { kind: "entry" as const, entryId: "fixture-entry", sessionId: "unread-recipient", activationEpoch: "old-generation" } };
+  const marker: RemoteSessionInfo = { remote: true, id: "roster-marker", address: { sessionId: "roster-marker", scopeId: null }, machineId: "machine-2", machineAlias: "box-1.invalid", homeEpoch: 1, activationEpoch: "marker-activation", endpointEpoch: "marker-activation", cwd: "/workspace", model: "fixture", startedAt: 1, lastActivity: 1 };
+  const markerState = () => receiver.listSessions().then(rows => rows.find(row => row.id === marker.id));
+  const waitForDisconnect = () => vi.waitFor(async () => expect(await markerState()).toMatchObject({ stale: true, reachability: "unknown" }));
+  bridge.publishPresence([marker]);
+  await bridge.inspectBlockers({ sessionId: "unread-recipient", scopeId: null });
+  expect(await markerState()).toMatchObject({ remote: true });
+  await bridge.close();
+  await waitForDisconnect();
+
+  // The peer never passes received frames to its adapter, as with a lost socket.
+  const connectUnreadBridge = async () => {
+    const socket = net.connect(getBrokerSocketPath());
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.on("error", reject);
+        socket.on("data", createMessageReader((message: any) => {
+          if (message.type === "federation_registered") {
+            writeMessage(socket, { type: "federation_presence", sessions: [marker] });
+            writeMessage(socket, { type: "inspect_blockers", requestId: "ready", address: { sessionId: "unread-recipient", scopeId: null } });
+          } else if (message.type === "blockers" && message.requestId === "ready") { socket.pause(); resolve(); }
+        }, reject));
+        writeMessage(socket, { type: "federation_register", ...registration });
+      });
+      return socket;
+    } catch (error) { socket.destroy(); throw error; }
+  };
+  const disconnect = async (socket: net.Socket) => {
+    await new Promise<void>(resolve => { socket.once("close", () => resolve()); socket.destroy(); });
+    await waitForDisconnect();
+  };
+  const first = await connectUnreadBridge();
+  try { receiver.sendMessageReceipt(receipt); await receiver.listSessions(); }
+  finally { await disconnect(first); }
+  const second = await connectUnreadBridge();
+  await disconnect(second);
+
+  bridge = new IntercomFederationClient(); await bridge.connect(registration, adapter);
+  await vi.waitFor(() => expect(receipts.some(value => value.receipt.messageId === id)).toBe(true));
+  expect(receipts.find(value => value.receipt.messageId === id)).toEqual({ from: { sessionId: "unread-recipient", scopeId: null }, receipt });
 }, 5000);

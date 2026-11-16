@@ -20,13 +20,19 @@ async function fixture(automaticSubagentPanes = false) {
   const executable = join(h.root, 'viewer.mjs'); await writeFile(executable, 'setInterval(() => {}, 1000);');
   const placement = { space: 'space', tab: 'tab', pane: 'owner-pane' } as OwnerPlacement;
   const layout = new Map<TerminalAddress, OwnerPlacement>([[owner.terminal.address, placement]]);
+  const tabs: OwnerPlacement['tab'][] = [placement.tab, 'following-tab' as OwnerPlacement['tab']];
   const commands: { name: string; args: Readonly<Record<string, unknown>> }[] = [];
-  let focused = placement;
+  let focused = placement, nextTab = 0;
   const app: AppClient & AppPaneInspection = {
     ownerPlacement: async address => { const p = layout.get(address); if (!p) throw new HerdrError('owner-unplaced', 'No pane'); return p; },
     tabTerminals: async target => [...layout].filter(([, p]) => p.tab === target.tab).map(([address]) => address),
     tabPanes: async target => [...layout].filter(([, p]) => p.tab === target.tab).map(([terminal, p]) => ({ terminal, pane: p.pane })),
-    tabIndex: async () => 1, focusedPane: async () => focused,
+    tabIndex: async target => {
+      const index = tabs.indexOf(target.tab);
+      if (index < 0) throw new HerdrError('not-found', 'No tab');
+      return index + 1;
+    },
+    focusedPane: async () => focused,
     tabSpace: async () => placement.space,
     awaitPane: async (address, target) => { const p = { ...target, pane: `pane-${address}` as OwnerPlacement['pane'] }; layout.set(address, p); return p.pane; },
     command: async (name, args) => {
@@ -36,7 +42,16 @@ async function fixture(automaticSubagentPanes = false) {
       if (name === 'pane.go') { const rows = [...layout.values()]; const next = rows[rows.indexOf(focused) + 1]; if (next) focused = next; }
       if (name === 'terminal.park') layout.delete(address);
       if (name === 'terminal.keep') { focused = { ...placement, pane: `pane-${address}` as OwnerPlacement['pane'] }; layout.set(address, focused); }
-      if (name === 'tab.new') return { ...placement, tab: 'new-tab' as OwnerPlacement['tab'], pane: 'new-pane' as OwnerPlacement['pane'] };
+      if (name === 'tab.new') {
+        const tab = `new-tab-${++nextTab}` as OwnerPlacement['tab']; tabs.push(tab);
+        focused = { ...placement, tab, pane: `new-pane-${nextTab}` as OwnerPlacement['pane'] };
+        return focused;
+      }
+      if (name === 'tab.move') {
+        const at = tabs.indexOf(args.id as OwnerPlacement['tab']), index = Number(args.index);
+        if (at < 0 || !Number.isInteger(index) || index < 1 || index > tabs.length) return { error: { code: 'app-error', message: 'No tab or index' } };
+        const [tab] = tabs.splice(at, 1); tabs.splice(index - 1, 0, tab);
+      }
       return {};
     },
   };
@@ -64,7 +79,7 @@ async function fixture(automaticSubagentPanes = false) {
   const seed = async (patch: Record<string, string> = {}, parent = owner.terminal.address) => h.hc.run({ argv: [process.execPath, executable], cwd: h.root, parent,
     labels: { 'spider.kind': 'subagent-viewer', 'spider.session': owner.sessionId, 'spider.owner-core': owner.terminal.coreId, 'spider.owner-terminal': owner.terminal.terminalId, 'spider.run': ids[0], ...patch },
     background: true, noNotify: true, outliveParent: true });
-  return { h, owner, app, panes, registration, hooks, layout, commands, launches, seed, attempted, launchRequests, errors, runEvents,
+  return { h, owner, app, panes, registration, hooks, layout, tabs, commands, launches, seed, attempted, launchRequests, errors, runEvents,
     emitRun(id: RunId) { for (const listener of listeners) listener(id); },
     swept: () => swept,
     async close() { await registration.dispose(); await swept.catch(() => {}); await panes.dispose(); await h.close(); expect(await h.remainingOwnedResources()).toEqual([]); } };
@@ -408,6 +423,10 @@ test.each([false, true])('an automatic check preserves an in-flight user open wi
     release();
     expect((await opening)?.viewer).toBe(viewer.address);
     expect(f.layout.has(viewer.address)).toBe(true);
+    if (automatic) {
+      expect(f.layout.get(viewer.address)?.tab).toBe('new-tab-1');
+      expect(f.tabs).toEqual(['tab', 'new-tab-1', 'following-tab']);
+    }
     await expect(f.h.hc.get(viewer.address)).resolves.toMatchObject({ state: 'live' });
     expect(await f.launches()).toHaveLength(automatic ? 3 : 1);
   } finally { release?.(); await opening?.catch(() => {}); await f.close(); }

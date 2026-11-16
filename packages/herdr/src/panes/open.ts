@@ -58,14 +58,16 @@ async function updatePresentation(p: PanePresentation, fields: Partial<PanePrese
   }) }));
   if (!changed) throw new HerdrError('stale-presentation', 'Presentation changed before acknowledgment'); return changed;
 }
-async function verifyProxy(address: TerminalAddress, p: PanePresentation, ports: PaneOpenPorts, match: 'target' | 'launch' | 'both' = 'target') {
+const proxyTargetLabels = (target: PaneTarget) => ({ 'spider.target-core': target.coreId, 'spider.target-terminal': target.terminalId, 'spider.owner-generation': target.generation });
+async function verifyProxy(address: TerminalAddress, p: PanePresentation, ports: PaneOpenPorts, match: 'target' | 'launch' | 'both' | 'retire' = 'target') {
   const core = await ports.hc.identity();
   if (address.includes('/') && !address.startsWith(`${core.coreId}/`)) throw new HerdrError('proxy-identity', 'Presentation proxy is not on the selected local core');
   const terminal = await ports.hc.get(address); const labels = terminal.labels;
   const targetMatches = labels['spider.target-core'] === p.target.coreId && labels['spider.target-terminal'] === p.target.terminalId;
   const launchMatches = labels['spider.pane-operation'] === (p.proxyOperationId ?? p.id);
-  const matches = match === 'launch' ? launchMatches : targetMatches && (match === 'target' || launchMatches);
-  if (terminal.address !== address || terminal.state !== 'live' || labels['spider.kind'] !== 'pane-proxy' || labels['spider.pane-id'] !== p.id || !matches) throw new HerdrError('proxy-identity', 'Presentation proxy identity is unproved');
+  const matches = match === 'launch' ? launchMatches : targetMatches && (match === 'target' || launchMatches) && (match !== 'retire' || (labels['spider.owner-generation'] ?? null) === p.target.generation);
+  const stateMatches = terminal.state === 'live' || match === 'retire' && terminal.state === 'finished';
+  if (terminal.address !== address || !stateMatches || labels['spider.kind'] !== 'pane-proxy' || labels['spider.pane-id'] !== p.id || !matches) throw new HerdrError('proxy-identity', 'Presentation proxy identity is unproved');
   return terminal;
 }
 export async function presentProxy(p: PanePresentation, operationId: string, ports: PaneOpenPorts): Promise<PanePresentation> {
@@ -219,7 +221,7 @@ export async function convertNativePresentation(input: { presentation: PanePrese
     const conversion: PanePresentation['conversion'] = p.visibility !== 'parked' && source ? { state: 'waiting-readiness', source, sourceFocused: input.sourceFocused, destination: null } : null;
     p = await updatePresentation(p, { target: destination, conversion }, ports);
     if (p.visibility === 'parked' || !ports.app || !p.proxy || !p.slot) return outcome(p.visibility === 'parked' ? 'complete' : 'pending', 'proxy-retargeted', p);
-    try { await ports.awaitPresented(p.proxy, destination, p.slot); p = await updatePresentation(p, { conversion: null }, ports); return outcome('complete', 'proxy-retargeted', p); }
+    try { await ports.hc.setLabels(p.proxy, proxyTargetLabels(destination)); await ports.awaitPresented(p.proxy, destination, p.slot); p = await updatePresentation(p, { conversion: null }, ports); return outcome('complete', 'proxy-retargeted', p); }
     catch { return outcome('pending', 'destination-screen-pending', p); }
   }
   if (p.visibility === 'parked') {
@@ -243,7 +245,7 @@ export async function convertNativePresentation(input: { presentation: PanePrese
       if (p.proxy.includes('/') && !p.proxy.startsWith(`${local.coreId}/`) || proxy.address !== p.proxy || proxy.state !== 'live' || proxy.labels['spider.kind'] !== 'pane-proxy' || proxy.labels['spider.pane-id'] !== p.id) return outcome('pending', 'conversion-proxy-unverified', p);
       // The durable binding retargets the attach loop. Keep its discovery facts in step.
       if (proxy.labels['spider.target-core'] !== destination.coreId || proxy.labels['spider.target-terminal'] !== destination.terminalId)
-        await ports.hc.setLabels(p.proxy, { 'spider.target-core': destination.coreId, 'spider.target-terminal': destination.terminalId });
+        await ports.hc.setLabels(p.proxy, proxyTargetLabels(destination));
     } catch { return outcome('pending', 'conversion-proxy-unavailable', p); }
   }
   if (!ports.app || !appAvailable) return outcome('pending', 'app-unavailable', p);
@@ -268,7 +270,7 @@ export async function convertNativePresentation(input: { presentation: PanePrese
           const proxy = await verifyProxy(recovered, desired, ports, 'launch');
           p = await updatePresentation(p, { proxy: recovered, launch: 'acknowledged' }, ports);
           if (proxy.labels['spider.target-core'] !== destination.coreId || proxy.labels['spider.target-terminal'] !== destination.terminalId)
-            await ports.hc.setLabels(recovered, { 'spider.target-core': destination.coreId, 'spider.target-terminal': destination.terminalId });
+            await ports.hc.setLabels(recovered, proxyTargetLabels(destination));
           await verifyProxy(recovered, desired, ports, 'both');
         } else {
           if ((p.proxyLaunchAttempts ?? 0) >= 2) return outcome('pending', 'conversion-proxy-exhausted', p);
@@ -308,10 +310,16 @@ export async function convertNativePresentation(input: { presentation: PanePrese
       await command(app, 'terminal.park', { terminal: oldDisplay });
       return outcome('complete', 'native-view-converted', p);
     }
-    await command(app, 'terminal.park', { terminal: oldDisplay });
-    if ((await app.tabTerminals(source)).includes(oldDisplay)) return outcome('pending', 'old-proxy-removal-pending', p);
-    await verifyProxy(oldDisplay, original, ports);
-    await ports.hc.kill(oldDisplay);
-    return outcome('complete', 'native-view-converted', p);
+    try {
+      const before = await verifyProxy(oldDisplay, original, ports, 'retire');
+      await command(app, 'terminal.park', { terminal: oldDisplay });
+      if ((await app.tabTerminals(source)).includes(oldDisplay)) return outcome('pending', 'old-proxy-removal-pending', p);
+      const current = before.state === 'finished' ? before : await verifyProxy(oldDisplay, original, ports, 'retire');
+      if (current.state === 'live') await ports.hc.kill(oldDisplay);
+      return outcome('complete', 'native-view-converted', p);
+    } catch (error) {
+      if (error instanceof HerdrError && error.code === 'proxy-identity') return outcome('refused', 'source-retirement-unverified', p);
+      throw error;
+    }
   } catch { return outcome('pending', 'conversion-pending', p); }
 }

@@ -16,6 +16,8 @@ The runner builds once, packs once, and supplies `SPIDER_HERDR_E2E_PACKED_ROOT` 
 
 Use only an executable prepared by `prepareNativeApp` in the current checkout. The helper records a ledger-owned APFS bundle clone, source digests, a distinct bundle identity, an owned app home, and a copied core pinned in `settings.json`. It disables native automatic sounds. The app tier refuses original application bundles, pending updates, launcher links, changed copies, and missing ownership. It never falls back to the live app.
 
+The production release test copies release fixtures into each owned app home. It tests the setup recipe, not whether the bundle's shipped built-ins match the fixtures. The backdrop and ScreenCaptureKit experiment runs only with `SPIDER_HERDR_BLUR_CAPTURE=1` and needs Screen Recording permission.
+
 The native isolation smoke prepares and checks both target releases without changing the source bundles. Use a pinned compatible `hc` and its sibling `herdr-core` under the checkout's owned temporary files:
 
 ```sh

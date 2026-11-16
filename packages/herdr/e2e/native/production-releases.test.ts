@@ -44,6 +44,7 @@ for (const [version, sourceBundle] of [['0.1.13', '/Applications/Herdr.app'], ['
     try {
       const cores = await startCores(ledger, root, env, bin);
       const owned = await prepareNativeApp({ root, sourceBundle, sourceCore: join(dirname(realHcBinary()), 'herdr-core'), env: { ...cores.local.env, HC_SOCKET: cores.local.socket }, ledger, invoke });
+      // These release fixtures exercise the recipe, not the bundle's shipped built-ins.
       const source = resolve(`packages/herdr/src/__tests__/fixtures/herdr-${version}`);
       await cp(join(source, 'mods'), join(owned.appHome, 'mods'), { recursive: true });
       await cp(join(source, 'layouts'), join(owned.appHome, 'layouts'), { recursive: true });
@@ -53,6 +54,11 @@ for (const [version, sourceBundle] of [['0.1.13', '/Applications/Herdr.app'], ['
       const launch = await launchNativeApp(owned, { invoke, ledger });
       expect(launch.after).toBe(launch.before);
       const app = createNativeAppDriver({ binary: owned.binary, env: owned.env, invoke, ownPath: path => path });
+      const listed = await app.command('commands', {}) as { commands: { name: string }[] };
+      const names = new Set(listed.commands.map(command => command.name));
+      expect(names.has('terminal.search')).toBe(true);
+      expect(names.has('window.minimize')).toBe(true);
+      expect(names.has('terminal.select_all')).toBe(version === '0.1.16');
       const configPath = join(root, 'production-config.json');
       await writeFile(configPath, JSON.stringify({ app: { binary: owned.binary, home: owned.appHome }, core: { binary: cores.wrapper, config: join(dirs.XDG_CONFIG_HOME, 'herdr-core/config.toml') }, agentDirectory: dirs.PI_CODING_AGENT_DIR, globalRoot: dirs.SPIDER_GLOBAL_ROOT, shellRc: join(root, 'shellrc'), spaces: [], machines: [] }));
       const packageRoot = join(root, 'package');
@@ -93,45 +99,47 @@ for (const [version, sourceBundle] of [['0.1.13', '/Applications/Herdr.app'], ['
       await writeFile(join(output, 'layout-source.json'), await readFile(join(owned.appHome, 'layouts/main.json')));
       await cp(join(owned.appHome, 'keys.json'), join(output, 'keys.json'));
       await writeFile(join(output, 'receipt.json'), JSON.stringify({ version, root, launch, doctor }, null, 2));
-      await app.command('space.new', { name: 'Compatibility', machine: '', argv: ['/bin/sh', '-c', 'printf "Compatibility text: neutral glass and readable terminal\\n"; exec cat'] });
-      await app.command('app.theme', { name: 'spider-glass' });
-      if (version === '0.1.16') {
-        const executable = join(root, 'bright-backdrop'), ready = join(root, 'bright-backdrop.json');
-        const compiled = await invoke('/usr/bin/swiftc', [resolve('packages/herdr/e2e/fixtures/bright-backdrop.swift'), '-o', executable], owned.env);
-        let backdrop: unknown = { result: 'default backdrop', compiler: compiled.stderr };
-        if (compiled.exitCode === 0) {
-          spawnOwned(ledger, { label: 'bright-backdrop', command: executable, args: [String(launch.pid), ready], env: owned.env, cwd: root, stdio: { log: join(root, 'bright-backdrop.log') } });
-          try { backdrop = await waitFor('owned bright backdrop', async () => JSON.parse(await readFile(ready, 'utf8').catch(() => 'null')), Boolean, deadline(5000)); }
-          catch (error) { backdrop = { result: 'default backdrop', reason: String(error) }; }
-        }
-        await writeFile(join(root, 'backdrop.json'), JSON.stringify(backdrop, null, 2));
-      }
-      const shots: { option: string; result: string }[] = [];
-      for (const option of version === '0.1.16' ? ['off', 'on'] : ['off']) {
-        request.config.look = { autoHideTabs: true, windowBlur: option === 'on' };
-        const files = await parts.stageLook(request, context, 'export');
-        const layout = files.find(file => file.path.endsWith('/layouts/spider-glass.json'))!;
-        await writeFile(join(owned.appHome, `layouts/spider-blur-${option}.json`), layout.bytes);
-        await app.command('layout.switch', { name: `spider-blur-${option}` });
-        await app.command('layout.select', { stack: 'panel-body', child: 'spider' });
-        await app.command('layout.show', { id: 'panel' });
-        const png = join(root, `window-blur-${option}.png`);
-        try {
-          await app.shot(png);
-          if (version === '0.1.16') {
-            const captured = await invoke('/usr/bin/swift', [resolve('packages/herdr/e2e/fixtures/capture-owned-window.swift'), String(launch.pid), owned.bundle, png], owned.env);
-            await writeFile(join(root, `window-capture-${option}.json`), JSON.stringify(captured, null, 2));
-            expect([0, 3], captured.stderr).toContain(captured.exitCode);
+      if (process.env.SPIDER_HERDR_BLUR_CAPTURE === '1') {
+        await app.command('space.new', { name: 'Compatibility', machine: '', argv: ['/bin/sh', '-c', 'printf "Compatibility text: neutral glass and readable terminal\\n"; exec cat'] });
+        await app.command('app.theme', { name: 'spider-glass' });
+        if (version === '0.1.16') {
+          const executable = join(root, 'bright-backdrop'), ready = join(root, 'bright-backdrop.json');
+          const compiled = await invoke('/usr/bin/swiftc', [resolve('packages/herdr/e2e/fixtures/bright-backdrop.swift'), '-o', executable], owned.env);
+          let backdrop: unknown = { result: 'default backdrop', compiler: compiled.stderr };
+          if (compiled.exitCode === 0) {
+            spawnOwned(ledger, { label: 'bright-backdrop', command: executable, args: [String(launch.pid), ready], env: owned.env, cwd: root, stdio: { log: join(root, 'bright-backdrop.log') } });
+            try { backdrop = await waitFor('owned bright backdrop', async () => JSON.parse(await readFile(ready, 'utf8').catch(() => 'null')), Boolean, deadline(5000)); }
+            catch (error) { backdrop = { result: 'default backdrop', reason: String(error) }; }
           }
-          const text = await invoke('/usr/bin/swift', [resolve('packages/herdr/e2e/fixtures/window-text.swift'), png], owned.env);
-          await writeFile(join(root, `window-blur-${option}-text.json`), text.stdout);
-          expect(text.exitCode, text.stderr).toBe(0);
-          expect(text.stdout).toContain('Compatibility text');
-          shots.push({ option, result: 'captured' });
-        } catch (error) { shots.push({ option, result: String(error) }); }
+          await writeFile(join(root, 'backdrop.json'), JSON.stringify(backdrop, null, 2));
+        }
+        const shots: { option: string; result: string }[] = [];
+        for (const option of version === '0.1.16' ? ['off', 'on'] : ['off']) {
+          request.config.look = { autoHideTabs: true, windowBlur: option === 'on' };
+          const files = await parts.stageLook(request, context, 'export');
+          const layout = files.find(file => file.path.endsWith('/layouts/spider-glass.json'))!;
+          await writeFile(join(owned.appHome, `layouts/spider-blur-${option}.json`), layout.bytes);
+          await app.command('layout.switch', { name: `spider-blur-${option}` });
+          await app.command('layout.select', { stack: 'panel-body', child: 'spider' });
+          await app.command('layout.show', { id: 'panel' });
+          const png = join(root, `window-blur-${option}.png`);
+          try {
+            await app.shot(png);
+            if (version === '0.1.16') {
+              const captured = await invoke('/usr/bin/swift', [resolve('packages/herdr/e2e/fixtures/capture-owned-window.swift'), String(launch.pid), owned.bundle, png], owned.env);
+              await writeFile(join(root, `window-capture-${option}.json`), JSON.stringify(captured, null, 2));
+              expect([0, 3], captured.stderr).toContain(captured.exitCode);
+            }
+            const text = await invoke('/usr/bin/swift', [resolve('packages/herdr/e2e/fixtures/window-text.swift'), png], owned.env);
+            await writeFile(join(root, `window-blur-${option}-text.json`), text.stdout);
+            expect(text.exitCode, text.stderr).toBe(0);
+            expect(text.stdout).toContain('Compatibility text');
+            shots.push({ option, result: 'captured' });
+          } catch (error) { shots.push({ option, result: String(error) }); }
+        }
+        expect(shots.every(shot => shot.result === 'captured'), JSON.stringify(shots)).toBe(true);
+        await writeFile(join(root, 'blur-shots.json'), JSON.stringify(shots, null, 2));
       }
-      expect(shots.every(shot => shot.result === 'captured'), JSON.stringify(shots)).toBe(true);
-      await writeFile(join(root, 'blur-shots.json'), JSON.stringify(shots, null, 2));
       expect(await frontmostApp(invoke, owned.env)).toBe(launch.before);
       verifyNativeAppSources(owned);
       console.log(`Production ${version} evidence: ${root}`);

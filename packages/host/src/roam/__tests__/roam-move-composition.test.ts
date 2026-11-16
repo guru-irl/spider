@@ -3,6 +3,7 @@ import { readMoveBindingDiagnostics } from "@spider/roam/move-diagnostics";
 import { afterEach, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { once } from "node:events";
 import { createReplica } from "@spider/db-core/testutil";
 import { DEFAULT_LIMITS, disabledIntercom, type RoamConfig } from "@spider/roam/contracts";
 import { openFreezeJournal } from "@spider/roam/journal";
@@ -80,7 +81,7 @@ async function inspectProductionActivation(initializeScratch: boolean) {
   const { createProcessPresence } = await import("@spider/herdr/sessions/presence");
   const { processStartTime } = await import("../../../../subagents/src/process-identity");
   const { recordLocation } = await import("@spider/db-core/roam/catalog");
-  const { spawn } = await import("node:child_process"), { once } = await import("node:events");
+  const { spawn } = await import("node:child_process");
   const global = createReplica("global", HUB), worktree = createReplica("worktree", HUB); fixtures.push(global, worktree);
   vi.stubEnv("HC_SOCKET", join(process.cwd(), ".spider/scratch/move-composition.sock"));
   vi.stubEnv("HC_TERMINAL_SOCKET", join(process.cwd(), ".spider/scratch/move-composition.sock"));

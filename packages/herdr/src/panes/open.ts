@@ -207,6 +207,10 @@ export async function convertNativePresentation(input: { presentation: PanePrese
   const source = p.conversion?.source ?? input.source;
   if (p.visibility !== 'parked' && p.slot && (!source || p.slot.space !== source.space || p.slot.tab !== source.tab)) return outcome('refused', 'captured-slot-changed', p);
   if (samePaneTarget(p.target, destination) && p.mode === (native ? 'native' : 'proxy') && !p.conversion) return outcome('complete', 'already-presented', p);
+  if (!p.slot && !p.proxy) {
+    p = await updatePresentation(p, { target: destination, mode: native ? 'native' : 'proxy', launch: 'none', proxyLaunchAttempts: 0, conversion: null }, ports);
+    return outcome('complete', 'unplaced-binding-updated', p);
+  }
   if (p.mode === 'proxy' && !native) {
     const conversion: PanePresentation['conversion'] = p.visibility !== 'parked' && source ? { state: 'waiting-readiness', source, sourceFocused: input.sourceFocused, destination: null } : null;
     p = await updatePresentation(p, { target: destination, conversion }, ports);

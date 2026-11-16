@@ -189,7 +189,7 @@ test.each(['restored home', 'parked restored home', 'hosting restart', 'box star
     expect((await runtime.store.read()).presentations[0]).toEqual(p);
     expect(commands).not.toHaveBeenCalled();
   } else if (scenario === 'unplaced session') {
-    expect(outcome).toMatchObject({ status: 'pending', reason: 'source-view-unavailable' });
+    expect(outcome).toMatchObject({ status: 'complete', reason: 'nothing-to-present', presentation: null });
     expect((await runtime.store.read()).presentations).toEqual([]);
     expect(commands).not.toHaveBeenCalled();
   } else {
@@ -431,5 +431,19 @@ test('a finished execution terminal cannot become a presentation destination', a
   const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
   expect(await operations.presentReadyTarget(destination.target)).toMatchObject({ status: 'pending', reason: 'readiness-unavailable' });
   expect((await runtime.store.read()).presentations[0]).toEqual(p);
+  expect(hc.run).not.toHaveBeenCalled();
+});
+
+
+test('a never-placed remote session advances its binding without waiting for a Mac view', async () => {
+  const { root, runtime, hc } = await fixture();
+  const row = sessionRow('gen-2'); row.target = { ...row.target, terminalId: 'moved' as never, address: 'core-remote/moved' as never, homeEpoch: 1 };
+  boundary.rows = [row];
+  const p: PanePresentation = { ...presentation('unplaced'), target: sessionRow().target, role: 'agent', slot: null, proxy: null, launch: 'none' };
+  await runtime.store.update(state => ({ ...state, presentations: [p] }));
+  const service = runtime.createService();
+  const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
+  expect(await operations.presentReadyTarget(row.target)).toMatchObject({ status: 'complete', presentation: { target: row.target, slot: null, proxy: null } });
+  expect((await runtime.store.read()).presentations).toMatchObject([{ target: row.target, slot: null, proxy: null }]);
   expect(hc.run).not.toHaveBeenCalled();
 });

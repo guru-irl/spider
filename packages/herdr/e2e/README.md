@@ -118,6 +118,36 @@ Selection is dynamic by tier and ID. `--story S52,S54` and `--task setup|remote|
 
 R01 exercises sync through the packed CLI and two isolated cores in the headless tier. R02 exercises admission, the packaged box observer and hub, and proxy placement with a fixture owner and a closed app. R02 does not start the native app or a pi owner. The headless workflow runs one story per job.
 
+## Run move and recovery stories
+
+Run R06 through R10 only in the GitHub Linux stories job. Select them with its
+`stories` input. The job builds and packs the release before this command:
+
+```sh
+npm run test:herdr:e2e -- --built --tier headless --story R06,R07,R08,R09,R10
+```
+
+These IDs are explicit members of `headless`, not the no-core `ci` tier. Any
+selection containing them uses one worker. Each story keeps the existing
+startup, per-wait, and 300-second story deadlines. The report records its duration
+and independent cleanup proof.
+
+| Story | Coverage |
+| --- | --- |
+| R06 | Outward move, exact session and mapped cwd, one active owner, staged and working trees, source index bytes, local usage, and deferred same-tab presentation. |
+| R07 | Return move, original checkout and file, higher epoch, retained history, and native same-tab presentation. |
+| R08 | Busy-source refusal, lost readiness replies, forward recovery, and proved-failure rollback. |
+| R09 | The original mirror and revoked reconnect assertions run first. Additional cases restore a mirrored prefix and preserve visible or parked intent, then refuse a reused alias and stale close. |
+| R10 | A copied participating file refuses ordinary prompts and tools without creating another owner. |
+
+CLI control and remote operations use the packed entry. The platform wrapper
+compiles the real host adapter factory and injects only power, service, launch
+limit, and presentation ports. Pi loads the packed extension. Presentation
+checks use the real service with a synthetic app document and owned terminal
+records, not a native window. Their presentation-only proxy terminals do not
+certify attach rendering. Native window observations are blocked on Linux.
+Roaming is enabled only in each story's isolated HOME.
+
 ## Results
 
 Each invocation has a fresh root under `.spider/scratch/e2/`. Story receipts link the actual `suite.evidenceDirectory` (`e2/_evidence/<story>/<ledger-id>/`), `suite.cleanupProofPath` (`e2/_ledgers/<ledger-id>.cleanup.json`) and ledger path. Installed pi path/version and hc/core/app resolution are retained separately from product output. Pi resolution prefers the Node sibling, then the checkout dependency. hc, core, and app resolution uses `os.userInfo().homedir`. Product subprocesses retain fenced HOME and XDG paths.
@@ -126,7 +156,7 @@ The runner registers its worker process group in its own durable ledger and star
 
 `--tier ci --story S55` kills real runner instances with TERM and KILL while they own a detached daemon and socket; the headless variant also owns two isolated cores and destination terminal processes. It kills both watchdogs in a further case and proves the next real runner reconciles their durable ledgers. It also proves independent retry collects a survivor from a failed ledger and records unchanged default-socket identity without a default-core CLI call. `--cleanup-control daemon|destination` is a fixture-only hold mode restricted to exactly S55 in ci/headless; use the ordinary S55 story to run and collect it.
 
-Each invocation root contains `invocation.json`, entry digests, build/pack/test logs, per-story JSON, and `matrix.md`/`matrix.json`. The matrix lists the registered S, R and B product IDs and distinguishes **passed**, **failed**, **blocked**, and **not exercised**. An R02 pass names its fixture-owner and native-app coverage limits. Missing selected results fail closed. A cleanup failure overrides any earlier story success. A blocked prerequisite never produces a complete-suite pass. Successful duration includes teardown. Failed runs are not timing samples. IDs that match `H-[a-z0-9-]+` select harness stories, which have a separate matrix section and never count toward the 56 product stories.
+Each invocation root contains `invocation.json`, entry digests, build/pack/test logs, per-story JSON, and `matrix.md`/`matrix.json`. The matrix lists the registered S, R (including R06 to R10) and B product IDs and distinguishes **passed**, **failed**, **blocked**, and **not exercised**. An R02 pass names its fixture-owner and native-app coverage limits. Missing selected results fail closed. A cleanup failure overrides any earlier story success. A blocked prerequisite never produces a complete-suite pass. Successful duration includes teardown. Failed runs are not timing samples. IDs that match `H-[a-z0-9-]+` select harness stories, which have a separate matrix section and never count toward the 56 product stories.
 
 S56 in CI repeats the actual runtime probe, mod-helper import, and runtime exit/receipt/stream assertions against the public package. Each pristine artifact must pass before its bad copy can count as caught. The headless controls reuse the actual S29, S22, and S34 definitions. A failed baseline, unrelated assertion, missing definition, or unproved cleanup does not count as a caught control. The CI artifact subset does not certify those active-core controls.
 

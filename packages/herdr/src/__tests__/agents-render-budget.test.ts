@@ -155,7 +155,7 @@ it.each([['run0-0', 2, true], ['run0-3', 2, false], ['run0-3', 4, true]] as cons
   'retains a finished run %s only when its live child and retention require it', (runId, limit, retained) => {
     const h = fixture('0.1.13', 1, 4), now = Date.now();
     h.state.terminals.push({ address: 'remote/job', parent: 't0', state: 'live', status: 'working',
-      labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': runId, 'spider.machine': 'remote' } });
+      labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': runId, 'spider.machine': 'box-1.invalid' } });
     const options = { now, completedRows: limit }, summary: { hiddenFinished?: number } = {};
     const full = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, options);
     const visible = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, { ...options, finishedSummary: summary });
@@ -171,7 +171,7 @@ it('counts deduplicated finished runs and respects equal-time retention ties', (
   for (const run of runs.slice(1)) run.finishedAt = now - 1000;
   runs.push({ ...runs[1], name: 'duplicate' });
   h.state.terminals.push({ address: 'remote/job', parent: 't0', state: 'live', status: 'working',
-    labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': 'run0-3', 'spider.machine': 'remote' } });
+    labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': 'run0-3', 'spider.machine': 'box-1.invalid' } });
   const options = { now, completedRows: 2 }, summary: { hiddenFinished?: number } = {};
   const full = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, options);
   const visible = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, { ...options, finishedSummary: summary });
@@ -185,7 +185,7 @@ it('preserves visible row order when a finished duplicate becomes active', () =>
   const h = fixture('0.1.13', 1, 0), now = Date.now(), active = h.state.feeds[0].runs.rows[0];
   h.state.feeds[0].runs.rows = [{ ...active, status: 'done', finishedAt: now - 1000 }, active];
   h.state.terminals.push({ address: 'remote/job', parent: 't0', state: 'live', status: 'working',
-    labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.machine': 'remote' } });
+    labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.machine': 'box-1.invalid' } });
   const options = { now, completedRows: 50 }, summary: { hiddenFinished?: number } = {};
   const full = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, options);
   const compact = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, { ...options, finishedSummary: summary });
@@ -197,7 +197,7 @@ it('preserves visible row order when a finished duplicate becomes active', () =>
 it('does not count a retained terminal hidden under a folded finished run', () => {
   const h = fixture('0.1.13', 1, 4), now = Date.now();
   h.state.terminals.push({ address: 'remote/old-console', parent: 't0', state: 'finished', status: 'idle', finishedAt: now - 2000,
-    labels: { 'spider.kind': 'remote-console', 'spider.session': 's0', 'spider.run': 'run0-0', 'spider.machine': 'remote' } });
+    labels: { 'spider.kind': 'remote-console', 'spider.session': 's0', 'spider.run': 'run0-0', 'spider.machine': 'box-1.invalid' } });
   const summary: { hiddenFinished?: number } = {};
   const rows = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract,
     { now, completedRows: 50, finishedSummary: summary, folded: new Set(['run0-0']), expandedConsoles: new Set() });

@@ -8,7 +8,7 @@ import { createPaneSourceEffects } from '../herdr/pane-source.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import type { HcClient, Owner, TerminalAddress, TerminalSummary } from '../../../herdr/src/contracts.js';
 import type { PaneSourceInventoryPorts } from '../herdr/pane-endpoint.js';
-const boundary = vi.hoisted(() => ({ terminals: new Map<string, TerminalSummary>() }));
+const boundary = vi.hoisted(() => ({ title: 'Child', terminals: new Map<string, TerminalSummary>() }));
 vi.mock('../session-run-db.js', () => ({ openSessionHistoryDb: () => ({ db: { prepare: () => ({ get: () => ({ name: 'Child', status: 'running', child_mode: 'rpc' }) }), close() {} } }) }));
 vi.mock('../../../herdr/src/client/argv-client.js', () => ({ createArgvClient: () => ({ exec: async () => { throw new Error('Unexpected remote execution'); } }) }));
 vi.mock('../../../herdr/src/client/hc.js', () => ({ invokeCli: async (_binary: string, args: string[]) => {
@@ -16,13 +16,14 @@ vi.mock('../../../herdr/src/client/hc.js', () => ({ invokeCli: async (_binary: s
   if (args[0] === 'get') {
     const address = args[1], terminal = boundary.terminals.get(address.split('/').at(-1)!);
     if (!terminal) throw new Error('Missing terminal');
-    return { ...terminal, address, created_ms: 100, exit_code: terminal.exitCode, finished_ms: terminal.finishedAt, title: 'Child' };
+    return { ...terminal, address, created_ms: 100, exit_code: terminal.exitCode, finished_ms: terminal.finishedAt, title: boundary.title };
   }
   throw new Error('Unexpected CLI call');
 } }));
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); boundary.terminals.clear(); });
 async function fixture(failure: 'absent' | 'lost-reply') {
+  boundary.title = 'Child';
   const base = join(paths.scratch('worktree', process.cwd()), 'pane-source-recovery'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'f-')); roots.push(root);
   const owner = { sessionId: 'session-1', generation: 'gen-1', cwd: root, sessionFile: null, name: 'Builder', terminal: { coreId: 'core-local', terminalId: 'owner', address: 'owner', socket: '/owned/core.sock', sessionNamespace: 'fixture' } } as Owner;
   let attempts = 0;
@@ -53,9 +54,10 @@ test('production recovers from a proved absent launch without stranding the disp
   expect(await f.effects.launchViewer!(f.owner, f.request)).toMatchObject({ kind: 'subagent', runId: 'run-1' });
   expect(f.hc.run).toHaveBeenCalledTimes(2);
 });
-test('production recovers a labelled viewer after a lost reply and removes its finished terminal on close', async () => {
+test.each([{ title: '', name: null }, { title: '   ', name: null }, { title: 'Child', name: 'Child' }])('production recovers a labelled viewer with core title "$title" after a lost reply and removes its finished terminal on close', async ({ title, name }) => {
   const f = await fixture('lost-reply');
-  expect(await f.effects.launchViewer!(f.owner, f.request)).toMatchObject({ kind: 'subagent', address: 'core-local/viewer-1' });
+  boundary.title = title;
+  expect(await f.effects.launchViewer!(f.owner, f.request)).toMatchObject({ kind: 'subagent', address: 'core-local/viewer-1', name });
   expect(f.hc.run).toHaveBeenCalledTimes(1);
   expect(await f.effects.stopViewer!(f.request.leaseId)).toMatchObject({ status: 'complete' });
   expect(boundary.terminals.size).toBe(0);

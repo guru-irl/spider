@@ -10,19 +10,19 @@ import * as paneSocket from '../../../herdr/src/panes/socket.js';
 import { createPaneRuntime, type PaneRuntime } from '../herdr/pane-runtime.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
-import { parsePanePresentation } from '../../../herdr/src/panes/codec.js';
+import { parsePanePresentation, parsePaneTarget } from '../../../herdr/src/panes/codec.js';
 import type { HerdrConfig, HcClient, TerminalSummary } from '../../../herdr/src/contracts.js';
 import type { PresentedAuxiliaryOptions, PresentedAuxiliaryPanes } from '../../../herdr/src/panes/auxiliary.js';
 import type { PaneAgentRow, PanePresentation, PaneTerminalFacts } from '../../../herdr/src/panes/types.js';
 import { createRoamPlacement, createRoamPresentationOperations } from '../../../herdr/src/roam-placement.js';
-const boundary = vi.hoisted(() => ({ client: null as HcClient | null, facts: vi.fn(), app: {} as Record<string, unknown>, rows: [] as PaneAgentRow[], remote: vi.fn(), auxiliary: null as PresentedAuxiliaryOptions | null, auxiliaryActor: null as PresentedAuxiliaryPanes | null, terminals: new Map<string, TerminalSummary>(), layout: { spaces: [] } as unknown }));
+const boundary = vi.hoisted(() => ({ client: null as HcClient | null, title: 'Example', facts: vi.fn(), app: {} as Record<string, unknown>, rows: [] as PaneAgentRow[], remote: vi.fn(), auxiliary: null as PresentedAuxiliaryOptions | null, auxiliaryActor: null as PresentedAuxiliaryPanes | null, terminals: new Map<string, TerminalSummary>(), layout: { spaces: [] } as unknown }));
 vi.mock('../../../herdr/src/client/hc.js', () => ({ createHcClient: () => boundary.client, invokeCli: vi.fn(async (_binary, args) => {
   if (args[0] === 'machine') return { machines: [{ name: 'box-1.invalid', aliases: [], id: 'core-remote', machine_id: 'machine-1', state: 'connected' }, { name: 'box-2.invalid', aliases: [], id: 'core-second', machine_id: 'machine-2', state: 'connected' }] };
   if (args[0] === 'read') return { text: 'Ready', how: 'screen', complete: true };
   if (args[0] === 'get') {
     const address = String(args[1]), terminal = boundary.terminals.get(address.split('/').at(-1)!);
     const target = boundary.rows.find(row => row.target?.address === address)?.target;
-    return { address, parent: terminal?.parent ?? null, state: terminal?.state ?? 'live', labels: terminal?.labels ?? target?.identityLabels ?? {}, status: null, exit_code: null, reason: null, signal: null, finished_ms: null, created_ms: 17, title: 'Example', cols: 80, rows: 24 };
+    return { address, parent: terminal?.parent ?? null, state: terminal?.state ?? 'live', labels: terminal?.labels ?? target?.identityLabels ?? {}, status: null, exit_code: null, reason: null, signal: null, finished_ms: null, created_ms: 17, title: boundary.title, cols: 80, rows: 24 };
   }
   throw new Error('Unexpected CLI call');
 }) }));
@@ -43,7 +43,7 @@ const resources: { root: string; runtime: PaneRuntime }[] = [];
 afterEach(async () => { for (const ports of productionPorts.splice(0)) await ports.dispose(); for (const { root, runtime } of resources.splice(0)) { await runtime.dispose(); await rm(root, { recursive: true, force: true }); } vi.restoreAllMocks(); vi.clearAllMocks(); });
 async function fixture(spaces: HerdrConfig['spaces'] = []) {
   const base = join(paths.scratch('worktree', process.cwd()), 'pane-runtime-state'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'f-'));
-  boundary.rows = []; boundary.terminals.clear(); boundary.app = {}; boundary.layout = { spaces: [] }; boundary.remote.mockImplementation(async (_machine, request) => {
+  boundary.title = 'Example'; boundary.rows = []; boundary.terminals.clear(); boundary.app = {}; boundary.layout = { spaces: [] }; boundary.remote.mockImplementation(async (_machine, request) => {
     if (request.op !== 'list') throw new Error('Unexpected remote effect');
     return { version: 1, op: 'list', page: { version: 1, rows: boundary.rows.filter(row => row.target?.coreId === _machine.coreId), complete: true, next: null } };
   });
@@ -624,8 +624,9 @@ test.each([
   if (launch === 'foreign-and-valid') expect(boundary.terminals.get('foreign-proxy')?.labels['spider.pane-operation']).toBe('other-operation');
 });
 
-test('opening a pane succeeds when the focused program has finished', async () => {
+test.each([{ title: '', name: null }, { title: '   ', name: null }, { title: 'Example', name: 'Example' }])('opening a pane with core title "$title" succeeds when the focused program has finished', async ({ title, name }) => {
   const { runtime, hc } = await fixture();
+  boundary.title = title;
   const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never };
   const finished: PanePresentation = { ...presentation('finished-program'), proxy: 'finished-proxy' as never, slot, launch: 'acknowledged' };
   await runtime.store.update(state => ({ ...state, presentations: [finished] }));
@@ -646,6 +647,10 @@ test('opening a pane succeeds when the focused program has finished', async () =
   });
   const result = await runtime.createService().request({ version: 1, op: 'open', operationId: 'open-after-finished', machineKey: 'core-local', coreId: 'core-local' as never, machineId: null,
     intent: { operationId: 'open-after-finished', space: 's1' as never, place: 'tab', anchor: null, program: { kind: 'shell' } } });
-  expect(result).toMatchObject({ outcome: { status: 'complete', reason: 'native-presented', presentation: { target: { terminalId: 'new-terminal' } } } });
+  expect(result).toMatchObject({ outcome: { status: 'complete', reason: 'native-presented', presentation: { target: { terminalId: 'new-terminal', name } } } });
   expect(hc.setLabels).toHaveBeenCalledWith('new-terminal', { 'spider.pane-operation': 'open-after-finished' });
+});
+test('the target parser still rejects an empty name and accepts an absent name', () => {
+  expect(() => parsePaneTarget({ ...presentation('plain').target, name: '' })).toThrow();
+  expect(parsePaneTarget({ ...presentation('plain').target, name: null }).name).toBeNull();
 });

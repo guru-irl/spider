@@ -661,7 +661,7 @@ test('ready outcome queries remain read-only after revision changes and service 
 test('ready outcome queries observe in-progress operations without dispatch or waiting for their effects', async () => {
   const f = await fixture(); let finish!: () => void, entered!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });
-  f.ports.dispatch = vi.fn(async () => { entered(); await new Promise<void>(resolve => { finish = resolve; }); return { status: 'pending', reason: 'screen-pending', presentation: f.presentation }; });
+  f.ports.dispatch = vi.fn<PaneServicePorts['dispatch']>(async () => { entered(); await new Promise<void>(resolve => { finish = resolve; }); return { status: 'pending', reason: 'screen-pending', presentation: f.presentation }; });
   const service = createPaneService(f.ports);
   const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'query-running', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
   const running = service.request(request); await started;

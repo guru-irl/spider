@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { chmod, lstat, unlink } from 'node:fs/promises';
+import { watch } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { connect, createServer, type Socket } from 'node:net';
 import { randomUUID } from 'node:crypto';
@@ -97,14 +98,39 @@ export async function connectPaneService(options: PaneServiceConnectOptions): Pr
     return { request(request) { if (stopped) return Promise.reject(new HerdrError('service-stopped', 'Service connection stopped')); return rpc(root, request); }, reconcile: async () => {}, stop: async () => { stopped = true; } };
   };
   async function existing(row: Claim | null): Promise<boolean> {
-    if (!row || !await safeSocket(join(root, 'service.sock'))) return false;
+    if (!row) return false;
     if (row.address) {
       const helper = await options.probeHelper(row.address);
       if (helper.address !== row.address || !helper.address.startsWith(`${identity.coreId}/`) || helper.labels['spider.kind'] !== 'pane-service' || helper.parent !== null) throw new HerdrError('service-identity', 'Service helper identity does not match');
       if (helper.state === 'finished') return false;
     }
     // Only an existing private owner can claim a reply after a lost launch response.
-    await rpc(root, { version: 1, op: 'snapshot', operationId: randomUUID() }); return true;
+    if (!await safeSocket(join(root, 'service.sock'))) return false;
+    try { await rpc(root, { version: 1, op: 'snapshot', operationId: randomUUID() }); return true; }
+    catch (error) { if (code(error) === 'ECONNREFUSED' || code(error) === 'ENOENT') return false; throw error; }
+  }
+  async function ready(row: Claim): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false, checking = false, dirty = false;
+      const finish = (error?: unknown) => { if (settled) return; settled = true; clearTimeout(deadline); clearInterval(exits); watcher.close(); if (error) reject(error); else resolve(); };
+      const check = async () => {
+        if (checking) { dirty = true; return; }
+        checking = true;
+        try {
+          const helper = await options.probeHelper(row.address!);
+          if (helper.state === 'finished') throw new HerdrError('service-exited', 'Presentation helper exited before readiness');
+          // listen() creates the socket before chmod() makes it private.
+          const info = await lstat(join(root, 'service.sock')).catch(error => { if (code(error) === 'ENOENT') return null; throw error; });
+          if (info && !(info.mode & 0o077) && await existing(row)) finish();
+        } catch (error) { finish(error); }
+        finally { checking = false; if (dirty && !settled) { dirty = false; void check(); } }
+      };
+      const watcher = watch(root, (_event, file) => { if (file === 'service.sock') void check(); });
+      watcher.on('error', finish);
+      const deadline = setTimeout(() => finish(new HerdrError('service-timeout', 'Presentation service deadline exceeded')), 5000);
+      const exits = setInterval(() => { void check(); }, 100);
+      void check();
+    });
   }
   const before = await load();
   if (!options.startIfMissing) { if (await existing(before)) return client(); throw new HerdrError('service-unavailable', 'Presentation service unavailable'); }
@@ -127,11 +153,12 @@ export async function connectPaneService(options: PaneServiceConnectOptions): Pr
     }
     const next: Claim = { version: 1, ...identity, operationId: randomUUID(), state: 'claimed', address: null };
     await writePrivateJson(file, next);
-    try {
-      const address = await options.launchHelper(next.operationId);
-      await writePrivateJson(file, { ...next, state: 'acknowledged', address });
-      if (!await existing({ ...next, state: 'acknowledged', address })) throw new HerdrError('service-unavailable', 'Service launch has not published a socket');
-      return client();
-    } catch (error) { await writePrivateJson(file, { ...next, state: 'uncertain', address: null }); throw error; }
+    let address: TerminalAddress;
+    try { address = await options.launchHelper(next.operationId); }
+    catch (error) { await writePrivateJson(file, { ...next, state: 'uncertain', address: null }); throw error; }
+    const acknowledged: Claim = { ...next, state: 'acknowledged', address };
+    await writePrivateJson(file, acknowledged);
+    await ready(acknowledged);
+    return client();
   });
 }

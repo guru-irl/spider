@@ -22,7 +22,15 @@ async function fixture() {
   const service: PaneService = { request, reconcile: async () => {}, stop: vi.fn(async () => {}) };
   const stateRoot = join(root, 'panes');
   let running: { close(): Promise<void> } | null = null; let currentAddress: TerminalAddress | null = null; const ended = new Set<TerminalAddress>(); let next = 0;
-  const launchHelper = vi.fn(async () => { const server = await servePaneRequests(stateRoot, service); running = server; cleanup.push(() => server.close()); currentAddress = `core-local/t${++next}` as TerminalAddress; return currentAddress; });
+  const starts: Promise<void>[] = [];
+  cleanup.push(async () => { await Promise.all(starts); await running?.close(); });
+  const launchHelper = vi.fn(async () => {
+    currentAddress = `core-local/t${++next}` as TerminalAddress;
+    starts.push(new Promise<void>((resolve, reject) => setTimeout(() => {
+      void servePaneRequests(stateRoot, service).then(server => { running = server; resolve(); }, reject);
+    }, 100)));
+    return currentAddress;
+  });
   const probeHelper = vi.fn(async (address: TerminalAddress) => ({ address, parent: null, labels: { 'spider.kind': 'pane-service' }, state: ended.has(address) ? 'finished' as const : 'live' as const, status: null, exitCode: null, reason: null, signal: null, finishedAt: null }));
   const options: PaneServiceConnectOptions = { root: stateRoot, identity: { coreId: 'core-local' as never, socket, sessionNamespace: 'test' }, startIfMissing: true, launchHelper, probeHelper };
   return { root, options, service, launchHelper, probeHelper, stopHelper: async () => { if (currentAddress) ended.add(currentAddress); await running?.close(); } };
@@ -43,6 +51,15 @@ test('proved ended helper can restart once on the still-live selected core', asy
   const f = await fixture(); await connectPaneService(f.options); await f.stopHelper();
   const [a, b] = await Promise.all([connectPaneService(f.options), connectPaneService(f.options)]);
   expect(f.launchHelper).toHaveBeenCalledTimes(2); expect(await a.request({ version: 1, op: 'snapshot', operationId: 's1' })).toEqual(await b.request({ version: 1, op: 'snapshot', operationId: 's2' }));
+});
+test('acknowledged helper exiting before readiness can restart', async () => {
+  const f = await fixture();
+  f.launchHelper.mockImplementationOnce(async () => 'core-local/early' as TerminalAddress);
+  f.probeHelper.mockImplementation(async address => ({ address, parent: null, labels: { 'spider.kind': 'pane-service' }, state: address === 'core-local/early' ? 'finished' as const : 'live' as const, status: null, exitCode: null, reason: null, signal: null, finishedAt: null }));
+  await expect(connectPaneService(f.options)).rejects.toThrow(/exited/);
+  const client = await connectPaneService(f.options);
+  expect((await client.request({ version: 1, op: 'snapshot', operationId: 'after-exit' })).kind).toBe('snapshot');
+  expect(f.launchHelper).toHaveBeenCalledTimes(2);
 });
 test('foreign-owned helper claim refuses before probe or launch', async () => {
   const f = await fixture(); await connectPaneService(f.options); f.probeHelper.mockClear();

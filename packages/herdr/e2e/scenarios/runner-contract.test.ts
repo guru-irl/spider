@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
 import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers } from '../../../../scripts/herdr-e2e.mjs';
-import { verifyHcBinaryPin } from '../harness/hc.js';
+import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
 
 vi.mock('../harness/scenario.js', async importOriginal => ({
@@ -36,6 +36,13 @@ describe('runner boundary and report', () => {
     expect(verifyHcBinaryPin('0.1.16', 'c617feeb4d1b5f59b30e4ab6b4e9e7f7ac114d0681d207d9f41efa12c813b922')).toBe('0.1.16');
     expect(() => verifyHcBinaryPin('0.1.16', '0'.repeat(64))).toThrow(/digest mismatch/);
     expect(() => verifyHcBinaryPin('0.1.17', '8c4c0930974e2b31978cbbb14b892cd29d5ace917f4c04ce6dfdd5573e1fe193')).toThrow(/unlisted/);
+  });
+  it('reports a closed client input pipe without an uncaught stream error', async () => {
+    const env = { HOME: process.cwd(), PATH: process.env.PATH ?? '/usr/bin:/bin' };
+    await expect(runHc('/usr/bin/true', [], env, { input: 'x'.repeat(1024 * 1024) })).rejects.toMatchObject({ code: 'EPIPE' });
+    expect(await runHc('/usr/bin/true', [], env)).toMatchObject({ exitCode: 0, stdout: '', stderr: '' });
+    const echo = "process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => process.stdout.write(chunk));";
+    expect(await runHc(process.execPath, ['-e', echo], env, { input: 'owned input' })).toMatchObject({ exitCode: 0, stdout: 'owned input' });
   });
   it('forwards an explicit native clone only to the app worker environment', () => {
     const input = { SPIDER_HERDR_E2E_APP: '/owned/native.app/Contents/MacOS/Herdr' };

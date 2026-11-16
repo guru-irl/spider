@@ -37,7 +37,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   let stopped = false;
   let machines: readonly MachineChoice[] = [];
   let facts: Readonly<Record<string, PaneTerminalFacts>> = {};
-  const inventories = new Map<string, PrivatePaneInventory>();
+  const inventories = new Map<string, PrivatePaneInventory & Pick<MachineChoice, 'coreId' | 'machineId'>>();
   const retry = new Map<string, { after: number; failures: number }>();
   const pending = new Map<string, Promise<void>>();
   const replay = new Map<string, { bytes: string; reply: Promise<PaneServiceReply>; settledAt: number | null }>();
@@ -85,7 +85,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
         // the cached rows marked unreachable when the machine is disconnected or the read fails.
         const snapshot = await readInventory(machine, abort.signal);
         if (!connected && snapshot.rows.length === 0 && inventories.has(machine.key)) unreachable(machine.key);
-        else inventories.set(machine.key, { rows: snapshot.rows, complete: snapshot.complete, stale: snapshot.stale });
+        else inventories.set(machine.key, { rows: snapshot.rows, complete: snapshot.complete, stale: snapshot.stale, coreId: machine.coreId, machineId: machine.machineId });
         if (connected && snapshot.stale) {
           const failures = (retry.get(machine.key)?.failures ?? 0) + 1;
           retry.set(machine.key, { failures, after: ports.clock() + Math.min(1000 * 2 ** Math.min(failures - 1, 4), 10000) });
@@ -168,11 +168,20 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     }).finally(() => { refreshing = null; kickRefresh(); });
     return refreshing;
   }
+  function authoritative(machine: MachineChoice): boolean {
+    const source = inventories.get(machine.key);
+    return machine.state === 'connected' && source?.complete === true && !source.stale && source.coreId === machine.coreId && source.machineId === machine.machineId;
+  }
   const privateInventory = (): PrivatePaneInventory => {
     const active = machines.map(machine => inventories.get(machine.key));
-    const complete = machines.length > 0 && machines.every((machine, i) => machine.state === 'connected' && active[i]?.complete === true);
+    const complete = machines.length > 0 && machines.every(authoritative);
     return { rows: active.flatMap(page => page?.rows ?? []), complete, stale: !complete || active.some(page => page?.stale) };
   };
+  function ownerLookupReady(request: Extract<PaneServiceRequest, { sessionId: unknown }>, inventory: PrivatePaneInventory): boolean {
+    const matches = inventory.rows.filter(row => row.sessionId === request.sessionId && row.generation === request.generation);
+    if (matches.some(row => !machines.some(machine => machine.key === row.machineKey && authoritative(machine)))) return false;
+    return matches.some(row => row.owner !== null) || inventory.complete;
+  }
   async function apply(request: PaneServiceRequest): Promise<PaneServiceReply> {
     await live();
     if (request.op === 'snapshot') {
@@ -199,6 +208,14 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
           if (verified.createdMs <= 0 || !samePaneTarget(verified, current.target) || verified.sessionId !== request.sessionId || verified.generation !== request.generation || verified.homeEpoch !== request.homeEpoch) return outcome('handoff-unverified');
         } catch { return { version: 1, kind: 'outcome', outcome: { status: 'pending', reason: 'handoff-unavailable', presentation: current } }; }
       }
+    }
+    const needsOwner = request.op === 'open-auxiliary' || request.op === 'open-existing' && 'sessionId' in request && (() => {
+      const existing = state.presentations.find(p => p.target.sessionId === request.sessionId && p.target.generation === request.generation);
+      return !existing || !(request.slot ?? existing.slot);
+    })();
+    if (needsOwner && 'sessionId' in request && !ownerLookupReady(request, privateInventory())) {
+      try { await reconcile(); } catch { /* An unavailable source is not proof that the owner is absent. */ }
+      if (!ownerLookupReady(request, privateInventory())) return { version: 1, kind: 'outcome', outcome: { status: 'pending', reason: 'inventory-unavailable', presentation: null } };
     }
     const beforeLaunch = async () => {
       if (request.op !== 'open') return;

@@ -24,6 +24,15 @@ test('packaged pane CLI binds every service and endpoint effect', async () => {
   expect(await runHerdrCli(['panes', 'remote', '--json', JSON.stringify({ version: 1, op: 'handshake', protocol: 1, buildDigest: 'a'.repeat(64) })], p as unknown as HerdrCliPorts)).toBe(0);
   expect(p.remotePane).toHaveBeenCalledOnce();
 });
+test('waiting proxy CLI preserves its generation and launch operation', async () => {
+  const p = fixture();
+  const args = ['panes', 'proxy', '--id', 'pane-1', '--binding-root', '/fixture/panes', '--hc', '/fixture/hc', '--waiting-operation', 'launch-1', '--waiting-generation', 'gen-1'];
+  expect(await runHerdrCli(args, p as unknown as HerdrCliPorts)).toBe(0);
+  expect(p.proxyPane).toHaveBeenCalledWith({ id: 'pane-1', bindingRoot: '/fixture/panes', hcBinary: '/fixture/hc', waitingClaim: { operationId: 'launch-1', generation: 'gen-1' } });
+  p.proxyPane.mockClear();
+  expect(await runHerdrCli(args.slice(0, -2), p as unknown as HerdrCliPorts)).toBe(2);
+  expect(p.proxyPane).not.toHaveBeenCalled();
+});
 test.each([
   ['panes', 'request', '--json', '{'], ['panes', 'request', '--json', '{}'], ['panes', 'serve', '--extra'],
   ['panes', 'proxy', '--id', '../escape', '--binding-root', '/fixture', '--hc', '/fixture/hc'],

@@ -33,6 +33,7 @@ export interface PanePresentation {
   visibility: 'visible' | 'parked' | 'closing' | 'ended';
   launch: 'none' | 'claimed' | 'acknowledged' | 'uncertain'; closeOperationId: string | null;
   proxyLaunchAttempts?: number;
+  proxyOperationId?: string;
   conversion: ({ source: OwnerPlacement; sourceFocused: boolean } & (
     { state: 'waiting-readiness'; destination: null } |
     { state: 'waiting-focus'; destination: PaneTarget }

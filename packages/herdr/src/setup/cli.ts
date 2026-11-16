@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { encodePaneServiceReply, encodeRemotePaneReply, paneId, parsePaneServiceRequest, parseRemotePaneRequest, PANE_REPLY_LIMIT } from '../panes/codec.js';
 import type { PaneServiceRequest, PaneServiceReply, RemotePaneRequest, RemotePaneReply } from '../panes/types.js';
+import type { PaneProxyInput } from '../panes/proxy.js';
 import { isAbsolute } from 'node:path';
 import { setupHerdr, rollbackHerdr, assertPlainShell, CoreOnlySetupError, type SetupParts, type SetupRequest } from './installer.js';
 import { readJournal } from './backup.js';
@@ -17,7 +18,7 @@ export type MemoryReviewReply = { ok: true; [key: string]: unknown } | { ok: fal
 export interface HerdrCliPorts {
   panes?(request: PaneServiceRequest): Promise<PaneServiceReply>;
   servePanes?(): Promise<void>;
-  proxyPane?(input: { id: string; bindingRoot: string; hcBinary: string }): Promise<number>;
+  proxyPane?(input: PaneProxyInput): Promise<number>;
   remotePane?(request: RemotePaneRequest): Promise<RemotePaneReply>;
   request(configPath?: string): Promise<SetupRequest>;
   assertAgentDirectory?(request: SetupRequest): Promise<void>;
@@ -76,10 +77,17 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
       const usage = () => new HerdrError('cli-usage', 'Expected panes request|remote --json <request>, panes serve, or panes proxy --id <id> --binding-root <absolute-path> --hc <absolute-path>');
       if (argv[1] === 'serve' && argv.length === 2) { if (!ports?.servePanes) throw unavailable(); await ports.servePanes(); return 0; }
       if (argv[1] === 'proxy') {
-        if (argv.length !== 8 || argv[2] !== '--id' || argv[4] !== '--binding-root' || argv[6] !== '--hc' || !isAbsolute(argv[5]) || !isAbsolute(argv[7])) throw usage();
-        let id: string; try { id = paneId(argv[3]); } catch { throw usage(); }
+        if (![8, 12].includes(argv.length) || argv[2] !== '--id' || argv[4] !== '--binding-root' || argv[6] !== '--hc' || !isAbsolute(argv[5]) || !isAbsolute(argv[7])) throw usage();
+        let id: string, waitingClaim: PaneProxyInput['waitingClaim'];
+        try {
+          id = paneId(argv[3]);
+          if (argv.length === 12) {
+            if (argv[8] !== '--waiting-operation' || argv[10] !== '--waiting-generation') throw usage();
+            waitingClaim = { operationId: paneId(argv[9]), generation: paneId(argv[11]) };
+          }
+        } catch { throw usage(); }
         if (!ports?.proxyPane) throw unavailable();
-        return await ports.proxyPane({ id, bindingRoot: argv[5], hcBinary: argv[7] });
+        return await ports.proxyPane({ id, bindingRoot: argv[5], hcBinary: argv[7], ...(waitingClaim ? { waitingClaim } : {}) });
       }
       if (!['request', 'remote'].includes(argv[1]) || argv.length !== 4 || argv[2] !== '--json' || Buffer.byteLength(argv[3]) > PANE_REPLY_LIMIT) throw usage();
       let value: unknown; try { value = JSON.parse(argv[3]); } catch { throw usage(); }

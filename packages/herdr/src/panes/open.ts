@@ -63,7 +63,7 @@ async function verifyProxy(address: TerminalAddress, p: PanePresentation, ports:
   if (address.includes('/') && !address.startsWith(`${core.coreId}/`)) throw new HerdrError('proxy-identity', 'Presentation proxy is not on the selected local core');
   const terminal = await ports.hc.get(address); const labels = terminal.labels;
   const targetMatches = labels['spider.target-core'] === p.target.coreId && labels['spider.target-terminal'] === p.target.terminalId;
-  const launchMatches = labels['spider.pane-operation'] === p.id;
+  const launchMatches = labels['spider.pane-operation'] === (p.proxyOperationId ?? p.id);
   const matches = match === 'launch' ? launchMatches : targetMatches && (match === 'target' || launchMatches);
   if (terminal.address !== address || terminal.state !== 'live' || labels['spider.kind'] !== 'pane-proxy' || labels['spider.pane-id'] !== p.id || !matches) throw new HerdrError('proxy-identity', 'Presentation proxy identity is unproved');
   return terminal;

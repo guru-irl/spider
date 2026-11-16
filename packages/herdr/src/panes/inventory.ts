@@ -14,7 +14,7 @@ export interface RemoteInventorySnapshot {
   complete: boolean; stale: boolean; rows: readonly PaneAgentRow[];
 }
 export interface PaneInventoryPorts {
-  readPage(machine: MachineChoice, cursor: string | null): Promise<unknown>;
+  readPage(machine: MachineChoice, cursor: string | null, signal?: AbortSignal): Promise<unknown>;
   readCache(machineKey: string): Promise<{ updatedAt: number; page: RemoteInventorySnapshot } | null>;
   writeCache(machineKey: string, page: RemoteInventorySnapshot, updatedAt: number): Promise<void>;
   clock(): number;
@@ -77,6 +77,21 @@ export function createPaneInventoryCache(root: string): Pick<PaneInventoryPorts,
     },
   };
 }
+/** Service pages have already been projected to the configured machine key. */
+export function createPaneServiceInventory(options: {
+  root: string;
+  readPage(machine: MachineChoice, signal: AbortSignal, cursor?: string | null): Promise<PaneInventoryPage>;
+  clock(): number;
+}): (machine: MachineChoice, signal: AbortSignal) => Promise<RemoteInventorySnapshot> {
+  const ports: PaneInventoryPorts = { ...createPaneInventoryCache(options.root), clock: options.clock,
+    async readPage(machine, cursor, signal) {
+      const page = parsePaneInventoryPage(await options.readPage(machine, signal!, cursor));
+      if (page.rows.some(row => row.machineKey !== machine.key && row.machineKey !== machine.coreId)) throw new HerdrError('invalid-pane-inventory', 'Inventory source identity changed');
+      return { ...page, rows: page.rows.map(row => ({ ...row, machineKey: machine.coreId })) };
+    },
+  };
+  return (machine, signal) => readRemotePaneInventory(machine, null, ports, signal);
+}
 export interface PaneRemoteInventoryTransport {
   exec: HcArgvClient['exec'];
   resolveMachine(machine: MachineChoice): Promise<{ on: string; coreId: CoreId; nodePath: string; endpointPath: string }>;
@@ -133,10 +148,10 @@ async function unavailable(machine: MachineChoice, ports: PaneInventoryPorts, pa
   return { ...empty(machine), rows: partial.map(row => ({ ...project(row, machine), status: 'unreachable' })) };
 }
 /** One refresh walks all pages; no partial or mixed snapshot is committed. */
-export async function readRemotePaneInventory(machine: MachineChoice, cursor: string | null, ports: PaneInventoryPorts): Promise<RemoteInventorySnapshot> {
+export async function readRemotePaneInventory(machine: MachineChoice, cursor: string | null, ports: PaneInventoryPorts, signal?: AbortSignal): Promise<RemoteInventorySnapshot> {
   if (cursor !== null) throw new HerdrError('invalid-pane-cursor', 'Inventory refresh must begin at the first page');
   if (!machine.coreId) return empty(machine);
-  if (machine.state !== 'connected') return unavailable(machine, ports);
+  if (machine.state !== 'connected' || signal?.aborted) return unavailable(machine, ports);
   let map = flights.get(ports); if (!map) { map = new Map(); flights.set(ports, map); }
   const key = JSON.stringify([machine.key, machine.coreId, machine.machineId]);
   const previous = map.get(key);
@@ -155,8 +170,8 @@ export async function readRemotePaneInventory(machine: MachineChoice, cursor: st
   const walk = async (): Promise<RemoteInventorySnapshot> => {
     let next: string | null = null;
     for (let pageNumber = 0; pageNumber < MAX_PAGES; pageNumber++) {
-      const page = validatePage(await ports.readPage(machine, next), machine);
-      if (expired) throw new HerdrError('pane-inventory-timeout', 'Inventory request timed out');
+      const page = validatePage(await ports.readPage(machine, next, signal), machine);
+      if (expired || signal?.aborted) throw new HerdrError('pane-inventory-timeout', 'Inventory request timed out');
       for (const row of page.rows) {
         if (ids.has(row.sessionId)) throw new HerdrError('invalid-pane-inventory', 'A session occurs on more than one page');
         const sourceSize = Buffer.byteLength(JSON.stringify(row)) + 1;

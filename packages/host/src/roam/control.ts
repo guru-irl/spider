@@ -1,5 +1,4 @@
 import { storeScope } from "@spider/db-core/roam/codec";
-import { safeError } from "@spider/organism";
 import { readSessionState } from "@spider/db-core/roam/state";
 import type { Home, JsonObject, StoreKey } from "@spider/db-core/roam/types";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -102,18 +101,24 @@ function validateTarget(operation: Operation, ports: FreezePorts): void {
       ports.expectedStores.some(key => !keys.has(key))) throw new Error("Participant store roster changed");
 }
 
+function controlErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Unknown session control failure";
+  return message.replace(/\b(?:npm_|gh[opsu]_|sk-)[A-Za-z0-9_-]+/g, "[redacted credential]")
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\b(api[_-]?key|authorization|password|token)(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1$2[redacted]").slice(0, 500);
+}
 function controlFailure(operation: Operation, ports: FreezePorts, error: unknown): JsonObject {
   const rawCode = error && typeof error === "object" && "code" in error ? error.code : null;
   const diagnostic = { code: typeof rawCode === "string" && /^[A-Za-z0-9_.-]{1,128}$/.test(rawCode) ||
     typeof rawCode === "number" && Number.isSafeInteger(rawCode) ? rawCode : null,
-    message: safeError(error instanceof Error || typeof error === "string" ? error : "Unknown session control failure") };
+    message: controlErrorMessage(error) };
   const evidence: JsonObject = { diagnostic };
   try {
     const moveId = operation.args.moveId;
     const id = typeof moveId === "string" && ports.journal.lookupOperation(moveId)?.state === "pending" ? moveId : operation.id;
     if (id === operation.id) ports.journal.begin(operation);
     ports.journal.record(id, "session-control-refused", { operationId: operation.id, diagnostic });
-  } catch (journalError) { evidence.journalError = safeError(journalError); }
+  } catch (journalError) { evidence.journalError = controlErrorMessage(journalError); }
   return evidence;
 }
 

@@ -86,7 +86,10 @@ export async function stagePaneEndpointInstallation(globalRoot: string, packageR
 }
 /** Read-only admission probe, using the same installed endpoint path as runtime calls. */
 export async function probeLocalPaneEndpoint(globalRoot: string, packageRoot: string): Promise<void> {
-  await inspectPackage(await realpath(packageRoot));
+  let canonical: string;
+  try { canonical = await realpath(packageRoot); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new HerdrError('pane-installation-missing', 'Installed package is missing'); throw error; }
+  await inspectPackage(canonical);
   let bytes: Buffer; try { bytes = await readFile(join(packageRoot, 'dist/herdr/pane-endpoint.mjs')); } catch { throw new HerdrError('pane-installation-missing', 'Installed endpoint is missing'); }
   const digest = createHash('sha256').update(bytes).digest('hex');
   try {

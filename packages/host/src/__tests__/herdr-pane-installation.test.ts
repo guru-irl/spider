@@ -63,6 +63,11 @@ test('local installation probe handshakes without source effects or registry wri
   expect(await readFile(f.registry)).toEqual(before); expect(await readFile(f.marker).catch(() => null)).toBeNull();
 });
 
+test('a removed local package is an installation failure rather than an unknown probe', async () => {
+  const f = await fixture(); await rm(f.packageRoot, { recursive: true });
+  await expect(probeLocalPaneEndpoint(f.root, f.packageRoot)).rejects.toMatchObject({ code: 'pane-installation-missing' });
+});
+
 test('concurrent explicit setup and activation preserve the verified endpoint registration', async () => {
   const f = await fixture(), staged = join(f.packageRoot, 'dist/herdr', `pane-endpoint-${f.digest}.mjs`); await rm(staged);
   await writeFile(f.registry, JSON.stringify({ version: 1, packageRoot: f.packageRoot }), { mode: 0o600 });

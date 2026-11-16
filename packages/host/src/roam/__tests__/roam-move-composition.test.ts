@@ -51,6 +51,27 @@ it("production composition leaves zero unbound effects", async () => {
     expect(await runtime.bindings.recovery!.workspaceRestores!()).toEqual([]);
   } finally { await runtime.close(); }
 }, 5000);
+it("production move evidence queries the connected machine service broker", async () => {
+  const { startMachineMoveSocket } = await import("@spider/roam/machine-move-socket");
+  const global = createReplica("global", HUB); fixtures.push(global);
+  mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+  const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+  const snapshot = { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] }, observed: unknown[] = [];
+  let connected = true;
+  const service = await startMachineMoveSocket(global.root, () => true, { async broker(address: unknown) {
+    if (!connected) throw new Error("intercom-broker-unavailable");
+    observed.push(address); return snapshot;
+  } } as never);
+  const mounted = await createHostMoveBindings({ root: global.root, globalDb: global.db, config, journal: openFreezeJournal(join(global.root, "roam", "journal.db")), sessionId: "session-a", transport: {} as never });
+  try {
+    const address = { sessionId: "session-a", scopeId: null };
+    expect(await mounted.bindings.evidence!.broker!.inspectFreezeBlockers(address)).toEqual(snapshot);
+    expect(observed).toEqual([address]);
+    connected = false;
+    await expect(mounted.bindings.evidence!.broker!.inspectFreezeBlockers(address)).rejects.toThrow("intercom-broker-unavailable");
+  } finally { await mounted.close(); await service.close(); }
+}, 5000);
+
 it("the real participant auth port blocks missing pi auth and warns that tools were not checked", async () => {
   const global = createReplica("global", HUB); fixtures.push(global);
   const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };

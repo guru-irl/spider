@@ -230,6 +230,14 @@ test('complete source evidence prunes finished and absent targets but keeps unav
   try { await service.reconcile(); expect(state.presentations.map(p => p.id)).toEqual(['unavailable', 'live']); }
   finally { await service.stop(); }
 });
+test('a complete inventory prunes a superseded terminal incarnation without stopping its successor', async () => {
+  const f = await fixture(); const target = { ...f.presentation.target, createdMs: 18, generation: 'gen-2' };
+  f.ports.inventory = async () => ({ version: 1, rows: [{ sessionId: 'session-1', generation: 'gen-2', name: 'Example', status: 'working', updatedAt: 2, machineKey: 'box-1.invalid', unavailableReason: null, target,
+    owner: { sessionId: 'session-1', generation: 'gen-2', terminal: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', socket: '/unused', sessionNamespace: 'test' }, cwd: '/home/example', sessionFile: null, name: 'Example' }, children: [], consoles: [] }] as never, next: null, complete: true });
+  const service = createPaneService(f.ports);
+  try { await service.reconcile(); expect((await f.ports.store.read()).presentations).toEqual([]); expect(f.hc.kill).not.toHaveBeenCalled(); }
+  finally { await service.stop(); }
+});
 test('snapshot trims live presentations and terminal facts without raising codec bounds', async () => {
   const f = await fixture(); let state = await f.ports.store.read();
   state = { ...state, presentations: Array.from({ length: 257 }, (_, i) => ({ ...f.presentation, id: `live-${i}` })) };

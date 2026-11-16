@@ -57,7 +57,8 @@ test('setup preflight adopts a live replacement terminal without retiring or rel
   expect(result.cutover?.terminals).toEqual([address]);
   expect(result.cutover?.identities[id]).toBe(identity.startIdentity);
   expect((await readCutoverRecovery(join(root, 'spaces'))).entries[0].placement.terminal).toBe(address);
-  expect(await readFile(commands, 'utf8')).toBe('commands\n');
+  // Doctor inspects native key commands and pane capabilities separately; neither mutates the app.
+  expect(await readFile(commands, 'utf8')).toBe('commands\ncommands\n');
   const launches = (await f.h.calls()).slice(before.length).filter(call => call.argv[0] === 'run' && !call.argv.includes('--probe'));
   expect(launches).toEqual([]);
   const observed = await f.ports.spacePorts(f.request).layoutSnapshot();

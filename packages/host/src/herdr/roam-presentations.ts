@@ -29,7 +29,7 @@ export async function createRoamPresentationPorts(input: {
   }
   const runtime = await input.runtime();
   const call: Parameters<typeof createRoamPresentationOperations>[0]['request'] = async request => {
-    const connection = await runtime.connect(false); try { return await connection.request(request); } finally { await connection.stop(); }
+    const connection = await runtime.connect(); try { return await connection.request(request); } finally { await connection.stop(); }
   };
   const operations = createRoamPresentationOperations({ stateRoot: join(config.globalRoot, 'roam', 'placement'), hc: input.client(),
     app: createAppClient({ binary: config.app.binary, env: { ...env, HERDR_APP_HOME: config.app.home } }), request: call });

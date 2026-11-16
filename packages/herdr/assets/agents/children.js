@@ -60,7 +60,7 @@ export function agentRenderInputs(input, rejected) {
       || !object(feed.owner) || !object(feed.owner.terminal) || !identity(feed.owner.terminal.address)
       || !text(feed.owner.name) || !object(feed.runs) || !Array.isArray(feed.runs.rows)) return null;
     const rows = renderRecords(feed.runs.rows, 'run', run => object(run) && identity(run.id)
-      && identity(run.ownerSessionId) && status(run.status) && texts(run, ['name', 'viewer']) && numbers(run, ['finishedAt']) ? { ...run } : null, rejected);
+      && identity(run.ownerSessionId) && status(run.status) && texts(run, ['name', 'viewer']) && numbers(run, ['finishedAt']) ? run : null, rejected);
     return { ...feed, owner: { ...feed.owner, terminal: { ...feed.owner.terminal } }, runs: { ...feed.runs, rows } };
   }, rejected);
   return { agents, terminals, panes, spaces, machines, feeds };
@@ -86,6 +86,120 @@ export function filterTopLevelAgents(agents, terminals, { labels, kinds }) {
   return agents.filter(a => !hidden.has(a.address));
 }
 
+// Retained run rows are roots. When the history is collapsed, only a retained
+// run that is an ancestor of a live terminal needs a row; the rest need a count.
+function summarizeFinished(all, deferred, feed, viewersBySession, labels, now, options, addRun, rows) {
+  const limit = options.completedRows ?? 50, age = (options.completedHours ?? 24) * 3600000;
+  const eligible = row => row.finishedAt !== null && now - row.finishedAt <= age && row.finishedAt <= now;
+  const compare = (a, b) => b.finishedAt - a.finishedAt || a.key.localeCompare(b.key);
+  const active = all.filter(row => !row.retained);
+  const nativeFinished = all.filter(row => row.retained && eligible(row));
+  let total = nativeFinished.length;
+  for (const run of deferred.values()) if (eligible(run)) total++;
+
+  // If retention trims candidates, select the newest keys with a bounded heap.
+  // The heap holds only keys and timestamps, never projected hidden rows.
+  let selected = null;
+  if (total > limit) {
+    const keys = [], times = [];
+    const worse = (a, b) => times[a] < times[b] || times[a] === times[b] && keys[a].localeCompare(keys[b]) > 0;
+    const swap = (a, b) => { [keys[a], keys[b]] = [keys[b], keys[a]]; [times[a], times[b]] = [times[b], times[a]]; };
+    const offer = (key, time) => {
+      if (!limit) return;
+      if (keys.length < limit) {
+        let i = keys.push(key) - 1; times.push(time);
+        while (i > 0) { const parent = Math.floor((i - 1) / 2); if (!worse(i, parent)) break; swap(i, parent); i = parent; }
+      } else if (time > times[0] || time === times[0] && key.localeCompare(keys[0]) < 0) {
+        keys[0] = key; times[0] = time; let i = 0;
+        for (;;) {
+          const left = i * 2 + 1, right = left + 1;
+          if (left >= keys.length) break;
+          const child = right < keys.length && worse(right, left) ? right : left;
+          if (!worse(child, i)) break;
+          swap(i, child); i = child;
+        }
+      }
+    };
+    for (const row of nativeFinished) offer(row.key, row.finishedAt);
+    for (const [key, run] of deferred) if (eligible(run)) offer(key, run.finishedAt);
+    selected = new Set(keys);
+  }
+  const selectedRun = key => {
+    const run = deferred.get(key);
+    return Boolean(run && eligible(run) && (!selected || selected.has(key)));
+  };
+  const retained = nativeFinished.filter(row => !selected || selected.has(row.key)).sort(compare);
+  const existing = [...active, ...retained], byKey = new Map(existing.map(row => [row.key, row]));
+  const keyByAddress = new Map(existing.filter(row => row.originalAddress).map(row => [row.originalAddress, row.key]));
+  const viewers = feed && viewersBySession.get(feed.sessionId);
+  if (viewers) for (const [key, terminal] of viewers) if (selectedRun(key)) keyByAddress.set(terminal.address, key);
+  for (const [key, run] of deferred) if (run.viewer && selectedRun(key) && !viewers?.has(key)) keyByAddress.set(run.viewer, key);
+  const consoles = new Map();
+  for (const row of existing) if (row.kind === 'console') {
+    if (!consoles.has(row.machine)) consoles.set(row.machine, new Map());
+    const runs = consoles.get(row.machine), runId = row.terminal.labels[labels.run] ?? null;
+    if (!runs.has(runId)) runs.set(runId, row);
+  }
+  const parentOf = row => {
+    if (row.kind === 'native' && row.parentKey) return keyByAddress.get(row.parentKey) ?? row.parentKey;
+    if (row.kind !== 'remote' && row.kind !== 'console') return row.parentKey;
+    const runId = row.terminal.labels[labels.run], run = byKey.get(runId);
+    const console = row.kind === 'remote' && row.machine ? consoles.get(row.machine)?.get(runId ?? null) : null;
+    return console?.key ?? (run?.kind === 'subagent' || selectedRun(runId) ? runId : null);
+  };
+  const needed = new Set(), live = new Set();
+  for (const row of active) for (let current = row; current && !live.has(current.key);) {
+    live.add(current.key);
+    const parent = parentOf(current);
+    if (selectedRun(parent)) { needed.add(parent); break; }
+    current = byKey.get(parent);
+  }
+  const hiddenNative = new Set(), folded = options.folded ?? new Set(), expanded = options.expandedConsoles ?? new Set();
+  let hiddenNativeCount = 0;
+  for (const row of retained) {
+    if (live.has(row.key)) continue;
+    let current = row, visible = true;
+    const seen = new Set();
+    while (current && !seen.has(current.key)) {
+      seen.add(current.key);
+      const parent = parentOf(current), parentRow = byKey.get(parent);
+      if (folded.has(parent) || parentRow?.kind === 'console' && !expanded.has(parent)) visible = false;
+      if (selectedRun(parent)) {
+        if (!needed.has(parent)) { hiddenNative.add(row.key); if (visible) hiddenNativeCount++; }
+        break;
+      }
+      current = parentRow;
+    }
+  }
+  const selectedDeferred = Math.min(total, limit) - retained.length;
+  for (const key of needed) { addRun(deferred.get(key)); retained.push(rows.get(key)); }
+  options.finishedSummary.hiddenFinished = selectedDeferred - needed.size + hiddenNativeCount;
+  retained.sort(compare);
+  return [...active, ...retained.filter(row => !hiddenNative.has(row.key))];
+}
+
+/** Build indexes once per immutable render snapshot, rather than once per owner. */
+export function indexAgentChildren(terminals, feeds, labelContract) {
+  const { labels, kinds } = labelContract;
+  const feedsBySession = new Map(), feedsByOwner = new Map(), byParent = new Map(), byOwner = new Map(), viewersBySession = new Map();
+  for (const feed of feeds) {
+    if (!feedsBySession.has(feed.sessionId)) feedsBySession.set(feed.sessionId, feed);
+    if (!feedsByOwner.has(feed.owner.terminal.address)) feedsByOwner.set(feed.owner.terminal.address, feed);
+  }
+  for (const terminal of terminals) {
+    if (!byParent.has(terminal.parent)) byParent.set(terminal.parent, []);
+    byParent.get(terminal.parent).push(terminal);
+    const owner = feedsBySession.get(terminal.labels[labels.session])?.owner.terminal.address;
+    if (owner) { if (!byOwner.has(owner)) byOwner.set(owner, []); byOwner.get(owner).push(terminal); }
+    if (terminal.labels[labels.kind] !== kinds.subagentViewer) continue;
+    const session = terminal.labels[labels.session], run = terminal.labels[labels.run];
+    if (!viewersBySession.has(session)) viewersBySession.set(session, new Map());
+    const viewers = viewersBySession.get(session);
+    if (!viewers.has(run)) viewers.set(run, terminal);
+  }
+  return { terminals, feeds, labelContract, feedsBySession, feedsByOwner, byParent, byOwner, viewersBySession, ownedRuns: new Map() };
+}
+
 /** Public terminal snapshots plus public session feeds; never reads a private job journal. */
 export function projectAgentChildren(terminals, feeds, ownerAddress, labelContract, options = {}) {
   const { labels, kinds } = labelContract;
@@ -93,10 +207,10 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
   const unavailable = new Set((options.machines ?? []).filter(machine => machine.layout === 'unavailable').map(machine => machine.name));
   const terminalMachine = t => t?.address?.includes('/') ? t.address.split('/')[0] : t?.labels?.[labels.machine] ?? null;
   const isUnreachable = t => unavailable.has(terminalMachine(t));
-  const feedsBySession = new Map();
-  for (const item of feeds) if (!feedsBySession.has(item.sessionId)) feedsBySession.set(item.sessionId, item);
-  const feed = feeds.find(f => f.owner.terminal.address === ownerAddress);
-  const ownedRuns = new Map();
+  const index = options.index?.terminals === terminals && options.index?.feeds === feeds && options.index?.labelContract === labelContract
+    ? options.index : indexAgentChildren(terminals, feeds, labelContract);
+  const { feedsBySession, byParent, byOwner, viewersBySession, ownedRuns } = index;
+  const feed = index.feedsByOwner.get(ownerAddress);
   const runsFor = item => {
     if (!ownedRuns.has(item)) {
       const runs = new Map();
@@ -105,16 +219,6 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     }
     return ownedRuns.get(item);
   };
-  const byParent = new Map(), viewersBySession = new Map();
-  for (const terminal of terminals) {
-    if (!byParent.has(terminal.parent)) byParent.set(terminal.parent, []);
-    byParent.get(terminal.parent).push(terminal);
-    if (terminal.labels[labels.kind] !== kinds.subagentViewer) continue;
-    const session = terminal.labels[labels.session], run = terminal.labels[labels.run];
-    if (!viewersBySession.has(session)) viewersBySession.set(session, new Map());
-    const viewers = viewersBySession.get(session);
-    if (!viewers.has(run)) viewers.set(run, terminal);
-  }
   const rows = new Map(), visited = new Set([ownerAddress]);
   const currentOwner = t => feedsBySession.get(t.labels[labels.session])?.owner.terminal.address;
   const sessionAction = (kind, key, sessionId, viewer) => {
@@ -170,13 +274,12 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
   };
   walk(ownerAddress, 0);
   // Resumed sessions have a new verified owner; native parentage remains original.
-  for (const t of terminals) {
+  for (const t of byOwner.get(ownerAddress) ?? []) {
     const kind = t.labels[labels.kind];
-    if (visited.has(t.address) || currentOwner(t) !== ownerAddress || (!isJob(t, labels, kinds) && !isConsole(t, labels, kinds) && kind !== kinds.subagentViewer)) continue;
+    if (visited.has(t.address) || (!isJob(t, labels, kinds) && !isConsole(t, labels, kinds) && kind !== kinds.subagentViewer)) continue;
     visited.add(t.address); if (add(t, 0)) walk(t.address, 1);
   }
-  for (const run of feed?.runs.rows ?? []) {
-    if (run.ownerSessionId !== feed.sessionId) continue;
+  const addRun = run => {
     const native = viewersBySession.get(feed.sessionId)?.get(run.id);
     const done = ['done', 'failed', 'cancelled'].includes(run.status);
     const action = sessionAction('subagent', run.id, feed.sessionId, native);
@@ -190,10 +293,20 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
       finishedAt: run.finishedAt, retained: done, depth: previous?.depth ?? 0, terminal: native ?? null,
       action: unreachable ? null : action,
     });
+  };
+  const limit = options.completedRows ?? 50;
+  const deferred = options.finishedSummary && Number.isSafeInteger(limit) && limit >= 0 ? new Map() : null;
+  for (const run of feed?.runs.rows ?? []) {
+    if (run.ownerSessionId !== feed.sessionId) continue;
+    if (deferred && ['done', 'failed', 'cancelled'].includes(run.status)) {
+      rows.set(run.id, null); deferred.set(run.id, run);
+    } else { deferred?.delete(run.id); addRun(run); }
   }
-  const all = [...rows.values()];
-  const finished = all.filter(r => r.retained && r.finishedAt !== null && now - r.finishedAt <= (options.completedHours ?? 24) * 3600000 && r.finishedAt <= now).sort((a, b) => b.finishedAt - a.finishedAt || a.key.localeCompare(b.key)).slice(0, options.completedRows ?? 50);
-  const kept = [...all.filter(r => !r.retained), ...finished];
+  const all = [];
+  for (const row of rows.values()) if (row) all.push(row);
+  const kept = deferred ? summarizeFinished(all, deferred, feed, viewersBySession, labels, now, options, addRun, rows)
+    : [...all.filter(r => !r.retained), ...all.filter(r => r.retained && r.finishedAt !== null && now - r.finishedAt <= (options.completedHours ?? 24) * 3600000 && r.finishedAt <= now).sort((a, b) => b.finishedAt - a.finishedAt || a.key.localeCompare(b.key)).slice(0, limit)];
+  if (options.finishedSummary && !deferred) options.finishedSummary.hiddenFinished = 0;
   const byKey = new Map(kept.map(row => [row.key, row]));
   const keyByAddress = new Map(kept.filter(row => row.originalAddress).map(row => [row.originalAddress, row.key]));
   const consoles = new Map();
@@ -242,23 +355,31 @@ export function agentModelInputKey(input, now, completedHours, feedCache = new M
       const stamp = input.feedStamps?.get(feed.sessionId);
       let cached = typeof stamp === 'string' ? feedCache.get(feed.sessionId) : null;
       if (!cached || cached.stamp !== stamp || cached.maxAge !== maxAge) {
-        const rows = feed.runs?.rows, times = [];
-        const value = Array.isArray(rows) ? rows.map(run => {
-          if (!object(run)) return run;
-          if (typeof run.finishedAt === 'number' && Number.isFinite(run.finishedAt)) times.push(run.finishedAt);
-          return [run.id, run.ownerSessionId, run.name, run.status, run.viewer, run.finishedAt];
-        }) : rows;
-        cached = { stamp, maxAge, rows: JSON.stringify(value), times, asOf: Infinity, deadline: -Infinity, age: null };
-        if (typeof stamp === 'string') feedCache.set(feed.sessionId, cached);
+        const rows = feed.runs?.rows;
+        if (typeof stamp === 'string') {
+          cached = { stamp, maxAge, rows: stamp, runs: Array.isArray(rows) ? rows : [], asOf: Infinity, deadline: -Infinity, age: 0 };
+          feedCache.set(feed.sessionId, cached);
+        } else {
+          const times = [];
+          const value = Array.isArray(rows) ? rows.map(run => {
+            if (!object(run)) return run;
+            if (typeof run.finishedAt === 'number' && Number.isFinite(run.finishedAt)) times.push(run.finishedAt);
+            return [run.id, run.ownerSessionId, run.name, run.status, run.viewer, run.finishedAt];
+          }) : rows;
+          cached = { stamp, maxAge, rows: JSON.stringify(value), times, asOf: Infinity, deadline: -Infinity, age: null };
+        }
       }
       used.add(feed.sessionId);
       if (now < cached.asOf || now >= cached.deadline) {
         let deadline = Infinity;
-        cached.age = JSON.stringify(cached.times.map(at => {
+        const boundary = at => {
           if (at > now) deadline = Math.min(deadline, at);
           else if (at + maxAge >= now) deadline = Math.min(deadline, at + maxAge + 1);
-          return withinRetention(at);
-        }));
+        };
+        if (cached.runs) {
+          for (const run of cached.runs) if (typeof run?.finishedAt === 'number' && Number.isFinite(run.finishedAt)) boundary(run.finishedAt);
+          cached.age++;
+        } else cached.age = JSON.stringify(cached.times.map(at => { boundary(at); return withinRetention(at); }));
         cached.asOf = now; cached.deadline = deadline;
       }
       return [feed.sessionId, feed.generation, feed.owner, feed.lifecycle, feed.ipc, feed.status, feed.placement,
@@ -291,7 +412,7 @@ export function agentModelOutputKey(model) {
     const spaces = snapshot.spaces.map(s => [s.id, s.name, s.tabs.map(t => [t.id, t.name, t.named])]);
     const names = snapshot.feeds.filter(f => owners.has(f.owner.terminal.address)).map(f => [f.owner.terminal.address, f.owner.name]);
     return JSON.stringify([agents, terminals, panes, spaces, names, [...rows].map(([owner, value]) => [owner, model.rowKeys?.get(owner) ?? agentModelRowKey(value)]),
-      parked, layouts.map(layout => [layout.name, layout.layout, layout.coreId]), [...diagnostics].sort(), connections, error]);
+      [...(model.hiddenFinished ?? [])], parked, layouts.map(layout => [layout.name, layout.layout, layout.coreId]), [...diagnostics].sort(), connections, error]);
   } catch { return null; }
 }
 

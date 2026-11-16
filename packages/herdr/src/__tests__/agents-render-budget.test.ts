@@ -19,7 +19,7 @@ function fixture(version: SpacesAVersion, count: number, finished: number) {
   const now = Date.now(), contract = HerdrLabelContract;
   const state: any = { agents: [], terminals: [], panes: [], spaces: [{ id: 'space', name: 'Work', tabs: [] }], feeds: [], errors: [],
     focus: { space: 'space', tab: 'tab0', pane: 'pane0', agent: 't0' }, machines: [{ name: null, layout: 'ready' }], inventory: [] };
-  let rendering = false, historyReads = 0, allHistoryReads = 0, notifications = 0, agentReads = 0;
+  let rendering = false, historyReads = 0, allHistoryReads = 0, notifications = 0, agentReads = 0, projections = 0, projectedFinished = 0;
   for (let i = 0; i < count; i++) {
     const address = `t${i}`, sessionId = `s${i}`, tab = `tab${i}`, pane = `pane${i}`, live = `live${i}`;
     const program = { key: 'agent', name: 'Agent', icon: null, agent: true };
@@ -56,6 +56,7 @@ function fixture(version: SpacesAVersion, count: number, finished: number) {
   const storage = new Map<string, string>();
   const host: Record<string, any> = {
     ...children, ...grouping, ...connections, ...consoleGroups, ...look, ...feed, ...kit, ...base,
+    projectAgentChildren: (...args: Parameters<typeof children.projectAgentChildren>) => { const rows = children.projectAgentChildren(...args); projections++; projectedFinished += rows.filter(row => row.retained).length; return rows; },
     projectNavigation: (snapshot: Parameters<typeof projectNavigation>[0]) => { if (state.throwNavigation) { state.throwNavigation = false; throw new Error('projection failed'); } return projectNavigation(snapshot); }, describeOpenFailure,
     createFeedReader: () => ({ read: async () => ({ feeds: state.feeds, errors: state.errors }), stamps: () => new Map(state.feeds.map((item: any) => [item.sessionId, String(item.stamp ?? item.revision)])), close: async () => {} }),
     initMoveMenu() {}, renderMoveMenu() {}, herdr: { checking: () => false }, props: () => config,
@@ -92,6 +93,8 @@ function fixture(version: SpacesAVersion, count: number, finished: number) {
     get allHistoryReads() { return allHistoryReads; },
     get notifications() { return notifications; },
     get agentReads() { return agentReads; },
+    get projections() { return projections; },
+    get projectedFinished() { return projectedFinished; },
     async send(command: string) { const resolve = commands.shift(); if (!resolve) throw new Error('No command waiter'); resolve(command); await flush(); },
     async ready() { await flush(); await view.spiderConnections.refresh(); view.spiderRequestRefresh(); await flush(); },
   };
@@ -137,6 +140,72 @@ it('projects a large owner history without repeatedly traversing the history', (
   void h.view.close();
 });
 
+it('counts collapsed finished runs without projecting their rows', () => {
+  const h = fixture('0.1.13', 1, 400);
+  const summary: { hiddenFinished?: number } = {};
+  const rows = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract,
+    { now: Date.now(), completedRows: 50, finishedSummary: summary });
+  expect(rows.map(row => row.key)).toContain('live0');
+  expect(rows.filter(row => row.retained)).toHaveLength(0);
+  expect(summary.hiddenFinished).toBe(50);
+  void h.view.close();
+});
+
+it.each([['run0-0', 2, true], ['run0-3', 2, false], ['run0-3', 4, true]] as const)(
+  'retains a finished run %s only when its live child and retention require it', (runId, limit, retained) => {
+    const h = fixture('0.1.13', 1, 4), now = Date.now();
+    h.state.terminals.push({ address: 'remote/job', parent: 't0', state: 'live', status: 'working',
+      labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': runId, 'spider.machine': 'remote' } });
+    const options = { now, completedRows: limit }, summary: { hiddenFinished?: number } = {};
+    const full = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, options);
+    const visible = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, { ...options, finishedSummary: summary });
+    expect(visible.find(row => row.key === 'job')?.parentKey).toBe(full.find(row => row.key === 'job')?.parentKey);
+    expect(visible.some(row => row.key === runId)).toBe(retained);
+    expect(summary.hiddenFinished).toBe(limit - Number(retained));
+    void h.view.close();
+  },
+);
+
+it('counts deduplicated finished runs and respects equal-time retention ties', () => {
+  const h = fixture('0.1.13', 1, 4), now = Date.now(), runs = h.state.feeds[0].runs.rows;
+  for (const run of runs.slice(1)) run.finishedAt = now - 1000;
+  runs.push({ ...runs[1], name: 'duplicate' });
+  h.state.terminals.push({ address: 'remote/job', parent: 't0', state: 'live', status: 'working',
+    labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': 'run0-3', 'spider.machine': 'remote' } });
+  const options = { now, completedRows: 2 }, summary: { hiddenFinished?: number } = {};
+  const full = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, options);
+  const visible = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, { ...options, finishedSummary: summary });
+  expect(full.filter(row => row.retained).map(row => row.key)).toEqual(['run0-0', 'run0-1']);
+  expect(visible.find(row => row.key === 'job')?.parentKey).toBeNull();
+  expect(summary.hiddenFinished).toBe(2);
+  void h.view.close();
+});
+
+it('preserves visible row order when a finished duplicate becomes active', () => {
+  const h = fixture('0.1.13', 1, 0), now = Date.now(), active = h.state.feeds[0].runs.rows[0];
+  h.state.feeds[0].runs.rows = [{ ...active, status: 'done', finishedAt: now - 1000 }, active];
+  h.state.terminals.push({ address: 'remote/job', parent: 't0', state: 'live', status: 'working',
+    labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.machine': 'remote' } });
+  const options = { now, completedRows: 50 }, summary: { hiddenFinished?: number } = {};
+  const full = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, options);
+  const compact = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract, { ...options, finishedSummary: summary });
+  expect(full.map(row => row.key)).toEqual(['live0', 'job']);
+  expect(compact.map(row => row.key)).toEqual(full.map(row => row.key));
+  void h.view.close();
+});
+
+it('does not count a retained terminal hidden under a folded finished run', () => {
+  const h = fixture('0.1.13', 1, 4), now = Date.now();
+  h.state.terminals.push({ address: 'remote/old-console', parent: 't0', state: 'finished', status: 'idle', finishedAt: now - 2000,
+    labels: { 'spider.kind': 'remote-console', 'spider.session': 's0', 'spider.run': 'run0-0', 'spider.machine': 'remote' } });
+  const summary: { hiddenFinished?: number } = {};
+  const rows = children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract,
+    { now, completedRows: 50, finishedSummary: summary, folded: new Set(['run0-0']), expandedConsoles: new Set() });
+  expect(rows.filter(row => row.retained)).toHaveLength(0);
+  expect(summary.hiddenFinished).toBe(4);
+  void h.view.close();
+});
+
 it('can resolve parked owners without projecting their children', () => {
   const h = fixture('0.1.13', 1, 48);
   h.state.agents[0].pane = null;
@@ -150,6 +219,66 @@ it('can resolve parked owners without projecting their children', () => {
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  it(`${version}: renders actual rows in the first frame`, async () => {
+    const h = fixture(version, 2, 4);
+    h.view.spiderFeeds = h.state.feeds;
+    try {
+      const first = h.text(h.render());
+      expect(first).toContain('Owner 0');
+      expect(first).toContain('Active 0');
+      expect(first).toContain('4 finished');
+      expect(first).not.toContain('Loading agent status…');
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: builds finished rows only when their history is expanded`, async () => {
+    const h = fixture(version, 20, 48);
+    h.view.spiderFeeds = h.state.feeds;
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    try {
+      const first = h.render();
+      expect(h.text(first).filter(value => value === '48 finished')).toHaveLength(20);
+      expect(h.projectedFinished).toBe(0);
+      const button = find(first, 'finished-toggle-t0');
+      button.events.on_click({}, h.cx);
+      const expanded = h.text(h.render());
+      expect(expanded).toContain('Finished 0-0');
+      expect(expanded.filter(value => value === '48 finished')).toHaveLength(19);
+      expect(h.projectedFinished).toBe(48);
+      await h.flush();
+      const before = h.projections;
+      h.render(); await h.flush(); h.render(); await h.flush();
+      expect(h.projections).toBe(before);
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: does not read hidden run names again to build row objects`, async () => {
+    const h = fixture(version, 1, 48); let nameReads = 0;
+    const runs = h.state.feeds[0].runs.rows;
+    for (let i = 1; i < runs.length; i++) runs[i] = new Proxy(runs[i], { get(target, key, receiver) {
+      if (key === 'name') nameReads++;
+      return Reflect.get(target, key, receiver);
+    } });
+    h.view.spiderFeeds = h.state.feeds;
+    h.view.spiderFeedStamps = new Map([['s0', 'content']]);
+    try {
+      expect(h.text(h.render())).toContain('48 finished');
+      expect(nameReads).toBe(48);
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: revalidates a visible child without building collapsed history`, async () => {
+    const h = fixture(version, 1, 48); h.view.spiderFeeds = h.state.feeds;
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    try {
+      const row = find(h.render(), 'sub-live0');
+      expect(h.projectedFinished).toBe(0);
+      row.events.on_click({}, h.cx); await Promise.resolve();
+      expect(h.projectedFinished).toBe(0);
+      expect(h.execCalls).toHaveLength(1);
+    } finally { await h.view.close(); }
+  });
+
   it(`${version}: renders a large unchanged snapshot without traversing finished history`, async () => {
     const h = fixture(version, 100, 48);
     try {
@@ -169,7 +298,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     } finally { await h.view.close(); }
   });
 
-  it(`${version}: prepares hidden-child trees before the first frame and before expanding history`, async () => {
+  it(`${version}: keeps hidden history out of render and prepares expanded rows on demand`, async () => {
     const h = fixture(version, 100, 48);
     let rendering = false, reads = 0;
     const wrapped = new WeakMap<object, any>(), project = h.view.projectChildren.bind(h.view);
@@ -244,6 +373,46 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       expect(h.view.spiderRefreshing).toBe(false);
       h.render(); await h.flush();
       expect(h.view.spiderModel.list[0].status).toBe('idle');
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: displays native rows before asynchronous feeds are available`, async () => {
+    const h = fixture(version, 1, 4);
+    try {
+      const first = h.text(h.render());
+      expect(first).toContain('Task 0');
+      expect(first).not.toContain('Loading agent status…');
+      await h.flush();
+      expect(h.text(h.render())).toContain('Owner 0');
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: keeps the previous visible model while an update is built`, async () => {
+    const h = fixture(version, 20, 8);
+    try {
+      await h.ready(); const before = h.text(h.render()); await h.flush();
+      const feed = h.state.feeds[0];
+      h.state.feeds[0] = { ...feed, revision: 2, owner: { ...feed.owner, name: 'Updated owner' } };
+      h.view.spiderReloadAt = -Infinity; h.watches.at(-1)!.fire();
+      for (let i = 0; i < 10; i++) await Promise.resolve();
+      await h.step();
+      expect(h.text(h.render())).toEqual(before);
+      await h.flush();
+      expect(h.text(h.render())).toContain('Updated owner');
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: preserves an expansion made while an update is in flight`, async () => {
+    const h = fixture(version, 20, 8);
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    try {
+      await h.ready(); const first = h.render(); await h.flush();
+      h.state.agents[0].status = 'blocked'; h.render(); await h.step();
+      find(first, 'finished-toggle-t0').events.on_click({}, h.cx);
+      expect(h.text(h.render())).toContain('Finished 0-0');
+      await h.flush();
+      expect(h.text(h.render())).toContain('Finished 0-0');
+      expect(h.view.spiderModel.list[0].status).toBe('blocked');
     } finally { await h.view.close(); }
   });
 

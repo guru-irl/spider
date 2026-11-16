@@ -44,7 +44,7 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
     if (current.length === 1 || old) recordLocation(core.db, { sessionId: input.sessionId, stores: expectedStores, home, file: input.file, cwd: context.cwd });
     const address = bindings.intercom!.address;
     const live = createLiveFreezePorts({ ...input, globalRoot: input.root, machineId: config.machineId, stores: stores.map(row => row.db), expectedStores,
-      routeStores: stores.map(row => row.db), address, jobRoots: [join(input.root, "herdr", "jobs")], scratchRoots: [paths.scratch("project", context.cwd), paths.scratch("global")],
+      routeStores: [core.db], address, jobRoots: [join(input.root, "herdr", "jobs")], scratchRoots: [paths.scratch("project", context.cwd), paths.scratch("global")],
       broker: bindings.evidence!.broker, bridge: bindings.evidence!.bridge, settlement: bindings.evidence!.settlement,
       authorizeAbort: bindings.evidence!.authorizeAbort, onHubRestored: bindings.evidence!.onHubRestored,
       intercom: { address, ports: bindings.intercom!.ports }, shutdown: async () => { input.context()?.shutdown(); } });

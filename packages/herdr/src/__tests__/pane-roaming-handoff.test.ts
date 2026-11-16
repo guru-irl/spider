@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { paths } from '@spider/db-core';
 import { createReplica } from '@spider/db-core/testutil';
@@ -128,6 +128,48 @@ test('remote ready retargets proxy without changing tab', async () => {
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
   } finally { await f.stop(); }
 });
+test('a remote retarget updates the existing proxy machine text', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source);
+    await f.operations().presentReadyTarget(f.remote);
+    const before = (await f.store.read()).presentations[0];
+    const next = parsePaneTarget({ ...target('core-next', 't4', 3), alias: 'box-2.invalid', machineId: 'machine-next' });
+    await f.operations().prepareHandoff(f.remote.sessionId!, f.remote);
+    expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete' });
+    const after = (await f.store.read()).presentations[0], proxy = await f.hc.get(after.proxy!);
+    expect(after).toMatchObject({ id: before.id, proxy: before.proxy, slot: before.slot, target: next, conversion: null });
+    expect(proxy.labels).toMatchObject({ 'spider.target-core': 'core-next', 'spider.target-terminal': 't4' });
+    const source = (await readFile(new URL('../../assets/pane/machine.js', import.meta.url), 'utf8'))
+      .replace(/^import .*;\s*$/gm, '').replace(/export /g, '');
+    const machineFact = new Function(`${source}; return paneMachineFact;`)();
+    expect(machineFact({ address: proxy.address, labels: proxy.labels, programIsAgent: false }, [after]))
+      .toEqual({ label: 'box-2.invalid', known: true });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
+  } finally { await f.stop(); }
+});
+
+test.each(['before-write', 'lost-reply'] as const)('a remote retarget retries a failed proxy label update: %s', async failure => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source);
+    await f.operations().presentReadyTarget(f.remote);
+    const before = (await f.store.read()).presentations[0];
+    const next = parsePaneTarget({ ...target('core-next', 't4', 3), alias: 'box-2.invalid', machineId: 'machine-next' });
+    await f.operations().prepareHandoff(f.remote.sessionId!, f.remote);
+    const write = f.hc.setLabels;
+    vi.spyOn(f.hc, 'setLabels').mockImplementationOnce(async (address, labels) => {
+      if (failure === 'lost-reply') await write(address, labels);
+      throw Error('label update unavailable');
+    });
+    expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'pending', reason: 'destination-screen-pending' });
+    expect((await f.store.read()).presentations[0]).toMatchObject({ id: before.id, proxy: before.proxy, target: next, conversion: { state: 'waiting-readiness' } });
+    expect(f.events.filter(value => value === 'screen')).toHaveLength(1);
+    expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete', presentation: { proxy: before.proxy, target: next, conversion: null } });
+    expect((await f.hc.get(before.proxy!)).labels).toMatchObject({ 'spider.target-core': 'core-next', 'spider.target-terminal': 't4' });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
+    expect(f.events.filter(value => value === 'screen')).toHaveLength(2);
+  } finally { await f.stop(); }
+});
+
 test('one readiness through the hub and move paths has exactly one presentation owner', async () => {
   const f = await fixture(), hubId = '00000000-0000-4000-8000-000000000001', boxId = '00000000-0000-4000-8000-000000000002';
   const global = createReplica('global', hubId);

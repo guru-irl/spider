@@ -114,6 +114,21 @@ it("stale generations cannot receive and scoped names stay isolated", async () =
   expect(f.dispatch).not.toHaveBeenCalled();
 }, 5000);
 
+it("blocker inspection does not mutate federation expiry state", async () => {
+  let now = 100;
+  const federation = createFederation({ agentDir: "/fixture", locals: () => [], now: () => now });
+  federation.registerBridge({ feature: FEDERATION_FEATURE, agentDir: "/fixture", machineId: "local", machineAlias: "local.invalid" }, {
+    async dispatch() { return { delivery: "queued", retryable: false, outcomeKnown: true, acceptance: { accepted: true, durable: true, location: "fixture" } }; }, receipt() {}, control() {},
+  });
+  federation.publishPresence([remote]);
+  await federation.dispatch(address, remote, { id: "preserved", timestamp: now, content: { text: "fixture" } });
+  now += 60 * 60 * 1000 + 1;
+  expect(federation.inspectBlockers(address, { includeExpired: true }).unobservedReceipts).toEqual(["preserved"]);
+  expect(federation.inspectBlockers(address).unobservedReceipts).toEqual([]);
+  now = 100;
+  expect(federation.inspectBlockers(address).unobservedReceipts).toEqual(["preserved"]);
+}, 5000);
+
 it("unobserved federation metadata is bounded and expires without receipts", async () => {
   let now = 1000;
   const federation = createFederation({ agentDir: "/fixture", locals: () => [], now: () => now });

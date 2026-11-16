@@ -355,3 +355,18 @@ it("missing authentication suspends immediately and never retries", async () => 
   expect(attempts).toBe(1);
   expect(f.notices).toHaveLength(1);
 }, 5000);
+
+it("retire-only reconnect prevents supervisor inspection and ordinary launch", async () => {
+  const module = await supervisorModule(), f = fixture(), actions: string[] = [];
+  f.ports.connection = {
+    machineId: local,
+    async handshake() { actions.push("handshake"); return { kind: "retire-only", reason: "machine-revoked", machineId: local }; },
+    async stopSessions() { actions.push("stop-sessions"); }, async sync() { actions.push("sync"); },
+  };
+  const inspect = f.ports.inspect;
+  f.ports.inspect = async id => { actions.push("inspect"); return inspect(id); };
+  const service = module!.createSupervisor(f.ports);
+  await service.reconcile();
+  expect(actions).toEqual(["handshake", "stop-sessions"]);
+  expect(f.launches).toEqual([]);
+}, 5000);

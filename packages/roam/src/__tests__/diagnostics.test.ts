@@ -15,6 +15,7 @@ import type { Diagnostic, Peer, RoamConfig } from "../contracts";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import * as diagnostics from "../diagnostics";
 import { main } from "../cli";
+import { writeEnabledConfig } from "./fixtures/enabled-config";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
 const BOX = "00000000-0000-4000-8000-000000000002";
@@ -348,11 +349,12 @@ it("status reports unknown observations and backlog instead of inventing a healt
   } finally { global.close(); worktree.close(); }
 }, 5000);
 
-it("local doctor reports a disabled registered duplicate store without touching data", async () => {
+it("local doctor reports a registered duplicate store when enabled without touching data", async () => {
   const root = mkdtempSync(join(dirname(scratchDbPath("roam-cli-duplicate")), "roam-cli-duplicate-"));
   roots.push(root);
   vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
   vi.stubEnv("HOME", root);
+  writeEnabledConfig(root);
   const global = openDb(join(root, "spider.db")), project = openDb(join(root, "project.db"));
   try {
     migrate(global, "global", { machineId: HUB, globalRoot: root });
@@ -367,8 +369,8 @@ it("local doctor reports a disabled registered duplicate store without touching 
     const before = hashes();
     const out: string[] = [], err: string[] = [];
     const exit = await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) });
-    expect(exit).toBe(0);
-    expect(out.join("")).toMatch(/information.*not roamable/i);
+    expect(exit).toBe(1);
+    expect(out.join("")).toMatch(/store.*not roamable/i);
     expect(out.join("")).toContain("17,29");
     expect(out.join("")).not.toContain("first");
     expect(err).toEqual([]);
@@ -376,19 +378,20 @@ it("local doctor reports a disabled registered duplicate store without touching 
   } finally { project.close(); global.close(); }
 }, 5000);
 
-it("local doctor reports the sqlite3 CLI floor even when roaming is disabled", async () => {
+it("local doctor reports the sqlite3 CLI floor when roaming is enabled", async () => {
   const root = mkdtempSync(join(dirname(scratchDbPath("roam-cli-sqlite")), "roam-cli-sqlite-"));
   roots.push(root);
   vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
   vi.stubEnv("HOME", root);
+  writeEnabledConfig(root);
   vi.stubEnv("PATH", root);
   writeFileSync(join(root, "sqlite3"), "#!/bin/sh\nprintf '3.37.9\\n'\n", { mode: 0o700 });
   const out: string[] = [], err: string[] = [];
   const exit = await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) });
-  expect(exit).toBe(0);
+  expect(exit).toBe(1);
   expect(out.join("")).toMatch(/sqlite3.*3\.38.*migrated/i);
   expect(err).toEqual([]);
-  expect(existsSync(join(root, "roam"))).toBe(false);
+  expect(existsSync(join(root, "roam", "journal.db"))).toBe(false);
 }, 5000);
 
 it("local doctor detects a removed service Node without running launchctl", async () => {
@@ -396,6 +399,7 @@ it("local doctor detects a removed service Node without running launchctl", asyn
   roots.push(root);
   vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
   vi.stubEnv("HOME", root);
+  writeEnabledConfig(root);
   const directory = join(root, "Library", "LaunchAgents");
   mkdirSync(directory, { recursive: true });
   const service = join(directory, "com.spider.roam.hub.plist");
@@ -405,7 +409,7 @@ it("local doctor detects a removed service Node without running launchctl", asyn
   writeFileSync(service, definition, { mode: 0o600 });
   const out: string[] = [], err: string[] = [];
   const exit = await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) });
-  expect(exit).toBe(0);
+  expect(exit).toBe(1);
   expect(out.join("")).toMatch(/node.*executable.*missing/i);
   expect(readFileSync(service, "utf8")).toBe(definition);
   expect(err).toEqual([]);
@@ -419,7 +423,7 @@ it("doctor works on an empty local root without creating data", async () => {
   const out: string[] = [], err: string[] = [];
   const exit = await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) });
   expect(exit).toBe(0);
-  expect(out.join("")).toMatch(/roam.*disabled/i);
+  expect(out.join("")).toBe("Roaming is disabled.\n");
   expect(err).toEqual([]);
   expect(existsSync(join(root, "roam"))).toBe(false);
   expect(existsSync(join(root, "spider.db"))).toBe(false);
@@ -428,6 +432,7 @@ it("doctor works on an empty local root without creating data", async () => {
 it("reports every trigger name in a long drift diagnosis", async () => {
   const root = mkdtempSync(join(dirname(scratchDbPath("roam-drift-all")), "roam-drift-all-")); roots.push(root);
   vi.stubEnv("SPIDER_GLOBAL_ROOT", root); vi.stubEnv("HOME", root);
+  writeEnabledConfig(root);
   const global = openDb(join(root, "spider.db")), project = openDb(join(root, "project.db"));
   try {
     migrate(global, "global", { machineId: HUB, globalRoot: root });
@@ -437,7 +442,7 @@ it("reports every trigger name in a long drift diagnosis", async () => {
     expect(names.join(", ").length).toBeGreaterThan(512);
     for (const name of names) project.exec(`DROP TRIGGER "${name.replaceAll('"', '""')}"`);
     const out: string[] = [], err: string[] = [];
-    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
     for (const name of names) expect(out.join(""), name).toContain(name);
     expect(err).toEqual([]);
   } finally { project.close(); global.close(); }
@@ -448,6 +453,7 @@ it("trigger drift reports disabled capture without repair", async () => {
   roots.push(root);
   vi.stubEnv("SPIDER_GLOBAL_ROOT", root);
   vi.stubEnv("HOME", root);
+  writeEnabledConfig(root);
   const db = openDb(join(root, "spider.db"));
   try {
     migrate(db, "global", { machineId: "00000000-0000-4000-8000-000000000001", globalRoot: root });
@@ -456,7 +462,7 @@ it("trigger drift reports disabled capture without repair", async () => {
     const before = db.prepare("SELECT capture_enabled, roamable, problem FROM roam_meta").get();
     const out: string[] = [], err: string[] = [];
     const exit = await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) });
-    expect(exit).toBe(0);
+    expect(exit).toBe(1);
     expect(out.join("")).toContain(trigger);
     expect(out.join("")).toMatch(/capture.*disabled/i);
     expect(err).toEqual([]);

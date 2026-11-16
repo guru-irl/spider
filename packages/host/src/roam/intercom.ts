@@ -13,6 +13,17 @@ import { recordFirstHomeAdoption } from "@spider/roam/intercom-first-home";
 export { createHostIntercomDelivery, type HostIntercomDelivery, type HostIntercomDeliveryPorts, type ReconcileProof } from "@spider/roam/intercom-delivery";
 import type { Admission, AdmissionGate } from "./admission.js";
 import { ordinaryWorkAllowed } from "./activation.js";
+import { randomUUID } from "node:crypto";
+import { qualifiedName, isSessionAddress, isRemoteSessionInfo, sameAddress as equalAddress, type IntercomIntakeFence, type RemoteSessionInfo } from "@spider/intercom/protocol";
+import { isIntercomIntakeFence } from "../../../intercom/src/broker/protocol.js";
+import type { IntercomFederationClient } from "@spider/intercom/broker/client";
+import type { IntercomBridge } from "@spider/roam/intercom-bridge";
+import type { IntercomMovePorts } from "@spider/roam/contracts";
+import { intercomBlockers } from "./blockers.js";
+export type { IntercomMovePorts } from "@spider/roam/contracts";
+import { isMachineId } from "@spider/roam/machine-id";
+
+export { IntercomFenceError, createIntercomMovePorts, type IntercomMoveInput } from "@spider/roam/intercom-move";
 
 export interface Disposable { dispose(): void }
 export interface HostIntercomPorts {

@@ -1,3 +1,4 @@
+import { writeEnabledConfig } from "./fixtures/enabled-config";
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -276,7 +277,7 @@ it("the roaming CLI subpath bundles and runs through the fixture builder", async
   const packaged = await import(pathToFileURL(bundle).href) as { main: typeof main };
   const output = capture();
   expect(await packaged.main(["roam", "doctor"], output.io)).toBe(0);
-  expect(output.out.join("")).toMatch(/roam.*disabled/i);
+  expect(output.out.join("")).toBe("Roaming is disabled.\n");
   expect(output.err).toEqual([]);
   expect(existsSync(globalRoot)).toBe(false);
 }, 5000);
@@ -317,6 +318,7 @@ it("the packaged roaming doctor reads actual loaded builds and leaves stores unc
   const root = fixture(), globalRoot = join(root, "global"), bundleRoot = join(root, "built"), bin = join(root, "bin");
   mkdirSync(globalRoot, { recursive: true });
   mkdirSync(bin);
+  writeEnabledConfig(globalRoot);
   const db = dbCore.openDb(join(globalRoot, "spider.db"));
   try {
     dbCore.migrate(db, "global", { machineId: hubId, globalRoot });
@@ -340,7 +342,7 @@ it("the packaged roaming doctor reads actual loaded builds and leaves stores unc
     cwd: root, env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: globalRoot, PATH: `${bin}:${process.env.PATH ?? ""}` },
     encoding: "utf8", timeout: 3000,
   });
-  expect(result.status).toBe(0);
+  expect(result.status).toBe(1);
   expect(result.stderr).toBe("");
   expect(result.stdout).toContain("roam_global_memory_capture_ai");
   expect(result.stdout).toMatch(/capture.*disabled/i);
@@ -353,7 +355,7 @@ it("the packaged roaming doctor reads actual loaded builds and leaves stores unc
   });
   expect(status.status).toBe(0);
   expect(status.stderr).toBe("");
-  expect(JSON.parse(status.stdout)).toMatchObject({ enabled: false, cached: true, available: true, stores: [expect.objectContaining({ key: "global" })] });
+  expect(JSON.parse(status.stdout)).toMatchObject({ enabled: true, cached: true, available: true, stores: [expect.objectContaining({ key: "global" })] });
   expect(snapshot(globalRoot)).toEqual(before);
   await presence.record({ ...live, build: { sha: "abcdef1", builtAt: "2026-01-02T03:04:05.000Z", version: "1.0.0", dirty: false } });
   const compatibleBefore = snapshot(globalRoot);
@@ -361,7 +363,7 @@ it("the packaged roaming doctor reads actual loaded builds and leaves stores unc
     cwd: root, env: { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: globalRoot, PATH: `${bin}:${process.env.PATH ?? ""}` },
     encoding: "utf8", timeout: 3000,
   });
-  expect(compatible.status).toBe(0);
+  expect(compatible.status).toBe(1);
   expect(compatible.stderr).toBe("");
   expect(compatible.stdout).toMatch(/loaded build abcdef1@2026-01-02T03:04:05\.000Z v1\.0\.0, roaming schema 14/);
   expect(compatible.stdout).not.toMatch(/without the required release/);

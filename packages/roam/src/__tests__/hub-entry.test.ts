@@ -1,7 +1,10 @@
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { startTestBroker, stopTestBroker } from "@spider/intercom/test-support";
+// @ts-expect-error The shim is an executable JavaScript build helper.
+import { extensionShim } from "../../../../scripts/extension-shim.mjs";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { migrate, openDb } from "@spider/db-core";
@@ -13,6 +16,7 @@ import { usageProcessIdentity } from "../../../host/src/usage/server-runtime";
 import type { SessionId } from "@spider/herdr/contracts";
 import { createLocalDiagnosticPorts } from "../local-diagnostics";
 import { buildRoamEntries } from "../../../../scripts/build-roam.mjs";
+import { buildIntercom } from "../../../../scripts/build-intercom.mjs";
 import { requestHubControl } from "../control-socket";
 import { openJournal } from "../journal";
 import { DEFAULT_LIMITS } from "../contracts";
@@ -22,14 +26,16 @@ import { acquireTransferLease } from "../staging";
 const HUB = "00000000-0000-4000-8000-000000000001";
 const BOX = "00000000-0000-4000-8000-000000000002";
 const roots: string[] = [];
+const brokers: ChildProcess[] = [];
 let built: string;
 beforeAll(async () => {
   built = mkdtempSync(join(resolve(".spider/scratch"), "hub-build-"));
   await buildRoamEntries(join(built, "roam"));
+  await buildIntercom(join(built, "intercom"));
   writeFileSync(join(built, "extension.js"), "// SPIDER_BUILD_ID=abcdef1@2026-01-01T00:00:00.000Z v1.2.3\n");
 });
 afterAll(() => rmSync(built, { recursive: true, force: true }));
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => { for (const broker of brokers.splice(0)) await stopTestBroker(broker); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 function fixture(capture = true) {
   const root = mkdtempSync(join(resolve(".spider/scratch"), "hub-entry-")); roots.push(root);
@@ -48,7 +54,7 @@ function fixture(capture = true) {
     core: { binary: hc, config: join(root, "core.toml") }, agentDirectory: root, globalRoot: root,
     shellRc: join(root, "shellrc"), spaces: [], machines: [] }), { mode: 0o600 });
   const env: NodeJS.ProcessEnv & { HOME: string; SPIDER_GLOBAL_ROOT: string; HC_SOCKET: string } =
-    { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: root, HC_SOCKET: join(root, "absent-core.sock") };
+    { ...process.env, SPIDER_ROAM_PI: process.execPath, HOME: root, SPIDER_GLOBAL_ROOT: root, HC_SOCKET: join(root, "absent-core.sock") };
   const cli = join(built, "roam", "cli.mjs"), socket = join(root, "roam", "hub.sock");
   return { root, marker, env, cli, socket };
 }
@@ -138,7 +144,10 @@ it("packaged enable checks live consumers before seeding and installing the isol
   writeFileSync(failFile, "fail once");
   expect((await command(f, ["roam", "disable"])).code).toBe(3);
   expect(existsSync(join(f.root, "Library", "LaunchAgents", "com.spider.roam.hub.plist"))).toBe(true);
-  expect((await command(f, ["roam", "disable"])).code).toBe(0);
+  const callsBeforeRetry = readFileSync(calls, "utf8"), repeated = await command(f, ["roam", "disable"]);
+  expect(repeated.code, repeated.err).toBe(0); expect(repeated.out).toContain("Roaming hub disabled");
+  const retryCalls = readFileSync(calls, "utf8").slice(callsBeforeRetry.length).trim().split("\n").map(line => JSON.parse(line));
+  expect(retryCalls).toHaveLength(1); expect(retryCalls[0][0]).toBe("bootout");
   expect(JSON.parse(readFileSync(join(f.root, "roam", "config.json"), "utf8")).enabled).toBe(false);
   expect(existsSync(join(f.root, "Library", "LaunchAgents", "com.spider.roam.hub.plist"))).toBe(false);
   db = openDb(join(f.root, "spider.db"));
@@ -182,11 +191,11 @@ it.each(["lock.json.guard", "startup.json", "replace-intent.json", "replace-inte
     else expect(worker).toBeNull();
   }, 5000);
 
-it("disable without a socket or service still verifies the journal and hub lock", async () => {
+it("disabled disable is a no-op only when no home change or live hub is unverified", async () => {
   const f = fixture(false);
   writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: HUB,
     hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
-  expect((await command(f, ["roam", "disable"])).code).toBe(3);
+  expect((await command(f, ["roam", "disable"])).code).toBe(0);
   expect(existsSync(join(f.root, "roam", "journal.db"))).toBe(false);
   const journal = openJournal(join(f.root, "roam", "journal.db"));
   journal.begin({ id: "pending-home", machineId: HUB, expectedEpoch: 1, kind: "move", args: {} });
@@ -209,7 +218,7 @@ it("disable without a socket or service still verifies the journal and hub lock"
   expect((await command(f, ["roam", "disable"])).code).toBe(0);
 }, 5000);
 
-it("disable resumes interrupted service removal after the hub exits, but not during a home change", async () => {
+it("disabled retries finish service removal only after the hub and pending move stop", async () => {
   const f = fixture(false), bin = join(f.root, "bin"), pidFile = join(f.root, "hub-pid"), failFile = join(f.root, "fail-bootout");
   mkdirSync(bin);
   writeFileSync(join(bin, "sqlite3"), `#!${process.execPath}\nconsole.log('3.45.0');\n`, { mode: 0o700 });
@@ -241,6 +250,7 @@ it("disable resumes interrupted service removal after the hub exits, but not dur
     journal.record("pending-home", "done", { complete: true });
     const resumed = await command(f, ["roam", "disable"]);
     expect(resumed.code, resumed.err).toBe(0);
+    expect(resumed.out).toContain("Roaming hub disabled");
     expect(existsSync(plist)).toBe(false);
     const db = openDb(join(f.root, "spider.db"));
     try { expect(db.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 1 }); }
@@ -250,20 +260,44 @@ it("disable resumes interrupted service removal after the hub exits, but not dur
   }
 }, 5000);
 
-async function twoNodeFixture(capture = true) {
+async function twoNodeFixture(capture = true, intercomReady = false, brokerRunning = true) {
   const f = fixture(capture), alias = "-box-1.invalid", box = join(f.root, "box"), calls = join(f.root, "hc-calls");
   mkdirSync(box); mkdirSync(join(box, "roam"), { mode: 0o700 }); mkdirSync(join(f.root, "bin"));
+  const agentDir = join(box, ".pi", "agent"); mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+  if (intercomReady) {
+    const release = join(box, "release"), scripts = join(release, "scripts"), extensionDir = join(agentDir, "extensions");
+    mkdirSync(scripts, { recursive: true, mode: 0o700 }); mkdirSync(join(release, "dist"), { mode: 0o700 }); mkdirSync(extensionDir, { mode: 0o700 });
+    writeFileSync(join(release, "dist", "extension.js"), "export default () => {};", { mode: 0o600 });
+    copyFileSync(join(process.cwd(), "scripts", "extension-shim.mjs"), join(scripts, "extension-shim.mjs"));
+    copyFileSync(join(process.cwd(), "scripts", "intercom-switchover.mjs"), join(scripts, "intercom-switchover.mjs"));
+    writeFileSync(join(extensionDir, "spider.ts"), extensionShim(join(release, "dist", "extension.js")), { mode: 0o600 });
+    writeFileSync(join(agentDir, "settings.json"), "{}", { mode: 0o600 });
+    writeFileSync(join(box, "roam", "active-release.json"), JSON.stringify(release), { mode: 0o600 });
+    const sdk = join(box, ".local", "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
+    mkdirSync(dirname(sdk), { recursive: true, mode: 0o700 }); symlinkSync(join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js"), sdk);
+    if (brokerRunning) {
+      const broker = startTestBroker(process.execPath, [join(built, "intercom", "broker.mjs")],
+        { env: { ...process.env, HOME: box, PI_CODING_AGENT_DIR: agentDir }, stdio: ["ignore", "pipe", "pipe"] });
+      brokers.push(broker);
+      await new Promise<void>((done, reject) => {
+        const timer = setTimeout(() => reject(new Error("fixture broker did not start")), 3000);
+        broker.once("exit", code => { clearTimeout(timer); reject(new Error(`fixture broker exited ${code}`)); });
+        broker.stdout!.on("data", bytes => { if (String(bytes).includes("Intercom broker started")) { clearTimeout(timer); done(); } });
+      });
+    }
+  }
   writeFileSync(join(box, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
   writeFileSync(join(box, "roam", "config.json"), JSON.stringify({ enabled: false, role: "box", machineId: BOX,
     hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
   const db = openDb(join(box, "spider.db")); migrate(db, "global", { machineId: BOX, globalRoot: box }); db.close();
-  const peer = { machineId: BOX, alias, node: process.execPath, pi: process.execPath, cli: f.cli, core: join(f.root, "hc"), globalRoot: box };
+  const peer = { machineId: BOX, alias, node: process.execPath, pi: process.execPath, cli: f.cli, core: join(box, "hc"), globalRoot: box };
   writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId: HUB,
     hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
   writeFileSync(join(f.root, "bin", "sqlite3"), `#!${process.execPath}\nconsole.log('3.45.0');\n`, { mode: 0o700 });
   f.env.PATH = join(f.root, "bin");
+  writeFileSync(join(box, "hc"), `#!${process.execPath}\nconsole.log(JSON.stringify({core:{id:'remote-core'},version:'0.1.16'}));\n`, { mode: 0o700 });
   const hcScript = join(f.root, "hc.js");
-  writeFileSync(hcScript, `#!${process.execPath}\nimport {appendFileSync,readFileSync} from 'node:fs'; import {spawnSync} from 'node:child_process';\nconst a=process.argv.slice(2); appendFileSync(${JSON.stringify(calls)},JSON.stringify(a)+'\\n');\nif(process.env.SPIDER_TEST_HC_OFFLINE==='1') process.exit(1);\nif(a[0]==='server') console.log(JSON.stringify({core:{id:'local-core'},version:'0.1.16'}));\nelse if(a[0]==='machine') console.log(JSON.stringify({machines:[{name:${JSON.stringify(alias)},id:'remote-core',state:'connected'}]}));\nelse if(a[0]==='exec' && a.includes(${JSON.stringify(`--on=${alias}`)})) { const cmd=a.slice(a.indexOf('--')+1); if(cmd[0]==='cat' && cmd.at(-1)===${JSON.stringify(join(box, "roam", "machine.json"))}) process.stdout.write(readFileSync(cmd.at(-1))); else if(cmd[0]===${JSON.stringify(process.execPath)} && cmd[1]===${JSON.stringify(f.cli)} && cmd[2]==='--global-root' && cmd[3]===${JSON.stringify(box)}) { const result=spawnSync(cmd[0],cmd.slice(1),{env:{...process.env,HOME:${JSON.stringify(box)}},input:a.includes('--stdin')?readFileSync(0):undefined}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status??1; } else process.exitCode=2; }\nelse process.exitCode=1;\n`, { mode: 0o700 });
+  writeFileSync(hcScript, `#!${process.execPath}\nimport {appendFileSync,readFileSync} from 'node:fs'; import {spawnSync} from 'node:child_process';\nconst a=process.argv.slice(2); appendFileSync(${JSON.stringify(calls)},JSON.stringify(a)+'\\n');\nif(process.env.SPIDER_TEST_HC_OFFLINE==='1') process.exit(1);\nif(a[0]==='server') console.log(JSON.stringify({core:{id:'local-core'},version:'0.1.16'}));\nelse if(a[0]==='machine') console.log(JSON.stringify({machines:[{name:${JSON.stringify(alias)},id:'remote-core',state:'connected'}]}));\nelse if(a[0]==='exec' && a.includes(${JSON.stringify(`--on=${alias}`)})) { const cmd=a.slice(a.indexOf('--')+1); if(cmd[0]==='cat' && cmd.at(-1)===${JSON.stringify(join(box, "roam", "machine.json"))}) process.stdout.write(readFileSync(cmd.at(-1))); else if(cmd[0]===${JSON.stringify(process.execPath)} && cmd[1]===${JSON.stringify(f.cli)} && cmd[2]==='--global-root' && cmd[3]===${JSON.stringify(box)}) { const result=spawnSync(cmd[0],cmd.slice(1),{env:{...process.env,HOME:${JSON.stringify(box)},PI_CODING_AGENT_DIR:${JSON.stringify(agentDir)},SPIDER_GLOBAL_ROOT:${JSON.stringify(box)}},input:a.includes('--stdin')?readFileSync(0):undefined}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status??1; } else if(cmd[0]===${JSON.stringify(process.execPath)} && cmd[1]==='--input-type=module-typescript' && cmd[2]==='-e') { const result=spawnSync(cmd[0],cmd.slice(1),{env:{...process.env,HOME:${JSON.stringify(box)},PI_CODING_AGENT_DIR:${JSON.stringify(agentDir)},SPIDER_GLOBAL_ROOT:${JSON.stringify(box)}},input:a.includes('--stdin')?readFileSync(0):undefined}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status??1; } else process.exitCode=2; }\nelse process.exitCode=1;\n`, { mode: 0o700 });
   // Repeated fixed probes do not need a separate Node process.
   const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   const fast = (args: string[], reply: unknown) => `if [ "$#" = 3 ] && [ "$1" = ${quote(args[0])} ] && [ "$2" = ${quote(args[1])} ] && [ "$3" = ${quote(args[2])} ]; then
@@ -282,20 +316,23 @@ exec ${quote(process.execPath)} ${quote(hcScript)} "$@"
   return { f, alias, box, calls, peer, server };
 }
 
-it("box controls direct nonlocal operations to the Mac without changing memory", async () => {
+it.each([false, true])("box controls preserve disabled-first and Mac-only guards without changing memory (enabled: %s)", async enabled => {
   const { f, box, server } = await twoNodeFixture(false);
   try {
     const db = openDb(join(box, "spider.db"));
     try { db.prepare("INSERT INTO global_memory(uuid,category,content,created_at,machine_id) VALUES ('box-note','insight','local',1,?)").run(BOX); }
     finally { db.close(); }
     f.env.HOME = box; f.env.SPIDER_GLOBAL_ROOT = box;
+    const configFile = join(box, "roam", "config.json");
+    writeFileSync(configFile, JSON.stringify({ ...JSON.parse(readFileSync(configFile, "utf8")), enabled }), { mode: 0o600 });
     for (const args of [["roam", "memory", "tag", "global", "box-note", "all"], ["move", "session-1", "box-1.invalid"],
       ["roam", "provision", "box-1.invalid"], ["roam", "recover", "session-1"], ["roam", "cancel", "operation-1"],
-      ["roam", "forget", "box-1.invalid"], ["roam", "claim", "session-1", "box-1.invalid"],
+      ["roam", "forget", "box-1.invalid", "--confirm", "destroyed box-1.invalid"], ["roam", "claim", "session-1", "box-1.invalid"],
       ["roam", "stop", "session-1"], ["roam", "resume", "session-1"]]) {
       const result = await command(f, args);
       expect(result.code, args.join(" ")).toBe(1);
-      expect(result.err, args.join(" ")).toMatch(/Mac hub/i);
+      const hubOnlyWhileDisabled = ["provision", "forget", "stop"].includes(args[1]);
+      expect(result.err, args.join(" ")).toMatch(enabled || hubOnlyWhileDisabled ? /Mac hub/i : /roaming-disabled/);
     }
     const inspect = openDb(join(box, "spider.db"));
     try { expect(inspect.prepare("SELECT machine_id FROM global_memory WHERE uuid='box-note'").get()).toEqual({ machine_id: BOX }); }
@@ -304,14 +341,21 @@ it("box controls direct nonlocal operations to the Mac without changing memory",
   } finally { await new Promise<void>(done => server.close(() => done())); }
 }, 5000);
 
-it("remote doctor uses both dash-alias forms and never falls back to local execution", async () => {
-  const { f, alias, box, calls, server } = await twoNodeFixture();
+it.each([false, true])("remote doctor preserves quiet disabled output and both dash-alias forms (hub enabled: %s)", async enabled => {
+  const { f, alias, box, calls, server } = await twoNodeFixture(true, true);
+  const configFile = join(f.root, "roam", "config.json");
+  writeFileSync(configFile, JSON.stringify({ ...JSON.parse(readFileSync(configFile, "utf8")), enabled }), { mode: 0o600 });
   try {
     for (const selector of [["--", alias], ["--machine", alias]]) {
       const result = await command(f, ["roam", "doctor", ...selector]);
       expect(result.code, result.err).toBe(0);
-      expect(result.out).toContain("Roaming is disabled");
+      expect(result.out).toBe(`Roaming is disabled.\n${enabled ? `peer-enabled-mismatch:${BOX}\n` : ""}`);
     }
+    const json = await command(f, ["roam", "doctor", "--machine", alias, "--json"]);
+    expect(json.code, json.err).toBe(0);
+    expect(JSON.parse(json.out)).toMatchObject({ reason: "roaming-disabled", value: { enabled: false, consumers: [], diagnostics: enabled ? [
+      { reason: `peer-enabled-mismatch:${BOX}`, severity: "warning", repairCommand: "spider roam enable" },
+    ] : [] } });
     const before = readFileSync(calls, "utf8");
     expect((await command(f, ["roam", "doctor", "unknown.invalid"])).code).toBe(2);
     expect(readFileSync(calls, "utf8")).toBe(before);
@@ -323,7 +367,7 @@ it("remote doctor uses both dash-alias forms and never falls back to local execu
 }, 5000);
 
 it("enable refuses old or unreadable remote consumer inventories before any capture or service effect", async () => {
-  const { f, box, peer, server } = await twoNodeFixture(false);
+  const { f, box, peer, server } = await twoNodeFixture(false, true);
   try {
     writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: HUB,
       hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
@@ -354,10 +398,11 @@ it("enable refuses old or unreadable remote consumer inventories before any capt
   } finally { await new Promise<void>(done => server.close(() => done())); }
 }, 5000);
 
-it("enable seeds both machines through the enrolled peer before the isolated hub starts", async () => {
-  const { f, alias, box, calls, peer, server } = await twoNodeFixture(false);
+it("enable starts a fresh box broker and seeds both machines before the isolated hub starts", async () => {
+  const { f, alias, box, calls, peer, server } = await twoNodeFixture(false, true, false);
   const pidFile = join(f.root, "hub-pid"), launchCalls = join(f.root, "launch-calls");
   try {
+    expect(existsSync(join(box, ".pi", "agent", "intercom", "broker.sock"))).toBe(false);
     writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: HUB,
       hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
     const db = openDb(join(box, "spider.db"));
@@ -368,6 +413,8 @@ it("enable seeds both machines through the enrolled peer before the isolated hub
     f.env.SPIDER_TEST_ROAM_LAUNCHCTL = launchctl;
     const result = await command(f, ["roam", "enable"]);
     expect(result.code, result.err).toBe(0);
+    expect(existsSync(join(box, ".pi", "agent", "intercom", "broker.sock"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(box, "roam/config.json"), "utf8")).enabled).toBe(true);
     for (const [root, row] of [[f.root, "memory-a"], [box, "peer-memory"]]) {
       const inspect = openDb(join(root, "spider.db"));
       try {
@@ -384,6 +431,8 @@ it("enable seeds both machines through the enrolled peer before the isolated hub
     expect(readFileSync(launchCalls, "utf8").trim().split("\n").map(line => JSON.parse(line)[0])).toEqual(["bootout", "bootstrap"]);
   } finally {
     if (existsSync(pidFile)) { try { process.kill(Number(readFileSync(pidFile, "utf8")), "SIGTERM"); } catch { /* already stopped */ } }
+    const brokerPid = join(box, ".pi", "agent", "intercom", "broker.pid");
+    if (existsSync(brokerPid)) { const pid = Number(readFileSync(brokerPid, "utf8")); if (Number.isSafeInteger(pid) && pid > 1) try { process.kill(pid, "SIGTERM"); } catch { /* already stopped */ } }
     const end = Date.now() + 1000;
     while (existsSync(f.socket) && Date.now() < end) await delay(20);
     await new Promise<void>(done => server.close(() => done()));
@@ -522,4 +571,26 @@ it("A9 hub survives without pi or a core, enforces its lock and refuses disablin
     expect(await exit(child)).toEqual({ code: 0, signal: null });
     expect(existsSync(f.marker)).toBe(false);
   } finally { if (child.exitCode === null && child.signalCode === null) { child.kill("SIGTERM"); await exit(child); } }
+}, 5000);
+
+it("enable refuses a missing participant executable before capture or service effects", async () => {
+  const f = fixture(false), bin = join(f.root, "bin"), marker = join(f.root, "service-called");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "sqlite3"), `#!${process.execPath}\nconsole.log('3.45.0');\n`, { mode: 0o700 });
+  const launchctl = join(bin, "launchctl");
+  writeFileSync(launchctl, `#!${process.execPath}\nimport {writeFileSync} from 'node:fs'; writeFileSync(${JSON.stringify(marker)},'called');\n`, { mode: 0o700 });
+  f.env.PATH = bin; f.env.SPIDER_TEST_ROAM_LAUNCHCTL = launchctl;
+  f.env.SPIDER_ROAM_PI = join(bin, "missing-pi");
+  const file = join(f.root, "roam", "config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false;
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const result = await command(f, ["roam", "enable"]);
+  expect(result.code, result.err).toBe(1);
+  expect(result.err).toContain("participant-pi-unavailable");
+  expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
+  const db = openDb(join(f.root, "spider.db"));
+  try { expect(db.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 0 }); }
+  finally { db.close(); }
+  expect(existsSync(marker)).toBe(false);
+  expect(existsSync(join(f.root, "Library", "LaunchAgents", "com.spider.roam.hub.plist"))).toBe(false);
 }, 5000);

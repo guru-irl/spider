@@ -1,3 +1,7 @@
+import { createMoveActivation } from "./roam/move-activation";
+import { registerMoveCommand } from "./roam/move-command";
+import { requestHubControl } from "@spider/roam/control-socket";
+import { readLocalIdentity } from "@spider/roam/runtime";
 import { fileURLToPath } from "node:url";
 import { registerIntercomOnce, intercomConflict, type IntercomBrokerPort } from "@spider/intercom";
 import { stripVTControlCharacters } from "node:util";
@@ -888,13 +892,36 @@ async function dispatchWithDoctorSnapshot(
 export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBroker?: IntercomBrokerPort } = {}): void {
   // Admission must be the first session_start registration, before any producer opens a writer.
   const admissionPorts = createAdmissionPorts();
+  let activationContext: ExtensionContext | undefined;
+  let moveActivation: Awaited<ReturnType<typeof createMoveActivation>>;
+  const setAdmissionContext = admissionPorts.setContext.bind(admissionPorts), lockAdmission = admissionPorts.lock.bind(admissionPorts), readyAdmission = admissionPorts.ready?.bind(admissionPorts);
+  admissionPorts.setContext = ctx => { activationContext = ctx; setAdmissionContext(ctx); };
   const admission = registerAdmission(hostPi as unknown as ExtensionAPI, admissionPorts);
+  admissionPorts.lock = async (sessionId, file) => {
+    const release = await lockAdmission(sessionId, file);
+    try {
+      moveActivation = await createMoveActivation({ root: paths.globalRoot, sessionId, file, context: () => activationContext, gate: admission,
+        usage: usageService, embeddings, organism,
+        activity: { busy: () => activity.ordinaryCommandActive!() || activity.overlayActive(), bashRunning: () => { const ctx = activationContext; if (!ctx) throw new Error("context-unavailable"); return autoReload.activity.bashRunning(ctx); }, promptOpen: () => autoReload.activity.promptOpen() },
+        others: [{ async pause() { if (!herdr?.drainRoamFeeds) throw new Error("producer-evidence-unavailable"); await herdr.drainRoamFeeds(); }, async resume() {} }] });
+      const mounted = moveActivation;
+      return async () => { try { await mounted?.close(); } finally { if (moveActivation === mounted) moveActivation = null; await release(); } };
+    } catch (error) { await release(); throw error; }
+  };
+  admissionPorts.ready = async (id, file, epoch, home) => { await readyAdmission?.(id, file, epoch, home); await moveActivation?.ready(file, epoch, home); };
   // Pi reads context files after extension factories but before session_start.
   // This machine-level configuration is independent of the session admission gate.
   prepareManagedGuidance({ skipAgentsMd: process.env.VITEST === "true" });
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission.inspect());
   const activity = trackReloadActivity(hostPi as unknown as ExtensionAPI);
   const pi = protectAdmissionApi(activity.pi, admission) as unknown as PiToolAPI;
+  let moveEnabled = false;
+  try { moveEnabled = readLocalIdentity(paths.globalRoot).enabled; } catch { /* Missing or unreadable configuration leaves the command unregistered. */ }
+  if (moveEnabled) registerMoveCommand(activity.pi, async request => {
+    const reply = await requestHubControl(path.join(paths.globalRoot, "roam", "hub.sock"), { op: "move", session: request.sessionId, machine: request.destinationMachine });
+    return { ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null,
+      value: reply.value as unknown as import("@spider/roam/contracts").MoveResult | null };
+  });
   let intercom: ReturnType<typeof registerIntercomOnce> | undefined;
   try {
     registerRoamIntercom(activity.pi, createHostIntercomPorts(admission));
@@ -909,7 +936,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   }
   let scheduler: SessionScheduler | undefined;
   const autoReload = registerAutoReload(pi as unknown as ExtensionAPI, loadedBundle, cwd => controlConfig("get", cwd, "reload.auto") !== false, ordinaryWorkAllowed, reloadWouldInterrupt,
-    () => activity.busy() || !!intercom?.hasPendingInboundAsks() || !!scheduler?.blocksReload() || organism.blocksReload());
+    () => activity.busy() || !!intercom?.hasPendingInboundAsks() || !!scheduler?.blocksReload() || organism.blocksReload(), activity);
   const setForHost = <T>(map: WeakMap<object, T>, value: T) => { map.set(hostPi, value); map.set(pi, value); };
   const clearForHost = <T>(map: WeakMap<object, T>, value: T) => { for (const key of [hostPi, pi]) if (map.get(key) === value) map.delete(key); };
   const loopCommand = registerLoopSchedule(pi as unknown as ExtensionAPI, createTimeMath(), ordinaryWorkAllowed);

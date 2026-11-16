@@ -21,14 +21,14 @@ beforeAll(async () => {
 afterAll(() => rmSync(built, { recursive: true, force: true }));
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-function fixture(identity = BOX, assigned = true, role: "hub" | "box" = "box") {
+function fixture(identity = BOX, assigned = true, role: "hub" | "box" = "box", enabled = false) {
   const root = mkdtempSync(join(resolve(".spider/scratch"), "agent-cli-")); roots.push(root);
   mkdirSync(join(root, "roam"), { mode: 0o700 });
   const machineId = role === "hub" ? HUB : BOX;
   const peers = role === "hub" ? [{ machineId: BOX, alias: "-box-1.invalid", node: process.execPath, pi: process.execPath,
     cli: join(built, "roam", "cli.mjs"), core: process.execPath, globalRoot: root }] : [];
   writeFileSync(join(root, "roam", "machine.json"), JSON.stringify({ machineId: identity }), { mode: 0o600 });
-  writeFileSync(join(root, "roam", "config.json"), JSON.stringify({ enabled: false, role, machineId,
+  writeFileSync(join(root, "roam", "config.json"), JSON.stringify({ enabled, role, machineId,
     hubMachineId: HUB, peers, discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
   const db = openDb(join(root, "spider.db"));
   migrate(db, "global", { machineId, globalRoot: root });
@@ -162,7 +162,7 @@ it("the packaged diagnostic entry inspects consumers and doctor state without wr
 }, 5000);
 
 it("the packaged CLI maps a local non-Git repository explicitly", () => {
-  const f = fixture();
+  const f = fixture(BOX, true, "box", true);
   try {
     const directory = join(f.root, "checkout"); mkdirSync(directory);
     const result = f.invoke(["roam", "repo", "map", "fixture-repo", directory], undefined, { GIT_CEILING_DIRECTORIES: f.root });
@@ -172,7 +172,7 @@ it("the packaged CLI maps a local non-Git repository explicitly", () => {
 }, 5000);
 
 it("the packaged CLI tags memory with enrolled identities without changing its prose", () => {
-  const f = fixture(HUB, true, "hub");
+  const f = fixture(HUB, true, "hub", true);
   try {
     const before = f.db.prepare("SELECT content,machine_id FROM global_memory WHERE uuid='memory-a'").get();
     expect(f.invoke(["roam", "memory", "tag", "global", "memory-a", HUB]).status).toBe(0);

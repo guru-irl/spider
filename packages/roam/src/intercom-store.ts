@@ -943,6 +943,35 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
   const knownEndpoint = (row: CopyRow, endpoint: SessionEndpoint): boolean =>
     (db.prepare("SELECT endpoint_json FROM intercom_endpoint_aliases WHERE direction=? AND id=?").all(row.direction,row.id) as { endpoint_json: string }[])
       .some(alias => sameEndpoint(parseStored<SessionEndpoint>(alias.endpoint_json), endpoint));
+  const moveMetadata = (address: SessionAddress) => {
+      if (!isSessionAddress(address)) throw new Error("Invalid intercom address");
+      const snapshot = store.inspectBlockers(address), key = addressKey(address);
+      const rows = db.prepare(`${selectCopy} WHERE json_extract(m.from_key,'$[1]')=? OR m.to_key=?`).all(key, key) as CopyRow[];
+      const neverInbound = (row: CopyRow) => row.direction === "inbound" && row.state === "queued" && row.unknown_outcome === 0 &&
+        row.readiness === null && row.attempt === 0 && row.observed_attempt === 0 && row.payload_json !== null;
+      const safe = new Set<string>(), unsafe = new Set<string>();
+      for (const row of rows) {
+        readIdentity(row); readEndpoint(row);
+        if (row.is_ask || row.unknown_outcome || row.state !== "queued" || row.payload_json === null) { unsafe.add(row.id); continue; }
+        const inbox = rows.find(item => item.id === row.id && neverInbound(item));
+        const localAcceptance = row.direction === "outbound" && row.peer === options.machineId && row.ack_kind === "message" &&
+          row.attempt === 0 && row.observed_attempt === 0 && row.readiness === null && inbox && sameEndpoint(readEndpoint(row), readEndpoint(inbox));
+        const neverOutbound = row.direction === "outbound" && row.transmitted === 0 && row.ack_kind === null && row.sent_kind === null && row.attempt === 0;
+        if (neverInbound(row) || neverOutbound || localAcceptance) safe.add(row.id); else unsafe.add(row.id);
+      }
+      // Every retained copy must provide positive non-dispatch metadata.
+      for (const id of unsafe) safe.delete(id);
+      const receiptRows = db.prepare(`SELECT DISTINCT id FROM intercom_receipts WHERE acknowledged=0`).all() as { id: string }[];
+      const receipts = new Set(receiptRows.map(row => row.id));
+      return { blockers: { ...snapshot, pendingDispatch: snapshot.pendingDispatch.filter(id => !safe.has(id)),
+        unobservedReceipts: snapshot.unobservedReceipts.filter(id => !safe.has(id) || receipts.has(id)) },
+        undispatched: [...safe].filter(id => !receipts.has(id)).flatMap(id => {
+          const row = rows.find(item => item.id === id && item.to_key === key);
+          if (!row) return [];
+          const identity = readIdentity(row); return [{ id, from: identity.from, to: identity.to, endpoint: readEndpoint(row) }];
+        }) };
+  };
+
   const store: IntercomStore = {
     ...topology,
     openHop(peer, edgeEpoch) {
@@ -1580,6 +1609,38 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         WHERE r.acknowledged=0 AND (json_extract(m.from_key,'$[1]')=? OR m.to_key=?) ORDER BY r.id`).all(key, key) as { id: string }[];
       for (const row of receipts) receiptIds.add(row.id);
       return { asks: [...asks.values()], pendingDispatch: [...pendingIds], unknownOutcomes: [...unknownIds], unobservedReceipts: [...receiptIds] };
+    },
+    inspectMoveBlockers(address): FederationBlockers { return moveMetadata(address).blockers; },
+    undispatched(address) { return moveMetadata(address).undispatched; },
+    rebindMoveUndispatched(address, endpoint, proof, edgeEpoch = "local"): number {
+      if (!isSessionAddress(address) || !isSessionEndpoint(endpoint) || !sameAddress(address, endpoint.address) || !isRebindProof(proof, address, endpoint))
+        throw new Error("Invalid intercom rebind proof");
+      return db.raw.transaction(() => {
+        const blockers = store.inspectMoveBlockers(address);
+        if (blockers.asks.length || blockers.pendingDispatch.length || blockers.unknownOutcomes.length || blockers.unobservedReceipts.length)
+          throw new Error("Unsettled intercom work blocks rebind");
+        const incoming = db.prepare(`${selectCopy} WHERE c.direction='inbound' AND m.to_key=? AND c.state='queued'`).all(addressKey(address)) as CopyRow[];
+        for (const row of incoming) {
+          if (!sameEndpoint(readEndpoint(row), proof.exclusion.owner) || row.unknown_outcome || row.readiness !== null || row.attempt !== 0 ||
+              row.observed_attempt !== 0 || row.payload_json === null || row.is_ask) throw new Error("Intercom dispatch lacks proof of non-injection");
+          const outbound = copy("outbound", row.id);
+          if (outbound && outbound.peer === options.machineId && sameEndpoint(readEndpoint(outbound), readEndpoint(row))) {
+            db.prepare("UPDATE intercom_copies SET transmitted=0,ack_kind=NULL,sent_kind=NULL WHERE direction='outbound' AND id=?").run(row.id);
+          }
+        }
+        for (const row of incoming) {
+          aliasEndpoint(row);
+          db.prepare("UPDATE intercom_copies SET endpoint_json=? WHERE direction='inbound' AND id=?").run(JSON.stringify(endpoint), row.id);
+        }
+        const rebound = store.rebindUndispatched(address, endpoint, proof, edgeEpoch);
+        for (const row of incoming) {
+          if (!copy("outbound", row.id)) {
+            const result = store.acceptOutbound({ frame: frameFor({ ...row, endpoint_json: JSON.stringify(endpoint) }, now()), nextHop: proof.nextHop, edgeEpoch });
+            if (result.kind === "refused") throw new Error("Intercom move route refused");
+          }
+        }
+        return rebound;
+      }).immediate();
     },
     rebindInboundAfterAbsence(id: string, endpoint: SessionEndpoint): void {
       ensureCheckpoint();

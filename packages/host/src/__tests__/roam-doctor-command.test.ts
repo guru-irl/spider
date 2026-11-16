@@ -124,11 +124,14 @@ it("read-only doctor runs inside a blocked pi session without transcript writes"
 }, 5000);
 
 it("uses pi command wording for doctor diagnostics while the shell CLI keeps shell wording", async () => {
-  const directory = root();
+  const directory = root(), machineId = "00000000-0000-4000-8000-000000000001";
+  mkdirSync(join(directory, "roam"), { mode: 0o700 });
+  writeFileSync(join(directory, "roam", "machine.json"), JSON.stringify({ machineId }), { mode: 0o600 });
+  writeFileSync(join(directory, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId, hubMachineId: machineId, peers: [], coreUnit: "fixture" }), { mode: 0o600 });
   mkdirSync(join(directory, "usage-server"), { mode: 0o700 });
   writeFileSync(join(directory, "usage-server", "lock.json"), "not JSON", { mode: 0o600 });
   const output: string[] = [];
-  expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(0);
+  expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(1);
   expect(output.join("")).toContain("Cannot inspect the usage worker. Run spider roam doctor.");
   const f = session();
   await f.start();

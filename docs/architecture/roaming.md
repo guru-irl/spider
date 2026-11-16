@@ -43,12 +43,31 @@ rollout must retain the admission and origin guards.
 ## Shell command
 
 The installed `spider roam` command provides status, doctor, sync, enable,
-disable, repository mapping, memory tagging, provisioning, and session stop and
-resume. For a machine alias starting with a dash, use
-`spider roam sync -- <alias>` or `spider roam sync --machine <alias>`; doctor
-supports the same forms. On a box, only local status, doctor, and repository
-mapping run locally. Other public controls direct the user to the hub. Move
-commands remain unavailable.
+disable, provisioning, repository mapping, memory tagging, and session controls.
+The hub also provides `spider move`, `roam recover`, `roam cancel`, `roam claim`,
+and `roam forget`. Add `--json` at the end for machine-readable output. For a
+machine alias starting with a dash, use `spider roam sync -- <alias>` or
+`spider roam sync --machine <alias>`. Doctor supports the same forms. On a box,
+only local status, doctor, and repository mapping run locally. Repository mapping
+also requires the box participation flag. Other controls direct the user to the hub.
+
+While roaming is disabled, status, doctor, enable, disable, provision, and
+`stop <session>` and confirmed `forget <box>` remain available. Stop addresses a
+session, not a box. Disabled forget takes the hub single-instance lock and runs
+recovery without enabling roaming or starting the hub. It refuses if the hub is
+running or roaming becomes enabled. Ownership recovery can finish while pane
+presentation remains pending. A disabled provision does not enable the box, start
+its broker, or start hosting. Enable starts
+Spider's broker when needed before it checks broker health. The enable preflight
+refuses if the broker cannot start or its health check fails. Reload open Pi
+sessions with `/reload` to update `/move`. A command left over from an enabled
+session still refuses after roaming is disabled.
+
+For non-interactive provisioning, run `spider roam provision <machine> --yes
+--consent copilot-auth` as an explicit user command. Anyone with the user's shell
+access can run this command. Before `roam forget`, confirm that the machine is
+destroyed. A live forgotten machine can run a second copy until reconnection.
+Conversation after the last mirror and unsent workspace edits will be lost.
 
 Enable refuses while a usage worker is starting or being replaced; retry after
 it settles. If the hub socket is unavailable, disable requires the hub lock and
@@ -98,12 +117,46 @@ core and checks one exact-file owner and one restored trigger delivery. R05
 checks crash suspension and a durable stop. They do not prove actual systemd or
 real-box behavior; phase 4 owns those checks.
 
+## Move launch and cleanup
+
+Move participants launch one exact session with `wake({ sessionId, operationId })`.
+The returned `launchId` is participant-local and differs from the hub operation
+ID. Retrying the request returns the same launch. Readiness is a separate,
+guarded query for `{ sessionId, launchId, epoch }`. Pending readiness never
+starts a second launch. The Mac resolves `SPIDER_ROAM_PI` or an executable `pi`
+on `PATH`, then pins its absolute path in the hub service environment. A missing
+executable reports `participant-pi-unavailable`.
+
+The source broker owns intake inspection, generation checks, and readiness.
+Its saved session endpoint and closure survive a bridge restart. A broker
+restart cannot bypass the persisted fence for a session without a home epoch.
+
+Destination presentation precedes source view removal. An absent app does not
+prevent ownership from completing. A separate durable `move-presentation` task
+retains the source view and retries presentation and terminal cleanup later.
+A box source reads presentation proof from the hub, not its local journal.
+Source cleanup verifies its own exact ID-lock claim, including the process
+start identity and the unexposed lock token.
+
+Destination cleanup does not take the live session lock. It removes only
+verified move-scoped staging and exact snapshot refs. Ref deletion uses a
+creation-time expected OID and bounded retries on Git lock contention. The
+snapshot creator or verified bundle importer records each OID before publishing
+the ref. Refs without that proof remain untouched. Changed refs
+are retained. Named cleanup warnings do not turn a completed move into a
+failure. Cleanup never rewrites the destination transcript, checkout, index,
+configuration, leases, or session state.
+
 ## Intercom across machines
 
 Spider owns its intercom fork and keeps the local broker and offline mailbox.
 The settings switchover removes the legacy extension entry, not its package
-files. A second intercom extension is a conflict, not a second relay. Sessions
-use scope and machine-qualified names to disambiguate recipients.
+files. A second intercom extension is a conflict, not a second relay. The
+`settings-unique` check covers global settings only; project-local settings are
+not checked. It identifies `pi-intercom` and its scoped variants. Doctor lists
+other enabled extensions without classifying them. Broker health is
+protocol-validated within the private agent directory, not authenticated.
+Sessions use scope and machine-qualified names to disambiguate recipients.
 
 A durable acceptance means the bridge stored a message. It does not mean Pi
 injected the message. The sender retains the payload until a receipt identifies

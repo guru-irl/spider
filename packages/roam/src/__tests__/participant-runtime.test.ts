@@ -1,3 +1,6 @@
+const unavailableMove = async (): Promise<never> => { throw new Error("intercom-move-unavailable"); };
+const movePort = { bridge: unavailableMove, settlement: unavailableMove, endpoint: unavailableMove, releaseRollbackFence: unavailableMove,
+  intake: { close: unavailableMove, drain: unavailableMove, inspect: unavailableMove, checkGeneration: unavailableMove, abort: unavailableMove, ready: unavailableMove } };
 import { afterEach, expect, it, vi } from "vitest";
 import { handleAgentOperation } from "../agent";
 import { startProductionSupervisor } from "../production-supervisor";
@@ -9,6 +12,7 @@ import * as localDiagnostics from "../local-diagnostics";
 import * as intercomRuntime from "../intercom-runtime";
 import * as intercomProduction from "../intercom-production";
 import * as participantSupervisor from "../participant-supervisor";
+import * as launcherModule from "../launcher";
 import * as hcModule from "@spider/herdr/client/hc";
 import { claimIdLock } from "@spider/herdr/sessions/id-lock";
 import { createParticipantSupervisor } from "../participant-supervisor";
@@ -27,7 +31,7 @@ import { createIntentStore } from "../intent";
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); vi.restoreAllMocks(); });
-function fixture(enabled = true) {
+function fixture(enabled = true, homed = true) {
   const global = createReplica("global", BOX), worktree = createReplica("worktree", BOX); fixtures.push(global, worktree);
   const config = { enabled, role: "box" as const, machineId: BOX, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture.service", syncMs: 120000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
   mkdirSync(join(global.root, "roam"), { mode: 0o700 });
@@ -35,7 +39,7 @@ function fixture(enabled = true) {
   writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
   const file = join(worktree.root, "s.jsonl"); writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "s-1", cwd: worktree.root }) + "\n", { mode: 0o600 });
   global.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
-  global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,?,1)").run("s-1", BOX, "move-1");
+  if (homed) global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,?,1)").run("s-1", BOX, "move-1");
   worktree.db.prepare("INSERT INTO sessions(id,started_at) VALUES (?,1)").run("s-1");
   worktree.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,2,'retired')").run("s-1");
   worktree.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
@@ -109,7 +113,7 @@ it.each([false, true])("production box owns its bridge with hub scheduling enabl
   writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
   await f.global.db.raw.backup(join(f.global.root, "spider.db"));
   const order: string[] = [];
-  const bridge = { async start() { order.push("bridge-start"); }, async stop() { order.push("bridge-stop"); }, diagnostics() { return []; }, readiness() { return { state: "ready" as const, reason: null }; } };
+  const bridge = { async start() { order.push("bridge-start"); }, async stop() { order.push("bridge-stop"); }, diagnostics() { return []; }, move: movePort, readiness() { return { state: "ready" as const, reason: null }; } };
   const factory = vi.spyOn(intercomRuntime, "createMachineIntercom").mockReturnValue(bridge);
   vi.spyOn(runtimeModule, "openLocalRuntime").mockReturnValue({ config, db: f.global.db, journal: f.ports.journal, agent: { ...f.ports, config }, close() { order.push("runtime-close"); } } as never);
   vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ agentDirectory: agentDir, core: { binary: "/fixture/hc" } } as never);
@@ -123,6 +127,7 @@ it.each([false, true])("production box owns its bridge with hub scheduling enabl
     expect(factory).toHaveBeenCalledOnce();
     expect(factory.mock.calls[0][0]).toMatchObject({ root: f.global.root, agentDir, config: { enabled, machineId: BOX, hubMachineId: HUB } });
     expect(order).toEqual(["bridge-start", "supervisor-start"]);
+    expect(vi.mocked(participantSupervisor.createParticipantSupervisor).mock.calls[0][0].connection).toMatchObject({ machineId: BOX, handshake: expect.any(Function), stopSessions: expect.any(Function) });
   } finally { await service.stop(); }
   expect(order).toEqual(["bridge-start", "supervisor-start", "supervisor-stop", "bridge-stop", "runtime-close"]);
 }, 5000);
@@ -132,7 +137,7 @@ it('passes only pair platform ports to maintenance, never bridge overrides', asy
   const config = { ...f.ports.config, intercom: { ...disabledIntercom(), enabled: true as const, machineAlias: 'box.invalid' } };
   writeFileSync(join(f.global.root, 'roam', 'config.json'), JSON.stringify(config), { mode: 0o600 });
   await f.global.db.raw.backup(join(f.global.root, 'spider.db'));
-  const bridge = { async start() {}, async stop() {}, diagnostics() { return []; }, readiness() { return { state: 'ready' as const, reason: null }; } };
+  const bridge = { async start() {}, async stop() {}, diagnostics() { return []; }, move: movePort, readiness() { return { state: 'ready' as const, reason: null }; } };
   vi.spyOn(intercomRuntime, 'createMachineIntercom').mockReturnValue(bridge);
   vi.spyOn(runtimeModule, 'openLocalRuntime').mockReturnValue({ config, db: f.global.db, journal: f.ports.journal, agent: { ...f.ports, config }, close() {} } as never);
   vi.spyOn(hubModule, 'loadHerdrConfig').mockReturnValue({ agentDirectory: agentDir, core: { binary: '/fixture/hc' } } as never);
@@ -341,4 +346,98 @@ it("standalone start rechecks persisted enrollment before effects", async () => 
   writeFileSync(join(f.global.root, "roam", "config.json"), JSON.stringify({ ...f.ports.config, hubMachineId: "00000000-0000-4000-8000-000000000003" }), { mode: 0o600 });
   expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => { throw new Error("must not wake"); } })).toMatchObject({ code: 1, reason: "participant-config-changed" });
   expect(f.worktree.db.prepare("SELECT state FROM roam_sessions").get()).toEqual({ state: "retired" });
+}, 5000);
+
+it("box wake reserves exactly the requested session with an idempotent local launch id and no readiness wait", async () => {
+  const { createBoxParticipantWake } = await import("../participant-runtime");
+  const f = fixture(), authority = createRunningIntentAuthority(f.global.db);
+  const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
+  await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, "start-1", { machineId: BOX, hubMachineId: HUB });
+  let wakes = 0;
+  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, wake: async () => { wakes++; } });
+  const first = await wake({ sessionId: "s-1", operationId: "start-1" });
+  expect(first).toMatchObject({ ok: true, launchId: expect.any(String) });
+  if (!first.ok) throw new Error(first.reason);
+  expect(first.launchId).not.toBe("start-1");
+  expect(await wake({ sessionId: "s-1", operationId: "start-1" })).toEqual(first);
+  expect((await createIntentStore(f.global.root).get("s-1"))?.value.supervision).toEqual({ kind: "launching", phase: "reserved", operationId: first.launchId });
+  expect(await wake({ sessionId: "different-session", operationId: "start-1" })).toMatchObject({ ok: false });
+  expect(await createIntentStore(f.global.root).get("different-session")).toBeNull();
+  expect(wakes).toBe(2);
+}, 5000);
+
+it.each(["same", "launch", "epoch", "file"] as const)("box wake recovers only its own complete reserved launch after a crash (%s)", async changed => {
+  const { createBoxParticipantWake, participantLaunchId } = await import("../participant-runtime"), f = fixture(), authority = createRunningIntentAuthority(f.global.db);
+  const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
+  const intent = { sessionId: "s-1", epoch: 2, desired: "running" as const, suspended: null, ...location, moveId: "move-1" };
+  await authority.set(intent, "start-1", { machineId: BOX, hubMachineId: HUB });
+  const launchId = participantLaunchId(BOX, "s-1", "start-1"), intents = createIntentStore(f.global.root);
+  await intents.update("s-1", null, { intent: { ...intent, ...(changed === "epoch" ? { epoch: 1 } : {}), ...(changed === "file" ? { file: join(f.global.root, "other.jsonl") } : {}) }, failures: [], supervision: { kind: "launching", phase: "reserved", operationId: changed === "launch" ? "other-launch" : launchId } });
+  let wakes = 0;
+  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, wake: async () => { wakes++; } });
+  const result = await wake({ sessionId: "s-1", operationId: "start-1" });
+  expect(result).toEqual(changed === "same" ? { ok: true, launchId } : { ok: false, reason: "participant-launch-conflict" });
+  expect(wakes).toBe(changed === "same" ? 1 : 0);
+}, 5000);
+
+it("retire-only durably stops every local session through the bounded stop port", async () => {
+  const f = fixture();
+  await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
+  const stopped: string[] = [];
+  await participantSupervisor.retireParticipantSessions(f.ports, async id => { stopped.push(id); return { kind: "absent" }; });
+  expect(stopped).toEqual(["s-1"]);
+  expect(await createRunningIntentAuthority(f.global.db).get("s-1")).toMatchObject({ desired: "stopped" });
+  expect(f.worktree.db.prepare("SELECT state FROM roam_sessions WHERE session_id='s-1'").get()).toEqual({ state: "retired" });
+}, 5000);
+
+it("an enabled production box launches and restarts a reserved session without dialing the hub", async () => {
+  const f = fixture(), agentDir = join(f.global.root, "agent");
+  mkdirSync(agentDir, { mode: 0o700 }); writeFileSync(join(agentDir, "auth.json"), '{"fixture":{}}', { mode: 0o600 });
+  await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
+  await f.global.db.raw.backup(join(f.global.root, "spider.db"));
+  vi.stubEnv("SPIDER_ROAM_PI", "/fixture/pi");
+  vi.spyOn(runtimeModule, "openLocalRuntime").mockReturnValue({ config: f.ports.config, db: f.global.db, journal: f.ports.journal, agent: f.ports, close() {} } as never);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ agentDirectory: agentDir, core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(hcModule, "createHcClient").mockReturnValue({ async identity() { return { coreId: "core-1", sessionNamespace: "fixture", socket: "/fixture/socket" }; },
+    events() { return { subscribe() { return () => {}; }, dispose() {} }; }, async dispose() {} } as never);
+  vi.spyOn(launcherModule, "createProductionLocalExactHc").mockReturnValue({ async coreId() { return "core-1"; }, async dispose() {} } as never);
+  let now = 100, launches = 0, lock: Awaited<ReturnType<typeof claimIdLock>> | undefined;
+  const identity = { pid: 987, startIdentity: "session-start" }, probe = async () => ({ kind: "live" as const, startIdentity: identity.startIdentity });
+  vi.spyOn(launcherModule, "createExactLaunchAdapter").mockImplementation(() => ({ async launch(request: { operationId: string; sessionId: string; epoch: number; file: string; cwd: string }) {
+    launches++;
+    lock = await claimIdLock(join(f.global.root, "herdr"), "s-1", identity, probe, { bootId: async () => "boot-1" });
+    f.ports.journal.begin({ id: request.operationId, kind: "exact-session-launch", machineId: BOX, expectedEpoch: 2, args: {} });
+    recordReadiness(f.ports.journal, { origin: "hub-operation", opId: request.operationId, sessionId: request.sessionId, epoch: request.epoch, file: request.file, cwd: request.cwd, core: "core-1", terminal: `term-${launches}` });
+    return {};
+  } }) as never);
+  const original = participantSupervisor.createParticipantSupervisor;
+  let supervisor!: ReturnType<typeof original>;
+  vi.spyOn(participantSupervisor, "createParticipantSupervisor").mockImplementation(input => supervisor = original(input));
+  const service = await startProductionSupervisor(f.global.root, { system: { bootId: async () => "boot-1", inventory: { probe } } as never,
+    clock: { now: () => now, later: () => () => {} } });
+  try {
+    await supervisor.reconcile(); expect(launches).toBe(1);
+    expect((await createIntentStore(f.global.root).get("s-1"))?.value.supervision.kind).toBe("live");
+    await lock!.release(); lock = undefined;
+    await supervisor.reconcile(); now += 5000;
+    await supervisor.reconcile(); expect(launches).toBe(2);
+    expect((await createIntentStore(f.global.root).get("s-1"))?.value.supervision.kind).toBe("live");
+  } finally { await service.stop(); await lock?.release(); vi.unstubAllEnvs(); }
+}, 5000);
+
+it.each([false, true])("production connection preserves ordinary hosting without contacting a hub when enabled=%s", async enabled => {
+  const { createProductionSupervisorConnection } = await import("../production-supervisor");
+  const f = fixture(enabled);
+  let requests = 0;
+  const connection = createProductionSupervisorConnection({ root: f.global.root, config: f.ports.config, globalDb: f.global.db,
+    transport: { resolve: async () => { requests++; throw new Error("must not contact hub"); } } as never, stopSessions: async () => {} });
+  expect(await connection.handshake()).toEqual({ kind: "accepted", machineId: BOX, reason: "ok" });
+  expect(requests).toBe(0);
+}, 5000);
+
+it("retire-only durably stops a never-homed local session as well as homed sessions", async () => {
+  const f = fixture(true, false), stopped: string[] = [];
+  await participantSupervisor.retireParticipantSessions(f.ports, async id => { stopped.push(id); return { kind: "absent" }; });
+  expect(stopped).toEqual(["s-1"]);
+  expect(await createRunningIntentAuthority(f.global.db).get("s-1")).toMatchObject({ desired: "stopped", epoch: 2 });
 }, 5000);

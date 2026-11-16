@@ -49,6 +49,20 @@ it("registration is inert and parent session_start lazily starts worker with pub
   expect(footer).toHaveBeenCalledTimes(1);
   await emit("session_shutdown"); expect(workers.instances[0].terminate).toHaveBeenCalledTimes(1); expect(footer).toHaveBeenLastCalledWith(undefined);
 });
+it("pauses the usage producer and restores exactly one worker on resume", async () => {
+  registration = registerUsage(pi, "file:///fixture/extension.js");
+  await emit("session_start"); await vi.advanceTimersByTimeAsync(1);
+  expect(workers.instances).toHaveLength(1);
+  await registration.pause(); await registration.pause();
+  expect(workers.instances[0].commands).toContainEqual({ type: "stop" });
+  expect(workers.instances[0].terminate).toHaveBeenCalledOnce();
+  registration.reload(); await vi.advanceTimersByTimeAsync(5000);
+  expect(workers.instances).toHaveLength(1);
+  await registration.resume(); await registration.resume();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(workers.instances).toHaveLength(2);
+});
+
 it("published worker snapshot supplies ledger diagnostics without main-thread opens", async () => {
   registration = registerUsage(pi, "file:///fixture/extension.js"); expect((await registration.doctor()).lines.join("\n")).toMatch(/not published/);
   await emit("session_start"); await vi.advanceTimersByTimeAsync(1);

@@ -61,6 +61,7 @@ it("names the target and all credential providers in interactive consent", async
   expect(await confirmProvision(f.journal, request, { tty: true, yes: false, consent: null, actor: "fixture-user", now: () => 123,
     async ask(text) { prompt = text; return "y"; } })).toBe(true);
   expect(prompt).toContain("box-1.invalid"); expect(prompt).toContain("copilot-auth"); expect(prompt).toContain("demo");
+  expect(prompt).toMatch(/roaming participation/i); expect(prompt).toMatch(/hub is enabled/i);
 }, 5000);
 
 it("stages a regular release override privately with a stable retry path", async () => {
@@ -144,6 +145,7 @@ it("previews and records the fixed selection and exact selected Copilot auth byt
   expect(await main(["roam", "provision", f.request.target, "--release", f.release,
     "--yes", "--consent", "copilot-auth", "--operation-id", "preview-1"], { out(text) { output += text; }, err(text) { errors += text; } })).toBe(0);
   const size = Buffer.byteLength(JSON.stringify({ "github-copilot": copilot }) + "\n");
+  expect(output).toContain("The broker starts at enable");
   expect(output).toContain(`Selected auth.json: ${size} bytes, mode 600.`);
   expect(output).not.toContain("selected-fixture"); expect(output).not.toContain("other-fixture");
   expect(output).not.toContain("fixture instructions"); expect(output).not.toContain("fixture theme"); expect(errors).toBe("");
@@ -166,6 +168,11 @@ it("previews and records the fixed selection and exact selected Copilot auth byt
   expect(expectedFiles).toEqual(metadata);
   const consentFiles = f.journal.read("preview-1").find(row => row.action === "human-consent")?.result.files;
   expect(consentFiles).toEqual([{ path: "auth.json", size, mode: 0o600 }, ...metadata]);
+  output = ""; errors = "";
+  expect(await main(["roam", "provision", f.request.target, "--release", f.release,
+    "--yes", "--consent", "copilot-auth", "--operation-id", "preview-json", "--json"], { out(text) { output += text; }, err(text) { errors += text; } })).toBe(0);
+  expect(JSON.parse(output)).toMatchObject({ code: 0, reason: "installed", operationId: "preview-json-install", home: null, epoch: null, value: { hostingReady: true } });
+  expect(output).not.toContain("selected-fixture"); expect(errors).not.toContain("selected-fixture");
 }, 5000);
 
 it("omits settings from the preview and transfer when requested", async () => {
@@ -203,9 +210,11 @@ it("prunes the completed source snapshot and safely replays without repacking", 
     peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/fixture/node", pi: "/home/fixture/.local/bin/pi", cli: "/home/fixture/cli", core: "/home/fixture/hc", globalRoot: "/home/fixture/.pi/agent/spider" }], coreUnit: "fixture.service" }), { mode: 0o600 });
   vi.stubEnv("PI_CODING_AGENT_DIR", agent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
   vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
-  const transport = vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: {} } as never);
+  const remoteFlag = vi.fn(), resolvePeer = vi.fn(async (peer: unknown) => peer);
+  const transport = vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { resolve: resolvePeer }, executeProvision: remoteFlag } as never);
   const install = vi.spyOn(provisionModule, "provision").mockImplementation(async (request, ports) => {
     await ports.confirm(request.peer.alias, request.confirmedProviders);
+    await ports.persistPeer(request.peer);
     const outcome = { code: 0 as const, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
     ports.journal.begin({ ...request.operation, args: { fixture: true } });
     ports.journal.record(request.operation.id, "done", outcome as never);
@@ -217,7 +226,8 @@ it("prunes the completed source snapshot and safely replays without repacking", 
   expect(f.journal.read("prune-done-install").at(-1)?.action).toBe("done");
   expect(existsSync(join(f.root, "roam", "provision-source", "prune-done"))).toBe(false);
   expect(await main(args, io)).toBe(0);
-  expect(install).toHaveBeenCalledTimes(1); expect(transport).toHaveBeenCalledTimes(1);
+  expect(install).toHaveBeenCalledTimes(1); expect(transport).toHaveBeenCalledTimes(2);
+  expect(resolvePeer).not.toHaveBeenCalled(); expect(remoteFlag).not.toHaveBeenCalled();
   expect(output).toContain("installed"); expect(errors).toBe("");
   writeFileSync(join(agent, "settings.json"), '{"theme":"lite"}', { mode: 0o600 });
   expect(await main(args, io)).toBe(1); expect(errors).toContain("provision-operation-arguments-changed");
@@ -246,9 +256,19 @@ it("retains the source snapshot while provisioning is pending", async () => {
   vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: {} } as never);
   vi.spyOn(provisionModule, "provision").mockImplementation(async request => ({ code: 3, reason: "release-pending",
     operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: null }));
+  let error = "";
   expect(await main(["roam", "provision", f.request.target, "--release", f.release, "--yes", "--consent", "copilot-auth", "--operation-id", "keep-pending"],
-    { out() {}, err() {} })).toBe(3);
+    { out() {}, err(text) { error += text; } })).toBe(3);
+  expect(error).toContain("Installation is still finishing on box-1.invalid");
+  expect(error).toContain("spider roam provision box-1.invalid --operation-id keep-pending");
+  expect(error).toContain("same options");
   expect(readFileSync(join(f.root, "roam", "provision-source", "keep-pending", "release.tgz"), "utf8")).toBe("release-one");
+  let output = ""; error = "";
+  expect(await main(["roam", "provision", f.request.target, "--release", f.release, "--yes", "--consent", "copilot-auth", "--operation-id", "keep-pending", "--json"],
+    { out(text) { output += text; }, err(text) { error += text; } })).toBe(3);
+  expect(JSON.parse(output)).toMatchObject({ code: 3, reason: "release-pending", operationId: "keep-pending-install",
+    repairCommand: "spider roam provision box-1.invalid --operation-id keep-pending" });
+  expect(error).toContain("still finishing on box-1.invalid");
 }, 5000);
 
 it("selects only explicitly named skills and includes their supporting files", async () => {

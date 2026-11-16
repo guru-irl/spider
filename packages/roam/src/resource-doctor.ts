@@ -2,6 +2,7 @@ import type { BootstrapPeer, Diagnostic } from "./contracts";
 import { InventoryError, inventory, prerequisiteDiagnostics } from "./inventory";
 import { normalizeConfiguredClis } from "./bootstrap-reply";
 import type { ConfiguredCli, DoctorPorts, FileLimit, FileStatus, IntercomDoctorState, Inventory, ProvisionVerification } from "./provision-contracts";
+import { intercomReadinessDiagnostics, validIntercomReadiness } from "./intercom-readiness";
 
 function fileReady(file: FileStatus): boolean { return file.present && file.readable && file.modeSafe; }
 function low(value: FileLimit, floor: number): boolean { return typeof value === "number" && value < floor; }
@@ -58,12 +59,13 @@ export async function doctorPeer(peer: BootstrapPeer, ports: DoctorPorts): Promi
   const diagnostics = prerequisiteDiagnostics(value, ports.coreUnit);
   const warning = (reason: string, repairCommand: string | null = null) => diagnostics.push({ reason, severity: "warning", repairCommand });
   const block = (reason: string) => diagnostics.push({ reason, severity: "block", repairCommand: null });
-  const keys: readonly (keyof ProvisionVerification)[] = ["piSignedIn", "nativeSqlite", "extensionLoaded", "exactSession", "privateModes",
-    "bundledIntercom", "intercomUnique", "legacyDrained", "federation"];
+  const keys = ["piSignedIn", "nativeSqlite", "extensionLoaded", "exactSession", "privateModes",
+    "bundledIntercom", "intercomUnique", "legacyDrained", "federation"] as const;
   let verified: ProvisionVerification | null = null;
   if (ports.verifyPeer) try {
     const result = await ports.verifyPeer();
-    if (result && typeof result === "object" && Object.keys(result).length === keys.length && keys.every(key => typeof result[key] === "boolean")) verified = result;
+    if (result && typeof result === "object" && Object.keys(result).length === keys.length + 1 &&
+        keys.every(key => typeof result[key] === "boolean") && validIntercomReadiness(result)) verified = result;
   } catch { /* An unavailable verification is not readiness. */ }
 
   if (value.linger === false) warning("User lingering is disabled and may require administrative permission.", "loginctl enable-linger");
@@ -93,9 +95,8 @@ export async function doctorPeer(peer: BootstrapPeer, ports: DoctorPorts): Promi
     if (!verified.extensionLoaded) block("The spider extension did not load.");
     if (!verified.exactSession) block("Exact-session launch was not verified.");
     if (!verified.privateModes) block("Installed file ownership or modes are unsafe.");
-    if (!verified.bundledIntercom || !verified.intercomUnique) block("The bundled intercom is missing or duplicated.");
-    if (!verified.legacyDrained) block("The legacy intercom broker has not drained.");
-    if (!verified.federation) block("Intercom federation is not ready.");
+    if (!verified.bundledIntercom) block("intercom-bundle-missing: The bundled intercom is unavailable.");
+    diagnostics.push(...intercomReadinessDiagnostics(verified));
   }
   if (ports.inspectIntercom) {
     try { diagnostics.push(...intercomDiagnostics(await ports.inspectIntercom())); }

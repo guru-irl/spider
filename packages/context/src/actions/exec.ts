@@ -5,6 +5,7 @@ import { isAbsolute, posix } from "node:path";
 
 export interface ExecCtx {
   cwd: string;
+  sessionId?: string;
   owner?: Owner;
   remote?: RemoteExecutionPort;
   remoteUnavailableReason?: string;
@@ -38,7 +39,11 @@ const TRUNCATION_NOTE =
   "under .spider/scratch/ and analyse it there (grep/head/wc/awk), or narrow the command " +
   "itself. For session/run history, query the DB rather than dumping logs.]";
 
-const mk = (ctx: ExecCtx) => new PolyglotExecutor({ projectRoot: () => ctx.cwd, remote: ctx.remote, remoteUnavailableReason: ctx.remoteUnavailableReason, owner: ctx.owner, environmentPolicy: ctx.environmentPolicy });
+const mk = (ctx: ExecCtx) => new PolyglotExecutor({
+  projectRoot: () => ctx.cwd, remote: ctx.remote, remoteUnavailableReason: ctx.remoteUnavailableReason,
+  owner: ctx.owner, environmentPolicy: ctx.environmentPolicy,
+  ownerSessionId: process.env.PI_SUBAGENT_CHILD === "1" ? process.env.PI_SPIDER_TOP_SESSION_ID : ctx.sessionId,
+});
 
 /** Throttle interval for partial updates. pi's bash tool throttles for the same reason:
  *  a chatty command emits hundreds of chunks a second and repainting on each one costs

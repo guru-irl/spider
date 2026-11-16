@@ -302,6 +302,8 @@ export class StagingFullError extends Error {
 export interface OutgoingStore {
   inspect(id: string): { current: ArtifactManifest | null; pending: ArtifactManifest | null };
   prepare(manifest: ArtifactManifest, expectedCurrent: string | null): void;
+  /** Reserve before writing; the synchronous callback runs under the artifact cleanup transaction. */
+  withPreparedFile<T>(id: string, name: string, bytes: number, write: (file: string) => T): T;
   writeChunk(id: string, version: string, chunk: ArtifactManifest["chunks"][number], bytes: Buffer): void;
   commit(manifest: ArtifactManifest): void;
   get(id: string, version: string): ArtifactManifest | null;
@@ -404,6 +406,36 @@ export function openOutgoingStaging(root: string, limits: Limits, create = true)
           .run(manifest.id, version, encoded);
         for (const chunk of manifest.chunks) db.prepare("INSERT OR IGNORE INTO outgoing_allocations(path, artifact, bytes) VALUES (?, ?, ?)")
           .run(sourceChunk(root, manifest.id, chunk.index, chunk.sha256), manifest.id, chunk.rawLength);
+      }).immediate();
+    },
+    withPreparedFile(id, name, bytes, write) {
+      artifactId(id); artifactId(name);
+      if (name.endsWith(".part") || !Number.isSafeInteger(bytes) || bytes < 0 || typeof write !== "function") throw new Error("Invalid prepared file reservation");
+      const file = join(directory, id, "prepared", name);
+      db.raw.transaction(() => {
+        const artifact = artifactRow(id);
+        if (!artifact || artifact.kind !== "session" || !artifact.current) throw new Error("Prepared file requires a staged session artifact");
+        const allocation = db.prepare("SELECT bytes, artifact FROM outgoing_allocations WHERE path = ?").get(file) as
+          { bytes: number; artifact: string } | undefined;
+        if (allocation) {
+          if (allocation.artifact !== id || allocation.bytes !== bytes) throw new Error("Conflicting prepared file reservation");
+        } else {
+          const used = db.prepare("SELECT COALESCE(SUM(bytes), 0) AS bytes FROM outgoing_allocations").get() as AllocationRow;
+          if (!Number.isSafeInteger(used.bytes + bytes) || used.bytes + bytes > limits.stagingBytes) throw new StagingFullError(root);
+          db.prepare("INSERT INTO outgoing_allocations(path, artifact, bytes) VALUES (?, ?, ?)").run(file, id, bytes);
+        }
+        db.prepare("UPDATE outgoing_artifacts SET updated = ? WHERE id = ?").run(Date.now(), id);
+      }).immediate();
+      return db.raw.transaction(() => {
+        const artifact = artifactRow(id);
+        const allocation = db.prepare("SELECT bytes FROM outgoing_allocations WHERE path = ? AND artifact = ?").get(file, id) as AllocationRow | undefined;
+        if (!artifact || artifact.kind !== "session" || !artifact.current || !allocation || allocation.bytes !== bytes) {
+          throw new Error("Prepared file reservation disappeared");
+        }
+        privateOutgoingArtifact(root, id); privateDirectory(dirname(file));
+        const result = write(file);
+        if (result && typeof (result as { then?: unknown }).then === "function") throw new Error("Prepared file writer must be synchronous");
+        return result;
       }).immediate();
     },
     writeChunk(id, version, chunk, bytes) {

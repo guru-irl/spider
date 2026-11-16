@@ -16,6 +16,10 @@ export function compatibleReceipt(receipt: MessageReceipt, evidence: boolean): M
   return receipt.status === "matched_waiter" ? { ...receipt, status: "acknowledged" } : receipt;
 }
 export const FEDERATION_FEATURE = "federation-v1";
+export const FREEZE_BLOCKERS_FEATURE = "freeze-blockers-v1";
+export const MOVE_FENCE_FEATURE = "move-intake-fence-v1";
+export interface IntercomIntakeFence { address: SessionAddress; moveId: string; expectedEpoch: number; generation: string }
+export type IntercomIntakeAction = "close" | "check" | "open";
 export const HELPER_EXCHANGE_FEATURE = "intercom-exchange-v1";
 export const FEDERATION_NOTICE_ACK_FEATURE = "federation-notice-ack-v1";
 export const HELPER_EXCHANGE_ERRORS: readonly string[] = ["machine-not-enrolled", "machine-mismatch", "stale-generation", "invalid-request",
@@ -54,9 +58,11 @@ export interface FederationBlockers {
   unknownOutcomes: readonly string[];
   unobservedReceipts: readonly string[];
 }
-export interface BridgeRegistration { credential?: string; feature: string; agentDir: string; machineId: string; machineAlias: string }
+export interface BridgeRegistration { credential?: string; feature: string; agentDir: string; machineId: string; machineAlias: string; moveFences?: true }
 /** The one machine-owned durable bridge. The broker owns no remote payload queue. */
 export interface FederationBridge {
+  /** Synchronous intake closure precedes acknowledgement; no waiter is cancelled. */
+  intake?(action: IntercomIntakeAction, fence: IntercomIntakeFence): string | null | Promise<string | null>;
   dispatch(frame: FederationDispatch): Promise<FederationDispatchResult>;
   receipt(from: SessionAddress, receipt: MessageReceipt): void;
   control(from: SessionAddress, to: SessionAddress, control: MessageControl): void;
@@ -67,7 +73,7 @@ export interface FederationPort {
   dispatch(from: SessionAddress, to: RemoteSessionInfo, message: Message): Promise<FederationDispatchResult>;
   receipt(from: SessionAddress, receipt: MessageReceipt): void;
   control(from: SessionAddress, to: SessionAddress, control: MessageControl): void;
-  inspectBlockers(address: SessionAddress): FederationBlockers;
+  inspectBlockers(address: SessionAddress, options?: { includeExpired?: boolean }): FederationBlockers;
 }
 export interface LocalPresence {
   startedAt: number;
@@ -81,6 +87,8 @@ export interface LocalPresence {
   status?: string;
 }
 export type FederationClientMessage =
+  | { type: "federation_intake"; requestId: string; action: IntercomIntakeAction; fence: IntercomIntakeFence }
+  | { type: "federation_intake_applied"; requestId: string; generation: string | null }
   | ({ type: "federation_register" } & BridgeRegistration)
   | { type: "federation_presence"; sessions: RemoteSessionInfo[] }
   | { type: "federation_result"; requestId: string; result: FederationDispatchResult }
@@ -90,8 +98,10 @@ export type FederationClientMessage =
   | { type: "federation_deliver_control"; from: RemoteSessionInfo; to: SessionAddress; control: MessageControl }
   | { type: "helper_authorize"; requestId: string; token: string }
   | { type: "federation_helper_result"; requestId: string; output?: unknown; error?: string }
-  | { type: "inspect_blockers"; requestId: string; address: SessionAddress };
+  | { type: "inspect_blockers"; requestId: string; address: SessionAddress; includeExpired?: boolean };
 export type FederationBrokerMessage =
+  | { type: "federation_intake_apply"; requestId: string; action: IntercomIntakeAction; fence: IntercomIntakeFence }
+  | { type: "intake_result"; requestId: string; generation: string | null }
   | { type: "federation_registered"; features: string[] }
   | { type: "federation_local_presence"; sessions: LocalPresence[] }
   | { type: "federation_dispatch"; requestId: string; dispatch: FederationDispatch }

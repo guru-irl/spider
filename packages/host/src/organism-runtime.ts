@@ -58,6 +58,7 @@ function completionRegistry(value: unknown): ModelRegistry {
 export class HostOrganismRuntime {
   readonly #entries = new Map<string, RuntimeEntry>();
   #disposed = false;
+  #paused = false;
   /** False once `registerOrganism`'s own `pi.on` registration has failed for
    *  THIS runtime instance — deliberately per-instance (not module-global) so
    *  multiple extension/runtime instances (e.g. tests) never share state. */
@@ -154,7 +155,7 @@ export class HostOrganismRuntime {
   }
 
   resolve(context: RuntimeContext): OrganismActionDeps {
-    if (!this.admitted()) throw new Error("Session ownership is not available; run /spider roam doctor.");
+    if (this.#paused || !this.admitted()) throw new Error("Session ownership is not available; run /spider roam doctor.");
     if (process.env.PI_SUBAGENT_CHILD === "1") throw new Error("organism is disabled in subagent sessions");
     if (this.#disposed) throw new Error("Organism runtime has shut down; reload the session before using it.");
     if (!context.sessionId) throw new Error("Organism needs an active pi session.");
@@ -236,6 +237,18 @@ export class HostOrganismRuntime {
   /** Abort reviews in all bindings, not just the currently selected repo. */
   async stopSkillReviews(): Promise<void> {
     await Promise.all([...this.#entries.values()].map(entry => entry.actions.worker.stopSkillReviews()));
+  }
+
+  /** Drain every binding, including a previous /bind target, before freeze acknowledgement. */
+  async pause(): Promise<void> {
+    this.#paused = true;
+    await Promise.all([...this.#entries.values()].map(entry => entry.actions.worker.pause()));
+  }
+  resume(): void {
+    if (!this.#paused || this.#disposed) return;
+    if (!this.admitted()) throw new Error("Session ownership is not available");
+    for (const entry of this.#entries.values()) entry.actions.worker.resume();
+    this.#paused = false;
   }
 
   /** Called after organism shutdown hooks have awaited their serialized work. */

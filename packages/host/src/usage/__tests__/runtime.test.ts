@@ -117,6 +117,14 @@ it("shutdown acknowledges and terminates once and rejects obsolete snapshot hand
   f.worker.emit("message", snapshot); expect(f.runtime.snapshot().health).toBeNull();
   expect(f.worker.listenerCount("message")).toBe(0);
 });
+it("roaming drain fails closed if worker termination cannot be proved", async () => {
+  const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
+  f.worker.terminate = vi.fn(async () => { throw new Error("termination unavailable"); });
+  const draining = f.runtime.quiesce();
+  f.worker.emit("message", { type: "stopped" });
+  await expect(draining).rejects.toThrow(/termination/i);
+});
+
 it("unacknowledged shutdown forces termination at the two second deadline", async () => {
   const f = fixture(); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0);
   const stopping = f.runtime.stop(); await vi.advanceTimersByTimeAsync(1999); expect(f.worker.terminations).toBe(0);

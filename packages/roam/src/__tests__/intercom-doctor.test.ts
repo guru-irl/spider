@@ -36,3 +36,20 @@ it("reports connector, host-key, legacy extension, broker feature and link issue
   const report = await runLocalDoctor({ root, inspectIntercomDoctor: true, intercomDoctor: inspector });
   expect(explicit).toBe(1); expect(report.diagnostics.some(item => item.reason.includes("host-key-changed"))).toBe(true);
 }, 5000);
+
+it("reports failed positive intercom evidence during box preflight even while roaming is disabled", async () => {
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "icpreflight-")); roots.push(root);
+  mkdirSync(join(root, "roam"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "box", machineId: B, hubMachineId: A,
+    coreUnit: "fixture.service" }), { mode: 0o600 });
+  const { runLocalDoctor } = await import("../local-diagnostics");
+  let calls = 0;
+  const input = { root, inspectIntercomDoctor: true, async intercomReadiness() {
+    calls++;
+    return { intercomUnique: true, legacyDrained: false, federation: true,
+      intercomEvidence: { settings: "settings-unique", legacy: "legacy-pending-asks", federation: "federation-v1", otherExtensions: [] } };
+  } };
+  const report = await runLocalDoctor(input);
+  expect(calls).toBe(1);
+  expect(report.diagnostics).toContainEqual(expect.objectContaining({ severity: "block", reason: expect.stringContaining("intercom-legacy-drained: legacy-pending-asks") }));
+}, 5000);

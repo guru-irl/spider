@@ -1,8 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
+import { readFileSync, appendFileSync, writeFileSync, chmodSync, existsSync, mkdirSync, readdirSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { replicaPath } from "@spider/db-core/roam/catalog";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
+import { supervisorRetirementLifecycle } from "../participant-supervisor";
+import { createProductionRecoveryPorts } from "../recovery-transport";
+import { recordLocation } from "@spider/db-core/roam/catalog";
 import { createSync } from "../sync";
 import { sizedBytes } from "../peer-state";
 import * as peerState from "../peer-state";
@@ -13,6 +16,9 @@ import { createReplica } from "@spider/db-core/testutil";
 import { openDb } from "@spider/db-core";
 import { exportBatch } from "@spider/db-core/roam/export";
 import { assignInitialHome } from "../homes";
+import { revokeMachine } from "../revocation";
+import { inspectSession } from "../session-file";
+import { recoverMirror } from "../mirrors";
 import type { ArtifactJournal } from "../journal";
 import { addTodo } from "../../../todo/src/store";
 import * as staging from "../staging";
@@ -371,4 +377,113 @@ it("count-zero batches produce no import or receipt", async () => {
   expect(result.every(row => row.code === 0)).toBe(true);
   expect(f.calls.filter(call => call.operation.kind === "import")).toEqual([]);
   expect(f.global.db.prepare("SELECT * FROM roam_receipts").all()).toEqual([]);
+}, 5000);
+
+it("revoked peers receive retire-only without any accepted sync cursor", async () => {
+  const f = fixture();
+  const db = openDb(join(f.global.root, "roam", "journal.db"));
+  try {
+    revokeMachine(db, BOX);
+    const actions: string[] = [];
+    const sync = createSync({ config: f.config, globalDb: f.global.db, stores: f.stores, journal: f.journal, transport: f.transport, clock: f.clock,
+      revocationDb: db, async retireOnly(_peer, reply) { actions.push(reply.kind); } });
+    const results = await sync.sync(BOX);
+    expect(results[0].reason).toBe("machine-revoked");
+    expect(actions).toEqual(["retire-only"]);
+    expect(f.calls).toEqual([]);
+    expect(await sync.barriers(BOX, [])).toBe(false);
+    expect(f.global.db.prepare("SELECT * FROM roam_cursors").all()).toEqual([]);
+  } finally { db.close(); }
+}, 5000);
+
+it("every peer sync mirrors only verified complete appended lines", async () => {
+  const f = fixture();
+  const sourceFile = join(f.global.root, "mirror-source.jsonl"), root = join(f.global.root, "mirrors");
+  const home = assignInitialHome(f.global.db, "mirrored-session", BOX, HUB);
+  if (home === "conflict") throw new Error("invalid fixture");
+  mkdirSync(root);
+  const header = JSON.stringify({ type: "session", version: 3, id: "mirrored-session", timestamp: "2026-01-01T00:00:00Z", cwd: f.global.root }) + "\n";
+  const message = (id: string, parentId: string | null) => JSON.stringify({ type: "message", id, parentId, timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: id, timestamp: 1 } }) + "\n";
+  writeFileSync(sourceFile, header + message("first", null), { mode: 0o600 });
+  const sync = createSync({ config: f.config, globalDb: f.global.db, stores: f.stores, journal: f.journal, transport: f.transport, clock: f.clock,
+    mirrors: { root, homes: () => [home], source: async () => inspectSession(sourceFile, "mirrored-session") } });
+  expect((await sync.sync(BOX)).every(row => row.code === 0)).toBe(true);
+  expect((await recoverMirror({ sessionId: home.sessionId, epoch: 1, machineId: BOX, root })).sha256).toBe((await inspectSession(sourceFile, home.sessionId)).sha256);
+  appendFileSync(sourceFile, message("next", "first"));
+  expect((await sync.sync(BOX)).every(row => row.code === 0)).toBe(true);
+  expect((await recoverMirror({ sessionId: home.sessionId, epoch: 1, machineId: BOX, root })).sha256).toBe((await inspectSession(sourceFile, home.sessionId)).sha256);
+  appendFileSync(sourceFile, '{"type":');
+  expect((await sync.sync(BOX)).some(row => row.code !== 0)).toBe(true);
+  expect((await recoverMirror({ sessionId: home.sessionId, epoch: 1, machineId: BOX, root })).size).toBe(Buffer.byteLength(header + message("first", null) + message("next", "first")));
+}, 5000);
+
+it("interrupted mirror append retains its caller-owned pending operation across sync retries", async () => {
+  const f = fixture(), sourceFile = join(f.global.root, "pending-source.jsonl"), root = join(f.global.root, "mirrors");
+  const home = assignInitialHome(f.global.db, "mirrored-session", BOX, HUB);
+  if (home === "conflict") throw new Error("invalid fixture");
+  writeFileSync(sourceFile, JSON.stringify({ type: "session", version: 3, id: home.sessionId, timestamp: "2026-01-01T00:00:00Z", cwd: f.global.root }) + "\n" + JSON.stringify({ type: "message", id: "first", parentId: null, timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "synthetic", timestamp: 1 } }) + "\n", { mode: 0o600 });
+  const ids: string[] = [], begin = f.journal.begin, record = f.journal.record;
+  f.journal.begin = operation => { if (operation.kind === "sync-mirror") ids.push(operation.id); return begin(operation); };
+  let fail = true;
+  f.journal.record = (id, action, value) => { if (action === "mirror-append-complete" && fail) { fail = false; throw new Error("append reply lost"); } return record(id, action, value); };
+  const ports = { config: f.config, globalDb: f.global.db, stores: f.stores, journal: f.journal, transport: f.transport, clock: f.clock,
+    mirrors: { root, homes: () => [home], source: async () => inspectSession(sourceFile, home.sessionId) } };
+  expect((await createSync(ports).sync(BOX)).some(row => row.code !== 0)).toBe(true);
+  expect((await createSync(ports).sync(BOX)).every(row => row.code === 0)).toBe(true);
+  expect(ids).toHaveLength(2);
+  expect(ids[1]).toBe(ids[0]);
+  expect(f.journal.lookupOperation?.(ids[0])?.state).toBe("done");
+}, 5000);
+
+it("revocation during peer resolution blocks the next sync call", async () => {
+  const f = fixture(), db = openDb(join(f.global.root, "roam", "journal.db"));
+  try {
+    const resolve = f.transport.resolve;
+    f.transport.resolve = async (...args) => { const peer = await resolve(...args); revokeMachine(db, BOX); return peer; };
+    const sync = createSync({ config: f.config, globalDb: f.global.db, stores: f.stores, journal: f.journal, transport: f.transport, clock: f.clock, revocationDb: db });
+    expect((await sync.sync(BOX))[0].reason).toBe("machine-revoked");
+    expect(f.calls).toEqual([]);
+  } finally { db.close(); }
+}, 5000);
+
+it("production recovery mirrors peer session bytes through the artifact port on sync", async () => {
+  const f = fixture(); f.seed();
+  const remote = f.remotes.get(BOX)!, file = join(remote.global.root, "session-a.jsonl");
+  const bytes = JSON.stringify({ type: "session", version: 3, id: "session-a", cwd: remote.worktree.root, timestamp: "2026-01-01T00:00:00Z" }) + "\n" +
+    JSON.stringify({ type: "message", id: "leaf-a", parentId: null, timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "mirrored", timestamp: 1 } }) + "\n";
+  writeFileSync(file, bytes, { mode: 0o600 });
+  const home = assignInitialHome(f.global.db, "session-a", BOX, HUB);
+  if (!home || home === "conflict") throw new Error("fixture home conflict");
+  recordLocation(remote.global.db, { sessionId: "session-a", file, cwd: remote.worktree.root, stores: [remote.worktree.storeKey], home });
+  const recovery = createProductionRecoveryPorts({ root: f.global.root, config: f.config, globalDb: f.global.db, journal: f.journal, transport: f.transport });
+  const sync = createSync({ config: f.config, globalDb: f.global.db, journal: f.journal, transport: f.transport, clock: f.clock, stores: f.stores, ...recovery });
+  const outcomes = await sync.sync(BOX);
+  expect(outcomes.every(row => row.code === 0)).toBe(true);
+  const mirror = await recoverMirror({ root: join(f.global.root, "roam", "mirrors"), sessionId: "session-a", machineId: BOX, epoch: 1 });
+  expect(readFileSync(mirror.file, "utf8")).toBe(bytes);
+  expect(f.calls.some(row => row.operation.kind === "mirror-export")).toBe(true);
+  appendFileSync(file, JSON.stringify({ type: "message", id: "leaf-b", parentId: "leaf-a", timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content: "appended", timestamp: 2 } }) + "\n");
+  expect((await sync.sync(BOX)).every(row => row.code === 0)).toBe(true);
+  const updated = await recoverMirror({ root: recovery.mirrors.root, sessionId: "session-a", machineId: BOX, epoch: 1 });
+  expect(readFileSync(updated.file, "utf8")).toBe(readFileSync(file, "utf8"));
+  const committed = readFileSync(updated.file);
+  writeFileSync(file, bytes.replace("mirrored", "rewritten"));
+  expect(await sync.sync(BOX)).toContainEqual(expect.objectContaining({ code: 1, reason: "mirror-source-rewritten:full-copy" }));
+  expect(readFileSync(updated.file)).toEqual(committed);
+}, 5000);
+
+it("production retire-only delivery reaches the surviving supervisor before any peer sync", async () => {
+  const f = fixture(), remote = f.remotes.get(BOX)!, events: string[] = [];
+  const lifecycle = supervisorRetirementLifecycle(remote.global.root, remote.ports.config, async () => { events.push("stop-sessions"); });
+  await lifecycle.start();
+  try {
+    const db = openDb(join(f.global.root, "roam", "journal.db"));
+    try { revokeMachine(db, BOX); } finally { db.close(); }
+    const recovery = createProductionRecoveryPorts({ root: f.global.root, config: f.config, globalDb: f.global.db, journal: f.journal, transport: f.transport });
+    const reply = recovery.supervisorHandshake(BOX);
+    expect(reply).toMatchObject({ kind: "retire-only", machineId: BOX });
+    await recovery.retireOnly(f.peers[0], reply as Extract<typeof reply, { kind: "retire-only" }>);
+    expect(events).toEqual(["stop-sessions"]);
+    expect(f.calls.map(row => row.operation.kind)).toEqual(["supervisor-retire"]);
+  } finally { await lifecycle.stop(); }
 }, 5000);

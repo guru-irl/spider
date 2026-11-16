@@ -1,9 +1,10 @@
 import type { Db } from "@spider/db-core";
+import type { SessionAddress, SessionEndpoint } from "@spider/intercom/protocol";
 import type { ApplyReceipt, BatchArtifact, ExportPolicy, Home, JsonObject, MachineId, Probe, ProcessIdentity, HubOperationReadiness, Readiness, ReplicaEffects, StoreBarrier, StoreKey } from "@spider/db-core/roam/types";
 import type {
   AgentPorts, ArtifactManifest, BootstrapPeer, CallOptions, Clock, DestinationObservation, Diagnostic, FreezeAck, GitPorts,
-  HostIntent, HubPorts, IntercomConfig, Journal, Limits, MoveCheck, MovePorts, MoveRequest, MoveResult, Operation, Outcome,
-  Peer, PlacementPort, PreparedMove, PreparedWorkspace, RecoveryPort, RoamConfig, SessionManifest,
+  HostIntent, HubPorts, IntercomConfig, IntercomMovePorts, Journal, Limits, MoveCheck, MovePorts, MoveRequest, MoveResult, MoveRefusal, MoveRefusalCode, MoveOutcome, MoveSessionOutcome, ValidatedBlockerId, Operation, Outcome,
+  PaneTarget, PaneActionOutcome, WorkspaceRestore, Peer, PlacementPort, PreparedMove, PreparedWorkspace, RecoveryPort, RoamConfig, SessionManifest,
   StorePort, SyncService, Transport, WorkspaceSnapshot,
 } from "@spider/roam/contracts";
 import type { BootstrapOptions, Inventory } from "@spider/roam/provision-contracts";
@@ -40,6 +41,7 @@ type _Transport = Assert<Equal<Transport, {
 type _Clock = Assert<Equal<Clock, { now(): number; later(ms: number, fn: () => void): () => void }>>;
 type _Journal = Assert<Equal<Journal, {
   begin(operation: Operation): { kind: "new" | "pending" | "done"; result: JsonObject | null };
+  lookupOperation?(id: string): { machineId: MachineId; state: "pending" | "done" } | null;
   record(id: string, action: string, result: JsonObject): void;
   read(id: string): readonly { action: string; result: JsonObject }[];
 }>>;
@@ -50,6 +52,7 @@ type _ArtifactManifest = Assert<Equal<ArtifactManifest, {
 type _AgentPorts = Assert<Equal<AgentPorts, {
   config: RoamConfig; journal: Journal; root: string;
   openStore(key: StoreKey): { db: Db; effects: ReplicaEffects; policy: ExportPolicy };
+  move?(operation: Operation): Promise<Outcome<JsonObject>>;
 }>>;
 type _StorePort = Assert<Equal<StorePort, {
   list(peer: MachineId): readonly StoreKey[]; cursor(key: StoreKey, machine: MachineId, stream: string): number;
@@ -73,28 +76,47 @@ type _GitPorts = Assert<Equal<GitPorts, {
 type _WorkspaceSnapshot = Assert<Equal<WorkspaceSnapshot, {
   root: string; repoKey: string; workspaceId: string; moveId: string; stage: "pre" | "final"; head: string;
   branch: string | null; objectFormat: "sha1" | "sha256"; indexTree: string; workingTree: string;
-  relativeCwd: string; sparsePatterns: string | null; worktreeConfig: string | null; refs: readonly string[];
+  relativeCwd: string; sparsePatterns: string | null; worktreeConfig: string | null; droppedConfigKeys: readonly string[];
+  normalization: { autocrlf: string | null; eol: string | null }; sparse: { enabled: boolean; cone: boolean | null }; refs: readonly string[];
   prerequisites: readonly string[]; bundle: { kind: "unbundled" } | { kind: "ready"; artifactId: string; byteLength: number };
 }>>;
-type _PreparedWorkspace = Assert<Equal<PreparedWorkspace, { root: string; snapshot: WorkspaceSnapshot; previous: WorkspaceSnapshot | null; moveId: string }>>;
+type _PreparedWorkspace = Assert<Equal<PreparedWorkspace, { root: string; snapshot: WorkspaceSnapshot; previous: WorkspaceSnapshot | null; moveId: string; adjustments: readonly ("sparse-cone-defaulted-to-false")[] }>>;
 type _SessionManifest = Assert<Equal<SessionManifest, { file: string; sessionId: string; cwd: string; leaf: string; size: number; sha256: string; historySha256: string; artifactId: string }>>;
 type _FreezeAck = Assert<Equal<FreezeAck, {
   operationId: string; sessionId: string; epoch: number; owner: ProcessIdentity | null; file: string; cwd: string;
-  leaf: string; size: number; sha256: string; barriers: readonly StoreBarrier[];
+  leaf: string; size: number; sha256: string; barriers: readonly StoreBarrier[]; intercomGeneration: string;
 }>>;
 type _MoveRequest = Assert<Equal<MoveRequest, { operation: Operation; sessionId: string; destinationMachine: MachineId }>>;
-type _MoveResult = Assert<Equal<MoveResult, { home: Home; terminal: string | null; lostPeers: readonly string[]; warnings: readonly string[] }>>;
+type _MoveResult = Assert<Equal<MoveResult, { home: Home; terminal: string | null; intercomAddress: string; warnings: readonly string[] }>>;
+type _MoveRefusalCode = Assert<Equal<MoveRefusalCode, keyof typeof import("../contracts").MOVE_REFUSAL_MESSAGES>>;
+type _MoveRefusal = Assert<Equal<MoveRefusal, { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string }>>;
+type _MoveOutcome = Assert<Equal<MoveOutcome, { ok: true; value: MoveResult } | { ok: false; refusal: MoveRefusal }>>;
+type _MoveSessionOutcome = Assert<Equal<MoveSessionOutcome, Outcome<MoveResult> & (
+  ({ code: 0 } & Extract<MoveOutcome, { ok: true }>) |
+  ({ code: 1 | 2 | 3; value: null } & Extract<MoveOutcome, { ok: false }>)
+)>>;
+type _MoveSuccessCode = Assert<Equal<Extract<MoveSessionOutcome, { ok: true }>["code"], 0>>;
+type _MoveFailureCode = Assert<Equal<Extract<MoveSessionOutcome, { ok: false }>["code"], 1 | 2 | 3>>;
+type _MoveFailureValue = Assert<Equal<Extract<MoveSessionOutcome, { ok: false }>["value"], null>>;
+type _BlockerIsBranded = Assert<Equal<string extends ValidatedBlockerId ? true : false, false>>;
+type _MoveFunction = Assert<Equal<ReturnType<typeof import("../move").moveSession>, Promise<MoveSessionOutcome>>>;
+type _RecoverFunction = Assert<Equal<Parameters<typeof import("../move-recovery").recoverMove>, [string, MovePorts]>>;
+type _CancelFunction = Assert<Equal<Parameters<typeof import("../move-recovery").cancelMove>, [string, MovePorts]>>;
+type _RecoverEnvelope = Assert<Equal<ReturnType<typeof import("../move-recovery").recoverMove> extends Promise<Outcome<MoveResult>> ? true : false, true>>;
+type _CancelEnvelope = Assert<Equal<ReturnType<typeof import("../move-recovery").cancelMove> extends Promise<Outcome<MoveResult>> ? true : false, true>>;
+type _AbortProof = Assert<Equal<ReturnType<typeof import("../move-recovery").authorizeMoveAbort>, Promise<{ home: Home; cancelledMoveId: string } | null>>>;
 type _MoveCheck = Assert<Equal<MoveCheck, {
   source: Home; destinationMachine: MachineId; repoKey: string; workspaceId: string; sourceRoot: string; sourceFile: string;
   sourceCwd: string; destinationRoot: string; destinationCwd: string; storeKeys: readonly StoreKey[];
-  lostPeers: readonly string[]; warnings: readonly string[];
+  warnings: readonly string[];
 }>>;
 type _PreparedMove = Assert<Equal<PreparedMove, { workspace: PreparedWorkspace; session: SessionManifest }>>;
 type _DestinationObservation = Assert<Equal<DestinationObservation, {
-  home: Home; owner: Probe; readiness: HubOperationReadiness | null; launchFailure: string | null; retired: boolean;
+  home: Home; owner: Probe; readiness: HubOperationReadiness | null; launchFailure: string | null; retired: boolean; activationCancelled?: boolean;
 }>>;
 type _MovePorts = Assert<Equal<MovePorts, {
   config: RoamConfig; globalDb: Db; journal: Journal; clock: Clock;
+  intercom: { address: SessionAddress; ports: IntercomMovePorts; destinationEndpoint(home: Home): Promise<SessionEndpoint> };
   check(request: MoveRequest): Promise<MoveCheck>; power(): Promise<() => Promise<void>>;
   seed(check: MoveCheck): Promise<readonly StoreBarrier[]>; prepare(check: MoveCheck, operation: Operation): Promise<PreparedMove>;
   freeze(home: Home, operation: Operation): Promise<FreezeAck>;
@@ -103,10 +125,14 @@ type _MovePorts = Assert<Equal<MovePorts, {
   barriers(machine: MachineId, required: readonly StoreBarrier[]): Promise<boolean>; replicateHome(home: Home): Promise<void>;
   start(home: Home, prepared: PreparedMove, operation: Operation): Promise<Outcome<HubOperationReadiness>>;
   inspect(home: Home, operation: Operation): Promise<DestinationObservation>; retire(home: Home, operation: Operation): Promise<Probe>;
+  readmitSource(source: Home, restoredHome: Home, operation: Operation): Promise<MoveSessionOutcome>;
+  abortWorkspace?(check: MoveCheck, operation: Operation): Promise<void>;
   unfreeze(home: Home, operation: Operation): Promise<void>; cleanup(check: MoveCheck, operation: Operation): Promise<void>; recovery: RecoveryPort;
 }>>;
 type _RecoveryPort = Assert<Equal<RecoveryPort, {
-  revocationDb: Db; homes(machine: MachineId): readonly Home[]; mirror(sessionId: string, epoch: number): Promise<SessionManifest | null>;
+  blockers(): readonly string[];
+  revocationDb: Db; workspaceRestores?(): Promise<readonly WorkspaceRestore[]>;
+  presentReadyTarget(target: PaneTarget): Promise<PaneActionOutcome>; homes(machine: MachineId): readonly Home[]; mirror(sessionId: string, epoch: number): Promise<SessionManifest | null>;
   restore(home: Home, mirror: SessionManifest, operation: Operation): Promise<Outcome<HubOperationReadiness>>;
   conflicts(sessionId: string): Promise<readonly { machineId: MachineId; owner: Probe }[]>;
 }>>;

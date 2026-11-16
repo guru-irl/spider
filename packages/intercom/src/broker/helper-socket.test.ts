@@ -59,6 +59,14 @@ it("advertises helper exchange in the existing private broker handshake", async 
   } finally { await client.close(); }
 }, 5000);
 
+it("advertises federation capability in the private broker health response", async () => {
+  const client = connect();
+  try {
+    writeMessage(client.socket, { type: "health", requestId: "federation-health" });
+    expect(await client.take("health_ok")).toMatchObject({ requestId: "federation-health", implementation: "spider", features: expect.arrayContaining([FEDERATION_FEATURE]) });
+  } finally { await client.close(); }
+}, 5000);
+
 it("refuses an ordinary client's helper request without disconnecting its normal traffic", async () => {
   const client = connect(), service = connect();
   try {

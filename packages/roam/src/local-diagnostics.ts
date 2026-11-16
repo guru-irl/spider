@@ -26,6 +26,8 @@ import { inspectIntentReservations, inspectSuspendedIntents } from "./intent";
 import { adoptedOwnerExited } from "./launcher";
 import { createIntercomRegistry } from "./intercom-registry";
 import { inspectLocalIntercomDoctor } from "./intercom-doctor";
+import { inspectIntercomReadiness, intercomReadinessDiagnostics, validIntercomReadiness, type IntercomReadiness } from "./intercom-readiness";
+import { readPrivateBytes } from "./selected-files";
 
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 function resumeCommand(id: string): string {
@@ -299,6 +301,7 @@ function readDoctorCatalog(db: Db, projects: DoctorProject[], globalPath: string
 /** Inspect registered local stores without modifying them. */
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
   launchRecovery?: { bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe> };
+  intercomReadiness?: () => Promise<IntercomReadiness>;
   intercomDoctor?: (input: { root: string; config: RoamConfig; agentDir: string }) => Promise<Diagnostic[]> }): Promise<{ enabled: boolean; diagnostics: readonly Diagnostic[]; consumers: LoadedConsumer[] }> {
   if (!isAbsolute(input.root)) throw new Error("The roaming root must be absolute");
   let root = resolve(input.root);
@@ -468,6 +471,23 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     }
     for (const peer of fences.keys()) if (!localPairs.some(record => [record.pair.source.machineId, record.pair.target.machineId].includes(peer))) inventory.push({ severity: "block", reason: `revocation-pending: An unmatched durable fence remains for ${peer}. Bring B back so revocation can finish; restore the pair record before cleanup.`, repairCommand: null });
   } catch { inventory.push({ severity: "warning", reason: "intercom-registry-unavailable: Pair enrollment state could not be inspected.", repairCommand: null }); }
+  if (input.inspectIntercomDoctor && config.role === "box") {
+    try {
+      let readiness: IntercomReadiness;
+      if (input.intercomReadiness) readiness = await input.intercomReadiness();
+      else {
+        const bytes = readPrivateBytes(join(root, "roam"), "active-release.json", 4096);
+        if (!bytes) throw new Error("active-release-unavailable");
+        const release: unknown = JSON.parse(bytes.toString("utf8")); bytes.fill(0);
+        if (typeof release !== "string" || !isAbsolute(release)) throw new Error("active-release-unavailable");
+        const home = homedir(), agentDir = process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent");
+        const sdk = join(home, ".local", "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
+        readiness = await inspectIntercomReadiness({ agentDir, release, sdk, cwd: home });
+      }
+      if (!validIntercomReadiness(readiness)) throw new Error("invalid-intercom-readiness");
+      inventory.push(...intercomReadinessDiagnostics(readiness));
+    } catch { inventory.push({ severity: "block", reason: "intercom-readiness-unavailable: Global settings and broker evidence could not be inspected.", repairCommand: null }); }
+  }
   if (input.inspectIntercomDoctor && config.intercom.enabled) try {
     const inspect = input.intercomDoctor ?? inspectLocalIntercomDoctor;
     inventory.push(...await inspect({ root, config, agentDir: process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent") }));

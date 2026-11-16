@@ -12,6 +12,7 @@ import { createRoamPlacement, rememberRoamSlot } from "@spider/herdr/roam-placem
 import type { TerminalRegistry } from "@spider/herdr/sessions/registry";
 import { main } from "../cli";
 import { openJournal } from "../journal";
+import { writeEnabledConfig } from "./fixtures/enabled-config";
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const key = "worktree:fixture-repo:fixture-workspace";
@@ -23,10 +24,8 @@ function fixture(): string {
   return root;
 }
 function configure(root: string, enabled = true): void {
-  mkdirSync(join(root, "roam"), { recursive: true });
-  writeFileSync(join(root, "roam", "config.json"), JSON.stringify({ enabled, role: "hub", machineId: HUB, hubMachineId: HUB,
-    peers: [{ machineId: BOX, alias: "box-1.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/spider", core: "/fixture/hc", globalRoot: "/fixture/global" }],
-    discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
+  writeEnabledConfig(root, { enabled, peers: [{ machineId: BOX, alias: "box-1.invalid", node: "/fixture/node",
+    pi: "/fixture/pi", cli: "/fixture/spider", core: "/fixture/hc", globalRoot: "/fixture/global" }] });
 }
 function snapshot(root: string, directory = root): Array<[string, string]> {
   return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
@@ -85,6 +84,7 @@ it("reports real cached status and leaves stores, sidecars, journal and config u
 
 it("includes verified unmapped replicas in doctor and status without touching their files", async () => {
   const root = fixture(), directory = join(root, "roam", "stores"), replicaKey = "repo:fixture-repo";
+  configure(root);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const file = join(directory, `${createHash("sha256").update(replicaKey).digest("hex")}.db`);
   const global = openDb(join(root, "spider.db")), repo = openDb(file);
@@ -94,7 +94,7 @@ it("includes verified unmapped replicas in doctor and status without touching th
     enableMemoryCapture(repo, replicaKey);
     repo.exec("DROP TRIGGER roam_memory_capture_ai");
     const before = snapshot(root), out: string[] = [], err: string[] = [];
-    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
     expect(out.join("")).toContain("roam_memory_capture_ai");
     expect(out.join("")).toMatch(/capture.*unsafe/i);
     expect(err).toEqual([]);
@@ -108,6 +108,7 @@ it("includes verified unmapped replicas in doctor and status without touching th
 
 it("includes mapped worktrees through the original catalog path", async () => {
   const root = fixture(), checkout = join(root, "checkout"), directory = join(checkout, ".spider");
+  configure(root);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const global = openDb(join(root, "spider.db")), project = openDb(join(directory, "project.db"));
   try {
@@ -118,7 +119,7 @@ it("includes mapped worktrees through the original catalog path", async () => {
     expect(seedSession(project, "session-a", 1, key, 4_194_304).complete).toBe(true);
     project.exec("DROP TRIGGER roam_sessions_capture_ai");
     const before = snapshot(root), out: string[] = [], err: string[] = [];
-    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
     expect(out.join("")).toContain("roam_sessions_capture_ai");
     expect(err).toEqual([]); expect(snapshot(root)).toEqual(before);
     out.length = 0;
@@ -152,6 +153,7 @@ it("doctor inspects a redirected mapped store and reports a cached peer failure"
 
 it("does not hide an unverifiable replica from status or doctor", async () => {
   const root = fixture(), directory = join(root, "roam", "stores"), replicaKey = "repo:fixture-repo";
+  configure(root);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const target = join(directory, `${createHash("sha256").update(replicaKey).digest("hex")}.db`);
   const source = join(root, "source.db"), global = openDb(join(root, "spider.db")), repo = openDb(source);
@@ -166,7 +168,7 @@ it("does not hide an unverifiable replica from status or doctor", async () => {
       diagnostics: [expect.objectContaining({ reason: expect.stringMatching(/cannot inspect.*store.*WAL commit boundary/i) })] });
     expect(snapshot(root)).toEqual(before);
     out.length = 0;
-    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
     expect(out.join("")).toMatch(/cannot inspect.*store.*WAL commit boundary/i);
     expect(err).toEqual([]); expect(snapshot(root)).toEqual(before);
   } finally { repo.close(); global.close(); }
@@ -174,6 +176,7 @@ it("does not hide an unverifiable replica from status or doctor", async () => {
 
 it("does not report a complete inventory when a mapped store is unavailable", async () => {
   const root = fixture(), global = openDb(join(root, "spider.db"));
+  configure(root);
   try {
     migrate(global, "global", { machineId: HUB, globalRoot: root });
     global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(join(root, "missing-checkout"));
@@ -183,7 +186,7 @@ it("does not report a complete inventory when a mapped store is unavailable", as
       diagnostics: [expect.objectContaining({ reason: expect.stringMatching(/cannot inspect/i) })] });
     expect(snapshot(root)).toEqual(before);
     out.length = 0;
-    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+    expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
     expect(out.join("")).toMatch(/cannot inspect.*store/i);
     expect(err).toEqual([]); expect(snapshot(root)).toEqual(before);
   } finally { global.close(); }
@@ -238,6 +241,7 @@ it("reports incomplete operations as unknown when the journal cannot be read", a
 it("doctor shows an actual failed proxy launch and clears it after a successful retry", async () => {
   const path = process.env.PATH, root = fixture(), directory = join(root, "roam", "placement");
   vi.stubEnv("PATH", path);
+  configure(root);
   await rememberRoamSlot(directory, "session-a", { space: "s1", tab: "tb1" } as Parameters<typeof rememberRoamSlot>[2]);
   let calls = 0;
   const hc = {
@@ -256,18 +260,19 @@ it("doctor shows an actual failed proxy launch and clears it after a successful 
   const row = { origin: "hub-operation" as const, opId: "op-1", sessionId: "session-a", epoch: 1, cwd: "/fixture", file: "/fixture/session.jsonl", core: "remote-core", terminal: "box-1.invalid/t1" };
   await expect(placement.reconcile([row])).rejects.toMatchObject({ code: "missing-hc" });
   const before = snapshot(root), output: string[] = [];
-  expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(0);
+  expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(1);
   expect(output.join("")).toMatch(/session-a.*proxy.*retry/i);
   expect(snapshot(root)).toEqual(before);
   expect(await placement.reconcile([row])).toEqual({ pending: [] });
   expect(calls).toBe(2);
   output.length = 0;
-  expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(0);
+  expect(await main(["roam", "doctor"], { out: text => output.push(text), err: text => output.push(text) })).toBe(1);
   expect(output.join("")).not.toMatch(/session-a.*proxy/i);
 }, 5000);
 
 it("doctor reports failed and uncertain proxy placement without changing its state", async () => {
   const root = fixture(), directory = join(root, "roam", "placement");
+  configure(root);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
   const attempt = (session: string, remote: string, failure: { attempts: number; retryable: boolean }) =>
     ({ session, remote, core: "remote-core", proxy: null, closed: false, localOwners: [], failure });
@@ -277,7 +282,7 @@ it("doctor reports failed and uncertain proxy placement without changing its sta
     attempt("unknown-session", "box-1.invalid/t3", { attempts: 1, retryable: false }),
   ] }), { mode: 0o600 });
   const before = snapshot(root), out: string[] = [], err: string[] = [];
-  expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+  expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
   expect(out.join("")).toMatch(/retry-session.*proxy.*retry/i);
   expect(out.join("")).toMatch(/exhausted-session.*proxy.*retries.*stopped/i);
   expect(out.join("")).toMatch(/unknown-session.*proxy.*uncertain/i);

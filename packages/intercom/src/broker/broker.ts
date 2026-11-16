@@ -1,5 +1,7 @@
 import { createFederation } from "./federation.js";
-import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
+import { MOVE_FENCE_FEATURE, type IntercomIntakeAction, type IntercomIntakeFence } from "../protocol.js";
+import { isIntercomIntakeAction, isIntercomIntakeFence } from "./protocol.js";
+import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, addressKey, sessionAddress, type SessionAddress, type RemoteSessionInfo, type FederationDispatchResult, type FederationBrokerMessage, type SessionEndpoint, type LocalSessionInfo } from "../protocol.js";
 import { isRemoteSessionInfo, isSessionAddress, isSessionEndpoint, isFederationDispatchResult, isMessageControl, isConsumptionReceipt } from "./protocol.js";
 import net from "net";
 import { constants, closeSync, fstatSync, lstatSync, openSync, realpathSync, chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from "fs";
@@ -243,6 +245,10 @@ class IntercomBroker {
   private bridgeSocket: net.Socket | null = null;
   private bridgeMachineId: string | null = null;
   private bridgeMachineAlias: string | null = null;
+  private intakeState?: {
+    fences: Map<string, { fence: IntercomIntakeFence; closed: boolean }>;
+    pending: Map<string, { socket: net.Socket; requestId: string; action: IntercomIntakeAction; fence: IntercomIntakeFence; timer: ReturnType<typeof setTimeout> }>;
+  };
   private detachBridge: (() => void) | null = null;
   private bridgePending = new Map<string, { resolve(value: FederationDispatchResult): void; timer: NodeJS.Timeout }>();
   private noticePending = new Map<string, { bridge: net.Socket; receiver: net.Socket; timer: NodeJS.Timeout }>();
@@ -429,15 +435,16 @@ class IntercomBroker {
   private publishLocalPresence(): void {
     this.writeBridge({ type: "federation_local_presence", sessions: [...this.sessions.values()].filter(session => session.federation).map(session => ({ address: sessionAddress(session.info, session.scopeId ?? null), startedAt: session.info.startedAt, lastActivity: session.info.lastActivity, homeEpoch: session.info.homeEpoch ?? null, activationEpoch: session.info.activationEpoch ?? session.info.endpointEpoch!, cwd: session.info.cwd, model: session.info.model, ...(session.info.name ? { name: session.info.name } : {}), ...(session.info.status ? { status: session.info.status } : {}) })) });
   }
-  private inspectBlockers(address: SessionAddress) {
-    this.pruneMessageReceiptRoutes(); this.pruneAskEdges();
-    const result = this.federation.inspectBlockers(address);
+  private inspectBlockers(address: SessionAddress, includeExpired = false) {
+    const now = Date.now(), result = this.federation.inspectBlockers(address, { includeExpired });
     const key = this.localForAddress(address)?.key ?? addressKey(address);
+    const receipts = [...this.unobservedLocalReceipts.entries()].filter(([, route]) => includeExpired || now - route.createdAt <= MESSAGE_RECEIPT_ROUTE_RETENTION_MS);
+    const visibleReceipts = includeExpired ? receipts : receipts.slice(-MAX_DELIVERY_RECORDS);
     return { ...result,
-      asks: [...result.asks, ...[...this.askEdges.entries()].filter(([, edge]) => edge.from === key || edge.to === key).map(([id, edge]) => ({ id, from: this.addressFromKey(edge.from), to: this.addressFromKey(edge.to) }))],
+      asks: [...result.asks, ...[...this.askEdges.entries()].filter(([, edge]) => (includeExpired || now - edge.createdAt <= this.askTimeoutMs) && (edge.from === key || edge.to === key)).map(([id, edge]) => ({ id, from: this.addressFromKey(edge.from), to: this.addressFromKey(edge.to) }))],
       pendingDispatch: [...result.pendingDispatch, ...this.mailboxMessages.filter(entry => entry.fromKey === key || entry.targetKey === key).map(entry => entry.message.id)],
-      unobservedReceipts: [...result.unobservedReceipts, ...[...this.unobservedLocalReceipts.entries()].filter(([, route]) => addressKey(route.from) === addressKey(address) || addressKey(route.to) === addressKey(address)).map(([id]) => id)],
-      unknownOutcomes: [...result.unknownOutcomes, ...[...this.unobservedLocalReceipts.entries()].filter(([, route]) => route.unknown && (addressKey(route.from) === addressKey(address) || addressKey(route.to) === addressKey(address))).map(([id]) => id)],
+      unobservedReceipts: [...result.unobservedReceipts, ...visibleReceipts.filter(([, route]) => addressKey(route.from) === addressKey(address) || addressKey(route.to) === addressKey(address)).map(([id]) => id)],
+      unknownOutcomes: [...result.unknownOutcomes, ...visibleReceipts.filter(([, route]) => route.unknown && (addressKey(route.from) === addressKey(address) || addressKey(route.to) === addressKey(address))).map(([id]) => id)],
     };
   }
   private localForAddress(address: SessionAddress): ConnectedSession | undefined {
@@ -449,8 +456,48 @@ class IntercomBroker {
     const [scopeId, sessionId] = JSON.parse(key) as [string | null, string];
     return { sessionId, scopeId };
   }
+  private intakeClosed(address: SessionAddress): boolean {
+    return this.intakeState?.fences.get(addressKey(address))?.closed === true;
+  }
+  private sameIntake(a: IntercomIntakeFence, b: IntercomIntakeFence): boolean {
+    return addressKey(a.address) === addressKey(b.address) && a.moveId === b.moveId && a.expectedEpoch === b.expectedEpoch && a.generation === b.generation;
+  }
+  private handleIntake(socket: net.Socket, message: Record<string, unknown>): boolean {
+    if (message.type !== "federation_intake" && message.type !== "federation_intake_applied") return false;
+    if (!this.intakeState || typeof message.requestId !== "string" || !message.requestId) throw new Error("intercom-fence-unsupported");
+    const state = this.intakeState;
+    if (message.type === "federation_intake_applied") {
+      if (!(message.generation === null || typeof message.generation === "string" && message.generation)) throw new Error("invalid-intake-result");
+      const pending = state.pending.get(message.requestId);
+      if (!pending) return true;
+      clearTimeout(pending.timer); state.pending.delete(message.requestId);
+      const current = state.fences.get(addressKey(pending.fence.address));
+      const matched = message.generation === pending.fence.generation && current && this.sameIntake(current.fence, pending.fence);
+      if (matched && pending.action === "open") current.closed = false;
+      if (!pending.socket.destroyed) writeMessage(pending.socket, { type: "intake_result", requestId: pending.requestId, generation: matched ? pending.fence.generation : null });
+      return true;
+    }
+    if (!isIntercomIntakeAction(message.action) || !isIntercomIntakeFence(message.fence)) throw new Error("invalid-intake-request");
+    const fence = message.fence, key = addressKey(fence.address), current = state.fences.get(key);
+    const replacing = message.action === "close" && current && !current.closed && fence.expectedEpoch >= current.fence.expectedEpoch && fence.moveId !== current.fence.moveId;
+    if (current && !this.sameIntake(current.fence, fence) && !replacing || message.action !== "close" && !current ||
+        message.action === "check" && current?.closed !== true) {
+      writeMessage(socket, { type: "intake_result", requestId: message.requestId, generation: null }); return true;
+    }
+    // This synchronous transition is the socket-dispatch linearization point.
+    if (message.action === "close") state.fences.set(key, { fence, closed: true });
+    const requestId = randomUUID();
+    const timer = setTimeout(() => {
+      state.pending.delete(requestId);
+      if (!socket.destroyed) writeMessage(socket, { type: "intake_result", requestId: message.requestId, generation: null });
+    }, 4000);
+    timer.unref(); state.pending.set(requestId, { socket, requestId: message.requestId, action: message.action, fence, timer });
+    this.writeBridge({ type: "federation_intake_apply", requestId, action: message.action, fence });
+    return true;
+  }
   private handleBridgeMessage(socket: net.Socket, message: Record<string, unknown>): void {
-    this.pruneMessageReceiptRoutes();
+    if (this.handleIntake(socket, message)) return;
+    if (message.type !== "inspect_blockers") this.pruneMessageReceiptRoutes();
     switch (message.type) {
       case "helper_authorize": {
         if (typeof message.requestId !== "string" || !message.requestId || typeof message.token !== "string" || !/^[0-9a-f]{64}$/.test(message.token)) throw new Error("invalid-helper-authorization");
@@ -485,8 +532,8 @@ class IntercomBroker {
         return;
       }
       case "inspect_blockers": {
-        if (typeof message.requestId !== "string" || !isSessionAddress(message.address)) throw new Error("invalid-blocker-query");
-        writeMessage(socket, { type: "blockers", requestId: message.requestId, blockers: this.inspectBlockers(message.address) });
+        if (typeof message.requestId !== "string" || !isSessionAddress(message.address) || message.includeExpired !== undefined && typeof message.includeExpired !== "boolean") throw new Error("invalid-blocker-query");
+        writeMessage(socket, { type: "blockers", requestId: message.requestId, blockers: this.inspectBlockers(message.address, message.includeExpired === true) });
         return;
       }
       case "federation_deliver": {
@@ -494,7 +541,9 @@ class IntercomBroker {
         const to = message.to;
         const target = this.localForAddress(to.address);
         let result: FederationDispatchResult;
-        if (!target?.federation || to.machineId !== this.bridgeMachineId || to.homeEpoch !== (target.info.homeEpoch ?? null) || to.activationEpoch !== (target.info.activationEpoch ?? target.info.endpointEpoch) || message.from.address.scopeId !== to.address.scopeId) {
+        if (this.intakeClosed(to.address)) {
+          result = { delivery: "failed", code: "E_INTERCOM_FROZEN", retryable: true, outcomeKnown: true, acceptance: { accepted: false, durable: false }, reason: "intercom-frozen" };
+        } else if (!target?.federation || to.machineId !== this.bridgeMachineId || to.homeEpoch !== (target.info.homeEpoch ?? null) || to.activationEpoch !== (target.info.activationEpoch ?? target.info.endpointEpoch) || message.from.address.scopeId !== to.address.scopeId) {
           result = { delivery: "failed", code: "E_TARGET_REBOUND", retryable: true, outcomeKnown: true, acceptance: { accepted: false, durable: false }, reason: "Target endpoint changed before delivery" };
         } else {
           try {
@@ -630,7 +679,7 @@ class IntercomBroker {
         requestId: clientMessage.requestId,
         protocol: INTERCOM_PROTOCOL_NAME,
         version: INTERCOM_PROTOCOL_VERSION,
-        ...(typeof LISTEN_TARGET === "string" ? { features: [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE] } : {}),
+        ...(typeof LISTEN_TARGET === "string" ? { implementation: "spider", features: [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, FEDERATION_FEATURE] } : {}),
       });
       return;
     }
@@ -656,7 +705,10 @@ class IntercomBroker {
       this.bridgeSocket = socket; this.bridgeMachineId = clientMessage.machineId; this.bridgeMachineAlias = clientMessage.machineAlias;
       setKey("federation-bridge");
       if (this.shutdownTimer) { clearTimeout(this.shutdownTimer); this.shutdownTimer = null; }
-      this.writeBridge({ type: "federation_registered", features: [FEDERATION_FEATURE, HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE] });
+      if (clientMessage.moveFences !== undefined && clientMessage.moveFences !== true) throw new Error("invalid-intake-feature");
+      if (clientMessage.moveFences === true) this.intakeState ??= { fences: new Map(), pending: new Map() };
+      this.writeBridge({ type: "federation_registered", features: [FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE,
+        ...(clientMessage.moveFences === true ? [MOVE_FENCE_FEATURE] : [])] });
       this.publishLocalPresence();
       // A socket write does not prove that the bridge handled the evidence.
       for (const [key, item] of this.restoredReceipts) {
@@ -893,8 +945,9 @@ class IntercomBroker {
 
       case "inspect_blockers": {
         const requester = currentKey ? this.sessions.get(currentKey) : undefined;
-        if (!requester?.federation || !isSessionAddress(clientMessage.address) || clientMessage.address.scopeId !== (requester.scopeId ?? null) || typeof clientMessage.requestId !== "string") throw new Error("invalid-blocker-query");
-        writeMessage(socket, { type: "blockers", requestId: clientMessage.requestId, blockers: this.inspectBlockers(clientMessage.address) });
+        if (!requester?.federation || !isSessionAddress(clientMessage.address) || clientMessage.address.scopeId !== (requester.scopeId ?? null) || typeof clientMessage.requestId !== "string" ||
+            clientMessage.includeExpired !== undefined && typeof clientMessage.includeExpired !== "boolean") throw new Error("invalid-blocker-query");
+        writeMessage(socket, { type: "blockers", requestId: clientMessage.requestId, blockers: this.inspectBlockers(clientMessage.address, clientMessage.includeExpired === true) });
         break;
       }
       case "send": {
@@ -934,10 +987,14 @@ class IntercomBroker {
           try { resolved = this.federation.resolve(clientMessage.to as string, fromSession.scopeId ?? null, [...this.sessions.values()].filter(session => sameScope(session.scopeId, fromSession.scopeId)).map(session => session.info)); }
           catch { this.writeDeliveryFailure(socket, message.id, "Multiple sessions match the target. Use the session ID.", "E_AMBIGUOUS_TARGET"); break; }
         }
-        const localHome = resolved && !resolved.remote && resolved.homeEpoch != null ? resolved : null;
+        if (message.expectsReply && (this.intakeClosed(sessionAddress(fromSession.info, fromSession.scopeId ?? null)) ||
+            resolved && this.intakeClosed(sessionAddress(resolved, fromSession.scopeId ?? null)))) {
+          this.writeDeliveryFailure(socket, message.id, "intercom-frozen", "E_INTERCOM_FROZEN", true); break;
+        }
+        const localHome = resolved && !resolved.remote && (this.intakeState !== undefined || resolved.homeEpoch != null || this.intakeClosed(sessionAddress(resolved, fromSession.scopeId ?? null))) ? resolved : null;
         if (localHome && !this.bridgeMachineId) { this.writeDeliveryFailure(socket, message.id, "bridge-unavailable", "E_FEDERATION_REFUSED"); break; }
         if (localHome) resolved = { remote: true, id: sessionAddress(localHome, fromSession.scopeId ?? null).sessionId, address: sessionAddress(localHome, fromSession.scopeId ?? null),
-          machineId: this.bridgeMachineId!, machineAlias: this.bridgeMachineAlias!, homeEpoch: localHome.homeEpoch!,
+          machineId: this.bridgeMachineId!, machineAlias: this.bridgeMachineAlias!, homeEpoch: localHome.homeEpoch ?? null,
           activationEpoch: localHome.activationEpoch ?? localHome.endpointEpoch!, endpointEpoch: localHome.activationEpoch ?? localHome.endpointEpoch!,
           cwd: localHome.cwd, model: localHome.model, startedAt: localHome.startedAt, lastActivity: localHome.lastActivity,
           ...(localHome.name ? { name: localHome.name } : {}) };
@@ -983,6 +1040,9 @@ class IntercomBroker {
             break;
           }
           const target = targets[0];
+          if (this.intakeClosed(sessionAddress(target.info, target.scopeId ?? null)) || this.intakeClosed(sessionAddress(fromSession.info, fromSession.scopeId ?? null))) {
+            this.writeDeliveryFailure(socket, message.id, "intercom-frozen", "E_INTERCOM_FROZEN", true); break;
+          }
           const fingerprint = this.deliveryFingerprint(message, target.info.id);
           if (this.replayOrReject(socket, currentKey, message.id, fingerprint)) {
             break;

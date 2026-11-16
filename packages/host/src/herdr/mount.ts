@@ -141,6 +141,7 @@ export async function resolveRealSshBinary(env: Readonly<NodeJS.ProcessEnv>, shi
 
 export interface HerdrMount extends Disposable {
   owner(): Owner | null;
+  drainRoamFeeds?(): Promise<void>;
   enabled(): boolean;
   /** True when this owning publisher queued a fresh snapshot, not when it was delivered. */
   queueNotification(sessionId: Owner['sessionId']): boolean;
@@ -795,7 +796,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     if (!owner || stopped || config?.enabled === false || !config) return event.input.on !== undefined ? { block: true, reason: HERDR_NOTICES.remoteDisabled.text } : undefined;
     return guardHerdrToolCall(event, routingPorts);
   };
-  return { owner: () => owner, enabled: () => Boolean(owner && !stopped), queueNotification(sessionId) {
+  return { drainRoamFeeds: async () => { await publishing; await heartbeatPending; }, owner: () => owner, enabled: () => Boolean(owner && !stopped), queueNotification(sessionId) {
       if (!owner || owner.sessionId !== sessionId || !source || !config || stopped || disposed || options.admitted?.() === false) return false;
       void publish().catch(report); return true;
     }, findKillJobs: id => findOwnedKillJobs(id, need(owner), journalRoot()), killJob: id => cancelJob(id, need(owner)), prepareSessionReplacement: () => closeFeed(false, 'wrong-generation'),

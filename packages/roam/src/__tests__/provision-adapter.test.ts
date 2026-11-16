@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -10,11 +10,15 @@ import { copyPiAuth } from "../auth";
 import { beginRelease, beginShortWrite, endShortWrite } from "../release-receipt";
 import { releaseRequestDigest } from "../release-request";
 import { inspectDestinationSettings, selectedSettingsDigests } from "../selected-files";
+// @ts-expect-error The release shim is an executable JavaScript build helper.
+import { extensionShim } from "../../../../scripts/extension-shim.mjs";
+import { startTestBroker, stopTestBroker } from "@spider/intercom/test-support";
 import * as adapterModule from "../provision-adapter";
 
 const roots: string[] = [];
 type Factory = (input: unknown) => {
   enroll(peer: Peer, hubMachineId: string): Promise<void>;
+  setEnabled(peer: Peer, hubMachineId: string, enabled: boolean): Promise<void>;
   installRelease(peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }): Promise<{ pi: string; cli: string; supervisor: string }>;
   installFiles(peer: Peer, files: readonly { path: string; bytes: Buffer; mode: 0o600 | 0o700 }[], expectedSettingsFingerprint?: string): Promise<void>;
   installCredentialFiles(peer: Peer, files: readonly { path: string; bytes: Buffer; mode: 0o600 | 0o700 }[], providers: readonly string[], expectedSettingsFingerprint?: string): Promise<void>;
@@ -27,9 +31,9 @@ type Factory = (input: unknown) => {
 const create = (adapterModule as { createHcProvisionAdapter?: Factory }).createHcProvisionAdapter;
 const remoteProgram = (adapterModule as { PROVISION_REMOTE_SCRIPT?: string }).PROVISION_REMOTE_SCRIPT;
 
-function fixture() {
+function fixture(short = false) {
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
-  const root = mkdtempSync(join(scratch, "provision-adapter-")); roots.push(root);
+  const root = mkdtempSync(join(scratch, short ? "pa-" : "provision-adapter-")); roots.push(root);
   const home = join(root, "home"), globalRoot = join(home, "global"), agentDir = join(home, "agent"), npmPrefix = join(home, "prefix"), unitDir = join(home, "units"), bin = join(home, "bin");
   for (const dir of [home, globalRoot, agentDir, npmPrefix, unitDir, bin]) mkdirSync(dir, { recursive: true, mode: 0o700 });
   mkdirSync(join(globalRoot, "roam"), { mode: 0o700 });
@@ -90,7 +94,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 function releaseNpm(f: ReturnType<typeof fixture>) {
   const log = join(f.root, "npm-calls");
-  const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';\nconst a=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args:a,root:process.env.SPIDER_GLOBAL_ROOT})+'\\n');\nconst prefix=a[a.indexOf('--prefix')+1];\nif(a.includes('--global')){const dir=path.join(prefix,'bin');fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(path.join(dir,'pi'),${JSON.stringify(`#!${process.execPath}\nconsole.log('1.2.0');\n`)},{mode:0o700});}\nelse {const p=path.join(prefix,'node_modules','@guru-irl','spider');for(const file of ['dist/extension.js','dist/intercom/broker.mjs','dist/roam/cli.mjs','dist/roam/supervisor.mjs','scripts/intercom-switchover.mjs','scripts/extension-shim.mjs']){const out=path.join(p,file);fs.mkdirSync(path.dirname(out),{recursive:true,mode:0o700});fs.writeFileSync(out,'fixture',{mode:0o600});}}\n`;
+  const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';\nconst a=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args:a,root:process.env.SPIDER_GLOBAL_ROOT})+'\\n');\nconst prefix=a[a.indexOf('--prefix')+1];\nif(a.includes('--global')){const dir=path.join(prefix,'bin');fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(path.join(dir,'pi'),${JSON.stringify(`#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(join(f.root, "pi-release-calls"))},JSON.stringify(process.argv.slice(2))+'\\n'); console.log('1.2.0');\n`)},{mode:0o700});}\nelse {const p=path.join(prefix,'node_modules','@guru-irl','spider');for(const file of ['dist/extension.js','dist/intercom/broker.mjs','dist/roam/cli.mjs','dist/roam/supervisor.mjs','scripts/intercom-switchover.mjs','scripts/extension-shim.mjs']){const out=path.join(p,file);fs.mkdirSync(path.dirname(out),{recursive:true,mode:0o700});fs.writeFileSync(out,'fixture',{mode:0o600});}}\n`;
   writeFileSync(join(f.bin, "npm"), npm, { mode: 0o700 });
   return log;
 }
@@ -128,6 +132,10 @@ it("reconciles a lost release-launch reply and never runs a duplicate installati
   expect(calls.every(call => call.root === f.globalRoot)).toBe(true);
   expect(calls[0].args).toContain("@earendil-works/pi-coding-agent@1.2.0");
   expect(calls[1].args.some(arg => arg.endsWith("release.tgz"))).toBe(true);
+  expect(JSON.parse(readFileSync(join(f.root, "pi-release-calls"), "utf8").trim())).toEqual(["--version"]);
+  expect(existsSync(join(f.agentDir, "intercom", "broker.sock"))).toBe(false);
+  expect(existsSync(f.calls)).toBe(false);
+  expect(f.requests.some(row => ["systemctl", "unit-write", "verify", "switchover"].includes(row.action))).toBe(false);
   expect(JSON.stringify(calls)).not.toContain("npm:pi-intercom");
   expect(f.writes.every(item => item.bytes.length <= 32)).toBe(true);
   expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1")).filter(name => /^release-[a-f0-9]{32}-\d+$/.test(name))).toEqual([]);
@@ -700,6 +708,154 @@ function readyExecutables(f: ReturnType<typeof fixture>, wrongSession = false) {
   return piLog;
 }
 
+async function withReadinessBroker<T>(f: ReturnType<typeof fixture>, features: string[], work: () => Promise<T>, identity = "spider"): Promise<T> {
+  const intercom = join(f.agentDir, "intercom"), socket = join(intercom, "broker.sock");
+  mkdirSync(intercom, { recursive: true, mode: 0o700 });
+  const server = join(f.root, "broker-fixture.mjs");
+  writeFileSync(server, `import net from 'node:net'; import fs from 'node:fs';
+const server=net.createServer(socket=>{ let data=Buffer.alloc(0); socket.on('error',()=>{}); socket.on('data',chunk=>{
+ data=Buffer.concat([data,chunk]); if(data.length<4||data.length<4+data.readUInt32BE(0))return;
+ const request=JSON.parse(data.subarray(4,4+data.readUInt32BE(0))); const body=Buffer.from(JSON.stringify({type:'health_ok',requestId:request.requestId,protocol:'pi-intercom',version:1,implementation:${JSON.stringify(identity)},features:${JSON.stringify(features)}}));
+ const header=Buffer.alloc(4); header.writeUInt32BE(body.length); socket.write(Buffer.concat([header,body])); }); });
+server.listen(${JSON.stringify(socket)},()=>{fs.chmodSync(${JSON.stringify(socket)},0o600); console.log('fixture-ready');});`, { mode: 0o600 });
+  const child = startTestBroker(process.execPath, [server], { env: { ...process.env, HOME: f.home, PI_CODING_AGENT_DIR: f.agentDir }, stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("fixture broker did not start")), 3000);
+      child.once("exit", code => { clearTimeout(timer); reject(new Error(`fixture broker exited ${code}`)); });
+      child.stdout!.on("data", chunk => { if (String(chunk).includes("fixture-ready")) { clearTimeout(timer); resolve(); } });
+    });
+    return await work();
+  } finally { await stopTestBroker(child); }
+}
+function readyIntercomDeclarations(f: ReturnType<typeof fixture>): void {
+  readyExecutables(f);
+  const sdk = join(f.npmPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
+  unlinkSync(sdk); symlinkSync(join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js"), sdk);
+  const scripts = join(f.releaseRoot, "scripts"), extensions = join(f.agentDir, "extensions");
+  mkdirSync(scripts, { mode: 0o700 }); mkdirSync(extensions, { mode: 0o700 });
+  copyFileSync(join(process.cwd(), "scripts", "extension-shim.mjs"), join(scripts, "extension-shim.mjs"));
+  copyFileSync(join(process.cwd(), "scripts", "intercom-switchover.mjs"), join(scripts, "intercom-switchover.mjs"));
+  writeFileSync(join(extensions, "spider.ts"), extensionShim(join(f.releaseRoot, "dist", "extension.js")), { mode: 0o600 });
+  writeFileSync(join(f.releaseRoot, "package.json"), JSON.stringify({ name: "@guru-irl/spider", type: "module", pi: { extensions: ["./dist/extension.js"] } }), { mode: 0o600 });
+  writeFileSync(join(f.agentDir, "settings.json"), "{}", { mode: 0o600 });
+}
+
+it.each([
+  ["settings-unique", "intercomUnique"], ["legacy broker drained", "legacyDrained"], ["federation-v1", "federation"],
+] as const)("proves %s through real remote verification", async (_label, key) => {
+  const f = fixture(true); readyIntercomDeclarations(f);
+  await withReadinessBroker(f, ["intercom-exchange-v1", "federation-v1"], async () => {
+    const result = await create!(f.options).verifyPeer();
+    expect(result[key]).toBe(true);
+  });
+}, 5000);
+
+it.each([
+  ["legacy declaration", "intercomUnique", "settings", "legacy-extension-declared"],
+  ["pending legacy ask", "legacyDrained", "legacy", "legacy-pending-asks"],
+  ["unsafe agent directory", "legacyDrained", "legacy", "intercom-agent-unsafe"],
+  ["unsafe broker socket", "legacyDrained", "legacy", "intercom-socket-unsafe"],
+  ["missing federation flag", "federation", "federation", "federation-feature-missing"],
+] as const)("keeps %s unready with its named reason", async (scenario, key, evidence, reason) => {
+  const f = fixture(true); readyIntercomDeclarations(f);
+  if (scenario === "legacy declaration") writeFileSync(join(f.agentDir, "settings.json"), '{"packages":["npm:pi-intercom"]}', { mode: 0o600 });
+  if (scenario === "pending legacy ask") {
+    mkdirSync(join(f.agentDir, "intercom"), { mode: 0o700 });
+    mkdirSync(join(f.agentDir, "intercom", "pending-asks"), { mode: 0o700 });
+    writeFileSync(join(f.agentDir, "intercom", "pending-asks", "ask.json"), "{}", { mode: 0o600 });
+  }
+  await withReadinessBroker(f, scenario === "missing federation flag" ? ["intercom-exchange-v1"] : ["intercom-exchange-v1", "federation-v1"], async () => {
+    if (scenario === "unsafe agent directory") chmodSync(f.agentDir, 0o777);
+    if (scenario === "unsafe broker socket") chmodSync(join(f.agentDir, "intercom", "broker.sock"), 0o666);
+    const result = await create!(f.options).verifyPeer();
+    expect(result[key]).toBe(false);
+    expect(result).toMatchObject({ intercomEvidence: { [evidence]: reason } });
+  });
+}, 5000);
+
+it("starts the real Spider broker on a fresh box and then proves broker health", async () => {
+  const f = fixture(true); readyIntercomDeclarations(f);
+  await create!(f.options).enroll(f.peer, "00000000-0000-4000-8000-000000000001");
+  vi.stubEnv("HOME", f.home); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.globalRoot); vi.stubEnv("PI_CODING_AGENT_DIR", f.agentDir);
+  const out: string[] = [], err: string[] = [];
+  const { main } = await import("../cli");
+  let pid: number | undefined;
+  try {
+    expect(existsSync(join(f.agentDir, "intercom", "broker.sock"))).toBe(false);
+    expect(await main(["--global-root", f.globalRoot, "roam", "intercom", "start-broker"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+    expect(JSON.parse(out.join(""))).toMatchObject({ version: 1, kind: "intercom-broker-start", ok: true, machineId: f.peer.machineId });
+    pid = Number(readFileSync(join(f.agentDir, "intercom", "broker.pid"), "utf8"));
+    expect(Number.isSafeInteger(pid) && pid! > 1).toBe(true);
+    expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: true, legacyDrained: true, federation: true });
+    out.length = 0;
+    expect(await main(["--global-root", f.globalRoot, "roam", "intercom", "start-broker"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
+    expect(Number(readFileSync(join(f.agentDir, "intercom", "broker.pid"), "utf8"))).toBe(pid);
+  } finally { if (pid) try { process.kill(pid, "SIGTERM"); } catch { /* Fixture process already exited. */ } vi.unstubAllEnvs(); }
+}, 5000);
+
+it("proves all three intercom checks against the real compiled Spider broker", async () => {
+  const f = fixture(true); readyIntercomDeclarations(f);
+  const child = startTestBroker(process.execPath, [join(process.cwd(), "dist", "intercom", "broker.mjs")],
+    { env: { ...process.env, HOME: f.home, PI_CODING_AGENT_DIR: f.agentDir }, stdio: ["ignore", "pipe", "pipe"] });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("real fixture broker did not start")), 3000);
+      child.once("exit", code => { clearTimeout(timer); reject(new Error(`real fixture broker exited ${code}`)); });
+      child.stdout!.on("data", chunk => { if (String(chunk).includes("Intercom broker started")) { clearTimeout(timer); resolve(); } });
+    });
+    expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: true, legacyDrained: true, federation: true,
+      intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: [] } });
+  } finally { await stopTestBroker(child); }
+}, 5000);
+
+it("rejects two enabled Spider extension declarations", async () => {
+  const f = fixture(true); readyIntercomDeclarations(f);
+  writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ packages: [f.releaseRoot] }), { mode: 0o600 });
+  await withReadinessBroker(f, ["federation-v1"], async () => {
+    expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: false, intercomEvidence: { settings: "settings-spider-duplicate" } });
+  });
+}, 5000);
+
+it("detects a legacy package by its installed manifest even under a different directory name", async () => {
+  const f = fixture(true); readyIntercomDeclarations(f);
+  const legacy = join(f.agentDir, "other-name"); mkdirSync(legacy, { mode: 0o700 });
+  writeFileSync(join(legacy, "package.json"), JSON.stringify({ name: "pi-intercom", pi: { extensions: ["./index.js"] } }), { mode: 0o600 });
+  writeFileSync(join(legacy, "index.js"), "export default () => {};", { mode: 0o600 });
+  writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ packages: ["./other-name"] }), { mode: 0o600 });
+  await withReadinessBroker(f, ["federation-v1"], async () => {
+    expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: false, intercomEvidence: { settings: "legacy-extension-declared" } });
+  });
+}, 5000);
+
+it("blocks a declared scoped pi-intercom package even when it is not installed", async () => {
+  const f = fixture(true); readyIntercomDeclarations(f);
+  writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ packages: ["npm:@someone/pi-intercom@1.2.3"] }), { mode: 0o600 });
+  await withReadinessBroker(f, ["federation-v1"], async () => {
+    expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: false, intercomEvidence: { settings: "legacy-extension-declared" } });
+  });
+}, 5000);
+
+it("allows an unrelated extension but lists it as unclassified", async () => {
+  const f = fixture(true); readyIntercomDeclarations(f);
+  const other = join(f.agentDir, "ordinary-extension"); mkdirSync(other, { mode: 0o700 });
+  writeFileSync(join(other, "package.json"), JSON.stringify({ name: "ordinary-extension", pi: { extensions: ["./index.js"] } }), { mode: 0o600 });
+  writeFileSync(join(other, "index.js"), "export default () => {};", { mode: 0o600 });
+  writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ packages: ["./ordinary-extension"] }), { mode: 0o600 });
+  await withReadinessBroker(f, ["federation-v1"], async () => {
+    expect(await create!(f.options).verifyPeer()).toMatchObject({ intercomUnique: true,
+      intercomEvidence: { settings: "settings-unique", otherExtensions: ["ordinary-extension"] } });
+  });
+}, 5000);
+
+it("does not trust federation claims from a non-Spider health response", async () => {
+  const f = fixture(true); readyIntercomDeclarations(f);
+  await withReadinessBroker(f, ["federation-v1"], async () => {
+    expect(await create!(f.options).verifyPeer()).toMatchObject({ legacyDrained: false, federation: false,
+      intercomEvidence: { legacy: "intercom-broker-not-spider", federation: "intercom-broker-not-spider" } });
+  }, "legacy");
+}, 5000);
+
 it("verifies offline pi auth, native modules, extension load and exact-session launch", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
   const f = fixture(), log = readyExecutables(f), adapter = create!(f.options);
@@ -788,4 +944,19 @@ it("uses the existing switchover transaction and retains old package files", asy
   expect(JSON.parse(readFileSync(join(f.agentDir, "settings.json"), "utf8"))).toEqual({ packages: ["npm:other"] });
   expect(readFileSync(old, "utf8")).toBe("legacy client");
   expect(existsSync(join(f.agentDir, "extensions", "spider.ts"))).toBe(true);
+}, 5000);
+
+it("explicit authenticated provisioning toggles only the enrolled hub's box flag", async () => {
+  const f = fixture(), adapter = create!(f.options), hub = "00000000-0000-4000-8000-000000000001", file = join(f.globalRoot, "roam", "config.json");
+  await expect(adapter.setEnabled(f.peer, hub, true)).rejects.toThrow();
+  expect(existsSync(file)).toBe(false);
+  await adapter.enroll(f.peer, hub);
+  expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
+  const before = readFileSync(file, "utf8");
+  await expect(adapter.setEnabled(f.peer, "00000000-0000-4000-8000-000000000009", true)).rejects.toThrow();
+  expect(readFileSync(file, "utf8")).toBe(before);
+  await adapter.setEnabled(f.peer, hub, true);
+  expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(true);
+  await adapter.setEnabled(f.peer, hub, false);
+  expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
 }, 5000);

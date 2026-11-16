@@ -1,4 +1,4 @@
-import { stripTerminalSequences } from "@earendil-works/pi-tui";
+import { stripVTControlCharacters as stripTerminalSequences } from "node:util";
 import type { Db } from "@spider/db-core";
 import type { SourceErrorRow } from "./dashboard-contract.js";
 import { validatePage } from "./dashboard-selection.js";

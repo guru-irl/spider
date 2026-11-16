@@ -73,6 +73,8 @@ export class OrganismWorker {
   #reviewTask: Promise<void> | undefined;
   #reviewController: AbortController | undefined;
   #shuttingDown = false;
+  #paused = false;
+  #resumeReviews = false;
 
   /** Fire-and-forget only from live-session lifecycle hooks, never a drain. */
   startSkillReviews(): void {
@@ -91,7 +93,20 @@ export class OrganismWorker {
 
   constructor(deps: WorkerDeps) { this.#deps = deps; }
 
+  /** Close the queue before waiting for all writers already admitted to it. */
+  async pause(): Promise<void> {
+    if (!this.#paused) { this.#resumeReviews = !this.#shuttingDown; this.#paused = true; }
+    await Promise.all([this.stopSkillReviews(), this.#inflight]);
+  }
+  resume(): void {
+    if (!this.#paused) return;
+    this.#paused = false;
+    if (this.#resumeReviews) { this.#shuttingDown = false; this.startSkillReviews(); }
+    this.#resumeReviews = false;
+  }
+
   #serialize<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.#paused) return Promise.reject(new Error("organism is paused"));
     this.#queuedWork++;
     const run = this.#inflight.then(fn, fn).finally(() => { this.#queuedWork--; });
     this.#inflight = run.then(() => undefined, () => undefined);

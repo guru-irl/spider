@@ -5,11 +5,19 @@ import releaseRequestSource from "./release-request.ts?raw";
 import enrollmentSource from "./enrollment.ts?raw";
 import configSource from "./config.ts?raw";
 import machineIdSource from "./machine-id.ts?raw";
+import intercomReadinessSource from "./intercom-readiness.ts?raw";
 import { DEFAULT_INTERCOM_LIMITS, DEFAULT_LIMITS } from "./contracts";
 
 // The destination executes the same file and auth checks as the local installer. Node's
 // native TypeScript stripping needs no package install before the release exists.
-const authForRemote = authSource
+const authConsent = authSource.indexOf("export function hasProvisionConsent");
+const authParse = authSource.indexOf("function parseAuth", authConsent);
+const authPreview = authSource.indexOf("export function previewPiAuthBytes", authParse);
+const authInstall = authSource.indexOf("export function installPiAuth", authPreview);
+if (authConsent < 0 || authParse <= authConsent || authPreview <= authParse || authInstall <= authPreview)
+  throw new Error("Cannot assemble remote authentication installer");
+// Consent, preview and transfer run on the hub; only validation and installation run remotely.
+const authForRemote = (authSource.slice(0, authConsent) + authSource.slice(authParse, authPreview) + authSource.slice(authInstall))
   .replace('import { basename, dirname } from "node:path";', 'import { basename } from "node:path";')
   .replace('import type { Journal, Peer } from "./contracts";', "")
   .replace('import { installPiAuthBytes, readPrivateBytes } from "./selected-files";', "");
@@ -22,11 +30,16 @@ const configForRemote = configSource
   .replace(/^export /gm, "");
 const machineIdForRemote = machineIdSource.replace(/^export /gm, "");
 const enrollmentForRemote = enrollmentSource.replace('import { parseConfig as parseRoamConfig } from "./config";', "");
+// Remote verification needs the inspector, not the host's validator or diagnostic formatter.
+const intercomHostStart = intercomReadinessSource.indexOf("export const INTERCOM_UNIQUENESS_DESCRIPTION");
+const intercomHostEnd = intercomReadinessSource.indexOf("function irLegacyPath", intercomHostStart);
+if (intercomHostStart < 0 || intercomHostEnd <= intercomHostStart) throw new Error("Cannot assemble intercom readiness inspector");
+const intercomForRemote = intercomReadinessSource.slice(0, intercomHostStart) + intercomReadinessSource.slice(intercomHostEnd);
 if (authForRemote === authSource || authForRemote.includes('from "./') || configForRemote.includes("import ") ||
     enrollmentForRemote === enrollmentSource || enrollmentForRemote.includes('from "./')) throw new Error("Cannot assemble provisioning program");
 const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAULT_LIMITS = ${JSON.stringify(DEFAULT_LIMITS)};\nconst DEFAULT_INTERCOM_LIMITS = ${JSON.stringify(DEFAULT_INTERCOM_LIMITS)};\n${machineIdForRemote}\n${configForRemote}\nreturn parseConfig;\n})();\n`;
 
-export const PROVISION_REMOTE_SCRIPT: string = selectedRemoteSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + String.raw`
+export const PROVISION_REMOTE_SCRIPT: string = selectedRemoteSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + "\n" + intercomForRemote + String.raw`
 import { readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -153,6 +166,12 @@ function releaseTerminals(core: string, coreId: string, operationId: string, mac
   return rows.some(row => row.state === "live") ? "live" : rows.length ? "finished" : "none";
 }
 async function run(): Promise<unknown> {
+  if (request.action === "roaming-enabled") {
+    if (typeof request.enabled !== "boolean") bad("invalid-request");
+    releaseCore(text("core"), text("coreId"));
+    setBoxRoamingEnabled(text("globalRoot"), text("machineId"), text("hubMachineId"), request.enabled);
+    return { enabled: request.enabled };
+  }
   const home = text("home"), globalRoot = text("globalRoot"), agentDir = text("agentDir"), npmPrefix = text("npmPrefix"), unitDir = text("unitDir");
   const operationId = text("operationId"), machineId = text("machineId"), action = text("action");
   if (resolve(home) !== home || realpathSync(home) !== home || homedir() !== home ||
@@ -438,7 +457,8 @@ async function run(): Promise<unknown> {
   }
   if (action === "verify") {
     const verification = { piSignedIn: false, nativeSqlite: false, extensionLoaded: false, exactSession: false,
-      privateModes: false, bundledIntercom: false, intercomUnique: false, legacyDrained: false, federation: false };
+      privateModes: false, bundledIntercom: false, intercomUnique: false, legacyDrained: false, federation: false,
+      intercomEvidence: { settings: "settings-resolution-unavailable", legacy: "intercom-broker-unavailable", federation: "intercom-broker-unavailable", otherExtensions: [] } };
     const release = resolve(dirname(text("cli")), "..", ".."), pi = text("pi");
     if (!inside(npmPrefix, release) || pi !== join(npmPrefix, "bin", "pi") || !Array.isArray(request.providers) ||
         !Array.isArray(request.files) || request.files.length > 10_000) bad("invalid-request");
@@ -466,6 +486,7 @@ async function run(): Promise<unknown> {
       try { verification.nativeSqlite = spawnSync(process.execPath, ["--input-type=module", "-e", nativeScript, release],
         { cwd: probe, env, stdio: "ignore", timeout: 15_000 }).status === 0; } catch { /* Missing evidence is not readiness. */ }
       const sdk = join(npmPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
+      Object.assign(verification, await inspectIntercomReadiness({ agentDir, release, sdk, cwd: home }));
       const extensionScript = "import {pathToFileURL} from 'node:url'; const p=await import(pathToFileURL(process.argv[1]).href); const l=new p.DefaultResourceLoader({cwd:process.argv[3],agentDir:process.argv[4],additionalExtensionPaths:[process.argv[2]],noExtensions:true,noSkills:true,noPromptTemplates:true,noThemes:true,noContextFiles:true}); await l.reload(); const v=l.getExtensions(); if(v.errors.length||!v.extensions.some(e=>e.tools.has('spider')))process.exitCode=1;";
       try { verification.extensionLoaded = spawnSync(process.execPath, ["--input-type=module", "-e", extensionScript, sdk,
         join(release, "dist", "extension.js"), probe, agent], { cwd: probe, env, stdio: "ignore", timeout: 20_000 }).status === 0; }

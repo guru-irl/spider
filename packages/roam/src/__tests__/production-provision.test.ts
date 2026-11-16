@@ -1,7 +1,8 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Journal, Transport } from "../contracts";
+import type { JsonObject } from "@spider/db-core/roam/types";
 import { DEFAULT_LIMITS } from "../contracts";
 import { readLocalIdentity } from "../runtime";
 import { bootstrapPeer } from "./bootstrap-fixture";
@@ -17,19 +18,27 @@ it("composes target-fenced ports, peer locking and durable launcher configuratio
   const machineId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
   writeFileSync(join(roam, "machine.json"), JSON.stringify({ machineId }), { mode: 0o600 });
   writeFileSync(join(roam, "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId, hubMachineId: machineId, peers: [], coreUnit: "herdr-core.service" }), { mode: 0o600 });
-  const journal: Journal = { begin: () => ({ kind: "new", result: null }), record() {}, read: () => [] };
+  const records = new Map<string, Array<{ action: string; result: JsonObject }>>();
+  const journal: Journal = { begin: () => ({ kind: "new", result: null }), record(id, action, result) {
+    records.set(id, [...(records.get(id) ?? []), { action, result }]);
+  }, read: id => records.get(id) ?? [] };
   const transport: Transport = { async resolve(peer) { return peer; }, async bootstrapProbe() { throw new Error("unexpected probe"); },
     async exec() { throw new Error("unexpected exec"); }, async run() { throw new Error("unexpected run"); }, async read() { throw new Error("unexpected read"); }, async write() { throw new Error("unexpected write"); } };
-  const core = { local: "fixture-local-core", remote: "fixture-core" }, claims: typeof core[] = [];
+  const core = { local: "fixture-local-core", remote: "fixture-core" }, claims: typeof core[] = [], participation: boolean[] = [];
   const previews: { home: string; core: typeof core }[] = [];
   const port = { transport, async probeAgentDirectory() { return { status: "default" as const, core }; },
     async previewSettings(_peer: unknown, home: string, _entries: unknown, _maximum: number, fence: typeof core) {
       previews.push({ home, core: fence }); return { fingerprint: "a".repeat(64), changedKeys: ["theme"] };
     },
     async claimIdentity(_peer: unknown, _id: string, value: typeof core) { claims.push(value); return { machineId: bootstrapPeer.machineId, coreId: "fixture-core" }; },
-    async executeProvision() { return true; }, async launchRelease() { return { terminal: "box-1.invalid/t1" }; } };
+    async executeProvision(_peer: unknown, request: Record<string, unknown>) {
+      expect(request.action).toBe("roaming-enabled");
+      expect(records.get(String(request.operationId))?.some(row => row.action === "provision-consent" && row.result.approved === true &&
+        row.result.machineId === bootstrapPeer.machineId && row.result.enabled === request.enabled)).toBe(true);
+      participation.push(request.enabled as boolean); return { enabled: request.enabled };
+    }, async launchRelease() { return { terminal: "box-1.invalid/t1" }; } };
   const options = { identity: { pid: process.pid, startIdentity: "fixture" }, probe: async () => ({ kind: "live" as const, startIdentity: "fixture" }) };
-  const ports = create!({ root, hubMachineId: "00000000-0000-4000-8000-000000000001", peer: bootstrapPeer, operationId: "op-1", transport: port, journal, limits: DEFAULT_LIMITS,
+  const ports = create!({ root, hubMachineId: machineId, peer: bootstrapPeer, operationId: "op-1", transport: port, journal, limits: DEFAULT_LIMITS,
     source: { agentRoot: root, releaseFile: join(root, "release.tgz"), piProviders: [] },
     destination: { home: "/home/fixture", agentDir: "/home/fixture/.pi/agent", npmPrefix: "/home/fixture/.local", supervisor: "/home/fixture/.local/supervisor.mjs" },
     unitDir: "/home/fixture/.config/systemd/user", coreUnit: "herdr-core.service", release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: "a".repeat(64), nodeRange: "22.23.4 || 26.4.0" },
@@ -48,5 +57,13 @@ it("composes target-fenced ports, peer locking and durable launcher configuratio
   expect(claims).toEqual([core]);
   await ports.withPeerLock(bootstrapPeer.machineId, async () => { await ports.persistPeer(bootstrapPeer); });
   expect(readLocalIdentity(root).peers).toEqual([bootstrapPeer]);
+  await ports.setParticipation(bootstrapPeer, true);
+  expect(participation).toEqual([false]);
+  const configFile = join(roam, "config.json"), updated = JSON.parse(readFileSync(configFile, "utf8"));
+  writeFileSync(configFile, JSON.stringify({ ...updated, enabled: true }), { mode: 0o600 });
+  await ports.setParticipation(bootstrapPeer, false);
+  await ports.setParticipation(bootstrapPeer, true);
+  await ports.setParticipation(bootstrapPeer, null);
+  expect(participation).toEqual([false, false, true]);
   expect(ports.systemd.unitDir).toBe("/home/fixture/.config/systemd/user");
 }, 5000);

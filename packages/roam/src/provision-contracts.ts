@@ -1,6 +1,7 @@
 import type { Diagnostic, Journal, Limits, Operation, Peer, Transport } from "./contracts";
 import type { AuthPorts } from "./auth";
 import type { SelectedFile, SelectedFileMetadata, SettingsDestinationPreview, SettingsKeyDigest } from "./selected-files";
+import type { IntercomReadiness } from "./intercom-readiness";
 
 export type FileLimit = number | "unlimited" | null;
 export interface FileStatus { present: boolean; readable: boolean; modeSafe: boolean }
@@ -33,9 +34,9 @@ export type ProvisionRequest = {
   operation: Operation; peer: Peer; selected: readonly string[]; includeAuth: boolean; confirmedProviders: readonly string[];
   expectedAuthBytes?: number; expectedFiles?: readonly SelectedFileMetadata[]; expectedSelectionDigest?: string;
 };
-export interface ProvisionVerification {
+export interface ProvisionVerification extends IntercomReadiness {
   piSignedIn: boolean; nativeSqlite: boolean; extensionLoaded: boolean; exactSession: boolean; privateModes: boolean;
-  bundledIntercom: boolean; intercomUnique: boolean; legacyDrained: boolean; federation: boolean;
+  bundledIntercom: boolean;
 }
 export interface IntercomDoctorState {
   connector: "ready" | "missing" | "unknown"; login: "ready" | "required" | "unknown";
@@ -153,6 +154,9 @@ export interface ProvisionPorts extends DoctorPorts {
   report(diagnostics: readonly Diagnostic[]): Promise<void>;
   verifyPeer(): Promise<ProvisionVerification>;
   persistPeer(peer: Peer): Promise<void>;
+  /** Under the hub configuration lock, set the box flag only when both hub and readiness permit it.
+   * A null readiness is a completed retry: clear a disabled hub's flag, but never enable from stale evidence. */
+  setParticipation(peer: Peer, ready: boolean | null): Promise<void>;
   bootstrap: {
     probeAgentDirectory(peer: Peer, home: string): Promise<AgentDirectoryProbe>;
     previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence): Promise<SettingsDestinationPreview>;
@@ -161,6 +165,7 @@ export interface ProvisionPorts extends DoctorPorts {
   systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<void> };
   transfer: {
     enroll(peer: Peer, hubMachineId: string): Promise<void>;
+    setEnabled(peer: Peer, hubMachineId: string, enabled: boolean): Promise<void>;
     cleanupSecrets(peer: Peer): Promise<void>;
     installRelease(peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }):
       Promise<{ pi: string; cli: string; supervisor: string }>;

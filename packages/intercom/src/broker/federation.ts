@@ -143,7 +143,7 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
     },
     async dispatchLocal(from, to, message) {
       requireBridge();
-      if (to.machineId !== localMachine || to.homeEpoch === null || !ports.locals().some(local => sameAddress(local, to.address)) || from.scopeId !== to.address.scopeId || sameAddress(from, to.address)) throw new Error("invalid-local-home-endpoint");
+      if (to.machineId !== localMachine || !ports.locals().some(local => sameAddress(local, to.address)) || from.scopeId !== to.address.scopeId || sameAddress(from, to.address)) throw new Error("invalid-local-home-endpoint");
       return dispatchTracked(from, to, message);
     },
     receipt(from, receipt): void {
@@ -154,11 +154,12 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
       requireBridge().control(from, to, control);
       applyControl(from, to, control);
     },
-    inspectBlockers(address): FederationBlockers {
-      prune();
-      const entries = [...dispatches.entries()].filter(([, value]) => related(address, value));
+    inspectBlockers(address, options): FederationBlockers {
+      const now = ports.now(), visible = (createdAt: number) => options?.includeExpired || now - createdAt <= 60 * 60 * 1000;
+      const bounded = <T>(items: T[]) => options?.includeExpired ? items : items.slice(-4096);
+      const entries = bounded([...dispatches.entries()].filter(([, value]) => visible(value.createdAt))).filter(([, value]) => related(address, value));
       return {
-        asks: structuredClone([...asks.values()].filter(edge => sameAddress(edge.from, address) || sameAddress(edge.to, address)).map(({ id, from, to }) => ({ id, from, to }))),
+        asks: structuredClone(bounded([...asks.values()].filter(edge => visible(edge.createdAt))).filter(edge => sameAddress(edge.from, address) || sameAddress(edge.to, address)).map(({ id, from, to }) => ({ id, from, to }))),
         pendingDispatch: entries.filter(([, value]) => value.pending).map(([id]) => id),
         unknownOutcomes: entries.filter(([, value]) => value.unknown).map(([id]) => id),
         unobservedReceipts: entries.filter(([, value]) => value.unobserved).map(([id]) => id),

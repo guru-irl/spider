@@ -1,3 +1,8 @@
+import { openDbReadOnly } from "@spider/db-core";
+import { syncHandshake } from "./revocation";
+import { inspectSession, verifyFrozenSession } from "./session-file";
+import { exportMirrorRange, type MirrorPrefix } from "./mirrors";
+import { requestSupervisorRetirement } from "./participant-supervisor";
 import { ReadinessParseError } from "@spider/db-core/roam/readiness";
 import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
@@ -488,6 +493,49 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
         ("header" in operation.args && !plainObject(operation.args.header))) throw new Error("Invalid operation object");
     operation = structuredClone(operation);
     id = artifactId(operation.id);
+    if (["mirror-export", "sync-handshake", "supervisor-retire"].includes(operation.kind)) {
+      const config = ports.config;
+      if (operation.machineId !== config.machineId || !isMachineId(operation.args.sourceMachine)) return outcome(2, "recovery-request-invalid", id);
+      if (operation.kind === "sync-handshake") {
+        if (config.role !== "hub" || !config.peers.some(peer => peer.machineId === operation.args.sourceMachine) || operation.expectedEpoch !== null || Object.keys(operation.args).join() !== "sourceMachine") return outcome(1, "recovery-authority-unavailable", id);
+        const db = openDbReadOnly(join(dirname(ports.openStore("global").db.raw.name), "roam", "journal.db"));
+        if (!db) return outcome(3, "revocation-evidence-unavailable", id);
+        try { return outcome(0, "sync-handshake", id, { ...syncHandshake(db, operation.args.sourceMachine) }); } finally { db.close(); }
+      }
+      if (config.role !== "box" || operation.args.sourceMachine !== config.hubMachineId) return outcome(1, "recovery-authority-unavailable", id);
+      if (operation.kind === "supervisor-retire") {
+        if (operation.expectedEpoch !== null || Object.keys(operation.args).sort().join() !== "reply,sourceMachine") return outcome(2, "recovery-request-invalid", id);
+        return await requestSupervisorRetirement(dirname(ports.openStore("global").db.raw.name), operation, config);
+      }
+      if (!config.enabled) return outcome(1, "roaming-disabled", id);
+      if (!["moveId,sessionId,sourceMachine", "moveId,prefix,sessionId,sourceMachine"].includes(Object.keys(operation.args).sort().join()) || typeof operation.args.sessionId !== "string" || !operation.args.sessionId || !Number.isSafeInteger(operation.expectedEpoch)) return outcome(2, "recovery-request-invalid", id);
+      const home = sessionHome(ports, operation.args.sessionId);
+      if (!home || home === "unknown" || home.machineId !== config.machineId || home.epoch !== operation.expectedEpoch || home.moveId !== operation.args.moveId) return outcome(1, "mirror-home-changed", id);
+      const local = ports.openStore("global").db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id=?").get(home.sessionId) as { file: string; cwd: string } | undefined;
+      if (!local) return outcome(1, "participant-location-unavailable", id);
+      const prior = ports.journal.begin(operation);
+      if (prior.kind === "done") return prior.result as unknown as Outcome<JsonObject>;
+      const source = await inspectSession(local.file, home.sessionId, undefined, config.limits);
+      if (source.cwd !== local.cwd) return outcome(1, "participant-file-mismatch", id);
+      const range = exportMirrorRange(source, (operation.args.prefix ?? null) as MirrorPrefix | null, join(ports.root, "mirror-exports"));
+      let artifact;
+      try { artifact = range.file === null ? null : await stageArtifact(range.file, "session", config.limits, { root: ports.root, artifactId: id }); }
+      finally { if (range.file !== null) unlinkSync(range.file); }
+      const result = outcome(0, range.reason, id, JSON.parse(JSON.stringify({ source, artifact, mode: range.mode, offset: range.offset, reason: range.reason })) as JsonObject);
+      ports.journal.record(id, "done", result as unknown as JsonObject); return result;
+    }
+    const moveKinds = ["session-inspect", "session-freeze", "session-unfreeze", "session-shutdown", "session-retire", "session-readmit", "move-diagnostics", "move-prerequisites", "move-seed", "move-observation", "move-retire-failed", "move-export", "move-import", "move-verify", "move-readmit", "move-cleanup", "move-abort-workspace", "move-cleanup-terminal", "move-intercom-inspect", "move-intercom-checkGeneration", "move-intercom-ready", "move-presentation-authority", "move-ready-target", "move-workspace-map", "move-owner-observation", "move-abort-authority", "move-retire-authority", "move-rollback-authority"];
+    if (moveKinds.includes(operation.kind) || operation.kind === "session-start" && operation.args.prepared) {
+      const authority = ["move-abort-authority", "move-retire-authority", "move-rollback-authority"].includes(operation.kind);
+      const readonly = ["move-workspace-map", "move-owner-observation"].includes(operation.kind);
+      const requester = operation.args.requesterMachine;
+      if (operation.machineId !== ports.config.machineId || !(Number.isSafeInteger(operation.expectedEpoch) && Number(operation.expectedEpoch) >= 1 || readonly && operation.expectedEpoch === null) ||
+          typeof operation.args.sessionId !== "string" || !/^[A-Za-z0-9_-]{1,160}$/.test(operation.args.sessionId) ||
+          typeof operation.args.moveId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operation.args.moveId)) return outcome(2, "move-request-invalid", id);
+      if (!ports.config.enabled) return outcome(1, "roaming-disabled", id);
+      if (authority ? typeof requester !== "string" || !(requester === ports.config.machineId || ports.config.peers.some(peer => peer.machineId === requester)) : operation.args.sourceMachine !== ports.config.hubMachineId) return outcome(1, "move-authority-unavailable", id);
+      return ports.move ? await ports.move(operation) : outcome(1, "adapter-unbound:moveControl", id);
+    }
     if (["session-start", "session-stop", "session-resume"].includes(operation.kind)) {
       const { handleSessionOperation } = await import("./participant-runtime");
       return await handleSessionOperation(operation, ports);

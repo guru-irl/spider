@@ -6,14 +6,14 @@ import { homedir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline/promises";
-import type { Journal } from "./contracts";
+import type { Journal, Outcome } from "./contracts";
 import { privateDirectory } from "@spider/herdr/sessions/registry";
 import { assertTestConfigPath } from "@spider/db-core";
 import { openJournal } from "./journal";
 import { readLocalIdentity } from "./runtime";
 import { loadHerdrConfig } from "./production-hub";
 import { createProvisionTransport } from "./transport";
-import { createProductionProvisionPorts } from "./production-provision";
+import { createProductionProvisionPorts, setProvisionParticipation } from "./production-provision";
 import { provision, provisionSelectionDigest } from "./provision";
 import { RELEASE_ENTRIES } from "./release-request";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
@@ -50,7 +50,7 @@ export async function confirmProvision(journal: Journal, request: ConsentRequest
   }
   const extra = providers.filter(name => name !== "github-copilot");
   const supplied = [...(ports.consentedProviders ?? [])].sort();
-  const approved = ports.tty ? /^(?:y|yes)$/i.test((await ports.ask(`Copy copilot-auth${extra.length ? ` and credentials for ${extra.join(", ")}` : ""} to ${request.target} and install this release? [y/N] `)).trim())
+  const approved = ports.tty ? /^(?:y|yes)$/i.test((await ports.ask(`Copy copilot-auth${extra.length ? ` and credentials for ${extra.join(", ")}` : ""} to ${request.target} and install this release? This permits box roaming participation when the hub is enabled. [y/N] `)).trim())
     : ports.yes && ports.consent === "copilot-auth" && JSON.stringify(supplied) === JSON.stringify(extra);
   if (!approved) return false;
   journal.record(request.operationId, "human-consent", { actor: ports.actor, at: ports.now(), operationId: request.operationId,
@@ -143,9 +143,12 @@ export interface ProvisionCliRequest { root: string; target: string; release?: s
   skills?: readonly string[]; consentedProviders?: readonly string[]; noSettings?: boolean }
 export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text: string): void; err(text: string): void }, options: {
   bundleUrl?: URL; tty?: boolean; ask?(text: string): Promise<string>;
-} = {}): Promise<number> {
+} = {}): Promise<Outcome<{ hostingReady: boolean }>> {
+  let operationId = input.operationId ?? "";
+  const refused = (code: 1 | 3, reason: string): Outcome<{ hostingReady: boolean }> => ({ code, reason, operationId, home: null, epoch: null, repairCommand: null, value: null });
   try {
     const config = readLocalIdentity(input.root); if (config.role !== "hub") throw new Error("provision-requires-hub");
+    io.out(`The broker starts at enable (spider roam enable), if it is not already running.${config.enabled ? "" : " Roaming is disabled; provisioning will not enable the box or start hosting."}\n`);
     const configured = config.peers.find(peer => peer.alias === input.target || peer.machineId === input.target);
     if (!configured) throw new Error("provision-target-unavailable");
     const tty = options.tty ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -176,7 +179,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       io.err(`Provider consent required: ${extra.map(safe).join(", ") || "none"}.\n`);
       throw new Error("provision-provider-consent-required");
     }
-    const operationId = input.operationId ?? randomUUID();
+    operationId = input.operationId ?? randomUUID();
     if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(operationId)) throw new Error("invalid-provision-operation");
     const journal = openJournal(join(input.root, "roam", "journal.db"));
     const completed = journal.read(operationId).find(row => row.action === "provision-completed")?.result;
@@ -208,13 +211,17 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     const request: ConsentRequest = { operationId, target: peer.alias, machineId: peer.machineId, hubMachineId: config.machineId, files, releaseHash: pinned.sha256, providers, selectionDigest };
     // Reserve the byte identity before any remote observation. Consent itself is recorded after inventory.
     journal.begin(consentOperation(request));
-    if (completed) {
-      if (completed.contextDigest !== contextDigest) throw new Error("Operation ID already has different arguments");
-      await removeProvisionSource(input.root, operationId);
-      io.out(`${safe(done!.reason as string)}\n`); return 0;
-    }
+    if (completed && completed.contextDigest !== contextDigest) throw new Error("Operation ID already has different arguments");
     const herdr = loadHerdrConfig(input.root);
     const transport = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: [peer] }, journal);
+    if (completed) {
+      try { await setProvisionParticipation({ root: input.root, hubMachineId: config.machineId, peer, ready: null, journal, transport }); }
+      catch { io.err("provision-participation-unconfirmed. Retry provisioning or run spider roam disable.\n"); return refused(3, "provision-participation-unconfirmed"); }
+      await removeProvisionSource(input.root, operationId);
+      io.out(`${safe(done!.reason as string)}\n`);
+      return { code: 0, reason: done!.reason as string, operationId: done!.operationId as string, home: null, epoch: null, repairCommand: null,
+        value: { hostingReady: (done!.value as { hostingReady: boolean }).hostingReady } };
+    }
     let shownSettings: { fingerprint: string | null; keys: readonly string[] } = { fingerprint: null, keys: [] };
     const ports = createProductionProvisionPorts({ root: input.root, hubMachineId: config.machineId, peer, operationId: `${operationId}-install`, transport, journal, limits: config.limits,
       source: { agentRoot, releaseFile: pinned.file, piProviders: ["github-copilot"] }, destination, coreUnit: config.coreUnit, unitDir: posix.join(home, ".config/systemd/user"),
@@ -232,16 +239,22 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       journal.record(operationId, "provision-completed", { installOperationId: `${operationId}-install`, releaseHash: pinned.sha256, contextDigest });
       await removeProvisionSource(input.root, operationId);
     }
-    (result.code === 0 ? io.out : io.err)(`${safe(result.reason)}\n`); return result.code;
+    if (result.reason === "release-pending") {
+      const target = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,255}$/.test(peer.alias) ? peer.alias : peer.machineId;
+      const repairCommand = `spider roam provision ${target} --operation-id ${operationId}`;
+      io.err(`Installation is still finishing on ${safe(peer.alias)}. Rerun ${repairCommand} with the same options to confirm.\n`);
+      return { ...result, repairCommand };
+    }
+    (result.code === 0 ? io.out : io.err)(`${safe(result.reason)}\n`); return result;
   } catch (error) {
     if (error instanceof SelectedFilesError) {
       const files = error.files.filter(file => file.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(file));
       io.err(`${error.code}${files.length ? ` (${files.join(", ")})` : ""}.\n`);
-      return 1;
+      return refused(1, error.code);
     }
     const message = error instanceof Error ? error.message : "";
     const named = /^(?:provision-|copilot-auth-|release-|installed-build-|invalid-provision-)[a-z-]+$/.test(message) ? message
       : message === "Operation ID already has different arguments" ? "provision-operation-arguments-changed" : "provision-unavailable";
-    io.err(`${named}.${named === "provision-requires-hub" ? " Run this command on the Mac hub." : ""}\n`); return 1;
+    io.err(`${named}.${named === "provision-requires-hub" ? " Run this command on the Mac hub." : ""}\n`); return refused(1, named);
   }
 }

@@ -18,8 +18,9 @@ export function embeddingRepoPath(project: ProjectInfo): string {
 export class HostEmbeddingRuntime {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #task: Promise<void> | undefined;
-  #controller: AbortController | undefined;
+  #drainAbort: AbortController | undefined;
   #stopped = false;
+  #paused = false;
   #paths: string[] = [];
   #project: ProjectInfo | undefined;
   #sessionId = "";
@@ -36,14 +37,14 @@ export class HostEmbeddingRuntime {
   ) {}
 
   start(): void {
-    if (this.#stopped || this.#project || this.opts.admitted?.() === false || process.env.PI_SUBAGENT_CHILD === "1") return;
+    if (this.#stopped || this.#paused || this.#project || this.opts.admitted?.() === false || process.env.PI_SUBAGENT_CHILD === "1") return;
     const ctx = this.getContext();
     this.#sessionId = sessionIdOf(ctx) || "embedding-runtime";
     this.#project = resolveProject(cwdOf(ctx) ?? process.cwd(), { sessionId: sessionIdOf(ctx) || undefined, explicitCwd: false });
     this.#paths = [embeddingRepoPath(this.#project), this.#project.dbPath];
     this.#idleMs = this.opts.intervalMs ?? 5000;
     this.#unsubscribe = onEmbedEnqueued(path => {
-      if (!this.#paths.includes(path) || this.#stopped || this.opts.admitted?.() === false) return;
+      if (!this.#paths.includes(path) || this.#stopped || this.#paused || this.opts.admitted?.() === false) return;
       this.#idleMs = this.opts.intervalMs ?? 5000;
       if (this.#task) this.#wakePending = true;
       else this.#schedule(0);
@@ -69,21 +70,35 @@ export class HostEmbeddingRuntime {
     } finally { snapshot?.close(); writer?.close(); }
   }
   #schedule(delay: number): void {
-    if (this.#stopped || this.opts.admitted?.() === false) return;
+    if (this.#stopped || this.#paused || this.opts.admitted?.() === false) return;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = setTimeout(() => { this.#timer = undefined; this.#tick(); }, delay);
     this.#timer.unref();
+  }
+  /** Stop timers and wait for an aborted in-flight drain before acknowledging a freeze. */
+  async pause(): Promise<void> {
+    this.#paused = true;
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = undefined;
+    this.#drainAbort?.abort(new Error("embedding worker paused"));
+    await this.#task;
+  }
+  resume(): void {
+    if (!this.#paused || this.#stopped) return;
+    if (this.opts.admitted?.() === false) throw new Error("Session ownership is not available");
+    this.#paused = false;
+    if (this.#project) this.#schedule(this.opts.intervalMs ?? 5000);
   }
   async stop(): Promise<void> {
     this.#stopped = true;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = undefined;
     this.#unsubscribe?.(); this.#unlog?.();
-    this.#controller?.abort(new Error("embedding worker stopped"));
+    this.#drainAbort?.abort(new Error("embedding worker stopped"));
     await this.#task;
   }
   #log(message: string): void {
-    if (this.#stopped || !this.#project || this.opts.admitted?.() === false) return;
+    if (this.#stopped || this.#paused || !this.#project || this.opts.admitted?.() === false) return;
     let db: Db | undefined;
     try {
       db = openDb(this.#project.dbPath, { fileMustExist: true, busyTimeoutMs: 250, checkpointOnClose: false });
@@ -92,14 +107,14 @@ export class HostEmbeddingRuntime {
     finally { db?.close(); }
   }
   #tick(): void {
-    if (this.#task || this.#stopped || this.opts.admitted?.() === false || process.env.PI_SUBAGENT_CHILD === "1") return;
-    const controller = new AbortController(); this.#controller = controller;
-    this.#task = this.#drain(controller.signal).catch(error => {
-      if (controller.signal.aborted || isEmbeddingBusy(error)) return;
+    if (this.#task || this.#stopped || this.#paused || this.opts.admitted?.() === false || process.env.PI_SUBAGENT_CHILD === "1") return;
+    const cancellation = new AbortController(); this.#drainAbort = cancellation;
+    this.#task = this.#drain(cancellation.signal).catch(error => {
+      if (cancellation.signal.aborted || isEmbeddingBusy(error)) return;
       runtimeErrors.errors++; runtimeErrors.lastError = safeReviewError(error); runtimeErrors.lastErrorAt = Date.now();
       this.#log(`embedding runtime: ${runtimeErrors.lastError}`);
     }).finally(() => {
-      this.#controller = undefined; this.#task = undefined;
+      this.#drainAbort = undefined; this.#task = undefined;
       if (this.#wakePending) { this.#wakePending = false; this.#schedule(0); }
       else this.#schedule(this.#idleMs);
     });

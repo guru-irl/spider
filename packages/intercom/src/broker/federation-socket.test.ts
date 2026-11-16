@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { authorizeTestBridge, startTestBroker, stopTestBroker, testTmpDir } from "../test-support.js";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -11,7 +11,7 @@ import { IntercomClient, IntercomFederationClient } from "./client.js";
 import { FEDERATION_FEATURE, type FederationBridge, type RemoteSessionInfo } from "../protocol.js";
 
 let broker: ChildProcess;
-let fixtureHome: string;
+let fixtureHome: string, clockFile: string;
 const clients: IntercomClient[] = [];
 let bridge: IntercomFederationClient;
 const frames: any[] = [], receipts: any[] = [], controls: any[] = [];
@@ -23,7 +23,7 @@ const adapter: FederationBridge = {
 };
 beforeAll(async () => {
   fixtureHome = mkdtempSync(join(testTmpDir(), "h-"));
-  const clock = join(fixtureHome, "clock"), preload = join(fixtureHome, "clock.mjs");
+  const clock = clockFile = join(fixtureHome, "clock"), preload = join(fixtureHome, "clock.mjs");
   writeFileSync(clock, String(Date.now()));
   writeFileSync(preload, `import { readFileSync } from 'node:fs'; Date.now = () => Number(readFileSync(${JSON.stringify(clock)}, 'utf8'));`);
   broker = startTestBroker(process.execPath, ["--import", preload, "dist/intercom/broker.mjs"], { env: { ...process.env, HOME: fixtureHome }, stdio: ["ignore", "pipe", "pipe"] }, "suite");
@@ -82,6 +82,20 @@ it("broker derives the sender and every client producer reaches one bridge", asy
   }
   expect(frames.slice(-3).map(frame => frame.from)).toEqual(Array(3).fill({ sessionId: "sender", scopeId: null }));
   expect(frames.at(-1).message.content.attachments[0].content).toBe("synthetic attachment");
+}, 5000);
+
+it("blocker inspection does not expire a pending local ask", async () => {
+  const sender = await session("inspect-expiry-source"), target = await session("inspect-expiry-target");
+  const now = Number(readFileSync(clockFile, "utf8"));
+  const record = join(getAgentDirPath(), "intercom", "pending-asks", "inspect-no-expire.json");
+  try {
+    await sender.send("inspect-expiry-target", { messageId: "inspect-no-expire", text: "fixture", expectsReply: true, remainingMs: 2000 });
+    expect(existsSync(record)).toBe(true);
+    writeFileSync(clockFile, String(now + 2 * 60 * 60 * 1000));
+    const blockers = await bridge.inspectFreezeBlockers({ sessionId: "inspect-expiry-source", scopeId: null });
+    expect(blockers.asks).toContainEqual(expect.objectContaining({ id: "inspect-no-expire" }));
+    expect(existsSync(record)).toBe(true);
+  } finally { writeFileSync(clockFile, String(now)); await sender.disconnect(); await target.disconnect(); }
 }, 5000);
 
 it("local presence includes portable epochs and activity but no local handles", async () => {

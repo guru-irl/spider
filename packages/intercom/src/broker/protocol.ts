@@ -123,9 +123,23 @@ function isBlockers(value: unknown): value is import("../protocol.js").Federatio
     && [value.pendingDispatch, value.unknownOutcomes, value.unobservedReceipts].every(ids => Array.isArray(ids) && ids.every(nonempty));
 }
 /** Local socket frames are parsed once before calling the service-owned bridge. */
+export function isIntercomIntakeFence(value: unknown): value is import("../protocol.js").IntercomIntakeFence {
+  return isRecord(value) && isSessionAddress(value.address) && nonempty(value.moveId) && nonempty(value.generation) &&
+    Number.isSafeInteger(value.expectedEpoch) && Number(value.expectedEpoch) >= 1;
+}
+export function isIntercomIntakeAction(value: unknown): value is import("../protocol.js").IntercomIntakeAction {
+  return value === "close" || value === "check" || value === "open";
+}
+
 export function parseFederationBrokerMessage(value: unknown): import("../protocol.js").FederationBrokerMessage | null {
   if (!isRecord(value)) return null;
   switch (value.type) {
+    case "federation_intake_apply":
+      return nonempty(value.requestId) && isIntercomIntakeAction(value.action) && isIntercomIntakeFence(value.fence)
+        ? { type: value.type, requestId: value.requestId, action: value.action, fence: value.fence } : null;
+    case "intake_result":
+      return nonempty(value.requestId) && (value.generation === null || nonempty(value.generation))
+        ? { type: value.type, requestId: value.requestId, generation: value.generation } : null;
     case "federation_registered":
       return Array.isArray(value.features) && value.features.every(nonempty) ? { type: value.type, features: value.features } : null;
     case "federation_local_presence":

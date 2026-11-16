@@ -1,3 +1,8 @@
+import { resolveParticipantPi } from "./launcher";
+import { setEnrolledPeerEnabled } from "./peer-enabled";
+import { openJournal } from "./journal";
+import { remoteDoctor } from "./remote-observations";
+import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
@@ -20,10 +25,28 @@ import { recheckWorktree } from "./recheck";
 import { openLocalCore, readLocalIdentity } from "./runtime";
 import { listStoreKeys } from "./store-inventory";
 import { createStorePort } from "./stores";
-import { createTransport } from "./transport";
+import { createTransport, createProvisionTransport } from "./transport";
 
-export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string }
+export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; issues?: readonly { reason: string; repairCommand: string; detail?: string }[];
+  information?: readonly { machine: string; reason: string }[] }
 const clean = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 1000);
+function preflightCheck(reason: string): string {
+  const detail = reason.replace(/^local machine:\s*/i, "");
+  const named = /^([a-z][a-z0-9-]{0,79})(?::|$)/.exec(detail)?.[1];
+  if (named) return named;
+  if (/^PID [0-9]+ loaded build /.test(detail)) return "consumer-incompatible";
+  if (detail === "Cannot read the process presence inventory. Run spider roam doctor.") return "consumer-inventory-unavailable";
+  if (/^Bundled SQLite\b/i.test(detail)) return "sqlite-bundled";
+  if (/^sqlite3 CLI\b/i.test(detail)) return "sqlite-cli";
+  return detail.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64) || "doctor-check-unidentified";
+}
+function preflightDetail(reason: string): string | undefined {
+  const detail = reason.replace(/^local machine:\s*/i, "");
+  const process = /^PID ([0-9]+) loaded build .+ without the required release or roaming schema [0-9]+\. Reload it\.$/.exec(detail);
+  if (process) return `PID ${process[1]} loaded build incompatible with this release. Reload it.`;
+  if (detail === "Cannot read the process presence inventory. Run spider roam doctor.") return detail;
+  return undefined;
+}
 function launchctlBinary(): string {
   if (!process.env.SPIDER_TEST_FIXTURE_CHECKOUT) {
     if (process.platform !== "darwin") throw new Error("The hub service requires macOS");
@@ -75,6 +98,15 @@ async function agent(transport: Transport, peer: Peer, config: RoamConfig, kind:
     throw new Error("Peer refused or did not confirm the capture request");
   return result.value as JsonObject;
 }
+async function startPeerBroker(transport: Transport, peer: Peer, config: RoamConfig): Promise<void> {
+  const handle = await transport.resolve(peer);
+  const bytes = await transport.exec(handle, ["roam", "intercom", "start-broker"], { timeoutMs: config.limits.controlMs, maxBytes: 4096 });
+  const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("intercom-broker-unavailable");
+  const result = value as Record<string, unknown>;
+  if (Object.keys(result).length !== 4 || result.version !== 1 || result.kind !== "intercom-broker-start" || result.ok !== true || result.machineId !== peer.machineId)
+    throw new Error("intercom-broker-unavailable");
+}
 async function waitReady(file: string): Promise<boolean> {
   const end = Date.now() + 4000;
   while (Date.now() < end) {
@@ -89,19 +121,70 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
   let changed = false;
   try {
     const initial = readLocalIdentity(root);
-    if (initial.role !== "hub") return { code: 1, reason: "Run this command on the Mac hub." };
+    if (initial.role !== "hub") return { code: 1, reason: "mac-hub-required", message: "Run this command on the Mac hub." };
     return await locked(root, initial, async () => {
       const config = readLocalIdentity(root), herdr = loadHerdrConfig(root);
       if (config.machineId !== initial.machineId || config.role !== "hub") throw new Error("Roaming configuration changed during the operation");
       const transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers });
-      await assertCompatibleConsumers(config, compatibleConsumerPorts(root, config, transport, bundleUrl));
-      const ports = servicePorts();
+      const inventories: Array<{ peer: Peer; keys: StoreKey[] }> = [], failures: Array<{ reason: string; repairCommand: string; detail?: string }> = [];
+      const information: Array<{ machine: string; reason: string }> = [];
       for (const peer of config.peers) {
-        const discovery = await agent(transport, peer, config, "stores", {});
-        if (discovery.protocol !== 1 || discovery.schema !== 14 || discovery.machineId !== peer.machineId || !Array.isArray(discovery.stores))
-          throw new Error("Peer store inventory is unavailable");
-        const keys = [...new Set(discovery.stores.map(key => { storeScope(key); return key as StoreKey; }))];
-        if (!keys.includes("global")) throw new Error("Peer global store is unavailable");
+        const name = clean(peer.alias), argument = /^[A-Za-z0-9_]/.test(peer.alias) ? name : peer.machineId;
+        let discovery: JsonObject;
+        try { discovery = await agent(transport, peer, config, "stores", {}); }
+        catch { failures.push({ reason: `box-unreachable:${name}`, repairCommand: `spider roam forget ${argument}` }); continue; }
+        try {
+          if (discovery.protocol !== 1 || discovery.schema !== 14 || discovery.machineId !== peer.machineId || !Array.isArray(discovery.stores)) throw new Error();
+          const keys = [...new Set(discovery.stores.map(key => { storeScope(key); return key as StoreKey; }))];
+          if (!keys.includes("global")) throw new Error();
+          inventories.push({ peer, keys });
+        } catch { failures.push({ reason: `preflight-failed:${name}:store-inventory`, repairCommand: `spider roam provision ${argument}` }); }
+        const brokerFailure = () => {
+          const reason = `preflight-failed:${name}:intercom-broker`;
+          if (!failures.some(item => item.reason === reason)) failures.push({ reason, repairCommand: `spider roam doctor ${argument}` });
+        };
+        try {
+          const report = await remoteDoctor(transport, peer, config);
+          for (const row of report.diagnostics.filter(item => item.severity === "warning")) {
+            if (row.reason === INTERCOM_UNIQUENESS_DESCRIPTION || /^intercom-other-extension: [A-Za-z0-9@._/-]{1,128} \(not classified for intercom\)\.$/.test(row.reason))
+              information.push({ machine: name, reason: row.reason });
+          }
+          for (const row of report.diagnostics.filter(item => item.severity === "block")) {
+            if (row.reason === "intercom-federation: intercom-broker-unavailable." || row.reason.startsWith("intercom-legacy-drained: legacy-drained-offline ")) continue;
+            if (/^(?:intercom-legacy-drained|intercom-federation): (?:intercom-broker-unavailable|intercom-broker-not-spider|intercom-agent-unsafe|intercom-directory-unsafe|intercom-socket-unsafe|federation-feature-missing)/.test(row.reason) ||
+                row.reason.startsWith("intercom-readiness-unavailable:")) brokerFailure();
+            const check = preflightCheck(row.reason), detail = preflightDetail(row.reason);
+            failures.push({ reason: `preflight-failed:${name}:${check}`, repairCommand: `spider roam provision ${argument}`, ...(detail ? { detail } : {}) });
+          }
+        } catch { failures.push({ reason: `box-unreachable:${name}`, repairCommand: `spider roam forget ${argument}` }); }
+      }
+      const infoText = information.map(item => `${item.machine}: ${item.reason}`).join("\n");
+      if (failures.length) return { code: 1 as const, reason: failures[0].reason, issues: failures, information,
+        message: [failures.map(item => `${item.reason}${item.detail ? `: ${item.detail}` : ""} (${item.repairCommand})`).join("; "), infoText].filter(Boolean).join("\n") };
+      const inventory = openLocalCore(root);
+      try {
+        let incomplete = false;
+        listStoreKeys(inventory.db, { onIncomplete: () => { incomplete = true; } });
+        if (incomplete) return { code: 1 as const, reason: "local-store-inventory-incomplete", message: "Local store inventory is incomplete. Run spider roam doctor." };
+      } finally { inventory.close(); }
+      await assertCompatibleConsumers(config, compatibleConsumerPorts(root, config, transport, bundleUrl));
+      const pi = resolveParticipantPi();
+      if (!pi) return { code: 1 as const, reason: "participant-pi-unavailable", message: "participant-pi-unavailable: Install pi or set SPIDER_ROAM_PI, then rerun spider roam enable." };
+      const ports = servicePorts();
+      // All boxes and the hub have passed read-only preflight. Persistent services
+      // start only after this proceed decision; failures from here are pending.
+      for (const { peer } of inventories) {
+        changed = true;
+        try {
+          await startPeerBroker(transport, peer, config);
+          const report = await remoteDoctor(transport, peer, config);
+          if (report.diagnostics.some(row => row.severity === "block")) throw new Error("broker-readiness-unconfirmed");
+        } catch {
+          const reason = `preflight-failed:${clean(peer.alias)}:intercom-broker`, repairCommand = `spider roam doctor ${/^[A-Za-z0-9_]/.test(peer.alias) ? clean(peer.alias) : peer.machineId}`;
+          return { code: 3 as const, reason, issues: [{ reason, repairCommand }], information, message: `${reason}: Enable is pending after broker startup (${repairCommand}).` };
+        }
+      }
+      for (const { peer, keys } of inventories) {
         for (const key of keys.filter(key => storeScope(key) === "worktree")) {
           changed = true; await agent(transport, peer, config, "recheck-store", { storeKey: key });
         }
@@ -124,13 +207,19 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
           }
         } finally { stores.close(); }
       } finally { local.close(); }
+      if (config.peers.length) {
+        const journal = openJournal(join(root, "roam", "journal.db"));
+        const provisioning = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }, journal);
+        for (const peer of config.peers) { changed = true; await setEnrolledPeerEnabled({ config, peer, enabled: true, journal, transport: provisioning }); }
+      }
       if (!config.enabled) { changed = true; await writeEnabled(root, config, true); }
-      await installHubService({ node: process.execPath, cli, globalRoot: root }, ports);
-      if (!await waitReady(join(root, "roam", "hub.sock"))) return { code: 3, reason: "Hub service startup is pending. Run spider roam doctor." };
-      return { code: 0, reason: "Roaming hub enabled." };
+      await installHubService({ node: process.execPath, cli, globalRoot: root, pi }, ports);
+      if (!await waitReady(join(root, "roam", "hub.sock"))) return { code: 3, reason: "hub-startup-pending", information, message: ["Hub service startup is pending. Run spider roam doctor.", infoText].filter(Boolean).join("\n") };
+      return { code: 0, reason: "roaming-enabled", information, message: ["Roaming hub enabled. Reload open pi sessions (/reload) to pick up /move.", infoText].filter(Boolean).join("\n") };
     });
   } catch (error) {
-    return { code: changed ? 3 : 1, reason: changed ? "Roaming enable needs reconciliation. Run spider roam doctor." : clean(error instanceof Error ? error.message : "Cannot enable roaming.") };
+    return { code: changed ? 3 : 1, reason: changed ? "enable-pending" : "enable-unavailable",
+      message: changed ? "Roaming enable needs reconciliation. Run spider roam doctor." : clean(error instanceof Error ? error.message : "Cannot enable roaming.") };
   }
 }
 
@@ -138,29 +227,44 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
   let changed = false;
   try {
     const initial = readLocalIdentity(root);
-    if (initial.role !== "hub") return { code: 1, reason: "Run this command on the Mac hub." };
+    if (initial.role !== "hub") return { code: 1, reason: "mac-hub-required", message: "Run this command on the Mac hub." };
     return await locked(root, initial, async () => {
-      const config = readLocalIdentity(root), socket = join(root, "roam", "hub.sock");
+      const config = readLocalIdentity(root), socket = join(root, "roam", "hub.sock"), journalFile = join(root, "roam", "journal.db");
       const plist = join(homedir(), "Library", "LaunchAgents", "com.spider.roam.hub.plist");
       assertTestConfigPath(plist);
+      const finish = async (): Promise<ControlResult> => {
+        // Unload KeepAlive before publishing the disabled flag, so a failed unload can be retried.
+        if (existsSync(plist)) { changed = true; await removeHubService({ globalRoot: root }, servicePorts()); }
+        if (config.enabled) { changed = true; await writeEnabled(root, config, false); }
+        const unconfirmed: string[] = [];
+        if (config.peers.length) {
+          try {
+            const herdr = loadHerdrConfig(root), journal = openJournal(journalFile);
+            const provisioning = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }, journal);
+            for (const peer of config.peers) {
+              try { await setEnrolledPeerEnabled({ config, peer, enabled: false, journal, transport: provisioning }); }
+              catch { unconfirmed.push(peer.alias); }
+            }
+          } catch { unconfirmed.push(...config.peers.map(peer => peer.alias)); }
+        }
+        const warning = unconfirmed.length ? ` Box flags unconfirmed: ${unconfirmed.map(clean).join(", ")}; retry spider roam disable.` : "";
+        return { code: 0, reason: "roaming-disabled", message: `Roaming hub disabled. Captures and homes were retained.${warning} Reload open pi sessions (/reload) to pick up /move.`,
+          issues: unconfirmed.map(name => ({ reason: `peer-enabled-unconfirmed:${clean(name)}`, repairCommand: "spider roam disable" })) };
+      };
       let reply;
       try { reply = await requestHubControl(socket, { op: "disable" }); }
-      catch (error) {
-        if (config.enabled) throw error;
-        // A prior disable may have persisted the flag before its service removal completed.
-        // The hub lock and journal together prove that no scheduler or home change remains.
+      catch {
+        // A missing journal proves a no-op only for a disabled hub with no service.
         return locked(root, config, async () => {
-          if (homeChangeInProgress(join(root, "roam", "journal.db")) !== false)
-            return { code: 3 as const, reason: "Cannot verify the hub is safe to disable. Run spider roam doctor." };
-          if (existsSync(plist)) { changed = true; await removeHubService({ globalRoot: root }, servicePorts()); }
-          return { code: 0 as const, reason: "Roaming hub disabled. Captures and homes were retained." };
+          const hasJournal = existsSync(journalFile);
+          if (hasJournal ? homeChangeInProgress(journalFile) !== false : config.enabled || existsSync(plist))
+            return { code: 3 as const, reason: "disable-safety-unverified", message: "Cannot verify the hub is safe to disable. Run spider roam doctor." };
+          return finish();
         }, "roam-hub", 1000);
       }
-      if (reply.code !== 0) return { code: reply.code, reason: clean(reply.reason) };
-      changed = true;
-      if (config.enabled) await writeEnabled(root, config, false);
-      if (existsSync(plist)) await removeHubService({ globalRoot: root }, servicePorts());
-      return { code: 0, reason: "Roaming hub disabled. Captures and homes were retained." };
+      if (reply.code !== 0) return { code: reply.code, reason: /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/.test(reply.reason) ? reply.reason : "disable-refused", message: clean(reply.reason) };
+      return finish();
     });
-  } catch { return { code: 3, reason: changed ? "Hub disable needs reconciliation. Run spider roam doctor." : "Cannot verify the hub is safe to disable. Run spider roam doctor." }; }
+  } catch { return { code: 3, reason: changed ? "disable-pending" : "disable-safety-unverified",
+    message: changed ? "Hub disable needs reconciliation. Run spider roam doctor." : "Cannot verify the hub is safe to disable. Run spider roam doctor." }; }
 }

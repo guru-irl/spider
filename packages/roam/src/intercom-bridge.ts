@@ -1,4 +1,6 @@
 import { randomBytes } from "node:crypto";
+import { type IntercomIntakeAction, type IntercomIntakeFence } from "@spider/intercom/protocol";
+import { isIntercomIntakeAction, isIntercomIntakeFence } from "../../intercom/src/broker/protocol";
 import type { IntercomFederationClient } from "../../intercom/src/broker/client";
 import {
   FEDERATION_FEATURE, addressKey, isHelperExchangeError, isConsumptionReceipt, isRemoteSessionInfo, receiptReleasesPayload, sameAddress,
@@ -9,7 +11,7 @@ import type { Home } from "@spider/db-core/roam/types";
 import type { Clock, Peer, Transport } from "./contracts";
 import { encodeExchange } from "./intercom-codec";
 import { INTERCOM_EXCHANGE_BYTES, INTERCOM_FEDERATION_VERSION, type ExchangeGeneration, type IntercomControlFrame, type IntercomExchange,
-  type IntercomIdentity, type IntercomLinkAck, type IntercomPairApproval, type IntercomReceiptFrame, type IntercomRefusal, type AuthenticatedIntercomExchange, type IntercomWireAck, type IntercomWireRefusal, type IntercomStore, type IntercomWireMissingOriginFrame } from "./intercom-contracts";
+  type IntercomIdentity, type IntercomLinkAck, type IntercomPairApproval, type IntercomReceiptFrame, type IntercomRefusal, type AuthenticatedIntercomExchange, type IntercomWireAck, type IntercomWireRefusal, type IntercomStore, type RebindProof, type UndispatchedIntercom, type IntercomWireMissingOriginFrame } from "./intercom-contracts";
 import { ExchangeError, exchange as executeExchange, type EnrolledIntercomEdge } from "./intercom-exchange";
 import { parseHelperEnroll, parseHelperFence, parseHelperInspect, parseHelperRequest, parseHelperRevoke, parseHelperTopology, type HelperTopologyRequest, type HelperEnrollRequest, type HelperReply } from "./intercom-helper";
 import { acquireHelperRoute, type HelperRouteLease } from "./intercom-route";
@@ -24,6 +26,8 @@ export interface IntercomBroker extends Pick<IntercomFederationClient, "connect"
 export interface BridgePorts {
   machineId: string;
   machineAlias: string;
+  /** Enabled only by a roaming participant composition. */
+  moveFences?: boolean;
   edges: readonly EnrolledIntercomEdge[];
   store: IntercomStore;
   transport: Transport;
@@ -68,6 +72,11 @@ export interface IntercomBridge extends FederationBridge {
   exchange(input: unknown, signal?: AbortSignal): Promise<HelperReply>;
   wake(peer: string): void;
   inspectBlockers(address: SessionAddress): FederationBlockers;
+  inspectMoveBlockers(address: SessionAddress): FederationBlockers;
+  drainIntake(fence: IntercomIntakeFence): Promise<void>;
+  undispatched(address: SessionAddress): readonly UndispatchedIntercom[];
+  rebindMove(fence: IntercomIntakeFence, endpoint: SessionEndpoint, proof: RebindProof): number;
+  resumeIntake(fence: IntercomIntakeFence): void;
   diagnostics(): readonly { peer: string; status: string; since: number; reason: string }[];
 }
 interface Inflight { generation: number; abort: AbortController; wake: (() => void) | null; preempted: boolean; done: Promise<void>; finish(): void }
@@ -106,8 +115,49 @@ const failed = (reason: string): FederationDispatchResult => ({ delivery: "faile
   retryable: !["machine-not-enrolled", "peer-revoked", "message-too-large", "ask-expired"].includes(reason), outcomeKnown: true,
   acceptance: { accepted: false, durable: false }, reason });
 
+// Move intake is independent of transport, presence and relay receipts.
+function createMoveIntake() {
+  const fences = new Map<string, { fence: IntercomIntakeFence; closed: boolean }>();
+  const active = new Set<{ id: string; from: SessionAddress; to: SessionAddress; done: Promise<void>; finish(): void }>();
+  const same = (a: IntercomIntakeFence, b: IntercomIntakeFence) => sameAddress(a.address, b.address) && a.moveId === b.moveId &&
+    a.expectedEpoch === b.expectedEpoch && a.generation === b.generation;
+  const closed = (address: SessionAddress) => fences.get(addressKey(address))?.closed === true;
+  const apply = (action: IntercomIntakeAction, fence: IntercomIntakeFence): string | null => {
+    if (!isIntercomIntakeAction(action) || !isIntercomIntakeFence(fence)) throw new Error("invalid-intake-request");
+    const key = addressKey(fence.address), current = fences.get(key);
+    const replacing = action === "close" && current && !current.closed && fence.expectedEpoch >= current.fence.expectedEpoch && fence.moveId !== current.fence.moveId;
+    if (current && !same(current.fence, fence) && !replacing || action !== "close" && !current || action === "check" && !current?.closed) return null;
+    fences.set(key, { fence, closed: action !== "open" });
+    return fence.generation;
+  };
+  return { closed, apply,
+    begin(input: FederationDispatch) {
+      if (closed(input.from) || input.message.expectsReply && closed(input.to.address)) return null;
+      let finish!: () => void;
+      const item = { id: input.message.id, from: input.from, to: input.to.address, done: new Promise<void>(resolve => { finish = resolve; }), finish: () => {} };
+      item.finish = () => { active.delete(item); finish(); };
+      active.add(item); return item;
+    },
+    pending(store: IntercomStore): string[] {
+      return [...fences.values()].filter(row => row.closed).flatMap(row => [...store.inspectBlockers(row.fence.address).pendingDispatch]);
+    },
+    inspect(address: SessionAddress, store: IntercomStore): FederationBlockers {
+      const snapshot = store.inspectMoveBlockers(address);
+      return { ...snapshot, pendingDispatch: [...new Set([...snapshot.pendingDispatch, ...[...active].filter(row =>
+        sameAddress(row.from, address) || sameAddress(row.to, address)).map(row => row.id)])] };
+    },
+    async drain(fence: IntercomIntakeFence) {
+      if (apply("check", fence) !== fence.generation) throw new Error("intercom-generation-changed");
+      await Promise.all([...active].filter(row => sameAddress(row.from, fence.address) || sameAddress(row.to, fence.address)).map(row => row.done));
+      if (apply("check", fence) !== fence.generation) throw new Error("intercom-generation-changed");
+    },
+  };
+}
+
 export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   if (!isMachineId(ports.machineId) || typeof ports.machineAlias !== "string" || !ports.machineAlias || !Array.isArray(ports.edges)) throw new Error("Invalid intercom bridge identity");
+  const intake = ports.moveFences ? createMoveIntake() : undefined;
+  const notifyInbound: NonNullable<BridgePorts["onInbound"]> = input => { if (!intake?.closed(input.to)) ports.onInbound?.(input); };
   const edges = new Map<string, EdgeRuntime>();
   const validEdge = (config: EnrolledIntercomEdge) => !!config && !!config.peer && isMachineId(config.peer.machineId) &&
     config.peer.machineId !== ports.machineId && typeof config.edgeEpoch === "string" && !!config.edgeEpoch && typeof config.initiator === "boolean";
@@ -278,7 +328,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     }
     const remaining = () => Math.max(0, Math.min(INTERCOM_EXCHANGE_BYTES - 1024, max - bytes(result) - 16));
     for (const receipt of ports.store.pending({ kind: "receipts", peer, maxBytes: remaining() })) result.receipts.push(receipt);
-    for (const frame of ports.store.pending({ kind: "outbound", peer, edgeEpoch: edge.config.edgeEpoch, hopBudgetMs, maxBytes: remaining(), skipIds })) result.frames.push(frame);
+    for (const frame of ports.store.pending({ kind: "outbound", peer, edgeEpoch: edge.config.edgeEpoch, hopBudgetMs, maxBytes: remaining(), skipIds: intake ? [...skipIds, ...intake.pending(ports.store)] : skipIds })) result.frames.push(frame);
     armExpiry();
     try { encodeExchange(result); } catch { return bad("exchange-too-large"); }
     return result;
@@ -417,6 +467,9 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         continue;
       }
       const prior = ports.store.retained("inbound", frame.identity.id);
+      if (intake?.closed(frame.identity.to) && frame.kind === "message" && frame.message.expectsReply && !prior && position.kind === "next") {
+        refusals.push({ identity: frame.identity, hopSequence: frame.hopSequence, reason: "intercom-frozen" }); continue;
+      }
       if (position.kind === "duplicate" && (!prior || prior.originMachineId !== frame.originMachineId || !sameIdentity(prior.identity, frame.identity))) {
         acks.push(ack); continue;
       }
@@ -449,7 +502,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
             sameAddress(item.from, frame.identity.from) && sameAddress(item.to, frame.identity.to))) {
           ports.onControl?.({ from: frame.identity.from, to: frame.identity.to, control: { messageId: frame.identity.id, action: "cancel", timestamp: ports.clock.now() } });
         }
-        ports.onInbound?.({ id: frame.identity.id, to: frame.identity.to });
+        notifyInbound({ id: frame.identity.id, to: frame.identity.to });
       }
       acks.push(ack);
       } catch (error) {
@@ -729,7 +782,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     const broker = ports.broker!;
     await ports.ensureBroker?.();
     if (stopped) return bad("bridge-stopped");
-    await broker.connect({ feature: FEDERATION_FEATURE, agentDir: ports.agentDir!, machineId: ports.machineId, machineAlias: ports.machineAlias, credential: await routeLease!.authorizeBridge(ports.machineId) }, bridge);
+    await broker.connect({ feature: FEDERATION_FEATURE, agentDir: ports.agentDir!, machineId: ports.machineId, machineAlias: ports.machineAlias, credential: await routeLease!.authorizeBridge(ports.machineId), ...(intake ? { moveFences: true as const } : {}) }, bridge);
     if (stopped) return bad("bridge-stopped");
     const token = randomBytes(32).toString("hex");
     await broker.enableHelpers(token, async (input, signal) => {
@@ -996,7 +1049,11 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       const status = state(edge).status;
       if (status !== "down" && status !== "recovering") void transfer(edge, "push", false);
     },
+    ...(intake ? { intake: (action: IntercomIntakeAction, fence: IntercomIntakeFence) => intake.apply(action, fence) } : {}),
     async dispatch(input: FederationDispatch): Promise<FederationDispatchResult> {
+      const ticket = intake?.begin(input);
+      if (intake && !ticket) return failed("intercom-frozen");
+      try {
       if (!started || stopped) return failed("bridge-unavailable");
       const local = input.to.machineId === ports.machineId;
       const edge = lookup(input.to.machineId);
@@ -1013,7 +1070,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         const endpoint = { address: input.to.address, machineId: ports.machineId, homeEpoch: input.to.homeEpoch, activationEpoch: input.to.activationEpoch };
         const accepted = ports.store.acceptLocal({ from: input.from, endpoint, message: input.message, firstHomePresence: firstHomePresence(endpoint, null) });
         if (accepted.kind === "refused") return failed(accepted.reason);
-        ports.onInbound?.({ id: accepted.identity.id, to: accepted.identity.to });
+        notifyInbound({ id: accepted.identity.id, to: accepted.identity.to });
         armExpiry();
         return { delivery: "queued", retryable: false, outcomeKnown: true, acceptance: accepted.acceptance,
           ...(accepted.receipt && receiptReleasesPayload(accepted.receipt) ? { consumption: accepted.receipt } : {}) };
@@ -1041,6 +1098,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       armExpiry(); bridge.wake(edge.config.peer.machineId);
       return { delivery: "queued", retryable: false, outcomeKnown: true, acceptance: accepted.acceptance,
           ...(accepted.receipt && receiptReleasesPayload(accepted.receipt) ? { consumption: accepted.receipt } : {}) };
+      } finally { ticket?.finish(); }
     },
     receipt(from: SessionAddress, receipt: MessageReceipt) {
       if (!started || stopped) return bad("bridge-unavailable");
@@ -1053,7 +1111,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       ports.store.settleReceipt({ queue: "inbound", peer: row.peer, frame });
       if (receipt.status === "not_injected" && ports.store.retained("inbound", receipt.messageId)?.pendingProof) {
         ports.store.resolveUnknown({ queue: "inbound", id: receipt.messageId, digest: row.identity.digest, proof: frame });
-        ports.onInbound?.({ id: row.identity.id, to: row.identity.to });
+        notifyInbound({ id: row.identity.id, to: row.identity.to });
       }
       if (row.peer === ports.machineId) drainLocalReceipts();
       else bridge.wake(row.peer);
@@ -1067,6 +1125,28 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       const edge = edges.get(row.peer); if (edge) { edge.controls.set(control.messageId, { from, to, control }); bridge.wake(row.peer); }
     },
     inspectBlockers(address) { return ports.store.inspectBlockers(address); },
+    inspectMoveBlockers(address) { if (!intake) throw new Error("intercom-fence-unsupported"); return intake.inspect(address, ports.store); },
+    async drainIntake(fence) { if (!intake) throw new Error("intercom-fence-unsupported"); await intake.drain(fence); },
+    undispatched(address) { if (!intake) throw new Error("intercom-fence-unsupported"); return ports.store.undispatched(address); },
+    rebindMove(fence, endpoint, proof) {
+      if (!intake || intake.apply("check", fence) !== fence.generation) throw new Error("intercom-generation-changed");
+      const home = ports.authoritativeHome(fence.address);
+      if (!home || !proof.owner || home.sessionId !== proof.owner.sessionId || home.machineId !== proof.owner.machineId || home.epoch !== proof.owner.epoch ||
+          home.moveId !== fence.moveId || home.epoch <= fence.expectedEpoch || endpoint.homeEpoch !== home.epoch || endpoint.machineId !== home.machineId)
+        throw new Error("intercom-home-unproved");
+      const next = endpoint.machineId === ports.machineId ? null : lookup(endpoint.machineId);
+      if (endpoint.machineId !== ports.machineId && !next) throw new Error("machine-not-enrolled");
+      if (proof.nextHop !== (next?.config.peer.machineId ?? ports.machineId)) throw new Error("intercom-home-unproved");
+      return ports.store.rebindMoveUndispatched(fence.address, endpoint, proof, next?.config.edgeEpoch);
+    },
+    resumeIntake(fence) {
+      if (!intake || intake.apply("open", fence) !== fence.generation) throw new Error("intercom-generation-changed");
+      for (const id of ports.store.pending({ kind: "inbound", address: fence.address })) {
+        const row = ports.store.retained("inbound", id.id);
+        if (row?.endpoint.machineId === ports.machineId) notifyInbound({ id: id.id, to: id.to });
+        else if (row) { const edge = lookup(row.endpoint.machineId); if (edge) bridge.wake(edge.config.peer.machineId); }
+      }
+    },
     diagnostics() { return [...ports.store.rejectionDiagnostics(), ...[...edges.values()].flatMap(edge => { const fence = ports.store.pairFence(edge.config.peer.machineId);
       if (fence) return [{ peer: fence.peer, status: "down", since: fence.fencedAt, reason: "peer-revoked" }];
       const current = state(edge); return current.outageSince === null || !current.reason ? [] :

@@ -272,6 +272,87 @@ it("outgoing staging has a per-root quota and never evicts another artifact", as
   expect((await stageArtifact(secondFile, "agent", limits, { root, artifactId: "second" })).byteLength).toBe(3);
 }, 5000);
 
+it("outgoing prepared files share chunk quota without double-counting retries", async () => {
+  const root = fixture(), source = join(dirname(root), "source"), other = join(dirname(root), "other");
+  writeFileSync(source, "data"); writeFileSync(other, "more");
+  const limits = { ...DEFAULT_LIMITS, stagingBytes: 12, chunkBytes: 4 };
+  await stageArtifact(source, "session", limits, { root, artifactId: "prepared" });
+  const store = openOutgoingStaging(root, limits, false);
+  try {
+    const file = store.withPreparedFile("prepared", "output.jsonl", 4, path => { writeFileSync(path, "copy"); return path; });
+    const again = store.withPreparedFile("prepared", "output.jsonl", 4, path => path);
+    expect(again).toBe(file);
+    expect(readFileSync(file, "utf8")).toBe("copy");
+    await stageArtifact(other, "agent", limits, { root, artifactId: "other" });
+    expect(store.withPreparedFile("prepared", "output.jsonl", 4, path => readFileSync(path, "utf8"))).toBe("copy");
+    writeFileSync(other, "x");
+    await expect(stageArtifact(other, "agent", limits, { root, artifactId: "extra" }))
+      .rejects.toMatchObject({ code: "STAGING_FULL", retryable: true });
+    store.remove("prepared");
+    expect(existsSync(file)).toBe(false);
+    expect((await stageArtifact(other, "agent", limits, { root, artifactId: "extra" })).byteLength).toBe(1);
+  } finally { store.close(); }
+}, 5000);
+
+it("outgoing prepared file quota refusal happens before the writer runs", async () => {
+  const root = fixture(), source = join(dirname(root), "source"), other = join(dirname(root), "other");
+  writeFileSync(source, "data"); writeFileSync(other, "123");
+  const limits = { ...DEFAULT_LIMITS, stagingBytes: 7, chunkBytes: 4 };
+  await stageArtifact(source, "session", limits, { root, artifactId: "full" });
+  const store = openOutgoingStaging(root, limits, false);
+  let called = false;
+  try {
+    expect(() => store.withPreparedFile("full", "output.jsonl", 4, () => { called = true; }))
+      .toThrow(expect.objectContaining({ code: "STAGING_FULL", retryable: true }));
+    expect(called).toBe(false);
+    expect(existsSync(join(root, "outgoing", "full", "prepared", "output.jsonl"))).toBe(false);
+    expect((await stageArtifact(other, "agent", limits, { root, artifactId: "other" })).byteLength).toBe(3);
+  } finally { store.close(); }
+}, 5000);
+
+it("outgoing prepared reservations survive interruption and sweep with their artifact", async () => {
+  const root = fixture(), source = join(dirname(root), "source"), other = join(dirname(root), "other");
+  writeFileSync(source, "data"); writeFileSync(other, "x");
+  const limits = { ...DEFAULT_LIMITS, stagingBytes: 8, chunkBytes: 4, retentionMs: 1000 };
+  vi.spyOn(Date, "now").mockReturnValue(1000);
+  await stageArtifact(source, "session", limits, { root, artifactId: "interrupted" });
+  let store = openOutgoingStaging(root, limits, false);
+  let prepared = "";
+  try {
+    expect(() => store.withPreparedFile("interrupted", "output.jsonl", 4, path => {
+      prepared = path; writeFileSync(path, "p"); throw new Error("interrupted");
+    })).toThrow(/interrupted/);
+    store.close();
+    await expect(stageArtifact(other, "agent", limits, { root, artifactId: "other" }))
+      .rejects.toMatchObject({ code: "STAGING_FULL" });
+    store = openOutgoingStaging(root, limits, false);
+    store.withPreparedFile("interrupted", "output.jsonl", 4, path => writeFileSync(path, "done"));
+    expect(readFileSync(prepared, "utf8")).toBe("done");
+    expect(store.sweep(2001, () => true)).toEqual([]);
+    expect(store.sweep(2001, () => false)).toEqual(["interrupted"]);
+    expect(existsSync(prepared)).toBe(false);
+    expect((await stageArtifact(other, "agent", limits, { root, artifactId: "other" })).byteLength).toBe(1);
+  } finally { store.close(); }
+}, 5000);
+
+it("outgoing prepared reservations reject unsafe names and conflicting sizes", async () => {
+  const root = fixture(), source = join(dirname(root), "source");
+  writeFileSync(source, "data");
+  const limits = { ...DEFAULT_LIMITS, stagingBytes: 20, chunkBytes: 4 };
+  await stageArtifact(source, "session", limits, { root, artifactId: "session" });
+  await stageArtifact(source, "agent", limits, { root, artifactId: "agent" });
+  const store = openOutgoingStaging(root, limits, false);
+  try {
+    expect(() => store.withPreparedFile("missing", "output.jsonl", 1, () => undefined)).toThrow();
+    expect(() => store.withPreparedFile("agent", "output.jsonl", 1, () => undefined)).toThrow();
+    expect(() => store.withPreparedFile("session", "../outside", 1, () => undefined)).toThrow();
+    expect(() => store.withPreparedFile("session", "output.jsonl.part", 1, () => undefined)).toThrow();
+    expect(() => store.withPreparedFile("session", "output.jsonl", -1, () => undefined)).toThrow();
+    store.withPreparedFile("session", "output.jsonl", 4, path => writeFileSync(path, "copy"));
+    expect(() => store.withPreparedFile("session", "output.jsonl", 5, () => undefined)).toThrow(/conflict/i);
+  } finally { store.close(); }
+}, 5000);
+
 it("source staging does not publish before its parent directories are durable", async () => {
   const root = fixture();
   const source = join(dirname(root), "source");

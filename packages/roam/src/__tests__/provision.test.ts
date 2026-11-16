@@ -1,5 +1,7 @@
 import { afterEach, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { claimMachineIdentity } from "@spider/db-core/roam/machine";
@@ -33,7 +35,7 @@ function fixture() {
   const releaseRoot = join(root, "release"); mkdirSync(join(releaseRoot, "dist", "intercom"), { recursive: true, mode: 0o700 });
   write(releaseRoot, "dist/extension.js", "extension"); write(releaseRoot, "dist/intercom/broker.mjs", "broker");
   const activeFile = write(root, "active.json", "null"), journal = openJournal(join(root, "journal.db"));
-  const state = { allow: true, existingId: null as string | null, verified: false, agentDirectory: "default" as "default" | "custom" | "unknown",
+  const state = { allow: true, existingId: null as string | null, verified: false, hubEnabled: true, boxEnabled: false, agentDirectory: "default" as "default" | "custom" | "unknown",
     coreId: "fixture-core", replaceCoreOnConfirm: false };
   const events: string[] = [], confirmations: { target: string; providers: readonly string[] }[] = [], persisted: Peer[] = [];
   const preview: unknown[] = [], diagnostics: unknown[] = [], systemctl: string[][] = [], secretCollectionCalls: string[] = [];
@@ -71,7 +73,8 @@ function fixture() {
     async report(value: unknown) { events.push("report"); diagnostics.push(value); },
     async verifyPeer() {
       return { piSignedIn: state.verified, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
-        bundledIntercom: true, intercomUnique: true, legacyDrained: true, federation: true };
+        bundledIntercom: true, intercomUnique: true, legacyDrained: true, federation: true,
+        intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: [] } };
     },
     bootstrap: { async probeAgentDirectory() {
       events.push("agent-directory-probe"); return { status: state.agentDirectory, core: { local: "fixture-local-core", remote: state.coreId } };
@@ -89,6 +92,7 @@ function fixture() {
       return { machineId: claimMachineIdentity(global, peer.machineId), coreId: "fixture-core" };
     } },
     transfer: {
+      async setEnabled(_peer: Peer, _hub: string, enabled: boolean) { state.boxEnabled = enabled; events.push(`enabled:${enabled}`); },
       async enroll(_peer: Peer, hubMachineId: string) { expect(hubMachineId).toBe("00000000-0000-4000-8000-000000000001"); events.push("enrollment"); },
       async cleanupSecrets(_peer: Peer) { events.push("cleanup-secrets"); },
       async installRelease(_peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: string; intercom: string }) {
@@ -117,6 +121,10 @@ function fixture() {
       },
     },
     async persistPeer(peer: Peer) { events.push("persist"); persisted.push(peer); },
+    async setParticipation(_peer: Peer, ready: boolean | null) {
+      if (state.hubEnabled && ready === null) return;
+      state.boxEnabled = state.hubEnabled && ready === true; events.push(`enabled:${state.boxEnabled}`);
+    },
   };
   const request = (id: string, includeAuth = false, providers: readonly string[] = [], selected: readonly string[] = ["settings.json"]) => ({
     operation: { id, machineId: bootstrapPeer.machineId, expectedEpoch: null, kind: "provision", args: {} }, peer: bootstrapPeer,
@@ -202,11 +210,60 @@ it("holds a per-peer lock and clears interrupted credential staging before insta
   expect(f.events.indexOf("cleanup-secrets")).toBeLessThan(f.events.indexOf("release"));
 }, 5000);
 
+it("provision while the hub is disabled clears a previously enabled box without starting hosting", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.state.hubEnabled = false; f.state.boxEnabled = true; f.state.verified = true;
+  expect(await provision!(f.request("disabled-provision"), f.ports)).toMatchObject({ code: 0, value: { hostingReady: true } });
+  expect(f.state.boxEnabled).toBe(false);
+  expect(f.events).toContain("enabled:false"); expect(f.events).not.toContain("enabled:true");
+  expect(f.systemctl.some(argv => argv.includes("start") || argv.includes("--now"))).toBe(false);
+}, 5000);
+
+it("disabled provision leaves no offline RPC probe process or session behind", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.hubEnabled = false;
+  const home = join(f.root, "probe-home"), agent = join(home, ".pi", "agent"), globalRoot = join(agent, "spider"), prefix = join(home, ".local"),
+    unitDir = join(home, ".config/systemd/user"), pi = join(prefix, "bin/pi"), observed = join(f.root, "probe-observed.json");
+  for (const dir of [home, agent, join(globalRoot, "roam"), dirname(pi), unitDir]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(join(globalRoot, "roam/machine.json"), JSON.stringify({ machineId: bootstrapPeer.machineId }), { mode: 0o600 });
+  writeFileSync(pi, `#!${process.execPath}\nimport fs from 'node:fs'; const a=process.argv.slice(2), file=a[a.indexOf('--session')+1];
+fs.writeFileSync(${JSON.stringify(observed)},JSON.stringify({pid:process.pid,file,argv:a,agent:process.env.PI_CODING_AGENT_DIR,global:process.env.SPIDER_GLOBAL_ROOT}));
+const header=JSON.parse(fs.readFileSync(file,'utf8').split('\\n')[0]); fs.readFileSync(0,'utf8');
+console.log(JSON.stringify({id:'probe',type:'response',command:'get_state',success:true,data:{sessionFile:file,sessionId:header.id}}));\n`, { mode: 0o700 });
+  f.ports.verifyPeer = async () => {
+    const request = { action: "verify", operationId: "probe-op", machineId: bootstrapPeer.machineId, home, agentDir: agent, globalRoot, npmPrefix: prefix, unitDir,
+      cli: join(prefix, "lib/spider/dist/roam/cli.mjs"), pi, providers: [], files: [], maximum: DEFAULT_LIMITS.agentBytes, chunkBytes: DEFAULT_LIMITS.chunkBytes };
+    const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], { input: JSON.stringify(request), encoding: "utf8", timeout: 10_000,
+      env: { ...process.env, HOME: home, SPIDER_GLOBAL_ROOT: globalRoot } });
+    if (child.status !== 0) throw new Error(`verification failed: ${child.stderr}`);
+    const reply = JSON.parse(child.stdout); if (reply.error) throw new Error(reply.error);
+    return reply.value;
+  };
+  expect(await provision!(f.request("disabled-offline-probe"), f.ports)).toMatchObject({ code: 0, reason: "installed-hosting-disabled" });
+  const probe = JSON.parse(readFileSync(observed, "utf8"));
+  expect(probe.argv).toEqual(expect.arrayContaining(["--offline", "--no-extensions", "--no-mcp", "--session"]));
+  expect(probe.agent).not.toBe(agent); expect(probe.global).not.toBe(globalRoot);
+  expect(existsSync(probe.file)).toBe(false); expect(existsSync(probe.agent)).toBe(false); expect(existsSync(probe.global)).toBe(false);
+  expect(() => process.kill(probe.pid, 0)).toThrow();
+  expect(existsSync(join(agent, "intercom/broker.sock"))).toBe(false);
+  expect(f.systemctl.some(argv => argv.includes("start") || argv.includes("--now"))).toBe(false);
+  expect(f.state.boxEnabled).toBe(false);
+}, 5000);
+
+it("a completed provisioning retry clears the box flag when the hub was disabled", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.verified = true;
+  expect((await provision!(f.request("completed-disabled"), f.ports)).code).toBe(0);
+  expect(f.state.boxEnabled).toBe(true);
+  f.state.hubEnabled = false;
+  expect((await provision!(f.request("completed-disabled"), f.ports)).code).toBe(0);
+  expect(f.state.boxEnabled).toBe(false);
+}, 5000);
+
 it("without auth install succeeds but hosting remains disabled", async () => {
   expect(provision).toBeTypeOf("function");
   const f = fixture(); f.write(f.source, "settings.json", JSON.stringify({ theme: "sample", packages: ["npm:pi-intercom"] }));
   const result = await provision!(f.request("no-auth"), f.ports);
   expect(result).toMatchObject({ code: 0, value: { hostingReady: false } });
+  expect(f.events).not.toContain("enabled:true");
   expect(f.confirmations).toEqual([{ target: bootstrapPeer.alias, providers: [] }]);
   expect(f.events.indexOf("present")).toBeLessThan(f.events.indexOf("confirm"));
   expect(f.events.indexOf("confirm")).toBeLessThan(f.events.indexOf("identity"));
@@ -490,6 +547,7 @@ it("secret commands are never executed and consented auth staging is removed", a
   f.write(f.source, "auth.json", JSON.stringify({ "github-copilot": { type: "oauth", access: "fixture-secret" }, other: { type: "api_key", key: "other-secret" } }));
   const result = await provision!(f.request("with-auth", true, ["github-copilot"]), f.ports);
   expect(result).toMatchObject({ code: 0, value: { hostingReady: false } });
+  expect(f.events).not.toContain("enabled:true");
   expect(f.confirmations).toEqual([{ target: bootstrapPeer.alias, providers: ["github-copilot"] }]);
   expect(JSON.parse(readFileSync(join(f.destination, "auth.json"), "utf8"))).toEqual({ "github-copilot": { type: "oauth", access: "fixture-secret" } });
   expect(existsSync(f.stageFile)).toBe(false);
@@ -601,7 +659,8 @@ it("requires every readiness check before declaring hosting ready", async () => 
   const result = await provision!(f.request("verified"), f.ports);
   expect(result).toMatchObject({ code: 0, value: { hostingReady: true } });
   f.ports.verifyPeer = async () => ({ piSignedIn: true, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
-    bundledIntercom: true, intercomUnique: true, legacyDrained: false, federation: true });
+    bundledIntercom: true, intercomUnique: true, legacyDrained: false, federation: true,
+    intercomEvidence: { settings: "settings-unique", legacy: "legacy-pending-asks", federation: "federation-v1", otherExtensions: [] } });
   const blocked = await provision!(f.request("legacy"), f.ports);
   expect(blocked).toMatchObject({ code: 0, value: { hostingReady: false } });
 }, 5000);

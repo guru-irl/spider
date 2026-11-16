@@ -15,6 +15,7 @@ export interface IdLockObservation {
 }
 export interface ReleasedIdLock { sessionId: string; operationId: string; identity: ProcessIdentity; bootId: string }
 export interface IdLockHandle {
+  isHeldByClaim?(): Promise<boolean>;
   release(): Promise<void>;
   transfer(next: ProcessIdentity): Promise<void>;
   prepareHandoff(operationId: string, file?: string, coreId?: string): Promise<IdLockHandoff>;
@@ -205,6 +206,13 @@ export async function claimIdLock(root: string, sessionId: string, identity: Pro
     return token;
   });
   return {
+    async isHeldByClaim() {
+      return locked(async () => {
+        const current = await read();
+        return !!current && current.token === token && current.identity.pid === identity.pid && current.identity.startIdentity === identity.startIdentity &&
+          current.bootId === bootId && !current.handoff && !current.adoptionPending;
+      });
+    },
     async release() {
       await locked(async () => {
         const current = await read();

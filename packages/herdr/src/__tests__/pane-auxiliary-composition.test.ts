@@ -142,6 +142,9 @@ function nativeActor(f: Awaited<ReturnType<typeof fixture>>) {
     automaticSubagentPanes: true, clock: Date.now, subagentViewer: launcher, discardSubagentViewer: async (_id, _owner, address) => { await f.hc.kill(address); await f.hc.rm(address); } });
   return { panes, launcher };
 }
+function localRoute(owner: Owner, panes: ReturnType<typeof createAuxiliaryPanes>) {
+  return { kind: 'local' as const, panes, identity: async () => owner.terminal };
+}
 
 test('two box owners sharing a Mac tab reserve capacity once', async () => {
   const f = await fixture(), panes = f.makeActor();
@@ -214,7 +217,7 @@ test('a native explicit viewer uses an adjacent tab when a presented proxy fills
   try {
     const proxy = await presented.openPresented('subagent', run1, f.owners[1], { timeoutMs: 2000, automatic: true });
     const view = await hostPorts.openRunView({ owner, id: run2, automatic: false, automaticEnabled: true, signal: new AbortController().signal,
-      localCore: 'mac-core' as CoreId, isCurrent: () => true, route: { kind: 'local', panes: native.panes } });
+      localCore: 'mac-core' as CoreId, isCurrent: () => true, route: localRoute(owner, native.panes) });
     expect(f.layout.get(proxy!.viewer)).toMatchObject({ space: 'mac-space', tab: 'mac-tab' });
     expect(f.layout.get(view!.address)).toMatchObject({ space: 'mac-space', tab: 'adjacent-1' });
     expect(f.tabs).toEqual(['mac-tab', 'adjacent-1']);
@@ -229,7 +232,7 @@ test('a native automatic viewer starts nothing when a presented proxy fills the 
     vi.mocked(f.hc.run).mockClear();
     expect(await native.panes.acquire('subagent', run2, owner, { timeoutMs: 2000, automatic: true })).toBeNull();
     expect(await hostPorts.openRunView({ owner, id: run2, automatic: true, automaticEnabled: true, signal: new AbortController().signal,
-      localCore: 'mac-core' as CoreId, isCurrent: () => true, route: { kind: 'local', panes: native.panes } })).toBeNull();
+      localCore: 'mac-core' as CoreId, isCurrent: () => true, route: localRoute(owner, native.panes) })).toBeNull();
     expect(native.launcher).not.toHaveBeenCalled();
     expect(f.hc.run).not.toHaveBeenCalled();
     expect(f.layout.get(proxy!.viewer)).toMatchObject({ tab: 'mac-tab' });
@@ -251,7 +254,7 @@ test.each(['park', 'release'] as const)('a native mount open moves and removes t
       return { version: 1 as const, kind: 'outcome' as const, outcome: { status: 'complete' as const, reason: 'view-presented', presentation } };
     }, stop: async () => {},
   }));
-  const route = { kind: 'local' as const, panes: native.panes, connect };
+  const route = { ...localRoute(owner, native.panes), connect };
   const input = { owner, id: run1, automatic: false, automaticEnabled: true, signal: new AbortController().signal,
     localCore: 'mac-core' as CoreId, isCurrent: () => true, route };
   try {
@@ -274,7 +277,7 @@ test('a native run with a mismatched core never connects to the presentation ser
   const f = await fixture(), owner = nativeOwner(f), native = nativeActor(f);
   const connect = vi.fn(async () => ({ request: async () => ({ version: 1 as const, kind: 'outcome' as const,
     outcome: { status: 'pending' as const, reason: 'view-unplaced', presentation: null } }), stop: async () => {} }));
-  const route = { kind: 'local' as const, panes: native.panes, connect };
+  const route = { ...localRoute(owner, native.panes), connect };
   const input = { owner, id: run1, automatic: false, automaticEnabled: true, signal: new AbortController().signal,
     localCore: 'other-core' as CoreId, isCurrent: () => true, route };
   try {
@@ -284,12 +287,62 @@ test('a native run with a mismatched core never connects to the presentation ser
   } finally { await native.panes.dispose(); await f.close(); }
 });
 
+test.each(['coreId', 'socket', 'sessionNamespace'] as const)('a native run refuses when the live %s changes before placement', async field => {
+  const f = await fixture(), owner = nativeOwner(f), native = nativeActor(f);
+  const identity = vi.fn(async () => ({ ...owner.terminal, [field]: 'different' }));
+  const connect = vi.fn(async () => { throw new Error('unexpected service connection'); });
+  const route = { kind: 'local' as const, panes: native.panes, identity, connect };
+  try {
+    await expect(hostPorts.openRunView({ owner, id: run1, automatic: false, automaticEnabled: true, signal: new AbortController().signal,
+      localCore: owner.terminal.coreId, isCurrent: () => true, route })).rejects.toMatchObject({ code: 'core-mismatch' });
+    expect(identity).toHaveBeenCalledOnce();
+    expect(native.launcher).not.toHaveBeenCalled();
+    expect(f.hc.run).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
+  } finally { await native.panes.dispose(); await f.close(); }
+});
+
+test('an unavailable local core refuses a native run before launch', async () => {
+  const f = await fixture(), owner = nativeOwner(f), native = nativeActor(f);
+  const identity = vi.fn(async () => { throw new HerdrError('core-unavailable', 'Selected core is unavailable'); });
+  try {
+    await expect(hostPorts.openRunView({ owner, id: run1, automatic: false, automaticEnabled: true, signal: new AbortController().signal,
+      localCore: owner.terminal.coreId, isCurrent: () => true, route: { kind: 'local', panes: native.panes, identity } })).rejects.toMatchObject({ code: 'core-unavailable' });
+    expect(identity).toHaveBeenCalledOnce();
+    expect(native.launcher).not.toHaveBeenCalled();
+    expect(f.hc.run).not.toHaveBeenCalled();
+  } finally { await native.panes.dispose(); await f.close(); }
+});
+
+test('a disabled automatic native run does not probe the core or start a viewer', async () => {
+  const f = await fixture(), owner = nativeOwner(f), native = nativeActor(f), identity = vi.fn(async () => owner.terminal);
+  try {
+    expect(await hostPorts.openRunView({ owner, id: run1, automatic: true, automaticEnabled: false, signal: new AbortController().signal,
+      localCore: owner.terminal.coreId, isCurrent: () => true, route: { kind: 'local', panes: native.panes, identity } })).toBeNull();
+    expect(identity).not.toHaveBeenCalled();
+    expect(native.launcher).not.toHaveBeenCalled();
+    expect(f.hc.run).not.toHaveBeenCalled();
+  } finally { await native.panes.dispose(); await f.close(); }
+});
+
+test('a native run does not launch if its owner changes during the live identity check', async () => {
+  const f = await fixture(), owner = nativeOwner(f), native = nativeActor(f); let current = true;
+  const identity = vi.fn(async () => { current = false; return owner.terminal; });
+  try {
+    expect(await hostPorts.openRunView({ owner, id: run1, automatic: false, automaticEnabled: true, signal: new AbortController().signal,
+      localCore: owner.terminal.coreId, isCurrent: () => current, route: { kind: 'local', panes: native.panes, identity } })).toBeNull();
+    expect(identity).toHaveBeenCalledOnce();
+    expect(native.launcher).not.toHaveBeenCalled();
+    expect(f.hc.run).not.toHaveBeenCalled();
+  } finally { await native.panes.dispose(); await f.close(); }
+});
+
 test('native registration uses the same local viewer for automatic and explicit opens', async () => {
   const f = await fixture(), owner = nativeOwner(f), native = nativeActor(f);
   const hooks = new Map<string, () => Promise<void>>();
   const connect = vi.fn(async () => ({ request: async () => ({ version: 1 as const, kind: 'outcome' as const,
     outcome: { status: 'pending' as const, reason: 'view-unplaced', presentation: null } }), stop: async () => {} }));
-  const route = { kind: 'local' as const, panes: native.panes, connect };
+  const route = { ...localRoute(owner, native.panes), connect };
   const registration = registerHerdrViewers({ on: (name: string, handler: () => Promise<void>) => { hooks.set(name, handler); } } as never, {
     owner: () => owner, hc: f.hc, panes: native.panes, viewerLauncher: native.launcher, viewerExecutable: '/fixture/viewer', feedRoot: '/fixture', ipcDescriptor: () => null,
     presentedView: (id, current, request) => hostPorts.openRunView({ owner: current, id, ...request, automaticEnabled: true, localCore: 'mac-core' as CoreId,

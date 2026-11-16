@@ -264,7 +264,10 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   const runView = (id: RunId, current: Owner, request: { automatic: boolean; signal: AbortSignal }) => {
     const selected = needAppConfig();
     return openRunView({ owner: current, id, ...request, automaticEnabled: selected.automaticSubagentPanes === true, localCore: current.terminal.coreId,
-      route: { kind: 'local', panes: need(panes) },
+      route: { kind: 'local', panes: need(panes), async identity() {
+        if (!await isCoreAvailable(need(activationEnv))) throw new HerdrError('core-unavailable', 'Selected core is unavailable');
+        return hc.identity();
+      } },
       isCurrent: () => !stopped && owner?.sessionId === current.sessionId && owner.generation === current.generation
         && owner.terminal.coreId === current.terminal.coreId && owner.terminal.terminalId === current.terminal.terminalId,
     });

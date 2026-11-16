@@ -4,12 +4,44 @@ import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createReplica } from "@spider/db-core/testutil";
 import { openDbAt } from "../registry";
-import { catalogReplica, resolveSessionReplica } from "../roam/catalog";
+import { catalogReplica, parseLocationStores, recordLocation, resolveSessionReplica } from "../roam/catalog";
+import type { StoreKey } from "../roam/types";
 
 const local = "11111111-1111-4111-8111-111111111111";
 const remote = "22222222-2222-4222-8222-222222222222";
 const fixtures: ReturnType<typeof createReplica>[] = [];
 afterEach(() => { for (const fixture of fixtures.splice(0)) fixture.close(); });
+
+const mixedStores = ["global", "repo:fixture-repo", "worktree:fixture-repo:fixture-workspace"] as const;
+
+it("validates mixed location stores with opaque repository and workspace IDs", () => {
+  expect(parseLocationStores(mixedStores)).toEqual(mixedStores);
+});
+
+it.each([
+  ["null", null], ["object", {}], ["string", "[]"], ["empty", []], ["non-string", [1]],
+  ["unknown kind", ["unknown:fixture"]], ["missing repository", ["repo:"]],
+  ["missing worktree repository", ["worktree::fixture"]], ["missing workspace", ["worktree:fixture:"]],
+  ["missing workspace separator", ["worktree:fixture"]], ["duplicate", ["global", "global"]],
+])("refuses a %s location store list", (_kind, value) => {
+  expect(() => parseLocationStores(value)).toThrow();
+});
+
+it.each([
+  ["unknown:fixture"], ["repo:"], ["worktree::fixture"], ["worktree:fixture:"], ["global", "global"],
+])("refuses invalid stores before writing the location: %j", (...stores) => {
+  const global = createReplica("global", local); fixtures.push(global);
+  expect(() => recordLocation(global.db, { sessionId: "s-1", stores: stores as StoreKey[], home: null })).toThrow();
+  expect(global.db.prepare("SELECT count(*) AS n FROM roam_locations").get()).toEqual({ n: 0 });
+});
+
+it("retains an empty catalog deletion marker without treating it as participant stores", () => {
+  const global = createReplica("global", local); fixtures.push(global);
+  recordLocation(global.db, { sessionId: "s-1", stores: [], home: null });
+  expect(global.db.prepare("SELECT stores_json FROM roam_locations").get()).toEqual({ stores_json: "[]" });
+  expect(resolveSessionReplica(global.db, "s-1")).toBeNull();
+  expect(() => parseLocationStores([])).toThrow();
+});
 
 it("hub reads box-created session without a checkout", () => {
   const global = createReplica("global", local);

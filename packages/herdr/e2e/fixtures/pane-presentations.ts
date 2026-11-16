@@ -33,6 +33,7 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
   let next = 0, selected: { space: string; tab: string; focused_pane: string } | null = null;
   const spaces: AppSpace[] = [];
   const neighbors = new Map<string, Record<string, string>>();
+  const proxyDisplays = new Set<string>();
   const reverse: Record<string, string> = { up: 'down', down: 'up', left: 'right', right: 'left' };
   const link = (anchor: string, pane: string, direction: string) => {
     const before = neighbors.get(anchor) ?? {}, opposite = reverse[direction];
@@ -58,6 +59,7 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
     }
     neighbors.delete(id);
     for (const space of spaces) for (const tab of space.tabs) {
+      for (const row of tab.terminals) if (row.pane === id) proxyDisplays.delete(row.terminal);
       tab.panes = tab.panes.filter(pane => pane.id !== id);
       tab.terminals = tab.terminals.filter(pane => pane.pane !== id);
     }
@@ -75,11 +77,19 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
       // Supported apps adopt labelled live terminals into a fresh pane, preserving focus:
       // herdrdev/herdr-app v0.1.16 src/window.rs, reconcile/start_adoption/adopt.
       const fallbackTabs = spaces.flatMap(space => space.tabs.filter(tab => tab.panes.some(pane => pane.mod === 'pane')).map(tab => ({ space, tab })));
-      if (fallbackTabs.length) {
+      if (fallbackTabs.length || proxyDisplays.size) {
         const inventory = await hc(['ls', '--json']);
         if (!Array.isArray(inventory.terminals)) throw new Error('owned core inventory is unavailable');
+        // window.rs checked_closed removes a pane only on a proved exit or kill.
+        for (const address of [...proxyDisplays]) {
+          if (!inventory.terminals.some(row => row.address === address && row.state === 'finished')) continue;
+          const proof = await hc(['get', address, '--json']);
+          if (proof.address !== address || proof.state !== 'finished' || !['exited', 'killed'].includes(proof.reason)) continue;
+          const pane = spaces.flatMap(space => space.tabs).flatMap(tab => tab.terminals).find(row => row.terminal === address)?.pane;
+          if (pane) erase(pane);
+        }
         for (const row of inventory.terminals) {
-          if (typeof row.address !== 'string' || row.address.includes('/') || row.state !== 'live') continue;
+          if (!fallbackTabs.length || typeof row.address !== 'string' || row.address.includes('/') || row.state !== 'live') continue;
           if (spaces.some(space => space.tabs.some(tab => tab.terminals.some(item => item.terminal === row.address)))) continue;
           const proof = await hc(['get', row.address, '--json']);
           if (proof.address !== row.address || proof.state !== 'live') continue;
@@ -88,6 +98,7 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
           const pane = { id: fresh('pane') }, anchor = destination.tab.panes.at(-1)!;
           link(anchor.id, pane.id, 'right'); destination.tab.panes.push(pane);
           destination.tab.terminals.push({ pane: pane.id, terminal: row.address });
+          if (proof.labels?.['spider.kind'] === 'pane-proxy') proxyDisplays.add(row.address);
         }
       }
       return structuredClone({ spaces, recent: [] });
@@ -131,6 +142,7 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
       if (address.includes('/')) throw new Error('only local presentation terminals can enter app panes');
       const target = await hc(['get', address, '--json']);
       if (target.state !== 'live') throw new Error('presentation is not live');
+      if (target.labels?.['spider.kind'] === 'pane-proxy') proxyDisplays.add(address);
       const existing = spaces.flatMap(space => space.tabs).flatMap(tab => tab.terminals).find(row => row.terminal === address);
       if (existing) { selected = locate(existing.pane); return { pane: existing.pane }; }
       if (!selected) throw new Error('no selected owned tab');

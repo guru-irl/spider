@@ -56,6 +56,16 @@ describe('cross-machine presentation fixtures', () => {
     expect((await app('status', {})).focused_pane).toBe(owner.pane);
     expect(presentationRows(await app('ls', {}) as PresentationDocument)).toEqual(rows);
   });
+  it('removes a proxy pane only after the core proves it exited and leaves the execution program alone', async () => {
+    let state = 'live', reason: string | null = null; const calls: string[][] = [];
+    const app = createPresentationApp(async args => { calls.push([...args]); return args[0] === 'run' ? { address: 't1' } : args[0] === 'ls' ? { terminals: [{ address: 't1', state: 'live' }, { address: 't2', state }] } : { address: args[1], state, reason, labels: { 'spider.kind': 'pane-proxy' } }; });
+    const owner = await app('space.new', { argv: ['/bin/cat'] });
+    const shown = await app('terminal.keep', { terminal: 't2', place: 'down' });
+    state = 'finished'; reason = 'exited';
+    expect(presentationRows(await app('ls', {}) as PresentationDocument)).toEqual([{ space: owner.space, tab: owner.tab, pane: owner.pane, terminal: 't1' }]);
+    expect((await app('ls', {})).spaces[0].tabs[0].panes).not.toContainEqual({ id: shown.pane });
+    expect(calls.some(args => args[0] === 'kill' || args[0] === 'rm')).toBe(false);
+  });
   it('moves an owned fallback tab by its one-based index while retaining pane focus', async () => {
     const app = createPresentationApp(async () => ({ address: 't1' }));
     const owner = await app('space.new', { argv: ['/bin/cat'] });

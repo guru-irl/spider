@@ -25,7 +25,7 @@ export async function handlePaneCommand(command, context, ports) {
     const entries = pendingEntries(ports);
     const pending = Object.prototype.hasOwnProperty.call(entries, match[1]) ? entries[match[1]] : null;
     delete entries[match[1]]; ports.setShared(pendingKey, entries);
-    if (!pending) return;
+    if (!pending) { ports.notify('Confirmation expired'); return; }
     if (pending.expires <= now(ports)) { ports.notify('Confirmation expired'); return; }
     try {
       const target = await ports.resolveTarget(pending);

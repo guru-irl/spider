@@ -80,7 +80,7 @@ test('later focus change cannot close another pane', async () => {
   expect(h.requests).toMatchObject([{ op: 'close-confirmed', operationId: 'op1', presentationId: 'pres-1', expectedRevision: 3, target: { coreId: 'core-remote', terminalId: 't7', createdMs: 42 } }]);
   expect(h.p.resolveTarget).toHaveBeenCalledOnce();
   await module().handlePaneCommand('confirm-op1', other, h.p);
-  expect(h.requests).toHaveLength(1); expect(h.p.resolveTarget).toHaveBeenCalledOnce(); expect(h.p.run).not.toHaveBeenCalled(); expect(h.notices).toEqual([]);
+  expect(h.requests).toHaveLength(1); expect(h.p.resolveTarget).toHaveBeenCalledOnce(); expect(h.p.run).not.toHaveBeenCalled(); expect(h.notices).toEqual(['Confirmation expired']);
 });
 
 test('confirmation that expires while reading the snapshot cannot close', async () => {
@@ -98,6 +98,7 @@ test('confirmation that expires while reading the snapshot cannot close', async 
 test('a nonexistent inherited-property confirmation does not read the service', async () => {
   const h = ports(); await module().handlePaneCommand('confirm-constructor', context(), h.p);
   expect(h.p.resolveTarget).not.toHaveBeenCalled(); expect(h.requests).toEqual([]);
+  expect(h.notices).toEqual(['Confirmation expired']);
 });
 
 test('remote shell close also requires confirmation', async () => {

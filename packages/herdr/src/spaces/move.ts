@@ -88,8 +88,13 @@ export async function presentExistingPane(presentation: PanePresentation, slot: 
   let display = selected.mode === 'proxy' ? selected.proxy : paneAddress(selected.target.terminalId);
   let launch = false;
   if (selected.mode === 'proxy') {
-    if (display && await proxyState(display) === 'finished') { display = null; launch = true; }
-    else if (!display) {
+    if (display) {
+      const state = await proxyState(display).catch(error => {
+        if (selected.visibility === 'parked' && error instanceof HerdrError && error.code === 'not_found') return 'absent' as const;
+        throw error;
+      });
+      if (state === 'finished' || state === 'absent') { display = null; launch = true; }
+    } else {
       display = await ports.findProxy(selected);
       if (display) {
         if (await proxyState(display) !== 'live') throw new HerdrError('proxy-launch-uncertain', 'Proxy launch is uncertain');

@@ -22,7 +22,7 @@ gh workflow run herdr-stories.yml --ref <branch> -f stories=R03
 
 Separate multiple story IDs with commas. Leave `stories` empty to run the default set in `controls/ci-stories.json`. A preparation job installs dependencies and builds once, verifies the pinned Linux core, and shares the build with one job per selected story. The jobs run in parallel and report independently. The harness requires an owned `hc` executable rather than a symbolic link. On failure, download the `herdr-headless-failures-<story>` artifact and extract `e2.tar.gz`.
 
-The preparation job has a five-minute limit. Each story uses the limit in `controls/ci-stories.json`; stories without an individual measurement retain the five-minute limit. The workflow exercises the packed extension and real, isolated local cores without a display. It does not certify the native app, native windows, SSH, or real remote machines. R01, R03, R04, R05, R11, and R12 are not yet in the default set. R02 covers app placement with a fixture owner and is outside the default set. R14local needs separately supplied local fixtures.
+The preparation job has a five-minute limit. Each measured story has its longest completed job time plus 40 seconds, rounded up to a minute; unmeasured stories retain the five-minute limit. The limits are in `controls/ci-stories.json`. The workflow exercises the packed extension and real, isolated local cores without a display. It does not certify the native app, native windows, SSH, or real remote machines. R01, R05, and R11 are not yet in the default set. R02 covers app placement with a fixture owner and is outside the default set. R14local needs separately supplied local fixtures.
 
 ## Run an isolated native copy
 

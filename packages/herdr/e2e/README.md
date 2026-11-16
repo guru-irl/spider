@@ -50,6 +50,55 @@ Headless checks use a copied, ad-hoc-signed command-only executable with a copie
 
 These checks prove launch isolation and command transport. They do not certify Spaces rendering, primary-session reopening, physical keys, hover, or clicks. The native Spaces stories remain a separate acceptance gate.
 
+## Cross-machine panes: B01–B08
+
+Run these stories only in the Linux stories workflow, with its pinned core and packed build. They run serially against independently owned cores connected by synthetic transport. The app boundary owns placement only; targets, proxies, source pi sessions, viewers and consoles are real packed processes. They are excluded from the no-core `ci` and real-machine `remote` profiles.
+
+```sh
+npm run test:herdr:e2e -- --built --tier headless \
+  --story B01,B02,B03,B04,B05,B06,B07,B08
+```
+
+`--task panes` selects the same eight stories. Each result retains its duration, packed CLI and endpoint digests, source identity, placement state, process observations and independent cleanup proof. A successful headless result explicitly excludes native input, SSH and continuous pixels. Fixture unit tests do not count as story results.
+
+| Story | Packed headless assertions | Not certified by that result |
+| --- | --- | --- |
+| B01 | Captured tab, split and Go-to intents; picker event handlers, preferred and disabled machines; single-use menu ticket; agent creation. | Physical shortcuts, pointer hit targets and rendered picker geometry. |
+| B02 | Remote home and focused remote cwd; UTF-8 input, multiline output, history attach, initial geometry and target-derived header. | Native clipboard, selection, interactive resize and actual paste events. |
+| B03 | Cancelled and confirmed proxy close; Send back and same-program reopen; target survival after tab, space or proxy exit. | Native local pi close and confirmation interaction. |
+| B04 | Stream loss, discarded input, reconnect to the same process, alternate-screen recovery, bounded probes and alias reuse with a same-ID decoy terminal. | Mouse and bracketed-paste mode bytes; native key translation. CPU is recorded, not certified as a performance result. |
+| B05 | Named source discovery, unplaced and live non-terminal rows, installed move and drag handlers, saved choices and helper restart. | Physical drag delivery. |
+| B06 | Remote viewer label, two-view renewal batch, idle CPU/RSS sample, 30-second helper outage, replacement view with unchanged children, view-only closure and failed-launch lease release. | Native 60 by 8 owner-relative fallback. |
+| B07 | Remote console label and one retained read-only console for two jobs; reuse, discarded input and unchanged live jobs after Send back. | Native console layout and pointer interactions. |
+| B08 | Native/proxy conversion both ways in the same space and tab; local and remote agent machine labels; unfocused conversion remains pending without focus theft. | Continuous pixels, native moved placeholder and roaming ownership transitions. |
+
+### Isolated app interaction checklist
+
+B01–B08 remain registered in `app`. Without an owned rendered-UI/input hook they report **blocked** before launching or focusing a window. An installed-mod event callback is not a native click or key. An image is not input evidence.
+
+After compatibility checks, prepare separate 0.1.13 and 0.1.16 copies with `prepareNativeApp`, explicit binary resolution, an owned app home and an owned display. Never use a live home, launcher link or global input injection. Record the copy's ownership document and core IDs, then select only these stories:
+
+```sh
+SPIDER_HERDR_APP_TESTS=1 \
+SPIDER_HERDR_TEST_DISPLAY_UUID="$OWNED_DISPLAY_UUID" \
+SPIDER_HERDR_E2E_APP="$OWNED_APP_BINARY" \
+npm run test:herdr:e2e -- --built --tier app \
+  --story B01,B02,B03,B04,B05,B06,B07,B08
+```
+
+Until that hook exists, retain the blocked automated result and collect the following observations manually in the isolated copy. For each item record the app version, actual target/core IDs, pane/space/tab IDs, cwd, process identity, outcome, duration and cleanup proof. Leave an unavailable observation blocked.
+
+1. **B01:** Use physical keys and the mouse for Tab +, both split actions, Go to → New terminal, the pane menu and an agent action. Check the focused machine default, filtering, unreachable rows and the captured original destination. One action creates one target and one local display.
+2. **B02:** Type UTF-8 text, resize the owned pane and observe the destination dimensions. Select and copy output, paste multiline text, and reconnect with history. Check exact cwd on the destination and an unchanged unrelated terminal.
+3. **B03:** Cancel remote close, then confirm it. Distinguish the live target after Send back, tab close, space close and proxy exit from the ended target after confirmation. Reopen the same program. Repeat local pi close with its existing confirmation and key binding unchanged.
+4. **B04:** Interrupt only the owned connector. Type while disconnected, restore it, and prove that input was discarded. Capture alternate-screen, mouse and bracketed-paste reset behavior. Reuse an alias for a different owned core with the same terminal ID; it must not receive the old target's input. Record reconnect attempts and process accounting.
+5. **B05:** Start and name an agent without a prior destination. Choose an existing tab, a new tab and a physical drop target. Restart the helper and check the remembered choice. A live pi outside an hc terminal remains visible but cannot be opened, moved or dragged.
+6. **B06:** Open a remote child view beside its parent. With less than 60 by 8 available, check the owner-relative new-tab fallback without shrinking the parent. Record renewal CPU and process counts, disconnect the display for 30 seconds, and reopen it. The view may restart; the child must not. Check close, failed-launch and helper-loss lease release separately.
+7. **B07:** Open the same agent's console twice while two jobs run. There is one console identity on that machine. Input is ignored, and closing the display leaves both jobs and the console history intact.
+8. **B08:** Observe both-direction conversion continuously in the same space and tab, with no hidden local target proxy. Check every agent, viewer and console machine pill, including **This computer** locally. Move execution while its original tab is unfocused: ownership must not roll back and focus must not move. The native moved placeholder on 0.1.13 is not implemented; keep that observation blocked even if the pending-state assertion passes.
+
+B08 exercises presentation readiness using source-owned session copies. It does not certify home compare-and-swap, revocation or destroyed-machine recovery; the roaming stories own those assertions.
+
 ## Scenario contract
 
 Every story file in `scenarios/` exports **exactly one named array**:
@@ -65,7 +114,7 @@ export const scenarios: readonly ScenarioDefinition[] = [
 
 Use `StoryId` as required by the foundation's type declarations. `scenario` and default exports are rejected, even if a `scenarios` export is also present. Files reserved for runner contract tests are excluded from discovery. Helpers belong outside `scenarios/`. Story files define stories; the central test invokes them and closes their suites. The foundation's optional `registerScenarios(scenarios)` helper is suppressed only during central discovery to prevent duplicate execution. Unrelated standalone Vitest registrations in story files are not supported. The central runner passes each definition's `script` into `createSuite`.
 
-Selection is dynamic by tier and ID. `--story S52,S54` and `--task setup|remote|subagents|lifecycle|panels|ssh|runner|roam` select stories; a missing requested ID, duplicate ID, wrong-tier selection, or malformed export fails. `--shuffle --seed fixture` changes execution order reproducibly. `--harness` also runs foundation, native utility, confidence, and `fixtures/**/*.test.ts` tests. Configuration fails with the filename if a harness test falls outside those include patterns.
+Selection is dynamic by tier and ID. `--story S52,S54` and `--task setup|remote|subagents|lifecycle|panels|ssh|runner|roam|panes` select stories; a missing requested ID, duplicate ID, wrong-tier selection, or malformed export fails. `--shuffle --seed fixture` changes execution order reproducibly. `--harness` also runs foundation, native utility, confidence, and `fixtures/**/*.test.ts` tests. Configuration fails with the filename if a harness test falls outside those include patterns.
 
 R01 exercises sync through the packed CLI and two isolated cores in the headless tier. R02 exercises admission, the packaged box observer and hub, and proxy placement with a fixture owner and a closed app. R02 does not start the native app or a pi owner. The headless workflow runs one story per job.
 
@@ -77,7 +126,7 @@ The runner registers its worker process group in its own durable ledger and star
 
 `--tier ci --story S55` kills real runner instances with TERM and KILL while they own a detached daemon and socket; the headless variant also owns two isolated cores and destination terminal processes. It kills both watchdogs in a further case and proves the next real runner reconciles their durable ledgers. It also proves independent retry collects a survivor from a failed ledger and records unchanged default-socket identity without a default-core CLI call. `--cleanup-control daemon|destination` is a fixture-only hold mode restricted to exactly S55 in ci/headless; use the ordinary S55 story to run and collect it.
 
-Each invocation root contains `invocation.json`, entry digests, build/pack/test logs, per-story JSON, and `matrix.md`/`matrix.json`. The matrix lists S01-S56 and R01-R02 and distinguishes **passed**, **failed**, **blocked**, and **not exercised**. An R02 pass names its fixture-owner and native-app coverage limits. Missing selected results fail closed. A cleanup failure overrides any earlier story success. A blocked prerequisite never produces a complete-suite pass. Successful duration includes teardown. Failed runs are not timing samples. IDs that match `H-[a-z0-9-]+` select harness stories, which have a separate matrix section and never count toward the 56 product stories.
+Each invocation root contains `invocation.json`, entry digests, build/pack/test logs, per-story JSON, and `matrix.md`/`matrix.json`. The matrix lists the registered S, R and B product IDs and distinguishes **passed**, **failed**, **blocked**, and **not exercised**. An R02 pass names its fixture-owner and native-app coverage limits. Missing selected results fail closed. A cleanup failure overrides any earlier story success. A blocked prerequisite never produces a complete-suite pass. Successful duration includes teardown. Failed runs are not timing samples. IDs that match `H-[a-z0-9-]+` select harness stories, which have a separate matrix section and never count toward the 56 product stories.
 
 S56 in CI repeats the actual runtime probe, mod-helper import, and runtime exit/receipt/stream assertions against the public package. Each pristine artifact must pass before its bad copy can count as caught. The headless controls reuse the actual S29, S22, and S34 definitions. A failed baseline, unrelated assertion, missing definition, or unproved cleanup does not count as a caught control. The CI artifact subset does not certify those active-core controls.
 

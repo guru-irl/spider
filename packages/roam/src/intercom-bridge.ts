@@ -399,7 +399,8 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       try { settled = ports.store.isSettledReceipt({ peer, frame }); }
       catch (error) { if (error instanceof Error && error.message === 'receipt-stream-mismatch') return bad('receipt-stream-mismatch'); throw error; }
       // A live relay copy may still need the second half of an interrupted settlement.
-      if (settled && !outbound) { receiptAcks.push(frame); continue; }
+      // An older activation's receipt is only a replay once the new owner settled it.
+      if (settled && (!outbound || !sameEndpoint(outbound.endpoint, frame.from))) { receiptAcks.push(frame); continue; }
       if (!outbound || outbound.peer !== peer) return bad("invalid-receipt");
       if (!sameEndpoint(outbound.endpoint, frame.from) && receiptReleasesPayload(frame.receipt)) {
         ports.store.followConsumption({ queue: "outbound", peer, frame });

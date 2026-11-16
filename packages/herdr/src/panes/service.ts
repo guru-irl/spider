@@ -95,8 +95,10 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     const state = await ports.store.read(), removed: PanePresentation[] = [];
     if (checkTargets) {
       let index = 0;
-      await Promise.all(Array.from({ length: Math.min(4, state.presentations.length) }, async () => {
-        while (index < state.presentations.length) {
+      const cancellation = new AbortController(), timer = setTimeout(() => cancellation.abort(), 5000);
+      const signal = AbortSignal.any([abort.signal, cancellation.signal]);
+      try { await Promise.all(Array.from({ length: Math.min(4, state.presentations.length) }, async () => {
+        while (index < state.presentations.length && !signal.aborted) {
           const p = state.presentations[index++];
           if (p.visibility === 'closing' || p.visibility === 'ended' || p.target.createdMs <= 0 || p.conversion) continue;
           const machine = machines.find(machine => machine.coreId === p.target.coreId);
@@ -106,13 +108,14 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
           if (source.rows.some(row => row.target?.coreId === p.target.coreId && row.target.terminalId === p.target.terminalId && row.target.createdMs !== p.target.createdMs)) { removed.push(p); continue; }
           const key = `${p.target.coreId}/${p.target.terminalId}`;
           try {
-            const terminal = facts[key]?.terminal ?? await bounded(signal => ports.hc.get(p.target.address, { signal }));
+            const cached = facts[key];
+            const terminal = cached?.createdMs === p.target.createdMs ? cached.terminal : await ports.hc.get(p.target.address, { signal });
             if (terminal.state === 'finished') removed.push(p);
           } catch (error) {
             if (error instanceof HerdrError && error.code === 'not_found') removed.push(p);
           }
         }
-      }));
+      })); } finally { clearTimeout(timer); }
     }
     if (removed.length || state.presentations.some(p => p.visibility === 'ended')) await ports.store.update(current => prunePaneHistory(current, removed));
   }

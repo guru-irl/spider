@@ -238,6 +238,29 @@ test('complete source evidence prunes finished and absent targets but keeps unav
   try { await service.reconcile(); expect(state.presentations.map(p => p.id)).toEqual(['unavailable', 'live']); }
   finally { await service.stop(); }
 });
+test('finished facts from another incarnation cannot retire the current live target', async () => {
+  const f = await fixture();
+  f.ports.targetFacts = async () => ({ 'core-remote/t7': { terminal: { address: 'core-remote/t7' as never, parent: null, labels: {}, state: 'finished', status: null, exitCode: 0, reason: 'exited', signal: null, finishedAt: 1 }, createdMs: 16, identityLabels: {}, currentCwd: null, title: null, app: null, status: null } });
+  const service = createPaneService(f.ports);
+  try { await service.reconcile(); expect((await f.ports.store.read()).presentations).toMatchObject([{ id: 'p1', target: { createdMs: 17 } }]); }
+  finally { await service.stop(); }
+});
+test('history probes share one endpoint budget instead of timing out once per target', async () => {
+  const f = await fixture(); const signals: AbortSignal[] = []; let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  await f.ports.store.update(state => ({ ...state, presentations: Array.from({ length: 17 }, (_, index) => ({ ...f.presentation, id: `p-${index}`, visibility: 'parked' as const, target: { ...f.presentation.target, terminalId: `t-${index}` as never, address: `core-remote/t-${index}` as never } })) }));
+  vi.mocked(f.hc.get).mockImplementation(async (_address, options) => {
+    const signal = options!.signal!; signals.push(signal); if (signals.length === 4) started();
+    return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(new HerdrError('aborted', 'Cancelled')), { once: true }));
+  });
+  vi.useFakeTimers(); const service = createPaneService(f.ports), running = service.reconcile();
+  try {
+    await ready; await vi.advanceTimersByTimeAsync(5000); const count = signals.length;
+    await vi.advanceTimersByTimeAsync(50000); await running; await service.stop();
+    expect(count).toBe(4); expect(signals.every(signal => signal.aborted)).toBe(true);
+    expect((await f.ports.store.read()).presentations).toHaveLength(17);
+  } finally { await service.stop(); vi.useRealTimers(); }
+});
 test('a complete inventory prunes a superseded terminal incarnation without stopping its successor', async () => {
   const f = await fixture(); const target = { ...f.presentation.target, createdMs: 18, generation: 'gen-2' };
   f.ports.inventory = async () => ({ version: 1, rows: [{ sessionId: 'session-1', generation: 'gen-2', name: 'Example', status: 'working', updatedAt: 2, machineKey: 'box-1.invalid', unavailableReason: null, target,

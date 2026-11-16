@@ -126,6 +126,7 @@ async function stoppedAndSuspended(suite: Suite): Promise<void> {
   } });
   const stoppedFixture = await hostingFixture(suite, 'hosting-stop');
   try {
+    console.log('R05 stop: starting owner');
     const owner = await start(stoppedFixture);
     const result = await runTool(stoppedFixture, owner, 'probe', 'suspension-probe');
     expect(result.toolName).toBe('spider');
@@ -142,22 +143,28 @@ async function stoppedAndSuspended(suite: Suite): Promise<void> {
     expect(stopped?.value.intent.desired).toBe('stopped');
     expect(await stoppedFixture.owners()).toEqual([]);
     await suite.evidence('R05-stop.json', { sessionId: stoppedFixture.sessionId, stopped: true, owners: 0 });
+    console.log('R05 stop: complete');
   } finally { await stoppedFixture.close(); }
 
   const fixture = await hostingFixture(suite, 'hosting-crashes'), delays = [5_000, 15_000, 60_000, 300_000];
   try {
+    console.log('R05 crashes: starting owner');
     let owner = await start(fixture);
     for (let count = 1; count <= 5; count++) {
+      console.log(`R05 crash ${count}: signalling owner`);
       await fixture.crash(owner);
+      console.log(`R05 crash ${count}: owner exited`);
       fixture.advance(10_000);
       const state = await waitFor('supervisor records the crash', fixture.state, row => (row?.value.failures.length ?? 0) >= count, deadline(30_000));
       expect(state?.value.failures).toHaveLength(count);
-      if (count < 5) { fixture.advance(delays[count - 1]); owner = await fixture.waitOwner(owner.pid); }
+      console.log(`R05 crash ${count}: recorded`);
+      if (count < 5) { fixture.advance(delays[count - 1]); owner = await fixture.waitOwner(owner.pid); console.log(`R05 crash ${count}: owner restarted`); }
       else expect(state?.value.intent.suspended).toMatch(/repeated session crashes/i);
     }
     expect(await fixture.owners()).toEqual([]);
     const suspendedLaunches = await launchCount(fixture);
     expect(suspendedLaunches).toBe(5);
+    console.log('R05 crashes: restarting core');
     await fixture.restartCore();
     fixture.advance(300_000);
     await fixture.settle();

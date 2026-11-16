@@ -133,6 +133,7 @@ jobs:
           test ! -e "$rundir"
 
       - name: Run headless story
+        timeout-minutes: ${{ matrix.story == 'R05' && 4 || matrix.timeout }}
         env:
           STORY: ${{ matrix.story }}
         run: |

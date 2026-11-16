@@ -7,7 +7,7 @@ import { HerdrError } from '../client/parse.js';
 import { withHcOperation } from '../client/operation.js';
 import { paneSnapshot } from './snapshot.js';
 import { prunePaneHistory } from './retention.js';
-import { encodePaneServiceRequest, parsePaneServiceRequest, parsePanePresentation } from './codec.js';
+import { encodePaneServiceRequest, parsePaneServiceRequest, parsePaneServiceReply, parsePanePresentation } from './codec.js';
 import { createPaneServiceInventory } from './inventory.js';
 import { confirmPresentationClose, parkPresentation, reconcilePendingClose, reconcilePresentationExit, samePaneTarget, type PaneLifecyclePorts } from './lifecycle.js';
 import type { AppPaneCapabilities, FolderMapPort, MachineChoice, PaneActionOutcome, PaneAgentRow, PaneInventoryPage, PanePlacementStore, PanePresentation, PaneServiceReply, PaneServiceRequest, PaneTerminalFacts } from './types.js';
@@ -16,7 +16,7 @@ export interface PaneService {
   reconcile(): Promise<void>;
   stop(): Promise<void>;
 }
-export type PaneMutation = Exclude<PaneServiceRequest, { op: 'snapshot' }>;
+export type PaneMutation = Exclude<PaneServiceRequest, { op: 'snapshot' | 'ready-outcome' }>;
 export interface PrivatePaneInventory { rows: readonly PaneAgentRow[]; complete: boolean; stale: boolean }
 export interface PaneServicePorts extends Pick<PaneLifecyclePorts, 'validateTarget' | 'closeSession'> {
   root: string; store: PanePlacementStore; hc: HcClient; app: AppClient | null;
@@ -222,7 +222,27 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   const inventoryUnavailable = (): PaneServiceReply => ({ version: 1, kind: 'outcome', outcome: { status: 'pending', reason: 'inventory-unavailable', presentation: null } });
   interface LookupDeadline { at: number; expired: boolean; timer?: ReturnType<typeof setTimeout> }
   const lookupExpired = (deadline: LookupDeadline) => deadline.expired || Date.now() >= deadline.at;
-  async function apply(request: PaneServiceRequest, deadline?: LookupDeadline): Promise<PaneServiceReply> {
+  async function queryReady(request: Extract<PaneServiceRequest, { op: 'ready-outcome' }>): Promise<PaneServiceReply> {
+    await live();
+    const previous = replay.get(request.operationId);
+    if (previous) {
+      const saved = parsePaneServiceRequest(JSON.parse(previous.bytes));
+      if (saved.op !== 'present-ready' || saved.presentationId !== request.presentationId) return outcome('operation-reused');
+      if (previous.settledAt === null) return { version: 1, kind: 'outcome', outcome: { status: 'pending', reason: 'operation-in-progress', presentation: null } };
+      try { return await previous.reply; } catch { /* An interrupted action has no recorded outcome. */ }
+    }
+    const saved = await readPrivateJson(join(ports.root, 'ready-outcomes', hash(request.presentationId) + '.json'));
+    if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
+      const evidence = saved as Record<string, unknown>;
+      if (evidence.operationId === request.operationId) {
+        const original = parsePaneServiceRequest(evidence.request);
+        if (original.op === 'present-ready' && original.operationId === request.operationId && original.presentationId === request.presentationId && evidence.digest === hash(encodePaneServiceRequest(original)))
+          return parsePaneServiceReply({ version: 1, kind: 'outcome', outcome: evidence.outcome });
+      }
+    }
+    return { version: 1, kind: 'outcome', outcome: { status: 'pending', reason: 'operation-unknown', presentation: null } };
+  }
+  async function apply(request: Exclude<PaneServiceRequest, { op: 'ready-outcome' }>, deadline?: LookupDeadline): Promise<PaneServiceReply> {
     if (deadline && lookupExpired(deadline)) return inventoryUnavailable();
     await live();
     if (request.op === 'snapshot') {
@@ -306,12 +326,12 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   const cancelTimer = ports.schedule(() => {
     if (initialized && !stopped && !refreshing) void reconcile().catch(() => {});
   }, 5000);
-  const applyOperation = async (request: PaneServiceRequest, deadline?: LookupDeadline) => {
+  const applyOperation = async (request: Exclude<PaneServiceRequest, { op: 'ready-outcome' }>, deadline?: LookupDeadline) => {
     initialized = true; activeRequests++;
     try { return await withHcOperation(() => apply(request, deadline)); }
     finally { activeRequests--; kickRefresh(); }
   };
-  function enqueue(request: PaneServiceRequest, deadline?: LookupDeadline): Promise<PaneServiceReply> {
+  function enqueue(request: Exclude<PaneServiceRequest, { op: 'ready-outcome' }>, deadline?: LookupDeadline): Promise<PaneServiceReply> {
     const reply = queue.then(() => applyOperation(request, deadline));
     queue = reply.then(() => {}, () => {});
     return reply;
@@ -344,6 +364,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     request(input) {
       const arrival = Date.now();
       const request = parsePaneServiceRequest(input); const bytes = encodePaneServiceRequest(request);
+      if (request.op === 'ready-outcome') return queryReady(request);
       if (request.op === 'snapshot') return applyOperation(request);
       pruneReplay();
       const previous = replay.get(request.operationId);

@@ -505,6 +505,7 @@ export class PolyglotExecutor {
   #remote?: RemoteExecutionPort;
   #remoteUnavailableReason?: string;
   #owner?: Owner;
+  #ownerSessionId?: string;
   #environmentPolicy?: ExecutionEnvironmentPolicy;
   get #runtimes(): RuntimeMap { return this.#runtimeMap ??= detectRuntimes(); }
   /** Injectable only for deterministic process-launch tests. */
@@ -518,6 +519,7 @@ export class PolyglotExecutor {
     remote?: RemoteExecutionPort;
     remoteUnavailableReason?: string;
     owner?: Owner;
+    ownerSessionId?: string;
     environmentPolicy?: ExecutionEnvironmentPolicy;
   }) {
     this.#hardCapBytes = opts?.hardCapBytes ?? 100 * 1024 * 1024; // 100MB
@@ -533,6 +535,7 @@ export class PolyglotExecutor {
     this.#remote = opts?.remote;
     this.#remoteUnavailableReason = opts?.remoteUnavailableReason;
     this.#owner = opts?.owner;
+    this.#ownerSessionId = opts?.ownerSessionId;
     this.#environmentPolicy = opts?.environmentPolicy;
     this.#spawnProcess = opts?.spawn ?? spawn;
   }
@@ -863,6 +866,7 @@ export class PolyglotExecutor {
             schema: 1,
             id: job!.id,
             cwd,
+            ...(this.#ownerSessionId ? { ownerSessionId: this.#ownerSessionId } : {}),
             windowsHide: buildSpawnOptions(process.platform).windowsHide,
             startedAt: new Date().toISOString(),
             ...(needsShell ? { shellCommand: buildFullShellCommand() } : { argv: [spawnCmd, ...spawnArgs] }),

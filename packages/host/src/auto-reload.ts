@@ -3,6 +3,13 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { parseBuildId, type BuildIdentity } from "../../../scripts/build-id.mjs";
 import type { LoadedBundle } from "./build-id.js";
+import type { InteractiveReloadActivity } from "./reload-activity.js";
+
+export interface ReloadActivity extends InteractiveReloadActivity {
+  bashRunning(ctx: ExtensionContext): boolean;
+  promptOpen(): boolean;
+  promptDepth(): number;
+}
 
 export const AUTO_RELOAD_ARG = "--spider-auto=";
 
@@ -44,9 +51,29 @@ export function registerAutoReload(
   admitted: () => boolean,
   wouldInterrupt: (sessionId: string) => boolean,
   busy: () => boolean = () => false,
-): { isAutomaticReload: () => boolean } {
+  interactive: InteractiveReloadActivity = { busy, commandActive: busy, overlayActive: () => false },
+): { isAutomaticReload: () => boolean; activity: ReloadActivity } {
   let automaticReload = false;
-  const activation = { isAutomaticReload: () => automaticReload };
+  let promptDepth = 0;
+  const pendingBash: Array<{ command: string; excluded: boolean; previous: Set<string> | null }> = [];
+  const consumedBashResults = new Set<string>();
+  const inspectBash = (ctx: ExtensionContext, consume: boolean): boolean => {
+    if (!pendingBash.length) return false;
+    const pending = consume ? pendingBash : pendingBash.slice();
+    const consumed = consume ? consumedBashResults : new Set(consumedBashResults);
+    for (const entry of ctx.sessionManager.getEntries()) {
+      if (entry.type !== "message" || entry.message.role !== "bashExecution" || consumed.has(entry.id)) continue;
+      const message = entry.message;
+      const index = pending.findIndex(item => item.previous !== null && !item.previous.has(entry.id) &&
+        item.command === message.command && item.excluded === !!message.excludeFromContext);
+      if (index >= 0) { pending.splice(index, 1); consumed.add(entry.id); }
+    }
+    return pending.length > 0;
+  };
+  const activation = { isAutomaticReload: () => automaticReload, activity: {
+    busy: () => interactive.busy(), commandActive: () => interactive.commandActive(), overlayActive: () => interactive.overlayActive(),
+    bashRunning: (ctx: ExtensionContext) => inspectBash(ctx, false), promptOpen: () => promptDepth > 0, promptDepth: () => promptDepth,
+  } };
   if (process.env.PI_SUBAGENT_CHILD === "1") return activation;
   // Rebuilt bundles have separate module instances, but the process survives reload.
   // Keep attempts in a versioned process-wide slot so an old build cannot loop.
@@ -61,28 +88,14 @@ export function registerAutoReload(
   let stopInput: (() => void) | undefined;
   let previous: string | undefined;
   let pending: { key: string; identity: BuildIdentity; token: string } | undefined;
-  let promptDepth = 0;
-  const pendingBash: Array<{ command: string; excluded: boolean; previous: Set<string> | null }> = [];
-  const consumedBashResults = new Set<string>();
   let lastActivity = Date.now();
   const activity = () => { lastActivity = Date.now(); };
   const eligible = (ctx: ExtensionContext) =>
     ctx.mode === "tui" && ctx.hasUI && process.env.PI_SUBAGENT_CHILD !== "1";
-  const bashRunning = (ctx: ExtensionContext): boolean => {
-    if (!pendingBash.length) return false;
-    for (const entry of ctx.sessionManager.getEntries()) {
-      if (entry.type !== "message" || entry.message.role !== "bashExecution" || consumedBashResults.has(entry.id)) continue;
-      const message = entry.message;
-      const index = pendingBash.findIndex(item => item.previous !== null && !item.previous.has(entry.id) &&
-        item.command === message.command && item.excluded === !!message.excludeFromContext);
-      if (index >= 0) { pendingBash.splice(index, 1); consumedBashResults.add(entry.id); }
-    }
-    return pendingBash.length > 0;
-  };
   const ready = (ctx: ExtensionContext, requireQuiet = true) => {
     try {
       // Pi's isIdle() is false while streaming or compacting.
-      return eligible(ctx) && ctx.isIdle() && !ctx.hasPendingMessages() && promptDepth === 0 && !bashRunning(ctx) &&
+      return eligible(ctx) && ctx.isIdle() && !ctx.hasPendingMessages() && promptDepth === 0 && !inspectBash(ctx, true) &&
         !ctx.ui.getEditorText().trim() && (!requireQuiet || Date.now() - lastActivity >= 20_000) &&
         admitted() && enabled(ctx.cwd) && !busy() && !wouldInterrupt(ctx.sessionManager.getSessionId());
     } catch { return false; }

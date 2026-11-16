@@ -1,12 +1,15 @@
-import { isAbsolute } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
+import { canonicalSessionFile } from "@spider/herdr/sessions/registry";
+import type { ProcessIdentity as LocalProcessIdentity, ProcessInventoryPorts } from "@spider/herdr/sessions/lease";
 import type { Db } from "@spider/db-core";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import { seedSession } from "@spider/db-core/roam/seed";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { validateRoamLayout } from "@spider/db-core/roam/layout";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
-import type { Home, JsonObject, HubOperationReadiness, StoreKey } from "@spider/db-core/roam/types";
+import type { Home, JsonObject, HubOperationReadiness, Probe, StoreKey } from "@spider/db-core/roam/types";
 import type { Diagnostic, HostIntent, Journal, Operation, Outcome, RoamConfig } from "./contracts";
 import { isMachineId } from "./machine-id";
 import { parseHubReadiness, validReadiness } from "@spider/db-core/roam/readiness";
@@ -23,6 +26,106 @@ export function participantCaptureInitialized(db: Db, machineId: string, key: St
     return meta?.machine_id === machineId && meta.store_key === key && meta.capture_enabled === 1 && meta.importing === 0 &&
       validateRoamLayout(db, storeScope(key), "inspect").captureSafe;
   } catch { return false; }
+}
+
+export interface BothLocksOptions {
+  root: string;
+  file(sessionId: string): Promise<string>;
+  inventory: ProcessInventoryPorts;
+  identity: LocalProcessIdentity;
+  bootId?(): Promise<string>;
+}
+
+export interface HeldSessionLocks { owns(): Promise<boolean> }
+
+/** An exclusive ID claim precedes the canonical file lease and both span the callback. */
+export function createBothLocks(input: BothLocksOptions): <T>(sessionId: string, fn: (locks?: HeldSessionLocks) => Promise<T>) => Promise<T> {
+  return async function withBothLocks<T>(sessionId: string, fn: (locks?: HeldSessionLocks) => Promise<T>): Promise<T> {
+    if (!text(sessionId) || typeof fn !== "function" || !isAbsolute(input.root) || resolve(input.root) !== resolve(input.inventory.leases.root) ||
+        !Number.isSafeInteger(input.identity.pid) || input.identity.pid <= 0 || !text(input.identity.startIdentity)) throw new Error("Session lock evidence unavailable");
+    const bootId = (await (input.bootId ?? localBootId)()).trim();
+    const current = await input.inventory.probe(input.identity.pid);
+    if (!bootId || current.kind !== "live" || current.startIdentity !== input.identity.startIdentity) throw new Error("Session lock identity unavailable");
+    const id = await claimIdLock(input.root, sessionId, input.identity, input.inventory.probe, { exclusive: true, bootId: async () => bootId });
+    try {
+      const file = await input.file(sessionId);
+      if (typeof file !== "string" || !isAbsolute(file) || file.includes("\0")) throw new Error("Session file unavailable");
+      const canonical = await canonicalSessionFile(file);
+      const lease = await input.inventory.leases.claim(canonical, input.identity, input.inventory, { mode: "cutover", bootId });
+      try {
+        if (await canonicalSessionFile(file) !== canonical) throw new Error("Session file changed during lock acquisition");
+        return await fn({ owns: async () => await id.isHeldByClaim?.() === true });
+      } finally { await input.inventory.leases.release(canonical, lease.token); }
+    } finally { await id.release(); }
+  };
+}
+
+export interface SessionControlPorts {
+  journal: Journal;
+  probe(sessionId: string): Promise<Probe>;
+  withBothLocks<T>(sessionId: string, fn: () => Promise<T>): Promise<T>;
+  live(operation: Operation): Promise<Outcome<JsonObject>>;
+  dormant(operation: Operation): Promise<Outcome<JsonObject>>;
+}
+
+const CONTROL_KINDS = new Set(["session-inspect", "session-freeze", "session-unfreeze", "session-shutdown", "session-retire"]);
+/** Validate before probing or touching the journal. Socket shutdown is the live half of retire. */
+export function validSessionControl(operation: Operation): boolean {
+  return !!operation && text(operation.id) && isMachineId(operation.machineId) && CONTROL_KINDS.has(operation.kind) &&
+    Number.isSafeInteger(operation.expectedEpoch) && operation.expectedEpoch! > 0 && !!operation.args &&
+    text(operation.args.sessionId) && text(operation.args.moveId);
+}
+function validProbe(probe: Probe): boolean {
+  return !!probe && (probe.kind === "absent" || probe.kind === "uncertain" || probe.kind === "live" &&
+    !!probe.identity && text(probe.identity.bootId) && Number.isSafeInteger(probe.identity.pid) && probe.identity.pid > 0 && text(probe.identity.startTime));
+}
+function validControlOutcome(value: Outcome<JsonObject>, operation: Operation): boolean {
+  return !!value && [0, 1, 2, 3].includes(value.code) && text(value.reason) && value.operationId === operation.id &&
+    value.epoch === operation.expectedEpoch && (value.value === null || typeof value.value === "object" && !Array.isArray(value.value));
+}
+
+/** A dormant handler runs only after a fresh absence proof under both physical locks. */
+export async function controlSession(operation: Operation, ports: SessionControlPorts): Promise<Outcome<JsonObject>> {
+  const result = (code: 0 | 1 | 2 | 3, reason: string): Outcome<JsonObject> => ({ code, reason,
+    operationId: typeof operation?.id === "string" ? operation.id : "", home: null,
+    epoch: Number.isSafeInteger(operation?.expectedEpoch) ? operation.expectedEpoch : null, repairCommand: null, value: null });
+  if (!validSessionControl(operation)) return result(2, "invalid-session-control");
+  const sessionId = operation.args.sessionId as string;
+  let owner: Probe;
+  try { owner = await ports.probe(sessionId); }
+  catch { return result(3, "ownership-unavailable"); }
+  if (!validProbe(owner) || owner.kind === "uncertain") return result(3, "ownership-unavailable");
+  try {
+    if (operation.kind !== "session-inspect") {
+      const begun = ports.journal.begin(operation);
+      if (operation.kind === "session-retire" && begun.kind === "done") {
+        const done = begun.result as unknown as Outcome<JsonObject>;
+        return validControlOutcome(done, operation) ? done : result(1, "invalid-retirement-receipt");
+      }
+    }
+    if (owner.kind === "live") {
+      const live = await ports.live(operation);
+      if (!validControlOutcome(live, operation)) return result(3, "live-control-unavailable");
+      if (operation.kind !== "session-retire" || live.code !== 0) return live;
+      try { owner = await ports.probe(sessionId); } catch { return result(3, "process-exit-unproven"); }
+      if (!validProbe(owner) || owner.kind !== "absent") return result(3, "process-exit-unproven");
+    }
+    return await ports.withBothLocks(sessionId, async () => {
+      const current = await ports.probe(sessionId);
+      if (!validProbe(current) || current.kind !== "absent") return result(3, "ownership-unavailable");
+      if (operation.kind === "session-retire") {
+        const begun = ports.journal.begin(operation);
+        if (begun.kind === "done") {
+          const done = begun.result as unknown as Outcome<JsonObject>;
+          return validControlOutcome(done, operation) ? done : result(1, "invalid-retirement-receipt");
+        }
+      }
+      const dormant = await ports.dormant(operation);
+      if (!validControlOutcome(dormant, operation)) return result(3, "dormant-control-unavailable");
+      if (operation.kind === "session-retire" && dormant.code === 0) ports.journal.record(operation.id, "done", dormant as unknown as JsonObject);
+      return dormant;
+    });
+  } catch { return result(3, "session-control-unavailable"); }
 }
 
 export interface ParticipantPorts {

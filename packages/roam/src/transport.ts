@@ -6,6 +6,7 @@ import { HerdrError, object, parseCore, selectedSocket, text } from '@spider/her
 import { DEFAULT_LIMITS } from './contracts';
 import { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_IDENTITY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from './bootstrap-script';
 import { PROVISION_REMOTE_SCRIPT } from './provision-remote-script';
+import { validIntercomReadiness } from './intercom-readiness';
 import { isMachineId } from './machine-id';
 import { normalizeConfiguredClis, normalizeCoreUnit, parseBootstrapInventory, sanitizeBootstrapError } from './bootstrap-reply';
 import type { BootstrapPeer, CallOptions, Journal, Peer, Transport } from './contracts';
@@ -52,7 +53,7 @@ function snapshotCall(options: CallOptions): CallOptions {
 }
 function privateProtocol(argv: readonly string[]): boolean {
   return argv[0] === 'roam' && (argv[1] === 'agent' || argv[1] === 'observe' || argv[1] === 'artifact' && argv[2] === 'receive' ||
-    argv[1] === 'intercom' && (argv[2] === 'exchange' || argv[2] === 'revoke-local' || argv[2] === 'setup-local' || argv[2] === 'observe-fence' || argv[2] === 'cleanup-local'));
+    argv[1] === 'intercom' && (argv[2] === 'exchange' || argv[2] === 'revoke-local' || argv[2] === 'setup-local' || argv[2] === 'observe-fence' || argv[2] === 'cleanup-local' || argv[2] === 'start-broker'));
 }
 function remoteArgs(peer: Peer, argv: readonly string[]): string[] {
   return [peer.node, peer.cli, ...(privateProtocol(argv) ? ['--global-root', peer.globalRoot] : []), ...argv];
@@ -304,7 +305,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
     },
     async executeProvision(peer, request) {
       const state = resolved(peer);
-      const actions = new Set(['enrollment', 'prepare', 'secret-chunk', 'cleanup', 'install-files', 'auth-install', 'release-prepare', 'release-observe', 'unit-write', 'systemctl', 'switchover', 'verify', 'clear-secrets']);
+      const actions = new Set(['roaming-enabled', 'enrollment', 'prepare', 'secret-chunk', 'cleanup', 'install-files', 'auth-install', 'release-prepare', 'release-observe', 'unit-write', 'systemctl', 'switchover', 'verify', 'clear-secrets']);
       if (!request || typeof request !== 'object' || typeof request.action !== 'string' || !actions.has(request.action) ||
           typeof request.operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(request.operationId) ||
           request.machineId !== state.peer.machineId || request.globalRoot !== state.peer.globalRoot || request.node !== state.peer.node ||
@@ -312,6 +313,9 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       const consent = journal?.read(request.operationId).find(({ action, result }) => action === 'provision-consent' &&
         result.approved === true && result.target === state.peer.alias && result.machineId === state.peer.machineId);
       if (!consent) throw new HerdrError('consent-required', 'Provisioning consent must be recorded before installation');
+      if (request.action === 'roaming-enabled' && !(typeof request.enabled === 'boolean' &&
+          (consent.result.scope === 'roaming-enabled' && consent.result.enabled === request.enabled || request.enabled === true && consent.result.enablesRoaming === true)))
+        throw new HerdrError('consent-required', 'Explicit roaming control consent is required');
       const file = request.file && typeof request.file === 'object' && !Array.isArray(request.file) ? request.file as Record<string, unknown> : null;
       const secretFile = request.action === 'install-files' && Array.isArray(file?.chunks) && file.chunks.some(chunk =>
         chunk && typeof chunk === 'object' && typeof chunk.name === 'string' && chunk.name.startsWith('secret-'));
@@ -369,6 +373,10 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       if (!Object.hasOwn(reply, 'value')) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
       if (request.action === 'enrollment') {
         if (reply.value !== 'enrolled' && reply.value !== 'already-enrolled') throw new HerdrError('invalid-provision-reply', 'Invalid enrollment reply');
+      } else if (request.action === 'roaming-enabled') {
+        const value = object(reply.value);
+        if (Object.keys(value).length !== 1 || typeof value.enabled !== 'boolean' || value.enabled !== request.enabled)
+          throw new HerdrError('invalid-provision-reply', 'Invalid participant flag reply');
       } else if (request.action === 'release-observe') {
         const value = object(reply.value);
         if (value.state === 'absent') {
@@ -391,7 +399,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       } else if (request.action === 'verify') {
         const value = object(reply.value), keys = ['piSignedIn', 'nativeSqlite', 'extensionLoaded', 'exactSession', 'privateModes',
           'bundledIntercom', 'intercomUnique', 'legacyDrained', 'federation'];
-        if (Object.keys(value).length !== keys.length || keys.some(key => typeof value[key] !== 'boolean')) {
+        if (Object.keys(value).length !== keys.length + 1 || keys.some(key => typeof value[key] !== 'boolean') || !validIntercomReadiness(value)) {
           throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         }
       } else if (reply.value !== true) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');

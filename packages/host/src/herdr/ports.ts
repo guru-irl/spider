@@ -78,96 +78,10 @@ export function disabledHerdrEnvironment(env: Readonly<NodeJS.ProcessEnv>): Read
 
 export { createViewerPorts } from '../../../herdr/src/viewers/ports.js';
 
-export function isPiProcessRow(platform: NodeJS.Platform, row: { title: string; executable: string; args: string }): boolean {
-  const title = row.title.split(/[/\\]/).pop()!;
-  const executable = (platform === 'linux' ? row.executable || row.args.trim().split(/\s+/, 1)[0] : row.executable).split(/[/\\]/).pop()!;
-  const pi = /^(?:pi|pi-coding-agent)(?:\.exe)?$/.test(title);
-  const nodeEntry = /^(?:node|nodejs)(?:\.exe)?$/.test(executable) && /^\S+\s+\S*[/\\]pi-coding-agent[/\\]dist[/\\](?:bundle[/\\])?cli\.m?js(?:\s|$)/.test(row.args);
-  return pi || nodeEntry;
-}
+import { createProcessInventory } from "./process-inventory";
+export { createProcessInventory, isPiProcessRow } from "./process-inventory";
 
-export function createProcessInventory(root: string, readOnly = false): ProcessInventoryPorts {
-  const storedPresence = createProcessPresence(root);
-  const presence = readOnly ? { ...storedPresence, remove: async () => {} } : storedPresence;
-  const leases = createSessionLeases(root), domain = fixtureProcessDomain(root);
-  const probe: ProcessInventoryPorts['probe'] = async pid => {
-    try { process.kill(pid, 0); } catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH' ? { kind: 'absent' } : { kind: 'unknown' }; }
-    const startIdentity = processStartTime(pid);
-    return startIdentity ? { kind: 'live', startIdentity } : { kind: 'unknown' };
-  };
-  return { presence, leases, probe, async processes() {
-    if (domain) return domain.processes();
-    // Same-user inventory remains read-only. An unreadable process is blocking, not absent.
-    // Keep the mutable process title and the untruncated executable name on macOS.
-    const rows = execFileSync('ps', ['-U', String(process.getuid?.() ?? 0), '-o', process.platform === 'darwin' ? 'pid=,comm=,ucomm=,args=' : 'pid=,comm=,comm=,args='], { encoding: 'utf8' }).split('\n');
-    return rows.flatMap(line => {
-      const match = /^\s*(\d+)\s+(\S+)\s+(\S+)(?:\s+(.*))?$/.exec(line); if (!match) return [];
-      const pid = Number(match[1]);
-      let executable = match[3];
-      if (process.platform === 'linux') {
-        try { executable = readlinkSync(`/proc/${pid}/exe`); } catch { executable = ''; }
-      }
-      if (!isPiProcessRow(process.platform, { title: match[2], executable, args: match[4] ?? '' })) return [];
-      return [{ pid, startIdentity: processStartTime(pid), classification: 'pi' as const }];
-    });
-  } };
-}
-
-export interface ParticipantLockOptions {
-  identity?: ProcessIdentity;
-  probe?: (pid: number) => Promise<ProcessProbe>;
-  bootId?: () => Promise<string>;
-  env?: Readonly<NodeJS.ProcessEnv>;
-}
-
-/** Hold both local ownership records until the caller releases them. */
-export async function lockParticipant(root: string, sessionId: string, file: string, options: ParticipantLockOptions = {}): Promise<() => Promise<void>> {
-  const inventory = createProcessInventory(root);
-  const identity = options.identity ?? { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' };
-  const probe = options.probe ?? inventory.probe;
-  const env = options.env ?? process.env;
-  const canonical = await canonicalSessionFile(file), handoffPath = env.SPIDER_HERDR_HANDOFF_FILE;
-  if (handoffPath === undefined && (env.SPIDER_HERDR_HANDOFF_OPERATION_ID !== undefined || env.SPIDER_HERDR_HANDOFF_NONCE !== undefined)) {
-    throw new HerdrError('invalid-launch-handoff', 'Participant handoff requires a private file');
-  }
-  const fromFile = handoffPath === undefined ? undefined : await readLaunchHandoff(root, handoffPath, sessionId, canonical);
-  const handoff = fromFile && { operationId: fromFile.operationId, nonce: fromFile.nonce, file: canonical };
-  const leaseToken = fromFile?.leaseToken;
-  if (handoff && (!leaseToken || (await inventory.leases.get(canonical))?.token !== leaseToken)) {
-    throw new HerdrError('lease-token-invalid', 'Participant handoff requires its exact file lease');
-  }
-  const id = await claimIdLock(root, sessionId, identity, probe, { ...(options.bootId ? { bootId: options.bootId } : {}), ...(handoff ? { handoff } : {}) });
-  const isSelf = (value: { pid: number; startIdentity: string | null }) => value.pid === identity.pid && value.startIdentity === identity.startIdentity;
-  const others: ProcessInventoryPorts = {
-    ...inventory, probe,
-    processes: async () => (await inventory.processes()).filter(value => !isSelf(value)),
-    presence: { ...inventory.presence, list: async () => (await inventory.presence.list()).filter(value => !isSelf(value)) },
-    leases: { ...inventory.leases, get: async path => { const lease = await inventory.leases.get(path); return lease && isSelf(lease) ? null : lease; } },
-  };
-  try {
-    const existing = await inventory.leases.get(canonical);
-    const lease = handoff ? await inventory.leases.adopt(canonical, leaseToken!, identity) :
-      existing && isSelf(existing) ? existing : await inventory.leases.claim(canonical, identity, others, { mode: 'switch', sessionId: sessionId as SessionId });
-    if (handoff) {
-      await removeLaunchHandoff(root, handoff.operationId);
-      if (env === process.env) {
-        delete process.env.SPIDER_HERDR_HANDOFF_FILE;
-        delete process.env.SPIDER_HERDR_HANDOFF_OPERATION_ID;
-        delete process.env.SPIDER_HERDR_HANDOFF_NONCE;
-        process.env.SPIDER_HERDR_LEASE_FILE = canonical;
-        process.env.SPIDER_HERDR_LEASE_TOKEN = lease.token;
-      }
-    }
-    return async () => {
-      try { await inventory.leases.release(file, lease.token, { mode: 'switch' }); }
-      finally { await id.release(); }
-    };
-  } catch (error) {
-    // An adopted ID stays fenced while its process is alive, even if file adoption fails.
-    if (!handoff) await id.release();
-    throw error;
-  }
-}
+export { lockParticipant, type ParticipantLockOptions } from "./participant-lock";
 
 export function explicitExtensionArguments(argv: readonly string[]): readonly string[] {
   const args: string[] = [];

@@ -1,3 +1,4 @@
+import { resolveParticipantPi } from "./launcher";
 import { randomBytes } from "node:crypto";
 import { accessSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -43,7 +44,7 @@ function openLog(file: string): void {
 function xml(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
 }
-function definition(node: string, cli: string, root: string, out: string, err: string): string {
+function definition(node: string, cli: string, root: string, out: string, err: string, pi: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -51,7 +52,7 @@ function definition(node: string, cli: string, root: string, out: string, err: s
 <key>ProgramArguments</key><array><string>${xml(node)}</string><string>${xml(cli)}</string><string>roam</string><string>hub</string></array>
 <key>RunAtLoad</key><true/>
 <key>KeepAlive</key><true/>
-<key>EnvironmentVariables</key><dict><key>SPIDER_GLOBAL_ROOT</key><string>${xml(root)}</string></dict>
+<key>EnvironmentVariables</key><dict><key>SPIDER_GLOBAL_ROOT</key><string>${xml(root)}</string><key>SPIDER_ROAM_PI</key><string>${xml(pi)}</string></dict>
 <key>StandardOutPath</key><string>${xml(out)}</string>
 <key>StandardErrorPath</key><string>${xml(err)}</string>
 <key>Umask</key><integer>63</integer>
@@ -97,7 +98,7 @@ function writeDefinition(file: string, contents: string, root: string, previous:
 }
 
 /** No service manager or user path is selected unless the caller supplies it. */
-export async function installHubService(input: { node: string; cli: string; globalRoot: string }, ports: LaunchdPorts): Promise<void> {
+export async function installHubService(input: { node: string; cli: string; globalRoot: string; pi?: string }, ports: LaunchdPorts): Promise<void> {
   const node = executable(input.node, true), cli = executable(input.cli, false);
   const root = absolute(input.globalRoot), directory = absolute(ports.plistDir);
   const file = join(directory, `${LABEL}.plist`), logDirectory = join(root, "roam", "logs");
@@ -109,7 +110,9 @@ export async function installHubService(input: { node: string; cli: string; glob
   privateDirectory(directory); privateDirectory(root); privateDirectory(join(root, "roam")); privateDirectory(logDirectory);
   const previous = managedDefinition(file, root);
   openLog(out); openLog(err);
-  writeDefinition(file, definition(node, cli, root, out, err), root, previous);
+  const pi = input.pi ?? resolveParticipantPi();
+  if (!pi) throw new Error("participant-pi-unavailable");
+  writeDefinition(file, definition(node, cli, root, out, err, executable(pi, true)), root, previous);
   const domain = `gui/${uid}`;
   try { await ports.launchctl(["bootout", domain, file]); }
   catch (error) { if ((error as { code?: unknown } | null)?.code !== "service-not-loaded") throw error; }

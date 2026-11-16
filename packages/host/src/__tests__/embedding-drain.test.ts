@@ -1,6 +1,7 @@
+import { fixtureIntercom } from "../roam/__tests__/intercom-move-fixture";
 import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -10,6 +11,11 @@ import { addMemory, enqueueEmbed, getVectorState, upsertVector, type Embedder } 
 import spiderExtension from "../extension";
 import { controlConfig, controlDoctor } from "../control";
 import { HostEmbeddingRuntime } from "../embedding-runtime";
+import { openFreezeJournal } from "@spider/roam/journal";
+import type { Operation } from "@spider/roam/contracts";
+import { freezeParticipant, unfreezeParticipant, type FreezePorts } from "../roam/freeze";
+import { createProducerDrain } from "../roam/producers";
+import type { AdmissionGate } from "../roam/admission";
 
 const provider = vi.hoisted(() => ({ workers: 0, nativeScans: 0, batches: [] as number[], calls: 0, get: undefined as undefined | (() => Promise<Embedder | null>) }));
 vi.mock("@spider/memory", async importOriginal => {
@@ -152,6 +158,72 @@ it("shutdown cancels in-flight inference without late writes or lingering timers
   expect(getVectorState(repo)).toMatchObject({ mapped: 0, pending: 1, retried: 0 });
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it("pauses an in-flight embedding drain without late writes and resumes it once", async () => {
+  const { repo } = tierDbs();
+  addMemory(repo, "repo", { category: "insight", content: "pause fixture" });
+  let finish!: (vectors: Float32Array[]) => void;
+  let calls = 0;
+  provider.get = async () => ({ model: "fixture", dim: 384, embed: texts => {
+    calls++;
+    return calls === 1 ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(texts.map(() => new Float32Array(384)));
+  } });
+  const runtime = new HostEmbeddingRuntime(context);
+  runtime.start();
+  try {
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(finish).toBeDefined();
+    await runtime.pause();
+    await runtime.pause();
+    finish([new Float32Array(384)]);
+    await vi.advanceTimersByTimeAsync(30000);
+    expect(getVectorState(repo)).toMatchObject({ mapped: 0, pending: 1 });
+    expect(calls).toBe(1);
+    runtime.resume(); runtime.resume();
+    await vi.advanceTimersByTimeAsync(5002);
+    expect(getVectorState(repo)).toMatchObject({ mapped: 1, pending: 0 });
+    expect(calls).toBe(2);
+  } finally { await runtime.stop(); }
+});
+
+it("holds an in-flight embedding result through freeze and resumes only after an authorized abort", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const { repo, worktree } = tierDbs();
+  addMemory(repo, "repo", { category: "insight", content: "freeze fixture" });
+  const machineId = "11111111-1111-4111-8111-111111111111", sessionId = "fixture-session";
+  worktree.prepare("UPDATE roam_meta SET machine_id=?,store_key='worktree:fixture:workspace',capture_enabled=1 WHERE id=1").run(machineId);
+  worktree.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES (?,1,?)").run(sessionId, machineId);
+  worktree.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES (?,2,'active')").run(sessionId);
+  const file = join(root, "session.jsonl");
+  writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: sessionId, cwd: root }) + "\n" +
+    JSON.stringify({ type: "model_change", id: "leaf-1", parentId: null, timestamp: "2026-01-01T00:00:00Z" }) + "\n");
+  let finish!: (vectors: Float32Array[]) => void, calls = 0, admitted = true;
+  provider.get = async () => ({ model: "fixture", dim: 384, embed: texts => {
+    calls++; return calls === 1 ? new Promise(resolve => { finish = resolve; }) : Promise.resolve(texts.map(() => new Float32Array(384)));
+  } });
+  const runtime = new HostEmbeddingRuntime(context, undefined, { admitted: () => admitted });
+  const home = { sessionId, machineId, epoch: 2, moveId: null, updatedAt: 1 };
+  const gate: AdmissionGate = { inspect: () => ({ kind: admitted ? "ordinary" : "control-only", home, blockers: [] }),
+    refreshInitialHome: async () => gate.inspect(), whenSettled: async () => gate.inspect(), close: async () => { admitted = false; },
+    freeze: async () => { admitted = false; }, unfreeze: async () => { admitted = true; } };
+  const inert = { async pause() {}, async resume() {} }, producers = createProducerDrain({ usage: inert, embeddings: runtime, organism: inert, others: [] });
+  const ports: FreezePorts = { gate, journal: openFreezeJournal(join(root, "roam", "journal.db")), stores: [worktree],
+    expectedStores: ["worktree:fixture:workspace"], intercom: fixtureIntercom(sessionId), ...producers, async inspect() { return { blockers: [], file, cwd: root, leaf: "leaf-1", owner: null }; },
+    async ingestThrough() {}, async authorizeAbort() { return { home, cancelledMoveId: "move-1" }; }, onHubRestored() { return () => {}; } };
+  const operation: Operation = { id: "freeze-embedding", kind: "session-freeze", machineId, expectedEpoch: 2, args: { sessionId, moveId: "move-1" } };
+  runtime.start();
+  try {
+    await vi.advanceTimersByTimeAsync(5000); expect(finish).toBeDefined();
+    await freezeParticipant(operation, ports);
+    finish([new Float32Array(384)]); await vi.advanceTimersByTimeAsync(30000);
+    expect(getVectorState(repo)).toMatchObject({ mapped: 0, pending: 1 });
+    expect(calls).toBe(1);
+    await unfreezeParticipant({ ...operation, id: "abort-embedding", kind: "session-unfreeze" }, ports);
+    await vi.advanceTimersByTimeAsync(5002);
+    expect(getVectorState(repo)).toMatchObject({ mapped: 1, pending: 0 });
+    expect(calls).toBe(2);
+  } finally { await runtime.stop(); }
+}, 10000);
 
 it("does not overlap ticks or discard inference completed after the setup deadline", async () => {
   const { repo } = tierDbs(); addMemory(repo, "repo", { category: "insight", content: "fixture" });

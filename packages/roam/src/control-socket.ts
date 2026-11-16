@@ -2,15 +2,16 @@ import { chmodSync, lstatSync, realpathSync, unlinkSync } from "node:fs";
 import { createConnection, createServer, type Socket } from "node:net";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
-import type { JsonObject } from "@spider/db-core/roam/types";
+import { parseMoveControlRequest, type MoveControlRequest } from "./move-control";
+import type { Home, JsonObject } from "@spider/db-core/roam/types";
 import { privateDirectory } from "./staging";
 
 const MAX_REQUEST = 32 * 1024;
 const MAX_REPLY = 1024 * 1024;
 const DEADLINE = 30 * 60_000;
 
-export type HubControlRequest = { op: "status" } | { op: "disable" } | { op: "sync"; machine?: string };
-export interface HubControlReply { code: 0 | 1 | 2 | 3; reason: string; value: JsonObject | null }
+export type HubControlRequest = { op: "status" } | { op: "disable" } | { op: "sync"; machine?: string } | MoveControlRequest;
+export interface HubControlReply { code: 0 | 1 | 2 | 3; reason: string; value: JsonObject | null; operationId?: string; home?: Home | null; epoch?: number | null; repairCommand?: string | null }
 
 function socketPath(file: string): string {
   if (!isAbsolute(file) || /[\u0000-\u001f\u007f]/.test(file)) throw new Error("An absolute control socket path is required");
@@ -24,6 +25,8 @@ function parseRequest(bytes: Buffer): HubControlRequest | null {
   try {
     const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const move = parseMoveControlRequest(value);
+    if (move) return move;
     const input = value as Record<string, unknown>;
     if ((input.op === "status" || input.op === "disable") && Object.keys(input).length === 1) return { op: input.op };
     if (input.op === "sync" && Object.keys(input).every(key => key === "op" || key === "machine") &&
@@ -42,7 +45,10 @@ function removeStaleSocket(file: string): void {
 }
 
 /** The caller holds the hub process lock before reclaiming a stale socket. */
-export async function startHubControl(file: string, handler: (request: HubControlRequest) => Promise<HubControlReply>): Promise<{ close(): Promise<void> }> {
+export function startHubControl(file: string, handler: (request: HubControlRequest) => Promise<HubControlReply>): Promise<{ close(): Promise<void> }> {
+  return startPrivateControl(file, parseRequest, handler);
+}
+export async function startPrivateControl<Request>(file: string, parse: (bytes: Buffer) => Request | null, handler: (request: Request) => Promise<HubControlReply>, enabled: () => boolean = () => true): Promise<{ close(): Promise<void> }> {
   const path = socketPath(file);
   privateDirectory(dirname(path));
   removeStaleSocket(path);
@@ -65,7 +71,8 @@ export async function startHubControl(file: string, handler: (request: HubContro
       if (end < 0 && input.length <= MAX_REQUEST) return;
       received = true; socket.pause();
       if (end < 0 || end > MAX_REQUEST || end !== input.length - 1) { send({ code: 2, reason: "Invalid request", value: null }); return; }
-      const request = parseRequest(input.subarray(0, end)); input = Buffer.alloc(0);
+      if (!enabled()) { send({ code: 1, reason: "roaming-disabled", value: null }); return; }
+      const request = parse(input.subarray(0, end)); input = Buffer.alloc(0);
       if (!request) { send({ code: 2, reason: "Invalid request", value: null }); return; }
       const task = Promise.resolve().then(() => handler(request)).then(send, () => send({ code: 1, reason: "Hub control failed", value: null }))
         .finally(() => requests.delete(task));
@@ -87,11 +94,14 @@ export async function startHubControl(file: string, handler: (request: HubContro
   } };
 }
 
-export async function requestHubControl(file: string, request: HubControlRequest, options: { timeoutMs?: number } = {}): Promise<HubControlReply> {
+export function requestHubControl(file: string, request: HubControlRequest, options: { timeoutMs?: number } = {}): Promise<HubControlReply> {
+  return requestPrivateControl(file, request, parseRequest, options);
+}
+export async function requestPrivateControl<Request>(file: string, request: Request, parse: (bytes: Buffer) => Request | null, options: { timeoutMs?: number } = {}): Promise<HubControlReply> {
   const timeoutMs = options.timeoutMs ?? DEADLINE;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > DEADLINE) throw new Error("Invalid control deadline");
   const path = socketPath(file), encoded = Buffer.from(JSON.stringify(request) + "\n");
-  if (encoded.length > MAX_REQUEST || !parseRequest(encoded.subarray(0, -1))) throw new Error("Invalid control request");
+  if (encoded.length > MAX_REQUEST || !parse(encoded.subarray(0, -1))) throw new Error("Invalid control request");
   const parent = lstatSync(dirname(path)), socket = lstatSync(path), uid = process.getuid?.();
   if (!parent.isDirectory() || parent.isSymbolicLink() || realpathSync(dirname(path)) !== dirname(path) ||
       !socket.isSocket() || socket.isSymbolicLink() || uid !== undefined && (parent.uid !== uid || socket.uid !== uid) ||

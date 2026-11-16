@@ -1,12 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Db } from "@spider/db-core";
 import { CursorMismatchError } from "@spider/db-core/roam/apply";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { assertBatchHeader, isRoamUuid, parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
-import type { ApplyReceipt, JsonObject, StoreKey } from "@spider/db-core/roam/types";
+import type { ApplyReceipt, Home, JsonObject, StoreKey } from "@spider/db-core/roam/types";
 import { pullArtifact, readManifestPages, stageArtifact, transferArtifact } from "./artifacts";
 import { barrierWatermarks } from "./barriers";
 import type { Clock, Journal, Operation, Outcome, Peer, RoamConfig, StorePort, SyncService, Transport } from "./contracts";
+import { appendMirror, type MirrorSource } from "./mirrors";
+import { isRevoked, syncHandshake, type SyncHandshake } from "./revocation";
 import { assignInitialHome, markInitialConflict } from "./homes";
 import { readOnlyOperation, releaseJournalArtifact, type ArtifactJournal } from "./journal";
 import { isPeerFailureReason, peerFailureReason } from "./peer-errors";
@@ -14,8 +17,16 @@ import { loadPeerState, receiptMatches, savePeerState, sizedBytes, type PeerStat
 import { acquireTransferLease, defaultStagingRoot, openOutgoingStaging, openStaging } from "./staging";
 import { removeOutgoing, type StoreAdapter } from "./stores";
 
-interface Ports {
+export interface SyncPorts {
   config: RoamConfig; globalDb: Db; transport: Transport; journal: Journal; clock: Clock; stores: StorePort;
+  /** Hosting composition supplies the private hub journal and retire-only reconnect delivery. */
+  revocationDb?: Db;
+  retireOnly?(peer: Peer, reply: Extract<SyncHandshake, { kind: "retire-only" }>): Promise<void>;
+  mirrors?: {
+    root: string; homes(machine: string): readonly Home[];
+    /** A local verified copy of the peer's exact installed session, never metadata replication. */
+    source(home: Home, peer: Peer): Promise<MirrorSource>;
+  };
   onPeerSync?(peer: Peer, results: readonly Outcome<ApplyReceipt>[]): void | Promise<void>;
 }
 export interface SyncAdapter extends SyncService { drain(): Promise<void> }
@@ -32,7 +43,7 @@ function outcome(code: 0 | 1 | 2 | 3, reason: string, operationId: string, value
   return { code, reason, operationId, home: null, epoch: null, repairCommand: null, value };
 }
 function discard(file: string): void { if (existsSync(file)) unlinkSync(file); }
-export function createSync(ports: Ports): SyncAdapter {
+export function createSync(ports: SyncPorts): SyncAdapter {
   const { config, stores, globalDb, transport, journal, clock } = ports;
   let running = false, active = 0;
   const inFlight = new Map<string, Promise<readonly Outcome<ApplyReceipt>[]>>();
@@ -48,7 +59,11 @@ export function createSync(ports: Ports): SyncAdapter {
     try { journal.record(id, action, result); }
     catch { throw new SyncFailure(3, "Operation journal result is pending reconciliation", id); }
   }
+  function assertNotRevoked(peer: Peer): void {
+    if (ports.revocationDb && isRevoked(ports.revocationDb, peer.machineId)) throw new SyncFailure(1, "machine-revoked");
+  }
   async function remote(peer: Peer, kind: string, args: JsonObject, id: string = randomUUID()): Promise<JsonObject> {
+    assertNotRevoked(peer);
     const operation: Operation = { id, machineId: peer.machineId, expectedEpoch: null, kind, args };
     const saved = readOnlyOperation(kind) ? { kind: "new", result: null } as const : journal.begin(operation);
     if (saved.kind === "done") {
@@ -65,6 +80,7 @@ export function createSync(ports: Ports): SyncAdapter {
     try {
       const handle = await transport.resolve(peer);
       if (handle.machineId !== peer.machineId) throw new SyncFailure(1, "Enrolled machine identity does not match");
+      assertNotRevoked(peer);
       const bytes = await transport.exec(handle, ["roam", "agent", JSON.stringify(operation)], {
         timeoutMs: kind === "export" ? config.limits.exportMs : kind === "import" ? config.limits.importMs : config.limits.controlMs,
         maxBytes: config.limits.replyBytes,
@@ -85,6 +101,7 @@ export function createSync(ports: Ports): SyncAdapter {
       if (peerFailure) throw new SyncFailure(1, peerFailure, id);
       throw new SyncFailure(3, "Peer operation is pending reconciliation", id);
     }
+    assertNotRevoked(peer);
     if (!object(decoded) || ![0, 1, 2, 3].includes(decoded.code as number) || decoded.operationId !== id) throw new SyncFailure(1, "Invalid peer outcome");
     if (decoded.code !== 0) {
       if (kind === "receipt" && decoded.code === 3 && decoded.reason === "Receipt is pending") return { pending: true };
@@ -193,6 +210,7 @@ export function createSync(ports: Ports): SyncAdapter {
           file = pulled.value.file;
           record(receiptId, "staged", { file });
         }
+        assertNotRevoked(peer);
         try { receipt = await stores.accept(key, { header, file, sha256: artifact.sha256, byteLength: artifact.byteLength }); }
         catch (error) {
           if (!(error instanceof CursorMismatchError) || stores.cursor(key, peer.machineId, header.senderStream) === pending.after || currentReceipt()) throw error;
@@ -260,7 +278,35 @@ export function createSync(ports: Ports): SyncAdapter {
       else if (gathered && origins.size === 1 && !unknown.has(id)) assignInitialHome(globalDb, id, [...origins][0], config.hubMachineId);
     }
   }
+  async function mirrorHomes(peer: Peer): Promise<void> {
+    if (!ports.mirrors) return;
+    for (const home of ports.mirrors.homes(peer.machineId)) {
+      assertNotRevoked(peer);
+      const current = () => globalDb.prepare("SELECT 1 FROM session_homes WHERE session_id=? AND machine_id=? AND epoch=? AND move_id IS ?").get(home.sessionId, peer.machineId, home.epoch, home.moveId);
+      if (home.machineId !== peer.machineId || !Number.isSafeInteger(home.epoch) || home.epoch < 1 || !current()) throw new SyncFailure(1, "mirror-home-changed");
+      const source = await ports.mirrors.source(home, peer);
+      assertNotRevoked(peer);
+      if (!current()) throw new SyncFailure(1, "mirror-home-changed");
+      if (source.transfer?.reason === "mirror-source-rewritten") throw new SyncFailure(1, "mirror-source-rewritten:full-copy");
+      const key = createHash("sha256").update(JSON.stringify([home.sessionId, home.epoch, peer.machineId])).digest("hex");
+      let id = readLocal<string>(globalDb, "sync-mirror", key);
+      if (id !== undefined && !isRoamUuid(id)) throw new SyncFailure(3, "mirror-journal-invalid");
+      if (!id) { id = randomUUID(); writeLocal(globalDb, "sync-mirror", key, id); }
+      const begin = () => journal.begin({ id: id!, machineId: peer.machineId, kind: "sync-mirror", expectedEpoch: home.epoch, args: { sessionId: home.sessionId } });
+      if (begin().kind === "done") { id = randomUUID(); writeLocal(globalDb, "sync-mirror", key, id); begin(); }
+      await appendMirror({ sessionId: home.sessionId, epoch: home.epoch, source, root: ports.mirrors.root, operationId: id, limits: config.limits }, journal);
+      record(id, "done", {});
+      writeLocal(globalDb, "sync-mirror", key, undefined);
+    }
+  }
   async function peerSync(peer: Peer): Promise<readonly Outcome<ApplyReceipt>[]> {
+    if (ports.revocationDb) {
+      const reply = syncHandshake(ports.revocationDb, peer.machineId);
+      if (reply.kind === "retire-only") {
+        try { await ports.retireOnly?.(peer, reply); } catch { /* No sync authority is granted while retirement is pending. */ }
+        return [outcome(1, reply.reason, peer.machineId)];
+      }
+    }
     const results: Outcome<ApplyReceipt>[] = [];
     const state = loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes);
     const observedAt = clock.now(), cursors: Array<{ storeKey: StoreKey; stream: string; through: number }> = [];
@@ -296,6 +342,7 @@ export function createSync(ports: Ports): SyncAdapter {
         try { await push(peer, key, state, results, observe); }
         catch (error) { results.push(failure(error, peer.machineId)); if (key === "global") break; }
       }
+      await mirrorHomes(peer);
       completed = pulled && globalReady && results.every(result => result.code === 0);
     } catch (error) { results.push(failure(error, peer.machineId)); }
     const uncertain = results.some(result => result.code === 3);
@@ -339,8 +386,9 @@ export function createSync(ports: Ports): SyncAdapter {
     async barriers(machine, required) {
       const peer = config.peers.find(peer => peer.machineId === machine); if (!peer || !config.enabled || config.role !== "hub") return false;
       try {
-        const watermarks = await barrierWatermarks(stores, config, required); if (!watermarks) return false;
+        assertNotRevoked(peer);
         await service.sync(machine);
+        const watermarks = await barrierWatermarks(stores, config, required); if (!watermarks) return false;
         for (const barrier of watermarks) if (await remoteCursor(peer, barrier.storeKey, barrier.stream) < barrier.through) return false;
         return true;
       } catch { return false; }

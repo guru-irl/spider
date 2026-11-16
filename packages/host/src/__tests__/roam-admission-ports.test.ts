@@ -89,7 +89,9 @@ it.each([false, true])('re-admits the same live session after enable, capture an
   try {
     await f.emitStart();
     expect(f.gate.inspect()).toEqual({ kind: 'ordinary', home: null, blockers: [] });
-    expect(lock).not.toHaveBeenCalled();
+    expect(lock).toHaveBeenCalledTimes(alreadyEnabled ? 1 : 0);
+    expect((await f.ports.load('session-1')).participating).toBe(false);
+    expect(sessionHome(f.global, 'session-1')).toBeNull();
     const request: IntercomHostRequest = { sessionId: 'session-1', scopeId: null, activationEpoch: 'running-before-enable' };
     f.host.pi.events.emit(INTERCOM_HOST_EVENT, request);
     expect(request.endpoint).toMatchObject({ machineId: f.machine, homeEpoch: null, activationEpoch: 'running-before-enable' });

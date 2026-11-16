@@ -1,0 +1,50 @@
+import { afterEach, expect, it } from "vitest";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { createReplica } from "@spider/db-core/testutil";
+import { recordLocation } from "@spider/db-core/roam/catalog";
+import { readLocal } from "@spider/db-core/roam/local-state";
+import { DEFAULT_LIMITS, disabledIntercom, type Operation, type RoamConfig, type Transport } from "../contracts";
+import { openFreezeJournal } from "../journal";
+import { handleAgentOperation } from "../agent";
+import { appendMirror } from "../mirrors";
+import { createProductionRecoveryPorts } from "../recovery-transport";
+const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
+const fixtures: ReturnType<typeof createReplica>[] = [];
+afterEach(() => { for (const f of fixtures.splice(0)) f.close(); });
+it("production mirror sync copies zero unchanged bytes, only an appended tail, and names a full-copy rewrite fallback", async () => {
+  const hub = createReplica("global", HUB), box = createReplica("global", BOX); fixtures.push(hub, box);
+  for (const f of [hub, box]) mkdirSync(join(f.root, "roam"), { mode: 0o700 });
+  const peer = { machineId: BOX, alias: "box-1.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/spider", core: "/fixture/hc", globalRoot: box.root };
+  const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "fixture.service", syncMs: 120000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+  const boxConfig = { ...config, role: "box" as const, machineId: BOX, peers: [] };
+  writeFileSync(join(box.root, "roam", "config.json"), JSON.stringify(boxConfig), { mode: 0o600 });
+  writeFileSync(join(box.root, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
+  const journal = openFreezeJournal(join(hub.root, "roam", "journal.db")), boxJournal = openFreezeJournal(join(box.root, "roam", "journal.db"));
+  const file = join(box.root, "session.jsonl"), line = (id: string, parentId: string | null, content: string) => JSON.stringify({ type: "message", id, parentId, timestamp: "2026-01-01T00:00:00Z", message: { role: "user", content, timestamp: 1 } }) + "\n";
+  const original = JSON.stringify({ type: "session", version: 3, id: "session-a", cwd: box.root, timestamp: "2026-01-01T00:00:00Z" }) + "\n" + line("leaf-a", null, "fixture");
+  writeFileSync(file, original, { mode: 0o600 });
+  const home = { sessionId: "session-a", machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 };
+  for (const f of [hub, box]) f.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run("session-a", BOX);
+  recordLocation(box.db, { sessionId: "session-a", file, cwd: box.root, stores: ["global"], home });
+  let copied = 0;
+  const transport: Transport = { async resolve(p) { return p; }, async read(_p, path) { const bytes = readFileSync(path); copied += bytes.length; return bytes; }, async write() { throw new Error("unexpected write"); }, async run() { throw new Error("unexpected run"); }, async bootstrapProbe() { throw new Error("unexpected probe"); },
+    async exec(_p, argv) { return Buffer.from(JSON.stringify(await handleAgentOperation(JSON.parse(argv[2]), { config: boxConfig, root: join(box.root, "roam", "staging"), journal: boxJournal, openStore: () => ({ db: box.db, effects: {} as never, policy: {} as never }) }))); } };
+  const recovery = createProductionRecoveryPorts({ root: hub.root, config, globalDb: hub.db, journal, transport });
+  async function sync(id: string) {
+    const source = await recovery.mirrors.source(home, peer);
+    const operation: Operation = { id, kind: "sync-mirror", machineId: BOX, expectedEpoch: 1, args: {} }; journal.begin(operation);
+    await appendMirror({ sessionId: "session-a", epoch: 1, source, root: recovery.mirrors.root, operationId: id }, journal);
+    return source;
+  }
+  await sync("first"); expect(copied).toBe(Buffer.byteLength(original));
+  copied = 0; await sync("unchanged"); expect(copied).toBe(0);
+  const tail = line("leaf-b", "leaf-a", "appended"); appendFileSync(file, tail);
+  copied = 0; const grown = await sync("grown"); expect(copied).toBe(Buffer.byteLength(tail));
+  expect(readFileSync(grown.file, "utf8")).toBe(original + tail);
+  const rewritten = original.replace("fixture", "changed"); writeFileSync(file, rewritten);
+  copied = 0; const replacement = await recovery.mirrors.source(home, peer);
+  expect(copied).toBe(Buffer.byteLength(rewritten)); expect(readFileSync(replacement.file, "utf8")).toBe(rewritten);
+  expect(replacement).toMatchObject({ transfer: { mode: "full", reason: "mirror-source-rewritten", bytes: Buffer.byteLength(rewritten) } });
+  expect(readLocal(hub.db, "mirror-transfer", "session-a")).toMatchObject({ mode: "full", reason: "mirror-source-rewritten", bytes: Buffer.byteLength(rewritten) });
+}, 5000);

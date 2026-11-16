@@ -5,6 +5,7 @@ import type { Journal, Peer, Transport } from "../contracts";
 import type { DoctorPorts, Inventory } from "../provision-contracts";
 import * as inventoryModule from "../inventory";
 import * as doctorModule from "../resource-doctor";
+import { intercomReadinessDiagnostics } from "../intercom-readiness";
 import { bootstrapPeer, healthyInventory } from "./bootstrap-fixture";
 
 type InventoryFn = (peer: Peer, transport: Transport) => Promise<Inventory>;
@@ -224,6 +225,32 @@ it("doctor never installs or logs in and reports named intercom problems", async
   expect(report.find(item => item.reason.includes("intercom-connector-sign-in-required"))?.reason).toMatch(/sign in/i);
   expect(test.adminRepairCalls).toEqual([]); expect(test.probeCalls).toEqual(["inventory"]); expect(effects).toEqual([]);
 }, 5000);
+
+it("accepts intercom hosting readiness only when all three checks are proved", async () => {
+  const test = fixture();
+  test.ports.verifyPeer = async () => ({ piSignedIn: true, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
+    bundledIntercom: true, intercomUnique: true, legacyDrained: true, federation: true,
+    intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: ["ordinary-extension"] } });
+  const report = await doctorModule.doctorPeer(bootstrapPeer, test.ports);
+  expect(report.filter(item => item.severity === "block")).toEqual([]);
+  expect(report.some(item => item.reason.includes("global settings only; project-local settings are not checked"))).toBe(true);
+  expect(report.some(item => item.reason.includes("only known intercom implementation") && item.reason.includes("other extensions are not classified"))).toBe(true);
+  expect(report.some(item => item.reason.includes("ordinary-extension") && item.severity === "warning")).toBe(true);
+});
+
+it.each([
+  ["intercomUnique", "intercom-settings-unique"],
+  ["legacyDrained", "intercom-legacy-drained"],
+  ["federation", "intercom-federation"],
+] as const)("names %s when it alone is unproved", async (key, reason) => {
+  // A truth-table test of the diagnostics, not a fake broker observation. In the real protocol,
+  // missing federation also makes legacy-drained unprovable because it uses the same health reply.
+  const blocks = intercomReadinessDiagnostics({ intercomUnique: true, legacyDrained: true, federation: true, [key]: false,
+    intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: [] } })
+    .filter(item => item.severity === "block");
+  expect(blocks).toHaveLength(1);
+  expect(blocks[0].reason).toContain(`${reason}:`);
+});
 
 it("refuses an unowned core without modifying its service", async () => {
   const doctor = (doctorModule as { doctorPeer?: DoctorFn }).doctorPeer;

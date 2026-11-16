@@ -956,3 +956,16 @@ it.each(["observed-origin", "session-row"])("requires a synced %s before publish
   await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 2, [remote(BOX, "box.invalid", address)])), signal);
   expect(f.broker.published.at(-1)).toMatchObject([{ address, machineId: BOX }]);
 }, 5000);
+
+it("settlement refuses an injected-looking retained row with no dispatch attempt", async () => {
+  const f = machineFixture(); let store: ReturnType<typeof openIntercomStore> | undefined;
+  const service = await makeMachine({ ...f.options, recoverRevocations: async value => { store = value; } }); await service.start();
+  const address = { sessionId: "recipient", scopeId: "scope" }, from = { sessionId: "sender", scopeId: "scope" };
+  f.global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,?,1)").run("recipient", HUB, "move-a");
+  f.broker.emit("presence", [{ ...localPresence(address, "recipient-generation"), homeEpoch: 2 }]);
+  const endpoint = { address, machineId: HUB, homeEpoch: 2, activationEpoch: "recipient-generation" };
+  store!.acceptOutbound({ from, endpoint, nextHop: HUB, message: { id: "settlement-a", timestamp: 1000, content: { text: "synthetic" } } });
+  const retained = store!.retained("outbound", "settlement-a")!;
+  vi.spyOn(store!, "retained").mockImplementation((direction, id) => direction === "outbound" && id === "settlement-a" ? { ...retained, payloadRetained: false, state: "injected", latestAttempt: 0 } : null);
+  expect(await service.move.settlement({ messageId: "settlement-a", fromSessionId: "sender", toSessionId: "recipient", scopeId: "scope" })).toBeNull();
+}, 5000);

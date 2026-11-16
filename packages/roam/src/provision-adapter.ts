@@ -175,6 +175,7 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
     },
   };
   return {
+    async setEnabled(target, hubMachineId, enabled) { await action(target, "roaming-enabled", { hubMachineId, enabled }); },
     async enroll(target, hubMachineId) { await action(target, "enrollment", { hubMachineId, coreUnit: options.coreUnit }); },
     async cleanupSecrets(target: Peer) { await action(target, "clear-secrets"); },
     async installRelease(target: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }) {

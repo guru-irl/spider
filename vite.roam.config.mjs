@@ -3,7 +3,7 @@ import { builtinModules } from "node:module";
 
 const entries = {
   cli: "packages/roam/src/cli-entry.ts",
-  "cli-main": "packages/roam/src/cli.ts",
+  "cli-main": "packages/host/src/roam/cli-main.ts",
   "intercom-helper": "packages/roam/src/intercom-helper.ts",
   supervisor: "packages/roam/src/supervisor-main.ts",
 };
@@ -18,8 +18,8 @@ export default defineConfig(({ mode }) => {
     plugins: [{
       name: "roam-no-pi-imports",
       enforce: "pre",
-      resolveId(source) {
-        if (source.startsWith("@earendil-works/pi-")) throw new Error("Roaming cannot import pi packages");
+      resolveId(source, importer) {
+        if (source.startsWith("@earendil-works/pi-")) throw new Error(`Roaming cannot import pi packages: ${source} from ${importer}`);
       },
     }],
     ssr: { target: "node", noExternal: true },

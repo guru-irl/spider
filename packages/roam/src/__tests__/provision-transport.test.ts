@@ -57,8 +57,8 @@ function fixture() {
     if (request.action && state.provisionError) throw state.provisionError;
     return Buffer.from(JSON.stringify(request.action ? state.provisionReply : state.reply));
   });
-  const fixtureRoot = process.env.SPIDER_GLOBAL_ROOT;
-  if (!fixtureRoot) throw new Error("Fixture global root is required");
+  const fixtureRoot = process.env.SPIDER_GLOBAL_ROOT ?? resolve(".spider/scratch/fx/global");
+  mkdirSync(fixtureRoot, { recursive: true, mode: 0o700 });
   const options = { binary: "/fixture/hc", env: { HC_SOCKET: resolve(fixtureRoot, "provision-fixture.sock"), HC_SESSION: "fixture" }, enrolled: [bootstrapPeer] };
   const consent = (peer: Peer = bootstrapPeer) => journal.record("op-1", "provision-consent", { target: peer.alias, machineId: peer.machineId, approved: true, providers: ["github-copilot"] });
   return { actions, calls, controlCalls, events, state, journal, options, consent };
@@ -204,6 +204,26 @@ it("reports only a valid blocking operation from a release-in-progress reply", a
   await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
   f.state.provisionReply = { version: 1, kind: "provision", error: "command-failed", operationId: "previous-op" };
   await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+}, 5000);
+
+it("accepts only coherent named intercom evidence from remote verification", async () => {
+  const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "verify", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi };
+  const value = { piSignedIn: true, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true, bundledIntercom: true,
+    intercomUnique: true, legacyDrained: true, federation: true,
+    intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: [] } };
+  f.state.provisionReply = { version: 1, kind: "provision", value };
+  expect(await port.executeProvision(handle, request)).toEqual(value);
+  for (const invalid of [
+    { ...value, intercomEvidence: undefined },
+    { ...value, intercomEvidence: { ...value.intercomEvidence, settings: "legacy-extension-declared" } },
+    { ...value, intercomEvidence: { ...value.intercomEvidence, legacy: "arbitrary-untrusted-text" } },
+    { ...value, federation: false, intercomEvidence: { ...value.intercomEvidence, federation: "federation-feature-missing" } },
+  ]) {
+    f.state.provisionReply = { version: 1, kind: "provision", value: invalid };
+    await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+  }
 }, 5000);
 
 it("fences an enrolled installer and sends sensitive request data only on stdin", async () => {
@@ -358,4 +378,31 @@ it("returns a named identity conflict without leaking remote details", async () 
   const f = fixture(); f.consent(); f.state.reply = { version: 1, kind: "identity", error: "machine-mismatch" };
   await expect(create!(f.options, f.journal).claimIdentity(bootstrapPeer, "op-1", coreFence)).rejects.toMatchObject({ code: "machine-mismatch" });
   expect(JSON.stringify(f.events)).not.toContain("fixture-secret");
+}, 5000);
+
+it("does not enable roaming from installation consent without enablesRoaming", async () => {
+  const f = fixture(), port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "roaming-enabled", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi, hubMachineId: "00000000-0000-4000-8000-000000000001", enabled: true };
+  f.consent(); const before = f.calls.length;
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "consent-required" });
+  expect(f.calls).toHaveLength(before);
+  f.actions[0].result.enablesRoaming = true;
+  f.state.provisionReply = { version: 1, kind: "provision", value: { enabled: true } };
+  expect(await port.executeProvision(handle, request)).toEqual({ enabled: true });
+}, 5000);
+
+it("explicit flag consent accepts only the exact authenticated enabled reply", async () => {
+  const f = fixture(), port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "roaming-enabled", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi, hubMachineId: "00000000-0000-4000-8000-000000000001", enabled: true };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "consent-required" });
+  f.journal.record("op-1", "provision-consent", { approved: true, scope: "roaming-enabled", enabled: true, target: bootstrapPeer.alias, machineId: bootstrapPeer.machineId });
+  f.state.provisionReply = { version: 1, kind: "provision", value: { enabled: true } };
+  expect(await port.executeProvision(handle, request)).toEqual({ enabled: true });
+  f.state.provisionReply = { version: 1, kind: "provision", value: { enabled: false } };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+  const count = f.calls.length;
+  await expect(port.executeProvision(handle, { ...request, enabled: false })).rejects.toMatchObject({ code: "consent-required" });
+  expect(f.calls).toHaveLength(count);
 }, 5000);

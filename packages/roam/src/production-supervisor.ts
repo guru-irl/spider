@@ -1,3 +1,6 @@
+import { createPendingHandoffControl, pendingHandoffLifecycle } from "./pending-handoff";
+import { machineMoveEvidence } from "./machine-move-evidence";
+import { openFreezeJournal } from "./journal";
 import { lstatSync, watch } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFile, readdir, readlink } from "node:fs/promises";
@@ -18,7 +21,7 @@ import { createIntentStore } from "./intent";
 import { createExactLaunchAdapter, createProductionLocalExactHc } from "./launcher";
 import { createLocalDiagnosticPorts } from "./local-diagnostics";
 import { loadHerdrConfig } from "./production-hub";
-import { createParticipantSupervisor } from "./participant-supervisor";
+import { createParticipantSupervisor, retireParticipantSessions, supervisorRetirementLifecycle } from "./participant-supervisor";
 import { openLocalRuntime, readLocalIdentity } from "./runtime";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority, readReadiness } from "./session-control";
 import { createNativeHostingOutcomeReader, observeHosting } from "./hosting";
@@ -214,6 +217,16 @@ export async function runLockedSupervisor(input: {
   return { stop() { return stopping ??= (async () => { release(); await lock; })(); } };
 }
 
+export function createProductionSupervisorConnection(input: { root: string; config: import("./contracts").RoamConfig; globalDb: import("@spider/db-core").Db;
+  transport: import("./contracts").Transport; stopSessions(): Promise<void> }): NonNullable<import("./supervisor").SupervisorPorts["connection"]> {
+  const { config, globalDb } = input;
+  return { machineId: config.machineId, stopSessions: input.stopSessions, async sync() { /* Boxes never initiate metadata replication. */ }, async handshake() {
+    if (readLocal(globalDb, "supervisor-revoked", config.machineId)) return { kind: "retire-only", reason: "machine-revoked", machineId: config.machineId };
+    // The hub pushes revocation durably. An offline hub never stops an active home.
+    return { kind: "accepted", reason: "ok", machineId: config.machineId };
+  } };
+}
+
 export async function startProductionSupervisor(root: string, options: { system?: SupervisorSystemPorts; clock?: Clock;
   intercomLocalPorts?: Omit<LocalPairPorts, "enrollBridge" | "inspectBridge" | "inspectFence"> } = {}): Promise<{ stop(): Promise<void> }> {
   const enrolled = readLocalIdentity(root);
@@ -268,7 +281,10 @@ export async function startProductionSupervisor(root: string, options: { system?
       machineId: runtime.config.machineId, hubMachineId: runtime.config.hubMachineId,
       // Owner liveness is probed separately; every inspection must classify the execution terminal.
       live: async () => false, terminalOutcome: createNativeHostingOutcomeReader(eventClient) };
-    const supervisor = createParticipantSupervisor({ root, agent: runtime.agent, clock, diagnostics,
+    const stopSessions = () => retireParticipantSessions(runtime.agent, stop.stop);
+    const recoveryTransport = createTransport({ binary: herdr.core.binary, env, enrolled: runtime.config.peers });
+    const connection = createProductionSupervisorConnection({ root, config: runtime.config, globalDb: runtime.db, transport: recoveryTransport, stopSessions });
+    const supervisor = createParticipantSupervisor({ root, agent: runtime.agent, clock, diagnostics, connection,
       async identityCurrent() { const current = readLocalIdentity(root); return current.role === "box" && current.machineId === runtime.config.machineId && current.hubMachineId === runtime.config.hubMachineId && participantCaptureReady(root, current.machineId); },
       events: createSupervisorEvents(runtime.db.raw.name, eventClient),
       async beforeInspect(sessionId) { await observeHosting({ ...hosting, sessionId }); },
@@ -302,9 +318,12 @@ export async function startProductionSupervisor(root: string, options: { system?
       ssh: platform.ssh, keygen: platform.keygen, sshd: platform.sshd, sshUser: platform.sshUser, recipe: platform.recipe,
       systemctl: platform.systemctl, run: platform.run, process: platform.process, cgroup: platform.cgroup };
     const direct = runtime.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
-    const intercom = runtime.config.intercom.enabled ? createMachineIntercom({ root, globalDb: runtime.db, config: runtime.config,
+    const machineIntercom = runtime.config.intercom.enabled ? createMachineIntercom({ root, globalDb: runtime.db, config: runtime.config, roamingEnabled: () => readLocalIdentity(root).enabled,
+      ...machineMoveEvidence({ db: runtime.db, config: runtime.config, journal: openFreezeJournal(join(root, "roam", "journal.db")), transport: createTransport({ binary: herdr.core.binary, env, enrolled: runtime.config.peers }) }),
       agentDir: herdr.agentDirectory, clock, env, directPeers: direct, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }),
       ...createProductionIntercomMaintenance({ root, config: runtime.config, binary: herdr.core.binary, env, localPorts }) }) : undefined;
+    const intercom = supervisorRetirementLifecycle(root, runtime.config, stopSessions, pendingHandoffLifecycle(root, createPendingHandoffControl({ root: join(root, "herdr"), journal: runtime.journal,
+      authority, inventory: system.inventory, identity: { pid: process.pid, startIdentity: identity.startIdentity }, bootId: system.bootId }), machineIntercom));
     const running = await runLockedSupervisor({ root, supervisor, intercom,
       identity: { pid: process.pid, startIdentity: identity.startIdentity }, probe: pid => system.inventory.probe(pid) });
     let stopping: Promise<void> | undefined;

@@ -29,6 +29,39 @@ function seed(db: any): void {
 }
 
 describe("OrganismWorker.runDrain", () => {
+  it("drains an in-flight writer before pause and accepts work again after resume", async () => {
+    vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+    ctx = makeOrgDb(); seed(ctx.db);
+    let release!: (value: string) => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let calls = 0;
+    const worker = new OrganismWorker({ db: ctx.repoDb, worktreeDb: ctx.db, globalDb: ctx.repoDb,
+      project: { projectKey: "fixture" } as never, getEmbedder: async () => null,
+      makeModel: () => ({ complete: async () => {
+        calls++;
+        if (calls === 1) { entered(); return new Promise(resolve => { release = resolve; }); }
+        return '{"memory":[],"skills":[],"todos":[]}';
+      } }),
+      org: { ...ORGANISM_DEFAULTS, selfNaming: false, passes: { runMemoryTodo: false, todoMemory: false, learning: false,
+        consolidation: true, reflection: false, insights: false } }, curator: CURATOR_DEFAULTS });
+    const drain = worker.runDrain("s1", "shutdown", { transcript: [{ role: "user", content: "fixture" }] });
+    await Promise.race([started, drain.then(() => { throw new Error(`drain ended before model: ${JSON.stringify(worker.getLastDrain())}`); })]);
+    let paused = false;
+    const pausing = worker.pause().then(() => { paused = true; });
+    await Promise.resolve();
+    expect(paused).toBe(false);
+    await expect(worker.runCurate(undefined, { force: true })).rejects.toThrow(/paused/i);
+    release('{"memory":[],"skills":[],"todos":[]}');
+    await drain; await pausing;
+    const before = ctx.db.prepare("SELECT COUNT(*) n FROM run_events").get();
+    await expect(worker.runDrain("s1", "shutdown")).rejects.toThrow(/paused/i);
+    expect(ctx.db.prepare("SELECT COUNT(*) n FROM run_events").get()).toEqual(before);
+    worker.resume(); worker.resume();
+    await worker.runDrain("s1", "shutdown", { transcript: [{ role: "user", content: "fixture" }] });
+    expect(calls).toBe(2);
+    await worker.stopSkillReviews();
+  });
   it("finishes reflection with unavailable vectors when initialization stalls", async () => {
     vi.useFakeTimers();
     vi.stubEnv("PI_SUBAGENT_CHILD", "0");

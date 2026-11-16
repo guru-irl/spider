@@ -1,3 +1,4 @@
+import { rollbackMoveId } from "@spider/roam/move-recovery";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Blocker, Home, MachineId, SessionState, StoreKey } from "@spider/db-core/roam/types";
 import { getBinding, openDbReadOnlyAt, openGlobalReadOnly, paths, type Db } from "@spider/db-core";
@@ -8,8 +9,8 @@ import { assertBoxEnrollment, participantCaptureInitialized } from "@spider/roam
 import { validateRoamLayout } from "@spider/db-core/roam/layout";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { readSessionState } from "@spider/db-core/roam/state";
-import { join, resolve } from "node:path";
-import { lockParticipant, type ParticipantLockOptions } from "../herdr/ports.js";
+import { isAbsolute, join, resolve } from "node:path";
+import { lockParticipant, type ParticipantLockOptions } from "../herdr/participant-lock.js";
 import { ordinaryWorkAllowed as isOrdinaryWorkAllowed } from "./activation.js";
 import { AUTO_RELOAD_ARG } from "../auto-reload.js";
 import { productionParticipantAdmission } from "./readiness.js";
@@ -25,16 +26,20 @@ export interface AdmissionGate {
   close(): Promise<void>;
   freeze(moveId: string, epoch: number): Promise<void>;
   unfreeze(moveId: string, epoch: number): Promise<void>;
+  readmit?(moveId: string, source: Home, restored: Home): Promise<void>;
 }
 export interface AdmissionPorts {
   expectedEpoch: number | null;
+  /** Enabled Mac controls claim only local ID/file locks, not portable membership. */
+  lockUntracked?(): boolean;
   localMachine(): Promise<MachineId>;
   knownParticipant(sessionId: string): boolean;
   /** Null excludes discovery; unchanged revisions require no admission lookup. */
   captureVersion?(): string | null;
   warnOnce(sessionId: string, reason: string): void;
   load(sessionId: string): Promise<{ home: Home | null; states: readonly SessionState[]; origin: MachineId | null;
-    participating: boolean; captureSafe: boolean; unfinishedFreeze: boolean; initialConflict: boolean }>;
+    participating: boolean; captureSafe: boolean; unfinishedFreeze: boolean; initialConflict: boolean;
+    freezeRecovery?: { moveId: string; epoch: number } }>;
   lock(sessionId: string, file: string): Promise<() => Promise<void>>;
   setContext?(ctx: ExtensionContext): void;
   prepare?(sessionId: string, file: string): Promise<void>;
@@ -63,6 +68,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
   let admission: Admission = { kind: "ordinary", home: null, blockers: [] };
   const ordinaryWorkAllowed = () => isOrdinaryWorkAllowed(admission);
   let sessionId = "", sessionFile = "", epoch: number | null = null, participating = false, generation = 0;
+  let ownershipVerified = false;
   let discoverable = false, captureVersion: string | null = null;
   let held: { sessionId: string; file: string; release: () => Promise<void>; valid: boolean } | undefined;
   let transition: Promise<void> = Promise.resolve();
@@ -121,11 +127,12 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         try { if (held && (!held.valid || held.sessionId !== id || held.file !== file)) await release(); }
         catch { if (ticket === generation) { sessionId = id; publishResult("blocked", null, VERIFY); } return; }
         if (ticket !== generation) return;
-        sessionId = id; sessionFile = file; epoch = null; participating = false; discoverable = false; captureVersion = null;
+        sessionId = id; sessionFile = file; epoch = null; participating = false; ownershipVerified = false; discoverable = false; captureVersion = null;
         if (!id) { publishResult(handoffRequired ? "blocked" : "ordinary", null, handoffRequired ? VERIFY : undefined); return; }
         stage = "prepare";
+        let preparationFailed = false, preparationFailure: unknown;
         try { await ports.prepare?.(id, file); }
-        catch (error) { if (ticket === generation) publishResult("blocked", null, admissionFailure(error)); return; }
+        catch (error) { preparationFailed = true; preparationFailure = error; }
         let state: Awaited<ReturnType<AdmissionPorts["load"]>>;
         stage = "load";
         try {
@@ -140,22 +147,57 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         stage = "eligibility";
         participating = !late && state.participating;
         if (!state.participating) {
-          if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publishResult("blocked", null, VERIFY);
-          else {
-            freeze = undefined; publishResult("ordinary", null);
-            discoverable = state.captureSafe && Boolean(ctx && file);
-            captureVersion = ports.captureVersion?.() ?? null;
+          if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) {
+            publishResult("blocked", null, VERIFY);
+            return;
           }
+          if (preparationFailed) {
+            if (!late) ports.warnOnce(id, "Move setup failed. This session can continue; run /spider roam doctor for details.");
+            freeze = undefined; publishResult("ordinary", null); return;
+          }
+          try {
+            if (!late && ports.lockUntracked?.() && ctx?.mode === "tui" && ctx.hasUI && file && isAbsolute(file) && process.env.PI_SUBAGENT_CHILD !== "1" && !held?.valid) {
+              held = { sessionId: id, file, release: await ports.lock(id, file), valid: true };
+              if (ticket !== generation) { await release(); return; }
+            }
+          } catch {
+            if (ticket !== generation) return;
+            ports.warnOnce(id, "Move setup failed. This session can continue; run /spider roam doctor for details.");
+          }
+          freeze = undefined; publishResult("ordinary", null);
+          discoverable = state.captureSafe && Boolean(ctx && file);
+          captureVersion = ports.captureVersion?.() ?? null;
           return;
         }
         if (!late) observed.add(id);
         const home = state.home;
+        if (preparationFailed) { publishResult("blocked", home, admissionFailure(preparationFailure)); return; }
         epoch = home?.epoch ?? state.states[0]?.epoch ?? null;
         if (state.initialConflict) { publishResult("blocked", home, "This session has conflicting initial homes. Run /spider roam doctor for details."); return; }
         const frozenState = state.states.find(row => row.state === "frozen");
-        if (frozenState?.moveId) freeze ??= { moveId: frozenState.moveId, epoch: frozenState.epoch };
+        const recovered = state.freezeRecovery ?? (frozenState?.moveId ? { moveId: frozenState.moveId, epoch: frozenState.epoch } : undefined);
+        if (recovered && (!freeze || freeze.moveId === recovered.moveId && freeze.epoch === recovered.epoch)) freeze = recovered;
+        else if (recovered) { publishResult("control-only", home, FROZEN); return; }
         if (!reopening && (freeze || state.unfinishedFreeze || frozenState)) {
-          publishResult("control-only", home, FROZEN); return;
+          publishResult("control-only", home, FROZEN);
+          // Control recovery is safe only while this activation owns the same locks
+          // as ordinary work. Incomplete evidence leaves the gate closed.
+          if (!freeze || !file || !state.captureSafe || !state.states.length || epoch === null || freeze.epoch !== epoch ||
+              ports.expectedEpoch !== null && ports.expectedEpoch !== epoch || state.states.some(row => row.sessionId !== id || row.epoch !== epoch ||
+                !(row.state === "active" || row.state === "frozen" && row.moveId === freeze!.moveId))) return;
+          try {
+            const machine = await ports.localMachine();
+            if (ticket !== generation || !machine || (home ? home.sessionId !== id || home.machineId !== machine : state.origin !== machine || epoch !== 1)) return;
+            if (!held) {
+              const unlock = await ports.lock(id, file);
+              held = { sessionId: id, file, release: unlock, valid: true };
+              handoffRequired = false;
+              if (ticket !== generation) { await release(); return; }
+            }
+            ownershipVerified = true;
+            if (!late) watchSignals();
+          } catch { /* Remain control-only; never recover without ownership. */ }
+          return;
         }
         if (state.unfinishedFreeze || frozenState) { publishResult("control-only", home, FROZEN); return; }
         if (!state.captureSafe || !state.states.length || state.states.some(row => row.sessionId !== id || row.state !== "active" || row.epoch !== epoch) ||
@@ -177,6 +219,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
             handoffRequired = false;
             if (ticket !== generation) { await release(); return; }
           }
+          ownershipVerified = true;
           stage = "readiness";
           await ports.ready?.(id, file, epoch, home);
           if (ticket !== generation) return;
@@ -196,7 +239,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
             let detail = `late-admission-${stage}-failed. ${result?.blockers[0]?.detail ?? VERIFY}`;
             try { await release(); } catch { detail = `late-admission-lock-release-failed. ${detail}`; }
             if (ticket === generation) {
-              participating = false; epoch = null; discoverable = false;
+              participating = false; ownershipVerified = false; epoch = null; discoverable = false;
               publish("ordinary", null, detail); ports.warnOnce(id, detail);
             }
           }
@@ -283,10 +326,24 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
     async close() { unwatchSignals(); ++generation; publish("blocked", admission.home, VERIFY); await sequence(release); },
     async freeze(moveId, expectedEpoch) {
       const sameFreeze = freeze?.moveId === moveId && freeze.epoch === expectedEpoch && admission.kind === "control-only";
-      if (!participating || !held?.valid || !moveId || epoch !== expectedEpoch || (!ordinaryWorkAllowed() && !sameFreeze) ||
+      if (!participating || !ownershipVerified || !held?.valid || !moveId || epoch !== expectedEpoch || (!ordinaryWorkAllowed() && !sameFreeze) ||
           freeze && (freeze.moveId !== moveId || freeze.epoch !== expectedEpoch)) throw new Error(VERIFY);
       ++generation; freeze = { moveId, epoch: expectedEpoch }; publish("control-only", admission.home, FROZEN);
       await sequence(async () => {});
+    },
+    async readmit(moveId, source, restored) {
+      const ticket = generation;
+      await sequence(async () => {
+        if (!participating || !ownershipVerified || !held?.valid || !freeze || freeze.moveId !== moveId || freeze.epoch !== source.epoch ||
+            epoch !== source.epoch || source.sessionId !== sessionId || restored.sessionId !== sessionId || restored.machineId !== source.machineId ||
+            restored.epoch !== source.epoch + 2 || restored.moveId !== rollbackMoveId(moveId) || admission.kind !== "control-only") throw new Error(VERIFY);
+        const state = await ports.load(sessionId), current = state.home;
+        if (ticket !== generation || !held?.valid || !current || current.machineId !== restored.machineId || current.epoch !== restored.epoch || current.moveId !== restored.moveId ||
+            current.updatedAt !== restored.updatedAt || !state.participating || !state.captureSafe || state.initialConflict || !state.states.length ||
+            state.states.some(row => row.sessionId !== sessionId || row.state !== "active" || row.epoch !== restored.epoch || row.moveId !== restored.moveId) ||
+            await ports.localMachine() !== restored.machineId) throw new Error(VERIFY);
+        epoch = restored.epoch; freeze = undefined; publish("ordinary", restored);
+      });
     },
     async unfreeze(moveId, expectedEpoch) {
       if (!freeze || freeze.moveId !== moveId || freeze.epoch !== expectedEpoch || !sessionId) throw new Error(VERIFY);
@@ -295,6 +352,12 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
       if (!ordinaryWorkAllowed()) throw new Error(VERIFY);
     },
   };
+}
+
+/** Admission validates and closes synchronously before intake can close. */
+export async function freezeAdmissionAndIntake<T>(gate: AdmissionGate, moveId: string, epoch: number, closeIntake: () => Promise<T>): Promise<T> {
+  await gate.freeze(moveId, epoch);
+  return closeIntake();
 }
 
 /** Pi dispatches extension commands before input hooks, so host-owned commands need the same gate. */
@@ -361,6 +424,7 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
   return {
     ...productionParticipantAdmission(() => context?.cwd),
     expectedEpoch: null,
+    lockUntracked() { try { const current = readLocalIdentity(paths.globalRoot); return current.enabled && current.role === "hub"; } catch { return false; } },
     setContext(ctx) { context = ctx; },
     knownParticipant(id) { return cache().known.has(id); },
     captureVersion() {
@@ -463,6 +527,7 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
             ...(context?.cwd ? [join(paths.projectRoot(context.cwd), 'project.db')] : []), ...opened.keys()])];
         }
         let captureSafe = true, unfinishedFreeze = false;
+        let freezeRecovery: { moveId: string; epoch: number } | undefined;
         machineIds = [];
         if (participating) {
           if (global && hasTable(global, "roam_cursors") && global.withRetry(() =>
@@ -499,12 +564,21 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
                 unfinishedFreeze = Boolean(journal.withRetry(() => journal.prepare(
                   "SELECT 1 FROM freeze_journal WHERE session_id COLLATE BINARY = ? AND (state IS NULL OR state COLLATE BINARY NOT IN ('complete', 'aborted')) LIMIT 1",
                 ).get(id)));
+                if (unfinishedFreeze && ["move_id", "epoch"].every(name => columns.some(column => column.name.toLowerCase() === name))) {
+                  const rows = journal.withRetry(() => journal.prepare(
+                    "SELECT move_id,epoch,state FROM freeze_journal WHERE session_id COLLATE BINARY = ? AND (state IS NULL OR state COLLATE BINARY NOT IN ('complete', 'aborted')) LIMIT 2",
+                  ).all(id)) as { move_id: unknown; epoch: unknown; state: unknown }[];
+                  const row = rows[0];
+                  if (rows.length === 1 && typeof row.move_id === "string" && row.move_id.length > 0 &&
+                      Number.isSafeInteger(row.epoch) && (row.epoch as number) > 0 && ["freezing", "frozen", "aborting"].includes(String(row.state)))
+                    freezeRecovery = { moveId: row.move_id, epoch: row.epoch as number };
+                }
               }
             } finally { journal.close(); }
           }
         }
         return { home, states, origin: origins.size === 1 ? [...origins][0] : null, participating, captureSafe, unfinishedFreeze,
-          initialConflict: Boolean(homeRow && !homeRow.machine_id) || origins.size > 1 };
+          ...(freezeRecovery ? { freezeRecovery } : {}), initialConflict: Boolean(homeRow && !homeRow.machine_id) || origins.size > 1 };
       } finally {
         for (const db of opened.values()) db.close();
         global?.close();

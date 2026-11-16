@@ -1,3 +1,4 @@
+import { rollbackMoveId } from "@spider/roam/move-recovery";
 import { afterEach, expect, it, vi } from "vitest";
 import { createHostSessionFixture } from './fixtures/pi-events';
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -57,6 +58,46 @@ function fixture(initial = snapshot(), id = sessionId) {
     failLock(error: Error) { lockError = error; },
   };
 }
+
+it("a never-homed session starts normally with one warning when move setup fails", async () => {
+  const f = fixture(snapshot({ home: null, states: [], origin: null, participating: false }));
+  f.ports.lockUntracked = () => true;
+  f.failLock(new Error("herdr-config-unavailable"));
+  await expect(f.emit("session_start", { reason: "startup" })).resolves.toBeUndefined();
+  expect(f.gate.inspect().kind).toBe("ordinary");
+  expect(await f.emit("input", { text: "continue" })).toBeUndefined();
+  expect(f.warnings).toHaveLength(1);
+  expect(f.warnings[0]).toMatch(/move|moving/i);
+  await f.emit("session_start", { reason: "reload" });
+  expect(f.warnings).toHaveLength(1);
+}, 5000);
+
+it("a homeless session continues with one warning when participant preparation fails", async () => {
+  const f = fixture(snapshot({ home: null, states: [], origin: null, participating: false }));
+  f.ports.prepare = async () => { throw new Error("move-setup-failed"); };
+  await f.emit("session_start", { reason: "startup" });
+  expect(f.calls.admission).toBe(1);
+  expect(f.gate.inspect().kind).toBe("ordinary");
+  expect(await f.emit("input", { text: "continue" })).toBeUndefined();
+  expect(f.warnings).toHaveLength(1);
+  await f.emit("session_start", { reason: "reload" });
+  expect(f.warnings).toHaveLength(1);
+}, 5000);
+
+it("a failed preparation remains blocked if subsequent discovery finds a participant", async () => {
+  const f = fixture(); f.ports.prepare = async () => { throw new Error("move-setup-failed"); };
+  await f.emit("session_start", { reason: "startup" });
+  expect(f.calls.admission).toBe(1); expect(f.gate.inspect().kind).toBe("blocked"); expect(f.calls.lock).toBe(0);
+}, 5000);
+
+it("a known participant still blocks when its move setup fails", async () => {
+  const f = fixture();
+  f.failLock(new Error("herdr-config-unavailable"));
+  await f.emit("session_start", { reason: "startup" });
+  expect(f.gate.inspect().kind).toBe("blocked");
+  expect(await f.emit("input", { text: "continue" })).toEqual({ action: "handled" });
+  expect(f.warnings).toEqual([]);
+}, 5000);
 
 it.each(["untracked", "read-error", "missing-id"] as const)("an exact handoff cannot fall back to ordinary admission: %s", async mode => {
   vi.stubEnv("SPIDER_HERDR_HANDOFF_FILE", "/fixture/handoff.json");
@@ -394,6 +435,16 @@ it("unfinished freeze blocks despite active rows", async () => {
   expect(f.gate.inspect().kind === "ordinary").toBe(false);
 }, 5000);
 
+it("restart holds ownership and recovers a journal-only partial freeze", async () => {
+  const f = fixture(snapshot({ unfinishedFreeze: true, freezeRecovery: { moveId: "move-1", epoch: 3 } }));
+  await f.emit("session_start", { reason: "resume" });
+  expect(f.gate.inspect().kind).toBe("control-only");
+  expect(f.calls.lock).toBe(1);
+  f.setSnapshot(snapshot());
+  await f.gate.unfreeze("move-1", 3);
+  expect(f.gate.inspect().kind).toBe("ordinary");
+}, 5000);
+
 it("reload cannot clear frozen state", async () => {
   const f = fixture(snapshot({ states: [{ ...active, state: "frozen", moveId: "move-1" }] }));
   await f.emit("session_start", { reason: "reload" });
@@ -491,6 +542,30 @@ it.each([false, true])('keeps a running session working throughout late readines
     expect(f.calls.released).toBe(1);
     await expect(f.gate.freeze('not-a-participant', 1)).rejects.toThrow();
   }
+}, 5000);
+
+it('late freeze recovery keeps the running session ordinary and releases provisional ownership', async () => {
+  vi.stubEnv('PI_SUBAGENT_CHILD', '0');
+  const f = fixture(snapshot({ home: null, states: [], participating: false }));
+  let version = 'uncaptured', enter!: () => void, finish!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), waiting = new Promise<void>(resolve => { finish = resolve; });
+  const lock = f.ports.lock;
+  Object.assign(f.ports, { captureVersion: () => version, lock: async (id: string, file: string) => {
+    enter(); await waiting; return lock(id, file);
+  } });
+  await f.emit('session_start');
+  f.setSnapshot(snapshot({ unfinishedFreeze: true, freezeRecovery: { moveId: 'recovering-freeze', epoch: 3 } }));
+  version = 'captured';
+  const refreshing = f.gate.refreshInitialHome(); await entered;
+  const during = f.gate.inspect(), tool = await f.emit('tool_call'), input = await f.emit('input');
+  await f.emit('turn_start'); await f.emit('before_agent_start');
+  finish(); await refreshing;
+  expect(during).toEqual({ kind: 'ordinary', home: null, blockers: [] });
+  expect(tool).toBeUndefined(); expect(input).toBeUndefined(); expect(f.ctx.abort).not.toHaveBeenCalled();
+  expect(f.gate.inspect()).toMatchObject({ kind: 'ordinary', home: null });
+  expect(f.warnings[0]).toContain('This session is frozen for a move');
+  expect(f.calls.released).toBe(1);
+  await expect(f.gate.freeze('recovering-freeze', 3)).rejects.toThrow();
 }, 5000);
 
 it('keeps a running session outside participation after a failed late lookup', async () => {
@@ -626,4 +701,37 @@ it("refreshes the original intercom endpoint through the admission gate after fi
     sessionId, activation: "original-process", machine: local, fromEpoch: null, toEpoch: 1, adoptedAt: expect.any(Number),
   });
   } finally { registration.dispose(); replica.close(); }
+}, 5000);
+
+it("rollback readmission opens only the held owner after e+2 membership advancement", async () => {
+  const f = fixture(); await f.emit("session_start", { reason: "startup" });
+  await f.gate.freeze("move-a", 3);
+  const restored = { ...home, epoch: 5, moveId: rollbackMoveId("move-a"), updatedAt: 3 };
+  f.setSnapshot(snapshot({ home: restored, states: [{ ...active, epoch: 5, moveId: restored.moveId }], unfinishedFreeze: true }));
+  await f.gate.readmit!("move-a", home, restored);
+  expect(f.gate.inspect()).toMatchObject({ kind: "ordinary", home: restored });
+  expect(f.calls.lock).toBe(1); expect(f.calls.released).toBe(0);
+  expect(await f.emit("input", { text: "continued" })).toBeUndefined();
+}, 5000);
+it.each(["epoch", "home", "membership", "revoked", "missing-owner"])("rollback readmission refuses %s without unlocking or admission", async kind => {
+  const f = fixture(); await f.emit("session_start", { reason: "startup" });
+  await f.gate.freeze("move-a", 3);
+  const restored = { ...home, epoch: 5, moveId: rollbackMoveId("move-a"), updatedAt: 3 };
+  f.setSnapshot(snapshot({ home: restored, states: [{ ...active, epoch: 5, moveId: restored.moveId }], unfinishedFreeze: true,
+    ...(kind === "home" ? { home: { ...restored, machineId: "foreign.invalid" } } : {}),
+    ...(kind === "membership" ? { states: [active] } : {}), ...(kind === "revoked" ? { captureSafe: false } : {}) }));
+  if (kind === "epoch") restored.epoch = 4;
+  if (kind === "missing-owner") await f.gate.close();
+  await expect(f.gate.readmit!("move-a", home, restored)).rejects.toThrow("Cannot verify this session's home.");
+  expect(f.gate.inspect().kind).not.toBe("ordinary");
+  expect(f.calls.lock).toBe(1);
+}, 5000);
+
+it("a refused admission freeze never closes the ordinary session intake", async () => {
+  const { freezeAdmissionAndIntake } = await import("../roam/admission");
+  const f = fixture(); await f.emit("session_start", { reason: "startup" });
+  let closes = 0;
+  await expect(freezeAdmissionAndIntake(f.gate, "move-a", 99, async () => { closes++; return "closed"; })).rejects.toThrow();
+  expect(closes).toBe(0);
+  expect(f.gate.inspect().kind).toBe("ordinary");
 }, 5000);

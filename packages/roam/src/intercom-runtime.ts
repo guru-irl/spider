@@ -1,3 +1,4 @@
+import { startMachineMoveSocket } from "./machine-move-socket";
 import { randomUUID } from "node:crypto";
 import { localEntries } from "@spider/db-core/roam/local-state";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
@@ -8,7 +9,12 @@ import type { Db } from "@spider/db-core";
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { IntercomFederationClient } from "@spider/intercom/broker/client";
 import { spawnBrokerIfNeeded } from "@spider/intercom/broker/spawn";
-import { addressKey, type LocalPresence, type RemoteSessionInfo, type SessionAddress } from "@spider/intercom/protocol";
+import { addressKey, sameAddress, type FederationBlockers, type IntercomIntakeFence, type LocalPresence, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint } from "@spider/intercom/protocol";
+import type { Home } from "@spider/db-core/roam/types";
+import { sessionHome } from "./homes";
+import { createIntercomMovePorts } from "./intercom-move";
+import { createRollbackIntercomPorts, type MoveEvidenceBindings, type RollbackEvidence } from "./move-ports";
+import type { Operation } from "./contracts";
 import type { Clock, IntercomLifecycle, Peer, RoamConfig, Transport } from "./contracts";
 import { createIntercomBridge, type IntercomBridge, type IntercomBroker } from "./intercom-bridge";
 import { acquireHelperRoute, type HelperRouteLease } from "./intercom-route";
@@ -21,13 +27,15 @@ import { firstHomeEndpointMatches, readFirstHomeAdoption } from "./intercom-firs
 import { createIntercomRegistry, withIntercomPeerLock } from "./intercom-registry";
 import { readLocalIdentity } from "./runtime";
 import { topologyTransitionId } from "./intercom-topology";
-import { openJournal } from "./journal";
+import { openJournal, openFreezeJournal } from "./journal";
 import type { IntercomEnrollmentPair } from "./provision-contracts";
 
 export interface MachineIntercomOptions {
   root: string;
   globalDb: Db;
   config: RoamConfig;
+  roamingEnabled?(): boolean;
+  moveJournal?: import("./journal").FreezeJournal;
   agentDir: string;
   clock: Clock;
   transport: Transport;
@@ -38,8 +46,18 @@ export interface MachineIntercomOptions {
   env?: NodeJS.ProcessEnv;
   ensureBroker?(input: { agentDir: string; signal: AbortSignal }): Promise<void>;
   generationKnown?(sessionId: string, generation: string): boolean;
+  moveRollbackProof?(operation: Operation): Promise<RollbackEvidence | null>;
+  moveOwns?(endpoint: SessionEndpoint): Promise<boolean>;
+}
+export interface MachineMovePort {
+  intake: import("./contracts").IntercomMovePorts;
+  bridge(address: SessionAddress): Promise<FederationBlockers>;
+  settlement: NonNullable<MoveEvidenceBindings["settlement"]>;
+  endpoint(address: SessionAddress): Promise<SessionEndpoint>;
+  releaseRollbackFence(fence: IntercomIntakeFence, home: Home, receipt: Home): Promise<void>;
 }
 export interface MachineIntercom extends IntercomLifecycle {
+  move: MachineMovePort;
   readiness(): { state: "disabled" | "pending" | "ready"; reason: string | null };
 }
 
@@ -75,6 +93,7 @@ function checkBrokerBoundary(agentDir: string): void {
 
 /** Owns the bridge for one locked hub or supervisor, never for a pi session. */
 export function createMachineIntercom(options: MachineIntercomOptions): MachineIntercom {
+  const roamingEnabled = () => { try { return options.roamingEnabled?.() ?? options.config.enabled; } catch { return false; } };
   const settings = { ...options.config.intercom, routes: [...options.config.intercom.routes] };
   const initiates = (peer: Peer) => options.config.role === "hub" ||
     peer.machineId !== options.config.hubMachineId && options.config.machineId < peer.machineId;
@@ -422,13 +441,88 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
     void running.then(() => { if (attemptTask === running) attemptTask = undefined; }, () => { if (attemptTask === running) attemptTask = undefined; });
     return running;
   };
+  const moveAvailable = () => {
+    if (!roamingEnabled() || !enabled || stopped || status.state !== "ready" || !bridge || !store) throw new Error("intercom-move-unavailable");
+    return { bridge, store };
+  };
+  const moveEndpoint = async (address: SessionAddress): Promise<SessionEndpoint> => {
+    moveAvailable();
+    const info = sender(address), home = sessionHome(options.globalDb, address.sessionId);
+    if (!info || !sameAddress(info.address, address) || !home || home === "unknown" || info.machineId !== home.machineId || info.homeEpoch !== home.epoch) throw new Error("intercom-endpoint-unproved");
+    return { address: info.address, machineId: info.machineId, homeEpoch: info.homeEpoch, activationEpoch: info.activationEpoch };
+  };
+  let intakePorts: import("./contracts").IntercomMovePorts | undefined;
+  const intake = () => {
+    moveAvailable();
+    return intakePorts ??= createIntercomMovePorts({
+      journal: options.moveJournal,
+      broker: {
+        async intake(action, fence) {
+          moveAvailable();
+          const port = (broker as IntercomBroker & Partial<Pick<IntercomFederationClient, "intake">>).intake;
+          if (!port) throw new Error("intercom-fence-unavailable");
+          return port.call(broker, action, fence);
+        },
+        async inspectFreezeBlockers(address) {
+          moveAvailable();
+          const port = (broker as IntercomBroker & Partial<Pick<IntercomFederationClient, "inspectFreezeBlockers">>).inspectFreezeBlockers;
+          if (!port) throw new Error("intercom-blocker-source-unavailable");
+          return port.call(broker, address);
+        },
+      },
+      bridge: {
+        drainIntake: fence => moveAvailable().bridge.drainIntake(fence),
+        inspectMoveBlockers: address => moveAvailable().bridge.inspectMoveBlockers(address),
+        undispatched: address => moveAvailable().bridge.undispatched(address),
+        rebindMove: (fence, endpoint, proof) => moveAvailable().bridge.rebindMove(fence, endpoint, proof),
+        resumeIntake: fence => moveAvailable().bridge.resumeIntake(fence),
+      },
+      owns: endpoint => options.moveOwns ? options.moveOwns(endpoint) : Promise.resolve(false),
+      endpoint: address => sender(address),
+      async home(address) { const home = sessionHome(options.globalDb, address.sessionId); return home === "unknown" ? null : home; },
+      admitted: endpoint => { const info = sender(endpoint.address); return !!info && info.machineId === endpoint.machineId && info.homeEpoch === endpoint.homeEpoch && info.activationEpoch === endpoint.activationEpoch; },
+      presence: endpoint => sender(endpoint.address),
+      warnings: () => [...bridge?.diagnostics().map(item => `intercom-route-unavailable:${item.peer}`) ?? []],
+    });
+  };
+  const move: MachineMovePort = {
+    intake: {
+      async close(...args) { return intake().close(...args); }, async drain(...args) { return intake().drain(...args); },
+      async inspect(...args) { return intake().inspect(...args); }, async checkGeneration(...args) { return intake().checkGeneration(...args); },
+      async abort(...args) { return intake().abort(...args); }, async ready(...args) { return intake().ready(...args); },
+    },
+    async bridge(address) { return moveAvailable().bridge.inspectMoveBlockers(address); },
+    endpoint: moveEndpoint,
+    async settlement(query) {
+      const { store } = moveAvailable();
+      for (const direction of ["inbound", "outbound"] as const) {
+        const retained = store.retained(direction, query.messageId);
+        if (!retained || retained.identity.from.sessionId !== query.fromSessionId || retained.identity.to.sessionId !== query.toSessionId ||
+            retained.identity.to.scopeId !== query.scopeId || retained.payloadRetained || !["injected", "matched_waiter"].includes(retained.state) || retained.latestAttempt < 1) continue;
+        const endpoint = await moveEndpoint(retained.identity.to);
+        if (endpoint.machineId !== retained.endpoint.machineId || endpoint.homeEpoch !== retained.endpoint.homeEpoch || endpoint.activationEpoch !== retained.endpoint.activationEpoch) continue;
+        return { ...query, kind: "delivered" };
+      }
+      return null;
+    },
+    async releaseRollbackFence(fence, home, receipt) {
+      const { bridge } = moveAvailable();
+      const intake = (broker as IntercomBroker & Partial<Pick<IntercomFederationClient, "intake">>).intake;
+      if (!options.moveRollbackProof || !intake) throw new Error("move-rollback-proof-missing");
+      await createRollbackIntercomPorts({ journal: options.moveJournal ?? openFreezeJournal(join(options.root, "roam", "journal.db")), address: fence.address,
+        proof: options.moveRollbackProof, broker: { intake: intake.bind(broker) }, bridge }).reopen(fence, home, receipt);
+    },
+  };
+  let moveSocket: Awaited<ReturnType<typeof startMachineMoveSocket>> | undefined;
   return {
+    move,
     start() {
       return startTask ??= (async () => {
         if (!enabled) return;
         checkDirectory(options.root); checkDirectory(options.agentDir); checkBrokerBoundary(options.agentDir);
         if (process.platform !== "win32" && Buffer.byteLength(join(options.agentDir, "intercom", "broker.sock")) >= 104) throw new Error("intercom broker socket path too long");
         await runAttempt();
+        if (options.config.enabled || roamingEnabled()) moveSocket = await startMachineMoveSocket(options.root, () => roamingEnabled() && !stopped, move);
       })();
     },
     stop() {
@@ -436,6 +530,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
         stopped = true; abort.abort(); cancelRetry?.(); cancelRetry = undefined; cancelRecovery?.(); cancelRecovery = undefined;
         try { await startTask; } catch { /* startup error already reported */ }
         try { await attemptTask; } catch { /* retry error already reported */ }
+        await moveSocket?.close(); moveSocket = undefined;
         await closeAttempt();
       })();
     },

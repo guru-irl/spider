@@ -2,6 +2,22 @@ import { randomUUID } from "node:crypto";
 import type { Home, MachineId, Probe, HubOperationReadiness, SessionState } from "@spider/db-core/roam/types";
 import type { Clock, Diagnostic, HostIntent, Journal, Outcome } from "./contracts";
 import type { IntentState, IntentStore, VersionedIntent } from "./intent";
+import type { SyncHandshake } from "./revocation";
+import { isMachineId } from "./machine-id";
+
+export interface SupervisorReconnectPorts {
+  machineId: MachineId;
+  /** Stop and durably retire every local session before resolving. Failure remains retire-only. */
+  stopSessions(): Promise<void>;
+  sync(): Promise<void>;
+}
+export async function reconnectSupervisor(reply: SyncHandshake, ports: SupervisorReconnectPorts): Promise<boolean> {
+  if (!reply || !isMachineId(reply.machineId) || reply.machineId !== ports.machineId || !(reply.kind === "accepted" && reply.reason === "ok" || reply.kind === "retire-only" && reply.reason === "machine-revoked"))
+    throw new Error("Invalid sync handshake");
+  if (reply.kind === "retire-only") { await ports.stopSessions(); return false; }
+  await ports.sync();
+  return true;
+}
 
 export interface SupervisorObservation {
   home: Home | null | "unknown" | "conflict";
@@ -33,6 +49,7 @@ export interface SupervisorPorts {
   intents: IntentStore;
   runningIntents: RunningIntentSource;
   events: { subscribe(listener: () => void): () => void };
+  connection?: SupervisorReconnectPorts & { handshake(): Promise<SyncHandshake> };
   inspect(sessionId: string): Promise<SupervisorObservation>;
   launch(request: SupervisorLaunch): Promise<Outcome<HubOperationReadiness>>;
   stop(sessionId: string): Promise<Probe>;
@@ -229,6 +246,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       working = (async () => {
         while (requested) {
           requested = false;
+          if (ports.connection && !await reconnectSupervisor(await ports.connection.handshake(), ports.connection)) continue;
           for (const id of await ports.runningIntents.list()) {
             try { await visit(id); }
             catch {

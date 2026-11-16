@@ -60,6 +60,7 @@ export interface BackgroundManifest {
   schema: number;
   id: string;
   cwd: string;
+  ownerSessionId?: string;
   /** Present unless `shellCommand` is (Windows .cmd/.bat shim path). */
   argv?: string[];
   /** Present only for the Windows .cmd/.bat shell:true path — see executor.ts's
@@ -71,6 +72,7 @@ export interface BackgroundManifest {
    *  Best-effort: may not have landed yet at the exact instant of a timeout
    *  handoff — advisory, never guaranteed. */
   childPid?: number;
+  supervisorPid?: number;
 }
 
 export interface BackgroundReceipt {
@@ -187,7 +189,7 @@ export function readManifestSafe(path: string): BackgroundManifest | undefined {
  * never carries BOTH a numeric `exitCode` AND a signal name at once (a
  * settled command either exited with a code or died by a signal, never both).
  */
-function isWellFormedReceipt(value: unknown): value is BackgroundReceipt {
+export function isWellFormedReceipt(value: unknown): value is BackgroundReceipt {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const r = value as Record<string, unknown>;
   if (r.schema !== 1) return false;
@@ -317,6 +319,7 @@ function recordChildPid(pid) {
   try {
     const m = readManifest();
     m.childPid = pid;
+    m.supervisorPid = process.pid;
     atomicWriteJSON(manifestPath, m);
   } catch (e) {
     /* best-effort — a caller reading childPid before this lands treats it as

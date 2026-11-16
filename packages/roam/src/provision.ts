@@ -149,6 +149,8 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
       const saved = prior.result;
       if (!saved || saved.code !== 0 || !saved.value || typeof saved.value !== "object" || Array.isArray(saved.value) ||
           typeof saved.value.hostingReady !== "boolean") return result(operationId, 3, "invalid-journal-result", null);
+      mutated = true;
+      await ports.setParticipation(peer, null);
       return result(operationId, 0, typeof saved.reason === "string" ? saved.reason : "installed", { hostingReady: saved.value.hostingReady });
     }
     const consent = ports.journal.read(operationId).find(({ action, result: receipt }) => action === "provision-consent" &&
@@ -173,7 +175,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
       providers: [...input.confirmedProviders], warnings: ["Hand-edited selected files may need re-editing after provisioning."] });
     if (!consent) {
       if (!await ports.confirm(peer.alias, [...input.confirmedProviders])) return result(operationId, 1, "consent-refused", null);
-      ports.journal.record(operationId, "provision-consent", { approved: true, target: peer.alias, machineId: peer.machineId,
+      ports.journal.record(operationId, "provision-consent", { approved: true, enablesRoaming: true, target: peer.alias, machineId: peer.machineId,
         providers: [...input.confirmedProviders], requestDigest: digest,
         settingsPreview: approvedSettings ? { fingerprint: approvedSettings.fingerprint, changedKeys: [...approvedSettings.changedKeys] } : null });
     }
@@ -210,6 +212,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     const diagnostics = await doctorPeer(peer, ports);
     await ports.report(diagnostics);
     const hostingReady = diagnostics.every(item => item.severity !== "block");
+    await ports.setParticipation(peer, hostingReady);
     const outcome = result(operationId, 0, hostingReady ? "installed" : "installed-hosting-disabled", { hostingReady });
     ports.journal.record(operationId, "done", outcome as unknown as JsonObject);
     return outcome;

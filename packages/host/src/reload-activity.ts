@@ -1,8 +1,15 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+export interface InteractiveReloadActivity {
+  busy(): boolean;
+  commandActive(): boolean;
+  ordinaryCommandActive?(): boolean;
+  overlayActive(): boolean;
+}
+
 /** Wrap the contexts Spider receives, including the session context used by shortcut overlays. */
-export function trackReloadActivity<T extends ExtensionAPI>(api: T): { pi: T; busy: () => boolean } {
-  let commands = 0;
+export function trackReloadActivity<T extends ExtensionAPI>(api: T): InteractiveReloadActivity & { pi: T } {
+  let commands = 0, moveCommands = 0;
   let overlays = 0;
   const contexts = new WeakMap<object, object>();
   const context = (value: unknown): unknown => {
@@ -44,9 +51,9 @@ export function trackReloadActivity<T extends ExtensionAPI>(api: T): { pi: T; bu
           handler: (...args: unknown[]) => {
             const contextIndex = key === "registerCommand" ? 1 : 0;
             args[contextIndex] = context(args[contextIndex]);
-            commands++;
+            commands++; if (key === "registerCommand" && name === "move") moveCommands++;
             let asynchronous = false;
-            const release = () => { commands = Math.max(0, commands - 1); };
+            const release = () => { commands = Math.max(0, commands - 1); if (key === "registerCommand" && name === "move") moveCommands = Math.max(0, moveCommands - 1); };
             try {
               const result = definition.handler(...args);
               if (result && typeof (result as PromiseLike<unknown>).then === "function") {
@@ -61,5 +68,5 @@ export function trackReloadActivity<T extends ExtensionAPI>(api: T): { pi: T; bu
       return method.bind(target);
     },
   });
-  return { pi, busy: () => commands > 0 || overlays > 0 };
+  return { pi, busy: () => commands > 0 || overlays > 0, commandActive: () => commands > 0, ordinaryCommandActive: () => commands > moveCommands, overlayActive: () => overlays > 0 };
 }

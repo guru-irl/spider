@@ -53,3 +53,37 @@ export function installBoxEnrollment(root: string, machineId: string, hubMachine
   if (!matching()) refuse("enrollment-publication-pending");
   return "enrolled";
 }
+
+/** Only the authenticated provisioning channel calls this; it cannot enroll a box. */
+export function setBoxRoamingEnabled(root: string, machineId: string, hubMachineId: string, enabled: boolean): void {
+  const refuse = (): never => { throw Object.assign(new Error("enrollment-conflict"), { code: "enrollment-conflict" }); };
+  if (typeof enabled !== "boolean" || !enrollPath.isAbsolute(root) || enrollFs.realpathSync(root) !== root) refuse();
+  const roam = enrollPath.join(root, "roam"), file = enrollPath.join(roam, "config.json");
+  for (const directory of [root, roam]) {
+    const stat = enrollFs.lstatSync(directory);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || typeof process.getuid === "function" && stat.uid !== process.getuid() ||
+        directory === roam && process.platform !== "win32" && (stat.mode & 0o7777) !== 0o700) refuse();
+  }
+  function read(path: string): Record<string, unknown> {
+    const fd = enrollFs.openSync(path, enrollFs.constants.O_RDONLY | enrollFs.constants.O_NOFOLLOW | enrollFs.constants.O_NONBLOCK);
+    try {
+      const stat = enrollFs.fstatSync(fd);
+      if (!stat.isFile() || stat.nlink !== 1 || stat.size > 1024 * 1024 || typeof process.getuid === "function" && stat.uid !== process.getuid() ||
+          process.platform !== "win32" && (stat.mode & 0o7777) !== 0o600) refuse();
+      const value: unknown = JSON.parse(enrollFs.readFileSync(fd, "utf8"));
+      if (!value || typeof value !== "object" || Array.isArray(value)) return refuse();
+      return value as Record<string, unknown>;
+    } finally { enrollFs.closeSync(fd); }
+  }
+  if (read(enrollPath.join(roam, "machine.json")).machineId !== machineId) refuse();
+  const raw = read(file), current = parseRoamConfig(raw);
+  if (current.role !== "box" || current.machineId !== machineId || current.hubMachineId !== hubMachineId) refuse();
+  if (current.enabled === enabled) return;
+  const temporary = enrollPath.join(roam, `.enabled-${enrollmentUuid()}`);
+  const fd = enrollFs.openSync(temporary, enrollFs.constants.O_WRONLY | enrollFs.constants.O_CREAT | enrollFs.constants.O_EXCL | enrollFs.constants.O_NOFOLLOW, 0o600);
+  try { enrollFs.writeFileSync(fd, JSON.stringify({ ...raw, enabled }) + "\n"); enrollFs.fsyncSync(fd); } finally { enrollFs.closeSync(fd); }
+  try { if (JSON.stringify(read(file)) !== JSON.stringify(raw)) refuse(); enrollFs.renameSync(temporary, file); }
+  finally { if (enrollFs.existsSync(temporary)) enrollFs.unlinkSync(temporary); }
+  const directory = enrollFs.openSync(roam, enrollFs.constants.O_RDONLY | enrollFs.constants.O_DIRECTORY | enrollFs.constants.O_NOFOLLOW);
+  try { enrollFs.fsyncSync(directory); } finally { enrollFs.closeSync(directory); }
+}

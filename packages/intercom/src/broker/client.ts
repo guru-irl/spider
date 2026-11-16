@@ -1,4 +1,4 @@
-import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, receiptReleasesPayload, FEDERATION_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
+import { RECEIPT_ACK_FEATURE, RECEIPT_EVIDENCE_FEATURE, compatibleReceipt, receiptReleasesPayload, FEDERATION_FEATURE, FREEZE_BLOCKERS_FEATURE, FEDERATION_NOTICE_ACK_FEATURE, HELPER_EXCHANGE_FEATURE, isHelperExchangeError, resolveSessionTarget, type BridgeRegistration, type FederationBridge, type RemoteSessionInfo, type SessionAddress, type SessionEndpoint, type FederationDispatchResult, type FederationBlockers, type FederationClientMessage, type FederationBrokerMessage, type MessageReceipt as FederationReceipt, type MessageControl as FederationControl } from "../protocol.js";
 import { isFederationDispatchResult, parseFederationBrokerMessage } from "./protocol.js";
 import { EventEmitter } from "events";
 import net from "net";
@@ -857,6 +857,8 @@ export class IntercomClient extends EventEmitter {
 
 
 /** Only a failed connection preflight proves that no request bytes reached a socket. */
+import { MOVE_FENCE_FEATURE, type IntercomIntakeAction, type IntercomIntakeFence } from "../protocol.js";
+
 export class FederationRequestNotSentError extends Error {
   constructor() { super("federation-disconnected"); this.name = "FederationRequestNotSentError"; }
 }
@@ -941,6 +943,16 @@ export class IntercomFederationClient extends EventEmitter {
         if (!aborter.signal.aborted) this.sendCompletion(socket, { type: "federation_helper_result", requestId: message.requestId,
           error: isHelperExchangeError(code) ? code : "bridge-exchange-failed" });
       }).finally(() => { if (this.helperRequests.get(message.requestId) === aborter) this.helperRequests.delete(message.requestId); });
+    } else if (message.type === "federation_intake_apply") {
+      const socket = this.socket;
+      if (!this.features.has(MOVE_FENCE_FEATURE) || !this.bridge?.intake || !socket) throw new Error("intercom-fence-unsupported");
+      void Promise.resolve(this.bridge.intake(message.action, message.fence)).then(generation => {
+        this.sendCompletion(socket, { type: "federation_intake_applied", requestId: message.requestId, generation });
+      }, () => this.sendCompletion(socket, { type: "federation_intake_applied", requestId: message.requestId, generation: null }));
+    } else if (message.type === "intake_result") {
+      const request = this.requests.get(message.requestId);
+      if (!request) return;
+      clearTimeout(request.timer); this.requests.delete(message.requestId); request.resolve(message.generation);
     } else if (message.type === "federation_helper_cancel") {
       this.helperRequests.get(message.requestId)?.abort();
       this.helperRequests.delete(message.requestId);
@@ -966,6 +978,13 @@ export class IntercomFederationClient extends EventEmitter {
     try { await this.request({ type: "helper_authorize", requestId: randomUUID(), token }); }
     catch (error) { this.helperHandler = null; throw error; }
   }
+  supportsFeature(feature: string): boolean { return this.features.has(feature); }
+  async intake(action: IntercomIntakeAction, fence: IntercomIntakeFence): Promise<string | null> {
+    if (!this.features.has(MOVE_FENCE_FEATURE)) throw new Error("intercom-fence-unsupported");
+    const generation = await this.request({ type: "federation_intake", requestId: randomUUID(), action, fence });
+    if (generation !== null && typeof generation !== "string") throw new Error("invalid-intake-result");
+    return generation;
+  }
   publishPresence(sessions: RemoteSessionInfo[]): void { this.send({ type: "federation_presence", sessions }); }
   deliver(from: RemoteSessionInfo, to: SessionEndpoint, message: Message): Promise<FederationDispatchResult> {
     return this.request({ type: "federation_deliver", requestId: randomUUID(), from, to, message }) as Promise<FederationDispatchResult>;
@@ -981,6 +1000,10 @@ export class IntercomFederationClient extends EventEmitter {
   deliverControl(from: RemoteSessionInfo, to: SessionAddress, control: FederationControl): void { this.send({ type: "federation_deliver_control", from, to, control }); }
   inspectBlockers(address: SessionAddress): Promise<FederationBlockers> {
     return this.request({ type: "inspect_blockers", requestId: randomUUID(), address }) as Promise<FederationBlockers>;
+  }
+  inspectFreezeBlockers(address: SessionAddress): Promise<FederationBlockers> {
+    if (!this.features.has(FREEZE_BLOCKERS_FEATURE)) return Promise.reject(new Error("unsupported-freeze-blocker-snapshot"));
+    return this.request({ type: "inspect_blockers", requestId: randomUUID(), address, includeExpired: true }) as Promise<FederationBlockers>;
   }
   async close(): Promise<void> {
     const socket = this.socket;

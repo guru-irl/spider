@@ -52,12 +52,30 @@ export function casHome(db: Db, expected: Home, nextMachine: MachineId, moveId: 
     const current = sessionHome(db, expected.sessionId);
     if (!current || current === "unknown" || current.epoch !== expected.epoch || current.machineId !== expected.machineId || current.moveId !== expected.moveId)
       throw new Error("Home compare-and-swap epoch does not match");
-    const home: Home = { sessionId: expected.sessionId, machineId: nextMachine, epoch: expected.epoch + 1, moveId, updatedAt: Date.now() };
-    db.prepare("UPDATE session_homes SET machine_id=?,epoch=?,move_id=?,updated_at=? WHERE session_id=?")
-      .run(home.machineId, home.epoch, home.moveId, home.updatedAt, home.sessionId);
-    db.prepare("INSERT INTO roam_home_actions(move_id,session_id,expected_epoch,args_digest,committed_home_json) VALUES (?,?,?,?,?)")
-      .run(moveId, home.sessionId, expected.epoch, digest, JSON.stringify(home));
-    return home;
+    return commitHome(db, expected, nextMachine, moveId, digest);
+  }).immediate();
+}
+function commitHome(db: Db, expected: Home, nextMachine: MachineId, moveId: string, digest: string): Home {
+  const home: Home = { sessionId: expected.sessionId, machineId: nextMachine, epoch: expected.epoch + 1, moveId, updatedAt: Date.now() };
+  db.prepare("UPDATE session_homes SET machine_id=?,epoch=?,move_id=?,updated_at=? WHERE session_id=?")
+    .run(home.machineId, home.epoch, home.moveId, home.updatedAt, home.sessionId);
+  db.prepare("INSERT INTO roam_home_actions(move_id,session_id,expected_epoch,args_digest,committed_home_json) VALUES (?,?,?,?,?)")
+    .run(moveId, home.sessionId, expected.epoch, digest, JSON.stringify(home));
+  return home;
+}
+/** Only initial claim may resolve this reserved unassigned row. Normal move CAS rejects it. */
+export function resolveInitialConflict(db: Db, expectedMarker: Home, machineId: MachineId, hubMachine: MachineId): Home {
+  hub(db, hubMachine, expectedMarker.sessionId);
+  if (expectedMarker.machineId !== "" || expectedMarker.epoch !== 1 || expectedMarker.moveId !== null ||
+      !Number.isSafeInteger(expectedMarker.updatedAt) || expectedMarker.updatedAt < 0 || !isMachineId(machineId))
+    throw new Error("Invalid initial conflict marker");
+  return db.raw.transaction(() => {
+    const row = db.prepare("SELECT machine_id,epoch,move_id,updated_at FROM session_homes WHERE session_id=?").get(expectedMarker.sessionId) as
+      { machine_id: string; epoch: number; move_id: string | null; updated_at: number } | undefined;
+    if (!row || row.machine_id !== "" || row.epoch !== 1 || row.move_id !== null || row.updated_at !== expectedMarker.updatedAt)
+      throw new Error("Initial conflict marker changed");
+    const digest = createHash("sha256").update(JSON.stringify([expectedMarker, machineId])).digest("hex");
+    return commitHome(db, expectedMarker, machineId, `claim-${digest.slice(0,40)}`, digest);
   }).immediate();
 }
 /** Cancellation is durable even if the corresponding transition never started. */

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { accessSync, constants, statSync } from "node:fs";
 import { lstat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { delimiter, isAbsolute, resolve } from "node:path";
 import { HerdrError, object, parseTerminal, text as replyText } from "@spider/herdr/client/parse";
 import { createHcClient, invokeCli as invokeHcCli, observeCoreIdentity } from "@spider/herdr/client/hc";
 import { invokeCli as invokeTransport } from "@spider/herdr/client/cli-transport";
@@ -348,4 +349,15 @@ export function createLaunchReconciler(ports: LaunchReconcilePorts): (operationI
         second: { coreId: core.coreId as string, issuedAt: second.issuedAt, terminal: "absent" }, confirmationBoundMs: CONFIRMATION_BOUND_MS } };
     } catch { return unknown(); }
   };
+}
+
+/** Match the ordinary session launcher's PATH lookup, then pin the executable for service launches. */
+export function resolveParticipantPi(env: Readonly<NodeJS.ProcessEnv> = process.env): string | null {
+  const explicit = env.SPIDER_ROAM_PI;
+  const candidates = explicit !== undefined ? [explicit] : (env.PATH ?? "").split(delimiter).filter(Boolean).map(directory => resolve(directory, "pi"));
+  for (const candidate of candidates) {
+    if (!isAbsolute(candidate) || /[\x00-\x1f\x7f]/.test(candidate)) continue;
+    try { if (statSync(candidate).isFile()) { accessSync(candidate, constants.X_OK); return candidate; } } catch { /* Try the next PATH entry. */ }
+  }
+  return null;
 }

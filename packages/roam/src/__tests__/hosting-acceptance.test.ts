@@ -42,7 +42,7 @@ function provisionFixture() {
   writeFileSync(terminals, '["existing-terminal"]', { mode: 0o600 });
   const journal = openJournal(join(root, "journal.db"));
   const actions: string[] = [], diagnostics: Array<{ reason: string; severity: string }> = [];
-  const state = { consent: true, signedIn: false };
+  const state = { consent: true, signedIn: false, peerEnabled: false };
   const inventory = healthyInventory();
   const transport: Transport = {
     async bootstrapProbe() { return structuredClone(inventory); }, async resolve(peer) { return peer; },
@@ -57,6 +57,9 @@ function provisionFixture() {
   const ports: ProvisionPorts = {
     transport, journal, hubMachineId: HUB, limits: DEFAULT_LIMITS, coreUnit: "herdr-core.service",
     async withPeerLock(_machine, work) { return work(); },
+    async setParticipation(target, ready) {
+      if (ready !== null) { await ports.transfer.setEnabled(target, HUB, ready); state.peerEnabled = ready; }
+    },
     async confirm() { actions.push("confirm"); return state.consent; },
     systemd: {
       unitDir: `${home}/.config/systemd/user`,
@@ -75,13 +78,15 @@ function provisionFixture() {
     destination: { home, agentDir, npmPrefix, supervisor },
     async present() {}, async report(rows) { diagnostics.push(...rows); },
     async verifyPeer() { return { piSignedIn: state.signedIn, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
-      bundledIntercom: true, intercomUnique: true, legacyDrained: true, federation: true }; },
+      bundledIntercom: true, intercomUnique: true, legacyDrained: true, federation: true,
+      intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: [] } }; },
     bootstrap: {
       async probeAgentDirectory() { return { status: "default", core: { local: "local-core", remote: "box-core" } }; },
       async previewSettings(_peer, _home, entries, maximum) { return inspectDestinationSettings({ home: root, destinationRoot: destination, entries, maximum }); },
       async claimIdentity() { actions.push("identity"); return { machineId: BOX, coreId: "box-core" }; },
     },
     transfer: {
+      async setEnabled(_peer, _hub, enabled) { actions.push(`enabled:${enabled}`); },
       async enroll() { actions.push("enroll"); }, async cleanupSecrets() { actions.push("cleanup"); },
       async installRelease() { actions.push("release"); return { pi: peer.pi, cli: peer.cli, supervisor }; },
       async installFiles(_peer, files, expectedSettingsFingerprint) { installSelectedFiles({ destinationRoot: destination, files, expectedSettingsFingerprint }); },

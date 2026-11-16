@@ -1,5 +1,9 @@
 import { afterEach, expect, it } from "vitest";
 import { join, resolve, sep } from "node:path";
+import { writeFile } from "node:fs/promises";
+import { createProcessPresence } from "@spider/herdr/sessions/presence";
+import { createSessionLeases, type ProcessInventoryPorts } from "@spider/herdr/sessions/lease";
+import { inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import { buildFixture } from "../../../../scripts/test-bundle";
 import { createReplica } from "@spider/db-core/testutil";
 import type { Home, Readiness } from "@spider/db-core/roam/types";
@@ -111,4 +115,114 @@ it("stopped authority survives reopening and failed doctor cannot resume", async
   expect(await authority.get("session-1")).toMatchObject({ desired: "stopped" });
   await authority.resume("session-1", async () => []);
   expect(await authority.get("session-1")).toMatchObject({ desired: "running", suspended: null });
+}, 5000);
+
+it("rejects unknown participant verbs and uncertain ownership without effects", async () => {
+  const f = fixture();
+  const operation: Operation = { id: "control-1", kind: "session-freeze", machineId: BOX, expectedEpoch: 2,
+    args: { sessionId: "session-1", moveId: "move-1" } };
+  const effects: string[] = [];
+  const ports: control.SessionControlPorts = { journal: f.journal, probe: async () => ({ kind: "uncertain" }),
+    withBothLocks: async (_id, fn) => { effects.push("locks"); return fn(); },
+    live: async op => { effects.push("live"); return { code: 0, reason: "ok", operationId: op.id, home: null, epoch: op.expectedEpoch, repairCommand: null, value: {} }; },
+    dormant: async op => { effects.push("dormant"); return { code: 0, reason: "ok", operationId: op.id, home: null, epoch: op.expectedEpoch, repairCommand: null, value: {} }; } };
+  expect(await control.controlSession({ ...operation, kind: "session-exec" }, ports)).toMatchObject({ code: 2 });
+  expect(await control.controlSession(operation, ports)).toMatchObject({ code: 3 });
+  expect(effects).toEqual([]);
+  expect(f.journal.read(operation.id)).toEqual([]);
+}, 5000);
+
+it("dormant control rechecks dormancy while holding both locks", async () => {
+  const f = fixture();
+  const operation: Operation = { id: "freeze-dormant", kind: "session-freeze", machineId: BOX, expectedEpoch: 2,
+    args: { sessionId: "session-1", moveId: "move-1" } };
+  const order: string[] = [];
+  const ports: control.SessionControlPorts = { journal: f.journal, probe: async () => { order.push("probe"); return { kind: "absent" }; },
+    withBothLocks: async (id, fn) => { expect(id).toBe("session-1"); order.push("locks"); try { return await fn(); } finally { order.push("unlock"); } },
+    live: async () => { throw new Error("must not call live"); },
+    dormant: async op => { order.push("dormant"); return { code: 0, reason: "frozen", operationId: op.id, home: null, epoch: op.expectedEpoch, repairCommand: null, value: { leaf: "physical-leaf" } }; } };
+  expect(await control.controlSession(operation, ports)).toMatchObject({ code: 0, value: { leaf: "physical-leaf" } });
+  expect(order).toEqual(["probe", "locks", "probe", "dormant", "unlock"]);
+}, 5000);
+
+it("live retirement waits for proved exit before a locked dormant retirement", async () => {
+  const f = fixture();
+  const operation: Operation = { id: "retire-1", kind: "session-retire", machineId: BOX, expectedEpoch: 2,
+    args: { sessionId: "session-1", moveId: "move-1" } };
+  let alive = true, retired = false, shutdowns = 0;
+  const ports: control.SessionControlPorts = { journal: f.journal,
+    probe: async () => alive ? { kind: "live", identity: { bootId: "boot", pid: 123, startTime: "start" } } : { kind: "absent" },
+    withBothLocks: async (_id, fn) => fn(),
+    live: async op => { shutdowns++; return { code: 0, reason: "shutdown-requested", operationId: op.id, home: null, epoch: op.expectedEpoch, repairCommand: null, value: {} }; },
+    dormant: async op => { retired = true; return { code: 0, reason: "retired", operationId: op.id, home: null, epoch: op.expectedEpoch, repairCommand: null, value: {} }; } };
+  expect(await control.controlSession(operation, ports)).toMatchObject({ code: 3, reason: "process-exit-unproven" });
+  expect(retired).toBe(false); expect(shutdowns).toBe(1);
+  alive = false;
+  expect(await control.controlSession(operation, ports)).toMatchObject({ code: 0, reason: "retired" });
+  expect(retired).toBe(true);
+}, 5000);
+
+async function lockFixture() {
+  const f = fixture(), root = join(f.root, "ownership"), file = join(f.root, "session.jsonl");
+  await writeFile(file, JSON.stringify({ type: "session", version: 3, id: "session-1", cwd: f.root }) + "\n");
+  const identity = { pid: process.pid, startIdentity: "fixture-process" };
+  const leases = createSessionLeases(root);
+  const inventory: ProcessInventoryPorts = { presence: createProcessPresence(root), leases,
+    processes: async () => [], probe: async pid => pid === identity.pid ? { kind: "live", startIdentity: identity.startIdentity } : { kind: "absent" } };
+  return { ...f, root, file, identity, inventory, leases };
+}
+
+it("both locks claim the session ID before the file and release on throw", async () => {
+  const f = await lockFixture();
+  expect(control.createBothLocks).toBeTypeOf("function");
+  let idHeldAtFileClaim = false;
+  const inventory: ProcessInventoryPorts = { ...f.inventory, leases: { ...f.leases,
+    async claim(file, process, ports, policy) {
+      idHeldAtFileClaim = (await inspectIdLock(f.root, "session-1"))?.identity.pid === f.identity.pid;
+      return f.leases.claim(file, process, ports, policy);
+    },
+  } };
+  const withBothLocks = control.createBothLocks({ root: f.root, file: async () => f.file, inventory, identity: f.identity, bootId: async () => "boot-fixture" });
+  await expect(withBothLocks("session-1", async () => {
+    expect(await inspectIdLock(f.root, "session-1")).toMatchObject({ identity: f.identity });
+    expect(await f.leases.get(f.file)).toMatchObject(f.identity);
+    throw new Error("fixture failure");
+  })).rejects.toThrow("fixture failure");
+  expect(idHeldAtFileClaim).toBe(true);
+  expect(await f.leases.get(f.file)).toBeNull();
+  expect(await inspectIdLock(f.root, "session-1")).toBeNull();
+}, 5000);
+
+it("both locks refuse same-ID and same-file contenders without releasing the owner", async () => {
+  const f = await lockFixture();
+  expect(control.createBothLocks).toBeTypeOf("function");
+  const withBothLocks = control.createBothLocks({ root: f.root, file: async () => f.file, inventory: f.inventory, identity: f.identity, bootId: async () => "boot-fixture" });
+  let enter!: () => void, finish!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const wait = new Promise<void>(resolve => { finish = resolve; });
+  const held = withBothLocks("session-1", async () => { enter(); await wait; return "done"; });
+  try {
+    await entered;
+    await expect(withBothLocks("session-1", async () => "duplicate")).rejects.toThrow();
+    await expect(withBothLocks("other", async () => "same-file")).rejects.toThrow();
+    expect(await inspectIdLock(f.root, "session-1")).not.toBeNull();
+    expect(await inspectIdLock(f.root, "other")).toBeNull();
+    expect(await f.leases.get(f.file)).not.toBeNull();
+  } finally { finish(); await expect(held).resolves.toBe("done"); }
+  expect(await f.leases.get(f.file)).toBeNull();
+  expect(await inspectIdLock(f.root, "session-1")).toBeNull();
+}, 5000);
+
+it("both locks fail closed on missing identity evidence or file claim failure", async () => {
+  const f = await lockFixture();
+  expect(control.createBothLocks).toBeTypeOf("function");
+  let entered = false;
+  const run = async () => { entered = true; };
+  const noBoot = control.createBothLocks({ root: f.root, file: async () => f.file, inventory: f.inventory, identity: f.identity, bootId: async () => "" });
+  await expect(noBoot("session-1", run)).rejects.toThrow();
+  const badInventory: ProcessInventoryPorts = { ...f.inventory, leases: { ...f.leases, claim: async () => { throw new Error("file unavailable"); } } };
+  const failedFile = control.createBothLocks({ root: f.root, file: async () => f.file, inventory: badInventory, identity: f.identity, bootId: async () => "boot-fixture" });
+  await expect(failedFile("session-1", run)).rejects.toThrow("file unavailable");
+  expect(await inspectIdLock(f.root, "session-1")).toBeNull();
+  expect(entered).toBe(false);
 }, 5000);

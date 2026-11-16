@@ -69,7 +69,7 @@ export type LaunchNoStartProof =
 export interface LaunchEvidence {
   receipt: 'absent' | 'started' | 'finished' | 'unknown'; terminal: 'absent' | 'present' | 'unknown'; proof?: LaunchNoStartProof;
 }
-function provedNoStart(value: LaunchEvidence, operationId: string, coreId: string, expectedBootId: string): boolean {
+export function provedNoStart(value: LaunchEvidence, operationId: string, coreId: string, expectedBootId: string): boolean {
   const proof = value.proof;
   if (!proof || proof.operationId !== operationId) return false;
   if (proof.kind === 'prelaunch-error') {

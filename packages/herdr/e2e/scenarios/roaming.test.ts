@@ -16,6 +16,13 @@ import { handleSessionOperation } from '@spider/roam/participant-runtime';
 import { openJournal } from '@spider/roam/journal';
 import { createIntentStore } from '@spider/roam/intent';
 import { readLocal } from '@spider/db-core/roam/local-state';
+import { recordLocation } from '@spider/db-core/roam/catalog';
+import { recoverMirror } from '@spider/roam/mirrors';
+import { requestHubControl } from '@spider/roam/control-socket';
+import { createSessionLeases } from '../../src/sessions/lease.js';
+import { createProcessPresence } from '../../src/sessions/presence.js';
+import { pathToFileURL } from 'node:url';
+import { enterHostingEnvironment } from '../fixtures/roam-hosting.js';
 import { createLocalDiagnosticPorts } from '@spider/roam/local-diagnostics';
 import { readLocalIdentity } from '@spider/roam/runtime';
 import { rememberRoamSlot } from '../../src/roam-placement.js';
@@ -218,8 +225,69 @@ async function closedAppPlacement(suite: Suite): Promise<void> {
   } finally { await service.stop(); await suite.keepEvidence(join(suite.root, 'logs/roam-hub.log')); await suite.keepEvidence(cores.recordLog); await lock.release(); worktree.close(); boxDb.close(); await hc.dispose(); }
 }
 
+async function mirrorAndRetire(suite: Suite): Promise<void> {
+  const cores = suite.cores;
+  if (!cores) throw new Error('R09 requires two isolated fixture cores');
+  const hub = suite.directories.SPIDER_GLOBAL_ROOT, box = suite.ownPath(join(suite.root, 'box-global'));
+  const cli = await releaseCli(suite), cwd = await suite.project('recovery'), sessionId = 'session-r09';
+  const file = suite.ownPath(join(cwd, 'session.jsonl'));
+  const bytes = JSON.stringify({ type: 'session', version: 3, id: sessionId, cwd, timestamp: '2026-01-01T00:00:00Z' }) + '\n' +
+    JSON.stringify({ type: 'message', id: 'leaf-r09', parentId: null, timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: 'fixture conversation', timestamp: 1 } }) + '\n';
+  await writeFile(file, bytes, { mode: 0o600 });
+  const peer = { machineId: BOX, alias: cores.machine, node: process.execPath, pi: suite.pi.launcher, cli, core: cores.wrapper, globalRoot: box };
+  await configureStore(hub, HUB, 'hub', [peer], true); await configureStore(box, BOX, 'box', [], true);
+  for (const root of [hub, box]) {
+    await mkdir(join(root, 'herdr'), { recursive: true, mode: 0o700 });
+    await writeFile(join(root, 'herdr/config.json'), JSON.stringify({ app: { binary: join(suite.root, 'closed-app'), home: suite.directories.HERDR_APP_HOME },
+      core: { binary: cores.wrapper, config: join(suite.root, 'core.toml') }, agentDirectory: suite.directories.PI_CODING_AGENT_DIR,
+      globalRoot: root, shellRc: join(suite.root, 'shellrc'), spaces: [], machines: [] }), { mode: 0o600 });
+    const db = openDb(join(root, 'spider.db'));
+    try {
+      if (root === hub) db.prepare('INSERT INTO session_homes VALUES (?,?,1,NULL,1)').run(sessionId, BOX);
+      if (root === box) recordLocation(db, { sessionId, file, cwd, stores: ['global'], home: { sessionId, machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 } });
+    } finally { db.close(); }
+  }
+  const env = { ...suite.env, ...cores.local.env, HC_SOCKET: cores.local.socket, SPIDER_GLOBAL_ROOT: hub, SPIDER_ROAM_PI: suite.pi.launcher };
+  const restore = enterHostingEnvironment({ ...suite.env, ...cores.dest.env, SPIDER_GLOBAL_ROOT: box });
+  let supervisor: { stop(): Promise<void> } | undefined;
+  try {
+    const packaged = await import(/* @vite-ignore */ pathToFileURL(suite.packed.roamSupervisor).href);
+    const diagnostic = createLocalDiagnosticPorts(box, []), herdr = join(box, 'herdr');
+    supervisor = await packaged.startProductionSupervisor(box, { system: { bootId: async () => 'r09-boot', limits: async () => ({ soft: 8192, hard: 8192 }),
+      inventory: { leases: createSessionLeases(herdr), presence: createProcessPresence(herdr), processes: async () => [],
+        probe: (pid: number) => diagnostic.probeProcess({ machineId: BOX, label: 'fixture owner', peer: null }, pid) } } });
+    const service = spawnOwned(suite.ledger, { label: 'recovery-hub', startsCores: true, command: process.execPath, args: [cli, 'roam', 'hub'], env,
+      cwd: suite.root, stdio: { log: join(suite.root, 'logs/recovery-hub.log') } });
+    try {
+      await waitFor('packed recovery hub socket', () => existsSync(join(hub, 'roam/hub.sock')), Boolean, deadline(20_000));
+      const sync = await suite.invoke(process.execPath, [cli, 'roam', 'sync', BOX], env);
+      const syncDetails = await requestHubControl(join(hub, 'roam/hub.sock'), { op: 'sync', machine: BOX });
+      await suite.evidence('R09-sync.json', { sync, syncDetails });
+      expect(sync.exitCode, sync.stderr + sync.stdout + JSON.stringify(syncDetails)).toBe(0);
+      const mirror = await recoverMirror({ root: join(hub, 'roam/mirrors'), machineId: BOX, sessionId, epoch: 1 });
+      expect(await readFile(mirror.file, 'utf8')).toBe(bytes);
+      const forget = await suite.invoke(process.execPath, [cli, 'roam', 'forget', cores.machine, '--confirm', `destroyed ${BOX}`, '--json'], env);
+      // Ownership is recovered, but an unmapped workspace must wait without invented readiness.
+      expect(forget.exitCode).toBe(3);
+      expect(JSON.parse(forget.stdout)).toMatchObject({ code: 3, reason: 'recovery-workspace-unavailable' });
+      const reconnect = await suite.invoke(process.execPath, [cli, 'roam', 'sync', BOX], env);
+      expect(reconnect.exitCode).toBe(1);
+      expect(await requestHubControl(join(hub, 'roam/hub.sock'), { op: 'sync', machine: BOX })).toMatchObject({ value: { outcomes: [expect.objectContaining({ reason: 'machine-revoked' })] } });
+      const db = openDb(join(box, 'spider.db'));
+      try {
+        expect(await createRunningIntentAuthority(db).get(sessionId)).toMatchObject({ desired: 'stopped', epoch: 1 });
+        expect(readLocal(db, 'supervisor-revoked', BOX)).toBe(true);
+      } finally { db.close(); }
+      expect(await readFile(mirror.file, 'utf8')).toBe(bytes);
+      await suite.evidence('R09-recovery.json', { boundary: 'packed hub sync pulls a real session artifact; packed retire-only stops durable box intent',
+        restore: 'named refusal without a mapped hub checkout; no readiness fabricated', sync: sync.stdout, forget: forget.stdout, reconnect: reconnect.stdout });
+    } finally { await service.stop(); await suite.keepEvidence(join(suite.root, 'logs/recovery-hub.log')); await suite.keepEvidence(cores.recordLog); }
+  } finally { await supervisor?.stop(); restore(); }
+}
+
 export const scenarios: readonly ScenarioDefinition[] = [
   { id: storyId('R01'), title: 'two isolated cores sync capture and session home through the packed CLI', tiers: ['headless'], run: twoCoreSync },
+  { id: storyId('R09'), title: 'packaged sync mirrors peer history and revoked reconnect durably stops the participant', tiers: ['headless'], run: mirrorAndRetire },
   { id: storyId('R02'), title: 'admitted box readiness reaches packaged hub and places one no-focus proxy in the remembered slot', tiers: ['headless'], run: closedAppPlacement },
 ];
 registerScenarios(scenarios);

@@ -54,7 +54,7 @@ export type IntercomFrame = IntercomMessageFrame | IntercomTombstoneFrame;
 
 /** A link acknowledgement proves durable inbox acceptance, not consumption. */
 export interface IntercomLinkAck { hopSequence?: number; identity: IntercomIdentity; kind: IntercomFrame["kind"] }
-export interface IntercomRefusal { hopSequence?: number; identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "hop-sequence-gap" | "hop-slot-mismatch" | "link-down" | "missing-origin" | "peer-revoked" | "intercom-topology-changing" | "sender-unauthorized" | "store-rejected" }
+export interface IntercomRefusal { hopSequence?: number; identity: IntercomIdentity; reason: "queue-full" | "message-too-large" | "machine-not-enrolled" | "hop-sequence-gap" | "hop-slot-mismatch" | "link-down" | "missing-origin" | "peer-revoked" | "intercom-topology-changing" | "intercom-frozen" | "sender-unauthorized" | "store-rejected" }
 /** Validated metadata from a rejected frame; no payload or fabricated origin is retained. */
 export interface MissingOriginFrame { hopSequence?: number; index: number; identity: IntercomIdentity; endpoint: SessionEndpoint; kind: IntercomFrame["kind"] }
 export interface IntercomReceiptInput {
@@ -121,6 +121,7 @@ export type OutboundMessage = (
 ) & { firstHomePresence?: RemoteSessionInfo; edgeEpoch?: string };
 export type IntercomQueue = "outbound" | "inbound";
 export type IntercomState = "queued" | "unknown" | "not_injected" | "injected" | "matched_waiter" | "answered" | "expired" | "cancelled";
+export interface UndispatchedIntercom { id: string; from: SessionAddress; to: SessionAddress; endpoint: SessionEndpoint }
 export interface RetainedIntercom {
   identity: IntercomIdentity;
   endpoint: SessionEndpoint;
@@ -235,6 +236,9 @@ export interface IntercomStore extends IntercomTopologyStore {
   expire(): readonly { queue: IntercomQueue; id: string }[];
   nextExpiry(): number | null;
   inspectBlockers(address: SessionAddress): FederationBlockers;
+  /** Ordinary copies with positive never-dispatched metadata may remain queued during a move. */
+  inspectMoveBlockers(address: SessionAddress): FederationBlockers;
+  undispatched(address: SessionAddress): readonly UndispatchedIntercom[];
   openAsks(peer: MachineId): readonly RetainedIntercom[];
   hasGenerationReferences(sessionId: string, generation: string): boolean;
   noticeReported(id: string, kind: "expiry" | "link-down"): boolean;
@@ -242,6 +246,7 @@ export interface IntercomStore extends IntercomTopologyStore {
   expiredOutbounds(peer: MachineId): readonly { identity: IntercomIdentity; outcomeKnown: boolean }[];
   hasPending(peer: MachineId): boolean;
   rebindUndispatched(address: SessionAddress, endpoint: SessionEndpoint, proof: RebindProof, edgeEpoch?: string): number;
+  rebindMoveUndispatched(address: SessionAddress, endpoint: SessionEndpoint, proof: RebindProof, edgeEpoch?: string): number;
   rebindInboundAfterAbsence(id: string, endpoint: SessionEndpoint): void;
   retained(queue: IntercomQueue, id: string): RetainedIntercom | null;
   close(): void;

@@ -288,11 +288,22 @@ it("a killed agent reconciles a committed import in a fresh process", async () =
     import { registerHooks } from "node:module";
     import { readFileSync, writeSync } from "node:fs";
     import { pathToFileURL } from "node:url";
-    registerHooks({ resolve(specifier, context, next) {
+    import ts from "typescript";
+    registerHooks({ load(url, context, next) {
+      if (!url.endsWith(".ts")) return next(url, context);
+      return { format: "module", shortCircuit: true, source: ts.transpileModule(readFileSync(new URL(url), "utf8"), {
+        compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ESNext },
+      }).outputText };
+    }, resolve(specifier, context, next) {
       if (context.parentURL?.endsWith(".ts") && (specifier.startsWith("./") || specifier.startsWith("../")) && !specifier.endsWith(".ts") && !specifier.endsWith(".js")) {
         return next(specifier + ".ts", context);
       }
-      return next(specifier, context);
+      try { return next(specifier, context); }
+      catch (error) {
+        if (error.code !== "ERR_MODULE_NOT_FOUND" || !context.parentURL?.endsWith(".ts") ||
+            !specifier.endsWith(".js") || !(specifier.startsWith("./") || specifier.startsWith("../"))) throw error;
+        return next(specifier.slice(0, -3) + ".ts", context);
+      }
     } });
     const input = JSON.parse(readFileSync(0, "utf8"));
     const { openDb } = await import(pathToFileURL(input.dbModule).href);

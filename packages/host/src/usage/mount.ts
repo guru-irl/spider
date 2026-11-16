@@ -140,26 +140,24 @@ export function mountUsage(pi: ExtensionAPI, ctx: ExtensionContext, runtime: Usa
 }
 
 /** Registration is inert. The parent session lifecycle owns the worker and config watcher. */
-export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL, admitted: () => boolean = () => true): { reload(): void; snapshot(): ReturnType<UsageRuntime["snapshot"]> | undefined; readPanel(now: number, sessionId: string, budget?: number): ReturnType<UsageRuntime['readPanel']>; doctor(): Promise<ReturnType<typeof usageDoctorLines>> } {
+export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL, admitted: () => boolean = () => true): { reload(): void; pause(): Promise<void>; resume(): Promise<void>; snapshot(): ReturnType<UsageRuntime["snapshot"]> | undefined; readPanel(now: number, sessionId: string, budget?: number): ReturnType<UsageRuntime['readPanel']>; doctor(): Promise<ReturnType<typeof usageDoctorLines>> } {
   let current: ExtensionContext | undefined;
   let runtime: UsageRuntime | undefined;
   let mounted: ReturnType<typeof mountUsage> | undefined;
   let config = readUsageConfig({}, {}).value;
   let reloader: ReturnType<typeof makeConfigReloader> | undefined;
   let watchedFile: string | undefined;
+  let paused = false, resumeNeeded = false;
+  let pausing: Promise<void> | undefined, resuming: Promise<void> | undefined;
   const reload = guarded(() => reloader?.reload(), "config reload", message => current?.ui?.notify?.(message, "warning"));
-  async function stop(): Promise<void> {
+  async function stop(strict = false): Promise<void> {
     if (watchedFile) unwatchFile(watchedFile, reload);
     watchedFile = undefined; reloader = undefined;
     mounted?.dispose(); mounted = undefined;
     const previous = runtime; runtime = undefined;
-    await previous?.stop();
+    if (strict) await previous?.quiesce(); else await previous?.stop();
   }
-  pi.on("session_start", async (_event, ctx) => {
-    if (process.env.PI_SUBAGENT_CHILD === "1") return;
-    await stop();
-    current = ctx;
-    if (!admitted()) return;
+  function start(ctx: ExtensionContext): void {
     config = readUsageConfig(controlConfig("get", ctx.cwd) as Record<string, unknown>, {}).value;
     runtime = new UsageRuntime({ bundleUrl, child: false, admitted, sessionId: ctx.sessionManager?.getSessionId?.() ?? null, roots: resolveUsageRoots(), onSnapshot: () => { if (admitted()) mounted?.refresh(); } });
     runtime.start(config.counterPoll, config.calibration);
@@ -173,9 +171,33 @@ export function registerUsage(pi: ExtensionAPI, bundleUrl: string | URL, admitte
     watchedFile = join(paths.globalRoot, "config.json");
     // Config I/O is separate from rendering. This also catches edits in another parent.
     watchFile(watchedFile, { persistent: false, interval: 1000 }, reload);
+  }
+  pi.on("session_start", async (_event, ctx) => {
+    if (process.env.PI_SUBAGENT_CHILD === "1") return;
+    await stop();
+    current = ctx;
+    if (!paused && admitted()) start(ctx);
   });
-  pi.on("session_shutdown", stop);
-  return { reload, snapshot: () => runtime?.snapshot(), readPanel: (now, sessionId, budget) => runtime?.readPanel(now, sessionId, budget) ?? Promise.resolve(null), doctor: async () => {
+  pi.on("session_shutdown", async () => { current = undefined; resumeNeeded = false; await stop(); });
+  const pause = (): Promise<void> => {
+    if (pausing) return pausing;
+    paused = true; resumeNeeded = Boolean(runtime);
+    return pausing = stop(true);
+  };
+  const resume = (): Promise<void> => {
+    if (resuming) return resuming;
+    if (!paused) return Promise.resolve();
+    const task = (async () => {
+      await pausing;
+      if (!admitted()) throw new Error("Session ownership is not available");
+      try { if (resumeNeeded && current) start(current); }
+      catch (error) { await stop(); throw error; }
+      paused = false; resumeNeeded = false; pausing = undefined;
+    })();
+    resuming = task.finally(() => { resuming = undefined; });
+    return resuming;
+  };
+  return { reload, pause, resume, snapshot: () => runtime?.snapshot(), readPanel: (now, sessionId, budget) => runtime?.readPanel(now, sessionId, budget) ?? Promise.resolve(null), doctor: async () => {
     if (process.env.PI_SUBAGENT_CHILD === "1") return { ok: true, lines: ["- usage worker: not started (child session)"] };
     const crashes = await Promise.all(["usage-server", "usage-server-failures"].map(dir => readUsageServerCrashDiagnostics(join(paths.globalRoot, dir))));
     const snapshot = runtime?.snapshot() ?? { health: null, counter: null, backfill: "pending" as const, reconciliation: null, errorCode: null };

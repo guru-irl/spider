@@ -1,7 +1,8 @@
+import { guardMoveControl, type MoveControlHandler } from "./move-control";
 import { parseReadiness, validReadiness } from "@spider/db-core/roam/readiness";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { assertTestConfigPath, type Db } from "@spider/db-core";
+import { assertTestConfigPath, openDb, type Db } from "@spider/db-core";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { resumePendingMappings } from "@spider/db-core/roam/repo-map";
 import type { ApplyReceipt, JsonObject, Readiness } from "@spider/db-core/roam/types";
@@ -14,9 +15,14 @@ import { startHubControl, type HubControlReply, type HubControlRequest } from ".
 import type { AgentPorts, Clock, HubPorts, IntercomLifecycle, Journal, Outcome, Peer, PlacementPort, RoamConfig, SyncService, Transport } from "./contracts";
 import { defaultStagingRoot, privateDirectory } from "./staging";
 import { createStorePort, type StoreAdapter } from "./stores";
-import { createSync, type SyncAdapter } from "./sync";
+import { createSync, type SyncAdapter, type SyncPorts } from "./sync";
+import { isRevoked } from "./revocation";
+import { recoverWorkspaceRestores } from "./move-recovery";
+import type { WorkspaceRestore } from "./contracts";
 import { removedPlacementSessions } from "./placement-inventory";
-import type { ArtifactJournal } from "./journal";
+import { openFreezeJournal, type ArtifactJournal } from "./journal";
+import { createMoveRuntimeService } from "./move-runtime-service";
+import type { MoveRuntimeFactory } from "./move-runtime-contracts";
 
 const UNREACHABLE_MS = 10 * 60_000;
 const LOCK = "roam-hub";
@@ -40,6 +46,8 @@ type Prepare = (onPeerSync: (peer: Peer, results: PeerResult) => Promise<void>) 
 
 export interface HubRuntimePorts extends HubPorts {
   globalDb: Db;
+  revocationDb?: Db;
+  workspaceRestores?(): Promise<readonly WorkspaceRestore[]>;
   runtimeRoot: string;
   socketPath: string;
   identity: ProcessIdentity;
@@ -48,20 +56,31 @@ export interface HubRuntimePorts extends HubPorts {
   notices: HubNoticePort;
   homeChangeInProgress(): Promise<boolean | null>;
   prepare: Prepare;
+  /** Mounted with move handlers. Await startup recovery of pending moves and active reservations before serving. */
+  reconcileMoves?(): Promise<void>;
+  moveControl?: MoveControlHandler;
   drain(): Promise<void>;
   closeStores(): void | Promise<void>;
   intercom?: IntercomLifecycle;
 }
 export interface StandaloneHubPorts {
   config: RoamConfig; globalDb: Db; journal: Journal; transport: Transport; clock: Clock;
+  revocationDb?: Db;
+  retireOnly?: SyncPorts["retireOnly"];
+  mirrors?: SyncPorts["mirrors"];
+  workspaceRestores?(): Promise<readonly WorkspaceRestore[]>;
   placement: PlacementPort | Omit<Parameters<typeof createRoamPlacement>[0], "removedSessions">;
   runtimeRoot: string; socketPath: string; identity: ProcessIdentity;
   probe(pid: number): Promise<ProcessProbe>;
   observe(peer: Peer, results: PeerResult): Promise<HubObservation>;
   notices: HubNoticePort;
   homeChangeInProgress(): Promise<boolean | null>;
+  moveFactory?: MoveRuntimeFactory;
   /** Null or a failure means activity cannot be proved absent. */
   artifactActive(value: string): boolean | null;
+  /** Production move composition supplies the same recovery callback as HubRuntimePorts. */
+  reconcileMoves?(): Promise<void>;
+  moveControl?: MoveControlHandler;
   intercom?: IntercomLifecycle;
 }
 
@@ -122,7 +141,7 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
   privateDirectory(root); privateDirectory(join(root, "locks")); privateDirectory(join(root, "locks", hash(LOCK)));
   const timers = new Map<string, () => void>();
   const queues = new Map<string, Promise<void>>();
-  let stopping = false, disabled = false;
+  let stopping = false, disabled = false, disabling = false, activeMoveControls = 0;
 
   function queue(peer: Peer, work: () => Promise<void>): Promise<void> {
     const prior = queues.get(peer.machineId) ?? Promise.resolve();
@@ -183,9 +202,10 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
   }
   async function afterSync(peer: Peer, results: PeerResult): Promise<void> {
     await queue(peer, async () => {
-      if (stopping || disabled) return;
+      if (stopping || disabled || ports.revocationDb && isRevoked(ports.revocationDb, peer.machineId)) return;
       let observation: HubObservation;
       try { observation = await ports.observe(peer, results); } catch { return; }
+      if (ports.revocationDb && isRevoked(ports.revocationDb, peer.machineId)) return;
       if (!validObservation(observation) || observation.reachability === "unknown") return;
       let state = peerStatus(db, peer.machineId);
       if (observation.reachability === "unreachable") {
@@ -234,15 +254,25 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
   }
   async function control(request: HubControlRequest): Promise<HubControlReply> {
     if (request.op === "status") return { code: 0, reason: "ok", value: status() };
-    if (request.op === "disable") {
-      let moving: boolean | null;
-      try { moving = await ports.homeChangeInProgress(); } catch { moving = null; }
-      if (moving !== false) return { code: 1, reason: "A home change is in progress or unknown", value: null };
-      disabled = true; ports.sync.stop(); for (const peer of config.peers) cancelTimer(peer.machineId);
-      await ports.drain();
-      return { code: 0, reason: "Hub scheduling disabled", value: null };
+    if (request.op !== "disable" && request.op !== "sync") {
+      activeMoveControls++;
+      try { return await guardMoveControl(() => config.enabled && !disabled && !disabling && !stopping, ports.moveControl)(request); }
+      finally { activeMoveControls--; }
     }
-    if (disabled || stopping) return { code: 1, reason: "Hub synchronization is disabled", value: null };
+    if (request.op === "disable") {
+      if (disabling) return { code: 3, reason: "disable-in-progress", value: null };
+      if (activeMoveControls) return { code: 1, reason: "move-in-progress", value: null };
+      disabling = true;
+      try {
+        let moving: boolean | null;
+        try { moving = await ports.homeChangeInProgress(); } catch { moving = null; }
+        if (moving !== false) return { code: 1, reason: "A home change is in progress or unknown", value: null };
+        disabled = true; ports.sync.stop(); for (const peer of config.peers) cancelTimer(peer.machineId);
+        await ports.drain();
+        return { code: 0, reason: "Hub scheduling disabled", value: null };
+      } finally { disabling = false; }
+    }
+    if (disabled || disabling || stopping) return { code: 1, reason: "Hub synchronization is disabled", value: null };
     const results = await ports.sync.sync(request.machine);
     const code = results.some(row => row.code === 3) ? 3 : results.some(row => row.code === 1) ? 1 : results.some(row => row.code === 2) ? 2 : 0;
     return { code, reason: code === 0 ? "Synchronization complete" : "Synchronization needs attention", value: json({ outcomes: results }) };
@@ -258,6 +288,8 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
     try {
       await ports.prepare(afterSync);
       await ports.intercom?.start();
+      await recoverWorkspaceRestores(await ports.workspaceRestores?.() ?? []);
+      await ports.reconcileMoves?.();
       // Validate retained state before opening the control socket or starting sync.
       for (const peer of config.peers) {
         const state = peerStatus(db, peer.machineId); pendingRows(db, peer.machineId);
@@ -318,6 +350,8 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
     throw new Error("Hub staging root does not match the global database");
   }
   let stores: StoreAdapter | undefined, sync: SyncAdapter | undefined;
+  let moves: ReturnType<typeof createMoveRuntimeService> | undefined;
+  let revocationDb = ports.revocationDb, ownedRevocationDb: Db | undefined;
   const delegated: SyncService = {
     start() { if (!sync) throw new Error("Hub synchronization is not prepared"); sync.start(); },
     stop() { sync?.stop(); },
@@ -328,7 +362,11 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
     async removedSessions(sessions) { return removedPlacementSessions(ports.globalDb, sessions); },
   });
   const hub = await runHub({ ...ports, placement, sync: delegated,
+    get revocationDb() { return revocationDb; },
+    moveControl: ports.moveControl ?? (request => moves ? moves.control(request) : Promise.resolve({ code: 1, reason: "adapter-unbound:moveControl", value: null })),
+    reconcileMoves: async () => { await ports.reconcileMoves?.(); await moves?.recover(); },
     async prepare(onPeerSync) {
+      if (!revocationDb) revocationDb = ownedRevocationDb = openDb(join(dirname(resolve(ports.globalDb.raw.name)), "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
       await resumePendingMappings(ports.globalDb);
       stores = createStorePort(ports.config, ports.globalDb);
       stores.recoverCatalog();
@@ -345,10 +383,13 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
       try { journal.prune?.(ports.clock.now(), ports.config.limits.retentionMs, value => pendingReference(ports.globalDb, value)); }
       catch (error) { writeLocal(ports.globalDb, "artifact-sweep-problem", "journal", { reason: error instanceof Error ? error.message : "Journal sweep failed" }); }
       sync = createSync({ config: ports.config, globalDb: ports.globalDb, transport: ports.transport,
-        journal: ports.journal, clock: ports.clock, stores, onPeerSync });
+        journal: ports.journal, clock: ports.clock, stores, async onPeerSync(peer, results) { await onPeerSync(peer, results); await moves?.recoverCleanup(peer.machineId); },
+        revocationDb, retireOnly: ports.retireOnly, mirrors: ports.mirrors });
+      if (ports.moveFactory) moves = createMoveRuntimeService({ root: dirname(resolve(ports.globalDb.raw.name)), globalDb: ports.globalDb, config: ports.config,
+        journal: openFreezeJournal(join(dirname(resolve(ports.globalDb.raw.name)), "roam", "journal.db")), transport: ports.transport, sync }, ports.moveFactory);
     },
     async drain() { await sync?.drain(); },
-    closeStores() { stores?.close(); },
+    closeStores() { try { stores?.close(); } finally { ownedRevocationDb?.close(); } },
   });
   const adapter = stores as StoreAdapter | undefined;
   if (!adapter) { await hub.stop(); throw new Error("Hub stores are not prepared"); }

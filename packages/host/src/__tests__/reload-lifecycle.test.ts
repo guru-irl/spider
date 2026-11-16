@@ -1,10 +1,11 @@
+import { writeEnabledConfig } from "../../../roam/src/__tests__/fixtures/enabled-config";
 import { withPiEvents, hostUnitPorts } from './fixtures/pi-events';
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { queryObjects } from "node:v8";
-import { openDbAt, type Db } from "@spider/db-core";
-import spiderExtension from "../extension";
+import { openDbAt, paths, type Db } from "@spider/db-core";
+import spiderExtension, { SPIDER_PARAMETERS } from "../extension";
 import { getAction, registerAction, clearActions } from "../dispatch";
 import * as context from "@spider/context";
 import { loadEmbedder, isEmbedderLoaded } from "../embeddings";
@@ -46,6 +47,7 @@ function fakePi() {
   };
 }
 let scratch: string;
+const originalGlobalRoot = paths.globalRoot;
 const dbs: Db[] = [];
 const hosts: ReturnType<typeof fakePi>[] = [];
 const globalCache = globalThis as typeof globalThis & Record<symbol, unknown>;
@@ -58,6 +60,8 @@ beforeEach(() => {
   mkdirSync(base, { recursive: true });
   scratch = mkdtempSync(join(base, "lifecycle-"));
   vi.stubEnv("GIT_CEILING_DIRECTORIES", base);
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", scratch);
+  paths.globalRoot = scratch;
   vi.stubEnv("PI_SUBAGENT_CHILD", "1"); // No organism work during lifecycle probes.
 });
 afterEach(async () => {
@@ -65,6 +69,7 @@ afterEach(async () => {
   clearActions();
   for (const db of dbs.splice(0)) db.close();
   delete globalCache[embedderKey];
+  paths.globalRoot = originalGlobalRoot;
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   rmSync(scratch, { recursive: true, force: true });
@@ -72,11 +77,12 @@ afterEach(async () => {
 const host = () => { const pi = fakePi(); hosts.push(pi); spiderExtension(withPiEvents(pi as never), hostUnitPorts); return pi; };
 const toolCtx = (id: string) => ({ cwd: scratch, sessionManager: { getSessionId: () => `${scratch}:${id}` } });
 
-it("registers every command, shortcut, tool, renderer and handler on both factory calls in the same module", async () => {
+it.each([false, true])("registers every command, shortcut, tool, renderer and handler on both factory calls with roaming %s", async enabled => {
+  writeEnabledConfig(scratch, { enabled });
   const first = host();
   await first.emit("session_shutdown");
   const second = host();
-  const expectedCommands = ["agents", "bind", "doctor", "exec-enforce", "herdr-setup", "insights", "learn", "loop", "memory", "search", "spider", "stats", "todos", "usage"];
+  const expectedCommands = ["agents", "bind", "doctor", "exec-enforce", "herdr-setup", "insights", "learn", "loop", "memory", ...(enabled ? ["move"] : []), "search", "spider", "stats", "todos", "usage"];
   for (const pi of [first, second]) {
     expect([...pi.commands.keys()].sort()).toEqual(expectedCommands);
     expect(pi.commands.has("spider-reload")).toBe(false);
@@ -263,4 +269,13 @@ it("keeps agents command handlers local to each pi activation across UI remounts
   expect(oldView.notify).not.toHaveBeenCalled();
   expect(newView.notify).toHaveBeenCalledWith("No active spider agents", "info");
   expect(otherView.notify).toHaveBeenCalledWith("No active spider agents", "info");
+});
+
+it("model tool cannot provision or mutate home", () => {
+  host();
+  for (const action of ["move", "enable", "disable", "provision", "home", "roam"]) {
+    expect(SPIDER_PARAMETERS.properties.action.enum).not.toContain(action);
+    expect(getAction(action)).toBeUndefined();
+  }
+  expect(getAction("control")).toBeTypeOf("function");
 });

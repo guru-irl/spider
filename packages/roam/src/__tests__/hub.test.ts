@@ -8,6 +8,7 @@ import { catalogReplica } from "@spider/db-core/roam/catalog";
 import { handleAgentOperation } from "../agent";
 import { stageArtifact } from "../artifacts";
 import { assignInitialHome } from "../homes";
+import { revokeMachine } from "../revocation";
 import { runHub, runStandaloneHub } from "../hub";
 import { requestHubControl } from "../control-socket";
 import type { Clock } from "../contracts";
@@ -98,6 +99,14 @@ it("refuses a staging root that belongs to a different global database", async (
   expect(existsSync(h.socketPath)).toBe(false);
 }, 5000);
 
+it("move recovery failure prevents hub startup and new controls", async () => {
+  const h = fixture();
+  const ports = { ...h.ports, async reconcileMoves() { throw new Error("move recovery unavailable"); } };
+  const started = runStandaloneHub(ports).then(hub => { handles.push(hub); return hub; });
+  await expect(started).rejects.toThrow("move recovery unavailable");
+  expect(existsSync(h.socketPath)).toBe(false);
+}, 5000);
+
 it("second hub refuses the process lock", async () => {
   const h = fixture(); const first = await h.start();
   await expect(h.start()).rejects.toThrow(/lock/i);
@@ -151,6 +160,52 @@ it("failed socket startup releases the lock and leaves a symlink target untouche
   unlinkSync(h.socketPath);
   await h.start();
   expect((await h.request("status")).code).toBe(0);
+}, 5000);
+
+it("disable refuses an in-flight move before the move has journaled", async () => {
+  const h = fixture();
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const stops: string[] = [];
+  const hub = await runHub({ ...h.ports,
+    sync: { start() {}, stop() { stops.push("stop"); }, async sync() { return []; }, async barriers() { return false; } },
+    async prepare() {}, async drain() {}, async closeStores() {},
+    async moveControl() { entered(); await hold; return { code: 0, reason: "moved", value: null }; },
+  });
+  handles.push(hub);
+  const moving = requestHubControl(h.socketPath, { op: "move", session: "session-1", machine: BOX });
+  await started;
+  try {
+    expect(await h.request("disable")).toMatchObject({ code: 1, reason: "move-in-progress" });
+    expect((await h.request("status")).value).toMatchObject({ enabled: true });
+    expect(stops).toEqual([]);
+  } finally { release(); await moving; }
+  expect(await h.request("disable")).toMatchObject({ code: 0 });
+}, 5000);
+
+it("new moves refuse while disable checks the journal", async () => {
+  const h = fixture();
+  let entered!: () => void, release!: () => void;
+  const checking = new Promise<void>(resolve => { entered = resolve; });
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const moves: string[] = [];
+  const hub = await runHub({ ...h.ports,
+    sync: { start() {}, stop() {}, async sync() { return []; }, async barriers() { return false; } },
+    async prepare() {}, async drain() {}, async closeStores() {},
+    async homeChangeInProgress() { entered(); await hold; return false; },
+    async moveControl(request) { moves.push(request.op); return { code: 0, reason: "moved", value: null }; },
+  });
+  handles.push(hub);
+  const disabling = h.request("disable");
+  await checking;
+  try {
+    expect(await requestHubControl(h.socketPath, { op: "move", session: "session-1", machine: BOX })).toMatchObject({ code: 1, reason: "roaming-disabled" });
+    expect(moves).toEqual([]);
+  } finally { release(); await disabling; }
+  expect((await h.request("status")).value).toMatchObject({ enabled: false });
+  expect(await requestHubControl(h.socketPath, { op: "move", session: "session-1", machine: BOX })).toMatchObject({ code: 1, reason: "roaming-disabled" });
+  expect(moves).toEqual([]);
 }, 5000);
 
 it("a startup failure is reported only after cleanup releases the lock", async () => {
@@ -571,4 +626,49 @@ it("unknown artifact activity retains old evidence", async () => {
   writeFileSync(file, "fixture", { mode: 0o600 }); const old = new Date(now - h.f.config.limits.retentionMs - 1000); utimesSync(file, old, old);
   await h.start();
   expect(existsSync(file)).toBe(true);
+}, 5000);
+
+it("interrupted workspace recovery failure prevents hub startup before move reconciliation", async () => {
+  const h = fixture(), actions: string[] = [];
+  const started = runStandaloneHub({ ...h.ports,
+    async workspaceRestores() { actions.push("workspace-recovery"); throw new Error("interrupted workspace needs recovery"); },
+    async reconcileMoves() { actions.push("move-recovery"); },
+  }).then(hub => { handles.push(hub); return hub; });
+  await expect(started).rejects.toThrow("interrupted workspace needs recovery");
+  expect(actions).toEqual(["workspace-recovery"]);
+  expect(existsSync(h.socketPath)).toBe(false);
+}, 5000);
+
+it("revoked peer observations cannot capture a remembered presentation", async () => {
+  const h = fixture(); h.home(); h.setReadiness([ready]);
+  const db = openDb(join(h.f.global.root, "roam", "journal.db"));
+  try {
+    revokeMachine(db, BOX);
+    const hub = await runStandaloneHub({ ...h.ports, revocationDb: db }); handles.push(hub);
+    await h.request("sync");
+    expect(h.placements).toEqual([]);
+  } finally { for (const hub of handles.splice(0)) await hub.stop(); db.close(); }
+}, 5000);
+
+it("standalone hub loads permanent revocation from its private journal by default", async () => {
+  const h = fixture(); h.home(); h.setReadiness([ready]);
+  const db = openDb(join(h.f.global.root, "roam", "journal.db"));
+  revokeMachine(db, BOX); db.close();
+  await h.start();
+  await h.request("sync");
+  expect(h.placements).toEqual([]);
+  expect(h.f.calls).toEqual([]);
+}, 5000);
+
+it("revocation during an observation prevents presenting its stale target", async () => {
+  const h = fixture(); h.home(); h.setReadiness([ready]);
+  const db = openDb(join(h.f.global.root, "roam", "journal.db"));
+  const observe = h.ports.observe;
+  try {
+    const hub = await runStandaloneHub({ ...h.ports, revocationDb: db,
+      async observe() { revokeMachine(db, BOX); return observe(); },
+    }); handles.push(hub);
+    await h.request("sync");
+    expect(h.placements).toEqual([]);
+  } finally { for (const hub of handles.splice(0)) await hub.stop(); db.close(); }
 }, 5000);

@@ -1,19 +1,29 @@
+import { loadHerdrConfig } from "./host-config";
+export { loadHerdrConfig } from "./host-config";
+import { createProductionRecoveryPorts } from "./recovery-transport";
+
+import { createPendingHandoffControl, pendingHandoffLifecycle } from "./pending-handoff";
+import { createRunningIntentAuthority } from "./session-control";
+import { createSessionLeases } from "@spider/herdr/sessions/lease";
+import { localBootId } from "@spider/herdr/sessions/id-lock";
+import { machineMoveEvidence } from "./machine-move-evidence";
+import { openFreezeJournal } from "./journal";
 import { execFile } from "node:child_process";
-import { existsSync, lstatSync, readFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { lstatSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import { assertTestConfigPath, openDbReadOnly } from "@spider/db-core";
 import { createAppClient } from "@spider/herdr/client/app";
 import { createHcClient, invokeCli } from "@spider/herdr/client/hc";
-import { parseHerdrConfig } from "@spider/herdr/config";
+
 import { VIEW_ON_MAC_MESSAGE } from "@spider/herdr/notices";
-import type { HerdrConfig } from "@spider/herdr/contracts";
+
 import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
 import { runStandaloneHub, type HubNotice, type HubObservation } from "./hub";
 import { createLocalDiagnosticPorts } from "./local-diagnostics";
 import { openJournal } from "./journal";
 import { remoteHosting } from "./remote-observations";
 import { loadPeerState } from "./peer-state";
-import { openLocalCore } from "./runtime";
+import { openLocalCore, readLocalIdentity } from "./runtime";
 import { createTransport } from "./transport";
 import { createMachineIntercom } from "./intercom-runtime";
 import { createProductionIntercomMaintenance } from "./intercom-production";
@@ -25,25 +35,6 @@ export function createHubProcessProbe(probe: (pid: number) => Promise<ProcessPro
     catch (error) { return ["ESRCH", "EPERM"].includes((error as NodeJS.ErrnoException).code ?? "") ? { kind: "absent" } : { kind: "unknown" }; }
     return probe(pid);
   };
-}
-
-function readOwnedJson(file: string): unknown {
-  assertTestConfigPath(file);
-  const stat = lstatSync(file);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024 ||
-      typeof process.getuid === "function" && stat.uid !== process.getuid()) throw new Error("Unsafe Herdr configuration");
-  return JSON.parse(readFileSync(file, "utf8"));
-}
-export function loadHerdrConfig(root: string): HerdrConfig {
-  const settings = join(root, "config.json");
-  const value = existsSync(settings) ? readOwnedJson(settings) : {};
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid global configuration");
-  const configured = (value as Record<string, unknown>)["herdr.config"];
-  if (configured !== undefined && (typeof configured !== "string" || !configured)) throw new Error("Invalid Herdr configuration path");
-  const file = configured === undefined ? join(root, "herdr", "config.json") : resolve(root, configured as string);
-  const config = parseHerdrConfig(readOwnedJson(file));
-  if (resolve(config.globalRoot) !== root) throw new Error("Herdr configuration belongs to another global root");
-  return config;
 }
 
 // The native identifier keeps a retry from adding another delivered notification.
@@ -97,7 +88,7 @@ export function homeChangeInProgress(file: string): boolean | null {
   } catch { return null; }
 }
 
-export async function startProductionHub(root: string, options: { intercomClock?: Clock } = {}): Promise<{ stop(): Promise<void> }> {
+export async function startProductionHub(root: string, options: { intercomClock?: Clock; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory } = {}): Promise<{ stop(): Promise<void> }> {
   const core = openLocalCore(root);
   let hc: ReturnType<typeof createHcClient> | undefined;
   try {
@@ -115,9 +106,13 @@ export async function startProductionHub(root: string, options: { intercomClock?
     const clock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
     const journalFile = join(root, "roam", "journal.db"), journal = openJournal(journalFile);
     const direct = core.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
-    const intercom = core.config.intercom.enabled ? createMachineIntercom({ root, globalDb: core.db, config: core.config,
+    const machineIntercom = core.config.intercom.enabled ? createMachineIntercom({ root, globalDb: core.db, config: core.config, roamingEnabled: () => readLocalIdentity(root).enabled,
+      ...machineMoveEvidence({ db: core.db, config: core.config, journal: openFreezeJournal(journalFile), transport }),
       agentDir: herdr.agentDirectory, clock: options.intercomClock ?? clock, env, directPeers: direct, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }),
       ...createProductionIntercomMaintenance({ root, config: core.config, binary: herdr.core.binary, env }) }) : undefined;
+    const intercom = pendingHandoffLifecycle(root, createPendingHandoffControl({ root: join(root, "herdr"), journal,
+      authority: createRunningIntentAuthority(core.db), inventory: { leases: createSessionLeases(join(root, "herdr")), probe },
+      identity: { pid: process.pid, startIdentity: self.startIdentity }, bootId: localBootId }), machineIntercom);
     const observe = async (peer: Peer): Promise<HubObservation> => {
       try {
         const before = await client.identity();
@@ -145,8 +140,12 @@ export async function startProductionHub(root: string, options: { intercomClock?
       async homeChangeInProgress() { return homeChangeInProgress(journalFile); },
       // Startup holds the hub lock. The sweep also holds shared transfer slots.
       artifactActive() { return false; },
+      moveFactory: options.moveFactory,
+      ...createProductionRecoveryPorts({ root, config: core.config, globalDb: core.db, journal, transport }),
     });
     let stopped: Promise<void> | undefined;
     return { stop() { return stopped ??= (async () => { try { await hub.stop(); } finally { await client.dispose(); core.close(); } })(); } };
   } catch (error) { await hc?.dispose(); core.close(); throw error; }
 }
+
+/** The hub obtains exact session bytes using the same authenticated artifact transfer as moves. */

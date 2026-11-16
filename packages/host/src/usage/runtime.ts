@@ -53,6 +53,7 @@ export class UsageRuntime {
   private calibrationMode: "auto" | "off" | undefined;
   private refreshPending = false;
   private workerFailed = false;
+  private terminationFailed = false;
   private stopping: Promise<void> | undefined;
   private stoppedAck: (() => void) | undefined;
   private nextPanelRequest = 0;
@@ -152,6 +153,11 @@ export class UsageRuntime {
   };
   private readonly onError = (error: Error): void => { this.workerFailed = true; if (!this.stopped) this.fail(failureCode(error)); this.stoppedAck?.(); };
   private readonly onExit = (): void => { const failed = this.workerFailed; this.workerFailed = true; if (!this.stopped && !failed && !this.current.errorCode) this.fail("usage-worker-failed"); this.stoppedAck?.(); };
+  /** A freeze cannot acknowledge while a worker may still be writing. */
+  async quiesce(): Promise<void> {
+    await this.stop();
+    if (this.terminationFailed) throw new Error("Usage worker termination was not proved");
+  }
   stop(): Promise<void> {
     if (this.stopping) return this.stopping;
     this.stopped = true; this.clearPanelRequests();
@@ -173,7 +179,7 @@ export class UsageRuntime {
         worker.off("message", this.onMessage); worker.off("error", this.onError); worker.off("exit", this.onExit);
         // Keep an error sink until termination finishes to avoid unhandled emitter errors.
         const ignore = () => {}; worker.on("error", ignore);
-        try { await worker.terminate(); } catch { /* worker already exited */ }
+        try { await worker.terminate(); } catch { this.terminationFailed = true; }
         worker.off("error", ignore);
         const owner = this.workerOwner; this.workerOwner = undefined;
         if (this.options.dashboardMode && !this.gracefulStop && owner) releaseUsageProcessLeases(this.options.roots.ledgerFile, owner);

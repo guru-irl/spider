@@ -13,18 +13,19 @@ vi.mock("node:fs", async importOriginal => {
   } };
 });
 const roots: string[] = [];
-afterEach(() => { failures.sync = false; vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { failures.sync = false; vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 function fixture() {
   const parent = dirname(scratchDbPath("roam-launchd"));
   mkdirSync(parent, { recursive: true });
   const root = mkdtempSync(join(parent, "launchd-")); roots.push(root);
-  const node = join(root, "node & runtime"), cli = join(root, "spider <cli>");
+  const node = join(root, "node & runtime"), cli = join(root, "spider <cli>"), pi = join(root, "pi");
+  writeFileSync(pi, "#!/bin/sh\nexit 0\n", { mode: 0o700 }); vi.stubEnv("SPIDER_ROAM_PI", pi);
   writeFileSync(node, "fixture node", { mode: 0o700 });
   writeFileSync(cli, "fixture cli", { mode: 0o700 });
   const plistDir = join(root, "launch-agents"), globalRoot = join(root, "global");
   const calls: string[][] = [];
-  return { root, node, cli, plistDir, globalRoot, calls, ports: {
+  return { root, node, cli, pi, plistDir, globalRoot, calls, ports: {
     plistDir,
     async launchctl(argv: readonly string[]) { calls.push([...argv]); },
   } };
@@ -148,4 +149,12 @@ it("reports an unexpected service failure without attempting bootstrap", async (
   } };
   await expect(installHubService(f, ports)).rejects.toThrow(/fixture launchd failure/);
   expect(f.calls.map(call => call[0])).toEqual(["bootout"]);
+}, 5000);
+
+it("the installed hub pins the same pi PATH resolution as ordinary session launches", async () => {
+  const { resolveParticipantPi } = await import("../launcher");
+  const f = fixture(); vi.stubEnv("SPIDER_ROAM_PI", undefined); vi.stubEnv("PATH", f.root);
+  expect(resolveParticipantPi()).toBe(f.pi);
+  await installHubService(f, f.ports);
+  expect(plist(plistAt(f.plistDir)).xml).toContain(`<key>SPIDER_ROAM_PI</key><string>${f.pi}</string>`);
 }, 5000);

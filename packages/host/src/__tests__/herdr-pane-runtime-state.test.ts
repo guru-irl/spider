@@ -46,7 +46,7 @@ async function fixture(spaces: HerdrConfig['spaces'] = []) {
   const hc = { identity: async () => ({ coreId: 'core-local', socket: '/owned/core.sock', sessionNamespace: 'fixture' }),
     get: vi.fn(async address => boundary.terminals.get(String(address).split('/').at(-1)!) ?? { address, state: 'live' }),
     run: vi.fn(async request => { const address = 'proxy-1'; boundary.terminals.set(address, { address: address as never, state: 'live', labels: request.labels, parent: null, status: null, exitCode: null, reason: null, signal: null, finishedAt: null, cols: 80, rows: 24 }); return { address, coreId: 'core-local' }; }),
-    events: () => ({ ready: Promise.resolve(), subscribe: listener => { listener({ type: 'snapshot', seq: 1, terminals: [...boundary.terminals.values()] }); return () => {}; }, dispose() {} }),
+    events: () => ({ ready: Promise.resolve(), subscribe: (listener: Parameters<ReturnType<HcClient['events']>['subscribe']>[0]) => { listener({ type: 'snapshot', seq: 1, terminals: [...boundary.terminals.values()] }); return () => {}; }, dispose() {} }),
     kill: vi.fn(async address => { const terminal = boundary.terminals.get(String(address)); if (terminal) terminal.state = 'finished'; }),
     rm: vi.fn(async address => { boundary.terminals.delete(String(address)); }), setLabels: vi.fn() } as unknown as HcClient;
   boundary.facts.mockImplementation(async target => facts({ target, id: target.terminalId } as PanePresentation));
@@ -140,6 +140,23 @@ test('an ambiguous live proxy inventory never permits another proxy launch', asy
   expect(await service.request({ version: 1, op: 'open-existing', operationId: 'ambiguous-click', sessionId: row.sessionId, generation: row.generation, slot: null }))
     .toMatchObject({ outcome: { status: 'pending', reason: 'proxy-launch-uncertain' } });
   expect(hc.run).not.toHaveBeenCalled();
+});
+test('production facts cancel the whole pass within the existing endpoint budget', async () => {
+  const f = await fixture(); const service = f.runtime.createService(); let started!: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; }), signals: AbortSignal[] = [];
+  const presentations = Array.from({ length: 17 }, (_, index) => presentation(`live-${index}`));
+  await f.runtime.store.update(state => ({ ...state, presentations }));
+  boundary.facts.mockImplementation(async (_target, options) => {
+    signals.push(options.signal); if (signals.length === 4) started();
+    return new Promise((_resolve, reject) => options.signal.addEventListener('abort', () => reject(new HerdrError('aborted', 'Cancelled')), { once: true }));
+  });
+  vi.useFakeTimers();
+  const running = service.reconcile();
+  try {
+    await ready; await vi.advanceTimersByTimeAsync(5000); const probesAtDeadline = signals.length;
+    await service.stop(); await running;
+    expect(probesAtDeadline).toBe(4); expect(signals.every(signal => signal.aborted)).toBe(true);
+  } finally { await service.stop(); vi.useRealTimers(); await f.runtime.dispose(); }
 });
 test('production facts skip ended history and read live presentations with bounded concurrency', async () => {
   const { runtime } = await fixture(); const live = Array.from({ length: 8 }, (_, i) => presentation(`live-${i}`));

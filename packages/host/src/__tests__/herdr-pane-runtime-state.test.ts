@@ -64,8 +64,14 @@ async function fixture(spaces: HerdrConfig['spaces'] = []) {
 function presentation(id: string, visibility: PanePresentation['visibility'] = 'visible'): PanePresentation {
   return parsePanePresentation({ id, revision: 1, mode: 'proxy', role: 'shell', target: { coreId: 'core-remote', terminalId: id, address: `core-remote/${id}`, createdMs: 17, identityLabels: { 'spider.pane-operation': id }, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'terminal', sessionId: null, generation: null, homeEpoch: null, runId: null, consoleId: null, name: id, cwd: '/home/example' }, proxy: null, slot: null, visibility, launch: 'none', closeOperationId: null, conversion: null });
 }
-function facts(p: PanePresentation): PaneTerminalFacts {
+function facts(p: { id: string; target: PanePresentation['target'] }): PaneTerminalFacts {
   return { terminal: { address: p.target.address, state: 'live', labels: p.target.identityLabels, parent: null, status: null, exitCode: null, reason: null, signal: null, finishedAt: null, cols: 80, rows: 24 }, createdMs: 17, identityLabels: p.target.identityLabels, currentCwd: '/home/example', title: p.id, app: null, status: null };
+}
+function updateTerminalLabels(address: string, labels: Readonly<Record<string, string | null>>) {
+  const terminal = boundary.terminals.get(address); if (!terminal) return;
+  const next = { ...terminal.labels };
+  for (const [key, value] of Object.entries(labels)) { if (value === null) delete next[key]; else next[key] = value; }
+  terminal.labels = next;
 }
 function installPlacementApp() {
   let placeholder = false, placed = false, focused = 'owner-pane', placeholderOperation = '';
@@ -512,16 +518,16 @@ test('a finished subagent target reconnects its existing view to a new target', 
     awaitPane: async (address: string) => { placements.set(address, viewSlot); return viewSlot.pane; },
     command: async (name: string, args: Record<string, string>) => { if (name === 'terminal.park') placements.delete(args.terminal); return {}; },
   });
-  vi.mocked(hc.setLabels).mockImplementation(async (address, labels) => { const terminal = boundary.terminals.get(String(address)); if (terminal) terminal.labels = { ...terminal.labels, ...labels }; });
+  vi.mocked(hc.setLabels).mockImplementation(async (address, labels) => updateTerminalLabels(String(address), labels));
   const ownerPresentation: PanePresentation = { ...presentation('agent'), role: 'agent', target: row.target, proxy: 'agent-proxy' as never, slot: ownerSlot, launch: 'acknowledged' };
   await runtime.store.update(state => ({ ...state, presentations: [ownerPresentation] }));
   boundary.terminals.set('agent-proxy', { ...facts(ownerPresentation).terminal, address: 'agent-proxy' as never, labels: { 'spider.kind': 'pane-proxy' } });
   const view = (terminalId: string) => ({ ...row.target, kind: 'subagent' as const, terminalId: terminalId as never, address: `core-remote/${terminalId}` as never,
     runId: 'run-1' as never, identityLabels: { 'spider.view-generation': row.generation } });
   const first = view('viewer-1'), second = view('viewer-2');
-  for (const target of [first, second]) boundary.terminals.set(target.terminalId, facts({ id: target.terminalId, target } as PanePresentation).terminal);
-  boundary.facts.mockImplementation(async target => ({ ...facts({ id: target.terminalId, target } as PanePresentation),
-    terminal: boundary.terminals.get(target.terminalId) ?? facts({ id: target.terminalId, target } as PanePresentation).terminal }));
+  for (const target of [first, second]) boundary.terminals.set(target.terminalId, facts({ id: target.terminalId, target }).terminal);
+  boundary.facts.mockImplementation(async target => ({ ...facts({ id: target.terminalId, target }),
+    terminal: boundary.terminals.get(target.terminalId) ?? facts({ id: target.terminalId, target }).terminal }));
   let launches = 0;
   boundary.remote.mockImplementation(async (_machine, request) => {
     if (request.op === 'launch-viewer') return { version: 1, op: 'launch-viewer', target: launches++ === 0 ? first : second };
@@ -564,7 +570,7 @@ test.each([
   let interrupted = launch === 'interrupted';
   vi.mocked(hc.setLabels).mockImplementation(async (address, labels) => {
     if (interrupted) { interrupted = false; throw new Error('Label update interrupted'); }
-    const terminal = boundary.terminals.get(String(address)); if (terminal) terminal.labels = { ...terminal.labels, ...labels };
+    updateTerminalLabels(String(address), labels);
   });
   const source = sessionRow(), first = sessionRow('gen-2'), second = sessionRow('gen-3');
   source.target = { ...source.target, coreId: 'core-local' as never, address: 'core-local/execution' as never, alias: null, machineId: null, homeEpoch: 1 };

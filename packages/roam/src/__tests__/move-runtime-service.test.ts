@@ -3,7 +3,7 @@ import { cpSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDb } from "@spider/db-core";
 import { assignInitialHome, casHome } from "../homes";
-import { createMovePorts, createHubMoveEvidencePorts, presentationTaskId, type MoveAdapterBindings } from "../move-ports";
+import { createMovePorts, createHubMoveEvidencePorts, createPushedMoveEvidencePorts, handleMoveParticipantOperation, presentationTaskId, recoverMovePresentation, type MoveAdapterBindings } from "../move-ports";
 import { appendMirror } from "../mirrors";
 import { inspectSession } from "../session-file";
 import { openFreezeJournal } from "../journal";
@@ -13,7 +13,7 @@ import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { createMoveRuntimeService } from "../move-runtime-service";
 import { recoveryFixture, BOX, HUB, OTHER } from "./recovery-fixture";
 import type { MoveRuntime, MoveRuntimeFactory } from "../move-runtime-contracts";
-import type { Transport } from "../contracts";
+import type { Operation, Transport } from "../contracts";
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const close of cleanups.splice(0)) close(); });
 async function fixture() {
@@ -104,6 +104,207 @@ it("startup replays a completed move's pending source view through only its reco
   expect(f.journal.lookupOperation(taskId)?.state).toBe("done");
   await service.recover();
   expect(mounted).toHaveLength(1);
+}, 5000);
+
+it.each(["ready", "pending", "successor-pending", "successor-revoked", "successor-started", "successor-claimed", "source-home", "pruned", "source-offline", "concurrent", "home-changes-under-lock", "home-changes-during-presentation"] as const)("superseded source cleanup converges when the successor is %s", async scenario => {
+  const f = await fixture(), sessionId = "session-b", firstMove = "move-first", nextMove = "move-second";
+  f.ports.config.peers = f.ports.config.peers.map(peer => ({ ...peer, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/spider" }));
+  const source = assignInitialHome(f.global.db, sessionId, HUB, HUB);
+  if (source === "conflict") throw new Error("Initial home conflict");
+  const firstHome = casHome(f.global.db, source, BOX, firstMove, HUB);
+  let current = casHome(f.global.db, firstHome, scenario === "source-home" ? HUB : OTHER, nextMove, HUB);
+  const first: Operation = { id: firstMove, kind: "move", machineId: HUB, expectedEpoch: source.epoch, args: { sessionId, destinationMachine: BOX } };
+  const next: Operation = { id: nextMove, kind: "move", machineId: HUB, expectedEpoch: firstHome.epoch, args: { sessionId, destinationMachine: current.machineId } };
+  const locator = (home: typeof current, terminalId: string) => ({ machineId: home.machineId, alias: null, sessionId, homeEpoch: home.epoch, coreId: "fixture-core", terminalId });
+  const oldTarget = locator(firstHome, "first-terminal"), oldTask = presentationTaskId(firstMove);
+  const check = { source, destinationMachine: BOX };
+  const proof = { source, stopped: { kind: "absent" }, destination: { home: firstHome, owner: { kind: "live", identity: { bootId: "boot", pid: 42, startTime: "start" } },
+    readiness: { origin: "hub-operation", opId: firstMove, sessionId, epoch: firstHome.epoch, file: f.file, cwd: f.root, core: "fixture-core", terminal: "first-terminal" }, retired: false, launchFailure: null } };
+  f.journal.begin(first);
+  f.journal.record(firstMove, "handoff-presentation-start", { target: oldTarget, sourceFence: { moveId: firstMove } });
+  f.journal.record(firstMove, "done", {});
+  f.journal.begin({ id: oldTask, kind: "move-presentation", machineId: HUB, expectedEpoch: firstHome.epoch, args: { moveId: firstMove, sessionId } });
+  f.journal.record(oldTask, "source-view-request", JSON.parse(JSON.stringify({ operation: first, check, proof })));
+  f.journal.begin(next);
+  if (scenario === "successor-pending") f.journal.record(nextMove, "handoff-presentation-start", { target: locator(current, `terminal-${current.epoch}`), sourceFence: { moveId: nextMove } });
+  f.journal.record(nextMove, "done", {});
+  if (scenario === "successor-pending") {
+    const nextTask = presentationTaskId(nextMove), nextCheck = { source: firstHome, destinationMachine: current.machineId };
+    const nextProof = { source: firstHome, stopped: { kind: "absent" }, destination: { home: current, owner: { kind: "live", identity: { bootId: "boot", pid: 43, startTime: "start" } },
+      readiness: { origin: "hub-operation", opId: nextMove, sessionId, epoch: current.epoch, file: f.file, cwd: f.root, core: "fixture-core", terminal: `terminal-${current.epoch}` }, retired: false, launchFailure: null } };
+    f.journal.begin({ id: nextTask, kind: "move-presentation", machineId: HUB, expectedEpoch: current.epoch, args: { moveId: nextMove, sessionId } });
+    f.journal.record(nextTask, "source-view-request", JSON.parse(JSON.stringify({ operation: next, check: nextCheck, proof: nextProof })));
+  }
+  let ready = scenario === "successor-started" || scenario === "successor-claimed";
+  const markReady = (moveId: string, home: typeof current, finish = true) => {
+    ready = true;
+    const task = presentationTaskId(moveId), target = locator(home, `terminal-${home.epoch}`);
+    f.journal.begin({ id: task, kind: "move-presentation", machineId: HUB, expectedEpoch: home.epoch, args: { moveId, sessionId } });
+    f.journal.record(task, "presentation", { status: "complete", reason: "presented", target, presentation: null });
+    if (finish) f.journal.record(task, "done", {});
+  };
+  if (scenario !== "pending" && scenario !== "successor-pending" && scenario !== "successor-started" && scenario !== "successor-claimed" && scenario !== "pruned" && scenario !== "concurrent" && scenario !== "home-changes-during-presentation") markReady(nextMove, current, scenario !== "successor-revoked");
+  const terminals = new Set(["source-terminal"]), removed: string[] = [], presented: string[] = [];
+  let sourceAvailable = scenario !== "source-offline" && scenario !== "successor-revoked" && scenario !== "successor-started" && scenario !== "successor-claimed", cleanupCalls = 0, changeHome = scenario === "home-changes-under-lock", changeDuringPresentation = scenario === "home-changes-during-presentation";
+  let successorCleanups = 0;
+  const transport: Transport = { resolve: async peer => ({ ...peer, core: peer.core! }),
+    exec: async (_peer, argv) => { const op = JSON.parse(argv[2]) as Operation; if (op.kind !== "move-cleanup-terminal" || op.args.moveId !== nextMove) throw new Error("Unexpected cleanup"); successorCleanups++; return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, epoch: op.expectedEpoch, value: {} })); },
+    bootstrapProbe: async () => { throw new Error("Unexpected probe"); }, run: async () => { throw new Error("Unexpected run"); }, read: async () => { throw new Error("Unexpected read"); }, write: async () => { throw new Error("Unexpected write"); } };
+  const factory: MoveRuntimeFactory = async input => {
+    const bindings: MoveAdapterBindings = {
+      globalDb: f.global.db,
+      participant: { config: f.ports.config, globalDb: f.global.db,
+        withBothLocks: async (_id: string, effect: () => Promise<unknown>) => {
+          if (changeHome) { changeHome = false; current = casHome(f.global.db, current, HUB, "returned-home", HUB); }
+          return effect();
+        },
+        cleanupTerminal: async (operation: Operation) => {
+          cleanupCalls++;
+          expect(operation.args.moveId).toBe(firstMove);
+          expect(operation.args.presentation).toMatchObject({ status: "complete", target: { machineId: current.machineId, homeEpoch: current.epoch } });
+          if (!sourceAvailable) throw new Error("Source is unavailable");
+          if (!terminals.delete("source-terminal")) throw new Error("Source terminal removed twice");
+          removed.push("source-terminal");
+        } } as never,
+      handoff: { prepareHandoff: async () => { throw new Error("Unexpected capture"); }, readyTarget: async home => ready ? locator(home, `terminal-${home.epoch}`) : null,
+        presentReadyTarget: async target => {
+          presented.push(target.terminalId);
+          if (changeDuringPresentation) { changeDuringPresentation = false; current = casHome(f.global.db, current, HUB, "returned-home", HUB); }
+          return { status: ready ? "complete" : "pending", reason: ready ? "presented" : "not-ready", presentation: null };
+        } },
+    };
+    const ports = createMovePorts(f.ports.config, transport, f.journal, bindings);
+    bindings.evidence = createHubMoveEvidencePorts(ports, {});
+    return { bindings, ports, control: async () => ({ code: 1, reason: "unexpected", value: null }), recover: async () => [], async close() {} };
+  };
+  const service = createMoveRuntimeService({ root: f.root, config: f.ports.config, globalDb: f.global.db, journal: f.journal, transport }, factory);
+  const count = () => (f.db.prepare("SELECT COUNT(*) AS n FROM roam_operation_actions").get() as { n: number }).n;
+  await service.recover();
+  expect(f.journal.lookupOperation(oldTask)?.state).toBe("done");
+  expect(f.journal.read(oldTask).filter(row => row.action === "done")).toHaveLength(1);
+  if (scenario === "ready") expect(removed).toEqual(["source-terminal"]);
+  else expect(terminals.has("source-terminal")).toBe(true);
+  const afterFirst = count();
+  await service.recover(); await service.recover();
+  expect(count()).toBe(afterFirst);
+  if (scenario === "pending" || scenario === "pruned" || scenario === "concurrent" || scenario === "home-changes-during-presentation") markReady(nextMove, current);
+  if (scenario === "successor-pending") ready = true;
+  if (scenario === "successor-started" || scenario === "successor-claimed") {
+    const nextTask = presentationTaskId(nextMove);
+    f.journal.begin({ id: nextTask, kind: "move-presentation", machineId: HUB, expectedEpoch: current.epoch, args: { moveId: nextMove, sessionId } });
+    if (scenario === "successor-started") f.journal.record(nextTask, "source-view-request", JSON.parse(JSON.stringify({ operation: next, check: { source: firstHome }, proof: {} })));
+    sourceAvailable = true;
+    const afterStart = count();
+    await service.recover();
+    expect(removed).toEqual([]);
+    expect(count()).toBe(afterStart);
+    markReady(nextMove, current);
+  }
+  if (scenario === "successor-revoked") {
+    const nextTask = presentationTaskId(nextMove), target = locator(current, `terminal-${current.epoch}`);
+    f.journal.record(nextTask, "presentation", { status: "pending", reason: "presentation-disconnected", target, presentation: null });
+    sourceAvailable = true;
+    const afterPending = count();
+    await service.recover();
+    expect(removed).toEqual([]);
+    expect(count()).toBe(afterPending);
+    f.journal.record(nextTask, "presentation", { status: "complete", reason: "presented", target, presentation: null });
+    f.journal.record(nextTask, "done", {});
+  }
+  if (scenario === "pruned" || scenario === "source-offline" || scenario === "home-changes-during-presentation") {
+    expect(f.journal.prune(Date.now() + 8 * 24 * 60 * 60 * 1000, 1)).toContain(oldTask);
+    expect(f.journal.lookupOperation(presentationTaskId(nextMove))).toBeNull();
+    sourceAvailable = true;
+  }
+  if (scenario === "home-changes-during-presentation") {
+    await service.recover();
+    expect(removed).toEqual([]);
+    expect(terminals.has("source-terminal")).toBe(true);
+    const afterChange = count();
+    await service.recover(); await service.recover();
+    expect(count()).toBe(afterChange);
+  }
+  if (scenario === "source-home" || scenario === "home-changes-under-lock" || scenario === "home-changes-during-presentation") {
+    current = casHome(f.global.db, current, OTHER, "move-third", HUB);
+    markReady("move-third", current);
+  }
+  if (scenario === "concurrent") await Promise.all([service.recover(), service.recover(), service.recover()]);
+  else await service.recover();
+  expect(removed).toEqual(["source-terminal"]);
+  expect(terminals.has("source-terminal")).toBe(false);
+  if (scenario === "concurrent") expect(cleanupCalls).toBe(1);
+  if (scenario === "successor-pending") { expect(presented.length).toBeGreaterThan(0); expect(presented.every(id => id === "terminal-3")).toBe(true); expect(successorCleanups).toBe(1); }
+  else expect(presented).toEqual(scenario === "pruned" || scenario === "successor-started" || scenario === "successor-claimed" || scenario === "home-changes-during-presentation" ? ["terminal-3"] : []);
+  const afterCleanup = count();
+  await service.recover(); await service.recover();
+  expect(count()).toBe(afterCleanup);
+  expect(removed).toEqual(["source-terminal"]);
+}, 5000);
+
+it("a superseded remote source accepts only the current hub presentation and original cleanup proof", async () => {
+  const f = await fixture(), sessionId = "session-a", firstMove = "remote-first", nextMove = "remote-second", source = f.oldHome!;
+  f.ports.config.peers = f.ports.config.peers.map(peer => ({ ...peer, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/spider" }));
+  const firstHome = casHome(f.global.db, source, HUB, firstMove, HUB), current = casHome(f.global.db, firstHome, OTHER, nextMove, HUB);
+  const operation: Operation = { id: firstMove, kind: "move", machineId: HUB, expectedEpoch: source.epoch, args: { sessionId, destinationMachine: HUB } };
+  const check = { source, destinationMachine: HUB }, oldTarget = { machineId: HUB, alias: null, sessionId, homeEpoch: firstHome.epoch, coreId: "core-hub", terminalId: "old-terminal" };
+  const target = { machineId: OTHER, alias: null, sessionId, homeEpoch: current.epoch, coreId: "core-remote", terminalId: "new-terminal" };
+  const proof = { source, stopped: { kind: "absent" }, destination: { home: firstHome, owner: { kind: "live", identity: { bootId: "boot", pid: 42, startTime: "start" } },
+    readiness: { origin: "hub-operation", opId: firstMove, sessionId, epoch: firstHome.epoch, file: f.file, cwd: f.root, core: "core-hub", terminal: "old-terminal" }, retired: false, launchFailure: null } };
+  f.journal.begin(operation); f.journal.record(firstMove, "handoff-presentation-start", { target: oldTarget }); f.journal.record(firstMove, "done", {});
+  const oldTask = presentationTaskId(firstMove), nextTask = presentationTaskId(nextMove);
+  f.journal.begin({ id: oldTask, kind: "move-presentation", machineId: HUB, expectedEpoch: firstHome.epoch, args: { moveId: firstMove, sessionId } });
+  f.journal.record(oldTask, "source-view-request", JSON.parse(JSON.stringify({ operation, check, proof })));
+  f.journal.begin({ id: nextTask, kind: "move-presentation", machineId: HUB, expectedEpoch: current.epoch, args: { moveId: nextMove, sessionId } });
+  f.journal.record(nextTask, "presentation", { status: "complete", reason: "presented", target, presentation: null }); f.journal.record(nextTask, "done", {});
+  const sourceJournal = openFreezeJournal(join(f.root, "source-journal.db")), boxConfig = { ...f.ports.config, role: "box" as const, machineId: BOX };
+  let removals = 0, forwarded: Operation | null = null;
+  const sourceBindings: MoveAdapterBindings = { globalDb: f.global.db, participant: { config: boxConfig, globalDb: f.global.db,
+    withBothLocks: async (_id: string, effect: () => Promise<unknown>) => effect(), cleanupTerminal: async () => { removals++; } } as never,
+    evidence: createPushedMoveEvidencePorts(f.global.db, boxConfig) };
+  const transport: Transport = { resolve: async peer => ({ ...peer, core: peer.core! }), bootstrapProbe: async () => { throw new Error("Unexpected probe"); },
+    run: async () => { throw new Error("Unexpected run"); }, read: async () => { throw new Error("Unexpected read"); }, write: async () => { throw new Error("Unexpected write"); },
+    exec: async (_peer, argv) => { forwarded = JSON.parse(argv[2]) as Operation; return Buffer.from(JSON.stringify(await handleMoveParticipantOperation(forwarded, sourceJournal, sourceBindings))); } };
+  const bindings: MoveAdapterBindings = { globalDb: f.global.db, participant: { config: f.ports.config } as never };
+  const ports = createMovePorts(f.ports.config, transport, f.journal, bindings);
+  bindings.evidence = createHubMoveEvidencePorts(ports, {});
+  const service = createMoveRuntimeService({ root: f.root, config: f.ports.config, globalDb: f.global.db, journal: f.journal, transport },
+    async () => ({ ports, bindings, control: async () => ({ code: 1, reason: "unexpected", value: null }), recover: async () => [], async close() {} }));
+  await service.recover();
+  expect(removals).toBe(1);
+  expect(f.journal.lookupOperation(oldTask)?.state).toBe("done");
+  const sent = forwarded as Operation | null;
+  if (!sent) throw new Error("Cleanup was not sent");
+  expect(sent.args.hubEvidence).toMatchObject({ kind: "presentation", home: current, value: { status: "complete", target } });
+  const clean = { ...sent, args: { ...sent.args } }; delete clean.args.hubEvidence;
+  expect(await bindings.evidence.presentation!(clean)).toMatchObject({ status: "complete", target });
+  expect(await bindings.evidence.presentation!({ ...clean, args: { ...clean.args, proof: JSON.parse(JSON.stringify({ ...proof, stopped: { kind: "live" } })) } })).toBeNull();
+  expect(await bindings.evidence.presentation!({ ...clean, args: { ...clean.args, presentationMoveId: "unrelated" } })).toBeNull();
+  const count = (f.db.prepare("SELECT COUNT(*) AS n FROM roam_operation_actions").get() as { n: number }).n;
+  await service.recover(); await service.recover();
+  expect((f.db.prepare("SELECT COUNT(*) AS n FROM roam_operation_actions").get() as { n: number }).n).toBe(count);
+  expect(removals).toBe(1);
+}, 5000);
+
+it("a pending presentation repairs an interrupted move journal write without repeated rows", async () => {
+  const f = await fixture(), source = f.oldHome!, moveId = "interrupted-presentation", sessionId = source.sessionId;
+  const home = casHome(f.global.db, source, HUB, moveId, HUB), task = presentationTaskId(moveId);
+  const operation: Operation = { id: moveId, kind: "move", machineId: HUB, expectedEpoch: source.epoch, args: { sessionId } };
+  const target = { machineId: HUB, alias: null, sessionId, homeEpoch: home.epoch, coreId: "fixture-core", terminalId: "fixture-terminal" };
+  const sourceFence = { moveId }, value = { target, sourceFence, status: "pending", reason: "app-unavailable", presentation: null };
+  f.journal.begin(operation); f.journal.record(moveId, "handoff-presentation-start", { target, sourceFence });
+  f.journal.begin({ id: task, kind: "move-presentation", machineId: HUB, expectedEpoch: home.epoch, args: { moveId, sessionId } });
+  f.journal.record(task, "source-view-request", JSON.parse(JSON.stringify({ check: { source }, operation, proof: {} })));
+  f.journal.record(task, "presentation", value);
+  const bindings: MoveAdapterBindings = { globalDb: f.global.db, participant: { config: f.ports.config } as never,
+    handoff: { prepareHandoff: async () => { throw new Error("Unexpected capture"); }, readyTarget: async () => null,
+      presentReadyTarget: async () => ({ status: "pending", reason: "app-unavailable", presentation: null }) } };
+  const ports = createMovePorts(f.ports.config, {} as Transport, f.journal, bindings), before = f.journal.read(task).length;
+  await recoverMovePresentation(ports, moveId);
+  expect(f.journal.read(task)).toHaveLength(before);
+  expect(f.journal.read(moveId).filter(row => row.action === "handoff-presentation").map(row => row.result)).toEqual([value]);
+  await recoverMovePresentation(ports, moveId);
+  expect(f.journal.read(task)).toHaveLength(before);
+  expect(f.journal.read(moveId).filter(row => row.action === "handoff-presentation")).toHaveLength(1);
 }, 5000);
 
 it("forget with no affected homes revokes without mounting a placeholder runtime", async () => {

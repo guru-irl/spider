@@ -223,6 +223,14 @@ function successful<T>(outcome: Outcome<T>): T {
 }
 
 const presentationRecoveries = new WeakMap<MovePorts, (moveId: string) => Promise<void>>();
+const presentationFlights = new WeakMap<Journal, Map<string, Promise<void>>>();
+interface SourceViewRequest {
+  check: MoveCheck; operation: Operation; proof: MoveCleanupProof;
+  originalOperation?: Operation; sourceMoveId?: string;
+}
+function supersededSourceMoveId(moveId: string): string {
+  return `source-cleanup-${createHash("sha256").update(moveId).digest("hex").slice(0, 40)}`;
+}
 
 /** Replay only this move's view cleanup through its session-bound adapter. */
 export async function recoverMovePresentation(ports: MovePorts, moveId: string): Promise<void> {
@@ -284,12 +292,61 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
   const finishPendingPresentation = async (moveId: string): Promise<void> => {
     const taskId = presentationTaskId(moveId), rows = journal.read(taskId);
     if (rows.some(row => row.action === "done")) return;
-    const request = rows.find(row => row.action === "source-view-request")?.result as unknown as { check: MoveCheck; operation: Operation; proof: MoveCleanupProof } | undefined;
+    const request = rows.find(row => row.action === "source-view-request")?.result as unknown as SourceViewRequest | undefined;
     if (!request) return;
+    const db = required(bindings.globalDb, "globalDb"), home = sessionHome(db, request.check.source.sessionId);
+    if (request.sourceMoveId) {
+      const original = request.originalOperation;
+      if (!original || original.id !== request.sourceMoveId || moveId !== supersededSourceMoveId(original.id) ||
+          !home || home === "unknown" || !home.moveId || home.moveId === original.id ||
+          !sameHome(homeReceipt(db, home.moveId), home) || !validCleanupProof(request.proof, request.check, original.id, db, home.moveId)) return;
+      const query: Operation = { ...original, args: { ...original.args, moveId: original.id, check: json(request.check), proof: json(request.proof), presentationMoveId: home.moveId } };
+      let presentation = readMovePresentation(journal, query);
+      const successorTask = presentationTaskId(home.moveId);
+      if (!presentation && !journal.lookupOperation?.(successorTask) && !journal.read(successorTask).length) {
+        try {
+          const handoff = required(bindings.handoff, "handoff"), target = await handoff.readyTarget(home);
+          if (!target || target.sessionId !== home.sessionId || target.machineId !== home.machineId || target.homeEpoch !== home.epoch || target.alias !== null || !target.coreId || !target.terminalId || !sameHome(sessionHome(db, home.sessionId), home)) return;
+          const observed = await handoff.presentReadyTarget(target);
+          if (observed.status !== "complete" || !sameHome(sessionHome(db, home.sessionId), home)) return;
+          presentation = json({ target, ...observed });
+        } catch { return; }
+      }
+      const target = presentation?.target as JsonObject | undefined;
+      if (!presentation || presentation.status !== "complete" || target?.sessionId !== home.sessionId || target.machineId !== home.machineId || target.homeEpoch !== home.epoch || target.alias !== null || !target.coreId || !target.terminalId) return;
+      if (!rows.some(row => row.action === "successor-presentation" && row.result.moveId === home.moveId && isDeepStrictEqual(row.result.presentation, presentation)))
+        journal.record(taskId, "successor-presentation", { moveId: home.moveId, presentation });
+      successful(await call(request.check.source, original, "move-cleanup-terminal", { check: json(request.check), proof: json(request.proof), presentation, presentationMoveId: home.moveId }));
+      journal.record(taskId, "done", { status: "complete", sourceMoveId: original.id });
+      return;
+    }
+    const destination = request.proof?.destination?.home;
+    if (destination && home && home !== "unknown" && home.moveId && home.moveId !== moveId && home.epoch > destination.epoch &&
+        sameHome(homeReceipt(db, moveId), destination) && sameHome(homeReceipt(db, home.moveId), home)) {
+      // Preserve source cleanup independently; the obsolete target must never replay.
+      const deferredId = supersededSourceMoveId(moveId), deferredTask = presentationTaskId(deferredId);
+      const deferred: SourceViewRequest = { ...request, operation: { ...request.operation, id: deferredId }, originalOperation: request.operation, sourceMoveId: moveId };
+      journal.begin({ id: deferredTask, kind: "move-presentation", machineId: required(bindings.participant, "participant").config.hubMachineId,
+        expectedEpoch: destination.epoch, args: { moveId: deferredId, sessionId: request.check.source.sessionId } });
+      const existing = journal.read(deferredTask).find(row => row.action === "source-view-request")?.result;
+      if (existing && !isDeepStrictEqual(existing, json(deferred))) throw new MoveAdapterError("source-cleanup-mismatch");
+      if (!existing) journal.record(deferredTask, "source-view-request", json(deferred));
+      journal.record(taskId, "done", { status: "superseded", successorMoveId: home.moveId, cleanupTask: deferredTask });
+      await recoverPresentation(deferredId);
+      return;
+    }
     const presentation = await presentCapturedHandoff(moveId, journal, bindings);
     if (presentation.status !== "complete") return;
     successful(await call(request.check.source, request.operation, "move-cleanup-terminal", { check: json(request.check), proof: json(request.proof), presentation }));
     journal.record(taskId, "done", {});
+  };
+  const recoverPresentation = (moveId: string): Promise<void> => {
+    let flights = presentationFlights.get(journal);
+    if (!flights) { flights = new Map(); presentationFlights.set(journal, flights); }
+    const running = flights.get(moveId); if (running) return running;
+    const active = flights;
+    const flight = Promise.resolve().then(() => finishPendingPresentation(moveId)).finally(() => { if (active.get(moveId) === flight) active.delete(moveId); });
+    active.set(moveId, flight); return flight;
   };
   const ports: MovePorts = {
     config, journal,
@@ -489,7 +546,7 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
       async conflicts(sessionId) { guard(bindings, "recovery.conflicts"); return bindings.recovery!.conflicts(sessionId); },
     },
   };
-  presentationRecoveries.set(ports, finishPendingPresentation);
+  presentationRecoveries.set(ports, recoverPresentation);
   return ports;
 }
 function requiredHome(db: Db, id: string): Home {
@@ -645,10 +702,17 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
   if (operation.kind === "move-readmit") return await readmit(operation, journal, bindings) as unknown as Outcome<JsonObject>;
   if (operation.kind === "move-cleanup-terminal") {
     const check = operation.args.check as unknown as MoveCheck, proof = operation.args.proof as unknown as MoveCleanupProof;
-    if (!validCleanupProof(proof, check, String(operation.args.moveId), participant.globalDb) || participant.config.machineId !== check.source.machineId || operation.expectedEpoch !== check.source.epoch)
-      throw new MoveAdapterError("move-cleanup-unproved");
+    const successor = operation.args.presentationMoveId;
+    const valid = () => (successor === undefined || typeof successor === "string" && !!successor) &&
+      validCleanupProof(proof, check, String(operation.args.moveId), participant.globalDb, typeof successor === "string" ? successor : undefined) &&
+      participant.config.machineId === check.source.machineId && operation.expectedEpoch === check.source.epoch;
+    if (!valid()) throw new MoveAdapterError("move-cleanup-unproved");
     await verifyPresentation(operation, journal, bindings);
-    await participant.withBothLocks(id, locks => participant.cleanupTerminal(operation, locks));
+    await participant.withBothLocks(id, async locks => {
+      if (!valid()) throw new MoveAdapterError("move-cleanup-unproved");
+      await verifyPresentation(operation, journal, bindings);
+      await participant.cleanupTerminal(operation, locks);
+    });
     return result({});
   }
   if (operation.kind === "move-abort-workspace") {
@@ -1141,10 +1205,12 @@ function publicReadiness(reply: Outcome<HubOperationReadiness>, publicId: string
 }
 
 interface MoveCleanupProof { source: Home; destination: DestinationObservation; stopped: Probe }
-function validCleanupProof(proof: MoveCleanupProof | undefined, check: MoveCheck | undefined, moveId: string, globalDb: Db): boolean {
+function validCleanupProof(proof: MoveCleanupProof | undefined, check: MoveCheck | undefined, moveId: string, globalDb: Db, successorMoveId?: string): boolean {
   if (!proof?.destination?.home || !check?.source || proof.stopped?.kind !== "absent" || proof.destination.owner?.kind !== "live" || proof.destination.retired || !proof.destination.readiness) return false;
-  const home = proof.destination.home, ready = parseParticipantReadiness(proof.destination.readiness);
-  return sameHome(proof.source, check.source) && sameHome(sessionHome(globalDb, home.sessionId), home) && home.sessionId === check.source.sessionId &&
+  const home = proof.destination.home, ready = parseParticipantReadiness(proof.destination.readiness), current = sessionHome(globalDb, home.sessionId);
+  const currentHome = sameHome(current, home) || !!successorMoveId && !!current && current !== "unknown" && current.moveId === successorMoveId &&
+    current.epoch > home.epoch && current.machineId !== check.source.machineId;
+  return currentHome && sameHome(proof.source, check.source) && home.sessionId === check.source.sessionId &&
     home.machineId === check.destinationMachine && home.epoch === check.source.epoch + 1 && home.moveId === moveId && ready.opId === moveId && ready.epoch === home.epoch && ready.sessionId === home.sessionId;
 }
 /** Only this move's verified, no-longer-used staging is removed; installed and original files stay intact. */
@@ -1186,8 +1252,21 @@ async function cleanupMoveStaging(moveId: string, check: MoveCheck, valid: () =>
 }
 export function presentationTaskId(moveId: string): string { return `presentation-${createHash("sha256").update(moveId).digest("hex").slice(0, 40)}`; }
 export function readMovePresentation(journal: Journal, operation: Operation): JsonObject | null {
-  const rows = journal.read(presentationTaskId(String(operation.args.moveId)));
-  const value = rows.filter(row => row.action === "presentation").at(-1)?.result;
+  const moveId = String(operation.args.moveId), successor = operation.args.presentationMoveId;
+  let saved: JsonObject | undefined;
+  if (successor !== undefined) {
+    if (typeof successor !== "string" || !successor || successor === moveId) return null;
+    const deferredId = supersededSourceMoveId(moveId), deferred = journal.read(presentationTaskId(deferredId));
+    const request = deferred.find(row => row.action === "source-view-request")?.result as unknown as SourceViewRequest | undefined;
+    if (!request || request.sourceMoveId !== moveId || request.originalOperation?.id !== moveId || request.operation.id !== deferredId ||
+        request.originalOperation.args.sessionId !== operation.args.sessionId || request.check.source.sessionId !== operation.args.sessionId ||
+        !isDeepStrictEqual(request.check, operation.args.check) || !isDeepStrictEqual(request.proof, operation.args.proof)) return null;
+    saved = deferred.filter(row => row.action === "successor-presentation" && row.result.moveId === successor).at(-1)?.result.presentation as JsonObject | undefined;
+  }
+  const taskId = presentationTaskId(typeof successor === "string" ? successor : moveId), rows = journal.read(taskId);
+  const latest = rows.filter(row => row.action === "presentation").at(-1)?.result;
+  // Saved evidence survives pruning, but a newly claimed task may supersede it.
+  const value = latest ?? (rows.length === 0 && !journal.lookupOperation?.(taskId) ? saved : undefined);
   return value && (value.target as JsonObject | undefined)?.sessionId === operation.args.sessionId ? value : null;
 }
 async function verifyPresentation(operation: Operation, journal: Journal, bindings: MoveAdapterBindings): Promise<void> {
@@ -1197,7 +1276,8 @@ async function verifyPresentation(operation: Operation, journal: Journal, bindin
   const supplied = operation.args.presentation;
   if (!observed || observed.status !== "complete" || !isDeepStrictEqual(observed, supplied)) throw new MoveAdapterError("destination-presentation-unproved");
   const target = observed.target as JsonObject, current = sessionHome(participant.globalDb, String(operation.args.sessionId));
-  if (!current || current === "unknown" || current.moveId !== operation.args.moveId || current.machineId !== target.machineId || current.epoch !== target.homeEpoch)
+  const presentationMoveId = operation.args.presentationMoveId ?? operation.args.moveId;
+  if (!current || current === "unknown" || current.moveId !== presentationMoveId || current.machineId !== target.machineId || current.epoch !== target.homeEpoch)
     throw new MoveAdapterError("destination-presentation-unproved");
 }
 async function presentCapturedHandoff(moveId: string, journal: Journal, bindings: MoveAdapterBindings): Promise<JsonObject> {
@@ -1216,8 +1296,9 @@ async function presentCapturedHandoff(moveId: string, journal: Journal, bindings
     catch { presented = { status: "pending", reason: "presentation-unavailable", presentation: json(captured) }; }
   }
   const value = json({ ...captured, ...presented });
-  journal.record(taskId, "presentation", value);
-  if (!journal.read(moveId).some(row => row.action === "done")) journal.record(moveId, "handoff-presentation", value);
+  if (!prior || !isDeepStrictEqual(prior, value)) journal.record(taskId, "presentation", value);
+  const moveRows = journal.read(moveId), previous = moveRows.filter(row => row.action === "handoff-presentation").at(-1)?.result;
+  if (!moveRows.some(row => row.action === "done") && !isDeepStrictEqual(previous, value)) journal.record(moveId, "handoff-presentation", value);
   return value;
 }
 

@@ -2,10 +2,11 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, test } from 'vitest';
 import { PANE_ENDPOINT_BOOTSTRAP, stagePaneEndpointInstallation, recordPaneInstallation, probeLocalPaneEndpoint } from '../herdr/pane-installation.js';
+import { inspectPaneInstallation } from '../herdr/pane-doctor.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 async function fixture(protocol = 1, reportedDigest?: string) {
@@ -77,6 +78,47 @@ test('explicit setup names an unsafe private registry directory without followin
   const staged = join(f.packageRoot, 'dist/herdr', `pane-endpoint-${f.digest}.mjs`); await rm(staged); await rename(root, moved); await symlink(moved, root);
   await expect(stagePaneEndpointInstallation(f.root, f.packageRoot)).rejects.toMatchObject({ code: 'pane-installation-unsafe' });
   await expect(readFile(staged)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+test('setup replaces an earlier package root and digest with the current installation', async () => {
+  const previous = await fixture(), current = await fixture();
+  const entry = join(current.packageRoot, 'dist/herdr/pane-endpoint.mjs');
+  await writeFile(entry, (await readFile(entry, 'utf8')) + '\n// current package\n');
+  const digest = createHash('sha256').update(await readFile(entry)).digest('hex');
+  await stagePaneEndpointInstallation(previous.root, current.packageRoot);
+  expect(JSON.parse(await readFile(previous.registry, 'utf8'))).toEqual({ version: 1, packageRoot: current.packageRoot, endpoint: { file: `pane-endpoint-${digest}.mjs`, digest, protocol: 1 } });
+  await probeLocalPaneEndpoint(previous.root, current.packageRoot);
+  await expect(probeLocalPaneEndpoint(previous.root, previous.packageRoot)).rejects.toMatchObject({ code: 'pane-endpoint-build-mismatch' });
+});
+test('a rejected replacement endpoint preserves the previous admitted installation', async () => {
+  const previous = await fixture(), rejected = await fixture(2), before = await readFile(previous.registry);
+  await expect(stagePaneEndpointInstallation(previous.root, rejected.packageRoot)).rejects.toMatchObject({ code: 'pane-endpoint-protocol-mismatch' });
+  expect(await readFile(previous.registry)).toEqual(before);
+  await probeLocalPaneEndpoint(previous.root, previous.packageRoot);
+});
+test('activation can report an unsafe package without throwing or changing admission', async () => {
+  const f = await fixture(), before = await readFile(f.registry), failures: unknown[] = [];
+  await chmod(f.packageRoot, 0o775);
+  await recordPaneInstallation(f.root, f.packageRoot, error => { failures.push(error); });
+  expect(failures).toHaveLength(1);
+  expect(await readFile(f.registry)).toEqual(before);
+  expect(f.run().status).toBe(1);
+});
+test('doctor gives an executable permission repair for a umask 002 deployment', async () => {
+  const f = await fixture(), deployed = join(f.root, "deployed package's files");
+  expect(spawnSync(process.execPath, ['-e', 'process.umask(0o002);require("node:fs").mkdirSync(process.argv[1])', deployed]).status).toBe(0);
+  expect((await stat(deployed)).mode & 0o777).toBe(0o775);
+  await cp(join(f.packageRoot, 'dist'), join(deployed, 'dist'), { recursive: true });
+  await chmod(join(deployed, 'dist'), 0o775); await chmod(join(deployed, 'dist/herdr'), 0o775);
+  const probe = () => probeLocalPaneEndpoint(f.root, deployed);
+  const report = await inspectPaneInstallation('local', probe);
+  expect(report.failures[0]?.code).toBe('pane-installation-unsafe');
+  expect(report.failures[0]?.repair).toContain('chmod go-w ');
+  expect(report.failures[0]?.repair).toContain('dist/herdr');
+  const repaired = spawnSync('/bin/sh', ['-c', report.failures[0]!.repair], { encoding: 'utf8' });
+  expect(repaired.status, repaired.stderr).toBe(0);
+  await stagePaneEndpointInstallation(f.root, deployed);
+  expect(await inspectPaneInstallation('local', probe)).toEqual({ failures: [] });
 });
 
 test('source refuses a factory build mismatch before any request effect', async () => {

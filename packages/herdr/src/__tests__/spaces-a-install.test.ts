@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setupHerdr } from '../setup/installer.js';
 import { digest, readJournal, saveJournal } from '../setup/backup.js';
 import { cleanup, fixture } from '../../../host/src/__tests__/herdr-setup-fixture.js';
+import { releaseFixture } from '../../../host/src/__tests__/herdr-setup-release-fixture.js';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -210,13 +211,7 @@ test('all installed shipped mod JavaScript imports resolve inside their own mod'
 }, 60_000);
 
 test('every shipped mod asset has a staged copy with in-root imports', async () => {
-  const f = await fixture(), app = f.h.directories.app, assets = join(f.root, 'packages/herdr/assets');
-  const manifestPath = join(assets, 'look/patches.json'), manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  manifest.upstreamVersion = '0.1.16';
-  await writeFile(manifestPath, JSON.stringify(manifest));
-  const appScript = join(f.h.root, 'app-selection.mjs');
-  await writeFile(appScript, (await readFile(appScript, 'utf8')).replace('herdr-app 0.1.12', 'herdr-app 0.1.16'));
-  await cp(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.16/mods/toast'), join(app, 'mods/toast'), { recursive: true });
+  const f = await releaseFixture('0.1.16'), app = f.h.directories.app, assets = join(f.root, 'packages/herdr/assets');
   const base = f.context.modProps[0].props;
   f.context.modProps = [...f.context.modProps, ...['picker', 'toast'].map(name => ({ directory: join(app, 'mods', `spider-${name}`), props: { ...base, modId: `spider-${name}` } }))];
   const staged = [...await f.parts.stageLook(f.request, f.context, 'export'), ...await f.parts.installFiles(f.request, f.context)];

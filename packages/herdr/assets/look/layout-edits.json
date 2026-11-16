@@ -4,6 +4,12 @@
     "0.1.13": { "root": { "terminal_menu": "spider-menu" } },
     "0.1.16": { "root": { "terminal_menu": "spider-menu", "toast": "spider-toast" } }
   },
+  "blur": {
+    "background": "#16161800",
+    "colors": { "canvas": "#16161800", "chrome": "#16161899" },
+    "sidebar": "#161618fa",
+    "panel": "#161618fa"
+  },
   "remove": ["status"],
   "tabs": { "stripPx": 6, "fullPx": 42 },
   "root": {

@@ -26,7 +26,7 @@ Setup also writes `hc` templates that start visible worker, reviewer, and watche
 
 - Node.js `>=22.19.0` on the local machine, and Node.js `>=22.18.0` on every remote machine you use with `on`.
 - Pi `1.2.0`.
-- `hc` `0.1.16` and `0.1.17`, with `herdr-app` `0.1.12`. Other versions are not supported.
+- `hc` `0.1.16` and `0.1.17`, with `herdr-app` `0.1.12`, `0.1.13` or `0.1.16`. Setup verifies the complete built-in mod sources against that release's inventory. A matching version string alone does not admit an edited or relabelled app.
 - macOS or Linux. A Linux machine reached from macOS is supported. On other platforms, the doctor reports a failure instead of falling back to local execution.
 
 The automated app stories use `hc` 0.1.16. Compatibility tests cover the 0.1.17 event snapshot and notification policy.
@@ -128,6 +128,8 @@ Setup accepts these flags:
 | --- | --- |
 | `--config <absolute-file>` | The configuration file. The path must be absolute. Without it, setup uses the standard location. |
 | `--overwrite-unowned-keys` | Replaces Herdr key bindings that spider does not own, after a backup. Without it, a conflicting key stops setup with `key-binding-conflict`. |
+| `--merge-native-keys` | Accepts the offer to add Cmd-F search, Cmd-A select all and Cmd-M minimize where those fields are absent. Existing bindings stay unchanged, even if they differ from the offer. |
+| `--decline-native-keys` | Refuses the native-key offer. This is also the default behavior when neither flag is passed. |
 | `--allow-staging-app` | Allows setup to open a second app window when it has to clone Herdr's built-in layout and mods in a separate staging home. Setup says so before it opens the window. |
 | `--adopt-existing-space <name>` | Lets setup add tabs to an existing space with this name that spider does not own. Repeat it for each space. Without it, the name conflict stops setup with `space-name-conflict`. |
 
@@ -136,9 +138,9 @@ Setup accepts these flags:
 Setup backs up every file it replaces before the first write and records each step in a journal under `<globalRoot>/herdr/setup`. It changes these things:
 
 1. The `herdr.config` entry in spider's global settings, only when you pass a configuration file outside the standard location.
-2. The spider panel mod, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied.
-3. The `spider-glass` layout and Herdr theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. Only the `theme` and `layout` fields of the app's settings change.
-4. Five key bindings in Herdr's terminal section. Other sections, including the Ctrl-V image paste binding, stay unchanged.
+2. The spider panel mod and picker, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied. Herdr 0.1.13 and 0.1.16 also use `spider-menu`. Herdr 0.1.16 uses one derived `spider-toast`; 0.1.13 leaves the stock toast untouched.
+3. The `spider-glass` layout and Herdr theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. Only `theme`, `layout` and `sounds.enabled` in the app's settings change. Custom sound paths remain unchanged. A later explicit sound opt-in releases that preference from setup ownership.
+4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space and the layout-scoped Cmd-Shift-E Send back action. Ctrl-V image paste and Cmd-Shift-W close remain unchanged. Cmd-F, Cmd-A and Cmd-M are an offer, never an automatic setup change.
 5. The `dracula-plus-glass` pi theme. Only the `theme` field of the agent directory's settings file changes.
 6. Role templates generated from your global model settings.
 7. `notes = false` in the core's `config.toml`. Only the root `notes` key changes.
@@ -206,6 +208,7 @@ The file is JSON. Every path must be absolute. Keep the configuration outside an
 | `spaces` | Required | Ordered spaces. See [Spaces](#spaces). |
 | `machines` | Required | Remote machines. See [Machines](#machines). |
 | `look.autoHideTabs` | `true` | Hide the tab bar until you hover over its top strip. Set to `false` to keep the full bar visible. |
+| `look.windowBlur` | `true` | Neutral transparent window blur on verified Herdr 0.1.16 only. Set to `false` to disable blur. Older releases stay alpha-only and never receive `window_blur`. |
 | `fonts.body`, `fonts.label`, `fonts.paths` | Bundled body and label fonts, and Herdr's path font | Optional replacement fonts. Each has a `path` and a `license` file. |
 | `limits.auxiliaryPanes` | `2` | Auxiliary pane slots shared by all sessions in a tab, from 1 to 6. |
 | `automaticSubagentPanes` | `false` | Let new subagent viewers open in free auxiliary slots automatically. Otherwise they stay parked until you open them. |
@@ -517,7 +520,9 @@ Setup installs a layout named `spider-glass` and a pi theme named `dracula-plus-
 - The terminal palette and the pi theme are Dracula+. Pi's boxes use opaque neutral greys, because pi themes have no alpha.
 - Herdr's UI text uses the bundled Google Sans Flex. Paths, names, and numbers in spider's views use Herdr's bundled JetBrains Mono. Your terminal font does not change.
 
-The window ground copies the Firefox Liquid Fox glass: its 176-degree window tint over its inactive-window fill `rgb(24, 24, 26)`, a gradient from `#18181a` to `#22201e`. Herdr's window is opaque and has no backdrop blur, so no desktop shows through. A transparent layout background shows the theme background instead. The chrome and sidebar are transparent over this ground, as Firefox's toolbars are.
+Herdr 0.1.13 retains the alpha-only layout. Verified Herdr 0.1.16 enables neutral window blur by default. Its root and canvas are transparent neutral black, with alpha rising where text sits. Bare chrome uses about 0.6 alpha, menus about 0.94, and text-heavy surfaces use higher alpha to preserve contrast over bright backdrops. A's existing dividers and card edges stay unchanged; blur adds no new edges or shadows. Terminal colors remain Dracula+ over neutral black, never its purple-grey background.
+
+Set `"look": { "windowBlur": false }` to disable blur without changing those surface colors. Herdr 0.1.13 stays alpha-only and never receives `window_blur`. The chrome and sidebar are transparent over this ground, as Firefox's toolbars are.
 
 ## Shortcuts
 
@@ -581,7 +586,7 @@ The spider panel's **Run doctor** button runs the same command.
 | `runtime-root-invalid` | A machine's runtime directory is missing, is not a private directory owned by you, or the runtime cannot run there. | Fix the directory's owner and mode, then run setup again. |
 | `runtime-not-installed` | A remote call found the machine's runtime missing or outdated. | Run setup again. |
 | `native-notes-enabled` | The core's root `notes` key is not exactly `false`. | Fix the root `notes` key, then run setup again from a plain shell. |
-| `launch-notify-enabled` | A spider launch permits native notifications. | Update spider, then run setup and the doctor again. |\n| `launch-history-unavailable` | The doctor could not read the core's terminal event snapshot. | Check that Herdr is running, then run the doctor again. |\n| `inspection-unavailable` | The doctor could not inspect a check, including a launch with no readable notification policy. | Follow the repair line for that check. For launch policy, run setup, start a spider pane or remote command, then run the doctor again. |\n| `installed-artifact-changed` | An installed spider mod or another checked file differs from this spider version. | For a mod, run setup again. For another file, follow the repair line. |\n| `upstream-source-unknown` | A built-in Herdr mod differs from the supported source. | Update spider or restore Herdr 0.1.12, then run setup again. |\n| `upstream-version-mismatch` | The installed Herdr app version is not supported. | Update spider, or use Herdr 0.1.12. |\n| `doctor-inspection-failed` | The doctor could not complete a check, including when a built-in source is not recognized. | Follow the message and repair line. |\n| `duplicate-live-session` | Two terminals hold the same session ID. Setup left both alone and continued with the other sessions. | Close one of the sessions, then run setup again. |
+| `launch-notify-enabled` | A spider launch permits native notifications. | Update spider, then run setup and the doctor again. |\n| `launch-history-unavailable` | The doctor could not read the core's terminal event snapshot. | Check that Herdr is running, then run the doctor again. |\n| `inspection-unavailable` | The doctor could not inspect a check, including a launch with no readable notification policy. | Follow the repair line for that check. For launch policy, run setup, start a spider pane or remote command, then run the doctor again. |\n| `installed-artifact-changed` | An installed spider mod or another checked file differs from this spider version. | For a mod, run setup again. For another file, follow the repair line. |\n| `upstream-source-unknown` | A built-in Herdr mod differs from the supported source. | Update spider or restore an unmodified supported Herdr release, then run setup again. |\n| `upstream-version-mismatch` | The installed Herdr app version is not supported. | Update spider, or use a verified supported Herdr release. |\n| `doctor-inspection-failed` | The doctor could not complete a check, including when a built-in source is not recognized. | Follow the message and repair line. |\n| `duplicate-live-session` | Two terminals hold the same session ID. Setup left both alone and continued with the other sessions. | Close one of the sessions, then run setup again. |
 | `key-binding-conflict` | A Herdr key is bound to something spider does not own. | Change the binding, or run setup with `--overwrite-unowned-keys`. |
 | `managed-artifact-changed` | A part of a file that setup owns was edited. | Restore the recorded value that the message names, then run setup again. |
 | `role-unresolved` | A configured role model is not available. | Fix that role in `models.defaults`, or sign in to its provider. |

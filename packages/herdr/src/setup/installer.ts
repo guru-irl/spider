@@ -46,6 +46,7 @@ export interface SetupRequest<T extends HerdrConfig = FullHerdrConfig> {
   packageRoot: string;
   journalRoot: string;
   overwriteUnownedKeys?: boolean;
+  nativeKeys?: 'accept' | 'decline';
   replaceChanged?: boolean;
   dryRun?: boolean;
   allowStagingApp?: boolean;

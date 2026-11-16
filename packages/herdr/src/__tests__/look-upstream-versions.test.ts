@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import shippedPatches from '../../assets/look/patches.json' with { type: 'json' };
-import { applyLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
+import { applyLookPatches, selectLookPatches, type HerdrClones, type LookPatchSet } from '../look/patches.js';
 
 async function clones(version: string): Promise<HerdrClones> {
   const result = {} as HerdrClones;
@@ -68,7 +68,27 @@ describe('look patches across Herdr releases', () => {
     await expect(applyLookPatches(source, shippedPatches as LookPatchSet)).rejects.toMatchObject({ code: 'upstream-source-unknown', message: expect.stringContaining(kind) });
   });
 
-  it('records 0.1.12 as the only supported source version', () => {
-    expect(shippedPatches.upstreamVersion).toBe('0.1.12');
+  it('retains 0.1.12 as the legacy recipe and rejects unlisted releases', () => {
+    expect(selectLookPatches(shippedPatches as LookPatchSet, '0.1.12').upstreamVersion).toBe('0.1.12');
+    expect(() => selectLookPatches(shippedPatches as LookPatchSet, '0.1.17')).toThrow();
   });
+
+  for (const version of ['0.1.13', '0.1.16'] as const) {
+    it(`${version} patches the complete real inventory including menu`, async () => {
+      const selected = selectLookPatches(shippedPatches as LookPatchSet, version);
+      const source = {} as HerdrClones;
+      for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome', 'menu'] as const) {
+        source[kind] = { name: `spider-${kind}`, clonedFrom: { name: kind, version }, files: Object.fromEntries(await Promise.all(Object.keys(selected.sourceHashes![kind]!).map(async file => [file, await readFile(new URL(`./fixtures/herdr-${version}/mods/${kind}/${file}`, import.meta.url), 'utf8')])))};
+      }
+      const result = await applyLookPatches(source, selected, { requireCompleteSources: true });
+      expect(result.menu!.files['main.js']).toContain('spider-look:a-menu-remote-park');
+      expect(await applyLookPatches(result, selected, { requireCompleteSources: true })).toEqual(result);
+      source.pane.files = { ...source.pane.files, 'close.svg': 'changed' };
+      await expect(applyLookPatches(source, selected, { requireCompleteSources: true })).rejects.toMatchObject({ code: 'upstream-source-unknown' });
+    });
+
+    it(`${version} refuses a relabelled 0.1.12 clone`, async () => {
+      await expect(applyLookPatches(await clones(version), selectLookPatches(shippedPatches as LookPatchSet, version), { requireCompleteSources: true })).rejects.toMatchObject({ code: 'upstream-source-unknown' });
+    });
+  }
 });

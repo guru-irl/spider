@@ -14,6 +14,12 @@ describe('runner boundary and report', () => {
     expect(storyWorkerEnvironment({}, input, 'headless')).not.toHaveProperty('SPIDER_HERDR_E2E_APP');
     expect(storyWorkerEnvironment({}, {}, 'app')).not.toHaveProperty('SPIDER_HERDR_E2E_APP');
   });
+  it('forwards the explicit 0.1.13 screenshot opt-in only to app workers', () => {
+    const input = { SPIDER_SPACES_A_SCREENSHOTS_013: '1' };
+    expect(storyWorkerEnvironment({}, input, 'app')).toEqual(input);
+    for (const tier of ['headless', 'ci', 'remote']) expect(storyWorkerEnvironment({}, input, tier)).toEqual({});
+    for (const value of [undefined, '0', 'true']) expect(storyWorkerEnvironment({}, { SPIDER_SPACES_A_SCREENSHOTS_013: value }, 'app')).toEqual({});
+  });
   it('every default profile selects actual supported story exports, including the real remote smoke', async () => {
     // @ts-ignore Vite provides import.meta.glob during test transformation.
     const modules = import.meta.glob('./*.test.ts');

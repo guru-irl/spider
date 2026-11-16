@@ -270,7 +270,10 @@ it('CLI ports recover verified G owners and rollback only G-created tabs', async
     await writeFile(join(bin, 'ps'), '#!/bin/sh\nif [ "$1" = -U ]; then exit 0; fi\nexec /bin/ps "$@"\n'); await chmod(join(bin, 'ps'), 0o700);
     vi.stubEnv('PATH', bin + ':' + process.env.PATH);
     await writePrivateJson(join(root, 'spaces/spaces.json'), g);
-    const request = { config: f.config, configPath: join(f.h.root, 'config.json'), packageRoot: f.h.root, journalRoot: join(root, 'setup') };
+    const appBinary = join(bin, 'app');
+    await writeFile(appBinary, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'herdr-app 0.1.12'; else exec ${JSON.stringify(f.config.app.binary)} "$@"; fi\n`);
+    await chmod(appBinary, 0o700);
+    const request = { config: { ...f.config, app: { ...f.config.app, binary: appBinary } }, configPath: join(f.h.root, 'config.json'), packageRoot: f.h.root, journalRoot: join(root, 'setup') };
     const look = join(f.h.root, 'packages/herdr/assets/look'); await mkdir(look, { recursive: true });
     await writeFile(join(look, 'patches.json'), await readFile(resolve('packages/herdr/assets/look/patches.json')));
     const intent = await readJournal(request.journalRoot); intent.cutoverPending = true; await saveJournal(request.journalRoot, intent);

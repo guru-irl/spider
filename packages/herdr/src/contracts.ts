@@ -302,7 +302,7 @@ export interface HerdrConfigBase {
   agentDirectory: string; globalRoot: string; shellRc: string;
   layout?: 'panes' | 'tabs';
   automaticSubagentPanes?: boolean;
-  look?: { autoHideTabs: boolean };
+  look?: { autoHideTabs: boolean; windowBlur?: boolean };
   /** Intentional notification sounds default to true when this setting is absent. */
   notifications?: { sound: boolean };
   spaces: { name: string; layout?: 'panes' | 'tabs'; sessions: ({ file: string } | { name: string; sessionId?: string })[] }[];

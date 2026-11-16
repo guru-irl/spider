@@ -9,6 +9,7 @@ import { readJournal } from '../setup/backup.js';
 import { planToastFiles } from '../setup/toast.js';
 import { automaticAgentAlert } from '../../assets/toast/filter.js';
 import { cleanup, fixture } from '../../../host/src/__tests__/herdr-setup-fixture.js';
+import { releaseFixture } from '../../../host/src/__tests__/herdr-setup-release-fixture.js';
 import { createUiModules } from './strict-mod-api.mjs';
 
 vi.mock('node:child_process', async importOriginal => {
@@ -65,14 +66,7 @@ test('plans the derived toast only for verified 0.1.16 stock sources', async () 
 });
 
 test('stages the verified 0.1.16 toast and checks its layout selector', async () => {
-  const f = await fixture(), app = f.h.directories.app;
-  const manifestPath = join(f.root, 'packages/herdr/assets/look/patches.json');
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  manifest.upstreamVersion = '0.1.16';
-  await writeFile(manifestPath, JSON.stringify(manifest));
-  const appScript = join(f.h.root, 'app-selection.mjs');
-  await writeFile(appScript, (await readFile(appScript, 'utf8')).replace('herdr-app 0.1.12', 'herdr-app 0.1.16'));
-  await cp(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.16/mods/toast'), join(app, 'mods/toast'), { recursive: true });
+  const f = await releaseFixture('0.1.16'), app = f.h.directories.app;
   const originalToast = await readFile(join(app, 'mods/toast/main.js'));
   const base = f.context.modProps[0].props;
   f.context.modProps = [...f.context.modProps, ...['picker', 'toast'].map(name => ({ directory: join(app, 'mods', `spider-${name}`), props: { ...base, modId: `spider-${name}` } }))];

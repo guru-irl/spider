@@ -35,6 +35,14 @@ test('the tab look setting defaults on and accepts a boolean opt-out', () => {
   for (const autoHideTabs of ['false', 0, null, {}]) expect(() => parseHerdrConfig({ ...base, look: { autoHideTabs } })).toThrow(/autoHideTabs/);
 });
 
+test('window blur defaults on and requires a boolean opt-out', () => {
+  const base = { ...config, machines: [] };
+  expect(parseHerdrConfig(base).look).toMatchObject({ windowBlur: true });
+  expect(parseHerdrConfig({ ...base, look: { windowBlur: false } }).look).toMatchObject({ windowBlur: false });
+  expect(parseHerdrConfig({ ...base, look: { windowBlur: true } }).look).toMatchObject({ windowBlur: true });
+  for (const windowBlur of ['true', null, 1, {}]) expect(() => parseHerdrConfig({ ...base, look: { windowBlur } })).toThrow(/windowBlur/);
+});
+
 test('intentional notification sound defaults on and only accepts a boolean', () => {
   const base = { ...config, machines: [] };
   expect(parseHerdrConfig(base).notifications).toEqual({ sound: true });

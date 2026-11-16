@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { paths } from '@spider/db-core';
 import { afterEach, expect, test, vi } from 'vitest';
+import { HerdrError } from '../client/parse.js';
 import { selectRemoteSessionSlot } from '../spaces/remote-placement.js';
 import { createPaneService, type PaneServicePorts } from '../panes/service.js';
 import { createPanePlacementStore } from '../panes/store.js';
@@ -148,6 +149,45 @@ test('stale parked shell incarnation refuses before dispatch', async () => {
   expect(f.ports.dispatch).not.toHaveBeenCalled(); await service.stop();
 });
 
+test('snapshot and a local action finish while unrelated inventory is still pending', async () => {
+  const f = await fixture(); let finish!: () => void;
+  f.ports.inventory = async () => { await new Promise<void>(resolve => { finish = resolve; }); return { version: 1, rows: [], next: null, complete: true }; };
+  const service = createPaneService(f.ports), refreshing = service.reconcile();
+  await vi.waitFor(() => expect(finish).toBeTypeOf('function'));
+  const deadline = new Promise<'blocked'>(resolve => { const timer = setTimeout(() => resolve('blocked'), 100); timer.unref(); });
+  const snapshot = await Promise.race([service.request({ version: 1, op: 'snapshot', operationId: 'cached' }), deadline]);
+  const action = await Promise.race([service.request(identityOpen), deadline]);
+  finish(); await refreshing; await service.stop();
+  expect(snapshot).toMatchObject({ kind: 'snapshot', complete: false });
+  expect(action).toMatchObject({ outcome: { status: 'complete', reason: 'applied' } });
+});
+test('a slow accepted open returns pending before the transport deadline and replays its final result', async () => {
+  const f = await fixture(); const state = await f.ports.store.read();
+  f.ports.store = { read: async () => state, update: async change => change(state) };
+  let finish!: () => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  f.ports.dispatch = vi.fn(async () => { entered(); await new Promise<void>(resolve => { finish = resolve; }); return { status: 'complete', reason: 'opened', presentation: f.presentation }; });
+  vi.useFakeTimers(); const service = createPaneService(f.ports);
+  try {
+    const request = service.request(identityOpen); await started;
+    await vi.advanceTimersByTimeAsync(4000);
+    const result = await Promise.race([request, Promise.resolve('blocked')]);
+    finish();
+    expect(result).toMatchObject({ outcome: { status: 'pending', reason: 'operation-in-progress' } });
+    expect(await service.request(identityOpen)).toMatchObject({ outcome: { status: 'complete', reason: 'opened' } });
+    expect(f.ports.dispatch).toHaveBeenCalledTimes(1);
+  } finally { finish(); vi.useRealTimers(); await service.stop(); }
+});
+test('expected target and folder refusals are returned instead of looking like an outage', async () => {
+  const f = await fixture(); const service = createPaneService(f.ports);
+  try {
+    for (const code of ['stale-pane-owner', 'target-mismatch', 'pane-folder-unavailable', 'pane-machine-mismatch', 'pane-build-mismatch', 'destination-unavailable']) {
+      f.ports.dispatch = async () => { throw new HerdrError(code, 'Unavailable'); };
+      expect(await service.request({ ...identityOpen, operationId: code, intent: { ...identityOpen.intent, operationId: code } }))
+        .toMatchObject({ outcome: { status: 'refused', reason: code } });
+    }
+  } finally { await service.stop(); }
+});
 test('capped display snapshots retain the full private placement inventory', async () => {
   const f = await fixture();
   const owner = { sessionId: 'session-0', generation: 'gen-1', terminal: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', socket: '/unused', sessionNamespace: 'test' }, cwd: '/home/example', sessionFile: null, name: 'Builder' };
@@ -160,6 +200,7 @@ test('capped display snapshots retain the full private placement inventory', asy
     return { status: 'refused', reason: selection.kind === 'unplaced' ? selection.reason : 'placed', presentation: null };
   };
   const service = createPaneService(f.ports);
+  await service.reconcile();
   const display = await service.request({ version: 1, op: 'snapshot', operationId: 'display' });
   expect(display).toMatchObject({ kind: 'snapshot', complete: false, omittedRows: 14 });
   if (display.kind !== 'snapshot') throw new Error('Expected display snapshot');

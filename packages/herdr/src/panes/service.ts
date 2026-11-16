@@ -120,19 +120,19 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   }
   const privateInventory = (): PrivatePaneInventory => {
     const active = machines.map(machine => inventories.get(machine.key));
-    const complete = machines.every((machine, i) => machine.state === 'connected' && active[i]?.complete === true);
+    const complete = machines.length > 0 && machines.every((machine, i) => machine.state === 'connected' && active[i]?.complete === true);
     return { rows: active.flatMap(page => page?.rows ?? []), complete, stale: !complete || active.some(page => page?.stale) };
   };
   async function apply(request: PaneServiceRequest): Promise<PaneServiceReply> {
     await live();
     if (request.op === 'snapshot') {
-      await reconcile(); const state = await ports.store.read();
+      const state = await ports.store.read();
+      void reconcile().catch(() => {});
       const inventory = privateInventory(); const rows = inventory.rows.slice(0, 256);
       const reply: Extract<PaneServiceReply, { kind: 'snapshot' }> = { version: 1, kind: 'snapshot', revision: state.revision, machines, presentations: state.presentations, rows, targetFacts: facts, complete: inventory.complete && inventory.rows.length <= 256, omittedRows: inventory.rows.length - rows.length };
       while (Buffer.byteLength(JSON.stringify(reply)) > 1024 * 1024 && rows.length) { rows.pop(); reply.omittedRows++; reply.complete = false; }
       encodePaneServiceReply(reply); return reply;
     }
-    await reconcile();
     const state = await ports.store.read();
     if ('presentationId' in request) {
       const current = state.presentations.find(p => p.id === request.presentationId);
@@ -162,9 +162,17 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     try { result = request.op === 'park' ? await parkPresentation(request.presentationId, request.expectedRevision, lifecycle)
       : request.op === 'close-confirmed' ? await confirmPresentationClose({ id: request.presentationId, expectedRevision: request.expectedRevision, operationId: request.operationId, target: request.target }, lifecycle)
       : await ports.dispatch(request, beforeLaunch, privateInventory());
-    } catch (error) { if (error instanceof HerdrError && ['machine-changed', 'unknown-agent', 'agent-program-missing'].includes(error.code)) return outcome(error.code); throw error; }
+    } catch (error) { if (error instanceof HerdrError) return outcome(error.code); throw error; }
     void reconcile().catch(() => {});
     return { version: 1, kind: 'outcome', outcome: result };
+  }
+  async function response(reply: Promise<PaneServiceReply>): Promise<PaneServiceReply> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([reply, new Promise<PaneServiceReply>(resolve => {
+        timer = setTimeout(() => resolve({ version: 1, kind: 'outcome', outcome: { status: 'pending', reason: 'operation-in-progress', presentation: null } }), 4000);
+      })]);
+    } finally { clearTimeout(timer); }
   }
   const unsubscribe = ports.subscribe(() => { void reconcile().catch(() => {}); });
   const cancelTimer = ports.schedule(() => { void reconcile().catch(() => {}); }, 5000);
@@ -174,14 +182,14 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
       if (request.op === 'snapshot') return apply(request);
       pruneReplay();
       const previous = replay.get(request.operationId);
-      if (previous) return previous.bytes === bytes ? previous.reply : Promise.resolve(outcome('operation-reused'));
+      if (previous) return previous.bytes === bytes ? response(previous.reply) : Promise.resolve(outcome('operation-reused'));
       // In-flight and recent actions must retain their replay evidence.
       if (replay.size >= 4096) return Promise.resolve(outcome('service-operation-limit'));
       const reply = queue.then(() => apply(request)); queue = reply.then(() => {}, () => {});
       const entry = { bytes, reply, settledAt: null as number | null };
       replay.set(request.operationId, entry);
       void reply.then(() => { entry.settledAt = ports.clock(); }, () => { entry.settledAt = ports.clock(); });
-      return reply;
+      return response(reply);
     }, reconcile,
     async stop() { if (stopped) return; stopped = true; abort.abort(); unsubscribe(); cancelTimer(); await queue; await refreshing?.catch(() => {}); },
   };

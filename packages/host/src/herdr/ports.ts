@@ -2,7 +2,7 @@ import { stagePaneEndpointInstallation, probeLocalPaneEndpoint } from './pane-in
 import { inspectPaneInstallation } from './pane-doctor.js';
 import { createPaneRemoteRequest } from './pane-transport.js';
 import { createArgvClient } from '../../../herdr/src/client/argv-client.js';
-import { PANE_MANAGED_MODS, planPaneModFiles } from '../../../herdr/src/setup/pane-assets.js';
+import { PANE_ENTRY_MODS, planPaneModFiles } from '../../../herdr/src/setup/pane-assets.js';
 import { createPaneRuntime, type PaneRuntime } from './pane-runtime.js';
 import { createProductionPaneEndpointPorts } from './bin/pane-endpoint.js';
 import { handleRemotePaneRequest } from './pane-endpoint.js';
@@ -418,6 +418,16 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   const appEnv = (request: SetupRequest) => ({ ...env, HERDR_APP_HOME: request.config.app.home });
   const toastAvailable = async (release: string | undefined, appHome: string) => release ? (await planToastFiles(release, appHome, join(packageRoot, 'packages/herdr/assets/toast'))).length > 0 : false;
   const additionalFor = (release: string | undefined) => release === '0.1.13' || release === '0.1.16' ? additionalPatches[release] ?? {} : {};
+  const auxiliaryModIds = (selected: LookPatchSet | undefined) => [
+    ...PANE_ENTRY_MODS,
+    ...(selected?.mods.menu ? ['spider-menu'] : []),
+    ...(additionalFor(selected?.upstreamVersion)['new-menu'] ? ['spider-new-menu'] : []),
+  ];
+  const modNames = (selected: LookPatchSet | undefined, hasToast: boolean) => [
+    'agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'picker',
+    ...auxiliaryModIds(selected).map(name => name.slice('spider-'.length)),
+    ...(hasToast ? ['toast'] : []),
+  ];
   const filesFor = async (files: readonly { path: string; bytes: Buffer; mode?: number; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[], context: SetupContext): Promise<InstallFile[]> => Promise.all(files.map(async file => ({ ...file, expected: file.terminalKeys || file.keys ? (await snapshot(file.path)).hash : context.installed[file.path] ?? null, collision: file.terminalKeys || file.keys ? 'key' as const : 'clone' as const })));
   const pickerFiles = async (request: SetupRequest, context: SetupContext, fonts: Awaited<ReturnType<typeof prepareFonts>>['families']): Promise<{ path: string; bytes: Buffer; mode?: number }[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets'), mods = join(request.config.app.home, 'mods');
@@ -456,7 +466,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     for (const name of ['diamond', 'heptagon', 'hexagon', 'octagon', 'pentagon', 'star', 'triangle']) files.push({ path: join(picker.directory, `space-${name}.svg`), bytes: await readFile(join(assets, 'agents', `space-${name}.svg`)) });
     const config = { ...picker.props, version: 1, fonts, machines: request.config.machines, retention: { completedRows: request.config.limits.completedRows, completedHours: request.config.limits.completedHours } };
     files.push({ path: configPath, mode: 0o600, bytes: Buffer.from(JSON.stringify(config, null, 2) + '\n') });
-    files.push(...await planPaneModFiles({ assetsRoot: assets, appHome: request.config.app.home, nodePath: picker.props.nodePath, cliPath: picker.props.cliPath, fonts }));
+    files.push(...await planPaneModFiles({ assetsRoot: assets, appHome: request.config.app.home, nodePath: picker.props.nodePath, cliPath: picker.props.cliPath, fonts, modIds: context.modProps.map(copy => copy.props.modId) }));
     const available = new Set([...files.map(file => resolve(file.path)), ...['feed.js', 'look.js', 'open-failure.js', 'presentations.js'].map(name => resolve(picker.directory, 'shared', name))]);
     for (const reference of references) {
       const target = resolve(dirname(reference.path), reference.specifier), root = resolve(reference.root);
@@ -780,7 +790,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       const selected = ['mods', 'clones', 'patch-version', 'layout-theme'].includes(item) ? await releaseLook(request) : undefined;
       const release = selected?.upstreamVersion;
       const hasToast = await toastAvailable(release, request.config.app.home);
-      const context: SetupContext = { labelContract: HerdrLabelContract, installed: Object.fromEntries(journal.entries.map(entry => [entry.path, entry.after])), retiredTerminals: [], priorCutover: journal.cutover, recordCutover: async () => { throw new HerdrError('doctor-read-only', 'Doctor cannot record a cutover'); }, modProps: ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'picker', ...PANE_MANAGED_MODS.map(name => name.slice('spider-'.length)), ...(selected?.mods.menu ? ['menu'] : []), ...(additionalFor(release)['new-menu'] ? ['new-menu'] : []), ...(hasToast ? ['toast'] : [])].map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(request.config.globalRoot, 'herdr'), cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: request.config.app.binary, configPath: request.configPath, labelContract: HerdrLabelContract } })) };
+      const context: SetupContext = { labelContract: HerdrLabelContract, installed: Object.fromEntries(journal.entries.map(entry => [entry.path, entry.after])), retiredTerminals: [], priorCutover: journal.cutover, recordCutover: async () => { throw new HerdrError('doctor-read-only', 'Doctor cannot record a cutover'); }, modProps: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(request.config.globalRoot, 'herdr'), cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: request.config.app.binary, configPath: request.configPath, labelContract: HerdrLabelContract } })) };
       const compareFiles = async (files: readonly InstallFile[]) => {
         for (const file of files) if (!(await snapshot(file.path)).bytes?.equals(file.bytes)) {
           if (item === 'mods' || item === 'clones') { const notice = installedModMismatchNotice(file.path); return failure('installed-artifact-changed', notice.message, notice.repair); }
@@ -804,11 +814,11 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const effectiveFiles = files.map(file => staged.get(file.path) ?? file);
         const result = await compareFiles(effectiveFiles);
         if (result.failures.length) return result;
-        const managedRoots = ['spider-picker', ...PANE_MANAGED_MODS, ...(toast.length ? ['spider-toast'] : [])].map(name => resolve(request.config.app.home, 'mods', name) + sep);
+        const managedRoots = ['spider-picker', ...auxiliaryModIds(selected), ...(toast.length ? ['spider-toast'] : [])].map(name => resolve(request.config.app.home, 'mods', name) + sep);
         for (const file of files) if (managedRoots.some(root => resolve(file.path).startsWith(root)) && (await snapshot(file.path)).hash !== context.installed[file.path]) {
           const notice = installedModMismatchNotice(file.path); return failure('installed-artifact-changed', notice.message, notice.repair);
         }
-        return loadingUnavailable(['spider-panel', 'spider-picker', ...PANE_MANAGED_MODS, ...(toast.length ? ['spider-toast'] : [])]);
+        return loadingUnavailable(['spider-panel', 'spider-picker', ...auxiliaryModIds(selected), ...(toast.length ? ['spider-toast'] : [])]);
       }
       if (item === 'clones') {
         const files = (await stagedLook(request, context)).filter(file => /\/mods\/spider-(?:agents|spaces|pane|tabs|chrome|menu|new-menu|picker)\//.test(file.path));
@@ -1059,9 +1069,9 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
             recoveredCutover = { terminals: recovery.createdTabs.map(tab => tab.terminal), identities: Object.fromEntries(recovery.entries.flatMap(entry => { const result = verified.find(r => r.sessionId === entry.target.sessionId) ?? entry.result; return result ? [[result.sessionId, result.startIdentity]] : []; })) };
           } else if (recovery.recoveredCutover) recoveredCutover = { terminals: recovery.createdTabs.map(tab => tab.terminal), identities: Object.fromEntries(recovery.recoveredCutover.launched.map(owner => [owner.sessionId, owner.startIdentity])) };
           const patchBytes = await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'));
-          const release = (await releaseLook(request)).upstreamVersion;
+          const selected = await releaseLook(request), release = selected.upstreamVersion;
           const hasToast = await toastAvailable(release, request.config.app.home);
-          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, cutoverActions: await planSpaceCutover(request.config, spaces, { snapshot, recovery }), fingerprint: digest(Object.keys(additionalFor(release)).length ? Buffer.concat([patchBytes, Buffer.from(JSON.stringify(additionalFor(release)))]) : patchBytes), coreIdentity: identity, mods: ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'picker', ...PANE_MANAGED_MODS.map(name => name.slice('spider-'.length)), ...(release === '0.1.13' || release === '0.1.16' ? ['menu'] : []), ...(additionalFor(release)['new-menu'] ? ['new-menu'] : []), ...(hasToast ? ['toast'] : [])].map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
+          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, cutoverActions: await planSpaceCutover(request.config, spaces, { snapshot, recovery }), fingerprint: digest(Object.keys(additionalFor(release)).length ? Buffer.concat([patchBytes, Buffer.from(JSON.stringify(additionalFor(release)))]) : patchBytes), coreIdentity: identity, mods: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
         },
         stageLook: (request, context) => stagedLook(request, context),
         installFiles: async (request, context) => {

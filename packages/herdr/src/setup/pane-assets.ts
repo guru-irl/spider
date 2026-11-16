@@ -5,8 +5,7 @@ import { join } from 'node:path';
 import { absolutePath, HerdrError } from '../client/parse.js';
 import { snapshot } from './backup.js';
 export const PANE_ENTRY_MODS = ['spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down', 'spider-pane-waiting'] as const;
-export const PANE_MANAGED_MODS: readonly string[] = [...PANE_ENTRY_MODS, 'spider-menu', 'spider-new-menu'];
-export async function planPaneModFiles(input: { assetsRoot: string; appHome: string; nodePath: string; cliPath: string; fonts: unknown }): Promise<{ path: string; bytes: Buffer; mode?: number }[]> {
+export async function planPaneModFiles(input: { assetsRoot: string; appHome: string; nodePath: string; cliPath: string; fonts: unknown; modIds: readonly string[] }): Promise<{ path: string; bytes: Buffer; mode?: number }[]> {
   for (const path of [input.assetsRoot, input.appHome, input.nodePath, input.cliPath]) absolutePath(path);
   const files: { path: string; bytes: Buffer; mode?: number }[] = [];
   for (const [suffix, place] of [['', 'tab'], ['-right', 'right'], ['-down', 'down']] as const) {
@@ -20,7 +19,7 @@ export async function planPaneModFiles(input: { assetsRoot: string; appHome: str
   // Stage common entry dependencies; verified stock clone bodies remain version-admitted separately.
   files.push({ path: join(input.appHome, 'mods/spider-tabs/presentation-move.js'), bytes: await readFile(join(input.assetsRoot, 'agents/move.js')) });
   const actions = await readFile(join(input.assetsRoot, 'machines/actions.js'));
-  for (const name of ['spider-pane', 'spider-tabs', 'spider-menu', 'spider-new-menu']) files.push({ path: join(input.appHome, 'mods', name, 'machines/actions.js'), bytes: actions });
+  for (const name of ['spider-pane', 'spider-tabs', ...['spider-menu', 'spider-new-menu'].filter(name => input.modIds.includes(name))]) files.push({ path: join(input.appHome, 'mods', name, 'machines/actions.js'), bytes: actions });
   const waiting = join(input.appHome, 'mods/spider-pane-waiting');
   files.push({ path: join(waiting, 'mod.json'), bytes: Buffer.from('{"place":"none","title":"Connecting"}\n') },
     { path: join(waiting, 'main.js'), bytes: Buffer.from("// SPDX-License-Identifier: MIT\nimport { View, div } from 'gpui-kit';\nexport default class WaitingPane extends View { render() { return div().child('Connecting…'); } }\n") });

@@ -8,7 +8,10 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createRemoteTestFixture } from './acceptance/c.js';
+import { openRetainedConsole } from './console-view-fixture.js';
+import { readRetainedAgentConsole } from '../remote/console.js';
 import { executeRemote } from '../remote/execute.js';
+import { parseRuntimePublication } from '../remote/runtime.js';
 import type { MachineName, RemoteExecuteRequest, TerminalAddress } from '../contracts.js';
 const harnesses: HerdrHarness[] = [];
 afterEach(async () => {
@@ -29,11 +32,20 @@ async function scenario(mode: 'fake' | 'hc') {
   expect(first.backgrounded).toBe(true);
   const second = await executeRemote(request("console.log('second output');console.error('diagnostic');process.exitCode=23"), fixture.ports);
   expect(second).toMatchObject({ stdout: 'second output\n', stderr: 'diagnostic\n', exitCode: 23 });
-  const inventory = await h.cli(['ls', '--all', '--json'], 'remote') as { terminals: { address: string; labels: Record<string, string>; name?: string; title?: string }[] };
-  const summaries = await Promise.all(inventory.terminals.map(terminal => h.remoteHc.get(terminal.address as TerminalAddress)));
-  const consoles = summaries.filter(terminal => terminal.labels['spider.kind'] === 'remote-console');
-  expect(consoles).toHaveLength(1); expect(fixture.started).toHaveLength(2);
+  const remoteConsoles = async () => {
+    const inventory = await h.cli(['ls', '--all', '--json'], 'remote') as { terminals: { address: string }[] };
+    const summaries = await Promise.all(inventory.terminals.map(terminal => h.remoteHc.get(terminal.address as TerminalAddress)));
+    return summaries.filter(terminal => terminal.labels['spider.kind'] === 'remote-console');
+  };
+  expect(await remoteConsoles()).toEqual([]); expect(fixture.started).toHaveLength(2);
+  const viewRequest = { ...request(''), target: await fixture.ports.target(on, h.owner!) };
+  const view = await openRetainedConsole(viewRequest, h.hc);
+  expect(view).not.toBeNull();
+  expect((await openRetainedConsole(viewRequest, h.hc))?.address).toBe(view!.address);
+  const consoles = await remoteConsoles();
+  expect(consoles).toHaveLength(1);
   const address = `remote.invalid/${consoles[0].address}` as TerminalAddress;
+  expect(address).toBe(view!.address);
   let screen = ''; const deadline = Date.now() + 5000;
   while (!screen.includes('#2 ✗ exit 23') && Date.now() < deadline) { screen = (await h.hc.read(address, { lines: 200 })).replace(/\x1b\[[0-9;]*m/g, ''); await delay(25); }
   expect(screen).toMatch(/#1 exec [^\n]*\n\s*#2 exec /);
@@ -59,24 +71,41 @@ async function scenario(mode: 'fake' | 'hc') {
   }
   await writeFile(resolve(`.spider/scratch/agent-consoles/execute-${mode}-evidence.json`), JSON.stringify({ localSocket: h.localSocket, remoteSocket: h.remoteSocket, localCoreId: h.localCoreId, remoteCoreId: h.remoteCoreId, consoles, screen, receipt, payloadSurvivedConsoleClose: true }, null, 2));
 }
-it('ensures the console before job preparation and passes its hold directory only to that launch', async () => {
+it('retains the console before job preparation without opening a view', async () => {
   const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start(); vi.stubEnv('HC_TERMINAL_ID', h.owner!.terminal.terminalId);
   const fixture = await createRemoteTestFixture(h); const start = fixture.ports.jobs.start;
+  const on = 'remote.invalid' as MachineName;
+  const source = { kind: 'code', language: 'javascript', code: 'process.exitCode=23' } as const;
+  const target = await fixture.ports.target(on, h.owner!);
+  let directory = '';
   fixture.ports.jobs.start = async (prepare, ...rest) => {
     const calls = (await h.calls()).filter(call => call.argv[0] === 'run' && call.argv.includes('spider.kind=remote-console'));
-    expect(calls).toHaveLength(1);
-    return start(async () => { const program = await prepare(); expect(program).toHaveProperty('consoleDirectory', calls[0].argv[calls[0].argv.indexOf('--console') + 1]); return program; }, ...rest);
+    expect(calls).toEqual([]);
+    const retained = await readRetainedAgentConsole({ owner: h.owner!, on, target, source }, h.hc);
+    expect(retained).toMatchObject({ machineKey: on });
+    directory = retained!.directory;
+    expect(directory).toMatch(/\/\.consoles\/[a-f0-9]{32}$/);
+    return start(async () => { const program = await prepare(); expect(program).toHaveProperty('consoleDirectory', directory); return program; }, ...rest);
   };
-  const result = await executeRemote({ owner: h.owner!, on: 'remote.invalid' as MachineName, source: { kind: 'code', language: 'javascript', code: 'process.exitCode=23' } }, fixture.ports);
+  const result = await executeRemote({ owner: h.owner!, on, source }, fixture.ports);
   expect(result.exitCode).toBe(23);
+  expect((await h.calls()).filter(call => call.argv[0] === 'run' && call.argv.includes('spider.kind=remote-console'))).toEqual([]);
+  const job = fixture.started[0];
+  expect(JSON.parse((await h.hc.fileRead(on, join(job.remoteDirectory, 'request.json'))).toString())).toMatchObject({ consoleDirectory: directory });
+  expect(parseRuntimePublication(await h.hc.fileRead(on, join(directory, 'head.json')))).toMatchObject({ count: 1 });
+  expect(parseRuntimePublication(await h.hc.fileRead(on, join(directory, 'command-0.json')))).toMatchObject({ jobId: result.remote.jobId });
 }, 20000);
 it('a console launch failure does not fail or cancel the already supervised payload', async () => {
   const h = await createHerdrHarness('fake'); harnesses.push(h); await h.start();
   vi.stubEnv('HC_TERMINAL_ID', h.owner!.terminal.terminalId);
   const fixture = await createRemoteTestFixture(h);
+  const on = 'remote.invalid' as MachineName;
+  const source = { kind: 'code', language: 'javascript', code: "console.log('payload result');process.exitCode=23" } as const;
+  const target = await fixture.ports.target(on, h.owner!);
   await h.scenario({ steps: [{ argvPrefix: ['run'], argvIncludes: ['spider.kind=remote-console'], stderr: { error: { kind: 'console-unavailable', message: 'View is unavailable' } }, exitCode: 3 }] }, 'remote');
-  const result = await executeRemote({ owner: h.owner!, on: 'remote.invalid' as MachineName, source: { kind: 'code', language: 'javascript', code: "console.log('payload result');process.exitCode=23" } }, fixture.ports);
+  const result = await executeRemote({ owner: h.owner!, on, source }, fixture.ports);
   expect(result).toMatchObject({ stdout: 'payload result\n', exitCode: 23, outcome: 'exited' });
+  await expect(openRetainedConsole({ owner: h.owner!, on, target, source }, h.hc)).rejects.toMatchObject({ code: 'console-unavailable' });
   expect(fixture.started).toHaveLength(1); expect(fixture.cancellations).toEqual([]);
 }, 20000);
 it('remote launches share one console and closing it leaves supervised payloads running', async () => { await scenario('fake'); }, 30000);

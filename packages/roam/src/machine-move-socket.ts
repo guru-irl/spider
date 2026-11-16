@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import { isSessionAddress, isSessionEndpoint, type IntercomIntakeFence } from "@spider/intercom/protocol";
 import { isIntercomIntakeFence } from "@spider/intercom/broker/protocol";
-import type { Home, JsonObject } from "@spider/db-core/roam/types";
+import type { Blocker, Home, JsonObject } from "@spider/db-core/roam/types";
+import { IntercomFenceError } from "./intercom-move";
 import type { MachineMovePort } from "./intercom-runtime";
 import { requestPrivateControl, startPrivateControl } from "./control-socket";
 
@@ -30,6 +31,28 @@ function parse(bytes: Buffer): Request | null {
   } catch { /* No malformed request reaches the machine port. */ }
   return null;
 }
+function safeMessage(message: string): string {
+  return message.replace(/\b(?:npm_|gh[opsu]_|sk-)[A-Za-z0-9_-]+/g, "[redacted credential]")
+    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
+    .replace(/\b(api[_-]?key|authorization|password|token)(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1$2[redacted]").slice(0, 500);
+}
+type FailureDiagnostic = { name: string; code: string | number | null; message: string; blockers?: Pick<Blocker, "kind" | "id" | "detail">[] };
+function validDiagnostic(value: unknown): value is FailureDiagnostic {
+  if (!value || typeof value !== "object") return false;
+  const row = value as FailureDiagnostic;
+  return typeof row.name === "string" && /^[A-Za-z0-9_.-]{1,128}$/.test(row.name) && typeof row.message === "string" && row.message.length <= 500 &&
+    (row.code === null || typeof row.code === "string" && /^[A-Za-z0-9_.-]{1,128}$/.test(row.code) || typeof row.code === "number" && Number.isSafeInteger(row.code)) &&
+    (row.blockers === undefined || Array.isArray(row.blockers) && row.blockers.every(item => item &&
+      [item.kind, item.id, item.detail].every(text => typeof text === "string" && text.length > 0 && text.length <= 500)));
+}
+function failureDiagnostic(error: unknown): FailureDiagnostic {
+  const rawCode = error && typeof error === "object" && "code" in error ? error.code : null;
+  const name = error instanceof IntercomFenceError ? "IntercomFenceError" : error instanceof Error ? error.name : "Error";
+  return { name: /^[A-Za-z0-9_.-]{1,128}$/.test(name) ? name : "Error",
+    code: typeof rawCode === "string" && /^[A-Za-z0-9_.-]{1,128}$/.test(rawCode) || typeof rawCode === "number" && Number.isSafeInteger(rawCode) ? rawCode : null,
+    message: safeMessage(error instanceof Error ? error.message : "Unknown machine control failure"),
+    ...(error instanceof IntercomFenceError ? { blockers: error.blockers.map(item => ({ kind: safeMessage(item.kind), id: safeMessage(item.id), detail: safeMessage(item.detail) })) } : {}) };
+}
 const path = (root: string) => join(root, "roam", "move.sock");
 export function startMachineMoveSocket(root: string, enabled: () => boolean, port: MachineMovePort): Promise<{ close(): Promise<void> }> {
   return startPrivateControl(path(root), parse, async request => {
@@ -46,8 +69,10 @@ export function startMachineMoveSocket(root: string, enabled: () => boolean, por
       else result = await port.intake[action as "drain" | "inspect" | "checkGeneration" | "abort"](args[0] as IntercomIntakeFence);
       return { code: 0, reason: "complete", value: { result: JSON.parse(JSON.stringify(result ?? null)) } as JsonObject };
     } catch (error) {
-      const reason = error instanceof Error && /^(?:intercom|move)-[a-z-]+$/.test(error.message) ? error.message : "intercom-move-unavailable";
-      return { code: 1, reason, value: null };
+      const diagnostic = failureDiagnostic(error);
+      const reason = error instanceof IntercomFenceError && typeof diagnostic.code === "string" ? diagnostic.code :
+        error instanceof Error && /^(?:intercom|move)-[a-z-]+$/.test(error.message) ? error.message : "intercom-move-unavailable";
+      return { code: 1, reason, value: { diagnostic } };
     }
   }, enabled);
 }
@@ -56,7 +81,17 @@ export async function requestMachineMove(root: string, input: unknown): Promise<
   const request = parse(encoded);
   if (!request) throw new Error("invalid-machine-move-control");
   const reply = await requestPrivateControl(path(root), request, parse, { timeoutMs: 60_000 });
-  if (reply.code !== 0 || !reply.value || !("result" in reply.value)) throw new Error(reply.reason);
+  if (reply.code !== 0 || !reply.value || !("result" in reply.value)) {
+    const diagnostic = reply.value?.diagnostic;
+    if (validDiagnostic(diagnostic)) {
+      if (diagnostic.name === "IntercomFenceError" && diagnostic.blockers) {
+        throw Object.assign(new IntercomFenceError(diagnostic.blockers), { name: diagnostic.name, diagnostic,
+          ...(diagnostic.code !== null ? { code: diagnostic.code } : {}) });
+      }
+      throw Object.assign(new Error(reply.reason), { code: reply.reason, diagnostic });
+    }
+    throw new Error(reply.reason);
+  }
   return reply.value.result;
 }
 export function machineMoveProxy(root: string): MachineMovePort {

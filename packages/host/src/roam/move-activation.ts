@@ -20,7 +20,7 @@ import { serveSessionControl } from "./control";
 import { createHostMoveBindings } from "./move-runtime";
 import { readmitLiveSession } from "./readmit";
 
-export interface MoveActivationInput extends Pick<LiveFreezeInput, "usage" | "embeddings" | "organism" | "others" | "activity"> {
+export interface MoveActivationInput extends Pick<LiveFreezeInput, "usage" | "embeddings" | "organism" | "others" | "activity" | "bootId"> {
   root: string; sessionId: string; file: string; context(): ExtensionContext | undefined; gate: AdmissionGate;
 }
 export async function createMoveActivation(input: MoveActivationInput): Promise<{ close(): Promise<void>; ready(file: string, epoch: number, home: Home | null): Promise<void> } | null> {
@@ -50,7 +50,7 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
       intercom: { address, ports: bindings.intercom!.ports }, shutdown: async () => { input.context()?.shutdown(); } });
     const ready = (file: string, epoch: number, home: Home | null, readmitOperationId?: string): Promise<HubOperationReadiness | null> => publishOwnedMoveReadiness({
       db: core.db, journal, sessionId: input.sessionId, machineId: config.machineId, file, cwd: input.context()!.cwd, epoch, home, readmitOperationId,
-      owner: () => inspectLiveOwner(join(input.root, "herdr"), input.sessionId, file),
+      owner: () => inspectLiveOwner(join(input.root, "herdr"), input.sessionId, file, input.bootId),
       lock: () => inspectIdLock(join(input.root, "herdr"), input.sessionId),
       async caller() {
         const hc = createHcClient({ binary: herdr.core.binary, env: process.env });
@@ -70,7 +70,7 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
       return live.inspect();
     };
     live.readmit = operation => readmitLiveSession(operation, { globalDb: core.db, machineId: config.machineId, stores, journal, limits: config.limits,
-      proof: op => bindings.evidence!.rollback!(op), owner: async () => ({ kind: "live", identity: await inspectLiveOwner(join(input.root, "herdr"), input.sessionId, input.file) }),
+      proof: op => bindings.evidence!.rollback!(op), owner: async () => ({ kind: "live", identity: await inspectLiveOwner(join(input.root, "herdr"), input.sessionId, input.file, input.bootId) }),
       async readmit(home, op) { if (!input.gate.readmit) throw new Error("move-rollback-proof-missing"); await input.gate.readmit(String(op.args.moveId), op.args.source as unknown as Home, home); const result = await ready(input.file, home.epoch, home, op.id); if (!result) throw new Error("move-rollback-proof-missing"); return result; },
       reopen: bindings.intercom!.rollback.reopen, resume: live.resume });
     const socket = await serveSessionControl({ sessionId: input.sessionId, runtimeRoot: participant.runtimeRoot, ports: live });

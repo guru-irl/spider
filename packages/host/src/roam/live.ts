@@ -19,9 +19,9 @@ import { createProducerDrain } from "./producers.js";
 import { createUsageIngestThrough } from "./usage-ingest.js";
 
 /** An acknowledgement may name the owner only while both ownership records match this process. */
-export async function inspectLiveOwner(root: string, sessionId: string, file: string): Promise<ProcessIdentity> {
+export async function inspectLiveOwner(root: string, sessionId: string, file: string, readBootId: () => Promise<string> = localBootId): Promise<ProcessIdentity> {
   const [id, lease, bootId] = await Promise.all([
-    inspectIdLock(root, sessionId), createSessionLeases(root).get(file), localBootId(),
+    inspectIdLock(root, sessionId), createSessionLeases(root).get(file), readBootId(),
   ]);
   const start = processStartTime(process.pid);
   if (!start || !bootId || !id || !lease || id.pendingOperationId !== null || id.bootId !== bootId ||
@@ -33,7 +33,7 @@ export async function inspectLiveOwner(root: string, sessionId: string, file: st
 type Producers = Parameters<typeof createProducerDrain>[0];
 type Evidence = Parameters<typeof createBlockerPorts>[0];
 export interface LiveFreezeInput {
-  globalRoot: string; sessionId: string; machineId: string; context(): ExtensionContext | undefined;
+  globalRoot: string; sessionId: string; machineId: string; context(): ExtensionContext | undefined; bootId?: () => Promise<string>;
   gate: AdmissionGate; stores: readonly Db[]; expectedStores: readonly StoreKey[]; routeStores: readonly Db[]; address: SessionAddress;
   activity: BlockerActivity; jobRoots: readonly string[]; scratchRoots: readonly string[]; usageRoots?: UsageRoots;
   usage: Producers["usage"]; embeddings: Producers["embeddings"]; organism: Producers["organism"]; others: Producers["others"];
@@ -65,7 +65,7 @@ export function createLiveFreezePorts(input: LiveFreezeInput): LiveFreezePorts {
       if (!ctx || ctx.sessionManager.getSessionId() !== input.sessionId) throw new Error("Participant context unavailable");
       const file = ctx.sessionManager.getSessionFile(), leaf = ctx.sessionManager.getLeafId();
       if (!file || !leaf) throw new Error("Participant transcript unavailable");
-      const owner = await inspectLiveOwner(join(input.globalRoot, "herdr"), input.sessionId, file);
+      const owner = await inspectLiveOwner(join(input.globalRoot, "herdr"), input.sessionId, file, input.bootId);
       return { file, cwd: ctx.cwd, leaf, owner, blockers: await inspectBlockers(ctx, input.stores, fence && input.intercom ? { ...blockers,
         intercom: async () => (await input.intercom!.ports.inspect(fence)).blockers } : blockers) };
     },

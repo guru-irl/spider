@@ -146,7 +146,8 @@ if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id &&
   await writeFile(entry, code, { mode: 0o600 });
   const { build } = await import('vite');
   const output = suite.ownPath(join(suite.root, 'platform'));
-  await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderIntercomBrokerRelative': JSON.stringify(suite.packed.intercomBroker) },
+  await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderIntercomBrokerRelative': JSON.stringify(suite.packed.intercomBroker),
+    'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' },
     ssr: { target: 'node', noExternal: true }, build: { ssr: entry, outDir: output, emptyOutDir: false, minify: false,
       rolldownOptions: { external: id => id.startsWith('node:') || ['better-sqlite3', 'sqlite-vec'].some(name => id === name || id.startsWith(`${name}/`)),
         output: { format: 'es', entryFileNames: 'cli.mjs', codeSplitting: false } } } });
@@ -322,17 +323,14 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: 'stop', timestamp: 2 } },
       { type: 'message', id: 'older-leaf', parentId: 'root-leaf', timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: 'mirrored history', timestamp: 1 } },
     ].map(row => JSON.stringify(row)).join('\n') + '\n', { mode: 0o600 });
-    original = await suite.launchPi({ mode: 'interactive', cwd, args: ['--session', originalFile], extraEnv: hub.env }) as InteractiveDriver;
-    await original.waitEvent('session_start', row => row.sessionId === sessionId, deadline(30_000));
     const global = openDb(join(hub.root, 'spider.db')), worktree = openDb(join(cwd, '.spider', 'project.db'));
     try {
       seedSession(worktree, sessionId, 1, WT, 1024 * 1024);
       global.prepare('INSERT INTO session_homes VALUES (?,?,1,NULL,1)').run(sessionId, HUB);
       recordLocation(global, { sessionId, file: originalFile, cwd, stores: ['global', `repo:${REPO}`, WT], home: { sessionId, machineId: HUB, epoch: 1, moveId: null, updatedAt: 1 } });
     } finally { worktree.close(); global.close(); }
-    const reloadedAt = Date.now();
-    await original.prompt('/reload');
-    await original.waitEvent('session_start', row => row.sessionId === sessionId && row.at >= reloadedAt, deadline(30_000));
+    original = await suite.launchPi({ mode: 'interactive', cwd, args: ['--session', originalFile], extraEnv: hub.env }) as InteractiveDriver;
+    await original.waitEvent('session_start', row => row.sessionId === sessionId, deadline(30_000));
     await waitFor('participating source holds its ID lock', () => inspectIdLock(join(hub.root, 'herdr'), sessionId), row => row?.identity.pid === original!.pid, deadline(30_000));
     await writeFile(join(cwd, 'tracked.txt'), 'staged\n'); await git(cwd, ['add', 'tracked.txt']); await writeFile(join(cwd, 'tracked.txt'), 'working\n');
     await writeFile(join(cwd, 'untracked.txt'), 'untracked fixture\n');

@@ -1,4 +1,5 @@
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { parseLocationStores } from "@spider/db-core/roam/catalog";
 import { startPrivateControl, requestPrivateControl } from "./control-socket";
 import type { IntercomLifecycle, Operation, RoamConfig } from "./contracts";
 import type { SupervisorPorts } from "./supervisor";
@@ -58,10 +59,10 @@ export function createParticipantSupervisor(input: {
     if (!participantCaptureInitialized(global, input.agent.config.machineId, "global")) throw new Error("Participant capture is not initialized");
     const intent = await trusted.get(id); if (!intent) throw new Error("Participant intent unavailable");
     const row = global.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(id) as { stores_json: string } | undefined;
-    const keys: unknown = row && JSON.parse(row.stores_json);
-    if (!Array.isArray(keys) || !keys.length || keys.some(key => typeof key !== "string" || !key.startsWith("worktree:"))) throw new Error("Participant stores unavailable");
+    const keys = parseLocationStores(row ? JSON.parse(row.stores_json) : null).filter(key => key.startsWith("worktree:"));
+    if (!keys.length) throw new Error("Participant stores unavailable");
     let origin: string | null = null;
-    const states = (keys as StoreKey[]).map(key => {
+    const states = keys.map(key => {
       const { db } = input.agent.openStore(key), state = readSessionState(db, id);
       if (!state || !participantCaptureInitialized(db, input.agent.config.machineId, key)) throw new Error("Participant store unavailable");
       const row = db.prepare("SELECT origin_machine FROM sessions WHERE id=?").get(id) as { origin_machine: string } | undefined;

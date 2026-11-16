@@ -12,10 +12,10 @@ import { HerdrError } from '../../../herdr/src/client/parse.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { parsePanePresentation } from '../../../herdr/src/panes/codec.js';
 import type { HerdrConfig, HcClient, TerminalSummary } from '../../../herdr/src/contracts.js';
-import type { PresentedAuxiliaryOptions } from '../../../herdr/src/panes/auxiliary.js';
+import type { PresentedAuxiliaryOptions, PresentedAuxiliaryPanes } from '../../../herdr/src/panes/auxiliary.js';
 import type { PaneAgentRow, PanePresentation, PaneTerminalFacts } from '../../../herdr/src/panes/types.js';
 import { createRoamPlacement, createRoamPresentationOperations } from '../../../herdr/src/roam-placement.js';
-const boundary = vi.hoisted(() => ({ client: null as HcClient | null, facts: vi.fn(), app: {} as Record<string, unknown>, rows: [] as PaneAgentRow[], remote: vi.fn(), auxiliary: null as PresentedAuxiliaryOptions | null, terminals: new Map<string, TerminalSummary>(), layout: { spaces: [] } as unknown }));
+const boundary = vi.hoisted(() => ({ client: null as HcClient | null, facts: vi.fn(), app: {} as Record<string, unknown>, rows: [] as PaneAgentRow[], remote: vi.fn(), auxiliary: null as PresentedAuxiliaryOptions | null, auxiliaryActor: null as PresentedAuxiliaryPanes | null, terminals: new Map<string, TerminalSummary>(), layout: { spaces: [] } as unknown }));
 vi.mock('../../../herdr/src/client/hc.js', () => ({ createHcClient: () => boundary.client, invokeCli: vi.fn(async (_binary, args) => {
   if (args[0] === 'machine') return { machines: [{ name: 'box-1.invalid', aliases: [], id: 'core-remote', machine_id: 'machine-1', state: 'connected' }, { name: 'box-2.invalid', aliases: [], id: 'core-second', machine_id: 'machine-2', state: 'connected' }] };
   if (args[0] === 'read') return { text: 'Ready', how: 'screen', complete: true };
@@ -36,7 +36,7 @@ vi.mock('../herdr/pane-endpoint.js', () => ({ handleRemotePaneRequest: async () 
 vi.mock('../herdr/pane-transport.js', () => ({ createPaneRemoteRequest: () => boundary.remote }));
 vi.mock('../../../herdr/src/panes/auxiliary.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../../../herdr/src/panes/auxiliary.js')>();
-  return { ...actual, createPresentedAuxiliaryPanes: (options: PresentedAuxiliaryOptions) => { boundary.auxiliary = options; return actual.createPresentedAuxiliaryPanes(options); } };
+  return { ...actual, createPresentedAuxiliaryPanes: (options: PresentedAuxiliaryOptions) => { boundary.auxiliary = options; return boundary.auxiliaryActor = actual.createPresentedAuxiliaryPanes(options); } };
 });
 const productionPorts: RoamPresentationPorts[] = [];
 const resources: { root: string; runtime: PaneRuntime }[] = [];
@@ -467,4 +467,99 @@ test.each(['cli-timeout', 'missing-hc', 'owner-unplaced', 'unexpected transport 
   expect((await runtime.store.read()).slots).toEqual([{ session: 'session-1', space: 's1', tab: 'tb1' }]);
   expect(hc.run).not.toHaveBeenCalled();
   expect(hc.kill).not.toHaveBeenCalled();
+});
+
+test('an exited proxy ends its finished session and a resumed session can move', async () => {
+  const { root, runtime, hc } = await fixture();
+  const old = sessionRow();
+  const p: PanePresentation = { ...presentation('old-session'), role: 'agent', target: old.target, proxy: 'old-proxy' as never,
+    slot: { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never }, launch: 'acknowledged' };
+  boundary.terminals.set('execution', { ...facts(p).terminal, state: 'finished' });
+  boundary.terminals.set('old-proxy', { ...facts(p).terminal, address: 'old-proxy' as never, state: 'finished', labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id } });
+  boundary.facts.mockImplementation(async target => ({ ...facts({ target, id: target.terminalId } as PanePresentation),
+    terminal: boundary.terminals.get(target.terminalId) ?? facts({ target, id: target.terminalId } as PanePresentation).terminal }));
+  await runtime.store.update(state => ({ ...state, presentations: [p] }));
+  const states: PanePresentation[][] = [];
+  const update = runtime.store.update.bind(runtime.store);
+  vi.spyOn(runtime.store, 'update').mockImplementation(async change => {
+    const state = await update(change); states.push(structuredClone(state.presentations)); return state;
+  });
+  const service = runtime.createService();
+  await service.reconcile();
+  expect(states.some(items => items.some(item => item.id === p.id && item.visibility === 'ended'))).toBe(true);
+  expect(states.flat().filter(item => item.id === p.id && item.visibility === 'parked')).toEqual([]);
+  expect((await runtime.store.read()).presentations).toEqual([]);
+
+  const resumed = sessionRow('gen-2');
+  resumed.target = { ...resumed.target, terminalId: 'resumed' as never, address: 'core-remote/resumed' as never, homeEpoch: 1 };
+  resumed.owner = { ...resumed.owner, terminal: { ...resumed.owner.terminal, terminalId: resumed.target.terminalId, address: resumed.target.address } };
+  boundary.rows = [resumed];
+  await service.reconcile();
+  const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
+  expect(await operations.prepareHandoff(resumed.sessionId, resumed.target)).toMatchObject({ status: 'pending', reason: 'source-view-unavailable' });
+  expect((await runtime.store.read()).presentations).toMatchObject([{ target: { generation: 'gen-2' }, visibility: 'visible' }]);
+});
+
+test('a finished subagent target reconnects its existing view to a new target', async () => {
+  const { runtime, hc } = await fixture();
+  const row = sessionRow(); boundary.rows = [row];
+  const ownerSlot = { space: 's1' as never, tab: 'tb1' as never, pane: 'owner-pane' as never };
+  const viewSlot = { ...ownerSlot, pane: 'view-pane' as never };
+  const placements = new Map<string, typeof ownerSlot>([['agent-proxy', ownerSlot]]);
+  Object.assign(boundary.app, {
+    ownerPlacement: async (address: string) => { const found = placements.get(address); if (!found) throw new HerdrError('owner-unplaced', 'Not placed'); return found; },
+    tabTerminals: async () => [...placements.keys()],
+    awaitPane: async (address: string) => { placements.set(address, viewSlot); return viewSlot.pane; },
+    command: async (name: string, args: Record<string, string>) => { if (name === 'terminal.park') placements.delete(args.terminal); return {}; },
+  });
+  vi.mocked(hc.setLabels).mockImplementation(async (address, labels) => { const terminal = boundary.terminals.get(String(address)); if (terminal) terminal.labels = { ...terminal.labels, ...labels }; });
+  const ownerPresentation: PanePresentation = { ...presentation('agent'), role: 'agent', target: row.target, proxy: 'agent-proxy' as never, slot: ownerSlot, launch: 'acknowledged' };
+  await runtime.store.update(state => ({ ...state, presentations: [ownerPresentation] }));
+  boundary.terminals.set('agent-proxy', { ...facts(ownerPresentation).terminal, address: 'agent-proxy' as never, labels: { 'spider.kind': 'pane-proxy' } });
+  const view = (terminalId: string) => ({ ...row.target, kind: 'subagent' as const, terminalId: terminalId as never, address: `core-remote/${terminalId}` as never,
+    runId: 'run-1' as never, identityLabels: { 'spider.view-generation': row.generation } });
+  const first = view('viewer-1'), second = view('viewer-2');
+  for (const target of [first, second]) boundary.terminals.set(target.terminalId, facts({ id: target.terminalId, target } as PanePresentation).terminal);
+  boundary.facts.mockImplementation(async target => ({ ...facts({ id: target.terminalId, target } as PanePresentation),
+    terminal: boundary.terminals.get(target.terminalId) ?? facts({ id: target.terminalId, target } as PanePresentation).terminal }));
+  let launches = 0;
+  boundary.remote.mockImplementation(async (_machine, request) => {
+    if (request.op === 'launch-viewer') return { version: 1, op: 'launch-viewer', target: launches++ === 0 ? first : second };
+    if (request.op === 'stop-viewer' || request.op === 'renew-viewers') return { version: 1, op: request.op };
+    if (request.op === 'list') return { version: 1, op: 'list', page: { version: 1, rows: [row], complete: true, next: null } };
+    throw new Error('Unexpected remote effect');
+  });
+  const actor = boundary.auxiliaryActor!;
+  expect(await actor.openPresented('subagent', 'run-1' as never, row.owner, { timeoutMs: 5000 })).toMatchObject({ viewer: 'proxy-1' });
+  expect((await runtime.store.read()).presentations.find(item => item.role === 'subagent')?.target.terminalId).toBe('viewer-1');
+  boundary.terminals.get('viewer-1')!.state = 'finished';
+  await actor.tick();
+  expect((await runtime.store.read()).presentations.find(item => item.role === 'subagent')).toMatchObject({ proxy: 'proxy-1', target: { terminalId: 'viewer-2' } });
+  expect(launches).toBe(2);
+});
+
+test('opening a pane succeeds when the focused program has finished', async () => {
+  const { runtime, hc } = await fixture();
+  const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never };
+  const finished: PanePresentation = { ...presentation('finished-program'), proxy: 'finished-proxy' as never, slot, launch: 'acknowledged' };
+  await runtime.store.update(state => ({ ...state, presentations: [finished] }));
+  boundary.facts.mockImplementation(async target => {
+    const value = facts({ id: target.terminalId, target } as PanePresentation);
+    return target.terminalId === finished.target.terminalId ? { ...value, currentCwd: null, terminal: { ...value.terminal, state: 'finished' } } : value;
+  });
+  Object.assign(boundary.app, {
+    focusedPane: async () => slot,
+    tabPanes: async () => [{ pane: slot.pane, terminal: finished.proxy }],
+    listSpaces: async () => [{ id: 's1', name: 'Work', machine: null, tabs: [{ id: 'tb1', name: 'Work' }] }],
+    ownerPlacement: async () => ({ space: 's1', tab: 'new-tab', pane: 'new-pane' }),
+    command: async (name: string) => {
+      if (name !== 'tab.new') throw new Error('Unexpected app command');
+      boundary.terminals.set('new-terminal', { ...facts(finished).terminal, address: 'new-terminal' as never, state: 'live', labels: { 'spider.pane-operation': 'open-after-finished' } });
+      return { tab: 'new-tab', pane: 'new-pane', terminal: 'new-terminal' };
+    },
+  });
+  const result = await runtime.createService().request({ version: 1, op: 'open', operationId: 'open-after-finished', machineKey: 'core-local', coreId: 'core-local' as never, machineId: null,
+    intent: { operationId: 'open-after-finished', space: 's1' as never, place: 'tab', anchor: null, program: { kind: 'shell' } } });
+  expect(result).toMatchObject({ outcome: { status: 'complete', reason: 'native-presented', presentation: { target: { terminalId: 'new-terminal' } } } });
+  expect(hc.setLabels).toHaveBeenCalledWith('new-terminal', { 'spider.pane-operation': 'open-after-finished' });
 });

@@ -84,7 +84,7 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
     if (reply.op !== 'list') throw new HerdrError('pane-reply-mismatch', 'Expected source inventory');
     const choices = await machines();
     return { ...reply.page, rows: reply.page.rows.map((sourceRow): PaneAgentRow => {
-      if (sourceRow.machineKey !== machine.coreId || sourceRow.target && sourceRow.target.coreId !== machine.coreId) throw new HerdrError('pane-source-mismatch', 'Inventory source changed');
+      if (sourceRow.machineKey !== machine.coreId || sourceRow.owner && sourceRow.owner.terminal.coreId !== machine.coreId || sourceRow.target && sourceRow.target.coreId !== machine.coreId) throw new HerdrError('pane-source-mismatch', 'Inventory source changed');
       if (sourceRow.unavailableReason !== null) return { ...sourceRow, machineKey: machine.key };
       const row = { ...sourceRow, consoles: sourceRow.consoles.map(console => { const matches = console.target ? choices.filter(choice => choice.coreId === console.target!.coreId && choice.state === 'connected') : []; return { ...console, target: matches.length === 1 && console.target ? { ...console.target, alias: matches[0].alias, machineId: matches[0].machineId } : null }; }) };
       if (row.machineKey !== machine.coreId || row.target && row.target.coreId !== machine.coreId) throw new HerdrError('pane-source-mismatch', 'Inventory source changed');
@@ -248,10 +248,12 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
         ? { version: 1, op: 'launch-viewer', sessionId: owner.sessionId, generation: owner.generation, runId: id as never, leaseId }
         : { version: 1, op: 'open-console', sessionId: owner.sessionId, generation: owner.generation, machineKey: console!.machineKey, consoleId: id as import('../../../herdr/src/contracts.js').ConsoleId, leaseId });
       if ((reply.op !== 'launch-viewer' && reply.op !== 'open-console') || !reply.target) throw new HerdrError('pane-view-unavailable', 'Source view is unavailable');
+      if (kind === 'subagent' && reply.target.coreId !== owner.terminal.coreId) throw new HerdrError('pane-source-mismatch', 'Source view moved to another machine');
       const executionMachine = await findMachine(reply.target.coreId);
       return { ...reply.target, alias: executionMachine.alias, machineId: executionMachine.machineId };
     },
     async bindTarget(reservation, target) {
+      await validateTarget(target, 'open');
       const id = 'aux-' + hash(JSON.stringify([reservation.kind, reservation.id, reservation.owner.sessionId, reservation.owner.generation]));
       const slot = await app.ownerPlacement(reservation.viewer);
       await store.update(state => { const old = state.presentations.find(p => p.id === id); const p: PanePresentation = { id, revision: (old?.revision ?? 0) + 1, mode: 'proxy', role: reservation.kind === 'console' ? 'console' : 'subagent', target, proxy: reservation.viewer, slot, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null }; return { ...state, presentations: [...state.presentations.filter(p => p.id !== id), p] }; });

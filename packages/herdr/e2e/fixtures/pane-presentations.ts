@@ -81,10 +81,10 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
         for (const row of inventory.terminals) {
           if (typeof row.address !== 'string' || row.address.includes('/') || row.state !== 'live') continue;
           if (spaces.some(space => space.tabs.some(tab => tab.terminals.some(item => item.terminal === row.address)))) continue;
-          const destination = fallbackTabs.find(({ space, tab }) => row.labels?.['herdr.space'] === space.id && row.labels?.['herdr.tab'] === tab.id);
-          if (!destination) continue;
           const proof = await hc(['get', row.address, '--json']);
-          if (proof.address !== row.address || proof.state !== 'live' || proof.labels?.['herdr.space'] !== destination.space.id || proof.labels?.['herdr.tab'] !== destination.tab.id) continue;
+          if (proof.address !== row.address || proof.state !== 'live') continue;
+          const destination = fallbackTabs.find(({ space, tab }) => proof.labels?.['herdr.space'] === space.id && proof.labels?.['herdr.tab'] === tab.id);
+          if (!destination) continue;
           const pane = { id: fresh('pane') }, anchor = destination.tab.panes.at(-1)!;
           link(anchor.id, pane.id, 'right'); destination.tab.panes.push(pane);
           destination.tab.terminals.push({ pane: pane.id, terminal: row.address });

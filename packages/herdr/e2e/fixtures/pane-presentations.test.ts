@@ -44,7 +44,7 @@ describe('cross-machine presentation fixtures', () => {
   });
   it('adopts a live labelled local display into an owned fallback tab without stealing focus', async () => {
     let records: Record<string, any>[] = [];
-    const app = createPresentationApp(async args => args[0] === 'run' ? { address: 't1' } : args[0] === 'ls' ? { terminals: records } : records.find(row => row.address === args[1])!);
+    const app = createPresentationApp(async args => args[0] === 'run' ? { address: 't1' } : args[0] === 'ls' ? { terminals: records.map(({ address, state }) => ({ address, state })) } : records.find(row => row.address === args[1])!);
     const owner = await app('space.new', { argv: ['/bin/cat'] });
     const target = await app('tab.new', { space: owner.space, mod: 'pane' });
     await app('pane.focus', { pane: owner.pane });

@@ -223,7 +223,7 @@ export function createHostHerdrPorts(options: HostPortOptions): HostHerdrPorts {
 
 export async function openRunView(input: {
   owner: Owner; id: RunId; automatic: boolean; automaticEnabled: boolean; signal: AbortSignal; localCore: CoreId;
-  route: { kind: 'local'; panes: Pick<AuxiliaryPaneActor, 'acquire' | 'release'> }
+  route: { kind: 'local'; panes: Pick<AuxiliaryPaneActor, 'acquire' | 'release'>; identity(): Promise<CoreIdentity> }
     | { kind: 'presented'; connect(): Promise<Pick<PaneService, 'request' | 'stop'>> };
   isCurrent(): boolean;
 }): Promise<TerminalHandle | null> {
@@ -231,6 +231,10 @@ export async function openRunView(input: {
   if (!active() || input.automatic && !input.automaticEnabled) return null;
   if (input.route.kind === 'local') {
     if (input.owner.terminal.coreId !== input.localCore) return null;
+    const identity = await input.route.identity();
+    if (!active()) return null;
+    if (identity.coreId !== input.owner.terminal.coreId || identity.socket !== input.owner.terminal.socket || identity.sessionNamespace !== input.owner.terminal.sessionNamespace)
+      throw new HerdrError('core-mismatch', 'Presentation core identity changed');
     const reservation = await input.route.panes.acquire('subagent', input.id, input.owner, { signal: input.signal, timeoutMs: input.automatic ? 10000 : 30000,
       automatic: input.automatic, ownerRelative: !input.automatic });
     if (!active()) { if (reservation) await input.route.panes.release(reservation); return null; }

@@ -342,3 +342,19 @@ export function middlePath(path, max) {
   const head = Math.ceil((max - 1) / 2), tail = Math.floor((max - 1) / 2);
   return points.slice(0, head).join('') + '\u2026' + (tail ? points.slice(-tail).join('') : '');
 }
+
+/** The CLI validates the bounded wire contract. Never treat pending placement as acknowledgement. */
+export async function requestPaneService(config, exec, request) {
+  if (!config?.nodePath || !config?.cliPath) throw new Error('Pane service is not configured');
+  const operationId = request.operationId ?? Date.now().toString(36) + Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  const result = await exec(config.nodePath, [config.cliPath, 'panes', 'request', '--json', JSON.stringify({ ...request, version: 1, operationId })], { timeout: 65000 });
+  let reply;
+  try { if (typeof result.stdout !== 'string' || utf8Size(result.stdout) > 1024 * 1024) throw new Error(); reply = JSON.parse(result.stdout); } catch { throw new Error('Pane service is unavailable'); }
+  if (result.code !== 0 || reply?.version !== 1) throw new Error('Pane service is unavailable');
+  if (request.op === 'snapshot') {
+    if (reply.kind !== 'snapshot' || !Array.isArray(reply.rows) || !Array.isArray(reply.presentations)) throw new Error('Pane service is unavailable');
+    return reply;
+  }
+  if (reply.kind !== 'outcome' || reply.outcome?.status !== 'complete') throw new Error(reply.outcome?.reason || 'Pane placement is not acknowledged');
+  return reply.outcome;
+}

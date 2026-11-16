@@ -3,11 +3,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { builtinModules } from 'node:module';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, cpSync, writeFileSync, symlinkSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, cpSync, writeFileSync, symlinkSync, chmodSync, existsSync, statSync } from 'node:fs';
 import { delimiter, join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHerdrHarness } from './testutil.js';
 import { releaseRemoteJob } from '../jobs/observer.js';
+import { PANE_ENDPOINT_BOOTSTRAP } from '../../../host/src/herdr/pane-installation.js';
 import type { JobRecord, JobId } from '../contracts.js';
 
 const root = resolve('.');
@@ -80,13 +81,14 @@ describe.sequential('published Herdr artifact', () => {
   it('the packed package contains the runtimes, optional pi view and assets without frozen mods', async () => {
     const packed = await h.buildAndInspectPackage();
     expect(packed.files).toEqual(expect.arrayContaining([
-      'dist/herdr/cli.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/feed-reader.mjs', 'dist/herdr/remote-runtime.mjs', 'dist/herdr/viewer-pi.mjs', 'dist/herdr/subagent-supervisor.mjs',
+      'dist/herdr/cli.mjs', 'dist/herdr/viewer.mjs', 'dist/herdr/feed-reader.mjs', 'dist/herdr/remote-runtime.mjs', 'dist/herdr/viewer-pi.mjs', 'dist/herdr/subagent-supervisor.mjs', 'dist/herdr/pane-endpoint.mjs',
       'packages/herdr/assets/themes/dracula-plus-glass.json',
       'packages/herdr/assets/themes/spider-glass.json',
       'packages/herdr/assets/shared/feed.js', 'packages/herdr/assets/shared/open-failure.js',
       'packages/herdr/assets/spaces/local.js', 'packages/herdr/assets/look/spaces-a-sidebar/agents-mod.json', 'packages/herdr/assets/agents/grouping.js',
       'packages/herdr/assets/agents/connections.js', 'packages/herdr/assets/agents/console-groups.js',
-      'packages/herdr/assets/shared/navigation.js', 'packages/herdr/assets/picker/model.js', 'packages/herdr/assets/pane/park.js',
+      'packages/herdr/assets/shared/navigation.js', 'packages/herdr/assets/shared/presentations.js', 'packages/herdr/assets/picker/model.js', 'packages/herdr/assets/pane/park.js', 'packages/herdr/assets/pane/machine.js', 'packages/herdr/assets/pane/actions.js',
+      'packages/herdr/assets/machines/picker.js', 'packages/herdr/assets/machines/actions.js',
       'packages/herdr/assets/picker/main.js', 'packages/herdr/assets/picker/mod.json', 'packages/herdr/assets/picker/NOTICE', 'packages/herdr/assets/mods/spider/sound.js', 'packages/herdr/assets/toast/main.js', 'packages/herdr/assets/toast/mod.json', 'packages/herdr/assets/toast/filter.js', 'packages/herdr/assets/toast/NOTICE',
       'packages/herdr/assets/look/spaces-a-sidebar/agents-0.1.13.json', 'packages/herdr/assets/look/spaces-a-sidebar/agents-0.1.16.json',
       'packages/herdr/assets/look/spaces-a-sidebar/spaces-0.1.13.json', 'packages/herdr/assets/look/spaces-a-sidebar/spaces-0.1.16.json',
@@ -94,7 +96,7 @@ describe.sequential('published Herdr artifact', () => {
       'packages/herdr/assets/tabs/spider.svg', 'packages/herdr/assets/tabs/autohide.js',
       'packages/herdr/assets/mods/spider/main.js',
       'packages/herdr/assets/agents/children.js', 'packages/herdr/assets/agents/move.js', 'packages/herdr/assets/agents/move-menu.js', 'packages/herdr/assets/agents/bot.svg', 'packages/herdr/assets/agents/list.svg', 'packages/herdr/assets/agents/bell.svg', 'packages/herdr/assets/agents/chevron-up.svg', 'packages/herdr/assets/agents/unreachable.svg',
-      'packages/herdr/assets/look/patches.json', 'packages/herdr/assets/look/layout-edits.json',
+      'packages/herdr/assets/look/patches.json', 'packages/herdr/assets/look/cross-machine-patches.json', 'packages/herdr/assets/look/layout-edits.json',
       'packages/herdr/assets/fonts/GoogleSansFlex.ttf', 'packages/herdr/assets/fonts/GlassLabel-Bold.ttf',
       'packages/herdr/assets/fonts/GoogleSansFlex-OFL.txt', 'packages/herdr/assets/fonts/GoogleSansFlex-TRADEMARKS.md',
       'packages/herdr/assets/keys.json', 'packages/herdr/assets/templates/role.md',
@@ -137,6 +139,27 @@ describe.sequential('published Herdr artifact', () => {
     expect(help.status).toBe(0);
     expect(help.stdout).toMatch(/usage:/i);
     expect(help.stderr).toBe('');
+  });
+
+  it('packed pane endpoint handshakes without source configuration or effects', () => {
+    const path = join(packedRoot, 'package/dist/herdr/pane-endpoint.mjs');
+    const digest = createHash('sha256').update(readFileSync(path)).digest('hex');
+    const reply = JSON.parse(run([path, '--json', JSON.stringify({ version: 1, op: 'handshake', protocol: 1, buildDigest: digest })], packedRoot));
+    expect(reply).toEqual({ version: 1, op: 'handshake', protocol: 1, buildDigest: digest });
+    const invalid = spawnSync(process.execPath, [path, '--json', '{'], { cwd: packedRoot, env, encoding: 'utf8' });
+    expect(invalid.status).toBe(1); expect(invalid.stderr.trim()).toBe('invalid-pane-command');
+  });
+
+  it('packed explicit setup stages its own endpoint once and runtime only reads it', () => {
+    const packageRoot = join(packedRoot, 'endpoint-installation'), globalRoot = join(packedRoot, 'endpoint-global'), endpoint = join(packageRoot, 'dist/herdr/pane-endpoint.mjs');
+    cpSync(join(packedRoot, 'package'), packageRoot, { recursive: true });
+    const digest = createHash('sha256').update(readFileSync(endpoint)).digest('hex');
+    const setup = "const [globalRoot, packageRoot] = process.argv.slice(1); const {pathToFileURL} = await import('node:url'); const installed = await import(pathToFileURL(packageRoot + '/dist/herdr/pane-endpoint.mjs').href); const first = await installed.stagePaneEndpointInstallation(globalRoot, packageRoot); const second = await installed.stagePaneEndpointInstallation(globalRoot, packageRoot); process.stdout.write(JSON.stringify([first,second]));";
+    const [first, second] = JSON.parse(run(['--input-type=module', '-e', setup, globalRoot, packageRoot], packedRoot));
+    const staged = join(packageRoot, 'dist/herdr', `pane-endpoint-${digest}.mjs`), registry = join(globalRoot, 'herdr/installation.json');
+    expect(first).toContain(staged); expect(second).toEqual([]); expect(readFileSync(staged)).toEqual(readFileSync(endpoint)); expect(statSync(registry).mode & 0o777).toBe(0o600);
+    const before = readFileSync(registry), reply = spawnSync(process.execPath, ['-e', PANE_ENDPOINT_BOOTSTRAP, digest, '1', JSON.stringify({ version: 1, op: 'handshake', protocol: 1, buildDigest: digest })], { cwd: packedRoot, env: { ...env, SPIDER_GLOBAL_ROOT: globalRoot }, encoding: 'utf8' });
+    expect(reply.status).toBe(0); expect(JSON.parse(reply.stdout)).toEqual({ version: 1, op: 'handshake', protocol: 1, buildDigest: digest }); expect(readFileSync(registry)).toEqual(before); expect(existsSync(join(globalRoot, 'herdr/panes'))).toBe(false);
   });
 
   it('remote-runtime is the only bundle containing the remote main guard', () => {

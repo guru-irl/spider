@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import { openRetainedConsole as ensureAgentConsole } from './console-view-fixture.js';
 import { expect, it, vi } from 'vitest';
 import { access, cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -6,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { createHerdrHarness } from './testutil.js';
 import { createJobMonitor } from '../jobs/monitor.js';
-import { ensureAgentConsole, closeAgentConsoles } from '../remote/console.js';
+import { closeAgentConsoles } from '../remote/console.js';
 import { parseHerdrConfig } from '../config.js';
 import { setupHerdr, runtimeInstallPath } from '../setup/installer.js';
 import { sha256 } from '../remote/runtime.js';

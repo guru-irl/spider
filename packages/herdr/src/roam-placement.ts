@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { isDeepStrictEqual } from 'node:util';
 import { lstat } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import type { AppClient, HcClient, Owner, OwnerPlacement, SpaceId, TabId, TerminalAddress, TerminalSummary } from './contracts.js';
 import { HERDR_LABELS } from './contracts.js';
 import { HerdrError } from './client/parse.js';
 import { placePaneWithoutFocus } from './jobs/placement.js';
-import { hash, privateDirectory, readPrivateJson, withProcessLock, writePrivateJson, type TerminalRegistry } from './sessions/registry.js';
+import { createPanePlacementStore, inspectPanePlacement } from './panes/store.js';
+import { hash, privateDirectory, withProcessLock, type TerminalRegistry } from './sessions/registry.js';
 
 type Slot = Pick<OwnerPlacement, 'space' | 'tab'>;
 import type { Readiness } from "@spider/db-core/roam/types";
 type LaunchFailure = { attempts: number; retryable: boolean };
 type Attempt = { session: string; remote: string; core: string; proxy: string | null; closed: boolean; localOwners: string[]; failure?: LaunchFailure };
-type State = { version: 1; slots: { session: string; space: string; tab: string }[]; attempts: Attempt[] };
+type State = { slots: { session: string; space: string; tab: string }[]; attempts: Attempt[] };
 const MAX_LAUNCH_ATTEMPTS = 2;
 type Options = { app: AppClient | null; hc: HcClient; registry: TerminalRegistry; hcBinary: string; stateRoot: string;
   removedSessions?: (sessions: readonly string[]) => Promise<ReadonlySet<string>> };
-const stateFile = (root: string) => join(root, 'roam-placement.json');
 const errorCode = (error: unknown) => error && typeof error === 'object' && 'code' in error ? error.code : undefined;
 export function launchNotStarted(error: unknown): boolean {
   if (!(error instanceof HerdrError)) return false;
@@ -44,21 +45,7 @@ async function prepareRoot(root: string): Promise<void> {
   }
 }
 async function load(root: string, create = true): Promise<State> {
-  if (create) await prepareRoot(root);
-  else {
-    if (!isAbsolute(root)) throw new HerdrError('unsafe-state-path', 'Placement state root must be absolute');
-    try { await checkPrivate(root, true); }
-    catch (error) { if (errorCode(error) === 'ENOENT') return { version: 1, slots: [], attempts: [] }; throw error; }
-  }
-  const path = stateFile(root);
-  try { await checkPrivate(path, false); } catch (error) { if (errorCode(error) !== 'ENOENT') throw error; }
-  const value = await readPrivateJson(path);
-  if (value === null) return { version: 1, slots: [], attempts: [] };
-  const state = value as State;
-  if (!state || state.version !== 1 || !Array.isArray(state.slots) || !Array.isArray(state.attempts) || state.slots.some(s => !s || typeof s.session !== 'string' || typeof s.space !== 'string' || typeof s.tab !== 'string' || !localSlot(s)) || state.attempts.some(a => !a || typeof a.session !== 'string' || typeof a.remote !== 'string' || typeof a.core !== 'string' || !(a.proxy === null || typeof a.proxy === 'string') || typeof a.closed !== 'boolean' || !Array.isArray(a.localOwners) || a.localOwners.some(key => typeof key !== 'string') ||
-    a.failure !== undefined && (!a.failure || !Number.isSafeInteger(a.failure.attempts) || a.failure.attempts < 1 || a.failure.attempts > MAX_LAUNCH_ATTEMPTS || typeof a.failure.retryable !== 'boolean')))
-    throw new HerdrError('invalid-placement-state', 'Invalid roaming placement state');
-  return state;
+  return create ? createPanePlacementStore(root).read() : inspectPanePlacement(root);
 }
 
 /** Inspect placement failures without creating the directory or acquiring a write lock. */
@@ -79,7 +66,25 @@ function getSlot(state: State, session: string): Slot | null {
   const slot = state.slots.find(s => s.session === session);
   return slot ? { space: slot.space as SpaceId, tab: slot.tab as TabId } : null;
 }
-async function save(root: string, state: State): Promise<void> { await writePrivateJson(stateFile(root), state); }
+function mergeChanges<T>(current: T[], before: T[], next: T[], key: (value: T) => string): T[] {
+  const old = new Map(before.map(row => [key(row), row])), desired = new Map(next.map(row => [key(row), row]));
+  const result = current.filter(row => desired.has(key(row)) || !old.has(key(row)) || !isDeepStrictEqual(row, old.get(key(row))));
+  for (const row of next) {
+    if (isDeepStrictEqual(row, old.get(key(row)))) continue;
+    const index = result.findIndex(existing => key(existing) === key(row));
+    if (index < 0) result.push(row);
+    else if (isDeepStrictEqual(result[index], old.get(key(row)))) result[index] = row;
+  }
+  return result;
+}
+async function save(root: string, state: State, before: State): Promise<void> {
+  const committed = await createPanePlacementStore(root).update(current => ({ ...current,
+    slots: mergeChanges(current.slots, before.slots, state.slots, row => row.session),
+    attempts: mergeChanges(current.attempts, before.attempts, state.attempts, row => JSON.stringify([row.session, row.core, row.remote.split('/').at(-1)])),
+  }));
+  state.slots = committed.slots;
+}
+
 async function snapshot(hc: HcClient): Promise<readonly TerminalSummary[]> {
   const events = hc.events();
   let resolve!: (rows: readonly TerminalSummary[]) => void;
@@ -91,8 +96,8 @@ async function snapshot(hc: HcClient): Promise<readonly TerminalSummary[]> {
 /** Phase 4 can preserve the local slot before the source terminal exits. */
 export async function rememberRoamSlot(stateRoot: string, session: string, slot: Slot): Promise<void> {
   await prepareRoot(stateRoot);
-  await withProcessLock(stateRoot, 'roam-placement', async () => {
-    const state = await load(stateRoot); setSlot(state, session, slot); await save(stateRoot, state);
+  await withProcessLock(stateRoot, 'roam-placement-effects', async () => {
+    await createPanePlacementStore(stateRoot).update(state => { setSlot(state, session, slot); return state; });
   });
 }
 
@@ -103,8 +108,10 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
     async reconcile(rows) {
       const identity = await hc.identity();
       await prepareRoot(stateRoot);
-      return withProcessLock(stateRoot, 'roam-placement', async () => {
+      return withProcessLock(stateRoot, 'roam-placement-effects', async () => {
         const state = await load(stateRoot);
+        let committed = structuredClone(state);
+        const saveState = async () => { await save(stateRoot, state, committed); committed = structuredClone(state); };
         if (state.attempts.some(attempt => !attempt.proxy && !attempt.closed)) {
           for (const terminal of await snapshot(hc)) {
             if (terminal.address.includes('/') || terminal.labels[HERDR_LABELS.kind] !== 'roam-proxy') continue;
@@ -155,7 +162,7 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
             } catch { /* An incomplete session inventory cannot prove a slot is removable. */ }
           }
         }
-        await save(stateRoot, state);
+        await saveState();
         const pending: string[] = [];
         for (const row of rows) {
           let remote = row.terminal;
@@ -181,7 +188,7 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
           } else { attempt.remote = remote; attempt.localOwners = localOwners; }
           // A crash or lost reply leaves an uncertain claim, not permission to relaunch.
           attempt.failure = { attempts: (attempt.failure?.attempts ?? 0) + 1, retryable: false };
-          await save(stateRoot, state);
+          await saveState();
           let launched;
           try {
             launched = await hc.run({ argv: [hcBinary, 'attach', '--history', '100', ...(remote.startsWith('-') ? ['--'] : []), remote], cwd: null, labels: {
@@ -192,12 +199,12 @@ export function createRoamPlacement(options: Options): { reconcile(rows: readonl
           } catch (error) {
             // These transport errors prove the hc run process did not start.
             attempt.failure.retryable = launchNotStarted(error);
-            await save(stateRoot, state);
+            await saveState();
             throw error;
           }
           attempt.proxy = launched.address;
           delete attempt.failure;
-          await save(stateRoot, state);
+          await saveState();
           if (app) {
             // Label adoption uses the space and tab. The helper does not use the anchor pane.
             try { await placePaneWithoutFocus(hc, app, launched.address, { ...slot, pane: '' as OwnerPlacement['pane'] }, { timeoutMs: 1000 }); }

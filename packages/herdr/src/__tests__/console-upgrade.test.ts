@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { createHash } from 'node:crypto';
+import { openRetainedConsole as ensureAgentConsole } from './console-view-fixture.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import { setTimeout as delay } from 'node:timers/promises';
 import { join } from 'node:path';
 import { parseRuntimePublication } from '../remote/runtime.js';
 import type { HcClient, JobHandle, JobPort, MachineName, RunId } from '../contracts.js';
-import { ensureAgentConsole, startWithAgentConsole, type AgentConsoleLaunch } from '../remote/console.js';
+import { startWithAgentConsole, type AgentConsoleLaunch } from '../remote/console.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
 import { createRemoteTestFixture } from './acceptance/c.js';
 
@@ -31,6 +33,9 @@ async function fixture() {
     argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on, background: true, outliveParent: true, noNotify: true,
     labels: { 'spider.kind': kind, 'spider.session': h.owner!.sessionId, 'spider.machine': on,
       'spider.owner-core': h.owner!.terminal.coreId, 'spider.owner-terminal': h.owner!.terminal.terminalId,
+      'spider.console-key': JSON.stringify([JSON.stringify([h.owner!.sessionId, run ?? null]), on]),
+      'spider.console-id': 'console-' + createHash('sha256').update(JSON.stringify([JSON.stringify([h.owner!.sessionId, run ?? null]), on])).digest('hex'),
+      'spider.view-generation': h.owner!.generation,
       ...(runtime ? { 'spider.runtime': runtime } : {}), ...(run ? { 'spider.run': run } : {}), ...ownerLabels },
   });
   const ensure = (hc: HcClient = h.hc, env = h.localEnv) => ensureAgentConsole(request, hc, env);
@@ -47,9 +52,9 @@ it.each([undefined, 'older-runtime'])('replaces an idle console with runtime %s'
   expect(await f.calls()).toHaveLength(2);
 }, 30000);
 
-it.each(['spider.owner-core', 'spider.owner-terminal'])('reuses an older console with a different %s', async label => {
+it.each(['spider.owner-core', 'spider.owner-terminal'])('refuses an older console with a different %s', async label => {
   const f = await fixture(); const old = await f.seed('older-runtime', undefined, 'remote-console', { [label]: 'other-owner' });
-  expect((await f.ensure())!.address).toBe(old.address);
+  await expect(f.ensure()).rejects.toMatchObject({ code: 'console-identity-mismatch' });
   expect((await f.h.hc.get(old.address)).state).toBe('live');
   expect(f.errors).toEqual([]);
 }, 30000);
@@ -67,7 +72,8 @@ it('reuses a console labelled with the current runtime', async () => {
 
 it('keeps an older console while a job runs and replaces it after the job finishes', async () => {
   const f = await fixture(); const old = await f.seed('older-runtime'); f.setIdle(false);
-  expect((await f.ensure())!.address).toBe(old.address);
+  await expect(f.ensure()).rejects.toMatchObject({ code: 'console-runtime-unavailable' });
+  expect((await f.h.hc.get(old.address)).state).toBe('live');
   f.setIdle(true); const current = await f.ensure();
   expect(current!.address).not.toBe(old.address);
   await expect(f.h.hc.get(old.address)).rejects.toMatchObject({ code: 'not_found' });
@@ -138,7 +144,7 @@ it('holds concurrent admission until the first job is registered', async () => {
 it('keeps an older console when idle state is unavailable', async () => {
   const f = await fixture(); const old = await f.seed('older-runtime');
   const request = { ...f.request, isConsoleIdle: async () => { throw new Error('state unavailable'); } };
-  expect((await ensureAgentConsole(request, f.h.hc, f.h.localEnv))!.address).toBe(old.address);
+  await expect(ensureAgentConsole(request, f.h.hc, f.h.localEnv)).rejects.toMatchObject({ code: 'console-runtime-unavailable' });
   expect((await f.h.hc.get(old.address)).state).toBe('live');
   expect(f.errors).toHaveLength(1);
   expect(f.errors[0]).toMatchObject({ message: 'state unavailable' });
@@ -155,8 +161,7 @@ it.each([
     const terminal = await f.h.hc.get(address);
     return address === old.address ? { ...terminal, labels: { ...terminal.labels, [label]: value } } : terminal;
   } };
-  const current = await f.ensure(hc);
-  expect(current!.address === old.address).toBe(reused);
+  await expect(f.ensure(hc)).rejects.toMatchObject({ code: 'console-runtime-unavailable' });
   expect((await f.h.hc.get(old.address)).state).toBe('live');
   expect((await hc.get(old.address)).labels[label]).toBe(value);
   expect(f.errors).toEqual([]);
@@ -174,28 +179,28 @@ it('replaces a console that disappears during retirement without reporting an er
   expect(f.errors).toEqual([]);
 }, 30000);
 
-it('reports a failed replacement launch and still starts the job', async () => {
+it('retained commands never launch or replace a view and still start the job', async () => {
   const f = await fixture(); const old = await f.seed('older-runtime'); const failure = new Error('console launch failed');
   vi.stubEnv('HC_TERMINAL_ID', f.h.owner!.terminal.terminalId); vi.stubEnv('PI_SUBAGENT_CHILD', '0');
   const hc: HcClient = { ...f.h.hc, run: async () => { throw failure; } };
   const handle: JobHandle = { id: 'job-one' as JobHandle['id'], address: 'remote.invalid/job-one' as JobHandle['address'], remoteDirectory: '/fixture/remote', localDirectory: '/fixture/local', finished: new Promise(() => {}), cancel: async () => {} };
   let started = 0;
   const jobs: JobPort & { consoleIdle: () => Promise<boolean>; consoleError: (error: unknown) => void } = {
-    start: async prepare => { started++; expect((await prepare()).consoleDirectory).toBeUndefined(); return handle; },
+    start: async prepare => { started++; expect((await prepare()).consoleDirectory).toEqual(expect.any(String)); return handle; },
     consoleIdle: async () => true, consoleError: error => { f.errors.push(error); },
     detach: async () => {}, toolReturned: async () => {}, consumeNotice: async () => {}, dispose() {},
   };
   const result = await startWithAgentConsole({ ...f.request, jobs, hc, program: async () => ({ directory: '/fixture/remote', argv: [], cwd: null, files: [], env: {} }), options: {} });
   expect(result).toBe(handle);
   expect(started).toBe(1);
-  expect(f.errors).toEqual([failure]);
-  await expect(f.h.hc.get(old.address)).rejects.toMatchObject({ code: 'not_found' });
+  expect(f.errors).toEqual([]);
+  await expect(f.h.hc.get(old.address)).resolves.toMatchObject({ state: 'live' });
 }, 30000);
 
 it('reports a failed kill and reuses the still-live console', async () => {
   const f = await fixture(); const old = await f.seed('older-runtime'); const failure = new Error('kill failed');
   const hc: HcClient = { ...f.h.hc, kill: async address => { if (address === old.address) throw failure; await f.h.hc.kill(address); } };
-  expect((await f.ensure(hc))!.address).toBe(old.address);
+  await expect(f.ensure(hc)).rejects.toMatchObject({ code: 'console-runtime-unavailable' });
   expect((await f.h.hc.get(old.address)).state).toBe('live');
   expect(f.errors).toEqual([failure]);
   expect(await f.calls()).toHaveLength(1);

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
+import { openRetainedConsole as ensureAgentConsole } from './console-view-fixture.js';
 import { expect, it } from 'vitest';
 import { join } from 'node:path';
 import { createViewerLauncher } from '../viewers/register.js';
 import { openRemoteObserver, observerMarker } from '../jobs/observer.js';
-import { ensureAgentConsole } from '../remote/console.js';
 import type { HcClient, HcRunRequest, JobRecord, RuntimeTarget } from '../contracts.js';
 import { bounded, cleanup, deferred, monitorFixture } from './herdr-monitor-fixture.js';
 

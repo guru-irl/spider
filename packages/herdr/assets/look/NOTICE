@@ -9,3 +9,7 @@ packages/herdr/assets/tabs/autohide.js also adapts menu choices and shortcut
 labels from Herdr 0.1.12 under the same licence, modified for spider.
 
 The complete licence is shipped at licenses/herdr-apache-2.0.txt at the root of the spider package.
+
+packages/herdr/assets/look/cross-machine-patches.json contains modified
+portions of the built-in mods of Herdr 0.1.13 and 0.1.16 under the same
+Apache-2.0 licence, modified for spider.

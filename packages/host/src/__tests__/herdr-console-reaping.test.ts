@@ -65,7 +65,7 @@ async function fixture(mode: 'fake' | 'hc' = 'fake', reportErrors = true, hasUI 
   return { h, store, mount, emit, labels, launch, missing, errors, notices, runtime, config, presence: createProcessPresence(join(h.directories.global, 'herdr')) };
 }
 
-it('reports a console replacement failure without adding a UI warning', async () => {
+it('retains command output without replacing a live view or adding a UI warning', async () => {
   const f = await fixture('fake', false, true); await f.emit('session_start', { reason: 'startup' });
   const old = await f.launch(f.labels(f.h.owner!.sessionId));
   await f.h.scenario({ steps: [{ argvPrefix: ['kill'], once: true, stderr: { error: { kind: 'fixture-failure', message: 'Cannot stop console' } }, exitCode: 3 }] }, 'remote');
@@ -75,7 +75,8 @@ it('reports a console replacement failure without adding a UI warning', async ()
     const result = await f.mount.execution().remote!.execute({ owner: f.mount.owner()!, on: 'remote.invalid' as MachineName, source: { kind: 'code', language: 'shell', code: 'printf result' } });
     expect(result).toMatchObject({ stdout: 'result', exitCode: 0 });
     expect((await f.h.hc.get(old.address)).state).toBe('live');
-    expect(messages.filter(message => message.includes('fixture-failure'))).toHaveLength(1);
+    expect(messages.filter(message => message.includes('fixture-failure'))).toHaveLength(0);
+    expect((await f.h.calls('remote')).filter(call => call.argv[0] === 'kill')).toEqual([]);
     expect(f.notices).toEqual(noticesBefore);
   } finally { stderr.mockRestore(); }
 }, 30000);
@@ -136,7 +137,7 @@ async function firstConsoleRace(mode: 'fake' | 'hc') {
   const blocked = new Promise<void>(resolve => { release = resolve; });
   const started = new Promise<TerminalHandle>(resolve => { launched = resolve; });
   const hc: HcClient = { ...f.h.hc, run: async request => { const handle = await f.h.hc.run(request); launched(handle); await blocked; return handle; } };
-  const { ensureAgentConsole } = await import('../../../herdr/src/remote/console.js');
+  const { openRetainedConsole: ensureAgentConsole } = await import('../../../herdr/src/__tests__/console-view-fixture.js');
   const on = 'remote.invalid' as MachineName;
   const target = { on, ...f.config.machines[0].runtime, environment: {}, nodePath: f.h.nodeBinary, runtimePath: f.runtime.path, runtimeSha256: f.runtime.sha256 };
   const starting = ensureAgentConsole({ owner: f.h.owner!, on, target, source: { kind: 'code', language: 'shell', code: 'echo unused' } }, hc,

@@ -12,6 +12,7 @@ export function classifyPane(pane, terminal, feeds, contract, freshAfter) {
   const machine = pane.terminal.includes('/') ? pane.terminal.split('/')[0] : null;
   const base = { pane: true, terminal: pane.terminal, machine, descriptor, ownsSession: feed?.owner?.terminal?.address === pane.terminal };
   const kind = labels[names.kind];
+  if (['pane-proxy', 'roam-proxy'].includes(kind)) return { ...base, kind: 'mod' };
   if (kind && kind === kinds.subagentViewer) {
     const key = labels[names.run], run = feed?.runs?.rows?.find(row => row.id === key);
     return { ...base, kind: 'subagent', key, active: Boolean(descriptor && run && !['done', 'failed', 'cancelled'].includes(run.status)) };
@@ -26,12 +27,12 @@ export function classifyPane(pane, terminal, feeds, contract, freshAfter) {
 /** Build the same menu for pane headers and child rows. */
 export function menuItems(target, spaces, currentSpace, currentTab) {
   if (target.kind === 'mod') return [];
-  const groups = spaces.filter(space => (space.machine ?? null) === (target.machine ?? null)).map(space => ({ id: space.id, name: space.name,
+  const groups = spaces.filter(space => (space.machine ?? null) === (target.navigation ? null : target.machine ?? null)).map(space => ({ id: space.id, name: space.name,
     tabs: space.tabs.filter(tab => tab.id !== currentTab).map(tab => ({ id: tab.id, name: tab.name })) }))
     .filter(space => space.tabs.length);
   groups.sort((a, b) => Number(b.id === currentSpace) - Number(a.id === currentSpace));
   const verb = target.pane === false ? 'Open' : 'Move';
-  const unavailable = target.kind !== 'terminal' && target.descriptor === null && !target.unmanaged;
+  const unavailable = target.navigation ? Boolean(target.navigation.disabledReason) : target.kind !== 'terminal' && target.descriptor === null && !target.unmanaged;
   const items = [
     { kind: 'action', id: 'new', label: `${verb} to new tab`, disabled: unavailable },
     { kind: 'tabs', id: 'tabs', label: `${verb} to tab`, groups, disabled: unavailable },
@@ -40,7 +41,7 @@ export function menuItems(target, spaces, currentSpace, currentTab) {
   if (verb === 'Open') { items[0].label = 'Open in new tab'; items[1].label = 'Open in tab'; }
   if (target.kind === 'subagent' && target.pane) items.push({ kind: 'action', id: 'hide', label: 'Hide', disabled: unavailable });
   const label = { subagent: 'Kill subagent', command: 'Kill command', session: 'Kill session…', terminal: 'Kill terminal' }[target.kind];
-  if (label) items.push({ kind: 'separator' }, { kind: 'action', id: 'kill', label, disabled: target.kind === 'subagent' && target.active === false || target.kind === 'command' && unavailable || target.kind === 'session' && (!target.descriptor || !target.ownsSession) });
+  if (label && !target.navigation) items.push({ kind: 'separator' }, { kind: 'action', id: 'kill', label, disabled: target.kind === 'subagent' && target.active === false || target.kind === 'command' && unavailable || target.kind === 'session' && (!target.descriptor || !target.ownsSession) });
   return items;
 }
 
@@ -59,6 +60,7 @@ export function journalOwnsTerminal(text, terminal) {
 
 /** A session controls its own panes; ordinary terminals have no owner endpoint. */
 export async function moveTarget(target, destination, ports) {
+  if (target.navigation) return moveNavigation(target.navigation, destination, ports);
   if (target.kind === 'terminal' || target.kind === 'session' && target.unmanaged) return ports.movePlain(target.terminal, destination);
   if (!target.descriptor) throw new Error('The owning session is unavailable');
   const generation = target.descriptor.generation;
@@ -178,4 +180,55 @@ export async function moveTerminal(terminal, destination, ports) {
     }
     throw error;
   }
+}
+
+async function moveNavigation(target, destination, ports) {
+  if (target.disabledReason || !ports.pane) throw new Error(target.disabledReason || 'Pane service is unavailable');
+  if (destination.kind === 'hide') {
+    if (!target.presentationId) throw new Error('Presentation is unavailable');
+    return ports.pane({ op: 'park', presentationId: target.presentationId, expectedRevision: target.expectedRevision });
+  }
+  const spaces = (ports.spaces ?? []).filter(space => (space.machine ?? null) === null);
+  let slot, placeholder = null;
+  if (destination.kind === 'new') {
+    const space = spaces.find(space => space.id === destination.space) ?? spaces.find(space => space.id === target.space) ?? spaces.find(space => space.active) ?? spaces[0];
+    if (!space || !ports.createTab) throw new Error('No local space is available');
+    placeholder = await ports.createTab(space.id);
+    if (placeholder.space !== space.id || !placeholder.tab) throw new Error('The new Mac tab is unavailable');
+    slot = { space: placeholder.space, tab: placeholder.tab, pane: null };
+  } else {
+    const matches = spaces.filter(space => space.tabs.some(tab => tab.id === destination.tab));
+    if (matches.length !== 1) throw new Error('The Mac tab is unavailable');
+    slot = { space: matches[0].id, tab: destination.tab, pane: null };
+  }
+  let presentationId = target.presentationId, expectedRevision = target.expectedRevision;
+  if (!presentationId && target.kind !== 'agent') {
+    if (target.action?.kind !== 'pane' || target.action.request.op !== 'open-auxiliary') throw new Error('Presentation is unavailable');
+    const opened = await ports.pane(target.action.request);
+    if (opened?.status !== 'complete' || !opened.presentation) throw new Error(opened?.reason || 'Auxiliary placement is not acknowledged');
+    presentationId = opened.presentation.id; expectedRevision = opened.presentation.revision;
+  }
+  const request = presentationId ? { op: 'move', presentationId, expectedRevision, slot }
+    : target.sessionId && target.generation ? { op: 'open-existing', sessionId: target.sessionId, generation: target.generation, slot } : null;
+  if (!request) throw new Error('Presentation is unavailable');
+  const outcome = await ports.pane(request);
+  if (outcome?.status !== 'complete') throw new Error(outcome?.reason || 'Pane placement is not acknowledged');
+  if (placeholder) await ports.removePlaceholder?.(placeholder);
+  return outcome;
+}
+
+const dragKey = 'spider.presentation-drag';
+/** Only opaque authority crosses mod shared state, never source paths or target labels. */
+export function beginPresentationDrag(target, store) {
+  if (!target || target.disabledReason || !target.presentationId && !(target.kind === 'agent' && target.sessionId && target.generation)) { store.setShared(dragKey, null); return false; }
+  store.setShared(dragKey, { ...(target.presentationId ? { presentationId: target.presentationId, expectedRevision: target.expectedRevision } : { sessionId: target.sessionId, generation: target.generation }), expires: (store.now?.() ?? Date.now()) + 30000 });
+  return true;
+}
+export async function dropPresentation(slot, ports) {
+  const drag = ports.shared(dragKey); ports.setShared(dragKey, null);
+  if (!drag || drag.expires <= (ports.now?.() ?? Date.now())) return false;
+  if (!slot?.space || !slot.tab || slot.space.includes('/') || slot.tab.includes('/')) return false;
+  const outcome = await ports.pane({ ...(drag.presentationId ? { op: 'move', presentationId: drag.presentationId, expectedRevision: drag.expectedRevision } : { op: 'open-existing', sessionId: drag.sessionId, generation: drag.generation }), slot: { space: slot.space, tab: slot.tab, pane: null } });
+  if (outcome?.status !== 'complete') throw new Error(outcome?.reason || 'Pane placement is not acknowledged');
+  return true;
 }

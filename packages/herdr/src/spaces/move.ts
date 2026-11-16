@@ -7,6 +7,10 @@ import { HerdrError } from '../client/parse.js';
 import { withProcessLock } from '../sessions/registry.js';
 import { moveTerminal } from '../../assets/agents/move.js';
 import { recordSessionMove, type LayoutSnapshot } from './setup.js';
+import { presentProxy, type PaneOpenPorts } from '../panes/open.js';
+import { paneAddress } from '../panes/codec.js';
+import type { PanePresentation, PaneSlot } from '../panes/types.js';
+import { rememberRemoteSessionPlacement } from './remote-placement.js';
 
 export interface SessionMovePorts {
   app: AppClient;
@@ -51,4 +55,92 @@ export async function moveOwnedSession(owner: { sessionId: string; terminal: Ter
   };
   if (!ports.placementRoot) return perform();
   await withProcessLock(ports.placementRoot, `${ports.appIdentity ?? 'app'}:${owner.coreId}:focus`, perform, { timeoutMs: 20000, signal: ports.signal });
+}
+
+/** The execution target is never a placement address unless it is on this Mac. */
+export async function presentExistingPane(presentation: PanePresentation, slot: PaneSlot, operationId: string, ports: PaneOpenPorts,
+  reserve: (slot: PaneSlot, operationId: string) => Promise<OwnerPlacement>): Promise<PanePresentation> {
+  const app = ports.app;
+  if (!app) throw new HerdrError('view-on-mac', 'View on Mac');
+  const spaces = await app.listSpaces?.();
+  if (!spaces?.some(space => space.machine === null && space.id === slot.space && space.tabs.some(tab => tab.id === slot.tab))) throw new HerdrError('destination-unavailable', 'The Mac tab is unavailable');
+  const local = await ports.hc.identity();
+  if (presentation.mode === 'native' && presentation.target.coreId !== local.coreId) throw new HerdrError('core-mismatch', 'Native display is not on this Mac');
+  let selected = presentation;
+  const update = async (fields: Partial<PanePresentation>) => {
+    let changed: PanePresentation | null = null;
+    await ports.store.update(state => ({ ...state, presentations: state.presentations.map(current => {
+      if (current.id !== selected.id || current.revision !== selected.revision || ['closing', 'ended'].includes(current.visibility)) return current;
+      changed = { ...current, ...fields, revision: current.revision + 1 }; return changed;
+    }) }));
+    if (!changed) throw new HerdrError('stale-presentation', 'Presentation changed');
+    selected = changed;
+  };
+  const proxyState = async (address: TerminalAddress) => {
+    if (address.includes('/')) throw new HerdrError('proxy-identity', 'Mac display is not local');
+    const terminal = await ports.hc.get(address);
+    if (terminal.address !== address || terminal.labels['spider.kind'] !== 'pane-proxy' || terminal.labels['spider.pane-id'] !== selected.id
+      || terminal.labels['spider.target-core'] !== selected.target.coreId || terminal.labels['spider.target-terminal'] !== selected.target.terminalId) throw new HerdrError('proxy-identity', 'Mac display identity changed');
+    return terminal.state;
+  };
+  let display = selected.mode === 'proxy' ? selected.proxy : paneAddress(selected.target.terminalId);
+  let launch = false;
+  if (selected.mode === 'proxy') {
+    if (display && await proxyState(display) === 'finished') { display = null; launch = true; }
+    else if (!display) {
+      display = await ports.findProxy(selected);
+      if (display) {
+        if (await proxyState(display) !== 'live') throw new HerdrError('proxy-launch-uncertain', 'Proxy launch is uncertain');
+      } else if (selected.launch === 'none') launch = true;
+      else throw new HerdrError('proxy-launch-uncertain', 'Proxy launch is uncertain');
+    }
+  }
+  if (display?.includes('/')) throw new HerdrError('display-unavailable', 'Mac display is unavailable');
+  const observe = () => display ? app.ownerPlacement(display).catch(error => { if (error instanceof HerdrError && error.code === 'owner-unplaced') return null; throw error; }) : Promise.resolve(null);
+  const previous = await observe();
+  const sameTab = previous?.space === slot.space && previous.tab === slot.tab;
+  const placeholder = sameTab ? previous! : await reserve(slot, operationId);
+  if (!sameTab && !await ports.verifyPlaceholder(placeholder, operationId)) throw new HerdrError('placeholder-unavailable', 'Mac placeholder identity is unproved');
+  await update({ slot: placeholder, visibility: 'visible', ...(selected.mode === 'proxy' ? { proxy: display, ...(launch ? { launch: 'claimed' as const } : {}) } : {}) });
+  if (launch) {
+    try {
+      display = await ports.launchProxy(selected);
+      if (await proxyState(display) !== 'live') throw new HerdrError('proxy-identity', 'Mac display is not live');
+      await update({ proxy: display, launch: 'acknowledged' });
+    } catch {
+      await update({ proxy: null, launch: 'uncertain' });
+      throw new HerdrError('proxy-launch-uncertain', 'Proxy launch is uncertain');
+    }
+  }
+  if (!display) throw new HerdrError('display-unavailable', 'Mac display is unavailable');
+  const command = async (name: string, args: Record<string, unknown>) => {
+    const reply = await app.command(name, args);
+    if (reply.error) throw new HerdrError(reply.error.code, reply.error.message);
+  };
+  if (previous && !sameTab) {
+    await command('terminal.park', { terminal: display });
+    const deadline = Date.now() + 5000;
+    while (await observe()) {
+      if (Date.now() >= deadline) throw new HerdrError('pane-timeout', 'The old Mac pane was not parked');
+      await delay(25);
+    }
+  }
+  if (selected.mode === 'proxy') selected = await presentProxy(selected, operationId, ports);
+  else {
+    if (!sameTab) {
+      await command('pane.focus', { pane: placeholder.pane });
+      const focused = await app.focusedPane();
+      if (focused?.pane !== placeholder.pane || focused.space !== slot.space || focused.tab !== slot.tab) throw new HerdrError('focus-changed', 'Mac destination changed');
+      await command('terminal.keep', { terminal: display, place: 'right' });
+    }
+    const actual = await ports.awaitPresented(display, selected.target, selected.slot!);
+    if (actual.space !== slot.space || actual.tab !== slot.tab) throw new HerdrError('placement-mismatch', 'Native pane appeared outside its Mac tab');
+    if (!sameTab && actual.pane !== placeholder.pane && await ports.verifyPlaceholder(placeholder, operationId)) await command('pane.close', { pane: placeholder.pane });
+    await update({ slot: actual, launch: 'acknowledged' });
+  }
+  if (!selected.slot?.pane) throw new HerdrError('placement-unacknowledged', 'Mac pane is unacknowledged');
+  await ports.hc.setLabels(display, { [HERDR_LABELS.space]: selected.slot.space, [HERDR_LABELS.tab]: selected.slot.tab });
+  if (selected.target.sessionId && selected.role === 'agent') await rememberRemoteSessionPlacement(selected.target.sessionId, { ...selected.slot, pane: selected.slot.pane }, ports.store);
+  await command('pane.focus', { pane: selected.slot.pane });
+  return selected;
 }

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 // Two real isolated hc cores (local and destination), a recording hc wrapper, and a local --via machine.
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { lstatSync } from 'node:fs';
 import { mkdir, writeFile, chmod, readFile, stat } from 'node:fs/promises';
 import { join, dirname, resolve, isAbsolute } from 'node:path';
@@ -23,6 +24,17 @@ export interface Cores {
   records(): Promise<HcRecord[]>;
 }
 
+const provedHcDigests: Readonly<Record<string, readonly string[]>> = {
+  '0.1.16': ['c617feeb4d1b5f59b30e4ab6b4e9e7f7ac114d0681d207d9f41efa12c813b922'],
+  '0.1.18': ['a4aff19a5af4beea754db8e41f854ce541e5f059d14c39cb402f7b615a2f0ec7'],
+};
+export function verifyHcBinaryPin(version: string, digest: string): string {
+  const pins = provedHcDigests[version];
+  if (!pins) throw new HarnessError('isolation-unproved', 'unlisted hc version');
+  if (!pins.includes(digest)) throw new HarnessError('isolation-unproved', 'hc binary digest mismatch');
+  return version;
+}
+
 export function realHcBinary(): string {
   const override = process.env.SPIDER_HERDR_E2E_HC;
   if (!override) return join(userInfo().homedir, '.local/bin/hc');
@@ -30,6 +42,11 @@ export function realHcBinary(): string {
   const path = ownedPath(scratchRoot(), override), info = lstatSync(path);
   if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.() || !(info.mode & 0o100)) throw new HarnessError('outside-owned-root', 'The hc override must be an owned executable under the fixture root');
   return path;
+}
+
+export function selectedHcBinary(): string {
+  if (!process.env.SPIDER_HERDR_E2E_HC) throw new HarnessError('missing-prerequisite', 'an explicit owned hc binary is required');
+  return realHcBinary();
 }
 
 const quote = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
@@ -64,7 +81,13 @@ export async function startCores(ledger: LedgerHandle, root: string, base: Recor
     throw new HarnessError('core-environment-invalid', `Extra core environment may not replace isolation field ${key}`);
   for (const candidate of [base.HC_SOCKET, base.HC_TERMINAL_SOCKET])
     if (candidate && resolve(candidate) === defaultCoreSocket()) throw new HarnessError('default-socket', 'refusing the default hc socket');
-  const real = realHcBinary();
+  const real = selectedHcBinary();
+  const versionResult = await runHc(real, ['--version'], base);
+  const version = /^hc (\S+)\s*$/.exec(versionResult.stdout)?.[1];
+  const digest = createHash('sha256').update(await readFile(real)).digest('hex');
+  if (versionResult.exitCode !== 0 || !version) throw new HarnessError('isolation-unproved', 'hc version could not be read');
+  verifyHcBinaryPin(version, digest);
+  await writeFile(ownedPath(root, join(root, 'hc-binary-pin.json')), JSON.stringify({ version, digest }), { mode: 0o600 });
   await writeFile(ownedPath(root, join(root, 'installed-binaries.json')), JSON.stringify({ hc: real, herdrCore: join(dirname(real), 'herdr-core'), herdrApp: join(userInfo().homedir, '.local/bin/herdr-app') }, null, 2));
   try { await stat(real); } catch { throw new HarnessError('missing-prerequisite', `hc is not installed at ${real}; Tier 1 needs the real hc 0.1.16`); }
   const bin = ownedPath(root, binDirectory); await mkdir(bin, { recursive: true });
@@ -99,7 +122,7 @@ export async function startCores(ledger: LedgerHandle, root: string, base: Recor
     ok(await hc(['server', 'start', '--json'], side), `${side} server start`);
     const status = ok(await hc(['server', 'status', '--json'], side), `${side} server status`);
     const core = status.core as { id?: unknown } | undefined;
-    if (typeof status.pid !== 'number' || typeof core?.id !== 'string' || status.version !== '0.1.16') throw new HarnessError('isolation-unproved', `${side} core status is not hc 0.1.16 with an id and pid`, status);
+    if (typeof status.pid !== 'number' || typeof core?.id !== 'string' || status.version !== version) throw new HarnessError('isolation-unproved', `${side} core status does not match the pinned hc with an id and pid`, status);
     if (!(await stat(sockets[side])).isSocket()) throw new HarnessError('isolation-unproved', `${side} socket was not created at ${sockets[side]}`);
     const identity = identityOf(status.pid);
     ledger.update(l => { const c = l.cores.find(x => x.side === side)!; c.coreId = core.id as string; c.pid = identity.pid; c.start = identity.start; });

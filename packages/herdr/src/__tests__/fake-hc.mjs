@@ -386,8 +386,8 @@ async function daemonMode() {
         const terminalIndex = args[0] === 'attach' ? attachTerminalIndex(args) : 1;
         const terminal = args[terminalIndex];
         const on = option('--on') || (terminal?.includes('/') && !terminal.startsWith('/') ? terminal.split('/')[0] : undefined);
-        if (on && ['run', 'get', 'kill', 'rm', 'read', 'attach', 'file', 'exec'].includes(args[0])) {
-          const machine = state.machines.find(m => m.name === on); if (!machine) throw new Error('Unknown fake machine');
+        if (on && on !== state.coreId && ['run', 'get', 'kill', 'rm', 'read', 'attach', 'file', 'exec'].includes(args[0])) {
+          const machine = state.machines.find(m => m.name === on || m.id === on); if (!machine) throw new Error('Unknown fake machine');
           const remoteArgs = [...args]; const index = flags.indexOf('--on');
           if (index >= 0) remoteArgs.splice(index, 2);
           else { const equals = flags.findIndex(arg => arg.startsWith('--on=')); if (equals >= 0) remoteArgs.splice(equals, 1); }
@@ -415,14 +415,14 @@ async function daemonMode() {
           else if (args[1] === 'add') {
             const socket = script.machineSocket || process.env.HERDR_FAKE_REMOTE_SOCKET;
             const hello = await request(socket, { argv: ['server', 'status'] }); const name = option('--name') || args.at(-1);
-            const m = { id: hello.result.core.id, host: 'fixture', name, session: option('--session') || 'r', target: option('--via') || 'fixture', via: true, version: '0.1.16', temporary: false, socket };
+            const m = { id: hello.result.core.id, host: 'fixture', name, session: option('--session') || 'r', target: option('--via') || 'fixture', via: true, state: 'connected', version: '0.1.16', temporary: false, socket };
             state.machines.push(m); save(); mirror(m); const { socket: ignored, ...result } = m; reply(s, result);
           } else { const name = args[2]; state.machines = state.machines.filter(m => m.name !== name); state.terminals = state.terminals.filter(t => !t.address.startsWith(name + '/')); remoteChannels.get(name)?.destroy(); remoteChannels.delete(name); save(); reply(s, {}); }
         } else if (args[0] === 'run') {
           const address = `t${state.next++}`; const index = args.indexOf('--'); const program = index >= 0 ? args.slice(index + 1) : [];
           const labels = {}; args.forEach((v, i) => { if (v === '--label') { const kv = args[i + 1], at = kv.indexOf('='); labels[kv.slice(0, at)] = kv.slice(at + 1); } });
           const parent = args.includes('--no-parent') ? null : option('--parent') || env.HC_TERMINAL_ID || null;
-          const t = { address, name: nameArgument(args) ?? null, parent, labels, state: 'live', status: null, exit_code: null, reason: null, signal: null, finished_ms: null, argv: program, cwd: option('--cwd') || root, screenText: '' };
+          const t = { address, name: nameArgument(args) ?? null, parent, labels, state: 'live', status: null, exit_code: null, reason: null, signal: null, finished_ms: null, created_ms: Date.now(), cols: 80, rows: 24, title: basename(program[0] || 'shell'), app: null, foreground: null, argv: program, cwd: option('--cwd') || root, screenText: '' };
           state.terminals.push(t); save(); emit('created', address, t);
           const child = spawn(program[0] || process.execPath, program.length ? program.slice(1) : ['-e', 'setInterval(()=>{},1000)'], { cwd: t.cwd, env: { ...process.env, ...env, XDG_STATE_HOME: process.env.XDG_STATE_HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, HC_SESSION: process.env.HC_SESSION, HERDR_FAKE_ROOT: root, HERDR_FAKE_SCENARIO: scenarioPath, HC_TERMINAL_ID: address, HC_TERMINAL_SOCKET: socketPath }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
           payloads.set(address, child); t.pid = child.pid; save();
@@ -435,9 +435,9 @@ async function daemonMode() {
           });
           reply(s, { address, agent: basename(program[0] || 'node'), cwd: t.cwd, parent, state: 'live', turn: 0 });
         } else if (['get', 'kill', 'rm', 'read', 'attach', 'label', 'keep'].includes(args[0])) {
-          const t = state.terminals.find(t => t.address === terminal); if (!t) { s.end(JSON.stringify({ stderr: { error: { kind: 'not_found', message: 'No such terminal', hint: null } }, exitCode: 3 }) + '\n'); return; }
+          const t = state.terminals.find(t => t.address === (terminal?.startsWith(state.coreId + '/') ? terminal.slice(state.coreId.length + 1) : terminal)); if (!t) { s.end(JSON.stringify({ stderr: { error: { kind: 'not_found', message: 'No such terminal', hint: null } }, exitCode: 3 }) + '\n'); return; }
           if (args[0] === 'get') { const { screenText, ...result } = t; reply(s, await withDimensions(result)); }
-          else if (args[0] === 'read') reply(s, { text: t.screenText || '', complete: true, how: 'history' });
+          else if (args[0] === 'read') reply(s, { text: t.screenText || '', complete: true, how: option('--lines') === '0' ? 'screen' : 'history' });
           else if (args[0] === 'attach') { s.write(t.screenText || ''); if (t.state === 'finished') s.end(); else { const sinks = attaches.get(t.address) || new Set(); sinks.add(s); attaches.set(t.address, sinks); s.on('close', () => sinks.delete(s)); } }
           else if (args[0] === 'kill') { const child = payloads.get(t.address); if (child) { t.cancelled = true; process.kill(-child.pid, 'SIGHUP'); await new Promise(resolve => child.once('close', resolve)); } reply(s, {}); }
           else if (args[0] === 'label') { for (const kv of args.slice(2).filter(v => !v.startsWith('--'))) { const at = kv.indexOf('='); if (at < 1) throw new Error('Invalid fixture label'); const key = kv.slice(0, at), value = kv.slice(at + 1); if (value) t.labels[key] = value; else delete t.labels[key]; } save(); emit('labels', t.address, { labels: t.labels }); reply(s, t); }

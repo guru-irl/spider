@@ -1036,7 +1036,7 @@ export function mergeKeys(bytes: Buffer | null, desiredSections: KeySections, ow
         throw new HerdrError('key-binding-conflict', `Competing ${section}.cmd-shift-e needs repair`);
     for (const section of ['global', 'terminal', 'layout:spider-glass']) {
       const close = sectionValues(section)['cmd-shift-w'];
-      if (close !== undefined && close !== 'pane.close')
+      if (close !== undefined && close !== 'pane.close' && !(section === 'layout:spider-glass' && desiredSections[section]?.['cmd-shift-w'] === 'spider-pane.close' && close === 'spider-pane.close'))
         throw new HerdrError('key-binding-conflict', `${section}.cmd-shift-w needs repair`);
     }
   }
@@ -1049,8 +1049,11 @@ export function mergeKeys(bytes: Buffer | null, desiredSections: KeySections, ow
         throw new HerdrError('setup-journal-invalid', 'Invalid managed key binding');
       if (current !== undefined && !isNativeKeyBinding(current))
         throw new HerdrError('key-binding-conflict', `Invalid ${section} key: ${key}`);
-      const stock = section === 'global' && (key === 'cmd-p' && current === 'mod.open:picker' || key === 'cmd-n' && current === 'space.new');
-      if (current !== undefined && canonicalJson(current) !== canonicalJson(value) && canonicalJson(current) !== canonicalJson(owned) && !stock && !overwrite)
+      const creationBaseline: Readonly<Record<string, string>> = { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' };
+      const strict = section === 'global' && Object.hasOwn(creationBaseline, key) || section === 'layout:spider-glass' && key === 'cmd-shift-w';
+      const bStock = section === 'global' && Object.hasOwn(creationBaseline, key) && current === creationBaseline[key] || section === 'layout:spider-glass' && key === 'cmd-shift-w' && current === 'pane.close';
+      const stock = bStock || section === 'global' && (key === 'cmd-p' && current === 'mod.open:picker' || key === 'cmd-n' && current === 'space.new');
+      if (current !== undefined && canonicalJson(current) !== canonicalJson(value) && (strict || canonicalJson(current) !== canonicalJson(owned)) && !stock && (!overwrite || strict))
         throw new HerdrError('key-binding-conflict', `Unowned ${section} key: ${key}`);
       currentSection[key] = value;
     }

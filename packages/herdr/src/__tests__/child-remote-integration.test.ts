@@ -2,6 +2,10 @@
 import { expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { startTerminalChild, type TerminalChild } from './child-remote-process.js';
+import { writeFixturePaneEndpoint } from './endpoint-fixture.js';
+import { openRetainedConsole } from './console-view-fixture.js';
+import { readRetainedAgentConsole, type AgentConsoleLaunch } from '../remote/console.js';
+import { sha256 } from '../remote/runtime.js';
 import { createInterface } from 'node:readline';
 import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -28,7 +32,7 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     const config: HerdrConfig = { enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid' as never, aliases: ['managed.invalid'], runtime: { cwd: h.directories.remote, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
     const configPath = standardHerdrConfigPath(config.globalRoot);
     const dist = join(h.root, 'dist/herdr'); await mkdir(dist, { recursive: true });
-    await build({ configFile: false, logLevel: 'silent', ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('./child-remote-entry.ts', import.meta.url)), outDir: dist, emptyOutDir: false, minify: false, rollupOptions: { external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: 'child.mjs' } } } });
+    await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderPaneEndpointEntry': 'false' }, ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('./child-remote-entry.ts', import.meta.url)), outDir: dist, emptyOutDir: false, minify: false, rollupOptions: { external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: 'child.mjs' } } } });
     if (legacyChildPolicy) {
       const bundlePath = join(dist, 'child.mjs'), bundle = await readFile(bundlePath, 'utf8');
       const childHook = /if\s*\(process\.env\.PI_SUBAGENT_CHILD\s*===\s*["']1["']\)\s*return mountChildHerdr\([^;]+\);/g;
@@ -40,6 +44,7 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     }
     const runtime = Buffer.from(stripTypeScriptTypes(await readFile(fileURLToPath(new URL('../remote/runtime.ts', import.meta.url)), 'utf8')));
     await writeFile(join(dist, 'remote-runtime.mjs'), runtime);
+    await writeFixturePaneEndpoint(h.root);
     execFileSync('git', ['init', '-q', h.root]);
     const request = { config, configPath, packageRoot: h.root, journalRoot: join(config.globalRoot, 'herdr/setup') };
     const installer = createProductionHerdrCliPorts(h.root, h.localEnv), parts = await installer.setupParts(request);
@@ -104,8 +109,18 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     expect(await h.hc.get(background.result.details.remote.address)).toMatchObject({ state: 'live' });
     const remoteRows = (await h.cli(['ls', '--all', '--json'], 'remote') as { terminals: { address: string }[] }).terminals;
     const remoteTerminals = await Promise.all(remoteRows.map(row => h.remoteHc.get(row.address as import('../contracts.js').TerminalAddress)));
-    const consoles = remoteTerminals.filter(row => row.labels['spider.kind'] === 'remote-console'); expect(consoles).toHaveLength(1);
-    const consoleAddress = `remote.invalid/${consoles[0].address}` as import('../contracts.js').TerminalAddress;
+    const consoles = remoteTerminals.filter(row => row.labels['spider.kind'] === 'remote-console'); expect(consoles).toHaveLength(0);
+    const on = 'remote.invalid' as import('../contracts.js').MachineName;
+    const consoleRequest: AgentConsoleLaunch = { owner: h.owner!, on,
+      target: { ...config.machines[0].runtime, on, environment: {}, nodePath: process.execPath, runtimePath: runtimeInstallPath(config.machines[0].runtime.directory, runtime), runtimeSha256: sha256(runtime) },
+      source: { kind: 'code', language: 'javascript', code: 'explicit console view' } };
+    const consoleEnv = { ...h.localEnv, HC_TERMINAL_ID: h.owner!.terminal.terminalId, PI_SUBAGENT_CHILD: '1', PI_SUBAGENT_RUN_ID: 'child-run', PI_SUBAGENT_RUN_NAME: 'worker' };
+    const retained = await readRetainedAgentConsole(consoleRequest, h.hc, consoleEnv); expect(retained).not.toBeNull();
+    const view = await openRetainedConsole(consoleRequest, h.hc, consoleEnv); expect(view).not.toBeNull();
+    expect(view!.consoleId).toBe(retained!.consoleId);
+    const consoleAddress = view!.address;
+    expect((await h.hc.get(consoleAddress)).labels).toMatchObject({ 'spider.kind': 'remote-console', 'spider.session': h.owner!.sessionId,
+      'spider.owner-core': h.owner!.terminal.coreId, 'spider.owner-terminal': h.owner!.terminal.terminalId, 'spider.machine': 'remote.invalid', 'spider.run': 'child-run' });
     // A parent reload must leave a live child writer and its payload untouched.
     await monitor.shutdown('reload'); monitor = parentMonitor(); await monitor.activate({ ...h.owner!, generation: 'reloaded-parent' as never });
     expect(notices).toEqual([]); child.kill('SIGKILL'); await exit; await monitor.reconcile();
@@ -128,14 +143,17 @@ async function scenario(mode: 'fake' | 'hc', legacyChildPolicy = false, largeSna
     expect(JSON.parse((await h.hc.fileRead('remote.invalid' as never, join(adopted.remoteDirectory, '.spider-settled'))).toString()).jobId).toBe(adopted.id);
     await monitor.shutdown('reload'); monitor = parentMonitor(); await monitor.activate(h.owner!); await monitor.reconcile(); expect(notices).toHaveLength(1);
     if (mode === 'fake') {
-      const calls = (await h.calls()).slice(setupCallCount).filter(call => call.argv[0] === 'run' && call.argv.includes('--on'));
+      const allCalls = (await h.calls()).slice(setupCallCount).filter(call => call.argv[0] === 'run' && call.argv.includes('--on'));
+      const viewCalls = allCalls.filter(call => call.argv.includes('--console')); expect(viewCalls).toHaveLength(1);
+      const calls = allCalls.filter(call => call !== viewCalls[0]);
       const labels = calls.map(call => Object.fromEntries(call.argv.flatMap((arg, index) => arg === '--label' ? [call.argv[index + 1]!.split('=', 2)] : [])));
       expect(labels.map(label => [label['spider.kind'], label['spider.job'] ?? null])).toEqual([
-        ['remote-console', null], ['exec', foreground.result.details.remote.jobId], ['exec', background.result.details.remote.jobId],
+        ['exec', foreground.result.details.remote.jobId], ['exec', background.result.details.remote.jobId],
       ]);
       for (const label of labels) expect(label).toMatchObject({ 'spider.session': h.owner!.sessionId, 'spider.owner-core': h.owner!.terminal.coreId, 'spider.owner-terminal': h.owner!.terminal.terminalId, 'spider.machine': 'remote.invalid', 'spider.run': 'child-run' });
-      const consoleCall = calls[0];
-      const metadata = JSON.parse(JSON.parse((await h.hc.fileRead('remote.invalid' as never, join(consoleCall.argv[consoleCall.argv.indexOf('--console') + 1]!, 'console.json'))).toString()).body);
+      const metadata = JSON.parse(JSON.parse((await h.hc.fileRead('remote.invalid' as never, join(retained!.directory, 'console.json'))).toString()).body);
+      const head = JSON.parse(JSON.parse((await h.hc.fileRead('remote.invalid' as never, join(retained!.directory, 'head.json'))).toString()).body);
+      expect(head.count).toBe(2);
       expect(metadata.title).toBe('worker · remote.invalid');
       expect(calls.every(call => call.env.PI_SUBAGENT_CHILD === '1' && call.env.PI_SUBAGENT_RUN_ID === 'child-run' && Reflect.get(call, 'parentPid') === child!.pid && call.argv.includes('--no-notify'))).toBe(true);
       expect(await readFile(join(h.directories.local, 'app-calls.jsonl'), 'utf8')).toBe('');

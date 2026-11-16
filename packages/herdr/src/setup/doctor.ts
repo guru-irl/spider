@@ -2,16 +2,19 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { activePlacementRepairs, placementRepairPath, readPlacementRepairs, type PlacementRepairInspection } from '../jobs/placement-repairs.js';
 import { HERDR_LABELS, HERDR_KINDS, type HcRunRequest } from '../contracts.js';
+import { readAppPaneCapabilities } from '../panes/capabilities.js';
+import { paneAddress, paneId, paneText } from '../panes/codec.js';
+import { readPrivateJson } from '../sessions/registry.js';
 import { runtimeInstallPath, type ProbeTarget, type NodeObservation, type SetupRequest } from './installer.js';
 import { snapshot, rootNotesValue, readJournal, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeySections } from './backup.js';
 import { isDeepStrictEqual } from 'node:util';
-import { access } from 'node:fs/promises';
+import { access, lstat, opendir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isAbsolute, join } from 'node:path';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM, isRuntimeRootProbe } from '../remote/node-version.js';
-export const DOCTOR_ITEMS = ['baseline', 'core-identity', 'hc-json', 'status-instance', 'feed-permissions', 'feed-freshness', 'ipc-authentication', 'jobs', 'observers', 'runtime-digest', 'ssh-cache', 'bypass-stripping', 'mods', 'clones', 'patch-version', 'layout-theme', 'fonts', 'pi-schema-contrast', 'keys', 'roles', 'resume', 'presence', 'mappings-leases', 'spaces-tabs', 'measurements', 'lock-adapters'] as const;
+export const DOCTOR_ITEMS = ['baseline', 'core-identity', 'hc-json', 'status-instance', 'feed-permissions', 'feed-freshness', 'ipc-authentication', 'jobs', 'observers', 'runtime-digest', 'ssh-cache', 'bypass-stripping', 'mods', 'clones', 'patch-version', 'layout-theme', 'fonts', 'pi-schema-contrast', 'keys', 'roles', 'resume', 'presence', 'mappings-leases', 'spaces-tabs', 'measurements', 'lock-adapters', 'pane-core', 'pane-capabilities', 'pane-helper', 'pane-installation'] as const;
 export type DoctorItem = typeof DOCTOR_ITEMS[number];
 export interface DoctorFailure {
   item: string;
@@ -51,13 +54,48 @@ export function checkManagedKeyBindings(bytes: Buffer | null, desired: KeySectio
       for (const [name, values] of [['global', global], ['terminal', terminal]] as const)
         if (values['cmd-shift-e'] !== undefined) failures.push(issue(`Competing key: ${name}.cmd-shift-e`));
       for (const [name, values] of [['global', global], ['terminal', terminal], ['layout:spider-glass', layout]] as const)
-        if (values['cmd-shift-w'] !== undefined && values['cmd-shift-w'] !== 'pane.close') failures.push(issue(`Pane close differs: ${name}.cmd-shift-w`));
+        if (values['cmd-shift-w'] !== undefined && values['cmd-shift-w'] !== 'pane.close' && !(name === 'layout:spider-glass' && desired[name]?.['cmd-shift-w'] === 'spider-pane.close' && values['cmd-shift-w'] === 'spider-pane.close')) failures.push(issue(`Pane close differs: ${name}.cmd-shift-w`));
       if (global['cmd-shift-w'] === undefined) warnings.push({ item: 'keys', code: 'inspection-unavailable', message: 'The effective global.cmd-shift-w default is not recorded in keys.json', repair: 'Check the active app key binding before relying on pane close.' });
     }
   } catch (error) {
     failures.push(issue(error instanceof Error ? error.message : 'Keys could not be inspected'));
   }
   return { failures, warnings };
+}
+export function paneCoreVersionSupported(version: string): boolean {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) return false;
+  const [major, minor, patch] = match.slice(1).map(Number); return major > 0 || minor > 1 || minor === 1 && patch >= 16;
+}
+export function inspectPaneCommands(value: unknown): { failures: DoctorFailure[]; warnings?: DoctorFailure[]; information?: DoctorInformation[] } {
+  const commands = Array.isArray(value) ? value : value && typeof value === 'object' ? (value as { commands?: unknown }).commands : null;
+  const warning = (code: string, message: string) => ({ failures: [], warnings: [{ item: 'pane-capabilities', code, message, repair: 'Use a supported app and rerun doctor.' }] });
+  if (!Array.isArray(commands) || commands.length > 4096 || commands.some(row => !row || typeof row.name !== 'string' || !Array.isArray(row.args) || row.args.some((arg: unknown) => !arg || typeof arg !== 'object' || typeof (arg as { name?: unknown }).name !== 'string' || typeof (arg as { required?: unknown }).required !== 'boolean'))) return warning('pane-capabilities-unknown', 'Pane command capabilities are unavailable; optional capabilities remain unsupported.');
+  for (const name of ['tab.new', 'terminal.open', 'terminal.keep', 'pane.split', 'pane.close']) if (commands.filter(row => row.name === name).length !== 1) return warning('pane-command-unavailable', `Required pane command is unavailable: ${name}`);
+  const capabilities = readAppPaneCapabilities(value);
+  return { failures: [], information: [{ item: 'pane-capabilities', code: 'pane-capabilities', message: `Background tabs: ${capabilities.backgroundTabCreation ? 'available' : 'unsupported'}; explicit swap: ${capabilities.explicitTargetSwap ? 'available' : 'unsupported'}; no-focus conversion: unsupported.` }] };
+}
+export interface PaneServiceClaimInspection { coreId: string; socket: string; sessionNamespace: string; operationId: string; address: import('../contracts.js').TerminalAddress }
+export async function inspectPaneServiceState(root: string, probe: (claim: PaneServiceClaimInspection) => Promise<boolean>): Promise<{ failures: DoctorFailure[]; warnings?: DoctorFailure[] }> {
+  const unavailable = (code: string, message: string) => ({ failures: [], warnings: [{ item: 'pane-helper', code, message, repair: 'Open the machine picker to request a presentation explicitly.' }] });
+  const unsafe = () => ({ failures: [{ item: 'pane-helper', code: 'pane-cache-unsafe', message: 'Presentation cache must contain private, owned regular files and directories.', repair: 'Repair the private presentation cache permissions and rerun doctor.' }] });
+  const privatePath = async (path: string, directory: boolean) => { const stat = await lstat(path); return !stat.isSymbolicLink() && (directory ? stat.isDirectory() : stat.isFile() && stat.nlink === 1 && stat.size <= 1024 * 1024) && (process.platform === 'win32' || stat.uid === process.getuid?.() && (stat.mode & 0o077) === 0); };
+  try { if (!await privatePath(root, true)) return unsafe(); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'ENOENT' ? unavailable('pane-helper-missing', 'Presentation helper has not been started.') : unsafe(); }
+  try {
+    try {
+      const bindings = join(root, 'bindings'); if (!await privatePath(bindings, true)) return unsafe();
+      let count = 0;
+      for await (const entry of await opendir(bindings)) { if (++count > 256) return unavailable('pane-cache-limit', 'Presentation cache inspection reached its bound.'); if (!await privatePath(join(bindings, entry.name), false)) return unsafe(); }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return unsafe(); }
+    const path = join(root, 'service.json');
+    try { if (!await privatePath(path, false)) return unsafe(); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return unavailable('pane-helper-missing', 'Presentation helper has not been started.'); return unsafe(); }
+    const raw = await readPrivateJson(path) as Record<string, unknown> | null;
+    if (!raw || raw.version !== 1 || raw.state !== 'acknowledged' || raw.address === null) return unavailable('pane-helper-uncertain', 'Presentation helper claim is unresolved; doctor did not start or repair it.');
+    const claim = { coreId: paneId(raw.coreId), socket: paneText(raw.socket), sessionNamespace: paneText(raw.sessionNamespace), operationId: paneId(raw.operationId), address: paneAddress(raw.address) };
+    return await probe(claim) ? { failures: [] } : unavailable('pane-helper-missing', 'Presentation helper is not proved live; doctor did not restart it.');
+  } catch { return unavailable('pane-helper-unavailable', 'Presentation helper could not be inspected; no repair was attempted.'); }
 }
 export type DoctorRequest = SetupRequest;
 export interface DoctorParts {

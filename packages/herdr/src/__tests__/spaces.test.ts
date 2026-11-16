@@ -1138,6 +1138,177 @@ it.each([
   expect(before.spaces[0].tabs[0].terminals?.every(row => after.spaces[0].tabs.flatMap(tab => tab.terminals ?? []).some(value => value.terminal === row.terminal))).toBe(true);
 });
 
+it('journal retains real target beside remote presentation', async () => {
+  const file = await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports), owner = initial.launched[0];
+  const journalPath = join(ports.journalRoot, 'spaces.json');
+  const journal = JSON.parse(await readFile(journalPath, 'utf8'));
+  journal.tabs[0].sessions[0].terminal = 'core-remote/t7';
+  await writeFile(journalPath, JSON.stringify(journal), { mode: 0o600 });
+  const tab = layout.spaces[0].tabs[0];
+  tab.terminal = 'proxy-1' as TerminalAddress;
+  tab.terminals = [{ terminal: 'proxy-1' as TerminalAddress, ownerSessionId: 'one' }];
+  await ports.processInventory.presence.record({ ...owner, sessionFile: file, sessionName: 'First', kind: 'top-level', hcAddress: 'core-remote/t7' as TerminalAddress });
+  ports.liveSessionFeed = async () => ({ sessionId: 'one', owner: { sessionId: 'one', sessionFile: file, cwd: root, terminal: { address: 'core-remote/t7' } } } as never);
+  ports.terminalState = async placement => placement.terminal === 'core-remote/t7' ? 'live' : 'absent';
+  const notices: string[] = []; ports.reportLayout = message => notices.push(message);
+  ports.terminalLabels = async () => ({ 'spider.kind': 'pane-proxy' });
+  ports.observedPresentation = async (target, execution, snapshot) => {
+    expect(target.sessionId).toBe('one');
+    expect(execution.terminal).toBe('core-remote/t7');
+    expect(snapshot.spaces[0].tabs[0].terminals?.[0].terminal).toBe('proxy-1');
+    return 'proxy-1' as TerminalAddress;
+  };
+  const recovery = await readCutoverRecovery(ports.journalRoot, await ports.layoutSnapshot(), config, ports);
+  expect(recovery.entries[0].placement.terminal).toBe('core-remote/t7');
+  expect(recovery.entries[0].result?.presentationTerminal).toBe('proxy-1');
+  const before = structuredClone(layout), command = vi.spyOn(ports.app, 'command');
+  const result = await setupSpaces(config, ports);
+  expect(result.tabs[0].terminal).toBe('core-remote/t7');
+  expect(result.launched[0].presentationTerminal).toBe('proxy-1');
+  expect(command).not.toHaveBeenCalled();
+  expect(layout).toEqual(before);
+  expect(notices).toEqual([]);
+  expect(writers).toEqual(['one']);
+  const saved = await readFile(journalPath, 'utf8'), written = JSON.parse(saved);
+  expect(written.tabs[0].sessions[0]).toMatchObject({ terminal: 'core-remote/t7', result: { presentationTerminal: 'proxy-1' } });
+  await setupSpaces(config, ports);
+  expect(await readFile(journalPath, 'utf8')).toBe(saved);
+  expect(writers).toEqual(['one']);
+});
+it('an already placed remote display completes an interrupted journal move without touching the target', async () => {
+  config.layout = 'panes';
+  const file = await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports), owner = initial.launched[0];
+  const path = join(ports.journalRoot, 'spaces.json'), journal = JSON.parse(await readFile(path, 'utf8'));
+  journal.tabs[0].sessions[0].terminal = 'core-remote/t7';
+  journal.tabs[0].sessions[0].result.presentationTerminal = 'proxy-1';
+  journal.tabs[0].sessions[0].pane = { tab: initial.tabs[0].tab, direction: 'down' };
+  await writeFile(path, JSON.stringify(journal), { mode: 0o600 });
+  const tab = layout.spaces[0].tabs[0]; tab.terminal = 'proxy-1' as TerminalAddress;
+  tab.terminals = [{ terminal: 'proxy-1' as TerminalAddress, ownerSessionId: 'one' }];
+  await ports.processInventory.presence.record({ ...owner, sessionFile: file, sessionName: 'First', kind: 'top-level', hcAddress: 'core-remote/t7' as TerminalAddress });
+  ports.liveSessionFeed = async () => ({ sessionId: 'one', owner: { sessionId: 'one', sessionFile: file, cwd: root, terminal: { address: 'core-remote/t7' } } } as never);
+  ports.terminalState = async placement => placement.terminal === 'core-remote/t7' ? 'live' : 'absent';
+  ports.observedPresentation = async () => 'proxy-1' as TerminalAddress;
+  const before = structuredClone(layout), command = vi.spyOn(ports.app, 'command');
+  const result = await setupSpaces(config, ports);
+  expect(result.tabs[0].terminal).toBe('core-remote/t7');
+  expect(result.launched[0].presentationTerminal).toBe('proxy-1');
+  expect((await readCutoverRecovery(ports.journalRoot)).entries[0].pendingMove).toBeUndefined();
+  expect(command).not.toHaveBeenCalled();
+  expect(layout).toEqual(before);
+  expect(writers).toEqual(['one']);
+});
+
+it('an incomplete remote display move never keeps the execution target', async () => {
+  config.layout = 'panes';
+  const file = await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports), owner = initial.launched[0];
+  const path = join(ports.journalRoot, 'spaces.json'), journal = JSON.parse(await readFile(path, 'utf8'));
+  journal.tabs[0].sessions[0].terminal = 'core-remote/t7';
+  journal.tabs[0].sessions[0].result.presentationTerminal = 'proxy-1';
+  journal.tabs[0].sessions[0].pane = { tab: 'destination', direction: 'down' };
+  await writeFile(path, JSON.stringify(journal), { mode: 0o600 });
+  const space = layout.spaces[0], tab = space.tabs[0]; tab.terminal = 'proxy-1' as TerminalAddress;
+  tab.terminals = [{ terminal: 'proxy-1' as TerminalAddress, ownerSessionId: 'one' }];
+  space.tabs.push({ id: 'destination' as TabId, name: 'Space A', terminal: 'other' as TerminalAddress, ownerSessionId: null });
+  await ports.processInventory.presence.record({ ...owner, sessionFile: file, sessionName: 'First', kind: 'top-level', hcAddress: 'core-remote/t7' as TerminalAddress });
+  ports.liveSessionFeed = async () => ({ sessionId: 'one', owner: { sessionId: 'one', sessionFile: file, cwd: root, terminal: { address: 'core-remote/t7' } } } as never);
+  ports.terminalState = async placement => placement.terminal === 'core-remote/t7' ? 'live' : 'absent';
+  ports.observedPresentation = async () => 'proxy-1' as TerminalAddress;
+  const before = structuredClone(layout), command = vi.spyOn(ports.app, 'command');
+  const plan = (await spaceSetup.planSpaceCutover(config, ports)).join('\n');
+  expect(plan).toContain('Setup left "First" running');
+  expect(plan).not.toContain('Re-place');
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'running-session-unplaced' });
+  expect(command).not.toHaveBeenCalled();
+  expect(layout).toEqual(before);
+  expect(writers).toEqual(['one']);
+  expect((await readCutoverRecovery(ports.journalRoot)).entries[0]).toMatchObject({ placement: { terminal: 'core-remote/t7' }, result: { presentationTerminal: 'proxy-1' } });
+});
+
+it('a remote journal without an observed display never keeps or recreates its target', async () => {
+  const file = await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports), owner = initial.launched[0];
+  const path = join(ports.journalRoot, 'spaces.json'), journal = JSON.parse(await readFile(path, 'utf8'));
+  journal.tabs[0].sessions[0].terminal = 'core-remote/t7';
+  await writeFile(path, JSON.stringify(journal), { mode: 0o600 });
+  const tab = layout.spaces[0].tabs[0];
+  tab.terminal = 'foreign-shell' as TerminalAddress;
+  tab.terminals = [{ terminal: 'foreign-shell' as TerminalAddress, ownerSessionId: null }];
+  await ports.processInventory.presence.record({ ...owner, sessionFile: file, sessionName: 'First', kind: 'top-level', hcAddress: 'core-remote/t7' as TerminalAddress });
+  ports.liveSessionFeed = async () => ({ sessionId: 'one', owner: { sessionId: 'one', sessionFile: file, cwd: root, terminal: { address: 'core-remote/t7' } } } as never);
+  ports.terminalState = async placement => placement.terminal === 'core-remote/t7' ? 'live' : 'absent';
+  ports.observedPresentation = async () => null;
+  const before = await readFile(path, 'utf8'), oldLayout = structuredClone(layout), command = vi.spyOn(ports.app, 'command');
+  expect((await readCutoverRecovery(ports.journalRoot)).entries[0].result?.presentationTerminal).toBeUndefined();
+  const plan = (await spaceSetup.planSpaceCutover(config, ports)).join('\n');
+  expect(plan).toContain('Setup left "First" running');
+  expect(plan).not.toContain('Re-place');
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'running-session-unplaced' });
+  expect(command).not.toHaveBeenCalled();
+  expect(layout).toEqual(oldLayout);
+  expect(writers).toEqual(['one']);
+  expect(await readFile(path, 'utf8')).toBe(before);
+});
+
+it('an observed proxy cannot authorize a replacement for an unproved remote owner', async () => {
+  await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports), owner = initial.launched[0];
+  const path = join(ports.journalRoot, 'spaces.json'), journal = JSON.parse(await readFile(path, 'utf8'));
+  journal.tabs[0].sessions[0].terminal = 'core-remote/t7';
+  await writeFile(path, JSON.stringify(journal), { mode: 0o600 });
+  const tab = layout.spaces[0].tabs[0];
+  tab.terminal = 'proxy-1' as TerminalAddress;
+  tab.terminals = [{ terminal: 'proxy-1' as TerminalAddress, ownerSessionId: 'one' }];
+  probes.set(owner.pid, { kind: 'absent' });
+  ports.terminalState = async () => 'absent';
+  ports.liveSessionFeed = async () => null;
+  ports.verifyOwner = async () => { throw new HerdrError('owner-activation-unconfirmed', 'Source unavailable'); };
+  ports.observedPresentation = async () => 'proxy-1' as TerminalAddress;
+  const before = structuredClone(layout), command = vi.spyOn(ports.app, 'command');
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'running-session-unplaced' });
+  const recovery = await readCutoverRecovery(ports.journalRoot);
+  expect(recovery.entries[0]).toMatchObject({ placement: { terminal: 'core-remote/t7' }, result: { presentationTerminal: 'proxy-1' } });
+  expect(command).not.toHaveBeenCalled();
+  expect(layout).toEqual(before);
+  expect(writers).toEqual(['one']);
+});
+
+it('an interrupted remote allocation stays pending without a second writer', async () => {
+  await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports);
+  const path = join(ports.journalRoot, 'spaces.json'), journal = JSON.parse(await readFile(path, 'utf8'));
+  journal.tabs[0].sessions[0].terminal = 'core-remote/t7';
+  journal.tabs[0].sessions[0].result = null;
+  await writeFile(path, JSON.stringify(journal), { mode: 0o600 });
+  probes.set(initial.launched[0].pid, { kind: 'absent' });
+  ports.terminalState = async () => 'absent';
+  ports.verifyOwner = async () => { throw new HerdrError('owner-activation-unconfirmed', 'Source unavailable'); };
+  const before = await readFile(path, 'utf8'), command = vi.spyOn(ports.app, 'command');
+  await expect(setupSpaces(config, ports)).rejects.toMatchObject({ code: 'running-session-unplaced' });
+  expect(command).not.toHaveBeenCalled();
+  expect(writers).toEqual(['one']);
+  expect(await readFile(path, 'utf8')).toBe(before);
+});
+
+it('old journal rerun preserves native local terminal', async () => {
+  await addSession('one', 'First');
+  const initial = await setupSpaces(config, ports), recovered = await readCutoverRecovery(ports.journalRoot);
+  const path = join(ports.journalRoot, 'spaces.json');
+  await writeFile(path, JSON.stringify({ version: 1, focused: true, spaces: [{ name: 'Space A', id: layout.spaces[0].id, adopted: false }], tabs: recovered.entries.map(entry => ({ ...entry, failure: null })) }), { mode: 0o600 });
+  const before = await readFile(path, 'utf8'), command = vi.spyOn(ports.app, 'command');
+  const again = await setupSpaces(config, ports);
+  expect(again.tabs[0].terminal).toBe(initial.tabs[0].terminal);
+  expect(again.launched[0].presentationTerminal).toBeUndefined();
+  expect(Object.hasOwn(again.launched[0], 'presentationTerminal')).toBe(false);
+  expect((await readCutoverRecovery(ports.journalRoot)).entries[0].result?.presentationTerminal).toBeUndefined();
+  expect(command).not.toHaveBeenCalled();
+  expect(writers).toEqual(['one']);
+  expect(await readFile(path, 'utf8')).toBe(before);
+});
+
 it.each(['tab.new', 'pane.close'] as const)('recovers a lost %s reply while replacing a lone parked pane without empty tabs', async operation => {
   config.layout = 'panes'; await addSession('one', 'First');
   const initial = await setupSpaces(config, ports), terminal = initial.tabs[0].terminal;

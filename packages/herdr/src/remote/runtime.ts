@@ -357,6 +357,7 @@ export interface ConsoleCommand {
 }
 export interface RemoteConsoleOptions {
   signal?: AbortSignal; pollMs?: number; write?: (text: string) => void; instance?: string; columns?: number;
+  displayLeaseFile?: string; sessionId?: string; generation?: string; consoleId?: string;
 }
 function consoleText(text: string): string {
   return text.replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, character => `\\x${character.charCodeAt(0).toString(16).padStart(2, '0')}`);
@@ -498,6 +499,22 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
   };
   while (!options.signal?.aborted) {
     const now = Date.now();
+    if (options.displayLeaseFile) {
+      try {
+        let file = options.displayLeaseFile;
+        try {
+          const binding = parseRuntimePublication(await readBoundedFile(join(directory, 'view-lease.json'), 4096));
+          if (binding.sessionId !== options.sessionId || binding.generation !== options.generation || binding.consoleId !== options.consoleId || typeof binding.file !== 'string') return;
+          file = binding.file;
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return; }
+        if (!isAbsolute(file)) return;
+        const info = await lstat(file);
+        if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || process.platform !== 'win32' && (info.mode & 0o077)) return;
+        const lease = JSON.parse((await readBoundedFile(file, 65536)).toString());
+        if (lease.version !== 1 || lease.sessionId !== options.sessionId || lease.generation !== options.generation || lease.consoleId !== options.consoleId
+          || !Number.isSafeInteger(lease.expiresAt) || lease.expiresAt <= now || lease.expiresAt > now + 20000) return;
+      } catch { return; }
+    }
     try {
       const meta = parseRuntimePublication(await readBoundedFile(join(directory, 'console.json'), 4096));
       if (meta.version === 1 && (meta.start === undefined || Number.isSafeInteger(meta.start) && (meta.start as number) >= 0)) next ??= (meta.start as number | undefined) ?? 0;
@@ -589,9 +606,15 @@ if ((import.meta as ImportMeta & { spiderHerdrRuntimeEntry?: boolean }).spiderHe
         process.stdout.write(JSON.stringify(result) + '\n');
       } else if (process.argv[2] === '--console') {
         const directory = process.argv[3]; if (!directory) throw new RemoteRuntimeError('console-directory-invalid', 'A console directory is required');
-        const controller = new AbortController(); const stop = () => controller.abort();
+        const cancellation = new AbortController(); const stop = () => cancellation.abort();
         for (const signal of ['SIGHUP', 'SIGINT', 'SIGTERM'] as const) process.on(signal, stop);
-        try { await runRemoteConsole(directory, { signal: controller.signal, instance: process.argv[4] }); }
+        const values = new Map<string, string>();
+        for (let i = 5; i < process.argv.length; i += 2) {
+          if (!['--display-lease', '--session', '--generation', '--console-id'].includes(process.argv[i]) || values.has(process.argv[i]) || !process.argv[i+1]) throw new RemoteRuntimeError('console-usage', 'Invalid console view arguments');
+          values.set(process.argv[i], process.argv[i+1]);
+        }
+        if (values.size && values.size !== 4) throw new RemoteRuntimeError('console-usage', 'Incomplete console display lease');
+        try { await runRemoteConsole(directory, { signal: cancellation.signal, instance: process.argv[4], displayLeaseFile: values.get('--display-lease'), sessionId: values.get('--session'), generation: values.get('--generation'), consoleId: values.get('--console-id') }); }
         finally { for (const signal of ['SIGHUP', 'SIGINT', 'SIGTERM'] as const) process.off(signal, stop); }
       } else process.exitCode = await runRemoteRuntime(process.argv[2]);
     }

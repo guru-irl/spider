@@ -17,3 +17,7 @@ export function parseSessionIpcEnvelope(line: string): SessionIpcEnvelope | null
 export function parseSessionIpcReply(line: string): SessionIpcReply | null;
 export function parseRunViewFrame(line: string): RunViewFrame | null;
 export function middlePath(path: string, max: number): string;
+
+export type PaneUiRequest = import('../../src/panes/types.js').PaneServiceRequest extends infer R ? R extends import('../../src/panes/types.js').PaneServiceRequest ? Omit<R, 'version' | 'operationId'> & { operationId?: string } : never : never;
+export type PaneUiMutationRequest = Exclude<PaneUiRequest, { op: 'snapshot' }>;
+export function requestPaneService<T extends PaneUiRequest>(config: { nodePath: string; cliPath: string }, exec: (program: string, args: string[], options?: { timeout: number }) => Promise<{ code: number; stdout: string }>, request: T): Promise<T extends { op: 'snapshot' } ? import('../../src/panes/types.js').PaneServiceSnapshot : import('../../src/panes/types.js').PaneActionOutcome>;

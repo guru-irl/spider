@@ -164,16 +164,17 @@ try {
   process.exit(1);
 }
 try {
-  const entries = ['cli.mjs', 'feed-reader.mjs', 'remote-runtime.mjs', 'subagent-supervisor.mjs', 'viewer-pi.mjs', 'viewer.mjs'];
+  const entries = ['cli.mjs', 'feed-reader.mjs', 'pane-endpoint.mjs', 'remote-runtime.mjs', 'subagent-supervisor.mjs', 'viewer-pi.mjs', 'viewer.mjs'];
   if (!lstatSync('dist/herdr').isDirectory() || readdirSync('dist/herdr').sort().join() !== entries.join()) throw new Error('Herdr entries missing or unexpected runtime chunk');
   const assets = [
     'spaces/local.js', 'look/spaces-a-sidebar/agents-mod.json', 'agents/grouping.js', 'agents/connections.js', 'agents/console-groups.js',
-    'shared/navigation.js', 'shared/open-failure.js', 'picker/model.js', 'pane/park.js',
+    'shared/navigation.js', 'shared/presentations.js', 'shared/open-failure.js', 'picker/model.js', 'pane/park.js', 'pane/machine.js', 'pane/actions.js',
+    'machines/picker.js', 'machines/actions.js',
     'picker/main.js', 'picker/mod.json', 'picker/NOTICE', 'mods/spider/sound.js', 'toast/main.js', 'toast/mod.json', 'toast/filter.js', 'toast/NOTICE',
     'look/spaces-a-sidebar/agents-0.1.13.json', 'look/spaces-a-sidebar/agents-0.1.16.json',
     'look/spaces-a-sidebar/spaces-0.1.13.json', 'look/spaces-a-sidebar/spaces-0.1.16.json',
     'look/spaces-a-goto/menu-0.1.13.json', 'look/spaces-a-goto/menu-0.1.16.json',
-    'agents/children.js', 'agents/move.js', 'agents/move-menu.js', 'agents/bot.svg', 'agents/list.svg', 'agents/bell.svg', 'agents/chevron-up.svg', 'agents/unreachable.svg', 'agents/corner-up-left.svg', 'agents/space-pentagon.svg', 'agents/space-heptagon.svg', 'agents/space-octagon.svg', 'agents/space-triangle.svg', 'agents/space-diamond.svg', 'agents/space-hexagon.svg', 'agents/space-star.svg', 'tabs/spider.svg', 'tabs/autohide.js', 'shared/feed.js', 'shared/look.js', 'look/layout-edits.json', 'look/patches.json', 'look/NOTICE',
+    'agents/children.js', 'agents/move.js', 'agents/move-menu.js', 'agents/bot.svg', 'agents/list.svg', 'agents/bell.svg', 'agents/chevron-up.svg', 'agents/unreachable.svg', 'agents/corner-up-left.svg', 'agents/space-pentagon.svg', 'agents/space-heptagon.svg', 'agents/space-octagon.svg', 'agents/space-triangle.svg', 'agents/space-diamond.svg', 'agents/space-hexagon.svg', 'agents/space-star.svg', 'tabs/spider.svg', 'tabs/autohide.js', 'shared/feed.js', 'shared/look.js', 'look/layout-edits.json', 'look/patches.json', 'look/cross-machine-patches.json', 'look/NOTICE',
     'mods/spider/data.js', 'mods/spider/main.js', 'mods/spider/mod.json',
     'themes/dracula-plus-glass.json', 'themes/spider-glass.json', 'keys.json',
     'fonts/GlassLabel-Bold.ttf', 'fonts/GoogleSansFlex.ttf', 'fonts/GoogleSansFlex-OFL.txt', 'fonts/GoogleSansFlex-TRADEMARKS.md',
@@ -237,6 +238,7 @@ try {
     }
     const remoteEntry = entry === 'remote-runtime.mjs';
     if (remoteEntry || entry === 'feed-reader.mjs') checkJavaScript(code, entry, false);
+    if (!code.includes(`SPIDER_PANE_ENDPOINT_ENTRY=${entry === 'pane-endpoint.mjs'}`) || code.includes('import.meta.spiderPaneEndpointEntry')) throw new Error(`Pane endpoint-main boundary invalid in ${entry}`);
     if (entry === 'feed-reader.mjs' && /SPIDER_GLOBAL_ROOT|better-sqlite3|sqlite-vec/.test(code)) throw new Error('Herdr feed reader imports global or database state');
     if (code.includes('A runtime request file is required') !== remoteEntry || !code.includes(`SPIDER_HERDR_RUNTIME_ENTRY=${remoteEntry}`) || code.includes('import.meta.spiderHerdrRuntimeEntry')) throw new Error(`Herdr runtime-main boundary invalid in ${entry}`);
   }

@@ -11,6 +11,7 @@ import { assessSessionLiveness, recordedSessionLiveness, type SessionLeasePolicy
 import { bootIdChanged, claimIdLock, inspectIdLock } from './id-lock.js';
 import { exactLaunchArgv } from './launch-limits.js';
 import { launchHandoffPath, removeLaunchHandoff, writeLaunchHandoff } from './launch-handoff.js';
+export const SESSION_PROGRAM = 'pi';
 export interface SessionLaunchRequest { sessionFile: string; sessionId: SessionId; cwd: string; environment: LaunchEnvironment }
 export interface ExactTerminalLaunch {
   background: true; noNotify: true; outliveParent: true; parent: null; labels: Readonly<Record<string, string>>;
@@ -42,7 +43,7 @@ export async function launchSession(request: SessionLaunchRequest, ports: Sessio
   let starting = false;
   try {
     const header = await readSessionHeader(file); if (header.id !== request.sessionId) throw new HerdrError('session-id-mismatch', 'Session file identity changed');
-    const argv = ['pi', '--session', file];
+    const argv = [SESSION_PROGRAM, '--session', file];
     const env = { ...safeLaunchEnvironment(ports.env), PI_CODING_AGENT_DIR: environment.agentDirectory, SPIDER_HERDR_LEASE_TOKEN: lease.token, SPIDER_HERDR_LEASE_FILE: file };
     starting = true; const process = await ports.spawnPi({ ...request, sessionFile: file, environment, argv, env });
     if (!process) throw new HerdrError('process-identity-unavailable', 'Cannot prove launched pi identity');

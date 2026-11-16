@@ -27,6 +27,8 @@ export async function stopParticipantWithExclusion(db: Db, sessionId: string, be
 }
 export function createParticipantSupervisor(input: {
   root: string; agent: AgentPorts; clock: Clock; identityCurrent?(): Promise<boolean>; events: { subscribe(listener: () => void): () => void };
+  /** Refresh external stop evidence before reading authoritative intent. */
+  beforeInspect?(sessionId: string): Promise<void>;
   owner(intent: HostIntent): Promise<Probe>;
   diagnostics(intent: HostIntent): Promise<readonly Diagnostic[]>;
   launch(intent: HostIntent, operationId: string, mode: "initial" | "reconcile"): Promise<Outcome<HubOperationReadiness>>;
@@ -40,7 +42,11 @@ export function createParticipantSupervisor(input: {
   const authorized = (id: string) => authority.authorized(id, input.agent.config.hubMachineId, input.agent.config.machineId);
   const trusted = { ...authority,
     async list() { if (input.identityCurrent && !await input.identityCurrent()) return []; return (await authority.list()).filter(authorized); },
-    async get(id: string) { return authorized(id) ? authority.get(id) : null; },
+    async get(id: string) {
+      if (!authorized(id)) return null;
+      await input.beforeInspect?.(id);
+      return authorized(id) ? authority.get(id) : null;
+    },
   };
   async function inspect(id: string) {
     if (!participantCaptureInitialized(global, input.agent.config.machineId, "global")) throw new Error("Participant capture is not initialized");

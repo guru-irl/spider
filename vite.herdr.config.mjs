@@ -4,6 +4,7 @@ import { builtinModules } from 'node:module';
 
 const entries = {
   cli: 'packages/herdr/src/bin/cli.ts',
+  'pane-endpoint': 'packages/host/src/herdr/bin/pane-endpoint.ts',
   'feed-reader': 'packages/herdr/src/bin/feed-reader.ts',
   viewer: 'packages/herdr/src/bin/viewer.ts',
   'viewer-pi': 'packages/herdr/src/viewers/pi-main.ts',
@@ -23,7 +24,7 @@ export default defineConfig(({ mode }) => {
   return {
     // Bundling collapses import.meta.url to the entry URL. This structural
     // marker keeps C's library imports from becoming additional main programs.
-    define: { 'import.meta.spiderHerdrRuntimeEntry': mode === 'remote-runtime' ? 'true' : 'false' },
+    define: { 'import.meta.spiderPaneEndpointEntry': mode === 'pane-endpoint' ? 'true' : 'false', 'import.meta.spiderHerdrRuntimeEntry': mode === 'remote-runtime' ? 'true' : 'false' },
     ssr: { target: 'node', noExternal: true },
     build: {
       target: 'node22', outDir: 'dist/herdr', emptyOutDir: mode === 'cli',
@@ -32,7 +33,7 @@ export default defineConfig(({ mode }) => {
         external: id => builtins.has(id) || peers.some(peer => id === peer || id.startsWith(`${peer}/`)),
         output: {
           format: 'es', entryFileNames: `${mode}.mjs`, codeSplitting: false,
-          banner: `/*! SPDX-License-Identifier: MIT — Herdr runtime. See NOTICE.md. SPIDER_HERDR_RUNTIME_ENTRY=${mode === 'remote-runtime'} */`,
+          banner: `/*! SPDX-License-Identifier: MIT — Herdr runtime. See NOTICE.md. SPIDER_HERDR_RUNTIME_ENTRY=${mode === 'remote-runtime'} SPIDER_PANE_ENDPOINT_ENTRY=${mode === 'pane-endpoint'} */`,
         },
       },
     },

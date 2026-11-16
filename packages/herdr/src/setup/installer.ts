@@ -151,6 +151,8 @@ export interface SetupParts {
   generateTemplates(request: SetupRequest, context: SetupContext): Promise<readonly InstallFile[]>;
   installResume(request: SetupRequest, context: SetupContext): Promise<readonly InstallFile[]>;
   probeMachineNode(target: ProbeTarget, launch: HcRunRequest): Promise<string>;
+  /** Explicit setup may stage only this machine’s owned installed endpoint. */
+  stagePaneEndpoint?(request: SetupRequest): Promise<readonly string[]>;
   ensureRuntime(request: SetupRequest, context: SetupContext): Promise<readonly RuntimeFile[]>;
   bootstrapRuntime(request: SetupRequest, context: SetupContext): Promise<void>;
   runtimeRootsHealthy?(request: SetupRequest, runtimes: readonly RuntimeFile[]): Promise<boolean>;
@@ -445,12 +447,13 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     };
     const unchanged = releasedSounds.length === 0 && fileActions.every(action => action.action === 'unchanged') && journal.verified && !cutoverNeeded && fingerprint === journal.fingerprint && probes.length === 0 && runtimePlans.every(p => p.before === p.runtime.sha256) && (await Promise.all(files.map(async file => file.snapshotOnly || (await snapshot(file.path)).hash === digest(file.bytes)))).every(Boolean);
     await ensureSessionFeedDirectory(request.config.globalRoot);
+    const endpointWrites = await parts.stagePaneEndpoint?.(request) ?? [];
     if (unchanged) {
       await bootstrap(); // Repair root loss without repeating cutover or unrelated setup writes.
       const doctor = await parts.verify(request);
       if (doctor.failures.length) throw new HerdrError('setup-verification-failed', 'Installed setup failed verification', { failures: doctor.failures });
       if (recordRuntimeRootProbes() || cutoverMetadataChanged) await saveJournal(request.journalRoot, journal);
-      return { writes: [], probes: [], cutover: journal.cutover, doctor };
+      return { writes: [...endpointWrites], probes: [], cutover: journal.cutover, doctor };
     }
     const appFiles = files.filter(file => file.updateAfterCutover);
     const ownedSounds = new Set<string>();
@@ -469,7 +472,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     journal.verified = false;
     journal.retiredTerminals = retiredTerminals;
     await prepareBackups(request.journalRoot, files, journal);
-    const writes = await applyFiles(files.filter(file => !file.updateAfterCutover), journal);
+    const writes = [...endpointWrites, ...await applyFiles(files.filter(file => !file.updateAfterCutover), journal)];
     for (const file of appFiles)
       if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
     for (const path of releasedSounds) parts.warn(`${path}: sounds.enabled was changed by the user and released.`);

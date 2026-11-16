@@ -13,6 +13,7 @@
   "remove": ["status"],
   "tabs": { "stripPx": 6, "fullPx": 42 },
   "root": {
+    "terminal_menu": "spider-menu",
     "theme": "spider-glass",
     "ui_font": "Google Sans Flex",
     "terminal_opacity": 0,

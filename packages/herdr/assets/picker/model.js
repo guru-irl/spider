@@ -11,7 +11,7 @@ function filtered(node, query, parentMatches = false) {
 }
 
 export function pickerRows(spaces, targets, filter) {
-  const localSpaces = spaces.filter(space => space.machine === null);
+  const localSpaces = spaces.filter(space => (space.machine ?? null) === null);
   const spaceNodes = new Map(), tabNodes = new Map(), targetNodes = new Map();
   for (const space of localSpaces) {
     const spaceNode = node({ kind: 'space', id: `space:${space.id}`, label: space.name, enabled: true, space: space.id });

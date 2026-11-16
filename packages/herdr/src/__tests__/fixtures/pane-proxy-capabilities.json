@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "synthetic": true,
+  "minimumHcVersion": "0.1.16",
+  "attachingClientsProved": ["0.1.16", "0.1.18"],
+  "nativeCoreReporting": { "title": true, "app": true, "states": ["working", "blocked", "error", "done"] },
+  "panes": "pending, screen locked",
+  "agents": "pending, screen locked",
+  "closeConfirmation": "pending, screen locked",
+  "packagedTtyGate": "implementation required before production use",
+  "versions": {
+    "0.1.13": {
+      "nativeFacts": "pending, screen locked",
+      "targetFactsHeaders": true,
+      "agentProjection": true,
+      "spiderCloseConfirmation": true,
+      "noFocusConversion": false,
+      "deferredPlaceholder": "pending, screen locked"
+    },
+    "0.1.16": {
+      "nativeFacts": "pending, screen locked",
+      "targetFactsHeaders": true,
+      "agentProjection": true,
+      "spiderCloseConfirmation": true,
+      "noFocusConversion": false,
+      "deferredPlaceholder": "pending, screen locked"
+    }
+  },
+  "detachClassifier": "stream-loss",
+  "exampleTarget": "box-1.invalid/t7"
+}

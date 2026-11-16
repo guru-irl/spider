@@ -38,6 +38,7 @@ export interface ViewerFeedSource { read(): Promise<SessionFeed | null>; subscri
 export interface ViewerOptions<Client extends ViewerStreamClient = ViewerStreamClient> {
   piPackageRoot?: string;
   runId: RunId; sessionId: SessionId; feedRoot: string; runDbPath?: string; stdout: Writable; stdin: Readable; intent?: ViewerIntent; initialStatus?: RunSummary['status'];
+  generation?: string; displayLeaseFile?: string;
   createClient(descriptor: IpcDescriptor): Client;
   submitSteer?: (client: Client, text: string) => Promise<SteerReply>;
   feedSource?: ViewerFeedSource; statusOutput?: Writable; signal?: AbortSignal; presenter?: ViewerPresenter;
@@ -71,6 +72,23 @@ export function createViewerFeedSource(feedRoot: string, sessionId: SessionId): 
       catch { return () => {}; } // Reconciliation also covers a not-yet-created feed directory.
     },
   };
+}
+/** A missing, replaced, unsafe or expired publication never keeps a view alive. */
+export async function readViewerDisplayLease(file: string, expected: { sessionId: string; generation: string; runId?: string | null; consoleId?: string | null }, now: number = Date.now()): Promise<boolean> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    if (!file.startsWith('/') && !/^[A-Za-z]:[\\\\/]/.test(file)) return false;
+    if (await realpath(file) !== resolve(file)) return false;
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1 || info.size > 65536 || process.platform !== 'win32' && (info.mode & 0o077)) return false;
+    const buffer = Buffer.alloc(65537); const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > 65536) return false;
+    const lease = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, bytesRead)));
+    return lease.version === 1 && lease.sessionId === expected.sessionId && lease.generation === expected.generation
+      && (expected.runId === undefined || lease.runId === expected.runId) && (expected.consoleId === undefined || lease.consoleId === expected.consoleId)
+      && Number.isSafeInteger(lease.expiresAt) && lease.expiresAt > now && lease.expiresAt <= now + 20000;
+  } catch { return false; } finally { await handle?.close(); }
 }
 export async function runViewer<Client extends ViewerStreamClient>(options: ViewerOptions<Client>): Promise<void> {
   const wait = options.wait ?? (ms => delay(ms)); const clock = options.clock ?? Date.now;
@@ -140,6 +158,7 @@ export async function runViewer<Client extends ViewerStreamClient>(options: View
   let handoff: { version: number; reason: 'disposed' | 'wrong-generation' } | null = null;
   const generations = new Set<string>();
   let wake = () => {};
+  let leaseExpired = false;
   let stop!: () => void; const stopped = new Promise<void>(resolve => { stop = resolve; });
   const interactiveInput = Boolean((options.stdin as Readable & { isTTY?: boolean }).isTTY);
   const composer = presenter ? null : createInterface({ input: options.stdin, output: status, terminal: interactiveInput });
@@ -187,6 +206,7 @@ export async function runViewer<Client extends ViewerStreamClient>(options: View
       return;
     }
     missingSince = null;
+    if (options.generation && feed.generation !== options.generation) { closed = true; canSteer = false; stop(); return; }
     if (presenter && feed.owner.name !== ownerName) { ownerName = feed.owner.name; presenter.owner(ownerName); }
     if (feed.sessionId !== options.sessionId || feed.owner.sessionId !== options.sessionId) {
       if (connectionState.client) { connectionVersion++; connectionState.client = null; streamActive = false; wake(); }
@@ -291,17 +311,28 @@ export async function runViewer<Client extends ViewerStreamClient>(options: View
       }
     } catch { runDb?.close(); runDb = undefined; }
   };
+  const checkLease = async () => {
+    if (options.displayLeaseFile && (!options.generation || !await readViewerDisplayLease(options.displayLeaseFile, { sessionId: options.sessionId, generation: options.generation, runId: options.runId }, clock()))) {
+      leaseExpired = true; closed = true; canSteer = false; stop();
+    }
+  };
+  const leaseTimer = options.displayLeaseFile ? setInterval(() => { void checkLease(); }, 1000) : undefined;
+  leaseTimer?.unref?.();
   const timer = setInterval(() => { void refresh(); void probe(); checkOwnerlessRun(); }, 1000); timer.unref?.();
   const stateTimer = presenter ? setInterval(pushState, 250) : undefined; stateTimer?.unref?.();
   try {
-    await refresh(); await refresh();
+    await checkLease();
+    if (leaseExpired) return;
+    await Promise.race([refresh(), stopped]);
+    if (closed || options.signal?.aborted) return;
+    await Promise.race([refresh(), stopped]);
     while (!finished && !closed && !userClosed && !options.signal?.aborted) {
       const version = connectionVersion; const selected = connectionState.client;
       const changed = new Promise<void>(resolve => { wake = resolve; });
-      if (!selected || !feedAvailable || savedFinished || refusedVersion === version) { await Promise.race([changed, stopped, delay(1000)]); await refresh(); continue; }
+      if (!selected || !feedAvailable || savedFinished || refusedVersion === version) { await Promise.race([changed, stopped, delay(1000)]); await Promise.race([refresh(), stopped]); continue; }
       let connection: Awaited<ReturnType<ViewerStreamClient['subscribeRun']>> | undefined;
       try {
-        connection = await selected.subscribeRun(options.runId, cursor, frame => {
+        const subscribing = selected.subscribeRun(options.runId, cursor, frame => {
           if (version !== connectionVersion || refusedVersion === version || closed || options.signal?.aborted || frame.runId !== options.runId || frame.kind === 'event' && frame.cursor === cursor) return;
           if (frame.kind === 'snapshot' && (frame.data.run.id !== options.runId || frame.data.run.ownerSessionId !== options.sessionId)) {
             refusedVersion = version; finalReadOnly = true; streamActive = false; canSteer = false;
@@ -350,6 +381,14 @@ export async function runViewer<Client extends ViewerStreamClient>(options: View
               break;
           }
         }, ...(presenter ? [{ view: RUN_VIEW_PROTOCOL }] : []));
+        connection = await Promise.race([
+          subscribing.then(async value => {
+            if (closed || userClosed || finished || options.signal?.aborted) { await value.dispose(); return undefined; }
+            return value;
+          }),
+          stopped.then(() => undefined),
+        ]);
+        if (!connection) break;
         await Promise.race([connection.closed, changed, stopped]);
       } catch (cause) {
         if (cause && typeof cause === 'object' && 'code' in cause && (cause.code === 'not-found' || cause.code === 'run-not-owned')) refusedVersion = version;
@@ -369,12 +408,12 @@ export async function runViewer<Client extends ViewerStreamClient>(options: View
           const changed = new Promise<void>(resolve => { wake = resolve; });
           await Promise.race([wait(reconnectDelay), changed, stopped]); reconnectDelay = Math.min(2000, reconnectDelay * 2);
         }
-        await refresh();
+        await Promise.race([refresh(), stopped]);
       }
     }
     if (finished && !closed && !userClosed && !options.signal?.aborted) await wait(2000);
   } finally {
-    clearInterval(timer); clearInterval(stateTimer); clearTimeout(lifecycleTimer); unsubscribe(); composer?.close(); runDb?.close(); options.signal?.removeEventListener('abort', stop); await options.release?.();
+    clearInterval(leaseTimer); clearInterval(timer); clearInterval(stateTimer); clearTimeout(lifecycleTimer); unsubscribe(); composer?.close(); runDb?.close(); options.signal?.removeEventListener('abort', stop); await options.release?.();
   }
 }
 function safe(text: string): string { return new TranscriptSanitizer().push(text); }

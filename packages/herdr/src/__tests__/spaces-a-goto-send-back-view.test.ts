@@ -28,7 +28,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     view.init({}, { spawn: (fn: any) => fn({ notify() {} }) });
     await Promise.resolve(); await Promise.resolve();
     expect(commands).toEqual([]);
-    expect(notices).toContainEqual(expect.objectContaining({ title: "Send back works only for this computer's panes for now" }));
+    expect(notices).toContainEqual(expect.objectContaining({ title: kind === 'proxy' ? "Pane target is unavailable" : "Send back works only for this computer's panes for now" }));
   });
 
   it(`${version}: Send back menu refuses a remote pane and keeps local menu behavior`, () => {

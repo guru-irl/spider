@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Gurupungav Narayanan
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { paths } from '@spider/db-core';
+import { afterEach, expect, test, vi } from 'vitest';
+import { selectRemoteSessionSlot } from '../spaces/remote-placement.js';
+import { createPaneService, type PaneServicePorts } from '../panes/service.js';
+import { createPanePlacementStore } from '../panes/store.js';
+import { parseMachineChoice, parsePanePresentation } from '../panes/codec.js';
+import type { HcClient } from '../contracts.js';
+const roots: string[] = [];
+afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+async function fixture() {
+  const base = join(paths.scratch('worktree', process.cwd()), 'b3', 'service'); await mkdir(base, { recursive: true });
+  const root = await mkdtemp(join(base, 's-')); roots.push(root);
+  const store = createPanePlacementStore(join(root, 'roam', 'placement'));
+  const presentation = parsePanePresentation({ id: 'p1', revision: 1, mode: 'proxy', role: 'agent', target: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', createdMs: 17, identityLabels: { 'spider.session': 'session-1' }, alias: 'box-1.invalid', machineId: null, kind: 'session', sessionId: 'session-1', generation: 'gen-1', homeEpoch: 2, runId: null, consoleId: null, name: 'Example', cwd: '/home/example/work' }, proxy: 'core-local/t8', slot: null, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null });
+  await store.update(s => ({ ...s, presentations: [presentation] }));
+  let tick: (() => void) | null = null;
+  const hc = { identity: vi.fn(async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' })), get: vi.fn(async (address: string) => ({ address, state: 'live' })), kill: vi.fn() } as unknown as HcClient;
+  const ports: PaneServicePorts = {
+    root: join(root, 'herdr', 'panes'), store, hc, app: null,
+    coreAvailable: vi.fn(async () => true), clock: () => 0,
+    validateTarget: vi.fn(async target => target), closeSession: vi.fn(async () => 'ended' as const),
+    machines: vi.fn(async () => [parseMachineChoice({ key: 'box-1.invalid', alias: 'box-1.invalid', label: 'box-1.invalid', coreId: 'core-remote', machineId: null, state: 'connected' })]),
+    inventory: vi.fn(async () => ({ version: 1 as const, rows: [], next: null, complete: true })),
+    targetFacts: vi.fn(async () => ({})), renewLeases: vi.fn(async () => {}),
+    appCapabilities: vi.fn(async () => ({ backgroundTabCreation: false, explicitTargetSwap: false, noFocusConversion: false, commandDigest: 'a'.repeat(64) })),
+    subscribe: vi.fn(() => () => {}), schedule: cb => { tick = cb; return () => { tick = null; }; },
+    dispatch: vi.fn(async () => ({ status: 'complete' as const, reason: 'applied', presentation })),
+  };
+  return { ports, hc, presentation, tick: () => tick?.() };
+}
+test('absent core makes zero hc calls', async () => {
+  const f = await fixture(); vi.mocked(f.ports.coreAvailable).mockResolvedValue(false);
+  const service = createPaneService(f.ports);
+  await expect(service.request({ version: 1, op: 'snapshot', operationId: 's1' })).rejects.toThrow(/core/i);
+  expect(f.hc.identity).not.toHaveBeenCalled(); expect(f.ports.machines).not.toHaveBeenCalled(); await service.stop();
+});
+test('socket refuses oversized or stale mutation', async () => {
+  const f = await fixture(); const service = createPaneService(f.ports);
+  const result = await service.request({ version: 1, op: 'park', operationId: 'park1', presentationId: 'p1', expectedRevision: 0 });
+  expect(result).toMatchObject({ kind: 'outcome', outcome: { status: 'refused', reason: 'stale-presentation' } });
+  expect(f.ports.dispatch).not.toHaveBeenCalled(); await service.stop();
+});
+test('service park persists intent even when the app is absent', async () => {
+  const f = await fixture(); const service = createPaneService(f.ports);
+  const result = await service.request({ version: 1, op: 'park', operationId: 'park1', presentationId: 'p1', expectedRevision: 1 });
+  expect(result).toMatchObject({ outcome: { status: 'pending', presentation: { visibility: 'parked' } } });
+  expect((await f.ports.store.read()).presentations[0].visibility).toBe('parked');
+  await service.stop();
+});
+test('replayed operation IDs share one effect and changed payload refuses', async () => {
+  const f = await fixture(); const service = createPaneService(f.ports);
+  const request = { version: 1 as const, op: 'move' as const, operationId: 'move1', presentationId: 'p1', expectedRevision: 1, slot: { space: 'space-1' as never, tab: 'tab-1' as never, pane: null } };
+  const [a, b] = await Promise.all([service.request(request), service.request(request)]);
+  expect(a).toEqual(b); expect(f.ports.dispatch).toHaveBeenCalledTimes(1);
+  expect(await service.request({ ...request, expectedRevision: 2 })).toMatchObject({ outcome: { status: 'refused', reason: 'operation-reused' } }); await service.stop();
+});
+test('changed readiness target refuses before dispatch', async () => {
+  const f = await fixture(); vi.mocked(f.ports.validateTarget).mockResolvedValue({ ...f.presentation.target, homeEpoch: 4 }); const service = createPaneService(f.ports);
+  const result = await service.request({ version: 1, op: 'present-ready', operationId: 'ready1', presentationId: 'p1', expectedRevision: 1, target: { ...f.presentation.target, homeEpoch: 3 } });
+  expect(result).toMatchObject({ outcome: { status: 'refused', reason: 'readiness-unverified' } }); expect(f.ports.dispatch).not.toHaveBeenCalled(); await service.stop();
+});
+test('handoff checks current source generation and home before dispatch', async () => {
+  const f = await fixture(); const service = createPaneService(f.ports);
+  const result = await service.request({ version: 1, op: 'prepare-handoff', operationId: 'handoff1', presentationId: 'p1', expectedRevision: 1, sessionId: 'session-1' as never, generation: 'gen-2' as never, homeEpoch: 2 });
+  expect(result).toMatchObject({ outcome: { status: 'refused', reason: 'handoff-unverified' } }); expect(f.ports.dispatch).not.toHaveBeenCalled(); await service.stop();
+});
+test('legacy source validation enriches facts without reopening parked or uncertain claims', async () => {
+  const f = await fixture(); const legacy = { ...f.presentation, visibility: 'parked' as const, target: { ...f.presentation.target, createdMs: 0, generation: null, homeEpoch: null } };
+  const attempts = [{ session: 'session-1', remote: 'box-1.invalid/t7', core: 'core-remote', proxy: null, closed: false, localOwners: ['owner-1'] }];
+  await f.ports.store.update(s => ({ ...s, presentations: [legacy], attempts })); vi.mocked(f.ports.validateTarget).mockResolvedValue(f.presentation.target);
+  const service = createPaneService(f.ports); await service.reconcile(); const state = await f.ports.store.read();
+  expect(state.presentations[0]).toMatchObject({ visibility: 'parked', target: { createdMs: 17, generation: 'gen-1', homeEpoch: 2 } });
+  expect(state.attempts).toEqual(attempts); expect(f.ports.dispatch).not.toHaveBeenCalled(); expect(f.hc.kill).not.toHaveBeenCalled(); await service.stop();
+});
+test('shutdown with live targets stops subscriptions not targets', async () => {
+  const f = await fixture(); const service = createPaneService(f.ports); await service.reconcile(); await service.stop();
+  expect(f.hc.kill).not.toHaveBeenCalled(); await expect(service.request({ version: 1, op: 'snapshot', operationId: 's1' })).rejects.toThrow(/stopped/);
+});
+test('inventory refresh is single flight and unreachable machines back off', async () => {
+  const f = await fixture(); let complete!: () => void;
+  vi.mocked(f.ports.inventory).mockImplementation(async () => { await new Promise<void>(r => { complete = r; }); throw Error('unreachable'); });
+  const service = createPaneService(f.ports); const first = service.reconcile();
+  await vi.waitFor(() => expect(f.ports.inventory).toHaveBeenCalledTimes(1));
+  const second = service.reconcile(); complete(); await Promise.all([first, second]); await service.reconcile();
+  expect(f.ports.inventory).toHaveBeenCalledTimes(1); expect(f.ports.renewLeases).toHaveBeenCalledTimes(1); await service.stop();
+});
+
+const identityOpen = { version: 1 as const, op: 'open' as const, operationId: 'identity-open', machineKey: 'box-1.invalid', coreId: 'core-remote' as never, machineId: null,
+  intent: { operationId: 'identity-open', space: 'space-1' as never, place: 'tab' as const, anchor: null, program: { kind: 'shell' as const } } };
+test.each(['coreId', 'machineId'] as const)('open refuses a changed %s before dispatch', async field => {
+  const f = await fixture(); const original = (await f.ports.machines())[0];
+  vi.mocked(f.ports.machines).mockResolvedValue([{ ...original, [field]: 'replacement' }]);
+  const service = createPaneService(f.ports);
+  expect(await service.request(identityOpen)).toMatchObject({ outcome: { status: 'refused', reason: 'machine-changed' } });
+  expect(f.ports.dispatch).not.toHaveBeenCalled(); await service.stop();
+});
+test.each(['coreId', 'machineId'] as const)('open rechecks %s immediately before launch', async field => {
+  const f = await fixture(); const original = (await f.ports.machines())[0]; const launch = vi.fn();
+  f.ports.dispatch = async (_request, beforeLaunch) => {
+    vi.mocked(f.ports.machines).mockResolvedValue([{ ...original, [field]: 'replacement' }]);
+    await beforeLaunch(); launch(); return { status: 'complete', reason: 'launched', presentation: null };
+  };
+  const service = createPaneService(f.ports);
+  expect(await service.request(identityOpen)).toMatchObject({ outcome: { status: 'refused', reason: 'machine-changed' } });
+  expect(launch).not.toHaveBeenCalled(); await service.stop();
+});
+
+test('stale parked shell incarnation refuses before dispatch', async () => {
+  const f = await fixture(); const service = createPaneService(f.ports);
+  const result = await service.request({ version: 1, op: 'open-existing', operationId: 'reopen-1', presentationId: 'p1', expectedRevision: 1, targetIncarnation: { coreId: 'core-remote' as never, terminalId: 't7' as never, createdMs: 18 } });
+  expect(result).toMatchObject({ outcome: { status: 'refused', reason: 'stale-presentation' } });
+  expect(f.ports.dispatch).not.toHaveBeenCalled(); await service.stop();
+});
+
+test('capped display snapshots retain the full private placement inventory', async () => {
+  const f = await fixture();
+  const owner = { sessionId: 'session-0', generation: 'gen-1', terminal: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', socket: '/unused', sessionNamespace: 'test' }, cwd: '/home/example', sessionFile: null, name: 'Builder' };
+  const rows = Array.from({ length: 270 }, (_, i) => ({ sessionId: `session-${i}`, generation: 'gen-1', name: i === 269 || i === 0 ? 'Builder' : `Other-${i}`, status: 'working', updatedAt: 1, machineKey: 'box-1.invalid', unavailableReason: null, owner: { ...owner, sessionId: `session-${i}` }, target: { ...f.presentation.target, sessionId: `session-${i}` }, children: [], consoles: [] }));
+  f.ports.inventory = async (_machine, _signal, cursor) => ({ version: 1, rows: (cursor ? rows.slice(256) : rows.slice(0, 256)) as never, next: cursor ? null : 'page-2', complete: true });
+  f.ports.dispatch = async (_request, _beforeLaunch, inventory) => {
+    const selection = selectRemoteSessionSlot({ row: inventory.rows[0], rows: inventory.rows, inventoryComplete: inventory.complete, inventoryStale: inventory.stale,
+      config: { spaces: [{ name: 'Work', sessions: [{ name: 'Builder' }] }] } as never,
+      state: { ...(await f.ports.store.read()), presentations: [] }, layout: { spaces: [] }, capabilities: await f.ports.appCapabilities() });
+    return { status: 'refused', reason: selection.kind === 'unplaced' ? selection.reason : 'placed', presentation: null };
+  };
+  const service = createPaneService(f.ports);
+  const display = await service.request({ version: 1, op: 'snapshot', operationId: 'display' });
+  expect(display).toMatchObject({ kind: 'snapshot', complete: false, omittedRows: 14 });
+  if (display.kind !== 'snapshot') throw new Error('Expected display snapshot');
+  expect(display.rows).toHaveLength(256);
+  expect(await service.request({ version: 1, op: 'move', operationId: 'private-placement', presentationId: 'p1', expectedRevision: 1, slot: { space: 's1' as never, tab: 'tab-1' as never, pane: null } })).toMatchObject({ outcome: { reason: 'name-ambiguous' } });
+  await service.stop();
+});

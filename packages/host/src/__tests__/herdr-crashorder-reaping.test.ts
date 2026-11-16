@@ -121,7 +121,7 @@ it.skipIf(!realEnabled).each(['run-status', 'late-created', 'missed'] as const)(
   try {
     gate = join(f.h.root, 'gate'); backgroundEffect = join(f.h.root, 'background-effect'); foregroundEffect = join(f.h.root, 'foreground-effect');
     const run = f.store.create({ sessionId: f.h.owner!.sessionId, agent: 'worker' }).id; f.store.start(run);
-    await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false' }, ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/__tests__/herdr-crashfg-owner.ts', import.meta.url)), outDir: join(f.h.root, 'bundle'), emptyOutDir: false,
+    await build({ configFile: false, logLevel: 'silent', define: { 'import.meta.spiderHerdrRuntimeEntry': 'false', 'import.meta.spiderPaneEndpointEntry': 'false' }, ssr: { noExternal: [/^@spider\//] }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/__tests__/herdr-crashfg-owner.ts', import.meta.url)), outDir: join(f.h.root, 'bundle'), emptyOutDir: false,
       rollupOptions: { external: [/^@earendil-works\//, 'better-sqlite3', 'sqlite-vec'], output: { entryFileNames: 'owner.mjs' } } } });
     const held = (name: string, effect: string) => `printf '%s' "$$" > ${quote(join(f.h.root, name + '-ready'))}; while [ ! -f ${quote(gate)} ]; do sleep 0.05; done; printf ${quote(name)} > ${quote(effect)}; exit 29`;
     const readyFile = join(f.h.root, 'ready.json'), inputFile = join(f.h.root, 'input.json');

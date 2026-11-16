@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import { writeFixturePaneEndpoint } from './endpoint-fixture.js';
 import { readFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
@@ -43,6 +44,7 @@ export async function createExpiredRemoteFixture(mode: 'fake' | 'hc' = 'fake'): 
   const config = parseHerdrConfig({ enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] });
   const packageRoot = join(h.root, 'package'); await mkdir(join(packageRoot, 'dist/herdr'), { recursive: true });
   await writeFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'), await readFile(resolve('dist/herdr/remote-runtime.mjs')));
+  await writeFixturePaneEndpoint(packageRoot);
   const cli = createProductionHerdrCliPorts(packageRoot, h.localEnv);
   let runtime: Awaited<ReturnType<Awaited<ReturnType<typeof cli.setupParts>>['ensureRuntime']>>[number];
   try {

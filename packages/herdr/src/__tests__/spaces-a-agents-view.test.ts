@@ -7,6 +7,9 @@ import emptyRunName from './fixtures/empty-run-name.json' with { type: 'json' };
 import * as look from '../../assets/shared/look.js';
 import * as feed from '../../assets/shared/feed.js';
 import { describeOpenFailure } from '../../assets/shared/open-failure.js';
+import * as navigation from '../../assets/shared/navigation.js';
+import * as moves from '../../assets/agents/move.js';
+import { replaySpacesBRecipe } from './spaces-b-fixture.js';
 import * as grouping from '../../assets/agents/grouping.js';
 import * as connections from '../../assets/agents/connections.js';
 import * as consoleGroups from '../../assets/agents/console-groups.js';
@@ -91,7 +94,7 @@ function loadView(source: string, ports: Record<string, unknown>): any {
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);
 }
-function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMenu?: boolean; feedRoot?: boolean; clipboard?: boolean; corruptStorage?: boolean; ports?: Record<string, unknown> } = {}) {
+function fixture(version: SpacesAVersion, options: { presented?: boolean; checking?: boolean; sortMenu?: boolean; feedRoot?: boolean; clipboard?: boolean; corruptStorage?: boolean; ports?: Record<string, unknown> } = {}) {
   const nativeAgents = [agent('box-1.invalid/unpinned', 'p1'), agent('local', 'p2'), agent('box-1.invalid/pinned', 'p3', true), agent('proxy', 'p4')];
   const nativeTerminals: any[] = [terminal('box-1.invalid/unpinned'), terminal('local'), terminal('box-1.invalid/pinned'),
     terminal('proxy', { 'spider.kind': 'roam-proxy', 'spider.machine': 'box-2.invalid', 'spider.owner-terminal': 'box-2.invalid/owner' })];
@@ -127,7 +130,7 @@ function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMen
   if (options.clipboard === false) delete cx.write_to_clipboard;
   const props = { modId: 'spider-agents', labelContract: HerdrLabelContract, retention: { completedHours: 24, completedRows: 50 }, machines: [{ name: 'box-5.invalid' }], nodePath: 'node', cliPath: 'cli', feedRoot: options.feedRoot ? '/fixture/feeds' : undefined, sortMenu: options.sortMenu ?? false };
   const host = {
-    ...children, ...look, ...feed, ...grouping, ...connections, ...consoleGroups, describeOpenFailure,
+    ...children, ...look, ...feed, ...grouping, ...connections, ...consoleGroups, ...navigation, ...moves, describeOpenFailure,
     createFeedReader: () => ({ read: async () => ({ feeds: [], errors: [] }), close: async () => { readerClosed++; } }),
     View: class {}, div: () => element(), h_flex: () => element(), v_flex: () => element(), image: () => element(), svg: (path: string) => element(path),
     Scrollbar: { vertical: () => element() }, TextView: { html: (id: string, value: string) => element(undefined, textViewMethods).id(id).child(value) },
@@ -156,7 +159,8 @@ function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMen
       return promise;
     }, readTextFile: async () => null, ...options.ports,
   };
-  const Agents = loadView(patched(version), host);
+  const source = options.presented ? replaySpacesBRecipe(version, loadSpacesAFiles(version), JSON.parse(readFileSync(new URL('../../assets/look/cross-machine-patches.json', import.meta.url), 'utf8')).versions[version]).agents['main.js'] : patched(version);
+  const Agents = loadView(source, host);
   const view = new Agents();
   view.init({}, cx);
   const render = view.render.bind(view);
@@ -172,7 +176,7 @@ function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMen
     return render(context);
   };
   return {
-    view, cx, nativeAgents, nativeTerminals, inventory, layouts, spaces, props, stored, state, commands, hcCalls, execCalls, timers, copied, overlays, snapshots, targets, waits, watches,
+    view, cx, host, nativeAgents, nativeTerminals, inventory, layouts, spaces, props, stored, state, commands, hcCalls, execCalls, timers, copied, overlays, snapshots, targets, waits, watches,
     get notifications() { return notifications; },
     get readerClosed() { return readerClosed; },
     failRemote(value = true) { failed = value; },
@@ -1597,4 +1601,84 @@ it('0.1.16: starts no Agents side effects while the app checks the mod', () => {
   expect(test.waits).toEqual([]);
   expect(test.watches).toEqual([]);
   expect(test.stored.size).toBe(0);
+});
+
+for (const version of ['0.1.13', '0.1.16'] as const) {
+  it(`${version}: B sidebar uses source inventory in all sorts without box layout focus`, async () => {
+    const h = fixture(version, { presented: true, ports: { projectNavigation: navigation.projectNavigation } }); await h.ready();
+    const target = { coreId: 'core-1', terminalId: 'unlisted', address: 'core-1/unlisted', createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'source-session', generation: 'source-gen', homeEpoch: 1, runId: null, consoleId: null, name: 'Source writer', cwd: '/project' };
+    h.view.spiderPaneSnapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'source-session', generation: 'source-gen', owner: { terminal: { address: 'core-1/unlisted' } }, target, name: 'Source writer', status: 'working', machineKey: 'box-1.invalid', children: [{ runId: 'child-one', name: 'Source child', status: 'working' }], consoles: [], unavailableReason: null }], presentations: [] };
+    for (const sort of ['priority', 'grouped', 'machine']) {
+      h.state.set('agents.sort', sort);
+      const root = h.view.render(h.cx);
+      expect(texts(root).filter(text => text === 'Source writer')).toHaveLength(1);
+      expect(texts(root)).not.toContain('box-1.invalid/unpinned');
+    }
+    h.state.set('agents.sort', 'priority');
+    const menuRows = all(h.view.render(h.cx)).filter(node => node.events['on_mouse_down:right']);
+    const childMenu = menuRows.find(node => node.id?.includes('child-one'));
+    expect(childMenu).toBeDefined();
+    childMenu!.events['on_mouse_down:right']({}, h.cx);
+    expect((h.overlays.at(-1) as any).props.moveMenu.navigationId).toBe('run:source-session:child-one');
+    h.setExec(async () => ok({ version: 1, kind: 'outcome', outcome: { status: 'complete', reason: 'presented', presentation: null } }));
+    await h.view.peek('core-1/unlisted');
+    expect(h.execCalls.some(args => JSON.parse((args[1] as string[]).at(-1)!).op === 'open-existing')).toBe(true);
+    expect(h.commands.filter(([name, args]) => ['pane.focus', 'terminal.keep', 'terminal.peek'].includes(name) && String(args?.terminal ?? args?.pane).includes('/'))).toEqual([]);
+    h.spaces[0].tabs.push({ id: 'tab-two', name: 'Two', active: false, named: true, status: null });
+    const source = replaySpacesBRecipe(version, loadSpacesAFiles(version), JSON.parse(readFileSync(new URL('../../assets/look/cross-machine-patches.json', import.meta.url), 'utf8')).versions[version]).tabs['main.js'];
+    const pending: unknown[] = [];
+    const ports = { ...h.host, presentationHost: h.host, ScrollHandle: { new: () => ({ scroll_to_item() {} }) }, settings: () => ({ zoom: 1 }) };
+    if (!/import\s*\{[^}]*\bprops\b[^}]*\}\s*from\s*['"]herdr['"]/.test(source)) delete (ports as any).props;
+    const Tabs = loadView(source, ports), tabs = new Tabs(); tabs.init();
+    byId(h.view.render(h.cx), 'ag-core-1/unlisted')!.events['on_mouse_down:left']({}, h.cx);
+    expect(h.state.get('spider.presentation-drag')).toMatchObject({ sessionId: 'source-session', generation: 'source-gen' });
+    const cx = { ...h.cx, spawn: (fn: (cx: any) => unknown) => { pending.push(fn(h.cx)); } };
+    byId(tabs.render(cx), 'tab-tab-two')!.events['on_mouse_up:left']({}, cx);
+    await Promise.all(pending);
+    const requests = h.execCalls.map(args => { try { return JSON.parse((args[1] as string[]).at(-1)!); } catch { return {}; } });
+    expect(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'source-session', generation: 'source-gen', slot: { space: 's1', tab: 'tab-two', pane: null } }));
+    expect(h.state.get('spider.presentation-drag')).toBeNull();
+
+    await h.view.close();
+  });
+}
+
+
+it.each(['0.1.13', '0.1.16'] as const)('%s: B Move menu reloads authority and allocates only a Mac waiting tab', async version => {
+  const h = fixture(version, { presented: true, feedRoot: true, ports: { projectNavigation: navigation.projectNavigation } }); await h.ready();
+  const target = { coreId: 'core-1', terminalId: 'source', address: 'core-1/source', createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'source-session', generation: 'source-gen', homeEpoch: 1, runId: null, consoleId: null, name: 'Source writer', cwd: '/project' };
+  const current = { id: 'pres-menu', revision: 9, mode: 'proxy', role: 'agent', target, proxy: 'menu-proxy', slot: { space: 's1', tab: 'tab', pane: 'old-pane' }, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null };
+  const service = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, machines: [{ alias: null, coreId: 'local-core' }], rows: [{ sessionId: 'source-session', generation: 'source-gen', owner: { terminal: { address: 'core-1/source' } }, target, name: 'Source writer', status: 'working', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [current] };
+  Object.assign(h.props, { moveMenu: { kind: 'pane', navigationId: 'session:source-session', terminal: 'old-stale-display' }, appBinary: '/fixture/mac-app' });
+  const displayed: any[] = [], notices: unknown[] = [], pending: unknown[] = [];
+  h.setExec(async () => {
+    const [binary, args] = h.execCalls.at(-1) as [string, string[]];
+    if (binary === '/fixture/mac-app') {
+      const props = JSON.parse(args.at(-1)!);
+      displayed.push({ pane: 'new-waiting', tab: 'new-tab', mod: 'spider-pane-waiting', props });
+      h.spaces[0].tabs.push({ id: 'new-tab', name: 'New', active: true, named: false, status: null });
+      return ok({ space: 's1', tab: 'new-tab', pane: 'new-waiting' });
+    }
+    const request = JSON.parse(args.at(-1)!);
+    return ok(request.op === 'snapshot' ? service : { version: 1, kind: 'outcome', outcome: { status: 'complete', reason: 'presented', presentation: current } });
+  });
+  const ports: any = { ...h.host, panes: () => displayed, notify: (notice: unknown) => notices.push(notice) };
+  const menu = readFileSync(new URL('../../assets/agents/move-menu.js', import.meta.url), 'utf8').replace(/^import .*;\s*$/gm, '').replaceAll('export function ', 'function ');
+  const api = new Function('ports', `const { ${Object.keys(ports).filter(key => !['initMoveMenu', 'renderMoveMenu'].includes(key)).join(',')} } = ports; ${menu}; return { initMoveMenu, renderMoveMenu };`)(ports);
+  Object.assign(ports, api);
+  const source = replaySpacesBRecipe(version, loadSpacesAFiles(version), JSON.parse(readFileSync(new URL('../../assets/look/cross-machine-patches.json', import.meta.url), 'utf8')).versions[version]).agents['main.js'];
+  const Agents = loadView(source, ports), view = new Agents();
+  const cx = { ...h.cx, focus_handle: () => ({ focus() {} }), spawn: (fn: (cx: any) => unknown) => pending.push(fn(cx)) };
+  view.init({}, cx); await Promise.all(pending.splice(0));
+  byId(view.render(cx), 'move-new')!.events.on_click({}, cx); await Promise.all(pending.splice(0));
+  const requests = h.execCalls.filter(args => args[0] !== '/fixture/mac-app').map(args => JSON.parse((args[1] as string[]).at(-1)!));
+  expect(requests).toContainEqual(expect.objectContaining({ op: 'snapshot' }));
+  expect(requests).toContainEqual(expect.objectContaining({ op: 'move', presentationId: 'pres-menu', expectedRevision: 9, slot: { space: 's1', tab: 'new-tab', pane: null } }));
+  expect(h.execCalls.find(args => args[0] === '/fixture/mac-app')?.[1]).toEqual(expect.arrayContaining(['--space', 's1', '--mod', 'spider-pane-waiting']));
+  expect(h.commands).toContainEqual(['pane.close', { pane: 'new-waiting' }]);
+  expect(notices).toEqual([]);
+  Object.assign(h.props, { moveMenu: { kind: 'pane', navigationId: 'agent:local', terminal: 'local', pane: 'local-pane' } });
+  displayed.push({ pane: 'local-pane', terminal: 'local', tab: 'tab' });
+  expect(byId(view.render(cx), 'move-kill')).toBeDefined();
+  await view.close(); await h.view.close();
 });

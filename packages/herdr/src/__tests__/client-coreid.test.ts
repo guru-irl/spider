@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { access, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -7,6 +7,8 @@ import { build } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { createHerdrHarness, createClientFixture, terminal } from './testutil.js';
 import { createHcClient, observeCoreIdentity } from '../client/hc.js';
+import { readPaneTerminal } from '../panes/hc.js';
+import { parsePaneTarget } from '../panes/codec.js';
 import { isCoreAvailable } from '../client/liveness.js';
 
 const realHc = process.env.SPIDER_HERDR_E2E === '1' && await access(process.env.SPIDER_HERDR_HC_BINARY ?? join(process.env.HOME!, '.local/bin/hc')).then(() => true, () => false);
@@ -95,3 +97,20 @@ test('an aborted core-identity query does not invoke hc', async () => {
   try { await expect(observeCoreIdentity(h.hcBinary, h.localEnv, { signal: abort.signal })).rejects.toMatchObject({ code: 'cli-aborted' }); }
   finally { await client.dispose(); await h.close(); }
 }, 5000);
+
+for (const mode of ['fake', 'hc'] as const) test.skipIf(mode === 'hc' && !process.env.SPIDER_HERDR_HC_BINARY)(`qualified core IDs route pane effects without aliases (${mode})`, async () => {
+  if (mode === 'hc') vi.stubEnv('SPIDER_HERDR_E2E', '1');
+  const h = await createHerdrHarness(mode);
+  try {
+    await h.start();
+    const local = `${h.localCoreId}/${h.owner!.terminal.terminalId}` as import('../contracts.js').TerminalAddress;
+    const raw = await h.cli(['get', local, '--json']) as { address: string };
+    expect([local, String(h.owner!.terminal.terminalId)]).toContain(raw.address);
+    const remote = await h.hc.run({ argv: [h.nodeBinary, '-e', 'setInterval(()=>{},1000)'], cwd: null, on: h.remoteCoreId! as unknown as import('../contracts.js').MachineName, labels: {}, parent: null, outliveParent: true, background: true, noNotify: true });
+    expect(remote.coreId).toBe(h.remoteCoreId);
+    const observed = await h.cli(['get', remote.address, '--json']) as { address: string; created_ms: number; labels: Record<string, string> };
+    const terminalId = remote.address.split('/').at(-1)!;
+    const target = parsePaneTarget({ coreId: h.remoteCoreId, terminalId, address: `${h.remoteCoreId}/${terminalId}`, createdMs: observed.created_ms, identityLabels: observed.labels, alias: 'remote.invalid', machineId: null, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null, runId: null, consoleId: null, name: null, cwd: null });
+    expect((await readPaneTerminal(target, { binary: h.hcBinary, env: h.localEnv })).terminal.address).toBe(target.address);
+  } finally { await h.close(); if (mode === 'hc') vi.unstubAllEnvs(); }
+}, 20000);

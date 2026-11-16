@@ -131,12 +131,13 @@ SOFTWARE.`;
       readdirSync(join(root, dir), { recursive: true, encoding: "utf8" })
         .filter(file => file === "SKILL.md" || file.endsWith("/SKILL.md")).map(file => `${dir}/${file}`));
     const requiredLicences = ["LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md"];
+    const requiredAssets = ["packages/herdr/assets/shared/presentations.js"];
     const files = [
       "dist/extension.js", "dist/extension.js.ready", "dist/dashboard/index.html", "README.md",
       "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "dist/intercom/broker.mjs", "scripts/intercom-switchover.mjs",
       "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs",
       "dist/dashboard/assets/index-12345678.js", "dist/dashboard/assets/index-12345678.css",
-      ...requiredLicences, ...skillFiles,
+      ...requiredLicences, ...requiredAssets, ...skillFiles,
     ];
     const verify = (paths: string[]) => spawnSync(process.execPath, ["-e", verifier!], {
       cwd: root,
@@ -145,7 +146,7 @@ SOFTWARE.`;
     });
     const complete = verify(files);
     expect(complete.status, complete.stderr).toBe(0);
-    for (const missing of requiredLicences) {
+    for (const missing of [...requiredLicences, ...requiredAssets]) {
       const result = verify(files.filter(file => file !== missing));
       expect(result.status, `Release accepted a tarball without ${missing}`).toBe(1);
       expect(result.stderr).toContain(`missing from tarball: ${missing}`);

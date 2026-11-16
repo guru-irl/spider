@@ -233,6 +233,7 @@ test('every shipped mod asset has a staged copy with in-root imports', async () 
   const target = (source: string) => {
     const [group, ...rest] = source.split('/');
     if (source === 'agents/children.js') return 'spider-agents/spider-children.js';
+    if (group === 'machines') return `spider-machine-picker/${rest.join('/')}`;
     if (group === 'shared') return `spider-picker/shared/${rest.join('/')}`;
     if (group === 'mods') return `spider-panel/${rest.slice(1).join('/')}`;
     return `spider-${group === 'spaces' ? 'spaces' : group}/${rest.join('/')}`;

@@ -52,6 +52,41 @@ it("production composition leaves zero unbound effects", async () => {
     expect(await runtime.bindings.recovery!.workspaceRestores!()).toEqual([]);
   } finally { await runtime.close(); }
 }, 5000);
+it("the import lock is not a session owner, but other observers still see the claim", async () => {
+  const inventoryModule = await import("../../herdr/process-inventory");
+  const { recordLocation } = await import("@spider/db-core/roam/catalog");
+  const global = createReplica("global", HUB); fixtures.push(global);
+  mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+  const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+  const file = join(global.root, "session.jsonl"), sessionId = "import-session";
+  recordLocation(global.db, { sessionId, stores: ["global"], home: null, file, cwd: global.root });
+  const inventory = inventoryModule.createProcessInventory(join(global.root, "herdr"));
+  const processes = vi.fn(async () => [] as Awaited<ReturnType<typeof inventory.processes>>);
+  vi.spyOn(inventoryModule, "createProcessInventory").mockReturnValue({ ...inventory, processes });
+  const mounted = await createHostMoveBindings({ root: global.root, globalDb: global.db, config, journal: openFreezeJournal(join(global.root, "roam", "journal.db")), sessionId, transport: {} as never });
+  const participant = mounted.bindings.participant!;
+  let release!: () => void, entered!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  let locked: Promise<void> | undefined;
+  try {
+    expect(await participant.probe(sessionId)).toEqual({ kind: "absent" });
+    locked = participant.withBothLocks(sessionId, async () => {
+      entered(); await hold;
+      expect(await participant.probe(sessionId)).toEqual({ kind: "absent" });
+      const current = await inventory.probe(process.pid);
+      if (current.kind !== "live") throw new Error("test process identity unavailable");
+      processes.mockResolvedValue([{ pid: process.pid, startIdentity: current.startIdentity, classification: "pi" }]);
+      expect(await participant.probe(sessionId)).toEqual({ kind: "uncertain" });
+      processes.mockResolvedValue([]);
+    });
+    await Promise.race([ready, locked]);
+    expect(await participant.probe(sessionId)).toMatchObject({ kind: "live", identity: { pid: process.pid } });
+    release(); await locked;
+    expect(await participant.probe(sessionId)).toEqual({ kind: "absent" });
+  } finally { release(); await locked?.catch(() => {}); await mounted.close(); }
+}, 5000);
+
 it("production move evidence queries the connected machine service broker", async () => {
   const { startMachineMoveSocket } = await import("@spider/roam/machine-move-socket");
   const global = createReplica("global", HUB); fixtures.push(global);

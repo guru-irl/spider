@@ -59,13 +59,16 @@ export function runHc(binary: string, argv: readonly string[], env: Record<strin
     const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
     child.stdout.on('data', d => out.push(d)); child.stderr.on('data', d => err.push(d));
     child.once('error', reject);
+    child.stdin.on('error', error => {
+      if ((error as NodeJS.ErrnoException).code !== 'EPIPE' || options.input) reject(error);
+    });
     child.once('close', (exitCode, signal) => {
       clearTimeout(timer);
       const stdout = Buffer.concat(out).toString('utf8'), stderr = Buffer.concat(err).toString('utf8');
       let json: unknown = null; try { json = JSON.parse(stdout || stderr); } catch { /* not JSON */ }
       resolve({ exitCode, signal, stdout, stderr, json });
     });
-    child.stdin.end(options.input ?? '');
+    child.stdin.end(options.input);
   });
 }
 function ok(result: HcResult, what: string): Record<string, unknown> {

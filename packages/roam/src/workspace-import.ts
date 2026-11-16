@@ -9,7 +9,9 @@ import { artifactId, privateDirectory } from "./staging";
 import { isUnsafeWorktreeConfig, recordMoveSnapshotRefs } from "./workspace";
 
 type Trees = { head: string; indexTree: string; workingTree: string };
-const localMetadataPathspecs = ["spider", "pi-subagents"].map(name => `:(exclude).${name}`);
+const localMetadataPathspecs = ["spider", "pi-subagents"].flatMap(name => [
+  `:(exclude,glob)**/.${name}`, `:(exclude,glob)**/.${name}/**`,
+]);
 
 function checkPath(path: string, kind: "directory" | "file", allowMissing = false): boolean {
   if (!isAbsolute(path) || resolve(path) !== path) throw new Error("workspace-path-unsafe");

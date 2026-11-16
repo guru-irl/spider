@@ -90,13 +90,15 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
   };
   const get: HcClient['get'] = async (address, callOptions) => {
     const parts = address.split('/');
-    const local = parts.length === 2 ? await identity() : null;
-    const routes = local && parts[0] !== local.coreId ? await machines(callOptions) : [];
+    let identityError: unknown;
+    const local = parts.length === 2 ? await identity().catch(error => { identityError = error; return null; }) : null;
+    const routes = local && parts[0] !== local.coreId ? await machines(callOptions).catch(error => { identityError = error; return []; }) : [];
     const matches = routes.filter(row => row.id === parts[0] || row.name === parts[0] || row.aliases.includes(parts[0]));
-    const route = matches.length === 1 && matches[0].state === 'connected' ? matches[0] : null;
-    if (local && parts[0] !== local.coreId && !route) throw new HerdrError('caller-mismatch', 'Requested terminal route is not uniquely verified');
+    const route = matches.length === 1 ? matches[0] : null;
     const coreId = route?.id ?? local?.coreId;
     const terminal = parseTerminal(await call(['get', address, '--json'], undefined, callOptions));
+    if (identityError) throw identityError;
+    if (local && parts[0] !== local.coreId && !route) throw new HerdrError('caller-mismatch', 'Requested terminal route is not uniquely verified');
     if (!local) {
       if (terminal.address !== address) throw new HerdrError('caller-mismatch', 'Returned terminal address differs from the requested address', { expectedAddress: address, actualAddress: terminal.address });
       return terminal;

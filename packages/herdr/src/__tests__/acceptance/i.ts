@@ -98,7 +98,7 @@ export async function runPanelScene<T = string[]>(body: string, fixture: Session
       const source = await readFile(new URL(`../../../assets/mods/spider/${name}`, import.meta.url), 'utf8');
       await writeFile(join(mod, name), name === 'main.js' ? transform(source) : source);
     }
-    for (const name of ['feed.js', 'look.js', 'navigation.js', 'open-failure.js']) {
+    for (const name of ['feed.js', 'look.js', 'navigation.js', 'open-failure.js', 'presentations.js']) {
       const source = await readFile(new URL(`../../../assets/shared/${name}`, import.meta.url), 'utf8');
       await writeFile(join(mod, 'shared', name), rewriteImportPrefix(source, '../agents/children.js', '../spider-children.js').source);
     }

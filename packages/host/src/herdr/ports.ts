@@ -374,6 +374,24 @@ async function assetFiles(root: string): Promise<{ relative: string; bytes: Buff
 import { relativeImports, rewriteImportPrefix } from './imports.js';
 export { rewriteImportPrefix } from './imports.js';
 
+const nativeKeyCandidates: Readonly<Record<string, KeySections>> = {
+  '0.1.13': { terminal: { 'cmd-f': 'terminal.search' }, global: { 'cmd-m': 'window.minimize' } },
+  '0.1.16': { terminal: { 'cmd-f': 'terminal.search', 'cmd-a': 'terminal.select_all' }, global: { 'cmd-m': 'window.minimize' } },
+};
+function pendingNativeKeys(release: string, bytes: Buffer | null): KeySections {
+  let current: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(bytes?.toString('utf8') ?? '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid key map');
+    current = parsed as Record<string, unknown>;
+  } catch { throw new HerdrError('key-binding-conflict', 'The keys file is malformed'); }
+  const sections = Object.values(current).filter((value): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value));
+  return Object.fromEntries(Object.entries(nativeKeyCandidates[release] ?? {}).flatMap(([section, bindings]) => {
+    const missing = Object.fromEntries(Object.entries(bindings).filter(([key]) => !sections.some(value => Object.hasOwn(value, key))));
+    return Object.keys(missing).length ? [[section, missing]] : [];
+  }));
+}
+
 export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly<NodeJS.ProcessEnv> = process.env, additionalPatches: AdditionalLookPatches = {}): HerdrCliPorts & { spacePorts(request: SetupRequest): SpaceSetupPorts; dispose(): Promise<void> } {
   const globalRoot = env.SPIDER_GLOBAL_ROOT ?? paths.globalRoot;
   const warnedConfig = new Set<string>();
@@ -930,6 +948,10 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           if ((await snapshot(join(request.config.app.home, 'keys.json'))).bytes === null) throw new HerdrError('keys-defaults-missing', missingKeyMapMessage);
           await discoverSessions(request.config, getSpaces());
         },
+        pendingNativeKeys: async request => {
+          const bytes = (await snapshot(join(request.config.app.home, 'keys.json'))).bytes;
+          return bytes === null ? {} : pendingNativeKeys((await releaseLook(request)).upstreamVersion, bytes);
+        },
         preflight: async () => {
           const spaces = getSpaces(), hc = client(request);
           rootProbes.clear();
@@ -962,12 +984,11 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           for (const file of await assetFiles(join(assets, 'mods/spider'))) files.push({ path: join(request.config.app.home, 'mods/spider-panel', file.relative), bytes: file.bytes });
           files.push({ path: join(request.config.agentDirectory, 'themes/dracula-plus-glass.json'), bytes: await readFile(join(assets, 'themes/dracula-plus-glass.json')) }, { path: join(request.config.app.home, 'themes/spider-glass.json'), bytes: await readFile(join(assets, 'themes/spider-glass.json')) });
           const keys = JSON.parse(await readFile(join(assets, 'keys.json'), 'utf8')) as Record<string, Record<string, KeyBinding>>;
+          const keyPath = join(request.config.app.home, 'keys.json'), currentKeys = await snapshot(keyPath);
           if (request.nativeKeys === 'accept') {
-            const current = JSON.parse((await readFile(join(request.config.app.home, 'keys.json'))).toString('utf8')) as KeySections;
-            const offered = { terminal: { 'cmd-f': 'terminal.search', 'cmd-a': 'terminal.select_all' }, global: { 'cmd-m': 'window.minimize' } };
-            for (const [section, bindings] of Object.entries(offered)) for (const [key, command] of Object.entries(bindings)) if (!Object.hasOwn(current[section] ?? {}, key)) (keys[section] ??= {})[key] = command;
+            const offered = pendingNativeKeys((await releaseLook(request)).upstreamVersion, currentKeys.bytes);
+            for (const [section, bindings] of Object.entries(offered)) Object.assign(keys[section] ??= {}, bindings);
           }
-          files.push({ path: join(request.config.app.home, 'keys.json'), bytes: Buffer.alloc(0), keys });
           const settingsPath = join(request.config.app.home, 'settings.json'), settings = await snapshot(settingsPath);
           let parsed: unknown;
           try { parsed = JSON.parse(settings.bytes?.toString('utf8') ?? '{}'); } catch { throw new HerdrError('invalid-app-settings', 'App settings must be a JSON object'); }
@@ -977,7 +998,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           const sounds = (rawSounds ?? {}) as Record<string, unknown>;
           if (sounds.enabled !== undefined && typeof sounds.enabled !== 'boolean') throw new HerdrError('invalid-app-settings', 'App settings sounds.enabled must be boolean');
           const bytes = Buffer.from(JSON.stringify({ ...appSettings, sounds: { ...sounds, enabled: false } }, null, 2) + '\n');
-          return [...await filesFor(files, context), { path: settingsPath, expected: settings.hash, bytes, updateAfterCutover: true, managed: { kind: 'json-paths' as const, paths: ['theme', 'layout', 'sounds.enabled'] } }];
+          return [...await filesFor(files, context), { path: keyPath, expected: currentKeys.hash, bytes: Buffer.alloc(0), keys, collision: 'key' as const }, { path: settingsPath, expected: settings.hash, bytes, updateAfterCutover: true, managed: { kind: 'json-paths' as const, paths: ['theme', 'layout', 'sounds.enabled'] } }];
         }, generateTemplates: (request, context) => templates(request, context),
         installResume: async (request, context) => {
           const hookPath = join(request.config.globalRoot, 'herdr/resume.sh'), current = await snapshot(request.config.shellRc);

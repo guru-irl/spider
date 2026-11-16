@@ -144,6 +144,7 @@ export interface SetupParts {
   globalRoot?: string;
   /** Read-only selection validation; rollback does not need to rediscover configured sessions. */
   validateSelections?(request: SetupRequest): Promise<void>;
+  pendingNativeKeys?(request: SetupRequest): Promise<KeySections>;
   preflight(request: SetupRequest): Promise<SetupPreflight>;
   stageLook(request: SetupRequest, context: SetupContext, mode: 'export' | 'isolated-clone'): Promise<readonly InstallFile[]>;
   installFiles(request: SetupRequest, context: SetupContext): Promise<readonly InstallFile[]>;

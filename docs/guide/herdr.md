@@ -128,10 +128,12 @@ Setup accepts these flags:
 | --- | --- |
 | `--config <absolute-file>` | The configuration file. The path must be absolute. Without it, setup uses the standard location. |
 | `--overwrite-unowned-keys` | Replaces Herdr key bindings that spider does not own, after a backup. Without it, a conflicting key stops setup with `key-binding-conflict`. |
-| `--merge-native-keys` | Accepts the offer to add Cmd-F search, Cmd-A select all and Cmd-M minimize where those fields are absent. Existing bindings stay unchanged, even if they differ from the offer. |
-| `--decline-native-keys` | Refuses the native-key offer. This is also the default behavior when neither flag is passed. |
+| `--merge-native-keys` | Accepts a pending native-key offer. Herdr 0.1.13 supports Cmd-F search and Cmd-M minimize. Herdr 0.1.16 also supports Cmd-A select all. Setup skips a key bound in any section. |
+| `--decline-native-keys` | Declines the offer. This is the default when neither flag is passed. It does not remove keys accepted earlier. |
 | `--allow-staging-app` | Allows setup to open a second app window when it has to clone Herdr's built-in layout and mods in a separate staging home. Setup says so before it opens the window. |
 | `--adopt-existing-space <name>` | Lets setup add tabs to an existing space with this name that spider does not own. Repeat it for each space. Without it, the name conflict stops setup with `space-name-conflict`. |
+
+Stock Herdr 0.1.13 already binds Cmd-F, and stock 0.1.16 binds all three keys. Setup prints no offer when no supported key is missing. Herdr 0.1.12 has no optional key offer.
 
 ### What setup changes
 
@@ -140,7 +142,7 @@ Setup backs up every file it replaces before the first write and records each st
 1. The `herdr.config` entry in spider's global settings, only when you pass a configuration file outside the standard location.
 2. The spider panel mod and picker, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied. Herdr 0.1.13 and 0.1.16 also use `spider-menu`. Herdr 0.1.16 uses one derived `spider-toast`; 0.1.13 leaves the stock toast untouched.
 3. The `spider-glass` layout and Herdr theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. Only `theme`, `layout` and `sounds.enabled` in the app's settings change. Custom sound paths remain unchanged. A later explicit sound opt-in releases that preference from setup ownership.
-4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space and the layout-scoped Cmd-Shift-E Send back action. Ctrl-V image paste and Cmd-Shift-W close remain unchanged. Cmd-F, Cmd-A and Cmd-M are an offer, never an automatic setup change.
+4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space and the layout-scoped Cmd-Shift-E Send back action. Ctrl-V image paste and Cmd-Shift-W close remain unchanged. Supported native keys are offered when absent and never changed automatically.
 5. The `dracula-plus-glass` pi theme. Only the `theme` field of the agent directory's settings file changes.
 6. Role templates generated from your global model settings.
 7. `notes = false` in the core's `config.toml`. Only the root `notes` key changes.

@@ -182,7 +182,11 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
       // Only owned parts that could not be restored remain in the journal.
       return (await readJournal(request.journalRoot)).entries.length ? 3 : 0;
     }
-    if (nativeKeys === undefined) stdout('Offer: merge Cmd-F search, Cmd-A select all and Cmd-M minimize with --merge-native-keys, or refuse with --decline-native-keys. Existing user bindings are preserved. No optional keys are changed by default.\n');
+    if (nativeKeys === undefined) {
+      const pending = await parts.pendingNativeKeys?.(fullRequest) ?? {};
+      const labels = Object.values(pending).flatMap(bindings => Object.entries(bindings).map(([key, binding]) => `${key.startsWith('cmd-') ? `Cmd-${key.slice(4).toUpperCase()}` : key} (${typeof binding === 'string' ? binding : binding.command})`));
+      if (labels.length) stdout(`Offer: merge ${labels.join(', ')} with --merge-native-keys, or refuse with --decline-native-keys. Existing user bindings are preserved. No optional keys are changed by default.\n`);
+    }
     const result = await setupHerdr(fullRequest, parts);
     if (result.plan) {
       for (const file of result.plan.files) stdout(`${file.action} ${file.path}${file.refusal ? ' (needs --replace-changed)' : ''}\n`);

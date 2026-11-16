@@ -117,7 +117,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(await runHerdrCli(['setup', '--merge-native-keys', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
     const merged = JSON.parse(await readFile(path, 'utf8'));
     expect(merged.terminal['cmd-f']).toBe('custom.find');
-    expect(merged.terminal['cmd-a']).toBe('terminal.select_all');
+    if (version === '0.1.16') expect(merged.terminal['cmd-a']).toBe('terminal.select_all');
+    else expect(merged.terminal).not.toHaveProperty('cmd-a');
     expect(merged.global['cmd-m']).toBe('window.minimize');
     expect(merged.terminal['ctrl-v']).toBe(keys.terminal['ctrl-v']);
     expect(merged['layout:spider-glass']['cmd-shift-e']).toBe('spider-pane.park');
@@ -129,6 +130,75 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     merged.terminal['cmd-a'] = 'custom.select'; await writeFile(path, JSON.stringify(merged));
     expect(await runHerdrCli(['setup', '--merge-native-keys', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
     expect(JSON.parse(await readFile(path, 'utf8')).terminal['cmd-a']).toBe('custom.select');
+  });
+
+  test(`${version} offers only supported native keys missing from the stock map`, async () => {
+    const f = await releaseFixture(version), out: string[] = [], errors: string[] = [];
+    const ports = { ...f.ports, stdout: (text: string) => out.push(text), stderr: (text: string) => errors.push(text) };
+    expect(await runHerdrCli(['setup', '--dry-run', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
+    if (version === '0.1.13') {
+      expect(out.join('')).toContain('Cmd-M');
+      expect(out.join('')).not.toContain('Cmd-F');
+      expect(out.join('')).not.toContain('Cmd-A');
+    } else expect(out.join('')).not.toContain('Offer:');
+  });
+
+  for (const section of ['terminal', 'layout:custom'] as const) test(`${version} does not shadow native bindings in ${section} or global`, async () => {
+    const f = await releaseFixture(version), path = join(f.h.directories.app, 'keys.json');
+    const keys = JSON.parse(await readFile(path, 'utf8'));
+    delete keys.terminal['cmd-f']; delete keys.terminal['cmd-a']; delete keys.global['cmd-m'];
+    keys.global['cmd-f'] = 'custom.find'; keys.global['cmd-a'] = 'custom.select';
+    (keys[section] ??= {})['cmd-m'] = 'custom.minimize';
+    await writeFile(path, JSON.stringify(keys));
+    const out: string[] = [], errors: string[] = [];
+    const ports = { ...f.ports, stdout: (text: string) => out.push(text), stderr: (text: string) => errors.push(text) };
+    expect(await runHerdrCli(['setup', '--dry-run', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
+    expect(out.join('')).not.toContain('Offer:');
+    expect(await runHerdrCli(['setup', '--merge-native-keys', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
+    const result = JSON.parse(await readFile(path, 'utf8'));
+    expect(result.global['cmd-f']).toBe('custom.find');
+    expect(result.global['cmd-a']).toBe('custom.select');
+    expect(result[section]['cmd-m']).toBe('custom.minimize');
+    expect(result.terminal).not.toHaveProperty('cmd-f');
+    expect(result.terminal).not.toHaveProperty('cmd-a');
+    expect(result.global).not.toHaveProperty('cmd-m');
+  });
+
+  if (version === '0.1.13') test('0.1.13 does not offer or install its unsupported select-all command', async () => {
+    const f = await releaseFixture(version), path = join(f.h.directories.app, 'keys.json');
+    const keys = JSON.parse(await readFile(path, 'utf8'));
+    delete keys.terminal['cmd-f']; delete keys.terminal['cmd-a']; delete keys.global['cmd-m'];
+    await writeFile(path, JSON.stringify(keys));
+    f.request.nativeKeys = 'accept';
+    const offered = (await f.parts.installFiles(f.request, f.context)).find(file => file.path === path)!;
+    expect(offered.keys?.terminal).toMatchObject({ 'cmd-f': 'terminal.search' });
+    expect(offered.keys?.terminal).not.toHaveProperty('cmd-a');
+    expect(offered.keys?.global).toMatchObject({ 'cmd-m': 'window.minimize' });
+  });
+
+  if (version === '0.1.13') test('accepted native keys are not reoffered or removed by decline', async () => {
+    const f = await releaseFixture(version), path = join(f.h.directories.app, 'keys.json'), original = await readFile(path);
+    const out: string[] = [], errors: string[] = [];
+    const ports = { ...f.ports, stdout: (text: string) => out.push(text), stderr: (text: string) => errors.push(text) };
+    expect(await runHerdrCli(['setup', '--merge-native-keys', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
+    expect(JSON.parse(await readFile(path, 'utf8')).global['cmd-m']).toBe('window.minimize');
+    out.length = 0;
+    expect(await runHerdrCli(['setup', '--dry-run', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
+    expect(out.join('')).not.toContain('Offer:');
+    expect(await runHerdrCli(['setup', '--decline-native-keys', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
+    expect(JSON.parse(await readFile(path, 'utf8')).global['cmd-m']).toBe('window.minimize');
+    expect(await runHerdrCli(['rollback', '--config', f.request.configPath], ports), errors.join('')).toBe(0);
+    expect(await readFile(path)).toEqual(original);
+  });
+
+  test(`${version} missing native key map uses the setup guidance`, async () => {
+    const f = await releaseFixture(version), path = join(f.h.directories.app, 'keys.json');
+    await rm(path);
+    f.request.nativeKeys = 'accept';
+    const files = await f.parts.installFiles(f.request, f.context);
+    expect(files.find(file => file.path === path)?.expected).toBeNull();
+    await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'keys-defaults-missing', message: expect.stringContaining('Open Herdr once') });
+    await expect(readFile(path)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   test(`${version} additional records cannot bypass guards or write partial clones`, async () => {
@@ -145,7 +215,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     }
   });
 
-  test(`${version} all three absent native keys remain optional until accepted`, async () => {
+  test(`${version} absent supported native keys remain optional until accepted`, async () => {
     const f = await releaseFixture(version), path = join(f.h.directories.app, 'keys.json');
     const keys = JSON.parse(await readFile(path, 'utf8'));
     delete keys.terminal['cmd-f']; delete keys.terminal['cmd-a']; delete keys.global['cmd-m'];
@@ -157,7 +227,9 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(offered.keys?.global).not.toHaveProperty('cmd-m');
     f.request.nativeKeys = 'accept';
     const accepted = (await f.parts.installFiles(f.request, f.context)).find(file => file.path === path)!;
-    expect(accepted.keys?.terminal).toMatchObject({ 'cmd-f': 'terminal.search', 'cmd-a': 'terminal.select_all' });
+    expect(accepted.keys?.terminal).toMatchObject({ 'cmd-f': 'terminal.search' });
+    if (version === '0.1.16') expect(accepted.keys?.terminal).toHaveProperty('cmd-a', 'terminal.select_all');
+    else expect(accepted.keys?.terminal).not.toHaveProperty('cmd-a');
     expect(accepted.keys?.global).toMatchObject({ 'cmd-m': 'window.minimize' });
     expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(keys);
   });

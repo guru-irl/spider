@@ -32,6 +32,15 @@ type AppCall = (name: string, args: Record<string, any>) => Promise<AppReply>;
 export function createPresentationApp(hc: (args: readonly string[]) => Promise<AppReply>): AppCall {
   let next = 0, selected: { space: string; tab: string; focused_pane: string } | null = null;
   const spaces: AppSpace[] = [];
+  const neighbors = new Map<string, Record<string, string>>();
+  const reverse: Record<string, string> = { up: 'down', down: 'up', left: 'right', right: 'left' };
+  const link = (anchor: string, pane: string, direction: string) => {
+    const before = neighbors.get(anchor) ?? {}, opposite = reverse[direction];
+    const next = before[direction];
+    neighbors.set(pane, { [opposite]: anchor, ...(next ? { [direction]: next } : {}) });
+    if (next) neighbors.get(next)![opposite] = pane;
+    before[direction] = pane; neighbors.set(anchor, before);
+  };
   const fresh = (prefix: string) => `${prefix}${++next}`;
   const tabFor = (id: string) => spaces.flatMap(space => space.tabs).find(tab => tab.id === id);
   const locate = (id: string) => {
@@ -42,6 +51,12 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
     throw new Error('unknown owned pane');
   };
   const erase = (id: string) => {
+    const edges = neighbors.get(id) ?? {};
+    for (const [direction, adjacent] of Object.entries(edges)) {
+      const links = neighbors.get(adjacent), opposite = reverse[direction], next = edges[opposite];
+      if (links?.[opposite] === id) { if (next) links[opposite] = next; else delete links[opposite]; }
+    }
+    neighbors.delete(id);
     for (const space of spaces) for (const tab of space.tabs) {
       tab.panes = tab.panes.filter(pane => pane.id !== id);
       tab.terminals = tab.terminals.filter(pane => pane.pane !== id);
@@ -78,7 +93,14 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
       if (!args.mod || !['right', 'down'].includes(args.direction)) throw new Error('only explicit mod splits are supported');
       const anchor = locate(args.pane), tab = tabFor(anchor.tab)!;
       const pane = { id: fresh('pane'), mod: String(args.mod), props: structuredClone(args.props ?? {}) };
+      link(anchor.focused_pane, pane.id, args.direction);
       tab.panes.push(pane); selected = { ...anchor, focused_pane: pane.id }; return { pane: pane.id };
+    }
+    if (name === 'pane.go') {
+      if (!selected || !reverse[args.direction]) throw new Error('an owned pane and direction are required');
+      const adjacent = neighbors.get(selected.focused_pane)?.[args.direction];
+      if (adjacent) selected = locate(adjacent);
+      return { pane: selected.focused_pane };
     }
     if (name === 'pane.focus') {
       const id = args.pane ?? spaces.flatMap(space => space.tabs).flatMap(tab => tab.terminals).find(row => row.terminal === args.terminal)?.pane;
@@ -93,6 +115,8 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
       if (existing) { selected = locate(existing.pane); return { pane: existing.pane }; }
       if (!selected) throw new Error('no selected owned tab');
       const tab = tabFor(selected.tab)!, pane = { id: fresh('pane') };
+      if (!['right', 'down'].includes(args.place)) throw new Error('an explicit synthetic split direction is required');
+      link(selected.focused_pane, pane.id, args.place);
       tab.panes.push(pane); tab.terminals.push({ pane: pane.id, terminal: address });
       selected = { ...selected, focused_pane: pane.id };
       return { pane: pane.id, tab: tab.id, terminal: address };

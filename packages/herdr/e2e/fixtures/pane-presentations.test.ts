@@ -26,6 +26,22 @@ describe('cross-machine presentation fixtures', () => {
     expect((await app('status', {})).tab).toBe(created.tab);
     await expect(app('terminal.keep', { terminal: 'box-1.invalid/t1', place: 'right' })).rejects.toThrow('local');
   });
+  it('navigates only between owned adjacent panes and reconnects neighbors after removal', async () => {
+    const app = createPresentationApp(async args => args[0] === 'run' ? { address: 't1' } : { state: 'live', address: args[1] });
+    const owner = await app('space.new', { argv: ['/bin/cat'] });
+    const waiting = await app('pane.split', { pane: owner.pane, direction: 'down', mod: 'spider-pane-waiting' });
+    const viewer = await app('terminal.keep', { terminal: 'viewer-1', place: 'down' });
+    await app('pane.focus', { pane: owner.pane });
+    await app('pane.go', { direction: 'down' });
+    expect((await app('status', {})).focused_pane).toBe(waiting.pane);
+    await app('pane.go', { direction: 'down' });
+    expect((await app('status', {})).focused_pane).toBe(viewer.pane);
+    await app('pane.close', { pane: waiting.pane });
+    await app('pane.go', { direction: 'up' });
+    expect((await app('status', {})).focused_pane).toBe(owner.pane);
+    await app('pane.go', { direction: 'left' });
+    expect((await app('status', {})).focused_pane).toBe(owner.pane);
+  });
   it('Send back removes a display without killing its execution program', async () => {
     const calls: string[][] = [];
     const app = createPresentationApp(async args => { calls.push([...args]); return { address: 't1', state: 'live' }; });

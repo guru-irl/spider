@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
 import { readFile, writeFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
@@ -22,7 +22,11 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const recipe = loadPublishedSpacesARecipe(version);
     const expected = replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe);
     const stockToast = await readFile(join(home, 'mods/toast/main.js'));
+    const names = (await f.parts.preflight(f.request)).mods.map(copy => basename(copy.directory));
+    expect(names.filter(name => name === 'spider-menu')).toHaveLength(1);
+    expect(names).not.toContain('spider-new-menu');
     await setupHerdr(f.request, f.parts);
+    await expect(readFile(join(home, 'mods/spider-new-menu/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
     for (const mod of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome', 'menu']) {
       const clone = mod === 'workspace-chrome' ? 'spider-chrome' : `spider-${mod}`;
       const manifest = JSON.parse(await readFile(join(home, 'mods', clone, 'mod.json'), 'utf8'));
@@ -70,7 +74,11 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const ports = createProductionHerdrCliPorts(f.root, { ...f.h.localEnv, SPIDER_GLOBAL_ROOT: f.h.directories.global }, records);
     cleanup.push(() => ports.dispose());
     const parts = await ports.setupParts(f.request);
-    expect((await parts.preflight(f.request)).fingerprint).not.toBe((await f.parts.preflight(f.request)).fingerprint);
+    const preflight = await parts.preflight(f.request);
+    expect(preflight.fingerprint).not.toBe((await f.parts.preflight(f.request)).fingerprint);
+    const names = preflight.mods.map(copy => basename(copy.directory));
+    expect(names.filter(name => name === 'spider-menu')).toHaveLength(1);
+    expect(names.filter(name => name === 'spider-new-menu')).toHaveLength(1);
     await setupHerdr(f.request, parts);
     expect(await readFile(join(home, 'mods/spider-agents/main.js'), 'utf8')).toContain('spider-look:b-arrival-proof');
     expect(await readFile(join(home, 'mods/spider-picker/main.js'), 'utf8')).toContain('/* "$&" */');

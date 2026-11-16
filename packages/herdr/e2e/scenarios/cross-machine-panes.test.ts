@@ -123,7 +123,7 @@ async function shell(suite: Suite): Promise<void> {
 }
 
 async function lifecycle(suite: Suite): Promise<void> {
-  const f = await preparePanePresentations(suite), p = await f.open(), raw = await f.terminal(p.target.address), before = stableTerminal(raw), targetIdentity = identityOf(raw.pid);
+  const f = await preparePanePresentations(suite), p = await f.open('right'), raw = await f.terminal(p.target.address), before = stableTerminal(raw), targetIdentity = identityOf(raw.pid);
   const actions = await paneActionFunctions(f.packageRoot);
   const current = await f.current(p.id), header = await f.terminal(p.proxy!), shared = new Map<string, unknown>(), overlays: any[] = [], replies: unknown[] = [];
   let operation = 'b03cancel';
@@ -260,7 +260,7 @@ async function manual(suite: Suite): Promise<void> {
   const choice = (await f.state()).choices.find(row => row.session === owner.row.sessionId);
   expect(choice).toMatchObject({ space: f.anchor.space, tab: f.anchor.tab });
   const proxy = (await f.current(first.id)).proxy;
-  expect(requests.map(request => request.op)).toEqual(['open-existing', 'move', 'move']);
+  expect(requests.map(request => request.op)).toEqual(['move', 'move', 'move']);
   expect(requests.slice(1).every(request => 'presentationId' in request && request.presentationId === first.id)).toBe(true);
   await stopPaneHelper(f); await f.snapshot();
   const restored = await waitFor('manual destination survives service restart', () => f.snapshot(), value => value.presentations.some(row => row.id === first.id && row.slot?.tab === f.anchor.tab), deadline(10000));

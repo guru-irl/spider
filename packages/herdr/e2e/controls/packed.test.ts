@@ -16,7 +16,7 @@ function fixture(): { root: string; packed: string } {
   return { root, packed };
 }
 const spacesAssets = [
-  'spaces/local.js', 'look/spaces-a-sidebar/agents-mod.json', 'agents/grouping.js', 'agents/connections.js', 'agents/console-groups.js',
+  'spaces/local.js', 'look/spaces-a-sidebar/agents-mod.json', 'agents/grouping.js', 'agents/connections.js', 'agents/console-groups.js', 'agents/unreachable.svg',
   'shared/navigation.js', 'picker/model.js', 'pane/park.js',
   'picker/main.js', 'picker/mod.json', 'picker/NOTICE', 'mods/spider/sound.js',
   'toast/main.js', 'toast/mod.json', 'toast/filter.js', 'toast/NOTICE',

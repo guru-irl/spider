@@ -15,6 +15,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(staged.files.map(file => file.path)).toContain('mods/spider-picker/shared/navigation.js');
     expect(staged.files.map(file => file.path)).toContain('mods/spider-panel/sound.js');
     expect(staged.files.map(file => file.path)).toContain('mods/spider-menu/main.js');
+    expect(readFileSync(join(root, 'mods/spider-agents/unreachable.svg'))).toEqual(readFileSync('packages/herdr/assets/agents/unreachable.svg'));
     const menu = readFileSync(join(root, 'mods/spider-menu/main.js'), 'utf8');
     expect(menu).toContain('spider-look:a-menu-remote-park');
     expect(menu).toContain('roam-proxy');

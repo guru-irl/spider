@@ -148,6 +148,26 @@ test('4097 stopped lease files are pruned before the live lease bound is checked
     expect((await readdir(f.ports.leaseRoot)).filter(name => name.endsWith('.json'))).toEqual(['lease-one.json']);
   } finally { await f.close(); }
 });
+test('failed cleanup keeps the inventory locked until all cleanup workers settle', async () => {
+  const f = await fixture(); await mkdir(f.ports.leaseRoot, { mode: 0o700 });
+  let release!: () => void, started!: () => void, failed!: () => void, settled = false;
+  const slowStarted = new Promise<void>(resolve => { started = resolve; }), firstFailed = new Promise<void>(resolve => { failed = resolve; });
+  f.ports.stopTarget = async target => {
+    if (target.terminalId === 'slow') { started(); await new Promise<void>(resolve => { release = resolve; }); }
+    else { await slowStarted; failed(); throw new Error('source unavailable'); }
+  };
+  try {
+    for (const id of ['failing', 'slow']) {
+      const target = { coreId: f.owner.terminal.coreId, terminalId: id, address: id, createdMs: 100, identityLabels: {}, alias: null, machineId: null, kind: 'subagent', sessionId: f.owner.sessionId, generation: f.owner.generation, homeEpoch: null, runId, consoleId: null, name: null, cwd: null };
+      await writeFile(join(f.ports.leaseRoot, id + '.json'), JSON.stringify({ version: 1, leaseId: id, sessionId: f.owner.sessionId, generation: f.owner.generation, runId, consoleId: null, expiresAt: 0, address: id, target, state: 'active' }), { mode: 0o600 });
+    }
+    const opening = launchPaneViewer(f.input, f.ports).then(() => { settled = true; }, () => { settled = true; });
+    await firstFailed;
+    const result = await Promise.race([opening.then(() => 'returned'), new Promise<string>(resolve => setTimeout(() => resolve('waiting'), 100))]);
+    release(); await opening;
+    expect(result).toBe('waiting'); expect(settled).toBe(true);
+  } finally { release?.(); await f.close(); }
+});
 test('closed and failed console views can reopen in the same generation', async () => {
   const f = await fixture(), consoleId = ('console-' + 'c'.repeat(64)) as import('../../../herdr/src/contracts.js').ConsoleId;
   const input = { sessionId: f.owner.sessionId, generation: f.owner.generation, machineKey: 'console.invalid', consoleId, leaseId: 'console-lease' };
@@ -155,7 +175,7 @@ test('closed and failed console views can reopen in the same generation', async 
   f.ports.recoverTarget = async () => null;
   f.ports.consoleSource = async () => ({ consoleId, runId: null, launch: async () => {
     if (fail) { fail = false; throw new Error('console unavailable'); }
-    return (await f.hc.run({ argv: ['console'], cwd: null, labels: {}, parent: null })).address;
+    return (await f.hc.run({ argv: ['console'], cwd: null, labels: {}, parent: null, outliveParent: true, background: true, noNotify: true })).address;
   } });
   try {
     await expect(openPaneConsole(input, f.ports)).rejects.toThrow('console unavailable');

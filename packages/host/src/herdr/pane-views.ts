@@ -93,7 +93,7 @@ async function exclusiveView<T>(input: { sessionId: SessionId; runId: RunId | nu
   return locked(input.leaseId, ports, async claimedFile => {
     const files = (await readdir(root)).filter(name => name.endsWith('.json'));
     let active = 0, existing = false, conflict = false, index = 0;
-    await Promise.all(Array.from({ length: Math.min(4, files.length) }, async () => {
+    const cleanup = await Promise.allSettled(Array.from({ length: Math.min(4, files.length) }, async () => {
       while (index < files.length) {
         const name = files[index++], file = join(root, name);
         const previous = await readLease(file);
@@ -105,6 +105,8 @@ async function exclusiveView<T>(input: { sessionId: SessionId; runId: RunId | nu
           conflict = true;
       }
     }));
+    const failed = cleanup.find(result => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
     if (conflict) throw new HerdrError('view-already-leased', 'Source view already has an active display lease');
     if (active >= 4096 && !existing) throw new HerdrError('view-lease-limit', 'View lease inventory exceeded its bound');
     return work(claimedFile);

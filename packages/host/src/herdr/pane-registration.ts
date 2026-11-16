@@ -11,7 +11,10 @@ export async function reconcilePaneRegistrations(input: { store: PanePlacementSt
     const state = await input.store.read();
     const existing = state.presentations.find(p => p.target.coreId === target.coreId && p.target.terminalId === target.terminalId);
     if (existing) {
-      if (existing.target.kind !== 'terminal' || existing.target.createdMs !== target.createdMs || existing.visibility === 'closing' || existing.visibility === 'ended' || Object.entries(existing.target.identityLabels).some(([key, value]) => target.identityLabels[key] !== value)) continue;
+      if (existing.target.createdMs !== target.createdMs || existing.visibility === 'closing' || existing.visibility === 'ended') continue;
+      if (existing.target.kind === 'terminal') {
+        if (Object.entries(existing.target.identityLabels).some(([key, value]) => target.identityLabels[key] !== value)) continue;
+      } else if (existing.target.kind !== 'session' || existing.target.sessionId !== row.sessionId || existing.target.generation === row.generation) continue;
       await input.store.update(current => ({ ...current, presentations: current.presentations.map(p => p.id === existing.id && p.revision === existing.revision ? { ...p, target, role: 'agent', revision: p.revision + 1 } : p) }));
       continue;
     }

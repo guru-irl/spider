@@ -672,3 +672,16 @@ test('ready outcome queries observe in-progress operations without dispatch or w
     expect(f.ports.dispatch).toHaveBeenCalledTimes(1);
   } finally { finish(); await running; await service.stop(); }
 });
+
+
+test.each(['cli-timeout', 'missing-hc', 'owner-unplaced', 'unknown transport failure'])('handoff dispatch failure %s is unavailable rather than a capture refusal', async code => {
+  const f = await fixture();
+  vi.mocked(f.ports.dispatch).mockRejectedValue(code === 'unknown transport failure' ? new Error(code) : new HerdrError(code, 'App is unavailable'));
+  const service = createPaneService(f.ports);
+  try {
+    expect(await service.request({ version: 1, op: 'prepare-handoff', operationId: 'failed-capture', presentationId: 'p1', expectedRevision: 1, sessionId: f.presentation.target.sessionId!, generation: f.presentation.target.generation!, homeEpoch: f.presentation.target.homeEpoch! }))
+      .toMatchObject({ kind: 'outcome', outcome: { status: 'pending', reason: 'handoff-unavailable', presentation: f.presentation } });
+    expect((await f.ports.store.read()).presentations[0]).toEqual(f.presentation);
+    expect(f.hc.kill).not.toHaveBeenCalled();
+  } finally { await service.stop(); }
+});

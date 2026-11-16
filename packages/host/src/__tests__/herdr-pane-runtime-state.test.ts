@@ -447,3 +447,24 @@ test('a never-placed remote session advances its binding without waiting for a M
   expect((await runtime.store.read()).presentations).toMatchObject([{ target: row.target, slot: null, proxy: null }]);
   expect(hc.run).not.toHaveBeenCalled();
 });
+
+
+test.each(['cli-timeout', 'missing-hc', 'owner-unplaced', 'unexpected transport error'])('handoff app lookup failure %s leaves durable pending conversion intent', async code => {
+  const { root, runtime, hc } = await fixture();
+  const row = sessionRow(); row.target = { ...row.target, coreId: 'core-local' as never, address: 'core-local/execution' as never, alias: null, machineId: null, homeEpoch: 1 };
+  row.machineKey = row.target.coreId; row.owner = { ...row.owner, terminal: { ...row.owner.terminal, coreId: row.target.coreId, address: row.target.address } };
+  boundary.rows = [row];
+  const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never };
+  const p: PanePresentation = { ...presentation('capture-error'), role: 'agent', mode: 'native', target: row.target, slot, launch: 'acknowledged' };
+  await runtime.store.update(state => ({ ...state, presentations: [p] }));
+  const error = code === 'unexpected transport error' ? new Error(code) : new HerdrError(code, 'App lookup failed');
+  Object.assign(boundary.app, { ownerPlacement: async () => { throw error; }, focusedPane: async () => { throw error; } });
+  const service = runtime.createService();
+  const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
+  expect(await operations.prepareHandoff(row.sessionId, row.target)).toMatchObject({ status: 'pending', reason: 'app-unavailable', presentation: p });
+  const { readPaneHandoff } = await import('../herdr/pane-handoff.js');
+  expect(await readPaneHandoff(join(root, 'herdr', 'panes'), p)).toEqual({ source: slot, sourceFocused: false });
+  expect((await runtime.store.read()).slots).toEqual([{ session: 'session-1', space: 's1', tab: 'tb1' }]);
+  expect(hc.run).not.toHaveBeenCalled();
+  expect(hc.kill).not.toHaveBeenCalled();
+});

@@ -480,7 +480,10 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
         resumeIntake: fence => moveAvailable().bridge.resumeIntake(fence),
       },
       owns: endpoint => options.moveOwns ? options.moveOwns(endpoint) : Promise.resolve(false),
-      endpoint: address => sender(address),
+      endpoint: address => {
+        const info = sender(address);
+        return info ? { address: info.address, machineId: info.machineId, homeEpoch: info.homeEpoch, activationEpoch: info.activationEpoch } : null;
+      },
       async home(address) { const home = sessionHome(options.globalDb, address.sessionId); return home === "unknown" ? null : home; },
       admitted: endpoint => { const info = sender(endpoint.address); return !!info && info.machineId === endpoint.machineId && info.homeEpoch === endpoint.homeEpoch && info.activationEpoch === endpoint.activationEpoch; },
       presence: endpoint => sender(endpoint.address),

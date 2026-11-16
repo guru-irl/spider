@@ -267,6 +267,15 @@ const destination = (address: SessionAddress): RemoteSessionInfo => ({ remote: t
   machineAlias: "hub.invalid", homeEpoch: null, activationEpoch: "recipient-generation", endpointEpoch: "recipient-generation",
   cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 });
 
+it("a ready roaming bridge exposes strict move blocker snapshots", async () => {
+  const f = machineFixture(), service = await makeMachine(f.options);
+  await service.start();
+  expect(service.readiness()).toEqual({ state: "ready", reason: null });
+  expect(await service.move.bridge({ sessionId: "clean-session", scopeId: null })).toEqual({ asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] });
+  await service.stop();
+  await expect(service.move.bridge({ sessionId: "clean-session", scopeId: null })).rejects.toThrow("intercom-move-unavailable");
+}, 5000);
+
 it("the service retries revocations periodically without overlapping sweeps and joins recovery on stop", async () => {
   const f = machineFixture(), timers: Array<{ ms: number; fn(): void; cancelled: boolean }> = [];
   let calls = 0, release: (() => void) | undefined, scheduled!: () => void;

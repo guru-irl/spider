@@ -404,6 +404,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
         onControl(frame) { delivery?.onControl(frame); }, onAskFailed(failure) { delivery?.onAskFailed(failure); },
         onExpiry(event) { delivery?.onExpiry(event); },
         store, transport: options.transport, clock: options.clock, broker, globalRoot: options.root, agentDir: options.agentDir, routeLease: lease,
+        moveFences: true,
         async ensureBroker() {
           checkDirectory(options.agentDir); checkBrokerBoundary(options.agentDir);
           if (options.ensureBroker) await options.ensureBroker({ agentDir: options.agentDir, signal: abort.signal });

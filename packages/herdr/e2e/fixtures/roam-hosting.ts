@@ -31,6 +31,16 @@ const BOX = '00000000-0000-4000-8000-000000000002';
 const BOOT = '00000000-0000-4000-8000-000000000005';
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
+export function participantBootSettings(settings: Record<string, unknown>, release: string, extension: string): Record<string, unknown> {
+  if (!Array.isArray(settings.packages)) throw new Error('packed extension is unavailable');
+  const packages = settings.packages.filter(entry => entry !== extension);
+  const matches = (entry: unknown) => entry === release || !!entry && typeof entry === 'object' && !Array.isArray(entry) && (entry as Record<string, unknown>).source === release;
+  if (packages.filter(matches).length !== 1) throw new Error('packed extension is unavailable');
+  return { ...settings, packages: packages.flatMap(entry => matches(entry) ? [
+    { ...(typeof entry === 'object' && entry !== null ? entry : { source: release }), extensions: [] }, extension,
+  ] : [entry]) };
+}
+
 function fixtureClock() {
   let offset = 0;
   const timers = new Set<{ at: number; fn(): void; timer: ReturnType<typeof setTimeout> }>();
@@ -101,10 +111,8 @@ export async function hostingFixture(suite: Suite, name = 'hosting'): Promise<Ho
   const bootExtension = suite.ownPath(join(suite.root, 'participant-boot.mjs'));
   const packedExtension = pathToFileURL(join(suite.packed.root, 'dist', 'extension.js')).href;
   await writeFile(bootExtension, `import spider from ${JSON.stringify(packedExtension)};\nexport default pi => spider(pi, { bootId: async () => ${JSON.stringify(BOOT)} });\n`, { mode: 0o600 });
-  const settingsFile = join(agent, 'settings.json'), settings = JSON.parse(await readFile(settingsFile, 'utf8')) as { packages: unknown[] };
-  if (!Array.isArray(settings.packages) || settings.packages.filter(entry => entry === suite.packed.root).length !== 1) throw new Error('packed extension is unavailable');
-  settings.packages = settings.packages.flatMap(entry => entry === suite.packed.root ? [{ source: suite.packed.root, extensions: [] }, bootExtension] : [entry]);
-  await writeFile(settingsFile, JSON.stringify(settings, null, 2), { mode: 0o600 });
+  const settingsFile = join(agent, 'settings.json'), settings = JSON.parse(await readFile(settingsFile, 'utf8')) as Record<string, unknown>;
+  await writeFile(settingsFile, JSON.stringify(participantBootSettings(settings, suite.packed.root, bootExtension), null, 2), { mode: 0o600 });
 
   // The launch shell records the requested limit instead of changing an operating-system limit.
   const systemctl = join(suite.root, 'bin', 'systemctl');

@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
 import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { paths } from '@spider/db-core';
 import { createPaneRuntime, type PaneRuntime } from '../herdr/pane-runtime.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
@@ -36,7 +37,7 @@ vi.mock('../../../herdr/src/panes/auxiliary.js', async importOriginal => {
 const resources: { root: string; runtime: PaneRuntime }[] = [];
 afterEach(async () => { for (const { root, runtime } of resources.splice(0)) { await runtime.dispose(); await rm(root, { recursive: true, force: true }); } vi.clearAllMocks(); });
 async function fixture(spaces: HerdrConfig['spaces'] = []) {
-  const base = resolve('.spider/scratch/pane-runtime-state'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'f-'));
+  const base = join(paths.scratch('worktree', process.cwd()), 'pane-runtime-state'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'f-'));
   boundary.rows = []; boundary.terminals.clear(); boundary.app = {}; boundary.layout = { spaces: [] }; boundary.remote.mockImplementation(async (_machine, request) => {
     if (request.op !== 'list') throw new Error('Unexpected remote effect');
     return { version: 1, op: 'list', page: { version: 1, rows: boundary.rows, complete: true, next: null } };

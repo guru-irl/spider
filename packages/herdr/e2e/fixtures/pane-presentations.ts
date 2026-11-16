@@ -71,7 +71,27 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
       { name: 'tab.new', args: [{ name: 'space', required: false }, { name: 'mod', required: false }, { name: 'props', required: false }] },
       { name: 'pane.split', args: [{ name: 'pane', required: true }, { name: 'direction', required: true }, { name: 'mod', required: false }, { name: 'props', required: false }] },
     ] };
-    if (name === 'ls') return structuredClone({ spaces, recent: [] });
+    if (name === 'ls') {
+      // Supported apps adopt labelled live terminals into a fresh pane, preserving focus:
+      // herdrdev/herdr-app v0.1.16 src/window.rs, reconcile/start_adoption/adopt.
+      const fallbackTabs = spaces.flatMap(space => space.tabs.filter(tab => tab.panes.some(pane => pane.mod === 'pane')).map(tab => ({ space, tab })));
+      if (fallbackTabs.length) {
+        const inventory = await hc(['ls', '--json']);
+        if (!Array.isArray(inventory.terminals)) throw new Error('owned core inventory is unavailable');
+        for (const row of inventory.terminals) {
+          if (typeof row.address !== 'string' || row.address.includes('/') || row.state !== 'live') continue;
+          if (spaces.some(space => space.tabs.some(tab => tab.terminals.some(item => item.terminal === row.address)))) continue;
+          const destination = fallbackTabs.find(({ space, tab }) => row.labels?.['herdr.space'] === space.id && row.labels?.['herdr.tab'] === tab.id);
+          if (!destination) continue;
+          const proof = await hc(['get', row.address, '--json']);
+          if (proof.address !== row.address || proof.state !== 'live' || proof.labels?.['herdr.space'] !== destination.space.id || proof.labels?.['herdr.tab'] !== destination.tab.id) continue;
+          const pane = { id: fresh('pane') }, anchor = destination.tab.panes.at(-1)!;
+          link(anchor.id, pane.id, 'right'); destination.tab.panes.push(pane);
+          destination.tab.terminals.push({ pane: pane.id, terminal: row.address });
+        }
+      }
+      return structuredClone({ spaces, recent: [] });
+    }
     if (name === 'status') return { ...selected, errors: [], layout: 'synthetic-presentations' };
     if (name === 'space.new' || name === 'tab.new') {
       if (args.machine) throw new Error('only local app spaces are supported');
@@ -131,6 +151,12 @@ export function createPresentationApp(hc: (args: readonly string[]) => Promise<A
       const row = spaces.flatMap(space => space.tabs).flatMap(tab => tab.terminals).find(row => row.pane === id);
       if (row) await hc(['kill', row.terminal, '--json']);
       erase(id); return { ok: true };
+    }
+    if (name === 'tab.move') {
+      const space = spaces.find(space => space.tabs.some(tab => tab.id === args.id));
+      if (!space || !Number.isInteger(args.index) || args.index < 1 || args.index > space.tabs.length) throw new Error('an owned tab and valid index are required');
+      const [tab] = space.tabs.splice(space.tabs.findIndex(tab => tab.id === args.id), 1);
+      space.tabs.splice(args.index - 1, 0, tab); return { ok: true };
     }
     if (name === 'tab.close' || name === 'space.close') {
       const tabs = name === 'tab.close' ? [tabFor(String(args.id))].filter(Boolean) as AppTab[] : spaces.find(space => space.id === args.id)?.tabs ?? [];

@@ -42,6 +42,29 @@ describe('cross-machine presentation fixtures', () => {
     await app('pane.go', { direction: 'left' });
     expect((await app('status', {})).focused_pane).toBe(owner.pane);
   });
+  it('adopts a live labelled local display into an owned fallback tab without stealing focus', async () => {
+    let records: Record<string, any>[] = [];
+    const app = createPresentationApp(async args => args[0] === 'run' ? { address: 't1' } : args[0] === 'ls' ? { terminals: records } : records.find(row => row.address === args[1])!);
+    const owner = await app('space.new', { argv: ['/bin/cat'] });
+    const target = await app('tab.new', { space: owner.space, mod: 'pane' });
+    await app('pane.focus', { pane: owner.pane });
+    const labels = { 'herdr.space': owner.space, 'herdr.tab': target.tab };
+    records = [{ address: 't2', state: 'live', labels }, { address: 'box-1.invalid/t3', state: 'live', labels }, { address: 't4', state: 'finished', labels }, { address: 't5', state: 'live', labels: { ...labels, 'herdr.space': 'foreign-space' } }];
+    const rows = presentationRows(await app('ls', {}) as PresentationDocument);
+    expect(rows.filter(row => row.tab === target.tab)).toEqual([{ space: owner.space, tab: target.tab, pane: expect.any(String), terminal: 't2' }]);
+    expect(rows.find(row => row.terminal === 't2')!.pane).not.toBe(target.pane);
+    expect((await app('status', {})).focused_pane).toBe(owner.pane);
+    expect(presentationRows(await app('ls', {}) as PresentationDocument)).toEqual(rows);
+  });
+  it('moves an owned fallback tab by its one-based index while retaining pane focus', async () => {
+    const app = createPresentationApp(async () => ({ address: 't1' }));
+    const owner = await app('space.new', { argv: ['/bin/cat'] });
+    const middle = await app('tab.new', { space: owner.space, mod: 'spider-pane-waiting' });
+    const target = await app('tab.new', { space: owner.space, mod: 'spider-pane-waiting' });
+    await app('tab.move', { id: target.tab, index: 2 });
+    expect((await app('ls', {})).spaces[0].tabs.map((tab: { id: string }) => tab.id)).toEqual([owner.tab, target.tab, middle.tab]);
+    expect((await app('status', {})).focused_pane).toBe(target.pane);
+  });
   it('Send back removes a display without killing its execution program', async () => {
     const calls: string[][] = [];
     const app = createPresentationApp(async args => { calls.push([...args]); return { address: 't1', state: 'live' }; });

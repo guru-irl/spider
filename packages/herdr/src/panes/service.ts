@@ -62,8 +62,12 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
       })]);
     } finally { clearTimeout(timer); abort.signal.removeEventListener('abort', onAbort); }
   }
+  function unreachable(key: string) {
+    const old = inventories.get(key);
+    if (old) inventories.set(key, { ...old, complete: false, stale: true, rows: old.rows.map(row => ({ ...row, status: 'unreachable' })) });
+  }
   async function refresh(machine: MachineChoice) {
-    if (machine.state !== 'connected' || !machine.coreId) return;
+    if (machine.state !== 'connected' || !machine.coreId) { unreachable(machine.key); return; }
     if ((retry.get(machine.key)?.after ?? 0) > ports.clock()) return;
     const running = pending.get(machine.key); if (running) return running;
     const operation = (async () => {
@@ -80,8 +84,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
       } catch {
         const failures = (retry.get(machine.key)?.failures ?? 0) + 1;
         retry.set(machine.key, { failures, after: ports.clock() + Math.min(1000 * 2 ** Math.min(failures - 1, 4), 10000) });
-        const old = inventories.get(machine.key);
-        if (old) inventories.set(machine.key, { ...old, complete: false, stale: true, rows: old.rows.map(row => ({ ...row, status: 'unreachable' })) });
+        unreachable(machine.key);
       } finally { pending.delete(machine.key); }
     })();
     pending.set(machine.key, operation); return operation;

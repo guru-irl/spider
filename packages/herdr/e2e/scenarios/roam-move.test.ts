@@ -254,7 +254,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
         SPIDER_ROAM_PI: suite.pi.launcher, SPIDER_E2E_MOVE_DESCRIPTOR: descriptor, SPIDER_HERDR_E2E_PROCESS_DOMAIN: join(root, 'manifest.json') } } as MoveMachine;
   }) as [MoveMachine, MoveMachine, MoveMachine];
   const [hub, box, secondBox] = machines;
-  const sessionId = randomUUID(), originalFile = suite.ownPath(join(hub.agent, 'sessions', `${sessionId}.jsonl`));
+  const sessionId = randomUUID(), originalFile = suite.ownPath(join(hub.agent, 'sessions', 'source-project', `${sessionId}.jsonl`));
   const peers = machines.map((machine, i) => ({ machineId: machine.id, alias: machine.alias, node: process.execPath, pi: suite.pi.launcher, cli,
     core: cores.wrapper, globalRoot: machine.root }));
   const services: Array<{ stop(): Promise<void> }> = [];
@@ -321,7 +321,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
           finally { store.close(); }
         }
         db.prepare('INSERT INTO projects(project_key,real_path,db_path,git_common_dir,created_at,last_seen_at) VALUES(?,?,?,?,1,1)')
-          .run(`project-${i}`, machine.cwd, join(machine.cwd, '.spider', 'project.db'), join(machine.cwd, '.git'));
+          .run(machine.cwd, machine.cwd, join(machine.cwd, '.spider', 'project.db'), join(machine.cwd, '.git'));
       } finally { db.close(); }
     }
     const { storyPresentation } = await import('./roam-recovery.test.js');
@@ -356,6 +356,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       cwd: suite.root, stdio: { log: hubLog } });
     services.push(hubService);
     await waitFor('packed move hub', async () => { if (hubService.child.exitCode !== null) throw Error(await readFile(hubLog, 'utf8')); return existsSync(join(hub.root, 'roam', 'hub.sock')); }, Boolean, deadline(20_000));
+    await mkdir(dirname(originalFile), { recursive: true, mode: 0o700 });
     await writeFile(originalFile, [
       { type: 'session', version: 3, id: sessionId, cwd, timestamp: '2026-01-01T00:00:00Z' },
       { type: 'message', id: 'root-leaf', parentId: null, timestamp: '2026-01-01T00:00:00Z', message: { role: 'user', content: 'fixture root', timestamp: 1 } },

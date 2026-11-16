@@ -43,6 +43,7 @@ import { planToastFiles } from '@spider/herdr/setup/toast';
 import type { HerdrCliPorts } from '@spider/herdr/setup/cli';
 import type { CoreId, CoreIdentity, TerminalHandle, TerminalIdentity, TerminalAddress, MachineName, HcRunRequest } from '@spider/herdr';
 import type { PaneService } from '../../../herdr/src/panes/service.js';
+import type { AuxiliaryPaneActor } from '../../../herdr/src/jobs/placement.js';
 import { parseFeed } from '../../../herdr/assets/shared/feed.js';
 import { createSessionIpcClient } from '@spider/herdr/feed/ipc-client';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
@@ -220,13 +221,22 @@ export function createHostHerdrPorts(options: HostPortOptions): HostHerdrPorts {
   };
 }
 
-export async function openPresentedRun(input: {
+export async function openRunView(input: {
   owner: Owner; id: RunId; automatic: boolean; automaticEnabled: boolean; signal: AbortSignal; localCore: CoreId;
-  isCurrent(): boolean; connect(): Promise<Pick<PaneService, 'request' | 'stop'>>;
+  route: { kind: 'local'; panes: Pick<AuxiliaryPaneActor, 'acquire' | 'release'> }
+    | { kind: 'presented'; connect(): Promise<Pick<PaneService, 'request' | 'stop'>> };
+  isCurrent(): boolean;
 }): Promise<TerminalHandle | null> {
   const active = () => !input.signal.aborted && input.isCurrent();
   if (!active() || input.automatic && !input.automaticEnabled) return null;
-  const service = await input.connect();
+  if (input.route.kind === 'local') {
+    if (input.owner.terminal.coreId !== input.localCore) return null;
+    const reservation = await input.route.panes.acquire('subagent', input.id, input.owner, { signal: input.signal, timeoutMs: input.automatic ? 10000 : 30000,
+      automatic: input.automatic, ownerRelative: !input.automatic });
+    if (!active()) { if (reservation) await input.route.panes.release(reservation); return null; }
+    return reservation ? { address: reservation.viewer, coreId: input.localCore } : null;
+  }
+  const service = await input.route.connect();
   try {
     if (!active()) return null;
     const reply = await service.request({ version: 1, op: 'open-auxiliary', operationId: randomUUID(), sessionId: input.owner.sessionId,

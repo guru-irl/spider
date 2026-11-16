@@ -13,7 +13,7 @@ vi.mock('node:fs/promises', async original => { const actual = await original<ty
 const actualLstat = vi.mocked(lstat).getMockImplementation()!;
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { vi.mocked(lstat).mockImplementation(actualLstat); for (const close of cleanup.splice(0).reverse()) await close(); });
-async function fixture() {
+async function fixture(addressForm: 'short' | 'prefixed' = 'prefixed') {
   const base = join(paths.scratch('worktree', process.cwd()), 'b3', 'socket'); await mkdir(base, { recursive: true });
   const root = await mkdtemp(join(base, 's-')); cleanup.push(() => rm(root, { recursive: true, force: true }));
   const core = createServer(s => s.end()); const socket = join(root, 'c.sock');
@@ -25,7 +25,7 @@ async function fixture() {
   const starts: Promise<void>[] = [];
   cleanup.push(async () => { await Promise.all(starts); await running?.close(); });
   const launchHelper = vi.fn(async () => {
-    currentAddress = `core-local/t${++next}` as TerminalAddress;
+    currentAddress = `${addressForm === 'prefixed' ? 'core-local/' : ''}t${++next}` as TerminalAddress;
     starts.push(new Promise<void>((resolve, reject) => setTimeout(() => {
       void servePaneRequests(stateRoot, service).then(server => { running = server; resolve(); }, reject);
     }, 100)));
@@ -47,13 +47,44 @@ test('two clients share one service claim', async () => {
   expect((await stat(join(f.options.root, 'service.sock'))).mode & 0o777).toBe(0o600);
   await a.stop(); expect(f.service.stop).not.toHaveBeenCalled();
 });
+test.each(['short', 'prefixed'] as const)('%s helper address connects only on its answering core', async addressForm => {
+  const f = await fixture(addressForm);
+  const client = await connectPaneService(f.options);
+  expect((await client.request({ version: 1, op: 'snapshot', operationId: 'local-helper' })).kind).toBe('snapshot');
+  const existing = await connectPaneService({ ...f.options, startIfMissing: false });
+  expect((await existing.request({ version: 1, op: 'snapshot', operationId: 'same-helper' })).kind).toBe('snapshot');
+  expect(f.launchHelper).toHaveBeenCalledTimes(1);
+});
+test.each([
+  { form: 'short' as const, observed: 'core-local/t1' },
+  { form: 'prefixed' as const, observed: 't1' },
+])('$form claim accepts equivalent observed address $observed', async ({ form, observed }) => {
+  const f = await fixture(form);
+  const probe = f.probeHelper.getMockImplementation()!;
+  f.probeHelper.mockImplementation(async address => ({ ...await probe(address), address: observed as TerminalAddress }));
+  const client = await connectPaneService(f.options);
+  expect((await client.request({ version: 1, op: 'snapshot', operationId: 'mixed-form' })).kind).toBe('snapshot');
+});
+test.each([
+  { claimed: 'core-other/t1', observed: 't1' },
+  { claimed: 't1', observed: 'core-other/t1' },
+  { claimed: 'core-local/t1', observed: 'core-other/t1' },
+  { claimed: 'core-other/t1', observed: 'core-other/t1' },
+])('helper claim $claimed refuses observed address $observed on another core', async ({ claimed, observed }) => {
+  const f = await fixture();
+  const launch = f.launchHelper.getMockImplementation()!;
+  f.launchHelper.mockImplementationOnce(async () => { await launch(); return claimed as TerminalAddress; });
+  f.probeHelper.mockImplementation(async () => ({ address: observed as TerminalAddress, parent: null, labels: { 'spider.kind': 'pane-service' }, state: 'live', status: null, exitCode: null, reason: null, signal: null, finishedAt: null }));
+  await expect(connectPaneService(f.options)).rejects.toMatchObject({ code: 'service-identity' });
+  expect(f.launchHelper).toHaveBeenCalledTimes(1);
+});
 test('lost service launch reply does not relaunch', async () => {
   const f = await fixture(); f.launchHelper.mockImplementation(async () => { throw Error('lost'); });
   await expect(connectPaneService(f.options)).rejects.toThrow(); await expect(connectPaneService(f.options)).rejects.toThrow(/uncertain/);
   expect(f.launchHelper).toHaveBeenCalledTimes(1);
 });
-test('proved ended helper can restart once on the still-live selected core', async () => {
-  const f = await fixture(); await connectPaneService(f.options); await f.stopHelper();
+test.each(['short', 'prefixed'] as const)('proved ended %s helper can restart once on the still-live selected core', async addressForm => {
+  const f = await fixture(addressForm); await connectPaneService(f.options); await f.stopHelper();
   const [a, b] = await Promise.all([connectPaneService(f.options), connectPaneService(f.options)]);
   expect(f.launchHelper).toHaveBeenCalledTimes(2); expect(await a.request({ version: 1, op: 'snapshot', operationId: 's1' })).toEqual(await b.request({ version: 1, op: 'snapshot', operationId: 's2' }));
 });

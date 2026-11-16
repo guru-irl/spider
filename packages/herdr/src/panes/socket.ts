@@ -85,6 +85,7 @@ function claim(value: unknown): Claim {
 }
 export async function connectPaneService(options: PaneServiceConnectOptions): Promise<PaneService> {
   const { root, identity } = options;
+  const qualify = (address: TerminalAddress) => address.includes('/') ? address : `${identity.coreId}/${address}`;
   await safeRoot(root, false);
   if (!await isCoreAvailable({ HC_SOCKET: identity.socket })) throw new HerdrError('core-unavailable', 'Selected local core is unavailable');
   const file = join(root, 'service.json');
@@ -101,7 +102,8 @@ export async function connectPaneService(options: PaneServiceConnectOptions): Pr
     if (!row) return false;
     if (row.address) {
       const helper = await options.probeHelper(row.address);
-      if (helper.address !== row.address || !helper.address.startsWith(`${identity.coreId}/`) || helper.labels['spider.kind'] !== 'pane-service' || helper.parent !== null) throw new HerdrError('service-identity', 'Service helper identity does not match');
+      const address = qualify(helper.address);
+      if (address !== qualify(row.address) || !address.startsWith(`${identity.coreId}/`) || helper.labels['spider.kind'] !== 'pane-service' || helper.parent !== null) throw new HerdrError('service-identity', 'Service helper identity does not match');
       if (helper.state === 'finished') return false;
     }
     // The private claim and live helper establish ownership; a listener proves readiness.
@@ -141,7 +143,8 @@ export async function connectPaneService(options: PaneServiceConnectOptions): Pr
       if (!row.address || row.state !== 'acknowledged') throw new HerdrError('service-uncertain', 'Previous service launch is uncertain; refusing duplicate');
       if (!await isCoreAvailable({ HC_SOCKET: identity.socket })) throw new HerdrError('core-unavailable', 'Selected local core is unavailable');
       const helper = await options.probeHelper(row.address);
-      if (helper.address !== row.address || !helper.address.startsWith(`${identity.coreId}/`) || helper.labels['spider.kind'] !== 'pane-service' || helper.parent !== null || helper.state !== 'finished') throw new HerdrError('service-uncertain', 'Previous helper completion is unproved; refusing duplicate');
+      const address = qualify(helper.address);
+      if (address !== qualify(row.address) || !address.startsWith(`${identity.coreId}/`) || helper.labels['spider.kind'] !== 'pane-service' || helper.parent !== null || helper.state !== 'finished') throw new HerdrError('service-uncertain', 'Previous helper completion is unproved; refusing duplicate');
       const socketPath = join(root, 'service.sock');
       if (await safeSocket(socketPath)) {
         const before = await lstat(socketPath);

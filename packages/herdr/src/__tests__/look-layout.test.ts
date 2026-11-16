@@ -92,6 +92,14 @@ describe('generated glass layout', () => {
     expect(nodes(result).map(node => node.content?.mod).filter(Boolean)).not.toContain('workspace-status');
   });
 
+  it('selects a terminal menu only on releases that provide its mod', async () => {
+    const input = await source();
+    expect(buildGlassLayout(input, names)).not.toHaveProperty('terminal_menu');
+    for (const release of ['0.1.13', '0.1.16']) {
+      expect(buildGlassLayout(input, { ...names, release }).terminal_menu).toBe('spider-menu');
+    }
+  });
+
   it('matches the desired layout bytes', async () => {
     const result = JSON.stringify(buildGlassLayout(await source(), names), null, 2);
     const expected = await readFile(new URL('spider-glass.json', layouts), 'utf8');

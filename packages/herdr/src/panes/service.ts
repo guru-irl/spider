@@ -4,7 +4,8 @@ import type { AppClient, HcClient } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { paneSnapshot } from './snapshot.js';
 import { prunePaneHistory } from './retention.js';
-import { encodePaneServiceRequest, parsePaneInventoryPage, parsePaneServiceRequest } from './codec.js';
+import { encodePaneServiceRequest, parsePaneServiceRequest } from './codec.js';
+import { createPaneServiceInventory } from './inventory.js';
 import { confirmPresentationClose, parkPresentation, reconcilePendingClose, reconcilePresentationExit, samePaneTarget, type PaneLifecyclePorts } from './lifecycle.js';
 import type { AppPaneCapabilities, FolderMapPort, MachineChoice, PaneActionOutcome, PaneAgentRow, PaneInventoryPage, PanePlacementStore, PanePresentation, PaneServiceReply, PaneServiceRequest, PaneTerminalFacts } from './types.js';
 export interface PaneService {
@@ -47,6 +48,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   let refreshing: Promise<void> | null = null;
   let leaseTick = -Infinity;
   const abort = new AbortController();
+  const readInventory = createPaneServiceInventory({ root: ports.root, readPage: ports.inventory, clock: ports.clock });
   const lifecycle: PaneLifecyclePorts = { store: ports.store, hc: ports.hc, app: ports.app, validateTarget: ports.validateTarget, closeSession: ports.closeSession };
   async function live() {
     if (stopped) throw new HerdrError('service-stopped', 'Presentation service stopped');
@@ -69,23 +71,22 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     if (old) inventories.set(key, { ...old, complete: false, stale: true, rows: old.rows.map(row => ({ ...row, status: 'unreachable' })) });
   }
   async function refresh(machine: MachineChoice) {
-    if (machine.state !== 'connected' || !machine.coreId) { unreachable(machine.key); return; }
-    if ((retry.get(machine.key)?.after ?? 0) > ports.clock()) return;
+    const connected = machine.state === 'connected' && !!machine.coreId;
+    // Retry throttling applies only to connected machines; a disconnected one still reads its cache.
+    if (connected && (retry.get(machine.key)?.after ?? 0) > ports.clock()) return;
     const running = pending.get(machine.key); if (running) return running;
     const operation = (async () => {
       try {
-        const rows: PaneAgentRow[] = []; let cursor: string | null = null; let complete = true;
-        const cursors = new Set<string>();
-        do {
-          const page = parsePaneInventoryPage(await bounded(signal => ports.inventory(machine, signal, cursor)));
-          rows.push(...page.rows); complete &&= page.complete; cursor = page.next;
-          if (rows.length > 4096 || Buffer.byteLength(JSON.stringify(rows)) > 1024 * 1024 || cursor !== null && cursors.has(cursor)) throw new HerdrError('pane-inventory-limit', 'Private inventory exceeded its bound');
-          if (cursor !== null) cursors.add(cursor);
-        } while (cursor !== null);
-        inventories.set(machine.key, { rows, complete, stale: !complete }); retry.delete(machine.key);
+        // The adapter walks every page within its bounds, persists complete snapshots, and returns
+        // the cached rows marked unreachable when the machine is disconnected or the read fails.
+        const snapshot = await readInventory(machine, abort.signal);
+        if (!connected && snapshot.rows.length === 0 && inventories.has(machine.key)) unreachable(machine.key);
+        else inventories.set(machine.key, { rows: snapshot.rows, complete: snapshot.complete, stale: snapshot.stale });
+        if (connected && snapshot.stale) {
+          const failures = (retry.get(machine.key)?.failures ?? 0) + 1;
+          retry.set(machine.key, { failures, after: ports.clock() + Math.min(1000 * 2 ** Math.min(failures - 1, 4), 10000) });
+        } else retry.delete(machine.key);
       } catch {
-        const failures = (retry.get(machine.key)?.failures ?? 0) + 1;
-        retry.set(machine.key, { failures, after: ports.clock() + Math.min(1000 * 2 ** Math.min(failures - 1, 4), 10000) });
         unreachable(machine.key);
       } finally { pending.delete(machine.key); }
     })();

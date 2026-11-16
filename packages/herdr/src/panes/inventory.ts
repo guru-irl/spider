@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { PANE_ENDPOINT_BOOTSTRAP } from './bootstrap.js';
 import { join } from 'node:path';
 import { lstat } from 'node:fs/promises';
 import { HerdrError, parseJson } from '../client/parse.js';
@@ -94,7 +95,7 @@ export function createPaneServiceInventory(options: {
 }
 export interface PaneRemoteInventoryTransport {
   exec: HcArgvClient['exec'];
-  resolveMachine(machine: MachineChoice): Promise<{ on: string; coreId: CoreId; nodePath: string; endpointPath: string }>;
+  resolveMachine(machine: MachineChoice): Promise<{ on: string; coreId: CoreId; nodePath: string }>;
   buildDigest: string;
 }
 /** Setup owns installation; refresh only invokes the already installed endpoint. */
@@ -104,11 +105,11 @@ export function createRemotePaneInventoryReader(ports: PaneRemoteInventoryTransp
     const deadline = performance.now() + 5000;
     const destination = await ports.resolveMachine(machine);
     if (destination.coreId !== machine.coreId || !destination.on || !/^[a-f0-9]{64}$/.test(ports.buildDigest)) throw new HerdrError('pane-machine-mismatch', 'Machine or endpoint identity changed');
-    panePath(destination.nodePath); panePath(destination.endpointPath);
+    panePath(destination.nodePath);
     const call = async (request: Parameters<typeof encodeRemotePaneRequest>[0]) => {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) throw new HerdrError('pane-inventory-timeout', 'Inventory request timed out');
-      const bytes = await ports.exec(destination.on, [destination.nodePath, destination.endpointPath, '--json', encodeRemotePaneRequest(request)], { timeoutMs: remaining, maxBytes: PANE_REPLY_LIMIT });
+      const bytes = await ports.exec(destination.on, [destination.nodePath, '-e', PANE_ENDPOINT_BOOTSTRAP, ports.buildDigest, '1', encodeRemotePaneRequest(request)], { timeoutMs: remaining, maxBytes: PANE_REPLY_LIMIT });
       if (bytes.length > PANE_REPLY_LIMIT) throw new HerdrError('pane-inventory-too-large', 'Inventory reply exceeds its bound');
       return parseRemotePaneReply(parseJson(bytes));
     };
@@ -117,7 +118,7 @@ export function createRemotePaneInventoryReader(ports: PaneRemoteInventoryTransp
     const result = await call({ version: 1, op: 'list', cursor });
     if (result.op !== 'list') throw new HerdrError('invalid-pane-inventory', 'Expected an inventory page');
     const current = await ports.resolveMachine(machine);
-    if (current.coreId !== machine.coreId || current.on !== destination.on || current.nodePath !== destination.nodePath || current.endpointPath !== destination.endpointPath || performance.now() > deadline) throw new HerdrError('pane-machine-mismatch', 'Machine identity changed during inventory');
+    if (current.coreId !== machine.coreId || current.on !== destination.on || current.nodePath !== destination.nodePath || performance.now() > deadline) throw new HerdrError('pane-machine-mismatch', 'Machine identity changed during inventory');
     return result.page;
   };
 }

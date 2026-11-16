@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { PANE_ENDPOINT_BOOTSTRAP } from '../../../herdr/src/panes/bootstrap.js';
 import { lstat, realpath, stat } from 'node:fs/promises';
 import { isAbsolute, posix, relative, resolve, sep, win32 } from 'node:path';
 import type { Db } from '@spider/db-core';
@@ -161,7 +162,7 @@ export function createPaneFolderPorts(ports: PaneFolderTransport): PaneFolderMap
 }
 export interface PaneFolderRemoteTransport {
   exec: HcArgvClient['exec']; buildDigest: string; timeoutMs?: number;
-  resolveMachine(machine: PaneFolderMachine): Promise<{ on: string; coreId: CoreId; nodePath: string; endpointPath: string }>;
+  resolveMachine(machine: PaneFolderMachine): Promise<{ on: string; coreId: CoreId; nodePath: string }>;
 }
 /** Invoke only the installed endpoint, with a build handshake and core checks around the read. */
 export function createPaneFolderRemoteRequest(ports: PaneFolderRemoteTransport): PaneFolderTransport['request'] {
@@ -179,18 +180,18 @@ export function createPaneFolderRemoteRequest(ports: PaneFolderRemoteTransport):
     };
     const destination = await bounded(() => ports.resolveMachine(machine));
     if (destination.coreId !== machine.coreId || !destination.on || !/^[a-f0-9]{64}$/.test(ports.buildDigest)) throw new HerdrError('pane-machine-mismatch', 'Machine identity changed');
-    panePath(destination.nodePath); panePath(destination.endpointPath);
+    panePath(destination.nodePath);
     const invoke = async (value: RemotePaneRequest) => {
       const remaining = Math.floor(deadline - performance.now());
       if (remaining <= 0) throw new HerdrError('pane-folder-unavailable', 'Folder request timed out');
-      const bytes = await bounded(() => ports.exec(destination.on, [destination.nodePath, destination.endpointPath, '--json', encodeRemotePaneRequest(value)], { timeoutMs: remaining, maxBytes: PANE_REPLY_LIMIT }));
+      const bytes = await bounded(() => ports.exec(destination.on, [destination.nodePath, '-e', PANE_ENDPOINT_BOOTSTRAP, ports.buildDigest, '1', encodeRemotePaneRequest(value)], { timeoutMs: remaining, maxBytes: PANE_REPLY_LIMIT }));
       if (bytes.length > PANE_REPLY_LIMIT) throw new HerdrError('invalid-pane-folder', 'Folder reply is too large');
       return parseRemotePaneReply(parseJson(bytes));
     };
     const hello = await invoke({ version: 1, op: 'handshake', protocol: 1, buildDigest: ports.buildDigest });
     if (hello.op !== 'handshake' || hello.protocol !== 1 || hello.buildDigest !== ports.buildDigest) throw new HerdrError('pane-build-mismatch', 'Pane endpoint build or protocol differs');
     const reply = await invoke(request), current = await bounded(() => ports.resolveMachine(machine));
-    if (current.coreId !== machine.coreId || current.on !== destination.on || current.nodePath !== destination.nodePath || current.endpointPath !== destination.endpointPath || performance.now() > deadline) throw new HerdrError('pane-machine-mismatch', 'Machine identity changed during folder read');
+    if (current.coreId !== machine.coreId || current.on !== destination.on || current.nodePath !== destination.nodePath || performance.now() > deadline) throw new HerdrError('pane-machine-mismatch', 'Machine identity changed during folder read');
     return reply;
   };
 }

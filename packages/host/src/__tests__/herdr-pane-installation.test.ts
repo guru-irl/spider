@@ -7,6 +7,8 @@ import { join, resolve } from 'node:path';
 import { afterEach, expect, test } from 'vitest';
 import { PANE_ENDPOINT_BOOTSTRAP, stagePaneEndpointInstallation, recordPaneInstallation, probeLocalPaneEndpoint } from '../herdr/pane-installation.js';
 import { inspectPaneInstallation } from '../herdr/pane-doctor.js';
+import { createRemotePaneInventoryReader } from '../../../herdr/src/panes/inventory.js';
+import { createPaneFolderRemoteRequest } from '../herdr/pane-folders.js';
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 async function fixture(protocol = 1, reportedDigest?: string) {
@@ -119,6 +121,21 @@ test('doctor gives an executable permission repair for a umask 002 deployment', 
   expect(repaired.status, repaired.stderr).toBe(0);
   await stagePaneEndpointInstallation(f.root, deployed);
   expect(await inspectPaneInstallation('local', probe)).toEqual({ failures: [] });
+});
+
+test.each(['inventory', 'folder'] as const)('the %s reader checks installation before importing endpoint code', async reader => {
+  const f = await fixture(), endpoint = join(f.packageRoot, 'dist/herdr/pane-endpoint.mjs');
+  await writeFile(endpoint, `import{writeFileSync as mark}from'node:fs';mark(${JSON.stringify(f.marker)},'imported');\n` + await readFile(endpoint, 'utf8'));
+  await rm(f.registry);
+  const machine = { key: 'box-1.invalid', alias: 'box-1.invalid', label: 'box-1.invalid', coreId: 'core-1' as never, machineId: null, state: 'connected' as const };
+  const ports = { buildDigest: f.digest, resolveMachine: async () => ({ on: 'box-1.invalid', coreId: machine.coreId, nodePath: process.execPath, endpointPath: endpoint }), exec: async (_on: string, argv: readonly string[]) => {
+    const result = spawnSync(argv[0], argv.slice(1), { env: { ...process.env, SPIDER_GLOBAL_ROOT: f.root }, encoding: 'buffer', timeout: 5000 });
+    if (result.status !== 0) throw new Error('admission refused');
+    return result.stdout;
+  } };
+  if (reader === 'inventory') await expect(createRemotePaneInventoryReader(ports)(machine, null)).rejects.toThrow();
+  else await expect(createPaneFolderRemoteRequest(ports)(machine, { version: 1, op: 'locate-folder', cwd: '/home/example' })).rejects.toThrow();
+  await expect(readFile(f.marker)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 test('source refuses a factory build mismatch before any request effect', async () => {

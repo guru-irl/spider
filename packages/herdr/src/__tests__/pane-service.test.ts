@@ -446,7 +446,7 @@ test('another mutation proceeds while a cold owner inventory refresh is pending'
     started(); await new Promise<void>(resolve => { release = resolve; });
     return { version: 1 as const, rows: [row] as never, next: null, complete: true };
   });
-  f.ports.dispatch = vi.fn((request, beforeLaunch, inventory) => request.op === 'move'
+  f.ports.dispatch = vi.fn<PaneServicePorts['dispatch']>((request, beforeLaunch, inventory) => request.op === 'move'
     ? Promise.resolve({ status: 'complete', reason: 'moved', presentation: f.presentation })
     : ownerDispatch(request, beforeLaunch, inventory));
   vi.useFakeTimers(); const service = createPaneService(f.ports);
@@ -467,7 +467,7 @@ test('a cold owner lookup cannot launch after its deadline while another mutatio
   const entered = new Promise<void>(resolve => { started = resolve; });
   f.ports.store = { read: async () => state, update: async change => state = change(state) };
   f.ports.inventory = vi.fn(async () => ({ version: 1 as const, rows: [row] as never, next: null, complete: true }));
-  f.ports.dispatch = vi.fn(async (request, beforeLaunch, inventory) => {
+  f.ports.dispatch = vi.fn<PaneServicePorts['dispatch']>(async (request, beforeLaunch, inventory) => {
     if (request.op !== 'move') return ownerDispatch(request, beforeLaunch, inventory);
     started(); await new Promise<void>(resolve => { release = resolve; });
     return { status: 'complete', reason: 'moved', presentation: f.presentation };

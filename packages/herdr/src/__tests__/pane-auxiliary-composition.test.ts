@@ -5,6 +5,7 @@ import { expect, test, vi } from 'vitest';
 import { createClientFixture } from './testutil.js';
 import { HerdrError } from '../client/parse.js';
 import { createPresentedAuxiliaryPanes } from '../panes/auxiliary.js';
+import { createAuxiliaryPanes } from '../jobs/placement.js';
 import { connectPaneService, servePaneRequests } from '../panes/socket.js';
 import { registerHerdrViewers } from '../viewers/register.js';
 import * as hostPorts from '../../../host/src/herdr/ports.js';
@@ -43,6 +44,7 @@ async function fixture(cols = 120, rows = 40) {
     async tabTerminals(target) { return [...(order.get(target.tab) ?? [])]; },
     async tabPanes(target) { return (order.get(target.tab) ?? []).map(address => ({ terminal: address, pane: layout.get(address)!.pane })); },
     async tabIndex(target) { return tabs.indexOf(target.tab); },
+    async tabSpace(tab) { return tabs.includes(tab) ? placement.space : null; },
     async focusedPane() { return focused; },
     async awaitPane(address, target) {
       timeline.push(`placement:${address}`); await hold?.();
@@ -76,9 +78,10 @@ async function fixture(cols = 120, rows = 40) {
   const hc = {
     identity: async () => ({ coreId: 'mac-core' as CoreId, socket: '/fixture/mac.sock', sessionNamespace: 'fixture' }),
     run: vi.fn(async (request: HcRunRequest) => {
-      const address = `waiting-${++sequence}` as TerminalAddress;
-      terminals.set(address, terminal(address, { ...request.labels }));
-      timeline.push(`waiting:${address}:${request.labels['spider.session']}`);
+      const kind = request.labels['spider.kind'] === 'subagent-viewer' ? 'viewer' : 'waiting';
+      const address = `${kind}-${++sequence}` as TerminalAddress;
+      terminals.set(address, { ...terminal(address, { ...request.labels }), parent: request.parent ?? null });
+      timeline.push(`${kind}:${address}:${request.labels['spider.session']}`);
       return { address, coreId: 'mac-core' as CoreId };
     }),
     get: async (address: TerminalAddress) => { const found = terminals.get(address); if (!found) throw new HerdrError('not_found', 'No terminal'); return found; },
@@ -86,6 +89,8 @@ async function fixture(cols = 120, rows = 40) {
       const found = terminals.get(address)!; const next = { ...found.labels };
       for (const [key, value] of Object.entries(labels)) { if (value === null) delete next[key]; else next[key] = value; }
       terminals.set(address, { ...found, labels: next });
+      if (found.labels['spider.kind'] === 'subagent-viewer' && labels['herdr.space'] && labels['herdr.tab'])
+        insert(address, { space: labels['herdr.space'], tab: labels['herdr.tab'], pane: `pane-${address}` } as OwnerPlacement);
     },
     kill: async (address: TerminalAddress) => { killed.push(address); terminals.delete(address); },
     rm: async (address: TerminalAddress) => { terminals.delete(address); },
@@ -111,10 +116,31 @@ async function fixture(cols = 120, rows = 40) {
     });
     actors.push(actor); return actor;
   };
-  return { files, owners, displays, layout, terminals, tabs, lookups, killed, timeline, launches, stopped, hc, makeActor,
+  return { files, owners, displays, placement, layout, terminals, tabs, lookups, killed, timeline, launches, stopped, app, hc, insert, makeActor,
     holdAcknowledgement(wait: (() => Promise<void>) | undefined) { hold = wait; },
     async close() { for (const actor of actors) await actor.dispose(); await files.close(); },
   };
+}
+
+function nativeOwner(f: Awaited<ReturnType<typeof fixture>>): Owner {
+  const address = f.displays[0];
+  const owner: Owner = { sessionId: 'native-session' as Owner['sessionId'], generation: 'native-generation' as Owner['generation'], name: 'Local', cwd: '/home/example', sessionFile: null,
+    terminal: { coreId: 'mac-core' as CoreId, terminalId: 'owner-display-1' as Owner['terminal']['terminalId'], address, socket: '/fixture/mac.sock', sessionNamespace: 'fixture' } };
+  f.terminals.set(address, { ...f.terminals.get(address)!, labels: { 'spider.kind': 'session' } });
+  return owner;
+}
+function nativeActor(f: Awaited<ReturnType<typeof fixture>>) {
+  const viewers = new Map<RunId, TerminalAddress>();
+  const launcher = vi.fn(async (id: RunId, owner: Owner) => {
+    const existing = viewers.get(id); if (existing && f.terminals.has(existing)) return existing;
+    const handle = await f.hc.run({ argv: ['native-view'], cwd: owner.cwd, parent: owner.terminal.address,
+      background: true, noNotify: true, outliveParent: true, labels: { 'spider.kind': 'subagent-viewer', 'spider.run': id, 'spider.session': owner.sessionId,
+        'spider.owner-core': owner.terminal.coreId, 'spider.owner-terminal': owner.terminal.terminalId } });
+    viewers.set(id, handle.address); return handle.address;
+  });
+  const panes = createAuxiliaryPanes({ hc: f.hc, app: f.app, placementRoot: f.files.root, appIdentity: 'mac-app', limit: 1,
+    automaticSubagentPanes: true, clock: Date.now, subagentViewer: launcher, discardSubagentViewer: async (_id, _owner, address) => { await f.hc.kill(address); await f.hc.rm(address); } });
+  return { panes, launcher };
 }
 
 test('two box owners sharing a Mac tab reserve capacity once', async () => {
@@ -183,6 +209,106 @@ test('an automatic open in a full tab starts no placeholder process', async () =
   } finally { await f.close(); }
 });
 
+test('a native explicit viewer uses an adjacent tab when a presented proxy fills the owner tab', async () => {
+  const f = await fixture(), owner = nativeOwner(f), presented = f.makeActor(), native = nativeActor(f);
+  try {
+    const proxy = await presented.openPresented('subagent', run1, f.owners[1], { timeoutMs: 2000, automatic: true });
+    const view = await hostPorts.openRunView({ owner, id: run2, automatic: false, automaticEnabled: true, signal: new AbortController().signal,
+      localCore: 'mac-core' as CoreId, isCurrent: () => true, route: { kind: 'local', panes: native.panes } });
+    expect(f.layout.get(proxy!.viewer)).toMatchObject({ space: 'mac-space', tab: 'mac-tab' });
+    expect(f.layout.get(view!.address)).toMatchObject({ space: 'mac-space', tab: 'adjacent-1' });
+    expect(f.tabs).toEqual(['mac-tab', 'adjacent-1']);
+    expect(native.launcher).toHaveBeenCalledTimes(1);
+  } finally { await native.panes.dispose(); await f.close(); }
+});
+
+test('a native automatic viewer starts nothing when a presented proxy fills the owner tab', async () => {
+  const f = await fixture(), owner = nativeOwner(f), presented = f.makeActor(), native = nativeActor(f);
+  try {
+    const proxy = await presented.openPresented('subagent', run1, f.owners[1], { timeoutMs: 2000, automatic: true });
+    vi.mocked(f.hc.run).mockClear();
+    expect(await native.panes.acquire('subagent', run2, owner, { timeoutMs: 2000, automatic: true })).toBeNull();
+    expect(await hostPorts.openRunView({ owner, id: run2, automatic: true, automaticEnabled: true, signal: new AbortController().signal,
+      localCore: 'mac-core' as CoreId, isCurrent: () => true, route: { kind: 'local', panes: native.panes } })).toBeNull();
+    expect(native.launcher).not.toHaveBeenCalled();
+    expect(f.hc.run).not.toHaveBeenCalled();
+    expect(f.layout.get(proxy!.viewer)).toMatchObject({ tab: 'mac-tab' });
+  } finally { await native.panes.dispose(); await f.close(); }
+});
+
+test.each(['park', 'release'] as const)('a native mount open moves and removes the same viewer via %s without a proxy', async action => {
+  const f = await fixture(), owner = nativeOwner(f), native = nativeActor(f);
+  f.tabs.push('other-tab');
+  const connect = vi.fn(async () => ({
+    request: async () => {
+      const handle = await f.hc.run({ argv: ['waiting-display'], cwd: null, parent: null, background: true, noNotify: true, outliveParent: true,
+        labels: { 'spider.kind': 'pane-proxy', 'spider.session': owner.sessionId } });
+      f.insert(handle.address, { ...f.placement, pane: `pane-${handle.address}` as OwnerPlacement['pane'] });
+      const target = { coreId: owner.terminal.coreId, terminalId: 'target-1', address: 'mac-core/target-1', createdMs: 1, identityLabels: {}, alias: null, machineId: null,
+        kind: 'subagent', sessionId: owner.sessionId, generation: owner.generation, homeEpoch: null, runId: run1, consoleId: null, name: null, cwd: null } as PaneTarget;
+      const presentation = { id: 'view-1', revision: 1, mode: 'proxy', role: 'subagent', target, proxy: handle.address,
+        slot: f.placement, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null } as PanePresentation;
+      return { version: 1 as const, kind: 'outcome' as const, outcome: { status: 'complete' as const, reason: 'view-presented', presentation } };
+    }, stop: async () => {},
+  }));
+  const route = { kind: 'local' as const, panes: native.panes, connect };
+  const input = { owner, id: run1, automatic: false, automaticEnabled: true, signal: new AbortController().signal,
+    localCore: 'mac-core' as CoreId, isCurrent: () => true, route };
+  try {
+    const opened = await hostPorts.openRunView(input);
+    expect(opened).not.toBeNull();
+    const moved = await native.panes.moveRun(run1, owner, { kind: 'tab', tab: 'other-tab' as never }, { timeoutMs: 2000 });
+    expect(moved?.viewer).toBe(opened!.address);
+    expect(f.layout.get(opened!.address)?.tab).toBe('other-tab');
+    expect(native.launcher).toHaveBeenCalledTimes(1);
+    expect(connect).not.toHaveBeenCalled();
+    expect([...f.terminals.values()].filter(terminal => terminal.labels['spider.kind'] === 'pane-proxy' && terminal.labels['spider.session'] === owner.sessionId)).toEqual([]);
+    if (action === 'park') await native.panes.park(run1); else await native.panes.release(moved!);
+    expect(f.layout.has(opened!.address)).toBe(false);
+    expect(f.terminals.has(opened!.address)).toBe(false);
+    expect(native.launcher).toHaveBeenCalledTimes(1);
+  } finally { await native.panes.dispose(); await f.close(); }
+});
+
+test('a native run with a mismatched core never connects to the presentation service', async () => {
+  const f = await fixture(), owner = nativeOwner(f), native = nativeActor(f);
+  const connect = vi.fn(async () => ({ request: async () => ({ version: 1 as const, kind: 'outcome' as const,
+    outcome: { status: 'pending' as const, reason: 'view-unplaced', presentation: null } }), stop: async () => {} }));
+  const route = { kind: 'local' as const, panes: native.panes, connect };
+  const input = { owner, id: run1, automatic: false, automaticEnabled: true, signal: new AbortController().signal,
+    localCore: 'other-core' as CoreId, isCurrent: () => true, route };
+  try {
+    expect(await hostPorts.openRunView(input)).toBeNull();
+    expect(connect).not.toHaveBeenCalled();
+    expect(native.launcher).not.toHaveBeenCalled();
+  } finally { await native.panes.dispose(); await f.close(); }
+});
+
+test('native registration uses the same local viewer for automatic and explicit opens', async () => {
+  const f = await fixture(), owner = nativeOwner(f), native = nativeActor(f);
+  const hooks = new Map<string, () => Promise<void>>();
+  const connect = vi.fn(async () => ({ request: async () => ({ version: 1 as const, kind: 'outcome' as const,
+    outcome: { status: 'pending' as const, reason: 'view-unplaced', presentation: null } }), stop: async () => {} }));
+  const route = { kind: 'local' as const, panes: native.panes, connect };
+  const registration = registerHerdrViewers({ on: (name: string, handler: () => Promise<void>) => { hooks.set(name, handler); } } as never, {
+    owner: () => owner, hc: f.hc, panes: native.panes, viewerLauncher: native.launcher, viewerExecutable: '/fixture/viewer', feedRoot: '/fixture', ipcDescriptor: () => null,
+    presentedView: (id, current, request) => hostPorts.openRunView({ owner: current, id, ...request, automaticEnabled: true, localCore: 'mac-core' as CoreId,
+      isCurrent: () => true, route }),
+    ownedRunEvents: { list: async () => [run1], subscribe: () => () => {} },
+  });
+  try {
+    await hooks.get('session_start')!();
+    await vi.waitFor(() => expect(native.launcher).toHaveBeenCalledTimes(1));
+    const visible = [...f.layout.keys()].find(address => f.terminals.get(address)?.labels['spider.run'] === run1);
+    expect(visible).toBeDefined();
+    expect((await registration.peek(run1))?.address).toBe(visible);
+    expect(vi.mocked(f.hc.run).mock.calls.filter(([request]) => request.labels['spider.kind'] === 'subagent-viewer')).toHaveLength(1);
+    expect(connect).not.toHaveBeenCalled();
+    await native.panes.park(run1);
+    expect(f.layout.has(visible!)).toBe(false);
+  } finally { await registration.dispose(); await native.panes.dispose(); await f.close(); }
+});
+
 test('explicit open uses the adjacent tab when the owner tab is full', async () => {
   const f = await fixture(), panes = f.makeActor();
   try {
@@ -215,9 +341,9 @@ test('viewer registration sends automatic and explicit opens to the presentation
   };
   const hooks = new Map<string, () => Promise<void>>();
   const panes = { reconcile: async () => {}, acquire: async () => { throw new Error('Legacy viewer placement is forbidden'); }, release: async () => {}, park: async () => {}, dispose: async () => {} };
-  const invoke = (id: RunId, owner: Owner, request: { automatic: boolean; signal: AbortSignal }) => hostPorts.openPresentedRun({
+  const invoke = (id: RunId, owner: Owner, request: { automatic: boolean; signal: AbortSignal }) => hostPorts.openRunView({
     owner, id, ...request, automaticEnabled: true, localCore: 'mac-core' as CoreId, isCurrent: () => true,
-    connect: async () => { const client = await connectPaneService(connection); return { request: client.request, stop: async () => { closed++; await client.stop(); } }; },
+    route: { kind: 'presented', connect: async () => { const client = await connectPaneService(connection); return { request: client.request, stop: async () => { closed++; await client.stop(); } }; } },
   });
   const registration = registerHerdrViewers({ on: (name: string, handler: () => Promise<void>) => { hooks.set(name, handler); } } as never, {
     owner: () => f.owners[0], hc: {} as HcClient, panes, presentedView: invoke, viewerLauncher: async () => { throw new Error('Source view cannot launch here'); },
@@ -225,7 +351,7 @@ test('viewer registration sends automatic and explicit opens to the presentation
     ownedRunEvents: { list: async () => [run1], subscribe: () => () => {} },
   });
   try {
-    expect(typeof hostPorts.openPresentedRun).toBe('function');
+    expect(typeof hostPorts.openRunView).toBe('function');
     await hooks.get('session_start')!();
     await vi.waitFor(() => expect(calls).toHaveLength(1));
     expect(calls[0]).toMatchObject({ op: 'open-auxiliary', mode: 'automatic', sessionId: f.owners[0].sessionId, generation: f.owners[0].generation, view: { kind: 'subagent', runId: run1 } });
@@ -244,23 +370,24 @@ test('presented viewer requests refuse disabled automatic opens and invalid repl
     slot: { space: 'mac-space' as never, tab: 'mac-tab' as never, pane: 'pane-1' as never }, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null };
   let current = presentation, closed = 0;
   const connect = vi.fn(async () => ({ request: async () => ({ version: 1 as const, kind: 'outcome' as const, outcome: { status: 'complete' as const, reason: 'view-presented', presentation: current } }), stop: async () => { closed++; } }));
-  const request = { owner, id: run1, automatic: true, automaticEnabled: false, signal, localCore: 'mac-core' as CoreId, isCurrent: () => true, connect };
+  const request = { owner, id: run1, automatic: true, automaticEnabled: false, signal, localCore: 'mac-core' as CoreId, isCurrent: () => true,
+    route: { kind: 'presented' as const, connect } };
   try {
-    expect(typeof hostPorts.openPresentedRun).toBe('function');
-    expect(await hostPorts.openPresentedRun(request)).toBeNull(); expect(connect).not.toHaveBeenCalled();
-    expect(await hostPorts.openPresentedRun({ ...request, automatic: false })).toEqual({ address: 'mac-core/display-1', coreId: 'mac-core' });
+    expect(typeof hostPorts.openRunView).toBe('function');
+    expect(await hostPorts.openRunView(request)).toBeNull(); expect(connect).not.toHaveBeenCalled();
+    expect(await hostPorts.openRunView({ ...request, automatic: false })).toEqual({ address: 'mac-core/display-1', coreId: 'mac-core' });
     current = { ...presentation, target: { ...target, generation: 'successor' as never } };
-    expect(await hostPorts.openPresentedRun({ ...request, automatic: false })).toBeNull();
+    expect(await hostPorts.openRunView({ ...request, automatic: false })).toBeNull();
     current = { ...presentation, proxy: 'source-core-1/display-1' as never };
-    expect(await hostPorts.openPresentedRun({ ...request, automatic: false })).toBeNull();
+    expect(await hostPorts.openRunView({ ...request, automatic: false })).toBeNull();
     expect(closed).toBe(3);
     current = presentation;
     const abort = new AbortController(); let entered!: () => void, release!: () => void, cancelledClosed = 0;
     const started = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
-    const inFlight = hostPorts.openPresentedRun({ ...request, automatic: false, signal: abort.signal, connect: async () => ({
+    const inFlight = hostPorts.openRunView({ ...request, automatic: false, signal: abort.signal, route: { kind: 'presented', connect: async () => ({
       request: async () => { entered(); await gate; return { version: 1 as const, kind: 'outcome' as const, outcome: { status: 'complete' as const, reason: 'view-presented', presentation: current } }; },
       stop: async () => { cancelledClosed++; },
-    }) });
+    }) } });
     await started; abort.abort(); release();
     expect(await inFlight).toBeNull(); expect(cancelledClosed).toBe(1);
   } finally { await f.close(); }

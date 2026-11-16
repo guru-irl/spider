@@ -361,7 +361,6 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
         if (current.space !== s.placement.space || current.tab !== s.placement.tab) throw new HerdrError('owner-tab-changed', 'Owner moved before pane acknowledgement');
         for (const ended of displayed(g)) if (ended.removedTerminal) await removeSlot(ended);
         const ownerRelative = explicit && (s.kind === 'subagent' || s.kind === 'console') && displayOptions.ownerRelative;
-        if (ownerRelative && !s.presentationOwner) return await showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName], changed);
         let occupancy = await occupied(s);
         if (ownerRelative) {
           return occupancy >= limit ? await ownerTabFallback(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName], changed)

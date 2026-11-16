@@ -104,7 +104,9 @@ test('the usage command exposes its real shared handler without opening a browse
 test('the additive terminal keys emit only CSI-u and preserve Ctrl-V image paste and fullscreen search', async () => {
   const patch = JSON.parse(await readFile(new URL('../../assets/keys.json', import.meta.url), 'utf8'));
   const terminal = { 'ctrl-v': 'terminal.paste_image', ...patch.terminal };
-  expect(Object.keys(patch)).toEqual(['terminal']);
+  expect(Object.keys(patch)).toEqual(['global', 'layout:spider-glass', 'terminal']);
+  expect(patch.global).toEqual({ 'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } } });
+  expect(patch['layout:spider-glass']).toEqual({ 'cmd-shift-e': 'spider-pane.park' });
   expect(Object.keys(patch.terminal)).toEqual(['cmd-shift-a', 'cmd-shift-o', 'cmd-shift-u', 'cmd-shift-m', 'cmd-shift-k']);
   const h = shortcutFixture(); registerHerdrShortcuts(h.pi, h.views);
   for (const key of ['cmd-shift-a', 'cmd-shift-o', 'cmd-shift-u', 'cmd-shift-m', 'cmd-shift-k']) {

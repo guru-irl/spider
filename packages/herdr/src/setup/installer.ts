@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:pat
 import { HerdrLabelContract } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
-import { digest, snapshot, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles, rejectSymlinks, mergeTheme, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, type ManagedPart, type FileAction } from './backup.js';
+import { digest, snapshot, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeySections, type ManagedPart, type FileAction } from './backup.js';
 import { probeLaunch, type DoctorReport } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
 import { shellQuote } from '../sessions/resume.js';
@@ -52,7 +52,7 @@ export interface SetupRequest<T extends HerdrConfig = FullHerdrConfig> {
   adoptExistingSpaces?: readonly string[];
 }
 function plannedAppSettings(request: SetupRequest) {
-  return { path: join(request.config.app.home, 'settings.json'), planned: { theme: 'spider-glass', layout: 'spider-glass' } };
+  return { path: join(request.config.app.home, 'settings.json'), planned: { theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false as const } } };
 }
 export interface InstallFile {
   path: string;
@@ -61,8 +61,10 @@ export interface InstallFile {
   collision?: 'clone' | 'key';
   mode?: number;
   terminalKeys?: Readonly<Record<string, string>>;
+  keys?: KeySections;
   managed?: ManagedPart;
   snapshotOnly?: boolean;
+  updateAfterCutover?: boolean;
   copyFrom?: string;
   replaceBaseline?: boolean;
   refusal?: { code: string; message: string };
@@ -288,23 +290,42 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     ];
     const files: InstallFile[] = [];
     for (const plan of plans) {
-      if (!plan.terminalKeys) {
+      if (!plan.terminalKeys && !plan.keys) {
         files.push(plan);
         continue;
       }
       const current = await snapshot(plan.path);
       if (current.hash !== plan.expected)
         throw new HerdrError('concurrent-settings-edit', `Changed keys after preflight: ${plan.path}`);
+      if (current.bytes === null) throw new HerdrError('keys-defaults-missing', missingKeyMapMessage);
       const prior = journal.entries.find(e => e.path === plan.path);
-      const owned = prior?.terminalKeys ?? {};
-      const managed: ManagedPart = { kind: 'json', section: 'terminal', fields: Object.keys(plan.terminalKeys) };
       let refusal: InstallFile['refusal'];
-      try { mergeTerminalKeys(current.bytes, plan.terminalKeys, owned, false); }
-      catch (error) {
-        if (!(error instanceof HerdrError) || error.code !== 'key-binding-conflict') throw error;
-        refusal = { code: error.code, message: error.message };
+      if (plan.keys) {
+        const desired: Record<string, Readonly<Record<string, KeyBinding>>> = { ...plan.keys };
+        if (plan.terminalKeys) {
+          for (const [key, value] of Object.entries(plan.terminalKeys))
+            if (desired.terminal?.[key] !== undefined && desired.terminal[key] !== value)
+              throw new HerdrError('key-binding-conflict', `Inconsistent terminal key: ${key}`);
+          desired.terminal = { ...plan.terminalKeys, ...desired.terminal };
+        }
+        const owned: KeySections = { ...prior?.keys, ...(prior?.terminalKeys || prior?.keys?.terminal ? { terminal: { ...prior?.terminalKeys, ...prior?.keys?.terminal } } : {}) };
+        const managed: ManagedPart = { kind: 'keys', sections: Object.fromEntries(Object.entries(desired).map(([section, bindings]) => [section, Object.keys(bindings)])) };
+        try { mergeKeys(current.bytes, desired, owned, false); }
+        catch (error) {
+          if (!(error instanceof HerdrError) || error.code !== 'key-binding-conflict') throw error;
+          refusal = { code: error.code, message: error.message };
+        }
+        files.push({ ...plan, keys: desired, managed, refusal, bytes: mergeKeys(current.bytes, desired, owned, true) });
+      } else {
+        const owned = prior?.terminalKeys ?? {};
+        const managed: ManagedPart = { kind: 'json', section: 'terminal', fields: Object.keys(plan.terminalKeys!) };
+        try { mergeTerminalKeys(current.bytes, plan.terminalKeys!, owned, false); }
+        catch (error) {
+          if (!(error instanceof HerdrError) || error.code !== 'key-binding-conflict') throw error;
+          refusal = { code: error.code, message: error.message };
+        }
+        files.push({ ...plan, managed, refusal, bytes: mergeTerminalKeys(current.bytes, plan.terminalKeys!, owned, true) });
       }
-      files.push({ ...plan, managed, refusal, bytes: mergeTerminalKeys(current.bytes, plan.terminalKeys, owned, true) });
     }
     const layoutPath = join(request.config.app.home, 'layouts/spider-glass.json');
     const layoutPlan = files.find(file => file.path === layoutPath);
@@ -328,11 +349,11 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           throw new HerdrError('missing-mod-id', `No validated mod props for installed copy: ${modId}`);
       }
     const fileActions = await validateFiles(files, journal, request.overwriteUnownedKeys, plannedAppSettings(request), { replaceChanged: request.replaceChanged, planOnly: request.dryRun });
-    const selectionReplacement = fileActions.some(action => action.action === 'replace' && action.path === plannedAppSettings(request).path && files.some(file => file.path === action.path && file.snapshotOnly));
+    const selectionReplacement = fileActions.some(action => action.action === 'replace' && action.path === plannedAppSettings(request).path && files.some(file => file.path === action.path && (file.snapshotOnly || file.updateAfterCutover)));
     needsAppSelection ||= selectionReplacement;
     if (selectionReplacement) {
       const file = files.find(file => file.path === plannedAppSettings(request).path)!;
-      file.bytes = Buffer.from(JSON.stringify(plannedAppSettings(request).planned));
+      if (file.snapshotOnly) file.bytes = Buffer.from(JSON.stringify(plannedAppSettings(request).planned));
     }
     if (request.dryRun) {
       const cutover = [...(cutoverNeeded ? preflight.cutoverActions ?? ['Recheck recorded sessions and open only closed selections'] : []), ...(needsAppSelection ? ['Select the installed layout and theme'] : [])];
@@ -403,6 +424,12 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     journal.retiredTerminals = retiredTerminals;
     await prepareBackups(request.journalRoot, files, journal);
     const writes = await applyFiles(files, journal);
+    const appFiles = files.filter(file => file.updateAfterCutover);
+    for (const file of appFiles) {
+      if ((await snapshot(file.path)).hash !== digest(file.bytes)) throw new HerdrError('concurrent-settings-edit', `Changed after sound compare-write: ${file.path}`);
+      journal.entries.find(entry => entry.path === file.path)!.soundApplied = true;
+    }
+    if (appFiles.length) await saveJournal(request.journalRoot, journal);
     for (const { runtime, before } of runtimePlans) {
       const installed = await readRuntime(parts, runtime);
       const current = installed === null ? null : digest(installed);
@@ -427,8 +454,12 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           }
         }
         finally {
-          for (const file of files.filter(file => file.snapshotOnly)) {
+          for (const file of files.filter(file => file.snapshotOnly || file.updateAfterCutover)) {
             const current = await snapshot(file.path);
+            if (file.updateAfterCutover) {
+              const sound: ManagedPart = { kind: 'json-paths', paths: ['sounds.enabled'] };
+              if (managedProjection(current.bytes, sound) !== managedProjection(file.bytes, sound)) throw new HerdrError('concurrent-settings-edit', `Sound changed during app selection: ${file.path}`);
+            }
             const entry = journal.entries.find(entry => entry.path === file.path)!;
             entry.after = current.hash ?? digest(Buffer.alloc(0));
             if (file.managed) entry.managedAfter = managedProjection(current.bytes, file.managed);

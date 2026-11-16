@@ -176,7 +176,10 @@ test('production keeps unrelated edits in all shared settings files', async () =
   expect(JSON.parse(await readFile(join(f.h.directories.agent, 'settings.json'), 'utf8')).unrelated).toBe('edited');
   expect(await readFile(f.request.config.shellRc, 'utf8')).toContain('export USER_CHOICE=kept');
   expect(await readFile(f.request.config.core.config, 'utf8')).toContain('value = 42');
-  expect(JSON.parse(await readFile(join(f.h.directories.app, 'keys.json'), 'utf8')).global).toEqual({ 'ctrl-q': 'user.action' });
+  expect(JSON.parse(await readFile(join(f.h.directories.app, 'keys.json'), 'utf8')).global).toEqual({
+    'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } },
+    'cmd-shift-w': 'pane.close', 'ctrl-q': 'user.action',
+  });
   expect(f.bootstraps).toHaveLength(1);
 });
 
@@ -210,7 +213,7 @@ test('app selections are backed up before commands and restored by rollback', as
   const settings = join(f.h.directories.app, 'settings.json');
   const original = await readFile(settings);
   await setupHerdr(f.request, f.parts);
-  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.25, theme: 'spider-glass', layout: 'spider-glass' });
+  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.25, theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false } });
   const entry = (await readJournal(f.request.journalRoot)).entries.find(e => e.path === settings)!;
   expect(await readFile(entry.backup!)).toEqual(original);
   await rollbackHerdr(f.request, f.parts);
@@ -421,7 +424,7 @@ test.each([false, true])('replacement re-applies app selections without repeatin
   f.parts.cutover = async () => { throw new Error('Selection repair must not repeat session setup'); };
   f.parts.reconcileCutover = f.parts.cutover;
   expect(await setupHerdr({ ...f.request, replaceChanged: true }, f.parts).then(result => result.doctor.failures)).toEqual([]);
-  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.5, theme: 'spider-glass', layout: 'spider-glass' });
+  expect(JSON.parse(await readFile(settings, 'utf8'))).toEqual({ zoom: 1.5, theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false } });
   const entry = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === settings)!;
   expect(await readFile(entry.backup!, 'utf8')).toBe(choice);
   expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);

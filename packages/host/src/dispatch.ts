@@ -4,7 +4,7 @@ import type { InjectionSnapshot } from "./injection-snapshot";
 
 export type SpiderAction =
   | "search" | "remember" | "recall" | "exec" | "exec_file" | "batch"
-  | "index" | "fetch" | "run" | "todo" | "skill" | "import" | "message" | "control" | "kill" | "loop" | "schedule";
+  | "index" | "fetch" | "run" | "todo" | "skill" | "import" | "message" | "notify" | "control" | "kill" | "loop" | "schedule";
 
 export interface SpiderArgs { action: SpiderAction; [k: string]: unknown; }
 
@@ -19,6 +19,7 @@ export interface ActionCtx {
   globalDb: Db;              // global DB (registry, message_mirror, model_stats, insights)
   project: ProjectInfo;      // { projectKey, realPath, gitCommonDir?, repoKey?, dbPath, name? }
   sessionId: string;         // pi native session id, verbatim
+  toolCallId?: string;       // pi's call identity, never supplied as a tool parameter
   cwd: string;
   injectionCwd?: string;       // host cwd before action-context binding resolution; doctor mirrors the hook
   injectionSnapshot?: InjectionSnapshot; // captured before action context can migrate a broken DB
@@ -57,7 +58,7 @@ export type ActionHandler = (args: SpiderArgs, ctx: ActionCtx) => Promise<unknow
 
 const VALID: ReadonlySet<string> = new Set<SpiderAction>([
   "search", "remember", "recall", "exec", "exec_file", "batch",
-  "index", "fetch", "run", "todo", "skill", "import", "message", "control", "kill", "loop", "schedule",
+  "index", "fetch", "run", "todo", "skill", "import", "message", "notify", "control", "kill", "loop", "schedule",
 ]);
 
 const handlers = new Map<string, { handler: ActionHandler; activationOwned: boolean }>();

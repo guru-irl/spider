@@ -252,6 +252,83 @@ it('client preserves actual steering refusals and dispatches view and run opener
     expect(await client.request({ op: 'openJob', jobId: 'foreign-job' as JobId, generation: owner.generation })).toMatchObject({ ok: false, code: 'not-found' });
   } finally { client.dispose(); await endpoint.dispose(); }
 });
+it('session opener authenticates and uses only its owning terminal', async () => {
+  const openSession = vi.fn(async () => owner.terminal.address);
+  const endpoint = await startSessionEndpoint(owner, { ...ports(), openSession }, root);
+  const client = createSessionIpcClient(endpoint.descriptor);
+  const destination = { space: 's1', tab: 'tb1' } as never;
+  try {
+    expect(await client.request({ op: 'openSession', generation: owner.generation, destination })).toEqual({ ok: true, op: 'openSession', terminal: 't1' });
+    expect(openSession).toHaveBeenCalledWith(destination, expect.any(AbortSignal));
+    expect(await client.request({ op: 'openSession', generation: 'old' as never, destination })).toMatchObject({ ok: false, code: 'wrong-generation' });
+    const request = { op: 'openSession', generation: owner.generation, destination, terminal: 'foreign' };
+    expect(await rawIpc(endpoint.descriptor.address, await envelope(endpoint.descriptor, request))).toMatchObject({ ok: false, code: 'unauthorized' });
+    expect(await rawIpc(endpoint.descriptor.address, { v: 1, capability: '0'.repeat(64), request: { op: 'openSession', generation: owner.generation, destination } })).toMatchObject({ ok: false, code: 'unauthorized' });
+    expect(openSession).toHaveBeenCalledTimes(1);
+  } finally { client.dispose(); await endpoint.dispose(); }
+});
+
+it('session opener refuses an acknowledgement for a different terminal', async () => {
+  const endpoint = await startSessionEndpoint(owner, { ...ports(), openSession: async () => 'foreign' as Owner['terminal']['address'] }, root);
+  const client = createSessionIpcClient(endpoint.descriptor);
+  try {
+    expect(await client.request({ op: 'openSession', generation: owner.generation, destination: null })).toMatchObject({ ok: false, code: 'unavailable' });
+  } finally { client.dispose(); await endpoint.dispose(); }
+});
+
+it('session opener waits beyond ten seconds for its acknowledgement', async () => {
+  let entered!: () => void;
+  const started = new Promise<'entered'>(resolve => { entered = () => resolve('entered'); });
+  const endpoint = await startSessionEndpoint(owner, { ...ports(), openSession: async () => {
+    entered(); await new Promise<void>(resolve => setTimeout(resolve, 11_000)); return owner.terminal.address;
+  } }, root);
+  const client = createSessionIpcClient(endpoint.descriptor);
+  vi.useFakeTimers();
+  const socketTimers = new WeakMap<Socket, ReturnType<typeof setTimeout>>();
+  const timerSpy = vi.spyOn(Socket.prototype, 'setTimeout').mockImplementation(function (this: Socket, ms: number, callback?: () => void) {
+    const old = socketTimers.get(this); if (old) clearTimeout(old);
+    if (ms && callback) socketTimers.set(this, setTimeout(callback, ms));
+    return this;
+  });
+  try {
+    const settled = client.request({ op: 'openSession', generation: owner.generation, destination: null })
+      .then(reply => ({ reply }), error => ({ error }));
+    expect(await Promise.race([started, settled.then(() => 'replied')])).toBe('entered');
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(await settled).toEqual({ reply: { ok: true, op: 'openSession', terminal: 't1' } });
+  } finally { client.dispose(); timerSpy.mockRestore(); vi.useRealTimers(); await endpoint.dispose(); }
+});
+
+it.each([
+  ['machine-unreachable', 'box-1.invalid is unreachable'],
+  ['no-space-on-machine', 'No space on box-1.invalid to reopen it in'],
+])('session opener reports the remote reason for %s without exposing private errors', async (code, message) => {
+  const remoteOwner: Owner = { ...owner, terminal: { ...owner.terminal, address: 'box-1.invalid/t1' as Owner['terminal']['address'] } };
+  const endpoint = await startSessionEndpoint(remoteOwner, { ...ports(), currentOwner: () => remoteOwner,
+    openSession: async () => { throw new HerdrError(code, 'private /home/secret'); } }, root);
+  const client = createSessionIpcClient(endpoint.descriptor);
+  try {
+    expect(await client.request({ op: 'openSession', generation: remoteOwner.generation, destination: null })).toEqual({ ok: false, code: 'unavailable', message });
+  } finally { client.dispose(); await endpoint.dispose(); }
+});
+
+it('session opener rejects a changed owner while placement is pending', async () => {
+  let current: Owner | null = owner, entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const endpoint = await startSessionEndpoint(owner, { ...ports(), currentOwner: () => current, openSession: async () => {
+    entered(); await gate; return owner.terminal.address;
+  } }, root);
+  const client = createSessionIpcClient(endpoint.descriptor);
+  try {
+    const opening = client.request({ op: 'openSession', generation: owner.generation, destination: null });
+    const stage = await Promise.race([started.then(() => 'entered'), opening.then(() => 'replied')]);
+    expect(stage).toBe('entered');
+    current = null; release();
+    expect(await opening).toMatchObject({ ok: false, code: 'wrong-generation' });
+  } finally { release(); client.dispose(); await endpoint.dispose(); }
+});
+
 it('opens only a journal-owned job through its injected observer opener', async () => {
   const p = ports(); const openJob = vi.fn(p.openJob); p.openJob = openJob;
   const endpoint = await startSessionEndpoint(owner, p, root); const client = createSessionIpcClient(endpoint.descriptor);

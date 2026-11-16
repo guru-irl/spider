@@ -29,6 +29,8 @@ async function fixture(nodeVersion?: string) {
   const base = resolve('.spider/scratch/fx3'); await mkdir(base, { recursive: true });
   const root = await mkdtemp(join(base, 'r-')); roots.push(root);
   await mkdir(join(root, 'global'), { mode: 0o700 });
+  await mkdir(join(root, 'app'));
+  await writeFile(join(root, 'app', 'keys.json'), JSON.stringify({ global: { 'cmd-p': 'mod.open:picker', 'cmd-n': 'space.new', 'cmd-shift-w': 'pane.close' }, terminal: { 'ctrl-v': 'terminal.paste_image' } }));
   vi.stubEnv('SPIDER_GLOBAL_ROOT', join(root, 'global'));
   const on = 'destination.invalid' as MachineName;
   const owner = { sessionId: 'session', generation: 'generation', terminal: { address: 'agent', coreId: 'core', terminalId: 'agent', socket: join(root, 'unused.sock'), sessionNamespace: 'isolated' }, cwd: root, name: null, sessionFile: null } as Owner;

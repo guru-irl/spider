@@ -4,7 +4,7 @@ import { readPlacementRepairs, writePlacementRepair } from '../jobs/placement-re
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import { mkdir, readFile, writeFile, symlink } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
 import { HERDR_LABELS, HERDR_KINDS, type MachineName, panelIpcArgv, type IpcDescriptor, type SessionIpcRequest } from '../contracts.js';
 import { createHerdrHarness, type HerdrHarness } from './testutil.js';
@@ -519,6 +519,17 @@ test('installed mod copies get unique validated modIds equal to their directory 
   expect(g.cutovers()).toBe(0);
 });
 
+test('a standalone picker receives validated installed-mod properties', async () => {
+  const f = await fixture(), preflight = f.parts.preflight;
+  const directory = join(f.request.config.app.home, 'mods/spider-picker');
+  f.parts.preflight = async request => { const result = await preflight(request); return { ...result, mods: [...result.mods, { directory }] }; };
+  await setupHerdr(f.request, f.parts);
+  const props = JSON.parse(await readFile(join(directory, 'props.json'), 'utf8'));
+  expect(props.modId).toBe('spider-picker');
+  for (const name of ['feedRoot', 'cliPath', 'nodePath', 'appBinary', 'configPath']) expect(isAbsolute(props[name]), name).toBe(true);
+  expect(props.labelContract).toMatchObject({ version: 1 });
+});
+
 test('the IPC subcommand consumes exactly the canonical full panel argv and returns one canonical reply line', async () => {
   const f = await fixture();
   const output: string[] = [];
@@ -676,4 +687,76 @@ test('doctor does not inspect app or core placement when no repair record exists
   const f = await fixture();
   const report = await doctorHerdr(f.request, { ...f.doctorParts, placementRepairInspection: async () => { throw new Error('No repair needs inspection'); } });
   expect(report.failures.filter(failure => failure.item === 'pane-repairs')).toEqual([]);
+});
+
+const sectionKeys = {
+  global: { 'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } } },
+  'layout:spider-glass': { 'cmd-shift-e': 'spider-pane.park' },
+} as const;
+const legacyTerminalKeys = { 'cmd-shift-a': 'send:\u001b[97;6u' };
+
+test('setup refuses absent native keys before any other installation changes', async () => {
+  const f = await fixture(), path = join(f.request.config.app.home, 'keys.json');
+  await writeFile(path, JSON.stringify({ global: { 'cmd-shift-w': 'pane.close' }, terminal: { 'ctrl-v': 'terminal.paste_image' } }));
+  await fs.unlink(path);
+  const originalSettings = await readFile(f.settings);
+  const original = f.parts.installFiles;
+  f.parts.installFiles = async (r, c) => [...await original(r, c), { path, expected: null, bytes: Buffer.alloc(0), terminalKeys: legacyTerminalKeys, keys: sectionKeys }];
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'keys-defaults-missing', message: 'Open Herdr once so it creates its default key map, then rerun setup.' });
+  expect(await realFs.stat(path).then(() => true, () => false)).toBe(false);
+  expect(await readFile(f.settings)).toEqual(originalSettings);
+  expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+  expect(f.cutovers()).toBe(0);
+});
+
+test('setup composes legacy and section keys in one write and records ownership', async () => {
+  const f = await fixture(), path = join(f.request.config.app.home, 'keys.json');
+  await writeFile(path, JSON.stringify({ global: { 'cmd-p': 'mod.open:picker', 'cmd-n': 'space.new', 'cmd-shift-w': 'pane.close' }, terminal: { 'ctrl-v': 'terminal.paste_image' } }));
+  const original = f.parts.installFiles;
+  f.parts.installFiles = async (r, c) => [...await original(r, c), { path, expected: hash(await readFile(path)), bytes: Buffer.alloc(0), terminalKeys: legacyTerminalKeys, keys: sectionKeys }];
+  const first = await setupHerdr(f.request, f.parts);
+  expect(first.writes.filter(p => p === path)).toEqual([path]);
+  const keys = JSON.parse(await readFile(path, 'utf8'));
+  expect(keys.global).toEqual({ 'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } }, 'cmd-shift-w': 'pane.close' });
+  expect(keys.terminal).toEqual({ 'ctrl-v': 'terminal.paste_image', 'cmd-shift-a': legacyTerminalKeys['cmd-shift-a'] });
+  expect(keys['layout:spider-glass']['cmd-shift-e']).toBe('spider-pane.park');
+  const saved = await readJournal(f.request.journalRoot);
+  expect(saved.entries.find(entry => entry.path === path)).toMatchObject({ keys: { ...sectionKeys, terminal: legacyTerminalKeys }, managed: { kind: 'keys' } });
+  expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
+});
+
+test.each([
+  { global: { 'cmd-p': 'foreign.picker' } },
+  { global: { 'cmd-shift-e': 'foreign.action' } },
+  { terminal: { 'cmd-shift-e': 'foreign.action' } },
+  { global: { 'cmd-shift-w': 'terminal.park' } },
+])('setup refuses a conflicting key before backup or cutover', async initial => {
+  const f = await fixture(), path = join(f.request.config.app.home, 'keys.json');
+  await writeFile(path, JSON.stringify(initial));
+  const original = f.parts.installFiles;
+  f.parts.installFiles = async (r, c) => [...await original(r, c), { path, expected: hash(await readFile(path)), bytes: Buffer.alloc(0), terminalKeys: legacyTerminalKeys, keys: sectionKeys }];
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'key-binding-conflict' });
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(initial);
+  expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+  expect(f.cutovers()).toBe(0);
+});
+
+test('setup migrates a journal with terminalKeys only and retains its earlier baseline', async () => {
+  const f = await fixture(), path = join(f.request.config.app.home, 'keys.json');
+  await writeFile(path, JSON.stringify({ global: { 'cmd-shift-w': 'pane.close' }, terminal: { 'ctrl-v': 'terminal.paste_image', 'cmd-shift-a': 'previous.action' } }));
+  const original = f.parts.installFiles;
+  f.parts.installFiles = async (r, c) => [...await original(r, c), { path, expected: hash(await readFile(path)), bytes: Buffer.alloc(0), terminalKeys: legacyTerminalKeys }];
+  await setupHerdr({ ...f.request, overwriteUnownedKeys: true }, f.parts);
+  const legacy = await readJournal(f.request.journalRoot), entry = legacy.entries.find(item => item.path === path)!;
+  delete entry.managed; delete entry.managedAfter;
+  await (await import('../setup/backup.js')).saveJournal(f.request.journalRoot, legacy);
+  const current = JSON.parse(await readFile(path, 'utf8'));
+  current.global['cmd-p'] = 'mod.open:picker';
+  current.global['cmd-n'] = 'space.new';
+  await writeFile(path, JSON.stringify(current));
+  f.parts.installFiles = async (r, c) => [...await original(r, c), { path, expected: hash(await readFile(path)), bytes: Buffer.alloc(0), terminalKeys: legacyTerminalKeys, keys: sectionKeys }];
+  await setupHerdr(f.request, f.parts);
+  expect((await setupHerdr(f.request, f.parts)).writes).toEqual([]);
+  await rollbackHerdr(f.request, f.parts);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ global: { 'cmd-shift-w': 'pane.close', 'cmd-p': 'mod.open:picker', 'cmd-n': 'space.new' }, terminal: { 'ctrl-v': 'terminal.paste_image', 'cmd-shift-a': 'previous.action' } });
 });

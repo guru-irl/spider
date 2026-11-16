@@ -22,7 +22,7 @@ function crossingFeed(id: string, period = 0, threshold = '80'): SessionFeed {
   return f;
 }
 
-function sessionNotice(feed: SessionFeed, kind: Exclude<HerdrNotification['kind'], 'budget'>, id: string, createdAt: number): HerdrNotification {
+function sessionNotice(feed: SessionFeed, kind: Extract<HerdrNotification, { kind: 'subagent-result' | 'escalation' | 'job-result' }>['kind'], id: string, createdAt: number): HerdrNotification {
   return {id,kind,createdAt,scope:'session',sessionId:feed.sessionId,ownerAddress:feed.owner.terminal.address,title:kind,body:'Committed event',
     action:{kind:'focus-owner',sessionId:feed.sessionId,address:feed.owner.terminal.address}};
 }

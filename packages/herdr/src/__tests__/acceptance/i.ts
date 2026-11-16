@@ -10,6 +10,7 @@ import type { HerdrHarness } from '../testutil.js';
 import { parseFeed } from '../../../assets/shared/feed.js';
 import { projectSpiderPanel } from '../../../assets/mods/spider/data.js';
 import { checkSpiderPanel } from '../panel-app-check.mjs';
+import { rewriteImportPrefix } from '../../../../host/src/herdr/ports.js';
 
 export async function acceptanceI(h: HerdrHarness): Promise<void> {
   assert(h.owner, 'The shared harness must be started');
@@ -93,11 +94,16 @@ export async function runPanelScene<T = string[]>(body: string, fixture: Session
   const root = await mkdtemp(join(scratch, 'scene-'));
   try {
     const mod = join(root, 'mod'); await mkdir(join(mod, 'shared'), { recursive: true });
-    for (const name of ['main.js', 'data.js']) {
+    for (const name of ['main.js', 'data.js', 'sound.js']) {
       const source = await readFile(new URL(`../../../assets/mods/spider/${name}`, import.meta.url), 'utf8');
       await writeFile(join(mod, name), name === 'main.js' ? transform(source) : source);
     }
-    await writeFile(join(mod, 'shared/feed.js'), await readFile(new URL('../../../assets/shared/feed.js', import.meta.url), 'utf8'));
+    for (const name of ['feed.js', 'look.js', 'navigation.js']) {
+      const source = await readFile(new URL(`../../../assets/shared/${name}`, import.meta.url), 'utf8');
+      await writeFile(join(mod, 'shared', name), rewriteImportPrefix(source, '../agents/children.js', '../spider-children.js').source);
+    }
+    const children = await readFile(new URL('../../../assets/agents/children.js', import.meta.url), 'utf8');
+    await writeFile(join(mod, 'spider-children.js'), rewriteImportPrefix(children, './shared/', './shared/').source);
     const script = `import vm from 'node:vm'; import fs from 'node:fs/promises'; import path from 'node:path';
       import { createUiModules, createHostModule, initView, strictInit } from ${JSON.stringify(new URL('../strict-mod-api.mjs', import.meta.url).href)};
       const ui = createUiModules();
@@ -118,11 +124,13 @@ export async function runPanelScene<T = string[]>(body: string, fixture: Session
         }
         return {ok:true,json:async()=>({version:1,entries,changes,errors})};
       } });
-      const tasks = [], timers = [], commands = [], notifications = [], persisted = new Map();
+      const tasks = [], timers = [], commands = [], notifications = [], sounds = [], persisted = new Map();
       const props = { feedRoot: '/fixture/feeds', cliPath: '/fixture/cli.mjs', nodePath: '/fixture/node', configPath: '/fixture/config.json', modId: 'spider-test' };
       const files = [${JSON.stringify(JSON.stringify(fixture))}];
       const api = { props: () => props, theme: () => ({foreground: '#fff', dim: '#aaa', background: '#161618', hover: '#242426', selected: '#2a2a2c'}),
         exec: async () => ({code: 0, stdout: JSON.stringify({feeds: files, errors: []}), stderr: ''}),
+        layout: () => ({ id: 'spider', content: { mod: props.modId } }), playSound: name => sounds.push(name),
+        focused: () => null, agents: () => [], terminals: () => [], machines: () => [],
         panes: () => [], spaces: () => globalThis.sceneSpaces ?? [], readTextFile: async () => null, watchFolder: async () => new Promise(() => {}), run: (name,args) => { commands.push({name,args}); },
         shared: k => persisted.get(k), setShared: (k,v) => persisted.set(k,v), notify: n => notifications.push(n), nextCommand: async () => new Promise(() => {}) };
       const cx = {spawn: f => {const p=f(cx);p.cancel=()=>{};tasks.push(p);return p;},notify:()=>{},focus_handle:()=>({focus(){}}),timer:{every:(n,f)=>{const timer={n,f,cancelled:false,cancel(){this.cancelled=true;}};timers.push(timer);return timer;}}};
@@ -135,7 +143,7 @@ export async function runPanelScene<T = string[]>(body: string, fixture: Session
       const m=await load(${JSON.stringify(mod + '/main.js')});
       await m.link((s,m)=>s==='herdr'?fake(s,createHostModule(new Proxy(readerHost,{get(target,key){return key==='exec'?target.exec:api[key];}}))):ui[s]?fake(s,ui[s]):load(path.resolve(path.dirname(m.identifier),s)));
       await m.evaluate();const panel=strictInit(new m.namespace.default());
-      async function drain(){await Promise.all(tasks.filter(p=>p!==panel.watchTask&&p!==panel.commandTask));}
+      async function drain(){await Promise.all(tasks.filter(p=>p!==panel.watchTask&&p!==panel.commandTask&&p!==panel.refreshTask));}
       function texts(el){return typeof el==='string'?[el]:el?.items?el.items.flatMap(texts):[];}
       function byId(el,id){if(el?.styles?.id?.[0]===id)return el;for(const child of el?.items||[]){const found=byId(child,id);if(found)return found;}}
       ${body}

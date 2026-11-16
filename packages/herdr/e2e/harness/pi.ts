@@ -158,7 +158,7 @@ export interface RpcDriver extends Common { mode: 'rpc'; rpc(command: Record<str
 export interface OneShotDriver extends Common { mode: 'print' | 'json'; exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>; output(): Promise<string> }
 export interface InteractiveDriver extends Common { mode: 'interactive'; terminal: string; prompt(text: string): Promise<void>; key(bytes: string): Promise<void>; draft(): Promise<string>; rawOutput(): Promise<Buffer> }
 export type PiDriver = RpcDriver | OneShotDriver | InteractiveDriver;
-export interface LaunchOptions { mode: PiMode; cwd: string; args?: readonly string[]; prompt?: string; extraEnv?: Record<string, string>; label?: string; terminalSide?: string }
+export interface LaunchOptions { mode: PiMode; side?: 'local' | 'dest'; cwd: string; args?: readonly string[]; prompt?: string; extraEnv?: Record<string, string>; label?: string; terminalSide?: string }
 
 let launches = 0;
 export async function launchPi(pi: PiEnvironment, ledger: LedgerHandle, options: LaunchOptions, cores?: Cores): Promise<PiDriver> {
@@ -220,8 +220,8 @@ function rpcDriver(proc: OwnedProcess, common: Omit<Common, 'close'>): RpcDriver
 }
 
 async function launchInteractive(pi: PiEnvironment, ledger: LedgerHandle, cores: Cores, cwd: OwnedPath, options: LaunchOptions, n: number): Promise<InteractiveDriver> {
-  const side = options.terminalSide ?? 'local';
-  if (!ledger.read().cores.some(core => core.side === side && core.coreId === cores.local.coreId)) {
+  const terminalSide = options.terminalSide ?? 'local';
+  if (!ledger.read().cores.some(core => core.side === terminalSide && core.coreId === cores.local.coreId)) {
     throw new HarnessError('terminal-core-unowned', 'the selected core does not match the owned ledger side');
   }
   const socketPath = ownedPath(pi.root, join(pi.root, `b${n}.s`)), rawLog = ownedPath(pi.root, join(pi.root, 'logs', `tui-${n}.raw`));
@@ -231,7 +231,8 @@ async function launchInteractive(pi: PiEnvironment, ledger: LedgerHandle, cores:
   const envFile = ownedPath(pi.root, join(pi.root, `env-${n}.json`));
   await writeFile(envFile, JSON.stringify({ ...pi.env, ...options.extraEnv }), { mode: 0o600 });
   const argv = ['run', '--bg', '--no-notify', '--outlive-parent', '--keep', '--json', '--cwd', cwd, '--', '/usr/bin/python3', fileURLToPath(new URL('./pty-broker.py', import.meta.url)), '--socket', socketPath, '--log', rawLog, '--env-file', envFile, '--', pi.launcher, ...(options.args ?? [])];
-  const result = await cores.hc(argv, 'local', { cwd });
+  const side = options.side ?? 'local';
+  const result = await cores.hc(argv, side, { cwd });
   const address = (result.json as { address?: unknown; terminal?: { address?: unknown } } | null);
   const terminal = typeof address?.address === 'string' ? address.address : typeof address?.terminal?.address === 'string' ? address.terminal.address : null;
   if (result.exitCode !== 0 || !terminal) throw new HarnessError('hc-run-failed', result.stderr || result.stdout);
@@ -273,9 +274,9 @@ async function launchInteractive(pi: PiEnvironment, ledger: LedgerHandle, cores:
     rawOutput: () => readFile(rawLog),
     async close() {
       await stopProcessGroup(identity, 'interactive pi', makeDeadline(10_000));
-      const state = await cores.hc(['get', terminal, '--json']);
-      if ((state.json as { state?: string } | null)?.state === 'live') await cores.hc(['kill', terminal, '--json']);
-      await cores.hc(['rm', terminal, '--json']);
+      const state = await cores.hc(['get', terminal, '--json'], side);
+      if ((state.json as { state?: string } | null)?.state === 'live') await cores.hc(['kill', terminal, '--json'], side);
+      await cores.hc(['rm', terminal, '--json'], side);
       await waitFor('interactive pi and broker have exited', () => ({ pi: identityAlive(identity), broker: identityAlive(brokerIdentity) }), state => !state.pi && !state.broker, makeDeadline(5000), { reconcileMs: 50 });
     },
   };

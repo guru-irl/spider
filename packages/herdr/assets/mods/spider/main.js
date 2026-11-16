@@ -3,8 +3,11 @@
 import { View, div, svg } from 'gpui-kit';
 import { v_flex, h_flex, Button } from 'gpui-base';
 import { exec, run, theme, watchFolder, panes, spaces, shared, setShared, props } from 'herdr';
+import * as herdr from 'herdr';
 import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from './shared/feed.js';
-import { panelSessionState, projectSpacePanel, projectNotifications, pruneDismissed, projectMemoryReview, projectSessionView, selectedSpace, notificationText, panelConfigProblem, describePanelProblems, describeFeedError, doctorCommand } from './data.js';
+import { panelSessionState, projectSpacePanel, projectNotifications, pruneDismissed, readDismissed, notificationBadge, panelIsShown, projectMemoryReview, projectSessionView, selectedSpace, notificationText, panelConfigProblem, soundPreference, describePanelProblems, describeFeedError, doctorCommand } from './data.js';
+import { projectNavigation } from './shared/navigation.js';
+import { observeNotificationSounds } from './sound.js';
 
 // Neutral chrome: colour only marks failure (danger) and needs-you (amber).
 const HAIRLINE = '#2f2f32', FAINT = '#232325', RAIL = '#3a3a3d', TRACK = '#242426', HATCH = '#55555a', TODAY = '#8a8a8e', INK = '#e6e6e8', DANGER = '#ff6b6b', AMBER = '#f2c063';
@@ -17,17 +20,19 @@ export default class SpiderPanel extends View {
   // Herdr passes {} to init; the layout's props come only from props().
   init(_props, cx) {
     const config = props();
-    this.config = config; this.feeds = []; this.errors = []; this.expanded = new Set(); this.closed = false;
+    this.config = config; this.feeds = []; this.errors = []; this.expanded = new Set(); this.pendingActions = new Set(); this.closed = false;
+    this.coreId = ''; this.machineIds = new Map();
     // What the body shows: the home list, the Memories view, or one session's view.
     this.view = { kind: 'home' };
     this.handle = cx.focus_handle();
     // A panel without usable paths starts nothing; render() explains how to fix it.
     this.configProblem = panelConfigProblem(config);
-    if (this.configProblem) return;
+    if (this.configProblem || herdr.checking?.()) return;
+    this.soundMountedAt = Date.now(); this.soundObserved = false; this.soundWasHidden = false; this.soundSnapshotReady = false;
     this.reader = createFeedReader(config, { exec, fetch: (url, options) => fetch(url, options), timer: cx.timer });
     this.dismissKey = `spider.dismissed/${config.modId}`;
-    try { const stored = shared(this.dismissKey); this.dismissed = new Set(Array.isArray(stored) ? stored.filter(token => typeof token === 'string') : []); }
-    catch { this.dismissed = new Set(); }
+    try { this.dismissed = readDismissed(shared(this.dismissKey), Date.now()); }
+    catch { this.dismissed = new Map(); }
     this.savedDismissed = JSON.stringify([...this.dismissed]);
     this.actions ||= {
       openRun: async (feed,runId) => (await this.ipc(feed,{op:'openRun',runId})).viewer,
@@ -44,6 +49,7 @@ export default class SpiderPanel extends View {
       let space = null; try { space = selectedSpace(spaces())?.id ?? null; } catch { space = null; }
       const state = [...this.feeds.map(feed => panelSessionState(feed, Date.now())), space, Math.floor(Date.now() / 60000)].join(',');
       if (state !== this.clockState) { this.clockState = state; cx.notify(); }
+      this.syncDismissed(); this.updateBadge(); this.observeSounds(cx);
     });
     cx.spawn(async cx => {
       await this.reload(cx);
@@ -52,8 +58,20 @@ export default class SpiderPanel extends View {
         this.startWatch(cx);
         // A second snapshot closes the gap between the first read and arming the watch.
         await this.reload(cx);
-
+        this.startCommands(cx);
       } catch (error) { this.unavailable('Feed watch', error.message, cx); }
+    });
+  }
+  startCommands(cx) {
+    if (typeof herdr.nextCommand !== 'function' || this.closed) return;
+    this.refreshTask = cx.spawn(async current => {
+      try { while (!this.closed) {
+        const command = await herdr.nextCommand(); if (this.closed) return;
+        if (command === 'refresh') {
+          await this.reload(current);
+          try { await this.refreshIdentity(current, null); } catch (error) { this.unavailable('Notification action', error.message, current); }
+        }
+      } } catch { /* Closing the panel ends its command stream. */ }
     });
   }
   startWatch(cx) {
@@ -61,22 +79,60 @@ export default class SpiderPanel extends View {
     this.watching = true; this.watchFailed = false;
     this.watchTask = cx.spawn(async cx => {
       try {
-        let next = watchFolder(this.config.feedRoot + '/sessions'); next.catch(() => {});
+        let next = watchFolder(this.config.feedRoot + '/sessions'); this.watch = next; next.catch(() => {});
         while (!this.closed) {
-          await next; if (this.closed) break;
-          next = watchFolder(this.config.feedRoot + '/sessions'); next.catch(() => {});
+          await next; next.cancel?.(); if (this.watch === next) this.watch = null;
+          if (this.closed) break;
+          next = watchFolder(this.config.feedRoot + '/sessions'); this.watch = next; next.catch(() => {});
           if (Date.now() - this.reloadAt >= 1000 && !this.reloading) await this.reload(cx);
           else this.pendingReload = true;
         }
       } catch (error) { this.watchFailed = true; this.unavailable('Feed watch', error.message, cx); }
-      finally { this.watching = false; }
+      finally { this.watch?.cancel?.(); this.watch = null; this.watching = false; }
     });
   }
-  async close() { this.closed = true; this.timer?.cancel(); this.watchTask?.cancel(); await this.reader?.close(); }
+  async close() { this.closed = true; this.timer?.cancel(); this.watch?.cancel?.(); this.watchTask?.cancel(); this.refreshTask?.cancel?.(); await this.reader?.close(); }
   /** Hide one notification occurrence; saved in Herdr's shared state so a reload keeps it hidden. */
   dismiss(item, cx) {
-    for (const token of item.tokens) { this.dismissed.delete(token); this.dismissed.add(token); }
-    this.saveDismissed(); cx.notify();
+    this.syncDismissed();
+    for (const token of item.tokens) { this.dismissed.delete(token); this.dismissed.set(token, item.expiresAt); }
+    this.dismissed = pruneDismissed(this.dismissed, projectNotifications(this.feeds, Date.now()), Date.now());
+    this.saveDismissed(); this.updateBadge(); cx.notify();
+  }
+  syncDismissed() {
+    try {
+      const saved = shared(this.dismissKey), serialized = JSON.stringify(saved ?? []);
+      if (serialized !== this.savedDismissed) { this.dismissed = readDismissed(saved, Date.now()); this.savedDismissed = serialized; }
+    } catch { /* Keep this instance's copy when shared storage is unavailable. */ }
+  }
+  updateBadge() {
+    if (this.closed || herdr.checking?.() || typeof herdr.setBadge !== 'function') return;
+    const count = notificationBadge(projectNotifications(this.feeds, Date.now()), this.dismissed), badge = count ? String(count) : null;
+    if (badge !== this.lastBadge) { this.lastBadge = badge; try { herdr.setBadge(badge); } catch { /* Unsupported platforms ignore badges. */ } }
+  }
+  observeSounds(cx) {
+    if (this.closed || !this.soundSnapshotReady || herdr.checking?.()) return;
+    try {
+      const now = Date.now(); let notices = projectNotifications(this.feeds, now);
+      if (!this.soundHistory) this.soundHistory = new Map(notices.map(notice => [notice.key, notice.expiresAt]));
+      if (!panelIsShown(herdr.layout(), this.config.modId)) { this.soundWasHidden = true; return; }
+      const enabled = soundPreference(props());
+      if (enabled === null && !this.errors.some(error => error.source === 'Notification sound' && error.message === 'Invalid sound setting')) this.unavailable('Notification sound', 'Invalid sound setting', cx);
+      const key = 'spider.notifications.sounded', saved = shared(key);
+      const prior = saved ?? (this.soundWasHidden && !this.soundObserved ? { baselineAt: this.soundMountedAt, observed: [] } : null);
+      if (!this.soundObserved && !this.soundWasHidden) notices = [];
+      else {
+        for (const [token, expiry] of this.soundHistory) if (expiry <= now) this.soundHistory.delete(token);
+        notices = notices.filter(notice => !this.soundHistory.has(notice.key));
+      }
+      const result = observeNotificationSounds(notices, prior, enabled === true, now, this.soundMountedAt);
+      if (JSON.stringify(saved) !== JSON.stringify(result.state)) setShared(key, result.state);
+      this.soundObserved = true;
+      for (const sound of result.sounds) {
+        try { herdr.playSound(sound); }
+        catch (error) { this.unavailable('Notification sound', String(error.message), cx); }
+      }
+    } catch (error) { this.unavailable('Notification sound', String(error.message), cx); }
   }
   saveDismissed() {
     const tokens = [...this.dismissed];
@@ -88,21 +144,47 @@ export default class SpiderPanel extends View {
     if (this.closed) return;
     this.errors.push({source,message,command,updatedAt:Date.now()}); cx.notify();
   }
-  async reload(cx) {
+  async refreshIdentity(cx, feed) {
+    if (!this.config?.labelContract?.labels?.ownerCore || !this.config?.labelContract?.kinds?.session || typeof herdr.hc !== 'function') throw new Error('Owner identity unavailable');
+    const query = async args => {
+      let timer;
+      try {
+        const reply = await Promise.race([herdr.hc(args), new Promise((_, reject) => { timer = cx.timer.every(5000, () => reject(new Error('Owner identity check timed out'))); })]);
+        if (reply.code !== 0) throw new Error('Owner identity unavailable');
+        return JSON.parse(reply.stdout);
+      } finally { timer?.cancel(); }
+    };
+    this.coreId = ''; this.machineIds = new Map();
+    const core = await query(['server', 'status', '--json']);
     if (this.closed) return;
-    if (this.reloading) { this.pendingReload = true; return; }
-    this.reloading = true; this.pendingReload = false; this.reloadAt = Date.now();
+    if (typeof core?.core?.id !== 'string' || !core.core.id) throw new Error('Owner identity unavailable');
+    this.coreId = core.core.id;
+    if (!feed) return;
+    const address = feed.owner.terminal.address, machine = address.includes('/') ? address.slice(0, address.indexOf('/')) : null;
+    if (machine || feed.owner.terminal.coreId !== this.coreId) {
+      const answer = await query(['machine', 'ls', '--json']);
+      const values = Array.isArray(answer?.machines) ? answer.machines : [];
+      this.machineIds = new Map(values.filter(item => item.state === 'connected' && typeof item.name === 'string' && typeof item.id === 'string').map(item => [item.name, item.id]));
+      const matches = [...this.machineIds].filter(([name, id]) => id === feed.owner.terminal.coreId && (!machine || name === machine));
+      if (matches.length !== 1) throw new Error(`${machine ?? 'Remote machine'} was rebuilt or can't be verified`);
+    }
+  }
+  async reload(cx) {
+    if (this.closed || !this.reader) return false;
+    if (this.reloading) { this.pendingReload = true; return false; }
+    this.reloading = true; this.pendingReload = false; this.reloadAt = Date.now(); let success = false;
     try {
       const snapshot = await this.reader.read();
-      if (this.closed) return;
-      this.feeds = snapshot.feeds;
+      if (this.closed) return false;
+      this.feeds = snapshot.feeds; this.soundSnapshotReady = !snapshot.errors.some(error => error.source === 'sessions');
       this.errors = [...snapshot.errors.map(error => ({...error,scope:error.source === 'sessions' ? 'sessions' : 'feed',updatedAt:Date.now()})), ...this.runtimeErrors()];
-      // A dismissal lapses once the state it hid is gone, so that state can return.
-      this.dismissed = pruneDismissed(this.dismissed, projectNotifications(this.feeds, Date.now()));
-      this.saveDismissed();
+      this.syncDismissed();
+      this.dismissed = pruneDismissed(this.dismissed, projectNotifications(this.feeds, Date.now()), Date.now());
+      this.saveDismissed(); this.updateBadge(); this.observeSounds(cx); success = true;
     } catch (error) { this.errors = [{ source: 'sessions', scope: 'sessions', message: String(error.message), updatedAt: Date.now() }, ...this.runtimeErrors()]; }
     finally { this.reloading = false; }
-    if (!this.closed) { cx.notify(); }
+    if (!this.closed) cx.notify();
+    return success;
   }
   /**
    * Runtime problems outlive a reload for a minute. A broken watch stays
@@ -118,7 +200,7 @@ export default class SpiderPanel extends View {
     const [command, ...args] = panelIpcArgv(this.config.nodePath,this.config.cliPath,descriptor,{...request,generation:feed.generation});
     const result = await exec(command,args), reply = parseSessionIpcReply(result.stdout);
     if (!reply) throw new Error('Invalid IPC reply');
-    if (!reply.ok) throw new Error(reply.message);
+    if (!reply.ok) throw new Error(reply.code === 'unknown-op' && request.op === 'openSession' ? 'Run /reload to enable session reopening' : reply.message);
     if (result.code !== 0) throw new Error('IPC action failed');
     if (reply.op !== request.op) throw new Error('Unexpected IPC acknowledgement');
     return reply;
@@ -197,24 +279,64 @@ export default class SpiderPanel extends View {
   // Plain phrases with word spacing: "[agent] `command` failed on [machine]".
   parts(item) {
     const t = theme();
-    return item.parts.map((part, index) => part.type === 'text' ? div().flex_none().text_color(t.foreground).child(part.text)
+    return item.parts.map((part, index) => part.type === 'text' ? div().min_w(0).whitespace_normal().text_color(t.foreground).child(part.text)
       : part.type === 'detail' ? div().min_w(0).truncate().text_color(t.dim).tooltip(part.text).child(part.text)
       : this.pill(part, `pill-${item.key}-${index}`));
   }
-  /** The leading mark of a notification item, by kind. */
-  glyph(kind) {
+  /** The leading mark uses colour only for explicit urgency. */
+  glyph(item) {
     const t = theme(), danger = t.ansi1 ?? DANGER, amber = t.blocked ?? AMBER;
-    if (kind === 'waiting') return div().size(14).flex_none().rounded(999).bg(amber + '26').text_size(10.5).font_bold().text_color(amber).flex().items_center().justify_center().tooltip('Needs you').child('!');
-    if (kind === 'failed') return svg('mods/workspace-chrome/x.svg').size(13).flex_none().text_color(danger);
+    if (item.urgency === 'urgent' || item.urgency === 'attention') {
+      const color = item.urgency === 'urgent' ? danger : amber;
+      return div().size(14).flex_none().rounded(999).bg(color + '26').text_size(10.5).font_bold().text_color(color).flex().items_center().justify_center().tooltip('Needs you').child('!');
+    }
     return svg('mods/workspace-chrome/file-text.svg').size(13).flex_none().text_color(this.muted());
   }
-  /** What clicking a notification card does: focus the session's pane, or open the Memories view. */
+  navigationTargets() {
+    if (!this.config?.labelContract || !this.coreId) return [];
+    try {
+      const locations = spaces(), focus = herdr.focused?.();
+      const active = locations.find(space => space.machine === null && space.id === focus?.space && space.tabs.some(tab => tab.id === focus.tab));
+      const destination = active ? { space: active.id, tab: focus.tab } : null;
+      const machines = (herdr.machines?.() ?? []).map(machine => ({ ...machine, ...(this.machineIds.has(machine.name) ? { coreId: this.machineIds.get(machine.name) } : {}) }));
+      return projectNavigation({ spaces: locations, agents: herdr.agents?.() ?? [], terminals: herdr.terminals?.() ?? [], panes: panes(), feeds: this.feeds,
+        coreId: this.coreId, destination, machines, contract: this.config.labelContract, now: Date.now(),
+        completedHours: this.config.retention?.completedHours ?? 24, completedRows: this.config.retention?.completedRows ?? 50 });
+    } catch { return []; }
+  }
   notificationAction(item, model) {
-    if (item.action === 'Review') return { enabled: true, tip: 'Review memories', act: cx => this.showMemories(cx) };
-    const feed = model.sessions.find(s => s.id === item.sessionId)?.feed;
-    const live = Boolean(feed) && panelSessionState(feed, Date.now()) === 'live';
-    return { enabled: live, tip: live ? 'Focus the session' : 'Owner unavailable',
-      act: () => { if (panelSessionState(feed, Date.now()) === 'live') run('pane.focus', { terminal: feed.owner.terminal.address }); } };
+    const feed = this.feeds.find(row => row.sessionId === item.sessionId);
+    const enabled = Boolean(feed && panelSessionState(feed, Date.now()) === 'live' && this.config?.labelContract && !this.pendingActions.has(item.key));
+    return { enabled, tip: enabled ? 'Open the agent' : 'Owner unavailable', act: cx => cx.spawn(next => this.activateNotification(item, next)) };
+  }
+  async activateNotification(item, cx) {
+    if (this.closed || this.pendingActions.has(item.key)) return;
+    this.pendingActions.add(item.key); cx.notify();
+    try {
+      if (!await this.reload(cx) || this.closed) return;
+      const current = projectNotifications(this.feeds, Date.now()).find(row => row.key === item.key);
+      if (!current) return;
+      const ownerFeed = this.feeds.find(row => row.sessionId === current.sessionId);
+      if (!ownerFeed) return;
+      await this.refreshIdentity(cx, ownerFeed);
+      if (this.closed || !await this.reload(cx)) return;
+      const latest = this.feeds.find(row => row.sessionId === current.sessionId);
+      if (!latest || latest.generation !== ownerFeed.generation || latest.owner.terminal.coreId !== ownerFeed.owner.terminal.coreId || latest.owner.terminal.address !== ownerFeed.owner.terminal.address) return;
+      const fresh = projectNotifications(this.feeds, Date.now()).find(row => row.key === current.key);
+      if (!fresh || fresh.runId !== current.runId || this.dismissed.has(current.key)) return;
+      const target = this.navigationTargets().find(row => row.id === (fresh.runId ? `run:${fresh.sessionId}:${fresh.runId}` : `session:${fresh.sessionId}`)), action = target?.action;
+      if (!action) { if (target?.disabledReason) throw new Error(target.disabledReason); return; }
+      if (action.kind === 'focus') run('pane.focus', { pane: action.pane });
+      else if (action.kind === 'keep') run('terminal.keep', { terminal: action.terminal, place: 'tab' });
+      else {
+        const feed = this.feeds.find(row => row.sessionId === current.sessionId);
+        if (!feed) return;
+        const reply = await this.ipc(feed, action.request);
+        const terminal = reply.op === 'openSession' ? reply.terminal : reply.op === 'openRun' || reply.op === 'openJob' ? reply.viewer : null;
+        if (terminal && !this.closed) run('pane.focus', { terminal });
+      }
+    } catch (error) { this.unavailable('Notification action', error.message, cx); }
+    finally { this.pendingActions.delete(item.key); if (!this.closed) cx.notify(); }
   }
   notificationRow(item, model, cx) {
     const t = theme(), action = this.notificationAction(item, model), on = Boolean(action?.enabled);
@@ -225,14 +347,14 @@ export default class SpiderPanel extends View {
       .when(on, e => e.cursor_pointer().hover(s => s.bg(t.hover)).tab_index(0).tooltip(action.tip)
         .on_click((_event, cx) => fire(cx))
         .on_key_down((event, cx) => { if (pressed(event)) fire(cx); }))
-      .child(this.glyph(item.kind))
+      .child(this.glyph(item))
       .child(h_flex().flex_1().min_w(0).flex_wrap().gap(5).items_center().accessibility_label(notificationText(item)).children(this.parts(item)));
     const dismiss = div().id(`dismiss-${item.key}`).flex_none().mr(6).p(3).rounded(999).text_color(t.dim).cursor_pointer().tab_index(0).tooltip('Dismiss')
       .hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_click((_event, cx) => { cx.stop_propagation?.(); this.dismiss(item, cx); })
       .on_key_down((event, cx) => { if (pressed(event)) { cx.stop_propagation?.(); this.dismiss(item, cx); } })
       .child(svg('mods/workspace-chrome/x.svg').size(11));
-    return h_flex().id(`card-${item.key}`).w_full().gap(4).items_center().rounded(8).border(1).border_color(CARD_BORDER).text_size(12.5)
+    return h_flex().id(`card-${item.key}`).w_full().gap(4).items_center().rounded(8).text_size(12.5)
       .child(body).child(dismiss);
   }
   sessionRow(row, cx) {
@@ -439,7 +561,7 @@ export default class SpiderPanel extends View {
       .child(h_flex().h(40).flex_none().px(16).items_center().child(div().flex_1()).child(close))
       .child(v_flex().id('spider-scroll').flex_1().min_h(0).overflow_y_scrollbar().px(16).pb(12).child(this.configState(this.configProblem)));
     let space = null; try { space = selectedSpace(spaces()); } catch { space = null; }
-    const model = projectSpacePanel(this.feeds, space, now, { dismissed: this.dismissed ?? new Set() });
+    const model = projectSpacePanel(this.feeds, space, now, { dismissed: this.dismissed ?? new Map() });
     const count = model.notifications.length, problems = describePanelProblems(this.errors);
     const home = this.view.kind === 'home';
     return root
@@ -449,6 +571,10 @@ export default class SpiderPanel extends View {
           .child(svg(`${OWN_ICONS}/bell.svg`).size(14).flex_none())
           .when(count > 0, e => e.child(div().id('spider-bell-count').font_family(mono).text_size(12).child(String(count)))))
         .child(div().flex_1())
+        .child(div().id('spider-memories-open').p(4).rounded(999).text_color(t.dim).cursor_pointer().tab_index(0).tooltip('Review memories')
+          .hover(s => s.bg(t.hover).text_color(t.foreground)).on_click((_event, current) => this.showMemories(current))
+          .on_key_down((event, current) => { const key = event?.keystroke?.key ?? event?.key; if (key === 'enter' || key === 'space') this.showMemories(current); })
+          .child(svg('mods/workspace-chrome/file-text.svg').size(14)))
         .child(close))
       .child(v_flex().id('spider-scroll').flex_1().min_h(0).overflow_y_scrollbar().px(16).pb(12)
         .when(problems.all.length > 0, e => e.child(this.problemsGroup(problems)))

@@ -45,7 +45,7 @@ export function selectScenarios(all: readonly ScenarioDefinition[], tier: Tier, 
 function suiteOptions(definition: ScenarioDefinition, tier: Tier): SuiteOptions {
   const script = definition.script ? { ...definition.script, story: definition.id } : undefined;
   const extra = definition.coreEnvironment ? { coreEnvironment: definition.coreEnvironment } : {};
-  if (tier === 'app') return { ...extra, tier, story: definition.id, consent: true, displayUuid: process.env.SPIDER_HERDR_TEST_DISPLAY_UUID ?? '', script };
+  if (tier === 'app') return { ...extra, tier, story: definition.id, consent: true, displayUuid: process.env.SPIDER_HERDR_TEST_DISPLAY_UUID ?? '', nativeAppBinary: process.env.SPIDER_HERDR_E2E_APP, script };
   if (tier === 'remote') return { ...extra, tier, story: definition.id, machine: process.env.SPIDER_HERDR_REAL_MACHINE ?? '', script };
   return { ...extra, tier, story: definition.id, script };
 }

@@ -143,7 +143,7 @@ const MAX_ERRORS = 32;
 function boundedNotifications(notices: SessionFeed['notifications']): SessionFeed['notifications'] {
   const result: SessionFeed['notifications'] = [];
   let bytes = 2; // JSON array brackets.
-  const recent = notices.filter(notice => notice.kind === 'job-result').sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
+  const recent = notices.filter(notice => notice.kind === 'job-result' || notice.kind === 'intentional').sort((a, b) => b.createdAt - a.createdAt || a.id.localeCompare(b.id));
   for (const notice of recent) {
     const size = Buffer.byteLength(JSON.stringify(notice)) + (result.length ? 1 : 0);
     if (bytes + size > MAX_NOTICE_BYTES) continue;

@@ -8,6 +8,12 @@ vi.mock('../harness/scenario.js', async importOriginal => ({
   ...await importOriginal<typeof import('../harness/scenario.js')>(), registerScenarios: () => {},
 }));
 describe('runner boundary and report', () => {
+  it('forwards an explicit native clone only to the app worker environment', () => {
+    const input = { SPIDER_HERDR_E2E_APP: '/owned/native.app/Contents/MacOS/Herdr' };
+    expect(storyWorkerEnvironment({}, input, 'app')).toHaveProperty('SPIDER_HERDR_E2E_APP', input.SPIDER_HERDR_E2E_APP);
+    expect(storyWorkerEnvironment({}, input, 'headless')).not.toHaveProperty('SPIDER_HERDR_E2E_APP');
+    expect(storyWorkerEnvironment({}, {}, 'app')).not.toHaveProperty('SPIDER_HERDR_E2E_APP');
+  });
   it('every default profile selects actual supported story exports, including the real remote smoke', async () => {
     // @ts-ignore Vite provides import.meta.glob during test transformation.
     const modules = import.meta.glob('./*.test.ts');

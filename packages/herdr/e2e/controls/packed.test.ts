@@ -1,4 +1,5 @@
 import { mkdtempSync, mkdirSync, existsSync, readFileSync, symlinkSync, writeFileSync, cpSync, rmSync, realpathSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { stagePackedBuild } from '../harness/pack.js';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -14,6 +15,56 @@ function fixture(): { root: string; packed: string } {
   for (const file of ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/remote-runtime.mjs']) writeFileSync(path.join(packed, 'dist', file), 'export const marker = "good";\n');
   return { root, packed };
 }
+const spacesAssets = [
+  'spaces/local.js', 'look/spaces-a-sidebar/agents-mod.json', 'agents/grouping.js', 'agents/connections.js', 'agents/console-groups.js',
+  'shared/navigation.js', 'picker/model.js', 'pane/park.js',
+  'picker/main.js', 'picker/mod.json', 'picker/NOTICE', 'mods/spider/sound.js',
+  'toast/main.js', 'toast/mod.json', 'toast/filter.js', 'toast/NOTICE',
+  'look/spaces-a-sidebar/agents-0.1.13.json', 'look/spaces-a-sidebar/agents-0.1.16.json',
+  'look/spaces-a-sidebar/spaces-0.1.13.json', 'look/spaces-a-sidebar/spaces-0.1.16.json',
+];
+
+describe('Spaces packed inventories', () => {
+  it('names every known dependency in the package and closed asset guard', () => {
+    const manifest = JSON.parse(readFileSync('package.json', 'utf8')) as { files: string[] };
+    const guard = readFileSync('scripts/assert-bundle.mjs', 'utf8');
+    for (const asset of spacesAssets) {
+      expect(manifest.files).toContain(`packages/herdr/assets/${asset}`);
+      expect(guard).toContain(`'${asset}'`);
+    }
+  });
+
+  it('checks an actual synthetic tarball and rejects each deliberately missing dependency', () => {
+    const { root } = fixture();
+    try {
+      const npmEnv = { ...process.env, COPYFILE_DISABLE: '1', npm_config_update_notifier: 'false', npm_config_audit: 'false', npm_config_fund: 'false' };
+      const [{ filename }] = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', root], { encoding: 'utf8', env: npmEnv })) as { filename: string }[];
+      execFileSync('tar', ['-xzf', path.join(root, filename), '-C', root]);
+      const packed = path.join(root, 'package');
+      for (const asset of spacesAssets) {
+        const file = path.join(packed, 'packages/herdr/assets', asset);
+        mkdirSync(path.dirname(file), { recursive: true });
+        if (!existsSync(file)) writeFileSync(file, asset.endsWith('.json') ? '{}' : 'export const synthetic = true;\n');
+      }
+      const tarball = path.join(root, 'spaces.tgz');
+      const inspect = () => {
+        execFileSync('tar', ['-czf', tarball, '-C', root, 'package/'], { env: npmEnv });
+        return spawnSync(process.execPath, ['scripts/assert-bundle.mjs', '--package', tarball], { encoding: 'utf8', env: npmEnv });
+      };
+      const valid = inspect();
+      expect(valid.status, valid.stderr).toBe(0);
+      for (const asset of spacesAssets) {
+        const file = path.join(packed, 'packages/herdr/assets', asset), contents = readFileSync(file);
+        rmSync(file);
+        const missing = inspect();
+        expect(missing.status, `missing ${asset}`).not.toBe(0);
+        expect(missing.stderr).toContain(asset);
+        writeFileSync(file, contents);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe('disposable packed controls', () => {
   it('accepts the real pack.ts dependency view, preserves its links without dereferencing, and rejects a planted product link', () => {
     const { root } = fixture();

@@ -35,6 +35,15 @@ test('the tab look setting defaults on and accepts a boolean opt-out', () => {
   for (const autoHideTabs of ['false', 0, null, {}]) expect(() => parseHerdrConfig({ ...base, look: { autoHideTabs } })).toThrow(/autoHideTabs/);
 });
 
+test('intentional notification sound defaults on and only accepts a boolean', () => {
+  const base = { ...config, machines: [] };
+  expect(parseHerdrConfig(base).notifications).toEqual({ sound: true });
+  expect(parseHerdrConfig({ ...base, notifications: {} }).notifications).toEqual({ sound: true });
+  for (const sound of [true, false]) expect(parseHerdrConfig({ ...base, notifications: { sound } }).notifications).toEqual({ sound });
+  for (const notifications of [null, [], 'muted', true]) expect(() => parseHerdrConfig({ ...base, notifications })).toThrow(/notifications/);
+  for (const sound of ['false', null, 0, {}]) expect(() => parseHerdrConfig({ ...base, notifications: { sound } })).toThrow(/notifications\.sound/);
+});
+
 test('preserves each configured per-machine nodePath', () => {
   const parsed = parseHerdrConfig({ ...config, machines: [
     { ...machine, nodePath: '/bin/node-a' },

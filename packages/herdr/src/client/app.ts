@@ -21,7 +21,7 @@ function placements(value: unknown, address: TerminalAddress): OwnerPlacement[] 
   }
   return found;
 }
-export function createAppClient(options: AppClientOptions, operationSignal?: AbortSignal, available?: (key: string) => void): AppClient & AppPaneInspection {
+export function createAppClient(options: AppClientOptions, operationSignal?: AbortSignal, available?: (key: string) => void): AppClient & AppPaneInspection & Required<Pick<AppPaneInspection, 'listSpaces'>> {
   const env = Object.freeze({ ...options.env });
   const call = (args: readonly string[], signal: AbortSignal | undefined = operationSignal) => trackAvailability(
     { key: `app:${args[0]}:${args[0] === 'do' ? args[1] : ''}` },
@@ -48,6 +48,23 @@ export function createAppClient(options: AppClientOptions, operationSignal?: Abo
     return matches[0];
   };
   return {
+    listSpaces: async () => {
+      const layout = object(await call(['ls']));
+      if (!Array.isArray(layout.spaces)) throw new HerdrError('app-disconnected', 'App layout document is unavailable');
+      return layout.spaces.map(value => {
+        const space = object(value), id = text(space.id) as SpaceId;
+        if (typeof space.name !== 'string' || space.name.includes('\0') || !Array.isArray(space.tabs)) throw new HerdrError('invalid-reply', 'Invalid app space');
+        const prefix = id.includes('/') ? id.slice(0, id.indexOf('/')) : null;
+        const machine = space.machine === undefined ? prefix : space.machine === null ? null : text(space.machine);
+        if (prefix && machine !== prefix) throw new HerdrError('invalid-reply', 'App space machine does not match its address');
+        const tabs = space.tabs.map(value => {
+          const tab = object(value);
+          if (typeof tab.name !== 'string' || tab.name.includes('\0')) throw new HerdrError('invalid-reply', 'Invalid app tab');
+          return { id: text(tab.id) as TabId, name: tab.name };
+        });
+        return { id, name: space.name, machine, ...(typeof space.active === 'boolean' ? { active: space.active } : {}), tabs };
+      });
+    },
     tabPanes: async placement => (await tab(placement)).rows,
     tabIndex: async placement => (await tab(placement)).index,
     focusedPane: async () => {

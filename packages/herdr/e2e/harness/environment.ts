@@ -111,6 +111,17 @@ export function buildEnvironment(source: Readonly<NodeJS.ProcessEnv>, fenced: Fe
   return env;
 }
 
+export const nativeInheritedScopeKeys = ['HC_SCOPE', 'HC_TERMINAL_ID', 'HC_TERMINAL_SOCKET', 'HC_TAB_ID', 'HC_SPACE_ID', 'HC_MACHINE', 'XDG_RUNTIME_DIR'] as const;
+
+export function nativeLaunchEnvironment(root: string, source: Readonly<Record<string, string>>, appId: string): Record<string, string> {
+  const env: Record<string, string> = { ...source, HERDR_RELEASES_URL: 'http://127.0.0.1:1', HERDR_TELEMETRY: '0', HERDR_APP_ID: appId };
+  for (const key of ['HOME', 'TMPDIR', 'HERDR_APP_HOME', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME']) env[key] = ownedPath(root, source[key]);
+  env.HC_SOCKET = assertSocketPath(root, source.HC_SOCKET);
+  if (!source.HC_SESSION || source.HC_SESSION === 'default' || !/^[a-z0-9-]+$/.test(source.HC_SESSION)) throw new HarnessError('isolation-unproved', 'native core namespace is required');
+  for (const key of nativeInheritedScopeKeys) delete env[key];
+  return env;
+}
+
 export async function writeJson(path: string, value: unknown, mode = 0o600): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(value, null, 2) + '\n', { mode });

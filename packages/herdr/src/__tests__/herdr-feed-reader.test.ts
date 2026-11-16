@@ -3,9 +3,30 @@
 import { expect, it } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile, readdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { paths } from '@spider/db-core';
 import { runPanelScene } from './acceptance/i.js';
 import type { Owner, SessionFeed } from '../contracts.js';
 import { createFeedReader } from '../../assets/shared/feed.js';
+import { createSnapshots } from '../feed/reader.js';
+it('reads intentional occurrences and job results while excluding retired notices', async () => {
+  const scratch = paths.scratch('worktree', process.cwd()); await mkdir(scratch, { recursive: true });
+  const root = await mkdtemp(join(scratch, 'intentional-reader-'));
+  try {
+    const owner: Owner = { sessionId: 'owner' as never, generation: 'g' as never, terminal: { coreId: 'core' as never, terminalId: 'owner' as never, address: 'owner' as never, socket: join(root, 'socket'), sessionNamespace: 'fixture' }, cwd: root, sessionFile: null, name: 'Owner' };
+    const base = { createdAt: Date.now(), title: 'Owner', body: 'Choose a fix', scope: 'session' as const, sessionId: owner.sessionId, ownerAddress: owner.terminal.address };
+    const feed: SessionFeed = { version: 1, sessionId: owner.sessionId, generation: owner.generation, revision: 1, updatedAt: Date.now(), owner, placement: null, lifecycle: 'live', status: { native: null, effective: null, message: null },
+      runs: { rows: [], total: 0, truncated: false }, todos: { rows: [], total: 0, truncated: false }, triggers: [], pace: { scope: 'shared', used: null, budget: null, projected: null, remaining: null, periodStart: null, periodEnd: null, updatedAt: null, unavailableReason: null }, approvals: [],
+      notifications: [{ ...base, id: 'notice-1', kind: 'intentional', urgency: 'attention', runId: null, action: { kind: 'focus-owner', sessionId: owner.sessionId, address: owner.terminal.address } },
+        { ...base, id: 'job-1', kind: 'job-result', action: { kind: 'focus-owner', sessionId: owner.sessionId, address: owner.terminal.address } },
+        { ...base, id: 'old', kind: 'escalation', action: { kind: 'focus-owner', sessionId: owner.sessionId, address: owner.terminal.address } }], ipc: null, errors: [] };
+    const directory = join(root, 'sessions', owner.sessionId); await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'session.json'), JSON.stringify(feed), { mode: 0o600 });
+    const snapshot = await createSnapshots(root)({});
+    expect(snapshot.errors).toEqual([]);
+    expect(snapshot.changes[0].feed.notifications.map(notice => notice.id)).toEqual(['notice-1', 'job-1']);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 it('does not wait for an earlier launch during close and closes a late acknowledgement', async () => {
   let release!: (reply: { code: number; stdout: string; stderr: string }) => void;
   const requests: string[] = [];

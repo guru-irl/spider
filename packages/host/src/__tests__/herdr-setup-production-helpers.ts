@@ -16,7 +16,9 @@ export async function editUnrelated(f: Awaited<ReturnType<typeof fixture>>): Pro
   await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8')) + 'export USER_CHOICE=kept\n');
   await writeFile(f.request.config.core.config, (await readFile(f.request.config.core.config, 'utf8')) + '\n[custom]\nvalue = 42\n');
   const keys = join(f.h.directories.app, 'keys.json');
-  await writeFile(keys, JSON.stringify({ ...JSON.parse(await readFile(keys, 'utf8')), global: { 'ctrl-q': 'user.action' } }));
+  const bindings = JSON.parse(await readFile(keys, 'utf8'));
+  bindings.global = { ...bindings.global, 'ctrl-q': 'user.action' };
+  await writeFile(keys, JSON.stringify(bindings));
 }
 
 export async function claimCurrentHash(f: Awaited<ReturnType<typeof fixture>>, path: string): Promise<void> {

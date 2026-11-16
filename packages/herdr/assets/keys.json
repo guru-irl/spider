@@ -1,4 +1,11 @@
 {
+  "global": {
+    "cmd-p": "mod.open:spider-picker",
+    "cmd-n": { "command": "space.new", "args": { "machine": "" } }
+  },
+  "layout:spider-glass": {
+    "cmd-shift-e": "spider-pane.park"
+  },
   "terminal": {
     "cmd-shift-a": "send:\u001b[97;6u",
     "cmd-shift-o": "send:\u001b[111;6u",

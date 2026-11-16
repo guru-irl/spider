@@ -150,6 +150,7 @@ export function storyWorkerEnvironment(fenced, caller, tier) {
   const base = caller.SPIDER_HERDR_E2E_R14_BASE, upstream = caller.SPIDER_HERDR_E2E_R14_UPSTREAM;
   return { ...fenced, ...(tier === 'remote' && caller.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: caller.SSH_AUTH_SOCK } : {}),
     ...(caller.SPIDER_HERDR_E2E_HC ? { SPIDER_HERDR_E2E_HC: caller.SPIDER_HERDR_E2E_HC } : {}),
+    ...(tier === 'app' && caller.SPIDER_HERDR_E2E_APP ? { SPIDER_HERDR_E2E_APP: caller.SPIDER_HERDR_E2E_APP } : {}),
     ...(tier === 'headless' && base && upstream ? { SPIDER_HERDR_E2E_R14_BASE: base, SPIDER_HERDR_E2E_R14_UPSTREAM: upstream } : {}) };
 }
 export function storyWorkers(options) {

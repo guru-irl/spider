@@ -99,6 +99,10 @@ export async function createHerdrHarness(mode: AcceptanceMode): Promise<HerdrHar
   if (runId) await writeFile(join(root, 'test-owner.json'), JSON.stringify({ runId, mode, binary: mode === 'fake' ? join(root, 'hc') : realHc }));
   const directories = { local: join(root, 'l'), remote: join(root, 'r'), app: join(root, 'a'), agent: join(root, 'p'), global: join(root, 'g'), tmp: join(root, 'tmp') };
   for (const path of Object.values(directories)) await mkdir(path, { recursive: true });
+  await writeFile(join(directories.app, 'keys.json'), JSON.stringify({
+    global: { 'cmd-p': 'mod.open:picker', 'cmd-n': 'space.new', 'cmd-shift-w': 'pane.close' },
+    terminal: { 'ctrl-v': 'terminal.paste_image' },
+  }));
   await writeFile(join(directories.global, 'config.json'), JSON.stringify({ organism: { enabled: false } }));
   const base = { ...process.env, TMPDIR: directories.tmp, PI_CODING_AGENT_DIR: directories.agent, SPIDER_GLOBAL_ROOT: directories.global };
   for (const key of Object.keys(base)) if (key.startsWith('HC_') || key.startsWith('HERDR_') || key.startsWith('PI_SUBAGENT_') || key.startsWith('PI_SPIDER_')) delete (base as NodeJS.ProcessEnv)[key];

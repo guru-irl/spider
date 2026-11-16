@@ -3,21 +3,22 @@
 // createSuite: one fenced fixture per story. Owned roots, ledger + watchdog, packed build, real cores, pi, app adapter.
 import { mkdir, writeFile, copyFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { join, basename } from 'node:path';
+import { join, basename, dirname } from 'node:path';
 import { userInfo } from 'node:os';
 import { buildEnvironment, createFencedDirectories, createFixtureRoot, HarnessError, ledgerDirectory, ownedPath, type FencedDirectories, type OwnedPath, type StoryId } from './environment.js';
 import { openLedger, startWatchdog, cleanupLedger, reconcileLedgers, type CleanupProof, type LedgerHandle } from './resources.js';
 import { spawnOwned } from './processes.js';
 import { stagePackedBuild, type PackedBuild } from './pack.js';
-import { startCores, type Cores, type HcResult, type Side } from './hc.js';
+import { startCores, realHcBinary, type Cores, type HcResult, type Side } from './hc.js';
 import { preparePi, launchPi, createGateServer, type GateServer, type LaunchOptions, type PiDriver, type PiEnvironment } from './pi.js';
 import type { ScriptFile } from '../fixtures/scripted-provider.js';
+import { frontmostApp, launchNativeApp, prepareNativeApp, readNativeAppOwnership, verifyNativeAppSources, type AppInvoke, type NativeAppOwnership, type NativeTargetKind } from './app.js';
 
 export type Tier = 'headless' | 'remote' | 'app' | 'ci';
 export type SuiteOptions = (
   | { tier: 'headless' | 'ci'; story: StoryId; script?: ScriptFile; watchdogMs?: number }
   | { tier: 'remote'; story: StoryId; machine: string; script?: ScriptFile; watchdogMs?: number }
-  | { tier: 'app'; story: StoryId; displayUuid: string; consent: true; script?: ScriptFile; watchdogMs?: number }
+  | { tier: 'app'; story: StoryId; displayUuid: string; consent: true; nativeAppBinary?: string; script?: ScriptFile; watchdogMs?: number }
 ) & { coreEnvironment?: Readonly<Record<string, string>> };
 
 export interface RenderedUi {
@@ -65,6 +66,9 @@ export interface Suite {
   /** Cached initialization and the owned product CLI connection for setup inputs. */
   appReady?: Promise<AppDriver>;
   appConnection?: { binary: string; env: Record<string, string> };
+  nativeAppOwnership?: NativeAppOwnership;
+  beforeNativeLaunch?(ownership: NativeAppOwnership): Promise<void>;
+  registerNativeTarget?(kind: NativeTargetKind, id: string): void;
   close(options?: { removeRoot?: boolean }): Promise<CleanupProof>;
 }
 
@@ -84,6 +88,8 @@ export async function createSuite(options: SuiteOptions): Promise<Suite> {
   const ledger = openLedger(ledgerDirectory(), root);
   const watchdog = startWatchdog(ledger, Date.now() + (options.watchdogMs ?? 20 * 60_000), join(ledgerDirectory(), `${ledger.id}.watchdog.log`));
   let gateServer: GateServer | undefined;
+  let nativeFrontmost: string | undefined;
+  const nativeTargets = new Map<NativeTargetKind, Set<string>>();
   try {
     const directories = await createFencedDirectories(root);
     const bin = ownedPath(root, join(root, 'bin'));
@@ -124,13 +130,35 @@ export async function createSuite(options: SuiteOptions): Promise<Suite> {
         return path;
       },
       async gates() { gateServer ??= await createGateServer(pi.gateSocket, options.story); return gateServer; },
+      registerNativeTarget(kind, id) {
+        if (!id || /[\x00-\x1f\x7f]/.test(id)) throw new HarnessError('invalid-target', 'invalid owned native target');
+        const values = nativeTargets.get(kind) ?? new Set<string>(); values.add(id); nativeTargets.set(kind, values);
+      },
       async app() {
         suite.appReady ??= (async () => {
           const nativeModule = await importAdapter('app');
+          const appInvoke: AppInvoke = (binary, argv, input) => invoke(binary, argv, Object.fromEntries(Object.entries(input).flatMap(([key, value]) => value === undefined ? [] : [[key, value]])));
+          const coreEnv = cores ? { ...cores.local.env, HC_SOCKET: cores.local.socket } : { ...env };
+          if (options.tier === 'app') {
+            if (!cores) throw new HarnessError('missing-prerequisite', 'native launch requires an isolated core');
+            const input = options.nativeAppBinary ?? globalThis.process.env.SPIDER_HERDR_E2E_APP;
+            if (!input) throw new HarnessError('missing-prerequisite', 'an explicitly owned native app clone is required');
+            const supplied = readNativeAppOwnership(input);
+            const owned = await prepareNativeApp({ root, sourceBundle: supplied.bundle, sourceCore: supplied.coreBinary, env: coreEnv, ledger, invoke: appInvoke });
+            suite.nativeAppOwnership = owned;
+            suite.appConnection = { binary: owned.binary, env: owned.env };
+            await suite.beforeNativeLaunch?.(owned);
+            const launched = await launchNativeApp(owned, { invoke: appInvoke, ledger });
+            nativeFrontmost = launched.before;
+            await suite.evidence('native-launch.json', { ...launched, release: owned.release, binary: owned.binary, appId: owned.appId, coreHash: owned.coreHash, sourceBundleHash: owned.sourceBundleHash });
+            suite.appConnection = { binary: owned.binary, env: owned.env };
+            return (nativeModule.createNativeAppDriver as (o: unknown) => AppDriver)({ binary: owned.binary, env: owned.env, invoke: appInvoke, ownPath: suite.ownPath,
+              ownsTarget: (kind: NativeTargetKind, id: string) => nativeTargets.get(kind)?.has(id) || (kind === 'terminal' && ledger.read().terminals.some(t => t.address === id)),
+            });
+          }
           const binary = join(userInfo().homedir, '.local/bin/herdr-app');
-          await suite.evidence('native-app-binary.json', { path: binary });
-          const native = (nativeModule.createNativeAppDriver as (o: unknown) => AppDriver)({ binary, env: { ...env }, invoke, ownPath: suite.ownPath });
-          if (options.tier === 'app') return native;
+          await suite.evidence('native-app-binary.json', { path: binary, mode: 'copied-checker-only' });
+          const native = (nativeModule.createNativeAppDriver as (o: unknown) => AppDriver)({ binary, env: coreEnv, invoke: appInvoke, ownPath: suite.ownPath, sourceCore: join(dirname(realHcBinary()), 'herdr-core') });
           if (!cores) throw new HarnessError('missing-prerequisite', 'the fake app boundary needs the isolated hc core');
           const module = await importAdapter('fake-app');
           const stage = module.stageFakeAppDaemon as (directory: string, own: (path: string) => string) => Promise<{ module: string; binary: string; socket: string }>;
@@ -172,8 +200,18 @@ export async function createSuite(options: SuiteOptions): Promise<Suite> {
       },
       async close({ removeRoot = false } = {}) {
         await gateServer?.close();
+        let isolationFailure: unknown;
+        if (suite.nativeAppOwnership) {
+          try {
+            verifyNativeAppSources(suite.nativeAppOwnership);
+            const current = await frontmostApp((binary, argv, input) => invoke(binary, argv, Object.fromEntries(Object.entries(input).flatMap(([key, value]) => value === undefined ? [] : [[key, value]]))), suite.nativeAppOwnership.env);
+            if (current !== nativeFrontmost) throw new HarnessError('isolation-unproved', 'frontmost application changed during the native story');
+          } catch (error) { isolationFailure = error; }
+        }
         const proof = await cleanupLedger(ledger.path, 'suite-close', { removeRoot });
+        if (suite.nativeAppOwnership) try { verifyNativeAppSources(suite.nativeAppOwnership); } catch (error) { isolationFailure ??= error; }
         watchdog.release();
+        if (isolationFailure) throw isolationFailure;
         if (!proof.clean) throw new HarnessError('cleanup-unproved', `owned resources survived: ${JSON.stringify(proof.survivors)}`, proof);
         return proof;
       },

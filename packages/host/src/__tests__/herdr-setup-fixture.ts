@@ -41,6 +41,10 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake', requireAppBackup = f
       { id: 'panel', children: [{ id: 'panel-body', type: 'stack', children: [{ id: 'files' }, { id: 'changes' }] }] } ] },
   ] }));
   await writeFile(join(h.directories.app, 'settings.json'), '{"zoom":1.25,"theme":"stock"}\n');
+  await writeFile(join(h.directories.app, 'keys.json'), JSON.stringify({
+    global: { 'cmd-p': 'mod.open:picker', 'cmd-n': 'space.new', 'cmd-shift-w': 'pane.close' },
+    terminal: { 'ctrl-v': 'terminal.paste_image' },
+  }));
   await writeFile(join(h.directories.agent, 'settings.json'), '{"theme":"stock","unrelated":true}\n');
   const configPath = join(h.root, 'config.json');
   const config = { app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] };

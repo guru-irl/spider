@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "spacesA": { "0.1.16": { "root": { "toast": "spider-toast" } } },
   "remove": ["status"],
   "tabs": { "stripPx": 6, "fullPx": 42 },
   "root": {

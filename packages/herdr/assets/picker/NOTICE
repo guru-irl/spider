@@ -1,0 +1,7 @@
+This picker is derived from the Herdr built-in picker by the Herdr authors.
+Licensed under the Apache License, Version 2.0. The full license is in
+licenses/herdr-apache-2.0.txt.
+
+Upstream mods/picker/main.js SHA-256:
+0.1.13: 6dfde109b9321e8bc7f0e081db964960195748915eb7ff73e75688dd853b6dc3
+0.1.16: d016a63eb7263ad4478152caa6521b218501bcc3539b7c42e13cfca1806b05c2

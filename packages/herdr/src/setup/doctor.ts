@@ -3,7 +3,8 @@
 import { activePlacementRepairs, placementRepairPath, readPlacementRepairs, type PlacementRepairInspection } from '../jobs/placement-repairs.js';
 import { HERDR_LABELS, HERDR_KINDS, type HcRunRequest } from '../contracts.js';
 import { runtimeInstallPath, type ProbeTarget, type NodeObservation, type SetupRequest } from './installer.js';
-import { snapshot, rootNotesValue, readJournal, managedProjection, assertGlobalRoot } from './backup.js';
+import { snapshot, rootNotesValue, readJournal, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeySections } from './backup.js';
+import { isDeepStrictEqual } from 'node:util';
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -25,6 +26,38 @@ export interface DoctorReport {
   warnings: readonly DoctorFailure[];
   probes: readonly NodeObservation[];
   passed?: number;
+}
+export function checkManagedKeyBindings(bytes: Buffer | null, desired: KeySections): { failures: DoctorFailure[]; warnings: DoctorFailure[] } {
+  if (bytes === null) return { failures: [{ item: 'keys', code: 'keys-defaults-missing', message: missingKeyMapMessage, repair: missingKeyMapMessage }], warnings: [] };
+  const failures: DoctorFailure[] = [], warnings: DoctorFailure[] = [];
+  const issue = (message: string): DoctorFailure => ({ item: 'keys', code: 'key-binding-conflict', message, repair: 'Repair the conflicting key and rerun setup and doctor.' });
+  try {
+    const parsed: unknown = JSON.parse(bytes?.toString('utf8') ?? '{}');
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Keys must be an object');
+    const keys = parsed as Record<string, unknown>;
+    const section = (name: string): Record<string, unknown> => {
+      const value = keys[name];
+      if (value === undefined) return {};
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid key section ${name}`);
+      return value as Record<string, unknown>;
+    };
+    for (const [name, bindings] of Object.entries(desired)) {
+      const actual = section(name);
+      for (const [key, value] of Object.entries(bindings))
+        if (!isDeepStrictEqual(actual[key], value)) failures.push(issue(`Managed key differs: ${name}.${key}`));
+    }
+    if (desired['layout:spider-glass']?.['cmd-shift-e'] !== undefined) {
+      const global = section('global'), terminal = section('terminal'), layout = section('layout:spider-glass');
+      for (const [name, values] of [['global', global], ['terminal', terminal]] as const)
+        if (values['cmd-shift-e'] !== undefined) failures.push(issue(`Competing key: ${name}.cmd-shift-e`));
+      for (const [name, values] of [['global', global], ['terminal', terminal], ['layout:spider-glass', layout]] as const)
+        if (values['cmd-shift-w'] !== undefined && values['cmd-shift-w'] !== 'pane.close') failures.push(issue(`Pane close differs: ${name}.cmd-shift-w`));
+      if (global['cmd-shift-w'] === undefined) warnings.push({ item: 'keys', code: 'inspection-unavailable', message: 'The effective global.cmd-shift-w default is not recorded in keys.json', repair: 'Check the active app key binding before relying on pane close.' });
+    }
+  } catch (error) {
+    failures.push(issue(error instanceof Error ? error.message : 'Keys could not be inspected'));
+  }
+  return { failures, warnings };
 }
 export type DoctorRequest = SetupRequest;
 export interface DoctorParts {

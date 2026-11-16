@@ -50,6 +50,22 @@ const tree = tab => tab.geometry ?? paneTree([...tab.terminals.map(row => row.pa
 const erase = (tab, pane) => { if (tab.geometry) tab.geometry = removePane(tab.geometry, pane) ?? paneTree([]); };
 const focusPane = pane => { doc.focusedPane = pane; doc.focusHistory ??= {}; doc.focusHistory[pane] = doc.focusSequence = (doc.focusSequence ?? 0) + 1; };
 if (doc.error !== undefined) { console.log(JSON.stringify(doc)); process.exit(0); }
+if (argv[0] === 'do' && argv[1] === 'space.select') {
+  const arg = key => { const at = argv.indexOf(`--${key}`); return at < 0 ? undefined : argv[at + 1]; };
+  const id = arg('id'), index = Number(arg('index'));
+  // Both supported releases select an id first, otherwise a one-based index.
+  const space = id !== undefined ? doc.spaces?.find(value => value.id === id)
+    : Number.isSafeInteger(index) && index >= 1 ? doc.spaces?.[index - 1] : undefined;
+  if (!space) { console.log(JSON.stringify({ error: 'no such space' })); process.exit(0); }
+  const tab = space.tabs.find(value => value.active) ?? space.tabs[0];
+  for (const candidate of doc.spaces) candidate.active = candidate === space;
+  for (const candidate of space.tabs) candidate.active = candidate === tab;
+  const panes = tab ? [...tab.terminals.map(row => row.pane), ...(tab.modPane ? [tab.modPane] : [])] : [];
+  const pane = panes.includes(doc.focusedPane) ? doc.focusedPane
+    : panes.sort((a, b) => (doc.focusHistory?.[b] ?? 0) - (doc.focusHistory?.[a] ?? 0))[0];
+  if (pane) focusPane(pane); else doc.focusedPane = null;
+  saveDoc(doc); console.log(JSON.stringify({ ok: true })); process.exit(0);
+}
 if (argv[0] === 'status') {
   const space = doc.spaces?.find(space => space.active) ?? doc.spaces?.[0];
   const tab = space?.tabs.find(tab => tab.active) ?? space?.tabs[0];

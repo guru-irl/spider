@@ -38,6 +38,11 @@ const notification = v => {
   if (!shape(v, { id: str, createdAt: count, title: string, body: string })) return false;
   if (v.scope === 'shared') return v.kind === 'budget' && v.sessionId === null && v.ownerAddress === null
     && shape(v.action, { kind: one(['open-usage']), scope: one(['shared']) });
+  if (v.kind === 'intentional') return v.scope === 'session' && str(v.sessionId) && str(v.ownerAddress)
+    && one(['low', 'attention', 'urgent'])(v.urgency) && v.job === undefined
+    && (v.runId === null
+      ? shape(v.action, { kind: one(['focus-owner']), sessionId: str, address: str }) && v.action.sessionId === v.sessionId && v.action.address === v.ownerAddress
+      : str(v.runId) && shape(v.action, { kind: one(['open-run']), sessionId: str, runId: str }) && v.action.sessionId === v.sessionId && v.action.runId === v.runId);
   return (v.job === undefined || (v.kind === 'job-result' && jobResult(v.job)))
     && v.scope === 'session' && one(['subagent-result', 'escalation', 'job-result'])(v.kind)
     && str(v.sessionId) && str(v.ownerAddress)
@@ -68,6 +73,7 @@ export function parseFeed(text) {
       ipc: nullable(v => shape(v, { address: str, capabilityFile: str })), errors: array(v => shape(v, { source: str, message: string })), monthCost })) return null;
     if (feed.owner.sessionId !== feed.sessionId || feed.owner.generation !== feed.generation) return null;
     if (feed.runs.rows.some(r => r.ownerSessionId !== feed.sessionId) || feed.todos.rows.some(t => t.sessionId !== feed.sessionId)) return null;
+    if (feed.notifications.some(n => n.kind === 'intentional' && (n.sessionId !== feed.sessionId || n.ownerAddress !== feed.owner.terminal.address))) return null;
     return feed;
   } catch { return null; }
 }
@@ -196,6 +202,10 @@ function ipcRequest(value) {
     case 'ping': return true;
     case 'killSession': return Object.keys(value).every(key => key === 'op' || key === 'generation');
     case 'openView': return ipcOne(value.view, ['agents', 'todos', 'usage', 'memory', 'triggers']);
+    case 'openSession': return Object.keys(value).every(key => ['op', 'generation', 'destination'].includes(key))
+      && (value.destination === null || ipcObject(value.destination)
+        && Object.keys(value.destination).every(key => key === 'space' || key === 'tab')
+        && ipcString(value.destination.space) && ipcString(value.destination.tab));
     case 'openRun':
     case 'killRun': return ipcString(value.runId);
     case 'openJob':
@@ -268,6 +278,7 @@ function ipcReply(value) {
     case 'killRun':
     case 'killSession':
     case 'moveSession': return true;
+    case 'openSession': return ipcString(value.terminal);
     case 'openRun':
     case 'openJob': return ipcString(value.viewer);
     case 'killJob': return ipcString(value.jobId);

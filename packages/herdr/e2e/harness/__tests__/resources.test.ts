@@ -227,6 +227,35 @@ describe('resource ledger cleanup', () => {
     expect(identityAlive(self)).toBe(true);
   });
 
+  it('cleans native children from spawn records rather than signalling a similar-prefix decoy', async () => {
+    const { root, ledger } = await fixture();
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', join(root, 'native-child')], { stdio: 'ignore' });
+    const decoy = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', `${root}-decoy/marker`], { stdio: 'ignore' });
+    const identity = spawnedIdentity(child.pid!), other = spawnedIdentity(decoy.pid!);
+    const directory = join(root, 'native-processes'); mkdirSync(directory);
+    ledger.update(value => { Object.assign(value, { nativeProcessDirectory: directory }); });
+    writeFileSync(join(directory, `${identity.pid}.json`), JSON.stringify(identity));
+    try {
+      const proof = await cleanupLedger(ledger.path, 'native-record-test');
+      expect(proof.clean).toBe(true);
+      expect(proof.signalled).toContainEqual(expect.objectContaining({ pid: identity.pid, label: 'native-feed-reader' }));
+      expect(identityAlive(identity)).toBe(false); expect(identityAlive(other)).toBe(true);
+    } finally { if (identityAlive(identity)) child.kill('SIGKILL'); if (identityAlive(other)) decoy.kill('SIGKILL'); }
+  });
+
+  it('recognises full long fixture arguments without claiming a similar-prefix process', async () => {
+    const { root } = await fixture();
+    const longRoot = join(root, ...Array.from({ length: 6 }, (_, index) => `${index}-${'x'.repeat(70)}`)); mkdirSync(longRoot, { recursive: true });
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', join(longRoot, 'marker')], { stdio: 'ignore' });
+    const decoy = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', `${longRoot}-decoy/marker`], { stdio: 'ignore' });
+    const identity = spawnedIdentity(child.pid!), other = spawnedIdentity(decoy.pid!);
+    try {
+      const found = rootProcesses(longRoot);
+      expect(found).toContainEqual({ pid: identity.pid, command: expect.stringContaining(join(longRoot, 'marker')) });
+      expect(found.some(item => item.pid === other.pid)).toBe(false);
+    } finally { if (identityAlive(identity)) child.kill('SIGKILL'); if (identityAlive(other)) decoy.kill('SIGKILL'); }
+  });
+
   it('reports failed cleanup rather than success when a root process survives outside the ledger', async () => {
     const { root, ledger } = await fixture();
     const stray = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', join(root, 'stray')], { stdio: 'ignore' });

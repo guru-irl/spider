@@ -95,7 +95,9 @@ export interface AppClientOptions { binary: string; env: Readonly<NodeJS.Process
 export type AppReply = { space?: SpaceId; tab?: TabId; pane?: PaneId; terminal?: TerminalAddress; pending?: boolean; error?: never }
   | { error: { code: string; message: string }; space?: never; tab?: never; pane?: never; terminal?: never };
 export interface OwnerPlacement { space: SpaceId; tab: TabId; pane: PaneId }
+export interface AppSpaceInfo { id: SpaceId; name: string; machine: string | null; active?: boolean; tabs: readonly { id: TabId; name: string }[] }
 export interface AppPaneInspection {
+	listSpaces?(): Promise<readonly AppSpaceInfo[]>;
 	tabPanes(placement: Pick<OwnerPlacement, 'space' | 'tab'>): Promise<readonly { terminal: TerminalAddress; pane: PaneId }[]>;
 	tabIndex(placement: Pick<OwnerPlacement, 'space' | 'tab'>): Promise<number>;
 	focusedPane(): Promise<OwnerPlacement | null>;
@@ -259,7 +261,15 @@ export interface JobResultSummary {
   id: JobId; runId: RunId | null; commandPreview: string; machine: MachineName;
   exitCode: number | null; signal: number | null; finishedAt: number; address: TerminalAddress;
 }
-export type PanelNotification =
+export type NotificationUrgency = 'low' | 'attention' | 'urgent';
+export type IntentionalNotification = {
+  id: string; createdAt: number; title: string; body: string;
+  kind: 'intentional'; scope: 'session'; sessionId: SessionId; ownerAddress: TerminalAddress; urgency: NotificationUrgency;
+} & (
+  | { runId: null; action: { kind: 'focus-owner'; sessionId: SessionId; address: TerminalAddress } }
+  | { runId: RunId; action: { kind: 'open-run'; sessionId: SessionId; runId: RunId } }
+);
+export type PanelNotification = IntentionalNotification
   | { id: string; createdAt: number; title: string; body: string;
       kind: 'subagent-result' | 'escalation' | 'job-result'; scope: 'session';
       sessionId: SessionId; ownerAddress: TerminalAddress;
@@ -293,6 +303,8 @@ export interface HerdrConfigBase {
   layout?: 'panes' | 'tabs';
   automaticSubagentPanes?: boolean;
   look?: { autoHideTabs: boolean };
+  /** Intentional notification sounds default to true when this setting is absent. */
+  notifications?: { sound: boolean };
   spaces: { name: string; layout?: 'panes' | 'tabs'; sessions: ({ file: string } | { name: string; sessionId?: string })[] }[];
   machines: { name: MachineName; aliases: string[]; runtime: MachineRuntime; nodePath?: string }[];
   fonts?: { body?: { path: string; license: string }; label?: { path: string; license: string }; paths?: { path: string; license: string } };
@@ -378,10 +390,12 @@ export type SteerReply = SteerReplyDetails & (
   | { delivery: 'refused'; accepted: false; delivered: false }
 );
 export type IpcMoveDestination = { kind: 'new' } | { kind: 'hide' } | { kind: 'tab'; tab: TabId };
+export type Destination = { space: SpaceId; tab: TabId } | null;
 /** Every IPC request is generation-bound, and steer text is at most 16 KiB of UTF-8. */
 export type SessionIpcRequest =
   | { op: 'ping'; generation: Generation }
   | { op: 'openView'; view: ViewName; generation: Generation }
+  | { op: 'openSession'; generation: Generation; destination: Destination }
   | { op: 'openRun'; runId: RunId; generation: Generation }
   | { op: 'killRun'; runId: RunId; generation: Generation }
   | { op: 'killSession'; generation: Generation }
@@ -404,6 +418,7 @@ export type SteerRefusal = 'queued' | 'paused' | 'print-mode' | 'slash-prefixed'
 export type SessionIpcReply =
   | { ok: true; op: 'ping'; status: { native: ProgramState | null; effective: ProgramState | null } }
   | { ok: true; op: 'openView' }
+  | { ok: true; op: 'openSession'; terminal: TerminalAddress }
   | { ok: true; op: 'killRun' }
   | { ok: true; op: 'killSession' }
   | { ok: true; op: 'moveSession' }

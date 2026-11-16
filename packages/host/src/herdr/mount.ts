@@ -35,6 +35,7 @@ import { hasLiveMappedAncestor, registerHerdrSessions } from '@spider/herdr/sess
 import { runtimeInstallPath, standardHerdrConfigPath as installedHerdrConfigPath } from '@spider/herdr/setup/installer';
 import { createTerminalRegistry } from '@spider/herdr/sessions/registry';
 import { moveOwnedSession } from '@spider/herdr/spaces/move';
+import { openOwnedSession } from '@spider/herdr/spaces/open';
 import { createMachineCache, type MachineCache } from '@spider/herdr/ssh/cache';
 import { createTransportPolicy } from '@spider/herdr/ssh/admin';
 import { createSshPolicy, type SshPolicy } from '@spider/herdr/ssh/policy';
@@ -137,6 +138,8 @@ export async function resolveRealSshBinary(env: Readonly<NodeJS.ProcessEnv>, shi
 export interface HerdrMount extends Disposable {
   owner(): Owner | null;
   enabled(): boolean;
+  /** True when this owning publisher queued a fresh snapshot, not when it was delivered. */
+  queueNotification(sessionId: Owner['sessionId']): boolean;
   /** Top-level owners end their streams before replacement cancels their children. */
   prepareSessionReplacement?(): Promise<void>;
   /** End owner streams before quit cancels children; publish the final feed afterward. */
@@ -188,6 +191,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   let observerAbort = new AbortController();
   const observerViews = new Map<JobId, Promise<{ handle: ObserverHandle; hc: HcClient }>>();
   const pendingRunOpens = new Set<Promise<TerminalAddress | null>>();
+  const pendingSessionOpens = new Set<Promise<TerminalAddress>>();
   const notifyError = (ctx: ExtensionContext, error: unknown) => {
     const manager = ctx.sessionManager ?? ctx, session = ctx.sessionManager?.getSessionId?.() ?? '(session)';
     const notice = inactiveNotices.get(manager) ?? { sessions: new Set<string>(), displayed: false };
@@ -329,7 +333,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   };
   const closeResources = async () => {
     // Canceled opens still need the live client to remove a late launch.
-    await Promise.allSettled([...pendingRunOpens]);
+    await Promise.allSettled([...pendingRunOpens, ...pendingSessionOpens]);
     const attempt = async (operation: () => unknown | Promise<unknown>) => {
       try { await operation(); }
       catch (error) { if (!(error instanceof HerdrError && ['core-unavailable', 'disposed'].includes(error.code))) report(error); }
@@ -642,6 +646,17 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
         const result = await makeMessageHandler()({ to: id, message: text }, options.actionContext(need(context)));
         return result.details as SteerReply;
       }, openView: view => { needAppConfig(); return views[view](need(context)); },
+      openSession: async (destination, signal) => {
+        if (owner !== current || stopped) throw new HerdrError('wrong-generation', 'Session owner is no longer active');
+        const selected = needAppConfig(), activeSignal = AbortSignal.any([observerAbort.signal, ...(signal ? [signal] : [])]);
+        const opening = openOwnedSession(current, destination, { hc: need(client),
+          app: createAppClient({ binary: selected.app.binary, env: need(activationEnv) }, activeSignal, availabilityReporter(need(context))),
+          placementRoot: join(selected.globalRoot, 'herdr/panes'), appIdentity: selected.app.home,
+          limit: selected.limits.auxiliaryPanes, clock: Date.now, signal: activeSignal });
+        pendingSessionOpens.add(opening);
+        try { return await opening; }
+        finally { pendingSessionOpens.delete(opening); }
+      },
       openRun: async (id, signal) => {
         needAppConfig();
         const opening = need(panes).acquire('subagent', id, current, { timeoutMs: 30_000, signal, ownerRelative: true }).then(reservation => reservation?.viewer ?? null);
@@ -752,7 +767,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   offs.push(registrationPi.on('session_shutdown', async event => {
     ++lifecycle; await coreProbe?.catch(report);
     // Reload hands a completed visible open to the next activation.
-    if (event.reason === 'reload') await Promise.allSettled([...pendingRunOpens]);
+    if (event.reason === 'reload') await Promise.allSettled([...pendingRunOpens, ...pendingSessionOpens]);
     await closeFeed(event.reason === 'quit'); await closeResources(); context = null;
   }));
   const guard: HerdrMount['guard'] = async event => {
@@ -762,7 +777,10 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     if (!owner || stopped || config?.enabled === false || !config) return event.input.on !== undefined ? { block: true, reason: HERDR_NOTICES.remoteDisabled.text } : undefined;
     return guardHerdrToolCall(event, routingPorts);
   };
-  return { owner: () => owner, enabled: () => Boolean(owner && !stopped), findKillJobs: id => findOwnedKillJobs(id, need(owner), journalRoot()), killJob: id => cancelJob(id, need(owner)), prepareSessionReplacement: () => closeFeed(false, 'wrong-generation'),
+  return { owner: () => owner, enabled: () => Boolean(owner && !stopped), queueNotification(sessionId) {
+      if (!owner || owner.sessionId !== sessionId || !source || !config || stopped || disposed || options.admitted?.() === false) return false;
+      void publish().catch(report); return true;
+    }, findKillJobs: id => findOwnedKillJobs(id, need(owner), journalRoot()), killJob: id => cancelJob(id, need(owner)), prepareSessionReplacement: () => closeFeed(false, 'wrong-generation'),
     prepareSessionQuit: async () => { try { await endpoint?.dispose(); } catch (error) { report(error); } finally { endpoint = null; } }, execution: () => ({ ...(owner ? { owner } : {}), ...(remote ? { remote } : {}), ...(!remote ? { remoteUnavailableReason: remoteUnavailableReason ?? HERDR_NOTICES.remoteDisabled.text } : {}), environmentPolicy: env => environment(env), ...(owner && config ? { supervisorHcBinary: config.core.binary } : {}) }), guard,
     async dispose() { if (disposed) return; disposed = true; ++lifecycle; for (const off of offs) off(); await coreProbe?.catch(report); agentConsoles.dispose(); await closeFeed(); await viewers.dispose(); await jobs.dispose(); status.dispose(); shortcuts?.dispose(); await routing?.dispose(); await sessions.dispose(); await closeResources(); },
   };

@@ -137,13 +137,16 @@ describe('Spider panel', () => {
       now+=1;timers[0].f(cx);await drain();samples.push(reads);console.log(JSON.stringify(samples));`);
     expect(output).toEqual([3,3]);
   });
-  test('close stops the mod-owned timer, watch and reader without a notice listener', async () => {
-    const output=await scene(`const canceled=[];let commandReads=0;api.nextCommand=()=>{commandReads++;return new Promise(()=>{});};
-      cx.spawn=f=>{const p=f(cx);p.cancel=()=>canceled.push(p===panel.watchTask?'watch':'other');tasks.push(p);return p;};
+  test('close stops the clock, watch, reader and exact refresh-command listener', async () => {
+    const output=await scene(`const canceled=[];let commandReads=0,deliver,reloads=0;api.nextCommand=()=>{commandReads++;return new Promise(resolve=>{deliver=resolve;});};
+      cx.spawn=f=>{const p=f(cx);p.cancel=()=>canceled.push(p===panel.watchTask?'watch':p===panel.refreshTask?'refresh':'other');tasks.push(p);return p;};
       initView(panel,cx);await tasks[0];panel.timer.cancel=()=>canceled.push('timer');
+      const original=panel.reload.bind(panel);panel.reload=async cx=>{reloads++;return original(cx);};
+      deliver('refresh:extra');for(let i=0;i<30;i++)await Promise.resolve();const ignored=reloads;
+      deliver('refresh');for(let i=0;i<50;i++)await Promise.resolve();const refreshed=reloads;
       const reader=panel.reader;panel.reader={...reader,close:async()=>{canceled.push('reader');await reader.close();}};
-      await panel.close();console.log(JSON.stringify({canceled,commandReads,hasCommandTask:panel.commandTask!==undefined}));`);
-    expect(output).toEqual({canceled:['timer','watch','reader'],commandReads:0,hasCommandTask:false});
+      await panel.close();console.log(JSON.stringify({canceled,commandReads,hasCommandTask:panel.commandTask!==undefined,ignored,refreshed}));`);
+    expect(output).toEqual({canceled:['timer','watch','refresh','reader'],commandReads:3,hasCommandTask:false,ignored:0,refreshed:1});
   });
   test('packaged run actions carry only canonical paths and owner generation', async () => {
     const output=await scene<{calls:string[][];commands:unknown[]}>(`const f=JSON.parse(files[0]);f.updatedAt=Date.now();f.runs={total:1,truncated:false,rows:[{id:'r1',ownerSessionId:'fixture',name:'Run',status:'done',childMode:'print',canSteer:false,startedAt:1,finishedAt:2,viewer:null,result:null}]};files[0]=JSON.stringify(f);const calls=[];
@@ -195,7 +198,7 @@ describe('Spider panel', () => {
       a.approvals=[];b.approvals=[{uuid:'approval',scope:'repo',repoKey:'/fixture/repo-b/.git',ownerSessionId:null,category:'insight',preview:'Second'}];files.splice(0,1,JSON.stringify(a),JSON.stringify(b));
       const calls=[];api.exec=async(cmd,args)=>{if(args[0]!=='-e')calls.push(args);return args[1]==='memory'?{code:0,stdout:JSON.stringify({ok:true,op:'pending',items:[],unavailable:[]}),stderr:''}:{code:0,stdout:JSON.stringify({feeds:files,errors:[]}),stderr:''};};
       initView(panel,cx);await tasks[0];
-      const button=byId(panel.render(cx),'need-memory');if(button)button.events.on_click({},cx);await drain();console.log(JSON.stringify({calls,commands,view:panel.view.kind}));`);
+      const button=byId(panel.render(cx),'spider-memories-open');if(button)button.events.on_click({},cx);await drain();console.log(JSON.stringify({calls,commands,view:panel.view.kind}));`);
     expect(output.calls).toEqual([['/fixture/cli.mjs','memory','pending','--repo','/fixture/repo-b/.git']]);expect(output.commands).toEqual([]);expect(output.view).toBe('memories');
   });
   test('a run reuses its displayed viewer and focuses the viewer the session returns', async () => {
@@ -299,7 +302,7 @@ describe('Spider panel', () => {
     const text = output.join(' ');
     expect(output).toContain('Usage unavailable'); expect(text).not.toContain('0 credits');
     expect(text).not.toMatch(/14 runs|9 todos|Showing/);
-    expect(output.filter(text => /memor|shared|Review/.test(text))).toEqual(['1 memory to review']);
+    expect(output.filter(text => /memor|shared|Review/.test(text))).toEqual([]);
     // The reason sits in the bar's tooltip; no track is drawn.
     const bar = await scene<{tip: unknown; track: boolean}>(`initView(panel,cx);await tasks[0];const tree=panel.render(cx);
       console.log(JSON.stringify({tip:byId(tree,'spider-pace').items[0].styles.tooltip[0],track:byId(tree,'pace-track')!==undefined}));`);

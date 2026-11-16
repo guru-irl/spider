@@ -1,0 +1,183 @@
+{
+  "0.1.13": {
+    "retainedOverrides": {
+      "agents": [
+        {
+          "id": "feed-lifecycle",
+          "anchor": "    this.folded = new Set();",
+          "replacement": "    this.folded = new Set();\n    this.spiderFeeds = [];\n    this.expandedConsoles = new Set();\n    const root = spiderProps().feedRoot;\n    if (root) {\n      const watchFeeds = cx => {\n        if (this.spiderWatching) return;\n        this.spiderWatching = true; this.spiderWatchFailed = false;\n        cx.spawn(async cx => {\n          try {\n            let next = watchFolder(root + \"/sessions\"); this.spiderWatch = next; next.catch(() => {});\n            await this.reloadSpiderFeeds(); cx.notify();\n            for (;;) {\n              await next;\n              if (this.spiderClosed) { next.cancel?.(); return; }\n              next.cancel?.();\n              next = watchFolder(root + \"/sessions\"); this.spiderWatch = next; next.catch(() => {});\n              await this.reloadSpiderFeeds(); cx.notify();\n            }\n          } catch { this.spiderWatchFailed = true; this.spiderFeedError = \"Feed watch unavailable; retrying\"; cx.notify(); }\n          finally { this.spiderWatching = false; }\n        });\n      };\n      watchFeeds(cx);\n      cx.timer.every(FEED_REFRESH_MS, cx => {\n        if (this.spiderClosed || this.spiderLoading) return;\n        if (this.spiderWatchFailed) watchFeeds(cx);\n        else cx.spawn(async cx => { await this.reloadSpiderFeeds(); cx.notify(); });\n      });\n    }",
+          "file": "main.js"
+        },
+        {
+          "id": "feed-and-actions",
+          "anchor": "  peek(addr) {\n",
+          "replacement": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const rows = projectAgentChildren(all, this.spiderFeeds ?? [], addr, p.labelContract, { ...p.retention, machines: machines() });\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n",
+          "file": "main.js"
+        },
+        {
+          "id": "agent-row-name",
+          "anchor": "    const label = (a) => labels.get(a.address);",
+          "replacement": "    const sessionName = a => (this.spiderFeeds ?? []).find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);",
+          "file": "main.js"
+        }
+      ],
+      "spaces": [
+        {
+          "id": "rail-pending-filter",
+          "anchor": "return out.filter(r => this.shown.has(r.w.id));",
+          "replacement": "return out.filter(r => includePending || this.shown.has(r.w.id));",
+          "file": "main.js"
+        }
+      ],
+      "pane": [],
+      "tabs": [],
+      "workspace-chrome": []
+    },
+    "supersededIds": {
+      "agents": [
+        "space-heading-icon",
+        "group-folded-pills",
+        "group-heading-padding",
+        "group-heading-counts"
+      ],
+      "spaces": [
+        "rail-space-button",
+        "workspace-empty-state",
+        "spaces-scrollbar",
+        "space-badge",
+        "space-identity",
+        "mono-machine-name",
+        "machine-space-thread-row",
+        "machine-space-thread",
+        "machine-fold-caret",
+        "machine-space-count",
+        "empty-machine-group-begin",
+        "empty-machine-group-end",
+        "thread-machine-heading",
+        "thread-new-space-row",
+        "thread-loading-row"
+      ]
+    },
+    "originalFailures": [
+      "agents/agent-row-name",
+      "spaces/rail-pending-filter"
+    ]
+  },
+  "0.1.16": {
+    "retainedOverrides": {
+      "agents": [
+        {
+          "id": "feed-lifecycle",
+          "anchor": "    this.folded = new Set();",
+          "replacement": "    this.folded = new Set();\n    this.spiderFeeds = [];\n    this.expandedConsoles = new Set();\n    const root = spiderProps().feedRoot;\n    if (root) {\n      const watchFeeds = cx => {\n        if (this.spiderWatching) return;\n        this.spiderWatching = true; this.spiderWatchFailed = false;\n        cx.spawn(async cx => {\n          try {\n            let next = watchFolder(root + \"/sessions\"); this.spiderWatch = next; next.catch(() => {});\n            await this.reloadSpiderFeeds(); cx.notify();\n            for (;;) {\n              await next;\n              if (this.spiderClosed) { next.cancel?.(); return; }\n              next.cancel?.();\n              next = watchFolder(root + \"/sessions\"); this.spiderWatch = next; next.catch(() => {});\n              await this.reloadSpiderFeeds(); cx.notify();\n            }\n          } catch { this.spiderWatchFailed = true; this.spiderFeedError = \"Feed watch unavailable; retrying\"; cx.notify(); }\n          finally { this.spiderWatching = false; }\n        });\n      };\n      watchFeeds(cx);\n      cx.timer.every(FEED_REFRESH_MS, cx => {\n        if (this.spiderClosed || this.spiderLoading) return;\n        if (this.spiderWatchFailed) watchFeeds(cx);\n        else cx.spawn(async cx => { await this.reloadSpiderFeeds(); cx.notify(); });\n      });\n    }",
+          "file": "main.js"
+        },
+        {
+          "id": "feed-and-actions",
+          "anchor": "  peek(addr) {\n",
+          "replacement": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const rows = projectAgentChildren(all, this.spiderFeeds ?? [], addr, p.labelContract, { ...p.retention, machines: machines() });\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n",
+          "file": "main.js"
+        },
+        {
+          "id": "child-action",
+          "anchor": ".on_click(() => (this.listed.has(k.address) ? run(\"pane.focus\", { terminal: k.address }) : this.peek(k.address)))",
+          "replacement": ".when(k.status !== \"unreachable\", el => el.on_click((_e, cx) => { if (k.kind === \"native\" && this.listed.has(k.address)) run(\"pane.focus\", { terminal: k.address }); else cx.spawn(async cx => { await this.openChild(k); cx.notify(); }); }))",
+          "file": "main.js"
+        },
+        {
+          "id": "agent-row-name",
+          "anchor": "    const label = (a) => labels.get(a.address);",
+          "replacement": "    const sessionName = a => (this.spiderFeeds ?? []).find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);",
+          "file": "main.js"
+        }
+      ],
+      "spaces": [
+        {
+          "id": "rail-scrollbar-import",
+          "anchor": "import { v_flex, h_flex, ScrollHandle } from \"gpui-base\";",
+          "replacement": "import { v_flex, h_flex, ScrollHandle, Scrollbar } from \"gpui-base\";",
+          "file": "main.js"
+        },
+        {
+          "id": "rail-pending-filter",
+          "anchor": "return out.filter(r => this.shown.has(r.w.id));",
+          "replacement": "return out.filter(r => includePending || this.shown.has(r.w.id));",
+          "file": "main.js"
+        },
+        {
+          "id": "mono-space-name",
+          "anchor": ".child(div().flex_initial().min_w(SIDE_MIN).truncate().text_color(t.foreground).child(w.name))",
+          "replacement": ".child(div().flex_initial().min_w(SIDE_MIN).font_family(\"JetBrains Mono\").truncate().text_color(t.foreground).child(w.name))",
+          "file": "main.js"
+        }
+      ],
+      "pane": [
+        {
+          "id": "style-1",
+          "anchor": "      .bg(t.background)\n      .when(bottom, el => el.border_t(1))\n      .when(!bottom, el => el.border_b(1))\n      .border_color(t.border)\n",
+          "replacement": "      .bg(t.chrome)\n",
+          "file": "main.js"
+        },
+        {
+          "id": "style-4",
+          "anchor": "import { panes, props, run, theme, home, layout } from \"herdr\";",
+          "replacement": "import { panes, props, run, theme, home, layout, terminals, nextCommand } from \"herdr\";\nimport { middlePath } from \"./shared/feed.js\";\nimport { identityPill } from \"./shared/look.js\";",
+          "file": "main.js"
+        }
+      ],
+      "tabs": [],
+      "workspace-chrome": [
+        {
+          "id": "footer-settings-only",
+          "anchor": ".when(Boolean(updates().app.ready), el => el.child(collapsed ? ready.absolute().top(5).right(6) : ready)))\n        .child(row(\"machine\", \"plus\", \"Add machine\", true, () => run(\"mod.open\", { name: \"machine-add\" })));",
+          "replacement": ".when(Boolean(updates().app.ready), el => el.child(div().size(6).rounded_full().bg(t.accent))));",
+          "file": "main.js"
+        }
+      ]
+    },
+    "supersededIds": {
+      "agents": [
+        "space-heading-icon",
+        "group-folded-pills",
+        "group-heading-padding",
+        "group-heading-counts"
+      ],
+      "spaces": [
+        "rail-space-button",
+        "workspace-empty-state",
+        "spaces-scrollbar",
+        "space-badge",
+        "space-identity",
+        "mono-machine-name",
+        "machine-space-thread-row",
+        "machine-space-thread",
+        "machine-fold-caret",
+        "machine-space-count",
+        "empty-machine-group-begin",
+        "empty-machine-group-end",
+        "thread-machine-heading",
+        "thread-new-space-row",
+        "thread-loading-row"
+      ]
+    },
+    "originalFailures": [
+      "agents/child-action",
+      "agents/agent-row-name",
+      "spaces/rail-scrollbar-import",
+      "spaces/rail-pending-filter",
+      "spaces/rail-space-button",
+      "spaces/workspace-empty-state",
+      "spaces/spaces-scrollbar",
+      "spaces/space-badge",
+      "spaces/mono-space-name",
+      "spaces/machine-fold-caret",
+      "spaces/empty-machine-group-end",
+      "spaces/thread-machine-heading",
+      "spaces/thread-new-space-row",
+      "spaces/thread-loading-row",
+      "pane/style-1",
+      "pane/style-4",
+      "workspace-chrome/footer-settings-only"
+    ]
+  }
+}

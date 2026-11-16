@@ -65,7 +65,7 @@ export type PaneServiceRequest =
   | (RequestBase & { op: 'open'; intent: PaneOpenIntent; machineKey: string; coreId: CoreId; machineId: string | null })
   | (PresentationRequest & { op: 'open-existing'; targetIncarnation: Pick<PaneTarget, 'coreId' | 'terminalId' | 'createdMs'> })
   | (RequestBase & { op: 'open-existing'; sessionId: SessionId; generation: Generation; slot: PaneSlot | null })
-  | (RequestBase & { op: 'open-auxiliary'; sessionId: SessionId; generation: Generation; view: { kind: 'subagent'; runId: RunId } | { kind: 'console'; machineKey: string; consoleId: ConsoleId } })
+  | (RequestBase & { op: 'open-auxiliary'; sessionId: SessionId; generation: Generation; mode?: 'automatic' | 'explicit'; view: { kind: 'subagent'; runId: RunId } | { kind: 'console'; machineKey: string; consoleId: ConsoleId } })
   | (PresentationRequest & { op: 'move'; slot: PaneSlot })
   | (PresentationRequest & { op: 'park' })
   | (PresentationRequest & { op: 'close-confirmed'; target: PaneTarget })

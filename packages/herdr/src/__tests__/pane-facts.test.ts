@@ -88,6 +88,18 @@ test('service mutations are revision or creation bound', () => {
   expect(() => parsePaneServiceRequest({ ...bound, op: 'park', expectedRevision: undefined })).toThrow();
   expect(() => parsePaneServiceRequest({ ...requests[1], intent: { ...intent, operationId: 'other' } })).toThrow();
 });
+test('auxiliary requests accept optional automatic or explicit mode without changing legacy requests', () => {
+  const request = { version: 1, operationId: 'aux-1', op: 'open-auxiliary', sessionId: 'session-1', generation: 'gen-1', view: { kind: 'subagent', runId: 'run-1' } };
+  expect(parsePaneServiceRequest(request)).toEqual(request);
+  for (const mode of ['automatic', 'explicit']) {
+    const parsed = parsePaneServiceRequest({ ...request, mode });
+    expect(parsed).toEqual({ ...request, mode });
+    expect(JSON.parse(encodePaneServiceRequest(parsed))).toEqual({ ...request, mode });
+  }
+  for (const mode of [null, undefined, '', 'other', true, 1, {}]) expect(() => parsePaneServiceRequest({ ...request, mode })).toThrow();
+  expect(() => parsePaneServiceRequest({ ...request, origin: 'automatic' })).toThrow();
+});
+
 test('reply codecs retain typed inventory and folder distinctions but reject capability descriptors', () => {
   const row = { sessionId: 'session-1', generation: 'gen-1', name: 'Example', owner: null, target: null, status: 'working', updatedAt: 1, machineKey: 'box-1.invalid', unavailableReason: 'not-in-hc', children: [], consoles: [] };
   const reply = { version: 1, op: 'list', page: { version: 1, rows: [row], next: null, complete: true } };

@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect, test } from 'vitest';
 import { createAuxiliaryPanes, type AuxiliaryPaneOptions } from '../jobs/placement.js';
+import { readPlacementRepairs, writePlacementRepair } from '../jobs/placement-repairs.js';
+import { createClientFixture } from './testutil.js';
 import { HerdrError } from '../client/parse.js';
 import type { AppClient, AppPaneInspection, ConsoleId, CoreId, HcClient, HcEvent, HcRunRequest, Owner, OwnerPlacement, RunId, TerminalAddress, TerminalSummary } from '../contracts.js';
 
@@ -19,6 +21,7 @@ function fixture(cols = 200, rows = 60, limit = 2) {
     exitCode: null, reason: null, signal: null, finishedAt: null, cols, rows });
   const terminals = new Map<TerminalAddress, TerminalSummary>([[display, terminal(display, { 'spider.kind': 'pane-proxy' })]]);
   const created: HcRunRequest[] = [], killed: TerminalAddress[] = [], lookups: TerminalAddress[] = [], sourceLaunches: RunId[] = [];
+  const commands: { name: string; args: Readonly<Record<string, unknown>> }[] = [];
   const events = new Set<(event: HcEvent) => void>();
   let sequence = 1, focused = placement, ownerDisplay: TerminalAddress | null = display;
   const app: AppClient & AppPaneInspection = {
@@ -30,6 +33,7 @@ function fixture(cols = 200, rows = 60, limit = 2) {
     focusedPane: async () => focused,
     awaitPane: async (address, target) => { const p = { ...target, pane: `pane-${address}` as OwnerPlacement['pane'] }; layout.set(address, p); return p.pane; },
     command: async (name, args) => {
+      commands.push({ name, args });
       const address = args.terminal as TerminalAddress;
       if (name === 'pane.focus') focused = args.pane ? [...layout.values()].find(p => p.pane === args.pane)! : layout.get(address)!;
       if (name === 'pane.go') { const panes = [...layout.values()].filter(p => p.tab === focused.tab); const next = panes[panes.indexOf(focused) + 1]; if (next) focused = next; }
@@ -60,7 +64,8 @@ function fixture(cols = 200, rows = 60, limit = 2) {
         'spider.owner-terminal': actualOwner.terminal.terminalId, 'spider.pane-role': kind, 'spider.reservation': id } }),
   };
   const panes = createAuxiliaryPanes(options);
-  return { owner, placement, layout, terminals, created, killed, lookups, sourceLaunches, options, panes, hc,
+  return { owner, placement, layout, terminals, created, killed, lookups, sourceLaunches, commands, options, panes, hc,
+    emit: (event: HcEvent) => { for (const listener of events) listener(event); },
     setOwnerDisplay: (value: TerminalAddress | null) => { ownerDisplay = value; },
     finish: (address: TerminalAddress) => {
       const ended = { ...terminals.get(address)!, state: 'finished' as const, finishedAt: Date.now(), exitCode: 0 };
@@ -211,6 +216,63 @@ test('removing a waiting display also releases its persistent claim', async () =
     expect(second?.viewer).toBe('t3'); expect(f.layout.size).toBe(2);
   } finally { await f.panes.dispose(); }
 });
+test('an existing presented viewer remains the owner-relative anchor for another actor', async () => {
+  const f = fixture(), other = createAuxiliaryPanes(f.options);
+  try {
+    const first = await f.panes.reservePresented('subagent', run, f.owner, { timeoutMs: 1000, ownerRelative: true });
+    const second = await other.reservePresented('subagent', otherRun, f.owner, { timeoutMs: 1000, ownerRelative: true });
+    expect(f.layout.get(first!.viewer)?.tab).toBe('mac-tab');
+    expect(f.layout.get(second!.viewer)?.tab).toBe('mac-tab');
+    expect(f.commands.filter(command => command.name === 'terminal.keep').map(command => command.args.place)).toEqual(['down', 'right']);
+    expect(f.lookups).not.toContain(f.owner.terminal.address);
+  } finally { await other.dispose(); await f.panes.dispose(); }
+});
+
+test('an earlier owner generation is not used as the current viewer anchor', async () => {
+  const f = fixture(), other = createAuxiliaryPanes(f.options);
+  try {
+    const first = await f.panes.reservePresented('subagent', run, f.owner, { timeoutMs: 1000, ownerRelative: true });
+    f.owner.generation = 'next-generation' as Owner['generation'];
+    const second = await other.reservePresented('subagent', otherRun, f.owner, { timeoutMs: 1000, ownerRelative: true });
+    expect(first).not.toBeNull(); expect(second).not.toBeNull();
+    expect(f.commands.filter(command => command.name === 'terminal.keep').map(command => command.args.place)).toEqual(['down', 'down']);
+    expect((await f.hc.get(first!.viewer)).labels['spider.owner-generation']).toBe('generation');
+    expect((await f.hc.get(second!.viewer)).labels['spider.owner-generation']).toBe('next-generation');
+  } finally { await other.dispose(); await f.panes.dispose(); }
+});
+
+test('reconciliation keeps leased source views and still reaps unplaced legacy viewers', async () => {
+  const f = fixture();
+  const addViewer = (address: TerminalAddress, lease: boolean) => {
+    const value: TerminalSummary = { ...f.terminals.get(display)!, address, parent: f.owner.terminal.address,
+      labels: { 'spider.kind': 'subagent-viewer', 'spider.session': f.owner.sessionId, 'spider.run': run,
+        'spider.owner-core': f.owner.terminal.coreId, 'spider.owner-terminal': f.owner.terminal.terminalId,
+        ...(lease ? { 'spider.display-lease': '/home/example/lease' } : {}) } };
+    f.terminals.set(address, value); f.emit({ type: 'created', seq: 1, terminal: address, data: value });
+  };
+  try {
+    addViewer('leased-view' as TerminalAddress, true);
+    await f.panes.reconcile(f.owner);
+    expect(f.terminals.has('leased-view' as TerminalAddress)).toBe(true);
+    expect(f.killed).not.toContain('leased-view');
+    addViewer('legacy-view' as TerminalAddress, false);
+    await f.panes.reconcile(f.owner);
+    expect(f.terminals.has('legacy-view' as TerminalAddress)).toBe(false);
+    expect(f.killed).toContain('legacy-view');
+    expect(f.terminals.has('leased-view' as TerminalAddress)).toBe(true);
+  } finally { await f.panes.dispose(); }
+});
+
+test('a presented reservation clears repairs for the Mac core, not the source core', async () => {
+  const f = fixture(), files = await createClientFixture();
+  f.options.placementRoot = files.root; f.options.appIdentity = 'mac-app'; f.options.automaticSubagentPanes = true;
+  try {
+    await writePlacementRepair(files.root, { viewer: 't2' as TerminalAddress, coreId: macCore, anchor: f.placement, app: 'mac-app', error: 'park-failed' });
+    expect(await f.panes.reservePresented('subagent', run, f.owner, { timeoutMs: 1000, automatic: true })).not.toBeNull();
+    expect(await readPlacementRepairs(files.root)).toEqual([]);
+  } finally { await f.panes.dispose(); await files.close(); }
+});
+
 test('release retires only the reserved display and keeps its source owner', async () => {
   const f = fixture();
   try {

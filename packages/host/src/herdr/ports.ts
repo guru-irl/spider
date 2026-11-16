@@ -41,11 +41,12 @@ import { snapshot, digest, managedProjection, rootNotesValue, readJournal, saveJ
 import { CoreOnlySetupError, runtimeInstallPath, standardHerdrConfigPath, type SetupRequest, type SetupParts, type SetupContext, type InstallFile, type RuntimeFile, type RuntimeRootObservation } from '@spider/herdr/setup/installer';
 import { planToastFiles } from '@spider/herdr/setup/toast';
 import type { HerdrCliPorts } from '@spider/herdr/setup/cli';
-import type { CoreIdentity, TerminalIdentity, TerminalAddress, MachineName, HcRunRequest } from '@spider/herdr';
+import type { CoreId, CoreIdentity, TerminalHandle, TerminalIdentity, TerminalAddress, MachineName, HcRunRequest } from '@spider/herdr';
+import type { PaneService } from '../../../herdr/src/panes/service.js';
 import { parseFeed } from '../../../herdr/assets/shared/feed.js';
 import { createSessionIpcClient } from '@spider/herdr/feed/ipc-client';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { join, resolve, isAbsolute, dirname, relative, sep } from 'node:path';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
@@ -217,6 +218,26 @@ export function createHostHerdrPorts(options: HostPortOptions): HostHerdrPorts {
     },
     dispose() { for (const c of collectors.values()) c.sink.finish(); collectors.clear(); },
   };
+}
+
+export async function openPresentedRun(input: {
+  owner: Owner; id: RunId; automatic: boolean; automaticEnabled: boolean; signal: AbortSignal; localCore: CoreId;
+  isCurrent(): boolean; connect(): Promise<Pick<PaneService, 'request' | 'stop'>>;
+}): Promise<TerminalHandle | null> {
+  const active = () => !input.signal.aborted && input.isCurrent();
+  if (!active() || input.automatic && !input.automaticEnabled) return null;
+  const service = await input.connect();
+  try {
+    if (!active()) return null;
+    const reply = await service.request({ version: 1, op: 'open-auxiliary', operationId: randomUUID(), sessionId: input.owner.sessionId,
+      generation: input.owner.generation, mode: input.automatic ? 'automatic' : 'explicit', view: { kind: 'subagent', runId: input.id } });
+    const p = reply.kind === 'outcome' && reply.outcome.status === 'complete' ? reply.outcome.presentation : null;
+    if (!active() || !p || p.mode !== 'proxy' || p.role !== 'subagent' || p.visibility !== 'visible' || p.launch !== 'acknowledged'
+      || !p.proxy || p.proxy.includes('/') && !p.proxy.startsWith(`${input.localCore}/`)
+      || p.target.kind !== 'subagent' || p.target.coreId !== input.owner.terminal.coreId || p.target.sessionId !== input.owner.sessionId
+      || p.target.generation !== input.owner.generation || p.target.runId !== input.id) return null;
+    return { address: p.proxy, coreId: input.localCore };
+  } finally { await service.stop(); }
 }
 
 export interface HostHerdrOptions {

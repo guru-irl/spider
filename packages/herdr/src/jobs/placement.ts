@@ -150,7 +150,8 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       if ([...slots.values()].some(slot => slot.reservation?.viewer === address)) { count++; continue; }
       const terminal = await options.hc.get(address).catch(error => { if (code(error) === 'not_found') return null; throw error; });
       // A pane can briefly outlive its core terminal. Reserve its capacity until the app removes it.
-      if (!terminal || [HERDR_KINDS.subagentViewer, HERDR_KINDS.remoteObserver, HERDR_KINDS.remoteConsole].some(kind => kind === terminal.labels[HERDR_LABELS.kind])) count++;
+      if (!terminal || [HERDR_KINDS.subagentViewer, HERDR_KINDS.remoteObserver, HERDR_KINDS.remoteConsole].some(kind => kind === terminal.labels[HERDR_LABELS.kind])
+        || terminal.labels[HERDR_LABELS.kind] === HERDR_KINDS.paneProxy && ['subagent', 'console'].includes(terminal.labels['spider.pane-role'])) count++;
     }
     return count;
   }
@@ -269,9 +270,11 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       if (!row) return null;
       const terminal = await options.hc.get(row.terminal).catch(error => { if (code(error) === 'not_found') return null; throw error; });
       const labels = terminal?.labels;
-      const reservedViewer = [...slots.values()].some(slot => slot.kind === 'subagent' && slot.reservation?.viewer === row.terminal
+      const reservedViewer = labels?.[HERDR_LABELS.kind] !== HERDR_KINDS.paneProxy && [...slots.values()].some(slot => slot.kind === 'subagent' && slot.reservation?.viewer === row.terminal
         && slot.owner.sessionId === s.owner.sessionId && slot.owner.generation === s.owner.generation);
-      return (labels?.[HERDR_LABELS.kind] === HERDR_KINDS.subagentViewer || reservedViewer) && labels?.[HERDR_LABELS.session] === s.owner.sessionId
+      const presentedViewer = labels?.[HERDR_LABELS.kind] === HERDR_KINDS.paneProxy && labels['spider.pane-role'] === 'subagent'
+        && labels['spider.owner-generation'] === s.owner.generation;
+      return (labels?.[HERDR_LABELS.kind] === HERDR_KINDS.subagentViewer || presentedViewer || reservedViewer) && labels?.[HERDR_LABELS.session] === s.owner.sessionId
         && labels[HERDR_LABELS.ownerCore] === s.owner.terminal.coreId && labels[HERDR_LABELS.ownerTerminal] === s.owner.terminal.terminalId ? row.terminal : null;
     };
     let anchorTerminal = ownerAddress(s);
@@ -349,7 +352,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
         if (explicit || displayOptions.automatic) {
           const placed = await app.ownerPlacement(viewer).catch(error => { if (code(error) === 'owner-unplaced') return null; throw error; });
           if (placed) { onRetained?.(); if (explicit) await focus(viewer); return acknowledged(s, viewer, placed); }
-          if (options.placementRoot) await clearPlacementRepair(options.placementRoot, { viewer, coreId: s.owner.terminal.coreId, app: options.appIdentity ?? 'app' });
+          if (options.placementRoot) await clearPlacementRepair(options.placementRoot, { viewer, coreId: placementCore(s), app: options.appIdentity ?? 'app' });
         }
         if (s.kind === 'subagent' && displayOptions.automatic && !options.automaticSubagentPanes) {
           await abandon(token); return null;
@@ -357,8 +360,13 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
         const current = await app.ownerPlacement(ownerAddress(s));
         if (current.space !== s.placement.space || current.tab !== s.placement.tab) throw new HerdrError('owner-tab-changed', 'Owner moved before pane acknowledgement');
         for (const ended of displayed(g)) if (ended.removedTerminal) await removeSlot(ended);
-        if (explicit && (s.kind === 'subagent' || s.kind === 'console') && displayOptions.ownerRelative) return await showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName], changed);
+        const ownerRelative = explicit && (s.kind === 'subagent' || s.kind === 'console') && displayOptions.ownerRelative;
+        if (ownerRelative && !s.presentationOwner) return await showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName], changed);
         let occupancy = await occupied(s);
+        if (ownerRelative) {
+          return occupancy >= limit ? await ownerTabFallback(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName], changed)
+            : await showBelowOwner(s, viewer, displayOptions, viewerLabels[HERDR_LABELS.displayName], changed);
+        }
         if (displayOptions.automatic && occupancy >= limit) {
           await awaitAbsent(viewer, true);
           await abandon(token); return null;
@@ -647,8 +655,10 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
             throw new HerdrError('pane-not-owned', 'Waiting display must belong to the local presentation core');
           s.waitingDisplay = waiting.address;
         }
+        await options.hc.setLabels(s.waitingDisplay, { 'spider.pane-role': kind, [HERDR_LABELS.session]: owner.sessionId, 'spider.owner-generation': owner.generation,
+          [HERDR_LABELS.ownerCore]: owner.terminal.coreId, [HERDR_LABELS.ownerTerminal]: owner.terminal.terminalId });
         check(displayOptions.signal);
-        const reservation = await show(s.token, s.waitingDisplay, { ...displayOptions, automatic: false,
+        const reservation = await show(s.token, s.waitingDisplay, { ...displayOptions,
           userInitiated: displayOptions.userInitiated ?? !displayOptions.automatic });
         if (!reservation) {
           await options.hc.kill(s.waitingDisplay); await options.hc.rm(s.waitingDisplay);
@@ -676,7 +686,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       await stream.ready; check(signal);
       for (const candidate of [...terminals.values()]) {
         const runId = candidate.labels[HERDR_LABELS.run] as RunId;
-        if (!runId || !sameRun(candidate, owner, runId)) continue;
+        if (!runId || candidate.labels['spider.display-lease'] || !sameRun(candidate, owner, runId)) continue;
         const key = openKey(runId, owner), revision = userOpens.get(key)?.revision ?? 0;
         // A completed open also invalidates a layout reply already in flight.
         const mayStop = () => !userOpens.get(key)?.active && (userOpens.get(key)?.revision ?? 0) === revision;

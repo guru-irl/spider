@@ -87,7 +87,7 @@ test('setup accepts a fresh new feed generation for the same live terminal and p
   const spaceRoot = join(root, 'spaces');
   await writePrivateJson(join(spaceRoot, 'spaces.json'), { version: 1, spaces: [{ name: 'Group', id: 'group', adopted: false }], tabs: [{ target, placement: { space: 'group', tab: 'tab', terminal: address }, result: { ...identity, sessionId: id, sessionFile: file, cwd: f.h.root }, failure: null, tabName: 'Group' }], intents: [], retired: [], focused: true });
   const script = join(f.h.root, 'read-layout.mjs'), binary = join(f.h.root, 'read-layout');
-  await writeFile(script, `console.log(JSON.stringify({spaces:[{id:'group',name:'Group',tabs:[{id:'tab',name:'Group',terminals:[{terminal:${JSON.stringify(address)}}]}]}]}));\n`);
+  await writeFile(script, `if (process.argv[2] === '--version') console.log('herdr-app 0.1.12');\nelse console.log(JSON.stringify({spaces:[{id:'group',name:'Group',tabs:[{id:'tab',name:'Group',terminals:[{terminal:${JSON.stringify(address)}}]}]}]}));\n`);
   await writeFile(binary, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`, { mode: 0o700 });
   f.request.config.app.binary = binary;
   const spaces = f.ports.spacePorts(f.request), reports: string[] = [];

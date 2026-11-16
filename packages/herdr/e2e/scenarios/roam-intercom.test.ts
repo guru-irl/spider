@@ -405,9 +405,17 @@ async function outages(suite: Suite): Promise<void> {
     const settled = await waitFor('same accepted IDs reconcile at the source', () => [copy(hub, firstId), copy(hub, secondId)],
       rows => rows.every(row => row?.state === 'injected' && row.payload_json === null), deadline(60_000));
     expect(events.some(event => received(event, 'cancelled private body'))).toBe(false);
+    const beforeReload = (await hub.probe.listSessions()).find(session => session.id === ids[0]);
+    expect(beforeReload?.activationEpoch).toBeTruthy();
+    const reloadDeadline = deadline(30_000);
     await sessions[0].prompt('/reload');
     await waitFor('returned sender reload completes before the late reply', () => sessions[0].events(),
-      entries => entries.filter(event => event.type === 'session_start').length >= 2, deadline(30_000));
+      entries => entries.filter(event => event.type === 'session_start').length >= 2, reloadDeadline);
+    const localPresence = await waitFor('reloaded sender registers its new activation', () => hub.probe.listSessions(),
+      list => list.some(session => session.id === ids[0] && !!session.activationEpoch && session.activationEpoch !== beforeReload!.activationEpoch), reloadDeadline);
+    const activation = localPresence.find(session => session.id === ids[0] && !!session.activationEpoch && session.activationEpoch !== beforeReload!.activationEpoch)!.activationEpoch;
+    await waitFor('helper sees the reloaded sender activation', () => box.probe.listSessions(),
+      list => list.some(session => session.remote === true && session.id === ids[0] && session.activationEpoch === activation && session.reachability === 'live'), reloadDeadline);
     const lateReply = await call(sessions[1], 'lateReply');
     expect(result(lateReply).details.delivered).toBe(true);
     await sessions[0].waitEvent('message_end', event => received(event, 'late answer after link-down'), deadline(60_000));

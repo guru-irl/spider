@@ -321,7 +321,15 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
       }
       if (value.op === 'move' || value.op === 'open-existing') {
         await validateTarget(p.target, 'open');
-        const slot = value.op === 'move' ? value.slot : 'slot' in value ? value.slot ?? p.slot : p.slot;
+        let slot = value.op === 'move' ? value.slot : 'slot' in value ? value.slot ?? p.slot : p.slot;
+        if (!slot && value.op === 'open-existing' && 'sessionId' in value) {
+          const matches = privateInventory.rows.filter(row => row.sessionId === value.sessionId && row.generation === value.generation);
+          const row = matches.length === 1 ? matches[0] : null;
+          if (!row?.target || !row.owner || row.unavailableReason !== null) return refused('not-in-hc');
+          const selection = selectRemoteSessionSlot({ row, rows: privateInventory.rows, inventoryComplete: privateInventory.complete, inventoryStale: privateInventory.stale, config, state, layout: await macLayout(), capabilities: await capabilities() });
+          if (selection.kind !== 'slot' || !selection.tab) return { status: 'pending', reason: selection.kind === 'unplaced' ? selection.reason : 'tab-choice-required', presentation: p };
+          slot = { space: selection.space, tab: selection.tab, pane: null };
+        }
         if (!slot) return refused('tab-choice-required');
         try { return { status: 'complete', reason: p.mode === 'native' ? 'native-presented' : 'proxy-presented', presentation: await presentInSlot(p, slot, value.operationId) }; }
         catch (error) { if (error instanceof HerdrError && error.code === 'proxy-launch-uncertain') return { status: 'pending', reason: error.code, presentation: (await store.read()).presentations.find(item => item.id === p!.id) ?? null }; throw error; }

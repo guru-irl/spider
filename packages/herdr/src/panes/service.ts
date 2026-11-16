@@ -36,7 +36,11 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   const inventories = new Map<string, PrivatePaneInventory>();
   const retry = new Map<string, { after: number; failures: number }>();
   const pending = new Map<string, Promise<void>>();
-  const replay = new Map<string, { bytes: string; reply: Promise<PaneServiceReply> }>();
+  const replay = new Map<string, { bytes: string; reply: Promise<PaneServiceReply>; settledAt: number | null }>();
+  const pruneReplay = () => {
+    const cutoff = ports.clock() - 60000;
+    for (const [id, entry] of replay) if (entry.settledAt !== null && entry.settledAt <= cutoff) replay.delete(id);
+  };
   let queue = Promise.resolve();
   let refreshing: Promise<void> | null = null;
   let leaseTick = -Infinity;
@@ -168,12 +172,16 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     request(input) {
       const request = parsePaneServiceRequest(input); const bytes = encodePaneServiceRequest(request);
       if (request.op === 'snapshot') return apply(request);
+      pruneReplay();
       const previous = replay.get(request.operationId);
       if (previous) return previous.bytes === bytes ? previous.reply : Promise.resolve(outcome('operation-reused'));
-      // Do not evict mutation evidence and then silently permit a replay.
+      // In-flight and recent actions must retain their replay evidence.
       if (replay.size >= 4096) return Promise.resolve(outcome('service-operation-limit'));
       const reply = queue.then(() => apply(request)); queue = reply.then(() => {}, () => {});
-      replay.set(request.operationId, { bytes, reply }); return reply;
+      const entry = { bytes, reply, settledAt: null as number | null };
+      replay.set(request.operationId, entry);
+      void reply.then(() => { entry.settledAt = ports.clock(); }, () => { entry.settledAt = ports.clock(); });
+      return reply;
     }, reconcile,
     async stop() { if (stopped) return; stopped = true; abort.abort(); unsubscribe(); cancelTimer(); await queue; await refreshing?.catch(() => {}); },
   };

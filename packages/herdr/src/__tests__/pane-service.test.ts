@@ -58,6 +58,38 @@ test('replayed operation IDs share one effect and changed payload refuses', asyn
   expect(a).toEqual(b); expect(f.ports.dispatch).toHaveBeenCalledTimes(1);
   expect(await service.request({ ...request, expectedRevision: 2 })).toMatchObject({ outcome: { status: 'refused', reason: 'operation-reused' } }); await service.stop();
 });
+test('settled action replies expire so the 4097th action still works', async () => {
+  const f = await fixture(); let now = 0;
+  f.ports.clock = () => now;
+  const state = await f.ports.store.read();
+  f.ports.store = { read: async () => state, update: async change => change(state) };
+  const service = createPaneService(f.ports);
+  try {
+    for (let i = 0; i < 4097; i++) {
+      now = i * 1000;
+      expect(await service.request({ version: 1, op: 'park', operationId: `expired-${i}`, presentationId: 'missing', expectedRevision: 1 }))
+        .toMatchObject({ outcome: { status: 'refused', reason: 'stale-presentation' } });
+    }
+  } finally { await service.stop(); }
+});
+test('in-flight actions retain replay protection beyond the replay window', async () => {
+  const f = await fixture(); let now = 0, finish!: () => void;
+  f.ports.clock = () => now;
+  const result = { status: 'complete' as const, reason: 'moved', presentation: f.presentation };
+  f.ports.dispatch = vi.fn(async () => { await new Promise<void>(resolve => { finish = resolve; }); return result; });
+  const service = createPaneService(f.ports);
+  const request = { version: 1 as const, op: 'move' as const, operationId: 'slow-move', presentationId: 'p1', expectedRevision: 1, slot: { space: 's1' as never, tab: 'tb1' as never, pane: null } };
+  const first = service.request(request);
+  await vi.waitFor(() => expect(f.ports.dispatch).toHaveBeenCalledTimes(1));
+  now = 120001;
+  const retry = service.request(request);
+  expect(await service.request({ ...request, expectedRevision: 2 })).toMatchObject({ outcome: { reason: 'operation-reused' } });
+  finish(); expect(await retry).toEqual(await first);
+  now += 59000;
+  expect(await service.request(request)).toMatchObject({ outcome: { reason: 'moved' } });
+  expect(f.ports.dispatch).toHaveBeenCalledTimes(1);
+  await service.stop();
+});
 test('changed readiness target refuses before dispatch', async () => {
   const f = await fixture(); vi.mocked(f.ports.validateTarget).mockResolvedValue({ ...f.presentation.target, homeEpoch: 4 }); const service = createPaneService(f.ports);
   const result = await service.request({ version: 1, op: 'present-ready', operationId: 'ready1', presentationId: 'p1', expectedRevision: 1, target: { ...f.presentation.target, homeEpoch: 3 } });

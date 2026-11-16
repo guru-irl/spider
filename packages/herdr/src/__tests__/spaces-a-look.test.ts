@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import base from '../../assets/look/patches.json' with { type: 'json' };
@@ -12,6 +14,42 @@ it('checks published recipe bytes without rewriting the manifest', () => {
   const result = spawnSync(process.execPath, ['scripts/compose-spaces-a.mjs', '--check'], { encoding: 'utf8' });
   expect(result.status, result.stderr).toBe(0);
   expect(readFileSync(manifest, 'utf8')).toBe(before);
+});
+
+it('refuses to publish an empty patch replacement for either release', () => {
+  const copy = mkdtempSync(join(tmpdir(), 'spaces-a-empty-replacement-'));
+  try {
+    mkdirSync(join(copy, 'scripts'), { recursive: true });
+    mkdirSync(join(copy, 'packages/herdr/src/__tests__'), { recursive: true });
+    cpSync('scripts/compose-spaces-a.mjs', join(copy, 'scripts/compose-spaces-a.mjs'));
+    cpSync('packages/herdr/assets', join(copy, 'packages/herdr/assets'), { recursive: true });
+    cpSync('packages/herdr/src/__tests__/fixtures', join(copy, 'packages/herdr/src/__tests__/fixtures'), { recursive: true });
+    cpSync('packages/herdr/src/__tests__/spaces-a-fixture.ts', join(copy, 'packages/herdr/src/__tests__/spaces-a-fixture.ts'));
+    symlinkSync(resolve('node_modules'), join(copy, 'node_modules'), 'dir');
+    const versions = ['0.1.13', '0.1.16'] as const;
+    const path = (version: string) => join(copy, `packages/herdr/assets/look/spaces-a-sidebar/agents-${version}.json`);
+    for (const version of versions) {
+      const patches = JSON.parse(readFileSync(path(version), 'utf8'));
+      patches.find((patch: any) => patch.id === 'a-agents-order').replacement = ' ';
+      writeFileSync(path(version), JSON.stringify(patches));
+    }
+    const compose = () => spawnSync(process.execPath, ['scripts/compose-spaces-a.mjs', 'agents'], { cwd: copy, encoding: 'utf8' });
+    const baseline = compose();
+    expect(baseline.status, baseline.stderr).toBe(0);
+    const manifest = join(copy, 'packages/herdr/assets/look/patches.json');
+    const before = readFileSync(manifest, 'utf8');
+    for (const version of versions) {
+      const patches = JSON.parse(readFileSync(path(version), 'utf8'));
+      patches.find((patch: any) => patch.id === 'a-agents-order').replacement = '';
+      writeFileSync(path(version), JSON.stringify(patches));
+      const result = compose();
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('a-agents-order');
+      expect(readFileSync(manifest, 'utf8')).toBe(before);
+      patches.find((patch: any) => patch.id === 'a-agents-order').replacement = ' ';
+      writeFileSync(path(version), JSON.stringify(patches));
+    }
+  } finally { rmSync(copy, { recursive: true, force: true }); }
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) describe(`Spaces A recipe ${version}`, () => {

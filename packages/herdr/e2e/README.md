@@ -20,7 +20,7 @@ The `Herdr headless stories` workflow runs on pull requests and accepts a `stori
 gh workflow run herdr-stories.yml --ref <branch> -f stories=R03
 ```
 
-Separate multiple story IDs with commas. Leave `stories` empty to run the default set in `controls/ci-stories.json`. The workflow verifies the pinned Linux core archive and executable, then uses a regular copy of the core executable as `hc`. The harness requires an owned executable rather than a symbolic link. `npm ci` runs `npm run build` through the root `prepare` script, and the story runner reuses that build.
+Separate multiple story IDs with commas. Leave `stories` empty to run the default set in `controls/ci-stories.json`. The workflow verifies the pinned Linux core archive and executable, then uses a regular copy of the core executable as `hc`. The harness requires an owned executable rather than a symbolic link. `npm ci` runs `npm run build` through the root `prepare` script, and the story runner reuses that build. On failure, download `herdr-headless-failures` and extract `e2.tar.gz`.
 
 The workflow exercises the packed extension and real, isolated local cores without a display. It does not certify the native app, native windows, SSH, or real remote machines. R01, R03, R04, R05, R11, and R12 are not yet in the default set. R02 covers app placement with a fixture owner and is outside the default set. R14local needs separately supplied local fixtures.
 

@@ -75,11 +75,19 @@ jobs:
           ')
           env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID XDG_RUNTIME_DIR= TMPDIR="$PWD/.spider/scratch/tmp" npm run test:herdr:e2e -- --built --tier headless --story "$stories"
 
+      - name: Archive failure artifacts
+        if: failure()
+        run: |
+          if [ -d "$PWD/.spider/scratch/e2" ]; then
+            mkdir -p "$PWD/.spider/scratch/herdr-ci"
+            tar --ignore-failed-read -czf "$PWD/.spider/scratch/herdr-ci/e2.tar.gz" -C "$PWD/.spider/scratch" e2
+          fi
+
       - name: Upload failure artifacts
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: herdr-headless-failures
-          path: .spider/scratch/e2/
+          path: .spider/scratch/herdr-ci/e2.tar.gz
           include-hidden-files: true
           if-no-files-found: ignore

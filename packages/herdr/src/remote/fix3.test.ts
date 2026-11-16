@@ -4,6 +4,7 @@ import { access, mkdtemp, mkdir, readFile, writeFile, rm, chmod } from 'node:fs/
 import { spawn } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { createProductionHerdrCliPorts, createHostHerdrPorts } from '../../../host/src/herdr/ports.js';
+import { writeFixturePaneEndpoint } from '../__tests__/endpoint-fixture.js';
 import { setupHerdr, type SetupParts, type SetupRequest } from '../setup/installer.js';
 import { parseHerdrConfig } from '../config.js';
 import { prepareRemoteProgram } from '../../../context/src/remote-plan.js';
@@ -43,6 +44,7 @@ async function fixture(nodeVersion?: string) {
   await writeFile(config.core.config, 'notes = false\n');
   await mkdir(join(root, 'dist/herdr'), { recursive: true });
   await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), await readFile(resolve('dist/herdr/remote-runtime.mjs')));
+  await writeFixturePaneEndpoint(root);
   const production = createProductionHerdrCliPorts(request.packageRoot, { ...process.env, HC_SESSION: 'isolated', HC_TERMINAL_SOCKET: owner.terminal.socket, XDG_STATE_HOME: root, XDG_CONFIG_HOME: join(root, 'config') });
   const runtimeParts = await production.setupParts(request);
   const parts: SetupParts = { ...runtimeParts, hc,

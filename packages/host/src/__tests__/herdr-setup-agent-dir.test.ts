@@ -8,6 +8,7 @@ import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { runtimeInstallPath } from '../../../herdr/src/setup/installer.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
+import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 
 let root = '';
 afterEach(() => { vi.unstubAllEnvs(); if (root) rmSync(root, { recursive: true, force: true }); });
@@ -71,6 +72,7 @@ it('refuses mismatched agent directories before writes and installs to the match
     cpSync(resolve('packages/herdr/assets'), assets, { recursive: true });
     mkdirSync(join(h.root, 'dist/herdr'), { recursive: true });
     cpSync(resolve('dist/herdr/remote-runtime.mjs'), join(h.root, 'dist/herdr/remote-runtime.mjs'));
+    await writeFixturePaneEndpoint(h.root);
     const versionedApp = join(h.root, 'versioned-app');
     writeFileSync(versionedApp, `#!/bin/sh\nif [ "$1" = '--version' ]; then echo 'herdr-app 0.1.12'; else exec '${h.appBinary}' "$@"; fi\n`, { mode: 0o700 });
     const matched = { enabled: true, app: { binary: versionedApp, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'rc'), spaces: [], machines: [{ name: 'remote.invalid', aliases: [], runtime: { cwd: h.directories.remote, directory: join(h.directories.remote, 'programs'), commands: {} }, nodePath: process.execPath }] };

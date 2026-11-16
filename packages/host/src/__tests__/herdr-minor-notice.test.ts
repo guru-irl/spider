@@ -11,6 +11,7 @@ import { setupHerdr, standardHerdrConfigPath } from '../../../herdr/src/setup/in
 import { isCoreAvailable } from '../../../herdr/src/client/liveness.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
+import { writeFixturePaneEndpoint } from '../../../herdr/src/__tests__/endpoint-fixture.js';
 import { controlConfig } from '../control.js';
 import { mountHerdr, type HerdrMount } from '../herdr/mount.js';
 
@@ -29,6 +30,7 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
   execFileSync('git', ['init', '-q', h.directories.local]);
   await mkdir(join(h.root, 'dist/herdr'), { recursive: true });
   for (const name of ['cli.mjs', 'remote-runtime.mjs']) await copyFile(resolve('dist/herdr', name), join(h.root, 'dist/herdr', name));
+  await writeFixturePaneEndpoint(h.root);
   await cp(resolve('packages/herdr/assets'), join(h.root, 'packages/herdr/assets'), { recursive: true });
   await mkdir(join(h.directories.global, 'herdr'), { recursive: true });
   await writeFile(standardHerdrConfigPath(h.directories.global), JSON.stringify({ enabled: true,

@@ -3,7 +3,31 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { startMachineMoveSocket, requestMachineMove, machineMoveProxy } from "../machine-move-socket";
 import type { MachineMovePort } from "../intercom-runtime";
+import { IntercomFenceError } from "../intercom-move";
 const roots: string[] = [], servers: Array<{ close(): Promise<void> }> = [];
+async function failingMachine(error: Error): Promise<ReturnType<typeof machineMoveProxy>> {
+  const root = mkdtempSync(join(resolve(".spider/scratch"), "mm-")); roots.push(root);
+  const fail = async (): Promise<never> => { throw error; };
+  servers.push(await startMachineMoveSocket(root, () => true, { broker: fail, bridge: fail, endpoint: fail, settlement: fail, releaseRollbackFence: fail,
+    intake: { close: fail, drain: fail, inspect: fail, checkGeneration: fail, abort: fail, ready: fail } }));
+  return machineMoveProxy(root);
+}
+it("unknown machine-control failures keep their sanitized cause without changing the public refusal", async () => {
+  const machine = await failingMachine(Object.assign(new Error("fixture failed, token=private-value"), { name: "FixtureFailure", code: "EIO", secret: "private-value", path: "/private/fixture" }));
+  const failure = await machine.broker({ sessionId: "session-a", scopeId: null }).catch(error => error);
+  expect(failure).toMatchObject({ message: "intercom-move-unavailable", code: "intercom-move-unavailable",
+    diagnostic: { name: "FixtureFailure", code: "EIO", message: "fixture failed, token=[redacted]" } });
+  expect(JSON.stringify(failure)).not.toMatch(/private-value|\/private\/fixture|stack|secret/);
+}, 5000);
+it.each([null, "intercom-owner-unknown"])("fence errors keep their blockers and optional code %s across the socket", async code => {
+  const blockers = [{ kind: "intercom-owner-unknown", id: "session-a", detail: "Cannot verify the intercom move fence." }];
+  const error = new IntercomFenceError(blockers);
+  if (code) Object.assign(error, { code });
+  const machine = await failingMachine(error);
+  const failure = await machine.broker({ sessionId: "session-a", scopeId: null }).catch(error => error);
+  expect(failure).toBeInstanceOf(IntercomFenceError);
+  expect(failure).toMatchObject({ blockers, ...(code ? { code } : {}), diagnostic: { name: "IntercomFenceError", code, blockers } });
+}, 5000);
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 it("machine socket exposes named operations and refuses malformed and disabled requests without effects", async () => {
   const root = mkdtempSync(join(resolve(".spider/scratch"), "mm-")); roots.push(root);

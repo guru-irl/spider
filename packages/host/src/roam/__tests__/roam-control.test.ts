@@ -7,6 +7,7 @@ import { createReplica } from "@spider/db-core/testutil";
 import { readSessionState } from "@spider/db-core/roam/state";
 import type { Home } from "@spider/db-core/roam/types";
 import type { Operation } from "@spider/roam/contracts";
+import { IntercomFenceError } from "@spider/roam/intercom-move";
 import { openFreezeJournal } from "@spider/roam/journal";
 import { requestSessionControl, sessionControlPath } from "@spider/roam/session-socket";
 import { createDormantControl, serveSessionControl } from "../control.js";
@@ -102,6 +103,31 @@ it("keeps the original control failure in the reply and the pending move journal
     expect(f.ports.journal.read("move-1")).toContainEqual({ action: "session-control-refused", result: { operationId: operation.id, diagnostic } });
     expect(JSON.stringify(reply) + JSON.stringify(f.ports.journal.read("move-1"))).not.toMatch(/private-value|\/private\/fixture|stack|secret/);
     expect(readSessionState(f.db, f.id)?.state).toBe("active");
+  } finally { await server.close(); }
+}, 5000);
+
+it("keeps a transported machine cause in the move journal", async () => {
+  const f = fixture(), operation = { ...f.operation, id: "transport-failed", kind: "session-freeze" };
+  const diagnostic = { name: "FixtureFailure", code: "EIO", message: "fixture failure" };
+  f.ports.journal.begin({ ...operation, id: "move-1", kind: "move" });
+  f.ports.gate.refreshInitialHome = async () => { throw Object.assign(new Error("intercom-move-unavailable"), { code: "intercom-move-unavailable", diagnostic }); };
+  const server = await serveSessionControl({ sessionId: f.id, runtimeRoot: root, ports: f.ports });
+  try {
+    expect(await requestSessionControl(root, operation)).toMatchObject({ code: 1, reason: "session-control-refused", value: { diagnostic } });
+    expect(f.ports.journal.read("move-1")).toContainEqual({ action: "session-control-refused", result: { operationId: operation.id, diagnostic } });
+  } finally { await server.close(); }
+}, 5000);
+
+it("keeps typed fence blockers in the move journal without changing the refusal", async () => {
+  const f = fixture(), operation = { ...f.operation, id: "fence-failed", kind: "session-freeze" };
+  const blockers = [{ kind: "intercom-owner-unknown", id: f.id, detail: "Cannot verify the intercom move fence." }];
+  f.ports.journal.begin({ ...operation, id: "move-1", kind: "move" });
+  f.ports.gate.refreshInitialHome = async () => { throw new IntercomFenceError(blockers); };
+  const server = await serveSessionControl({ sessionId: f.id, runtimeRoot: root, ports: f.ports });
+  try {
+    expect(await requestSessionControl(root, operation)).toMatchObject({ code: 3, reason: "freeze-blocked", value: { blockers } });
+    expect(f.ports.journal.read("move-1")).toContainEqual({ action: "session-control-refused", result: { operationId: operation.id,
+      diagnostic: { name: "IntercomFenceError", code: null, message: "Cannot verify the intercom move fence", blockers } } });
   } finally { await server.close(); }
 }, 5000);
 

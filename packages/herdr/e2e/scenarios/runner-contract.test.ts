@@ -10,6 +10,47 @@ import { storyId } from '../harness/scenario.js';
 vi.mock('../harness/scenario.js', async importOriginal => ({
   ...await importOriginal<typeof import('../harness/scenario.js')>(), registerScenarios: () => {},
 }));
+describe('cross-machine pane story registration', () => {
+  const ids = ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08'];
+  it('selects every packed pane story serially in headless and app tiers', async () => {
+    // @ts-ignore Vite provides import.meta.glob during test transformation.
+    const definitions = await discoverScenarios(import.meta.glob('./cross-machine-*.test.ts'));
+    for (const tier of ['headless', 'app']) {
+      const env = { SPIDER_HERDR_APP_TESTS: '1', SPIDER_HERDR_TEST_DISPLAY_UUID: 'owned-display' };
+      const options = parseOptions(['--tier', tier, '--story', ids.join(',')], env);
+      expect(selectScenarios(definitions, options).map((definition: { id: string }) => definition.id)).toEqual(ids);
+      expect(profileIds[tier]).toEqual(expect.arrayContaining(ids));
+      expect(storyWorkers(options)).toBe(1);
+    }
+    expect(profileIds.ci.filter((id: string) => ids.includes(id))).toEqual([]);
+    expect(profileIds.remote.filter((id: string) => ids.includes(id))).toEqual([]);
+  });
+  it('labels successful synthetic results without certifying native interaction', () => {
+    expect(parseOptions(['--tier', 'headless', '--task', 'panes'], {}).ids).toEqual(ids);
+    expect(() => parseOptions(['--tier', 'ci', '--task', 'panes'], {})).toThrow(/no stories/);
+    expect(storyWorkers({ tier: 'headless', ids: ['B04'], workers: 4 })).toBe(1);
+    const reports = ids.map(id => ({ id, tier: 'headless', result: 'passed', evidence: `${id}.json`, startedAt: 100, finishedAt: 200 }));
+    const matrix = buildMatrix('headless', ids, reports);
+    for (const id of ids) {
+      const row = matrix.find((row: { id: string }) => row.id === id);
+      expect(row).toMatchObject({ result: 'passed', startedAt: 100, finishedAt: 200 });
+      expect(row.reason).toMatch(/synthetic transport and app placement/);
+      expect(row.reason).toMatch(/native input, SSH and continuous pixels not exercised/);
+    }
+  });
+  it('retains blocked app results and missing headless results without claiming success', () => {
+    const reports = ids.map(id => ({ id, tier: 'app', result: 'blocked', evidence: `${id}.json`, reason: 'owned native input unavailable', startedAt: 100, finishedAt: 200 }));
+    const blocked = buildMatrix('app', ids, reports);
+    for (const id of ids) {
+      expect(blocked.find((row: { id: string }) => row.id === id)).toMatchObject({ result: 'blocked', startedAt: 100, finishedAt: 200 });
+      expect(renderMatrix(blocked)).toContain(`| ${id} | app | blocked |`);
+      expect(buildMatrix('headless', ids, []).find((row: { id: string }) => row.id === id).result).toBe('failed');
+    }
+    expect(complete(blocked, ids)).toBe(false);
+    expect(complete(buildMatrix('headless', ids, []), ids)).toBe(false);
+  });
+});
+
 describe('runner boundary and report', () => {
   it('pins the Linux release and selects registered headless stories for CI', async () => {
     const file = resolve('packages/herdr/e2e/controls/ci-stories.json');
@@ -214,7 +255,7 @@ describe('runner boundary and report', () => {
       { id: 'S54', tier: 'ci', result: 'blocked', evidence: 'S54.json', reason: 'native-input' },
       { id: 'S55', tier: 'ci', result: 'failed', evidence: 'S55.json', reason: 'cleanup failed' },
     ]);
-    expect(matrix).toHaveLength(67);
+    expect(matrix).toHaveLength(75);
     expect(matrix.find((x: { id: string }) => x.id === 'R14').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S01').result).toBe('not exercised');
     expect(matrix.find((x: { id: string }) => x.id === 'S56').result).toBe('failed');

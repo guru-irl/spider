@@ -369,9 +369,9 @@ The list includes agents from every machine. Use the sort control in the Agents 
 ### Panes
 
 Each tab shares `limits.auxiliaryPanes` auxiliary slots across all its sessions, 2 by default. Spider counts the viewer panes in the app layout, including viewers opened by another session process. Opening an auxiliary view never parks, moves, resizes, or hides your main agent panes.
-The close button in spider's pane header asks before closing a pi session. Cancel keeps the pane and session running. Confirm ends pi, but its supervised subagents keep running and reconnect when you resume the same session. Shell and mod panes still close normally. Spider does not park main sessions because Herdr cannot reliably give those terminals a pane again. The focused header also accepts `spider-pane.close`, which uses the same confirmation. It is not a new default key binding. Herdr's native `pane.close` command has no close hook, so a custom key binding or another mod that calls it directly can still close without asking. The move menu's explicit Kill session action instead stops its subagents before ending pi.
+The close button in spider's pane header asks before closing a pi session. Cancel keeps the pane and session running. Confirm ends pi, but its supervised subagents keep running and reconnect when you resume the same session. Shell and mod panes still close normally. Spider does not park native local main sessions because Herdr cannot reliably give those terminals a pane again. The focused header also accepts `spider-pane.close`, which uses the same confirmation. It is not a new default key binding. Herdr's native `pane.close` command has no close hook, so a custom key binding or another mod that calls it directly can still close without asking. The move menu's explicit Kill session action instead stops its subagents before ending pi.
 
-Subagent viewers stay parked by default. They keep running without a pane and appear under their parent in the sidebar. Open them from the sidebar, the spider panel, or an open or move menu. Consoles and command observers also wait for you to open them.
+Subagent viewers stay parked by default and appear under their parent in the sidebar. Local viewers can keep running without a pane; remote viewers use the disposable display leases described below. Open them from the sidebar, the spider panel, or an open or move menu. Consoles and command observers also wait for you to open them.
 
 Set `automaticSubagentPanes: true` to let new subagent viewers fill free auxiliary slots automatically. The setting is off by default. When the tab is full, a new viewer stays parked. Spider never closes a displayed pane to make room for an automatic viewer.
 
@@ -390,6 +390,36 @@ Right-click a terminal pane's header to move it to a new tab or another tab. The
 The last menu item stops the item in that pane. It reads **Kill subagent**, **Kill command**, **Kill session…**, or **Kill terminal**. Killing a session asks for confirmation, then waits for its subagents to stop before killing the session's terminal. Cancel leaves both running. **Kill terminal** uses that same backend stop when the terminal owns a pi session; an ordinary shell is killed directly. Session kills require a live owning connection rather than falling back to an unsafe native kill. **Kill command** asks the owning session to cancel the remote process group.
 
 Closing a viewer, console, or observer, or the tab that holds it, never cancels a job or a run. To stop a remote command, abort the call, let its timeout expire, or use `spider kill` with its job ID.
+
+## Cross-machine panes
+
+The tab plus action, split actions, Go to → New terminal and agent creation actions choose a machine before starting a program. **This computer** is the local choice. The focused agent's machine is preferred when known. Unreachable machines remain visible but disabled. A pane-menu selection carries its original destination and machine choice into the next action; it cannot start the same program twice by reusing that selection.
+
+The program runs on the chosen core. A remote program appears through a local proxy in a local space and tab, not through a remote app space. Its header uses the target's title, status and current folder, with a neutral machine pill. Local agents, viewers and consoles show **This computer**; an ordinary local shell has no machine pill.
+
+A new remote shell uses a proved current folder from the focused target on that machine, or that machine's home when no suitable folder is available. The remote machine checks the folder. An unreachable machine does not start the program locally instead.
+
+### Close, Send back and reconnect
+
+A remote proxy is a display, not the program it shows:
+
+- **Close** asks before ending the real target. Cancel leaves it running.
+- **Send back** removes the display and keeps the program running. Open it again from Agents to attach to the same target, using its saved tab when available. Choose another tab explicitly if the original container was removed.
+- A tab or space closing, a display process exiting, or a connection dropping is not a request to stop the remote program.
+
+During an outage the proxy shows reconnecting status and discards input. It does not replay those keys when the connection returns. It verifies the source core and terminal incarnation before enabling input again. Reusing the same machine alias for another core cannot redirect the old presentation.
+
+Native local pi close keeps its existing confirmation. A native `pane.close` call still has no spider close hook.
+
+### Hand-started agents and remote views
+
+Agents discovers named pi sessions on configured machines even when they were started outside spider's space setup. A unique configured name can supply a destination. Otherwise the agent stays unplaced until you choose **Open in tab**, **Move to tab**, **Move to new tab**, or a drop target. Explicit placement is remembered and takes priority over a later name match, including after the presentation helper restarts. A live pi outside an hc terminal is listed as **Not in an hc terminal**; its placement actions are disabled.
+
+A remote subagent view opens relative to its parent's local presentation. If that view cannot fit at 60 columns by 8 rows, it uses an owner-relative tab instead of shrinking the parent. Its display lease lasts 20 seconds and renews while displayed. Closing the display, losing its helper or letting the lease expire may stop that viewer process, never the subagent. Reopening starts a new view of the same run. Consoles are read-only and keep one identity per agent and machine; removing their display does not cancel jobs.
+
+When execution moves between this computer and another machine, presentation readiness preserves the saved local space and tab and changes between a native pane and a proxy. Ownership and display readiness are separate. If the original tab is unfocused and a focus-safe placeholder cannot be proved, conversion remains pending without moving focus or rolling ownership back. The native moved placeholder on 0.1.13 is not implemented.
+
+The [B01–B08 acceptance checklist](../../packages/herdr/e2e/README.md#cross-machine-panes-b01b08) separates packed checks from blocked native keyboard, clipboard, resize and continuous-visibility observations. A headless result does not certify those interactions.
 
 ## Raw SSH
 

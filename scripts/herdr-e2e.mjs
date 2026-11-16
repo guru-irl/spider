@@ -7,19 +7,20 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const storyIds = Array.from({ length: 56 }, (_, i) => `S${String(i + 1).padStart(2, '0')}`);
 export const roamStoryIds = ['R01', 'R02', 'R03', 'R04', 'R05', 'R09', 'R11', 'R12', 'R13', 'R14', 'R14local'];
-const allStoryIds = [...storyIds, ...roamStoryIds];
+export const paneStoryIds = ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08'];
+const allStoryIds = [...storyIds, ...roamStoryIds, ...paneStoryIds];
 const validStoryId = id => typeof id === 'string' && (allStoryIds.includes(id) || id === 'B00' || /^H-[a-z0-9-]+$/.test(id));
 export const profileIds = {
-  headless: [...storyIds.filter(id => id !== 'S53'), 'R01', 'R02', 'R03', 'R04', 'R05', 'R09', 'R11', 'R12', 'R13', 'R14'],
+  headless: [...storyIds.filter(id => id !== 'S53'), 'R01', 'R02', 'R03', 'R04', 'R05', 'R09', 'R11', 'R12', 'R13', 'R14', ...paneStoryIds],
   ci: ['S03', 'S04', 'S14', 'S27', 'S45', 'S46', 'S47', 'S48', 'S49', 'S51', 'S55', 'S56'],
   remote: ['H-tier2-smoke', 'S05', 'S07', ...storyIds.slice(14, 26), 'S28', 'S36', 'S45', 'S48'],
-  app: [...storyIds.slice(0, 3), ...storyIds.slice(4, 13), ...storyIds.slice(14, 23), 'S25', ...storyIds.slice(25, 44).filter(id => id !== 'S27'), 'S50', 'S51', ...storyIds.slice(51, 54)],
+  app: [...storyIds.slice(0, 3), ...storyIds.slice(4, 13), ...storyIds.slice(14, 23), 'S25', ...storyIds.slice(25, 44).filter(id => id !== 'S27'), 'S50', 'S51', ...storyIds.slice(51, 54), ...paneStoryIds],
 };
 const taskIds = {
   setup: ['S04', ...storyIds.slice(4, 12), 'S14'],
   remote: storyIds.slice(14, 25), subagents: storyIds.slice(25, 33),
   status: storyIds.slice(0, 3), lifecycle: [...storyIds.slice(0, 3), 'S13', ...storyIds.slice(48, 51)],
-  panels: storyIds.slice(33, 44), ssh: storyIds.slice(44, 48), runner: storyIds.slice(51), look: ['S52', 'S53'], shortcuts: ['S54'], roam: roamStoryIds,
+  panels: storyIds.slice(33, 44), ssh: storyIds.slice(44, 48), runner: storyIds.slice(51), look: ['S52', 'S53'], shortcuts: ['S54'], roam: roamStoryIds, panes: paneStoryIds,
 };
 export function parseOptions(argv, env = process.env) {
   const options = { tier: 'headless', ids: [], shuffle: false, seed: 'fixture', build: true, harness: false };
@@ -115,6 +116,10 @@ export function buildMatrix(tier, selected, reports) {
       id, tier, result: selected.includes(id) ? 'failed' : 'not exercised', evidence: 'invocation.json',
       reason: selected.includes(id) ? 'selected story produced no result (worker failed or interrupted)' : 'outside selected profile or no discovered implementation',
     };
+    if (paneStoryIds.includes(id) && tier === 'headless' && report.result === 'passed') {
+      const limit = 'Independent local cores with synthetic transport and app placement; native input, SSH and continuous pixels not exercised';
+      return { ...report, reason: [report.reason, limit].filter(Boolean).join('; ') };
+    }
     if (id !== 'R02' || report.result !== 'passed') return report;
     const limit = 'Packaged observer-to-placement uses a fixture owner; native app and pi owner not exercised';
     return { ...report, reason: [report.reason, limit].filter(Boolean).join('; ') };
@@ -161,6 +166,7 @@ export function storyWorkerEnvironment(fenced, caller, tier) {
     ...(tier === 'headless' && base && upstream ? { SPIDER_HERDR_E2E_R14_BASE: base, SPIDER_HERDR_E2E_R14_UPSTREAM: upstream } : {}) };
 }
 export function storyWorkers(options) {
+  if (options.ids?.some(id => paneStoryIds.includes(id))) return 1;
   if (options.ids?.some(id => ['R03', 'R04', 'R05', 'R09', 'R11', 'R12', 'R13'].includes(id))) return 1;
   if (options.ids?.length === 1 && ['R14', 'R14local'].includes(options.ids[0])) return 1;
   return options.tier === 'app' ? 1 : 2;
@@ -191,14 +197,14 @@ export async function packEntryDigests(checkout, root, pack) {
   if (result.code !== 0) throw new Error('pack failed');
   // npm 10 may rebuild dist during pack even with --ignore-scripts. Snapshot
   // the checkout as packed, including the new build id, not its pre-pack state.
-  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/cli-main.mjs', 'roam/intercom-helper.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs'];
+  const entries = ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/feed-reader.mjs', 'herdr/pane-endpoint.mjs', 'herdr/remote-runtime.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/cli-main.mjs', 'roam/intercom-helper.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs'];
   const digests = Object.fromEntries(entries.map(entry => [entry, createHash('sha256').update(readFileSync(path.join(checkout, 'dist', entry))).digest('hex')]));
   writeFileSync(path.join(root, 'entries.json'), JSON.stringify(digests, null, 2));
   return { entries, digests };
 }
 export async function main(argv = process.argv.slice(2)) {
   const options = parseOptions(argv);
-  if (options.help) { console.log('herdr-e2e --tier headless|ci|remote|app [--story S52,R01] [--task setup|remote|subagents|lifecycle|panels|ssh|runner|roam] [--shuffle --seed value] [--built] [--harness]'); return 0; }
+  if (options.help) { console.log('herdr-e2e --tier headless|ci|remote|app [--story S52,R01] [--task setup|remote|subagents|lifecycle|panels|ssh|runner|roam|panes] [--shuffle --seed value] [--built] [--harness]'); return 0; }
   if (!options.ids.length) options.ids = profileIds[options.tier];
   const checkout = realpathSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
   const root = path.join(checkout, '.spider/scratch/e2', randomBytes(3).toString('hex'));

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parse } from 'yaml';
 
-type Step = { name?: string; uses?: string; run?: string; if?: string; env?: Record<string, string>; with?: Record<string, string> };
+type Step = { name?: string; uses?: string; run?: string; if?: string; env?: Record<string, string>; with?: Record<string, string>; 'timeout-minutes'?: number | string };
 type Job = { name?: string; uses?: string; needs?: string[] | string; permissions?: Record<string, string>; if?: string; outputs?: Record<string, string>; steps: Step[]; 'timeout-minutes'?: number | string; strategy?: { matrix: any; 'fail-fast'?: boolean } };
 type Workflow = { on: Record<string, unknown>; permissions?: Record<string, string>; jobs: Record<string, Job>; concurrency?: unknown };
 const source = (name: string): string => readFileSync(join(process.cwd(), '.github/workflows', `${name}.yml`), 'utf8');
@@ -123,6 +123,7 @@ describe('headless story matrix', () => {
     expect(story.steps.some(item => item.run?.includes('npm ci'))).toBe(false);
     const run = step(story, 'Run headless story');
     expect(run.env?.STORY).toBe('${{ matrix.story }}');
+    expect(run['timeout-minutes']).toBe("${{ matrix.story == 'R05' && 4 || matrix.timeout }}");
     expect(run.run).toContain('--built --tier headless --story "$stories"');
     const artifacts = step(story, 'Upload failure artifacts');
     expect(artifacts.if).toBe('failure()');

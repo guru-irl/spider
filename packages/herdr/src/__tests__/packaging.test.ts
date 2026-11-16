@@ -93,7 +93,7 @@ describe.sequential('published Herdr artifact', () => {
       'packages/herdr/assets/look/spaces-a-goto/menu-0.1.13.json', 'packages/herdr/assets/look/spaces-a-goto/menu-0.1.16.json',
       'packages/herdr/assets/tabs/spider.svg', 'packages/herdr/assets/tabs/autohide.js',
       'packages/herdr/assets/mods/spider/main.js',
-      'packages/herdr/assets/agents/children.js', 'packages/herdr/assets/agents/move.js', 'packages/herdr/assets/agents/move-menu.js', 'packages/herdr/assets/agents/bot.svg', 'packages/herdr/assets/agents/list.svg', 'packages/herdr/assets/agents/bell.svg', 'packages/herdr/assets/agents/chevron-up.svg',
+      'packages/herdr/assets/agents/children.js', 'packages/herdr/assets/agents/move.js', 'packages/herdr/assets/agents/move-menu.js', 'packages/herdr/assets/agents/bot.svg', 'packages/herdr/assets/agents/list.svg', 'packages/herdr/assets/agents/bell.svg', 'packages/herdr/assets/agents/chevron-up.svg', 'packages/herdr/assets/agents/unreachable.svg',
       'packages/herdr/assets/look/patches.json', 'packages/herdr/assets/look/layout-edits.json',
       'packages/herdr/assets/fonts/GoogleSansFlex.ttf', 'packages/herdr/assets/fonts/GlassLabel-Bold.ttf',
       'packages/herdr/assets/fonts/GoogleSansFlex-OFL.txt', 'packages/herdr/assets/fonts/GoogleSansFlex-TRADEMARKS.md',
@@ -259,7 +259,7 @@ else { console.error('Publish requires a checked tarball path'); process.exit(1)
     } finally { await core.close(); }
   });
 
-  it.each(['missing entry', 'missing asset', 'missing parent icon', 'Node mod API', 'Node mod global', 'external remote import', 'invalid runtime syntax', 'extra runtime', 'frozen built-in mod', 'truncated licence'])('rejects a broken artifact: %s', kind => {
+  it.each(['missing entry', 'missing asset', 'missing parent icon', 'missing unreachable icon', 'Node mod API', 'Node mod global', 'external remote import', 'invalid runtime syntax', 'extra runtime', 'frozen built-in mod', 'truncated licence'])('rejects a broken artifact: %s', kind => {
     const copy = mkdtempSync(join(scratch, 'broken-'));
     try {
       cpSync(join(packedRoot, 'package'), copy, { recursive: true });
@@ -267,6 +267,7 @@ else { console.error('Publish requires a checked tarball path'); process.exit(1)
       if (kind === 'truncated licence') writeFileSync(join(copy, 'licenses/herdr-apache-2.0.txt'), 'Apache License\n');
       if (kind === 'missing asset') rmSync(join(copy, 'packages/herdr/assets/shared/feed.js'));
       if (kind === 'missing parent icon') rmSync(join(copy, 'packages/herdr/assets/agents/corner-up-left.svg'), { force: true });
+      if (kind === 'missing unreachable icon') rmSync(join(copy, 'packages/herdr/assets/agents/unreachable.svg'), { force: true });
       if (kind === 'Node mod global') writeFileSync(join(copy, 'packages/herdr/assets/mods/spider/data.js'), 'export const bad = globalThis["process"];\n');
       if (kind === 'invalid runtime syntax') writeFileSync(join(copy, 'dist/herdr/remote-runtime.mjs'), 'export {\n');
       if (kind === 'frozen built-in mod') {
@@ -276,7 +277,7 @@ else { console.error('Publish requires a checked tarball path'); process.exit(1)
       if (kind === 'Node mod API') writeFileSync(join(copy, 'packages/herdr/assets/mods/spider/data.js'), 'import fs from "node:fs";\nexport const bad = fs;\n');
       if (kind === 'external remote import') writeFileSync(join(copy, 'dist/herdr/remote-runtime.mjs'), 'import "@spider/context";\n');
       if (kind === 'extra runtime') writeFileSync(join(copy, 'dist/herdr/metrics-runtime.mjs'), 'export {};\n');
-      expect(() => run(['scripts/assert-bundle.mjs', '--root', copy])).toThrow(new RegExp(kind.startsWith('Node mod') ? 'Node API' : kind === 'external remote import' ? 'non-builtin' : kind === 'missing asset' ? 'feed.js' : kind === 'missing parent icon' ? 'corner-up-left.svg' : 'Herdr'));
+      expect(() => run(['scripts/assert-bundle.mjs', '--root', copy])).toThrow(new RegExp(kind.startsWith('Node mod') ? 'Node API' : kind === 'external remote import' ? 'non-builtin' : kind === 'missing asset' ? 'feed.js' : kind === 'missing parent icon' ? 'corner-up-left.svg' : kind === 'missing unreachable icon' ? 'unreachable.svg' : 'Herdr'));
     } finally { rmSync(copy, { recursive: true, force: true }); }
   });
 });

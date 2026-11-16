@@ -33,7 +33,7 @@ function element(svgPath?: string, allowed = methods): any {
     };
     if (key === 'child') return (value: unknown) => { add(value); return proxy; };
     if (key === 'children') return (values: unknown[]) => { values.forEach(add); return proxy; };
-    if (key === 'hover') return () => proxy;
+    if (key === 'hover') return (fn: (style: any) => unknown) => { node.events.hover = fn; return proxy; };
     return (...args: unknown[]) => {
       node.calls.push([key, args]);
       if (key === 'id') node.id = args[0] as string;
@@ -200,6 +200,74 @@ it('0.1.13: defers machine observation until the first tick while remote focus w
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  it(`${version}: displays an accessible unreachable icon in the working status slot`, () => {
+    const test = fixture(version);
+    const unreachable = test.view.status(palette, { status: 'unreachable', address: 'away' }, false);
+    const node = all(unreachable).find(item => item.svg === 'mods/spider-agents/unreachable.svg')!;
+    expect(node).toBeDefined();
+    const spinner = all(test.view.status(palette, { status: 'working', address: 'running' }, false)).find(item => item.svg === 'mods/workspace-chrome/spinner.svg')!;
+    for (const [name, value] of [['size', 12], ['mx', 1]] as const) {
+      expect(call(node, name)).toEqual([value]);
+      expect(call(node, name)).toEqual(call(spinner, name));
+    }
+    expect(call(node, 'flex_none')).toEqual([]);
+    expect(call(node, 'text_color')).toEqual([palette.dim]);
+    expect(call(node, 'tooltip')).toEqual(['Unreachable']);
+    expect(call(node, 'accessibility_label')).toEqual(['Unreachable']);
+    expect(texts(unreachable)).not.toContain('Unreachable');
+    for (const [status, label] of [['queued', 'Queued'], ['paused', 'Paused'], ['disconnected', 'Disconnected'], ['cancelled', 'Cancelled'], ['unknown', 'Unknown']]) {
+      expect(texts(test.view.status(palette, { status, address: 'away' }, false))).toContain(label);
+    }
+  });
+
+  it(`${version}: shows the unreachable icon on console and subagent rows`, async () => {
+    const test = fixture(version);
+    seedConsoles(test);
+    test.nativeTerminals.push({ ...terminal('box-5.invalid/viewer', { 'spider.kind': 'subagent-viewer', 'spider.run': 'away-run', 'spider.session': 'session-one', 'spider.machine': 'box-5.invalid' }), parent: 'local', name: 'Away subagent' });
+    await test.ready();
+    let root = test.view.render(test.cx);
+    byId(root, consoleId('local'))!.events.on_click({}, test.cx);
+    root = test.view.render(test.cx);
+    for (const id of ['sub-console:box-5.invalid/console-away', 'sub-away-run']) {
+      const row = byId(root, id)!;
+      expect(row, id).toBeDefined();
+      expect(row.children.flatMap(all).filter(node => node.svg === 'mods/spider-agents/unreachable.svg')).toHaveLength(1);
+      expect(row.children.flatMap(all).flatMap(node => node.children)).not.toContain('Unreachable');
+    }
+  });
+
+  it(`${version}: places the console label in the old icon slot without the terminal icon`, async () => {
+    const test = fixture(version);
+    seedConsoles(test);
+    await test.ready();
+    const group = byId(test.view.render(test.cx), consoleId('local'))!;
+    expect(group.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/terminal.svg')).toBe(false);
+    expect(call(group, 'pl')).toEqual([69]); // 17 px icon slot plus two 26 px tree levels.
+    expect(group.children.flatMap(all).some(node => node.children.includes('Consoles'))).toBe(true);
+  });
+
+  it(`${version}: matches the finished toggle's console label treatment`, async () => {
+    const test = fixture(version);
+    seedConsoles(test);
+    test.nativeTerminals.push({ ...terminal('box-4.invalid/old', { 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid' }), parent: 'local', state: 'finished', finishedAt: Date.now(), exitCode: 0, reason: 'exited' });
+    await test.ready();
+    const root = test.view.render(test.cx);
+    const group = byId(root, consoleId('local'))!;
+    const finished = byId(root, 'finished-toggle-local')!;
+    expect(call(group, 'h')).toEqual([24]);
+    expect(call(group, 'text_size')).toEqual([11.5]);
+    expect(call(group, 'text_color')).toEqual([palette.dim]);
+    expect(call(group, 'h')).toEqual(call(finished, 'h'));
+    expect(call(group, 'text_size')).toEqual(call(finished, 'text_size'));
+    expect(call(group, 'text_color')).toEqual(call(finished, 'text_color'));
+    const hover = element();
+    group.events.hover(hover);
+    expect(call(all(hover)[0], 'text_color')).toEqual([palette.foreground]);
+    const count = byId(root, `console-group-count:${encodeURIComponent(consoleKey('local'))}`)!;
+    expect(call(count, 'h')).toEqual([16]);
+    expect(texts(root)).toContain('1');
+  });
+
   it(`${version}: keeps remote focus available when the first machine observation fails`, async () => {
     const test = fixture(version, { ports: { hc: async () => ({ code: 1, stdout: '', stderr: 'offline' }) } });
     await test.ready();
@@ -381,7 +449,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(call(byId(root, consoleId('local'))!, 'accessibility_label')).toEqual(['Consoles, 1, expanded']);
   });
 
-  it(`${version}: the consoles caret and icon use the same columns as child rows`, async () => {
+  it(`${version}: the consoles caret and label use the child-row columns`, async () => {
     const test = fixture(version);
     seedConsoles(test);
     await test.ready();
@@ -389,9 +457,11 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const root = test.view.render(test.cx);
     const group = byId(root, consoleId('local'))!;
     const caret = group.children.flatMap(all).find(node => node.svg === 'mods/workspace-chrome/chevron-right.svg')!;
-    const icon = group.children.flatMap(all).find(node => node.svg === 'mods/workspace-chrome/terminal.svg');
+    const label = group.children.flatMap(all).find(node => node.children.includes('Consoles'));
     expect(call(caret, 'left')).toEqual([30]);
-    expect(icon && call(icon, 'left')).toEqual([43]);
+    expect(label).toBeDefined();
+    expect(call(group, 'pl')).toEqual([43]);
+    expect(group.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/terminal.svg')).toBe(false);
   });
 
   it(`${version}: replays malformed agent rows as a muted diagnostic and recovers`, async () => {

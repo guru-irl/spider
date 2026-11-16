@@ -173,7 +173,7 @@ try {
     'look/spaces-a-sidebar/agents-0.1.13.json', 'look/spaces-a-sidebar/agents-0.1.16.json',
     'look/spaces-a-sidebar/spaces-0.1.13.json', 'look/spaces-a-sidebar/spaces-0.1.16.json',
     'look/spaces-a-goto/menu-0.1.13.json', 'look/spaces-a-goto/menu-0.1.16.json',
-    'agents/children.js', 'agents/move.js', 'agents/move-menu.js', 'agents/bot.svg', 'agents/list.svg', 'agents/bell.svg', 'agents/chevron-up.svg', 'agents/corner-up-left.svg', 'agents/space-pentagon.svg', 'agents/space-heptagon.svg', 'agents/space-octagon.svg', 'agents/space-triangle.svg', 'agents/space-diamond.svg', 'agents/space-hexagon.svg', 'agents/space-star.svg', 'tabs/spider.svg', 'tabs/autohide.js', 'shared/feed.js', 'shared/look.js', 'look/layout-edits.json', 'look/patches.json', 'look/NOTICE',
+    'agents/children.js', 'agents/move.js', 'agents/move-menu.js', 'agents/bot.svg', 'agents/list.svg', 'agents/bell.svg', 'agents/chevron-up.svg', 'agents/unreachable.svg', 'agents/corner-up-left.svg', 'agents/space-pentagon.svg', 'agents/space-heptagon.svg', 'agents/space-octagon.svg', 'agents/space-triangle.svg', 'agents/space-diamond.svg', 'agents/space-hexagon.svg', 'agents/space-star.svg', 'tabs/spider.svg', 'tabs/autohide.js', 'shared/feed.js', 'shared/look.js', 'look/layout-edits.json', 'look/patches.json', 'look/NOTICE',
     'mods/spider/data.js', 'mods/spider/main.js', 'mods/spider/mod.json',
     'themes/dracula-plus-glass.json', 'themes/spider-glass.json', 'keys.json',
     'fonts/GlassLabel-Bold.ttf', 'fonts/GoogleSansFlex.ttf', 'fonts/GoogleSansFlex-OFL.txt', 'fonts/GoogleSansFlex-TRADEMARKS.md',

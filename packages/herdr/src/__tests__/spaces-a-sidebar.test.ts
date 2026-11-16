@@ -145,6 +145,25 @@ function renderFixture(version: SpacesAVersion, options: { width?: number; check
 }
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  it(`${version}: shows branches and counts without a repository name`, () => {
+    const fixture = renderFixture(version, { spaces: [
+      { ...localA, name: 'harness', folder: '/fixture/main', status: null },
+      { ...localB, name: 'work', folder: '/fixture/spike', status: null },
+    ] });
+    const main = { name: 'spider', repo: 'spider', branch: 'main', linked: false, ahead: 0, behind: 0 };
+    fixture.view.git[JSON.stringify([null, '/fixture/main'])] = main;
+    fixture.view.git[JSON.stringify([null, '/fixture/spike'])] = { ...main, branch: 'spike', ahead: 2, behind: 1 };
+    for (const branch of ['main', 'master', 'harness']) {
+      main.branch = branch;
+      const root = fixture.view.render();
+      const harness = all(root).find(node => node.id === 'space-s1')!;
+      const spike = all(root).find(node => node.id === 'space-s2')!;
+      expect(harness.items.flatMap(all).flatMap(node => node.items).filter(item => typeof item === 'string')).toEqual(['harness']);
+      expect(spike.items.flatMap(all).flatMap(node => node.items).filter(item => typeof item === 'string')).toEqual(expect.arrayContaining(['work', 'spike', '↑2', '↓1']));
+      expect(text(root)).not.toContain('spider');
+    }
+  });
+
   it(`${version}: uses overflow-only scrollbars and 14 pixel shapes in wide and narrow lists`, () => {
     for (const width of [268, 76]) {
       const fixture = renderFixture(version, { width });
@@ -170,7 +189,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(rendered.filter(node => node.svg?.startsWith('mods/spider-agents/space-')).map(node => node.svg)).toEqual([
       'mods/spider-agents/space-triangle.svg', 'mods/spider-agents/space-octagon.svg',
     ]);
-    expect(text(root)).toContain('repo · topic');
+    expect(text(root)).toContain('topic');
+    expect(text(root)).not.toContain('repo');
     expect(rendered.some(node => node.id?.startsWith('machine-'))).toBe(false);
     expect(fixture.commands.filter(([name]) => name === 'space.move' || name.startsWith('machine.'))).toEqual([]);
     expect(fixture.hcCalls).toEqual([]);

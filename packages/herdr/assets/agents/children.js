@@ -17,6 +17,8 @@ export async function loadAgentFeeds(root, ports) {
 }
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const text = value => value == null || typeof value === 'string';
+const title = value => text(value) || typeof value === 'number' && Number.isFinite(value);
+const titleText = value => typeof value === 'number' ? String(value) : value;
 const identity = value => typeof value === 'string' && value.length > 0 && !value.includes('\0');
 const texts = (value, keys) => keys.every(key => text(value[key]));
 const numbers = (value, keys) => keys.every(key => value[key] == null || typeof value[key] === 'number' && Number.isFinite(value[key]));
@@ -42,16 +44,17 @@ const terminalRecord = value => object(value) && identity(value.address) && prog
 /** Snapshot and narrow external records once; one malformed record never poisons its neighbors. */
 export function agentRenderInputs(input, rejected) {
   const agents = renderRecords(input.agents, 'agent', value => object(value) && identity(value.address)
-    && program(value.program) && status(value.status) && numbers(value, ['seq']) && texts(value, ['title', 'name', 'space_name', 'space', 'tab', 'pane']) ? { ...value } : null, rejected);
+    && program(value.program) && status(value.status) && numbers(value, ['seq']) && title(value.title)
+    && texts(value, ['name', 'space_name', 'space', 'tab', 'pane']) ? { ...value, title: titleText(value.title) } : null, rejected);
   const terminals = renderRecords(input.terminals, 'terminal', terminalRecord, rejected);
   const panes = renderRecords(input.panes, 'pane', value => object(value) && program(value.program)
-    && texts(value, ['tab', 'title']) ? { ...value } : null, rejected);
+    && text(value.tab) && title(value.title) ? { ...value, title: titleText(value.title) } : null, rejected);
   const spaces = renderRecords(input.spaces, 'space', value => {
     if (!object(value) || !identity(value.id) || !text(value.name)) return null;
-    const tabs = renderRecords(value.tabs ?? [], 'tab', tab => object(tab) && identity(tab.id) && text(tab.name) ? { ...tab, name: tab.name ?? '' } : null, rejected);
+    const tabs = renderRecords(value.tabs ?? [], 'tab', tab => object(tab) && identity(tab.id) && title(tab.name) ? { ...tab, name: titleText(tab.name) ?? '' } : null, rejected);
     return { ...value, name: value.name ?? '', tabs };
   }, rejected);
-  const machines = renderRecords(input.machines, 'machine', value => object(value) && identity(value.name) ? { ...value } : null, rejected);
+  const machines = renderRecords(input.machines, 'machine', value => object(value) && (value.name === null || identity(value.name)) ? { ...value } : null, rejected);
   const feeds = renderRecords(input.feeds, 'feed', feed => {
     if (!object(feed) || !identity(feed.sessionId) || !Number.isFinite(feed.updatedAt)
       || !object(feed.owner) || !object(feed.owner.terminal) || !identity(feed.owner.terminal.address)

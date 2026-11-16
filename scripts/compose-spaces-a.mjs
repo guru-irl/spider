@@ -7,8 +7,11 @@ source = source.replace(/from '(\.[^']+)'/g, (_match, relative) => `from '${new 
   .replaceAll('import.meta.url', JSON.stringify(helper.href));
 const { composeSpacesARecipe } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 const manifestPath = new URL('../packages/herdr/assets/look/patches.json', import.meta.url);
-const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-const through = process.argv[2] ?? 'full';
+const original = readFileSync(manifestPath, 'utf8');
+const manifest = JSON.parse(original);
+const args = process.argv.slice(2);
+const check = args.includes('--check');
+const through = args.filter(arg => arg !== '--check')[0] ?? 'full';
 if (!['agents', 'spaces', 'full'].includes(through)) throw new Error('Expected agents, spaces, or full');
 for (const version of ['0.1.13', '0.1.16']) {
   const fragments = {};
@@ -46,4 +49,8 @@ for (const version of ['0.1.13', '0.1.16']) {
   (manifest.spacesA ??= {})[version] = record;
   console.log(`${version}: ${Object.values(retainedMods).flat().length} retained, ${Object.values(fragments).flat().length} additions, ${derived.length} derived files`);
 }
-writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
+const output = JSON.stringify(manifest, null, 2) + '\n';
+if (check) {
+  if (output !== original) throw new Error('Published Spaces A recipes differ from composed output');
+  console.log('Published Spaces A recipes match composed output');
+} else writeFileSync(manifestPath, output);

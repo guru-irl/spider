@@ -28,6 +28,7 @@ import { createLocalDiagnosticPorts } from '@spider/roam/local-diagnostics';
 import { readLocalIdentity } from '@spider/roam/runtime';
 import { rememberRoamSlot } from '../../src/roam-placement.js';
 import { spawnOwned } from '../harness/processes.js';
+import { checkoutRoot } from '../harness/environment.js';
 import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/scenario.js';
 import type { Suite } from '../harness/suite.js';
 import { deadline, waitFor } from '../harness/wait.js';
@@ -64,8 +65,7 @@ async function twoCoreSync(suite: Suite): Promise<void> {
   const hub = suite.directories.SPIDER_GLOBAL_ROOT, box = suite.ownPath(join(suite.root, 'box-global'));
   const cli = suite.packed.roamCli, bootstrap = suite.ownPath(join(suite.root, 'bootstrap'));
   const destination = await stageRoamDestination({ root: suite.root, sourceAgent: suite.directories.PI_CODING_AGENT_DIR,
-    box, home: cores.dest.env.HOME, release: suite.packed.root,
-    sdk: join(suite.packed.root, 'node_modules/@earendil-works/pi-coding-agent'), cli });
+    box, home: cores.dest.env.HOME, release: suite.packed.root, checkout: checkoutRoot(), cli });
   const peer = { machineId: BOX, alias: cores.machine, node: process.execPath, pi: process.execPath,
     cli: destination.cli, core: cores.wrapper, globalRoot: box };
   await configureStore(hub, HUB, 'hub', [peer]);

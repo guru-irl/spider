@@ -60,7 +60,7 @@ export function createPaneSourceEffects(input: {
     if (facts.createdMs <= 0 || labels['spider.session'] !== owner.sessionId || labels['spider.owner-core'] !== owner.terminal.coreId || labels['spider.owner-terminal']?.split('/').at(-1) !== owner.terminal.terminalId || labels['spider.view-generation'] !== owner.generation || runId && labels['spider.run'] !== runId || consoleId && labels['spider.console-id'] !== consoleId) throw new HerdrError('pane-view-identity', 'Source view identity changed');
     return { coreId: route.coreId, terminalId: id as PaneTarget['terminalId'], address: qualified, createdMs: facts.createdMs,
       identityLabels: Object.fromEntries(Object.entries(labels).filter(([key]) => key !== 'spider.console-key')), alias: route.alias, machineId: null,
-      kind: consoleId ? 'console' : 'subagent', sessionId: owner.sessionId, generation: owner.generation, homeEpoch: null, runId, consoleId, name: facts.title, cwd: facts.currentCwd };
+      kind: consoleId ? 'console' : 'subagent', sessionId: owner.sessionId, generation: owner.generation, homeEpoch: null, runId, consoleId, name: facts.title.trim() ? facts.title : null, cwd: facts.currentCwd };
   };
   const runtimeBytes = () => readFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'));
   const consoleEnv = (owner: Owner, runId: RunId | null): Readonly<NodeJS.ProcessEnv> => ({ ...env, HC_TERMINAL_ID: owner.terminal.terminalId, PI_SUBAGENT_CHILD: runId ? '1' : '0', PI_SUBAGENT_RUN_ID: runId ?? undefined });

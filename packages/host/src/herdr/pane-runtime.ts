@@ -123,7 +123,7 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
       if (source.length !== 1) throw new HerdrError('pane-source-mismatch', 'Terminal is on another core');
     }
     const facts = parsePaneTerminal(await invokeCli(config.core.binary, ['get', qualified, '--json'], env, undefined, undefined, { timeoutMs: 5000 }));
-    const target = parsePaneTarget({ coreId: machine.coreId, terminalId: id, address: qualified, createdMs: facts.createdMs, identityLabels: facts.identityLabels, alias: machine.alias, machineId: machine.machineId, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null, runId: null, consoleId: null, name: facts.title, cwd: facts.currentCwd });
+    const target = parsePaneTarget({ coreId: machine.coreId, terminalId: id, address: qualified, createdMs: facts.createdMs, identityLabels: facts.identityLabels, alias: machine.alias, machineId: machine.machineId, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null, runId: null, consoleId: null, name: facts.title.trim() ? facts.title : null, cwd: facts.currentCwd });
     const verified = await readPaneTerminal(target, { binary: config.core.binary, env });
     return { ...target, cwd: verified.currentCwd };
   };

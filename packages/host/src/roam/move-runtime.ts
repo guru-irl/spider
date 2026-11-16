@@ -2,6 +2,7 @@ import { pendingWorkspaceTransitions } from "@spider/roam/move-recovery";
 import { recordMoveBindings } from "@spider/roam/move-diagnostics";
 import { cancelPendingHandoff, type MoveNoStartReceipt } from "@spider/roam/pending-handoff";
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
@@ -13,7 +14,7 @@ import type { Clock, Diagnostic, GitPorts, Operation, RoamConfig, Transport, Wor
 import { createMovePorts, createHubMoveEvidencePorts, createPushedMoveEvidencePorts, createMoveWorkspacePorts, handleMoveParticipantOperation, recoverMoveAdapters, unboundMoveEffects, moveEffectReason, readMovePresentation, type MoveAdapterBindings } from "@spider/roam/move-ports";
 import { openFreezeJournal, type FreezeJournal } from "@spider/roam/journal";
 import { machineMoveProxy } from "@spider/roam/machine-move-socket";
-import { createBothLocks, createRunningIntentAuthority, readReadiness, recordReadiness } from "@spider/roam/session-control";
+import { createBothLocks, createRunningIntentAuthority, readReadiness, recordReadiness, type HeldSessionLocks } from "@spider/roam/session-control";
 import { requestSessionControl } from "@spider/roam/session-socket";
 import { createStorePort } from "@spider/roam/stores";
 import { listStoreKeys } from "@spider/roam/store-inventory";
@@ -91,11 +92,18 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     return join(directory, `${id}.jsonl`);
   };
-  const withBothLocks = createBothLocks({ root: join(root, "herdr"), inventory, file: target,
+  const claimBothLocks = createBothLocks({ root: join(root, "herdr"), inventory, file: target,
     identity: { pid: process.pid, startIdentity: processStartTime(process.pid) ?? "unavailable" }, bootId: localBootId });
+  const heldClaims = new AsyncLocalStorage<{ sessionId: string; locks: HeldSessionLocks }>();
+  const withBothLocks: typeof claimBothLocks = (id, effect) => claimBothLocks(id, async locks => {
+    if (!locks) throw new Error("session-lock-evidence-unavailable");
+    return heldClaims.run({ sessionId: id, locks }, () => effect(locks));
+  });
   const probe = async (id: string): Promise<Probe> => {
-    const lock = await inspectIdLock(join(root, "herdr"), id);
-    if (!lock) {
+    const lock = await inspectIdLock(join(root, "herdr"), id), held = heldClaims.getStore();
+    const ownClaim = held?.sessionId === id;
+    if (ownClaim && !await held.locks.owns()) return { kind: "uncertain" };
+    if (!lock || ownClaim) {
       const records = await inventory.presence.list();
       for (const record of records.filter(record => record.sessionId === id)) if ((await inventory.probe(record.pid)).kind !== "absent") return { kind: "uncertain" };
       const unknown = await inventory.processes();

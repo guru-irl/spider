@@ -9,7 +9,7 @@ import { openFreezeJournal } from "@spider/roam/journal";
 import { unboundMoveEffects, moveEffectReason } from "@spider/roam/move-ports";
 import { createHostMoveBindings, moveBindingDiagnostics } from "../move-runtime";
 import * as hostConfig from "@spider/roam/host-config";
-import * as presentationPorts from "../../herdr/ports";
+import * as presentationPorts from "../../herdr/roam-presentations";
 import * as sessionSocket from "@spider/roam/session-socket";
 import { parsePaneTarget, parsePaneSlot } from "@spider/herdr/panes/codec";
 import { createPanePlacementStore } from "@spider/herdr/panes/store";

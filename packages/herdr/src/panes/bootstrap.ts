@@ -27,4 +27,3 @@ if(handshake.protocol!==protocol)fail('pane-endpoint-protocol-mismatch');if(hand
 process.stdout.write(await installed.runPaneEndpointCli(['--json',requestText],create)+'\n');
 })().catch(error=>{process.stderr.write(JSON.stringify({code:error.paneCode||'pane-endpoint-failed'})+'\n');process.exitCode=1});
 `;
-

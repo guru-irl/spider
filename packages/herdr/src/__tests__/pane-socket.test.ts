@@ -52,10 +52,10 @@ test('proved ended helper can restart once on the still-live selected core', asy
   const [a, b] = await Promise.all([connectPaneService(f.options), connectPaneService(f.options)]);
   expect(f.launchHelper).toHaveBeenCalledTimes(2); expect(await a.request({ version: 1, op: 'snapshot', operationId: 's1' })).toEqual(await b.request({ version: 1, op: 'snapshot', operationId: 's2' }));
 });
-test('acknowledged helper exiting before readiness can restart', async () => {
-  const f = await fixture();
+test('acknowledged helper exiting while waiting for its socket can restart', async () => {
+  const f = await fixture(); let probes = 0;
   f.launchHelper.mockImplementationOnce(async () => 'core-local/early' as TerminalAddress);
-  f.probeHelper.mockImplementation(async address => ({ address, parent: null, labels: { 'spider.kind': 'pane-service' }, state: address === 'core-local/early' ? 'finished' as const : 'live' as const, status: null, exitCode: null, reason: null, signal: null, finishedAt: null }));
+  f.probeHelper.mockImplementation(async address => ({ address, parent: null, labels: { 'spider.kind': 'pane-service' }, state: address === 'core-local/early' && ++probes > 1 ? 'finished' as const : 'live' as const, status: null, exitCode: null, reason: null, signal: null, finishedAt: null }));
   await expect(connectPaneService(f.options)).rejects.toThrow(/exited/);
   const client = await connectPaneService(f.options);
   expect((await client.request({ version: 1, op: 'snapshot', operationId: 'after-exit' })).kind).toBe('snapshot');

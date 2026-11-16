@@ -136,6 +136,7 @@ test('a second setup writes nothing and preserves unrelated settings', async () 
     session: 'spider.session', ownerCore: 'spider.owner-core', ownerTerminal: 'spider.owner-terminal',
     kind: 'spider.kind', job: 'spider.job', run: 'spider.run', space: 'herdr.space', tab: 'herdr.tab', machine: 'spider.machine',
     paneId: 'spider.pane-id', paneOperation: 'spider.pane-operation', targetCore: 'spider.target-core', targetTerminal: 'spider.target-terminal',
+    paneRole: 'spider.pane-role', ownerGeneration: 'spider.owner-generation',
     parentName: 'spider.parent-name', steer: 'spider.steer', displayName: 'spider.display-name', viewerLifetime: 'spider.viewer-lifetime',
   }, kinds: HERDR_KINDS });
   expect(JSON.parse(await readFile(f.paths.props, 'utf8')).mods.map((mod: { props: { appBinary: string } }) => mod.props.appBinary)).toEqual(Array(5).fill(f.request.config.app.binary));

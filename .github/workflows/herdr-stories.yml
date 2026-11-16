@@ -1,0 +1,85 @@
+name: Herdr headless stories
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      stories:
+        description: Comma-separated story IDs; leave empty for the default set
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: herdr-stories-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  stories:
+    name: Headless stories with a real core
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.x'
+          cache: npm
+
+      - name: Prepare temporary directories
+        run: mkdir -p "$PWD/.spider/scratch/tmp" "$PWD/.spider/scratch/e2" "$PWD/.spider/scratch/herdr-ci"
+
+      # The root prepare script runs npm run build once during npm ci.
+      - name: Install and build
+        run: TMPDIR="$PWD/.spider/scratch/tmp" npm ci
+
+      - name: Install the pinned Linux core
+        run: |
+          set -euo pipefail
+          release=packages/herdr/e2e/controls/ci-stories.json
+          directory="$PWD/.spider/scratch/herdr-ci"
+          url=$(node -p "require('./$release').url")
+          checksum=$(node -p "require('./$release').sha256")
+          binary_checksum=$(node -p "require('./$release').binarySha256")
+          version=$(node -p "require('./$release').version")
+          curl --fail --location --silent --show-error --retry 2 "$url" -o "$directory/core.tar.gz"
+          printf '%s  %s\n' "$checksum" "$directory/core.tar.gz" | sha256sum --check
+          tar -xzf "$directory/core.tar.gz" -C "$directory"
+          printf '%s  %s\n' "$binary_checksum" "$directory/herdr-core" | sha256sum --check
+          cp "$directory/herdr-core" "$directory/hc"
+          test "$("$directory/hc" --version)" = "hc $version"
+          echo "SPIDER_HERDR_E2E_HC=$directory/hc" >> "$GITHUB_ENV"
+
+      # hc otherwise selects /run/user/<uid> instead of each fixture's state home.
+      - name: Remove runner runtime directory
+        run: |
+          rundir="/run/user/$(id -u)"
+          if mountpoint -q "$rundir"; then sudo umount -l "$rundir"; fi
+          sudo rm -rf "$rundir"
+          test ! -e "$rundir"
+
+      - name: Run headless stories
+        env:
+          REQUESTED_STORIES: ${{ inputs.stories }}
+        run: |
+          set -euo pipefail
+          stories=$(node -e '
+            const config = require("./packages/herdr/e2e/controls/ci-stories.json");
+            const input = (process.env.REQUESTED_STORIES || "").trim();
+            const ids = input ? input.split(",").map(id => id.trim()) : config.stories;
+            if (ids.some(id => !id)) throw new Error("Story IDs cannot be empty");
+            process.stdout.write(ids.join(","));
+          ')
+          env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID XDG_RUNTIME_DIR= TMPDIR="$PWD/.spider/scratch/tmp" npm run test:herdr:e2e -- --built --tier headless --story "$stories"
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: herdr-headless-failures
+          path: .spider/scratch/e2/
+          include-hidden-files: true
+          if-no-files-found: ignore

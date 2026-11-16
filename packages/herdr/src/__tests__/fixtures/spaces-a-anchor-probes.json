@@ -3,8 +3,8 @@
     "agents": [
       {
         "id": "a-agents-imports",
-        "anchor": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
-        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
+        "anchor": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
+        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
         "file": "main.js"
       },
       {
@@ -21,14 +21,14 @@
       },
       {
         "id": "a-agents-list",
-        "anchor": "let list = filterTopLevelAgents(agents(), terminals(), spiderProps().labelContract);",
-        "replacement": "let list = filterTopLevelAgents(agents(), terminals(), spiderProps().labelContract);",
+        "anchor": "let list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, spiderProps().labelContract);",
+        "replacement": "let list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, spiderProps().labelContract);",
         "file": "main.js"
       },
       {
         "id": "a-agents-names",
-        "anchor": "const leads = leadPanes(panes());\n    const tabLabels = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, title(tab, leads.get(tab.id))]));\n    const labels = new Map(list.map(a => [a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || \"\")]));\n/* spider-look:agent-row-name */    const sessionName = a => (this.spiderFeeds ?? []).find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);\n/* spider-look:session-name-detail */",
-        "replacement": "const leads = leadPanes(panes());\n    const tabLabels = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, title(tab, leads.get(tab.id))]));\n    const labels = new Map(list.map(a => [a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || \"\")]));\n/* spider-look:agent-row-name */    const sessionName = a => (this.spiderFeeds ?? []).find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);\n/* spider-look:session-name-detail */",
+        "anchor": "const leads = leadPanes(panes());\n    const tabLabels = new Map(/* spider-look:render-tab-snapshot */snapshot.spaces.flatMap(s => s.tabs).map(tab => [tab.id, title(tab, leads.get(tab.id))]));\n    const labels = new Map(list.map(a => [a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || \"\")]));\n/* spider-look:agent-row-name */    const sessionName = a => snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);\n/* spider-look:session-name-detail */    const detail = new Map(list.map(a => [a.address, /^\\d+$/.test(label(a)) && !sessionName(a) && !(tabs.some(tab => tab.id === a.tab) && sharedTab(a.tab)) ? null : label(a)]));",
+        "replacement": "const leads = leadPanes(panes());\n    const tabLabels = new Map(/* spider-look:render-tab-snapshot */snapshot.spaces.flatMap(s => s.tabs).map(tab => [tab.id, title(tab, leads.get(tab.id))]));\n    const labels = new Map(list.map(a => [a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || \"\")]));\n/* spider-look:agent-row-name */    const sessionName = a => snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);\n/* spider-look:session-name-detail */    const detail = new Map(list.map(a => [a.address, /^\\d+$/.test(label(a)) && !sessionName(a) && !(tabs.some(tab => tab.id === a.tab) && sharedTab(a.tab)) ? null : label(a)]));",
         "file": "main.js"
       },
       {
@@ -57,8 +57,8 @@
       },
       {
         "id": "a-agents-console-groups-rows",
-        "anchor": "return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority)), ...this.finishedToggle(t, a.address, groupLine)];",
-        "replacement": "return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority)), ...this.finishedToggle(t, a.address, groupLine)];",
+        "anchor": "      return [r, ...subs.flatMap(s => this.spiderRows(\"child\", () => [this.subRow(t, s, shown, byPriority)])), ...this.spiderRows(\"finished\", () => this.finishedToggle(t, a.address, groupLine))];",
+        "replacement": "      return [r, ...subs.flatMap(s => this.spiderRows(\"child\", () => [this.subRow(t, s, shown, byPriority)])), ...this.spiderRows(\"finished\", () => this.finishedToggle(t, a.address, groupLine))];",
         "file": "main.js"
       }
     ],
@@ -143,8 +143,8 @@
     "agents": [
       {
         "id": "a-agents-imports",
-        "anchor": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
-        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
+        "anchor": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
+        "replacement": "import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren, agentRenderInputs, agentChildRows } from \"./spider-children.js\";\nimport { View, div, image, svg } from \"gpui-kit\";\nimport { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from \"./shared/feed.js\";\nimport { assignSpaceIdentities, threadKeylines } from \"./shared/look.js\";\nfunction spiderProps() { return props() ?? {}; }\n/* spider-look:move-menu-import */import { initMoveMenu, renderMoveMenu } from \"./move-menu.js\";\nimport { v_flex, h_flex, Scrollbar } from \"gpui-base\";\n/* spider-look:feed-host-imports */import { readTextFile, exec, watchFolder, agents, terminals, panes, machines, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout } from \"herdr\";",
         "file": "main.js"
       },
       {
@@ -161,14 +161,14 @@
       },
       {
         "id": "a-agents-list",
-        "anchor": "let list = filterTopLevelAgents(agents(), terminals(), spiderProps().labelContract);",
-        "replacement": "let list = filterTopLevelAgents(agents(), terminals(), spiderProps().labelContract);",
+        "anchor": "let list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, spiderProps().labelContract);",
+        "replacement": "let list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, spiderProps().labelContract);",
         "file": "main.js"
       },
       {
         "id": "a-agents-names",
-        "anchor": "const leads = leadPanes(panes());\n    const tabs = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, tab]));\n    const labels = new Map(list.map(a => {\n      const tab = tabs.get(a.tab);\n      const many = tabCounts.get(a.tab) > 1;\n      return [a.address, tab ? title(many ? { ...tab, named: false } : tab, many ? a : leads.get(a.tab)) : (a.title || a.program?.name || \"\")];\n    }));\n/* spider-look:agent-row-name */    const sessionName = a => (this.spiderFeeds ?? []).find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);\n/* spider-look:session-name-detail */",
-        "replacement": "const leads = leadPanes(panes());\n    const tabs = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, tab]));\n    const labels = new Map(list.map(a => {\n      const tab = tabs.get(a.tab);\n      const many = tabCounts.get(a.tab) > 1;\n      return [a.address, tab ? title(many ? { ...tab, named: false } : tab, many ? a : leads.get(a.tab)) : (a.title || a.program?.name || \"\")];\n    }));\n/* spider-look:agent-row-name */    const sessionName = a => (this.spiderFeeds ?? []).find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);\n/* spider-look:session-name-detail */",
+        "anchor": "const leads = leadPanes(panes());\n    const tabs = new Map(/* spider-look:render-tab-snapshot */snapshot.spaces.flatMap(s => s.tabs).map(tab => [tab.id, tab]));\n    const labels = new Map(list.map(a => {\n      const tab = tabs.get(a.tab);\n      const many = tabCounts.get(a.tab) > 1;\n      return [a.address, tab ? title(many ? { ...tab, named: false } : tab, many ? a : leads.get(a.tab)) : (a.title || a.program?.name || \"\")];\n    }));\n/* spider-look:agent-row-name */    const sessionName = a => snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);\n/* spider-look:session-name-detail */    const detail = new Map(list.map(a => [a.address, /^\\d+$/.test(label(a)) && !sessionName(a) && !(tabs.some(tab => tab.id === a.tab) && sharedTab(a.tab)) ? null : label(a)]));",
+        "replacement": "const leads = leadPanes(panes());\n    const tabs = new Map(/* spider-look:render-tab-snapshot */snapshot.spaces.flatMap(s => s.tabs).map(tab => [tab.id, tab]));\n    const labels = new Map(list.map(a => {\n      const tab = tabs.get(a.tab);\n      const many = tabCounts.get(a.tab) > 1;\n      return [a.address, tab ? title(many ? { ...tab, named: false } : tab, many ? a : leads.get(a.tab)) : (a.title || a.program?.name || \"\")];\n    }));\n/* spider-look:agent-row-name */    const sessionName = a => snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);\n/* spider-look:session-name-detail */    const detail = new Map(list.map(a => [a.address, /^\\d+$/.test(label(a)) && !sessionName(a) && !(tabs.some(tab => tab.id === a.tab) && sharedTab(a.tab)) ? null : label(a)]));",
         "file": "main.js"
       },
       {
@@ -197,8 +197,8 @@
       },
       {
         "id": "a-agents-console-groups-rows",
-        "anchor": "return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority)), ...this.finishedToggle(t, a.address, groupLine)];",
-        "replacement": "return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority)), ...this.finishedToggle(t, a.address, groupLine)];",
+        "anchor": "      return [r, ...subs.flatMap(s => this.spiderRows(\"child\", () => [this.subRow(t, s, shown, byPriority)])), ...this.spiderRows(\"finished\", () => this.finishedToggle(t, a.address, groupLine))];",
+        "replacement": "      return [r, ...subs.flatMap(s => this.spiderRows(\"child\", () => [this.subRow(t, s, shown, byPriority)])), ...this.spiderRows(\"finished\", () => this.finishedToggle(t, a.address, groupLine))];",
         "file": "main.js"
       }
     ],

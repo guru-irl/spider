@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { expect, it } from 'vitest';
 import * as children from '../../assets/agents/children.js';
+import emptyRunName from './fixtures/empty-run-name.json' with { type: 'json' };
 import * as look from '../../assets/shared/look.js';
 import * as feed from '../../assets/shared/feed.js';
 import * as grouping from '../../assets/agents/grouping.js';
@@ -25,8 +26,12 @@ function element(svgPath?: string, allowed = methods): any {
     if (typeof key === 'symbol') return Reflect.get(target, key);
     if (!allowed.has(key)) throw new Error(`Unknown GPUI method: ${key}`);
     if (key === 'when') return (on: boolean, fn: (element: any) => unknown) => { if (on) fn(proxy); return proxy; };
-    if (key === 'child') return (value: unknown) => { node.children.push(value); return proxy; };
-    if (key === 'children') return (values: unknown[]) => { node.children.push(...values); return proxy; };
+    const add = (value: unknown) => {
+      if (!recorded.has(value as object) && !['string', 'number', 'boolean'].includes(typeof value)) throw new TypeError('Invalid GPUI child');
+      node.children.push(value);
+    };
+    if (key === 'child') return (value: unknown) => { add(value); return proxy; };
+    if (key === 'children') return (values: unknown[]) => { values.forEach(add); return proxy; };
     if (key === 'hover') return () => proxy;
     return (...args: unknown[]) => {
       node.calls.push([key, args]);
@@ -72,7 +77,7 @@ function loadView(source: string, ports: Record<string, unknown>): any {
   const name = /class (\w+) extends View/.exec(code)![1];
   return new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return ${name};`)(ports);
 }
-function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMenu?: boolean; feedRoot?: boolean; clipboard?: boolean; corruptStorage?: boolean } = {}) {
+function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMenu?: boolean; feedRoot?: boolean; clipboard?: boolean; corruptStorage?: boolean; ports?: Record<string, unknown> } = {}) {
   const nativeAgents = [agent('box-1.invalid/unpinned', 'p1'), agent('local', 'p2'), agent('box-1.invalid/pinned', 'p3', true), agent('proxy', 'p4')];
   const nativeTerminals: any[] = [terminal('box-1.invalid/unpinned'), terminal('local'), terminal('box-1.invalid/pinned'),
     terminal('proxy', { 'spider.kind': 'roam-proxy', 'spider.machine': 'box-2.invalid', 'spider.owner-terminal': 'box-2.invalid/owner' })];
@@ -131,7 +136,7 @@ function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMen
       watches.push(watch);
       for (const waiter of watchWaiters.filter(item => watches.length >= item.count)) waiter.resolve();
       return promise;
-    }, readTextFile: async () => null,
+    }, readTextFile: async () => null, ...options.ports,
   };
   const Agents = loadView(patched(version), host);
   const view = new Agents();
@@ -182,6 +187,137 @@ it('0.1.13: defers machine process work until the first refresh and then fills i
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  it(`${version}: replays malformed agent rows as a muted diagnostic and recovers`, async () => {
+    const test = fixture(version);
+    await test.ready();
+    test.nativeAgents.push({ ...agent('bad', 'bad-pane'), title: {} } as any);
+    const root = test.view.render(test.cx);
+    expect(byId(root, 'ag-local')).toBeDefined();
+    expect(byId(root, 'ag-bad')).toBeUndefined();
+    const diagnostic = all(root).find(node => node.children.includes('Some agent rows unavailable (agent)'))!;
+    expect(call(diagnostic, 'text_color')).toEqual([palette.dim]);
+    test.nativeAgents.pop();
+    expect(texts(test.view.render(test.cx)).join(' ')).not.toContain('Some agent rows unavailable');
+    expect(test.view.spiderRenderRows).toBeNull();
+    expect(test.view.spiderRenderSnapshot).toBeNull();
+  });
+
+  it(`${version}: isolates a child builder failure with the muted content-free diagnostic`, async () => {
+    const test = fixture(version);
+    test.nativeTerminals.push({ ...terminal('good-child'), parent: 'local', name: 'Good child' }, { ...terminal('bad-child'), parent: 'local', name: 'Bad child' });
+    await test.ready();
+    const render = test.view.subRow.bind(test.view);
+    test.view.subRow = (...args: any[]) => { if (args[1].t.key === 'bad-child') throw Error('SECRET'); return render(...args); };
+    const root = test.view.render(test.cx);
+    expect(byId(root, 'ag-local')).toBeDefined();
+    expect(byId(root, 'sub-good-child')).toBeDefined();
+    expect(byId(root, 'sub-bad-child')).toBeUndefined();
+    const diagnostic = all(root).find(node => node.children.includes('Some agent rows unavailable (child)'))!;
+    expect(call(diagnostic, 'text_color')).toEqual([palette.dim]);
+    expect(texts(root).join(' ')).not.toContain('SECRET');
+  });
+
+  it(`${version}: validates projected children before folded console grouping`, async () => {
+    const good = { key: 'good', kind: 'native', depth: 0, name: 'Good child', address: 'good', parentKey: null, status: 'working', retained: false, terminal: null };
+    const test = fixture(version, { ports: { projectAgentChildren: () => [null, { ...good, key: 'bad', depth: Infinity }, good] } });
+    await test.ready();
+    const root = test.view.render(test.cx);
+    expect(byId(root, 'sub-good')).toBeDefined();
+    expect(byId(root, 'sub-bad')).toBeUndefined();
+    expect(texts(root)).toContain('Some agent rows unavailable (child)');
+    test.view.foldedMachines.add('machine:');
+    expect(() => test.view.render(test.cx)).not.toThrow();
+  });
+
+  it(`${version}: retains a key caption for an empty-name run with no viewer`, async () => {
+    const test = fixture(version);
+    await test.ready();
+    const parsed = feed.parseFeed(JSON.stringify({ ...emptyRunName, updatedAt: Date.now(),
+      owner: { ...emptyRunName.owner, terminal: { ...emptyRunName.owner.terminal, address: 'local', terminalId: 'local' } } }));
+    expect(parsed).not.toBeNull();
+    test.view.spiderFeeds = [parsed];
+    let root = test.view.render(test.cx);
+    expect(byId(root, 'sub-empty-run')).toBeDefined();
+    expect(texts(root)).toContain('empty-run');
+    expect(texts(root).join(' ')).not.toContain('Some agent rows unavailable');
+    test.view.spiderFeeds[0].runs.rows.push(null);
+    root = test.view.render(test.cx);
+    expect(byId(root, 'sub-empty-run')).toBeDefined();
+    expect(texts(root)).toContain('Some agent rows unavailable (run)');
+  });
+
+  it(`${version}: rejects malformed terminal and feed neighbors before child projection`, async () => {
+    const test = fixture(version);
+    test.nativeTerminals.push(null, { ...terminal('good-child'), parent: 'local', name: 'Good child' });
+    await test.ready();
+    test.view.spiderFeeds = [{ owner: null }];
+    const root = test.view.render(test.cx);
+    expect(byId(root, 'ag-local')).toBeDefined();
+    expect(byId(root, 'sub-good-child')).toBeDefined();
+    expect(texts(root)).toContain('Some agent rows unavailable (feed, terminal)');
+  });
+
+  it(`${version}: isolates a root builder failure while keeping other machine members`, async () => {
+    const test = fixture(version);
+    await test.ready();
+    const status = test.view.status.bind(test.view);
+    test.view.status = (...args: any[]) => { if (args[1].address === 'local') throw Error('SECRET'); return status(...args); };
+    const root = test.view.render(test.cx);
+    expect(byId(root, 'ag-local')).toBeUndefined();
+    expect(byId(root, 'ag-box-1.invalid/pinned')).toBeDefined();
+    expect(texts(root)).toContain('Some agent rows unavailable (agent)');
+    expect(texts(root).join(' ')).not.toContain('SECRET');
+  });
+
+  it(`${version}: uses one validated snapshot throughout machine and parked projections`, async () => {
+    let reads = 0, machineReads = 0;
+    const test = fixture(version, { ports: {
+      terminals: () => ++reads === 1 ? [terminal('local'), { ...terminal('good-child'), parent: 'local', name: 'Good child' }] : [null],
+      machines: () => ++machineReads === 1 ? [{ name: null, layout: 'ready' }, { name: 'box-1.invalid', layout: 'ready' }] : [null],
+    } });
+    await test.ready();
+    const root = test.view.render(test.cx);
+    expect(byId(root, 'ag-local')).toBeDefined();
+    expect(byId(root, 'ag-box-1.invalid/pinned')).toBeDefined();
+    expect(byId(root, 'sub-good-child')).toBeDefined();
+    expect(reads).toBe(1);
+    expect(machineReads).toBe(1);
+  });
+
+  it(`${version}: guards group headings, console rows and the finished toggle independently`, async () => {
+    const test = fixture(version, { ports: { svg: (path: string) => { if (path.endsWith('/monitor.svg')) throw Error('SECRET'); return element(path); } } });
+    seedConsoles(test);
+    await test.ready();
+    test.view.consoleGroupRow = () => { throw Error('SECRET'); };
+    test.view.finishedToggle = () => { throw Error('SECRET'); };
+    const root = test.view.render(test.cx);
+    expect(byId(root, 'ag-local')).toBeDefined();
+    expect(byId(root, 'ag-box-1.invalid/pinned')).toBeDefined();
+    expect(texts(root)).toContain('Some agent rows unavailable (child, finished, group)');
+    expect(texts(root).join(' ')).not.toContain('SECRET');
+  });
+
+  it(`${version}: keeps the muted fallback for an iconless agent`, async () => {
+    const test = fixture(version);
+    test.nativeAgents[1].program = { name: 'Custom', key: 'custom' };
+    await test.ready();
+    const root = test.view.render(test.cx);
+    expect(byId(root, 'ag-local')).toBeDefined();
+    expect(byId(root, 'ag-local')!.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/terminal.svg')).toBe(true);
+    expect(texts(root).join(' ')).not.toContain('Some agent rows unavailable');
+  });
+
+  it(`${version}: normalizes primitive numeric titles without discarding the agent`, async () => {
+    const test = fixture(version);
+    test.spaces[0].tabs[0].name = 42 as any;
+    test.nativeAgents.forEach(item => { item.title = 42 as any; });
+    await test.ready();
+    const root = test.view.render(test.cx);
+    expect(byId(root, 'ag-local')).toBeDefined();
+    expect(texts(root)).toContain('42');
+    expect(texts(root).join(' ')).not.toContain('Some agent rows unavailable');
+  });
+
   it(`${version}: groups native agents once per machine, retaining pin order and proxy ownership`, async () => {
     const test = fixture(version);
     await test.ready();

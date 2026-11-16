@@ -6,6 +6,14 @@ import base from '../../assets/look/patches.json' with { type: 'json' };
 import { composeSpacesARecipe, loadSpacesAFiles, replaySpacesARecipe, spacesARecipes, loadPublishedSpacesARecipe, type SpacesAFragments } from './spaces-a-fixture.js';
 import probes from './fixtures/spaces-a-anchor-probes.json' with { type: 'json' };
 
+it('checks published recipe bytes without rewriting the manifest', () => {
+  const manifest = new URL('../../assets/look/patches.json', import.meta.url);
+  const before = readFileSync(manifest, 'utf8');
+  const result = spawnSync(process.execPath, ['scripts/compose-spaces-a.mjs', '--check'], { encoding: 'utf8' });
+  expect(result.status, result.stderr).toBe(0);
+  expect(readFileSync(manifest, 'utf8')).toBe(before);
+});
+
 for (const version of ['0.1.13', '0.1.16'] as const) describe(`Spaces A recipe ${version}`, () => {
   it('publishes the complete ordered Agents recipe with numeric-title repair', () => {
     const published = (base as unknown as { spacesA?: Record<string, any> }).spacesA?.[version];
@@ -106,7 +114,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) describe(`Spaces A recipe $
       }
     }
     expect(failures).toEqual(spacesARecipes[version].originalFailures);
-    expect(failures).toHaveLength(version === '0.1.13' ? 2 : 17);
+    expect(failures).toHaveLength(version === '0.1.13' ? 3 : 18);
     for (const failure of failures) {
       const [mod, id] = failure.split('/');
       expect(spacesARecipes[version].supersededIds[mod!]?.includes(id!) || spacesARecipes[version].retainedOverrides[mod!]?.some(p => p.id === id)).toBe(true);
@@ -117,7 +125,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) describe(`Spaces A recipe $
     const files = loadSpacesAFiles(version);
     const final = replaySpacesARecipe(version, files);
     expect(replaySpacesARecipe(version, final)).toEqual(final);
-    expect(Object.values(spacesARecipes[version].mods).flat()).toHaveLength(99);
+    expect(Object.values(spacesARecipes[version].mods).flat()).toHaveLength(100);
     expect(final.toast).toEqual(files.toast);
     for (const [mod, entries] of Object.entries(final)) {
       const checked = spawnSync(process.execPath, ['--check', '--input-type=module'], { input: entries['main.js'], encoding: 'utf8' });

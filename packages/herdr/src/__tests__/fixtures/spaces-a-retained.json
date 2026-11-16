@@ -11,14 +11,20 @@
         {
           "id": "feed-and-actions",
           "anchor": "  peek(addr) {\n",
-          "replacement": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const rows = projectAgentChildren(all, this.spiderFeeds ?? [], addr, p.labelContract, { ...p.retention, machines: machines() });\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n",
+          "replacement": "  spiderRows(kind, build) {\n    try { return build(); }\n    catch { (this.spiderRowDiagnostics ??= new Set()).add(kind); return []; }\n  }\n\n  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const snapshot = this.spiderRenderSnapshot;\n    const rows = this.spiderRows(\"projection\", () => agentChildRows(\n      projectAgentChildren(all, snapshot?.feeds ?? this.spiderFeeds ?? [], addr, p.labelContract, { ...p.retention, machines: snapshot?.machines ?? machines() }),\n      kind => (this.spiderRowDiagnostics ??= new Set()).add(kind)));\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n",
           "file": "main.js"
         },
         {
           "id": "agent-row-name",
           "anchor": "    const label = (a) => labels.get(a.address);",
-          "replacement": "    const sessionName = a => (this.spiderFeeds ?? []).find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);",
+          "replacement": "    const sessionName = a => snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);",
           "file": "main.js"
+        },
+        {
+          "id": "render-tab-snapshot",
+          "file": "main.js",
+          "anchor": "spaces().flatMap(s => s.tabs)",
+          "replacement": "snapshot.spaces.flatMap(s => s.tabs)"
         }
       ],
       "spaces": [
@@ -60,6 +66,7 @@
     },
     "originalFailures": [
       "agents/agent-row-name",
+      "agents/render-tab-snapshot",
       "spaces/rail-pending-filter"
     ]
   },
@@ -75,7 +82,7 @@
         {
           "id": "feed-and-actions",
           "anchor": "  peek(addr) {\n",
-          "replacement": "  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const rows = projectAgentChildren(all, this.spiderFeeds ?? [], addr, p.labelContract, { ...p.retention, machines: machines() });\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n",
+          "replacement": "  spiderRows(kind, build) {\n    try { return build(); }\n    catch { (this.spiderRowDiagnostics ??= new Set()).add(kind); return []; }\n  }\n\n  projectChildren(all, addr) {\n    const cache = this.spiderRenderRows;\n    if (cache?.has(addr)) return cache.get(addr);\n    const p = spiderProps();\n    const snapshot = this.spiderRenderSnapshot;\n    const rows = this.spiderRows(\"projection\", () => agentChildRows(\n      projectAgentChildren(all, snapshot?.feeds ?? this.spiderFeeds ?? [], addr, p.labelContract, { ...p.retention, machines: snapshot?.machines ?? machines() }),\n      kind => (this.spiderRowDiagnostics ??= new Set()).add(kind)));\n    cache?.set(addr, rows);\n    return rows;\n  }\n\n  async reloadSpiderFeeds() {\n    if (this.spiderClosed) return;\n    if (this.spiderLoading || Date.now() - (this.spiderReloadAt ?? -Infinity) < FEED_REFRESH_MS) return;\n    this.spiderLoading = true;\n    this.spiderReloadAt = Date.now();\n    try {\n      const p = spiderProps();\n      if (!p.feedRoot || !p.nodePath) { this.spiderFeeds = []; this.spiderFeedError = \"Session feeds not configured; run doctor\"; return; }\n      this.spiderReader ??= createFeedReader(p, { exec, fetch: (url, options) => fetch(url, options), timer: this.spiderFeedTimer });\n      const loaded = await this.spiderReader.read();\n      if (this.spiderClosed) return;\n      this.spiderFeeds = loaded.feeds;\n      this.spiderFeedsLoaded = true;\n      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n    } catch { this.spiderFeedError = \"Session feeds unavailable; run doctor\"; }\n    finally { this.spiderLoading = false; }\n  }\n\n  async close() { this.spiderClosed = true; this.spiderWatch?.cancel?.(); await this.spiderReader?.close(); }\n\n  openChild(k) {\n    if (!k.action) { this.spiderFeedError = \"No live endpoint for this child\"; return; }\n    if (k.action.kind === \"peek\") { this.peek(k.action.terminal); return; }\n    const p = spiderProps();\n    if (!p.nodePath || !p.cliPath) { this.spiderFeedError = \"Child view unavailable; run doctor\"; return; }\n    const argv = panelIpcArgv(p.nodePath, p.cliPath, k.action.descriptor, k.action.request);\n    return exec(argv[0], argv.slice(1))\n      .then(reply => {\n        const result = parseSessionIpcReply(reply.stdout);\n        this.spiderFeedError = reply.code !== 0 ? \"Child view unavailable; run doctor\" : result?.ok === false ? (result.message || \"Child view unavailable; run doctor\") : result?.ok === true && result.op === k.action.request.op ? null : \"Child view unavailable; run doctor\";\n      }, () => { this.spiderFeedError = \"Child view unavailable; run doctor\"; });\n  }\n\n  peek(addr) {\n",
           "file": "main.js"
         },
         {
@@ -87,8 +94,14 @@
         {
           "id": "agent-row-name",
           "anchor": "    const label = (a) => labels.get(a.address);",
-          "replacement": "    const sessionName = a => (this.spiderFeeds ?? []).find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);",
+          "replacement": "    const sessionName = a => snapshot.feeds.find(feed => feed.owner?.terminal?.address === a.address && feed.owner?.name)?.owner.name;\n    const label = a => sessionName(a) || labels.get(a.address);",
           "file": "main.js"
+        },
+        {
+          "id": "render-tab-snapshot",
+          "file": "main.js",
+          "anchor": "spaces().flatMap(s => s.tabs)",
+          "replacement": "snapshot.spaces.flatMap(s => s.tabs)"
         }
       ],
       "spaces": [
@@ -163,6 +176,7 @@
     "originalFailures": [
       "agents/child-action",
       "agents/agent-row-name",
+      "agents/render-tab-snapshot",
       "spaces/rail-scrollbar-import",
       "spaces/rail-pending-filter",
       "spaces/rail-space-button",

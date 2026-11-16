@@ -107,6 +107,48 @@ test('requires a changed pane-close key to be repaired without taking ownership'
   expect(() => backup.mergeKeys(bytes, desired, {}, true)).toThrowError(expect.objectContaining({ code: 'key-binding-conflict' }));
 });
 
+test.each([
+  ['global', 'cmd-shift-e'],
+  ['terminal', 'cmd-shift-e'],
+  ['global', 'cmd-shift-w'],
+  ['terminal', 'cmd-shift-w'],
+  ['layout:spider-glass', 'cmd-shift-w'],
+])('setup and dry-run refuse %s.%s even with overwrite permission', async (section, key) => {
+  const { cleanup, fixture } = await import('../../../host/src/__tests__/herdr-setup-fixture.js');
+  const f = await fixture(), path = join(f.h.directories.app, 'keys.json');
+  try {
+    const keys = JSON.parse(await readFile(path, 'utf8'));
+    keys[section] ??= {};
+    keys[section][key] = 'foreign.action';
+    const original = JSON.stringify(keys);
+    await writeFile(path, original);
+    const request = { ...f.request, overwriteUnownedKeys: true, replaceChanged: true };
+    const plan = await setupHerdr({ ...request, dryRun: true }, f.parts);
+    const refusal = plan.plan!.files.find(file => file.path === path)?.refusal;
+    expect(refusal).toMatchObject({ code: 'key-binding-conflict' });
+    expect(refusal?.message).toContain(path);
+    expect(refusal?.message).toContain(`${section}.${key}`);
+    await expect(setupHerdr(request, f.parts)).rejects.toMatchObject({ code: 'key-binding-conflict', message: expect.stringContaining(`${section}.${key}`) });
+    expect(await readFile(path, 'utf8')).toBe(original);
+    expect((await backup.readJournal(f.request.journalRoot)).entries).toEqual([]);
+  } finally { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); }
+}, 60_000);
+
+test('reports the required binding even alongside a changed managed key', async () => {
+  const { cleanup, fixture } = await import('../../../host/src/__tests__/herdr-setup-fixture.js');
+  const f = await fixture(), path = join(f.h.directories.app, 'keys.json');
+  try {
+    await setupHerdr(f.request, f.parts);
+    const keys = JSON.parse(await readFile(path, 'utf8'));
+    keys.global['cmd-p'] = 'foreign.action';
+    keys.global['cmd-shift-e'] = 'foreign.action';
+    await writeFile(path, JSON.stringify(keys));
+    const result = await setupHerdr({ ...f.request, dryRun: true, overwriteUnownedKeys: true, replaceChanged: true }, f.parts);
+    expect(result.plan!.files.find(file => file.path === path)?.refusal).toMatchObject({ message: expect.stringContaining('global.cmd-shift-e') });
+    await expect(setupHerdr({ ...f.request, overwriteUnownedKeys: true, replaceChanged: true }, f.parts)).rejects.toMatchObject({ message: expect.stringContaining('global.cmd-shift-e') });
+  } finally { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); }
+}, 60_000);
+
 test('treats a native object without args as an unowned binding', () => {
   const bytes = Buffer.from(JSON.stringify({ global: { 'cmd-p': { command: 'tab.new' } } }));
   expect(() => backup.mergeKeys(bytes, desired, {}, false)).toThrowError(expect.objectContaining({ code: 'key-binding-conflict' }));

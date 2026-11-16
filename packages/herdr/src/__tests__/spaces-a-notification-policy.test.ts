@@ -125,7 +125,9 @@ test('owns native sound with app selection while preserving custom sounds and st
   const current = JSON.parse(await readFile(settingsPath, 'utf8')); current.sounds.enabled = true;
   await writeFile(settingsPath, JSON.stringify(current));
   const doctor = await f.ports.doctorParts(f.request);
-  expect((await doctor.inspect('layout-theme', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'native-sound-enabled' }));
+  const soundReport = await doctor.inspect('layout-theme', f.request);
+  expect(soundReport.failures).toEqual([]);
+  expect(soundReport.information).toContainEqual(expect.objectContaining({ code: 'native-sound-policy', message: expect.stringMatching(/enabled/i) }));
   await rollbackHerdr(f.request, f.parts);
   expect(JSON.parse(await readFile(settingsPath, 'utf8'))).toEqual(original);
   expect(await readFile(join(stock, 'main.js'))).toEqual(stockBefore);

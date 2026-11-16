@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:pat
 import { HerdrLabelContract } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
-import { digest, snapshot, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeySections, type ManagedPart, type FileAction } from './backup.js';
+import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeySections, type ManagedPart, type FileAction } from './backup.js';
 import { probeLaunch, type DoctorReport } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
 import { shellQuote } from '../sessions/resume.js';
@@ -65,9 +65,11 @@ export interface InstallFile {
   managed?: ManagedPart;
   snapshotOnly?: boolean;
   updateAfterCutover?: boolean;
+  deferredSoundApplied?: boolean;
   copyFrom?: string;
   replaceBaseline?: boolean;
   refusal?: { code: string; message: string };
+  refusalRequired?: boolean;
 }
 export interface ProbeTarget {
   machine: MachineName;
@@ -288,6 +290,27 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       ...await parts.generateTemplates(request, context), notesFile,
       ...await parts.installResume(request, context),
     ];
+    const releasedSounds: string[] = [];
+    for (const plan of plans) {
+      if (!plan.updateAfterCutover || plan.managed?.kind !== 'json-paths') continue;
+      const prior = journal.entries.find(entry => entry.path === plan.path);
+      if (prior?.managed?.kind !== 'json-paths' || !journal.verified && prior.managed.paths.includes('sounds.enabled')) continue;
+      const rows = JSON.parse(prior.managedAfter ?? '[]') as unknown[];
+      const sound = rows.find(row => Array.isArray(row) && row[0] === 'sounds.enabled');
+      const current = await snapshot(plan.path);
+      const userEnabled = Array.isArray(sound) && sound[1] === true && sound[2] === false
+        && managedProjection(current.bytes, { kind: 'json-paths', paths: ['sounds.enabled'] }) === JSON.stringify([['sounds.enabled', true, true]]);
+      if (!userEnabled && prior.managed.paths.includes('sounds.enabled')) continue;
+      if (current.hash !== plan.expected || current.bytes === null) throw new HerdrError('concurrent-settings-edit', `Changed after preflight: ${plan.path}`);
+      plan.bytes = current.bytes;
+      plan.managed = { kind: 'json-paths', paths: plan.managed.paths.filter(path => path !== 'sounds.enabled') };
+      if (userEnabled) {
+        prior.managed = { kind: 'json-paths', paths: prior.managed.paths.filter(path => path !== 'sounds.enabled') };
+        prior.managedAfter = JSON.stringify(rows.filter(row => !Array.isArray(row) || row[0] !== 'sounds.enabled'));
+        if (prior.pathsBefore) prior.pathsBefore = Object.fromEntries(Object.entries(prior.pathsBefore).filter(([path]) => path !== 'sounds.enabled'));
+        releasedSounds.push(plan.path);
+      }
+    }
     const files: InstallFile[] = [];
     for (const plan of plans) {
       if (!plan.terminalKeys && !plan.keys) {
@@ -315,7 +338,15 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           if (!(error instanceof HerdrError) || error.code !== 'key-binding-conflict') throw error;
           refusal = { code: error.code, message: error.message };
         }
-        files.push({ ...plan, keys: desired, managed, refusal, bytes: mergeKeys(current.bytes, desired, owned, true) });
+        let bytes: Buffer, refusalRequired = false;
+        try { bytes = mergeKeys(current.bytes, desired, owned, true); }
+        catch (error) {
+          if (!(error instanceof HerdrError) || error.code !== 'key-binding-conflict') throw error;
+          refusal = { code: error.code, message: `${plan.path}: ${error.message}` };
+          refusalRequired = true;
+          bytes = current.bytes;
+        }
+        files.push({ ...plan, keys: desired, managed, refusal, refusalRequired, bytes });
       } else {
         const owned = prior?.terminalKeys ?? {};
         const managed: ManagedPart = { kind: 'json', section: 'terminal', fields: Object.keys(plan.terminalKeys!) };
@@ -410,7 +441,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         throw new HerdrError('runtime-bootstrap-failed', `Destination runtime bootstrap failed; repair its directory permissions or Node configuration and rerun setup: ${error instanceof Error ? error.message : String(error)}`);
       }
     };
-    const unchanged = fileActions.every(action => action.action === 'unchanged') && journal.verified && !cutoverNeeded && fingerprint === journal.fingerprint && probes.length === 0 && runtimePlans.every(p => p.before === p.runtime.sha256) && (await Promise.all(files.map(async file => file.snapshotOnly || (await snapshot(file.path)).hash === digest(file.bytes)))).every(Boolean);
+    const unchanged = releasedSounds.length === 0 && fileActions.every(action => action.action === 'unchanged') && journal.verified && !cutoverNeeded && fingerprint === journal.fingerprint && probes.length === 0 && runtimePlans.every(p => p.before === p.runtime.sha256) && (await Promise.all(files.map(async file => file.snapshotOnly || (await snapshot(file.path)).hash === digest(file.bytes)))).every(Boolean);
     await ensureSessionFeedDirectory(request.config.globalRoot);
     if (unchanged) {
       await bootstrap(); // Repair root loss without repeating cutover or unrelated setup writes.
@@ -419,17 +450,27 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       if (recordRuntimeRootProbes() || cutoverMetadataChanged) await saveJournal(request.journalRoot, journal);
       return { writes: [], probes: [], cutover: journal.cutover, doctor };
     }
+    const appFiles = files.filter(file => file.updateAfterCutover);
+    const ownedSounds = new Set<string>();
+    for (const file of appFiles) {
+      const prior = journal.entries.find(entry => entry.path === file.path);
+      if (prior?.managed?.kind !== 'json-paths' || !prior.managed.paths.includes('sounds.enabled')) continue;
+      const current = await snapshot(file.path);
+      if (!journal.verified && prior.soundApplied !== true && (current.hash === null || current.hash !== prior.soundIntent)) continue;
+      const rows = JSON.parse(prior.managedAfter ?? '[]') as unknown[];
+      const sound = rows.find(row => Array.isArray(row) && row[0] === 'sounds.enabled');
+      if (Array.isArray(sound) && managedProjection(current.bytes, { kind: 'json-paths', paths: ['sounds.enabled'] }) === JSON.stringify([sound])) ownedSounds.add(file.path);
+    }
+    for (const file of appFiles)
+      if (file.managed?.kind === 'json-paths' && file.managed.paths.includes('sounds.enabled')) file.deferredSoundApplied = ownedSounds.has(file.path);
     journal.fingerprint = fingerprint;
     journal.verified = false;
     journal.retiredTerminals = retiredTerminals;
     await prepareBackups(request.journalRoot, files, journal);
-    const writes = await applyFiles(files, journal);
-    const appFiles = files.filter(file => file.updateAfterCutover);
-    for (const file of appFiles) {
-      if ((await snapshot(file.path)).hash !== digest(file.bytes)) throw new HerdrError('concurrent-settings-edit', `Changed after sound compare-write: ${file.path}`);
-      journal.entries.find(entry => entry.path === file.path)!.soundApplied = true;
-    }
-    if (appFiles.length) await saveJournal(request.journalRoot, journal);
+    const writes = await applyFiles(files.filter(file => !file.updateAfterCutover), journal);
+    for (const file of appFiles)
+      if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
+    for (const path of releasedSounds) parts.warn(`${path}: sounds.enabled was changed by the user and released.`);
     for (const { runtime, before } of runtimePlans) {
       const installed = await readRuntime(parts, runtime);
       const current = installed === null ? null : digest(installed);
@@ -446,26 +487,52 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     try {
       if (cutoverNeeded || selectionReplacement) {
         if (cutoverNeeded) { journal.cutoverPending = true; await saveJournal(request.journalRoot, journal); }
+        let selectionError: unknown;
         try {
           if (cutoverNeeded) cutover = await (context.priorCutover && !needsAppSelection && parts.reconcileCutover ? parts.reconcileCutover(request, context) : parts.cutover(request, context));
           else {
             if (!parts.selectApp) throw new HerdrError('app-selection-unavailable', 'App selection is unavailable; run setup again');
             await parts.selectApp(request);
           }
-        }
-        finally {
+        } catch (error) { selectionError = error; }
+        try {
           for (const file of files.filter(file => file.snapshotOnly || file.updateAfterCutover)) {
             const current = await snapshot(file.path);
-            if (file.updateAfterCutover) {
-              const sound: ManagedPart = { kind: 'json-paths', paths: ['sounds.enabled'] };
-              if (managedProjection(current.bytes, sound) !== managedProjection(file.bytes, sound)) throw new HerdrError('concurrent-settings-edit', `Sound changed during app selection: ${file.path}`);
-            }
             const entry = journal.entries.find(entry => entry.path === file.path)!;
             entry.after = current.hash ?? digest(Buffer.alloc(0));
             if (file.managed) entry.managedAfter = managedProjection(current.bytes, file.managed);
           }
           await saveJournal(request.journalRoot, journal);
-        }
+        } catch (error) { if (selectionError === undefined) selectionError = error; }
+        if (selectionError !== undefined) throw selectionError;
+      }
+      for (const file of appFiles) {
+        if (file.managed?.kind !== 'json-paths' || !file.managed.paths.includes('sounds.enabled')) continue;
+        const sound: ManagedPart = { kind: 'json-paths', paths: ['sounds.enabled'] };
+        let soundError: unknown;
+        try {
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const current = await snapshot(file.path);
+            if (managedProjection(current.bytes, sound) === managedProjection(file.bytes, sound)) break;
+            const settings = JSON.parse(current.bytes?.toString('utf8') ?? '{}') as Record<string, unknown>;
+            const sounds = (settings.sounds ?? {}) as Record<string, unknown>;
+            const bytes = Buffer.from(JSON.stringify({ ...settings, sounds: { ...sounds, enabled: false } }, null, 2) + '\n');
+            journal.entries.find(entry => entry.path === file.path)!.soundIntent = digest(bytes);
+            await saveJournal(request.journalRoot, journal);
+            await atomicWrite(file.path, bytes, current.mode, current.hash);
+            if (!writes.includes(file.path)) writes.push(file.path);
+          }
+          const current = await snapshot(file.path);
+          if (managedProjection(current.bytes, sound) !== managedProjection(file.bytes, sound)) throw new HerdrError('concurrent-settings-edit', `Sound changed after app selection: ${file.path}`);
+          journal.entries.find(entry => entry.path === file.path)!.soundApplied = true;
+        } catch (error) { soundError = error; }
+        try {
+          const current = await snapshot(file.path), entry = journal.entries.find(entry => entry.path === file.path)!;
+          entry.after = current.hash ?? digest(Buffer.alloc(0));
+          entry.managedAfter = managedProjection(current.bytes, file.managed);
+          await saveJournal(request.journalRoot, journal);
+        } catch (error) { if (soundError === undefined) soundError = error; }
+        if (soundError !== undefined) throw soundError;
       }
       if (!cutover) throw new HerdrError('cutover-reconciliation-required', 'No completed cutover was recorded');
       journal.cutoverFingerprint = cutoverFingerprint;

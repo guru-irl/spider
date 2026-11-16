@@ -74,7 +74,11 @@ it.each(['explicit', 'standard'] as const)('starts the production session feed f
   const hooks = new Map<string, Function[]>();
   vi.stubEnv('PI_SUBAGENT_CHILD', '0');
   for (const [name, value] of Object.entries(h.localEnv)) if (value !== undefined && (name.startsWith('HC_') || name.startsWith('XDG_') || name.startsWith('HERDR_'))) vi.stubEnv(name, value);
-  const config = { enabled: true, app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
+  const versionedApp = join(h.root, 'versioned-app');
+  await writeFile(versionedApp, `#!/bin/sh\nif [ "$1" = '--version' ]; then echo 'herdr-app 0.1.12'; else exec '${h.appBinary}' "$@"; fi\n`, { mode: 0o700 });
+  const look = join(h.root, 'packages/herdr/assets/look'); await mkdir(look, { recursive: true });
+  await writeFile(join(look, 'patches.json'), await readFile(resolve('packages/herdr/assets/look/patches.json')));
+  const config = { enabled: true, app: { binary: versionedApp, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.root, 'core.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
   vi.stubEnv('SPIDER_GLOBAL_ROOT', h.directories.global);
   const file = location === 'standard' ? join(h.directories.global, 'herdr/config.json') : join(h.root, 'herdr.json');
   await mkdir(join(h.directories.global, 'herdr'), { recursive: true });

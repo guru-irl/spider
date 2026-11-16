@@ -19,7 +19,9 @@ async function fixture(coreOnly = false, mode: 'fake' | 'hc' = 'fake') {
 }
 test('production service snapshots use the already selected core and start no target', async () => {
   const { h, service } = await fixture(); const before = h.mutations().length;
-  expect(await service.request({ version: 1, op: 'snapshot', operationId: 'snapshot-1' })).toMatchObject({ kind: 'snapshot', complete: true, omittedRows: 0, rows: [], machines: [{ coreId: h.localCoreId, alias: null, label: 'This computer' }] });
+  expect(await service.request({ version: 1, op: 'snapshot', operationId: 'snapshot-1' })).toMatchObject({ kind: 'snapshot', complete: false, omittedRows: 0, rows: [], machines: [{ coreId: h.localCoreId, alias: null, label: 'This computer' }] });
+  await service.reconcile();
+  expect(await service.request({ version: 1, op: 'snapshot', operationId: 'snapshot-2' })).toMatchObject({ kind: 'snapshot', complete: true, omittedRows: 0, rows: [], machines: [{ coreId: h.localCoreId, alias: null, label: 'This computer' }] });
   expect(h.mutations()).toHaveLength(before);
 });
 test('production unknown agent key refuses before target or app mutation', async () => {

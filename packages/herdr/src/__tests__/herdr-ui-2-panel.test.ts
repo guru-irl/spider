@@ -34,9 +34,11 @@ describe('failed commands and machine problems', () => {
     expect(Object.keys(data)).not.toContain('projectFailedCommands');
     expect(Object.keys(data)).not.toContain('projectMachineProblems');
   });
-  test('memories still list after the session items', () => {
-    const items = projectNotifications([feed('b', { status: { native: 'blocked', effective: 'blocked', message: null } }), feed('a', { approvals: [{ uuid: 'u', scope: 'global', repoKey: null, ownerSessionId: null, category: 'insight', preview: 'p' }] })], NOW);
-    expect(items.map(notificationText)).toEqual(['b is waiting', '1 memory to review']);
+  test('memories remain reviewable without automatic notification cards', () => {
+    const feeds = [feed('b', { status: { native: 'blocked', effective: 'blocked', message: null } }), feed('a', { approvals: [{ uuid: 'u', scope: 'global', repoKey: null, ownerSessionId: null, category: 'insight', preview: 'p' }] })];
+    const items = projectNotifications(feeds, NOW);
+    expect(items.map(notificationText)).toEqual([]);
+    expect(data.projectMemoryReview(feeds).map(row => row.uuid)).toEqual(['u']);
   });
 });
 

@@ -23,7 +23,7 @@ async function editEveryKind(f: Fixture) {
   await update(join(f.h.directories.agent, 'settings.json'), s => { s.defaultModel = 'user-choice'; });
   await writeFile(f.request.config.shellRc, (await readFile(f.request.config.shellRc, 'utf8').catch(() => '')) + 'export USER_LATER=1\n');
   await writeFile(f.request.config.core.config, (await readFile(f.request.config.core.config, 'utf8').catch(() => '')) + '\n[custom]\nlater = 42\n');
-  await update(join(f.h.directories.app, 'keys.json'), k => { k.global = { 'ctrl-q': 'user.action' }; });
+  await update(join(f.h.directories.app, 'keys.json'), k => { k.global = { ...k.global as Record<string, unknown>, 'ctrl-q': 'user.action' }; });
   await update(join(f.h.directories.app, 'settings.json'), s => { s.zoom = 2; });
   await update(join(f.h.directories.global, 'config.json'), c => { c.userChoice = 'keep'; });
 }
@@ -41,8 +41,8 @@ async function expectEditsKept(f: Fixture, notesBefore: boolean | null) {
   expect(notes).toContain('later = 42');
   expect(rootNotesValue(Buffer.from(notes))).toBe(notesBefore);
   const keys = await json(join(f.h.directories.app, 'keys.json'));
-  expect(keys.global).toEqual({ 'ctrl-q': 'user.action' });
-  expect(Object.keys(keys.terminal ?? {})).toEqual([]);
+  expect(keys.global).toEqual({ 'cmd-p': 'mod.open:picker', 'cmd-n': 'space.new', 'cmd-shift-w': 'pane.close', 'ctrl-q': 'user.action' });
+  expect(keys.terminal).toEqual({ 'ctrl-v': 'terminal.paste_image' });
   expect(await json(join(f.h.directories.app, 'settings.json'))).toEqual({ zoom: 2, theme: 'stock' });
   const global = await json(join(f.h.directories.global, 'config.json'));
   expect(global.userChoice).toBe('keep');

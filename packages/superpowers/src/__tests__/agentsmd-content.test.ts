@@ -51,6 +51,11 @@ superpowers skills above; they replace none of them.
     expect(b.match(/<!-- spider:end -->/g)!.length).toBe(1);
   });
 
+  it("reserves notify for a person who must act, not completion", () => {
+    expect(SPIDER_BLOCK_BODY).toContain("spider notify");
+    expect(SPIDER_BLOCK_BODY.replace(/\s+/g, " ")).toMatch(/only when a person must act, never for completion/i);
+  });
+
   it("documents removal of obsolete items and safe clear defaults", () => {
     expect(SPIDER_BLOCK_BODY).toContain("`remove`");
     expect(SPIDER_BLOCK_BODY).toMatch(/remove obsolete items with op=remove/i);

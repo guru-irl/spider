@@ -25,6 +25,12 @@ describe("action dispatch", () => {
     expect(res.error).toMatch(/unknown action/i);
   });
 
+  it("routes intentional notification requests to the registered handler", async () => {
+    registerAction("notify", (args, context) => ({ ok: true, message: args.message, toolCallId: context.toolCallId }));
+    const res = await dispatch({ action: "notify" as never, message: "Choose a fix" }, { ...ctx, toolCallId: "call-1" } as ActionCtx);
+    expect(res).toEqual({ ok: true, message: "Choose a fix", toolCallId: "call-1" });
+  });
+
   it("routes 'kill' action through dispatch without error", async () => {
     // Critical: 'kill' must be in SpiderAction union AND VALID set for dispatch to succeed
     registerAction("kill", async (args) => ({ ok: true, details: { killed: [], requested: args.id ?? "all" } }));

@@ -11,7 +11,8 @@ import type { SessionScheduler } from '../loop/index.js';
 import { computePace } from '../usage/billing-pace.js';
 import type { PanelUsage } from '../usage/protocol.js';
 import { formatCompact, formatExact, formatMonthTitle, formatLocalTime } from '../usage/web/format.js';
-import type { PaceLabels, SessionMonthCost } from '../../../herdr/src/contracts.js';
+import type { IntentionalNotification, PaceLabels, SessionMonthCost } from '../../../herdr/src/contracts.js';
+import { readNotifications, type StoredNotification } from '../notifications/store.js';
 export interface HostDataSourceOptions {
   /** Each opener transfers a fresh handle; the adapter closes it after its read. */
   resolveRunDb(owner: Owner): { db: Db; dbPath: string };
@@ -25,7 +26,7 @@ export interface HostDataSourceOptions {
   clock(): number;
 }
 const preview = (text: string, limit = 180): string => scrubSecrets(text).text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').slice(0, limit);
-interface OwnedFacts { rows: RunRow[]; total: number; truncated: boolean; todos: SessionFeed['todos']['rows']; approvals: SessionFeed['approvals'] }
+interface OwnedFacts { rows: RunRow[]; total: number; truncated: boolean; todos: SessionFeed['todos']['rows']; approvals: SessionFeed['approvals']; notifications: StoredNotification[] }
 const USAGE_CACHE_TTL = 30000;
 interface UsageCache { at: number; period?: ReturnType<typeof computePace>['period']; valueAt?: number; pending: boolean; publishedPending?: boolean; pace?: PaceSummary; monthCost?: SessionMonthCost }
 interface OwnerCache { sessionId: string; readAt: number; dirty: boolean; revision: number; facts: OwnedFacts | null; lastSnapshot?: SessionFeed; usage?: UsageCache }
@@ -93,7 +94,7 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
   };
   const readFacts = (owner: Owner): OwnedFacts => {
     const { db } = options.resolveRunDb(owner);
-    let rows: RunRow[]; let total: number; let truncated: boolean; let todos: OwnedFacts['todos'];
+    let rows: RunRow[]; let total: number; let truncated: boolean; let todos: OwnedFacts['todos']; let notifications: StoredNotification[];
     try {
       const limits = options.readConfig(owner).limits;
       const cutoff = options.clock() - limits.completedHours * 3600000;
@@ -102,9 +103,9 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
         const active = new RunStore(db).listActive(owner.sessionId);
         const completed = db.prepare(`SELECT * FROM runs WHERE ${retained} ORDER BY ended_at DESC, id LIMIT ?`).all(owner.sessionId, cutoff, limits.completedRows) as RunRow[];
         const count = db.prepare(`SELECT COUNT(*) AS total FROM runs WHERE ${retained}`).get(owner.sessionId, cutoff) as { total: number };
-        return { rows: [...active, ...completed], total: active.length + count.total, truncated: count.total > completed.length, todos: listTodos(db, owner.sessionId).map(todo => ({ ...todo, text: preview(todo.text, 2000), sessionId: owner.sessionId })) };
+        return { rows: [...active, ...completed], total: active.length + count.total, truncated: count.total > completed.length, todos: listTodos(db, owner.sessionId).map(todo => ({ ...todo, text: preview(todo.text, 2000), sessionId: owner.sessionId })), notifications: readNotifications(db, owner.sessionId, options.clock()) };
       })();
-      ({ rows, total, truncated, todos } = values);
+      ({ rows, total, truncated, todos, notifications } = values);
     } finally { db.close(); }
     const handles = options.openApprovalDbs(owner);
     let approvals: SessionFeed['approvals'];
@@ -113,7 +114,7 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
       if (handles.repo) approvals.push(...listPending(handles.repo.db, 'repo').map(record => ({ uuid: record.uuid, scope: 'repo' as const, repoKey: handles.repo!.repoKey, ownerSessionId: record.sessionId as Owner['sessionId'] | null, category: record.category, preview: preview(record.content) })));
     } finally { handles.global.close(); handles.repo?.db.close(); }
     approvals = [...new Map(approvals.map(row => [JSON.stringify([row.scope, row.repoKey, row.uuid]), row])).values()];
-    return { rows, total, truncated, todos, approvals };
+    return { rows, total, truncated, todos, approvals, notifications };
   };
   return {
     subscribe(listener) { if (disposed) return () => {}; listeners.add(listener); return () => { listeners.delete(listener); }; },
@@ -136,11 +137,17 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
       let live: Awaited<ReturnType<NonNullable<HostDataSourceOptions['readOwnerFacts']>>> | undefined;
       try { live = await options.readOwnerFacts?.(owner); } catch { errors.push({ source: 'placement', message: 'Observed owner placement is unavailable.' }); }
       if (disposed) throw new Error('data-source-disposed');
+      const notifications: IntentionalNotification[] = facts.notifications.map(note => {
+        const common = { id: note.id, createdAt: note.createdAt, title: owner.name ?? 'Spider', body: note.message, kind: 'intentional' as const,
+          scope: 'session' as const, sessionId: owner.sessionId, ownerAddress: owner.terminal.address, urgency: note.urgency };
+        return note.runId === null ? { ...common, runId: null, action: { kind: 'focus-owner', sessionId: owner.sessionId, address: owner.terminal.address } }
+          : { ...common, runId: note.runId, action: { kind: 'open-run', sessionId: owner.sessionId, runId: note.runId } };
+      });
       const feed: SessionFeed = { version: 1, sessionId: owner.sessionId, generation: owner.generation, revision: ++cache.revision, updatedAt: options.clock(), owner,
         placement: live?.placement ?? null, lifecycle: 'live', status: live?.status ?? { native: null, effective: null, message: null },
         runs: { rows, total: facts.total, truncated: facts.truncated }, todos: { rows: facts.todos.map(row => ({ ...row })), total: facts.todos.length, truncated: false },
         triggers: options.scheduler.listTriggers().map(trigger => ({ name: trigger.name, kind: trigger.kind === 'once' ? 'schedule' : 'loop', nextAt: trigger.nextAt, tz: trigger.tz, state: trigger.state, prompt: preview(trigger.prompt, 80) })),
-        pace: account, approvals: facts.approvals.map(row => ({ ...row })), notifications: [], ipc: live?.ipc ?? null, errors, monthCost: { ...(usage.monthCost ?? UNAVAILABLE_COST) } };
+        pace: account, approvals: facts.approvals.map(row => ({ ...row })), notifications, ipc: live?.ipc ?? null, errors, monthCost: { ...(usage.monthCost ?? UNAVAILABLE_COST) } };
       cache.lastSnapshot = feed; return feed;
     },
   };

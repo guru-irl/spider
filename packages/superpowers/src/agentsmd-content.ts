@@ -86,6 +86,7 @@ built-ins:
   Nothing fires while closed or asleep. Missed one-shot and cron triggers fire once, late.
   Intervals resume from their anchor without catch-up.
 - \`spider message\` — wake a specific peer/reviewer session directly.
+- \`spider notify\` — use only when a person must act, never for completion.
 - \`spider control <command>\` — admin: \`doctor\`, \`stats\`, \`insights\`,
   \`models\`, \`config\` (get/set), \`memory\`, \`migrate\`, \`bind\`, \`unbind\`,
   \`upstream-watch\`. Every result renders as a themed card, never raw JSON.

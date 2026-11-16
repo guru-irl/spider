@@ -18,6 +18,17 @@ test.each([
   expect((await load())?.modStoreFileName(props)).toBe(expected);
 });
 
+test('standalone picker configuration does not create a layout storage migration', async () => {
+  const parent = resolve(process.env.SPIDER_GLOBAL_ROOT!, 'mod-storage'); await mkdir(parent, { recursive: true });
+  const root = await mkdtemp(join(parent, 'picker-')); roots.push(root);
+  const data = join(root, 'data/spider-picker'); await mkdir(data, { recursive: true });
+  const saved = join(data, 'store.json'); await writeFile(saved, '{"query":"kept"}');
+  const layout = Buffer.from(JSON.stringify({ content: { mod: 'spider-agents', props: { modId: 'spider-agents' } } }));
+  const mod = await load();
+  expect(await mod!.planModStorage(root, layout, layout)).toEqual([]);
+  expect(await readFile(saved, 'utf8')).toBe('{"query":"kept"}');
+});
+
 test('changed props copy saved state to the new store without replacing existing state', async () => {
   const parent = resolve(process.env.SPIDER_GLOBAL_ROOT!, 'mod-storage'); await mkdir(parent, { recursive: true });
   const root = await mkdtemp(join(parent, 'case-')); roots.push(root);

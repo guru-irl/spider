@@ -209,6 +209,7 @@ declare namespace Wire {
   );
   export type SessionIpcRequest = { op: 'ping'; generation: Generation }
     | { op: 'openView'; view: Fixed.ViewName; generation: Generation }
+    | { op: 'openSession'; generation: Generation; destination: { space: SpaceId; tab: TabId } | null }
     | { op: 'openRun'; runId: RunId; generation: Generation }
     | { op: 'killRun'; runId: RunId; generation: Generation }
     | { op: 'killSession'; generation: Generation }
@@ -224,6 +225,7 @@ declare namespace Wire {
   export type SteerRefusal = 'queued' | 'paused' | 'print-mode' | 'slash-prefixed' | 'wrong-owner' | 'dead-pipe';
   export type SessionIpcReply = { ok: true; op: 'ping'; status: { native: ProgramState | null; effective: ProgramState | null } }
     | { ok: true; op: 'openView' }
+    | { ok: true; op: 'openSession'; terminal: TerminalAddress }
     | { ok: true; op: 'killRun' }
     | { ok: true; op: 'killSession' }
     | { ok: true; op: 'moveSession' }
@@ -235,7 +237,12 @@ declare namespace Wire {
     | { ok: true; op: 'steerRun'; acknowledgement: SteerReply }
     | { ok: false; code: Exclude<IpcErrorCode, 'refused'>; message: string; reason?: never }
     | { ok: false; code: 'refused'; message: string; reason?: SteerRefusal };
-  export type PanelNotification =
+  export type NotificationUrgency = 'low' | 'attention' | 'urgent';
+  export type IntentionalNotification = { id: string; createdAt: number; title: string; body: string; kind: 'intentional'; scope: 'session'; sessionId: SessionId; ownerAddress: TerminalAddress; urgency: NotificationUrgency } & (
+    | { runId: null; action: { kind: 'focus-owner'; sessionId: SessionId; address: TerminalAddress } }
+    | { runId: RunId; action: { kind: 'open-run'; sessionId: SessionId; runId: RunId } }
+  );
+  export type PanelNotification = IntentionalNotification
     | { id: string; createdAt: number; title: string; body: string; kind: 'subagent-result' | 'escalation' | 'job-result'; scope: 'session'; sessionId: SessionId; ownerAddress: TerminalAddress; job?: { outcome?: Fixed.RemoteResult['outcome']; evidenceConflict?: boolean; exitEvidence?: Fixed.JobExitEvidence; id: JobId; runId: RunId | null; commandPreview: string; machine: MachineName; exitCode: number | null; signal: number | null; finishedAt: number; address: TerminalAddress }; action: { kind: 'focus-owner'; sessionId: SessionId; address: TerminalAddress } }
     | { id: string; createdAt: number; title: string; body: string; kind: 'budget'; scope: 'shared'; sessionId: null; ownerAddress: null; action: { kind: 'open-usage'; scope: 'shared' } };
   export interface ProcessPresence { pid: number; startIdentity: string; sessionFile: string | null; sessionName: string | null; kind: 'top-level' | 'child'; hcAddress: TerminalAddress | null }
@@ -257,6 +264,8 @@ export type SharedContractChecks = [
   Assert<Equal<Actual.IpcErrorCode, Wire.IpcErrorCode>>,
   Assert<Equal<Actual.SteerRefusal, Wire.SteerRefusal>>,
   Assert<Equal<Actual.SteerReply, Wire.SteerReply>>,
+  Assert<Equal<Actual.NotificationUrgency, Wire.NotificationUrgency>>,
+  Assert<Equal<Actual.IntentionalNotification, Wire.IntentionalNotification>>,
   Assert<Equal<Actual.PanelNotification, Wire.PanelNotification>>,
   Assert<Equal<Actual.HerdrNotification, Wire.PanelNotification>>,
   Assert<Equal<Actual.ProcessPresence, Wire.ProcessPresence>>,

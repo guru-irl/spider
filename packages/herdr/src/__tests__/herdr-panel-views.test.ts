@@ -24,6 +24,11 @@ const approval = (uuid: string, patch: Partial<ApprovalSummary> = {}): ApprovalS
 const blocked = { native: 'blocked', effective: 'blocked', message: 'Approve?' } as const;
 const failedStatus = { native: 'error', effective: 'error', message: 'boom' } as const;
 const overPace = { scope: 'shared', used: 90, budget: 100, projected: 180, remaining: 10, periodStart: NOW - 86400000, periodEnd: NOW + 29 * 86400000, updatedAt: NOW, unavailableReason: null } as SessionFeed['pace'];
+const intentional = (owner: SessionFeed, id: string, body: string): Extract<SessionFeed['notifications'][number], { kind: 'intentional' }> => ({
+  id, createdAt: NOW, title: owner.owner.name ?? owner.sessionId, body, kind: 'intentional', scope: 'session', sessionId: owner.sessionId,
+  ownerAddress: owner.owner.terminal.address, urgency: 'attention', runId: null,
+  action: { kind: 'focus-owner', sessionId: owner.sessionId, address: owner.owner.terminal.address },
+});
 
 describe('notifications list only what the user acts on', () => {
   test('waiting, failed sessions and memories; never failed runs, failed commands, machines or budget pace', () => {
@@ -35,56 +40,61 @@ describe('notifications list only what the user acts on', () => {
         runs: { rows: [run('reviewer', 'planner', { status: 'failed', finishedAt: NOW - 60000 })], total: 1, truncated: false } }),
       feed('tester', { status: failedStatus }),
     ], NOW);
-    expect(items.map(item => [item.kind, notificationText(item), item.action])).toEqual([
-      ['waiting', 'planner is waiting', 'Focus'], ['failed', 'tester failed', 'Focus'], ['memory', '1 memory to review', 'Review']]);
+    expect(items.map(item => [item.kind, notificationText(item), item.action])).toEqual([]);
+    expect(projectMemoryReview([feed('planner', { approvals: [approval('a')] })])).toHaveLength(1);
   });
   test('a closed or stale session never asks for attention', () => {
     const items = projectNotifications([feed('planner', { status: blocked, lifecycle: 'closed' }), feed('tester', { status: failedStatus, updatedAt: NOW - 60000 })], NOW);
     expect(items).toEqual([]);
   });
   test('memories are counted once across feeds by scope, repo and uuid', () => {
-    const items = projectNotifications([feed('planner', { approvals: [approval('a'), approval('b')] }), feed('tester', { approvals: [approval('a')] })], NOW);
-    expect(items.map(notificationText)).toEqual(['2 memories to review']);
+    const sources = [feed('planner', { approvals: [approval('a'), approval('b')] }), feed('tester', { approvals: [approval('a')] })];
+    const items = projectNotifications(sources, NOW);
+    expect(items.map(notificationText)).toEqual([]);
+    expect(projectMemoryReview(sources).map(row => row.uuid)).toEqual(['a', 'b']);
   });
 });
 
 describe('dismissal', () => {
-  const feeds = (status: SessionFeed['status'], approvals: ApprovalSummary[]) => [feed('planner', { status, approvals })];
+  const sources = () => { const planner = feed('planner'), tester = feed('tester');
+    planner.notifications = [intentional(planner, 'a', 'Choose A'), intentional(planner, 'b', 'Choose B')];
+    tester.notifications = [intentional(tester, 'c', 'Choose C')]; return [planner, tester]; };
   test('dismissing hides one occurrence; the others stay', () => {
-    const items = projectNotifications([...feeds(blocked, [approval('a')]), feed('tester', { status: failedStatus })], NOW);
-    const waiting = items.find(item => item.kind === 'waiting')!;
-    const shown = visibleNotifications(items, new Set(waiting.tokens));
-    expect(shown.map(notificationText)).toEqual(['tester failed', '1 memory to review']);
+    const items = projectNotifications(sources(), NOW);
+    const shown = visibleNotifications(items, new Map([[items[0].tokens[0], items[0].expiresAt]]));
+    expect(shown.map(notificationText)).toEqual(['planner Choose B', 'tester Choose C']);
   });
-  test('a dismissed session returns when it becomes blocked again', () => {
-    const first = projectNotifications(feeds(blocked, []), NOW);
-    let dismissed = new Set(first[0]!.tokens);
-    expect(visibleNotifications(first, dismissed)).toEqual([]);
-    // It stops waiting: the dismissal has nothing left to hide and is dropped.
-    dismissed = pruneDismissed(dismissed, projectNotifications(feeds({ native: 'working', effective: 'working', message: null }, []), NOW));
-    expect([...dismissed]).toEqual([]);
-    expect(visibleNotifications(projectNotifications(feeds(blocked, []), NOW), dismissed).map(notificationText)).toEqual(['planner is waiting']);
+  test('a dismissed occurrence stays hidden when the session status changes', () => {
+    const [planner] = sources(), first = projectNotifications([planner], NOW);
+    let dismissed = new Map(first[0].tokens.map(token => [token, first[0].expiresAt]));
+    expect(visibleNotifications(first, dismissed).map(notificationText)).toEqual(['planner Choose B']);
+    planner.status = { native: 'working', effective: 'working', message: null };
+    dismissed = pruneDismissed(dismissed, projectNotifications([planner], NOW), NOW);
+    expect([...dismissed.keys()]).toEqual(['intentional:planner:a']);
+    planner.status = blocked;
+    expect(visibleNotifications(projectNotifications([planner], NOW), dismissed).map(notificationText)).toEqual(['planner Choose B']);
   });
-  test('dismissed memories return when a new approval arrives, and the count includes every pending one', () => {
-    const first = projectNotifications(feeds(blocked, [approval('a'), approval('b')]), NOW);
-    const memory = first.find(item => item.kind === 'memory')!;
-    const dismissed = new Set(memory.tokens);
-    expect(visibleNotifications(projectNotifications(feeds(blocked, [approval('a')]), NOW), dismissed).map(item => item.kind)).toEqual(['waiting']);
-    const next = visibleNotifications(projectNotifications(feeds(blocked, [approval('a'), approval('b'), approval('c')]), NOW), dismissed);
-    expect(next.map(notificationText)).toEqual(['planner is waiting', '3 memories to review']);
+  test('a new occurrence is shown while older dismissals stay hidden', () => {
+    const [planner] = sources(), first = projectNotifications([planner], NOW);
+    const dismissed = new Map(first.flatMap(item => item.tokens.map(token => [token, item.expiresAt] as const)));
+    planner.notifications = [planner.notifications[0]];
+    expect(visibleNotifications(projectNotifications([planner], NOW), dismissed).map(item => item.kind)).toEqual([]);
+    planner.notifications.push(intentional(planner, 'c', 'Choose C'));
+    const next = visibleNotifications(projectNotifications([planner], NOW), dismissed);
+    expect(next.map(notificationText)).toEqual(['planner Choose C']);
   });
-  test('pruning keeps only tokens that still exist and stays bounded', () => {
-    const items = projectNotifications(feeds(blocked, [approval('a')]), NOW);
-    const kept = pruneDismissed(new Set(['waiting:gone', ...items.flatMap(item => item.tokens)]), items);
-    expect([...kept].sort()).toEqual(items.flatMap(item => item.tokens).sort());
-    const many = Array.from({ length: 700 }, (_, i) => approval(`m${i}`));
-    const all = projectNotifications(feeds(blocked, many), NOW);
-    expect(pruneDismissed(new Set(all.flatMap(item => item.tokens)), all).size).toBeLessThanOrEqual(512);
+  test('pruning drops expired tokens and stays bounded', () => {
+    const [planner] = sources(), items = projectNotifications([planner], NOW);
+    const kept = pruneDismissed(new Map([['expired', NOW - 1], ...items.flatMap(item => item.tokens.map(token => [token, item.expiresAt] as const))]), items, NOW);
+    expect([...kept.keys()].sort()).toEqual(items.flatMap(item => item.tokens).sort());
+    planner.notifications = Array.from({ length: 700 }, (_, i) => intentional(planner, `m${i}`, 'Choose'));
+    const all = projectNotifications([planner], NOW);
+    expect(pruneDismissed(new Map(all.flatMap(item => item.tokens.map(token => [token, item.expiresAt] as const))), all, NOW).size).toBeLessThanOrEqual(512);
   });
-  test('the space panel counts only shown items', () => {
-    const items = projectNotifications(feeds(blocked, [approval('a')]), NOW);
-    const model = projectSpacePanel(feeds(blocked, [approval('a')]), null, NOW, { dismissed: new Set(items[0]!.tokens) });
-    expect(model.notifications.map(notificationText)).toEqual(['1 memory to review']);
+  test('the space panel counts globally shown intentional items', () => {
+    const feeds = sources(), items = projectNotifications(feeds, NOW);
+    const model = projectSpacePanel(feeds, null, NOW, { dismissed: new Map([[items[0].tokens[0], items[0].expiresAt]]) });
+    expect(model.notifications.map(notificationText)).toEqual(['planner Choose B', 'tester Choose C']);
   });
 });
 
@@ -143,33 +153,34 @@ const LIVE = `const a=JSON.parse(files[0]);a.updatedAt=Date.now();a.status={nati
     if(args[1]==='ipc'){const request=JSON.parse(args[5]);return {code:0,stdout:JSON.stringify({ok:true,op:request.op,viewer:'alpha.invalid/t9'})+'\\n',stderr:''};}
     throw new Error('unexpected exec '+JSON.stringify(args));};`;
 
+const NOTICE_SCENE = `a.notifications=['one','two'].map((id,i)=>({id,createdAt:Date.now(),title:'Planner',body:i?'Choose second':'Choose first',kind:'intentional',scope:'session',sessionId:a.sessionId,ownerAddress:a.owner.terminal.address,urgency:i?'low':'attention',runId:null,action:{kind:'focus-owner',sessionId:a.sessionId,address:a.owner.terminal.address}}));files[0]=JSON.stringify(a);`;
+
 describe('panel cards', () => {
-  test('each notification is a bordered card with its own dismiss control', async () => {
-    const output = await runPanelScene<Record<string, unknown>>(`${LIVE}
+  test('each intentional notification is a borderless card with its own dismiss control', async () => {
+    const output = await runPanelScene<Record<string, unknown>>(`Date.now=()=>${NOW};${LIVE}${NOTICE_SCENE}
       initView(panel,cx);await tasks[0];await drain();let tree=panel.render(cx);
-      const card=byId(tree,'card-waiting:planner'),x=byId(tree,'dismiss-waiting:planner'),list=byId(tree,'spider-notifications');
+      const card=byId(tree,'card-intentional:planner:one'),x=byId(tree,'dismiss-intentional:planner:one'),list=byId(tree,'spider-notifications');
       const before={card:[card.styles.border?.[0],card.styles.border_color?.[0],card.styles.rounded?.[0]],gap:list.styles.gap?.[0],tip:x.styles.tooltip?.[0],tab:x.styles.tab_index?.[0],hover:'hover' in x.styles,
         bell:texts(byId(tree,'spider-bell-count'))};
       x.events.on_click({},cx);tree=panel.render(cx);
       const afterClick={list:texts(byId(tree,'spider-notifications')),bell:texts(byId(tree,'spider-bell-count')),commands:[...commands],stored:persisted.get('spider.dismissed/spider-test')};
-      byId(tree,'dismiss-memory').events.on_key_down({keystroke:{key:'enter'}},cx);tree=panel.render(cx);
+      byId(tree,'dismiss-intentional:planner:two').events.on_key_down({keystroke:{key:'enter'}},cx);tree=panel.render(cx);
       console.log(JSON.stringify({before,afterClick,afterKey:{list:byId(tree,'spider-notifications')??null,bell:byId(tree,'spider-bell-count')??null,execs:execs.filter(e=>e[0]!=='-e')}}));`, feed('planner'));
-    expect(output.before).toEqual({ card: [1, '#38383a', 8], gap: 6, tip: 'Dismiss', tab: 0, hover: true, bell: ['2'] });
-    // The click hides that card only, does not focus the session, and is saved for a reload.
-    expect(output.afterClick).toEqual({ list: ['2 memories to review'], bell: ['1'], commands: [], stored: ['waiting:planner'] });
+    expect(output.before).toEqual({ card: [null, null, 8], gap: 6, tip: 'Dismiss', tab: 0, hover: true, bell: ['2'] });
+    expect(output.afterClick).toEqual({ list: ['planner', 'Choose second'], bell: ['1'], commands: [], stored: [['intentional:planner:one', NOW + 7 * 86400000]] });
     expect(output.afterKey).toEqual({ list: null, bell: null, execs: [] });
   });
-  test('dismissals survive a reload and lapse when the state they hid goes away', async () => {
-    const output = await runPanelScene<Record<string, unknown>>(`${LIVE}persisted.set('spider.dismissed/spider-test',['waiting:planner','waiting:gone']);
+  test('dismissals survive a reload and a status change', async () => {
+    const output = await runPanelScene<Record<string, unknown>>(`Date.now=()=>${NOW};${LIVE}${NOTICE_SCENE}persisted.set('spider.dismissed/spider-test',['intentional:planner:one','waiting:gone']);
       initView(panel,cx);await tasks[0];await drain();const shown=()=>{const list=byId(panel.render(cx),'spider-notifications');return list?texts(list):[];};
       const reloaded=shown();
       a.status={native:'working',effective:'working',message:null};a.updatedAt=Date.now();files[0]=JSON.stringify(a);await panel.reload(cx);
       const working={shown:shown(),stored:persisted.get('spider.dismissed/spider-test')};
       a.status={native:'blocked',effective:'blocked',message:null};a.updatedAt=Date.now();files[0]=JSON.stringify(a);await panel.reload(cx);
       console.log(JSON.stringify({reloaded,working,again:shown()}));`, feed('planner'));
-    expect(output.reloaded).toEqual(['2 memories to review']);
-    expect(output.working).toEqual({ shown: ['2 memories to review'], stored: [] });
-    expect(output.again).toEqual(['!', 'planner', 'is waiting', '2 memories to review']);
+    expect(output.reloaded).toEqual(['planner', 'Choose second']);
+    expect(output.working).toEqual({ shown: ['planner', 'Choose second'], stored: [['intentional:planner:one', NOW + 7 * 86400000], ['waiting:gone', NOW + 7 * 86400000]] });
+    expect(output.again).toEqual(['planner', 'Choose second']);
   });
 });
 
@@ -177,7 +188,7 @@ describe('memories view', () => {
   test('clicking the memories card lists full text with approve and reject, and decides without pi', async () => {
     const output = await runPanelScene<Record<string, unknown>>(`${LIVE}
       initView(panel,cx);await tasks[0];await drain();let tree=panel.render(cx);
-      byId(tree,'need-memory').events.on_click({},cx);await drain();tree=panel.render(cx);
+      byId(tree,'spider-memories-open').events.on_click({},cx);await drain();tree=panel.render(cx);
       const view=byId(tree,'spider-memories');
       const first={title:texts(byId(view,'memories-header')),back:Boolean(byId(view,'memories-back')?.events.on_click),
         cards:['u1','u2'].map(u=>texts(byId(view,'memory-'+u))),wrap:'whitespace_normal' in byId(view,'memory-text-u1').styles,
@@ -198,7 +209,7 @@ describe('memories view', () => {
   });
   test('an empty list says so', async () => {
     const output = await runPanelScene<string[]>(`${LIVE}a.approvals=[{uuid:'u1',scope:'global',repoKey:null,ownerSessionId:null,category:'insight',preview:'p'}];files[0]=JSON.stringify(a);
-      initView(panel,cx);await tasks[0];await drain();byId(panel.render(cx),'need-memory').events.on_click({},cx);await drain();
+      initView(panel,cx);await tasks[0];await drain();byId(panel.render(cx),'spider-memories-open').events.on_click({},cx);await drain();
       byId(panel.render(cx),'approve-u1').events.on_click({},cx);await drain();console.log(JSON.stringify(texts(byId(panel.render(cx),'spider-memories'))));`, feed('planner'));
     expect(output).toEqual(['Memories to review', 'Nothing to review']);
   });

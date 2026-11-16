@@ -2,7 +2,10 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, it, vi } from 'vitest';
 import { readFile } from 'node:fs/promises';
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { appendEvent, bus, openDbAt, paths } from '@spider/db-core';
+import { createHerdrDataSource } from '../herdr/data-source.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
 import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { publishSessionFeed, publishSessionHeartbeat } from '../../../herdr/src/feed/publisher.js';
@@ -16,6 +19,33 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+
+it('replays committed intentional notices into a later feed but ignores generic tool events', async () => {
+  const scratch = join(paths.scratch('worktree', process.cwd()), 'intentional-feed'); mkdirSync(scratch, { recursive: true });
+  const root = mkdtempSync(join(scratch, 'case-')), dbPath = join(root, 'runs.db'), approvals = join(root, 'global.db'), now = Date.now();
+  let current = now;
+  cleanup.push(async () => { rmSync(root, { recursive: true, force: true }); });
+  const db = openDbAt(dbPath, 'worktree');
+  appendEvent(db, { sessionId: 'owner', ts: now, phase: 'after', tool: 'notify', payload: { version: 1, kind: 'agent-notification', id: 'notice-1', toolCallId: 'call-1', message: 'Choose a fix', urgency: 'attention', runId: null } });
+  appendEvent(db, { sessionId: 'owner', ts: now, phase: 'after', tool: 'exec', payload: { message: 'not a notice' } }); db.close();
+  const source = createHerdrDataSource({
+    resolveRunDb: () => ({ db: openDbAt(dbPath, 'worktree'), dbPath }), openApprovalDbs: () => ({ global: openDbAt(approvals, 'global'), repo: null }),
+    runEvents: bus, scheduler: { listTriggers: () => [], subscribe: () => () => {} },
+    readUsage: async () => ({ snapshots: [], budget: undefined, correctedMonth: null, correctedWindow: null, updatedAt: null }),
+    readConfig: () => ({ limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 } }), clock: () => current,
+  });
+  cleanup.push(async () => { await source.dispose(); });
+  const owner = { sessionId: 'owner', generation: 'generation', terminal: { coreId: 'core', terminalId: 'terminal', address: 'terminal', socket: join(root, 'socket'), sessionNamespace: 'fixture' }, cwd: root, sessionFile: null, name: 'Owner' } as any;
+  const feed = await source.snapshot(owner);
+  expect(feed.notifications).toHaveLength(1);
+  expect(feed.notifications[0]).toMatchObject({ kind: 'intentional', id: 'notice-1', body: 'Choose a fix', runId: null, sessionId: 'owner', action: { kind: 'focus-owner', address: 'terminal' } });
+  const childDb = openDbAt(dbPath, 'worktree');
+  appendEvent(childDb, { sessionId: 'owner', ts: now + 1, phase: 'after', tool: 'notify', payload: { version: 1, kind: 'agent-notification', id: 'notice-2', toolCallId: 'call-2', message: 'Review the child', urgency: 'urgent', runId: 'run-1' } }); childDb.close();
+  current = now + 1;
+  const next = await source.snapshot(owner);
+  expect(next.notifications).toHaveLength(2);
+  expect(next.notifications[0]).toMatchObject({ kind: 'intentional', id: 'notice-2', body: 'Review the child', urgency: 'urgent', runId: 'run-1', action: { kind: 'open-run', sessionId: 'owner', runId: 'run-1' } });
+});
 
 it.each([true, false])('doctor judges an unchanged owner by its generation-bound heartbeat (present: %s)', async present => {
   const f = await fixture(); await setupHerdr(f.request, f.parts);

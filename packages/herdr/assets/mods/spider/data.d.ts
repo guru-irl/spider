@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import type { ApprovalSummary, SessionFeed, SessionId, SpaceId, TodoSummary } from '../../../src/contracts.js';
+import type { ApprovalSummary, NotificationUrgency, RunId, SessionFeed, SessionId, SpaceId, TodoSummary } from '../../../src/contracts.js';
 export interface SpiderPanelModel {
   sessions: { id: SessionId; feed: SessionFeed }[];
   spaces: { id: SpaceId | null; name: string | null; sessionIds: SessionId[] }[];
@@ -17,15 +17,15 @@ export type NotificationPart =
   | { type: 'agent'; icon: 'session' | 'subagent'; text: string }
   | { type: 'machine' | 'command' | 'text' | 'detail'; text: string };
 export interface NotificationItem {
-  kind: 'waiting' | 'failed' | 'memory'; key: string; tokens: string[]; parts: NotificationPart[]; action: 'Focus' | 'Review';
-  sessionId?: SessionId; approvals?: ApprovalSummary[];
+  kind: 'intentional'; key: string; tokens: string[]; parts: NotificationPart[]; action: 'Open';
+  sessionId: SessionId; runId: RunId | null; urgency: NotificationUrgency; createdAt: number; expiresAt: number;
 }
 export interface SessionFact { kind: 'live' | 'todos'; count: number; label: string }
 export interface SessionFacts {
   id: SessionId; name: string; state: string; live: number; openTodos: number; facts: SessionFact[]; cost: string | null;
   todos: TodoSummary[]; moreTodos: number; triggers: { name: string; next: string }[];
 }
-export interface PanelExtras { dismissed?: ReadonlySet<string> }
+export interface PanelExtras { dismissed?: ReadonlyMap<string, number> | ReadonlySet<string> }
 export interface MemoryReviewRow extends ApprovalSummary { key: string; scopeLabel: string }
 export interface SessionView {
   id: SessionId; name: string; state: 'live' | 'closed' | 'disconnected'; todos: TodoSummary[]; done: number; moreRuns: number;
@@ -41,13 +41,17 @@ export function selectedSpace(spaces: readonly { id: string; name?: string | nul
 export function projectPace(feeds: readonly SessionFeed[], now: number): PanelPace;
 export function notificationText(item: NotificationItem): string;
 export function projectNotifications(feeds: readonly SessionFeed[], now: number): NotificationItem[];
-export function visibleNotifications(items: readonly NotificationItem[], dismissed: ReadonlySet<string>): NotificationItem[];
-export function pruneDismissed(dismissed: ReadonlySet<string>, items: readonly NotificationItem[]): Set<string>;
+export function visibleNotifications(items: readonly NotificationItem[], dismissed: ReadonlyMap<string, number> | ReadonlySet<string>): NotificationItem[];
+export function notificationBadge(items: readonly NotificationItem[], dismissed: ReadonlyMap<string, number> | ReadonlySet<string>): number;
+export function readDismissed(value: unknown, now: number): Map<string, number>;
+export function pruneDismissed(dismissed: ReadonlyMap<string, number> | ReadonlySet<string>, items: readonly NotificationItem[], now?: number): Map<string, number>;
+export function panelIsShown(snapshot: unknown, modId: string): boolean;
 export function projectMemoryReview(feeds: readonly SessionFeed[]): MemoryReviewRow[];
 export function projectSessionView(feed: SessionFeed, now: number): SessionView;
 export function projectSessionFacts(feed: SessionFeed, now: number): SessionFacts;
 export function projectSpacePanel(feeds: readonly SessionFeed[], space: PanelSpace | null, now: number, extra?: PanelExtras): { space: PanelSpace | null; pace: PanelPace; notifications: NotificationItem[]; sessions: (SessionFacts & { feed: SessionFeed })[] };
 export interface PanelConfigProblem { title: string; text: string; fix: NotificationPart[]; then: string; detail: string }
+export function soundPreference(props: unknown): boolean | null;
 export function panelConfigProblem(props: unknown): PanelConfigProblem | null;
 export function doctorCommand(config: { nodePath: string; cliPath: string; configPath: string }): string;
 export interface PanelError { source: string; message: string; scope?: 'feed' | 'sessions'; command?: string | null }

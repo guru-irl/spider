@@ -57,7 +57,7 @@ async function heartbeat(root: string, feed: SessionFeed): Promise<number> {
   return feed.updatedAt;
 }
 /** The cache belongs to one reader, and retains no more than the reply byte budget. */
-function createSnapshots(root: string) {
+export function createSnapshots(root: string) {
   let cache = new Map<string, CachedFeed>();
   return async (known: Record<string, unknown>): Promise<Snapshot> => {
     const errors: Snapshot['errors'] = [], candidates: { source: string; file: string; stamp: string; mtime: number }[] = [];
@@ -94,8 +94,8 @@ function createSnapshots(root: string) {
         if (!value || value.stamp !== candidate.stamp) {
           const read = await readBounded(candidate.file, MAX_FILE), feed = parseFeed(read.text);
           if (!feed || feed.sessionId !== candidate.source) throw Object.assign(new Error('invalid-feed'), { code: 'invalid-feed' });
-          // Older sessions still publish retired notices. They are never shown.
-          value = { stamp: read.stamp, size: read.size, feed: { ...feed, notifications: feed.notifications.filter(n => n.kind === 'job-result') } };
+          // Retired notices are excluded; job results remain available to existing consumers.
+          value = { stamp: read.stamp, size: read.size, feed: { ...feed, notifications: feed.notifications.filter(n => n.kind === 'job-result' || n.kind === 'intentional') } };
         }
         const updatedAt = await heartbeat(root, value.feed);
         const rank = value.feed.lifecycle === 'live' && now - updatedAt <= FEED_DISCONNECT_MS ? 0 : now - candidate.mtime <= 7 * 86400000 ? 1 : 2;

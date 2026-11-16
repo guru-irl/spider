@@ -8,7 +8,7 @@ import { createHcClient } from '../client/hc.js';
 import { createAppClient } from '../client/app.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createClientFixture, terminal, type ClientFixture } from './testutil.js';
 const fixtures: ClientFixture[] = [];
@@ -35,6 +35,38 @@ test('reads the terminal dimensions reported by the core', async () => {
   const result = await createHcClient({ binary: h.hcBinary, env: h.localEnv }).get(h.address('t1'));
   expect(result).toMatchObject({ cols: 183, rows: 47 });
 });
+test('reads local and remote space identities and tabs without changing the app', async () => {
+  const h = await fixture();
+  const world = { spaces: [
+    { id: 's1', name: 'Work', machine: null, tabs: [{ id: 'tb1', name: 'Coding', terminals: [] }] },
+    { id: 'box-1.invalid/s2', name: 'Box', machine: 'box-1.invalid', tabs: [{ id: 'box-1.invalid/tb2', name: 'Remote', terminals: [] }] },
+  ] };
+  await writeFile(join(h.root, 'app.json'), JSON.stringify(world));
+  const app = createAppClient({ binary: h.appBinary, env: h.localEnv });
+  expect(await app.listSpaces()).toEqual([
+    { id: 's1', name: 'Work', machine: null, tabs: [{ id: 'tb1', name: 'Coding' }] },
+    { id: 'box-1.invalid/s2', name: 'Box', machine: 'box-1.invalid', tabs: [{ id: 'box-1.invalid/tb2', name: 'Remote' }] },
+  ]);
+  expect(JSON.parse(await readFile(join(h.root, 'app.json'), 'utf8'))).toEqual(world);
+});
+
+test('reports the active space even when there is no focused pane', async () => {
+  const h = await fixture();
+  await writeFile(join(h.root, 'app.json'), JSON.stringify({ spaces: [
+    { id: 's1', name: 'One', machine: null, active: false, tabs: [] },
+    { id: 's2', name: 'Two', machine: null, active: true, tabs: [] },
+  ] }));
+  const app = createAppClient({ binary: h.appBinary, env: h.localEnv });
+  expect(await app.listSpaces()).toMatchObject([{ id: 's1', active: false }, { id: 's2', active: true }]);
+});
+
+test('refuses malformed space inventory instead of guessing its machine', async () => {
+  const h = await fixture();
+  await writeFile(join(h.root, 'app.json'), JSON.stringify({ spaces: [{ id: 's1', name: 'Work', machine: 3, tabs: [] }] }));
+  const app = createAppClient({ binary: h.appBinary, env: h.localEnv });
+  await expect(app.listSpaces()).rejects.toMatchObject({ code: 'invalid-reply' });
+});
+
 test('reads pane focus and ordered tabs from the app', async () => {
   const h = await fixture();
   await writeFile(join(h.root, 'app.json'), JSON.stringify({ spaces: [{ id: 'sp1', tabs: [

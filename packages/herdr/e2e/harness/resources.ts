@@ -22,7 +22,7 @@ export interface Ledger {
   owner: ProcessIdentity; watchdog?: ProcessIdentity;
   processes: LedgerProcess[]; cores: LedgerCore[];
   terminals: { side: string; address: string }[]; machines: { side: string; name: string }[];
-  appHome?: string; remoteRoot?: string; viaDirectory?: string;
+  appHome?: string; remoteRoot?: string; viaDirectory?: string; nativeProcessDirectory?: string;
   modeRestores?: FileModeRestore[];
 }
 export interface CleanupProof {
@@ -185,10 +185,9 @@ async function stopCoreStarters(ledger: Ledger, proof: CleanupProof): Promise<bo
 interface ViaRecord extends ProcessIdentity { child?: ProcessIdentity }
 
 /** Each via writes its own atomic record, so concurrent dial attempts never rewrite the shared ledger. */
-function viaRecords(ledger: Ledger): { records: ViaRecord[]; invalid: string[] } {
-  const directory = ledger.viaDirectory;
+function viaRecords(ledger: Ledger, directory: string | undefined = ledger.viaDirectory, expected: string = join(resolve(ledger.root), 'via-processes')): { records: ViaRecord[]; invalid: string[] } {
   if (!directory) return { records: [], invalid: [] };
-  if (directory !== join(resolve(ledger.root), 'via-processes') || !existsSync(directory)) return { records: [], invalid: [directory] };
+  if (directory !== expected || !existsSync(directory)) return { records: [], invalid: [directory] };
   const info = lstatSync(directory);
   if (!info.isDirectory() || info.isSymbolicLink() || (process.getuid && info.uid !== process.getuid())) return { records: [], invalid: [directory] };
   const records: ViaRecord[] = [], invalid: string[] = [];
@@ -361,6 +360,14 @@ export async function cleanupLedger(path: string, reason: string, options: { rem
     // Apps can autostart hc on connect. Wait for their owned process groups before touching either core.
     const appsStopped = await stopCoreStarters(ledger, proof);
     proof.phases.push({ phase: 'app-stopped', ok: appsStopped });
+    if (appsStopped && ledger.nativeProcessDirectory) {
+      const native = viaRecords(ledger, ledger.nativeProcessDirectory, join(resolve(ledger.root), 'native-processes'));
+      for (const file of native.invalid) proof.survivors.push({ kind: 'native-process-record', id: file });
+      for (const record of native.records) {
+        if (!ledger.processes.some(item => item.pid === record.pid && item.start === record.start)) ledger.processes.push({ pid: record.pid, start: record.start, label: 'native-feed-reader', group: false });
+      }
+      const durable = readLedger(path); durable.processes = ledger.processes; writeAtomic(path, durable);
+    }
     // Only the local core spawns via. Stop it, drain its already-started transports, then stop the destination.
     let localStopped = appsStopped;
     if (localStopped) for (const core of ledger.cores.filter(core => core.side === 'local')) localStopped = await stopCore(ledger, core, proof) && localStopped;

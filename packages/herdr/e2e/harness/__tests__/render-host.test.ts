@@ -11,6 +11,17 @@ function mod(source: string): string {
 }
 const theme = () => ({ foreground: '#f8f8f2', dim: '#b4b4ba' });
 describe('strict fake-app render host', () => {
+  it('routes explicit playSound through the strict API and does not synthesize native sound', async () => {
+    const dir = mod(`import {View,div} from 'gpui-kit'; import {playSound} from 'herdr';
+      export default class Panel extends View {render(){return div().id('sound').child('Notice').on_click(()=>playSound('blocked'));}}`);
+    const sounds: unknown[] = [];
+    const host = await createRenderHost({ installedDirectory: dir, props: {}, api: { playSound: value => sounds.push(value) } }); hosts.push(host);
+    expect(sounds).toEqual([]);
+    await host.activate('sound');
+    expect(sounds).toEqual(['blocked']);
+    expect(() => host.invalidate()).not.toThrow();
+    expect(sounds).toEqual(['blocked']);
+  });
   it('executes the installed module init and its real registered handler, then observes rerender', async () => {
     const dir = mod(`import {View,div} from 'gpui-kit'; import {Button} from 'gpui-base'; import {readTextFile,run,theme,props} from 'herdr';
       export default class Panel extends View {

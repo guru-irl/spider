@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { describe, expect, test } from 'vitest';
-import type { SessionFeed, CoreId, TerminalId, TerminalAddress, SpaceId, RunSummary } from '../contracts.js';
+import { HerdrLabelContract, type SessionFeed, type CoreId, type TerminalId, type TerminalAddress, type SpaceId, type RunSummary } from '../contracts.js';
 import { runPanelScene } from './acceptance/i.js';
-import { projectNotifications, projectSessionFacts, notificationText } from '../../assets/mods/spider/data.js';
+import { projectNotifications, projectMemoryReview, projectSessionFacts, notificationText } from '../../assets/mods/spider/data.js';
 
 const NOW = Date.UTC(2026, 10, 15, 12, 0, 0);
 function feed(id: string, patch: Partial<SessionFeed> = {}): SessionFeed {
@@ -19,6 +19,7 @@ function feed(id: string, patch: Partial<SessionFeed> = {}): SessionFeed {
     approvals: [], notifications: [], ipc: { address: '/fixture/ipc', capabilityFile: '/fixture/capability' }, errors: [], ...patch,
   };
 }
+const notice = (owner: SessionFeed): Extract<SessionFeed['notifications'][number], { kind: 'intentional' }> => ({ id: 'notice-1', createdAt: NOW, title: owner.sessionId, body: 'Choose a fix', kind: 'intentional', scope: 'session', sessionId: owner.sessionId, ownerAddress: owner.owner.terminal.address, urgency: 'attention', runId: null, action: { kind: 'focus-owner', sessionId: owner.sessionId, address: owner.owner.terminal.address } });
 const run = (id: string, owner: string, patch: Partial<RunSummary> = {}): RunSummary => ({ id, ownerSessionId: owner, name: id, status: 'running', childMode: 'rpc', canSteer: true, startedAt: NOW - 60000, finishedAt: null, viewer: null, result: null, ...patch } as RunSummary);
 const job = (patch: Record<string, unknown> = {}) => ({ id: 'job-result:job-1', kind: 'job-result', scope: 'session', sessionId: 'planner', ownerAddress: 'planner', createdAt: NOW - 120000,
   title: 'Job job-1', body: 'Exit 1', action: { kind: 'focus-owner', sessionId: 'planner', address: 'planner' },
@@ -29,11 +30,12 @@ const tagIcons = (source: string) => source.replace("import { View, div, svg } f
 const LABELS = "props.labelContract={version:1,labels:{job:'spider.job',kind:'spider.kind',session:'spider.session',run:'spider.run',machine:'spider.machine',displayName:'spider.display-name'},kinds:{exec:'exec',execFile:'exec-file',batch:'batch'}};";
 
 describe('notification wording', () => {
-  test('a waiting session shows only that it is waiting, never the question', () => {
+  test('an intentional notice shows its owner and message, not the native status question', () => {
     const waiting = feed('planner', { status: { native: 'blocked', effective: 'blocked', message: 'Approve push to origin?' } });
+    waiting.notifications = [notice(waiting)];
     const [item] = projectNotifications([waiting], NOW);
-    expect(item!.parts).toEqual([{ type: 'agent', icon: 'session', text: 'planner' }, { type: 'text', text: 'is waiting' }]);
-    expect(notificationText(item!)).toBe('planner is waiting');
+    expect(item!.parts).toEqual([{ type: 'agent', icon: 'session', text: 'planner' }, { type: 'text', text: 'Choose a fix' }]);
+    expect(notificationText(item!)).toBe('planner Choose a fix');
   });
   test('a failed command is not something to act on, so it is not listed', () => {
     expect(projectNotifications([feed('planner', { notifications: [job({ commandPreview: 'make test build' })] })], NOW)).toEqual([]);
@@ -41,11 +43,13 @@ describe('notification wording', () => {
   test('memories read just the count; failed sessions carry no detail; failed runs are not listed', () => {
     const shared = { uuid: 'g', scope: 'global' as const, repoKey: null, ownerSessionId: null, category: 'insight', preview: 'p' };
     const owned = { uuid: 'm', scope: 'repo' as const, repoKey: 'r' as never, ownerSessionId: 'planner' as never, category: 'insight', preview: 'q' };
-    const items = projectNotifications([
+    const feeds = [
       feed('planner', { approvals: [shared, owned], runs: { rows: [run('reviewer', 'planner', { status: 'failed', finishedAt: NOW - 60000, result: 'exit 1' })], total: 1, truncated: false } }),
       feed('tester', { status: { native: 'error', effective: 'error', message: 'boom' } }),
-    ], NOW);
-    expect(items.map(notificationText)).toEqual(['tester failed', '2 memories to review']);
+    ];
+    const items = projectNotifications(feeds, NOW);
+    expect(items.map(notificationText)).toEqual([]);
+    expect(projectMemoryReview(feeds)).toHaveLength(2);
   });
 });
 
@@ -63,41 +67,41 @@ describe('panel rendering', () => {
       a.status={native:'blocked',effective:'blocked',message:'Approve push to origin?'};
       a.approvals=[{uuid:'g',scope:'global',repoKey:null,ownerSessionId:null,category:'insight',preview:'p'}];
       files[0]=JSON.stringify(a);${LABELS}
-      a.notifications=[{id:'job-result:j1',kind:'job-result',scope:'session',sessionId:a.sessionId,ownerAddress:a.owner.terminal.address,createdAt:Date.now()-60000,title:'Job j1',body:'Exit 2',action:{kind:'focus-owner',sessionId:a.sessionId,address:a.owner.terminal.address},job:{id:'j1',runId:null,commandPreview:'make test build',machine:'build.invalid',address:'build.invalid/t9',exitCode:2,signal:null,finishedAt:Date.now()-60000}}];files[0]=JSON.stringify(a);api.terminals=()=>[];
+      a.notifications=[{id:'job-result:j1',kind:'job-result',scope:'session',sessionId:a.sessionId,ownerAddress:a.owner.terminal.address,createdAt:Date.now()-60000,title:'Job j1',body:'Exit 2',action:{kind:'focus-owner',sessionId:a.sessionId,address:a.owner.terminal.address},job:{id:'j1',runId:null,commandPreview:'make test build',machine:'build.invalid',address:'build.invalid/t9',exitCode:2,signal:null,finishedAt:Date.now()-60000}},{id:'notice-1',kind:'intentional',scope:'session',sessionId:a.sessionId,ownerAddress:a.owner.terminal.address,createdAt:Date.now(),title:'Owner',body:'Choose a fix',urgency:'attention',runId:null,action:{kind:'focus-owner',sessionId:a.sessionId,address:a.owner.terminal.address}}];files[0]=JSON.stringify(a);api.terminals=()=>[];
       initView(panel,cx);await tasks[0];panel.errors.push({source:'Doctor',message:'timeout',command:'make test build',updatedAt:Date.now()});const tree=panel.render(cx);const list=byId(tree,'spider-notifications');
-      const code=byId(tree,'problem-0-command');const pill=byId(tree,'pill-waiting:'+a.sessionId+'-0');
+      const code=byId(tree,'problem-0-command');const pill=byId(tree,'pill-intentional:'+a.sessionId+':notice-1-0');
       let buttons=0;(function walk(el){if(el?.styles?.id&&/^need-(focus|output|review|usage)/.test(el.styles.id[0]))buttons++;(el?.items||[]).forEach(walk);})(list);
       console.log(JSON.stringify({text:texts(list),buttons,lines:list.items.map(r=>'border_t' in r.styles),code:[code.items.length,code.styles.rounded?.[0],code.styles.font_family?.[0],code.styles.bg?.[0],'border' in code.styles],
         pill:[pill.styles.h?.[0],pill.styles.text_size?.[0],pill.styles.bg?.[0],'border' in pill.styles]}));`, feed('planner'), tagIcons);
     // The failed command in the feed is not listed: only what the user acts on.
-    expect(output.text).toEqual(['!', 'planner', 'is waiting', '1 memory to review']);
+    expect(output.text).toEqual(['!', 'planner', 'Choose a fix']);
     expect(output.text.join(' ')).not.toMatch(/\u00b7|Approve push|exit 2|Focus|Output|Review/);
     expect(output.buttons).toBe(0);
     // Cards are separated by space and their own border, not by rules.
-    expect(output.lines).toEqual([false, false]);
+    expect(output.lines).toEqual([false]);
     // Inline code: text only, monospace, a subtle fill and a small radius; no border, no pill.
     expect(output.code).toEqual([1, 4, 'JetBrains Mono', '#ffffff12', false]);
     expect(output.pill).toEqual([16, 10.5, '#ffffff0d', false]);
   });
-  test('the whole row runs its action from a click or the keyboard, with a hover fill', async () => {
-    const output = await runPanelScene<{ commands: { name: string; args: unknown }[]; hover: boolean[]; tab: unknown[]; view: string; quiet: boolean }>(`const a=JSON.parse(files[0]);a.updatedAt=Date.now();
-      a.status={native:'blocked',effective:'blocked',message:'Approve?'};files[0]=JSON.stringify(a);${LABELS}
-      api.panes=()=>[{terminal:'build.invalid/t9'}];
+  test('an intentional row focuses its owner and the Memories control opens its view', async () => {
+    const output = await runPanelScene<{ commands: { name: string; args: unknown }[]; hover: boolean[]; tab: unknown[]; view: string; before: unknown[]; hc: unknown[]; configReads: number }>(`const a=JSON.parse(files[0]);a.updatedAt=Date.now();
+      a.status={native:'blocked',effective:'blocked',message:'Approve?'};props.labelContract=${JSON.stringify(HerdrLabelContract)};
       a.approvals=[{uuid:'g',scope:'global',repoKey:null,ownerSessionId:null,category:'insight',preview:'p'}];
-      a.notifications=[{id:'job-result:j1',kind:'job-result',scope:'session',sessionId:a.sessionId,ownerAddress:a.owner.terminal.address,createdAt:Date.now()-60000,title:'Job j1',body:'Exit 1',action:{kind:'focus-owner',sessionId:a.sessionId,address:a.owner.terminal.address},job:{id:'j1',runId:null,commandPreview:'make-test-build',machine:'build.invalid',address:'build.invalid/t9',exitCode:1,signal:null,finishedAt:Date.now()-60000}}];files[0]=JSON.stringify(a);api.terminals=()=>[];
-      let polled=0;api.readTextFile=async()=>{polled++;return JSON.stringify({machines:[{name:'gone.invalid'}]});};api.hc=async()=>{polled++;return {code:0,stdout:JSON.stringify({machines:[]}),stderr:''};};
-      initView(panel,cx);await tasks[0];await drain();const after=Date.now()+10000;Date.now=()=>after;a.updatedAt=after;files[0]=JSON.stringify(a);await panel.reload(cx);for(const timer of timers)for(let i=0;i<5;i++)timer.f(cx);await drain();const tree=panel.render(cx);
-      const waiting=byId(tree,'need-waiting:'+a.sessionId), memory=byId(tree,'need-memory');
+      a.notifications=[{id:'notice-1',kind:'intentional',scope:'session',sessionId:a.sessionId,ownerAddress:a.owner.terminal.address,createdAt:Date.now(),title:'Owner',body:'Choose a fix',urgency:'attention',runId:null,action:{kind:'focus-owner',sessionId:a.sessionId,address:a.owner.terminal.address}}];files[0]=JSON.stringify(a);
+      api.panes=()=>[{pane:'owner-pane',terminal:'planner',tab:'t1',cwd:null}];api.terminals=()=>[{address:'planner',parent:null,labels:{},state:'live',status:'working'}];
+      api.agents=()=>[{address:'planner',pane:'owner-pane',space:'space-3',tab:'t1',title:'Pi',program:{name:'pi'},status:'working'}];api.machines=()=>[{name:null,layout:'ready'}];
+      const hc=[];let configReads=0;api.readTextFile=async()=>{configReads++;return null;};api.hc=async args=>{hc.push(args);return {code:0,stdout:JSON.stringify({core:{id:'core'}}),stderr:''};};
+      initView(panel,cx);await tasks[0];await drain();const after=Date.now()+10000;Date.now=()=>after;a.updatedAt=after;files[0]=JSON.stringify(a);await panel.reload(cx);for(const timer of timers)for(let i=0;i<5;i++)timer.f(cx);await drain();const tree=panel.render(cx),before=[...hc];
+      const waiting=byId(tree,'need-intentional:'+a.sessionId+':notice-1'), memory=byId(tree,'spider-memories-open');
       waiting.events.on_click({},cx);waiting.events.on_key_down({keystroke:{key:'a'}},cx);memory.events.on_key_down({keystroke:{key:'enter'}},cx);await drain();
-      console.log(JSON.stringify({commands,hover:[waiting,memory].map(r=>'hover' in r.styles&&'cursor_pointer' in r.styles),tab:[waiting.styles.tab_index?.[0],memory.styles.tab_index?.[0]],
-        view:panel.view.kind,quiet:polled===0}));`, feed('planner'));
-    expect(output.commands).toEqual([{ name: 'pane.focus', args: { terminal: 'planner' } }]);
+      console.log(JSON.stringify({commands,hover:[waiting,memory].map(r=>'hover' in r.styles&&'cursor_pointer' in r.styles),tab:[waiting.styles.tab_index?.[0],memory.styles.tab_index?.[0]],view:panel.view.kind,before,hc,configReads}));`, feed('planner'));
+    expect(output.commands).toEqual([{ name: 'pane.focus', args: { pane: 'owner-pane' } }]);
     expect(output.hover).toEqual([true, true]);
     expect(output.tab).toEqual([0, 0]);
-    // The memories card opens the Memories view in the panel.
     expect(output.view).toBe('memories');
-    // Machine problems are not notifications, so the panel never polls machines.
-    expect(output.quiet).toBe(true);
+    expect(output.before).toEqual([]);
+    expect(output.hc).toEqual([['server', 'status', '--json']]);
+    expect(output.configReads).toBe(0);
   });
   test('session rows lead with the kind icon instead of a status glyph, keep credits and the chevron, and show facts as icons', async () => {
     const output = await runPanelScene<{ lead: unknown[]; tail: string[]; facts: unknown[]; text: string[] }>(`const a=JSON.parse(files[0]);a.updatedAt=Date.now();

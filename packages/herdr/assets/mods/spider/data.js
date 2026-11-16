@@ -97,41 +97,60 @@ function pendingApprovals(feeds) {
   return [...owners.values(), ...shared.values()];
 }
 
-/**
- * Only what the user acts on, in a fixed order of urgency: a live session
- * waiting on them, a live session that stopped with an error, and memories to
- * review. Each item carries the tokens a dismissal hides: one per session
- * occurrence, one per pending approval.
- */
+const NOTICE_LIFETIME_MS = 7 * 86400000;
+const urgencyOrder = { urgent: 0, attention: 1, low: 2 };
+/** Intentional occurrences are global; a stale owner leaves a dismissible card. */
 export function projectNotifications(feeds, now) {
-  const live = feeds.filter(feed => panelSessionState(feed, now) === 'live');
-  const items = [];
-  for (const feed of live) if (feed.status.effective === 'blocked')
-    items.push({ kind: 'waiting', key: `waiting:${feed.sessionId}`, tokens: [`waiting:${feed.sessionId}`], sessionId: feed.sessionId, parts: [agent(nameOf(feed)), words('is waiting')], action: 'Focus' });
-  for (const feed of live) if (feed.status.effective === 'error')
-    items.push({ kind: 'failed', key: `error:${feed.sessionId}`, tokens: [`error:${feed.sessionId}`], sessionId: feed.sessionId, parts: [agent(nameOf(feed)), words('failed')], action: 'Focus' });
-  const approvals = pendingApprovals(feeds);
-  if (approvals.length)
-    items.push({ kind: 'memory', key: 'memory', tokens: approvals.map(approval => `memory:${approvalKey(approval)}`), approvals,
-      parts: [words(`${plural(approvals.length, 'memory', 'memories')} to review`)], action: 'Review' });
-  return items;
+  const items = new Map();
+  for (const feed of [...feeds].sort((a, b) => b.updatedAt - a.updatedAt)) for (const notice of feed.notifications) {
+    if (notice.kind !== 'intentional' || notice.createdAt > now || now - notice.createdAt >= NOTICE_LIFETIME_MS) continue;
+    const key = `intentional:${feed.sessionId}:${notice.id}`;
+    if (items.has(key)) continue;
+    const sender = notice.runId ? (feed.runs.rows.find(run => run.id === notice.runId)?.name || notice.runId) : nameOf(feed);
+    items.set(key, { kind: 'intentional', key, tokens: [key], sessionId: feed.sessionId, runId: notice.runId,
+      urgency: notice.urgency, createdAt: notice.createdAt, expiresAt: notice.createdAt + NOTICE_LIFETIME_MS,
+      parts: [agent(sender, notice.runId ? 'subagent' : 'session'), words(notice.body)], action: 'Open' });
+  }
+  return [...items.values()].sort((a, b) => urgencyOrder[a.urgency] - urgencyOrder[b.urgency] || b.createdAt - a.createdAt || compare(a.key, b.key));
 }
 
 /** Items with at least one token the user has not dismissed. */
 export function visibleNotifications(items, dismissed) {
   return items.filter(item => item.tokens.some(token => !dismissed.has(token)));
 }
+export function notificationBadge(items, dismissed) {
+  return visibleNotifications(items, dismissed).filter(item => item.urgency === 'attention' || item.urgency === 'urgent').length;
+}
 
 const DISMISSED_LIMIT = 512;
-/**
- * Dismissals that still hide something. A token whose state has gone (the
- * session stopped waiting, the memory was decided) is dropped, so the same
- * state returning later shows again. Bounded to the newest tokens.
- */
-export function pruneDismissed(dismissed, items) {
-  const present = new Set(items.flatMap(item => item.tokens));
-  const kept = [...dismissed].filter(token => present.has(token));
-  return new Set(kept.slice(-DISMISSED_LIMIT));
+/** Read old string tokens and new [token, expiry] entries without losing a temporarily absent occurrence. */
+export function readDismissed(value, now) {
+  const entries = [];
+  for (const entry of Array.isArray(value) ? value : []) {
+    if (typeof entry === 'string') entries.push([entry, now + NOTICE_LIFETIME_MS]);
+    else if (Array.isArray(entry) && typeof entry[0] === 'string' && Number.isFinite(entry[1])) entries.push([entry[0], entry[1]]);
+  }
+  return new Map(entries.filter(([, expiry]) => expiry > now).slice(-DISMISSED_LIMIT));
+}
+/** An absent feed does not erase a dismissal; expiration and the cap bound storage. */
+export function pruneDismissed(dismissed, items, now = Date.now()) {
+  const expiry = new Map(items.flatMap(item => item.tokens.map(token => [token, item.expiresAt])));
+  const entries = [...dismissed].map(entry => Array.isArray(entry) ? entry : [entry, now + NOTICE_LIFETIME_MS]);
+  return new Map(entries.filter(([token, until]) => typeof token === 'string' && Number.isFinite(until) && until > now)
+    .map(([token, until]) => [token, Math.min(until, expiry.get(token) ?? until)]).filter(([, until]) => until > now).slice(-DISMISSED_LIMIT));
+}
+/** Whether a layout currently exposes this mod, respecting hidden nodes and stacks. */
+export function panelIsShown(snapshot, modId) {
+  const seen = new Set();
+  function visit(node) {
+    if (!node || typeof node !== 'object' || node.hidden || seen.has(node)) return false;
+    seen.add(node);
+    if (node.content?.mod === modId) return true;
+    let children = Array.isArray(node.children) ? node.children.filter(child => child && !child.hidden) : [];
+    if (node.type === 'stack') children = [typeof node.active === 'string' ? children.find(child => child.id === node.active) : children[0]].filter(Boolean);
+    return children.some(visit);
+  }
+  return typeof modId === 'string' && modId.length > 0 && visit(snapshot);
 }
 
 /** The basename of a repo key (its git common dir), for people. */
@@ -177,6 +196,13 @@ export function projectSessionFacts(feed, now) {
 const PANEL_PATHS = ['feedRoot', 'cliPath', 'nodePath', 'configPath'];
 const absolutePath = value => typeof value === 'string' && /^(\/|[A-Za-z]:[\\/])/.test(value) && !/[\u0000-\u001f]/.test(value) && !value.split(/[\\/]/).includes('..');
 
+/** Missing notification props preserve the default; malformed props fail closed. */
+export function soundPreference(props) {
+  const notifications = props?.notifications;
+  if (notifications === undefined) return true;
+  return notifications && typeof notifications === 'object' && !Array.isArray(notifications) && typeof notifications.sound === 'boolean' ? notifications.sound : null;
+}
+
 /**
  * Why the panel cannot start, or null when its layout props are usable. Setup
  * writes these props and doctor checks them, so the fix is the same each time.
@@ -212,6 +238,7 @@ const RUNTIME = {
   'Feed watch': "Spider can't watch for session changes. It rereads the feeds every 8 seconds instead.",
   Notifications: "Spider couldn't post a Herdr notice.", 'Notification setup': "Spider can't post Herdr notices.",
   'Notification commands': 'Spider stopped listening for clicks on its notices.',
+  'Notification sound': "Spider couldn't play a notification sound.",
   Doctor: "Doctor didn't finish within 30 seconds. Run it in a shell for the full report.",
 };
 const feedCount = n => n === 1 ? 'a session feed' : `${n} session feeds`;
@@ -243,7 +270,9 @@ export function describePanelProblems(errors, options = {}) {
         : kind === 'unreadable' ? `Spider couldn't read ${feedCount(n)}.` : FEED_CODES[kind](n);
       groups.set(key, group); continue;
     }
-    const text = ACTIONS[error.source] ? [ACTIONS[error.source], CAUSES[message]].filter(Boolean).join(' ') : RUNTIME[error.source] ?? `${error.source} failed.`;
+    const named = error.source === 'Notification action' && (/^[A-Za-z0-9._-]{1,253} was rebuilt or can't be verified$/.test(message)
+      || /^Owner on [A-Za-z0-9._ -]{1,253} is unreachable$/.test(message) || message === 'Run /reload to enable session reopening') ? `${message}.` : null;
+    const text = ACTIONS[error.source] ? [ACTIONS[error.source], CAUSES[message] ?? named].filter(Boolean).join(' ') : RUNTIME[error.source] ?? `${error.source} failed.`;
     const key = `run:${text}`;
     if (!groups.has(key)) groups.set(key, { key, text, tips: [message], command: error.command ?? null });
   }
@@ -262,6 +291,6 @@ export function projectSpacePanel(feeds, space, now, extra = {}) {
   const ordered = projectSpiderPanel(feeds).sessions.map(row => row.feed);
   const mine = space ? ordered.filter(feed => !feed.placement || feed.placement.spaceId === space.id) : ordered;
   const pace = projectPace(feeds, now);
-  const notifications = visibleNotifications(projectNotifications(mine, now), extra.dismissed ?? new Set());
+  const notifications = visibleNotifications(projectNotifications(feeds, now), extra.dismissed ?? new Map());
   return { space, pace, notifications, sessions: mine.map(feed => ({ ...projectSessionFacts(feed, now), feed })) };
 }

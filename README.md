@@ -160,6 +160,7 @@ Before non-trivial work, load a skill that applies. Run `spider skill op:"list"`
 | `skill` | `list`, `view`, `distill`, `add`, `approve`, or `reject`. |
 | `import` | Import local pi session transcripts. |
 | `message` | Send text to a peer session, or steer an RPC child that this session owns. |
+| `notify` | Store a notice only when a person must act, never for completion. Set `message` and optional `urgency` (`low`, `attention`, or `urgent`). |
 | `loop` | Define a named interval, zoned `cron`, or self-paced trigger. Cron has no immediate first prompt. Omit definition fields to list triggers. `stop:true` stops only the named loop and its re-arm, not an independent one-shot. |
 | `schedule` | Define a named one-shot with `delaySeconds` or offset-bearing `at`. Relative delays clamp to 60 through 3600 seconds. Replace or cancel only that name. Re-arm a self-paced loop with its exact name and prompt. |
 | `control` | Run the administrative commands below. |

@@ -20,7 +20,7 @@ test('remote errors preserve actionable details while removing secrets and termi
   vi.stubEnv('SPIDER_GLOBAL_ROOT', paths.globalRoot); vi.stubEnv('PI_SUBAGENT_CHILD', '1');
   let failure: unknown = new RemoteRuntimeError('runtime-not-installed', 'Remote runtime on planner.invalid is missing; rerun spider herdr setup');
   const remote = { execute: async () => { throw failure; } };
-  vi.spyOn(mountModule, 'mountHerdr').mockReturnValue({ enabled: () => true, owner: () => ({} as never),
+  vi.spyOn(mountModule, 'mountHerdr').mockReturnValue({ enabled: () => true, owner: () => ({} as never), queueNotification: () => false,
     findKillJobs: async () => [],
     killJob: async () => { throw new Error('No command is selected.'); },
     execution: () => ({ owner: {} as never, remote, environmentPolicy: env => env }), guard: async () => undefined, dispose: async () => {} });

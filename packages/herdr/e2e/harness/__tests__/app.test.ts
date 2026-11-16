@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { validateAppCommand, parseAppReply, parseAppEnvelope, createNativeAppDriver, appObject } from '../app.js';
+import { validateAppCommand, parseAppReply, parseAppEnvelope, createNativeAppDriver, appObject, prepareNativeApp, type AppInvoke } from '../app.js';
 import { createFakeAppDriver } from '../fake-app.js';
 import { request } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, cpSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { counterInput } from '../../fixtures/panel-inputs.js';
@@ -11,6 +11,24 @@ import { cp, readFile, writeFile, symlink } from 'node:fs/promises';
 import { createSuite } from '../suite.js';
 import { storyId } from '../scenario.js';
 import { writeFileSync } from 'node:fs';
+import { fencedDirectories } from '../environment.js';
+import { openLedger } from '../resources.js';
+
+async function ownedTransport() {
+  const parent = resolve('.spider/scratch/e2'); mkdirSync(parent, { recursive: true });
+  const root = mkdtempSync(join(parent, 'd-')), source = join(root, 'source.app'), core = join(root, 'source-core');
+  mkdirSync(join(source, 'Contents/MacOS'), { recursive: true });
+  writeFileSync(join(source, 'Contents/MacOS/Herdr'), 'synthetic app', { mode: 0o700 });
+  writeFileSync(join(source, 'Contents/Info.plist'), 'synthetic plist'); writeFileSync(core, 'synthetic core', { mode: 0o700 });
+  const dirs = fencedDirectories(root); for (const path of Object.values(dirs)) mkdirSync(path, { recursive: true });
+  const env = { ...dirs, HC_SESSION: 'l', HC_SOCKET: join(root, 'l.sock') };
+  const ledger = openLedger(join(parent, '_ledgers'), root);
+  const invoke: AppInvoke = async (binary, argv) => {
+    if (binary === '/bin/cp') cpSync(argv[1]!, argv[2]!, { recursive: true });
+    return { exitCode: 0, stderr: '', stdout: binary === '/usr/bin/plutil' && argv[0] === '-convert' ? JSON.stringify({ CFBundleShortVersionString: '0.1.16', CFBundleExecutable: 'Herdr' }) : '' };
+  };
+  return { owned: await prepareNativeApp({ root, sourceBundle: source, sourceCore: core, env, ledger, invoke }), ledger };
+}
 
 // A permissive command or reply parser must break these tests.
 describe('external counter fixture', () => {
@@ -130,6 +148,24 @@ describe('app 0.1.11 command boundary', () => {
     expect(() => validateAppCommand('tab.close', { id: 'tb1', confirmed: 'true' })).toThrow(/confirmed/);
     expect(() => validateAppCommand('pane.focus', { terminal: 't1', pane: 'p1' })).toThrow(/one target/);
   });
+  it('accepts only bounded mod commands, canonical encoded targets and empty private args', () => {
+    for (const name of ['spider-pane.park', 'spider-agents.sort-priority', 'spider-agents.sort-space', 'spider-agents.sort-machine', 'spider-panel.refresh']) expect(() => validateAppCommand(name, {})).not.toThrow();
+    expect(() => validateAppCommand('spider-agents.sort-grouped', {})).toThrow(/unknown command/);
+    expect(() => validateAppCommand('spider-agents.console-group-toggle:' + encodeURIComponent('owner:t1/parent'), {})).not.toThrow();
+    expect(() => validateAppCommand('spider-agents.activate-session:' + encodeURIComponent('session-1'), {})).not.toThrow();
+    expect(() => validateAppCommand('mod.open', { name: 'spider-picker' })).not.toThrow();
+    expect(() => validateAppCommand('commands', {})).not.toThrow();
+    for (const name of ['spider-pane.eval', 'spider-agents.activate-session:', 'spider-agents.activate-session:%ZZ', 'spider-agents.activate-session:%0A', 'spider-agents.console-group-toggle:non%2fcanonical']) expect(() => validateAppCommand(name, {})).toThrow();
+    expect(() => validateAppCommand('spider-pane.park', { terminal: 't1' })).toThrow(/empty/);
+    expect(() => validateAppCommand('mod.open', { name: 'arbitrary' })).toThrow(/mod/);
+  });
+
+  it('parses the observed native commands array without accepting malformed command metadata', () => {
+    const commands = [{ name: 'mod.open', args: [{ name: 'name', required: true }], about: 'Open an overlay.' }];
+    expect(parseAppReply('commands', {}, commands)).toEqual({ commands });
+    expect(() => parseAppReply('commands', {}, [{ name: 7 }])).toThrow(/invalid app reply/);
+  });
+
   it('requires allocated native IDs, pending park acknowledgements, and explicit success', () => {
     expect(parseAppReply('space.new', {}, { space: 'sp1', tab: 'tb1', terminal: 't1' })).toEqual({ space: 'sp1', tab: 'tb1', terminal: 't1' });
     expect(parseAppReply('terminal.park', { terminal: 't1' }, { pending: true, terminal: 't1' })).toEqual({ pending: true, terminal: 't1' });
@@ -149,10 +185,41 @@ describe('app 0.1.11 command boundary', () => {
     expect(() => parseAppEnvelope('request-1', 'tab.rename', {}, { requestId: 'request-1' })).toThrow(/invalid app reply/);
   });
   it('refuses allocated IDs not present in the actual app document', async () => {
-    const driver = createNativeAppDriver({ binary: 'owned-app', env: { HERDR_APP_HOME: 'owned-home', TMPDIR: 'owned-tmp' }, ownPath: p => p,
-      invoke: async (_binary, args) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(args[0] === 'ls' ? { spaces: [], recent: [] } : { space: 'wrong-space', tab: 'wrong-tab', terminal: 'wrong-terminal' }) }) });
-    await expect(driver.command('space.new', { argv: ['pi'] })).rejects.toThrow(/unobserved allocated IDs/);
+    const { owned, ledger } = await ownedTransport();
+    try {
+      const driver = createNativeAppDriver({ binary: owned.binary, env: owned.env, ownPath: p => p,
+        invoke: async (_binary, args) => ({ exitCode: 0, stderr: '', stdout: JSON.stringify(args[0] === 'ls' ? { spaces: [], recent: [] } : { space: 'wrong-space', tab: 'wrong-tab', terminal: 'wrong-terminal' }) }) });
+      await expect(driver.command('space.new', { argv: ['pi'] })).rejects.toThrow(/unobserved allocated IDs/);
+    } finally { ledger.update(l => { l.state = 'closed'; }); }
   });
+  it('discovers native commands through their subcommand and sends bounded dotted dispatch', async () => {
+    const { owned, ledger } = await ownedTransport();
+    const calls: readonly string[][] = [];
+    const registered = new Set(['p1', 't1', 'owner:t1/parent', 'session-1']);
+    try {
+      const driver = createNativeAppDriver({ binary: owned.binary, env: owned.env, ownPath: p => p, ownsTarget: (_kind, id) => registered.has(id),
+        invoke: async (_binary, argv) => {
+          (calls as string[][]).push([...argv]);
+          const value = argv[0] === 'commands' ? { commands: [{ name: 'pane.close' }] } : argv[0] === 'status' ? { layout: 'spider-glass', space: 's1', tab: 'tb1', focused_pane: 'p1', agent: 't1', errors: [], overlays: [], floats: {} } : { ok: true };
+          return { exitCode: 0, stderr: '', stdout: JSON.stringify(value) };
+        } });
+      expect(await driver.command('commands', {})).toEqual({ commands: [{ name: 'pane.close' }] });
+      expect(calls[0]).toEqual(['commands']);
+      await driver.command('pane.focus', { terminal: 't1' });
+      await driver.command('spider-pane.park', {});
+      await driver.command('spider-agents.console-group-toggle:' + encodeURIComponent('owner:t1/parent'), {});
+      await driver.command('spider-agents.activate-session:session-1', {});
+      expect(calls).toContainEqual(['do', 'spider-pane.park']);
+      expect(calls).toContainEqual(['do', 'spider-agents.activate-session:session-1']);
+      const count = calls.length;
+      await expect(driver.command('pane.focus', { terminal: 'foreign' })).rejects.toThrow(/not owned/);
+      await expect(driver.command('spider-agents.activate-session:foreign', {})).rejects.toThrow(/not owned/);
+      registered.delete('p1');
+      await expect(driver.command('spider-pane.park', {})).rejects.toThrow(/not owned/);
+      expect(calls.length).toBe(count + 1);
+    } finally { ledger.update(l => { l.state = 'closed'; }); }
+  });
+
   it('adapts the fake boundary without inventing pixels or window key routing', async () => {
     const driver = createFakeAppDriver({ boundary: { command: async () => ({ spaces: [], recent: [] }), drain: async () => {} },
       check: async () => ({ exitCode: 0, stdout: 'actual check', stderr: '' }) });

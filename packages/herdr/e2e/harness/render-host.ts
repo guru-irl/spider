@@ -41,7 +41,7 @@ const styles = new Set([
   'spin', 'line_height', 'cursor_pointer', 'opacity', 'border_0', 'border_color', 'border',
   'fill', 'flex', 'font_bold', 'font_medium', 'font_semibold', 'mr', 'mt', 'rounded_bl', 'self_start', 'text_right', 'whitespace_nowrap', 'mode', 'relative', 'absolute', 'left', 'right', 'top', 'bottom', 'ml', 'mb', 'border_t', 'border_b', 'border_l', 'accessibility_label', 'tab_index',
 ]);
-const herdrNames = ['exec', 'run', 'theme', 'watchFolder', 'panes', 'shared', 'setShared', 'notify', 'nextCommand', 'readTextFile', 'hc', 'machines', 'terminals', 'spaces', 'agents', 'focused', 'props', 'window', 'layout', 'setAgentOrder', 'openOverlay', 'closeOverlay'];
+const herdrNames = ['exec', 'run', 'theme', 'watchFolder', 'panes', 'shared', 'setShared', 'notify', 'nextCommand', 'readTextFile', 'hc', 'machines', 'terminals', 'spaces', 'agents', 'focused', 'props', 'window', 'layout', 'setAgentOrder', 'openOverlay', 'closeOverlay', 'playSound'];
 function contained(root: string, target: string): string {
   const physical = realpathSync(target), suffix = relative(root, physical);
   if (isAbsolute(suffix) || suffix === '..' || suffix.startsWith(`..${sep}`)) throw new AppBoundaryError('unowned-mod-import', 'mod import leaves installed directory');

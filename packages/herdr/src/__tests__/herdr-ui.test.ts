@@ -21,7 +21,7 @@ export const panelFeed = (id = 'planner'): SessionFeed => ({
   approvals: [], notifications: [], ipc: { address: '/fixture/ipc', capabilityFile: '/fixture/capability' }, errors: [],
 });
 
-test('an unplaced session and its waiting item stay visible in each active space', async () => {
+test('an unplaced session stays visible in each active space without an automatic card', async () => {
   const result = await runPanelScene<{ sessions: string[][]; waiting: string[][] }>(`
     const a=JSON.parse(files[0]);a.updatedAt=Date.now();files[0]=JSON.stringify(a);
     const b=JSON.parse(files[0]);b.sessionId=b.owner.sessionId='reviewer';b.owner.name='reviewer';
@@ -32,7 +32,7 @@ test('an unplaced session and its waiting item stay visible in each active space
       sessions.push(texts(byId(tree,'spider-sessions')));waiting.push(texts(byId(tree,'spider-notifications')));}
     panel.close();console.log(JSON.stringify({sessions,waiting}));`, panelFeed());
   expect(result.sessions).toEqual([['Sessions', 'Credits', 'planner', '\u2013'], ['Sessions', 'Credits', 'planner', '\u2013']]);
-  expect(result.waiting).toEqual([['!', 'planner', 'is waiting'], ['!', 'planner', 'is waiting']]);
+  expect(result.waiting).toEqual([[], []]);
 });
 
 
@@ -65,7 +65,7 @@ test('a failed panel watch polls at a bounded cadence, re-arms and resumes event
     panel.close();console.log(JSON.stringify({reloads,watches,waiting:texts(byId(tree,'spider-notifications')),state}));`, panelFeed());
   expect(result.reloads).toEqual([100000, 100000, 104000, 108000, 112000, 116000, 118000]);
   expect(result.watches).toEqual(Array(4).fill('/fixture/feeds/sessions'));
-  expect(result.waiting).toEqual(['!', 'planner', 'is waiting']);
+  expect(result.waiting).toEqual([]);
   expect(result.state).toBe('planner');
 });
 
@@ -104,29 +104,33 @@ test.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('the production sidebar re-ar
 });
 
 
-test('a disconnected machine raises no panel notification and the panel never asks hc about machines', async () => {
-  const result = await runPanelScene<{ rows: string[][]; configReads: number; hcCalls: number }>(`
-    let now=100000,configReads=0,hcCalls=0;Date.now=()=>now;
-    props.machines=[{name:'build.invalid'}];api.readTextFile=async()=>{configReads++;return JSON.stringify({machines:props.machines});};
-    api.hc=async()=>{hcCalls++;return {code:0,stdout:JSON.stringify({machines:[{name:'build.invalid',state:'disconnected'}]}),stderr:''};};
+test('a disconnected machine raises no card and identity is queried only by explicit refresh', async () => {
+  const result = await runPanelScene<{ rows: string[][]; configReads: number; before: unknown[]; hcCalls: unknown[] }>(`
+    let now=100000,configReads=0,deliver;Date.now=()=>now;const hcCalls=[];
+    props.labelContract=${JSON.stringify(HerdrLabelContract)};props.machines=[{name:'build.invalid'}];api.readTextFile=async()=>{configReads++;return JSON.stringify({machines:props.machines});};
+    api.hc=async args=>{hcCalls.push(args);return {code:0,stdout:JSON.stringify({core:{id:'core'}}),stderr:''};};api.nextCommand=()=>new Promise(resolve=>{deliver=resolve;});
     const a=JSON.parse(files[0]);a.updatedAt=now;a.status={native:'idle',effective:'idle',message:null};files[0]=JSON.stringify(a);
     initView(panel,cx);await tasks[0];const rows=[];
     for(const at of [0,6000,16000,20000]){now=100000+at;timers[0].f(cx);await drain();rows.push(texts(byId(panel.render(cx),'spider-notifications')));}
-    panel.close();console.log(JSON.stringify({rows,configReads,hcCalls}));`, panelFeed());
+    const before=[...hcCalls];deliver('refresh');for(let i=0;i<50;i++)await Promise.resolve();
+    panel.close();console.log(JSON.stringify({rows,configReads,before,hcCalls}));`, panelFeed());
   expect(result.rows).toEqual([[], [], [], []]);
   expect(result.configReads).toBe(0);
-  expect(result.hcCalls).toBe(0);
+  expect(result.before).toEqual([]);
+  expect(result.hcCalls).toEqual([['server', 'status', '--json']]);
 });
 
-test('hidden or visible, the panel never polls machines', async () => {
-  const result = await runPanelScene<{ calls: number[]; configReads: number }>(`
-    let now=100000,hidden=true,active='other',configReads=0;Date.now=()=>now;const calls=[];
-    props.machines=[{name:'build.invalid'}];api.readTextFile=async()=>{configReads++;return JSON.stringify({machines:props.machines});};
-    api.hc=async()=>{calls.push(now);return {code:0,stdout:JSON.stringify({machines:[{name:'build.invalid',state:'connected'}]}),stderr:''};};
+test('hidden or visible, passive updates never query core identity', async () => {
+  const result = await runPanelScene<{ calls: unknown[]; before: unknown[]; configReads: number }>(`
+    let now=100000,hidden=true,active='other',configReads=0,deliver;Date.now=()=>now;const calls=[];
+    props.labelContract=${JSON.stringify(HerdrLabelContract)};props.machines=[{name:'build.invalid'}];api.readTextFile=async()=>{configReads++;return JSON.stringify({machines:props.machines});};
+    api.hc=async args=>{calls.push(args);return {code:0,stdout:JSON.stringify({core:{id:'core'}}),stderr:''};};api.nextCommand=()=>new Promise(resolve=>{deliver=resolve;});
     api.layout=()=>({children:[{id:'panel',hidden,children:[{type:'stack',active,children:[{id:'other',content:{mod:'files'}},{id:'spider',content:{mod:props.modId}}]}]}]});
     const a=JSON.parse(files[0]);a.updatedAt=now;files[0]=JSON.stringify(a);initView(panel,cx);await tasks[0];
     for(let i=1;i<=30;i++){now=100000+i*2000;if(i===11)hidden=false;if(i===16)active='spider';if(i===26)hidden=true;timers[0].f(cx);await drain();}
-    panel.close();console.log(JSON.stringify({calls,configReads}));`, panelFeed());
-  expect(result.calls).toEqual([]);
+    const before=[...calls];deliver('refresh');for(let i=0;i<50;i++)await Promise.resolve();
+    panel.close();console.log(JSON.stringify({calls,before,configReads}));`, panelFeed());
+  expect(result.before).toEqual([]);
+  expect(result.calls).toEqual([['server', 'status', '--json']]);
   expect(result.configReads).toBe(0);
 });

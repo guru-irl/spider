@@ -13,6 +13,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 
 test('setup owns and verifies the brand clone, repeats without writes and restores it on rollback', async () => {
   const f = await fixture();
+  f.context.modProps = [...f.context.modProps, { directory: join(f.h.directories.app, 'mods/spider-picker'), props: { ...f.context.modProps[0].props, modId: 'spider-picker' } }];
   const path = join(f.h.directories.app, 'mods/spider-chrome/main.js');
   const staged = await f.parts.stageLook(f.request, f.context, 'export');
   expect(staged.some(file => file.path === path)).toBe(true);

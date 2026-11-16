@@ -10,7 +10,7 @@ import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
 import { sweepSessionIpc } from './cleanup.js';
 import { join } from 'node:path';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
-import { parseRunViewFrame, parseSessionIpcEnvelope, parseSessionIpcReply, type Disposable, type IpcDescriptor, type IpcErrorCode, type IpcMoveDestination, type JobId, type Owner, type RunCursor, type RunId, type RunViewFrame, type SessionIpcReply, type SteerReply, type TerminalAddress, type ViewName } from '../contracts.js';
+import { parseRunViewFrame, parseSessionIpcEnvelope, parseSessionIpcReply, type Destination, type Disposable, type IpcDescriptor, type IpcErrorCode, type IpcMoveDestination, type JobId, type Owner, type RunCursor, type RunId, type RunViewFrame, type SessionIpcReply, type SteerReply, type TerminalAddress, type ViewName } from '../contracts.js';
 import { atomicPrivateWrite, feedError, privateDirectory, sweepSessionFeeds } from './publisher.js';
 export const OPEN_BUDGET_MS = 30_000;
 export const OPEN_CLIENT_TIMEOUT_MS = 60_000;
@@ -28,6 +28,7 @@ export interface SessionEndpointPorts {
   subscribeRun(runId: RunId, cursor: RunCursor | null, emit: (frame: RunViewFrame) => void, options?: { view: number }): Disposable | Promise<Disposable>;
   steerRun(runId: RunId, text: string): SteerReply | Promise<SteerReply>;
   openView(view: ViewName): void | Promise<void>;
+  openSession?(destination: Destination, signal?: AbortSignal): Promise<TerminalAddress | null>;
   openRun(runId: RunId, signal?: AbortSignal): TerminalAddress | null | Promise<TerminalAddress | null>;
   killRun?(runId: RunId): void | Promise<void>;
   moveRun?(runId: RunId, destination: IpcMoveDestination): TerminalAddress | null | Promise<TerminalAddress | null>;
@@ -87,7 +88,7 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
         if (value && typeof value === 'object' && 'request' in value) {
           const request = value.request;
           if (request && typeof request === 'object' && 'op' in request) {
-            if (!['ping', 'openView', 'openRun', 'killRun', 'moveRun', 'moveSession', 'killSession', 'openJob', 'killJob', 'moveJob', 'steerRun', 'subscribeRun'].includes(String(request.op))) return fail('unknown-op');
+            if (!['ping', 'openView', 'openSession', 'openRun', 'killRun', 'moveRun', 'moveSession', 'killSession', 'openJob', 'killJob', 'moveJob', 'steerRun', 'subscribeRun'].includes(String(request.op))) return fail('unknown-op');
             if ('text' in request && typeof request.text === 'string' && Buffer.byteLength(request.text) > MAX_STEER_BYTES) return fail('too-large');
           }
         }
@@ -96,7 +97,7 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
       if (!timingSafeEqual(Buffer.from(envelope.capability, 'hex'), Buffer.from(capability, 'hex'))) return fail('unauthorized');
       const request = envelope.request;
       if (request.generation !== generation || !live()) return fail('wrong-generation');
-      if (request.op === 'openRun' || request.op === 'openJob') {
+      if (request.op === 'openSession' || request.op === 'openRun' || request.op === 'openJob') {
         socket.setTimeout(OPEN_CLIENT_TIMEOUT_MS + 5000);
         openTimer = setTimeout(() => openAbort.abort(), OPEN_BUDGET_MS);
       }
@@ -107,6 +108,22 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
             return status === null ? fail('status-instance-unavailable') : sendReply({ ok: true, op: 'ping', status });
           }
           case 'openView': await ports.openView(request.view); return sendReply({ ok: true, op: 'openView' });
+          case 'openSession': {
+            if (!ports.openSession) return fail('unavailable');
+            const sameTerminal = () => {
+              const current = ports.currentOwner();
+              return live() && current?.terminal.coreId === owner.terminal.coreId
+                && current.terminal.terminalId === owner.terminal.terminalId && current.terminal.address === owner.terminal.address;
+            };
+            if (!sameTerminal()) return fail('wrong-generation');
+            const terminal = await ports.openSession(request.destination, openAbort.signal);
+            if (openAbort.signal.aborted) return fail('unavailable', 'open-aborted');
+            if (!sameTerminal() || socket.destroyed) return fail('wrong-generation');
+            clearTimeout(openTimer);
+            if (terminal === null) return fail('not-found');
+            if (terminal !== owner.terminal.address) return fail('unavailable');
+            return sendReply({ ok: true, op: 'openSession', terminal });
+          }
           case 'killSession': {
             if (!ports.prepareSessionStop || !ports.killSessionTerminal) return fail('unavailable');
             await ports.prepareSessionStop();
@@ -221,6 +238,11 @@ export async function startSessionEndpoint(owner: Owner, ports: SessionEndpointP
         const code = (error as { code?: IpcErrorCode } | null)?.code;
         const canonical = code && errorCodes.includes(code) ? code : 'unavailable';
         const typed = error instanceof HerdrError && /^[a-z][a-z0-9-]{0,79}$/.test(error.code);
+        const machine = owner.terminal.address.includes('/') ? owner.terminal.address.split('/', 1)[0] : '';
+        if (request.op === 'openSession' && typed && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$/.test(machine)) {
+          if (error.code === 'machine-unreachable') return fail('unavailable', `${machine} is unreachable`);
+          if (error.code === 'no-space-on-machine') return fail('unavailable', `No space on ${machine} to reopen it in`);
+        }
         fail(canonical, typed ? error.code : request.op === 'openRun' ? 'run-open-failed' : 'Session action failed.');
       }
     };

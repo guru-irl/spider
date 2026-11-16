@@ -8,9 +8,33 @@ Run from the repository root. No dependency installation is needed beyond the ex
 | `npm run test:herdr:e2e:ci` | Explicit no-hc, no-app, no-SSH subset. Active-core and native stories are **not exercised**. |
 | `npm run typecheck:herdr:e2e` | Acceptance TypeScript, including fixtures and configuration, with repo strictness and isolated declarations. Runs in both CI workflows. |
 | `SPIDER_HERDR_REAL_MACHINE=<explicit-alias> npm run test:herdr:e2e:remote` | Opted-in Linux destination with owned namespaces and independent cleanup. |
-| `SPIDER_HERDR_APP_TESTS=1 SPIDER_HERDR_TEST_DISPLAY_UUID=<chosen-display> npm run test:herdr:e2e:app` | User-approved native slot; one fenced window for the serial batch. Missing native interaction capabilities are **blocked**. |
+| `SPIDER_HERDR_APP_TESTS=1 SPIDER_HERDR_TEST_DISPLAY_UUID=<chosen-display> SPIDER_HERDR_E2E_APP=<owned-clone-executable> npm run test:herdr:e2e:app` | An owned native copy for each serial story. Missing ownership or interaction capabilities are **blocked**. |
 
 The runner builds once, packs once, and supplies `SPIDER_HERDR_E2E_PACKED_ROOT` to `createSuite`. The foundation validates containment and required entries before reusing that root. It packs independently only when no runner root is supplied. `--built` uses the existing build, for CI immediately after its build step; packed-entry digests still must match.
+
+## Run an isolated native copy
+
+Use only an executable prepared by `prepareNativeApp` in the current checkout. The helper records a ledger-owned APFS bundle clone, source digests, a distinct bundle identity, an owned app home, and a copied core pinned in `settings.json`. It disables native automatic sounds. The app tier refuses original application bundles, pending updates, launcher links, changed copies, and missing ownership. It never falls back to the live app.
+
+The native isolation smoke prepares and checks both target releases without changing the source bundles. Use a pinned compatible `hc` and its sibling `herdr-core` under the checkout's owned temporary files:
+
+```sh
+SPIDER_HERDR_NATIVE_ISOLATION_SMOKE=1 \
+SPIDER_HERDR_E2E_HC="$PINNED_HC" \
+npx vitest run --config packages/herdr/e2e/vitest.config.ts \
+  packages/herdr/e2e/harness/__tests__/native-launch.test.ts \
+  -t 'isolates native launch and window observations' --maxWorkers=2
+```
+
+Each smoke root retains `native-ownership.json`, native command replies, `launch.json`, `status.json`, a check result, and `window.png`. The check result lists clipboard API names without invoking clipboard readers or writers. The ledger retains its cleanup proof. A verified copy from a closed, clean ledger can be reused as a read-only source. Set `SPIDER_HERDR_E2E_APP` to its `binary` field. The runner clones that source again into each new suite. A closed ledger cannot authorize commands or a launch against its own executable.
+
+Launch Services receives `open -g -n` with explicit environment arguments, including the owned home, socket and core namespace, an unreachable releases URL, disabled telemetry, and the distinct app ID. The adapter requires the frontmost application's bundle identity to remain unchanged. It never restores focus after a failed isolation check. Native screenshots use only the copied app's window.
+
+The command adapter sends the same dotted commands that the installed mod handlers receive. It allows `mod.open` for the installed picker or panel, owned-target `pane.focus`, `spider-pane.park`, the three `spider-agents.sort-*` commands, encoded console-group and session activation commands, and `spider-panel.refresh`. Register fixture-only pane, group, and session IDs through `suite.registerNativeTarget`. Mod-private arguments must be empty. Encoded targets must be canonical. Arbitrary terminal input and eval are rejected. Read the native command list with `command('commands', {})`, which invokes the `commands` subcommand, not `do commands`.
+
+Headless checks use a copied, ad-hoc-signed command-only executable with a copied compatible core. They never execute the installed launcher or open a native window. The strict render host exposes explicit `playSound` calls for assertions, without claiming audible output.
+
+These checks prove launch isolation and command transport. They do not certify Spaces rendering, primary-session reopening, physical keys, hover, or clicks. The native Spaces stories remain a separate acceptance gate.
 
 ## Scenario contract
 

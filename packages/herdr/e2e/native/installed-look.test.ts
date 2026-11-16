@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateInstalledLook } from './installed-look.js';
+import { createNativeAppDriver } from '../harness/app.js';
 
 function observations(): Record<string, unknown> {
   return {
@@ -12,6 +13,14 @@ function observations(): Record<string, unknown> {
   };
 }
 describe('installed look observations', () => {
+  it('never treats valid look observations as native application ownership', async () => {
+    validateInstalledLook(observations());
+    let invoked = false;
+    const driver = createNativeAppDriver({ binary: '/Applications/Herdr.app/Contents/MacOS/Herdr', env: { HERDR_APP_HOME: 'unowned', TMPDIR: 'unowned' }, ownPath: p => p,
+      invoke: async () => { invoked = true; throw new Error('must not run'); } });
+    await expect(driver.status()).rejects.toMatchObject({ code: 'isolation-unproved' });
+    expect(invoked).toBe(false);
+  });
   it('accepts the promised palette, surfaces, contrast and receiving key fragment', () => {
     const report = validateInstalledLook(observations());
     expect(report.contrast.some(row => row.token === 'text' && row.ratio >= 4.5)).toBe(true);

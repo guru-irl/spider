@@ -1,0 +1,49 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import ts from 'typescript';
+
+const helper = new URL('../packages/herdr/src/__tests__/spaces-a-fixture.ts', import.meta.url);
+let source = ts.transpileModule(readFileSync(helper, 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText;
+source = source.replace(/from '(\.[^']+)'/g, (_match, relative) => `from '${new URL(relative, helper).href}'`)
+  .replaceAll('import.meta.url', JSON.stringify(helper.href));
+const { composeSpacesARecipe } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const manifestPath = new URL('../packages/herdr/assets/look/patches.json', import.meta.url);
+const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+const through = process.argv[2] ?? 'full';
+if (!['agents', 'spaces', 'full'].includes(through)) throw new Error('Expected agents, spaces, or full');
+for (const version of ['0.1.13', '0.1.16']) {
+  const fragments = {};
+  for (const mod of through === 'agents' ? ['agents'] : ['agents', 'spaces']) {
+    fragments[mod] = JSON.parse(readFileSync(new URL(`../packages/herdr/assets/look/spaces-a-sidebar/${mod}-${version}.json`, import.meta.url), 'utf8'));
+  }
+  if (through === 'full') {
+    const probes = JSON.parse(readFileSync(new URL('../packages/herdr/src/__tests__/fixtures/spaces-a-anchor-probes.json', import.meta.url), 'utf8'));
+    const pane = probes[version].pane;
+    const imports = pane.find(p => p.id === 'a-pane-imports');
+    const park = pane.find(p => p.id === 'a-pane-park');
+    fragments.pane = [
+      { ...imports, replacement: imports.anchor.replace('from "herdr";', 'from "herdr";\nimport * as herdrApi from "herdr";\nimport { parkFocusedTerminal } from "./park.js";') },
+      { ...park, replacement: park.anchor + '\n          if (command === "park" && p?.focused && props()?.labelContract) parkFocusedTerminal(herdrApi.focused(), herdrApi.terminals(), props().labelContract, run);' },
+    ];
+  }
+  const derived = [];
+  if (through === 'full') {
+    for (const [mod, asset, sourceMod] of [['spider-picker', 'picker', 'picker'], ...(version === '0.1.16' ? [['spider-toast', 'toast', 'toast']] : [])]) {
+      for (const file of ['main.js', 'mod.json']) {
+        const contents = readFileSync(new URL(`../packages/herdr/assets/${asset}/${file}`, import.meta.url), 'utf8');
+        const hashes = JSON.parse(readFileSync(new URL(`../packages/herdr/src/__tests__/fixtures/herdr-${version}/source-hashes.json`, import.meta.url), 'utf8'));
+        const { createHash } = await import('node:crypto');
+        derived.push({ mod, file, sourceMod, sourceFile: file, sourceHash: hashes[`mods/${sourceMod}/${file}`], contents, outputHash: createHash('sha256').update(contents).digest('hex'), asset: `${asset}/${file}` });
+      }
+    }
+    const contents = readFileSync(new URL('../packages/herdr/assets/look/spaces-a-sidebar/agents-mod.json', import.meta.url), 'utf8');
+    const hashes = JSON.parse(readFileSync(new URL(`../packages/herdr/src/__tests__/fixtures/herdr-${version}/source-hashes.json`, import.meta.url), 'utf8'));
+    const { createHash } = await import('node:crypto');
+    derived.push({ mod: 'agents', file: 'mod.json', sourceMod: 'agents', sourceFile: 'mod.json', sourceHash: hashes['mods/agents/mod.json'], contents, outputHash: createHash('sha256').update(contents).digest('hex'), asset: 'look/spaces-a-sidebar/agents-mod.json' });
+  }
+  const recipe = composeSpacesARecipe(version, fragments, derived);
+  const { retainedMods, aFragments, ...record } = recipe;
+  record.derivedFiles = derived.map(({ contents, ...entry }) => entry);
+  (manifest.spacesA ??= {})[version] = record;
+  console.log(`${version}: ${Object.values(retainedMods).flat().length} retained, ${Object.values(fragments).flat().length} additions, ${derived.length} derived files`);
+}
+writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');

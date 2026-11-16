@@ -9,6 +9,7 @@ export { runUsageServerEntry } from "./usage/server-entry.js";
 export { UsageRuntime } from "./usage/runtime.js";
 import { mountHerdr, effectiveHerdrConfigPath, standardHerdrConfigPath, type HerdrMount } from "./herdr/mount.js";
 import { routeKillAction } from "./herdr/kill-job.js";
+import { notifyHandler, parseNotificationInput } from "./notifications/action.js";
 import { HERDR_NOTICES, herdrErrorNotice } from '@spider/herdr/notices';
 import { HerdrError } from '@spider/herdr/client/parse';
 import { RemoteRuntimeError } from '@spider/herdr/remote/runtime';
@@ -196,7 +197,7 @@ export const SPIDER_PARAMETERS = {
       type: "string",
       enum: [
         "search", "remember", "recall", "exec", "exec_file", "batch",
-        "index", "fetch", "run", "kill", "todo", "skill", "import", "message", "control", "loop", "schedule",
+        "index", "fetch", "run", "kill", "todo", "skill", "import", "message", "notify", "control", "loop", "schedule",
       ],
       description: "The spider verb to run.",
     },
@@ -292,7 +293,8 @@ export const SPIDER_PARAMETERS = {
     stop: { type: "boolean", description: "loop: stop only the named loop and its re-arm, not an independent one-shot. schedule: cancel only the named one-shot. Defaults: loop and wakeup. No other fields required. Persistent top-level sessions only. Triggers survive /reload and same-session resume; new and fork start empty. Nothing fires during closure or sleep." },
     // message
     to: { type: "string", description: "Target session name/id for action 'message'." },
-    message: { type: "string", description: "Message body for action 'message'." },
+    message: { type: "string", description: "Message body for action 'message' or 'notify'." },
+    urgency: { type: "string", enum: ["low", "attention", "urgent"], description: "notify urgency; defaults to attention." },
     kind: { type: "string", description: "message: optional intercom message kind; defaults to 'message'." },
     // todo
     text: { type: "string", description: "Todo body for action 'todo' op=add; skill candidate final-format SKILL.md (YAML frontmatter with exactly name and a Use when description, then concise body; agent limit 1500 words/16 KB) for action='skill' op=add; free-form request for action='skill' op=distill." },
@@ -768,7 +770,7 @@ export function buildActionCtx(
   const reviewerExcludeTools = validReviewerTools ? [...configuredReviewerTools] : undefined;
   // Run records are owned by the dispatching session, not by the child's cwd.
   // Keep `project`, `cwd`, repoDb and modelDefaults tied to the target as before.
-  const runRecordAction = args.action === "run" || args.action === "kill" || args.action === "message";
+  const runRecordAction = args.action === "run" || args.action === "kill" || args.action === "message" || args.action === "notify" && process.env.PI_SUBAGENT_CHILD !== "1";
   // With no explicit override, this resolution also identifies the session-owned DB.
   const sessionRun = runRecordAction ? openSessionRunDb(ctxCwd ?? process.cwd(), sessionId, !explicitCwd ? project : undefined) : undefined;
   const worktreeDb = sessionRun?.db ?? openProject(project.projectKey);
@@ -797,8 +799,17 @@ export function buildActionCtx(
 
 async function dispatchWithDoctorSnapshot(
   pi: PiToolAPI, params: SpiderArgs, ctx: unknown, ownedActions: ReadonlyMap<string, ActionHandler>,
-  onPartial?: (text: string) => void, signal?: AbortSignal, onSessionProject?: (project: ProjectInfo) => void,
+  onPartial?: (text: string) => void, signal?: AbortSignal, onSessionProject?: (project: ProjectInfo) => void, toolCallId?: string,
 ): Promise<unknown> {
+  // Validate notify before resolving any caller-supplied project or storage path.
+  if (params.action === "notify") {
+    parseNotificationInput(params);
+    if (process.env.PI_SUBAGENT_CHILD === "1") {
+      // The child handler needs only call identity; it opens and verifies its inherited run DB itself.
+      const childCtx = { sessionId: sessionIdOf(ctx), cwd: cwdOf(ctx) ?? process.cwd(), toolCallId } as ActionCtx;
+      return dispatch(params, childCtx, ownedActions);
+    }
+  }
   // Timers belong to the pi session, not a cwd or database binding. Refuse
   // one-shot calls here too, before project resolution can mask the diagnostic.
   if (params.action === "loop" || params.action === "schedule") {
@@ -856,6 +867,7 @@ async function dispatchWithDoctorSnapshot(
     const actionCtx = {
       ...buildActionCtx(pi, params, sessionId, cwdOf(ctx), onPartial,
         (ctx as { modelRegistry?: unknown })?.modelRegistry, signal, parentModelOf(ctx)),
+      toolCallId,
       parentSessionFile: params.action === "run"
         ? (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.() : undefined,
       sessionDirectory: params.action === "import"
@@ -950,6 +962,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
   };
   // control is owned by the host from Phase 0; ctx is threaded for memory routing.
   registerAction("control", (args, ctx) => handleControl(args as SpiderArgs, ctx));
+  registerAction("notify", (args, ctx) => notifyHandler(args, ctx, sessionId => herdr?.queueNotification(sessionId) ?? false));
 
   // in-process exec/exec_file/batch handlers (Phase 2 Task 4).
   // Strangler: spider owns exec/exec_file/batch/index/fetch/search/import in-process; legacy context-mode ctx_* MCP tools are deprecated (spider does not register them).
@@ -1189,7 +1202,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
     name: "spider",
     label: "🕸 spider",
     description:
-      "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; exec→{on,copy:{direction,local,remote}} for file transfer; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); kill→{id} for an owned remote job or subagent; loop→{name?,interval?|cron?,tz?,prompt} (no definition lists all triggers), schedule→{name?,delaySeconds|at,prompt,reason?,noop?}; independent names replace only themselves (defaults loop and wakeup); stop:true affects only the named kind; exact named self-paced re-arms retain origin; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents or remote spider jobs whose completion notices arrive automatically; top-level persistent sessions only; triggers survive /reload and same-session resume, new and fork start empty; cron uses a captured IANA zone and has no immediate first prompt; nothing fires while closed or asleep; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
+      "spider 🕸: unified memory, context/search, todos, and subagents on one shared DB. Set `action` to the verb. Key params by action: search/recall→query; exec→{on,copy:{direction,local,remote}} for file transfer; remember→content+category+required justification, optional supersedes:[uuid or unique prefix] for atomic same-scope replacement with cap credit (foreground only; reviewer still checks durability, usefulness and scope and may skip storage, change scope or archive replaced entries); run→ SINGLE {agent,task} · PARALLEL {tasks:[{agent,task}]} · CHAIN {chain:[{agent,task}]}; subagents ALWAYS run in the background and report back when done; message→{to,message} (owned RPC run: delivered only after observed conversation entry, otherwise accepted but not confirmed, no reply yet with delivery unknown, or refused; slash-prefixed steers are refused); notify→{message,urgency?} only when a person must act, never for completion; kill→{id} for an owned remote job or subagent; loop→{name?,interval?|cron?,tz?,prompt} (no definition lists all triggers), schedule→{name?,delaySeconds|at,prompt,reason?,noop?}; independent names replace only themselves (defaults loop and wakeup); stop:true affects only the named kind; exact named self-paced re-arms retain origin; loop/schedule wait on external work (CI, deploys, timers), not for polling subagents or remote spider jobs whose completion notices arrive automatically; top-level persistent sessions only; triggers survive /reload and same-session resume, new and fork start empty; cron uses a captured IANA zone and has no immediate first prompt; nothing fires while closed or asleep; todo→op:add/list/toggle/remove/clear/sessions/view(+text, id or session); control→command('doctor'|'config'|'memory'|'bind'|'unbind'). Every `run` needs a concrete `task` string; never call run without one.",
     parameters: SPIDER_PARAMETERS,
     renderCall: renderSpiderCall,
     renderResult: (result: any, options: any, theme: any, context: any) => renderSpiderResult(result, options, theme,
@@ -1229,7 +1242,7 @@ export default function spiderExtension(hostPi: PiToolAPI, ports: { intercomBrok
       // Reuse only this call's non-explicit resolution, never a prior binding or cwd.
       let sessionProject: ProjectInfo | undefined;
       try {
-        r = await dispatchWithDoctorSnapshot(pi, args as SpiderArgs, ctx, ownedActions, onPartial, abortSignal, project => { sessionProject = project; });
+        r = await dispatchWithDoctorSnapshot(pi, args as SpiderArgs, ctx, ownedActions, onPartial, abortSignal, project => { sessionProject = project; }, toolCallId);
       } catch (error) {
         if (args.on !== undefined && (error instanceof HerdrError || error instanceof RemoteRuntimeError)) {
           const detail = error instanceof HerdrError ? error : new HerdrError(error.code, error.message);

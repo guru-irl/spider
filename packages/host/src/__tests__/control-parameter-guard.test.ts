@@ -19,6 +19,7 @@ const handlers: Array<[string, string, string]> = [
   ["run", "packages/subagents/src/actions/run.ts", "runHandler"],
   ["kill", "packages/subagents/src/actions/kill.ts", "killHandler"],
   ["message", "packages/subagents/src/actions/message.ts", "messageHandler"],
+  ["notify", "packages/host/src/notifications/action.ts", "notifyHandler"],
   ["todo", "packages/todo/src/actions.ts", "makeTodo"],
   ["skill", "packages/organism/src/actions.ts", "skillAction"],
   ["loop", "packages/host/src/loop/index.ts", "loop"],

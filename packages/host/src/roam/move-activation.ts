@@ -1,6 +1,7 @@
 import { publishOwnedMoveReadiness } from "./move-readiness";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dirname, join, resolve } from "node:path";
+import { mkdirSync } from "node:fs";
 import { paths } from "@spider/db-core";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import { readLocal } from "@spider/db-core/roam/local-state";
@@ -43,8 +44,10 @@ export async function createMoveActivation(input: MoveActivationInput): Promise<
     const home = sessionHome(core.db, input.sessionId); if (home === "unknown") throw new Error("participant-home-unavailable");
     if (current.length === 1 || old) recordLocation(core.db, { sessionId: input.sessionId, stores: expectedStores, home, file: input.file, cwd: context.cwd });
     const address = bindings.intercom!.address;
+    const scratchRoots = [paths.scratch("project", context.cwd), paths.scratch("global")];
+    for (const root of scratchRoots) mkdirSync(root, { recursive: true });
     const live = createLiveFreezePorts({ ...input, globalRoot: input.root, machineId: config.machineId, stores: stores.map(row => row.db), expectedStores,
-      routeStores: [core.db], address, jobRoots: [join(input.root, "herdr", "jobs")], scratchRoots: [paths.scratch("project", context.cwd), paths.scratch("global")],
+      routeStores: [core.db], address, jobRoots: [join(input.root, "herdr", "jobs")], scratchRoots,
       broker: bindings.evidence!.broker, bridge: bindings.evidence!.bridge, settlement: bindings.evidence!.settlement,
       authorizeAbort: bindings.evidence!.authorizeAbort, onHubRestored: bindings.evidence!.onHubRestored,
       intercom: { address, ports: bindings.intercom!.ports }, shutdown: async () => { input.context()?.shutdown(); } });

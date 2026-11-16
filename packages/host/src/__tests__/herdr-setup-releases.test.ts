@@ -78,6 +78,13 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(JSON.parse(await readFile(join(home, 'mods/spider-new-menu/mod.json'), 'utf8')).clonedFrom).toEqual({ name: 'new-menu', version });
     const doctor = await ports.doctorParts(f.request);
     for (const item of ['mods', 'clones', 'patch-version', 'layout-theme'] as const) expect((await doctor.inspect(item, f.request)).failures).toEqual([]);
+    const warnings = (await doctor.inspect('clones', f.request)).warnings ?? [];
+    for (const name of ['spider-menu', 'spider-new-menu', 'spider-picker']) expect(warnings).toContainEqual(expect.objectContaining({ code: 'inspection-unavailable', message: expect.stringContaining(name) }));
+    const panel = join(home, 'mods/spider-panel/main.js'), originalPanel = await readFile(panel);
+    await writeFile(panel, '// tampered panel');
+    expect((await doctor.inspect('mods', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'installed-artifact-changed' }));
+    await writeFile(panel, originalPanel);
+    expect((await doctor.inspect('mods', f.request)).failures).toEqual([]);
     const before = await readFile(join(home, 'mods/spider-picker/main.js'));
     await setupHerdr(f.request, parts);
     expect(await readFile(join(home, 'mods/spider-picker/main.js'))).toEqual(before);

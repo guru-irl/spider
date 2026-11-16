@@ -14,7 +14,7 @@ import type { PaneAgentRow, PanePresentation, PaneTerminalFacts } from '../../..
 import { createRoamPlacement, createRoamPresentationOperations } from '../../../herdr/src/roam-placement.js';
 const boundary = vi.hoisted(() => ({ facts: vi.fn(), app: {} as Record<string, unknown>, rows: [] as PaneAgentRow[], remote: vi.fn(), auxiliary: null as PresentedAuxiliaryOptions | null, terminals: new Map<string, TerminalSummary>(), layout: { spaces: [] } as unknown }));
 vi.mock('../../../herdr/src/client/hc.js', () => ({ invokeCli: vi.fn(async (_binary, args) => {
-  if (args[0] === 'machine') return { machines: [{ name: 'box-1.invalid', aliases: [], id: 'core-remote', machine_id: 'machine-1', state: 'connected' }] };
+  if (args[0] === 'machine') return { machines: [{ name: 'box-1.invalid', aliases: [], id: 'core-remote', machine_id: 'machine-1', state: 'connected' }, { name: 'box-2.invalid', aliases: [], id: 'core-second', machine_id: 'machine-2', state: 'connected' }] };
   if (args[0] === 'read') return { text: 'Ready', how: 'screen', complete: true };
   if (args[0] === 'get') {
     const address = String(args[1]), terminal = boundary.terminals.get(address.split('/').at(-1)!);
@@ -41,10 +41,10 @@ async function fixture(spaces: HerdrConfig['spaces'] = []) {
   const base = join(paths.scratch('worktree', process.cwd()), 'pane-runtime-state'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'f-'));
   boundary.rows = []; boundary.terminals.clear(); boundary.app = {}; boundary.layout = { spaces: [] }; boundary.remote.mockImplementation(async (_machine, request) => {
     if (request.op !== 'list') throw new Error('Unexpected remote effect');
-    return { version: 1, op: 'list', page: { version: 1, rows: boundary.rows.filter(row => row.target?.coreId !== 'core-local'), complete: true, next: null } };
+    return { version: 1, op: 'list', page: { version: 1, rows: boundary.rows.filter(row => row.target?.coreId === _machine.coreId), complete: true, next: null } };
   });
   const config = parseHerdrConfig({ mode: 'full', app: { binary: '/owned/app', home: join(root, 'app') }, core: { binary: '/owned/hc', config: join(root, 'core.toml') }, globalRoot: root, agentDirectory: join(root, 'agent'), shellRc: join(root, 'shellrc'),
-    machines: [{ name: 'box-1.invalid', nodePath: '/usr/bin/node', runtime: { directory: '/home/example/runtime', commands: {} } }], spaces });
+    machines: ['box-1.invalid', 'box-2.invalid'].map(name => ({ name, nodePath: '/usr/bin/node', runtime: { directory: '/home/example/runtime', commands: {} } })), spaces });
   const hc = { identity: async () => ({ coreId: 'core-local', socket: '/owned/core.sock', sessionNamespace: 'fixture' }),
     get: vi.fn(async address => boundary.terminals.get(String(address).split('/').at(-1)!) ?? { address, state: 'live' }),
     run: vi.fn(async request => { const address = 'proxy-1'; boundary.terminals.set(address, { address: address as never, state: 'live', labels: request.labels, parent: null, status: null, exitCode: null, reason: null, signal: null, finishedAt: null, cols: 80, rows: 24 }); return { address, coreId: 'core-local' }; }),
@@ -328,4 +328,49 @@ test('production facts skip ended history and read live presentations with bound
   expect(read.sort()).toEqual(live.map(p => p.id).sort());
   boundary.facts.mockImplementation(async target => facts(live.find(p => p.target.terminalId === target.terminalId)!));
   expect(await service.request({ version: 1, op: 'snapshot', operationId: 'facts' })).toMatchObject({ targetFacts: { 'core-remote/live-0': { title: 'live-0' }, 'core-remote/live-7': { title: 'live-7' } } });
+});
+
+
+test.each(['app closed', 'unfocused pane', 'hosting restart'] as const)('a pending %s conversion does not prevent the next move capture', async scenario => {
+  const { root, runtime, hc } = await fixture();
+  const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'old-pane' as never };
+  let absent = scenario !== 'unfocused pane', focused = scenario !== 'unfocused pane';
+  const placements = new Map<string, typeof slot>([['execution', slot], ['old-proxy', slot]]);
+  let focusSlot = slot;
+  const commands = vi.fn(async (name: string, args: Record<string, string>) => {
+    if (name === 'terminal.keep') { focusSlot = { ...slot, pane: 'replacement' as never }; placements.set(args.terminal, focusSlot); }
+    if (name === 'terminal.park') placements.delete(args.terminal);
+    return {};
+  });
+  Object.assign(boundary.app, {
+    focusedPane: async () => { if (absent) throw new HerdrError('app-disconnected', 'App is absent'); return focused ? focusSlot : { ...slot, pane: 'other-pane' }; },
+    ownerPlacement: async (address: string) => { if (absent) throw new HerdrError('app-disconnected', 'App is absent'); const found = placements.get(address); if (!found) throw new HerdrError('owner-unplaced', 'Not placed'); return found; },
+    tabTerminals: async () => [...placements.keys()], command: commands,
+  });
+  const original = sessionRow(), first = sessionRow('gen-2'), second = sessionRow('gen-3');
+  original.target = { ...original.target, homeEpoch: 1, ...(scenario === 'hosting restart' ? {} : { coreId: 'core-local' as never, address: 'core-local/execution' as never, alias: null, machineId: null }) };
+  first.target = { ...first.target, terminalId: 'first' as never, address: 'core-remote/first' as never, homeEpoch: scenario === 'hosting restart' ? 1 : 2 };
+  second.target = { ...second.target, coreId: 'core-second' as never, terminalId: 'second' as never, address: 'core-second/second' as never, alias: 'box-2.invalid', machineId: 'machine-2', homeEpoch: first.target.homeEpoch! + 1 };
+  for (const row of [original, first, second]) { row.machineKey = row.target.coreId; row.owner = { ...row.owner, terminal: { ...row.owner.terminal, coreId: row.target.coreId, terminalId: row.target.terminalId, address: row.target.address } }; }
+  const p: PanePresentation = { ...presentation('pending-conversion'), target: original.target, mode: scenario === 'hosting restart' ? 'proxy' : 'native', role: 'agent', proxy: scenario === 'hosting restart' ? 'old-proxy' as never : null, slot, launch: 'acknowledged' };
+  await runtime.store.update(state => ({ ...state, presentations: [p] }));
+  boundary.terminals.set('execution', { ...facts(p).terminal, address: 'execution' as never });
+  if (p.proxy) boundary.terminals.set(p.proxy, { ...facts(p).terminal, address: p.proxy, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.target-core': original.target.coreId, 'spider.target-terminal': original.target.terminalId } });
+  boundary.rows = [original];
+  const service = runtime.createService();
+  const operations = () => createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
+  if (scenario !== 'hosting restart') expect((await operations().prepareHandoff(original.sessionId, original.target)).status).not.toBe('refused');
+  boundary.rows = [first];
+  expect((await operations().presentReadyTarget(first.target)).status).toBe('pending');
+  // The pane service remains running while the execution source has advanced.
+  const before = (await runtime.store.read()).presentations[0];
+  expect(before.target).toEqual(original.target);
+  expect(await operations().prepareHandoff(first.sessionId, first.target)).toMatchObject({ status: 'pending', reason: 'presentation-conversion-pending', presentation: before });
+  expect((await runtime.store.read()).slots).toEqual([{ session: 'session-1', space: 's1', tab: 'tb1' }]);
+  absent = false; focused = true; boundary.rows = [second];
+  const outcome = await operations().presentReadyTarget(second.target);
+  expect(outcome).toMatchObject({ status: 'complete', presentation: { target: second.target, mode: 'proxy', slot: { space: 's1', tab: 'tb1' }, conversion: null } });
+  expect((await runtime.store.read()).presentations).toHaveLength(1);
+  expect(hc.run).toHaveBeenCalledTimes(scenario === 'hosting restart' ? 0 : 1);
+  expect(commands.mock.calls.filter(([name]) => name === 'pane.focus')).toEqual([]);
 });

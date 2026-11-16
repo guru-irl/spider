@@ -24,7 +24,7 @@ const presentation: any = { id: 'pres-1', revision: 1, mode: 'proxy', role: 'age
 const proxyLabels: any = { 'spider.kind': 'pane-proxy', 'spider.pane-id': 'pres-1', 'spider.target-core': 'core-remote', 'spider.target-terminal': 't7' };
 const header: any = { address: 'proxy-1', programIsAgent: false, nativeTitle: 'Node attach', nativeStatus: null, nativeCwd: '/mac/wrong', labels: proxyLabels };
 const facts = (status = 'working', patch: any = {}) => ({ terminal: { address: 'core-remote/t7', labels: { 'spider.session': 'session-1' } }, createdMs: 42, title: 'π - Planner - project', app: 'pi', status, currentCwd: '/home/example/work', identityLabels: { 'spider.session': 'session-1' }, ...patch });
-const keyed = (row: any) => ({ [JSON.stringify(['core-remote', 't7'])]: row });
+const keyed = (row: any) => ({ 'core-remote/t7': row });
 
 function render(version: SpacesAVersion, options: { p?: any; labels?: any; presentations?: any[]; targetFacts?: any; bottom?: boolean; hover?: boolean } = {}) {
   const m = machine();
@@ -98,7 +98,7 @@ test('restarted or mislabeled target facts cannot replace the bound header', () 
     expect(resolved.cwd).toBeNull(); expect(resolved.status).toBeNull();
     expect(resolved.name).not.toBe('Node attach');
   }
-  expect(m.resolvePaneHeaderFacts(header, [presentation], { [JSON.stringify(['core-other', 't7'])]: facts() }).status).toBeNull();
+  expect(m.resolvePaneHeaderFacts(header, [presentation], { 'core-other/t7': facts() }).status).toBeNull();
 });
 
 test.each(['working', 'blocked', 'error', 'done'])('remote proxy header uses target name status and foreground cwd: %s', status => {

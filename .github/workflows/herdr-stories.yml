@@ -21,7 +21,7 @@ jobs:
   stories:
     name: Headless stories with a real core
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

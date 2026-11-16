@@ -247,9 +247,19 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
       const reply = await request({ ...machine, coreId: target.coreId }, { version: 1, op: 'close-session', sessionId: target.sessionId, generation: target.generation, homeEpoch: target.homeEpoch ?? 0, operationId });
       return reply.op === 'close-session' && reply.outcome.status === 'complete' ? 'ended' : 'pending';
     },
-    async targetFacts() {
+    async targetFacts(presentations, signal) {
       const facts: Record<string, Awaited<ReturnType<typeof readPaneTerminal>>> = {};
-      for (const p of (await store.read()).presentations) { try { facts[`${p.target.coreId}/${p.target.terminalId}`] = await readPaneTerminal(p.target, { binary: config.core.binary, env }); } catch { /* Missing sources grant no new authority. */ } }
+      const targets = [...new Map(presentations.filter(p => p.visibility === 'visible').map(p => [`${p.target.coreId}/${p.target.terminalId}`, p.target])).values()];
+      let index = 0;
+      await Promise.all(Array.from({ length: Math.min(4, targets.length) }, async () => {
+        while (index < targets.length && !signal.aborted) {
+          const target = targets[index++], cancellation = new AbortController();
+          const timer = setTimeout(() => cancellation.abort(), 5000);
+          try { facts[`${target.coreId}/${target.terminalId}`] = await readPaneTerminal(target, { binary: config.core.binary, env, signal: AbortSignal.any([signal, cancellation.signal]) }); }
+          catch { /* Missing sources grant no new authority. */ }
+          finally { clearTimeout(timer); }
+        }
+      }));
       return facts;
     },
     renewLeases: async () => { await auxiliary?.tick(); }, appCapabilities: capabilities,

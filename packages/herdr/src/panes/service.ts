@@ -2,9 +2,11 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import type { AppClient, HcClient } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
-import { encodePaneServiceReply, encodePaneServiceRequest, parsePaneInventoryPage, parsePaneServiceRequest } from './codec.js';
+import { paneSnapshot } from './snapshot.js';
+import { prunePaneHistory } from './retention.js';
+import { encodePaneServiceRequest, parsePaneInventoryPage, parsePaneServiceRequest } from './codec.js';
 import { confirmPresentationClose, parkPresentation, reconcilePendingClose, reconcilePresentationExit, samePaneTarget, type PaneLifecyclePorts } from './lifecycle.js';
-import type { AppPaneCapabilities, FolderMapPort, MachineChoice, PaneActionOutcome, PaneAgentRow, PaneInventoryPage, PanePlacementStore, PaneServiceReply, PaneServiceRequest, PaneTerminalFacts } from './types.js';
+import type { AppPaneCapabilities, FolderMapPort, MachineChoice, PaneActionOutcome, PaneAgentRow, PaneInventoryPage, PanePlacementStore, PanePresentation, PaneServiceReply, PaneServiceRequest, PaneTerminalFacts } from './types.js';
 export interface PaneService {
   request(input: PaneServiceRequest): Promise<PaneServiceReply>;
   reconcile(): Promise<void>;
@@ -20,7 +22,7 @@ export interface PaneServicePorts extends Pick<PaneLifecyclePorts, 'validateTarg
   machines(): Promise<readonly MachineChoice[]>;
   inventory(machine: MachineChoice, signal: AbortSignal, cursor?: string | null): Promise<PaneInventoryPage>;
   reconcileInventory?(inventory: PrivatePaneInventory): Promise<void>;
-  targetFacts(): Promise<Readonly<Record<string, PaneTerminalFacts>>>;
+  targetFacts(presentations: readonly PanePresentation[], signal: AbortSignal): Promise<Readonly<Record<string, PaneTerminalFacts>>>;
   renewLeases(machine: MachineChoice, signal: AbortSignal): Promise<void>;
   appCapabilities(): Promise<AppPaneCapabilities>;
   subscribe(changed: () => void): () => void;
@@ -89,10 +91,34 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     })();
     pending.set(machine.key, operation); return operation;
   }
+  async function pruneHistory(checkTargets: boolean) {
+    const state = await ports.store.read(), removed: PanePresentation[] = [];
+    if (checkTargets) {
+      let index = 0;
+      await Promise.all(Array.from({ length: Math.min(4, state.presentations.length) }, async () => {
+        while (index < state.presentations.length) {
+          const p = state.presentations[index++];
+          if (p.visibility === 'closing' || p.visibility === 'ended' || p.target.createdMs <= 0 || p.conversion) continue;
+          const machine = machines.find(machine => machine.coreId === p.target.coreId);
+          if (machine?.state !== 'connected') continue;
+          const source = inventories.get(machine.key);
+          if (!source?.complete || source.stale) continue;
+          const key = `${p.target.coreId}/${p.target.terminalId}`;
+          try {
+            const terminal = facts[key]?.terminal ?? await bounded(signal => ports.hc.get(p.target.address, { signal }));
+            if (terminal.state === 'finished') removed.push(p);
+          } catch (error) {
+            if (error instanceof HerdrError && error.code === 'not_found') removed.push(p);
+          }
+        }
+      }));
+    }
+    if (removed.length || state.presentations.some(p => p.visibility === 'ended')) await ports.store.update(current => prunePaneHistory(current, removed));
+  }
   function reconcile(): Promise<void> {
     if (refreshing) return refreshing;
     refreshing = (async () => {
-      await live(); machines = await ports.machines();
+      await live(); await pruneHistory(false); machines = await ports.machines();
       const renew = ports.clock() - leaseTick >= 5000;
       if (renew) leaseTick = ports.clock();
       await Promise.all(machines.map(async machine => {
@@ -100,7 +126,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
         if (renew && machine.state === 'connected') await bounded(signal => ports.renewLeases(machine, signal)).catch(() => {});
       }));
       await ports.reconcileInventory?.(privateInventory());
-      try { facts = await bounded(() => ports.targetFacts()); } catch { /* Keep the last verified display facts. */ }
+      try { facts = await ports.targetFacts((await ports.store.read()).presentations.filter(p => p.visibility === 'visible'), abort.signal); } catch { /* Keep the last verified display facts. */ }
       const before = await ports.store.read();
       for (const p of before.presentations) {
         if (p.visibility === 'closing' || p.visibility === 'ended' || p.target.createdMs > 0 && (p.target.kind === 'terminal' || p.target.generation !== null)) continue;
@@ -118,6 +144,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
           await reconcilePresentationExit(p, terminal, lifecycle);
         }
       }
+      await pruneHistory(true);
     })().finally(() => { refreshing = null; });
     return refreshing;
   }
@@ -131,10 +158,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     if (request.op === 'snapshot') {
       const state = await ports.store.read();
       void reconcile().catch(() => {});
-      const inventory = privateInventory(); const rows = inventory.rows.slice(0, 256);
-      const reply: Extract<PaneServiceReply, { kind: 'snapshot' }> = { version: 1, kind: 'snapshot', revision: state.revision, machines, presentations: state.presentations, rows, targetFacts: facts, complete: inventory.complete && inventory.rows.length <= 256, omittedRows: inventory.rows.length - rows.length };
-      while (Buffer.byteLength(JSON.stringify(reply)) > 1024 * 1024 && rows.length) { rows.pop(); reply.omittedRows++; reply.complete = false; }
-      encodePaneServiceReply(reply); return reply;
+      return paneSnapshot(state, machines, privateInventory(), facts);
     }
     const state = await ports.store.read();
     if ('presentationId' in request) {

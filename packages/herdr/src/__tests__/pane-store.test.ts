@@ -176,6 +176,14 @@ test('binding and placement roots never write each other\'s authority files', as
   await h.store.update(state => ({ ...state, choices: [{ session: 'session-1' as SessionId, space: 'space-1' as SpaceId, tab: 'tab-1' as TabId, revision: 1 }] }));
   expect(await readFile(h.binding('pane-1'))).toEqual(bindingBytes);
 });
+test('removing a presentation also removes its binding projection', async () => {
+  const h = await fixture(); const p = presentation();
+  await h.store.update(state => ({ ...state, presentations: [p] }));
+  expect(await readPaneBinding(h.panesRoot, p.id)).toEqual(p);
+  await h.store.update(state => ({ ...state, presentations: [] }));
+  expect(await readPaneBinding(h.panesRoot, p.id)).toBeNull();
+  expect((await createPanePlacementStore(h.root).read()).presentations).toEqual([]);
+});
 test('pending conversion survives restart without changing parked intent', async () => {
   const h = await fixture(); const p = presentation();
   const pending: PanePresentation = { ...p, conversion: { state: 'waiting-focus', destination: p.target, source: { ...p.slot!, pane: 'pane-source' as import('../contracts.js').PaneId }, sourceFocused: false } };

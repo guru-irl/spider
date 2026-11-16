@@ -18,7 +18,7 @@ export function parseNotificationInput(input: unknown): { message: string; urgen
   const { action, message, urgency } = value;
   if (action !== undefined && action !== 'notify') throw new Error('invalid notify action');
   if (typeof message !== 'string') throw new Error('notify requires a message');
-  const cleaned = scrubSecrets(stripVTControlCharacters(message).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, ' ')).text.trim();
+  const cleaned = scrubSecrets(stripVTControlCharacters(message).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/g, ' ')).text.trim();
   if (!cleaned || !cleaned.replace(/\[REDACTED:[^\]]+\]/g, '').trim() || Array.from(cleaned).length > 500) throw new Error('notify message must contain 1 to 500 characters after scrubbing');
   if (urgency !== undefined && urgency !== 'low' && urgency !== 'attention' && urgency !== 'urgent') throw new Error('notify urgency must be low, attention, or urgent');
   return { message: cleaned, urgency: urgency ?? 'attention' };
@@ -33,7 +33,8 @@ export function notifyHandler(args: SpiderArgs, ctx: ActionCtx, queue: (sessionI
   if (child) {
     const inherited = process.env.PI_SPIDER_SESSION_ID, top = process.env.PI_SPIDER_TOP_SESSION_ID;
     const run = process.env.PI_SUBAGENT_RUN_ID, path = process.env.PI_SPIDER_DB_PATH;
-    if (!inherited || !run || !path || !isAbsolute(path) || top && top !== inherited) throw new Error('notify child ownership is unavailable');
+    if (top && inherited && top !== inherited) throw new Error('notify is unavailable to nested or remote subagents');
+    if (!inherited || !run || !path || !isAbsolute(path)) throw new Error('notify child ownership is unavailable; nested or remote subagents cannot notify');
     sessionId = inherited as SessionId; runId = run as RunId; dbPath = path;
   } else {
     if (!ctx.sessionId) throw new Error('notify session ownership is unavailable');
@@ -41,14 +42,19 @@ export function notifyHandler(args: SpiderArgs, ctx: ActionCtx, queue: (sessionI
     const history = openSessionHistoryDb(ctx.injectionCwd ?? ctx.cwd, sessionId);
     dbPath = history.dbPath; history.db.close();
   }
-  const db = openDb(dbPath, { fileMustExist: true });
+  let db: ReturnType<typeof openDb>;
+  try { db = openDb(dbPath, { fileMustExist: true }); }
+  catch (error) {
+    if (child && (error as NodeJS.ErrnoException).code === 'SQLITE_CANTOPEN') throw new Error('notify is unavailable to nested or remote subagents');
+    throw error;
+  }
   try {
     const note = db.withRetry(() => db.transaction(() => {
       if (runId) {
         // Lock before checking identity so ownership cannot change before the event is written.
         db.prepare('UPDATE events SET id = id WHERE 0').run();
         const run = new RunStore(db).get(runId);
-        if (!run || !isLocalRun(db, runId) || run.session_id !== sessionId || run.pid !== process.pid || !['queued', 'running', 'paused'].includes(run.status)) throw new Error('notify child ownership does not match the recorded run');
+        if (!run || !isLocalRun(db, runId) || run.session_id !== sessionId || run.pid !== process.pid || !['queued', 'running', 'paused'].includes(run.status)) throw new Error('notify child ownership does not match the recorded run; nested or remote subagents cannot notify');
       }
       return storeNotification(db, { sessionId, runId }, ctx.toolCallId!, input, Date.now());
     })());

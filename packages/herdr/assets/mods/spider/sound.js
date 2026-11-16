@@ -24,3 +24,38 @@ export function observeNotificationSounds(notices, previous, enabled, now, mount
   }
   return { state: { baselineAt, observed: [...seen].map(([token, createdAt]) => ({ token, createdAt })) }, sounds };
 }
+
+/** Each Agents mount ignores its initial history and claims later arrivals synchronously. */
+export function createNotificationSound({ shared, setShared, playSound, props, report }) {
+  const key = 'spider.notifications.sounded';
+  const problem = message => {
+    try { setShared('spider.notifications.soundProblem', { at: Date.now(), message }); } catch { /* The sidebar still reports the failure. */ }
+    report(message);
+  };
+  let history = null, mountedAt = Date.now();
+  return {
+    observe(snapshot) {
+      if (snapshot.errors.some(error => error.source === 'sessions')) return;
+      try {
+        const now = Date.now(), notices = snapshot.feeds.flatMap(feed => (feed.notifications ?? []).map(notice => ({
+          ...notice, key: `intentional:${feed.sessionId}:${notice.id}`,
+        })));
+        if (!history) {
+          history = new Set(notices.map(notice => notice.key));
+          if (!shared(key)) setShared(key, { baselineAt: now, observed: [] });
+          return;
+        }
+        const config = props()?.notifications;
+        const enabled = config === undefined ? true : config && typeof config === 'object' && !Array.isArray(config) && typeof config.sound === 'boolean' ? config.sound : null;
+        if (enabled === null) problem('Invalid notification sound setting');
+        const saved = shared(key);
+        const result = observeNotificationSounds(notices.filter(notice => !history.has(notice.key)), saved, enabled === true, now, mountedAt);
+        if (JSON.stringify(saved) !== JSON.stringify(result.state)) setShared(key, result.state);
+        const sound = result.sounds.includes('blocked') ? 'blocked' : result.sounds[0];
+        if (sound) {
+          try { playSound(sound); } catch { problem('Notification sound unavailable'); }
+        }
+      } catch { problem('Notification sound unavailable'); }
+    },
+  };
+}

@@ -24,18 +24,10 @@ function fromEvent(row: EventRecord): StoredNotification | null {
   } catch { return null; }
 }
 
-/** A tool call is one occurrence even if its acknowledgement is retried. */
+/** Each invocation is a distinct occurrence, even if a provider reuses tool-call IDs. */
 export function storeNotification(db: Db, caller: { sessionId: SessionId; runId: RunId | null }, toolCallId: string, input: Input, now: number): StoredNotification {
   if (!toolCallId.trim()) throw new Error('notify requires a tool call ID');
   return db.withRetry(() => db.transaction(() => {
-    // Reserve the writer before reading so concurrent retries cannot both insert.
-    db.prepare('UPDATE events SET id = id WHERE 0').run();
-    const previous = db.prepare(`SELECT ts, payload FROM events WHERE session_id=? AND phase='after' AND tool='notify'
-      AND json_valid(payload) AND json_extract(payload, '$.version')=1 AND json_extract(payload, '$.kind')='agent-notification'
-      AND json_extract(payload, '$.toolCallId')=? AND COALESCE(json_extract(payload, '$.runId'), '')=COALESCE(?, '') ORDER BY id LIMIT 1`)
-      .get(caller.sessionId, toolCallId, caller.runId) as EventRecord | undefined;
-    const existing = previous && fromEvent(previous);
-    if (existing) return existing;
     const note: StoredNotification = { id: randomUUID(), createdAt: now, message: input.message, urgency: input.urgency, runId: caller.runId };
     appendEvent(db, { sessionId: caller.sessionId, ts: now, phase: 'after', tool: 'notify', payload: {
       version: 1, kind: 'agent-notification', id: note.id, toolCallId, message: note.message, urgency: note.urgency, runId: note.runId,

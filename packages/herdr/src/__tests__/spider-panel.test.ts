@@ -345,14 +345,18 @@ describe('Spider panel', () => {
     expect(rows.sessions[0].feed.approvals).toContainEqual(first.approvals[1]);
     expect(rows.sharedApprovals.some(a => a.uuid === 'owned')).toBe(false);
   });
-  test('session-owned and shared memories are one notification without previews', async () => {
-    const output = await scene<{ session: string[]; all: string[] }>(`const f=JSON.parse(files[0]);
+  test('session-owned and shared memories remain accessible without automatic notices', async () => {
+    const output = await scene<{ session: string[]; all: string[]; view: string; memories: boolean[] }>(`const f=JSON.parse(files[0]);
       f.approvals.push({uuid:'owned',scope:'repo',repoKey:'repo-a',ownerSessionId:'fixture',category:'insight',preview:'Only this session'});
       files[0]=JSON.stringify(f);initView(panel,cx);await tasks[0];panel.expanded.add('fixture');const tree=panel.render(cx);
-      console.log(JSON.stringify({session:texts(byId(tree,'session-fixture')),all:texts(tree)}));`);
-    expect(output.all.filter(text => /memor|from|shared/.test(text))).toEqual(['2 memories to review']);
+      const session=texts(byId(tree,'session-fixture')),all=texts(tree);
+      byId(tree,'spider-memories-open').events.on_click({},cx);await drain();const review=panel.render(cx);
+      console.log(JSON.stringify({session,all,view:panel.view.kind,memories:['approval','owned'].map(id=>Boolean(byId(review,'memory-'+id)))}));`);
+    expect(output.all.filter(text => /memor|from|shared/.test(text))).toEqual([]);
     expect(output.all.join(' ')).not.toContain('Needs you');
     expect(output.all.join(' ')).not.toMatch(/Only this session|Review this|Shared approvals/);
     expect(output.session.join(' ')).not.toContain('memor');
+    expect(output.view).toBe('memories');
+    expect(output.memories).toEqual([true, true]);
   });
 });

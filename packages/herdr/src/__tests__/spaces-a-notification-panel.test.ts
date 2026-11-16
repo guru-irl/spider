@@ -51,9 +51,11 @@ describe('intentional notification projection', () => {
     const source = feed('owner');
     source.runs = { rows: [{ id: 'run-1' as never, ownerSessionId: source.sessionId, name: 'reviewer', status: 'done', childMode: 'print', canSteer: false, startedAt: now - 100, finishedAt: now - 10, viewer: null, result: null }], total: 1, truncated: false };
     source.notifications = [{ ...notice(source, 'child', 'attention'), runId: 'run-1' as never, action: { kind: 'open-run', sessionId: source.sessionId, runId: 'run-1' as never } }];
-    expect(data.notificationText(data.projectNotifications([source], now)[0])).toBe('reviewer Choose a fix');
+    expect(data.notificationText(data.projectNotifications([source], now)[0])).toBe('owner reviewer Choose a fix');
     source.runs.rows = []; source.runs.total = 0;
-    expect(data.notificationText(data.projectNotifications([source], now)[0])).toBe('run-1 Choose a fix');
+    expect(data.notificationText(data.projectNotifications([source], now)[0])).toBe('owner Run run-1 Choose a fix');
+    source.notifications[0] = { ...notice(source, 'child', 'attention'), runId: '0123456789abcdef' as never, action: { kind: 'open-run', sessionId: source.sessionId, runId: '0123456789abcdef' as never } };
+    expect(data.notificationText(data.projectNotifications([source], now)[0])).toBe('owner Run 01234567 Choose a fix');
   });
 
   it('keeps stale and closed owner cards dismissible without deriving automatic cards', () => {
@@ -148,7 +150,7 @@ function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boo
 function flatten(root: any): any[] { return root && typeof root === 'object' ? [root, ...(root.items ?? []).flatMap(flatten)] : []; }
 function byId(root: any, id: string): any { return flatten(root).find(item => item.styles?.id?.[0] === id); }
 
-it('plays only new intentional arrival sounds, once per urgency', async () => {
+it('plays at most one sound for a mixed batch of new intentional notices', async () => {
   const h = panelHost(); await h.ready; await h.drain();
   expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([]);
   h.state.feeds[0].status = { native: 'blocked', effective: 'blocked', message: 'waiting' };
@@ -157,7 +159,7 @@ it('plays only new intentional arrival sounds, once per urgency', async () => {
   h.state.feeds[0].status = { native: 'idle', effective: 'idle', message: 'done' };
   h.state.feeds[0].notifications.push(notice(h.state.feeds[0], 'urgent-new', 'urgent', Date.now()), notice(h.state.feeds[0], 'attention-new', 'attention', Date.now()), notice(h.state.feeds[0], 'low-new', 'low', Date.now()));
   await h.view.reload(h.cx); await h.view.reload(h.cx);
-  expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([['playSound', 'blocked'], ['playSound', 'blocked'], ['playSound', 'done']]);
+  expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([['playSound', 'blocked']]);
   expect(h.calls.filter(call => call[0] === 'exec' || call[0] === 'run')).toEqual([]); await h.view.close();
 });
 
@@ -215,6 +217,39 @@ it('rejects malformed sound settings without playback or replay after repair', a
   expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([]); await h.view.close();
 });
 
+it('does not replay a hidden backlog when the panel is revealed', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(Date.UTC(2026, 10, 15, 12));
+  const h = panelHost({ hidden: true });
+  try {
+    await h.ready; await h.drain();
+    for (let i = 0; i < 5; i++) {
+      vi.setSystemTime(Date.now() + 3600000);
+      h.state.feeds[0].notifications.push(notice(h.state.feeds[0], `backlog-${i}`, 'attention', Date.now()));
+      await h.view.reload(h.cx);
+    }
+    h.state.layout.hidden = false; await h.view.reload(h.cx);
+    expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([]);
+    h.state.feeds[0].notifications.push(notice(h.state.feeds[0], 'new-after-reveal', 'low', Date.now()));
+    await h.view.reload(h.cx);
+    expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([['playSound', 'done']]);
+  } finally { await h.view.close(); vi.useRealTimers(); }
+});
+
+it('shares arrival claims between Agents and a hidden or visible panel', async () => {
+  const h = panelHost({ hidden: true }); await h.ready; await h.drain();
+  const agentSound = sound.createNotificationSound({ shared: h.herdr.shared, setShared: h.herdr.setShared, playSound: h.herdr.playSound, props: () => h.config, report: () => {} });
+  agentSound.observe({ feeds: h.state.feeds, errors: [] });
+  h.state.feeds[0].notifications.push(notice(h.state.feeds[0], 'hidden-mixed-low', 'low', Date.now()), notice(h.state.feeds[0], 'hidden-mixed-urgent', 'urgent', Date.now()));
+  agentSound.observe({ feeds: h.state.feeds, errors: [] }); await h.view.reload(h.cx);
+  expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([['playSound', 'blocked']]);
+  h.state.layout.hidden = false; await h.view.reload(h.cx);
+  expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([['playSound', 'blocked']]);
+  h.state.feeds[0].notifications.push(notice(h.state.feeds[0], 'visible-new', 'low', Date.now()));
+  await h.view.reload(h.cx); agentSound.observe({ feeds: h.state.feeds, errors: [] });
+  expect(h.calls.filter(call => call[0] === 'playSound')).toEqual([['playSound', 'blocked'], ['playSound', 'done']]);
+  await h.view.close();
+});
+
 it('does not consume arrivals in hidden or inactive-stack panels', async () => {
   vi.useFakeTimers(); vi.setSystemTime(Date.UTC(2026, 10, 15, 12));
   const storage = new Map<string, unknown>(), visible = panelHost({ storage }), hidden = panelHost({ storage, hidden: true });
@@ -225,7 +260,7 @@ it('does not consume arrivals in hidden or inactive-stack panels', async () => {
     hidden.state.layout = { type: 'stack', active: 'other', children: [{ id: 'spider', content: { mod: 'spider-panel' } }, { id: 'other', content: { mod: 'other' } }] };
     await hidden.view.reload(hidden.cx); expect(hidden.calls.filter(call => call[0] === 'playSound')).toEqual([]);
     hidden.state.layout.active = 'spider'; await hidden.view.reload(hidden.cx);
-    expect(hidden.calls.filter(call => call[0] === 'playSound')).toEqual([['playSound', 'blocked']]);
+    expect(hidden.calls.filter(call => call[0] === 'playSound')).toEqual([]);
   } finally { await visible.view.close(); await hidden.view.close(); vi.useRealTimers(); }
 });
 
@@ -256,7 +291,7 @@ it('does not sound or claim when both same-mod layout blocks are hidden', async 
   expect(storage.has('spider.notifications.sounded')).toBe(false);
   layout.children[0].hidden = false;
   await Promise.all([a.view.reload(a.cx), b.view.reload(b.cx)]);
-  expect([...a.calls, ...b.calls].filter(call => call[0] === 'playSound')).toEqual([['playSound', 'blocked']]);
+  expect([...a.calls, ...b.calls].filter(call => call[0] === 'playSound')).toEqual([]);
   await a.view.close(); await b.view.close();
 });
 
@@ -290,6 +325,22 @@ it('keeps the card and reports playback failure without retrying', async () => {
   expect(byId(h.view.render(h.cx), 'card-intentional:owner:failed-sound')).toBeDefined(); await h.view.close();
 });
 
+it('shows a sound problem reported by the always-mounted Agents view', async () => {
+  const h = panelHost({ hidden: true }); await h.ready; await h.drain();
+  h.storage.set('spider.notifications.soundProblem', { at: Date.now(), message: 'Notification sound unavailable' });
+  h.timers.find(timer => timer.ms === 2000)!.fn(h.cx);
+  expect(h.view.errors.some((error: any) => error.source === 'Notification sound')).toBe(true);
+  expect(data.describePanelProblems(h.view.errors).rows.map(row => row.text)).toContain("Spider couldn't play a notification sound.");
+  expect(flatten(h.view.render(h.cx)).some(node => node.items?.includes("Spider couldn't play a notification sound."))).toBe(true);
+  h.timers.find(timer => timer.ms === 2000)!.fn(h.cx);
+  expect(h.view.errors.filter((error: any) => error.source === 'Notification sound')).toHaveLength(1);
+  await h.view.close();
+  const stale = panelHost({ storage: new Map([['spider.notifications.soundProblem', { at: Date.now() - 60001, message: 'Notification sound unavailable' }]]) });
+  await stale.ready; await stale.drain();
+  expect(stale.view.errors.some((error: any) => error.source === 'Notification sound')).toBe(false);
+  await stale.view.close();
+});
+
 it('does not establish sound baselines or play sound while the app checks mods', async () => {
   const h = panelHost({ checking: true }); await h.ready;
   expect(h.storage.has('spider.notifications.sounded')).toBe(false);
@@ -310,7 +361,9 @@ it('does not focus a reused terminal address after the owner identity changes', 
   const h = panelHost(); await h.ready; await h.drain(); const root = h.view.render(h.cx);
   h.state.terms[0].labels['spider.session'] = 'another-session';
   byId(root, 'need-intentional:owner:notice-1').events.on_click({}, h.cx); await h.drain();
-  expect(h.calls.filter(call => call[0] === 'run')).toEqual([]); await h.view.close();
+  expect(h.calls.filter(call => call[0] === 'run')).toEqual([]);
+  expect(h.view.errors.some((error: any) => error.message === 'Owner unavailable')).toBe(true);
+  await h.view.close();
 });
 
 it('updates the app badge for hidden panels and clears it on dismissal', async () => {
@@ -318,6 +371,58 @@ it('updates the app badge for hidden panels and clears it on dismissal', async (
   expect(h.calls.filter(call => call[0] === 'badge')).toContainEqual(['badge', '1']);
   byId(h.view.render(h.cx), 'dismiss-intentional:owner:notice-1').events.on_click({}, h.cx);
   expect(h.calls.filter(call => call[0] === 'badge')).toContainEqual(['badge', null]); await h.view.close();
+});
+
+it('clears the badge after the last panel closes and restores it from a remaining panel', async () => {
+  const storage = new Map<string, unknown>(), a = panelHost({ storage }), b = panelHost({ storage });
+  await Promise.all([a.ready, b.ready]); await a.drain(); await b.drain();
+  await a.view.close();
+  expect(a.calls.filter(call => call[0] === 'badge').at(-1)).toEqual(['badge', null]);
+  b.view.updateBadge();
+  expect(b.calls.filter(call => call[0] === 'badge').at(-1)).toEqual(['badge', '1']);
+  await b.view.close();
+  expect(b.calls.filter(call => call[0] === 'badge').at(-1)).toEqual(['badge', null]);
+});
+
+it('reports when a child notice outlives navigation retention', async () => {
+  const h = panelHost(), source = h.state.feeds[0];
+  source.runs = { rows: [{ id: 'run-long-expired', ownerSessionId: 'owner', name: 'reviewer', status: 'done', childMode: 'print', canSteer: false, startedAt: Date.now() - 30 * 3600000, finishedAt: Date.now() - 30 * 3600000, viewer: null, result: null }], total: 1, truncated: false };
+  source.notifications[0] = { ...source.notifications[0], runId: 'run-long-expired', action: { kind: 'open-run', sessionId: 'owner', runId: 'run-long-expired' } };
+  await h.ready; await h.drain();
+  byId(h.view.render(h.cx), 'need-intentional:owner:notice-1').events.on_click({}, h.cx); await h.drain();
+  expect(h.view.errors.some((error: any) => error.message === 'Owner unavailable')).toBe(true);
+  expect(flatten(h.view.render(h.cx)).some(node => node.items?.some((part: unknown) => typeof part === 'string' && part.includes("Its pi session isn't reachable")))).toBe(true);
+  expect(h.calls.filter(call => call[0] === 'run' || call[0] === 'exec')).toEqual([]);
+  await h.view.close();
+});
+
+it('opens an older child when configured retention includes it', async () => {
+  const h = panelHost(), source = h.state.feeds[0]; h.config.retention.completedHours = 48;
+  source.runs = { rows: [{ id: 'run-long-retained', ownerSessionId: 'owner', name: 'reviewer', status: 'done', childMode: 'print', canSteer: false, startedAt: Date.now() - 30 * 3600000, finishedAt: Date.now() - 30 * 3600000, viewer: null, result: null }], total: 1, truncated: false };
+  source.notifications[0] = { ...source.notifications[0], runId: 'run-long-retained', action: { kind: 'open-run', sessionId: 'owner', runId: 'run-long-retained' } };
+  await h.ready; await h.drain();
+  byId(h.view.render(h.cx), 'need-intentional:owner:notice-1').events.on_click({}, h.cx); await h.drain();
+  const args = h.calls.find(call => call[0] === 'exec')?.[2];
+  expect(args).toBeDefined();
+  expect(JSON.parse(args[args.indexOf('--request') + 1])).toMatchObject({ op: 'openRun', runId: 'run-long-retained' });
+  expect(h.calls).toContainEqual(['run', 'pane.focus', { terminal: 'viewer' }]);
+  await h.view.close();
+});
+
+it('explains a restarted local core and a disconnected remote machine', async () => {
+  const local = panelHost(); local.state.feeds[0].owner.terminal.coreId = 'old-core';
+  await local.ready; await local.drain();
+  byId(local.view.render(local.cx), 'need-intentional:owner:notice-1').events.on_click({}, local.cx); await local.drain();
+  expect(local.view.errors.some((error: any) => error.message === "This computer's Herdr restarted; reopen the session")).toBe(true);
+  expect(flatten(local.view.render(local.cx)).some(node => node.items?.some((part: unknown) => typeof part === 'string' && part.includes("This computer's Herdr restarted; reopen the session")))).toBe(true);
+  await local.view.close();
+  const remote = panelHost(); remote.state.feeds[0].owner.terminal.address = 'box.invalid/owner'; remote.state.feeds[0].owner.terminal.coreId = 'remote-core';
+  remote.herdr.hc = async (args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [{ name: 'box.invalid', id: 'remote-core', state: 'disconnected' }] }) });
+  await remote.ready; await remote.drain();
+  byId(remote.view.render(remote.cx), 'need-intentional:owner:notice-1').events.on_click({}, remote.cx); await remote.drain();
+  expect(remote.view.errors.some((error: any) => error.message === 'Owner on box.invalid is unreachable')).toBe(true);
+  expect(flatten(remote.view.render(remote.cx)).some(node => node.items?.some((part: unknown) => typeof part === 'string' && part.includes('Owner on box.invalid is unreachable')))).toBe(true);
+  await remote.view.close();
 });
 
 it('reopens a parked primary using the freshly read generation, once for a double click', async () => {
@@ -341,7 +446,7 @@ it('opens a retained child run and reports an old primary endpoint without repla
   h.state.feeds[0].runs = { rows: [{ id: 'run-1', ownerSessionId: 'owner', name: 'reviewer', status: 'done', childMode: 'print', canSteer: false, startedAt: Date.now() - 2000, finishedAt: Date.now() - 1000, viewer: null, result: null }], total: 1, truncated: false };
   h.state.feeds[0].notifications[0] = { ...h.state.feeds[0].notifications[0], runId: 'run-1', action: { kind: 'open-run', sessionId: 'owner', runId: 'run-1' } };
   await h.ready; await h.drain();
-  expect(data.notificationText(data.projectNotifications(h.view.feeds, Date.now())[0])).toBe('reviewer Choose a fix');
+  expect(data.notificationText(data.projectNotifications(h.view.feeds, Date.now())[0])).toBe('owner reviewer Choose a fix');
   byId(h.view.render(h.cx), 'need-intentional:owner:notice-1').events.on_click({}, h.cx); await h.drain();
   const args = h.calls.find(call => call[0] === 'exec')[2];
   expect(JSON.parse(args[args.indexOf('--request') + 1])).toMatchObject({ op: 'openRun', runId: 'run-1' });
@@ -368,7 +473,7 @@ it('does not open when the occurrence disappears during owner identity verificat
 it('keeps stale owner cards dismissible without dispatch', async () => {
   const h = panelHost(); h.state.feeds[0].updatedAt = Date.now() - 60000; await h.ready; await h.drain();
   const root = h.view.render(h.cx), body = byId(root, 'need-intentional:owner:notice-1'), dismiss = byId(root, 'dismiss-intentional:owner:notice-1');
-  expect(body.events.on_click).toBeUndefined(); expect(dismiss.events.on_click).toBeTypeOf('function');
+  expect(body.events.on_click).toBeUndefined(); expect(body.styles.tooltip).toEqual(['Owner unavailable']); expect(dismiss.events.on_click).toBeTypeOf('function');
   dismiss.events.on_click({}, h.cx); expect(h.calls.filter(call => call[0] === 'run')).toEqual([]);
   expect(byId(h.view.render(h.cx), 'card-intentional:owner:notice-1')).toBeUndefined(); await h.view.close();
 });

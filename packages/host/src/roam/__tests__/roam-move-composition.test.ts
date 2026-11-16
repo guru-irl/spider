@@ -72,6 +72,67 @@ it("production move evidence queries the connected machine service broker", asyn
   } finally { await mounted.close(); await service.close(); }
 }, 5000);
 
+async function inspectProductionActivation(initializeScratch: boolean) {
+  const { paths } = await import("@spider/db-core"), control = await import("../control");
+  const { createBothLocks } = await import("@spider/roam/session-control");
+  const { startMachineMoveSocket } = await import("@spider/roam/machine-move-socket");
+  const { createSessionLeases } = await import("@spider/herdr/sessions/lease");
+  const { createProcessPresence } = await import("@spider/herdr/sessions/presence");
+  const { processStartTime } = await import("../../../../subagents/src/process-identity");
+  const { recordLocation } = await import("@spider/db-core/roam/catalog");
+  const { spawn } = await import("node:child_process"), { once } = await import("node:events");
+  const global = createReplica("global", HUB), worktree = createReplica("worktree", HUB); fixtures.push(global, worktree);
+  vi.stubEnv("HC_SOCKET", join(process.cwd(), ".spider/scratch/move-composition.sock"));
+  vi.stubEnv("HC_TERMINAL_SOCKET", join(process.cwd(), ".spider/scratch/move-composition.sock"));
+  vi.stubEnv("HC_SESSION", "move-composition");
+  mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+  const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+  mkdirSync(join(global.root, "herdr", "jobs"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(global.root, "herdr", "config.json"), JSON.stringify({ mode: "core-only", globalRoot: global.root, core: { binary: join(global.root, "hc"), config: join(global.root, "core.json") }, agentDirectory: join(global.root, "agent"), shellRc: join(global.root, "shell.rc"), machines: [] }), { mode: 0o600 });
+  vi.spyOn(runtime, "readLocalIdentity").mockReturnValue(config);
+  vi.spyOn(runtime, "openLocalCore").mockReturnValue({ root: global.root, config, db: global.db, close() {} });
+  vi.spyOn(await import("../../usage/mount"), "resolveUsageRoots").mockReturnValue({ registryDb: join(global.root, "spider.db"), ledgerFile: join(global.root, "usage.db"), sessionsDir: join(global.root, "sessions"), authPath: join(global.root, "auth.json"), leaseDir: join(global.root, "usage-leases") });
+  const scratch = [join(worktree.root, ".spider", "scratch"), join(global.root, "scratch")];
+  vi.spyOn(paths, "scratch").mockImplementation(scope => scratch[scope === "global" ? 1 : 0]);
+  if (initializeScratch) for (const root of scratch) mkdirSync(root, { recursive: true });
+  const file = join(worktree.root, "session.jsonl"), sessionId = "clean-session";
+  writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: sessionId, cwd: worktree.root }) + "\n" + JSON.stringify({ type: "model_change", id: "leaf-1", parentId: null }) + "\n");
+  worktree.db.prepare("INSERT INTO sessions(id,started_at,origin_machine) VALUES(?,1,?)").run(sessionId, HUB);
+  worktree.db.prepare("INSERT INTO roam_sessions(session_id,epoch,state) VALUES(?,1,'active')").run(sessionId);
+  global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES(?,?,?,1,1)").run("fixture", worktree.root, worktree.db.raw.name);
+  global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(sessionId, HUB);
+  const home = { sessionId, machineId: HUB, epoch: 1, moveId: null, updatedAt: 1 };
+  recordLocation(global.db, { sessionId, stores: ["global", worktree.storeKey], home, file, cwd: worktree.root });
+  const snapshot = { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] };
+  const machine = await startMachineMoveSocket(global.root, () => true, { broker: async () => snapshot, bridge: async () => snapshot, settlement: async () => null } as never);
+  let live!: Parameters<typeof control.serveSessionControl>[0]["ports"];
+  vi.spyOn(control, "serveSessionControl").mockImplementation(async input => { live = input.ports; return { async close() {} }; });
+  const context = { cwd: worktree.root, mode: "rpc", hasUI: false, isIdle: () => true, hasPendingMessages: () => false,
+    sessionManager: { getSessionId: () => sessionId, getSessionFile: () => file, getLeafId: () => "leaf-1" } };
+  const inert = { async pause() {}, async resume() {} }, activity = { busy: () => false, bashRunning: () => false, promptOpen: () => false };
+  const gate = { inspect: () => ({ kind: "ordinary", home, blockers: [] }) };
+  let activation: Awaited<ReturnType<typeof createMoveActivation>>;
+  try {
+    activation = await createMoveActivation({ root: global.root, sessionId, file, context: () => context, gate, activity, usage: inert, embeddings: inert, organism: inert, others: [] } as never);
+    expect(activation).not.toBeNull();
+    const startIdentity = processStartTime(process.pid)!, leases = createSessionLeases(join(global.root, "herdr"));
+    const inventory = { presence: createProcessPresence(leases.root), leases, processes: async () => [], probe: async () => ({ kind: "live" as const, startIdentity }) };
+    await createBothLocks({ root: leases.root, file: async () => file, inventory, identity: { pid: process.pid, startIdentity } })(sessionId, async () => {
+      expect((await live.inspect()).blockers).toEqual([]);
+      const child = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
+      await once(child, "spawn");
+      const job = join(scratch[0], "bg", "active-job"); mkdirSync(job, { recursive: true });
+      writeFileSync(join(job, "job.json"), JSON.stringify({ schema: 1, id: "active-job", ownerSessionId: sessionId, childPid: child.pid }), { mode: 0o600 });
+      try { expect((await live.inspect()).blockers).toEqual([{ kind: "local-job", id: "active-job", detail: "A local job is running or its status is unknown." }]); }
+      finally { const exited = once(child, "exit"); child.stdin!.end(); await exited; }
+    });
+  } finally { await activation!?.close(); await machine.close(); }
+}
+
+it("production activation inspects the route-owning store and still blocks real local jobs", async () => {
+  await inspectProductionActivation(true);
+}, 5000);
+
 it("the real participant auth port blocks missing pi auth and warns that tools were not checked", async () => {
   const global = createReplica("global", HUB); fixtures.push(global);
   const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };

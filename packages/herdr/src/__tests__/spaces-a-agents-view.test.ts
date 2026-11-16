@@ -176,14 +176,26 @@ function seedConsoles(test: ReturnType<typeof fixture>) {
 const consoleKey = (owner: string, parent: string | null = null) => `console-group:${JSON.stringify([owner, parent])}`;
 const consoleId = (owner: string, parent: string | null = null) => `console-group:${encodeURIComponent(consoleKey(owner, parent))}`;
 
-it('0.1.13: refreshes machines at mount and allows remote focus before observation', async () => {
+it('0.1.13: defers machine observation until the first tick while remote focus works', async () => {
   const test = fixture('0.1.13');
+  expect(test.hcCalls).toEqual([]);
+  test.nativeTerminals.push({ ...terminal('box-4.invalid/native-child'), parent: 'local' });
+  test.nativeAgents.push(agent('box-4.invalid/native-child', 'child-pane'));
   const root = test.view.render(test.cx);
-  expect(test.hcCalls).toEqual([['server', 'status', '--json'], ['machine', 'ls', '--json']]);
-  expect(byId(root, 'ag-box-1.invalid/unpinned')!.events.on_click).toBeDefined();
-  byId(root, 'ag-box-1.invalid/unpinned')!.events.on_click?.();
+  expect(test.hcCalls).toEqual([]);
+  const remote = byId(root, 'ag-box-1.invalid/unpinned')!;
+  expect(remote.events.on_click).toBeDefined();
+  remote.events.on_click();
   expect(test.commands).toContainEqual(['pane.focus', { pane: 'p1' }]);
-  await test.ready();
+  const child = byId(root, 'sub-box-4.invalid/native-child')!;
+  expect(child.events.on_click).toBeDefined();
+  child.events.on_click({}, test.cx);
+  expect(test.commands).toContainEqual(['pane.focus', { terminal: 'box-4.invalid/native-child' }]);
+  expect(test.hcCalls).toEqual([]);
+  const tick = test.timers.find(timer => timer.delay === 15000)!;
+  expect(tick).toBeDefined();
+  await tick.callback(test.cx);
+  expect(test.hcCalls).toEqual([['server', 'status', '--json'], ['machine', 'ls', '--json']]);
   expect(byId(test.view.render(test.cx), 'machine:box-4.invalid')).toBeDefined();
 });
 

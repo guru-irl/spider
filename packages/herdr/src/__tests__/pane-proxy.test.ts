@@ -16,7 +16,7 @@ function presentation(revision = 1): PanePresentation {
   return parsePanePresentation({ id: 'p1', revision, mode: 'proxy', role: 'shell', target: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', createdMs: 17, identityLabels: { 'spider.pane-operation': 'op1' }, alias: 'box-1.invalid', machineId: null, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null, runId: null, consoleId: null, name: null, cwd: null }, proxy: 'core-local/t8', slot: null, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null });
 }
 function fixture() {
-  let binding: PanePresentation | null = presentation(); let listener: ((p: PanePresentation) => void) | null = null;
+  let binding: PanePresentation | null = presentation(); let listener: ((p: PanePresentation | null) => void) | null = null;
   const stop = new AbortController(); const order: string[] = []; const addresses: string[] = []; const delays: number[] = [];
   const ports: PaneProxyPorts = {
     readBinding: async () => binding,
@@ -28,7 +28,7 @@ function fixture() {
     delay: vi.fn(async ms => { delays.push(ms); if (delays.length === 5) stop.abort(); }), clock: () => 0,
     status: vi.fn(async () => { order.push('status'); }), signal: stop.signal,
   };
-  return { ports, order, addresses, delays, stop, change: (p: PanePresentation | null) => { binding = p; if (p) listener?.(p); } };
+  return { ports, order, addresses, delays, stop, change: (p: PanePresentation | null) => { binding = p; listener?.(p); } };
 }
 const input = { id: 'p1', bindingRoot: '/unused', hcBinary: '/owned/hc' };
 test('packaged pty discards outage keys flushes queued input and observe never types', () => {
@@ -106,6 +106,17 @@ test('new binding retargets without a target launch and resets backoff', async (
   await runPaneProxy(input, f.ports);
   expect(f.addresses).toEqual(['core-remote/t7', 'core-remote/t7', 'core-remote/t9', 'core-remote/t9']); expect(f.delays).toEqual([1000, 1000]);
   expect(f.order).toContain('reaped');
+});
+test('binding deletion reaps the attached display without reconnecting', async () => {
+  const f = fixture(); let deletionError: unknown;
+  vi.mocked(f.ports.attach).mockImplementation(async (_argv, _mode, signal, gate) => {
+    gate.markAttached(); queueMicrotask(() => { try { f.change(null); } catch (error) { deletionError = error; f.stop.abort(); } });
+    if (!signal.aborted) await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
+    f.order.push('reaped'); return { kind: 'stream-loss', exitCode: 0 };
+  });
+  expect(await runPaneProxy(input, f.ports)).toBe(0);
+  expect(deletionError).toBeUndefined();
+  expect(f.order).toContain('reaped'); expect(f.delays).toEqual([]); expect(f.ports.attach).toHaveBeenCalledTimes(1);
 });
 test('alias moved to another core never attaches or releases input', async () => {
   const f = fixture(); vi.mocked(f.ports.probe).mockImplementation(async target => ({ terminal: { address: 'core-successor/t7', parent: null, labels: target.identityLabels, state: 'live' as const, status: null, exitCode: null, reason: null, signal: null, finishedAt: null }, createdMs: 17 } as PaneTerminalFacts));

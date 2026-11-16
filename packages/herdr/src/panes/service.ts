@@ -103,6 +103,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
           if (machine?.state !== 'connected') continue;
           const source = inventories.get(machine.key);
           if (!source?.complete || source.stale) continue;
+          if (source.rows.some(row => row.target?.coreId === p.target.coreId && row.target.terminalId === p.target.terminalId && row.target.createdMs !== p.target.createdMs)) { removed.push(p); continue; }
           const key = `${p.target.coreId}/${p.target.terminalId}`;
           try {
             const terminal = facts[key]?.terminal ?? await bounded(signal => ports.hc.get(p.target.address, { signal }));

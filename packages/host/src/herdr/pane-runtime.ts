@@ -384,7 +384,7 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
         readBinding: async id => { let p = await readPaneBinding(root, id); while (!p && !cancellation.signal.aborted) { await delay(50, undefined, { signal: cancellation.signal }); p = await readPaneBinding(root, id); } return p; },
         probe: target => readPaneTerminal(target, { binary: config.core.binary, env }),
         verifyAttachedCore: async target => { const machine = await findMachine(target.coreId); return machine.alias === target.alias && machine.machineId === target.machineId; },
-        watchBinding: (id, changed) => { const watcher = watch(join(root, 'bindings'), () => { void readPaneBinding(root, id).then(p => { if (p) changed(p); }).catch(() => {}); }); return () => watcher.close(); },
+        watchBinding: (id, changed) => { const watcher = watch(join(root, 'bindings'), () => { void readPaneBinding(root, id).then(p => changed(p)).catch(() => {}); }); return () => watcher.close(); },
         delay: async (ms, signal) => { await delay(ms, undefined, { signal }); }, status: async text => { process.stdout.write(text + '\r\n'); },
       }); } finally { await tty.close(); for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.off(name, stop); }
     },

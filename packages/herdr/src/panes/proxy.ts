@@ -31,7 +31,7 @@ export interface PaneProxyPorts {
   verifyAttachedCore(target: PaneTarget): Promise<boolean>;
   attach(argv: readonly string[], mode: 'interactive' | 'observe', signal: AbortSignal, input: ProxyInputGate): Promise<AttachEnd>;
   tty: ProxyTtyPorts;
-  watchBinding(id: string, changed: (presentation: PanePresentation) => void): () => void;
+  watchBinding(id: string, changed: (presentation: PanePresentation | null) => void): () => void;
   delay(ms: number, signal: AbortSignal): Promise<void>;
   clock(): number;
   status?(text: string): Promise<void>;
@@ -55,7 +55,7 @@ export async function runPaneProxy(input: { id: string; bindingRoot: string; hcB
   try {
     if (!isAbsolute(input.hcBinary)) throw new HerdrError('invalid-proxy-binary', 'Proxy requires an absolute hc executable');
     binding = await ports.readBinding(input.id);
-    unwatch = ports.watchBinding(input.id, next => { if (!binding || next.revision > binding.revision) { binding = next; retry = 0; active?.abort(); } });
+    unwatch = ports.watchBinding(input.id, next => { if (!next || !binding || next.revision > binding.revision) { binding = next; retry = 0; active?.abort(); } });
     discard = ports.tty.discardInput(stop.signal); void discard.catch(() => stop.abort());
     while (!stop.signal.aborted) {
       if (!binding || binding.visibility !== 'visible') return 0;
@@ -73,7 +73,7 @@ export async function runPaneProxy(input: { id: string; bindingRoot: string; hcB
           const facts = await ports.probe(target);
           if (!matches(target, facts)) throw new HerdrError('target-changed', 'Execution target identity changed');
           if (facts.terminal.state === 'finished') { await status('Program finished'); return 0; }
-          if (active.signal.aborted || binding.revision !== current.revision) continue;
+          if (active.signal.aborted || binding?.revision !== current.revision) continue;
           await reset(); await ports.tty.flushInput();
           const gate = new OwnedProxyInputGate();
           const mode = target.kind === 'console' ? 'observe' : 'interactive';
@@ -81,24 +81,24 @@ export async function runPaneProxy(input: { id: string; bindingRoot: string; hcB
           attached = ports.attach(argv, mode, active.signal, gate);
           void attached.catch(error => gate.fail(error));
           await Promise.race([gate.ready, attached.then(() => { throw new HerdrError('attach-ended', 'Attach ended before input verification'); })]);
-          if (!active.signal.aborted && binding.revision === current.revision) {
+          if (!active.signal.aborted && binding?.revision === current.revision) {
             if (!await ports.verifyAttachedCore(target)) throw new HerdrError('core-mismatch', 'Attached core does not match the execution target');
             // Recheck incarnation after spawn as well as the selected core.
             if (!matches(target, await ports.probe(target))) throw new HerdrError('target-changed', 'Execution target changed after attach');
-            if (!active.signal.aborted && binding.revision === current.revision && mode === 'interactive') await ports.tty.releaseInput(gate);
+            if (!active.signal.aborted && binding?.revision === current.revision && mode === 'interactive') await ports.tty.releaseInput(gate);
           }
           await attached;
           // No authenticated detach marker is proved, including exit code zero.
         }
       } catch (error) {
         if (stop.signal.aborted) break;
-        if (binding.revision === current.revision && !active.signal.aborted) await status(`${target.alias ?? 'Machine unavailable'}: reconnecting`);
+        if (binding?.revision === current.revision && !active.signal.aborted) await status(`${target.alias ?? 'Machine unavailable'}: reconnecting`);
       } finally {
         active.abort(); if (attached) await attached.catch(() => {});
         // The packaged attach cancellation closes the gate and reaps its child.
         await reset(); stop.signal.removeEventListener('abort', cancel);
       }
-      if (binding.revision !== current.revision) continue;
+      if (binding?.revision !== current.revision) continue;
       if (stop.signal.aborted) break;
       active = new AbortController(); const cancelDelay = () => active?.abort(); stop.signal.addEventListener('abort', cancelDelay, { once: true });
       try { await ports.delay([1000, 2000, 5000, 10000][Math.min(retry++, 3)], active.signal); }

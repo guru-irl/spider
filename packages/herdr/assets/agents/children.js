@@ -93,12 +93,33 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
   const unavailable = new Set((options.machines ?? []).filter(machine => machine.layout === 'unavailable').map(machine => machine.name));
   const terminalMachine = t => t?.address?.includes('/') ? t.address.split('/')[0] : t?.labels?.[labels.machine] ?? null;
   const isUnreachable = t => unavailable.has(terminalMachine(t));
+  const feedsBySession = new Map();
+  for (const item of feeds) if (!feedsBySession.has(item.sessionId)) feedsBySession.set(item.sessionId, item);
   const feed = feeds.find(f => f.owner.terminal.address === ownerAddress);
+  const ownedRuns = new Map();
+  const runsFor = item => {
+    if (!ownedRuns.has(item)) {
+      const runs = new Map();
+      for (const run of item.runs.rows) if (run.ownerSessionId === item.sessionId && !runs.has(run.id)) runs.set(run.id, run);
+      ownedRuns.set(item, runs);
+    }
+    return ownedRuns.get(item);
+  };
+  const byParent = new Map(), viewersBySession = new Map();
+  for (const terminal of terminals) {
+    if (!byParent.has(terminal.parent)) byParent.set(terminal.parent, []);
+    byParent.get(terminal.parent).push(terminal);
+    if (terminal.labels[labels.kind] !== kinds.subagentViewer) continue;
+    const session = terminal.labels[labels.session], run = terminal.labels[labels.run];
+    if (!viewersBySession.has(session)) viewersBySession.set(session, new Map());
+    const viewers = viewersBySession.get(session);
+    if (!viewers.has(run)) viewers.set(run, terminal);
+  }
   const rows = new Map(), visited = new Set([ownerAddress]);
-  const currentOwner = t => feeds.find(f => f.sessionId === t.labels[labels.session])?.owner.terminal.address;
+  const currentOwner = t => feedsBySession.get(t.labels[labels.session])?.owner.terminal.address;
   const sessionAction = (kind, key, sessionId, viewer) => {
-    const current = feeds.find(f => f.sessionId === sessionId);
-    const ownedRun = kind !== 'subagent' || current?.runs.rows.some(run => run.id === key && run.ownerSessionId === sessionId);
+    const current = feedsBySession.get(sessionId);
+    const ownedRun = kind !== 'subagent' || current && runsFor(current).has(key);
     if (current?.lifecycle !== 'live' || !current.ipc || kind === 'subagent' && (now - current.updatedAt > FEED_DISCONNECT_MS || !ownedRun))
       return kind === 'subagent' && viewer?.state === 'live' ? { kind: 'peek', terminal: viewer.address } : null;
     const descriptor = { version: 1, sessionId: current.sessionId, generation: current.generation, ...current.ipc };
@@ -126,7 +147,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     const unreachable = (remote || subagent || console) && isUnreachable(t);
     if (unreachable) status = 'unreachable';
     const rowKind = remote ? 'remote' : subagent ? 'subagent' : console ? 'console' : 'native';
-    const run = feed?.runs.rows.find(r => r.id === t.labels[labels.run] && r.ownerSessionId === feed.sessionId);
+    const run = feed ? runsFor(feed).get(t.labels[labels.run]) : null;
     const machine = t.labels[labels.machine] ?? null;
     // hc only takes slug names; the readable name rides on a display-only label.
     const display = t.labels[labels.displayName ?? 'spider.display-name'];
@@ -142,7 +163,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     return true;
   };
   const walk = (parent, depth) => {
-    for (const t of terminals.filter(t => t.parent === parent)) {
+    for (const t of byParent.get(parent) ?? []) {
       if (visited.has(t.address)) continue;
       visited.add(t.address); if (add(t, depth)) walk(t.address, depth + 1);
     }
@@ -156,7 +177,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
   }
   for (const run of feed?.runs.rows ?? []) {
     if (run.ownerSessionId !== feed.sessionId) continue;
-    const native = terminals.find(t => t.labels[labels.kind] === kinds.subagentViewer && t.labels[labels.run] === run.id && t.labels[labels.session] === feed.sessionId);
+    const native = viewersBySession.get(feed.sessionId)?.get(run.id);
     const done = ['done', 'failed', 'cancelled'].includes(run.status);
     const action = sessionAction('subagent', run.id, feed.sessionId, native);
     const unreachable = isUnreachable(native ?? (run.viewer ? { address: run.viewer } : null)) && !(done && action?.kind === 'ipc');
@@ -175,6 +196,12 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
   const kept = [...all.filter(r => !r.retained), ...finished];
   const byKey = new Map(kept.map(row => [row.key, row]));
   const keyByAddress = new Map(kept.filter(row => row.originalAddress).map(row => [row.originalAddress, row.key]));
+  const consoles = new Map();
+  for (const row of kept) if (row.kind === 'console') {
+    if (!consoles.has(row.machine)) consoles.set(row.machine, new Map());
+    const runs = consoles.get(row.machine), runId = row.terminal.labels[labels.run] ?? null;
+    if (!runs.has(runId)) runs.set(runId, row);
+  }
   for (const row of kept) {
     if (row.kind === 'native' && row.parentKey) row.parentKey = keyByAddress.get(row.parentKey) ?? row.parentKey;
     if (row.kind !== 'remote' && row.kind !== 'console') continue;
@@ -182,23 +209,123 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     const run = byKey.get(runId);
     row.parentKey = run?.kind === 'subagent' ? run.key : null;
     if (row.kind === 'remote' && row.machine) {
-      const console = kept.find(c => c.kind === 'console' && c.machine === row.machine
-        && (c.terminal.labels[labels.run] ?? null) === (runId ?? null));
+      const console = consoles.get(row.machine)?.get(runId ?? null);
       if (console) row.parentKey = console.key;
     }
   }
   // Remote terminals report no agent status, so a console is busy exactly when a command under it is running.
+  const busyConsoles = new Set(kept.filter(row => row.kind === 'remote' && row.status === 'working').map(row => row.parentKey));
+  for (const row of kept) if (row.kind === 'console' && row.status === 'idle' && busyConsoles.has(row.key)) row.status = 'working';
+  const childrenByKey = new Map();
   for (const row of kept) {
-    if (row.kind === 'console' && row.status === 'idle' && kept.some(job => job.kind === 'remote' && job.parentKey === row.key && job.status === 'working')) row.status = 'working';
+    if (!childrenByKey.has(row.parentKey)) childrenByKey.set(row.parentKey, []);
+    childrenByKey.get(row.parentKey).push(row);
   }
   const ordered = [], emitted = new Set();
   const emit = (row, depth) => {
     if (emitted.has(row.key)) return;
     emitted.add(row.key); row.depth = depth; ordered.push(row);
-    for (const child of kept.filter(c => c.parentKey === row.key)) emit(child, depth + 1);
+    for (const child of childrenByKey.get(row.key) ?? []) emit(child, depth + 1);
   };
   for (const row of kept) if (!row.parentKey || !byKey.has(row.parentKey)) { row.parentKey = null; emit(row, 0); }
   return ordered;
+}
+
+/** Keys contain only sidebar data, not heartbeat timestamps or revision counters. */
+export function agentModelInputKey(input, now, completedHours, feedCache = new Map()) {
+  const maxAge = completedHours * 3600000;
+  const withinRetention = at => typeof at === 'number' ? [at <= now, now - at <= maxAge] : null;
+  try {
+    const used = new Set();
+    const feeds = Array.isArray(input.feeds) ? input.feeds.map(feed => {
+      if (!object(feed)) return feed;
+      const stamp = input.feedStamps?.get(feed.sessionId);
+      let cached = typeof stamp === 'string' ? feedCache.get(feed.sessionId) : null;
+      if (!cached || cached.stamp !== stamp || cached.maxAge !== maxAge) {
+        const rows = feed.runs?.rows, times = [];
+        const value = Array.isArray(rows) ? rows.map(run => {
+          if (!object(run)) return run;
+          if (typeof run.finishedAt === 'number' && Number.isFinite(run.finishedAt)) times.push(run.finishedAt);
+          return [run.id, run.ownerSessionId, run.name, run.status, run.viewer, run.finishedAt];
+        }) : rows;
+        cached = { stamp, maxAge, rows: JSON.stringify(value), times, asOf: Infinity, deadline: -Infinity, age: null };
+        if (typeof stamp === 'string') feedCache.set(feed.sessionId, cached);
+      }
+      used.add(feed.sessionId);
+      if (now < cached.asOf || now >= cached.deadline) {
+        let deadline = Infinity;
+        cached.age = JSON.stringify(cached.times.map(at => {
+          if (at > now) deadline = Math.min(deadline, at);
+          else if (at + maxAge >= now) deadline = Math.min(deadline, at + maxAge + 1);
+          return withinRetention(at);
+        }));
+        cached.asOf = now; cached.deadline = deadline;
+      }
+      return [feed.sessionId, feed.generation, feed.owner, feed.lifecycle, feed.ipc, feed.status, feed.placement,
+        Number.isFinite(feed.updatedAt) ? now - feed.updatedAt > FEED_DISCONNECT_MS : feed.updatedAt, cached.rows, cached.age];
+    }) : input.feeds;
+    for (const session of feedCache.keys()) if (!used.has(session)) feedCache.delete(session);
+    const terminalAge = Array.isArray(input.terminals) ? input.terminals.map(t => object(t) && t.state === 'finished' ? withinRetention(t.finishedAt ?? t.finished_ms) : null) : null;
+    return JSON.stringify([input.agents, input.terminals, input.panes, input.spaces, input.machines, feeds, terminalAge,
+      input.focus, input.connections, input.error, input.diagnostics, input.contract, input.configuredMachines, completedHours, input.completedRows]);
+  } catch { return null; }
+}
+
+const modelProgram = value => value && [value.key, value.name, value.icon, value.tint, value.agent];
+/** Only fields consumed by the row builders participate in notification and tree-cache equality. */
+export function agentModelRowKey(rows) {
+  try {
+    return JSON.stringify(rows.map(row => [row.key, row.kind, row.address, row.originalAddress, row.name,
+      row.description, row.status, row.outcome, row.completeness, row.finishedAt, row.retained, row.depth,
+      row.parentKey, row.machine, row.action, row.terminal && [row.terminal.state, row.terminal.template, modelProgram(row.terminal.program)]]));
+  } catch { return null; }
+}
+export function agentModelOutputKey(model) {
+  try {
+    const { snapshot, list, rows, parked, layouts, diagnostics, connections, error } = model;
+    const owners = new Set(list.map(agent => agent.address)), labels = model.contract.labels;
+    const agents = list.map(a => [a.address, a.pane, a.space, a.space_name, a.tab, a.title, a.name, a.status, a.pinned, a.focused, a.seq, modelProgram(a.program)]);
+    const terminals = snapshot.terminals.filter(t => owners.has(t.address)).map(t => [t.address, t.state,
+      typeof t.status === 'string' ? t.status : t.status?.state, t.labels[labels.kind], t.labels[labels.machine], t.labels[labels.ownerTerminal], t.labels['herdr.pinned']]);
+    const panes = snapshot.panes.map(p => [p.pane, p.terminal, p.tab, p.title, p.focused, modelProgram(p.program)]);
+    const spaces = snapshot.spaces.map(s => [s.id, s.name, s.tabs.map(t => [t.id, t.name, t.named])]);
+    const names = snapshot.feeds.filter(f => owners.has(f.owner.terminal.address)).map(f => [f.owner.terminal.address, f.owner.name]);
+    return JSON.stringify([agents, terminals, panes, spaces, names, [...rows].map(([owner, value]) => [owner, model.rowKeys?.get(owner) ?? agentModelRowKey(value)]),
+      parked, layouts.map(layout => [layout.name, layout.layout, layout.coreId]), [...diagnostics].sort(), connections, error]);
+  } catch { return null; }
+}
+
+export function agentModelChildStats(rows, listed, ranks) {
+  const consoleKeys = new Set(rows.filter(row => row.kind === 'console').map(row => row.key));
+  const consoles = [], bots = [], states = [];
+  let rank = 0;
+  for (const row of rows) {
+    if (row.kind === 'console' && row.status !== 'unreachable' && row.terminal?.state === 'live') consoles.push(row);
+    if (row.retained || row.status === 'unreachable') continue;
+    if (row.kind !== 'console' && !(row.kind === 'remote' && consoleKeys.has(row.parentKey))) bots.push(row);
+    const status = listed.get(row.address) ?? row.status;
+    const normalized = status === 'error' ? 'blocked' : status === 'done' ? 'idle' : status;
+    states.push(normalized); rank = Math.max(rank, ranks[normalized] ?? 0);
+  }
+  return { consoles, bots, states, rank };
+}
+
+/** Map changed controls to their owners without scanning finished rows during render. */
+export function agentModelTreeStates(model, folded, expandedConsoles, expandedGroups, shownFinished) {
+  const states = new Map();
+  const add = (owner, type, key) => {
+    if (!states.has(owner)) states.set(owner, []);
+    states.get(owner).push([type, key]);
+  };
+  const fromIndex = (index, values, type) => {
+    for (const key of values) for (const owner of index.get(key) ?? []) add(owner, type, key);
+  };
+  fromIndex(model.childOwners, folded, 'fold');
+  fromIndex(model.childOwners, expandedConsoles, 'console');
+  fromIndex(model.groupOwners, expandedGroups, 'group');
+  for (const owner of shownFinished) add(owner, 'finished', owner);
+  for (const [owner, values] of states) states.set(owner, JSON.stringify(values.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))));
+  return states;
 }
 
 /** Hide jobs and their descendants inside collapsed consoles. */

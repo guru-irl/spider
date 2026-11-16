@@ -8,6 +8,6 @@ export type NativeAgent = {
   program: { name: string; key?: string }; status: string; pinned: boolean; focused: boolean;
 };
 export type MachineGroup = { id: string; machine: string | null; label: string; members: NativeAgent[] };
-export function agentMachine(agent: NativeAgent, terminals: readonly AgentTerminal[], contract: HerdrLabelContract): string | null;
-export function groupAgentsByMachine(agents: readonly NativeAgent[], terminals: readonly AgentTerminal[], contract: HerdrLabelContract, knownMachines: readonly { name: string | null }[]): MachineGroup[];
+export function agentMachine(agent: NativeAgent, terminals: readonly AgentTerminal[], contract: HerdrLabelContract, terminalIndex?: ReadonlyMap<string, AgentTerminal>): string | null;
+export function groupAgentsByMachine(agents: readonly NativeAgent[], terminals: readonly AgentTerminal[], contract: HerdrLabelContract, knownMachines: readonly { name: string | null }[], terminalIndex?: ReadonlyMap<string, AgentTerminal>): MachineGroup[];
 export function machineGroupCounts(children: readonly ChildRow[]): { subagents: number; consoles: number };

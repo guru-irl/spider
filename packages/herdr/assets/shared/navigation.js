@@ -98,6 +98,7 @@ export function projectNavigation(snapshot) {
     claimedSessions.add(feed.sessionId);
     for (const match of matches) claimedAgents.add(match.address);
     targets.push(target);
+    if (snapshot.includeChildren === false) return;
 
     const children = projectAgentChildren(snapshot.terminals, [feed], feed.owner.terminal.address, snapshot.contract,
       { now: snapshot.now, completedHours: snapshot.completedHours, completedRows: snapshot.completedRows, machines: snapshot.machines });

@@ -111,13 +111,17 @@ function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMen
   let execResult: () => Promise<{ code: number; stdout: string; stderr: string }> = async () => ok({ ok: true, op: 'openSession', terminal: 'local' });
   const waits: ((command: string) => void)[] = [], queued: string[] = [], noticeWaiters: (() => void)[] = [];
   const watches: { finish: (value: string[]) => void; cancelled: number }[] = [];
+  const deferred: { callback: (cx: any) => unknown; cancelled: boolean }[] = [];
   const watchWaiters: { count: number; resolve: () => void }[] = [];
   let readerClosed = 0;
   const deliver = (command: string) => { const resolve = waits.shift(); if (resolve) resolve(command); else queued.push(command); };
   const storage = { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => stored.set(key, value), removeItem: (key: string) => stored.delete(key) };
   const cx: any = {
     notify() { notifications++; for (const resolve of noticeWaiters.splice(0)) resolve(); }, stop_propagation() {}, write_to_clipboard(value: string) { copied.push(value); },
-    timer: { every(delay: number, callback: (cx: any) => unknown) { timers.push({ delay, callback }); return { cancel() {} }; } },
+    timer: {
+      every(delay: number, callback: (cx: any) => unknown) { timers.push({ delay, callback }); return { cancel() {} }; },
+      after(_delay: number, callback: (cx: any) => unknown) { const task = { callback, cancelled: false }; deferred.push(task); return { cancel() { task.cancelled = true; } }; },
+    },
     spawn(fn: (cx: any) => unknown) { return fn(cx); },
   };
   if (options.clipboard === false) delete cx.write_to_clipboard;
@@ -155,6 +159,18 @@ function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMen
   const Agents = loadView(patched(version), host);
   const view = new Agents();
   view.init({}, cx);
+  const render = view.render.bind(view);
+  view.render = (context: any) => {
+    // These UI tests inject navigation targets independently of the host snapshots.
+    // Rebuild before drawing so changes to that fake projection are observable.
+    if (view.spiderModelEnabled) {
+      if (view.spiderModel) view.spiderModel.inputKey = null;
+      view.spiderRequestRefresh();
+      let task;
+      while ((task = deferred.shift())) if (!task.cancelled) task.callback(cx);
+    }
+    return render(context);
+  };
   return {
     view, cx, nativeAgents, nativeTerminals, inventory, layouts, spaces, props, stored, state, commands, hcCalls, execCalls, timers, copied, overlays, snapshots, targets, waits, watches,
     get notifications() { return notifications; },
@@ -162,7 +178,7 @@ function fixture(version: SpacesAVersion, options: { checking?: boolean; sortMen
     failRemote(value = true) { failed = value; },
     failAdd(value = true) { addFails = value; },
     async ready() { if (view.spiderConnections) await view.spiderConnections.refresh(); },
-    async send(command: string) { if (!waits.length) throw new Error('command loop is not listening'); const notice = new Promise<void>(resolve => noticeWaiters.push(resolve)); deliver(command); await notice; },
+    async send(command: string) { if (!waits.length) throw new Error('command loop is not listening'); deliver(command); await Promise.resolve(); await Promise.resolve(); },
     waitForExec() { return execCalls.length ? Promise.resolve() : new Promise<void>(resolve => { execStarted = resolve; }); },
     waitForNotice() { return new Promise<void>(resolve => noticeWaiters.push(resolve)); },
     waitForWatches(count: number) { return watches.length >= count ? Promise.resolve() : new Promise<void>(resolve => watchWaiters.push({ count, resolve })); },

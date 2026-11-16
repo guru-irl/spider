@@ -15,7 +15,7 @@ function fixture(version: SpacesAVersion, sharedState = new Map<string, unknown>
   source = source.replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const calls: string[] = [], props: any = { feedRoot: '/fixture/feeds', nodePath: '/fixture/node', notifications: { sound: true } };
   const state: any = { feeds: [{ sessionId: 'owner', notifications: [] }], errors: [], reads: 0 };
-  const timer = { every: () => ({ cancel() {} }) };
+  const timer = { every: () => ({ cancel() {} }), after: () => ({ cancel() {} }) };
   const cx: any = { timer, notify() {}, spawn(fn: Function) { const result = Promise.resolve().then(() => fn(cx)); result.catch(() => {}); return result; } };
   const herdr: any = { checking: () => checking, playSound: (sound: string) => { calls.push(sound); if (state.failSound) throw new Error('device unavailable'); } };
   const ports: any = {

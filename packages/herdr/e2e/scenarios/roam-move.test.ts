@@ -230,15 +230,15 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
   const close = async () => { for (const service of services.splice(0).reverse()) await service.stop(); };
   try {
     // The reverse route is owned by this story as well.
-    const reverse = suite.ownPath(join(suite.root, 'bin', 'via-local')), reverseDescriptor = suite.ownPath(join(suite.root, 'via-local.json'));
+    const reverse = suite.ownPath(join(suite.root, 'bin', 'via-i1')), reverseDescriptor = suite.ownPath(join(suite.root, 'via-i1.json'));
     await writeFile(reverseDescriptor, JSON.stringify({ root: suite.root, env: cores.local.env, log: cores.viaLog, ledgerPath: suite.ledger.path,
       socket: cores.local.socket, viaDirectory: join(suite.root, 'via-processes'), localDestination: { ledgerId: suite.ledger.id, coreId: cores.local.coreId } }), { mode: 0o600 });
     await writeFile(reverse, `#!/bin/sh\nexec 9<"$0"\nexec ${quote(process.execPath)} ${quote(fileURLToPath(new URL('../fixtures/via.mjs', import.meta.url)))} ${quote(reverseDescriptor)} "$@"\n`, { mode: 0o700 });
     suite.ledger.update(ledger => { ledger.machines.push({ side: 'dest', name: hub.alias }); });
     const route = await suite.hc(['machine', 'add', '--via', reverse, '--name', hub.alias, '--session', cores.local.namespace, '--json'], 'dest');
     expect(route.exitCode, route.stderr).toBe(0);
-    const secondVia = suite.ownPath(join(suite.root, 'bin', 'via-second'));
-    const secondDescriptor = suite.ownPath(join(suite.root, 'via-second.json'));
+    const secondVia = suite.ownPath(join(suite.root, 'bin', 'via-i2'));
+    const secondDescriptor = suite.ownPath(join(suite.root, 'via-i2.json'));
     await writeFile(secondDescriptor, JSON.stringify({ root: suite.root, env: machineCores[2].env, log: cores.viaLog, ledgerPath: suite.ledger.path,
       socket: machineCores[2].socket, viaDirectory: join(suite.root, 'via-processes') }), { mode: 0o600 });
     await writeFile(secondVia, `#!/bin/sh\nexec 9<"$0"\nexec ${quote(process.execPath)} ${quote(fileURLToPath(new URL('../fixtures/via.mjs', import.meta.url)))} ${quote(secondDescriptor)} "$@"\n`, { mode: 0o700 });
@@ -262,7 +262,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       const config = parseConfig({ enabled: i === 0, role: i ? 'box' : 'hub', machineId: machine.id, hubMachineId: HUB,
         peers: i === 0 ? others : [], discoveryRoots: [], coreUnit: 'fixture.service',
         intercom: { enabled: true, mode: 'hub-only', machineAlias: machine.alias, routes: others.map(peer => i && peer.machineId !== HUB
-          ? { kind: 'relay', via: HUB, peer, edgeEpoch: 'fixture-edge' } : { kind: 'direct', peer, edgeEpoch: 'fixture-edge' }) } });
+          ? { kind: 'relay', via: HUB, peer } : { kind: 'direct', peer, edgeEpoch: 'fixture-edge' }) } });
       await writeFile(join(machine.root, 'roam', 'config.json'), JSON.stringify(config), { mode: 0o600 });
       await writeFile(join(machine.root, 'herdr', 'config.json'), JSON.stringify({ app: { binary: join(suite.root, 'closed-app'), home: suite.directories.HERDR_APP_HOME },
         core: { binary: cores.wrapper, config: join(suite.root, 'core.toml') }, globalRoot: machine.root, agentDirectory: machine.agent,

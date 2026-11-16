@@ -359,11 +359,13 @@ export async function launchPaneOwner(f: PaneFixture, side: Side, resume?: strin
   const result = await f.suite.launchPi({ mode: 'interactive', side, cwd, label: `owner-${side}`, args: ['--approve', ...(resume ? ['--session', resume] : [])], extraEnv: side === 'dest' ? f.remoteEnv : f.env });
   if (result.mode !== 'interactive') throw new Error('an interactive owner is required');
   const start = await result.waitEvent('session_start', event => event.mode === 'tui', deadline(20000));
+  const labelled = await f.suite.hc(['label', result.terminal, `spider.e2e-owner=${start.sessionId}`, '--json'], side);
+  if (labelled.exitCode !== 0) throw new Error(labelled.stderr || labelled.stdout);
   const global = (side === 'dest' ? f.remoteEnv : f.env).SPIDER_GLOBAL_ROOT!;
   const feed = await waitFor('source owner publishes authenticated feed', async () => {
     try { return JSON.parse(await readFile(join(global, 'herdr/sessions', String(start.sessionId), 'session.json'), 'utf8')); } catch { return null; }
   }, value => Boolean(value?.ipc && value?.generation && value.lifecycle === 'live' && value.owner?.terminal.terminalId === result.terminal.split('/').at(-1)), deadline(20000));
-  const rows = await waitFor('source inventory observes owner', () => f.snapshot(), value => value.rows.some(row => row.sessionId === start.sessionId && row.generation === feed.generation && row.target !== null), deadline(20000));
+  const rows = await waitFor('source inventory observes owner', () => f.snapshot(), value => value.rows.some(row => row.sessionId === start.sessionId && row.generation === feed.generation && row.target?.identityLabels['spider.e2e-owner'] === start.sessionId), deadline(20000));
   const row = rows.rows.find(row => row.sessionId === start.sessionId && row.generation === feed.generation && row.unavailableReason === null);
   if (!row || row.unavailableReason !== null || typeof start.sessionFile !== 'string') throw new Error('source owner identity is unavailable');
   return { pi: result, row, feed, file: start.sessionFile };

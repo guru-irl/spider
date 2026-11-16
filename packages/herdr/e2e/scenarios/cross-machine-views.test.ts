@@ -152,7 +152,8 @@ async function consoleView(suite: Suite): Promise<void> {
   const row = await sourceRow(f, owner, row => row.consoles.length === 1), console = row.consoles[0]!;
   expect(row.consoles).toHaveLength(1);
   const inventory = (await suite.hc(['ls', '--all', '--json'], 'dest')).json as { terminals: { address: string; labels: Record<string, string>; state: string }[] };
-  const jobRows = inventory.terminals.map(parseTerminal).filter(terminal => terminal.labels['spider.kind'] === 'exec' && terminal.labels['spider.session'] === owner.row.sessionId);
+  const observed = await Promise.all(inventory.terminals.map(terminal => f.terminal(terminal.address, 'dest')));
+  const jobRows = observed.map(parseTerminal).filter(terminal => terminal.labels['spider.kind'] === 'exec' && terminal.labels['spider.session'] === owner.row.sessionId);
   expect(jobRows).toHaveLength(2);
   const before = await Promise.all(jobRows.map(job => f.terminal(job.address, 'dest')));
   expect(before.every(job => job.state === 'live')).toBe(true);

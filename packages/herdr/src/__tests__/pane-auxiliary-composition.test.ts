@@ -9,7 +9,7 @@ import { connectPaneService, servePaneRequests } from '../panes/socket.js';
 import { registerHerdrViewers } from '../viewers/register.js';
 import * as hostPorts from '../../../host/src/herdr/ports.js';
 import type { PanePresentation, PaneServiceRequest, PaneTarget } from '../panes/types.js';
-import type { AppClient, AppPaneInspection, ConsoleId, CoreId, HcClient, HcEvent, Owner, OwnerPlacement, RunId, TerminalAddress, TerminalSummary } from '../contracts.js';
+import type { AppClient, AppPaneInspection, ConsoleId, CoreId, HcClient, HcEvent, HcRunRequest, Owner, OwnerPlacement, RunId, TerminalAddress, TerminalSummary } from '../contracts.js';
 
 const run1 = 'run-1' as RunId, run2 = 'run-2' as RunId, consoleId = ('console-' + 'a'.repeat(64)) as ConsoleId;
 async function fixture(cols = 120, rows = 40) {
@@ -75,6 +75,12 @@ async function fixture(cols = 120, rows = 40) {
   };
   const hc = {
     identity: async () => ({ coreId: 'mac-core' as CoreId, socket: '/fixture/mac.sock', sessionNamespace: 'fixture' }),
+    run: vi.fn(async (request: HcRunRequest) => {
+      const address = `waiting-${++sequence}` as TerminalAddress;
+      terminals.set(address, terminal(address, { ...request.labels }));
+      timeline.push(`waiting:${address}:${request.labels['spider.session']}`);
+      return { address, coreId: 'mac-core' as CoreId };
+    }),
     get: async (address: TerminalAddress) => { const found = terminals.get(address); if (!found) throw new HerdrError('not_found', 'No terminal'); return found; },
     setLabels: async (address: TerminalAddress, labels: Readonly<Record<string, string | null>>) => {
       const found = terminals.get(address)!; const next = { ...found.labels };
@@ -90,11 +96,8 @@ async function fixture(cols = 120, rows = 40) {
     const actor = createPresentedAuxiliaryPanes({ hc, app, placementRoot: files.root, appIdentity: 'mac-app', limit: 1, automaticSubagentPanes, clock: Date.now,
       subagentViewer: async () => { throw new Error('Legacy source launch is forbidden'); }, discardSubagentViewer: async () => {},
       ownerPresentation: async owner => displays[owners.findIndex(actual => actual.sessionId === owner.sessionId)] ?? null,
-      waitingPresentation: async (_kind, _id, owner) => {
-        const address = `waiting-${++sequence}` as TerminalAddress;
-        terminals.set(address, terminal(address, { 'spider.kind': 'pane-proxy' }));
-        timeline.push(`waiting:${address}:${owner.sessionId}`); return { address, coreId: 'mac-core' as CoreId };
-      },
+      waitingPresentation: async (_kind, _id, owner) => hc.run({ argv: ['waiting-display'], cwd: null, parent: null, background: true, noNotify: true, outliveParent: true,
+        labels: { 'spider.kind': 'pane-proxy', 'spider.session': owner.sessionId } }),
       observed: async reservation => layout.get(reservation.viewer)?.pane === reservation.pane,
       targetIsLive: async () => true,
       async launchTarget(kind, id, owner, leaseId) {
@@ -108,7 +111,7 @@ async function fixture(cols = 120, rows = 40) {
     });
     actors.push(actor); return actor;
   };
-  return { files, owners, displays, layout, terminals, tabs, lookups, killed, timeline, launches, stopped, makeActor,
+  return { files, owners, displays, layout, terminals, tabs, lookups, killed, timeline, launches, stopped, hc, makeActor,
     holdAcknowledgement(wait: (() => Promise<void>) | undefined) { hold = wait; },
     async close() { for (const actor of actors) await actor.dispose(); await files.close(); },
   };
@@ -165,6 +168,18 @@ test('separate Mac actors count each other\'s presented auxiliary panes', async 
     expect(f.launches.map(launch => launch.id)).toEqual([run1]);
     expect(f.layout.size).toBe(3);
     expect(f.displays.every(address => f.layout.has(address))).toBe(true);
+  } finally { await f.close(); }
+});
+
+test('an automatic open in a full tab starts no placeholder process', async () => {
+  const f = await fixture(), panes = f.makeActor();
+  try {
+    expect(await panes.openPresented('subagent', run1, f.owners[0], { timeoutMs: 2000, automatic: true })).not.toBeNull();
+    vi.mocked(f.hc.run).mockClear();
+    expect(await panes.openPresented('subagent', run2, f.owners[1], { timeoutMs: 2000, automatic: true })).toBeNull();
+    expect(f.hc.run).not.toHaveBeenCalled();
+    expect(f.launches.map(launch => launch.id)).toEqual([run1]);
+    expect(f.layout.size).toBe(3);
   } finally { await f.close(); }
 });
 

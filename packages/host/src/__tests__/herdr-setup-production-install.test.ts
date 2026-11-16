@@ -117,7 +117,8 @@ test('production layout passes selected font families and retention to the consu
   const contents: any[] = [];
   const visit = (node: any) => { if (node?.content?.mod) contents.push(node.content); if (node?.content?.pane?.header) visit(node.content.pane.header); for (const child of node?.children ?? []) visit(child); };
   visit(layout);
-  expect(contents.find(c => c.mod === 'spider-agents')?.props).toMatchObject({ labelFont: 'Google Sans Flex', retention: { completedRows: 7, completedHours: 3 } });
+  expect(contents.find(c => c.mod === 'spider-agents')?.props).toMatchObject({ labelFont: 'Google Sans Flex', retention: { completedRows: 7, completedHours: 3 }, notifications: { sound: true } });
+  expect(contents.find(c => c.mod === 'spider-panel')?.props).toMatchObject({ retention: { completedRows: 7, completedHours: 3 } });
   expect(contents.find(c => c.mod === 'spider-spaces')?.props).toMatchObject({ labelFont: 'Google Sans Flex' });
   expect(contents.find(c => c.mod === 'spider-pane')?.props).toMatchObject({ pathFont: 'Glass Label' });
 });

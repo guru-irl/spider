@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import edits from '../../assets/look/layout-edits.json' with { type: 'json' };
 import { HerdrError, object } from '../client/parse.js';
-export interface CloneNames { agents: string; spaces: string; pane: string; tabs: string; spider: string; chrome: string; bodyFont?: string; autoHideTabs?: boolean; props?: Partial<Record<'agents' | 'spaces' | 'pane' | 'tabs' | 'spider' | 'chrome', Readonly<Record<string, unknown>>>> }
+export interface CloneNames { agents: string; spaces: string; pane: string; tabs: string; spider: string; chrome: string; toast?: string; bodyFont?: string; autoHideTabs?: boolean; props?: Partial<Record<'agents' | 'spaces' | 'pane' | 'tabs' | 'spider' | 'chrome', Readonly<Record<string, unknown>>>> }
 export interface GlassLayout { [key: string]: unknown }
 
 const removedNodeIds: readonly string[] = edits.remove;
@@ -51,6 +51,7 @@ export function buildGlassLayout(currentMain: unknown, names: CloneNames): Glass
     }
   }
   Object.assign(root, edits.root, { colors: { ...object(root.colors ?? {}), ...edits.root.colors } });
+  if (names.toast) root.toast = names.toast;
   if (names.bodyFont) root.ui_font = names.bodyFont;
   sidebar.background = '#00000000'; work.padding = 8; work.gap = 8;
   Object.assign(pane, structuredClone(edits.pane)); delete pane.shadow;

@@ -46,20 +46,52 @@ it('stores with no app and no Herdr activation', async () => {
   finally { db.close(); }
 });
 
-it('deduplicates the same tool call but not equal messages', async () => {
+it('stores a distinct occurrence for each call even when the provider reuses its ID', async () => {
   const f = fixture();
   const first = await f.call('call-1', { message: 'Choose a fix' });
   const again = await f.call('call-1', { message: 'Choose a fix' });
-  const second = await f.call('call-2', { message: 'Choose a fix' });
-  expect(again.details.id).toBe(first.details.id); expect(second.details.id).not.toBe(first.details.id);
+  const second = await f.call('call-1', { message: 'Choose another fix' });
+  expect(again.details.id).not.toBe(first.details.id); expect(second.details.id).not.toBe(again.details.id);
   const db = f.db();
-  try { expect(db.prepare("SELECT id FROM events WHERE session_id=? AND tool='notify'").all('parent-session')).toHaveLength(2); }
+  try { expect(db.prepare("SELECT id FROM events WHERE session_id=? AND tool='notify'").all('parent-session')).toHaveLength(3); }
   finally { db.close(); }
+});
+
+it('removes bidirectional and line separator controls from stored text', async () => {
+  const f = fixture();
+  await f.call('bidi', { message: 'start\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069\u2028\u2029end' });
+  const db = f.db();
+  try {
+    const rows = readNotifications(db, 'parent-session' as SessionId, Date.now());
+    expect(rows[0].message).toMatch(/^start\s+end$/);
+    expect(rows[0].message).not.toMatch(/[\u200e\u200f\u202a-\u202e\u2066-\u2069\u2028\u2029]/);
+  } finally { db.close(); }
+});
+
+it('explains why nested and inaccessible remote subagents cannot notify', async () => {
+  const f = fixture(true);
+  vi.stubEnv('PI_SPIDER_SESSION_ID', 'child-session'); vi.stubEnv('PI_SPIDER_TOP_SESSION_ID', 'parent-session');
+  vi.stubEnv('PI_SUBAGENT_RUN_ID', 'nested'); vi.stubEnv('PI_SPIDER_DB_PATH', join(f.root, 'missing.db'));
+  await expect(f.call('nested', { message: 'Choose a fix' })).rejects.toThrow(/nested or remote subagents/i);
+  vi.stubEnv('PI_SPIDER_SESSION_ID', 'parent-session');
+  await expect(f.call('remote', { message: 'Choose a fix' })).rejects.toThrow(/nested or remote subagents/i);
+  vi.stubEnv('PI_SPIDER_DB_PATH', '');
+  await expect(f.call('missing-remote', { message: 'Choose a fix' })).rejects.toThrow(/nested or remote subagents/i);
+});
+
+it('explains when a recorded subagent run belongs to another machine', async () => {
+  const f = fixture(true), db = f.db(), store = new RunStore(db);
+  const run = store.create({ sessionId: 'parent-session', agent: 'worker' });
+  store.start(run.id); store.setPid(run.id, process.pid, process.pid);
+  db.prepare('UPDATE roam_meta SET machine_id=? WHERE id=1').run('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'); db.close();
+  vi.stubEnv('PI_SPIDER_DB_PATH', join(f.root, '.spider', 'project.db')); vi.stubEnv('PI_SPIDER_SESSION_ID', 'parent-session');
+  vi.stubEnv('PI_SPIDER_TOP_SESSION_ID', 'parent-session'); vi.stubEnv('PI_SUBAGENT_RUN_ID', run.id);
+  await expect(f.call('remote-run', { message: 'Choose a fix' })).rejects.toThrow(/nested or remote subagents/i);
 });
 
 it('validates input before resolving caller-supplied storage or focus parameters', async () => {
   const f = fixture();
-  for (const extra of [{ cwd: '/nonexistent/unsafe-cwd' }, { on: 'elsewhere' }, { toolCallId: 'spoofed' }, { sessionId: 'other' }, { focus: true }]) {
+  for (const extra of [{ cwd: '/nonexistent/unsafe-cwd' }, { on: 'elsewhere.invalid' }, { toolCallId: 'spoofed' }, { sessionId: 'other' }, { focus: true }]) {
     await expect(f.call('invalid', { message: 'Choose a fix', ...extra })).rejects.toThrow(/unsupported.*parameter/i);
   }
   const secretOnly = ['ghp_', 'fixture123456789012345678901234567890'].join('');

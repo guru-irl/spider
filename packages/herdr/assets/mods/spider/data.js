@@ -106,10 +106,10 @@ export function projectNotifications(feeds, now) {
     if (notice.kind !== 'intentional' || notice.createdAt > now || now - notice.createdAt >= NOTICE_LIFETIME_MS) continue;
     const key = `intentional:${feed.sessionId}:${notice.id}`;
     if (items.has(key)) continue;
-    const sender = notice.runId ? (feed.runs.rows.find(run => run.id === notice.runId)?.name || notice.runId) : nameOf(feed);
+    const sender = notice.runId ? (feed.runs.rows.find(run => run.id === notice.runId)?.name || `Run ${notice.runId.slice(0, 8)}`) : null;
     items.set(key, { kind: 'intentional', key, tokens: [key], sessionId: feed.sessionId, runId: notice.runId,
       urgency: notice.urgency, createdAt: notice.createdAt, expiresAt: notice.createdAt + NOTICE_LIFETIME_MS,
-      parts: [agent(sender, notice.runId ? 'subagent' : 'session'), words(notice.body)], action: 'Open' });
+      parts: [agent(nameOf(feed)), ...(sender ? [agent(sender, 'subagent')] : []), words(notice.body)], action: 'Open' });
   }
   return [...items.values()].sort((a, b) => urgencyOrder[a.urgency] - urgencyOrder[b.urgency] || b.createdAt - a.createdAt || compare(a.key, b.key));
 }
@@ -232,6 +232,7 @@ const ACTIONS = {
 };
 const CAUSES = {
   'Owner endpoint unavailable': "Its pi session isn't reachable.", 'Owner unavailable': "Its pi session isn't reachable.",
+  "This computer's Herdr restarted; reopen the session": "This computer's Herdr restarted; reopen the session.",
   'Unknown notification': 'Spider no longer has that notice.', 'Action unavailable': 'The notice has no action.',
 };
 const RUNTIME = {

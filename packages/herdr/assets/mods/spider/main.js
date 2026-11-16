@@ -49,7 +49,7 @@ export default class SpiderPanel extends View {
       let space = null; try { space = selectedSpace(spaces())?.id ?? null; } catch { space = null; }
       const state = [...this.feeds.map(feed => panelSessionState(feed, Date.now())), space, Math.floor(Date.now() / 60000)].join(',');
       if (state !== this.clockState) { this.clockState = state; cx.notify(); }
-      this.syncDismissed(); this.updateBadge(); this.observeSounds(cx);
+      this.syncDismissed(); this.syncSoundProblem(cx); this.updateBadge(); this.observeSounds(cx);
     });
     cx.spawn(async cx => {
       await this.reload(cx);
@@ -91,7 +91,14 @@ export default class SpiderPanel extends View {
       finally { this.watch?.cancel?.(); this.watch = null; this.watching = false; }
     });
   }
-  async close() { this.closed = true; this.timer?.cancel(); this.watch?.cancel?.(); this.watchTask?.cancel(); this.refreshTask?.cancel?.(); await this.reader?.close(); }
+  async close() {
+    if (this.closed) return;
+    this.closed = true; this.timer?.cancel(); this.watch?.cancel?.(); this.watchTask?.cancel(); this.refreshTask?.cancel?.();
+    if (this.lastBadge && typeof herdr.setBadge === 'function') {
+      try { herdr.setBadge(null); setShared('spider.notifications.badgeGeneration', Math.random()); } catch { /* Unsupported platforms ignore badges. */ }
+    }
+    await this.reader?.close();
+  }
   /** Hide one notification occurrence; saved in Herdr's shared state so a reload keeps it hidden. */
   dismiss(item, cx) {
     this.syncDismissed();
@@ -105,10 +112,25 @@ export default class SpiderPanel extends View {
       if (serialized !== this.savedDismissed) { this.dismissed = readDismissed(saved, Date.now()); this.savedDismissed = serialized; }
     } catch { /* Keep this instance's copy when shared storage is unavailable. */ }
   }
+  syncSoundProblem(cx) {
+    try {
+      const problem = shared('spider.notifications.soundProblem'), age = Date.now() - problem?.at;
+      if (!Number.isFinite(age) || age < 0 || age >= 60000 || typeof problem.message !== 'string') return;
+      const key = `${problem.at}:${problem.message}`;
+      if (key === this.soundProblemSeen) return;
+      this.soundProblemSeen = key;
+      this.errors.push({ source: 'Notification sound', message: problem.message, updatedAt: problem.at });
+      cx.notify();
+    } catch { /* Shared state is optional. */ }
+  }
   updateBadge() {
     if (this.closed || herdr.checking?.() || typeof herdr.setBadge !== 'function') return;
     const count = notificationBadge(projectNotifications(this.feeds, Date.now()), this.dismissed), badge = count ? String(count) : null;
-    if (badge !== this.lastBadge) { this.lastBadge = badge; try { herdr.setBadge(badge); } catch { /* Unsupported platforms ignore badges. */ } }
+    let generation; try { generation = shared('spider.notifications.badgeGeneration'); } catch { generation = null; }
+    if (badge !== this.lastBadge || generation !== this.badgeGeneration) {
+      this.lastBadge = badge; this.badgeGeneration = generation;
+      try { herdr.setBadge(badge); } catch { /* Unsupported platforms ignore badges. */ }
+    }
   }
   observeSounds(cx) {
     if (this.closed || !this.soundSnapshotReady || herdr.checking?.()) return;
@@ -116,19 +138,23 @@ export default class SpiderPanel extends View {
       const now = Date.now(); let notices = projectNotifications(this.feeds, now);
       if (!this.soundHistory) this.soundHistory = new Map(notices.map(notice => [notice.key, notice.expiresAt]));
       if (!panelIsShown(herdr.layout(), this.config.modId)) { this.soundWasHidden = true; return; }
+      if (this.soundWasHidden) {
+        for (const notice of notices) this.soundHistory.set(notice.key, notice.expiresAt);
+        this.soundWasHidden = false;
+      }
       const enabled = soundPreference(props());
       if (enabled === null && !this.errors.some(error => error.source === 'Notification sound' && error.message === 'Invalid sound setting')) this.unavailable('Notification sound', 'Invalid sound setting', cx);
       const key = 'spider.notifications.sounded', saved = shared(key);
-      const prior = saved ?? (this.soundWasHidden && !this.soundObserved ? { baselineAt: this.soundMountedAt, observed: [] } : null);
-      if (!this.soundObserved && !this.soundWasHidden) notices = [];
+      if (!this.soundObserved) notices = [];
       else {
         for (const [token, expiry] of this.soundHistory) if (expiry <= now) this.soundHistory.delete(token);
         notices = notices.filter(notice => !this.soundHistory.has(notice.key));
       }
-      const result = observeNotificationSounds(notices, prior, enabled === true, now, this.soundMountedAt);
+      const result = observeNotificationSounds(notices, saved, enabled === true, now, this.soundMountedAt);
       if (JSON.stringify(saved) !== JSON.stringify(result.state)) setShared(key, result.state);
       this.soundObserved = true;
-      for (const sound of result.sounds) {
+      const sound = result.sounds.includes('blocked') ? 'blocked' : result.sounds[0];
+      if (sound) {
         try { herdr.playSound(sound); }
         catch (error) { this.unavailable('Notification sound', String(error.message), cx); }
       }
@@ -161,9 +187,12 @@ export default class SpiderPanel extends View {
     this.coreId = core.core.id;
     if (!feed) return;
     const address = feed.owner.terminal.address, machine = address.includes('/') ? address.slice(0, address.indexOf('/')) : null;
-    if (machine || feed.owner.terminal.coreId !== this.coreId) {
+    if (!machine && feed.owner.terminal.coreId !== this.coreId) throw new Error("This computer's Herdr restarted; reopen the session");
+    if (machine) {
       const answer = await query(['machine', 'ls', '--json']);
       const values = Array.isArray(answer?.machines) ? answer.machines : [];
+      const remote = values.find(item => item.name === machine);
+      if (remote && remote.state !== 'connected') throw new Error(`Owner on ${machine} is unreachable`);
       this.machineIds = new Map(values.filter(item => item.state === 'connected' && typeof item.name === 'string' && typeof item.id === 'string').map(item => [item.name, item.id]));
       const matches = [...this.machineIds].filter(([name, id]) => id === feed.owner.terminal.coreId && (!machine || name === machine));
       if (matches.length !== 1) throw new Error(`${machine ?? 'Remote machine'} was rebuilt or can't be verified`);
@@ -178,7 +207,7 @@ export default class SpiderPanel extends View {
       if (this.closed) return false;
       this.feeds = snapshot.feeds; this.soundSnapshotReady = !snapshot.errors.some(error => error.source === 'sessions');
       this.errors = [...snapshot.errors.map(error => ({...error,scope:error.source === 'sessions' ? 'sessions' : 'feed',updatedAt:Date.now()})), ...this.runtimeErrors()];
-      this.syncDismissed();
+      this.syncDismissed(); this.syncSoundProblem(cx);
       this.dismissed = pruneDismissed(this.dismissed, projectNotifications(this.feeds, Date.now()), Date.now());
       this.saveDismissed(); this.updateBadge(); this.observeSounds(cx); success = true;
     } catch (error) { this.errors = [{ source: 'sessions', scope: 'sessions', message: String(error.message), updatedAt: Date.now() }, ...this.runtimeErrors()]; }
@@ -325,7 +354,7 @@ export default class SpiderPanel extends View {
       const fresh = projectNotifications(this.feeds, Date.now()).find(row => row.key === current.key);
       if (!fresh || fresh.runId !== current.runId || this.dismissed.has(current.key)) return;
       const target = this.navigationTargets().find(row => row.id === (fresh.runId ? `run:${fresh.sessionId}:${fresh.runId}` : `session:${fresh.sessionId}`)), action = target?.action;
-      if (!action) { if (target?.disabledReason) throw new Error(target.disabledReason); return; }
+      if (!action) throw new Error(target?.disabledReason || 'Owner unavailable');
       if (action.kind === 'focus') run('pane.focus', { pane: action.pane });
       else if (action.kind === 'keep') run('terminal.keep', { terminal: action.terminal, place: 'tab' });
       else {
@@ -343,8 +372,8 @@ export default class SpiderPanel extends View {
     const fire = cx => { const now = this.notificationAction(item, model); if (now?.enabled) now.act(cx); };
     const pressed = event => { const key = event?.keystroke?.key ?? event?.key; return key === 'enter' || key === 'space'; };
     // The card's body is the target; the dismiss control sits beside it, so it never runs the card's action.
-    const body = h_flex().id(`need-${item.key}`).flex_1().min_w(0).py(7).pl(8).gap(10).items_center().rounded(7)
-      .when(on, e => e.cursor_pointer().hover(s => s.bg(t.hover)).tab_index(0).tooltip(action.tip)
+    const body = h_flex().id(`need-${item.key}`).flex_1().min_w(0).py(7).pl(8).gap(10).items_center().rounded(7).tooltip(action.tip)
+      .when(on, e => e.cursor_pointer().hover(s => s.bg(t.hover)).tab_index(0)
         .on_click((_event, cx) => fire(cx))
         .on_key_down((event, cx) => { if (pressed(event)) fire(cx); }))
       .child(this.glyph(item))

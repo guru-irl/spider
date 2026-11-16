@@ -98,7 +98,7 @@ export function parsePaneOpenIntent(value: unknown): PaneOpenIntent {
 }
 export function parseFolderChoice(value: unknown): FolderChoice { const r = paneRecord(value, ['cwd', 'reason']); return { cwd: nullable(r.cwd, panePath), reason: tag(r.reason, ['focused', 'mapped', 'home']) }; }
 export function parsePanePresentation(value: unknown): PanePresentation {
-  const r = paneRecord(value, ['id', 'revision', 'mode', 'role', 'target', 'proxy', 'slot', 'visibility', 'launch', 'closeOperationId', 'conversion', 'proxyLaunchAttempts']);
+  const r = paneRecord(value, ['id', 'revision', 'mode', 'role', 'target', 'proxy', 'slot', 'visibility', 'launch', 'closeOperationId', 'conversion', 'proxyLaunchAttempts', 'proxyOperationId']);
   let conversion: PanePresentation['conversion'] = null;
   if (r.conversion !== null) {
     const c = paneRecord(r.conversion, ['source', 'sourceFocused', 'state', 'destination']);
@@ -108,6 +108,7 @@ export function parsePanePresentation(value: unknown): PanePresentation {
     else return invalid('Unknown conversion state');
   }
   const result: PanePresentation = { id: paneId(r.id), revision: paneNumber(r.revision), mode: tag(r.mode, ['native', 'proxy']), role: tag(r.role, ['shell', 'agent', 'subagent', 'console']), target: parsePaneTarget(r.target), proxy: nullable(r.proxy, paneAddress), slot: nullable(r.slot, parsePaneSlot), visibility: tag(r.visibility, ['visible', 'parked', 'closing', 'ended']), launch: tag(r.launch, ['none', 'claimed', 'acknowledged', 'uncertain']), closeOperationId: nullable(r.closeOperationId, paneId), conversion };
+  if (r.proxyOperationId !== undefined) result.proxyOperationId = paneId(r.proxyOperationId);
   if (r.proxyLaunchAttempts !== undefined) {
     const count = paneNumber(r.proxyLaunchAttempts);
     if (count > 2) return invalid('Invalid proxy launch count');

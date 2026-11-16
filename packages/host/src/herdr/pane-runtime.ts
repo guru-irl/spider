@@ -5,7 +5,7 @@ import { samePaneTarget } from '../../../herdr/src/panes/lifecycle.js';
 import { capturePaneHandoff, readPaneHandoff } from './pane-handoff.js';
 import { reconcilePaneRegistrations } from './pane-registration.js';
 import { readPaneScreen } from './pane-screen.js';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { watch } from 'node:fs';
 import { readFile, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
@@ -24,7 +24,7 @@ import { readAppPaneCapabilities } from '../../../herdr/src/panes/capabilities.j
 import { paneAddress, paneId, parsePaneTerminal, parsePaneTarget, parseMachineChoices } from '../../../herdr/src/panes/codec.js';
 import { readPaneTerminal } from '../../../herdr/src/panes/hc.js';
 import { awaitPanePresented, convertNativePresentation, openPane, presentProxy, type PaneOpenPorts, type PaneScreen } from '../../../herdr/src/panes/open.js';
-import { createPaneProxyTty, runPaneProxy } from '../../../herdr/src/panes/proxy.js';
+import { createPaneProxyTty, runPaneProxy, type PaneProxyInput } from '../../../herdr/src/panes/proxy.js';
 import { createPaneService, type PaneService, type PrivatePaneInventory } from '../../../herdr/src/panes/service.js';
 import { connectPaneService, servePaneRequests } from '../../../herdr/src/panes/socket.js';
 import { createPanePlacementStore, readPaneBinding } from '../../../herdr/src/panes/store.js';
@@ -144,8 +144,8 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
     }
     return found;
   };
-  const launchProxy = async (p: PanePresentation): Promise<TerminalAddress> => (await hc.run({ argv: [process.execPath, join(packageRoot, 'dist/herdr/cli.mjs'), 'panes', 'proxy', '--id', p.id, '--binding-root', root, '--hc', config.core.binary], cwd: null, parent: null, outliveParent: true, background: true, noNotify: true,
-    labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.target-core': p.target.coreId, 'spider.target-terminal': p.target.terminalId, 'spider.pane-operation': p.id } })).address;
+  const launchProxy = async (p: PanePresentation, waitingClaim?: PaneProxyInput['waitingClaim']): Promise<TerminalAddress> => (await hc.run({ argv: [process.execPath, join(packageRoot, 'dist/herdr/cli.mjs'), 'panes', 'proxy', '--id', p.id, '--binding-root', root, '--hc', config.core.binary, ...(waitingClaim ? ['--waiting-operation', waitingClaim.operationId, '--waiting-generation', waitingClaim.generation] : [])], cwd: null, parent: null, outliveParent: true, background: true, noNotify: true,
+    labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.target-core': p.target.coreId, 'spider.target-terminal': p.target.terminalId, 'spider.pane-operation': waitingClaim?.operationId ?? p.proxyOperationId ?? p.id, ...(waitingClaim ? { 'spider.owner-generation': waitingClaim.generation } : {}) } })).address;
   const readScreen = (address: TerminalAddress): Promise<PaneScreen> => readPaneScreen(address, {
     get: async terminal => { const coreId = terminal.includes('/') ? terminal.split('/')[0] : (await identity()).coreId; const target = await readTarget(terminal, await findMachine(coreId)); const facts = await readPaneTerminal(target, { binary: config.core.binary, env }); return { address: terminal, created_ms: facts.createdMs, cols: facts.terminal.cols, rows: facts.terminal.rows }; },
     read: terminal => invokeCli(config.core.binary, ['read', terminal, '--lines', '0', '--json'], env, undefined, undefined, { timeoutMs: 5000 }),
@@ -215,7 +215,12 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
         })) throw new HerdrError('pane-view-identity', 'Waiting display identity changed');
         const live = found.filter(row => row.state === 'live');
         if (live.length > 1) throw new HerdrError('auxiliary-launch-uncertain', 'Multiple waiting displays match this view');
-        if (live.length) return { address: live[0].address, coreId: selected.coreId };
+        if (live.length) {
+          const claim = await readPrivateJson(path);
+          const row = claim && typeof claim === 'object' && !Array.isArray(claim) ? claim as Record<string, unknown> : null;
+          if (!row || row.coreId !== selected.coreId || row.operationId !== operationId || row.generation !== owner.generation || row.proxyOperationId !== live[0].labels['spider.pane-operation'] || live[0].labels['spider.owner-generation'] !== owner.generation) throw new HerdrError('auxiliary-launch-uncertain', 'Waiting display launch identity is unproved');
+          return { address: live[0].address, coreId: selected.coreId };
+        }
         for (const terminal of found) await hc.rm(terminal.address);
         await unlink(path).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
         return 'absent';
@@ -236,11 +241,12 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
     },
     waitingPresentation: (kind, id, owner) => withWaitingClaim(kind, id, owner, async (operationId, path, inspect) => {
       const existing = await inspect(); if (existing !== 'absent') return existing;
-      await writePrivateJson(path, { version: 1, operationId, coreId: (await identity()).coreId });
+      const proxyOperationId = randomUUID(), generation = owner.generation;
+      await writePrivateJson(path, { version: 1, operationId, coreId: (await identity()).coreId, proxyOperationId, generation });
       const p = { id: operationId, target: { coreId: owner.terminal.coreId, terminalId: owner.terminal.terminalId } } as PanePresentation;
       try {
-        const address = await launchProxy(p), coreId = (await identity()).coreId;
-        await writePrivateJson(path, { version: 1, operationId, coreId, address }); return { address, coreId };
+        const address = await launchProxy(p, { operationId: proxyOperationId, generation }), coreId = (await identity()).coreId;
+        await writePrivateJson(path, { version: 1, operationId, coreId, address, proxyOperationId, generation }); return { address, coreId };
       } catch (error) {
         const recovered = await inspect(); if (recovered !== 'absent') return recovered;
         throw error;
@@ -266,8 +272,10 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
     async bindTarget(reservation, target) {
       await validateTarget(target, 'open');
       const id = 'aux-' + hash(JSON.stringify([reservation.kind, reservation.id, reservation.owner.sessionId, reservation.owner.generation]));
-      const slot = await app.ownerPlacement(reservation.viewer);
-      await store.update(state => { const old = state.presentations.find(p => p.id === id); const p: PanePresentation = { id, revision: (old?.revision ?? 0) + 1, mode: 'proxy', role: reservation.kind === 'console' ? 'console' : 'subagent', target, proxy: reservation.viewer, slot, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null }; return { ...state, presentations: [...state.presentations.filter(p => p.id !== id), p] }; });
+      const slot = await app.ownerPlacement(reservation.viewer), display = await hc.get(reservation.viewer);
+      if (display.labels['spider.pane-id'] !== id || display.labels['spider.owner-generation'] !== reservation.owner.generation) throw new HerdrError('pane-view-identity', 'Waiting display generation changed');
+      const proxyOperationId = paneId(display.labels['spider.pane-operation']);
+      await store.update(state => { const old = state.presentations.find(p => p.id === id); const p: PanePresentation = { id, proxyOperationId, revision: (old?.revision ?? 0) + 1, mode: 'proxy', role: reservation.kind === 'console' ? 'console' : 'subagent', target, proxy: reservation.viewer, slot, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null }; return { ...state, presentations: [...state.presentations.filter(p => p.id !== id), p] }; });
       await hc.setLabels(reservation.viewer, { 'spider.target-core': target.coreId, 'spider.target-terminal': target.terminalId });
     },
     renew: async (key, leases) => { const machine = await findMachine(key); await request({ ...machine, coreId: machine.coreId! }, { version: 1, op: 'renew-viewers', leases }); },
@@ -421,13 +429,13 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
       try { await new Promise<void>(resolve => { const stop = () => { for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.off(name, stop); resolve(); }; for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(name, stop); }); }
       finally { await server.close(); await service?.stop(); await auxiliary?.dispose(); }
     },
-    async proxy(input: { id: string; bindingRoot: string; hcBinary: string }) {
+    async proxy(input: PaneProxyInput) {
       if (resolve(input.bindingRoot) !== resolve(root) || resolve(input.hcBinary) !== resolve(config.core.binary)) throw new HerdrError('invalid-proxy-root', 'Proxy configuration differs from its installation');
       const cancellation = new AbortController(), stop = () => cancellation.abort();
       for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(name, stop);
       const tty = createPaneProxyTty({ env: { ...env } });
       try { return await runPaneProxy(input, { ...tty, signal: cancellation.signal, clock: Date.now,
-        readBinding: async id => { let p = await readPaneBinding(root, id); while (!p && !cancellation.signal.aborted) { await delay(50, undefined, { signal: cancellation.signal }); p = await readPaneBinding(root, id); } return p; },
+        readBinding: async id => { let p = await readPaneBinding(root, id); while (!p && !input.waitingClaim && !cancellation.signal.aborted) { await delay(50, undefined, { signal: cancellation.signal }); p = await readPaneBinding(root, id); } return p; },
         probe: target => readPaneTerminal(target, { binary: config.core.binary, env }),
         verifyAttachedCore: async target => { const machine = await findMachine(target.coreId); return machine.alias === target.alias && machine.machineId === target.machineId; },
         watchBinding: (id, changed) => { const watcher = watch(join(root, 'bindings'), () => { void readPaneBinding(root, id).then(p => changed(p)).catch(() => {}); }); return () => watcher.close(); },

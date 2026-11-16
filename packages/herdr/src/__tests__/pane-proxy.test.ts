@@ -147,6 +147,50 @@ test('verified target finish retires proxy without relaunch', async () => {
   const f = fixture(); vi.mocked(f.ports.probe).mockImplementation(async target => ({ terminal: { address: target.address, parent: null, labels: target.identityLabels, state: 'finished', status: null, exitCode: 0, reason: 'exited', signal: null, finishedAt: 1 }, currentCwd: null, createdMs: 17, title: '', app: null, status: null, identityLabels: target.identityLabels }));
   expect(await runPaneProxy(input, f.ports)).toBe(0); expect(f.addresses).toEqual([]);
 });
+test.each(['live', 'finished'] as const)('waiting launch ignores an older %s viewer binding and attaches only its replacement', async oldState => {
+  const f = fixture(), old = presentation();
+  old.proxyOperationId = 'previous-launch'; old.target = { ...old.target, kind: 'subagent', generation: 'gen-1' as never, sessionId: 'session-1' as never, runId: 'run-1' as never };
+  f.change(old);
+  const own = { ...old, revision: 4, proxyOperationId: 'next-launch', target: { ...old.target, terminalId: 't9' as never, address: 'core-remote/t9' as never, createdMs: 19 } };
+  let turns = 0;
+  vi.mocked(f.ports.delay).mockImplementation(async () => {
+    turns++;
+    if (turns === 1) f.change({ ...own, revision: 2, proxyOperationId: 'another-launch' });
+    else if (turns === 2) f.change({ ...own, revision: 3, target: { ...own.target, generation: 'gen-other' as never } });
+    else f.change(own);
+    if (turns > 3) f.stop.abort();
+  });
+  const probe = vi.mocked(f.ports.probe).getMockImplementation()!;
+  vi.mocked(f.ports.probe).mockImplementation(async target => { const facts = await probe(target); return target.terminalId === old.target.terminalId ? { ...facts, terminal: { ...facts.terminal, state: oldState } } : facts; });
+  vi.mocked(f.ports.attach).mockImplementation(async (argv, _mode, _signal, gate) => { f.addresses.push(argv.at(-1)!); gate.markAttached(); f.stop.abort(); return { kind: 'stream-loss', exitCode: 0 }; });
+  expect(await runPaneProxy({ ...input, waitingClaim: { operationId: 'next-launch', generation: 'gen-1' } }, f.ports)).toBe(0);
+  expect(f.addresses).toEqual(['core-remote/t9']);
+  expect(vi.mocked(f.ports.probe).mock.calls.map(([target]) => target.address)).toEqual(['core-remote/t9']);
+  expect(turns).toBe(3);
+});
+test('a waiting proxy can be explicitly released before its own binding arrives', async () => {
+  const f = fixture(); f.change(null);
+  vi.mocked(f.ports.delay).mockImplementation(async () => { f.stop.abort(); });
+  expect(await runPaneProxy({ ...input, waitingClaim: { operationId: 'own-launch', generation: 'gen-1' } }, f.ports)).toBe(0);
+  expect(f.ports.probe).not.toHaveBeenCalled(); expect(f.ports.attach).not.toHaveBeenCalled();
+});
+test('waiting claim publication between initial read and watcher registration is not lost', async () => {
+  const f = fixture(), own = presentation(2);
+  own.proxyOperationId = 'own-launch'; own.target = { ...own.target, generation: 'gen-1' as never };
+  const watch = f.ports.watchBinding;
+  f.ports.watchBinding = (id, changed) => { f.change(own); return watch(id, changed); };
+  vi.mocked(f.ports.attach).mockImplementation(async (argv, _mode, _signal, gate) => { f.addresses.push(argv.at(-1)!); gate.markAttached(); f.stop.abort(); return { kind: 'stream-loss', exitCode: 0 }; });
+  expect(await runPaneProxy({ ...input, waitingClaim: { operationId: 'own-launch', generation: 'gen-1' } }, f.ports)).toBe(0);
+  expect(f.addresses).toEqual(['core-remote/t7']);
+});
+test('a waiting proxy exits when its own generation and operation binding finishes', async () => {
+  const f = fixture(), own = presentation();
+  own.proxyOperationId = 'own-launch'; own.target = { ...own.target, kind: 'subagent', generation: 'gen-1' as never, sessionId: 'session-1' as never, runId: 'run-1' as never }; f.change(own);
+  const probe = vi.mocked(f.ports.probe).getMockImplementation()!;
+  vi.mocked(f.ports.probe).mockImplementation(async target => { const facts = await probe(target); return { ...facts, terminal: { ...facts.terminal, state: 'finished' } }; });
+  expect(await runPaneProxy({ ...input, waitingClaim: { operationId: 'own-launch', generation: 'gen-1' } }, f.ports)).toBe(0);
+  expect(f.ports.attach).not.toHaveBeenCalled(); expect(f.ports.delay).not.toHaveBeenCalled();
+});
 test('console proxy is observe only and never releases typed input', async () => {
   const f = fixture(); const p = presentation(); p.target = { ...p.target, kind: 'console', sessionId: 'session-1' as never, generation: 'gen-1' as never, consoleId: 'console-1' as never }; f.change(p);
   await runPaneProxy(input, f.ports); expect(vi.mocked(f.ports.attach).mock.calls[0]?.[0]).toContain('--observe'); expect(f.ports.tty.releaseInput).not.toHaveBeenCalled();

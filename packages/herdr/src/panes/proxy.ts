@@ -5,6 +5,7 @@ import { Writable, Readable } from 'node:stream';
 import { isAbsolute } from 'node:path';
 import { HerdrError } from '../client/parse.js';
 import type { PanePresentation, PaneTarget, PaneTerminalFacts } from './types.js';
+export interface PaneProxyInput { id: string; bindingRoot: string; hcBinary: string; waitingClaim?: { operationId: string; generation: string } }
 export interface AttachEnd { kind: 'proved-detach' | 'stream-loss'; exitCode: number | null }
 export interface ProxyInputGate {
   readonly ready: Promise<void>;
@@ -43,11 +44,19 @@ function matches(target: PaneTarget, facts: PaneTerminalFacts): boolean {
     Object.keys(target.identityLabels).length > 0 && Object.entries(target.identityLabels).every(([key, value]) => facts.identityLabels[key] === value) &&
     (target.kind === 'terminal' || target.generation !== null);
 }
-export async function runPaneProxy(input: { id: string; bindingRoot: string; hcBinary: string }, ports: PaneProxyPorts): Promise<number> {
+export async function runPaneProxy(input: PaneProxyInput, ports: PaneProxyPorts): Promise<number> {
   const stop = new AbortController(); const onSignal = () => stop.abort();
   if (ports.signal?.aborted) stop.abort(); ports.signal?.addEventListener('abort', onSignal, { once: true });
   if (!ports.signal) { process.on('SIGINT', onSignal); process.on('SIGTERM', onSignal); process.on('SIGHUP', onSignal); }
   let binding: PanePresentation | null = null; let retry = 0; let active: AbortController | null = null;
+  let claimBound = !input.waitingClaim;
+  const acceptBinding = (next: PanePresentation | null) => {
+    if (input.waitingClaim && (!next || next.id !== input.id || next.proxyOperationId !== input.waitingClaim.operationId || next.target.generation !== input.waitingClaim.generation)) {
+      if (claimBound && (!next || !binding || next.revision > binding.revision)) { binding = null; active?.abort(); }
+      return;
+    }
+    if (!next || !binding || next.revision > binding.revision) { binding = next; claimBound = true; retry = 0; active?.abort(); }
+  };
   let unwatch: () => void = () => {};
   const reset = () => ports.tty.resetModes();
   const status = async (text: string) => { await reset(); await ports.status?.(text); };
@@ -55,9 +64,15 @@ export async function runPaneProxy(input: { id: string; bindingRoot: string; hcB
   try {
     if (!isAbsolute(input.hcBinary)) throw new HerdrError('invalid-proxy-binary', 'Proxy requires an absolute hc executable');
     binding = await ports.readBinding(input.id);
-    unwatch = ports.watchBinding(input.id, next => { if (!next || !binding || next.revision > binding.revision) { binding = next; retry = 0; active?.abort(); } });
+    if (input.waitingClaim) { const initial = binding; binding = null; acceptBinding(initial); }
+    unwatch = ports.watchBinding(input.id, acceptBinding);
+    if (input.waitingClaim) acceptBinding(await ports.readBinding(input.id));
     discard = ports.tty.discardInput(stop.signal); void discard.catch(() => stop.abort());
     while (!stop.signal.aborted) {
+      if (!claimBound) {
+        try { await ports.delay(25, stop.signal); } catch (error) { if (!stop.signal.aborted) throw error; }
+        continue;
+      }
       if (!binding || binding.visibility !== 'visible') return 0;
       const current = binding;
       const conversion = current.conversion?.state === 'waiting-focus' ? current.conversion : null;

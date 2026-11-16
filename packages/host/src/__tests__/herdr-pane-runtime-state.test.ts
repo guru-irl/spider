@@ -51,8 +51,9 @@ async function fixture(spaces: HerdrConfig['spaces'] = []) {
     kill: vi.fn(async address => { const terminal = boundary.terminals.get(String(address)); if (terminal) terminal.state = 'finished'; }),
     rm: vi.fn(async address => { boundary.terminals.delete(String(address)); }), setLabels: vi.fn() } as unknown as HcClient;
   boundary.facts.mockImplementation(async target => facts({ target, id: target.terminalId } as PanePresentation));
-  const runtime = createPaneRuntime({ config, hc, env: {}, packageRoot: process.cwd(), endpointBytes: Buffer.from('synthetic endpoint') });
-  resources.push({ root, runtime }); return { root, runtime, hc };
+  const input = { config, hc, env: {}, packageRoot: process.cwd(), endpointBytes: Buffer.from('synthetic endpoint') };
+  const runtime = createPaneRuntime(input), resource = { root, runtime };
+  resources.push(resource); return { root, runtime, hc, restart: async () => { await resource.runtime.dispose(); resource.runtime = createPaneRuntime(input); return resource.runtime; } };
 }
 function presentation(id: string, visibility: PanePresentation['visibility'] = 'visible'): PanePresentation {
   return parsePanePresentation({ id, revision: 1, mode: 'proxy', role: 'shell', target: { coreId: 'core-remote', terminalId: id, address: `core-remote/${id}`, createdMs: 17, identityLabels: { 'spider.pane-operation': id }, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'terminal', sessionId: null, generation: null, homeEpoch: null, runId: null, consoleId: null, name: id, cwd: '/home/example' }, proxy: null, slot: null, visibility, launch: 'none', closeOperationId: null, conversion: null });
@@ -109,9 +110,10 @@ test('production waiting claims are removed on release and do not block the same
   expect(second).toMatchObject({ address: 'proxy-1', coreId: 'core-local' }); expect(hc.run).toHaveBeenCalledTimes(2);
 });
 test('production recovers a dead waiting claim even after helper state was lost', async () => {
-  const { runtime, hc } = await fixture(); const owner = sessionRow().owner; runtime.createService();
+  const { runtime, hc, restart } = await fixture(); const owner = sessionRow().owner; runtime.createService();
   const first = await boundary.auxiliary!.waitingPresentation!('console', 'console-1' as never, owner);
   await hc.kill(first.address); await hc.rm(first.address);
+  (await restart()).createService();
   expect(await boundary.auxiliary!.waitingPresentation!('console', 'console-1' as never, owner)).toMatchObject({ address: 'proxy-1' });
   expect(hc.run).toHaveBeenCalledTimes(2);
 });

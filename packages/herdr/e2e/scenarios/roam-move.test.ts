@@ -230,7 +230,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
     return { id: [HUB, BOX, BOX2][i], alias: ['hub.invalid', cores.machine, 'box-2.invalid'][i], root, cwd: [cwd, destination, secondDestination][i], agent, side: core.side, coreId: core.coreId,
       shell: suite.ownPath(join(suite.root, 'bin', `move-shell-${i}`)),
       env: { ...suite.env, ...core.env, HC_SESSION: core.namespace, HC_SOCKET: core.socket, SPIDER_GLOBAL_ROOT: root, PI_CODING_AGENT_DIR: agent,
-        SPIDER_ROAM_PI: suite.pi.launcher, SPIDER_E2E_MOVE_DESCRIPTOR: descriptor } } as MoveMachine;
+        SPIDER_ROAM_PI: suite.pi.launcher, SPIDER_E2E_MOVE_DESCRIPTOR: descriptor, SPIDER_HERDR_E2E_PROCESS_DOMAIN: join(root, 'manifest.json') } } as MoveMachine;
   }) as [MoveMachine, MoveMachine, MoveMachine];
   const [hub, box, secondBox] = machines;
   const sessionId = randomUUID(), originalFile = suite.ownPath(join(hub.agent, 'sessions', `${sessionId}.jsonl`));
@@ -265,6 +265,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
     }
     for (const [i, machine] of machines.entries()) {
       for (const directory of [join(machine.root, 'roam'), join(machine.root, 'herdr'), join(machine.agent, 'sessions')]) await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(join(machine.root, 'manifest.json'), JSON.stringify({ version: 1, root: machine.root }), { mode: 0o600 });
       for (const name of ['settings.json', 'models.json']) await copyFile(join(suite.directories.PI_CODING_AGENT_DIR, name), join(machine.agent, name));
       await writeFile(join(machine.agent, 'auth.json'), JSON.stringify({ fixture: { type: 'api_key', key: 'fixture-only' } }), { mode: 0o600 });
       await copyFile(join(suite.directories.SPIDER_GLOBAL_ROOT, 'config.json'), join(machine.root, 'config.json'));
@@ -278,7 +279,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       await writeFile(join(machine.root, 'herdr', 'config.json'), JSON.stringify({ app: { binary: join(suite.root, 'closed-app'), home: suite.directories.HERDR_APP_HOME },
         core: { binary: cores.wrapper, config: join(suite.root, 'core.toml') }, globalRoot: machine.root, agentDirectory: machine.agent,
         shellRc: join(suite.root, 'shellrc'), spaces: [], machines: [] }), { mode: 0o600 });
-      await writeFile(machine.shell, `#!/bin/sh\n[ "$1" = '-c' ] || exit 90\nshift 2\n[ "$1" = "$0" ] || exit 91\nshift\nprintf '%s\\n' "$1" >> ${quote(effects)}\nshift\nexport SPIDER_GLOBAL_ROOT="$1" PI_CODING_AGENT_DIR="$2" SPIDER_HERDR_HANDOFF_FILE="$3"\nunset SPIDER_HERDR_HANDOFF_OPERATION_ID SPIDER_HERDR_HANDOFF_NONCE SPIDER_HERDR_LEASE_TOKEN SPIDER_HERDR_LEASE_FILE PI_SUBAGENT_CHILD\nshift 3\n[ "$1" = ${quote(suite.pi.launcher)} ] && [ "$2" = '--session' ] || exit 92\ncase "$3" in ${quote(suite.root)}/*) ;; *) exit 93 ;; esac\n[ ! -f ${quote(join(machine.root, 'roam', 'fail-launch'))} ] || exit 95\nexec "$@"\n`, { mode: 0o700 });
+      await writeFile(machine.shell, `#!/bin/sh\n[ "$1" = '-c' ] || exit 90\nshift 2\n[ "$1" = "$0" ] || exit 91\nshift\nprintf '%s\\n' "$1" >> ${quote(effects)}\nshift\nexport SPIDER_GLOBAL_ROOT="$1" PI_CODING_AGENT_DIR="$2" SPIDER_HERDR_HANDOFF_FILE="$3" SPIDER_HERDR_E2E_PROCESS_DOMAIN="$1/manifest.json"\nunset SPIDER_HERDR_HANDOFF_OPERATION_ID SPIDER_HERDR_HANDOFF_NONCE SPIDER_HERDR_LEASE_TOKEN SPIDER_HERDR_LEASE_FILE PI_SUBAGENT_CHILD\nshift 3\n[ "$1" = ${quote(suite.pi.launcher)} ] && [ "$2" = '--session' ] || exit 92\ncase "$3" in ${quote(suite.root)}/*) ;; *) exit 93 ;; esac\n[ ! -f ${quote(join(machine.root, 'roam', 'fail-launch'))} ] || exit 95\nexec "$@"\n`, { mode: 0o700 });
       const db = openDb(join(machine.root, 'spider.db'));
       try {
         migrate(db, 'global', { machineId: machine.id, globalRoot: machine.root });

@@ -183,7 +183,7 @@ test.each(['restored home', 'parked restored home', 'hosting restart', 'box star
   boundary.rows = [destination];
   const p = { ...presentation('existing'), target: source.target, role: 'agent' as const, proxy: 'old-proxy' as never, slot,
     visibility: scenario === 'parked restored home' ? 'parked' as const : scenario === 'closing presentation' ? 'closing' as const : 'visible' as const, closeOperationId: scenario === 'closing presentation' ? 'close-1' : null, launch: 'acknowledged' as const };
-  boundary.terminals.set('old-proxy', { ...facts(p).terminal, address: 'old-proxy' as never, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.target-core': source.target.coreId, 'spider.target-terminal': source.target.terminalId } });
+  boundary.terminals.set('old-proxy', { ...facts(p).terminal, address: 'old-proxy' as never, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.pane-operation': p.id, 'spider.owner-generation': source.target.generation!, 'spider.target-core': source.target.coreId, 'spider.target-terminal': source.target.terminalId } });
   if (scenario !== 'unplaced session') await runtime.store.update(state => ({ ...state, presentations: [p] }));
   const service = runtime.createService();
   const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });

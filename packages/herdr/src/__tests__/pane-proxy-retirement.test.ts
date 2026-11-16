@@ -11,7 +11,7 @@ import { createPanePlacementStore } from '../panes/store.js';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-async function fixture(state: 'live' | 'finished', changed: Record<string, string> = {}) {
+async function fixture(state: 'live' | 'finished', changed: Record<string, string | undefined> = {}) {
   const scratch = paths.scratch('worktree', process.cwd()); await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(join(scratch, 'retire-')); roots.push(root);
   const store = createPanePlacementStore(join(root, 'roam', 'placement'));
@@ -37,10 +37,13 @@ async function fixture(state: 'live' | 'finished', changed: Record<string, strin
     kill: vi.fn(async () => {}), rm: vi.fn(async () => {}),
   };
   const launchTarget = vi.fn(async () => { throw Error('must not launch execution'); });
-  const ports = { store, hc: hc as unknown as HcClient, app, launchTarget, validateTarget: async value => value,
+  const unexpected = async (): Promise<never> => { throw Error('Unexpected converter operation'); };
+  const ports: PaneOpenPorts = { store, hc: hc as unknown as HcClient, app, launchTarget, validateTarget: async value => value,
+    placeholderMod: 'fixture', launchProxy: unexpected, findTargetLaunch: unexpected, findProxy: unexpected, readNativeTarget: unexpected,
+    agentArgv: unexpected, verifyPlaceholder: unexpected, findPlaceholder: unexpected, deferSourceView: unexpected,
     appCapabilities: async () => ({ backgroundTabCreation: false, explicitTargetSwap: false, noFocusConversion: false, commandDigest: 'a'.repeat(64) }),
     awaitPresented: async address => app.ownerPlacement(address),
-  } as PaneOpenPorts;
+  };
   const run = () => convertNativePresentation({ presentation, destination, source: slot, sourceFocused: true }, ports);
   return { run, hc, app, presentation, launchTarget };
 }

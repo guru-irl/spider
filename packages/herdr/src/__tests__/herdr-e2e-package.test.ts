@@ -10,13 +10,15 @@ afterEach(async () => { if (root) await rm(root, { recursive: true, force: true 
 it('fingerprints the packaged reader along with all other deployed entries', async () => {
   const scratch = resolve('.spider/scratch'); await mkdir(scratch, { recursive: true }); root = await mkdtemp(join(scratch, 'e2e-package-'));
   const checkout = join(root, 'checkout'); await mkdir(join(checkout, 'dist/herdr'), { recursive: true }); await mkdir(join(checkout, 'dist/roam'), { recursive: true }); await mkdir(join(checkout, 'dist/intercom'), { recursive: true });
-  for (const name of ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/remote-runtime.mjs', 'herdr/feed-reader.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/cli-main.mjs', 'roam/intercom-helper.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs']) await writeFile(join(checkout, 'dist', name), name);
+  for (const name of ['extension.js', 'herdr/cli.mjs', 'herdr/viewer.mjs', 'herdr/remote-runtime.mjs', 'herdr/feed-reader.mjs', 'herdr/pane-endpoint.mjs', 'herdr/viewer-pi.mjs', 'herdr/subagent-supervisor.mjs', 'roam/cli.mjs', 'roam/cli-main.mjs', 'roam/intercom-helper.mjs', 'roam/supervisor.mjs', 'intercom/broker.mjs']) await writeFile(join(checkout, 'dist', name), name);
   const { packEntryDigests } = await import(pathToFileURL(resolve('scripts/herdr-e2e.mjs')).href);
   const result = await packEntryDigests(checkout, root, async () => {
     await writeFile(join(checkout, 'dist/herdr/feed-reader.mjs'), 'packed reader');
     await writeFile(join(checkout, 'dist/herdr/subagent-supervisor.mjs'), 'packed supervisor'); return { code: 0 };
   });
   expect(result.entries).toContain('herdr/feed-reader.mjs');
+  expect(result.entries).toContain('herdr/pane-endpoint.mjs');
+  expect(result.digests['herdr/pane-endpoint.mjs']).toBe(createHash('sha256').update('herdr/pane-endpoint.mjs').digest('hex'));
   expect(result.entries).toContain('herdr/viewer-pi.mjs');
   expect(result.entries).toContain('herdr/subagent-supervisor.mjs');
   expect(result.entries).toContain('roam/cli.mjs');

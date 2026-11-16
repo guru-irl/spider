@@ -695,7 +695,8 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(packageRoot, 'packages/herdr/assets/fonts'), readFile });
         try { for (const file of await pickerFiles(request, context, fonts.families)) files.push({ ...file, expected: null }); }
         catch (error) { if (error instanceof HerdrError) return failure(error.code, error.message); throw error; }
-        const effectiveFiles = Object.keys(additionalFor(release)).length ? (await stagedLook(request, context)).filter(file => files.some(expected => expected.path === file.path)) : files;
+        const staged = Object.keys(additionalFor(release)).length ? new Map((await stagedLook(request, context)).map(file => [file.path, file])) : new Map<string, InstallFile>();
+        const effectiveFiles = files.map(file => staged.get(file.path) ?? file);
         const result = await compareFiles(effectiveFiles);
         if (result.failures.length) return result;
         const managedRoots = ['spider-picker', ...(toast.length ? ['spider-toast'] : [])].map(name => resolve(request.config.app.home, 'mods', name) + sep);
@@ -704,7 +705,12 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         }
         return loadingUnavailable(['spider-panel', 'spider-picker', ...(toast.length ? ['spider-toast'] : [])]);
       }
-      if (item === 'clones') { const result = await compareFiles((await stagedLook(request, context)).filter(file => /\/mods\/spider-(?:agents|spaces|pane|tabs|chrome|menu|new-menu|picker)\//.test(file.path))); return result.failures.length ? result : loadingUnavailable(['spider-agents', 'spider-spaces', 'spider-pane', 'spider-tabs', 'spider-chrome']); }
+      if (item === 'clones') {
+        const files = (await stagedLook(request, context)).filter(file => /\/mods\/spider-(?:agents|spaces|pane|tabs|chrome|menu|new-menu|picker)\//.test(file.path));
+        const result = await compareFiles(files);
+        const names = [...new Set(files.map(file => relative(join(request.config.app.home, 'mods'), file.path).split(sep)[0]!))];
+        return result.failures.length ? result : loadingUnavailable(names);
+      }
       if (item === 'patch-version') {
         const patches = selected!;
         const expected = await stagedLook(request, context);

@@ -26,6 +26,9 @@ export interface AuxiliaryPaneOptions {
   ownerPresentation?(owner: Owner): Promise<TerminalAddress | null>;
   /** Starts only a bindable waiting display on the selected local core. */
   waitingPresentation?(kind: 'subagent' | 'console', id: RunId | ConsoleId, owner: Owner, signal?: AbortSignal): Promise<TerminalHandle>;
+  /** Read-only recovery: null is unavailable, absent proves a fresh launch is safe. */
+  recoverWaitingPresentation?(kind: 'subagent' | 'console', id: RunId | ConsoleId, owner: Owner, signal?: AbortSignal): Promise<TerminalHandle | 'absent' | null>;
+  releaseWaitingPresentation?(kind: 'subagent' | 'console', id: RunId | ConsoleId, owner: Owner, address: TerminalAddress): Promise<void>;
   limit?: number;
   /** Automatic subagent viewers open only when explicitly enabled. */
   automaticSubagentPanes?: boolean;
@@ -442,6 +445,9 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       throw new HerdrError('pane-repair-pending', 'Viewer repair failed after three park attempts', { viewer, anchor, cause: String(code(failure)) });
     });
   }
+  async function releaseWaiting(s: Slot, address: TerminalAddress) {
+    if (s.kind !== 'remote') await options.releaseWaitingPresentation?.(s.kind, s.id as RunId | ConsoleId, s.owner, address);
+  }
   async function release(reservation: PaneReservation): Promise<void> {
     const s = [...slots.values()].find(s => s.reservation === reservation); if (!s) return;
     return s.releasing ??= (async () => {
@@ -449,6 +455,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       if (s.waitingDisplay === reservation.viewer) {
         await options.hc.kill(reservation.viewer);
         await options.hc.rm(reservation.viewer);
+        await releaseWaiting(s, reservation.viewer);
       } else if (s.kind === 'subagent') await stopViewer(reservation.viewer, s.owner, s.id as RunId);
       slots.delete(s.token.id);
     })().catch(error => { s.releasing = undefined; throw error; });
@@ -488,6 +495,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
         catch (error) { if (code(error) !== 'owner-unplaced') throw error; }
         const ended = await options.hc.get(terminal).catch(error => { if (code(error) === 'not_found') return null; throw error; });
         if (ended?.state === 'finished' && !protectedKind(ended.labels)) await options.hc.rm(terminal);
+        if (!ended || ended.state === 'finished' && !protectedKind(ended.labels)) await releaseWaiting(s, terminal);
       } else if (s.kind === 'subagent') {
         // Native pane removal can lag the viewer's exit. Count its occupancy
         // without making new viewers wait for that acknowledgement.
@@ -631,9 +639,10 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
       }
       try {
         if (!s.waitingDisplay) {
-          if (s.waitingClaimed) throw new HerdrError('presentation-uncertain', 'Waiting display launch is still unacknowledged');
+          const recovered = s.waitingClaimed ? await options.recoverWaitingPresentation?.(kind, id, owner, displayOptions.signal) : 'absent';
+          if (!recovered) throw new HerdrError('presentation-uncertain', 'Waiting display launch is still unacknowledged');
           s.waitingClaimed = true;
-          const waiting = await options.waitingPresentation(kind, id, owner, displayOptions.signal);
+          const waiting = recovered === 'absent' ? await options.waitingPresentation(kind, id, owner, displayOptions.signal) : recovered;
           if (waiting.coreId !== core.coreId || waiting.address === owner.terminal.address || waiting.address === address)
             throw new HerdrError('pane-not-owned', 'Waiting display must belong to the local presentation core');
           s.waitingDisplay = waiting.address;
@@ -643,6 +652,7 @@ export function createAuxiliaryPanes(options: AuxiliaryPaneOptions): AuxiliaryPa
           userInitiated: displayOptions.userInitiated ?? !displayOptions.automatic });
         if (!reservation) {
           await options.hc.kill(s.waitingDisplay); await options.hc.rm(s.waitingDisplay);
+          await releaseWaiting(s, s.waitingDisplay);
           slots.delete(s.token.id); return null;
         }
         const size = await options.hc.get(reservation.viewer, { signal: displayOptions.signal });

@@ -3,7 +3,7 @@
 import { constants } from 'node:fs';
 import { mkdir, lstat, open, rename, unlink, readdir } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { withProcessLock } from '../../../herdr/src/sessions/registry.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
 import { paneId, parsePaneTarget } from '../../../herdr/src/panes/codec.js';
@@ -18,7 +18,7 @@ export interface PaneViewPorts {
   /** Probe core, incarnation and ownership at the source boundary. */
   readTarget(address: TerminalAddress, owner: Owner, runId: RunId | null, consoleId: ConsoleId | null): Promise<PaneTarget>;
   stopTarget(target: PaneTarget): Promise<void>;
-  /** Optional reconciliation of a launch whose handle reply was lost. Must never launch. */
+  /** A target recovers a lost reply; null proves absence. Throw when unavailable. Must never launch. */
   recoverTarget?(owner: Owner, runId: RunId | null, consoleId: ConsoleId | null, leaseId: string): Promise<PaneTarget | null>;
   consoleSource?(owner: Owner, machineKey: string, consoleId: ConsoleId): Promise<{ consoleId: ConsoleId; runId: RunId | null; launch(displayLeaseFile: string): Promise<TerminalAddress> } | null>;
   publishLease?(lease: Readonly<ViewLease>): Promise<void>;
@@ -70,30 +70,51 @@ async function ownerFor(input: { sessionId: SessionId; generation: Generation },
 const outcome = (status: PaneActionOutcome['status'], reason: string): PaneActionOutcome => ({ status, reason, presentation: null });
 async function locked<T>(leaseId: string, ports: PaneViewPorts, work: (file: string) => Promise<T>): Promise<T> {
   const root = await privateRoot(ports.leaseRoot), id = paneId(leaseId);
-  return withProcessLock(root, 'view-' + id, () => work(join(root, id + '.json')));
+  return withProcessLock(root, 'view-leases', () => work(join(root, id + '.json')));
 }
-async function exclusiveView<T>(input: { sessionId: SessionId; runId: RunId | null; consoleId: ConsoleId | null; leaseId: string }, ports: PaneViewPorts, work: () => Promise<T>): Promise<T> {
+async function retireLease(file: string, lease: ViewLease, ports: PaneViewPorts): Promise<void> {
+  if (lease.state !== 'stopped') {
+    lease.expiresAt = 0; await publish(file, lease, ports);
+    if (lease.target) await ports.stopTarget(lease.target);
+    lease.state = 'stopped'; await publish(file, lease, ports);
+  } else await ports.publishLease?.(lease);
+  await unlink(file).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+}
+async function failedLaunch(file: string, lease: ViewLease, owner: Owner, ports: PaneViewPorts, error: unknown): Promise<void> {
+  lease.state = 'uncertain'; await publish(file, lease, ports);
+  if (!ports.recoverTarget) throw error;
+  let recovered: PaneTarget | null;
+  try { recovered = await ports.recoverTarget(owner, lease.runId, lease.consoleId, lease.leaseId); } catch { throw error; }
+  if (!recovered) { await retireLease(file, lease, ports); throw error; }
+  lease.address = recovered.address; await publish(file, lease, ports);
+}
+async function exclusiveView<T>(input: { sessionId: SessionId; runId: RunId | null; consoleId: ConsoleId | null; leaseId: string }, ports: PaneViewPorts, work: (file: string) => Promise<T>): Promise<T> {
   const root = await privateRoot(ports.leaseRoot);
-  const digest = createHash('sha256').update(JSON.stringify([input.sessionId, input.runId, input.consoleId])).digest('hex');
-  return withProcessLock(root, 'source-view-' + digest, async () => {
+  return locked(input.leaseId, ports, async claimedFile => {
     const files = (await readdir(root)).filter(name => name.endsWith('.json'));
-    if (files.length > 4096) throw new HerdrError('view-lease-limit', 'View lease inventory exceeded its bound');
-    for (const name of files) {
-      const previous = await readLease(join(root, name));
-      if (!previous || previous.leaseId === input.leaseId || previous.sessionId !== input.sessionId || previous.runId !== input.runId || previous.consoleId !== input.consoleId || previous.state === 'stopped') continue;
-      if (previous.expiresAt > ports.clock()) throw new HerdrError('view-already-leased', 'Source view already has an active display lease');
-      if (!previous.target && previous.state !== 'active') throw new HerdrError('view-launch-uncertain', 'Previous view launch must be reconciled before reopening');
-      if (previous.target) await ports.stopTarget(previous.target);
-      previous.state = 'stopped'; previous.expiresAt = 0; await publish(join(root, name), previous, ports);
-    }
-    return work();
+    let active = 0, existing = false, conflict = false, index = 0;
+    await Promise.all(Array.from({ length: Math.min(4, files.length) }, async () => {
+      while (index < files.length) {
+        const name = files[index++], file = join(root, name);
+        const previous = await readLease(file);
+        if (!previous) continue;
+        if (previous.state === 'stopped' || previous.expiresAt <= ports.clock()) { await retireLease(file, previous, ports); continue; }
+        active++;
+        if (previous.leaseId === input.leaseId) { existing = true; continue; }
+        if (previous.sessionId === input.sessionId && previous.runId === input.runId && previous.consoleId === input.consoleId)
+          conflict = true;
+      }
+    }));
+    if (conflict) throw new HerdrError('view-already-leased', 'Source view already has an active display lease');
+    if (active >= 4096 && !existing) throw new HerdrError('view-lease-limit', 'View lease inventory exceeded its bound');
+    return work(claimedFile);
   });
 }
 export async function launchPaneViewer(input: {sessionId: SessionId; generation: Generation; runId: RunId; leaseId: string}, ports: PaneViewPorts): Promise<PaneTarget> {
   paneId(input.runId);
   const initialOwner = await ownerFor(input, ports);
   if (!await ports.ownsRun(initialOwner, input.runId)) throw new HerdrError('run-not-owned', 'Run does not belong to the source owner');
-  return exclusiveView({ ...input, consoleId: null }, ports, () => locked(input.leaseId, ports, async file => {
+  return exclusiveView({ ...input, consoleId: null }, ports, async file => {
     const owner = await ownerFor(input, ports);
     if (!await ports.ownsRun(owner, input.runId)) throw new HerdrError('run-not-owned', 'Run does not belong to the source owner');
     let lease = await readLease(file);
@@ -103,30 +124,32 @@ export async function launchPaneViewer(input: {sessionId: SessionId; generation:
       if (lease.state === 'stopped' || lease.expiresAt <= ports.clock()) throw new HerdrError('view-lease-expired', 'Reopen the view with a new display lease');
       if (!lease.address) {
         const recovered = await ports.recoverTarget?.(owner, input.runId, null, input.leaseId);
-        if (!recovered) throw new HerdrError('view-launch-uncertain', 'View launch must be reconciled before retry');
-        lease.address = recovered.address;
+        if (recovered) lease.address = recovered.address;
+        else if (ports.recoverTarget) { await retireLease(file, lease, ports); lease = null; }
+        else throw new HerdrError('view-launch-uncertain', 'View launch must be reconciled before retry');
       }
-    } else {
+    }
+    if (!lease) {
       lease = { version: 1, ...input, consoleId: null, expiresAt: ports.clock() + DISPLAY_LEASE_MS, address: null, target: null, state: 'claimed' };
       await publish(file, lease, ports);
       try {
         lease.address = await ports.viewerLauncher(owner, file)(input.runId, owner, undefined, 'explicit');
         await publish(file, lease, ports);
-      } catch (error) { lease.state = 'uncertain'; await publish(file, lease, ports); throw error; }
+      } catch (error) { await failedLaunch(file, lease, owner, ports, error); }
     }
     const target = await ports.readTarget(lease.address!, owner, input.runId, null);
     await ownerFor(input, ports);
     if (target.kind !== 'subagent' || target.runId !== input.runId || target.sessionId !== input.sessionId || target.generation !== input.generation || target.coreId !== owner.terminal.coreId)
       throw new HerdrError('view-target-mismatch', 'Source viewer identity changed');
     lease.target = target; lease.state = 'active'; await publish(file, lease, ports); return target;
-  }));
+  });
 }
 export async function openPaneConsole(input: {sessionId: SessionId; generation: Generation; machineKey: string; consoleId: ConsoleId; leaseId: string}, ports: PaneViewPorts): Promise<PaneTarget | null> {
   const owner = await ownerFor(input, ports);
   if (!ports.consoleSource) throw new HerdrError('console-unavailable', 'Source console support is not installed');
   const source = await ports.consoleSource(owner, input.machineKey, input.consoleId); if (!source) return null;
   if (source.consoleId !== input.consoleId) throw new HerdrError('console-identity-mismatch', 'Source console changed');
-  return exclusiveView({ ...input, runId: source.runId, consoleId: source.consoleId }, ports, () => locked(input.leaseId, ports, async file => {
+  return exclusiveView({ ...input, runId: source.runId, consoleId: source.consoleId }, ports, async file => {
     await ownerFor(input, ports); let lease = await readLease(file);
     if (lease && (lease.sessionId !== input.sessionId || lease.generation !== input.generation || lease.consoleId !== source.consoleId || lease.runId !== source.runId))
       throw new HerdrError('view-lease-mismatch', 'Display lease is bound to another console');
@@ -134,21 +157,23 @@ export async function openPaneConsole(input: {sessionId: SessionId; generation: 
       if (lease.state === 'stopped' || lease.expiresAt <= ports.clock()) throw new HerdrError('view-lease-expired', 'Reopen the console with a new display lease');
       if (!lease.address) {
         const recovered = await ports.recoverTarget?.(owner, source.runId, source.consoleId, input.leaseId);
-        if (!recovered) throw new HerdrError('view-launch-uncertain', 'Console launch must be reconciled before retry');
-        lease.address = recovered.address;
+        if (recovered) lease.address = recovered.address;
+        else if (ports.recoverTarget) { await retireLease(file, lease, ports); lease = null; }
+        else throw new HerdrError('view-launch-uncertain', 'Console launch must be reconciled before retry');
       }
-    } else {
+    }
+    if (!lease) {
       lease = { version: 1, leaseId: input.leaseId, sessionId: input.sessionId, generation: input.generation, runId: source.runId, consoleId: source.consoleId,
         expiresAt: ports.clock() + DISPLAY_LEASE_MS, address: null, target: null, state: 'claimed' };
       await publish(file, lease, ports);
       try { lease.address = await source.launch(file); await publish(file, lease, ports); }
-      catch (error) { lease.state = 'uncertain'; await publish(file, lease, ports); throw error; }
+      catch (error) { await failedLaunch(file, lease, owner, ports, error); }
     }
     const target = await ports.readTarget(lease.address!, owner, source.runId, source.consoleId); await ownerFor(input, ports);
     if (target.kind !== 'console' || target.consoleId !== source.consoleId || target.sessionId !== input.sessionId || target.generation !== input.generation)
       throw new HerdrError('view-target-mismatch', 'Source console identity changed');
     lease.target = target; lease.state = 'active'; await publish(file, lease, ports); return target;
-  }));
+  });
 }
 export async function renewPaneViewers(leases: readonly {leaseId: string; generation: Generation}[], ports: PaneViewPorts): Promise<PaneActionOutcome> {
   if (leases.length > 256 || new Set(leases.map(lease => lease.leaseId)).size !== leases.length) return outcome('refused', 'invalid-lease-batch');
@@ -170,10 +195,7 @@ export async function renewPaneViewers(leases: readonly {leaseId: string; genera
 }
 export async function stopPaneViewer(leaseId: string, ports: PaneViewPorts): Promise<PaneActionOutcome> {
   return locked(leaseId, ports, async file => {
-    const lease = await readLease(file); if (!lease || lease.state === 'stopped') return outcome('complete', 'view-stopped');
-    // Expiration is durable even if the source terminal is temporarily unreachable.
-    lease.expiresAt = 0; await publish(file, lease, ports);
-    if (lease.target) await ports.stopTarget(lease.target);
-    lease.state = 'stopped'; await publish(file, lease, ports); return outcome('complete', 'view-stopped');
+    const lease = await readLease(file); if (lease) await retireLease(file, lease, ports);
+    return outcome('complete', 'view-stopped');
   });
 }

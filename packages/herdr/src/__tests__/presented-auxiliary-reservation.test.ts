@@ -191,6 +191,26 @@ test('an ended waiting display is removed after native pane removal', async () =
   } finally { await f.panes.dispose(); }
 });
 
+test('a proved absent failed waiting launch can be retried in the same owner generation', async () => {
+  const f = fixture(), launch = f.options.waitingPresentation!; let fail = true;
+  f.options.waitingPresentation = async (...args) => { if (fail) { fail = false; throw new HerdrError('launch-failed', 'No display created'); } return launch(...args); };
+  Object.assign(f.options, { recoverWaitingPresentation: async () => 'absent' });
+  try {
+    await expect(f.panes.reservePresented('subagent', run, f.owner, { timeoutMs: 1000 })).rejects.toMatchObject({ code: 'launch-failed' });
+    const result = await f.panes.reservePresented('subagent', run, f.owner, { timeoutMs: 1000 });
+    expect(result).toMatchObject({ viewer: 't2', kind: 'subagent' }); expect(f.created).toHaveLength(1);
+  } finally { await f.panes.dispose(); }
+});
+test('removing a waiting display also releases its persistent claim', async () => {
+  const f = fixture(); const forgotten: string[] = [];
+  Object.assign(f.options, { releaseWaitingPresentation: async (_kind: string, _id: string, _owner: Owner, address: string) => { forgotten.push(address); } });
+  try {
+    const first = await f.panes.reservePresented('subagent', run, f.owner, { timeoutMs: 1000 });
+    await f.panes.release(first!); expect(forgotten).toEqual(['t2']);
+    const second = await f.panes.reservePresented('subagent', run, f.owner, { timeoutMs: 1000 });
+    expect(second?.viewer).toBe('t3'); expect(f.layout.size).toBe(2);
+  } finally { await f.panes.dispose(); }
+});
 test('release retires only the reserved display and keeps its source owner', async () => {
   const f = fixture();
   try {

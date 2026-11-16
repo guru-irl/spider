@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 import { expect, test } from 'vitest';
-import { mkdir, mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, readFile, readdir, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { launchPaneViewer, openPaneConsole, renewPaneViewers, stopPaneViewer, type PaneViewPorts } from '../herdr/pane-views.js';
 import { createViewerLauncher } from '../../../herdr/src/viewers/register.js';
@@ -39,7 +39,7 @@ async function fixture() {
     readTarget, stopTarget: async target => { await hc.kill(target.address); await hc.rm(target.address); },
   };
   const input = { sessionId: owner.sessionId, generation: owner.generation, runId, leaseId: 'lease-one' };
-  return { root, owner, ports, input, launches, killed, terminals, setNow: (value: number) => { now = value; }, stale: () => { current = false; }, close: () => rm(root, { recursive: true, force: true }) };
+  return { root, owner, ports, input, hc, launches, killed, terminals, setNow: (value: number) => { now = value; }, stale: () => { current = false; }, close: () => rm(root, { recursive: true, force: true }) };
 }
 test('core only viewer launch does not request app placement', async () => {
   const f = await fixture();
@@ -107,6 +107,65 @@ test('source installation failure retains uncertain claim and never duplicates a
   } finally { await f.close(); }
 });
 
+test('closing a source view deletes its lease and a new view opens in the same generation', async () => {
+  const f = await fixture();
+  try {
+    await launchPaneViewer(f.input, f.ports); await stopPaneViewer(f.input.leaseId, f.ports);
+    expect((await readdir(f.ports.leaseRoot)).filter(name => name.endsWith('.json'))).toEqual([]);
+    expect(await launchPaneViewer({ ...f.input, leaseId: 'reopened' }, f.ports)).toMatchObject({ generation: f.owner.generation });
+    expect(f.launches).toHaveLength(2);
+  } finally { await f.close(); }
+});
+test('a proved absent failed launch deletes its claim so the same lease can retry', async () => {
+  const f = await fixture(); const original = f.ports.viewerLauncher; let fail = true;
+  f.ports.viewerLauncher = (...args) => { if (!fail) return original(...args); return async () => { fail = false; throw new Error('installation failed'); }; };
+  f.ports.recoverTarget = async () => null;
+  try {
+    await expect(launchPaneViewer(f.input, f.ports)).rejects.toThrow('installation failed');
+    expect((await readdir(f.ports.leaseRoot)).filter(name => name.endsWith('.json'))).toEqual([]);
+    expect(await launchPaneViewer(f.input, f.ports)).toMatchObject({ runId });
+    expect(f.launches).toHaveLength(1);
+  } finally { await f.close(); }
+});
+test('expired uncertain leases do not block a later view and are deleted', async () => {
+  const f = await fixture(); const original = f.ports.viewerLauncher;
+  f.ports.viewerLauncher = () => async () => { throw new Error('reply lost'); };
+  try {
+    await expect(launchPaneViewer(f.input, f.ports)).rejects.toThrow('reply lost');
+    f.setNow(120001); f.ports.viewerLauncher = original;
+    expect(await launchPaneViewer({ ...f.input, leaseId: 'later' }, f.ports)).toMatchObject({ runId });
+    expect((await readdir(f.ports.leaseRoot)).filter(name => name.endsWith('.json'))).toEqual(['later.json']);
+  } finally { await f.close(); }
+});
+test('4097 stopped lease files are pruned before the live lease bound is checked', async () => {
+  const f = await fixture(); await mkdir(f.ports.leaseRoot, { mode: 0o700 });
+  try {
+    const stopped = { version: 1, sessionId: f.owner.sessionId, generation: f.owner.generation, runId, consoleId: null, expiresAt: 0, address: null, target: null, state: 'stopped' };
+    for (let start = 0; start < 4097; start += 32) await Promise.all(Array.from({ length: Math.min(32, 4097 - start) }, (_, offset) => {
+      const leaseId = `stopped-${start + offset}`; return writeFile(join(f.ports.leaseRoot, leaseId + '.json'), JSON.stringify({ ...stopped, leaseId }), { mode: 0o600 });
+    }));
+    expect(await launchPaneViewer(f.input, f.ports)).toMatchObject({ runId });
+    expect((await readdir(f.ports.leaseRoot)).filter(name => name.endsWith('.json'))).toEqual(['lease-one.json']);
+  } finally { await f.close(); }
+});
+test('closed and failed console views can reopen in the same generation', async () => {
+  const f = await fixture(), consoleId = ('console-' + 'c'.repeat(64)) as import('../../../herdr/src/contracts.js').ConsoleId;
+  const input = { sessionId: f.owner.sessionId, generation: f.owner.generation, machineKey: 'console.invalid', consoleId, leaseId: 'console-lease' };
+  let fail = true;
+  f.ports.recoverTarget = async () => null;
+  f.ports.consoleSource = async () => ({ consoleId, runId: null, launch: async () => {
+    if (fail) { fail = false; throw new Error('console unavailable'); }
+    return (await f.hc.run({ argv: ['console'], cwd: null, labels: {}, parent: null })).address;
+  } });
+  try {
+    await expect(openPaneConsole(input, f.ports)).rejects.toThrow('console unavailable');
+    expect(await openPaneConsole(input, f.ports)).toMatchObject({ kind: 'console', generation: f.owner.generation });
+    await stopPaneViewer(input.leaseId, f.ports);
+    expect((await readdir(f.ports.leaseRoot)).filter(name => name.endsWith('.json'))).toEqual([]);
+    expect(await openPaneConsole({ ...input, leaseId: 'reopened-console' }, f.ports)).toMatchObject({ kind: 'console' });
+    expect(f.launches).toHaveLength(2);
+  } finally { await f.close(); }
+});
 test('console open revalidates generation and opaque ID before any source launch', async () => {
   const f = await fixture(), consoleId = ('console-' + 'a'.repeat(64)) as import('../../../herdr/src/contracts.js').ConsoleId;
   let calls = 0;

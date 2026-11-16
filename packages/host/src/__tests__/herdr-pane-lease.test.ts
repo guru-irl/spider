@@ -5,6 +5,16 @@ import { mkdir, mkdtemp, rm, stat, readFile, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { expect, test } from 'vitest';
 import { PANE_LEASE_WRITER } from '../herdr/pane-lease.js';
+test('a stopped console lease removes its mirror and repeated removal is safe', async () => {
+  const base = resolve('.spider/scratch/pane-lease-tests'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'r-'));
+  try {
+    const run = (state: string, expiresAt: number) => spawnSync(process.execPath, ['-e', PANE_LEASE_WRITER, root, 'lease-1'], { input: JSON.stringify({ version: 1, leaseId: 'lease-1', expiresAt, state }), encoding: 'utf8' });
+    expect(run('active', Date.now() + 20000).status).toBe(0);
+    expect(run('stopped', 0).status).toBe(0);
+    await expect(stat(join(root, '.view-leases/lease-1.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(run('stopped', 0).status).toBe(0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 test('qualified console lease mirror is private, atomic and refuses a symlink', async () => {
   const base = resolve('.spider/scratch/pane-lease-tests'); await mkdir(base, { recursive: true }); const root = await mkdtemp(join(base, 'r-'));
   try {

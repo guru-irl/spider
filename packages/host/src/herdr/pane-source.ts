@@ -95,7 +95,7 @@ export function createPaneSourceEffects(input: {
     const matches = (await retainedConsoles(owner)).filter(console => console.consoleId === consoleId && (machineKey === undefined || console.machine.name === machineKey || console.route.id === machineKey));
     if (matches.length !== 1) throw new HerdrError('console-identity-mismatch', 'Source console is unavailable'); return matches[0];
   };
-  const mirrorLease = async (console: Awaited<ReturnType<typeof findConsole>>, lease: { leaseId: string }, bytes: Buffer) => {
+  const mirrorLease = async (console: Pick<Awaited<ReturnType<typeof findConsole>>, 'machine' | 'route'>, lease: { leaseId: string }, bytes: Buffer) => {
     if (!console.machine.nodePath) throw new HerdrError('pane-node-unconfigured', 'Console Node executable is not configured');
     const current = await configuredRoute(console.machine); if (current.id !== console.route.id) throw new HerdrError('machine-changed', 'Console route changed');
     await argv.exec(console.route.id, [console.machine.nodePath, '-e', PANE_LEASE_WRITER, console.machine.runtime.directory, paneId(lease.leaseId)], { timeoutMs: 5000, maxBytes: 1024, stdin: bytes });
@@ -117,10 +117,35 @@ export function createPaneSourceEffects(input: {
           } finally { db.close(); }
         } });
     },
+    async recoverTarget(owner, runId, consoleId, leaseId) {
+      await currentOwner(owner);
+      const console = consoleId ? await findConsole(owner, consoleId) : null;
+      const coreId = console?.route.id ?? owner.terminal.coreId;
+      const leaseFile = join(root, 'panes', 'view-leases', paneId(leaseId) + '.json');
+      const stream = hc.events(); let observed!: (rows: readonly import('../../../herdr/src/contracts.js').TerminalSummary[]) => void;
+      const snapshot = new Promise<readonly import('../../../herdr/src/contracts.js').TerminalSummary[]>(resolve => { observed = resolve; });
+      const off = stream.subscribe(event => { if (event.type === 'snapshot' || event.type === 'missed') observed(event.terminals); });
+      let rows;
+      try { await stream.ready; rows = await snapshot; } finally { off(); }
+      const candidates = rows.filter(terminal => {
+        const labels = terminal.labels, prefix = terminal.address.includes('/') ? terminal.address.split('/')[0] : null;
+        if (terminal.state !== 'live' || prefix === null && coreId !== owner.terminal.coreId || prefix !== null && prefix !== coreId && prefix !== console?.route.name && !console?.route.aliases.includes(prefix)) return false;
+        return labels['spider.session'] === owner.sessionId && labels['spider.owner-core'] === owner.terminal.coreId && labels['spider.owner-terminal']?.split('/').at(-1) === owner.terminal.terminalId
+          && labels['spider.view-generation'] === owner.generation && (!runId || labels['spider.run'] === runId)
+          && (consoleId ? labels['spider.kind'] === 'remote-console' && labels['spider.console-id'] === consoleId : labels['spider.kind'] === 'subagent-viewer' && labels['spider.display-lease'] === leaseFile);
+      });
+      if (candidates.length > 1) throw new HerdrError('pane-view-identity', 'Multiple source views match this lease');
+      return candidates.length ? readTarget(`${coreId}/${paneId(candidates[0].address.split('/').at(-1))}` as TerminalAddress, owner, runId, consoleId) : null;
+    },
     async stopTarget(target) {
-      const current = await readTarget(target.address, await resolveOwner(target.sessionId!, target.generation!), target.runId, target.consoleId);
-      if (current.createdMs !== target.createdMs || Object.entries(target.identityLabels).some(([key, value]) => current.identityLabels[key] !== value)) throw new HerdrError('pane-view-identity', 'Source view changed before stop');
-      await hc.kill(target.address);
+      const matches = (facts: Awaited<ReturnType<typeof readFacts>>) => facts.createdMs === target.createdMs && Object.entries(target.identityLabels).every(([key, value]) => facts.identityLabels[key] === value);
+      let current;
+      try { current = await readFacts(target.address); } catch (error) { if (error instanceof HerdrError && error.code === 'not_found') return; throw error; }
+      if (!matches(current)) throw new HerdrError('pane-view-identity', 'Source view changed before stop');
+      if (current.terminal.state !== 'finished') await hc.kill(target.address);
+      const ended = await readFacts(target.address);
+      if (!matches(ended) || ended.terminal.state !== 'finished') throw new HerdrError('pane-view-identity', 'Source view removal is not yet verified');
+      await hc.rm(target.address);
     },
     async consoleSource(owner, machineKey, consoleId) {
       const console = await findConsole(owner, consoleId, machineKey);
@@ -135,6 +160,13 @@ export function createPaneSourceEffects(input: {
     },
     async publishLease(lease) {
       if (!lease.consoleId) return;
+      if (lease.state === 'stopped' || lease.expiresAt === 0) {
+        for (const machine of config.machines) {
+          const route = await configuredRoute(machine);
+          if (!lease.target || route.id === lease.target.coreId) await mirrorLease({ machine, route }, lease, Buffer.from(JSON.stringify(lease)));
+        }
+        return;
+      }
       const owner = await resolveOwner(lease.sessionId, lease.generation), console = await findConsole(owner, lease.consoleId);
       await mirrorLease(console, lease, Buffer.from(JSON.stringify(lease)));
     },

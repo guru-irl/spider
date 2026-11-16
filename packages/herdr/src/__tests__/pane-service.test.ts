@@ -113,6 +113,18 @@ test('shutdown with live targets stops subscriptions not targets', async () => {
   const f = await fixture(); const service = createPaneService(f.ports); await service.reconcile(); await service.stop();
   expect(f.hc.kill).not.toHaveBeenCalled(); await expect(service.request({ version: 1, op: 'snapshot', operationId: 's1' })).rejects.toThrow(/stopped/);
 });
+test('disconnected machines mark their previously working agents unreachable', async () => {
+  const f = await fixture(); const target = f.presentation.target;
+  const row = { sessionId: 'session-1', generation: 'gen-1', name: 'Example', status: 'working', updatedAt: 1, machineKey: 'box-1.invalid', unavailableReason: null, target,
+    owner: { sessionId: 'session-1', generation: 'gen-1', terminal: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', socket: '/unused', sessionNamespace: 'test' }, cwd: '/home/example', sessionFile: null, name: 'Example' }, children: [], consoles: [] };
+  f.ports.inventory = vi.fn(async () => ({ version: 1, rows: [row] as never, next: null, complete: true }));
+  const service = createPaneService(f.ports); await service.reconcile();
+  expect(await service.request({ version: 1, op: 'snapshot', operationId: 'connected' })).toMatchObject({ rows: [{ status: 'working' }] });
+  const machine = (await f.ports.machines())[0]; vi.mocked(f.ports.machines).mockResolvedValue([{ ...machine, state: 'disconnected' }]);
+  await service.reconcile();
+  expect(await service.request({ version: 1, op: 'snapshot', operationId: 'disconnected' })).toMatchObject({ complete: false, rows: [{ status: 'unreachable' }] });
+  await service.stop();
+});
 test('inventory refresh is single flight and unreachable machines back off', async () => {
   const f = await fixture(); let complete!: () => void;
   vi.mocked(f.ports.inventory).mockImplementation(async () => { await new Promise<void>(r => { complete = r; }); throw Error('unreachable'); });

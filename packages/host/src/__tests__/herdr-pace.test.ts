@@ -23,6 +23,7 @@ const mods = process.env.SPIDER_HERDR_MOD_FIXTURE;
 if (!mods) console.info('SKIP production pace feed: set SPIDER_HERDR_MOD_FIXTURE to the upstream Herdr mods');
 describe.skipIf(!mods)('production pace feed', () => {
   let h: HerdrHarness;
+  let packageRoot: string;
   let ports: ReturnType<typeof createProductionHerdrCliPorts>;
 
   beforeAll(async () => {
@@ -30,12 +31,13 @@ describe.skipIf(!mods)('production pace feed', () => {
     expect(h.localSocket).toContain(h.root); expect(h.remoteSocket).toContain(h.root);
     expect(h.localSocket).not.toContain('/default/default.sock');
     execFileSync('git', ['init', '-q', h.directories.local]);
-    const root = join(h.root, 'package');
-    await mkdir(join(root, 'packages/herdr'), { recursive: true });
-    await cp(resolve('packages/herdr/assets'), join(root, 'packages/herdr/assets'), { recursive: true });
-    await mkdir(join(root, 'dist/herdr'), { recursive: true });
-    await writeFile(join(root, 'dist/herdr/remote-runtime.mjs'), stripTypeScriptTypes(await readFile(resolve('packages/herdr/src/remote/runtime.ts'), 'utf8')));
-    await writeFixturePaneEndpoint(root);
+    packageRoot = join(h.root, 'package');
+    await mkdir(join(packageRoot, 'packages/herdr'), { recursive: true });
+    await cp(resolve('packages/herdr/assets'), join(packageRoot, 'packages/herdr/assets'), { recursive: true });
+    await mkdir(join(packageRoot, 'dist/herdr'), { recursive: true });
+    await cp(resolve('dist/extension.js'), join(packageRoot, 'dist/extension.js'));
+    await writeFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs'), stripTypeScriptTypes(await readFile(resolve('packages/herdr/src/remote/runtime.ts'), 'utf8')));
+    await writeFixturePaneEndpoint(packageRoot);
     await mkdir(join(h.directories.agent, 'sessions'), { recursive: true });
     for (const kind of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome']) {
       const target = join(h.directories.app, 'mods', kind);
@@ -59,7 +61,7 @@ else console.log('{"spaces":[]}');\n`);
     const configPath = join(h.root, 'config.json');
     await writeFile(configPath, JSON.stringify({ app: { binary: app, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'), spaces: [], machines: [{ name: 'remote.invalid', nodePath: process.execPath, runtime: { directory: join(h.directories.remote, 'programs'), cwd: null, commands: {} } }] }));
     vi.spyOn(ModelRegistry.prototype, 'getAvailable').mockImplementation(function (this: ModelRegistry) { return this.getAll(); });
-    ports = configFixtureCwd(createProductionHerdrCliPorts(root, { ...h.localEnv, SPIDER_GLOBAL_ROOT: h.directories.global }), h.directories.local);
+    ports = configFixtureCwd(createProductionHerdrCliPorts(packageRoot, { ...h.localEnv, SPIDER_GLOBAL_ROOT: h.directories.global }), h.directories.local);
     const request = await ports.request(configPath);
     const installed = await setupHerdr(request, await ports.setupParts(request));
     expect(installed.probes).toHaveLength(1);
@@ -92,7 +94,7 @@ else console.log('{"spaces":[]}');\n`);
       const pi = { getSessionName: () => undefined, registerTool() {}, registerCommand() {}, registerShortcut() {}, on(name: string, handler: Function) { hooks.set(name, [...hooks.get(name) ?? [], handler]); return () => {}; }, sendMessage() {} };
       const ctx = { cwd: h.directories.local, mode: 'rpc', hasUI: false, isIdle: () => true, ui: { notify() {}, setWidget() {}, setFooter() {}, setStatus() {} }, sessionManager: { getSessionId: () => h.owner!.sessionId, getEntries: () => [], getBranch: () => [], getSessionFile: () => undefined, getSessionName: () => undefined } };
       const sourceUrl = loadedBundle.url;
-      loadedBundle.url = pathToFileURL(resolve('dist/extension.js')).href;
+      loadedBundle.url = pathToFileURL(join(packageRoot, 'dist/extension.js')).href;
       try { extension(withPiEvents(pi as never), hostUnitPorts); } finally { loadedBundle.url = sourceUrl; }
       try {
         for (const handler of hooks.get('session_start') ?? []) await handler({ reason: 'startup' }, ctx);

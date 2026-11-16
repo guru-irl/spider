@@ -133,12 +133,12 @@ test('leased remote console exits at expiry and preserves retained output', asyn
   } finally { await f.close(); }
 });
 
-test('console display lease expires after 20 s without signalling payloads', async () => {
+test('console display lease expires after its clock allowance without signalling payloads', async () => {
   const f = await fixture(), directory = join(f.root, '.consoles', 'timed'); await mkdir(directory, { recursive: true });
   const file = join(f.root, 'timed-lease'); const start = Date.now();
   await writeFile(join(directory, 'head.json'), encodeRuntimePublication({ version: 1, count: 0 }), { mode: 0o600 });
   await writeFile(file, JSON.stringify({ version: 1, sessionId: f.owner.sessionId, generation: f.owner.generation, consoleId: 'console-one', expiresAt: start + 20000 }), { mode: 0o600 });
-  let reads = 0, finished = false; const clock = vi.spyOn(Date, 'now').mockImplementation(() => reads++ < 2 ? start : start + 20000);
+  let reads = 0, finished = false; const clock = vi.spyOn(Date, 'now').mockImplementation(() => reads++ < 2 ? start : start + 25000);
   try { await runRemoteConsole(directory, { displayLeaseFile: file, sessionId: f.owner.sessionId, generation: f.owner.generation, consoleId: 'console-one', pollMs: 1, write: () => {} }).then(() => { finished = true; });
     expect(finished).toBe(true); expect(f.killed).toEqual([]); expect(f.launches).toEqual([]);
     expect(await readFile(join(directory, 'head.json'), 'utf8')).toContain('count');

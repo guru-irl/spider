@@ -511,8 +511,10 @@ export async function runRemoteConsole(directory: string, options: RemoteConsole
         const info = await lstat(file);
         if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || process.platform !== 'win32' && (info.mode & 0o077)) return;
         const lease = JSON.parse((await readBoundedFile(file, 65536)).toString());
+        // Leases carry the source clock, not this console machine's clock.
+        const skewMs = 5000;
         if (lease.version !== 1 || lease.sessionId !== options.sessionId || lease.generation !== options.generation || lease.consoleId !== options.consoleId
-          || !Number.isSafeInteger(lease.expiresAt) || lease.expiresAt <= now || lease.expiresAt > now + 20000) return;
+          || !Number.isSafeInteger(lease.expiresAt) || lease.expiresAt <= 0 || lease.expiresAt <= now - skewMs || lease.expiresAt > now + 20000 + skewMs) return;
       } catch { return; }
     }
     try {

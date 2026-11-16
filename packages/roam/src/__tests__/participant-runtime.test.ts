@@ -190,6 +190,47 @@ it.each([false, true])("core restart recreates one exact-file owner with enabled
   await supervisor.stop();
 }, 5000);
 
+it("supervises the mixed location store list written by a move", async () => {
+  const f = fixture(); await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
+  const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
+  recordLocation(f.global.db, { sessionId: "s-1", stores: ["global", "repo:fixture-repo", f.worktree.storeKey], home: null, ...location });
+  let owner: import("@spider/db-core/roam/types").Probe = { kind: "absent" };
+  const supervisor = createParticipantSupervisor({ root: f.global.root, agent: f.ports,
+    clock: { now: () => 1, later: () => () => {} }, events: { subscribe: () => () => {} },
+    owner: async () => owner, diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {},
+    async launch(intent, operationId) {
+      owner = { kind: "live", identity: { bootId: "boot-1", pid: 90, startTime: "start-1" } };
+      const ready = { origin: "hub-operation" as const, opId: operationId, sessionId: intent.sessionId, epoch: intent.epoch,
+        file: intent.file, cwd: intent.cwd, core: "core-1", terminal: "term-1" };
+      f.ports.journal.begin({ id: operationId, kind: "exact-session-launch", machineId: BOX, expectedEpoch: 2, args: {} });
+      recordReadiness(f.ports.journal, ready); writeLocal(f.global.db, "participant-ready", intent.sessionId, ready);
+      return { code: 0, reason: "ready", operationId, home: null, epoch: intent.epoch, repairCommand: null, value: ready };
+    } });
+  try {
+    await supervisor.reconcile();
+    expect((await createIntentStore(f.global.root).get("s-1"))?.value).toMatchObject({ intent: { suspended: null }, supervision: { kind: "live" } });
+  } finally { await supervisor.stop(); }
+}, 5000);
+
+it.each(["null", "object", "string", "empty", "non-string", "unknown kind", "missing repository", "missing worktree repository", "missing workspace", "missing separator", "duplicate", "no worktree", "invalid JSON"])(
+  "supervision refuses a %s location list before reserving a launch", async kind => {
+  const f = fixture(); await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
+  const invalid: Record<string, unknown> = {
+    null: null, object: {}, string: "[]", empty: [], "non-string": [1], "unknown kind": ["unknown:fixture"],
+    "missing repository": ["repo:"], "missing worktree repository": ["worktree::fixture"], "missing workspace": ["worktree:fixture:"],
+    "missing separator": ["worktree:fixture"], duplicate: [f.worktree.storeKey, f.worktree.storeKey], "no worktree": ["global", "repo:fixture-repo"],
+  };
+  f.global.db.prepare("UPDATE roam_locations SET stores_json=? WHERE session_id='s-1'").run(kind === "invalid JSON" ? "[" : JSON.stringify(invalid[kind]));
+  const supervisor = createParticipantSupervisor({ root: f.global.root, agent: f.ports,
+    clock: { now: () => 1, later: () => () => {} }, events: { subscribe: () => () => {} }, owner: async () => ({ kind: "absent" }),
+    diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {}, async launch() { throw new Error("must not launch"); } });
+  try {
+    await supervisor.reconcile();
+    expect((await createIntentStore(f.global.root).get("s-1"))?.value).toMatchObject({
+      intent: { suspended: "Cannot verify hosting state" }, supervision: { kind: "idle" } });
+  } finally { await supervisor.stop(); }
+}, 5000);
+
 it("hub readiness is advertised only for the matching live launch owner", async () => {
   const f = fixture(), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
   const authority = createRunningIntentAuthority(f.global.db);

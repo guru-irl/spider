@@ -63,6 +63,7 @@ export async function reconcilePendingClose(id: string, ports: PaneLifecyclePort
       }
     }
     const ended = await transition(p, { visibility: 'ended' }, ports);
+    if (ended && p.target.kind === 'terminal') await ports.hc.rm(p.target.address);
     return ended ? result('complete', 'target-ended', ended) : stale(await read(id, ports));
   } catch { return result('pending', 'close-pending', await read(id, ports)); }
 }
@@ -93,6 +94,9 @@ export async function parkPresentation(id: string, expectedRevision: number, por
     const current = await read(id, ports); if (!current || current.revision !== parked.revision || current.visibility !== 'parked') return result('pending', 'presentation-changed', current);
     const again = await ownedProxy(parked, ports);
     if (again?.state === 'live') await ports.hc.kill(p.proxy);
+    const finished = await ownedProxy(parked, ports);
+    if (finished?.state !== 'finished') return result('pending', 'park-removal-pending', parked);
+    await ports.hc.rm(p.proxy);
     return result('complete', 'parked', parked);
   } catch { return result('pending', 'park-removal-pending', parked); }
 }

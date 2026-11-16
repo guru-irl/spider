@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { paths } from '@spider/db-core';
 import { afterEach, expect, test, vi } from 'vitest';
+import { HerdrError } from '../client/parse.js';
 import { confirmPresentationClose, parkPresentation, reconcilePendingClose, reconcilePresentationExit, type PaneLifecyclePorts } from '../panes/lifecycle.js';
 import { createPanePlacementStore } from '../panes/store.js';
 import { parsePanePresentation } from '../panes/codec.js';
@@ -15,9 +16,9 @@ async function fixture(session = false) {
   const root = await mkdtemp(join(base, 's-')); roots.push(root); const store = createPanePlacementStore(join(root, 'roam', 'placement'));
   const p = parsePanePresentation({ id: 'p1', revision: 1, mode: 'proxy', role: session ? 'agent' : 'shell', target: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', createdMs: 17, identityLabels: { 'spider.pane-operation': 'op1' }, alias: 'box-1.invalid', machineId: null, kind: session ? 'session' : 'terminal', sessionId: session ? 'session-1' : null, generation: session ? 'gen-1' : null, homeEpoch: session ? 2 : null, runId: null, consoleId: null, name: null, cwd: null }, proxy: 'core-local/t8', slot: { space: 'space-1', tab: 'tab-1', pane: 'pane-1' }, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null });
   await store.update(s => ({ ...s, presentations: [p] }));
-  let targetState: 'live' | 'finished' = 'live'; let shown = true; let hosting: 'running' | 'stopped' = 'running'; let children = 'live'; const order: string[] = [];
-  const terminal = (address: string): TerminalSummary => ({ address: address as never, parent: null, labels: address === p.proxy ? { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id } : p.target.identityLabels, state: address === p.proxy ? 'live' : targetState, status: null, exitCode: null, reason: null, signal: null, finishedAt: null });
-  const hc = { identity: async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' }), get: vi.fn(async address => terminal(address)), kill: vi.fn(async address => { const state = await store.read(); order.push(state.presentations[0].visibility + ':' + address); if (address === p.target.address) targetState = 'finished'; }) } as unknown as HcClient;
+  let targetState: 'live' | 'finished' = 'live', proxyState: 'live' | 'finished' = 'live'; const removed = new Set<string>(); let shown = true; let hosting: 'running' | 'stopped' = 'running'; let children = 'live'; const order: string[] = [];
+  const terminal = (address: string): TerminalSummary => ({ address: address as never, parent: null, labels: address === p.proxy ? { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id } : p.target.identityLabels, state: address === p.proxy ? proxyState : targetState, status: null, exitCode: null, reason: null, signal: null, finishedAt: null });
+  const hc = { identity: async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' }), get: vi.fn(async address => { if (removed.has(address)) throw new HerdrError('not_found', 'No terminal'); return terminal(address); }), rm: vi.fn(async address => { if (terminal(address).state !== 'finished') throw new Error('Cannot remove a live terminal'); removed.add(address); }), kill: vi.fn(async address => { const state = await store.read(); order.push(state.presentations[0].visibility + ':' + address); if (address === p.target.address) targetState = 'finished'; if (address === p.proxy) proxyState = 'finished'; }) } as unknown as HcClient;
   const app = { command: vi.fn(async (name: string) => { if (name === 'terminal.park') { expect((await store.read()).presentations[0].visibility).toBe('parked'); shown = false; } return {}; }), tabTerminals: vi.fn(async () => shown ? [p.proxy!] : []) } as unknown as AppClient;
   const ports: PaneLifecyclePorts = { store, hc, app, validateTarget: vi.fn(async target => target), closeSession: vi.fn(async () => { hosting = 'stopped'; order.push(hosting); targetState = 'finished'; children = 'ended-by-session-policy'; return 'ended' as const; }) };
   return { p, ports, hc, app, order, state: () => ({ targetState, hosting, children }), terminal };
@@ -26,6 +27,17 @@ test('spider confirmed close ends exact target after durable intent', async () =
   const f = await fixture(); const reply = await confirmPresentationClose({ id: f.p.id, expectedRevision: 1, operationId: 'close1', target: f.p.target }, f.ports);
   expect(reply).toMatchObject({ status: 'complete', presentation: { visibility: 'ended', closeOperationId: 'close1' } });
   expect(f.order[0]).toBe('closing:core-remote/t7'); expect(f.state().targetState).toBe('finished');
+});
+test('completed shell close removes its finished terminal record', async () => {
+  const f = await fixture();
+  expect(await confirmPresentationClose({ id: f.p.id, expectedRevision: 1, operationId: 'close1', target: f.p.target }, f.ports)).toMatchObject({ status: 'complete' });
+  await expect(f.hc.get(f.p.target.address)).rejects.toMatchObject({ code: 'not_found' });
+});
+test('completed park removes only the finished display terminal record', async () => {
+  const f = await fixture();
+  expect(await parkPresentation(f.p.id, 1, f.ports)).toMatchObject({ status: 'complete' });
+  await expect(f.hc.get(f.p.proxy!)).rejects.toMatchObject({ code: 'not_found' });
+  expect(await f.hc.get(f.p.target.address)).toMatchObject({ state: 'live' });
 });
 test('park records intent before proxy removal and retains target', async () => {
   const f = await fixture(); const result = await parkPresentation(f.p.id, 1, f.ports);

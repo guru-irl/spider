@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { paths } from '@spider/db-core';
-import { createProductionRoamPresentationPorts, type RoamPresentationPorts } from '../herdr/ports.js';
+import { createProductionRoamPresentationPorts, type RoamPresentationPorts } from '../herdr/roam-presentations.js';
 import * as paneSocket from '../../../herdr/src/panes/socket.js';
 import { createPaneRuntime, type PaneRuntime } from '../herdr/pane-runtime.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
@@ -418,3 +418,4 @@ test.each(['no Mac view', 'app closed', 'service down', 'core-only'] as const)('
   expect(hc.run).not.toHaveBeenCalled();
   expect(commands).not.toHaveBeenCalled();
 });
+

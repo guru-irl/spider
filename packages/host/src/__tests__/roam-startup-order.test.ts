@@ -8,6 +8,8 @@ import { openDbAt, paths, setGlobalDbPathForTests } from "@spider/db-core";
 import spiderExtension from "../extension";
 import { HostEmbeddingRuntime } from "../embedding-runtime";
 import * as admission from "../roam/admission";
+import * as moveActivations from "../roam/move-activation";
+import { createReplica } from "@spider/db-core/testutil";
 import * as roamCli from "@spider/roam/cli";
 
 const trace = vi.hoisted(() => ({ startupCalls: [] as string[] }));
@@ -238,6 +240,57 @@ it("a second host session cannot reopen or close another session's gate", async 
     await allowed.emit("session_shutdown", { reason: "quit" });
     global.close(); worktree.close();
   }
+}, 5000);
+
+it("reload replaces the session control resource without releasing participant ownership", async () => {
+  const replica = createReplica("global", "00000000-0000-4000-8000-000000000001");
+  root = replica.root;
+  paths.globalRoot = root; vi.stubEnv("SPIDER_GLOBAL_ROOT", root); vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  setGlobalDbPathForTests(join(root, "spider.db"));
+  let open = false, closed = 0, released = 0;
+  vi.spyOn(admission, "createAdmissionPorts").mockImplementation(() => ({
+    expectedEpoch: null, setContext() {}, knownParticipant: () => true, warnOnce() {},
+    localMachine: async () => "hub.invalid",
+    load: async () => ({ home: null, states: [{ sessionId: "own", epoch: 1, state: "active", moveId: null }],
+      origin: "hub.invalid", participating: true, captureSafe: true, unfinishedFreeze: false, initialConflict: false }),
+    lock: async () => async () => { released++; },
+  } as never));
+  vi.spyOn(moveActivations, "createMoveActivation").mockImplementation(async () => {
+    if (open) throw new Error("Session control socket is already active");
+    open = true;
+    return { async close() { open = false; closed++; }, async ready() {} };
+  });
+  const ctx = { cwd: root, mode: "tui", hasUI: true, ui: { notify() {} }, abort() {}, isIdle: () => true,
+    sessionManager: { getSessionId: () => "own", getSessionFile: () => join(root, "session.jsonl"), getSessionName: () => null, getEntries: () => [], getBranch: () => [] } };
+  function host() {
+    const hooks = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+    const pi = { on(name: string, handler: (event: any, ctx: any) => unknown) { hooks.set(name, [...hooks.get(name) ?? [], handler]); return () => {}; },
+      registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
+      sendMessage() {}, sendUserMessage() {}, appendEntry() {} };
+    spiderExtension(withPiEvents(pi as never), hostUnitPorts);
+    return {
+      start: async () => { await hooks.get("session_start")![0]({}, ctx); },
+      input: async () => hooks.get("input")![0]({}, ctx),
+      shutdown: async (reason: string) => {
+        const handlers = hooks.get("session_shutdown")!;
+        await handlers[0]({ reason }, ctx);
+        await handlers.at(-1)!({ reason }, ctx);
+      },
+    };
+  }
+  const first = host(), second = host();
+  try {
+    await first.start();
+    expect(await first.input()).toBeUndefined();
+    await first.shutdown("reload");
+    expect(closed).toBe(1);
+    expect(released).toBe(0);
+    await second.start();
+    expect(await second.input()).toBeUndefined();
+    await second.shutdown("quit");
+    expect(closed).toBe(2);
+    expect(released).toBe(1);
+  } finally { replica.close(); }
 }, 5000);
 
 it("nonparticipating sessions keep existing startup without ID lock", async () => {

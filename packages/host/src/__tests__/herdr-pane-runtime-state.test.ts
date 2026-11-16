@@ -60,17 +60,17 @@ function facts(p: PanePresentation): PaneTerminalFacts {
   return { terminal: { address: p.target.address, state: 'live', labels: p.target.identityLabels, parent: null, status: null, exitCode: null, reason: null, signal: null, finishedAt: null, cols: 80, rows: 24 }, createdMs: 17, identityLabels: p.target.identityLabels, currentCwd: '/home/example', title: p.id, app: null, status: null };
 }
 function installPlacementApp() {
-  let placeholder = false, placed = false, focused = 'owner-pane';
+  let placeholder = false, placed = false, focused = 'owner-pane', placeholderOperation = '';
   const slot = { space: 's1', tab: 'tb1', pane: 'proxy-pane' };
   const space = { id: 's1', name: 'Work', machine: null, tabs: [{ id: 'tb1', name: 'Work' }] };
-  const updateLayout = () => { boundary.layout = { spaces: [{ ...space, tabs: [{ ...space.tabs[0], panes: [{ id: 'owner-pane' }, ...(placeholder ? [{ id: 'placeholder', mod: 'spider-pane-waiting', props: { operationId: 'click-session' } }] : [])] }] }] }; };
+  const updateLayout = () => { boundary.layout = { spaces: [{ ...space, tabs: [{ ...space.tabs[0], panes: [{ id: 'owner-pane' }, ...(placeholder ? [{ id: 'placeholder', mod: 'spider-pane-waiting', props: { operationId: placeholderOperation } }] : [])] }] }] }; };
   updateLayout();
   Object.assign(boundary.app, {
     listSpaces: async () => [space], tabPanes: async () => [], tabTerminals: async () => placed ? ['proxy-1'] : [],
     ownerPlacement: async () => { if (!placed) throw new HerdrError('owner-unplaced', 'Not placed'); return slot; },
     focusedPane: async () => ({ ...slot, pane: focused }),
     command: vi.fn(async (name, args) => {
-      if (name === 'pane.split') { placeholder = true; updateLayout(); return { pane: 'placeholder' }; }
+      if (name === 'pane.split') { placeholder = true; placeholderOperation = args.props.operationId; updateLayout(); return { pane: 'placeholder' }; }
       if (name === 'pane.focus') focused = args.pane;
       if (name === 'terminal.keep') placed = true;
       if (name === 'pane.close') { placeholder = false; updateLayout(); }
@@ -130,6 +130,16 @@ test('only the agent presentation can anchor auxiliary panes', async () => {
   const console = { ...agent, id: 'console', role: 'console' as const, proxy: 'console-proxy' as never, target: { ...row.target, kind: 'console' as const, consoleId: ('console-' + 'a'.repeat(64)) as never } };
   await runtime.store.update(s => ({ ...s, presentations: [console, agent] }));
   expect(await boundary.auxiliary!.ownerPresentation(row.owner)).toBe('agent-proxy');
+});
+test('an ambiguous live proxy inventory never permits another proxy launch', async () => {
+  const { runtime, hc } = await fixture(); const row = sessionRow(); installPlacementApp(); boundary.rows = [row];
+  const p = { ...presentation('ambiguous'), role: 'agent' as const, target: row.target, launch: 'uncertain' as const, slot: { space: 's1' as never, tab: 'tb1' as never, pane: null } };
+  await runtime.store.update(s => ({ ...s, presentations: [p] }));
+  for (const address of ['duplicate-1', 'duplicate-2']) boundary.terminals.set(address, { ...facts(p).terminal, address: address as never, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.target-core': row.target.coreId, 'spider.target-terminal': row.target.terminalId } });
+  const service = runtime.createService(); await service.reconcile();
+  expect(await service.request({ version: 1, op: 'open-existing', operationId: 'ambiguous-click', sessionId: row.sessionId, generation: row.generation, slot: null }))
+    .toMatchObject({ outcome: { status: 'pending', reason: 'proxy-launch-uncertain' } });
+  expect(hc.run).not.toHaveBeenCalled();
 });
 test('production facts skip ended history and read live presentations with bounded concurrency', async () => {
   const { runtime } = await fixture(); const live = Array.from({ length: 8 }, (_, i) => presentation(`live-${i}`));

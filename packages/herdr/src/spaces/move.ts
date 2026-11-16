@@ -62,6 +62,8 @@ export async function presentExistingPane(presentation: PanePresentation, slot: 
   reserve: (slot: PaneSlot, operationId: string) => Promise<OwnerPlacement>): Promise<PanePresentation> {
   const app = ports.app;
   if (!app) throw new HerdrError('view-on-mac', 'View on Mac');
+  const current = (await ports.store.read()).presentations.find(p => p.id === presentation.id);
+  if (!current || current.revision !== presentation.revision || current.visibility === 'closing' || current.visibility === 'ended') throw new HerdrError('stale-presentation', 'Presentation changed');
   const spaces = await app.listSpaces?.();
   if (!spaces?.some(space => space.machine === null && space.id === slot.space && space.tabs.some(tab => tab.id === slot.tab))) throw new HerdrError('destination-unavailable', 'The Mac tab is unavailable');
   const local = await ports.hc.identity();
@@ -91,8 +93,7 @@ export async function presentExistingPane(presentation: PanePresentation, slot: 
       display = await ports.findProxy(selected);
       if (display) {
         if (await proxyState(display) !== 'live') throw new HerdrError('proxy-launch-uncertain', 'Proxy launch is uncertain');
-      } else if (selected.launch === 'none') launch = true;
-      else throw new HerdrError('proxy-launch-uncertain', 'Proxy launch is uncertain');
+      } else launch = true;
     }
   }
   if (display?.includes('/')) throw new HerdrError('display-unavailable', 'Mac display is unavailable');

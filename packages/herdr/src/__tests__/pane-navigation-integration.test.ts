@@ -169,14 +169,28 @@ test('first proxy placement proves the Mac placeholder before a durable display 
   expect(result.target).toEqual(execution);
   expect(h.state().choices).toMatchObject([{ session: 'writer', space: 's1', tab: 'tb2' }]);
 });
-test('an uncertain first proxy launch is not duplicated on retry', async () => {
-  const h = unplacedProxyPorts();
-  vi.mocked(h.ports.launchProxy).mockRejectedValue(new Error('lost acknowledgement'));
+test('an uncertain first proxy launch recovers its live display without a duplicate', async () => {
+  const h = unplacedProxyPorts(); let launched = false;
+  vi.mocked(h.ports.launchProxy).mockImplementation(async () => { launched = true; throw new Error('lost acknowledgement'); });
+  h.ports.findProxy = async () => launched ? 'new-proxy' as never : null;
   await expect(presentExistingPane(h.state().presentations[0], h.selected, 'lost-launch', h.ports, h.reserve)).rejects.toMatchObject({ code: 'proxy-launch-uncertain' });
   expect(h.state().presentations[0]).toMatchObject({ launch: 'uncertain', proxy: null });
-  await expect(presentExistingPane(h.state().presentations[0], h.selected, 'retry-launch', h.ports, h.reserve)).rejects.toMatchObject({ code: 'proxy-launch-uncertain' });
+  expect(await presentExistingPane(h.state().presentations[0], h.selected, 'retry-launch', h.ports, h.reserve)).toMatchObject({ proxy: 'new-proxy', launch: 'acknowledged' });
   expect(h.ports.launchProxy).toHaveBeenCalledTimes(1);
-  expect(h.state().choices).toEqual([]);
+});
+test('a proved absent uncertain proxy launch can be retried', async () => {
+  const h = unplacedProxyPorts(), launch = vi.mocked(h.ports.launchProxy).getMockImplementation()!;
+  vi.mocked(h.ports.launchProxy).mockRejectedValueOnce(new Error('launch failed'));
+  await expect(presentExistingPane(h.state().presentations[0], h.selected, 'failed-launch', h.ports, h.reserve)).rejects.toMatchObject({ code: 'proxy-launch-uncertain' });
+  vi.mocked(h.ports.launchProxy).mockImplementation(launch);
+  expect(await presentExistingPane(h.state().presentations[0], h.selected, 'retry-launch', h.ports, h.reserve)).toMatchObject({ proxy: 'new-proxy', launch: 'acknowledged' });
+  expect(h.ports.launchProxy).toHaveBeenCalledTimes(2);
+});
+test.each(['closing', 'ended'] as const)('a refused %s reopen allocates no placeholder', async visibility => {
+  const h = unplacedProxyPorts();
+  await h.ports.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, visibility, closeOperationId: visibility === 'closing' ? 'close-1' : null })) }));
+  await expect(presentExistingPane(h.state().presentations[0], h.selected, 'refused-reopen', h.ports, h.reserve)).rejects.toMatchObject({ code: 'stale-presentation' });
+  expect(h.events).not.toContain('reserve'); expect(h.ports.launchProxy).not.toHaveBeenCalled();
 });
 test('an unproved Mac placeholder creates no proxy and saves no preference', async () => {
   const h = unplacedProxyPorts(); h.ports.verifyPlaceholder = async () => false;

@@ -12,6 +12,7 @@ export interface PaneOpenPorts {
   launchProxy(presentation: PanePresentation): Promise<TerminalAddress>;
   awaitPresented(proxy: TerminalAddress, target: PaneTarget, slot: PaneSlot): Promise<OwnerPlacement>;
   findTargetLaunch(operationId: string, machine: MachineChoice): Promise<PaneTarget | null>;
+  /** Null proves no live labelled display; unavailable or ambiguous probes must throw. */
   findProxy(presentation: PanePresentation): Promise<TerminalAddress | null>;
   readNativeTarget(address: TerminalAddress): Promise<PaneTarget>;
   validateTarget(target: PaneTarget, cause: 'open' | 'handoff' | 'close'): Promise<PaneTarget>;

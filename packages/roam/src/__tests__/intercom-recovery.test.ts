@@ -3,6 +3,7 @@ import { withHopExchange } from "./intercom-hop-fixture";
 import { afterEach, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { createReplica } from "@spider/db-core/testutil";
 import { createIntercomBridge } from "../intercom-bridge";
 import { createHostIntercomDelivery } from "../intercom-delivery";
 import { openIntercomStore } from "../intercom-store";
@@ -116,7 +117,7 @@ it("returns the new activation's physical consumption evidence to the original s
 }, 5000);
 
 it("acknowledges an old absence receipt after the receiver resumes and proves delivery", async () => {
-  const root = mkdtempSync(join(resolve(".spider/scratch"), "recovery-old-receipt-")); roots.push(root);
+  const fixture = createReplica("global", A), root = fixture.root;
   const clock = { now: () => 1000, later: () => () => {} }, source = openIntercomStore({ file: join(root, "s.db"), machineId: A, clock }), inbox = openIntercomStore({ file: join(root, "i.db"), machineId: B, clock });
   const old = { address: to, machineId: B, homeEpoch: null, activationEpoch: "ended" }, next = { ...old, activationEpoch: "replacement" };
   const bridge = createIntercomBridge({ machineId: A, machineAlias: "source.invalid", store: source, clock, transport: {} as never,
@@ -152,7 +153,7 @@ it("acknowledges an old absence receipt after the receiver resumes and proves de
     for (const receipt of retry.exchange.receiptAcknowledgements ?? []) inbox.acknowledgeReceipt({ peer: A, frame: receipt });
     inbox.acknowledgeReceipt({ peer: A, frame: oldReceipt });
     expect(inbox.pending({ kind: "receipts", peer: A })).toEqual([]);
-  } finally { await bridge.stop(); source.close(); inbox.close(); }
+  } finally { await bridge.stop(); source.close(); inbox.close(); fixture.close(); }
 }, 5000);
 
 it("acknowledges a lost-link-ack replay of the original endpoint after a safe local activation rebind", async () => {

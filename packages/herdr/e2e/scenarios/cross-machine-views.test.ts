@@ -89,11 +89,12 @@ async function viewer(suite: Suite): Promise<void> {
   const expiry = active.find(lease => lease.runId === child.runId)!.expiresAt;
   expect(expiry).toBeGreaterThan(Date.now()); expect(expiry).toBeLessThanOrEqual(Date.now() + 20000);
   const processBefore = await paneProcesses(f);
-  await waitFor('one batched lease renewal advances the owned view', () => leases(f), values => values.some(lease => lease.runId === child.runId && lease.expiresAt > expiry), deadline(10000));
+  const ids = active.map(lease => lease.leaseId);
+  const readRenewals = async () => (await suite.cores!.records()).filter(record => record.argv[0] === 'exec').flatMap(record => { try { const request = JSON.parse(record.argv.at(-1)!); return request.op === 'renew-viewers' ? [request] : []; } catch { return []; } });
+  await waitFor('one batched lease renewal advances the owned view', async () => ({ values: await leases(f), batches: await readRenewals() }), observed => observed.values.some(lease => lease.runId === child.runId && lease.expiresAt > expiry) && observed.batches.some(request => request.leases.length === 2 && request.leases.every((lease: any) => ids.includes(lease.leaseId))), deadline(10000));
   const renewed = await leases(f);
   expect(renewed.filter(lease => lease.runId === child.runId && lease.state === 'active')).toHaveLength(1);
-  const renewals = (await suite.cores!.records()).filter(record => record.argv[0] === 'exec').flatMap(record => { try { const request = JSON.parse(record.argv.at(-1)!); return request.op === 'renew-viewers' ? [request] : []; } catch { return []; } });
-  const ids = active.map(lease => lease.leaseId);
+  const renewals = await readRenewals();
   expect(renewals.some(request => request.leases.length === 2 && request.leases.every((lease: any) => ids.includes(lease.leaseId)))).toBe(true);
   expect(identityAlive(childIdentity)).toBe(true);
   const idleStart = Date.now(), cpuBefore = (await paneProcesses(f)).find(row => row.pid === target.pid);

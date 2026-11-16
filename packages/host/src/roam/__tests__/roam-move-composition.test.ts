@@ -163,7 +163,7 @@ it("production handoff captures before freeze and presents only a current ready 
   global.db.prepare("INSERT INTO session_homes VALUES(?,?,?,?,?)").run(home.sessionId, HUB, 1, null, 1);
   const source = parsePaneTarget({ coreId: "core-a", terminalId: "t1", address: "core-a/t1", createdMs: 10, identityLabels: { "spider.session": "session-a", "spider.generation": "gen-1" }, alias: null, machineId: HUB, kind: "session", sessionId: "session-a", generation: "gen-1", homeEpoch: 1, runId: null, consoleId: null, name: null, cwd: "/example" });
   const store = createPanePlacementStore(join(global.root, "roam", "placement")), calls: string[] = [];
-  let captureAvailable = false;
+  let captureAvailable = true;
   const operations = createRoamPresentationOperations({ stateRoot: join(global.root, "roam", "placement"), hc: { identity: async () => ({ coreId: "core-a" }) } as never,
     app: { ownerPlacement: async () => ({ space: "space-1", tab: "tab-1", pane: "pane-1" }) } as never,
     async request(request) { calls.push(request.op); if (request.op === 'prepare-handoff' && !captureAvailable) throw Error('service unavailable'); return { version: 1, kind: "outcome", outcome: { status: "complete", reason: request.op, presentation: (await store.read()).presentations[0] } }; },
@@ -175,9 +175,6 @@ it("production handoff captures before freeze and presents only a current ready 
     global.db.prepare("INSERT INTO roam_locations(session_id,stores_json,home_json,file,cwd) VALUES(?,?,?,?,?)").run(home.sessionId, '["global"]', JSON.stringify(home), "/example/session.jsonl", "/example");
     runtime.bindings.participant!.probe = async () => ({ kind: "live", identity: { pid: 123, bootId: "source-boot", startTime: "source-start" } });
     journal.begin({ id: "move-a", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: home.sessionId, moveId: "move-a" } });
-    await expect(runtime.ports.freeze(home, { id: "move-a", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: home.sessionId, moveId: "move-a" } })).rejects.toThrow('handoff-capture-unavailable');
-    expect(calls).toEqual(['prepare-handoff']);
-    captureAvailable = true; calls.length = 0;
     await runtime.ports.freeze(home, { id: "move-a", kind: "move", machineId: HUB, expectedEpoch: 1, args: { sessionId: home.sessionId, moveId: "move-a" } });
     expect(calls).toEqual(["prepare-handoff", "session-freeze"]);
     expect(open).toHaveBeenCalledWith(global.root);
@@ -191,6 +188,45 @@ it("production handoff captures before freeze and presents only a current ready 
     vi.mocked(open).mock.results[0].value.resolveTarget = async () => resolved;
     expect(await runtime.bindings.handoff!.presentReadyTarget(locator)).toMatchObject({ status: "complete" });
     expect(calls).toEqual(["prepare-handoff", "session-freeze", "present-ready"]);
+  } finally { await runtime.close(); }
+}, 5000);
+
+it.each(['box-to-box without a Mac view', 'app closed', 'service down', 'core-only'] as const)('production freeze proceeds with %s', async scenario => {
+  const BOX = '00000000-0000-4000-8000-000000000002', global = createReplica('global', HUB); fixtures.push(global);
+  mkdirSync(join(global.root, 'roam'), { mode: 0o700 });
+  const config: RoamConfig = { enabled: true, role: 'hub', machineId: HUB, hubMachineId: HUB, peers: [{ machineId: BOX, alias: 'box-1.invalid', core: 'box-core', node: '/bin/node', pi: '/bin/pi', cli: '/bin/spider', globalRoot: '/example' }], discoveryRoots: [], coreUnit: 'fixture', syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+  const home = { sessionId: 'session-a', machineId: scenario === 'box-to-box without a Mac view' ? BOX : HUB, epoch: 1, moveId: null, updatedAt: 1 };
+  global.db.prepare('INSERT INTO session_homes VALUES(?,?,?,?,?)').run(home.sessionId, home.machineId, 1, null, 1);
+  const source = parsePaneTarget({ coreId: home.machineId === BOX ? 'box-core' : 'core-a', terminalId: 't1', address: home.machineId === BOX ? 'box-core/t1' : 't1', createdMs: 10, identityLabels: { 'spider.session': 'session-a', 'spider.generation': 'gen-1' }, alias: home.machineId === BOX ? 'box-1.invalid' : null, machineId: home.machineId, kind: 'session', sessionId: 'session-a', generation: 'gen-1', homeEpoch: 1, runId: null, consoleId: null, name: null, cwd: '/example' });
+  const stateRoot = join(global.root, 'roam', 'placement'), calls: string[] = [];
+  if (scenario === 'app closed') await createPanePlacementStore(stateRoot).update(state => ({ ...state,
+    presentations: [{ id: 'presentation-a', revision: 1, mode: 'native', role: 'agent', target: source, proxy: null, slot: { space: 'space-1', tab: 'tab-1', pane: 'pane-1' }, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null }] }));
+  const operations = createRoamPresentationOperations({ stateRoot, hc: { identity: async () => ({ coreId: 'core-a' }) } as never,
+    app: scenario === 'core-only' ? null : { ownerPlacement: async () => { calls.push('placement'); if (scenario === 'app closed') throw Error('app disconnected'); return { space: 'space-1', tab: 'tab-1', pane: 'pane-1' }; } } as never,
+    request: async () => { calls.push('service'); throw Error('service unavailable'); } });
+  vi.spyOn(presentationPorts, 'createProductionRoamPresentationPorts').mockReturnValue({ ...operations, resolveTarget: async () => source, dispose: async () => {} });
+  vi.spyOn(sessionSocket, 'requestSessionControl').mockImplementation(async (_root, operation) => { calls.push(operation.kind); return { code: 0, reason: 'frozen', operationId: operation.id, epoch: 1, home, repairCommand: null, value: { operationId: operation.id, sessionId: home.sessionId, epoch: 1 } } as never; });
+  const journal = openFreezeJournal(join(global.root, 'roam', 'journal.db'));
+  const transport = { resolve: async (peer: unknown) => peer, async exec(_peer: unknown, argv: string[]) {
+    const operation = JSON.parse(argv[2]); calls.push(operation.kind);
+    return Buffer.from(JSON.stringify({ operationId: operation.id, code: 0, epoch: 1, value: { operationId: operation.id, sessionId: home.sessionId, epoch: 1 } }));
+  } };
+  const runtime = await createHostMoveBindings({ root: global.root, globalDb: global.db, config, journal, sessionId: home.sessionId, transport: transport as never });
+  try {
+    global.db.prepare('INSERT INTO roam_locations(session_id,stores_json,home_json,file,cwd) VALUES(?,?,?,?,?)').run(home.sessionId, '["global"]', JSON.stringify(home), '/example/session.jsonl', '/example');
+    runtime.bindings.participant!.probe = async () => ({ kind: 'live', identity: { pid: 123, bootId: 'source-boot', startTime: 'source-start' } });
+    const operation = { id: 'move-a', kind: 'move', machineId: HUB, expectedEpoch: 1, args: { sessionId: home.sessionId, moveId: 'move-a' } };
+    journal.begin(operation);
+    expect(await runtime.bindings.handoff!.prepareHandoff({ source: home, operation, placementRoot: stateRoot })).toMatchObject({ capture: 'durable', presentation: { status: 'pending' } });
+    await runtime.ports.freeze(home, operation);
+    expect(calls.filter(call => call === 'session-freeze')).toEqual(['session-freeze']);
+    expect(journal.read(operation.id)).toContainEqual(expect.objectContaining({ action: 'host-handoff-captured', result: expect.objectContaining({ kind: ['service down', 'app closed'].includes(scenario) ? 'app-absent' : 'nothing-to-capture' }) }));
+    const state = await createPanePlacementStore(stateRoot).read();
+    if (scenario === 'service down' || scenario === 'app closed') {
+      expect(state.slots).toEqual([{ session: 'session-a', space: 'space-1', tab: 'tab-1' }]);
+      expect(state.presentations).toHaveLength(1);
+    } else expect(state.presentations).toEqual([]);
+    expect(calls.every(call => ['placement', 'service', 'session-freeze'].includes(call))).toBe(true);
   } finally { await runtime.close(); }
 }, 5000);
 

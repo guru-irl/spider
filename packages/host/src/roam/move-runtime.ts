@@ -290,8 +290,9 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       async prepareHandoff({ source, operation, placementRoot }) {
         if (placementRoot !== join(root, "roam", "placement")) return { capture: "refused", reason: "presentation-root-changed" };
         const presentation = await presentations.prepareHandoff(source);
-        if (!presentation.presentation || presentation.status === "refused" || presentation.status === "pending" && presentation.reason !== "app-unavailable") return { capture: "refused", reason: presentation.reason };
-        journal.record(operation.id, "host-handoff-captured", { kind: "service", presentationStatus: presentation.status });
+        if (presentation.status === "refused") return { capture: "refused", reason: presentation.reason };
+        const kind = presentation.status === "complete" ? "service" : !presentation.presentation && presentation.reason === "source-view-unavailable" ? "nothing-to-capture" : "app-absent";
+        journal.record(operation.id, "host-handoff-captured", { kind, presentationStatus: presentation.status });
         return { capture: "durable", presentation };
       },
       async readyTarget(home) {

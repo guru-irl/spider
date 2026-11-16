@@ -70,6 +70,11 @@ Object.assign(process.env, machine.env);
 const record = value => appendFileSync(descriptor.effects, JSON.stringify(value) + '\\n');
 const moveFactory = async input => {
   const runtime = await createHostMoveBindings(input);
+  const gitRun = runtime.bindings.participant!.git.run;
+  runtime.bindings.participant!.git.run = async (cwd, argv, options) => {
+    try { return await gitRun(cwd, argv, options); }
+    catch (error) { record({ effect: 'git-failed', machineId: machine.id, cwd, argv, status: error.status, stderr: String(error.stderr ?? '') }); throw error; }
+  };
   const check = runtime.ports.check;
   runtime.ports.check = async request => {
     try { return await check(request); }

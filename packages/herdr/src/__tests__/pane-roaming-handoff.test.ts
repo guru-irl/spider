@@ -380,3 +380,16 @@ test('delegated completion revalidates the presentation before closing a legacy 
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
   } finally { await f.stop(); }
 });
+
+
+test('a new ready target has its own spawn budget after proven no-start failures', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source); f.failSpawns(2);
+    expect((await f.operations().presentReadyTarget(f.remote)).reason).toBe('conversion-proxy-retryable');
+    expect((await f.operations().presentReadyTarget(f.remote)).reason).toBe('conversion-proxy-exhausted');
+    const next = target('core-remote', 't4', 3);
+    expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete', presentation: { target: next, launch: 'acknowledged' } });
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(3);
+    expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
+  } finally { await f.stop(); }
+});

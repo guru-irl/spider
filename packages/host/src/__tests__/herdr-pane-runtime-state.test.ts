@@ -54,7 +54,11 @@ async function fixture(spaces: HerdrConfig['spaces'] = []) {
     run: vi.fn(async request => { const address = 'proxy-1'; boundary.terminals.set(address, { address: address as never, state: 'live', labels: request.labels, parent: null, status: null, exitCode: null, reason: null, signal: null, finishedAt: null, cols: 80, rows: 24 }); return { address, coreId: 'core-local' }; }),
     events: () => ({ ready: Promise.resolve(), subscribe: (listener: Parameters<ReturnType<HcClient['events']>['subscribe']>[0]) => { listener({ type: 'snapshot', seq: 1, terminals: [...boundary.terminals.values()] }); return () => {}; }, dispose() {} }),
     kill: vi.fn(async address => { const terminal = boundary.terminals.get(String(address)); if (terminal) terminal.state = 'finished'; }),
-    rm: vi.fn(async address => { boundary.terminals.delete(String(address)); }), dispose: async () => {}, setLabels: vi.fn() } as unknown as HcClient;
+    rm: vi.fn(async address => { boundary.terminals.delete(String(address)); }), dispose: async () => {}, setLabels: vi.fn(async (address, labels) => {
+      const key = String(address).split('/').at(-1)!;
+      if (!boundary.terminals.has(key)) throw new HerdrError('not_found', 'Terminal is missing');
+      updateTerminalLabels(key, labels);
+    }) } as unknown as HcClient;
   boundary.client = hc;
   boundary.facts.mockImplementation(async target => facts({ target, id: target.terminalId } as PanePresentation));
   const input = { config, hc, env: {}, packageRoot: process.cwd(), endpointBytes: Buffer.from('synthetic endpoint') };
@@ -145,7 +149,7 @@ test('app absence captures durable handoff intent and a screen retry resumes the
   destination.target = { ...destination.target, terminalId: 'moved' as never, address: 'core-remote/moved' as never, homeEpoch: 1 };
   boundary.rows = [source];
   const p = { ...presentation('handoff'), role: 'agent' as const, target: source.target, visibility: 'visible' as const, slot, proxy: 'proxy-1' as never, launch: 'acknowledged' as const };
-  boundary.terminals.set('proxy-1', { ...facts(p).terminal, address: 'proxy-1' as never });
+  boundary.terminals.set('proxy-1', { ...facts(p).terminal, address: 'proxy-1' as never, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.pane-operation': p.id, 'spider.target-core': source.target.coreId, 'spider.target-terminal': source.target.terminalId } });
   const service = runtime.createService();
   await runtime.store.update(state => ({ ...state, presentations: [{ ...p, slot: null }] }));
   expect(await service.request({ version: 1, op: 'prepare-handoff', operationId: 'capture-no-slot', presentationId: p.id, expectedRevision: 1, sessionId: source.sessionId, generation: source.generation, homeEpoch: 0 })).toMatchObject({ outcome: { status: 'pending', reason: 'source-view-unavailable', presentation: { slot: null } } });
@@ -183,7 +187,7 @@ test.each(['restored home', 'parked restored home', 'hosting restart', 'box star
   boundary.rows = [destination];
   const p = { ...presentation('existing'), target: source.target, role: 'agent' as const, proxy: 'old-proxy' as never, slot,
     visibility: scenario === 'parked restored home' ? 'parked' as const : scenario === 'closing presentation' ? 'closing' as const : 'visible' as const, closeOperationId: scenario === 'closing presentation' ? 'close-1' : null, launch: 'acknowledged' as const };
-  boundary.terminals.set('old-proxy', { ...facts(p).terminal, address: 'old-proxy' as never, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.target-core': source.target.coreId, 'spider.target-terminal': source.target.terminalId } });
+  boundary.terminals.set('old-proxy', { ...facts(p).terminal, address: 'old-proxy' as never, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.pane-operation': p.id, 'spider.target-core': source.target.coreId, 'spider.target-terminal': source.target.terminalId } });
   if (scenario !== 'unplaced session') await runtime.store.update(state => ({ ...state, presentations: [p] }));
   const service = runtime.createService();
   const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
@@ -206,6 +210,29 @@ test.each(['restored home', 'parked restored home', 'hosting restart', 'box star
   }
   expect(hc.run).not.toHaveBeenCalled();
   expect(hc.kill).toHaveBeenCalledTimes(scenario === 'restored home' ? 1 : 0);
+});
+
+test('a remote retarget label failure retains its binding until retry', async () => {
+  const { root, runtime, hc } = await fixture();
+  const source = sessionRow(), destination = sessionRow('gen-2');
+  destination.target = { ...destination.target, terminalId: 'next' as never, address: 'core-remote/next' as never, homeEpoch: 1 };
+  boundary.rows = [destination];
+  const p: PanePresentation = { ...presentation('label-failure'), target: source.target, role: 'agent', proxy: 'old-proxy' as never,
+    slot: { space: 's1' as never, tab: 'tb1' as never, pane: 'proxy-pane' as never }, visibility: 'parked', launch: 'acknowledged' };
+  const labels = { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.pane-operation': p.id,
+    'spider.target-core': source.target.coreId, 'spider.target-terminal': source.target.terminalId };
+  boundary.terminals.set('old-proxy', { ...facts(p).terminal, address: 'old-proxy' as never, labels });
+  await runtime.store.update(state => ({ ...state, presentations: [p] }));
+  const service = runtime.createService();
+  const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
+  vi.mocked(hc.setLabels).mockRejectedValueOnce(new Error('Label write failed'));
+  expect(await operations.presentReadyTarget(destination.target)).toMatchObject({ status: 'pending', reason: 'destination-screen-pending' });
+  expect((await runtime.store.read()).presentations[0]).toEqual(p);
+  expect(boundary.terminals.get('old-proxy')?.labels).toEqual(labels);
+  expect(hc.setLabels).toHaveBeenCalledTimes(1);
+  expect(await operations.presentReadyTarget(destination.target)).toMatchObject({ status: 'complete', presentation: { target: destination.target, proxy: 'old-proxy' } });
+  expect(boundary.terminals.get('old-proxy')?.labels).toMatchObject({ 'spider.target-core': destination.target.coreId, 'spider.target-terminal': destination.target.terminalId });
+  expect(hc.run).not.toHaveBeenCalled();
 });
 
 test.each(['moved proxy', 'closed moved proxy', 'new native terminal'])('the production slot store places the next terminal after a %s', async previous => {
@@ -416,7 +443,7 @@ test.each(['app closed', 'unfocused pane', 'hosting restart'] as const)('a pendi
   const p: PanePresentation = { ...presentation('pending-conversion'), target: original.target, mode: scenario === 'hosting restart' ? 'proxy' : 'native', role: 'agent', proxy: scenario === 'hosting restart' ? 'old-proxy' as never : null, slot, launch: 'acknowledged' };
   await runtime.store.update(state => ({ ...state, presentations: [p] }));
   boundary.terminals.set('execution', { ...facts(p).terminal, address: 'execution' as never });
-  if (p.proxy) boundary.terminals.set(p.proxy, { ...facts(p).terminal, address: p.proxy, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.target-core': original.target.coreId, 'spider.target-terminal': original.target.terminalId } });
+  if (p.proxy) boundary.terminals.set(p.proxy, { ...facts(p).terminal, address: p.proxy, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.pane-operation': p.id, 'spider.target-core': original.target.coreId, 'spider.target-terminal': original.target.terminalId } });
   boundary.rows = [original];
   const service = runtime.createService();
   const operations = () => createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });

@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect } from 'vitest';
 import { migrate, openDb } from '@spider/db-core';
-import { mapWorkspace } from '@spider/db-core/roam/repo-map';
+import { mapRepository, mapWorkspace } from '@spider/db-core/roam/repo-map';
 import { recordLocation } from '@spider/db-core/roam/catalog';
 import { text, mark, held, scripts } from '../fixtures/child-scripts.js';
 import type { StoryPresentation } from './roam-recovery.test.js';
@@ -284,6 +284,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       try {
         migrate(db, 'global', { machineId: machine.id, globalRoot: machine.root });
         db.prepare("UPDATE roam_meta SET store_key='global',capture_enabled=1 WHERE id=1").run();
+        await mapRepository(db, { repoKey: REPO, path: machine.cwd });
         await mapWorkspace(db, { repoKey: REPO, workspaceId: WORKSPACE, path: machine.cwd });
         for (const [scope, file, key] of [
           ['worktree', join(machine.cwd, '.spider', 'project.db'), WT],

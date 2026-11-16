@@ -37,7 +37,13 @@ const allowed = () => {
   try {
     const ledger = JSON.parse(readFileSync(descriptor.ledgerPath, 'utf8'));
     return ledger.root === descriptor.root && ledger.state === 'open' && ledger.tearingDown !== true && ledger.viaDirectory === descriptor.viaDirectory
-      && Array.isArray(ledger.cores) && ledger.cores.some(core => core.side !== 'local' && core.socket === descriptor.socket);
+      && Array.isArray(ledger.cores) && ledger.cores.some(core => {
+        if (core.socket !== descriptor.socket) return false;
+        if (core.side !== 'local') return true;
+        const selected = descriptor.localDestination;
+        return selected?.ledgerId === ledger.id && typeof selected.coreId === 'string' && selected.coreId.length > 0
+          && selected.coreId === core.coreId && core.namespace === env.HC_SESSION && core.namespace !== 'default';
+      });
   } catch { return false; }
 };
 const listening = () => new Promise(resolve => {

@@ -208,10 +208,12 @@ appendFileSync(input.trace,JSON.stringify({at:Date.now(),argv:args})+'\n',{mode:
 if(remote&&down()){process.stderr.write('synthetic link unavailable\n');process.exit(1)}
 let fault={};try{fault=JSON.parse(readFileSync(input.fault,'utf8'))}catch{}
 if(args[0]==='run'&&args.includes(input.viewer)&&fault.viewerLaunchFailed){process.stderr.write(JSON.stringify({error:{kind:'cannot_spawn',message:'synthetic viewer spawn unavailable'}})+'\n');process.exit(1)}
-const child=spawn(input.hc,args,{env:process.env,stdio:'inherit'});
+const capture=['get','exec','run','ls'].includes(args[0]),output={stdout:'',stderr:''};
+const child=spawn(input.hc,args,{env:process.env,stdio:capture?['inherit','pipe','pipe']:'inherit'});
+if(capture)for(const stream of ['stdout','stderr'])child[stream].on('data',bytes=>{process[stream].write(bytes);if(output[stream].length<1048576)output[stream]+=bytes.toString()});
 const timer=args[0]==='attach'&&remote?setInterval(()=>{if(down())child.kill('SIGTERM')},25):null;
 for(const signal of ['SIGINT','SIGTERM','SIGHUP'])process.on(signal,()=>child.kill(signal));
-child.once('exit',(code)=>{if(timer)clearInterval(timer);process.exit(code??1)});
+child.once('close',(code)=>{if(timer)clearInterval(timer);if(capture)appendFileSync(input.trace,JSON.stringify({at:Date.now(),argv:args,exitCode:code,...output})+'\n',{mode:0o600});process.exit(code??1)});
 `;
 
 export async function preparePanePresentations(suite: Suite, options: { disconnectedChoice?: boolean } = {}): Promise<PaneFixture> {

@@ -14,7 +14,7 @@ export interface PaneOpenPorts {
   awaitPresented(proxy: TerminalAddress, target: PaneTarget, slot: PaneSlot): Promise<OwnerPlacement>;
   findTargetLaunch(operationId: string, machine: MachineChoice): Promise<PaneTarget | null>;
   /** Null proves no live labelled display; unavailable or ambiguous probes must throw. */
-  findProxy(presentation: PanePresentation): Promise<TerminalAddress | null>;
+  findProxy(presentation: PanePresentation, match?: 'launch'): Promise<TerminalAddress | null>;
   readNativeTarget(address: TerminalAddress): Promise<PaneTarget>;
   validateTarget(target: PaneTarget, cause: 'open' | 'handoff' | 'close'): Promise<PaneTarget>;
   agentArgv(machine: MachineChoice, key: string): Promise<readonly string[]>;
@@ -58,11 +58,12 @@ async function updatePresentation(p: PanePresentation, fields: Partial<PanePrese
   }) }));
   if (!changed) throw new HerdrError('stale-presentation', 'Presentation changed before acknowledgment'); return changed;
 }
-async function verifyProxy(address: TerminalAddress, p: PanePresentation, ports: PaneOpenPorts) {
+async function verifyProxy(address: TerminalAddress, p: PanePresentation, ports: PaneOpenPorts, match: 'target' | 'launch' = 'target') {
   const core = await ports.hc.identity();
   if (address.includes('/') && !address.startsWith(`${core.coreId}/`)) throw new HerdrError('proxy-identity', 'Presentation proxy is not on the selected local core');
   const terminal = await ports.hc.get(address); const labels = terminal.labels;
-  if (terminal.address !== address || terminal.state !== 'live' || labels['spider.kind'] !== 'pane-proxy' || labels['spider.pane-id'] !== p.id || labels['spider.target-core'] !== p.target.coreId || labels['spider.target-terminal'] !== p.target.terminalId) throw new HerdrError('proxy-identity', 'Presentation proxy identity is unproved');
+  const matches = match === 'launch' ? labels['spider.pane-operation'] === p.id : labels['spider.target-core'] === p.target.coreId && labels['spider.target-terminal'] === p.target.terminalId;
+  if (terminal.address !== address || terminal.state !== 'live' || labels['spider.kind'] !== 'pane-proxy' || labels['spider.pane-id'] !== p.id || !matches) throw new HerdrError('proxy-identity', 'Presentation proxy identity is unproved');
 }
 export async function presentProxy(p: PanePresentation, operationId: string, ports: PaneOpenPorts): Promise<PanePresentation> {
   const app = ports.app!; const proxy = p.proxy; if (!proxy || !p.slot) throw new HerdrError('unplaced-target', 'Target has no acknowledged presentation claim');
@@ -260,8 +261,16 @@ export async function convertNativePresentation(input: { presentation: PanePrese
       const desired = { ...p, target: destination, mode: 'proxy' as const, conversion: null };
       if (!p.proxy) {
         if (p.launch === 'claimed' || p.launch === 'uncertain') {
-          const recovered = await ports.findProxy(desired); if (!recovered) return outcome('pending', 'conversion-proxy-uncertain', p);
-          await verifyProxy(recovered, desired, ports); p = await updatePresentation(p, { proxy: recovered, launch: 'acknowledged' }, ports);
+          let recovered = await ports.findProxy(desired);
+          if (recovered) {
+            await verifyProxy(recovered, desired, ports); p = await updatePresentation(p, { proxy: recovered, launch: 'acknowledged' }, ports);
+          } else {
+            recovered = await ports.findProxy(desired, 'launch'); if (!recovered) return outcome('pending', 'conversion-proxy-uncertain', p);
+            await verifyProxy(recovered, desired, ports, 'launch');
+            p = await updatePresentation(p, { proxy: recovered, launch: 'acknowledged' }, ports);
+            await ports.hc.setLabels(recovered, { 'spider.target-core': destination.coreId, 'spider.target-terminal': destination.terminalId });
+            await verifyProxy(recovered, desired, ports);
+          }
         } else {
           if ((p.proxyLaunchAttempts ?? 0) >= 2) return outcome('pending', 'conversion-proxy-exhausted', p);
           p = await updatePresentation(p, { launch: 'claimed', proxyLaunchAttempts: (p.proxyLaunchAttempts ?? 0) + 1 }, ports);

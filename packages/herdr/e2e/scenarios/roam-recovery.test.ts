@@ -256,7 +256,7 @@ export async function runRecoveryCases(suite: Suite): Promise<void> {
       try { expect(readLocal(boxDb, 'supervisor-revoked', BOX)).toBe(true); }
       finally { boxDb.close(); }
       expect((await owned.hc(['machine', 'rm', box.alias, '--json'])).exitCode).toBe(0);
-      expect((await owned.hc(['machine', 'add', '--via', join(owned.root, 'bin', 'via-local'), '--name', box.alias,
+      expect((await owned.hc(['machine', 'add', '--via', join(owned.root, 'bin', 'via-i1'), '--name', box.alias,
         '--session', owned.cores!.local.namespace, '--json'])).exitCode).toBe(0);
       const reused = await owned.hc(['machine', 'ls', '--json']);
       expect((reused.json as { machines: Array<{ name: string; id: string }> }).machines.find(row => row.name === box.alias)?.id).toBe(owned.cores!.local.coreId);

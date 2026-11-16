@@ -522,9 +522,11 @@ Setup installs a layout named `spider-glass` and a pi theme named `dracula-plus-
 - The terminal palette and the pi theme are Dracula+. Pi's boxes use opaque neutral greys, because pi themes have no alpha.
 - Herdr's UI text uses the bundled Google Sans Flex. Paths, names, and numbers in spider's views use Herdr's bundled JetBrains Mono. Your terminal font does not change.
 
-Herdr 0.1.13 retains the alpha-only layout. Verified Herdr 0.1.16 enables neutral window blur by default. Its root and canvas are transparent neutral black, with alpha rising where text sits. Bare chrome uses about 0.6 alpha, menus about 0.94, and text-heavy surfaces use higher alpha to preserve contrast over bright backdrops. A's existing dividers and card edges stay unchanged; blur adds no new edges or shadows. Terminal colors remain Dracula+ over neutral black, never its purple-grey background.
+Herdr 0.1.13 uses an opaque window with a 176-degree gradient from `#18181a` to `#22201e`. Its chrome and sidebar are transparent over that gradient.
 
-Set `"look": { "windowBlur": false }` to disable blur without changing those surface colors. Herdr 0.1.13 stays alpha-only and never receives `window_blur`. The chrome and sidebar are transparent over this ground, as Firefox's toolbars are.
+Verified Herdr 0.1.16 enables neutral window blur by default. Its root and canvas are transparent neutral black, with alpha rising where text sits. Bare chrome uses about 0.6 alpha, menus about 0.94, and text-heavy surfaces use higher alpha to preserve contrast over bright backdrops. The existing dividers and card edges stay unchanged; blur adds no new edges or shadows. Terminal colors remain Dracula+ over neutral black, never its purple-grey background.
+
+Set `"look": { "windowBlur": false }` to disable blur without changing those surface colors. With blur off, the theme background shows behind the transparent `#16161800` root and canvas. The 0.1.16 sidebar is `#161618fa`, not transparent. Herdr 0.1.13 never receives `window_blur`.
 
 ## Shortcuts
 

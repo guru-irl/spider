@@ -17,7 +17,7 @@ import { createHostRoamPlacement } from '../readiness.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { try { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); } finally { vi.restoreAllMocks(); } });
-it.each(['core-only', 'full'] as const)('%s production sync and roaming ports leave rows pending with zero helper launches', async mode => {
+it.each(['core-only', 'full'] as const)('%s production sync starts a presentation helper only when app-capable', async mode => {
   const f = await createClientFixture(); cleanups.push(() => f.close());
   execFileSync('git', ['init', '-q', f.root]);
   vi.spyOn(process, 'cwd').mockReturnValue(f.root);
@@ -52,7 +52,8 @@ it.each(['core-only', 'full'] as const)('%s production sync and roaming ports le
     expect(await ports.prepareHandoff(source.sessionId!, source)).toMatchObject({ status: 'pending', presentation: null });
     expect(await ports.presentReadyTarget(source)).toMatchObject({ status: 'pending', presentation: null });
   }
-  expect(launches).toEqual([]);
+  expect(launches).toHaveLength(mode === 'core-only' ? 0 : 1);
+  if (mode === 'full') expect(launches[0]).toMatchObject({ argv: expect.arrayContaining(['panes', 'serve']), background: true, noNotify: true, parent: null });
   if (mode === 'core-only') expect(app).not.toHaveBeenCalled();
   else expect(app).toHaveBeenCalled();
 });

@@ -104,10 +104,10 @@ export async function connectPaneService(options: PaneServiceConnectOptions): Pr
       if (helper.address !== row.address || !helper.address.startsWith(`${identity.coreId}/`) || helper.labels['spider.kind'] !== 'pane-service' || helper.parent !== null) throw new HerdrError('service-identity', 'Service helper identity does not match');
       if (helper.state === 'finished') return false;
     }
-    // Only an existing private owner can claim a reply after a lost launch response.
-    if (!await safeSocket(join(root, 'service.sock'))) return false;
-    try { await rpc(root, { version: 1, op: 'snapshot', operationId: randomUUID() }); return true; }
-    catch (error) { if (code(error) === 'ECONNREFUSED' || code(error) === 'ENOENT') return false; throw error; }
+    // The private claim and live helper establish ownership; a listener proves readiness.
+    const socket = join(root, 'service.sock');
+    if (!await safeSocket(socket)) return false;
+    return isCoreAvailable({ HC_SOCKET: socket });
   }
   async function ready(row: Claim): Promise<void> {
     await new Promise<void>((resolve, reject) => {

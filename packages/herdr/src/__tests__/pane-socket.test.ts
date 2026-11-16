@@ -35,6 +35,11 @@ async function fixture() {
   const options: PaneServiceConnectOptions = { root: stateRoot, identity: { coreId: 'core-local' as never, socket, sessionNamespace: 'test' }, startIfMissing: true, launchHelper, probeHelper };
   return { root, options, service, launchHelper, probeHelper, stopHelper: async () => { if (currentAddress) ended.add(currentAddress); await running?.close(); } };
 }
+test('connecting verifies the listener without requesting inventory', async () => {
+  const f = await fixture(); const client = await connectPaneService(f.options);
+  expect(f.service.request).not.toHaveBeenCalled();
+  await client.stop();
+});
 test('two clients share one service claim', async () => {
   const f = await fixture(); const [a, b] = await Promise.all([connectPaneService(f.options), connectPaneService(f.options)]);
   expect(f.launchHelper).toHaveBeenCalledTimes(1);

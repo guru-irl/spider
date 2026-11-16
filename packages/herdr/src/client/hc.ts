@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { invokeCli as invokeTransport } from './cli-transport.js';
 import { trackAvailability } from './availability.js';
+import { operationObservation } from './operation.js';
 import childProcess from 'node:child_process';
 import { requireCoreAvailable } from './liveness.js';
 import { realpathSync, existsSync } from 'node:fs';
@@ -18,7 +19,9 @@ export async function invokeCli(binary: string, argv: readonly string[], env: Re
   catch (error) { if (callOptions.signal?.aborted) throw new HerdrError('cli-aborted', 'CLI request aborted'); throw error; }
   // hc has no no-autostart mode. Keep the unavoidable check-then-call race to
   // this immediate spawn; a core exiting in that gap can still be auto-started.
-  return invokeTransport(binary, argv, environment, maxBytes, input, callOptions);
+  const invoke = () => invokeTransport(binary, argv, environment, maxBytes, input, callOptions);
+  return argv.length === 3 && argv[0] === 'server' && argv[1] === 'status' && argv[2] === '--json'
+    ? operationObservation(JSON.stringify(['core', binary, environment.HC_SOCKET, env.HC_SESSION]), invoke) : invoke();
 }
 function physicalPath(path: string): string {
   const tail: string[] = []; let parent = resolve(path);

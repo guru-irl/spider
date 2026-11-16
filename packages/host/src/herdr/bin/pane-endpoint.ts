@@ -17,7 +17,7 @@ import { createTerminalRegistry, readPrivateJson } from '../../../../herdr/src/s
 import { parseFeed } from '../../../../herdr/assets/shared/feed.js';
 import { processStartTime } from '../../../../subagents/src/process-identity.js';
 import { createPaneSourceEffects } from '../pane-source.js';
-import { handleRemotePaneRequest, readPaneSourceInventory, type PaneEndpointPorts, type PaneSourceInventoryPorts } from '../pane-endpoint.js';
+import { handleRemotePaneRequest, readPaneSourceInventory, resolvePaneSourceOwner, type PaneEndpointPorts, type PaneSourceInventoryPorts } from '../pane-endpoint.js';
 
 export { stagePaneEndpointInstallation } from '../pane-installation.js';
 
@@ -79,17 +79,7 @@ export function createProductionPaneEndpointPorts(buildDigest: string, env: Read
       async readConsoles(owner) { return (await effects()).readConsoles(owner); }, clock: Date.now,
     } satisfies PaneSourceInventoryPorts;
   })();
-  const resolveOwner: PaneEndpointPorts['resolveOwner'] = async (sessionId, generation) => {
-    const p = await source(); let cursor: string | null = null;
-    do {
-      const page = await readPaneSourceInventory(cursor, { ...p, readConsoles: async () => [] });
-      if (!page.complete) throw new HerdrError('pane-inventory-incomplete', 'Source inventory is incomplete');
-      const match = page.rows.find(row => row.sessionId === sessionId && row.generation === generation && row.unavailableReason === null);
-      if (match?.owner) return match.owner;
-      cursor = page.next;
-    } while (cursor !== null);
-    throw new HerdrError('stale-pane-owner', 'Source owner is unavailable');
-  };
+  const resolveOwner: PaneEndpointPorts['resolveOwner'] = async (sessionId, generation) => resolvePaneSourceOwner(sessionId, generation, await source());
   return {
     protocol: 1, buildDigest, resolveOwner,
     async dispose() { await ownedClient?.dispose(); },

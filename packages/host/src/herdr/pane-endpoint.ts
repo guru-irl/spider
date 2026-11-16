@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import type { CoreIdentity, Generation, Owner, SessionFeed, SessionId } from '../../../herdr/src/contracts.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
+import { operationObservation, withHcOperation } from '../../../herdr/src/client/operation.js';
 import { paneId, parsePaneInventoryPage, parseRemotePaneReply, parseRemotePaneRequest, PANE_REPLY_LIMIT } from '../../../herdr/src/panes/codec.js';
 import type { PaneActionOutcome, PaneAgentRow, PaneInventoryPage, PaneConsoleRow, PaneTarget, PaneTerminalFacts, RemotePaneReply, RemotePaneRequest } from '../../../herdr/src/panes/types.js';
 import type { ProcessProbe } from '../../../herdr/src/sessions/lease.js';
@@ -43,9 +44,23 @@ function terminalAddress(identity: CoreIdentity, id: string): string { return `$
 function matchingOwner(a: Owner, b: Owner): boolean {
   return a.sessionId === b.sessionId && a.generation === b.generation && a.terminal.coreId === b.terminal.coreId && a.terminal.socket === b.terminal.socket && a.terminal.sessionNamespace === b.terminal.sessionNamespace && a.terminal.terminalId === b.terminal.terminalId && a.sessionFile === b.sessionFile;
 }
-/** Build a page from current live process, feed, mapping, and terminal facts on this source. */
-export async function readPaneSourceInventory(cursor: string | null, ports: PaneSourceInventoryPorts): Promise<PaneInventoryPage> {
-  const [identity, presence, mappings] = await Promise.all([ports.identity(), ports.listPresence(), ports.listMappings()]);
+function sourceSnapshot(ports: PaneSourceInventoryPorts) {
+  return operationObservation(ports, async () => {
+    const [identity, presence, mappings] = await Promise.all([ports.identity(), ports.listPresence(), ports.listMappings()]);
+    return { identity, presence, mappings, facts: new Map<string, Promise<PaneTerminalFacts>>(), pages: new Map<string, Promise<PaneInventoryPage>>() };
+  });
+}
+/** Build a page once per operation, retaining fresh feed and process checks at launch. */
+export function readPaneSourceInventory(cursor: string | null, ports: PaneSourceInventoryPorts, includeConsoles = true): Promise<PaneInventoryPage> {
+  return sourceSnapshot(ports).then(snapshot => {
+    const page = JSON.stringify([cursor, includeConsoles]);
+    let result = snapshot.pages.get(page);
+    if (!result) { result = buildPaneSourceInventory(cursor, ports, includeConsoles, snapshot); snapshot.pages.set(page, result); }
+    return result;
+  });
+}
+async function buildPaneSourceInventory(cursor: string | null, ports: PaneSourceInventoryPorts, includeConsoles: boolean, snapshot: Awaited<ReturnType<typeof sourceSnapshot>>): Promise<PaneInventoryPage> {
+  const { identity, presence, mappings } = snapshot;
   let complete = true;
   const live: PresenceRecord[] = [];
   for (const item of presence) {
@@ -71,13 +86,16 @@ export async function readPaneSourceInventory(cursor: string | null, ports: Pane
     try {
       const feed = await ports.readFeed(sessionId);
       if (!feed || feed.lifecycle !== 'live' || !matchingOwner(owner, feed.owner) || feed.sessionId !== sessionId || feed.generation !== owner.generation) { complete = false; continue; }
-      const facts = await ports.readTerminal(owner);
+      const factKey = JSON.stringify([owner.sessionId, owner.generation, owner.terminal.coreId, owner.terminal.terminalId]);
+      let observed = snapshot.facts.get(factKey);
+      if (!observed) { observed = ports.readTerminal(owner); snapshot.facts.set(factKey, observed); }
+      const facts = await observed;
       if (facts.terminal.state !== 'live' || (facts.terminal.address !== owner.terminal.address && facts.terminal.address !== terminalAddress(identity, owner.terminal.terminalId))) { complete = false; continue; }
       if (['pane-proxy', 'roam-proxy'].includes(facts.identityLabels['spider.kind'] ?? '')) { complete = false; continue; }
       const target: PaneTarget = { coreId: identity.coreId, terminalId: owner.terminal.terminalId, address: terminalAddress(identity, owner.terminal.terminalId) as PaneTarget['address'], createdMs: facts.createdMs, identityLabels: facts.identityLabels, alias: null, machineId: null, kind: 'session', sessionId, generation: owner.generation, homeEpoch: await ports.readHomeEpoch?.(sessionId) ?? 0, runId: null, consoleId: null, name: item.sessionName, cwd: facts.currentCwd };
       if (feed.runs.truncated) complete = false;
       let consoles: readonly PaneConsoleRow[] | null;
-      try { consoles = await ports.readConsoles(owner); } catch { consoles = null; }
+      try { consoles = includeConsoles ? await ports.readConsoles(owner) : []; } catch { consoles = null; }
       if (consoles === null) complete = false;
       if (consoles?.some(console => console.target && (console.target.kind !== 'console' || console.target.sessionId !== sessionId || console.target.generation !== owner.generation || console.target.consoleId !== console.consoleId))) throw new HerdrError('invalid-pane-console', 'Console does not belong to the source session');
       rows.push({ sessionId, generation: owner.generation, name: item.sessionName, owner, target, status: feed.status.effective ?? feed.status.native ?? 'unknown', updatedAt: feed.updatedAt, machineKey: identity.coreId, unavailableReason: null, children: feed.runs.rows.map(run => ({ runId: run.id, name: run.name, status: run.status })), consoles: consoles ?? [] });
@@ -111,13 +129,35 @@ export async function readPaneSourceInventory(cursor: string | null, ports: Pane
   const end = offset + selected.length;
   return parsePaneInventoryPage({ version: 1, rows: selected, next: end < rows.length ? `v1:${fingerprint}:${end}` : null, complete });
 }
+export async function resolvePaneSourceOwner(sessionId: SessionId, generation: Generation, ports: PaneSourceInventoryPorts): Promise<Owner> {
+  let cursor: string | null = null;
+  do {
+    const page = await readPaneSourceInventory(cursor, ports, false);
+    if (!page.complete) throw new HerdrError('pane-inventory-incomplete', 'Source inventory is incomplete');
+    const match = page.rows.find(row => row.sessionId === sessionId && row.generation === generation && row.unavailableReason === null);
+    if (match?.owner) {
+      const owner = match.owner, feed = await ports.readFeed(sessionId);
+      if (!feed || feed.lifecycle !== 'live' || feed.sessionId !== sessionId || feed.generation !== generation || !matchingOwner(owner, feed.owner)) throw new HerdrError('stale-pane-owner', 'Source session changed');
+      const presence = (await sourceSnapshot(ports)).presence.filter(item => item.kind === 'top-level' && item.sessionId === sessionId);
+      if (presence.length !== 1) throw new HerdrError('stale-pane-owner', 'Source process is ambiguous');
+      const probe = await ports.probe(presence[0].pid);
+      if (probe.kind !== 'live' || probe.startIdentity !== presence[0].startIdentity) throw new HerdrError('stale-pane-owner', 'Source process changed');
+      return owner;
+    }
+    cursor = page.next;
+  } while (cursor !== null);
+  throw new HerdrError('stale-pane-owner', 'Source owner is unavailable');
+}
 async function ownerFor(request: { sessionId: SessionId; generation: Generation }, ports: PaneEndpointPorts): Promise<Owner> {
   const owner = await ports.resolveOwner(request.sessionId, request.generation);
   if (owner.sessionId !== request.sessionId || owner.generation !== request.generation) throw new HerdrError('stale-pane-owner', 'Session generation changed');
   return owner;
 }
 /** Requests are decoded again at the source boundary before any effect is delegated. */
-export async function handleRemotePaneRequest(input: RemotePaneRequest, ports: PaneEndpointPorts): Promise<RemotePaneReply> {
+export function handleRemotePaneRequest(input: RemotePaneRequest, ports: PaneEndpointPorts): Promise<RemotePaneReply> {
+  return withHcOperation(() => applyRemotePaneRequest(input, ports));
+}
+async function applyRemotePaneRequest(input: RemotePaneRequest, ports: PaneEndpointPorts): Promise<RemotePaneReply> {
   const request = parseRemotePaneRequest(input);
   let reply: RemotePaneReply;
   switch (request.op) {

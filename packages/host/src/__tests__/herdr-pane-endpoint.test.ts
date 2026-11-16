@@ -9,10 +9,11 @@ import { mapWorkspace } from '@spider/db-core/roam/repo-map';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/isolated.js';
 import { createProcessPresence } from '../../../herdr/src/sessions/presence.js';
 import { createTerminalRegistry, writePrivateJson } from '../../../herdr/src/sessions/registry.js';
+import { withHcOperation } from '../../../herdr/src/client/operation.js';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import type { CoreIdentity, Owner, SessionFeed } from '../../../herdr/src/contracts.js';
 import type { PaneTerminalFacts } from '../../../herdr/src/panes/types.js';
-import { createSourcePaneFolderPorts, handleRemotePaneRequest, readPaneSourceInventory, type PaneEndpointPorts, type PaneSourceInventoryPorts } from '../herdr/pane-endpoint.js';
+import { createSourcePaneFolderPorts, handleRemotePaneRequest, readPaneSourceInventory, resolvePaneSourceOwner, type PaneEndpointPorts, type PaneSourceInventoryPorts } from '../herdr/pane-endpoint.js';
 
 const identity = { coreId: 'core-1', socket: '/home/example/core.sock', sessionNamespace: 'fixture' } as CoreIdentity;
 const owner = { sessionId: 'session-1', generation: 'gen-1', terminal: { ...identity, terminalId: 't7', address: 't7' }, cwd: '/home/example/start', sessionFile: '/home/example/session.jsonl', name: 'Old name' } as Owner;
@@ -97,6 +98,22 @@ test('endpoint handshake rejects incompatible build', async () => {
   await expect(handleRemotePaneRequest({ version: 1, op: 'handshake', protocol: 1, buildDigest: 'b'.repeat(64) }, p)).rejects.toThrow();
   expect(p.listRows).not.toHaveBeenCalled();
   expect(await handleRemotePaneRequest({ version: 1, op: 'handshake', protocol: 1, buildDigest: digest }, p)).toEqual({ version: 1, op: 'handshake', protocol: 1, buildDigest: digest });
+});
+test('source owner checks reuse one inventory but recheck the live feed and process', async () => {
+  const p = source(); p.readTerminal = vi.fn(p.readTerminal); p.listPresence = vi.fn(p.listPresence);
+  let current = feed;
+  p.readFeed = async () => current;
+  await withHcOperation(async () => {
+    expect((await readPaneSourceInventory(null, p)).rows).toHaveLength(1);
+    expect(await resolvePaneSourceOwner(owner.sessionId, owner.generation, p)).toEqual(owner);
+    expect(await resolvePaneSourceOwner(owner.sessionId, owner.generation, p)).toEqual(owner);
+    expect(p.readTerminal).toHaveBeenCalledTimes(1);
+    expect(p.listPresence).toHaveBeenCalledTimes(1);
+    current = { ...feed, generation: 'changed-generation' as Owner['generation'] };
+    await expect(resolvePaneSourceOwner(owner.sessionId, owner.generation, p)).rejects.toThrow();
+    current = feed; p.probe = async () => ({ kind: 'absent' });
+    await expect(resolvePaneSourceOwner(owner.sessionId, owner.generation, p)).rejects.toThrow();
+  });
 });
 test('production source reads verified private presence mapping and feed without app calls', async () => {
   const h = await createHerdrHarness('fake');

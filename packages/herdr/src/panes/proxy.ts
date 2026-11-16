@@ -80,7 +80,7 @@ export async function runPaneProxy(input: PaneProxyInput, ports: PaneProxyPorts)
       const gated = current.mode === 'proxy' && !!conversion || current.mode === 'native' && (!current.proxy || conversion?.destination.coreId === current.target.coreId);
       const target = current.mode === 'native' && conversion ? conversion.destination : current.target;
       active = new AbortController(); const cancel = () => active?.abort(); stop.signal.addEventListener('abort', cancel, { once: true });
-      let attached: Promise<AttachEnd> | null = null;
+      let attached: Promise<AttachEnd> | null = null, completion: Promise<boolean> | null = null;
       try {
         if (gated) {
           await status(current.mode === 'proxy' ? 'moved to This computer; focus to reconnect' : `Opening presentation on ${target.alias ?? 'Machine unavailable'}`);
@@ -102,14 +102,26 @@ export async function runPaneProxy(input: PaneProxyInput, ports: PaneProxyPorts)
             if (!matches(target, await ports.probe(target))) throw new HerdrError('target-changed', 'Execution target changed after attach');
             if (!active.signal.aborted && binding?.revision === current.revision && mode === 'interactive') await ports.tty.releaseInput(gate);
           }
-          await attached;
+          if (input.waitingClaim) {
+            const signal = active.signal;
+            completion = (async () => {
+              while (!signal.aborted) {
+                await ports.delay(1000, signal); if (signal.aborted) break;
+                let observed: PaneTerminalFacts; try { observed = await ports.probe(target); } catch { continue; }
+                if (!matches(target, observed)) throw new HerdrError('target-changed', 'Execution target changed during attach');
+                if (observed.terminal.state === 'finished') return true;
+              }
+              return false;
+            })();
+            if (await Promise.race([attached.then(() => false), completion])) { await status('Program finished'); return 0; }
+          } else await attached;
           // No authenticated detach marker is proved, including exit code zero.
         }
       } catch (error) {
         if (stop.signal.aborted) break;
         if (binding?.revision === current.revision && !active.signal.aborted) await status(`${target.alias ?? 'Machine unavailable'}: reconnecting`);
       } finally {
-        active.abort(); if (attached) await attached.catch(() => {});
+        active.abort(); if (attached) await attached.catch(() => {}); await completion?.catch(() => false);
         // The packaged attach cancellation closes the gate and reaps its child.
         await reset(); stop.signal.removeEventListener('abort', cancel);
       }

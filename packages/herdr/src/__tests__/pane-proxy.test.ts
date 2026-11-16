@@ -183,6 +183,17 @@ test('waiting claim publication between initial read and watcher registration is
   expect(await runPaneProxy({ ...input, waitingClaim: { operationId: 'own-launch', generation: 'gen-1' } }, f.ports)).toBe(0);
   expect(f.addresses).toEqual(['core-remote/t7']);
 });
+test('an attached waiting proxy exits on its own proved finish without waiting for attach to close', async () => {
+  const f = fixture(), own = presentation(2); own.proxyOperationId = 'own-launch'; own.target = { ...own.target, generation: 'gen-1' as never }; f.change(own);
+  let probes = 0; const probe = vi.mocked(f.ports.probe).getMockImplementation()!;
+  vi.mocked(f.ports.probe).mockImplementation(async target => { const facts = await probe(target); return { ...facts, terminal: { ...facts.terminal, state: ++probes >= 3 ? 'finished' : 'live' } }; });
+  vi.mocked(f.ports.delay).mockImplementation(async () => { await Promise.resolve(); });
+  vi.mocked(f.ports.attach).mockImplementation(async (_argv, _mode, signal, gate) => { gate.markAttached(); return new Promise(resolve => signal.addEventListener('abort', () => resolve({ kind: 'stream-loss', exitCode: 0 }), { once: true })); });
+  const fallback = setTimeout(() => f.stop.abort(), 100);
+  try { expect(await runPaneProxy({ ...input, waitingClaim: { operationId: 'own-launch', generation: 'gen-1' } }, f.ports)).toBe(0); }
+  finally { clearTimeout(fallback); }
+  expect(f.ports.status).toHaveBeenCalledWith('Program finished');
+});
 test('a waiting proxy exits when its own generation and operation binding finishes', async () => {
   const f = fixture(), own = presentation();
   own.proxyOperationId = 'own-launch'; own.target = { ...own.target, kind: 'subagent', generation: 'gen-1' as never, sessionId: 'session-1' as never, runId: 'run-1' as never }; f.change(own);

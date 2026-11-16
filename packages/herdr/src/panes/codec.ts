@@ -164,6 +164,7 @@ export function parsePaneServiceRequest(value: unknown): PaneServiceRequest {
   const bound = () => ({ ...base, presentationId: paneId(r.presentationId), expectedRevision: paneNumber(r.expectedRevision) });
   switch (r.op) {
     case 'snapshot': check(); return { ...base, op: r.op };
+    case 'ready-outcome': check('presentationId'); return { ...base, op: r.op, presentationId: paneId(r.presentationId) };
     case 'open': { check('intent', 'machineKey', 'coreId', 'machineId'); const intent = parsePaneOpenIntent(r.intent); if (intent.operationId !== base.operationId) return invalid('Creation operation differs'); return { ...base, op: r.op, intent, machineKey: paneText(r.machineKey), coreId: paneId(r.coreId) as CoreId, machineId: nullable(r.machineId, paneId) }; }
     case 'open-existing':
       if ('presentationId' in r) {

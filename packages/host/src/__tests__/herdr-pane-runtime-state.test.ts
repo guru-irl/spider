@@ -419,3 +419,17 @@ test.each(['no Mac view', 'app closed', 'service down', 'core-only'] as const)('
   expect(commands).not.toHaveBeenCalled();
 });
 
+test('a finished execution terminal cannot become a presentation destination', async () => {
+  const { root, runtime, hc } = await fixture();
+  const source = sessionRow(), destination = sessionRow('gen-2');
+  destination.target = { ...destination.target, terminalId: 'finished' as never, address: 'core-remote/finished' as never, homeEpoch: 1 };
+  boundary.rows = [destination];
+  const p: PanePresentation = { ...presentation('not-finished'), target: source.target, role: 'agent', visibility: 'parked' };
+  await runtime.store.update(state => ({ ...state, presentations: [p] }));
+  boundary.facts.mockImplementation(async target => ({ ...facts({ target, id: target.terminalId } as PanePresentation), terminal: { ...facts(p).terminal, address: target.address, state: 'finished' } }));
+  const service = runtime.createService();
+  const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
+  expect(await operations.presentReadyTarget(destination.target)).toMatchObject({ status: 'pending', reason: 'readiness-unavailable' });
+  expect((await runtime.store.read()).presentations[0]).toEqual(p);
+  expect(hc.run).not.toHaveBeenCalled();
+});

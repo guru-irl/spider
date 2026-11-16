@@ -164,15 +164,21 @@ export function createRoamPresentationOperations(options: {
         };
         if (previous) {
           const same = samePaneTarget(previous.target, target);
-          if (same && priorOutcome?.status === 'complete' && priorOutcome.presentation?.revision === current?.revision && presented()) return result('complete', 'already-presented', current ?? null);
-          // Replay the exact persisted operation before interpreting a changed revision or
-          // creating its successor. A timeout does not establish that its effects stopped.
-          const replay = await request(previous, p);
-          if (unknown(replay)) return remember(previous, replay);
+          const queried = await request({ version: 1, op: 'ready-outcome', operationId: previous.operationId, presentationId: previous.presentationId }, p);
+          await remember(previous, queried);
           current = (await presentations(target.sessionId!)).find(item => item.id === p.id);
-          if (same && replay.status === 'complete') return remember(previous, replay);
-          if (same && replay.reason === 'stale-presentation' && (!priorOutcome || priorOutcome.status === 'complete' || unknown(priorOutcome)) && presented()) return remember(previous, result('complete', 'already-presented', current ?? null));
-          if (same && replay.reason !== 'stale-presentation') return remember(previous, replay);
+          if (!same) {
+            await writePrivateJson(join(directory, hash(p.id) + '.superseded.json'), { request: previous, outcome: queried.reason === 'operation-unknown' ? priorOutcome ?? queried : queried, superseded: true });
+          } else {
+            if (queried.status === 'complete' && presented()) return remember(previous, result('complete', 'already-presented', current ?? null));
+            // Only the current destination may retry an action. Queries never dispatch effects.
+            const replay = await request(previous, p);
+            if (unknown(replay)) return remember(previous, replay);
+            current = (await presentations(target.sessionId!)).find(item => item.id === p.id);
+            if (replay.status === 'complete') return remember(previous, replay);
+            if (replay.reason === 'stale-presentation' && (!priorOutcome || priorOutcome.status === 'complete' || unknown(priorOutcome)) && presented()) return remember(previous, result('complete', 'already-presented', current ?? null));
+            if (replay.reason !== 'stale-presentation') return remember(previous, replay);
+          }
         } else if (presented()) return result('complete', 'already-presented', current ?? null);
         if (!current || current.visibility === 'closing' || current.visibility === 'ended') return result('refused', 'Session changed. Close again.', current ?? null);
         const input: Extract<PaneServiceRequest, { op: 'present-ready' }> = {

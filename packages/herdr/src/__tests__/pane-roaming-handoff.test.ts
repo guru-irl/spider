@@ -17,6 +17,7 @@ import { createPanePlacementStore } from '../panes/store.js';
 import type { PanePresentation, PaneServiceRequest, PaneTarget } from '../panes/types.js';
 import { createRoamPlacement, createRoamPresentationOperations, rememberRoamSlot } from '../roam-placement.js';
 import { HerdrError } from '../client/parse.js';
+import { hash, readPrivateJson } from '../sessions/registry.js';
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -96,7 +97,7 @@ async function fixture() {
     lateLegacy: () => { displays.set('legacy-proxy', { ...(displays.get('t3') ?? { target: remote }), id: 'legacy' } as PanePresentation); placements.set('legacy-proxy' as TerminalAddress, slot); },
     displays,
     close: (p: PanePresentation) => confirmPresentationClose({ id: p.id, expectedRevision: p.revision, target: p.target, operationId: 'stale-close' }, { store, hc, app, validateTarget: open.validateTarget, closeSession: async () => { throw Error('cannot close a successor'); } }), stop: () => service.stop(),
-    focus: (value: boolean) => { focused = value; }, absent: () => { appPresent = false; open.app = null; },
+    focus: (value: boolean) => { focused = value; }, focusSource: () => { focused = true; focusSlot = slot; }, absent: () => { appPresent = false; open.app = null; },
     replaceSource: () => { open.readNativeTarget = async () => ({ ...source, createdMs: source.createdMs + 1, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null }); },
     nativeTarget: (value: PaneTarget) => { open.readNativeTarget = async () => ({ ...value, kind: 'terminal', sessionId: null, generation: null, homeEpoch: null }); },
     loseReadyReply: () => { loseReadyReply = true; },
@@ -226,7 +227,9 @@ test('lost readiness reply reuses the recorded service request', async () => {
     await f.operations().prepareHandoff(f.source.sessionId!, f.source); f.loseReadyReply();
     expect((await f.operations().presentReadyTarget(f.remote)).status).toBe('pending');
     expect((await f.operations().presentReadyTarget(f.remote)).status).toBe('complete');
-    expect(f.requests.filter(request => request.op === 'present-ready')[0]).toEqual(f.requests.filter(request => request.op === 'present-ready')[1]);
+    const actions = f.requests.filter(request => request.op === 'present-ready');
+    expect(actions).toHaveLength(1);
+    expect(f.requests.filter(request => request.op === 'ready-outcome')).toEqual([{ version: 1, op: 'ready-outcome', operationId: actions[0].operationId, presentationId: actions[0].presentationId }]);
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
     expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
   } finally { await f.stop(); }
@@ -314,7 +317,8 @@ test('an in-progress ready operation retains its identity until completion', asy
     gate.release(); await gate.done;
     expect(await f.operations().presentReadyTarget(f.remote)).toMatchObject({ status: 'complete' });
     const requests = f.requests.filter(request => request.op === 'present-ready');
-    expect(requests[1]).toEqual(requests[0]);
+    expect(requests).toHaveLength(1);
+    expect(f.requests.filter(request => request.op === 'ready-outcome')).toEqual([{ version: 1, op: 'ready-outcome', operationId: requests[0].operationId, presentationId: requests[0].presentationId }]);
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
     expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
   } finally { gate.release(); await f.stop(); }
@@ -326,7 +330,8 @@ test('readiness after a park asks for its original outcome without retiring the 
     await f.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, visibility: 'parked', revision: p.revision + 1 })) }));
     expect(await f.operations().presentReadyTarget(f.remote)).toMatchObject({ status: 'complete', presentation: { visibility: 'parked' } });
     const requests = f.requests.filter(request => request.op === 'present-ready');
-    expect(requests[1]).toEqual(requests[0]);
+    expect(requests).toHaveLength(1);
+    expect(f.requests.filter(request => request.op === 'ready-outcome')).toEqual([{ version: 1, op: 'ready-outcome', operationId: requests[0].operationId, presentationId: requests[0].presentationId }]);
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
     expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
   } finally { await f.stop(); }
@@ -411,5 +416,25 @@ test('a completed parked binding clears the previous spawn budget', async () => 
     expect(await f.operations().presentReadyTarget(target('core-remote', 't6', 4))).toMatchObject({ status: 'complete' });
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(3);
     expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
+  } finally { await f.stop(); }
+});
+
+
+test('a changed revision and destination query the saved operation without acting on its old target', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source); f.screen(false);
+    expect((await f.operations().presentReadyTarget(f.remote)).status).toBe('pending');
+    const saved = f.requests.find(request => request.op === 'present-ready')!;
+    const revision = 'expectedRevision' in saved ? saved.expectedRevision : -1;
+    expect((await f.store.read()).presentations[0].revision).toBeGreaterThan(revision);
+    const before = f.requests.length, next = target('core-remote', 't4', 3); f.screen(true); f.focusSource();
+    expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete', presentation: { target: next, conversion: null } });
+    const requests = f.requests.slice(before);
+    expect(requests.filter(request => request.op === 'ready-outcome')).toEqual([{ version: 1, op: 'ready-outcome', operationId: saved.operationId, presentationId: (await f.store.read()).presentations[0].id }]);
+    expect(requests.filter(request => request.op === 'present-ready')).toMatchObject([{ target: next }]);
+    expect(requests.filter(request => request.op === 'present-ready')).toHaveLength(1);
+    expect(await readPrivateJson(join(f.stateRoot, 'ready-requests', hash((await f.store.read()).presentations[0].id) + '.superseded.json'))).toMatchObject({ request: saved, outcome: { status: 'pending', reason: 'conversion-pending' }, superseded: true });
+    expect((await f.store.read()).presentations).toMatchObject([{ target: next, mode: 'proxy' }]);
+    expect((await f.store.read()).presentations).toHaveLength(1);
   } finally { await f.stop(); }
 });

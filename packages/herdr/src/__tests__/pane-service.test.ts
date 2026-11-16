@@ -641,3 +641,34 @@ test('capped display snapshots retain the full private placement inventory', asy
   expect(await service.request({ version: 1, op: 'move', operationId: 'private-placement', presentationId: 'p1', expectedRevision: 1, slot: { space: 's1' as never, tab: 'tab-1' as never, pane: null } })).toMatchObject({ outcome: { reason: 'name-ambiguous' } });
   await service.stop();
 });
+
+
+test('ready outcome queries remain read-only after revision changes and service restart', async () => {
+  const f = await fixture();
+  const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'query-ready', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
+  const service = createPaneService(f.ports), completed = await service.request(request); await service.stop();
+  await f.ports.store.update(state => ({ ...state, presentations: [{ ...f.presentation, revision: 2, visibility: 'parked' }] }));
+  const before = await f.ports.store.read(); vi.mocked(f.ports.validateTarget).mockClear();
+  const restarted = createPaneService(f.ports);
+  try {
+    expect(await restarted.request({ version: 1, op: 'ready-outcome', operationId: request.operationId, presentationId: 'p1' })).toEqual(completed);
+    expect(await restarted.request({ version: 1, op: 'ready-outcome', operationId: 'unknown', presentationId: 'p1' })).toMatchObject({ outcome: { status: 'pending', reason: 'operation-unknown' } });
+    expect(await f.ports.store.read()).toEqual(before);
+    expect(f.ports.dispatch).toHaveBeenCalledTimes(1);
+    expect(f.ports.validateTarget).not.toHaveBeenCalled();
+  } finally { await restarted.stop(); }
+});
+test('ready outcome queries observe in-progress operations without dispatch or waiting for their effects', async () => {
+  const f = await fixture(); let finish!: () => void, entered!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  f.ports.dispatch = vi.fn(async () => { entered(); await new Promise<void>(resolve => { finish = resolve; }); return { status: 'pending', reason: 'screen-pending', presentation: f.presentation }; });
+  const service = createPaneService(f.ports);
+  const request = { version: 1 as const, op: 'present-ready' as const, operationId: 'query-running', presentationId: 'p1', expectedRevision: 1, target: f.presentation.target };
+  const running = service.request(request); await started;
+  try {
+    expect(await service.request({ version: 1, op: 'ready-outcome', operationId: request.operationId, presentationId: 'p1' })).toMatchObject({ outcome: { status: 'pending', reason: 'operation-in-progress' } });
+    finish(); const completed = await running;
+    expect(await service.request({ version: 1, op: 'ready-outcome', operationId: request.operationId, presentationId: 'p1' })).toEqual(completed);
+    expect(f.ports.dispatch).toHaveBeenCalledTimes(1);
+  } finally { finish(); await running; await service.stop(); }
+});

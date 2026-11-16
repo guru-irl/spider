@@ -97,10 +97,11 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
     do { const page = await inventory(machine, cursor); if (!page.complete) throw new HerdrError('pane-inventory-incomplete', 'Source inventory is incomplete'); rows.push(...page.rows); if (rows.length > 4096) throw new HerdrError('pane-inventory-limit', 'Source inventory exceeded its bound'); cursor = page.next; } while (cursor !== null);
     return rows;
   };
-  const validateTarget: PaneOpenPorts['validateTarget'] = async target => {
+  const validateTarget: PaneOpenPorts['validateTarget'] = async (target, cause) => {
     const machine = await findMachine(target.coreId);
     if (machine.alias !== target.alias || machine.machineId !== target.machineId) throw new HerdrError('machine-changed', 'Execution source changed');
     const facts = await readPaneTerminal(target, { binary: config.core.binary, env });
+    if (cause !== 'close' && facts.terminal.state === 'finished') throw new HerdrError('pane-target-finished', 'Execution target has finished');
     if (target.kind === 'session' && facts.terminal.state !== 'finished') {
       const row = (await allRows(machine)).find(row => row.sessionId === target.sessionId && row.generation === target.generation && row.target?.terminalId === target.terminalId && row.target.createdMs === target.createdMs);
       if (!row?.target || row.target.homeEpoch !== target.homeEpoch) throw new HerdrError('stale-pane-owner', 'Source session changed');

@@ -63,6 +63,7 @@ interface PresentationRequest extends RequestBase { presentationId: string; expe
 /** Target-bearing handoff and close requests still require source-owned validation before effects. */
 export type PaneServiceRequest =
   | (RequestBase & { op: 'snapshot' })
+  | (RequestBase & { op: 'ready-outcome'; presentationId: string })
   | (RequestBase & { op: 'open'; intent: PaneOpenIntent; machineKey: string; coreId: CoreId; machineId: string | null })
   | (PresentationRequest & { op: 'open-existing'; targetIncarnation: Pick<PaneTarget, 'coreId' | 'terminalId' | 'createdMs'> })
   | (RequestBase & { op: 'open-existing'; sessionId: SessionId; generation: Generation; slot: PaneSlot | null })

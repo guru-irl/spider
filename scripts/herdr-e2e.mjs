@@ -151,6 +151,7 @@ export function storyWorkerEnvironment(fenced, caller, tier) {
   return { ...fenced, ...(tier === 'remote' && caller.SSH_AUTH_SOCK ? { SSH_AUTH_SOCK: caller.SSH_AUTH_SOCK } : {}),
     ...(caller.SPIDER_HERDR_E2E_HC ? { SPIDER_HERDR_E2E_HC: caller.SPIDER_HERDR_E2E_HC } : {}),
     ...(tier === 'app' && caller.SPIDER_HERDR_E2E_APP ? { SPIDER_HERDR_E2E_APP: caller.SPIDER_HERDR_E2E_APP } : {}),
+    ...(tier === 'app' && caller.SPIDER_SPACES_A_SCREENSHOTS_013 === '1' ? { SPIDER_SPACES_A_SCREENSHOTS_013: '1' } : {}),
     ...(tier === 'headless' && base && upstream ? { SPIDER_HERDR_E2E_R14_BASE: base, SPIDER_HERDR_E2E_R14_UPSTREAM: upstream } : {}) };
 }
 export function storyWorkers(options) {

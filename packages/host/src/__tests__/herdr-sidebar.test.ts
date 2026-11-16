@@ -259,7 +259,7 @@ describe('installed agents sidebar', () => {
     expect((await setupHerdr(request, await ports!.setupParts(request))).writes).toEqual([]);
   }, 120_000);
 
-  test('setup refuses a newer upstream app before changing installed files', async () => {
+  test('setup refuses relabelled sources and unlisted releases before changing installed files', async () => {
     const h = harness!, app = join(h.root, 'app-selection');
     const original = await readFile(app, 'utf8');
     const layout = join(h.directories.app, 'layouts/spider-glass.json');
@@ -267,6 +267,9 @@ describe('installed agents sidebar', () => {
     await writeFile(app, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'herdr-app 0.1.13'; else exec '${process.execPath}' '${join(h.root, 'app-selection.mjs')}' "$@"; fi\n`);
     try {
       const request = await ports!.request(join(h.root, 'config.json'));
+      await expect(setupHerdr(request, await ports!.setupParts(request))).rejects.toMatchObject({ code: 'upstream-source-unknown' });
+      expect(await readFile(layout)).toEqual(before);
+      await writeFile(app, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'herdr-app 0.1.17'; else exec '${process.execPath}' '${join(h.root, 'app-selection.mjs')}' "$@"; fi\n`);
       await expect(setupHerdr(request, await ports!.setupParts(request))).rejects.toMatchObject({ code: 'upstream-version-mismatch' });
       expect(await readFile(layout)).toEqual(before);
       await writeFile(app, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo unknown; else exec '${process.execPath}' '${join(h.root, 'app-selection.mjs')}' "$@"; fi\n`);

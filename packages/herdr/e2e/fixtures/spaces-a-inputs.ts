@@ -6,6 +6,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { loadPublishedSpacesARecipe, loadSpacesAFiles, replaySpacesARecipe, type SpacesAVersion } from '../../src/__tests__/spaces-a-fixture.js';
+import { applyLookPatches, type HerdrClones } from '../../src/look/patches.js';
+import { notificationAgentPatches } from '../../src/look/notification-patches.js';
 import { rewriteImportPrefix } from '../../../host/src/herdr/imports.js';
 import { ownedPath, scratchRoot } from '../harness/environment.js';
 
@@ -15,6 +17,9 @@ export async function stageSpacesAFiles(destination: string, version: SpacesAVer
   const root = ownedPath(scratchRoot(), resolve(destination));
   const recipe = loadPublishedSpacesARecipe(version);
   const composed = replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe);
+  const patchInputs = Object.fromEntries(['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome'].map(kind => [kind, { name: kind, clonedFrom: { name: kind, version }, files: composed[kind] }])) as unknown as HerdrClones;
+  const notified = await applyLookPatches(patchInputs, { version: 1, upstreamVersion: version, mods: { agents: notificationAgentPatches, spaces: [], pane: [], tabs: [] } });
+  composed.agents = { ...notified.agents.files };
   const payload = new Map<string, { bytes: Buffer; source: string }>();
   const put = (path: string, bytes: string | Buffer, source: string) => payload.set(path, { bytes: Buffer.from(bytes), source });
   const layout = JSON.parse(await readFile(new URL(`../../src/__tests__/fixtures/herdr-${version}/layouts/main.json`, import.meta.url), 'utf8'));
@@ -39,6 +44,7 @@ export async function stageSpacesAFiles(destination: string, version: SpacesAVer
   await assets('pane', 'mods/spider-pane');
   await assets('tabs', 'mods/spider-tabs');
   await assets('mods/spider', 'mods/spider-panel');
+  put('mods/spider-agents/sound.js', await readFile(join(assetRoot, 'mods/spider/sound.js')), 'asset:mods/spider/sound.js');
   await assets('picker', 'mods/spider-picker');
   if (version === '0.1.16') await assets('toast', 'mods/spider-toast');
   for (const clone of [...Object.values(clones), 'spider-panel', 'spider-picker']) {

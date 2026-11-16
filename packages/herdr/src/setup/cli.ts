@@ -34,7 +34,7 @@ async function readCoreRequest(ports: HerdrCliPorts, path?: string): Promise<Set
   try { return await ports.request(path); }
   catch (error) { if (error instanceof CoreOnlySetupError) return error.request; throw error; }
 }
-const USAGE = 'usage: node <installed-package>/dist/herdr/cli.mjs <command>\nCommands:\n  setup [--dry-run] [--replace-changed] [--config <absolute-user-file>] [--overwrite-unowned-keys] [--allow-staging-app] [--adopt-existing-space <name>]\n  doctor [--config <absolute-user-file>]\n  rollback [--config <absolute-user-file>]\n  resume-offer --config <absolute-user-file>\n  resume --config <absolute-user-file> --file <absolute-session-file> --session-id <id> --cwd <absolute-directory>\n  ipc --descriptor <json> --request <json>\n  memory pending [--repo <absolute-repo-key>]...\n  memory approve|reject --scope global|repo [--repo <absolute-repo-key>] --uuid <uuid>\n  --ssh-shim <ssh-arguments>\n  --remote-observer --observe <address> --hc <absolute-binary> --nonce <nonce> --exit-file <absolute-file>\n  --help, -h' + `\n  ${ADMIN_USAGE}\n    Approve {path, sha256} in admin.wrappers. Reason: nonblank, at most 2048 characters, no controls.\n    Wrapper argv: destination first, then argv after --. Stdio and exit code pass through.\n    Audit: <globalRoot>/herdr/admin/audit.jsonl before launch. Children may use PI_SPIDER_SESSION_ID.\nSetup/doctor/rollback exit codes: 0 success; 1 failure; 2 usage error; 3 incomplete rollback.`;
+const USAGE = 'usage: node <installed-package>/dist/herdr/cli.mjs <command>\nCommands:\n  setup [--dry-run] [--replace-changed] [--config <absolute-user-file>] [--overwrite-unowned-keys] [--merge-native-keys | --decline-native-keys] [--allow-staging-app] [--adopt-existing-space <name>]\n  doctor [--config <absolute-user-file>]\n  rollback [--config <absolute-user-file>]\n  resume-offer --config <absolute-user-file>\n  resume --config <absolute-user-file> --file <absolute-session-file> --session-id <id> --cwd <absolute-directory>\n  ipc --descriptor <json> --request <json>\n  memory pending [--repo <absolute-repo-key>]...\n  memory approve|reject --scope global|repo [--repo <absolute-repo-key>] --uuid <uuid>\n  --ssh-shim <ssh-arguments>\n  --remote-observer --observe <address> --hc <absolute-binary> --nonce <nonce> --exit-file <absolute-file>\n  --help, -h' + `\n  ${ADMIN_USAGE}\n    Approve {path, sha256} in admin.wrappers. Reason: nonblank, at most 2048 characters, no controls.\n    Wrapper argv: destination first, then argv after --. Stdio and exit code pass through.\n    Audit: <globalRoot>/herdr/admin/audit.jsonl before launch. Children may use PI_SPIDER_SESSION_ID.\nSetup/doctor/rollback exit codes: 0 success; 1 failure; 2 usage error; 3 incomplete rollback.`;
 function verificationFailures(details: unknown): readonly DoctorFailure[] {
   if (!details || typeof details !== 'object' || !('failures' in details) || !Array.isArray(details.failures)) return [];
   return details.failures.filter((issue): issue is DoctorFailure => issue !== null && typeof issue === 'object'
@@ -97,6 +97,7 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
     const command = argv[0];
     let configPath: string | undefined;
     let overwrite = false;
+    let nativeKeys: SetupRequest['nativeKeys'];
     let dryRun = false, replaceChanged = false;
     let allowStaging = false;
     let cutover = false;
@@ -135,6 +136,10 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
       else if (command === 'setup' && flag === '--replace-changed') replaceChanged = true;
       else if (command === 'setup' && flag === '--overwrite-unowned-keys')
         overwrite = true;
+      else if (command === 'setup' && (flag === '--merge-native-keys' || flag === '--decline-native-keys')) {
+        if (nativeKeys !== undefined) throw new HerdrError('cli-usage', USAGE);
+        nativeKeys = flag === '--merge-native-keys' ? 'accept' : 'decline';
+      }
       else if (command === 'setup' && flag === '--allow-staging-app')
         allowStaging = true;
       else
@@ -147,7 +152,7 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
     if (!ports)
       throw new HerdrError('setup-composition-unavailable', 'Installer composition is required; refusing implicit live configuration defaults');
     const loaded = command === 'resume-offer' || command === 'resume' ? await readCoreRequest(ports, configPath) : await ports.request(configPath);
-    const request = { ...loaded, dryRun, replaceChanged, overwriteUnownedKeys: overwrite, allowStagingApp: allowStaging, adoptExistingSpaces };
+    const request = { ...loaded, dryRun, replaceChanged, overwriteUnownedKeys: overwrite, nativeKeys, allowStagingApp: allowStaging, adoptExistingSpaces };
     if (command === 'resume-offer') {
       if (!ports.resumeOffer) throw new HerdrError('setup-composition-unavailable', 'Resume offer composition is required');
       stdout(await ports.resumeOffer(request)); return 0;
@@ -177,6 +182,7 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
       // Only owned parts that could not be restored remain in the journal.
       return (await readJournal(request.journalRoot)).entries.length ? 3 : 0;
     }
+    if (nativeKeys === undefined) stdout('Offer: merge Cmd-F search, Cmd-A select all and Cmd-M minimize with --merge-native-keys, or refuse with --decline-native-keys. Existing user bindings are preserved. No optional keys are changed by default.\n');
     const result = await setupHerdr(fullRequest, parts);
     if (result.plan) {
       for (const file of result.plan.files) stdout(`${file.action} ${file.path}${file.refusal ? ' (needs --replace-changed)' : ''}\n`);

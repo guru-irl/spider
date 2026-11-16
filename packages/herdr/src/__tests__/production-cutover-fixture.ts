@@ -107,6 +107,7 @@ if(a[0]==='terminal-shell') {
   while(!(await settings()).exit)await delay(25);
   clearInterval(timer); await registration.dispose(); await hc.dispose();
 } else if(a[0]==='app') {
+  if(a[1]==='--version'){console.log('herdr-app 0.1.12');process.exit(0);}
   const docPath=${JSON.stringify(join(root, 'layout.json'))}, doc=JSON.parse(await readFile(docPath,'utf8'));
   const command=a[2], flag=k=>a[a.indexOf('--'+k)+1];
   if(a[1]==='ls'){console.log(JSON.stringify(doc));process.exit(0);}
@@ -164,7 +165,7 @@ if(a[0]==='terminal-shell') {
   h.localEnv.PATH = bin + ':' + h.localEnv.PATH; h.remoteEnv.PATH = bin + ':' + h.remoteEnv.PATH;
   const file = join(root, 'selected.jsonl'); await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: 'selected', cwd: root }) + '\n' + JSON.stringify({ type: 'session_info', name: 'Selected' }) + '\n');
   await mkdir(join(h.directories.agent, 'sessions')); await writeFile(join(root, 'layout.json'), '{"spaces":[]}');
-  await mkdir(join(root, 'packages/herdr/assets/look'), { recursive: true }); await writeFile(join(root, 'packages/herdr/assets/look/patches.json'), '{}');
+  await mkdir(join(root, 'packages/herdr/assets/look'), { recursive: true }); await writeFile(join(root, 'packages/herdr/assets/look/patches.json'), JSON.stringify({ version: 1, upstreamVersion: '0.1.12', mods: { agents: [], spaces: [], pane: [], tabs: [] } }));
   const config = { enabled: true, app: { binary: app, home: h.directories.app }, core: { binary: h.hcBinary, config: join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml') }, agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(root, 'rc'), spaces: [{ name: 'Selected space', sessions: [{ file }] }], machines: [], limits: { auxiliaryPanes: 2, completedRows: 50, completedHours: 24 }, retention: { foregroundDays: 7 }, admin: { wrappers: [] } };
   await writeFile(configPath, JSON.stringify(config));
   const request: SetupRequest = { config, configPath, packageRoot: root, journalRoot: join(config.globalRoot, 'herdr/setup') };

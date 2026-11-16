@@ -10,7 +10,7 @@ import { HERDR_LABELS } from './contracts.js';
 import { HerdrError } from './client/parse.js';
 import { placePaneWithoutFocus } from './jobs/placement.js';
 import { createPanePlacementStore, inspectPanePlacement } from './panes/store.js';
-import { parsePaneServiceRequest } from './panes/codec.js';
+import { parsePaneServiceRequest, parsePaneServiceReply } from './panes/codec.js';
 import { hash, privateDirectory, readPrivateJson, writePrivateJson, withProcessLock, type TerminalRegistry } from './sessions/registry.js';
 
 type Slot = Pick<OwnerPlacement, 'space' | 'tab'>;
@@ -147,19 +147,38 @@ export function createRoamPresentationOperations(options: {
       return withProcessLock(options.stateRoot, 'ready-' + hash(p.id), async () => {
         const directory = join(options.stateRoot, 'ready-requests'); await privateDirectory(directory);
         const file = join(directory, hash(p.id) + '.json');
-        const saved = await readPrivateJson(file) as { request?: unknown; retry?: boolean } | null;
+        const saved = await readPrivateJson(file) as { request?: unknown; outcome?: unknown } | null;
         let previous: Extract<PaneServiceRequest, { op: 'present-ready' }> | null = null;
         if (saved?.request) { const parsed = parsePaneServiceRequest(saved.request); if (parsed.op === 'present-ready') previous = parsed; }
-        const input: Extract<PaneServiceRequest, { op: 'present-ready' }> = previous && !saved?.retry && isDeepStrictEqual(previous.target, target) ? previous : {
-          version: 1, operationId: 'ready-' + hash(JSON.stringify([p.id, p.revision, target, previous?.operationId ?? null])), op: 'present-ready', presentationId: p.id, expectedRevision: p.revision, target,
+        const recorded = saved?.outcome ? parsePaneServiceReply({ version: 1, kind: 'outcome', outcome: saved.outcome }) : null;
+        const priorOutcome = recorded?.kind === 'outcome' ? recorded.outcome : null;
+        let current = (await presentations(target.sessionId!)).find(item => item.id === p.id);
+        const native = target.coreId === (await options.hc.identity()).coreId;
+        const presented = () => current && current.visibility !== 'closing' && current.visibility !== 'ended' && samePaneTarget(current.target, target) &&
+          current.mode === (native ? 'native' : 'proxy') && current.conversion === null &&
+          (current.visibility === 'parked' || current.slot && current.launch === 'acknowledged' && (native || current.proxy));
+        const unknown = (outcome: PaneActionOutcome) => outcome.status === 'pending' && ['operation-in-progress', 'presentation-unavailable'].includes(outcome.reason);
+        const remember = async (input: Extract<PaneServiceRequest, { op: 'present-ready' }>, outcome: PaneActionOutcome) => {
+          await writePrivateJson(file, { request: input, outcome }); return outcome;
         };
-        await writePrivateJson(file, { request: input, retry: false });
-        try {
-          const reply = await options.request(input);
-          const outcome = reply.kind === 'outcome' ? reply.outcome : result('refused', 'presentation-reply-mismatch', p);
-          await writePrivateJson(file, { request: input, retry: outcome.status !== 'complete' });
-          return outcome;
-        } catch { return result('pending', 'presentation-unavailable', p); }
+        if (previous) {
+          const same = samePaneTarget(previous.target, target);
+          if (same && priorOutcome?.status === 'complete' && priorOutcome.presentation?.revision === current?.revision && presented()) return result('complete', 'already-presented', current ?? null);
+          // Replay the exact persisted operation before interpreting a changed revision or
+          // creating its successor. A timeout does not establish that its effects stopped.
+          const replay = await request(previous, p);
+          if (unknown(replay)) return remember(previous, replay);
+          current = (await presentations(target.sessionId!)).find(item => item.id === p.id);
+          if (same && replay.status === 'complete') return remember(previous, replay);
+          if (same && replay.reason === 'stale-presentation' && (!priorOutcome || priorOutcome.status === 'complete' || unknown(priorOutcome)) && presented()) return remember(previous, result('complete', 'already-presented', current ?? null));
+          if (same && replay.reason !== 'stale-presentation') return remember(previous, replay);
+        } else if (presented()) return result('complete', 'already-presented', current ?? null);
+        if (!current || current.visibility === 'closing' || current.visibility === 'ended') return result('refused', 'Session changed. Close again.', current ?? null);
+        const input: Extract<PaneServiceRequest, { op: 'present-ready' }> = {
+          version: 1, operationId: 'ready-' + hash(JSON.stringify([current.id, current.revision, target, previous?.operationId ?? null])), op: 'present-ready', presentationId: current.id, expectedRevision: current.revision, target,
+        };
+        await writePrivateJson(file, { request: input });
+        return remember(input, await request(input, current));
       });
     },
   };

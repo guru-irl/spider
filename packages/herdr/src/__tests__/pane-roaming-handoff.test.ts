@@ -62,23 +62,37 @@ async function fixture() {
   };
   const captured = new Map<string, { source: OwnerPlacement | null; sourceFocused: boolean }>();
   const requests: PaneServiceRequest[] = [];
-  const service = createPaneService({ root: join(root, 'service'), store, hc, app, coreAvailable: async () => true, clock: Date.now,
+  let readyGate: { entered(): void; wait: Promise<void>; completed(): void } | null = null, crashDispatch = false;
+  const servicePorts: Parameters<typeof createPaneService>[0] = { root: join(root, 'service'), store, hc, app, coreAvailable: async () => true, clock: Date.now,
     machines: async () => [], inventory: async () => ({ version: 1, rows: [], complete: true, next: null }), targetFacts: async () => ({}), renewLeases: async () => {},
     appCapabilities: open.appCapabilities, subscribe: () => () => {}, schedule: () => () => {}, validateTarget: async value => value, closeSession: async () => 'stale',
     async dispatch(request) {
       const p = 'presentationId' in request ? (await store.read()).presentations.find(p => p.id === request.presentationId) : null;
       if (!p) throw Error('missing presentation');
       if (request.op === 'prepare-handoff') { captured.set(p.id, { source: p.slot as OwnerPlacement, sourceFocused: focused }); events.push('capture'); return { status: 'complete', reason: 'handoff-prepared', presentation: p }; }
-      if (request.op === 'present-ready') return convertNativePresentation({ presentation: p, destination: request.target, ...captured.get(p.id)! }, open);
+      if (request.op === 'present-ready') {
+        const gate = readyGate; gate?.entered(); await gate?.wait;
+        const result = await convertNativePresentation({ presentation: p, destination: request.target, ...captured.get(p.id)! }, open);
+        gate?.completed();
+        if (crashDispatch && result.status === 'complete') { crashDispatch = false; throw Error('process interrupted before outcome write'); }
+        return result;
+      }
       throw Error('unexpected operation');
     },
-  });
+  };
+  let service = createPaneService(servicePorts);
   let loseReadyReply = false;
   const operations = () => createRoamPresentationOperations({ stateRoot, hc, app: appPresent ? app : null, request: async request => { requests.push(request); const result = await service.request(request); if (request.op === 'present-ready' && loseReadyReply) { loseReadyReply = false; throw Error('reply lost'); } return result; } });
   const placement = () => createRoamPlacement({ stateRoot, hc, app, hcBinary: '/unused/hc', registry: { list: async () => [] } as never,
     presentation: { resolveTarget: async () => remote, presentReadyTarget: value => operations().presentReadyTarget(value) } });
   return { root, stateRoot, hc, source, remote, slot, store, events, placements, operations, requests, placement,
     recoverLaunch: () => { recoverLaunch = true; }, failSpawns: (count: number) => { spawnFailures = count; },
+    interruptOutcome: () => { crashDispatch = true; }, restartService: async () => { await service.stop(); service = createPaneService(servicePorts); },
+    blockReady: () => {
+      let entered!: () => void, release!: () => void, completed!: () => void;
+      const started = new Promise<void>(resolve => { entered = resolve; }), wait = new Promise<void>(resolve => { release = resolve; }), done = new Promise<void>(resolve => { completed = resolve; });
+      readyGate = { entered, wait, completed }; return { started, release, done };
+    },
     lateLegacy: () => { displays.set('legacy-proxy', { ...(displays.get('t3') ?? { target: remote }), id: 'legacy' } as PanePresentation); placements.set('legacy-proxy' as TerminalAddress, slot); },
     displays,
     close: (p: PanePresentation) => confirmPresentationClose({ id: p.id, expectedRevision: p.revision, target: p.target, operationId: 'stale-close' }, { store, hc, app, validateTarget: open.validateTarget, closeSession: async () => { throw Error('cannot close a successor'); } }), stop: () => service.stop(),
@@ -131,7 +145,7 @@ test('one readiness through the hub and move paths has exactly one presentation 
     expect((await f.store.read()).presentations).toHaveLength(1);
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
     expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
-    expect(f.requests.filter(request => request.op === 'present-ready')).toHaveLength(2);
+    expect(f.requests.filter(request => request.op === 'present-ready')).toHaveLength(1);
   } finally { await hub?.stop(); await f.stop(); global.close(); }
 });
 
@@ -286,5 +300,47 @@ test('an uncertain legacy claim with the service present cannot create a second 
     expect((await f.store.read()).attempts[0]).toMatchObject({ closed: true, failure: { attempts: 1, retryable: false } });
     expect((await f.store.read()).presentations).toHaveLength(1);
     expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
+  } finally { await f.stop(); }
+});
+
+
+test('an in-progress ready operation retains its identity until completion', async () => {
+  const f = await fixture(); const gate = f.blockReady(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source);
+    const running = f.operations().presentReadyTarget(f.remote);
+    await gate.started;
+    expect(await running).toMatchObject({ status: 'pending', reason: 'operation-in-progress' });
+    gate.release(); await gate.done;
+    expect(await f.operations().presentReadyTarget(f.remote)).toMatchObject({ status: 'complete' });
+    const requests = f.requests.filter(request => request.op === 'present-ready');
+    expect(requests[1]).toEqual(requests[0]);
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
+    expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
+  } finally { gate.release(); await f.stop(); }
+});
+test('readiness after a park asks for its original outcome without retiring the source again', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source);
+    expect((await f.operations().presentReadyTarget(f.remote)).status).toBe('complete');
+    await f.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, visibility: 'parked', revision: p.revision + 1 })) }));
+    expect(await f.operations().presentReadyTarget(f.remote)).toMatchObject({ status: 'complete', presentation: { visibility: 'parked' } });
+    const requests = f.requests.filter(request => request.op === 'present-ready');
+    expect(requests[1]).toEqual(requests[0]);
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
+    expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
+  } finally { await f.stop(); }
+});
+test('a restart between conversion commit and outcome write recovers the original operation', async () => {
+  const f = await fixture(); try {
+    await f.operations().prepareHandoff(f.source.sessionId!, f.source); f.interruptOutcome();
+    expect((await f.operations().presentReadyTarget(f.remote)).status).toBe('pending');
+    expect((await f.store.read()).presentations[0]).toMatchObject({ target: f.remote, conversion: null });
+    await f.restartService();
+    expect(await f.operations().presentReadyTarget(f.remote)).toMatchObject({ status: 'complete' });
+    expect((await f.operations().presentReadyTarget(f.remote)).status).toBe('complete');
+    const requests = f.requests.filter(request => request.op === 'present-ready');
+    expect(requests[1]).toEqual(requests[0]);
+    expect(f.events.filter(value => value === 'proxy')).toHaveLength(1);
+    expect(f.events.filter(value => value === 'terminal.park')).toHaveLength(1);
   } finally { await f.stop(); }
 });

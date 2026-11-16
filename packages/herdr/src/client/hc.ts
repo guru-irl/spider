@@ -161,8 +161,11 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
     setLabels: async (address, labels) => {
       const entries = Object.entries(labels);
       const allowedKeys: readonly string[] = Object.values(HERDR_LABELS);
-      if (entries.length === 0 || entries.some(([key]) => !allowedKeys.includes(key)))
-        throw new HerdrError('invalid-labels', 'Expected a nonempty map of canonical Herdr label keys');
+      const identifierKeys: readonly string[] = [HERDR_LABELS.paneId, HERDR_LABELS.paneOperation, HERDR_LABELS.targetCore, HERDR_LABELS.targetTerminal, HERDR_LABELS.ownerGeneration];
+      if (entries.length === 0 || entries.some(([key, value]) => !allowedKeys.includes(key) || value !== null && (
+        identifierKeys.includes(key) && (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/.test(value))
+        || key === HERDR_LABELS.paneRole && value !== 'subagent' && value !== 'console')))
+        throw new HerdrError('invalid-labels', 'Expected canonical Herdr labels with valid values');
       await call(['label', address, ...entries.map(([key, value]) => `${key}=${value ?? ''}`), '--json']);
     },
     fileRead: async (on, path) => { await machine(on); const reply = object(await call(['file', 'read', '--json', '--on', on, path])); if (typeof reply.text !== 'string') throw new HerdrError('invalid-reply', 'Expected text file'); return Buffer.from(reply.text); },

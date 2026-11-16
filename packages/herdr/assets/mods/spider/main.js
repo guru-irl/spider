@@ -7,6 +7,7 @@ import * as herdr from 'herdr';
 import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from './shared/feed.js';
 import { panelSessionState, projectSpacePanel, projectNotifications, pruneDismissed, readDismissed, notificationBadge, panelIsShown, projectMemoryReview, projectSessionView, selectedSpace, notificationText, panelConfigProblem, soundPreference, describePanelProblems, describeFeedError, doctorCommand } from './data.js';
 import { projectNavigation } from './shared/navigation.js';
+import { describeOpenFailure } from './shared/open-failure.js';
 import { observeNotificationSounds } from './sound.js';
 
 // Neutral chrome: colour only marks failure (danger) and needs-you (amber).
@@ -227,9 +228,9 @@ export default class SpiderPanel extends View {
     if (!feed.ipc || panelSessionState(feed, Date.now()) !== 'live') throw new Error('Owner endpoint unavailable');
     const descriptor = {version:1,sessionId:feed.sessionId,generation:feed.generation,...feed.ipc};
     const [command, ...args] = panelIpcArgv(this.config.nodePath,this.config.cliPath,descriptor,{...request,generation:feed.generation});
-    const result = await exec(command,args), reply = parseSessionIpcReply(result.stdout);
+    const result = await exec(command,args, ['openSession', 'openRun', 'openJob'].includes(request.op) ? { timeout: 65000 } : undefined), reply = parseSessionIpcReply(result.stdout);
     if (!reply) throw new Error('Invalid IPC reply');
-    if (!reply.ok) throw new Error(reply.code === 'unknown-op' && request.op === 'openSession' ? 'Run /reload to enable session reopening' : reply.message);
+    if (!reply.ok) throw new Error(['openSession', 'openRun', 'openJob'].includes(request.op) ? describeOpenFailure(reply) : reply.message);
     if (result.code !== 0) throw new Error('IPC action failed');
     if (reply.op !== request.op) throw new Error('Unexpected IPC acknowledgement');
     return reply;

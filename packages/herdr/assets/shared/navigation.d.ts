@@ -21,8 +21,7 @@ export interface NavigationSnapshot {
 }
 export type NavigationAction =
   | { kind: 'focus'; pane: string }
-  | { kind: 'ipc'; descriptor: IpcDescriptor; request: SessionIpcRequest | { op: 'openSession'; generation: Generation; destination: Destination } }
-  | { kind: 'keep'; terminal: string };
+  | { kind: 'ipc'; descriptor: IpcDescriptor; request: SessionIpcRequest | { op: 'openSession'; generation: Generation; destination: Destination } };
 export interface NavigationTarget {
   id: string; kind: 'agent' | 'subagent' | 'console'; ownerId: string | null;
   sessionId: string | null; terminal: string | null; pane: string | null;

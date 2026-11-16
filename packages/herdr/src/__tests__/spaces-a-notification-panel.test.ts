@@ -7,6 +7,7 @@ import { createUiModules } from './strict-mod-api.mjs';
 import { runPanelScene } from './acceptance/i.js';
 import { HerdrLabelContract, type IntentionalNotification, type SessionFeed } from '../contracts.js';
 import { projectNavigation } from '../../assets/shared/navigation.js';
+import { describeOpenFailure } from '../../assets/shared/open-failure.js';
 import { FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply } from '../../assets/shared/feed.js';
 import * as data from '../../assets/mods/spider/data.js';
 import * as sound from '../../assets/mods/spider/sound.js';
@@ -140,7 +141,7 @@ function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boo
       return state.reply ? state.reply(request) : { code: 0, stdout: JSON.stringify({ ok: true, op: request.op, ...(request.op === 'openSession' ? { terminal: 'owner' } : { viewer: 'viewer' }) }) }; },
   };
   const createFeedReader = () => ({ read: async () => { calls.push(['read']); if (state.failRead) throw new Error('offline'); return { feeds: structuredClone(state.feeds), errors: structuredClone(state.snapshotErrors ?? []) }; }, close: async () => { calls.push(['closeReader']); } });
-  const api = { ...kit, ...base, ...data, ...sound, ...herdr, herdr, createFeedReader, projectNavigation, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply };
+  const api = { ...kit, ...base, ...data, ...sound, ...herdr, herdr, createFeedReader, projectNavigation, describeOpenFailure, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply };
   const text = readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8').replace(/^import .*;\s*$/gm, '').replace('export default class SpiderPanel', 'class SpiderPanel');
   const Panel = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${text}; return SpiderPanel;`)(api);
   const view = new Panel(); view.init({}, cx);
@@ -149,6 +150,13 @@ function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boo
 }
 function flatten(root: any): any[] { return root && typeof root === 'object' ? [root, ...(root.items ?? []).flatMap(flatten)] : []; }
 function byId(root: any, id: string): any { return flatten(root).find(item => item.styles?.id?.[0] === id); }
+
+it('explains a timed-out notification open without exposing raw codes', async () => {
+  const h = panelHost({ parked: true }); await h.ready; await h.drain();
+  h.state.reply = async () => ({ code: 0, stdout: JSON.stringify({ ok: false, code: 'unavailable', message: 'pane-timeout' }) });
+  await expect(h.view.ipc(h.state.feeds[0], { op: 'openSession', destination: null })).rejects.toThrow('Timed out opening the pane');
+  await h.view.close();
+});
 
 it('plays at most one sound for a mixed batch of new intentional notices', async () => {
   const h = panelHost(); await h.ready; await h.drain();

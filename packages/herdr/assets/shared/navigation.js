@@ -75,7 +75,7 @@ export function projectNavigation(snapshot) {
     if (claimedSessions.has(feed.sessionId)) return;
     const matches = snapshot.terminals.filter(terminal => terminalMatches(terminal, feed, snapshot.coreId, labels));
     const ownerTerminal = matches.find(terminal => !isProxy(terminal, labels));
-    const proxy = matches.find(terminal => isProxy(terminal, labels) && agents.has(terminal.address));
+    const proxy = matches.find(terminal => isProxy(terminal, labels) && (agents.has(terminal.address) || paneFor(terminal.address)));
     const shown = proxy ?? ownerTerminal;
     if (!shown) return;
     const visibleAgent = agents.get(shown.address);
@@ -83,15 +83,18 @@ export function projectNavigation(snapshot) {
     const machine = machineFor(proxy ?? ownerTerminal ?? shown);
     const id = `session:${feed.sessionId}`;
     const fallback = visibleAgent ?? { address: shown.address, title: '', program: { name: '' } };
-    const action = !available(machine) ? null : pane ? { kind: 'focus', pane } : feed.ipc ? {
+    const action = proxy && pane ? { kind: 'focus', pane } : !available(machine) ? null : pane ? { kind: 'focus', pane } : feed.ipc ? {
       kind: 'ipc', descriptor: { version: 1, sessionId: feed.sessionId, generation: feed.generation, ...feed.ipc },
       request: { op: 'openSession', generation: feed.generation, destination: snapshot.destination },
     } : null;
-    const space = visibleAgent?.space ?? feed.placement?.spaceId ?? null;
-    const tab = visibleAgent?.tab ?? feed.placement?.tabId ?? null;
+    const proxyPane = proxy && paneFor(proxy.address);
+    const proxySpace = proxyPane && snapshot.spaces.find(item => item.tabs.some(tab => tab.id === proxyPane.tab));
+    const space = visibleAgent?.space ?? proxySpace?.id ?? feed.placement?.spaceId ?? null;
+    const tab = visibleAgent?.tab ?? proxyPane?.tab ?? feed.placement?.tabId ?? null;
     const target = { id, kind: 'agent', ownerId: null, sessionId: feed.sessionId, terminal: feed.owner.terminal.address,
       pane, space, tab, name: sessionDisplayName(fallback, shown, [feed]), path: feed.owner.cwd,
-      status: feed.status.effective ?? visibleAgent?.status ?? statusOf(shown), machine, retained: false, action };
+      status: feed.status.effective ?? visibleAgent?.status ?? statusOf(shown), machine, retained: false, action,
+      ...(!action ? { disabledReason: !available(machine) ? `Owner on ${machine ?? 'This computer'} is unreachable` : 'Owning session unavailable' } : {}) };
     claimedSessions.add(feed.sessionId);
     for (const match of matches) claimedAgents.add(match.address);
     targets.push(target);
@@ -119,13 +122,12 @@ export function projectNavigation(snapshot) {
       let childAction = null;
       if (ownerAvailable && childAvailable && childPane) childAction = { kind: 'focus', pane: childPane };
       else if (ownerAvailable && (childAvailable || savedRun) && child.action?.kind === 'ipc') childAction = child.action;
-      else if (ownerAvailable && childAvailable && child.action?.kind === 'peek') childAction = { kind: 'keep', terminal: child.action.terminal };
       targets.push({ id: childId, kind: child.kind === 'native' ? 'agent' : child.kind, ownerId: parentId, sessionId: feed.sessionId,
         terminal: address, pane: childPane, space, tab,
         name: child.kind === 'console' ? `${parent.name} console` : nativeAgent ? sessionDisplayName(nativeAgent, child.terminal, []) : child.name,
         path: feed.owner.cwd, status: child.status === 'unreachable' ? statusOf(child.terminal) : child.status,
         machine: childMachine, retained: child.retained, action: childAction,
-        ...(!ownerAvailable ? { disabledReason: `Owner on ${machine ?? 'This computer'} is unreachable` } : {}) });
+        ...(!childAction ? { disabledReason: !ownerAvailable ? `Owner on ${machine ?? 'This computer'} is unreachable` : !childAvailable ? `Machine ${childMachine ?? 'This computer'} is unreachable` : 'Owning session unavailable' } : {}) });
     }
   }
 
@@ -138,13 +140,23 @@ export function projectNavigation(snapshot) {
   for (const agent of top) {
     if (claimedAgents.has(agent.address)) continue;
     const terminal = terminals.get(agent.address);
-    if (isProxy(terminal, labels)) continue;
     const machine = machineFor(terminal) ?? machineOfAddress(agent.address);
     const pane = paneFor(agent.address)?.pane ?? agent.pane ?? null;
     targets.push({ id: `agent:${agent.address}`, kind: 'agent', ownerId: null, sessionId: null, terminal: agent.address,
       pane, space: agent.space ?? null, tab: agent.tab ?? null, name: sessionDisplayName(agent, terminal ?? null, []),
       path: paneFor(agent.address)?.cwd ?? null, status: agent.status, machine, retained: false,
-      action: pane && available(machine) ? { kind: 'focus', pane } : null });
+      action: pane && (isProxy(terminal, labels) || available(machine)) ? { kind: 'focus', pane } : null });
+    claimedAgents.add(agent.address);
+  }
+  for (const terminal of snapshot.terminals) {
+    if (!isProxy(terminal, labels) || terminal.state !== 'live' || claimedAgents.has(terminal.address)) continue;
+    const pane = paneFor(terminal.address);
+    if (!pane) continue;
+    const space = snapshot.spaces.find(item => item.tabs.some(tab => tab.id === pane.tab));
+    const fallback = { address: terminal.address, title: '', program: { name: '' } };
+    targets.push({ id: `agent:${terminal.address}`, kind: 'agent', ownerId: null, sessionId: null, terminal: terminal.address,
+      pane: pane.pane, space: space?.id ?? null, tab: pane.tab, name: sessionDisplayName(fallback, terminal, []),
+      path: pane.cwd, status: statusOf(terminal), machine: machineFor(terminal), retained: false, action: { kind: 'focus', pane: pane.pane } });
   }
   return targets;
 }

@@ -1,6 +1,9 @@
 {
   "version": 1,
-  "spacesA": { "0.1.16": { "root": { "toast": "spider-toast" } } },
+  "spacesA": {
+    "0.1.13": { "root": { "terminal_menu": "spider-menu" } },
+    "0.1.16": { "root": { "terminal_menu": "spider-menu", "toast": "spider-toast" } }
+  },
   "remove": ["status"],
   "tabs": { "stripPx": 6, "fullPx": 42 },
   "root": {

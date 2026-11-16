@@ -48,6 +48,53 @@ it('waits for a user-open placement that takes longer than the ordinary request 
   try { expect(await client.openRun(runId)).toMatchObject({ ok: true, op: 'openRun', viewer: 'viewer/t1' }); }
   finally { client.dispose(); timers.mockRestore(); await endpoint.dispose(); }
 });
+it('returns a human-readable opener failure rather than a raw code', async () => {
+  const endpoint = await startSessionEndpoint(owner, { ...ports(), openSession: async () => { throw new HerdrError('pane-timeout', 'The session pane was not acknowledged'); } }, root);
+  const client = createSessionIpcClient(endpoint.descriptor);
+  try {
+    expect(await client.request({ op: 'openSession', generation: owner.generation, destination: null })).toEqual({ ok: false, code: 'unavailable', message: 'The session pane was not acknowledged' });
+  } finally { client.dispose(); await endpoint.dispose(); }
+});
+
+it('honours cancellation that reaches the owner before the open', async () => {
+  const openSession = vi.fn(async () => owner.terminal.address);
+  const endpoint = await startSessionEndpoint(owner, { ...ports(), openSession }, root);
+  const client = createSessionIpcClient(endpoint.descriptor);
+  try {
+    const requestId = 'cafe0000000000000000000000000001';
+    expect(await client.request({ op: 'cancelOpen', generation: owner.generation, requestId } as any)).toMatchObject({ ok: true, op: 'cancelOpen' });
+    expect(await client.request({ op: 'openSession', generation: owner.generation, destination: null, requestId } as any)).toMatchObject({ ok: false });
+    expect(openSession).not.toHaveBeenCalled();
+  } finally { client.dispose(); await endpoint.dispose(); }
+});
+
+it('aborts an open waiting on the focus lock when the separate cancellation arrives', async () => {
+  const { withProcessLock } = await import('../sessions/registry.js');
+  const lockRoot = join(globalRoot, 'locks');
+  let entered!: () => void, release!: () => void;
+  const held = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const lock = withProcessLock(lockRoot, 'focus', async () => { entered(); await gate; });
+  await held;
+  let waiting!: () => void;
+  const started = new Promise<void>(resolve => { waiting = resolve; });
+  let changed = false;
+  const endpoint = await startSessionEndpoint(owner, { ...ports(), openSession: async (_destination, signal) => {
+    waiting();
+    return withProcessLock(lockRoot, 'focus', async () => { if (!signal?.aborted) changed = true; return owner.terminal.address; }, { signal });
+  } }, root);
+  const client = createSessionIpcClient(endpoint.descriptor);
+  try {
+    const requestId = 'cafe0000000000000000000000000002';
+    const opening = client.request({ op: 'openSession', generation: owner.generation, destination: null, requestId } as any);
+    await Promise.race([started, opening.then(reply => { throw new Error(`Open rejected before reaching the focus lock: ${JSON.stringify(reply)}`); })]);
+    expect(await client.request({ op: 'cancelOpen', generation: owner.generation, requestId } as any)).toMatchObject({ ok: true, op: 'cancelOpen' });
+    release(); await lock;
+    expect(await opening).toMatchObject({ ok: false });
+    expect(changed).toBe(false);
+  } finally { release(); await lock; client.dispose(); await endpoint.dispose(); }
+});
+
 it('aborts a running open when its client closes, before any late placement', async () => {
   let entered!: () => void, aborted!: () => void, release!: () => void;
   const started = new Promise<void>(resolve => { entered = resolve; });

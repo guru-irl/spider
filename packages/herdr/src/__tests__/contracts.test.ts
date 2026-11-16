@@ -209,13 +209,14 @@ declare namespace Wire {
   );
   export type SessionIpcRequest = { op: 'ping'; generation: Generation }
     | { op: 'openView'; view: Fixed.ViewName; generation: Generation }
-    | { op: 'openSession'; generation: Generation; destination: { space: SpaceId; tab: TabId } | null }
-    | { op: 'openRun'; runId: RunId; generation: Generation }
+    | { op: 'openSession'; generation: Generation; destination: { space: SpaceId; tab: TabId } | null; requestId?: string; returnFocus?: Actual.OwnerPlacement; backgroundKeep?: boolean }
+    | { op: 'cancelOpen'; generation: Generation; requestId: string }
+    | { op: 'openRun'; runId: RunId; generation: Generation; requestId?: string }
     | { op: 'killRun'; runId: RunId; generation: Generation }
     | { op: 'killSession'; generation: Generation }
     | { op: 'moveRun'; runId: RunId; destination: { kind: 'new' } | { kind: 'hide' } | { kind: 'tab'; tab: TabId }; generation: Generation }
     | { op: 'moveSession'; destination: { kind: 'new' } | { kind: 'tab'; tab: TabId }; generation: Generation }
-    | { op: 'openJob'; jobId: JobId; generation: Generation }
+    | { op: 'openJob'; jobId: JobId; generation: Generation; requestId?: string }
     | { op: 'killJob'; jobId: JobId; generation: Generation }
     | { op: 'moveJob'; jobId: JobId; viewer: TerminalAddress; destination: { kind: 'new' } | { kind: 'tab'; tab: TabId }; generation: Generation }
     | { op: 'steerRun'; runId: RunId; text: string; generation: Generation }
@@ -226,6 +227,7 @@ declare namespace Wire {
   export type SessionIpcReply = { ok: true; op: 'ping'; status: { native: ProgramState | null; effective: ProgramState | null } }
     | { ok: true; op: 'openView' }
     | { ok: true; op: 'openSession'; terminal: TerminalAddress }
+    | { ok: true; op: 'cancelOpen' }
     | { ok: true; op: 'killRun' }
     | { ok: true; op: 'killSession' }
     | { ok: true; op: 'moveSession' }

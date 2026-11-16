@@ -7,6 +7,7 @@ import { createUiModules } from './strict-mod-api.mjs';
 import { HerdrLabelContract } from '../contracts.js';
 import { pickerRows, selectPickerRow } from '../../assets/picker/model.js';
 import { projectNavigation } from '../../assets/shared/navigation.js';
+import { describeOpenFailure } from '../../assets/shared/open-failure.js';
 import { assignSpaceIdentities } from '../../assets/shared/look.js';
 import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply } from '../../assets/shared/feed.js';
 
@@ -47,9 +48,9 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
     theme: () => ({ foreground: '#eeeeee', muted: '#aaaaaa', dim: '#888888', hover: '#ffffff12', working: '#aaaaaa', blocked: '#f2c063', done: '#aaaaaa', error: '#ff6b6b' }),
     settings: () => ({ zoom: 1 }), closeOverlay: (overlay: string) => { calls.push(['closeOverlay', overlay]); closed(); }, run: (name: string, args: unknown) => calls.push(['run', name, args]),
     hc: async (args: string[]) => { calls.push(['hc', args]); return { code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [] }) }; },
-    exec: async (command: string, args: string[]) => {
-      calls.push(['exec', command, args]);
-      if (args.includes('ipc')) return state.ipcReply ? await state.ipcReply() : { code: 0, stdout: JSON.stringify({ ok: true, op: 'openSession', terminal: 't1' }) };
+    exec: async (command: string, args: string[], options?: unknown) => {
+      calls.push(['exec', command, args, options]);
+      if (args.includes('ipc')) return state.ipcReply ? await state.ipcReply(JSON.parse(args[args.indexOf('--request') + 1]), options) : { code: 0, stdout: JSON.stringify({ ok: true, op: 'openSession', terminal: 't1' }) };
       return { code: 0, stdout: JSON.stringify({ version: 1, port: 1234, pid: 123, token: 'a'.repeat(64) }) };
     },
     watchFolder: (path: string) => {
@@ -66,7 +67,7 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
     const entries = state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, updatedAt: Date.now() }));
     return { ok: true, json: async () => ({ version: 1, entries, changes: state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, feed: item })), errors: [] }) };
   };
-  const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => kit.div() }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply };
+  const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => kit.div() }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, describeOpenFailure, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply };
   const body = readFileSync(source, 'utf8').replace(/^import .*;\s*$/gm, '').replace(/export default class Picker/, 'class Picker').replace(/export class Picker/, 'class Picker').replace(/export default Picker;?/g, '');
   const Picker = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${body}; return Picker;`)(api);
   const view = new Picker(); view.init({}, cx);
@@ -199,6 +200,33 @@ it('shares Enter and click activation while a current-owner IPC request is pendi
   } finally { release(); await h.view.close(); }
 });
 
+it('sends an authenticated cancellation on Escape while a reopen is pending', async () => {
+  const h = host({ parked: true }); await h.view.ready;
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const requests: any[] = [];
+  h.state.ipcReply = async (request: any) => {
+    requests.push(request);
+    if (request.op === 'cancelOpen') return { code: 0, stdout: JSON.stringify({ ok: true, op: 'cancelOpen' }) };
+    entered(); await gate; return { code: 0, stdout: JSON.stringify({ ok: true, op: 'openSession', terminal: 't1' }) };
+  };
+  try {
+    h.herdr.commands = () => [{ name: 'terminal.keep', args: [{ name: 'terminal' }, { name: 'place' }, { name: 'focus' }] }];
+    const opening = h.view.activate('session:session'); await started;
+    expect(requests[0]).toMatchObject({ returnFocus: { space: 's1', tab: 'tb1', pane: 'p1' }, backgroundKeep: true });
+    await h.view.activate('tab:s1:tb1');
+    expect(h.calls.filter(call => call[0] === 'run')).toEqual([]);
+    h.view.render().events.on_key_down({ key: 'escape' }, h.cx);
+    await vi.waitFor(() => expect(requests.find(request => request.op === 'cancelOpen')).toMatchObject({ generation: requests[0].generation, requestId: requests[0].requestId }));
+    expect(requests[0].requestId).toMatch(/^[a-z0-9]{16,64}$/);
+    release(); await opening;
+    expect(h.calls.filter(call => call[0] === 'run')).toEqual([]);
+    const ipcCalls = h.calls.filter(call => call[0] === 'exec' && call[2].includes('ipc'));
+    expect(ipcCalls[0][3]).toMatchObject({ timeout: 65000 });
+  } finally { release(); await h.view.close(); }
+});
+
 it('keeps selection stable across feed refresh and sends the current generation', async () => {
   const h = host({ parked: true }); await h.view.ready;
   h.view.selectedId = 'session:session'; h.state.feeds = [feed('gen-2', 'Writer updated')];
@@ -235,6 +263,43 @@ it('does not dispatch a stale action when the required refresh fails', async () 
   expect(h.calls.filter(call => call[0] === 'exec' && call[2].includes('ipc'))).toEqual([]);
   expect(h.view.problem).toBe('Session information is unavailable');
   await h.view.close();
+});
+
+it.each([
+  ['wrong-generation', 'wrong-generation', 'Owning session unavailable'],
+  ['unavailable', 'pane-timeout', 'Timed out opening the pane'],
+  ['unavailable', 'view-on-mac', 'This needs the Herdr app on this Mac'],
+])('explains %s/%s in words', async (code, message, expected) => {
+  const h = host({ parked: true }); await h.view.ready;
+  h.state.ipcReply = async () => ({ code: 0, stdout: JSON.stringify({ ok: false, code, message }) });
+  await h.view.activate('session:session');
+  expect(h.view.problem).toBe(expected);
+  await h.view.close();
+});
+
+it('explains when a session vanishes during the pre-dispatch refresh', async () => {
+  const h = host({ parked: true }); await h.view.ready;
+  h.state.feeds = [];
+  await h.view.activate('session:session');
+  expect(h.view.problem).toBe('Owning session unavailable');
+  expect(h.calls.filter(call => call[0] === 'exec' && call[2].includes('ipc'))).toEqual([]);
+  await h.view.close();
+});
+
+it('explains when a target disappears before activation begins', async () => {
+  const h = host({ parked: true }); await h.view.ready;
+  h.view.feeds = []; h.state.terms = [];
+  await h.view.activate('session:session');
+  expect(h.view.problem).toBe('Owning session unavailable');
+  expect(h.calls.filter(call => call[0] === 'exec' && call[2].includes('ipc'))).toEqual([]);
+  await h.view.close();
+});
+
+it('selects the current tab on opening so Enter does not switch spaces', async () => {
+  const h = host({ config: 'missing' });
+  h.state.spaces = [{ ...localSpace, id: 's0', name: 'Other', active: false, tabs: [{ ...localSpace.tabs[0], id: 'tb0' }] }, localSpace];
+  await h.view.ready; h.view.render(); h.inputs[0].handlers.submit({}, h.cx); await h.state.closed;
+  expect(h.calls.filter(call => call[0] === 'run')).toEqual([['run', 'tab.select', { id: 'tb1' }]]);
 });
 
 it('explains an old endpoint without launching a replacement terminal', async () => {

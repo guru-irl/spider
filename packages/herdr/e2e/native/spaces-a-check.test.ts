@@ -44,7 +44,7 @@ for (const [version, sourceBundle] of [['0.1.13', '/Applications/Herdr.app'], ['
       writeFileSync(agentsPath, composedAgents);
       const checks: any[] = [];
       const before = (await cores.records()).length;
-      for (const mod of ['spider-agents', 'spider-spaces', 'spider-pane', 'spider-picker', 'spider-panel', ...(version === '0.1.16' ? ['spider-toast'] : [])]) {
+      for (const mod of ['spider-agents', 'spider-spaces', 'spider-pane', 'spider-picker', 'spider-panel', 'spider-menu', ...(version === '0.1.16' ? ['spider-toast'] : [])]) {
         const result = await app.check(join(owned.appHome, 'mods', mod));
         checks.push({ mod, ...result });
       }

@@ -193,6 +193,7 @@ const ipcObject = (value) => value !== null && typeof value === 'object' && !Arr
 const ipcString = (value) => typeof value === 'string' && value.length > 0 && !value.includes('\0');
 const ipcCount = (value) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const ipcOne = (value, choices) => typeof value === 'string' && choices.includes(value);
+const ipcRequestId = value => typeof value === 'string' && /^[a-z0-9]{16,64}$/.test(value);
 function ipcCursor(value) {
   return ipcString(value) && ipcUtf8Size(value) <= IPC_CURSOR_BYTES;
 }
@@ -202,13 +203,19 @@ function ipcRequest(value) {
     case 'ping': return true;
     case 'killSession': return Object.keys(value).every(key => key === 'op' || key === 'generation');
     case 'openView': return ipcOne(value.view, ['agents', 'todos', 'usage', 'memory', 'triggers']);
-    case 'openSession': return Object.keys(value).every(key => ['op', 'generation', 'destination'].includes(key))
+    case 'cancelOpen': return Object.keys(value).every(key => ['op', 'generation', 'requestId'].includes(key)) && ipcRequestId(value.requestId);
+    case 'openSession': return Object.keys(value).every(key => ['op', 'generation', 'destination', 'requestId', 'returnFocus', 'backgroundKeep'].includes(key))
+      && (value.requestId === undefined || ipcRequestId(value.requestId))
+      && (value.backgroundKeep === undefined || typeof value.backgroundKeep === 'boolean')
+      && (value.returnFocus === undefined || ipcObject(value.returnFocus)
+        && Object.keys(value.returnFocus).every(key => ['space', 'tab', 'pane'].includes(key))
+        && ipcString(value.returnFocus.space) && ipcString(value.returnFocus.tab) && ipcString(value.returnFocus.pane))
       && (value.destination === null || ipcObject(value.destination)
         && Object.keys(value.destination).every(key => key === 'space' || key === 'tab')
         && ipcString(value.destination.space) && ipcString(value.destination.tab));
-    case 'openRun':
+    case 'openRun': return ipcString(value.runId) && (value.requestId === undefined || ipcRequestId(value.requestId));
     case 'killRun': return ipcString(value.runId);
-    case 'openJob':
+    case 'openJob': return ipcString(value.jobId) && (value.requestId === undefined || ipcRequestId(value.requestId));
     case 'killJob': return ipcString(value.jobId);
     case 'moveRun': return ipcString(value.runId) && ipcObject(value.destination)
       && (ipcOne(value.destination.kind, ['new', 'hide']) || value.destination.kind === 'tab' && ipcString(value.destination.tab));
@@ -275,6 +282,7 @@ function ipcReply(value) {
       && (value.status.native === null || ipcOne(value.status.native, ['idle', 'working', 'blocked', 'done', 'error']))
       && (value.status.effective === null || ipcOne(value.status.effective, ['idle', 'working', 'blocked', 'done', 'error']));
     case 'openView':
+    case 'cancelOpen':
     case 'killRun':
     case 'killSession':
     case 'moveSession': return true;

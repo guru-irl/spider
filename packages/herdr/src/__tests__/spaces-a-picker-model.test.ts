@@ -62,6 +62,13 @@ describe('Go to navigation projections', () => {
     expect(sessionDisplayName(writer, terminal('t1'), [])).toBe('Native name');
   });
 
+  it('does not reopen an unplaced child directly when the owner cannot place a viewer', () => {
+    const work = feed(owner('writer', 't1', 'Writer'), [run('run-1', 'writer', 'Child')]); work.ipc = null;
+    const viewer = terminal('view1', 't1', { 'spider.kind': 'subagent-viewer', 'spider.session': 'writer', 'spider.run': 'run-1' });
+    const inputs = snapshot({ terminals: [terminal('t1'), viewer], feeds: [work] });
+    expect(projectNavigation(inputs).find(target => target.id === 'run:writer:run-1')).toMatchObject({ action: null, disabledReason: 'Owning session unavailable' });
+  });
+
   it('finds children under their owner even when the sidebar is folded', () => {
     const work = feed(owner('writer', 't1', 'Writer'), [run('run-1', 'writer', 'Check output')]);
     const viewer = terminal('view1', 't1', { 'spider.kind': 'subagent-viewer', 'spider.session': 'writer', 'spider.run': 'run-1' });
@@ -92,6 +99,29 @@ describe('Go to navigation projections', () => {
     expect(targets.find(target => target.name === 'Remote agent')?.machine).toBe('box-1.invalid');
   });
 
+  it.each([true, false])('keeps an unclaimed roaming proxy with a pane selectable (native agent: %s)', withAgent => {
+    const proxy = terminal('proxy', null, { 'spider.kind': 'roam-proxy', 'spider.session': 'roamer',
+      'spider.owner-core': 'remote-core', 'spider.owner-terminal': 'box-1.invalid/t2', 'spider.display-name': 'Roamer' });
+    const inputs = snapshot({ agents: withAgent ? [agent('proxy', 'p3', 'Proxy')] : [], terminals: [proxy],
+      panes: [{ pane: 'p3', terminal: 'proxy', tab: 'tb1', cwd: null }] });
+    expect(projectNavigation(inputs)).toMatchObject([{ id: 'agent:proxy', name: 'Roamer', machine: 'box-1.invalid', action: { kind: 'focus', pane: 'p3' } }]);
+  });
+
+  it('focuses a locally visible proxy even if its owner machine is unavailable', () => {
+    const proxy = terminal('proxy', null, { 'spider.kind': 'roam-proxy', 'spider.session': 'roamer',
+      'spider.owner-core': 'remote-core', 'spider.owner-terminal': 'box-1.invalid/t2' });
+    const inputs = snapshot({ terminals: [terminal('box-1.invalid/t2'), proxy], feeds: [feed(owner('roamer', 'box-1.invalid/t2', 'Roamer', 'remote-core'))],
+      machines: [{ name: 'box-1.invalid', layout: 'unavailable', coreId: 'remote-core' }],
+      panes: [{ pane: 'p3', terminal: 'proxy', tab: 'tb1', cwd: null }] });
+    expect(projectNavigation(inputs)[0]).toMatchObject({ action: { kind: 'focus', pane: 'p3' } });
+  });
+
+  it('explains why a parked session without an endpoint cannot be reopened', () => {
+    const value = feed(owner('writer', 't1', 'Writer')); value.ipc = null;
+    const inputs = snapshot({ terminals: [terminal('t1')], feeds: [value] });
+    expect(projectNavigation(inputs)[0]).toMatchObject({ action: null, disabledReason: 'Owning session unavailable' });
+  });
+
   it('deduplicates roaming proxies by session and focuses the local pane', () => {
     const remoteOwner = owner('roamer', 'box-1.invalid/t2', 'Roamer', 'remote-core');
     const proxy = terminal('proxy', null, { 'spider.kind': 'roam-proxy', 'spider.session': 'roamer',
@@ -101,6 +131,17 @@ describe('Go to navigation projections', () => {
     const targets = projectNavigation(inputs).filter(target => target.kind === 'agent');
     expect(targets).toHaveLength(1);
     expect(targets[0]).toMatchObject({ id: 'session:roamer', name: 'Roamer', machine: 'box-1.invalid', terminal: 'box-1.invalid/t2', action: { kind: 'focus', pane: 'p3' } });
+  });
+
+  it('focuses a feed-backed proxy pane when the native agent list omits the proxy', () => {
+    const remoteOwner = owner('roamer', 'box-1.invalid/t2', 'Roamer', 'remote-core');
+    const proxy = terminal('proxy', null, { 'spider.kind': 'roam-proxy', 'spider.session': 'roamer',
+      'spider.owner-core': 'remote-core', 'spider.owner-terminal': 'box-1.invalid/t2' });
+    const inputs = snapshot({ terminals: [terminal('box-1.invalid/t2'), proxy], feeds: [feed(remoteOwner)],
+      panes: [{ pane: 'p3', terminal: 'proxy', tab: 'tb1', cwd: null }] });
+    expect(projectNavigation(inputs).filter(target => target.kind === 'agent')).toMatchObject([
+      { id: 'session:roamer', action: { kind: 'focus', pane: 'p3' } },
+    ]);
   });
 
   it('qualifies a bare remote owner through the matching core before resolving its proxy', () => {
@@ -194,7 +235,8 @@ describe('Go to navigation projections', () => {
     const proxy = terminal('proxy', null, { 'spider.kind': 'roam-proxy', 'spider.session': 'old', 'spider.owner-core': 'other-core', 'spider.owner-terminal': 't1' });
     const inputs = snapshot({ agents: [agent('t1', 'p1', 'Native'), agent('proxy', 'p3', 'Proxy')], terminals: [terminal('t1'), proxy], feeds: [wrongCore] });
     const targets = projectNavigation(inputs);
-    expect(targets.map(target => target.name)).toEqual(['Native']);
+    expect(targets.map(target => target.name)).toEqual(['Native', 'Proxy']);
+    expect(targets[1]).toMatchObject({ id: 'agent:proxy', action: { kind: 'focus', pane: 'p3' } });
     expect(targets[0].id).toBe('agent:t1');
     expect(targets[0].action).toEqual({ kind: 'focus', pane: 'p1' });
   });

@@ -58,6 +58,31 @@ test('one mutation reconciles once even when its own effects emit core events', 
     expect(f.ports.inventory).toHaveBeenCalledTimes(1);
   } finally { await service.stop(); }
 });
+test('scheduled reconciliation waits for placement acknowledgement before registering session facts', async () => {
+  const f = await fixture();
+  let release!: () => void, entered!: () => void, placing = false, overlapping = false;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const observeIdentity = vi.mocked(f.hc.identity).getMockImplementation()!;
+  vi.mocked(f.hc.identity).mockImplementation(async () => { if (placing) overlapping = true; return observeIdentity(); });
+  f.ports.reconcileInventory = async () => { await f.ports.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, target: { ...p.target, name: 'Registered agent' }, revision: p.revision + 1 })) })); };
+  f.ports.dispatch = async () => {
+    placing = true; entered(); await gate;
+    await f.ports.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, slot: { space: 's1' as never, tab: 'tb1' as never, pane: 'proxy-pane' as never }, revision: p.revision + 1 })) }));
+    placing = false;
+    return { status: 'complete', reason: 'proxy-presented', presentation: (await f.ports.store.read()).presentations[0] };
+  };
+  const service = createPaneService(f.ports);
+  try {
+    const request = service.request({ version: 1, op: 'move', operationId: 'scheduled-placement', presentationId: 'p1', expectedRevision: 1, slot: { space: 's1' as never, tab: 'tb1' as never, pane: null } });
+    await started;
+    f.tick(); await Promise.resolve(); release();
+    expect(await request).toMatchObject({ outcome: { status: 'complete', presentation: { slot: { pane: 'proxy-pane' } } } });
+    await service.stop();
+    expect(overlapping).toBe(false);
+    expect((await f.ports.store.read()).presentations[0]).toMatchObject({ slot: { pane: 'proxy-pane' }, target: { name: 'Registered agent' } });
+  } finally { release(); await service.stop(); }
+});
 test('absent core makes zero hc calls', async () => {
   const f = await fixture(); vi.mocked(f.ports.coreAvailable).mockResolvedValue(false);
   const service = createPaneService(f.ports);

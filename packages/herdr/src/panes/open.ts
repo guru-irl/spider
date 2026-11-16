@@ -225,7 +225,8 @@ export async function convertNativePresentation(input: { presentation: PanePrese
     const caps = await ports.appCapabilities(); noFocus = caps.noFocusConversion && caps.explicitTargetSwap && !!ports.placeWithoutFocus;
   }
   const conversion: PanePresentation['conversion'] = { state: 'waiting-focus', source, sourceFocused: focused, destination };
-  if (!p.conversion || p.conversion.state !== 'waiting-focus' || !samePaneTarget(p.conversion.destination, destination) || p.conversion.sourceFocused !== focused) p = await updatePresentation(p, { conversion }, ports);
+  const nextLaunch = p.launch === 'none' && p.conversion?.state === 'waiting-focus' && !samePaneTarget(p.conversion.destination, destination);
+  if (!p.conversion || p.conversion.state !== 'waiting-focus' || !samePaneTarget(p.conversion.destination, destination) || p.conversion.sourceFocused !== focused) p = await updatePresentation(p, { conversion, ...(nextLaunch ? { proxyLaunchAttempts: 0 } : {}) }, ports);
   if (!ports.app) return outcome('pending', 'app-unavailable', p);
   if (!focused && !noFocus) {
     let proved = false;

@@ -38,7 +38,7 @@ import { createSessionIpcClient } from '@spider/herdr/feed/ipc-client';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { join, resolve, isAbsolute, dirname, sep } from 'node:path';
+import { join, resolve, isAbsolute, dirname, relative, sep } from 'node:path';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { createMemoryReviewDbs, decideMemoryReview, listMemoryReview } from './memory-review.js';
 import { createProcessPresence } from '@spider/herdr/sessions/presence';
@@ -371,7 +371,7 @@ async function assetFiles(root: string): Promise<{ relative: string; bytes: Buff
   };
   await walk(root, ''); return result;
 }
-import { rewriteImportPrefix } from './imports.js';
+import { relativeImports, rewriteImportPrefix } from './imports.js';
 export { rewriteImportPrefix } from './imports.js';
 
 export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly<NodeJS.ProcessEnv> = process.env): HerdrCliPorts & { spacePorts(request: SetupRequest): SpaceSetupPorts; dispose(): Promise<void> } {
@@ -402,14 +402,14 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     const references: { path: string; root: string; specifier: string }[] = [];
     const files: { path: string; bytes: Buffer; mode?: number }[] = sources.map(file => {
       const path = join(picker.directory, file.relative), source = file.bytes.toString('utf8');
-      const rewritten = file.relative.endsWith('.js') ? rewriteImportPrefix(source, '../shared/', './shared/') : { source, references: [] };
+      const rewritten = file.relative.endsWith('.js') ? rewriteImportPrefix(source, '../shared/', './shared/', path) : { source, references: [] };
       for (const specifier of rewritten.references) references.push({ path, root: picker.directory, specifier });
       return { path, bytes: file.relative.endsWith('.js') ? Buffer.from(rewritten.source) : file.bytes };
     });
     const shared = await assetFiles(join(assets, 'shared')), agents = await assetFiles(join(assets, 'agents'));
     const navSource = shared.find(file => file.relative === 'navigation.js'), children = agents.find(file => file.relative === 'children.js')?.bytes;
     if (!navSource || !children) throw new HerdrError('picker-assets-missing', 'The packaged picker dependencies are incomplete');
-    const navigation = rewriteImportPrefix(navSource.bytes.toString('utf8'), '../agents/children.js', '../spider-children.js');
+    const navigation = rewriteImportPrefix(navSource.bytes.toString('utf8'), '../agents/children.js', '../spider-children.js', join(assets, 'shared/navigation.js'));
     if (navigation.references.length !== 1) throw new HerdrError('picker-assets-invalid', 'Navigation needs one declared children import');
     for (const name of ['spider-agents', 'spider-panel', 'spider-picker']) {
       const directory = join(mods, name);
@@ -550,6 +550,18 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     files.push({ path: join(request.config.app.home, 'layouts/spider-glass.json'), bytes: Buffer.from(JSON.stringify(buildGlassLayout(current, { agents: 'spider-agents', spaces: 'spider-spaces', pane: 'spider-pane', tabs: 'spider-tabs', spider: 'spider-panel', chrome: 'spider-chrome', toast: toast.length ? 'spider-toast' : undefined, bodyFont: fonts.families.body, autoHideTabs: request.config.look?.autoHideTabs, props: { ...props, spider: props.panel } }), null, 2)) });
     for (const font of fonts.files) files.push({ path: join(request.config.app.home, 'fonts', font.fileName), bytes: font.bytes });
     for (const copy of context.modProps.filter(copy => copy.props.modId !== 'spider-toast')) for (const name of ['feed.js', 'look.js', 'open-failure.js']) files.push({ path: join(copy.directory, 'shared', name), bytes: await readFile(join(assets, 'shared', name)) });
+    const mods = join(request.config.app.home, 'mods');
+    const panel = (await assetFiles(join(assets, 'mods/spider'))).map(file => ({ path: join(mods, 'spider-panel', file.relative), bytes: file.bytes }));
+    const staged = [...files, ...panel], available = new Set(staged.map(file => resolve(file.path)));
+    for (const file of staged) {
+      const name = relative(mods, file.path).split(sep)[0];
+      if (!name.startsWith('spider-') || !file.path.endsWith('.js')) continue;
+      const root = resolve(mods, name);
+      for (const specifier of relativeImports(file.bytes.toString('utf8'), file.path)) {
+        const target = resolve(dirname(file.path), specifier);
+        if (!target.startsWith(root + sep) || !available.has(target)) throw new HerdrError('picker-import-unresolved', `Unresolved import in ${file.path}: ${specifier}`);
+      }
+    }
     return filesFor(files, context);
   };
   const templates = async (request: SetupRequest, context: SetupContext): Promise<InstallFile[]> => {
@@ -687,10 +699,9 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome']) if (!isDeepStrictEqual(installed.get(`spider-${name}`), expected.get(`spider-${name}`))) return failure('layout-props-mismatch', `Installed spider-${name} props differ from the current configuration`);
         if (!(await snapshot(join(request.config.app.home, 'themes/spider-glass.json'))).bytes?.equals(await readFile(join(packageRoot, 'packages/herdr/assets/themes/spider-glass.json')))) return failure('app-theme-mismatch', 'Installed Herdr theme differs');
         const settings = JSON.parse((await snapshot(join(request.config.app.home, 'settings.json'))).bytes?.toString() ?? '{}');
-        if (settings.sounds?.enabled !== false) return failure('native-sound-enabled', 'Native automatic sound is not disabled', 'Rerun setup to disable native automatic sound.');
         if (settings.theme !== undefined && settings.theme !== 'spider-glass' || settings.layout !== undefined && settings.layout !== 'spider-glass') return failure('app-selection-mismatch', 'App selection differs from spider-glass');
         const information: DoctorInformation[] = [
-          { item, code: 'native-sound-policy', message: hasToast ? 'Native automatic sounds are disabled and the derived toast is selected.' : 'Native automatic sounds are disabled; stock automatic toasts can still appear.' },
+          { item, code: 'native-sound-policy', message: settings.sounds?.enabled === true ? 'Native automatic sounds are enabled by the user.' : settings.sounds?.enabled === false ? (hasToast ? 'Native automatic sounds are disabled and the derived toast is selected.' : 'Native automatic sounds are disabled; stock automatic toasts can still appear.') : 'Native automatic sound setting is not available.' },
           { item, code: 'intentional-sound-policy', message: `Intentional notification sounds are ${request.config.notifications?.sound === false ? 'disabled' : 'enabled'}.` },
         ];
         if (settings.theme === undefined || settings.layout === undefined) return { failures: [], information, warnings: [{ item, code: 'inspection-unavailable', message: 'Installed layout and theme are valid; active app selection is not exposed in settings', repair: 'Check the app layout and theme selection, then rerun doctor.' }] };

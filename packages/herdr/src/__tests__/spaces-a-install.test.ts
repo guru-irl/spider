@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
-import { access, chmod, mkdir, readFile, readdir, stat, symlink, unlink, writeFile } from 'node:fs/promises';
+import { access, chmod, cp, mkdir, readFile, readdir, stat, symlink, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { setupHerdr } from '../setup/installer.js';
 import { digest, readJournal, saveJournal } from '../setup/backup.js';
@@ -169,6 +169,83 @@ test('refuses an unresolved rewritten import before writing files', async () => 
   expect(await readFile(settings)).toEqual(before);
   expect(await exists(join(f.h.directories.app, 'mods/spider-picker/config.json'))).toBe(false);
 });
+
+test.each(['./missing.js', '../../outside.js'])('refuses an unsafe picker import %s before any writes', async specifier => {
+  const f = await pickerFixture(), settings = join(f.h.directories.app, 'settings.json');
+  const before = await readFile(settings), source = join(f.root, 'packages/herdr/assets/picker/main.js');
+  await writeFile(source, `import '${specifier}';\n`);
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'picker-import-unresolved', message: expect.stringContaining(specifier) });
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ message: expect.stringContaining('main.js') });
+  expect(await readFile(settings)).toEqual(before);
+  expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+}, 60_000);
+
+test('refuses a skipped import after a quote-containing regex and names its source', async () => {
+  const f = await pickerFixture(), settings = join(f.h.directories.app, 'settings.json');
+  const before = await readFile(settings), source = join(f.root, 'packages/herdr/assets/picker/main.js');
+  const specifier = '../shared/navigation.js';
+  await writeFile(source, `const quote = /['"]/;\nimport '${specifier}';\n`);
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'picker-import-unresolved', message: expect.stringContaining('spider-picker/main.js') });
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ message: expect.stringContaining(specifier) });
+  expect(await readFile(settings)).toEqual(before);
+  expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+}, 60_000);
+
+test('all installed shipped mod JavaScript imports resolve inside their own mod', async () => {
+  const f = await fixture();
+  await setupHerdr(f.request, f.parts);
+  const mods = join(f.h.directories.app, 'mods'), files: string[] = [];
+  const walk = async (directory: string) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.isFile() && path.endsWith('.js')) files.push(path);
+    }
+  };
+  for (const name of await readdir(mods)) if (name.startsWith('spider-')) await walk(join(mods, name));
+  expect(files.length).toBeGreaterThan(10);
+  expect(files.some(path => path.endsWith('/spider-picker/main.js'))).toBe(true);
+  expect(files.some(path => path.endsWith('/spider-panel/main.js'))).toBe(true);
+  expect(await unresolvedImports(mods, files)).toEqual([]);
+}, 60_000);
+
+test('every shipped mod asset has a staged copy with in-root imports', async () => {
+  const f = await fixture(), app = f.h.directories.app, assets = join(f.root, 'packages/herdr/assets');
+  const manifestPath = join(assets, 'look/patches.json'), manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.upstreamVersion = '0.1.16';
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  const appScript = join(f.h.root, 'app-selection.mjs');
+  await writeFile(appScript, (await readFile(appScript, 'utf8')).replace('herdr-app 0.1.12', 'herdr-app 0.1.16'));
+  await cp(resolve('packages/herdr/src/__tests__/fixtures/herdr-0.1.16/mods/toast'), join(app, 'mods/toast'), { recursive: true });
+  const base = f.context.modProps[0].props;
+  f.context.modProps = [...f.context.modProps, ...['picker', 'toast'].map(name => ({ directory: join(app, 'mods', `spider-${name}`), props: { ...base, modId: `spider-${name}` } }))];
+  const staged = [...await f.parts.stageLook(f.request, f.context, 'export'), ...await f.parts.installFiles(f.request, f.context)];
+  const mods = join(f.h.root, 'staged-mods'), originalMods = join(app, 'mods'), stagedJs: string[] = [];
+  for (const file of staged) {
+    const name = relative(originalMods, file.path);
+    if (name.startsWith('..') || !name.startsWith('spider-') || !name.endsWith('.js')) continue;
+    const path = join(mods, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, file.bytes); stagedJs.push(path);
+  }
+  const sourceJs: string[] = [];
+  const walk = async (directory: string) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) await walk(path);
+      else if (entry.isFile() && path.endsWith('.js')) sourceJs.push(relative(assets, path));
+    }
+  };
+  await walk(assets);
+  const target = (source: string) => {
+    const [group, ...rest] = source.split('/');
+    if (source === 'agents/children.js') return 'spider-agents/spider-children.js';
+    if (group === 'shared') return `spider-picker/shared/${rest.join('/')}`;
+    if (group === 'mods') return `spider-panel/${rest.slice(1).join('/')}`;
+    return `spider-${group === 'spaces' ? 'spaces' : group}/${rest.join('/')}`;
+  };
+  expect(sourceJs.length).toBeGreaterThan(10);
+  expect(sourceJs.filter(source => !stagedJs.includes(join(mods, target(source))))).toEqual([]);
+  expect(await unresolvedImports(mods, stagedJs)).toEqual([]);
+}, 60_000);
 
 test('refuses a symlinked navigation source before writing files', async () => {
   const f = await pickerFixture(), settings = join(f.h.directories.app, 'settings.json');

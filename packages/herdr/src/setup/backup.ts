@@ -212,6 +212,8 @@ export interface BackupEntry {
   keySectionsBefore?: Readonly<Record<string, boolean>>;
   pathsBefore?: PathBaselines;
   soundApplied?: boolean;
+  soundDeferred?: boolean;
+  soundIntent?: string;
   managed?: ManagedPart;
   managedAfter?: string;
   previous?: { before: string | null; backup: string | null; mode: number }[];
@@ -472,6 +474,8 @@ export async function readJournal(root: string): Promise<SetupJournal> {
     }));
     const managed = e.managed === undefined ? undefined : parseManagedPart(e.managed);
     if (e.soundApplied !== undefined && typeof e.soundApplied !== 'boolean') throw new HerdrError('setup-journal-invalid', 'Invalid sound compare-write marker');
+    if (e.soundDeferred !== undefined && typeof e.soundDeferred !== 'boolean') throw new HerdrError('setup-journal-invalid', 'Invalid deferred sound marker');
+    if (e.soundIntent !== undefined && (typeof e.soundIntent !== 'string' || !/^[a-f0-9]{64}$/.test(e.soundIntent))) throw new HerdrError('setup-journal-invalid', 'Invalid sound write intent');
     const pathsBefore: PathBaselines | undefined = e.pathsBefore === undefined ? undefined : Object.fromEntries(Object.entries(journalObject(e.pathsBefore)).map(([path, value]) => {
       const parts = pathParts(path), baseline = journalObject(value), parents = baseline.parents;
       if (!Array.isArray(parents) || parents.length !== parts.length - 1 || parents.some(parent => typeof parent !== 'boolean') || typeof baseline.present !== 'boolean' || (baseline.present ? !Object.hasOwn(baseline, 'value') : Object.hasOwn(baseline, 'value'))) throw new HerdrError('setup-journal-invalid', 'Invalid managed path baseline');
@@ -485,7 +489,7 @@ export async function readJournal(root: string): Promise<SetupJournal> {
       throw new HerdrError('setup-journal-invalid', 'Managed key values do not match the journal');
     if (keysBefore && (!keys || fieldNames(keysBefore) !== fieldNames(keys))) throw new HerdrError('setup-journal-invalid', 'Managed key baselines do not match their bindings');
     if (keySectionsBefore && (!keys || canonicalJson(Object.keys(keySectionsBefore).sort()) !== canonicalJson(Object.keys(keys).sort()))) throw new HerdrError('setup-journal-invalid', 'Managed key section baselines do not match their bindings');
-    return { ...(previous ? { previous } : {}), path: text(e.path), before: e.before === null ? null : text(e.before), after: text(e.after), backup: e.backup === null ? null : text(e.backup), mode: e.mode, ...(e.terminalKeys === undefined ? {} : { terminalKeys }), ...(keys === undefined ? {} : { keys }), ...(keysBefore === undefined ? {} : { keysBefore }), ...(keySectionsBefore === undefined ? {} : { keySectionsBefore }), ...(pathsBefore === undefined ? {} : { pathsBefore }), ...(e.soundApplied === undefined ? {} : { soundApplied: e.soundApplied as boolean }), ...(managed === undefined ? {} : { managed, managedAfter: typeof e.managedAfter === 'string' ? e.managedAfter : text(e.managedAfter) }) };
+    return { ...(previous ? { previous } : {}), path: text(e.path), before: e.before === null ? null : text(e.before), after: text(e.after), backup: e.backup === null ? null : text(e.backup), mode: e.mode, ...(e.terminalKeys === undefined ? {} : { terminalKeys }), ...(keys === undefined ? {} : { keys }), ...(keysBefore === undefined ? {} : { keysBefore }), ...(keySectionsBefore === undefined ? {} : { keySectionsBefore }), ...(pathsBefore === undefined ? {} : { pathsBefore }), ...(e.soundApplied === undefined ? {} : { soundApplied: e.soundApplied as boolean }), ...(e.soundDeferred === undefined ? {} : { soundDeferred: e.soundDeferred as boolean }), ...(e.soundIntent === undefined ? {} : { soundIntent: e.soundIntent as string }), ...(managed === undefined ? {} : { managed, managedAfter: typeof e.managedAfter === 'string' ? e.managedAfter : text(e.managedAfter) }) };
   });
   const probes = j.probes.map(value => { const p = object(value); return { machine: text(p.machine) as NodeObservation['machine'], nodePath: text(p.nodePath), version: text(p.version), coreStartedAt: text(p.coreStartedAt) }; });
   let cutover: CutoverResult | null = null;
@@ -590,6 +594,9 @@ export interface AppSettingsTransition {
   path: string;
   planned: Readonly<{ theme: string; layout: string; sounds: { enabled: false } }>;
 }
+function soundOwned(entry: BackupEntry, currentHash: string | null, journal: SetupJournal): boolean {
+  return entry.soundApplied === true || currentHash !== null && currentHash === entry.soundIntent || !entry.soundDeferred && (currentHash === entry.after || journal.cutoverPending);
+}
 function matchesAppSettingsTransition(path: string, part: ManagedPart, current: Buffer | null, original: Buffer | null, transition?: AppSettingsTransition, soundOwned = false): boolean {
   if (!transition || resolve(path) !== resolve(transition.path)) return false;
   const planned = Buffer.from(JSON.stringify(transition.planned));
@@ -636,14 +643,14 @@ export async function validateFiles(files: readonly InstallFile[], journal: Setu
         const baseline = prior.backup === null ? null : (await snapshot(prior.backup)).bytes;
         if ((baseline === null ? null : digest(baseline)) !== prior.before) throw new HerdrError('backup-verification-failed', `Cannot verify original managed values: ${f.path}`);
         const sound = pathBaseline(current.bytes, 'sounds.enabled'), planned = pathBaseline(Buffer.from(JSON.stringify(appSettings.planned)), 'sounds.enabled');
-        if (!samePath(sound, pathBaseline(baseline, 'sounds.enabled')) && (!(current.hash === prior.after || journal.cutoverPending || prior.soundApplied === true) || !samePath(sound, planned))) { unsafeSound = true; refusal = { code: 'managed-artifact-changed', message: `Unowned sound changed during an unfinished selection: ${f.path}` }; }
+        if (!samePath(sound, pathBaseline(baseline, 'sounds.enabled')) && (!soundOwned(prior, current.hash, journal) || !samePath(sound, planned))) { unsafeSound = true; refusal = { code: 'managed-artifact-changed', message: `Unowned sound changed during an unfinished selection: ${f.path}` }; }
       }
       let restored = !journal.verified && prior.before === current.hash;
       if (!restored && !journal.verified && actual !== recorded) {
         const baseline = prior.backup === null ? null : (await snapshot(prior.backup)).bytes;
         if ((baseline === null ? null : digest(baseline)) !== prior.before) throw new HerdrError('backup-verification-failed', `Cannot verify original managed values: ${f.path}`);
         restored = managedProjection(baseline, part) === actual
-          || (f.snapshotOnly === true || f.updateAfterCutover === true) && matchesAppSettingsTransition(f.path, part, current.bytes, baseline, appSettings, current.hash === prior.after || journal.cutoverPending || prior.soundApplied === true);
+          || (f.snapshotOnly === true || f.updateAfterCutover === true) && matchesAppSettingsTransition(f.path, part, current.bytes, baseline, appSettings, soundOwned(prior, current.hash, journal));
       }
       if (actual !== recorded && !restored)
         refusal = { code: 'managed-artifact-changed', message: `Managed content changed in ${f.path}. Restore these recorded managed values: ${recorded}` };
@@ -657,7 +664,7 @@ export async function validateFiles(files: readonly InstallFile[], journal: Setu
     const action = (identical || f.snapshotOnly) && owned && !refusal ? 'unchanged'
       : refusal ? 'replace' : identical ? 'adopt' : 'write';
     const keyPlan = f.terminalKeys !== undefined || f.keys !== undefined;
-    const authorized = !unsafeSound && (keyPlan && refusal?.code === 'key-binding-conflict' ? overwriteKeys : options.replaceChanged || keyPlan && overwriteKeys);
+    const authorized = !unsafeSound && !f.refusalRequired && (keyPlan && refusal?.code === 'key-binding-conflict' ? overwriteKeys : options.replaceChanged || keyPlan && overwriteKeys);
     actions.push({ path: f.path, action, ...(refusal && !authorized ? { refusal } : {}) });
     if (identical || refusal && authorized) {
       f.expected = current.hash;
@@ -680,7 +687,7 @@ export async function prepareBackups(root: string, files: readonly InstallFile[]
     const oldFields = prior ? priorKeyFields(prior) : {}, oldPaths = prior ? priorPaths(prior) : [];
     const expanded = !!(prior && (keyPart && Object.entries(keyPart.sections).some(([section, keys]) => keys.some(key => !oldFields[section]?.includes(key))) || pathPart && pathPart.paths.some(path => !oldPaths.includes(path))));
     const migrating = !!(prior && (keyPart && (!prior.keys || expanded) || pathPart && (!prior.pathsBefore || expanded)));
-    if (!f.replaceBaseline && !migrating && (current.hash === after && prior?.after === after || prior?.after === after && current.hash === prior.before))
+    if (f.deferredSoundApplied === undefined && !f.replaceBaseline && !migrating && (current.hash === after && prior?.after === after || prior?.after === after && current.hash === prior.before))
       continue;
     if (current.hash !== f.expected)
       throw new HerdrError('concurrent-settings-edit', `Changed between preflight and backup: ${f.path}`);
@@ -694,7 +701,10 @@ export async function prepareBackups(root: string, files: readonly InstallFile[]
       if (keysBefore) prior.keysBefore = keysBefore;
       if (keySectionsBefore) prior.keySectionsBefore = keySectionsBefore;
       if (pathsBefore) prior.pathsBefore = pathsBefore;
-      if (f.updateAfterCutover) prior.soundApplied = false;
+      if (f.updateAfterCutover) {
+        prior.soundApplied = f.deferredSoundApplied ?? false;
+        if (f.deferredSoundApplied !== undefined) prior.soundDeferred = true;
+      }
       if (f.managed) { prior.managed = f.managed; prior.managedAfter = plannedProjection(f, f.managed); }
       continue;
     }
@@ -728,7 +738,7 @@ export async function prepareBackups(root: string, files: readonly InstallFile[]
     }
     const previous = prior && (f.replaceBaseline || expanded) ? [...(prior.previous ?? []), { before: prior.before, backup: prior.backup, mode: prior.mode }] : undefined;
     const terminalKeys = f.terminalKeys ?? prior?.terminalKeys;
-    const entry = { ...(previous ? { previous } : {}), path: f.path, before: current.hash, after, backup, mode: current.mode, ...(terminalKeys ? { terminalKeys } : {}), ...(f.keys ? { keys: f.keys } : {}), ...(keysBefore ? { keysBefore } : {}), ...(keySectionsBefore ? { keySectionsBefore } : {}), ...(pathsBefore ? { pathsBefore } : {}), ...(f.updateAfterCutover ? { soundApplied: false } : {}), ...(f.managed ? { managed: f.managed, managedAfter: plannedProjection(f, f.managed) } : {}) };
+    const entry = { ...(previous ? { previous } : {}), path: f.path, before: current.hash, after, backup, mode: current.mode, ...(terminalKeys ? { terminalKeys } : {}), ...(f.keys ? { keys: f.keys } : {}), ...(keysBefore ? { keysBefore } : {}), ...(keySectionsBefore ? { keySectionsBefore } : {}), ...(pathsBefore ? { pathsBefore } : {}), ...(f.updateAfterCutover ? { soundApplied: f.deferredSoundApplied ?? false, ...(f.deferredSoundApplied === undefined ? {} : { soundDeferred: true }) } : {}), ...(f.managed ? { managed: f.managed, managedAfter: plannedProjection(f, f.managed) } : {}) };
     journal.entries = [...journal.entries.filter(e => e.path !== f.path), entry];
   }
   await saveJournal(root, journal);
@@ -822,13 +832,14 @@ interface PathRollbackPlan {
   changed: boolean;
   released: string[];
 }
-function planPathRollback(current: Buffer | null, original: Buffer | null, entry: BackupEntry, transition?: AppSettingsTransition, soundOwned = true): PathRollbackPlan {
+function planPathRollback(current: Buffer | null, original: Buffer | null, entry: BackupEntry, candidates: readonly (Buffer | null)[], transition?: AppSettingsTransition, soundOwned = true): PathRollbackPlan {
   const part = entry.managed as Extract<ManagedPart, { kind: 'json-paths' }>;
   let source = current?.toString('utf8') ?? '{}';
   const released: string[] = []; let changed = false;
   for (const path of part.paths) {
     const baseline = entry.pathsBefore?.[path] ?? pathBaseline(original, path);
     const actual = pathBaseline(current, path);
+    if (transition && samePath(actual, baseline)) continue;
     if (path === 'sounds.enabled' && !soundOwned && !samePath(actual, baseline)) { released.push(path); continue; }
     const installed = transition && (path === 'theme' || path === 'layout') && samePath(actual, pathBaseline(Buffer.from(JSON.stringify(transition.planned)), path)) ? actual : recordedPath(entry, path);
     if (!samePath(actual, installed)) { released.push(path); continue; }
@@ -836,22 +847,27 @@ function planPathRollback(current: Buffer | null, original: Buffer | null, entry
     source = editJsonPath(source, path, baseline); changed = true;
   }
   let bytes = changed ? original === null && !Object.keys(object(JSON.parse(source))).length ? null : Buffer.from(source) : current;
-  if (changed && bytes && original && !released.length && (current !== null && digest(current) === entry.after || transition) && canonicalJson(JSON.parse(bytes.toString('utf8'))) === canonicalJson(JSON.parse(original.toString('utf8')))) bytes = original;
+  if (changed && bytes && !released.length && (current !== null && digest(current) === entry.after || transition)) {
+    const result = canonicalJson(JSON.parse(bytes.toString('utf8')));
+    bytes = candidates.find(candidate => candidate && canonicalJson(JSON.parse(candidate.toString('utf8'))) === result) ?? bytes;
+  }
   return { bytes, changed, released };
 }
-async function verifyPathBaselines(root: string, entry: BackupEntry, original: Buffer | null): Promise<void> {
-  if (!entry.pathsBefore) return;
-  const candidates = [original, ...await Promise.all((entry.previous ?? []).map(previous => verifiedBackup(root, previous.backup, previous.before)))];
-  for (const [path, baseline] of Object.entries(entry.pathsBefore)) if (!candidates.some(bytes => canonicalJson(pathBaseline(bytes, path)) === canonicalJson(baseline))) throw new HerdrError('backup-verification-failed', `Cannot verify original path ${path}`);
+async function verifyPathBaselines(root: string, entry: BackupEntry, original: Buffer | null): Promise<(Buffer | null)[]> {
+  const candidates = [...await Promise.all((entry.previous ?? []).map(previous => verifiedBackup(root, previous.backup, previous.before))), original];
+  for (const [path, baseline] of Object.entries(entry.pathsBefore ?? {})) if (!candidates.some(bytes => canonicalJson(pathBaseline(bytes, path)) === canonicalJson(baseline))) throw new HerdrError('backup-verification-failed', `Cannot verify original path ${path}`);
+  return candidates;
 }
 interface KeyRollbackPlan {
   bytes: Buffer | null;
   changed: boolean;
   keys: KeySections;
   baselines: KeyBaselines;
+  released: string[];
 }
-function planKeyRollback(current: Buffer | null, original: Buffer | null, entry: BackupEntry): KeyRollbackPlan {
+function planKeyRollback(current: Buffer | null, original: Buffer | null, entry: BackupEntry, candidates: readonly (Buffer | null)[]): KeyRollbackPlan {
   const part = entry.managed as Extract<ManagedPart, { kind: 'keys' }>;
+  if (current === null) return { bytes: null, changed: false, keys: {}, baselines: {}, released: Object.entries(part.sections).flatMap(([section, keys]) => keys.map(key => `${section}.${key}`)) };
   const json = current === null ? {} : object(JSON.parse(current.toString('utf8')));
   const before = original === null ? {} : object(JSON.parse(original.toString('utf8')));
   const remaining: Record<string, Record<string, KeyBinding>> = {};
@@ -877,18 +893,21 @@ function planKeyRollback(current: Buffer | null, original: Buffer | null, entry:
     else delete json[section];
   }
   let bytes = changed ? original === null && !Object.keys(json).length ? null : Buffer.from(JSON.stringify(json, null, 2) + '\n') : current;
-  if (bytes && original && canonicalJson(JSON.parse(bytes.toString('utf8'))) === canonicalJson(JSON.parse(original.toString('utf8')))) bytes = original;
-  return { bytes, changed, keys: remaining, baselines };
+  if (bytes) {
+    const result = canonicalJson(JSON.parse(bytes.toString('utf8')));
+    bytes = candidates.find(candidate => candidate && canonicalJson(JSON.parse(candidate.toString('utf8'))) === result) ?? bytes;
+  }
+  return { bytes, changed, keys: remaining, baselines, released: [] };
 }
-async function verifyKeyBaselines(root: string, entry: BackupEntry, original: Buffer | null): Promise<void> {
-  if (!entry.keysBefore && !entry.keySectionsBefore) return;
-  const candidates = [original, ...await Promise.all((entry.previous ?? []).map(previous => verifiedBackup(root, previous.backup, previous.before)))];
+async function verifyKeyBaselines(root: string, entry: BackupEntry, original: Buffer | null): Promise<(Buffer | null)[]> {
+  const candidates = [...await Promise.all((entry.previous ?? []).map(previous => verifiedBackup(root, previous.backup, previous.before))), original];
   for (const [section, values] of Object.entries(entry.keysBefore ?? {})) for (const [key, baseline] of Object.entries(values)) {
     if (!candidates.some(bytes => canonicalJson(keyBaseline(bytes, section, key)) === canonicalJson(baseline)))
       throw new HerdrError('backup-verification-failed', `Cannot verify original key ${section}.${key}`);
   }
   for (const [section, present] of Object.entries(entry.keySectionsBefore ?? {}))
     if (!candidates.some(bytes => hasKeySection(bytes, section) === present)) throw new HerdrError('backup-verification-failed', `Cannot verify original key section ${section}`);
+  return candidates;
 }
 export async function rollbackFiles(root: string, journal: SetupJournal, options: {
   dependencies?: Readonly<Record<string, readonly string[]>>;
@@ -904,19 +923,19 @@ export async function rollbackFiles(root: string, journal: SetupJournal, options
     let conflict = false, alreadyRestored = current.hash === entry.before;
     let keyPlan: KeyRollbackPlan | undefined, pathPlan: PathRollbackPlan | undefined;
     if (entry.managed?.kind === 'json-paths') {
-      await verifyPathBaselines(root, entry, original);
+      const candidates = await verifyPathBaselines(root, entry, original);
       try {
         const partial = !journal.verified && options.appSettings && resolve(entry.path) === resolve(options.appSettings.path);
-        const soundOwned = !partial || current.hash === entry.after || journal.cutoverPending || entry.soundApplied === true;
-        pathPlan = planPathRollback(current.bytes, original, entry, partial ? options.appSettings : undefined, soundOwned);
+        const ownsSound = !partial || soundOwned(entry, current.hash, journal);
+        pathPlan = planPathRollback(current.bytes, original, entry, candidates, partial ? options.appSettings : undefined, ownsSound);
         alreadyRestored = !pathPlan.changed && pathPlan.released.length === 0;
       } catch { conflict = true; alreadyRestored = false; }
     } else if (entry.managed?.kind === 'keys') {
-      await verifyKeyBaselines(root, entry, original);
+      const candidates = await verifyKeyBaselines(root, entry, original);
       try {
-        keyPlan = planKeyRollback(current.bytes, original, entry);
+        keyPlan = planKeyRollback(current.bytes, original, entry, candidates);
         conflict = Object.keys(keyPlan.keys).length > 0;
-        alreadyRestored = !conflict && !keyPlan.changed;
+        alreadyRestored = !conflict && !keyPlan.changed && keyPlan.released.length === 0;
       } catch { conflict = true; alreadyRestored = false; }
     } else if (entry.managed && !alreadyRestored) {
       try {
@@ -946,6 +965,10 @@ export async function rollbackFiles(root: string, journal: SetupJournal, options
       continue;
     }
     if (keyPlan && !keep.has(entry.path)) {
+      if (keyPlan.released.length) {
+        if ((await snapshot(entry.path)).hash !== current.hash) throw new HerdrError('concurrent-settings-edit', `Changed during rollback: ${entry.path}`);
+        options.warn?.(`${entry.path} was deleted by the user; released ${keyPlan.released.join(', ')} without restoring it.`);
+      }
       if (keyPlan.changed) {
         if (keyPlan.bytes === null) {
           if ((await snapshot(entry.path)).hash !== current.hash) throw new HerdrError('concurrent-settings-edit', `Changed during rollback: ${entry.path}`);
@@ -1008,12 +1031,14 @@ export function mergeKeys(bytes: Buffer | null, desiredSections: KeySections, ow
     catch { throw new HerdrError('key-binding-conflict', `Invalid key section: ${section}`); }
   };
   if (desiredSections['layout:spider-glass']?.['cmd-shift-e'] !== undefined) {
-    const global = sectionValues('global'), terminal = sectionValues('terminal'), layout = sectionValues('layout:spider-glass');
-    if (global['cmd-shift-e'] !== undefined || terminal['cmd-shift-e'] !== undefined)
-      throw new HerdrError('key-binding-conflict', 'A competing send-back key needs repair');
-    for (const values of [global, terminal, layout])
-      if (values['cmd-shift-w'] !== undefined && values['cmd-shift-w'] !== 'pane.close')
-        throw new HerdrError('key-binding-conflict', 'The pane-close key needs repair');
+    for (const section of ['global', 'terminal'])
+      if (sectionValues(section)['cmd-shift-e'] !== undefined)
+        throw new HerdrError('key-binding-conflict', `Competing ${section}.cmd-shift-e needs repair`);
+    for (const section of ['global', 'terminal', 'layout:spider-glass']) {
+      const close = sectionValues(section)['cmd-shift-w'];
+      if (close !== undefined && close !== 'pane.close')
+        throw new HerdrError('key-binding-conflict', `${section}.cmd-shift-w needs repair`);
+    }
   }
   for (const [section, desired] of Object.entries(desiredSections)) {
     const currentSection = sectionValues(section);

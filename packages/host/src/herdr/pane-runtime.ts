@@ -222,7 +222,16 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
     });
   };
   const auxiliary = app ? createPresentedAuxiliaryPanes({ hc, app, subagentViewer: async () => { throw new HerdrError('presented-view-required', 'Use the acknowledged presentation path'); }, discardSubagentViewer: async () => {}, placementRoot: root, appIdentity: config.mode === 'full' ? config.app.home : '', automaticSubagentPanes: config.automaticSubagentPanes, limit: config.limits.auxiliaryPanes, clock: Date.now,
-    ownerPresentation: async owner => { const p = (await store.read()).presentations.find(p => p.role === 'agent' && p.target.sessionId === owner.sessionId && p.target.generation === owner.generation && p.visibility === 'visible'); return p ? p.mode === 'native' ? paneAddress(p.target.terminalId) : p.proxy : null; },
+    ownerPresentation: async owner => {
+      const matches = (await store.read()).presentations.filter(p => p.role === 'agent' && p.target.kind === 'session' && p.visibility === 'visible'
+        && p.target.sessionId === owner.sessionId && p.target.generation === owner.generation
+        && p.target.coreId === owner.terminal.coreId && p.target.terminalId === owner.terminal.terminalId);
+      if (matches.length !== 1) return null;
+      const p = matches[0], local = await identity();
+      if (p.mode === 'native') return p.target.coreId === local.coreId ? paneAddress(p.target.terminalId) : null;
+      if (!p.proxy || p.proxy.includes('/') && !p.proxy.startsWith(`${local.coreId}/`)) return null;
+      return p.proxy;
+    },
     waitingPresentation: (kind, id, owner) => withWaitingClaim(kind, id, owner, async (operationId, path, inspect) => {
       const existing = await inspect(); if (existing !== 'absent') return existing;
       await writePrivateJson(path, { version: 1, operationId, coreId: (await identity()).coreId });
@@ -313,11 +322,16 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
         const matches = privateInventory.rows.filter(row => row.sessionId === value.sessionId && row.generation === value.generation && row.unavailableReason === null);
         const row = matches.length === 1 ? matches[0] : null;
         if (!row?.owner || !auxiliary) return refused('not-in-hc');
+        if (value.mode === 'automatic' && value.view.kind === 'console') return { status: 'pending', reason: 'view-unplaced', presentation: null };
         const kind = value.view.kind; const console = kind === 'console' ? row.consoles.find(console => console.consoleId === (value.view as { consoleId: string }).consoleId && console.machineKey === (value.view as { machineKey: string }).machineKey) : null;
         const id = kind === 'subagent' ? (value.view as { runId: import('../../../herdr/src/contracts.js').RunId }).runId : console?.consoleId;
         if (!id) return refused('pane-view-unavailable');
-        const display = await auxiliary.openPresented(kind, id, row.owner, { timeoutMs: 5000 });
-        return { status: display ? 'complete' : 'pending', reason: display ? 'view-presented' : 'view-unplaced', presentation: display ? (await store.read()).presentations.find(p => p.proxy === display.viewer) ?? null : null };
+        const automatic = value.mode === 'automatic';
+        const display = await auxiliary.openPresented(kind, id, row.owner, { timeoutMs: 5000, automatic, ownerRelative: !automatic });
+        const presentation = display ? (await store.read()).presentations.find(p => p.proxy === display.viewer && p.role === kind && p.visibility === 'visible' && p.launch === 'acknowledged'
+          && p.target.kind === kind && p.target.sessionId === row.sessionId && p.target.generation === row.generation
+          && (kind === 'subagent' ? p.target.runId === id : p.target.consoleId === id)) ?? null : null;
+        return { status: presentation ? 'complete' : 'pending', reason: presentation ? 'view-presented' : 'view-unplaced', presentation };
       }
       const state = await store.read();
       let p = 'presentationId' in value ? state.presentations.find(p => p.id === value.presentationId) : value.op === 'open-existing' ? state.presentations.find(p => p.target.sessionId === value.sessionId && p.target.generation === value.generation) : null;

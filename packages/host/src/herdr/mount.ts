@@ -59,7 +59,7 @@ import { openSessionHistoryDb } from '../session-run-db.js';
 import { loadedBuildPresence } from '../roam/build-presence.js';
 import { controlConfig, configValues, modelDefaultLayers } from '../control.js';
 import { mountChildHerdr } from './child.js';
-import { coreStartedAt, disabledHerdrEnvironment, verifiedHerdrFile, readAppLayout, createHostHerdrPorts, createProcessInventory, explicitExtensionArguments, readJobJournal, type HostHerdrOptions, type HostHerdrPorts } from './ports.js';
+import { coreStartedAt, disabledHerdrEnvironment, verifiedHerdrFile, readAppLayout, createHostHerdrPorts, createProcessInventory, explicitExtensionArguments, readJobJournal, openPresentedRun, type HostHerdrOptions, type HostHerdrPorts } from './ports.js';
 
 export const RECORDED_TRANSCRIPT_QUERY = "SELECT payload FROM run_events WHERE run_id=? AND +session_id=? AND type='child_transcript' ORDER BY id DESC LIMIT 1";
 
@@ -261,6 +261,22 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
   const needAppConfig = () => { const current = need(config); if (current.mode === 'core-only') throw new HerdrError('view-on-mac', VIEW_ON_MAC_MESSAGE); return current; };
   const hc: HcClient = new Proxy({} as HcClient, { get(_target, key) { const c = need(client); const value = Reflect.get(c, key); return typeof value === 'function' ? value.bind(c) : value; } });
   const panePort: AuxiliaryPanes & Pick<AuxiliaryPaneActor, 'reconcile'> = { reconcile: (...args) => need(panes).reconcile(...args), acquire: (...args) => need(panes).acquire(...args), release: r => need(panes).release(r), park: id => need(panes).park(id), dispose: () => panes?.dispose() };
+  const presentedView = (id: RunId, current: Owner, request: { automatic: boolean; signal: AbortSignal }) => {
+    const selected = needAppConfig();
+    return openPresentedRun({ owner: current, id, ...request, automaticEnabled: selected.automaticSubagentPanes === true, localCore: current.terminal.coreId,
+      isCurrent: () => !stopped && owner?.sessionId === current.sessionId && owner.generation === current.generation
+        && owner.terminal.coreId === current.terminal.coreId && owner.terminal.terminalId === current.terminal.terminalId,
+      async connect() {
+        if (!await isCoreAvailable(need(activationEnv))) throw new HerdrError('core-unavailable', 'Selected core is unavailable');
+        const identity = await hc.identity();
+        if (identity.coreId !== current.terminal.coreId || identity.socket !== current.terminal.socket || identity.sessionNamespace !== current.terminal.sessionNamespace)
+          throw new HerdrError('core-mismatch', 'Presentation core identity changed');
+        return connectPaneService({ root: join(selected.globalRoot, 'herdr/panes'), identity, startIfMissing: true,
+          launchHelper: async operationId => (await hc.run({ argv: [process.execPath, join(options.packageRoot, 'dist/herdr/cli.mjs'), 'panes', 'serve'], cwd: null, parent: null, outliveParent: true, background: true, noNotify: true, labels: { 'spider.kind': 'pane-service', 'spider.pane-operation': operationId } })).address,
+          probeHelper: address => hc.get(address) });
+      },
+    });
+  };
   const views = createHerdrViews(options.views);
   const viewerExecutable = join(options.packageRoot, 'dist/herdr/viewer.mjs');
   const launcher = createViewerLauncher({ hc, owner: () => owner, ipcDescriptor: () => endpoint?.descriptor ?? null, viewerExecutable, piPackageRoot: resolvePiPackageRoot(),
@@ -677,7 +693,8 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       },
       openRun: async (id, signal) => {
         needAppConfig();
-        const opening = need(panes).acquire('subagent', id, current, { timeoutMs: 30_000, signal, ownerRelative: true }).then(reservation => reservation?.viewer ?? null);
+        const activeSignal = AbortSignal.any([observerAbort.signal, ...(signal ? [signal] : [])]);
+        const opening = presentedView(id, current, { automatic: false, signal: activeSignal }).then(view => view?.address ?? null);
         pendingRunOpens.add(opening);
         try { return await opening; }
         finally { pendingRunOpens.delete(opening); }
@@ -735,7 +752,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       if (source === startingSource && !stopped) unsubscribe = startingSource.subscribe(() => { void publish().catch(report); });
     }
   }));
-  const viewers = registerHerdrViewers(registrationPi, { owner: () => panes ? owner : null, hc, panes: panePort, viewerLauncher: launcher, viewerExecutable, get feedRoot() { return config ? join(config.globalRoot, 'herdr') : root; }, ipcDescriptor: () => endpoint?.descriptor ?? null,
+  const viewers = registerHerdrViewers(registrationPi, { owner: () => panes ? owner : null, hc, panes: panePort, presentedView, viewerLauncher: launcher, viewerExecutable, get feedRoot() { return config ? join(config.globalRoot, 'herdr') : root; }, ipcDescriptor: () => endpoint?.descriptor ?? null,
     ownedRunEvents: { list: async o => withStore(o, store => store.listActive(o.sessionId).map(row => row.id as RunId)), subscribe: (o, listener) => bus.on(event => { if (event.sessionId === o.sessionId) listener(event.runId as RunId); }) }, reportError: report });
 
   const routingPorts: RoutingPorts = { policy: { checkArgv: argv => policy ? policy.checkArgv(argv) : Promise.resolve({ kind: 'refuse', reason: 'Managed-machine cache unavailable' }), checkShell: code => policy ? policy.checkShell(code) : Promise.resolve({ kind: 'refuse', reason: 'Managed-machine cache unavailable' }) }, environmentPolicy: env => environment(env), currentOwner: () => owner,

@@ -37,7 +37,7 @@ export function paneTargetFacts(pane, presentations, targetFacts) {
   const item = panePresentation(pane, presentations);
   if (!item || item.mode !== 'proxy') return null;
   const target = item.target;
-  const facts = targetFacts[JSON.stringify([target.coreId, target.terminalId])];
+  const facts = targetFacts[`${target.coreId}/${target.terminalId}`];
   if (!facts || facts.createdMs !== target.createdMs || facts.terminal?.address !== `${target.coreId}/${target.terminalId}` ||
       Object.entries(target.identityLabels).some(([key, value]) => facts.identityLabels?.[key] !== value || facts.terminal.labels?.[key] !== value)) return null;
   return facts;

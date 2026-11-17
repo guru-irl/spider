@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import type { JsonObject, Readiness, StoreKey } from "@spider/db-core/roam/types";
 import { parseReadiness } from "@spider/db-core/roam/readiness";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { parseLocationStores } from "@spider/db-core/roam/catalog";
 import { readSessionHeader } from "@spider/herdr/sessions/launcher";
 import { localBootId } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
@@ -82,9 +83,11 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
   }
   const location = db.prepare("SELECT stores_json,file,cwd FROM roam_locations WHERE session_id=?").get(id) as { stores_json: string; file: string | null; cwd: string | null } | undefined;
   if (!location?.file || !location.cwd) return result(1, "participant-location-unavailable");
-  const keys: unknown = JSON.parse(location.stores_json);
-  if (!Array.isArray(keys) || !keys.length || keys.some(key => typeof key !== "string" || !key.startsWith("worktree:"))) return result(1, "participant-stores-unavailable");
-  const stores = [...new Set(keys as StoreKey[])].map(key => {
+  let keys: StoreKey[];
+  try { keys = parseLocationStores(JSON.parse(location.stores_json)).filter(key => key.startsWith("worktree:")); }
+  catch { return result(1, "participant-stores-unavailable"); }
+  if (!keys.length) return result(1, "participant-stores-unavailable");
+  const stores = keys.map(key => {
     const store = ports.openStore(key).db;
     if (!participantCaptureInitialized(store, pinned.machineId, key)) throw new Error("Participant capture is not initialized");
     return store;

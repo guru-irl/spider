@@ -61,6 +61,27 @@ it("standalone start activates mapped stores and running intent with no pi proce
   expect(f.worktree.db.prepare("SELECT state FROM roam_sessions").get()).toEqual({ state: "active" });
   expect(await createRunningIntentAuthority(f.global.db).get("s-1")).toMatchObject({ desired: "running", epoch: 2 });
 }, 5000);
+it("standalone activation accepts the mixed location list written by a move", async () => {
+  const f = fixture(), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
+  recordLocation(f.global.db, { sessionId: "s-1", stores: ["global", "repo:fixture-repo", f.worktree.storeKey], home: null, ...location });
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {} })).toMatchObject({ code: 3, reason: "readiness-pending" });
+  expect(f.worktree.db.prepare("SELECT state FROM roam_sessions").get()).toEqual({ state: "active" });
+  expect(await createRunningIntentAuthority(f.global.db).get("s-1")).toMatchObject({ desired: "running", epoch: 2 });
+}, 5000);
+
+it.each(["null", "object", "string", "empty", "non-string", "unknown kind", "missing repository", "missing worktree repository", "missing workspace", "missing separator", "duplicate", "no worktree", "invalid JSON"])(
+  "standalone activation refuses a %s location list before changing membership", async kind => {
+  const f = fixture(), invalid: Record<string, unknown> = {
+    null: null, object: {}, string: "[]", empty: [], "non-string": [1], "unknown kind": ["unknown:fixture"],
+    "missing repository": ["repo:"], "missing worktree repository": ["worktree::fixture"], "missing workspace": ["worktree:fixture:"],
+    "missing separator": ["worktree:fixture"], duplicate: [f.worktree.storeKey, f.worktree.storeKey], "no worktree": ["global", "repo:fixture-repo"],
+  };
+  f.global.db.prepare("UPDATE roam_locations SET stores_json=? WHERE session_id='s-1'").run(kind === "invalid JSON" ? "[" : JSON.stringify(invalid[kind]));
+  expect(await handleSessionOperation(f.operation, f.ports, { wake: async () => {} })).toMatchObject({ code: 1, reason: "participant-stores-unavailable" });
+  expect(f.worktree.db.prepare("SELECT state FROM roam_sessions").get()).toEqual({ state: "retired" });
+  expect(await createRunningIntentAuthority(f.global.db).get("s-1")).toBeNull();
+}, 5000);
+
 it("retrying activation cannot erase a later durable stop", async () => {
   const f = fixture(), authority = createRunningIntentAuthority(f.global.db), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
   await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, f.operation.id);

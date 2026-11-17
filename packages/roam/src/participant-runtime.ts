@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { createHash } from "node:crypto";
+import { participantLaunchId } from "./participant-launch";
 import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
 import type { JsonObject, Readiness, StoreKey } from "@spider/db-core/roam/types";
@@ -129,10 +129,6 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
   return outcome as unknown as Outcome<JsonObject>;
 }
 
-/** Launch ids belong to the participant, not the hub operation namespace. */
-export function participantLaunchId(machineId: string, sessionId: string, epoch: number, operationId: string): string {
-  return `launch-${createHash("sha256").update(JSON.stringify([machineId, sessionId, epoch, operationId])).digest("hex").slice(0, 40)}`;
-}
 export function createBoxParticipantWake(input: { root: string; db: import("@spider/db-core").Db; config: import("./contracts").RoamConfig;
   wake?(): Promise<void> }): (request: import("./move-ports").ParticipantLaunchRequest) => Promise<import("./move-ports").ParticipantLaunchResult> {
   const authority = createRunningIntentAuthority(input.db), intents = createIntentStore(input.root);

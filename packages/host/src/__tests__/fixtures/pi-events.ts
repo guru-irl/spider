@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { IntercomBrokerPort } from '@spider/intercom';
-import type { CustomMessage, SessionEntry, SessionManager } from '@earendil-works/pi-coding-agent';
+import type { ExtensionAPI, SessionEntry, SessionManager } from '@earendil-works/pi-coding-agent';
 export interface PiEventsFixture { on<T>(name: string, handler: (value: T) => void): () => void; emit(name: string, value?: unknown): void }
 export function createPiEvents(): PiEventsFixture {
   const bus = new EventEmitter();
@@ -26,7 +26,7 @@ export function withPiEvents<T extends object>(pi: T): T & { events: ReturnType<
 }
 type HostFixtureHook = (event: any, ctx: any) => unknown;
 type HostFixtureEntry = Record<string, unknown> & { id: string };
-type HostFixtureMessage = Pick<CustomMessage, 'customType'> & Partial<Pick<CustomMessage, 'content' | 'display' | 'details'>>;
+type HostFixtureMessage = { customType: string } & Partial<Parameters<ExtensionAPI['sendMessage']>[0]>;
 interface HostFixtureContext {
   cwd: string; mode: string; hasUI: boolean; isIdle(): boolean; model: { id: string };
   ui: { notify(message: string): void; setStatus(): void }; abort(): void;
@@ -51,7 +51,7 @@ export function createHostSessionFixture(options: {
   const ctx: HostFixtureContext = { cwd: options.cwd, mode: 'tui', hasUI: options.hasUI ?? true, isIdle: () => true,
     model: { id: 'fixture' }, ui: { notify: options.notify ?? (() => {}), setStatus() {} }, abort: options.abort ?? (() => {}),
     sessionManager: { getSessionId: () => options.sessionManager?.getSessionId() ?? options.sessionId,
-      getSessionFile: (): string | null => options.sessionManager ? options.sessionManager.getSessionFile() : options.sessionFile ?? null,
+      getSessionFile: (): string | null => (options.sessionManager ? options.sessionManager.getSessionFile() : options.sessionFile) ?? null,
       getSessionName: () => options.sessionName ?? null, getEntries: () => options.sessionManager?.getEntries() ?? entries, getBranch: () => [], getLeafId: () => null } };
   const pi = withPiEvents({
     on(name: string, handler: (event: any, ctx: any) => unknown) {

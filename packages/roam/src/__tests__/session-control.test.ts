@@ -92,10 +92,10 @@ it.each([
 
 it.each(["stopped", "suspended"])("does not replace a %s authority with running at the same epoch", async kind => {
   const f = fixture(), authority = control.createRunningIntentAuthority(f.db);
-  await authority.set(kind === "stopped" ? { ...f.intent, desired: "stopped" } : { ...f.intent, suspended: "review required" }, f.operation.id, { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
+  await authority.set(kind === "stopped" ? { ...f.intent, desired: "stopped" } : { ...f.intent, suspended: "manual hold" }, f.operation.id, { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   await expect(authority.set(f.intent, "another-start", { kind: "box-participant", machineId: BOX, hubMachineId: HUB })).rejects.toThrow(/stopped or suspended/i);
   expect(await control.createRunningIntentAuthority(f.db).get("session-1")).toMatchObject(
-    kind === "stopped" ? { desired: "stopped", epoch: f.intent.epoch } : { suspended: "review required", epoch: f.intent.epoch });
+    kind === "stopped" ? { desired: "stopped", epoch: f.intent.epoch } : { suspended: "manual hold", epoch: f.intent.epoch });
 }, 5000);
 
 it("keeps a stop generation across retries but changes it after resume", async () => {

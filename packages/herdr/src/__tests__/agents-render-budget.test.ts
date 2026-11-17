@@ -559,13 +559,14 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   it(`${version}: rendering does not serialize hidden subagent expansion keys`, async () => {
-    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0], now = Date.now();
     for (let i = 0; i < 400; i++) {
       const id = `nested-${i}`;
-      h.state.feeds[0].runs.rows.push({ ...first, id, viewer: `viewer-${i}` });
-      h.state.terminals.push({ address: `viewer-${i}`, parent: 'v0', state: 'live', status: 'working',
+      h.state.feeds[0].runs.rows.push({ ...first, id, viewer: `viewer-${i}`, status: 'done', finishedAt: now - 1000 });
+      h.state.terminals.push({ address: `viewer-${i}`, parent: 'v0', state: 'finished', status: 'idle', finishedAt: now - 1000, exitCode: 0, reason: 'exited',
         labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': id } });
     }
+    h.state.feeds[0].runs.total = h.state.feeds[0].runs.rows.length;
     let drawing = false, bytes = 0;
     const stringify = JSON.stringify;
     vi.spyOn(JSON, 'stringify').mockImplementation(((...args: any[]) => {
@@ -577,9 +578,11 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     try {
       await h.ready(); h.render(); await h.flush();
       const empty = measure();
-      // Hold the rendered tree fixed while stressing the renderer with 400 hidden keys.
+      // Inject an oversized historical set to stress the render path beyond the load cap.
       for (let i = 0; i < 400; i++) h.view.expandedSubagents.add(`nested-${i}`);
       h.storage.set('spider.subagents.expanded', JSON.stringify([...h.view.expandedSubagents]));
+      h.view.spiderModel.inputKey = null; h.view.spiderRequestRefresh(); await h.flush();
+      h.render(); await h.flush();
       expect(measure()).toBe(empty);
     } finally { drawing = false; await h.view.close(); }
   });

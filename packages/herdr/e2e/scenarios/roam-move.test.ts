@@ -86,6 +86,12 @@ if (!machine || !root.startsWith(descriptor.root + '/')) throw Error('unowned mo
 Object.assign(process.env, machine.env);
 const record = value => appendFileSync(descriptor.effects, JSON.stringify(value) + '\\n');
 const moveFactory = async input => {
+  const journalRecord = input.journal.record.bind(input.journal);
+  input.journal.record = (id, action, result) => {
+    journalRecord(id, action, result);
+    if (action === 'move-action-start' || action === 'move-action-complete')
+      record({ effect: 'move-phase', at: Date.now(), operationId: id, event: action, action: result.action });
+  };
   const runtime = await createHostMoveBindings(input);
   const endpoint = runtime.bindings.intercom!.destinationEndpoint;
   runtime.bindings.intercom!.destinationEndpoint = async home => {
@@ -498,6 +504,11 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       const result = await suite.invoke(process.execPath, [cli, ...args, '--json'], machine.env);
       console.info(JSON.stringify({ story: suite.story, phase: 'cli-end', machine: machine.side, args, durationMs: Date.now() - startedAt, exitCode: result.exitCode }));
       await suite.evidence(`${suite.story}-${++calls}-${machine.side}-${args.filter(arg => !arg.startsWith('-')).join('-').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100)}.json`, result);
+      if (args[0] === 'move' || args[0] === 'roam' && args[1] === 'recover') {
+        const phases = effectJsonLines(await readFile(effects, 'utf8')).map(line => JSON.parse(line))
+          .filter(row => row.effect === 'move-phase' && row.at >= startedAt);
+        console.info(JSON.stringify({ story: suite.story, phase: 'move-timeline', startedAt, phases }));
+      }
       let value: Record<string, any>; try { value = JSON.parse(result.stdout); } catch { throw Error(result.stdout + result.stderr); }
       expect(result.exitCode, result.stderr + result.stdout).toBe(value.code);
       if (['R08', 'R17'].includes(suite.story) && args[0] === 'roam' && args[1] === 'recover') console.info(JSON.stringify({ story: suite.story, phase: 'recovery-result', result: value }));

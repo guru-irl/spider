@@ -114,22 +114,26 @@ describe('headless story matrix', () => {
     }
   });
 
-  it('places the runner deadline before the shorter R05 step limit', () => {
-    const setup = step(workflow('herdr-stories').jobs.stories!, 'Set overall story deadline');
+  it('places R05 before its step limit without charging checkout against that step', () => {
+    const job = workflow('herdr-stories').jobs.stories!;
+    const setup = step(job, 'Set overall story deadline'), story = step(job, 'Run headless story');
     const root = mkdtempSync(join(process.cwd(), '.spider/scratch/story-deadline-'));
     try {
       mkdirSync(join(root, 'bin'));
-      writeFileSync(join(root, 'bin/date'), '#!/bin/sh\nprintf "1000000\\n"\n', { mode: 0o700 });
-      const output = join(root, 'environment');
-      const run = (short = '') => spawnSync('bash', ['-e', '-o', 'pipefail', '-c', setup.run!], {
-        env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, GITHUB_ENV: output,
-          JOB_MINUTES: '2', STEP_MINUTES: '1', SHORT_DEADLINE: short }, encoding: 'utf8' });
-      expect(run().status).toBe(0);
-      expect(readFileSync(output, 'utf8')).toBe('SPIDER_HERDR_E2E_DEADLINE=1040000\n');
-      expect(run('41').status).not.toBe(0);
-      expect(run('20').status).toBe(0);
-      expect(readFileSync(output, 'utf8')).toContain('SPIDER_HERDR_E2E_DEADLINE=1020000\n');
-      expect(setup.env?.STEP_MINUTES).toBe("${{ matrix.story == 'R05' && 1 || matrix.timeout }}");
+      writeFileSync(join(root, 'bin/date'), '#!/bin/sh\nprintf "%s\\n" "$CLOCK_NOW"\n', { mode: 0o700 });
+      writeFileSync(join(root, 'bin/npm'), '#!/bin/sh\nprintf "%s\\n" "$SPIDER_HERDR_E2E_DEADLINE" > "$CAPTURE"\n', { mode: 0o700 });
+      const output = join(root, 'environment'), capture = join(root, 'effective-deadline');
+      const env = { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, GITHUB_ENV: output,
+        JOB_MINUTES: '2', STEP_MINUTES: '1', SHORT_DEADLINE: '', CLOCK_NOW: '1000000', CAPTURE: capture, STORY: 'R05' };
+      const shell = (source: string, extra = {}) => spawnSync('bash', ['-e', '-o', 'pipefail', '-c', source], { env: { ...env, ...extra }, encoding: 'utf8' });
+      expect(shell(setup.run!).status).toBe(0);
+      expect(readFileSync(output, 'utf8')).toBe('SPIDER_HERDR_E2E_DEADLINE=1100000\n');
+      expect(shell(story.run!, { CLOCK_NOW: '1030000', SPIDER_HERDR_E2E_DEADLINE: '1100000' }).status).toBe(0);
+      expect(readFileSync(capture, 'utf8')).toBe('1070000\n');
+      expect(shell(story.run!, { CLOCK_NOW: '1030000', SPIDER_HERDR_E2E_DEADLINE: '1040000' }).status).toBe(0);
+      expect(readFileSync(capture, 'utf8')).toBe('1040000\n');
+      expect(shell(setup.run!, { SHORT_DEADLINE: '101' }).status).not.toBe(0);
+      expect(story.env?.STEP_MINUTES).toBe("${{ matrix.story == 'R05' && 1 || matrix.timeout }}");
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

@@ -1207,7 +1207,7 @@ it.each(['throw', 'uncertain', 'live'] as const)('a committed move keeps %s sour
   expect(f.events).not.toContain('retire');
   expect(f.events).toContain('power-released');
   expect(f.registryRemovals).toEqual([]);
-  expect(f.held).toBe(true);
+  expect(f.held).toBe(false);
   mkdirSync(join(f.root, 'roam'));
   cpSync(join(f.root, 'journal.db'), join(f.root, 'roam', 'journal.db'));
   const journal = openFreezeJournal(join(f.root, 'roam', 'journal.db'));

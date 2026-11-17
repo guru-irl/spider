@@ -1178,20 +1178,24 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       const root = join(request.config.globalRoot, 'herdr'), rawInventory = createProcessInventory(root);
       const inventory = selection.cutover ? selectedProcessInventory({ ...request.config, spaces: [{ name: selection.sessionId, sessions: [{ file: selection.file }] }] }, rawInventory, [{ file: selection.file, sessionId: selection.sessionId as SessionId }]) : rawInventory;
       const identity = { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' }; if (!identity.startIdentity) throw new HerdrError('process-identity-unavailable', 'Cannot claim a launch lease');
-      let childExit: Promise<{ code: number | null; error?: Error }> | undefined;
+      let childExit: Promise<{ code: number | null; signal?: NodeJS.Signals | null; error?: Error }> | undefined;
       const file = await canonicalSessionFile(selection.file);
       await withProcessLock(root, `resume-launch:${file}`, () => launchSession({ sessionFile: file, sessionId: selection.sessionId as SessionId, cwd: selection.cwd, environment: { agentDirectory: request.config.agentDirectory, extensionArguments: [] } }, { leases: inventory.leases, processInventory: inventory, processIdentity: identity, env, leasePolicy: selection.cutover ? { mode: 'cutover' } : { mode: 'switch', sessionId: selection.sessionId as SessionId },
         spawnPi: async spawnRequest => {
           const child = spawn(spawnRequest.argv[0], spawnRequest.argv.slice(1), { cwd: spawnRequest.cwd, env: { ...spawnRequest.env }, stdio: 'inherit' });
           // Subscribe before any await: startup failure can precede lease transfer or owner activation.
-          childExit = new Promise(resolve => { child.once('exit', code => resolve({ code })); child.once('error', error => resolve({ code: null, error })); });
+          childExit = new Promise(resolve => { child.once('exit', (code, signal) => resolve({ code, signal })); child.once('error', error => resolve({ code: null, error })); });
           await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
           const startIdentity = processStartTime(child.pid!); if (!startIdentity) throw new HerdrError('process-identity-unavailable', 'Cannot prove launched pi identity');
           return { pid: child.pid!, startIdentity };
         },
         // pi activation owns the generation-bound terminal mapping; the lease launcher never publishes one.
       }), { reclaimReusedOwner: true });
-      if (childExit) { const result = await childExit; if (result.error || result.code !== 0) throw new HerdrError('resume-exited', 'Resumed pi exited unsuccessfully'); }
+      if (childExit) {
+        const result = await childExit;
+        if (result.error) throw new HerdrError('resume-exited', `Resumed pi failed: ${result.error.message}`);
+        if (result.code !== 0 && result.code !== 130 && !result.signal) throw new HerdrError('resume-exited', `Resumed pi exited with code ${result.code}`);
+      }
     },
     stdout: text => process.stdout.write(text), stderr: text => process.stderr.write(text),
     async dispose() { if (panes) await (await panes).dispose(); for (const hc of clients.values()) await hc.dispose(); clients.clear(); },

@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile, stat, rm } from 'node:fs/promises';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
 import { readJournal, digest, mergeKeys, validateFiles, prepareBackups, applyFiles } from '../../../herdr/src/setup/backup.js';
 import type { InstallFile } from '../../../herdr/src/setup/installer.js';
-import { basename, join } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
 import { releaseFixture } from './herdr-setup-release-fixture.js';
 import * as lookPatches from '@spider/herdr/look/patches';
@@ -81,6 +81,23 @@ test.each(['recipe', 'menu'] as const)('B refuses a missing A %s before staging'
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  test(`${version} writes mod entry points only after their relative dependencies`, async () => {
+    const f = await releaseFixture(version), mods = join(f.h.directories.app, 'mods');
+    const writes = (await setupHerdr(f.request, f.parts)).writes;
+    const entries = writes.filter(path => /^spider-[^/]+\/main\.js$/.test(relative(mods, path)));
+    expect(entries.length).toBeGreaterThan(5);
+    for (const entry of entries) {
+      const source = (await readFile(entry, 'utf8')).replace(/^\s*\/\/[^\n]*$/gm, '');
+      for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.[^'"]+)['"]/g)) {
+        const target = resolve(dirname(entry), match[1]!);
+        expect(writes.indexOf(target), `${relative(mods, entry)} imports ${match[1]}`).toBeGreaterThanOrEqual(0);
+        expect(writes.indexOf(target), `${relative(mods, entry)} imports ${match[1]}`).toBeLessThan(writes.indexOf(entry));
+      }
+      const manifest = join(dirname(entry), 'mod.json');
+      if (writes.includes(manifest)) expect(writes.indexOf(manifest)).toBeGreaterThan(writes.indexOf(entry));
+    }
+  });
+
   test(`${version} installs B as one owned set and repeats and rolls back without changing stock`, async () => {
     const f = await releaseFixture(version), home = f.h.directories.app;
     const keys = join(home, 'keys.json'), beforeKeys = await readFile(keys);

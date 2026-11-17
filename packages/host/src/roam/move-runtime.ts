@@ -148,7 +148,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
     } catch { return [{ reason: "pi-auth-missing", severity: "block", repairCommand: null }]; }
   };
   const identityCurrent = async () => JSON.stringify(readLocalIdentity(root)) === JSON.stringify(config);
-  const boxWake = config.role === "box" ? createBoxParticipantWake({ root, db: globalDb, config }) : null;
+  const boxWake = config.role === "box" ? createBoxParticipantWake({ root, db: globalDb, config, journal }) : null;
   const wake = async (request: import("@spider/roam/move-ports").ParticipantLaunchRequest): Promise<import("@spider/roam/move-ports").ParticipantLaunchResult> => {
     if (!pi) return { ok: false, reason: "participant-pi-unavailable" };
     if (boxWake) return boxWake(request);

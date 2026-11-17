@@ -418,7 +418,7 @@ it("box wake reserves exactly the requested session with an idempotent local lau
   const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
   await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   let wakes = 0;
-  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, wake: async () => { wakes++; } });
+  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, journal: f.ports.journal, wake: async () => { wakes++; } });
   const first = await wake({ sessionId: "s-1", operationId: "start-1" });
   expect(first).toMatchObject({ ok: true, launchId: expect.any(String) });
   if (!first.ok) throw new Error(first.reason);
@@ -438,7 +438,7 @@ it.each(["same", "launch", "epoch", "file"] as const)("box wake recovers only it
   const launchId = participantLaunchId(BOX, "s-1", 2, "start-1"), intents = createIntentStore(f.global.root);
   await intents.update("s-1", null, { intent: { ...intent, ...(changed === "epoch" ? { epoch: 1 } : {}), ...(changed === "file" ? { file: join(f.global.root, "other.jsonl") } : {}) }, failures: [], supervision: { kind: "launching", phase: "reserved", operationId: changed === "launch" ? "other-launch" : launchId } });
   let wakes = 0;
-  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, wake: async () => { wakes++; } });
+  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, journal: f.ports.journal, wake: async () => { wakes++; } });
   const result = await wake({ sessionId: "s-1", operationId: "start-1" });
   expect(result).toEqual(changed === "same" ? { ok: true, launchId } : { ok: false, reason: "participant-launch-conflict" });
   expect(wakes).toBe(changed === "same" ? 1 : 0);
@@ -460,7 +460,7 @@ it.each(["supervisor-first", "wake-first"] as const)("the same intent joins one 
           cwd: intent.cwd, core: "core-1", terminal: "terminal-1" } };
     },
   });
-  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, wake: () => supervisor.reconcile() });
+  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, journal: f.ports.journal, wake: () => supervisor.reconcile() });
   try {
     if (order === "supervisor-first") await supervisor.reconcile();
     const result = await wake({ sessionId: "s-1", operationId: f.operation.id });
@@ -487,7 +487,7 @@ it("wake joins when supervision creates the same idle intent before its reservat
     }
     return store.update(id, version, next);
   } });
-  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, wake: async () => { wakes++; } });
+  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, journal: f.ports.journal, wake: async () => { wakes++; } });
   const result = await wake({ sessionId: "s-1", operationId: f.operation.id });
   expect(raced).toBe(true);
   expect(result).toMatchObject({ ok: true });

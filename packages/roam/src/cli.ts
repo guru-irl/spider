@@ -1,6 +1,6 @@
 import { peerEnabledDiagnostics } from "./peer-enabled";
 import { readMoveBindingDiagnostics } from "./move-diagnostics";
-import { controlRefusal, controlText, parsePublicControl, resolveControlMachine, safeControlOutcome } from "./commands";
+import { controlRefusal, controlText, sourceCleanupStatusText, parsePublicControl, resolveControlMachine, safeControlOutcome } from "./commands";
 import { destroyedMachineWarning } from "./forget";
 import type { RunDisabledForget } from "./disabled-forget-contract";
 import { ReadinessParseError } from "@spider/db-core/roam/readiness";
@@ -469,6 +469,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         }
         for (const warning of status.warnings) io.out(`Warning ${clean(warning.machineId)}: ${clean(warning.kind)}.\n`);
         for (const item of status.suspensions) io.out(`Suspended ${clean(item.sessionId)} on ${clean(item.machineId)} (epoch ${item.epoch}).\n`);
+        if (status.sourceCleanups === null) io.out("Source cleanup: unknown.\n");
+        else for (const item of status.sourceCleanups) io.out(`${sourceCleanupStatusText(item)}\n`);
         if (status.incompleteOperations === null) io.out("Incomplete operations: unknown.\n");
         else for (const operation of status.incompleteOperations) io.out(`Incomplete ${clean(operation.kind)}: ${clean(operation.id)} on ${clean(operation.machineId)}.\n`);
         for (const diagnostic of status.diagnostics) io.out(`${clean(diagnostic.reason)}\n`);

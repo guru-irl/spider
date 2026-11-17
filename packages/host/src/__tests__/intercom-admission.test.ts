@@ -1,9 +1,10 @@
 import { afterAll, expect, it, vi } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createHostSessionFixture } from './fixtures/pi-events';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
 
 const scratch = resolve('.spider/scratch/i');
 mkdirSync(scratch, { recursive: true });
@@ -25,14 +26,17 @@ afterAll(async () => {
 
 it('blocked admission gates intercom calls but never acknowledges a dropped inbound message as injected', async () => {
   vi.stubEnv('PI_SUBAGENT_CHILD', '0');
+  const sessionManager = SessionManager.create(root, join(root, 'sessions'));
+  sessionManager.appendMessage({ role: 'user', content: 'prior conversation', timestamp: 0 });
+  const sessionId = sessionManager.getSessionId(), sessionFile = sessionManager.getSessionFile()!;
   vi.spyOn(admission, 'createAdmissionPorts').mockReturnValue({
     expectedEpoch: null,
     knownParticipant: () => true,
     warnOnce() {}, setContext() {},
     localMachine: async () => 'local.invalid',
     lock: async () => async () => {},
-    load: async () => ({ home: { sessionId: 'blocked-target', machineId: 'other.invalid', epoch: 1, moveId: null, updatedAt: 1 },
-      states: [{ sessionId: 'blocked-target', epoch: 1, state: 'retired', moveId: null, freezeSeq: null }],
+    load: async () => ({ home: { sessionId, machineId: 'other.invalid', epoch: 1, moveId: null, updatedAt: 1 },
+      states: [{ sessionId, epoch: 1, state: 'retired', moveId: null, freezeSeq: null }],
       origin: 'other.invalid', participating: true, captureSafe: true, unfinishedFreeze: false, initialConflict: false }),
   });
   broker = spawn(process.execPath, [resolve('dist/intercom/broker.mjs')], { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -41,7 +45,7 @@ it('blocked admission gates intercom calls but never acknowledges a dropped inbo
     broker!.once('exit', code => { clearTimeout(timer); reject(new Error(`Fixture broker exited ${code}`)); });
     broker!.stdout!.on('data', chunk => { if (String(chunk).includes('Intercom broker started')) { clearTimeout(timer); ready(); } });
   });
-  const fixture = createHostSessionFixture({ cwd: root, sessionId: 'blocked-target', sessionName: 'blocked-target', sessionFile: join(root, 'session.jsonl') });
+  const fixture = createHostSessionFixture({ cwd: root, sessionId, sessionName: 'blocked-target', sessionManager });
   const { pi, ctx, hooks, sent } = fixture;
   const sender = new IntercomClient();
   try {
@@ -51,23 +55,28 @@ it('blocked admission gates intercom calls but never acknowledges a dropped inbo
     expect(gateResults).toContainEqual(expect.objectContaining({ block: true }));
     const now = Date.now();
     await sender.connect({ cwd: root, name: 'sender', model: 'fixture', pid: process.pid, startedAt: now, lastActivity: now }, 'sender');
-    await vi.waitFor(async () => expect((await sender.listSessions()).map(session => session.id)).toContain('blocked-target'), { timeout: 3000, interval: 20 });
+    await vi.waitFor(async () => expect((await sender.listSessions()).map(session => session.id)).toContain(sessionId), { timeout: 3000, interval: 20 });
     const receipts: string[] = [], droppedReceipts: string[] = [], evidence: unknown[] = [];
     sender.onMessageReceipt((_from, receipt) => {
       if (receipt.messageId === 'fixture-message') { receipts.push(receipt.status); if (receipt.status === 'injected') evidence.push(receipt.evidence); }
       if (receipt.messageId === 'fixture-dropped') droppedReceipts.push(receipt.status);
     });
-    expect((await sender.send('blocked-target', { messageId: 'fixture-message', text: 'fixture message' })).delivered).toBe(true);
+    expect((await sender.send(sessionId, { messageId: 'fixture-message', text: 'fixture message' })).delivered).toBe(true);
     await vi.waitFor(() => expect(receipts).toContain('injected'), { timeout: 2000, interval: 20 });
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ customType: 'intercom_message', details: { message: { id: 'fixture-message' } } });
-    expect(evidence).toMatchObject([{ kind: 'entry', entryId: 'physical-entry-1', sessionId: 'blocked-target' }]);
+    expect(existsSync(sessionFile)).toBe(true);
+    const persistedEntries = SessionManager.open(sessionFile).getEntries();
+    const persistedMessage = persistedEntries.find(entry => entry.type === 'custom_message' && entry.customType === 'intercom_message');
+    expect(persistedMessage).toMatchObject({ details: { message: { id: 'fixture-message' } } });
+    expect(evidence).toMatchObject([{ kind: 'entry', entryId: persistedMessage?.id, sessionId }]);
     fixture.setPersistMessages(false);
-    expect((await sender.send('blocked-target', { messageId: 'fixture-dropped', text: 'fixture message' })).delivered).toBe(true);
+    expect((await sender.send(sessionId, { messageId: 'fixture-dropped', text: 'fixture message' })).delivered).toBe(true);
     await vi.waitFor(() => expect(sent).toHaveLength(2), { timeout: 2000, interval: 20 });
     for (const handler of hooks.get('agent_settled') ?? []) await handler({}, ctx);
     await vi.waitFor(() => expect(droppedReceipts).toContain('unknown'), { timeout: 2000, interval: 20 });
     expect(droppedReceipts).not.toContain('injected');
+    expect(SessionManager.open(sessionFile).getEntries()).toEqual(persistedEntries);
   } finally {
     await sender.disconnect();
     for (const handler of hooks.get('session_shutdown') ?? []) await handler({ reason: 'quit' }, ctx);

@@ -1138,7 +1138,7 @@ export function openIntercomStore(options: IntercomStoreOptions): IntercomStore 
         encodeFrame(candidate);
       } catch (error) {
         if (error instanceof Error && /size limit/.test(error.message)) return { kind: "refused", reason: "message-too-large" };
-        throw error;
+        return { kind: "refused", reason: "invalid-message" };
       }
       let deleted = false;
       const result = db.raw.transaction(() => {

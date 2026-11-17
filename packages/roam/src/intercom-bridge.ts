@@ -113,7 +113,7 @@ const sameIdentity = (a: IntercomIdentity, b: IntercomIdentity): boolean => a.id
 const sameEndpoint = (a: import("@spider/intercom/protocol").SessionEndpoint, b: import("@spider/intercom/protocol").SessionEndpoint): boolean =>
   sameAddress(a.address, b.address) && a.machineId === b.machineId && a.homeEpoch === b.homeEpoch && a.activationEpoch === b.activationEpoch;
 const failed = (reason: string): FederationDispatchResult => ({ delivery: "failed",
-  retryable: !["machine-not-enrolled", "peer-revoked", "message-too-large", "ask-expired"].includes(reason), outcomeKnown: true,
+  retryable: !["machine-not-enrolled", "peer-revoked", "message-too-large", "invalid-message", "ask-expired"].includes(reason), outcomeKnown: true,
   acceptance: { accepted: false, durable: false }, reason });
 
 // Move intake is independent of transport, presence and relay receipts.

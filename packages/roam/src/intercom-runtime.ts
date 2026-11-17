@@ -445,6 +445,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
     } catch (error) {
       await closeAttempt();
       if (stopped) return;
+      brokerFailure = failureDiagnostic(error);
       status = { state: "pending", reason: error instanceof Error && error.message === "unsupported-broker" ? "unsupported-broker" : "bridge-unavailable" };
       cancelRetry = options.clock.later(1000, () => {
         cancelRetry = undefined;
@@ -589,6 +590,6 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
       if (switchProblem) result.push({ peer: options.config.hubMachineId, status: "blocked", since: 0, reason: switchProblem });
       return result;
     },
-    readiness: () => ({ ...status }),
+    readiness: () => ({ ...status, reason: status.state !== "ready" && brokerFailure?.code !== null && brokerFailure?.code !== undefined ? `${status.reason}:${brokerFailure.code}` : status.reason }),
   };
 }

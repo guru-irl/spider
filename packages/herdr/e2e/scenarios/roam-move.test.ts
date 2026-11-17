@@ -500,7 +500,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       await suite.evidence(`${suite.story}-${++calls}-${machine.side}-${args.filter(arg => !arg.startsWith('-')).join('-').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100)}.json`, result);
       let value: Record<string, any>; try { value = JSON.parse(result.stdout); } catch { throw Error(result.stdout + result.stderr); }
       expect(result.exitCode, result.stderr + result.stdout).toBe(value.code);
-      if (suite.story === 'R08' && args[0] === 'roam' && args[1] === 'recover') console.info(JSON.stringify({ story: suite.story, phase: 'recovery-result', result: value }));
+      if (['R08', 'R17'].includes(suite.story) && args[0] === 'roam' && args[1] === 'recover') console.info(JSON.stringify({ story: suite.story, phase: 'recovery-result', result: value }));
       if (['R15', 'R16'].includes(suite.story) && args[0] !== 'fixture-ingest') console.info(JSON.stringify({ story: suite.story,
         measurement: 'move-control', code: value.code, reason: value.reason, sourceCleanup: value.value?.sourceCleanup }));
       return value;
@@ -766,6 +766,25 @@ async function exclusion(suite: Suite): Promise<void> {
     phase('return-home');
     expect(await f.moveTo(hub, 'mac')).toMatchObject({ code: 0 });
     await assertMoveState(f, hub, expectedTrees, 3);
+    phase('complete');
+    await suite.evidence('R08-exclusion.json', { blocked, pending, cancel, recovered, before, owner });
+  } finally { phase('cleanup'); await f.close(); phase('closed'); }
+}
+
+async function failedLaunchRollback(suite: Suite): Promise<void> {
+  const startedAt = Date.now();
+  const phase = (name: string) => console.info(JSON.stringify({ story: suite.story, phase: name, elapsedMs: Date.now() - startedAt }));
+  phase('setup');
+  const f = await createMoveStory(suite), [hub, box] = f.machines;
+  try {
+    const expectedTrees = await f.trees(hub.cwd);
+    phase('outward');
+    const outward = await f.moveTo(hub, box.alias);
+    expect(outward).toMatchObject({ code: 0, reason: 'moved' });
+    await assertMoveState(f, box, expectedTrees, 2);
+    phase('return-home');
+    expect(await f.moveTo(hub, 'mac')).toMatchObject({ code: 0 });
+    await assertMoveState(f, hub, expectedTrees, 3);
     phase('failed-launch');
     await writeFile(join(box.root, 'roam', 'fail-launch'), 'refuse before pi starts\n');
     const failed = await f.cli(hub, ['move', f.sessionId, box.alias]);
@@ -780,16 +799,16 @@ async function exclusion(suite: Suite): Promise<void> {
         lock: await inspectIdLock(join(box.root, 'herdr'), f.sessionId),
         freezes: boxJournal.prepare('SELECT move_id,epoch,state FROM freeze_journal WHERE session_id=?').all(f.sessionId) };
       console.info(JSON.stringify(observation));
-      await suite.evidence('R08-failed-launch.json', observation);
+      await suite.evidence('R17-failed-launch.json', observation);
     } finally { boxJournal.close(); startDb.close(); }
     const expectedLaunch = participantLaunchId(BOX, f.sessionId, 4, `${failed.operationId}-session-start-${BOX}`);
     if (start?.reason === 'participant-launch-conflict') {
       const conflict = effectJsonLines(await readFile(f.effects, 'utf8')).map(line => JSON.parse(line)).findLast(row =>
         row.effect === 'participant-wake-conflict' && row.operationId === `${failed.operationId}-session-start-${BOX}`);
-      expect(conflict).toMatchObject({ launchId: expectedLaunch, before: { value: { intent: { epoch: 2, moveId: pending.operationId } } },
+      expect(conflict).toMatchObject({ launchId: expectedLaunch, before: { value: { intent: { epoch: 2, moveId: outward.operationId } } },
         intent: { epoch: 4, moveId: failed.operationId } });
       expect(conflict.before.version).toBe(conflict.after.version);
-      await suite.evidence('R08-intent-conflict.json', conflict);
+      await suite.evidence('R17-intent-conflict.json', conflict);
     } else expect(start).toMatchObject({ code: 3, reason: 'readiness-pending' });
     const rollbackDeadline = deadline(60_000);
     phase('await-exact-launch-exit');
@@ -806,7 +825,7 @@ async function exclusion(suite: Suite): Promise<void> {
     expect(launchProof.receipt.terminalId).toBe(launchProof.receipt.evidence.proof.terminalId);
     expect(launchProof.observed.launchFailure).toBe(`proved-unadopted-exit:${expectedLaunch}:${launchProof.receipt.terminalId}`);
     expect(f.home()).toMatchObject({ machine_id: BOX, epoch: 4 });
-    await suite.evidence('R08-unadopted-exit.json', launchProof);
+    await suite.evidence('R17-unadopted-exit.json', launchProof);
     phase('rollback');
     const rolledBack = await waitFor('proved launch failure permits rollback', () => f.cli(hub, ['roam', 'recover', failed.operationId]),
       result => result.reason === 'rolled-back', rollbackDeadline, { reconcileMs: 500 });
@@ -818,7 +837,7 @@ async function exclusion(suite: Suite): Promise<void> {
       expect(retirement).toBeTruthy();
     } finally { db.close(); }
     phase('complete');
-    await suite.evidence('R08-exclusion.json', { blocked, pending, cancel, recovered, before, owner, failed, rolledBack });
+    await suite.evidence('R17-rollback.json', { outward, failed, rolledBack });
   } finally { phase('cleanup'); await f.close(); phase('closed'); }
 }
 
@@ -869,5 +888,6 @@ export const scenarios: readonly ScenarioDefinition[] = [
   { id: storyId('R07'), title: 'return move reuses checkout', tiers: ['headless'], run: returnMove },
   { id: storyId('R08'), title: 'lost readiness prevents unsafe rollback', tiers: ['headless'], run: exclusion },
   { id: storyId('R10'), title: 'copied participating file refuses ordinary work', tiers: ['headless'], run: copiedFile },
+  { id: storyId('R17'), title: 'proved launch failure permits rollback', tiers: ['headless'], run: failedLaunchRollback },
 ];
 registerScenarios(scenarios);

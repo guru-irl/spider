@@ -175,6 +175,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   let startTask: Promise<void> | null = null, stopTask: Promise<void> | null = null;
   const lifetime = new AbortController();
   let routeLease: HelperRouteLease | null = null, brokerLocal: RemoteSessionInfo[] = [];
+  let brokerAddresses = new Set<string>();
   let brokerRetryCancel: (() => void) | null = null, brokerRetries = 0, brokerConnectTask: Promise<void> | null = null;
   let expiryCancel: (() => void) | null = null, expiryDeadline: number | null = null, expiryNoticeRetry = false, localReceiptRetry = false, revocationNoticeRetry = false;
   const revocations = new Map<string, Promise<{ peer: string; edgeEpoch: string; fenceId: string; exchanges: "closed"; inFlight: 0 }>>();
@@ -278,7 +279,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     }
     const roster = [...entries.values()];
     ports.publishPresence?.(roster);
-    if (brokerReady) ports.broker!.publishPresence(roster);
+    if (brokerReady) ports.broker!.publishPresence(roster.filter(entry => !brokerAddresses.has(addressKey(entry.address))));
   };
   const expirePassiveRoute = (edge: EdgeRuntime): void => {
     const current = state(edge);
@@ -773,6 +774,9 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   };
 
   const onLocalPresence = (sessions: LocalPresence[]): void => {
+    const addresses = new Set(sessions.map(session => addressKey(session.address)));
+    const sameAddresses = addresses.size === brokerAddresses.size && [...addresses].every(key => brokerAddresses.has(key));
+    brokerAddresses = addresses;
     const next = sessions.filter(session => ports.authorizeLocalPresence?.(session) ?? true).map(session => {
       const info: RemoteSessionInfo = { remote: true, id: session.address.sessionId, address: session.address, machineId: ports.machineId,
         machineAlias: ports.machineAlias, homeEpoch: session.homeEpoch, activationEpoch: session.activationEpoch, endpointEpoch: session.activationEpoch,
@@ -781,7 +785,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       const attestation = ports.firstHomeAttestation?.({ address: info.address, machineId: info.machineId, homeEpoch: info.homeEpoch, activationEpoch: info.activationEpoch });
       return attestation ? { ...info, firstHome: attestation } : info;
     });
-    if (JSON.stringify(next) === JSON.stringify(brokerLocal)) return;
+    if (sameAddresses && JSON.stringify(next) === JSON.stringify(brokerLocal)) return;
     brokerLocal = next;
     revalidatePresence(); publish();
     for (const edge of edges.values()) bridge.wake(edge.config.peer.machineId);
@@ -865,7 +869,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   const onBrokerDisconnected = (): void => {
     const wasReady = brokerReady; brokerReady = false;
     if (wasReady) ports.onBrokerState?.(false);
-    brokerLocal = [];
+    brokerLocal = []; brokerAddresses.clear();
     scheduleBrokerReconnect();
   };
 

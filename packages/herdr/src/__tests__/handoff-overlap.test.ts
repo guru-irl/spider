@@ -153,6 +153,28 @@ it('waits for a stalled scan on shutdown and refuses later ticks', async () => {
   expect(stopped).toBe(true);
 });
 
+it('starts waiting child work when a slot opens without waiting for another scan', async () => {
+  vi.useFakeTimers();
+  const journals = filesystem(6, true);
+  for (const journal of journals) journal.child!.settled = true;
+  let release!: () => void, active = 0, peak = 0;
+  const stalled = new Promise<void>(resolve => { release = resolve; });
+  const started: RunId[] = [];
+  const handoff = createJobHandoff({ root: '/fixture/queue', owner, hc: {} as HcClient,
+    adopt: async () => { throw new Error('Settled journals need no adoption'); },
+    releaseSettled: async journal => {
+      active++; peak = Math.max(peak, active); started.push(journal.child!.id);
+      try { if (journal.child!.id === 'run-0') await stalled; } finally { active--; }
+    },
+  });
+  try {
+    await handoff.reconcile(); await vi.advanceTimersByTimeAsync(1);
+    expect(started).toEqual(['run-0', 'run-1', 'run-2', 'run-3', 'run-4', 'run-5']);
+    expect(peak).toBe(4);
+    expect(active).toBe(1);
+  } finally { release(); await handoff.shutdown('reload'); }
+});
+
 it('releases the scan slot after a failed read and discovers later runs', async () => {
   filesystem(); io.readdir.mockRejectedValueOnce(new Error('Read failed'));
   const handoff = createJobHandoff({ root, owner, hc: {} as HcClient,

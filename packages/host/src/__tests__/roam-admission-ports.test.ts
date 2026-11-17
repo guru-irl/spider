@@ -9,7 +9,7 @@ import { writeLocal } from "@spider/db-core/roam/local-state";
 import { createRunningIntentAuthority, seedNewParticipant } from "@spider/roam/session-control";
 import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 import { enableMemoryCapture } from "@spider/db-core/roam/seed";
-import { assignInitialHome, sessionHome } from "@spider/roam/homes";
+import { assignInitialHome, casHome, sessionHome } from "@spider/roam/homes";
 import { INTERCOM_HOST_EVENT, type IntercomHostRequest } from "@spider/intercom/protocol";
 import { createHostSessionFixture } from "./fixtures/pi-events";
 import { createHostIntercomPorts, registerRoamIntercom } from "../roam/intercom";
@@ -18,6 +18,8 @@ import { writeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
 import { createSessionLeases, type ProcessInventoryPorts } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { openJournal } from "@spider/roam/journal";
+import { rollbackMoveId } from "@spider/roam/move-recovery";
+import { revokeMachine } from "@spider/roam/revocation";
 import { createAdmissionPorts, registerAdmission } from "../roam/admission";
 
 let root = "";
@@ -176,8 +178,9 @@ it.each([
     writeLocal(f.global, "participant-origin", "session-1", { kind: "box-local", machineId: f.machine, epoch: 1,
       file: f.file, cwd: f.cwd, pid: f.identity.pid, startIdentity: f.identity.startIdentity, stopped: false });
   } else {
+    f.global.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run("session-1", f.machine);
     await createRunningIntentAuthority(f.global).set({ sessionId: "session-1", epoch: 1, file: f.file, cwd: f.cwd,
-      desired: "running", suspended: null, moveId: null }, "start-1", { machineId: f.machine, hubMachineId: "00000000-0000-4000-8000-000000000001" });
+      desired: "running", suspended: null, moveId: null }, "start-1", { kind: "box-participant", machineId: f.machine, hubMachineId: "00000000-0000-4000-8000-000000000001" });
   }
   const hooks = new Map<string, Function>(), lock = vi.spyOn(f.ports, "lock");
   const gate = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, f.ports);
@@ -532,3 +535,102 @@ it("a preclaimed ID lock is adopted by the exact process and boot identity", asy
   await after.release();
   await launcher.release();
 }, 5000);
+
+
+async function ownedIntent(kind: "box-participant" | "hub-return" | "hub-restoration", rollback = false) {
+  const f = fixture(), HUB = f.machine, BOX = "00000000-0000-4000-8000-000000000002";
+  const box = kind === "box-participant", machineId = box ? BOX : HUB, sourceMachine = box || rollback ? HUB : BOX, moveId = "owned-move";
+  enableMemoryCapture(f.global, "global");
+  f.global.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run("session-1", sourceMachine);
+  const source = sessionHome(f.global, "session-1");
+  if (!source || source === "unknown") throw Error("Missing test source");
+  const moved = casHome(f.global, source, rollback ? BOX : machineId, moveId, HUB);
+  const home = rollback ? casHome(f.global, moved, HUB, rollbackMoveId(moveId), HUB) : moved;
+  f.global.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(machineId);
+  f.current.prepare("UPDATE roam_meta SET machine_id=? WHERE id=1").run(machineId);
+  f.current.prepare("UPDATE roam_sessions SET epoch=?,move_id=? WHERE session_id='session-1'").run(home.epoch, home.moveId);
+  const config = { enabled: true, role: box ? "box" : "hub", machineId, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture.service",
+    intercom: { enabled: false, mode: "hub-only", machineAlias: null, routes: [] } };
+  writeFileSync(join(f.globalRoot, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+  writeFileSync(join(f.globalRoot, "roam", "machine.json"), JSON.stringify({ machineId }), { mode: 0o600 });
+  const owner = box ? { kind, machineId, hubMachineId: HUB } : kind === "hub-restoration" ? { kind, machineId, moveId, revokedMachineId: BOX } : { kind, machineId, moveId };
+  const intent = { sessionId: "session-1", epoch: home.epoch, desired: "running", suspended: null, file: f.file, cwd: f.cwd, moveId: home.moveId };
+  const row = { intent, operationId: "owned-start", owner };
+  const save = () => f.global.raw.transaction(() => writeLocal(f.global, "participant-intent", "session-1", row)).immediate();
+  save();
+  const journal = openJournal(join(f.globalRoot, "roam", "journal.db"));
+  journal.begin({ id: moveId, kind: kind === "hub-restoration" ? "restore-destroyed-home" : "move", machineId: HUB,
+    expectedEpoch: kind === "hub-restoration" ? home.epoch : source.epoch, args: { sessionId: "session-1" } });
+  if (kind !== "hub-restoration") journal.record(moveId, "move-action-complete", { action: "check", value: { source: { ...source } } });
+  if (kind === "hub-restoration") {
+    journal.record(moveId, "forget-home", { source: { ...source }, home: { ...home } });
+    const privateDb = openDb(join(f.globalRoot, "roam", "journal.db")); dbs.push(privateDb); revokeMachine(privateDb, BOX);
+  }
+  f.ports.ready = async () => {};
+  const hooks = new Map<string, Function>(), gate = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, f.ports);
+  const start = () => hooks.get("session_start")!({ reason: "startup" }, f.ctx);
+  return { ...f, HUB, BOX, home, owner, row, save, journal, gate, start };
+}
+
+it.each(["hub-return", "hub-restoration", "box-participant"] as const)("admits the recorded %s owner with its matching provenance", async kind => {
+  const f = await ownedIntent(kind);
+  try { await f.start(); expect(f.gate.inspect()).toEqual({ kind: "ordinary", home: f.home, blockers: [] }); }
+  finally { await f.gate.close(); }
+}, 5000);
+
+it.each(["missing owner", "unknown kind", "different machine", "different epoch", "different move", "missing revocation", "forged revocation", "forged provenance", "on a box"])(
+  "refuses a hub restoration intent with %s", async mismatch => {
+    const f = await ownedIntent("hub-restoration"), row = f.row as unknown as { owner?: Record<string, unknown>; intent: { epoch: number }; operationId: string };
+    if (mismatch === "missing owner") delete row.owner;
+    if (mismatch === "unknown kind") row.owner!.kind = "unknown";
+    if (mismatch === "different machine") row.owner!.machineId = f.BOX;
+    if (mismatch === "different epoch") row.intent.epoch++;
+    if (mismatch === "different move") row.owner!.moveId = "forged-move";
+    if (mismatch === "forged revocation") row.owner!.revokedMachineId = "00000000-0000-4000-8000-000000000003";
+    if (mismatch === "forged provenance") row.owner!.kind = "hub-return";
+    if (mismatch === "missing revocation") {
+      const privateDb = openDb(join(f.globalRoot, "roam", "journal.db")); dbs.push(privateDb); privateDb.prepare("DELETE FROM roam_machine_revocations").run();
+    }
+    if (mismatch === "on a box") {
+      const config = { enabled: true, role: "box", machineId: f.BOX, hubMachineId: f.HUB, peers: [], discoveryRoots: [], coreUnit: "fixture.service",
+        intercom: { enabled: false, mode: "hub-only", machineAlias: null, routes: [] } };
+      writeFileSync(join(f.globalRoot, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+      writeFileSync(join(f.globalRoot, "roam", "machine.json"), JSON.stringify({ machineId: f.BOX }), { mode: 0o600 });
+    }
+    f.save();
+    try { await f.start(); expect(f.gate.inspect().kind).toBe("blocked"); expect(await inspectIdLock(join(f.globalRoot, "herdr"), "session-1")).toBeNull(); }
+    finally { await f.gate.close(); }
+  }, 5000);
+
+it.each(["different hub", "different machine", "not enrolled"])("a box-owned intent still refuses %s", async mismatch => {
+  const f = await ownedIntent("box-participant"), owner = f.row.owner as unknown as Record<string, unknown>;
+  if (mismatch === "different hub") owner.hubMachineId = "00000000-0000-4000-8000-000000000003";
+  if (mismatch === "different machine") owner.machineId = f.HUB;
+  if (mismatch === "not enrolled") unlinkSync(join(f.globalRoot, "roam", "machine.json"));
+  f.save();
+  try { await f.start(); expect(f.gate.inspect().kind).toBe("blocked"); expect(await inspectIdLock(join(f.globalRoot, "herdr"), "session-1")).toBeNull(); }
+  finally { await f.gate.close(); }
+}, 5000);
+
+
+it("admits a normal hub rollback owner only through its original move provenance", async () => {
+  const f = await ownedIntent("hub-return", true);
+  try { await f.start(); expect(f.gate.inspect()).toEqual({ kind: "ordinary", home: f.home, blockers: [] }); }
+  finally { await f.gate.close(); }
+}, 5000);
+
+it.each(["different machine", "different epoch", "different move", "missing move commit", "missing move check", "forged restoration"])(
+  "refuses a normal hub-return intent with %s", async mismatch => {
+    const f = await ownedIntent("hub-return"), owner = f.row.owner as unknown as Record<string, unknown>;
+    if (mismatch === "different machine") owner.machineId = f.BOX;
+    if (mismatch === "different epoch") f.row.intent.epoch++;
+    if (mismatch === "different move") owner.moveId = "forged-move";
+    if (mismatch === "missing move commit") f.global.prepare("DELETE FROM roam_home_actions").run();
+    if (mismatch === "missing move check") {
+      const privateDb = openDb(join(f.globalRoot, "roam", "journal.db")); dbs.push(privateDb); privateDb.prepare("DELETE FROM roam_operation_actions WHERE action='move-action-complete'").run();
+    }
+    if (mismatch === "forged restoration") { owner.kind = "hub-restoration"; owner.revokedMachineId = f.BOX; }
+    f.save();
+    try { await f.start(); expect(f.gate.inspect().kind).toBe("blocked"); expect(await inspectIdLock(join(f.globalRoot, "herdr"), "session-1")).toBeNull(); }
+    finally { await f.gate.close(); }
+  }, 5000);

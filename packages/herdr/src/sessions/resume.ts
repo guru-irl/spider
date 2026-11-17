@@ -21,6 +21,41 @@ export function buildResumeBlock(options: ResumeHookOptions): string {
   if (!starts) return existing + (existing && !existing.endsWith('\n') ? '\n' : '') + block;
   const before = existing.slice(0, existing.indexOf(START)); const after = existing.slice(existing.indexOf(END) + END.length).replace(/^\n/, ''); return before + block + after;
 }
+export function resumeWatchShell(root: string, identity: TerminalIdentity): string {
+  const directory = shellQuote(join(root, 'resume-starts', terminalIdentityKey(identity)));
+  return `_spider_resume_seen=:
+_spider_resume_snapshot() {
+  if [ -n "\${ZSH_VERSION:-}" ]; then setopt localoptions nonomatch; fi
+  local _spider_live _spider_token
+  for _spider_live in ${directory}/live-*; do
+    [ -f "$_spider_live" ] || continue
+    _spider_token="\${_spider_live##*/live-}"
+    _spider_resume_seen="\${_spider_resume_seen}\${_spider_token}:"
+  done
+}
+_spider_resume_watch() {
+  if [ -n "\${ZSH_VERSION:-}" ]; then setopt localoptions nonomatch; fi
+  local _spider_live _spider_token
+  for _spider_live in ${directory}/live-*; do
+    [ -f "$_spider_live" ] || continue
+    _spider_token="\${_spider_live##*/live-}"
+    case "$_spider_resume_seen" in *:"$_spider_token":*) continue ;; esac
+    if command mv -f "$_spider_live" "\${_spider_live%/*}/ended-$_spider_token" 2>/dev/null; then
+      _spider_resume_seen="\${_spider_resume_seen}\${_spider_token}:"
+    fi
+  done
+}
+_spider_resume_snapshot
+if [ -n "\${ZSH_VERSION:-}" ]; then
+  precmd_functions+=(_spider_resume_watch)
+else
+  case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+    'declare -a '*) PROMPT_COMMAND+=( _spider_resume_watch ) ;;
+    *) PROMPT_COMMAND="\${PROMPT_COMMAND:+$PROMPT_COMMAND; }_spider_resume_watch" ;;
+  esac
+fi
+`;
+}
 export function resumeOfferShell(offer: ResumeOffer, options: ResumeHookOptions, mode: 'offer' | 'auto' = 'offer'): string {
   const argv = [options.nodePath, options.cliPath, 'resume', '--config', options.configPath, '--file', offer.sessionFile, '--session-id', offer.sessionId, '--cwd', offer.cwd];
   const name = (offer.name ?? offer.sessionId).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ');
@@ -101,12 +136,15 @@ async function claimAutomaticResume(root: string, identity: TerminalIdentity, st
   }, { reclaimReusedOwner: true });
 }
 export async function offerResume(identity: TerminalIdentity, ports: ResumePorts): Promise<ResumeOffer | null> {
-  const mapping = await ports.registry.get(identity); if (!mapping || mapping.endedAt !== undefined || mapping.owner.sessionFile === null) return null;
+  const mapping = await ports.registry.get(identity); if (!mapping || mapping.owner.sessionFile === null) return null;
+  const ended = () => mapping.activityId ? ports.registry.ended(identity, mapping.activityId) : Promise.resolve(false);
+  if (await ended()) return null;
   const file = mapping.owner.sessionFile;
   const restartedAt = await ports.coreStartedAt(identity);
   if (!Number.isFinite(restartedAt) || restartedAt <= 0 || restartedAt <= mapping.recordedAt || restartedAt <= mapping.coreStartedAt) return null;
   refuseExplicitExtensions(mapping.owner.name ?? mapping.owner.sessionId, mapping.environment.extensionArguments);
   const eligible = async (): Promise<ResumeOffer | null> => {
+    if (await ended()) return null;
     if ((await recordedSessionLiveness(file, ports.processInventory, mapping.owner.sessionId)).kind !== 'free') return null;
     let header; try { header = await readSessionHeader(file); } catch { return null; }
     if (header.id !== mapping.owner.sessionId) return null;

@@ -22,7 +22,7 @@ import { createJobStore, type JournalJob } from '@spider/herdr/jobs/store';
 import { preflightSpaces, setupSpaces, readCutoverRecovery, reconcileSpaceJournal, planSpaceCutover, tabTerminals, forgetCutoverTabs, type SpaceSetupPorts, type LayoutSnapshot } from '@spider/herdr/spaces/setup';
 import { inspectPanePlacement } from '@spider/herdr/panes/store';
 import { createRoamPresentationPorts, type RoamPresentationPorts } from './roam-presentations.js';
-import { offerResume, resumeOfferShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
+import { offerResume, resumeOfferShell, resumeWatchShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
 import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces/discovery';
 import { launchSession } from '@spider/herdr/sessions/launcher';
 import { applyLookPatches, selectLookPatches, applyModPatches, lookCloneKinds, type AdditionalLookPatches, type LookModKind, type LookPatch, type HerdrClones, type LookPatchSet } from '@spider/herdr/look/patches';
@@ -1170,9 +1170,15 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     },
     resumeOffer: async request => {
       const identity = await client(request).caller(env), root = join(request.config.globalRoot, 'herdr');
-      const mode = request.config.resume ?? 'offer';
-      const offer = await offerResume(identity, { registry: createTerminalRegistry(root), processInventory: createProcessInventory(root), coreStartedAt: () => coreStartedAt(request.config.core.binary, env), ...(mode === 'auto' ? { autoResumeRoot: root } : {}) });
-      return offer ? resumeOfferShell(offer, { nodePath: process.execPath, cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), configPath: request.configPath, hookPath: join(root, 'resume.sh') }, mode) : '';
+      const mode = request.config.resume ?? 'offer', watch = resumeWatchShell(root, identity);
+      try {
+        const offer = await offerResume(identity, { registry: createTerminalRegistry(root), processInventory: createProcessInventory(root), coreStartedAt: () => coreStartedAt(request.config.core.binary, env), ...(mode === 'auto' ? { autoResumeRoot: root } : {}) });
+        return watch + (offer ? resumeOfferShell(offer, { nodePath: process.execPath, cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), configPath: request.configPath, hookPath: join(root, 'resume.sh') }, mode) : '');
+      } catch (error) {
+        const code = error instanceof HerdrError ? error.code : 'setup-failed';
+        process.stderr.write(`${code}: ${error instanceof Error ? error.message : String(error)}\n`);
+        return watch;
+      }
     },
     resume: async (request, selection) => {
       const root = join(request.config.globalRoot, 'herdr'), rawInventory = createProcessInventory(root);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import type { Disposable, Owner, ProcessPresence, SessionId, TerminalIdentity } from '../contracts.js';
 import { processContainsCaller } from '../client/hc.js';
 import type { PresenceMetadata, ProcessPresenceStore } from './presence.js';
@@ -29,13 +29,7 @@ export async function hasLiveMappedAncestor(terminal: TerminalIdentity, ports: P
 export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrationPorts): Disposable {
   const held = new Map<string, SessionLease>(); let disposed = false, stopping = false;
   const pendingActivations = new Set<Promise<void>>();
-  let interrupted = false;
   let recorded: { terminal: TerminalIdentity; activityId: string } | undefined;
-  const onSignal = () => { interrupted = true; };
-  const signals: NodeJS.Signals[] = process.platform === 'win32' ? ['SIGTERM'] : ['SIGTERM', 'SIGHUP'];
-  let observingSignals = false;
-  const observeSignals = () => { if (!observingSignals) { observingSignals = true; for (const signal of signals) process.on(signal, onSignal); } };
-  const removeSignalListeners = () => { if (observingSignals) { observingSignals = false; for (const signal of signals) process.off(signal, onSignal); } };
   const isSelf = (p: { pid: number; startIdentity: string | null }) => p.pid === ports.processIdentity.pid && p.startIdentity === ports.processIdentity.startIdentity;
   const ownInventory: ProcessInventoryPorts = {
     ...ports,
@@ -63,7 +57,7 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     catch (error) { if (error instanceof HerdrError && error.code === 'lease-token-invalid') return claim(); throw error; }
   }
 
-  async function activation(ctx: ExtensionContext): Promise<void> {
+  async function activation(ctx: ExtensionContext, started: boolean): Promise<void> {
     if (disposed) return;
     const current = ports.currentSession(ctx);
     await ports.presence.record({ ...current, ...ports.metadata?.(), sessionId: ctx.sessionManager.getSessionId() as SessionId, mode: ctx.mode, extensionArguments: ports.launchEnvironment.extensionArguments }); // Presence does not depend on HC, enablement, or child status.
@@ -71,16 +65,14 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     if (current.sessionFile !== null && current.kind === 'top-level') await reserve(current.sessionFile, ctx.sessionManager.getSessionId() as SessionId);
     const owner = ports.owner(); if (!owner || ctx.mode !== 'tui' && ctx.mode !== 'rpc' || current.kind !== 'top-level') return;
     if (await hasLiveMappedAncestor(owner.terminal, ports)) return;
-    observeSignals();
-    const activityId = randomUUID();
-    await ports.registry.record({ owner: { ...owner, sessionFile: current.sessionFile, name: current.sessionName }, recordedAt: Date.now(), coreStartedAt: ports.coreStartedAt(), environment: ports.launchEnvironment, activityId });
+    const newActivity = started || !recorded;
+    const activityId = newActivity ? randomBytes(16).toString('hex') : recorded!.activityId;
+    await ports.registry.record({ owner: { ...owner, sessionFile: current.sessionFile, name: current.sessionName }, recordedAt: Date.now(), coreStartedAt: ports.coreStartedAt(), environment: ports.launchEnvironment, activityId }, newActivity);
     recorded = { terminal: owner.terminal, activityId };
   }
-  function startActivation(ctx: ExtensionContext): Promise<void> {
+  function startActivation(ctx: ExtensionContext, started: boolean): Promise<void> {
     if (disposed || stopping) return Promise.resolve();
-    // Interactive pi installs its own signal handlers before session_start.
-    if (ctx.mode === 'tui') observeSignals();
-    const pending = activation(ctx); pendingActivations.add(pending);
+    const pending = activation(ctx, started); pendingActivations.add(pending);
     void pending.then(() => pendingActivations.delete(pending), () => pendingActivations.delete(pending));
     return pending;
   }
@@ -91,23 +83,15 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     held.clear(); await ports.presence.remove(ports.processIdentity);
   }
   const unsubscribe = [
-    pi.on('session_start', async (_event, ctx) => startActivation(ctx)),
-    pi.on('session_info_changed', async (_event, ctx) => startActivation(ctx)),
+    pi.on('session_start', async (_event, ctx) => startActivation(ctx, true)),
+    pi.on('session_info_changed', async (_event, ctx) => startActivation(ctx, false)),
     pi.on('session_before_switch', async event => { if (ports.admitted?.() === false || !event.targetSessionFile) return; try { await reserve(event.targetSessionFile); } catch (error) { if (!active()) return; warn(herdrErrorNotice(error)); return { cancel: true }; } }),
     pi.on('session_shutdown', async (event, ctx) => {
       stopping = true;
-      // Pi prepends its signal handler and reports both signals and interactive exits as 'quit'.
-      // Yield until all listeners in the current signal dispatch have run before deciding.
-      await Promise.resolve();
       await Promise.allSettled([...pendingActivations]);
-      try {
-        if (event.reason === 'quit' && !interrupted && recorded && ports.owner()) await ports.registry.end(recorded.terminal, recorded.activityId);
-      } finally {
-        removeSignalListeners();
-        try { await cleanup(event.reason === 'reload' ? ctx.sessionManager?.getSessionFile?.() : event.reason === 'resume' || event.reason === 'new' ? event.targetSessionFile : undefined); }
-        finally { stopping = false; }
-      }
+      try { await cleanup(event.reason === 'reload' ? ctx.sessionManager?.getSessionFile?.() : event.reason === 'resume' || event.reason === 'new' ? event.targetSessionFile : undefined); }
+      finally { stopping = false; }
     }),
   ];
-  return { async dispose() { if (disposed) return; disposed = true; for (const off of unsubscribe) off(); await Promise.allSettled([...pendingActivations]); removeSignalListeners(); await cleanup(); } };
+  return { async dispose() { if (disposed) return; disposed = true; for (const off of unsubscribe) off(); await Promise.allSettled([...pendingActivations]); await cleanup(); } };
 }

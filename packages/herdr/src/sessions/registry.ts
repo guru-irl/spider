@@ -10,11 +10,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import type { ProcessIdentity, ProcessProbe } from './lease.js';
 export interface LaunchEnvironment { agentDirectory: string; extensionArguments: readonly string[] }
-export interface TerminalAssociation { version: 1; owner: Owner; recordedAt: number; coreStartedAt: number; environment: LaunchEnvironment; activityId?: string; endedAt?: number }
+export interface TerminalAssociation { version: 1; owner: Owner; recordedAt: number; coreStartedAt: number; environment: LaunchEnvironment; activityId?: string }
 export interface TerminalRegistry {
-  record(record: Omit<TerminalAssociation, 'version'>): Promise<void>;
+  record(record: Omit<TerminalAssociation, 'version'>, started?: boolean): Promise<void>;
   get(identity: TerminalIdentity): Promise<TerminalAssociation | null>;
-  end(identity: TerminalIdentity, activityId: string): Promise<void>;
+  ended(identity: TerminalIdentity, activityId: string): Promise<boolean>;
   list(onInvalid?: (file: string, error: unknown) => void): Promise<TerminalAssociation[]>;
   remove(identity: TerminalIdentity, provedRemoved: boolean): Promise<void>;
 }
@@ -87,25 +87,32 @@ const identityKey = terminalIdentityKey;
 function association(value: unknown): TerminalAssociation {
   const r = value as TerminalAssociation;
   if (!r || r.version !== 1 || !r.owner || typeof r.owner.sessionId !== 'string' || typeof r.owner.generation !== 'string' || !r.owner.terminal || typeof r.owner.terminal.coreId !== 'string' || typeof r.owner.terminal.terminalId !== 'string' || typeof r.owner.terminal.socket !== 'string' || typeof r.owner.terminal.address !== 'string' || typeof r.owner.terminal.sessionNamespace !== 'string' || !isAbsolute(r.owner.cwd) || !(r.owner.sessionFile === null || typeof r.owner.sessionFile === 'string' && isAbsolute(r.owner.sessionFile)) || !(r.owner.name === null || typeof r.owner.name === 'string') || !Number.isFinite(r.recordedAt) || !Number.isFinite(r.coreStartedAt)) throw new HerdrError('invalid-terminal-mapping', 'Terminal association shape is invalid');
-  if (r.activityId !== undefined && (typeof r.activityId !== 'string' || !r.activityId) || r.endedAt !== undefined && !Number.isFinite(r.endedAt)) throw new HerdrError('invalid-terminal-mapping', 'Terminal association activity is invalid');
+  if (r.activityId !== undefined && (typeof r.activityId !== 'string' || !/^[a-f0-9]{32}$/.test(r.activityId))) throw new HerdrError('invalid-terminal-mapping', 'Terminal association activity is invalid');
   launchEnvironment(r.environment); return r;
 }
 export function createTerminalRegistry(root: string): TerminalRegistry {
   const directory = join(root, 'terminals'); const path = (id: TerminalIdentity) => join(directory, `${identityKey(id)}.json`);
   return {
-    async record(r) {
+    async record(r, started = false) {
       const owner: Owner = { sessionId: r.owner.sessionId, generation: r.owner.generation, terminal: { coreId: r.owner.terminal.coreId, terminalId: r.owner.terminal.terminalId, address: r.owner.terminal.address, socket: r.owner.terminal.socket, sessionNamespace: r.owner.terminal.sessionNamespace }, cwd: r.owner.cwd, name: r.owner.name, sessionFile: r.owner.sessionFile === null ? null : await canonicalSessionFile(r.owner.sessionFile) };
-      await withProcessLock(root, `terminal:${identityKey(owner.terminal)}`, async () => {
-        await writePrivateJson(path(owner.terminal), association({ version: 1, owner, recordedAt: r.recordedAt, coreStartedAt: r.coreStartedAt, environment: launchEnvironment(r.environment), ...(r.activityId ? { activityId: r.activityId } : {}) }));
+      const key = identityKey(owner.terminal);
+      const mapping = association({ version: 1, owner, recordedAt: r.recordedAt, coreStartedAt: r.coreStartedAt, environment: launchEnvironment(r.environment), ...(r.activityId ? { activityId: r.activityId } : {}) });
+      if (started && !mapping.activityId) throw new HerdrError('invalid-terminal-mapping', 'A started session requires an activity identifier');
+      await withProcessLock(root, `resume-start:${key}`, async () => {
+        await withProcessLock(root, `terminal:${key}`, async () => {
+          const markers = join(root, 'resume-starts', key);
+          if (started) await writePrivateJson(join(markers, `live-${mapping.activityId}`), { version: 1 });
+          await writePrivateJson(path(owner.terminal), mapping);
+          if (started) for (const name of await readdir(markers)) {
+            if (/^(?:live|ended)-[a-f0-9]{32}$/.test(name) && name !== `live-${mapping.activityId}`) await unlink(join(markers, name)).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+          }
+        }, { reclaimReusedOwner: true });
       }, { reclaimReusedOwner: true });
     },
     async get(id) { const r = await readPrivateJson(path(id)); if (r === null) return null; const a = association(r); if (identityKey(a.owner.terminal) !== identityKey(id)) throw new HerdrError('terminal-identity-mismatch', 'Mapping belongs to another terminal'); return a.owner.terminal.address === id.address ? a : null; },
-    async end(id, activityId) {
-      await withProcessLock(root, `terminal:${identityKey(id)}`, async () => {
-        const raw = await readPrivateJson(path(id)); if (raw === null) return;
-        const mapping = association(raw);
-        if (identityKey(mapping.owner.terminal) === identityKey(id) && mapping.activityId === activityId && mapping.endedAt === undefined) await writePrivateJson(path(id), { ...mapping, endedAt: Date.now() });
-      }, { reclaimReusedOwner: true });
+    async ended(id, activityId) {
+      if (!/^[a-f0-9]{32}$/.test(activityId)) throw new HerdrError('invalid-terminal-mapping', 'Terminal association activity is invalid');
+      return await readPrivateJson(join(root, 'resume-starts', identityKey(id), `ended-${activityId}`)) !== null;
     },
     async list(onInvalid) {
       const records = [];

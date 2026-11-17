@@ -9,6 +9,7 @@ import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, sce
 import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
 import { restorationPending, presentationInProgress } from './roam-recovery.test.js';
+import { moveRecoveryPending } from './roam-move.test.js';
 
 vi.mock('../harness/scenario.js', async importOriginal => ({
   ...await importOriginal<typeof import('../harness/scenario.js')>(), registerScenarios: () => {},
@@ -51,6 +52,14 @@ describe('move launch observation command', () => {
     expect(observation).toHaveBeenCalledWith(home, expect.objectContaining({ kind: 'move-observation', expectedEpoch: 4 }));
     expect(JSON.parse(output[0])).toMatchObject({ code: state === 'exited' ? 0 : 3, reason: state === 'exited' ? 'exited-without-adoption' : 'launch-outcome-pending', receipt });
     expect(close).toHaveBeenCalledOnce(); expect(stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe('documented move recovery states', () => {
+  it('keeps waiting for a named pending intercom endpoint without accepting a refusal as success', () => {
+    for (const reason of ['move-destination-pending', 'move-pending', 'intercom-endpoint-not-ready']) expect(moveRecoveryPending({ code: 3, reason })).toBe(true);
+    for (const value of [null, {}, { code: 0, reason: 'intercom-endpoint-not-ready' }, { code: 1, reason: 'intercom-endpoint-not-ready' },
+      { code: 3, reason: 'move-home-changed' }, { code: 3, reason: 'unknown' }, { code: '3', reason: 'intercom-endpoint-not-ready' }]) expect(moveRecoveryPending(value)).toBe(false);
   });
 });
 

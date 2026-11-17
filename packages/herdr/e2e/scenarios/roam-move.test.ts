@@ -27,6 +27,11 @@ import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/
 import type { Suite } from '../harness/suite.js';
 import { deadline, waitFor } from '../harness/wait.js';
 
+export function moveRecoveryPending(result: unknown): boolean {
+  return !!result && typeof result === 'object' && 'code' in result && result.code === 3 && 'reason' in result &&
+    (result.reason === 'move-destination-pending' || result.reason === 'move-pending');
+}
+
 export const HUB = '00000000-0000-4000-8000-000000000001';
 export const BOX = '00000000-0000-4000-8000-000000000002';
 export const BOX2 = '00000000-0000-4000-8000-000000000005';
@@ -491,7 +496,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
         const recovered = await control(machine, ['roam', 'recover', initial.operationId]);
         expect(recovered.operationId).toBe(initial.operationId);
         return recovered;
-      }, recovered => !(recovered.code === 0 && recovered.value?.sourceCleanup?.status === 'pending') && (recovered.code !== 3 || !['move-destination-pending', 'move-pending'].includes(recovered.reason)), deadline(60_000), { reconcileMs: 500 });
+      }, recovered => !(recovered.code === 0 && recovered.value?.sourceCleanup?.status === 'pending') && !moveRecoveryPending(recovered), deadline(60_000), { reconcileMs: 500 });
     };
     const owners: MoveStory['owners'] = async () => {
       const result: MoveOwner[] = [];

@@ -30,6 +30,28 @@ describe('move fixture transport failures', () => {
   });
 });
 
+describe('move launch observation command', () => {
+  it.each(['pending', 'exited', 'uncertain'] as const)('reports %s from the actual participant observation', async state => {
+    const source = readFileSync(new URL('./roam-move.test.ts', import.meta.url), 'utf8');
+    const start = source.indexOf("} else if (args[0] === 'fixture-observe')");
+    const end = source.indexOf("} else if (args[0] === 'fixture-baseline')", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const home = { sessionId: 'session-a', machineId: 'box-a', epoch: 4, moveId: 'move-a' };
+    const receipt = state === 'pending' ? null : { kind: 'exited-without-adoption', launchId: 'launch-a', terminalId: 't1' };
+    const observed = { owner: { kind: state === 'uncertain' ? 'uncertain' : 'absent' }, readiness: null };
+    const observation = vi.fn(async () => observed), close = vi.fn(), stop = vi.fn(async () => {}), output: string[] = [];
+    const process = { exitCode: 0, stdout: { write: (text: string) => output.push(text) } };
+    await runInNewContext('(async () => {' + source.slice(start + 7, end).replaceAll('\\\\n', '\\n') + '}})()', {
+      args: ['fixture-observe', 'session-a', 'move-a'], root: '/fixture', machine: { id: 'box-a' }, join: (...parts: string[]) => parts.join('/'), process,
+      openLocalCore: () => ({ db: {}, config: {}, close }), openFreezeJournal: () => ({}), sessionHome: () => home,
+      moveFactory: async () => ({ bindings: { participant: { observation } }, close: stop }), readMoveLaunchAbsenceReceipt: () => receipt,
+    });
+    expect(observation).toHaveBeenCalledWith(home, expect.objectContaining({ kind: 'move-observation', expectedEpoch: 4 }));
+    expect(JSON.parse(output[0])).toMatchObject({ code: state === 'exited' ? 0 : 3, reason: state === 'exited' ? 'exited-without-adoption' : 'launch-outcome-pending', receipt });
+    expect(close).toHaveBeenCalledOnce(); expect(stop).toHaveBeenCalledOnce();
+  });
+});
+
 describe('cross-machine pane story registration', () => {
   const ids = ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08'];
   it('selects every packed pane story serially in headless and app tiers', async () => {

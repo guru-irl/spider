@@ -87,6 +87,49 @@ it("the import lock is not a session owner, but other observers still see the cl
   } finally { release(); await locked?.catch(() => {}); await mounted.close(); }
 }, 5000);
 
+it.each(["never-started", "exited-without-adoption"] as const)("rollback retains %s evidence inside its own locks, not another observer's", async kind => {
+  const inventoryModule = await import("../../herdr/process-inventory");
+  const { recordLocation } = await import("@spider/db-core/roam/catalog");
+  const pending = await import("@spider/roam/pending-handoff");
+  const { recordMoveLaunchAbsence } = await import("../launch-observation");
+  const global = createReplica("global", HUB); fixtures.push(global);
+  mkdirSync(join(global.root, "roam"), { mode: 0o700 });
+  const config: RoamConfig = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() };
+  const sessionId = "rollback-session", file = join(global.root, "session.jsonl"), home = { sessionId, machineId: HUB, epoch: 2, moveId: "move-a", updatedAt: 1 };
+  recordLocation(global.db, { sessionId, stores: ["global"], home, file, cwd: global.root });
+  global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,'move-a',1)").run(sessionId, HUB);
+  const journal = openFreezeJournal(join(global.root, "roam", "journal.db"));
+  journal.begin({ id: "move-a", machineId: HUB, expectedEpoch: 1, kind: "move", args: {} });
+  journal.begin({ id: "launch-a", machineId: HUB, expectedEpoch: 2, kind: "exact-session-launch", args: { sessionId } });
+  if (kind === "exited-without-adoption") journal.record("launch-a", "exact-terminal", { terminalId: "t1" });
+  const receipt = await recordMoveLaunchAbsence({ journal, operationId: "move-a", launchId: "launch-a", sessionId, epoch: 2, coreId: "core-a", bootId: "boot-a",
+    intent: { sessionId, epoch: 2, file, cwd: global.root, desired: "running", suspended: null, moveId: "move-a" }, readiness: async () => null, ownership: async () => null,
+    evidence: async () => kind === "never-started" ? { receipt: "unknown", terminal: "unknown", proof: { kind: "prelaunch-error", operationId: "launch-a", beforeLaunch: true, errorCode: "missing-hc", hcPid: null } }
+      : { receipt: "started", terminal: "present", proof: { kind: "terminal-exited-without-adoption", operationId: "launch-a", coreId: "core-a", terminalId: "t1", terminalExited: true, lockNeverAdopted: true } } });
+  expect(receipt?.kind).toBe(kind);
+  vi.spyOn(pending, "cancelPendingHandoff").mockResolvedValue("already-released");
+  const inventory = inventoryModule.createProcessInventory(join(global.root, "herdr"));
+  vi.spyOn(inventoryModule, "createProcessInventory").mockReturnValue({ ...inventory, processes: async () => [] });
+  const mounted = await createHostMoveBindings({ root: global.root, globalDb: global.db, config, journal, sessionId, transport: {} as never });
+  const participant = mounted.bindings.participant!, operation = { id: "retire-a", kind: "session-retire", machineId: HUB, expectedEpoch: 2, args: { sessionId, moveId: "move-a" } };
+  const launchFailure = kind === "never-started" ? "proved-no-start:launch-a" : "proved-unadopted-exit:launch-a:t1";
+  let release!: () => void, entered!: () => void;
+  const hold = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+  let locked: Promise<void> | undefined;
+  try {
+    expect(await participant.observation(home, operation)).toMatchObject({ owner: { kind: "absent" }, launchFailure });
+    locked = participant.withBothLocks(sessionId, async () => {
+      entered(); await hold;
+      expect(await participant.observation(home, operation)).toMatchObject({ owner: { kind: "absent" }, launchFailure });
+      expect(await participant.retireFailed(home, operation)).toEqual({ kind: "absent" });
+    });
+    await Promise.race([ready, locked]);
+    expect(await participant.observation(home, operation)).toMatchObject({ owner: { kind: "live" }, launchFailure: null });
+    release(); await locked;
+    expect(await participant.observation(home, operation)).toMatchObject({ owner: { kind: "absent" }, launchFailure, retired: true, activationCancelled: true });
+  } finally { release(); await locked?.catch(() => {}); await mounted.close(); }
+}, 5000);
+
 it("production move evidence queries the connected machine service broker", async () => {
   const { startMachineMoveSocket } = await import("@spider/roam/machine-move-socket");
   const global = createReplica("global", HUB); fixtures.push(global);

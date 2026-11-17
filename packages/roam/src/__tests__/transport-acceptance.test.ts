@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -12,6 +12,15 @@ import { stageArtifact, transferArtifact } from "../artifacts";
 import { DEFAULT_LIMITS, type Operation, type Peer } from "../contracts";
 import { openJournal } from "../journal";
 import { createTransport } from "../transport";
+
+vi.mock("@spider/herdr/client/hc", async importOriginal => {
+  const actual = await importOriginal<typeof import("@spider/herdr/client/hc")>();
+  return { ...actual, async invokeCli(...args: Parameters<typeof actual.invokeCli>) {
+    if (args[1][0] === "server") return { core: { id: "local-core" }, version: "0.1.16" };
+    if (args[1][0] === "machine") return { machines: [{ name: "-box-1.invalid", id: "remote-core", state: "connected" }] };
+    return actual.invokeCli(...args);
+  } };
+});
 
 const HUB = "00000000-0000-4000-8000-000000000001";
 const BOX = "00000000-0000-4000-8000-000000000002";
@@ -31,11 +40,39 @@ it("A8 chunk transport composes with durable apply", async () => {
       hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
     const db = openDb(join(dir, "spider.db"));
     migrate(db, "global", { machineId: id, globalRoot: dir });
-    if (id === HUB) db.prepare("INSERT INTO global_memory(uuid,category,content,created_at) VALUES ('memory-a','insight',?,1)").run("portable ".repeat(100));
+    if (id === HUB) db.prepare("INSERT INTO global_memory(uuid,category,content,created_at) VALUES ('memory-a','insight',?,1)").run("portable ".repeat(10));
     enableMemoryCapture(db, "global"); db.close();
   }
   const cli = join(built, "roam", "cli.mjs"), hc = join(root, "hc"), alias = "-box-1.invalid";
-  writeFileSync(hc, `#!${process.execPath}\nimport {appendFileSync,readFileSync} from 'node:fs'; import {spawnSync} from 'node:child_process';\nconst a=process.argv.slice(2); appendFileSync(${JSON.stringify(calls)},JSON.stringify(a)+'\\n');\nif(a[0]==='server') console.log(JSON.stringify({core:{id:'local-core'},version:'0.1.16'}));\nelse if(a[0]==='machine') console.log(JSON.stringify({machines:[{name:${JSON.stringify(alias)},id:'remote-core',state:'connected'}]}));\nelse if(a[0]==='exec' && a.includes(${JSON.stringify(`--on=${alias}`)})) {const c=a.slice(a.indexOf('--')+1); if(c[0]==='cat' && c.at(-1)===${JSON.stringify(join(box, "roam", "machine.json"))})process.stdout.write(readFileSync(c.at(-1))); else if(c[0]===${JSON.stringify(process.execPath)} && c[1]===${JSON.stringify(cli)} && c[2]==='--global-root' && c[3]===${JSON.stringify(box)}){const r=spawnSync(c[0],c.slice(1),{env:{...process.env,HOME:${JSON.stringify(box)}},input:a.includes('--stdin')?readFileSync(0):undefined});process.stdout.write(r.stdout);process.stderr.write(r.stderr);process.exitCode=r.status??1;}else process.exitCode=2;}\nelse process.exitCode=1;\n`, { mode: 0o700 });
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  writeFileSync(hc, `#!/bin/sh
+set -eu
+printf '%s\\0' "$@" '' >> ${quote(calls)}
+case "\${1:-}" in
+  server) printf '%s\\n' ${quote(JSON.stringify({ core: { id: "local-core" }, version: "0.1.16" }))} ;;
+  machine) printf '%s\\n' ${quote(JSON.stringify({ machines: [{ name: alias, id: "remote-core", state: "connected" }] }))} ;;
+  exec)
+    allowed=0
+    for arg in "$@"; do [ "$arg" != ${quote(`--on=${alias}`)} ] || allowed=1; done
+    [ "$allowed" = 1 ] || exit 1
+    while [ "$#" -gt 0 ] && [ "$1" != -- ]; do shift; done
+    [ "$#" -gt 0 ] || exit 2
+    shift
+    if [ "\${1:-}" = cat ]; then
+      last=''
+      for arg in "$@"; do last="$arg"; done
+      [ "$last" = ${quote(join(box, "roam", "machine.json"))} ] || exit 2
+      exec cat "$last"
+    fi
+    [ "$#" -ge 4 ] || exit 2
+    [ "$1" = ${quote(process.execPath)} ] && [ "$2" = ${quote(cli)} ] &&
+      [ "$3" = --global-root ] && [ "$4" = ${quote(box)} ] || exit 2
+    export HOME=${quote(box)}
+    exec "$@"
+    ;;
+  *) exit 1 ;;
+esac
+`, { mode: 0o700 });
   const env = { ...process.env, HOME: hub, SPIDER_GLOBAL_ROOT: hub, HC_SOCKET: socket };
   const peer: Peer = { machineId: BOX, alias, node: process.execPath, pi: process.execPath, cli, core: hc, globalRoot: box };
   const server = createServer(connection => connection.end()); await new Promise<void>(done => server.listen(socket, done));
@@ -46,7 +83,7 @@ it("A8 chunk transport composes with durable apply", async () => {
     const limits = { ...DEFAULT_LIMITS, chunkBytes: 512, retryDelaysMs: [] };
     const staging = join(hub, "roam", "staging");
     const manifest = await stageArtifact(batch.file, "batch", limits, { root: staging, artifactId: "artifact-1" });
-    expect(manifest.chunks.length).toBeGreaterThan(1);
+    expect(manifest.chunks).toHaveLength(2);
     const transport = createTransport({ binary: hc, env, enrolled: [peer] });
     const journal = openJournal(join(hub, "roam", "journal.db"));
     const sent = await transferArtifact(peer, manifest, { transport, journal, limits, root: staging, operationId: "transfer-1" });
@@ -67,12 +104,12 @@ it("A8 chunk transport composes with durable apply", async () => {
     expect(receipt).toMatchObject({ code: 0, value: { through: batch.header.through, sha256: batch.sha256 } });
     const restarted = openDb(join(box, "spider.db"));
     try {
-      expect(restarted.prepare("SELECT uuid,content FROM global_memory").all()).toEqual([{ uuid: "memory-a", content: "portable ".repeat(100) }]);
+      expect(restarted.prepare("SELECT uuid,content FROM global_memory").all()).toEqual([{ uuid: "memory-a", content: "portable ".repeat(10) }]);
       expect(restarted.prepare("SELECT last_seq FROM roam_cursors WHERE peer_machine=? AND peer_stream=?").get(HUB, batch.header.senderStream))
         .toEqual({ last_seq: batch.header.through });
       expect(restarted.prepare("SELECT count(*) AS count FROM roam_receipts").get()).toEqual({ count: 1 });
     } finally { restarted.close(); }
-    const entries = readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+    const entries = readFileSync(calls, "utf8").split("\0\0").filter(Boolean).map(line => line.split("\0"));
     expect(entries.filter(args => args[0] === "exec").every(args => args.includes(`--on=${alias}`))).toBe(true);
     expect(entries.some(args => args.includes("--stdin") && args.includes("receive"))).toBe(true);
   } finally { source.close(); await new Promise<void>(done => server.close(() => done())); }

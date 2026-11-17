@@ -10,7 +10,7 @@ import { isUnsafeWorktreeConfig, recordMoveSnapshotRefs } from "./workspace";
 
 type Trees = { head: string; indexTree: string; workingTree: string };
 const localMetadataPathspecs = ["spider", "pi-subagents"].flatMap(name => [
-  `:(exclude,glob)**/.${name}`, `:(exclude,glob)**/.${name}/**`,
+  `:(top,exclude,glob).${name}`, `:(top,exclude,glob).${name}/**`,
 ]);
 
 function checkPath(path: string, kind: "directory" | "file", allowMissing = false): boolean {

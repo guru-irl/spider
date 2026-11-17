@@ -205,6 +205,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   const currentLocalPresence = (): RemoteSessionInfo[] => [...ports.localPresence(), ...brokerLocal].filter(entry => {
     if (intake?.closed(entry.address)) return false;
     const home = ports.authoritativeHome(entry.address);
+    if (!home && ports.store.presenceOwner(entry.address)?.ambiguous) return false;
     return home ? home.machineId === entry.machineId && home.epoch === entry.homeEpoch : entry.homeEpoch === null || entry.homeEpoch === 1;
   });
   const firstHomePresence = (endpoint: SessionEndpoint, edge: EdgeRuntime | null): RemoteSessionInfo | undefined => {

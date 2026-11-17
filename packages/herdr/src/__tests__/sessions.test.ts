@@ -165,6 +165,20 @@ function apiFixture() {
   return { pi, fire: (name: string, event: unknown, ctx: ExtensionContext) => handlers.get(name)!(event, ctx) };
 }
 function context(file: string | null, mode: string, name = 'named session', sessionId = 's1') { return { cwd: root, mode, hasUI: mode === 'tui', sessionManager: { getSessionFile: () => file ?? undefined, getSessionId: () => sessionId, getSessionName: () => name } } as unknown as ExtensionContext; }
+it('session registration does not install process signal listeners', async () => {
+  const before = { term: process.listeners('SIGTERM'), hup: process.listeners('SIGHUP') };
+  const file = await session(); const api = apiFixture();
+  const registration = registerHerdrSessions(api.pi, { ...inventory(), registry: createTerminalRegistry(root), processIdentity: { pid: 300, startIdentity: 'start:300' }, currentSession: () => ({ pid: 300, startIdentity: 'start:300', sessionFile: file, sessionName: 'named session', kind: 'top-level', hcAddress: terminal.address }), owner: () => owner(file), coreStartedAt: () => 1, launchEnvironment: request(file).environment });
+  try {
+    await api.fire('session_start', { reason: 'startup' }, context(file, 'tui'));
+    expect(process.listeners('SIGTERM')).toEqual(before.term);
+    expect(process.listeners('SIGHUP')).toEqual(before.hup);
+    await api.fire('session_shutdown', { reason: 'quit' }, context(file, 'tui'));
+    expect(process.listeners('SIGTERM')).toEqual(before.term);
+    expect(process.listeners('SIGHUP')).toEqual(before.hup);
+  } finally { await registration.dispose(); }
+});
+
 it('every spider-loading pi process records named presence', async () => {
   const file = join(root, 'unflushed.jsonl');
   for (const [pid, child, enabled, hc, mode] of [[200, false, true, true, 'tui'], [201, false, true, false, 'tui'], [202, false, false, true, 'tui'], [203, true, true, true, 'rpc']] as const) {

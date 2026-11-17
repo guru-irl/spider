@@ -553,7 +553,7 @@ async function outward(suite: Suite): Promise<void> {
     const outage = await waitFor('source reports its actual unavailable intercom route', () => f.cli(hub, ['fixture-status']),
       result => result.value?.intercom?.links?.some((link: { peer: string }) => link.peer === BOX2), deadline(30_000), { reconcileMs: 500 });
     const result = await f.moveTo(hub, box.alias);
-    expect(result).toMatchObject({ code: 0, reason: 'moved', value: { home: { machineId: BOX, epoch: 2 } } });
+    expect(result).toMatchObject({ code: 0, reason: 'moved', home: { machineId: BOX, epoch: 2 } });
     expect(result.value.intercomAddress).toContain(box.alias);
     expect(result.value.warnings).toContain('tool-auth-unverified');
     await assertRouteWarnings(f, result);

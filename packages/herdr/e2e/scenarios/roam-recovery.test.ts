@@ -97,8 +97,10 @@ export async function storyPresentation(suite: Suite, machines: readonly MoveMac
         '--label', `spider.pane-id=${p.id}`, '--label', `spider.pane-operation=${p.id}`, '--label', `spider.target-core=${p.target.coreId}`,
         '--label', `spider.target-terminal=${p.target.terminalId}`, '--', '/bin/cat']);
       expect(result.exitCode, result.stderr).toBe(0);
-      const address = (result.json as { address: TerminalAddress }).address;
-      expect(address).toBeTruthy(); proxies.set(p.id, address); events.push('proxy-created');
+      const returnedAddress = (result.json as { address: string }).address;
+      expect(returnedAddress).toBeTruthy();
+      const address = paneAddress(returnedAddress.includes('/') ? returnedAddress : `${hub.coreId}/${returnedAddress}`);
+      proxies.set(p.id, address); events.push('proxy-created');
       suite.ledger.update(ledger => { ledger.terminals.push({ side: 'local', address }); });
       return address;
     },
@@ -230,7 +232,11 @@ export async function runRecoveryCases(suite: Suite): Promise<void> {
       await f.stopBox();
       expect((await owned.hc(['kill', remote.terminal, '--json'], 'dest')).exitCode).toBe(0);
       await waitFor('destroyed fixture owner exits', () => f!.owners(), rows => !rows.some(row => row.pid === remote.pid), deadline(30_000));
-      const restored = await f.cli(hub, ['roam', 'forget', box.alias, '--confirm', `destroyed ${BOX}`]);
+      const initialRestore = await f.cli(hub, ['roam', 'forget', box.alias, '--confirm', `destroyed ${BOX}`]);
+      const restored = initialRestore.code === 3 && initialRestore.reason === 'recovery-pending'
+        ? await waitFor('documented retry completes destroyed-home recovery', () => f!.cli(hub, ['roam', 'forget', BOX, '--confirm', `destroyed ${BOX}`]),
+          result => result.code !== 3, deadline(60_000), { reconcileMs: 500 })
+        : initialRestore;
       expect(restored).toMatchObject({ code: 0, reason: 'destroyed-machine-recovered' });
       const local = await assertMoveState(f, hub, expectedTrees, 3);
       const bytes = await readFile(local.file, 'utf8'), entries = bytes.trimEnd().split('\n').map(line => JSON.parse(line));

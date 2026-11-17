@@ -92,6 +92,42 @@ it.each(['/bin/bash', '/bin/zsh'])('a returning %s prompt ends pi, while a reboo
   }
 }, 15000);
 
+it('a killed shell and pi retain a live marker for the next restart', async () => {
+  root = await mkdtemp(join(await realpath(tmpdir()), 'auto-reboot-'));
+  const state = join(root, 'herdr'), agent = join(root, 'agent'); await mkdir(agent);
+  const file = join(root, 's1.jsonl'); await writeFile(file, JSON.stringify({ type: 'session', id: 's1', cwd: root }) + '\n');
+  const terminal = { coreId: 'core', terminalId: 't1', address: 't1', socket: join(root, 'socket'), sessionNamespace: 'test' } as TerminalIdentity;
+  core.terminal = terminal;
+  const config = parseHerdrConfig({ app: { binary: '/app', home: root }, core: { binary: '/hc', config: join(root, 'core') }, agentDirectory: agent, globalRoot: root, shellRc: join(root, 'rc'), spaces: [], machines: [] });
+  const ports = createProductionHerdrCliPorts(root, { ...process.env, SPIDER_GLOBAL_ROOT: root });
+  const registry = createTerminalRegistry(state), processInventory = { presence: createProcessPresence(state), leases: createSessionLeases(state), processes: async () => [], probe: async () => ({ kind: 'absent' as const }) };
+  await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/__tests__/fixtures/resume-shutdown-process.ts', import.meta.url)), outDir: root, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'running-pi.mjs' } } } });
+  let shell: ReturnType<typeof spawn> | undefined, piPid: number | undefined;
+  try {
+    const source = await ports.resumeOffer!({ config, configPath: join(root, 'config.json'), packageRoot: root, journalRoot: join(root, 'journal') });
+    const rc = join(root, 'bashrc'); await writeFile(rc, source + "\nPS1=''\n");
+    shell = spawn('/bin/bash', ['--noprofile', '--rcfile', rc, '-i'], { cwd: root, env: { ...process.env, HOME: root, TEST_ROOT: root, TEST_STAY_LIVE: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let output = '', errors = ''; shell.stdout!.on('data', chunk => { output += chunk; }); shell.stderr!.on('data', chunk => { errors += chunk; });
+    shell.stdin!.write(`'${process.execPath}' '${join(root, 'running-pi.mjs')}' resume\n`);
+    for (let i = 0; i < 1000 && !output.includes('background-pi-ready'); i++) await delay(10);
+    expect(output, errors).toContain('background-pi-ready');
+    const markerDir = join(state, 'resume-starts', (await readdir(join(state, 'resume-starts')))[0]);
+    const liveName = (await readdir(markerDir)).find(name => name.startsWith('live-'))!;
+    piPid = JSON.parse(await readFile(join(markerDir, liveName), 'utf8')).pid;
+    const shellExit = new Promise<void>(resolveExit => shell!.once('exit', () => resolveExit())); shell.kill('SIGKILL'); await shellExit;
+    process.kill(piPid!, 'SIGKILL');
+    let gone = false;
+    for (let i = 0; i < 100; i++) { try { process.kill(piPid!, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') { gone = true; break; } throw error; } await delay(10); }
+    expect(gone, 'the isolated pi process exited').toBe(true); piPid = undefined;
+    expect(await offerResume(terminal, { registry, processInventory, coreStartedAt: async () => Number.MAX_SAFE_INTEGER })).not.toBeNull();
+    expect(await offerResume(terminal, { registry, processInventory, coreStartedAt: async () => Number.MAX_SAFE_INTEGER, autoResumeRoot: state })).not.toBeNull();
+  } finally {
+    if (piPid) { try { process.kill(piPid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    if (shell && shell.exitCode === null && shell.signalCode === null) { const exited = new Promise<void>(resolveExit => shell!.once('exit', () => resolveExit())); shell.kill('SIGKILL'); await exited; }
+    await ports.dispose();
+  }
+}, 20000);
+
 it.each(['/bin/bash', '/bin/zsh'])('an auto-resumed pi is marked ended before the first %s prompt returns', async binary => {
   root = await mkdtemp(join(await realpath(tmpdir()), 'auto-first-'));
   const state = join(root, 'herdr'), agent = join(root, 'agent'); await mkdir(agent);

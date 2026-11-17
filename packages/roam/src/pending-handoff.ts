@@ -38,8 +38,10 @@ function parseMoveLaunchAbsenceReceipt(value: unknown): MoveLaunchAbsenceReceipt
   }
   return provedNoStart(receipt.evidence, receipt.launchId!, receipt.coreId!, receipt.bootId!) ? receipt as MoveLaunchAbsenceReceipt : null;
 }
-export function readMoveLaunchAbsenceReceipt(journal: Journal, moveId: string): MoveLaunchAbsenceReceipt | null {
-  const rows = journal.read(moveId).filter(row => row.action === "move-no-start" || row.action === "move-unadopted-launch-exit");
+export function readMoveLaunchAbsenceReceipt(journal: Journal, moveId: string, launchId?: string): MoveLaunchAbsenceReceipt | null {
+  const all = journal.read(moveId).filter(row => row.action === "move-no-start" || row.action === "move-unadopted-launch-exit");
+  const selected = launchId ?? all.at(-1)?.result.launchId;
+  const rows = all.filter(row => row.result.launchId === selected);
   if (rows.length !== 1) return null;
   const receipt = parseMoveLaunchAbsenceReceipt(rows[0].result);
   if (!receipt || receipt.moveId !== moveId || moveLaunchAbsenceAction(receipt) !== rows[0].action) return null;
@@ -64,7 +66,7 @@ export function createPendingHandoffControl(input: { root: string; journal: Jour
       const receipt = parseMoveLaunchAbsenceReceipt(request?.absenceReceipt);
       if (!receipt || receipt.sessionId !== request.sessionId || receipt.moveId !== request.moveId || receipt.launchId !== request.launchId ||
           !Number.isSafeInteger(receipt.epoch) || receipt.epoch < 1 || !provedNoStart(receipt.evidence, request.launchId, receipt.coreId, receipt.bootId)) return "refused";
-      const durable = readMoveLaunchAbsenceReceipt(journal, request.moveId);
+      const durable = readMoveLaunchAbsenceReceipt(journal, request.moveId, request.launchId);
       if (!durable || !isDeepStrictEqual(durable, receipt)) return "refused";
       const operationId = `cancel-handoff-${createHash("sha256").update(JSON.stringify([request.sessionId, request.moveId, request.launchId])).digest("hex").slice(0, 40)}`;
       const rows = journal.read(operationId);
@@ -100,7 +102,7 @@ export function createPendingHandoffControl(input: { root: string; journal: Jour
       journal.begin({ id: operationId, machineId, expectedEpoch: receipt.epoch, kind: "cancel-pending-handoff", args: { sessionId: request.sessionId, moveId: request.moveId, launchId: request.launchId, launchDigest: receipt.launchDigest, reason: receipt.kind } });
       if (!rows.some(row => row.action === "cancel-context")) journal.record(operationId, "cancel-context", context as unknown as import("@spider/db-core/roam/types").JsonObject);
       // All refusal checks precede the first mutation. Missing completed resources are resumable only with this durable context.
-      await authority.stop(request.sessionId);
+      if (authority.owned(request.sessionId)?.owner.kind !== "hub-restoration") await authority.stop(request.sessionId);
       if (lease) await inventory.leases.release(intent.file, context.leaseToken, { mode: "cutover" });
       journal.record(operationId, "lease-released", {});
       if (pending) await removeLaunchHandoff(root, request.launchId);

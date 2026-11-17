@@ -17,6 +17,7 @@ import { registerHerdrSessions } from '../../../herdr/src/sessions/register.js';
 import { createProcessPresence } from '../../../herdr/src/sessions/presence.js';
 import { createSessionLeases } from '../../../herdr/src/sessions/lease.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
+import { processStartTime } from '../../../subagents/src/process-identity.js';
 
 const core = vi.hoisted(() => ({ terminal: null as TerminalIdentity | null }));
 vi.mock('@spider/herdr/client/hc', async original => {
@@ -42,13 +43,13 @@ it.each(['/bin/bash', '/bin/zsh'])('a returning %s prompt ends pi, while a reboo
   const hooks = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
   const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { hooks.set(name, handler); return () => hooks.delete(name); } } as unknown as ExtensionAPI;
   const ctx = { mode: 'tui', sessionManager: { getSessionFile: () => file, getSessionId: () => 's1', getSessionName: () => 'Saved' } } as unknown as ExtensionContext;
-  const registration = registerHerdrSessions(pi, { ...processInventory, registry, processIdentity: { pid: 12345, startIdentity: 'test' }, currentSession: () => ({ pid: 12345, startIdentity: 'test', sessionFile: file, sessionName: 'Saved', kind: 'top-level', hcAddress: terminal.address }), owner: () => owner, coreStartedAt: () => 1, launchEnvironment: { agentDirectory: agent, extensionArguments: [] } });
+  const registration = registerHerdrSessions(pi, { ...processInventory, registry, processIdentity: { pid: 2147483647, startIdentity: 'test' }, currentSession: () => ({ pid: 2147483647, startIdentity: 'test', sessionFile: file, sessionName: 'Saved', kind: 'top-level', hcAddress: terminal.address }), owner: () => owner, coreStartedAt: () => 1, launchEnvironment: { agentDirectory: agent, extensionArguments: [] } });
   const fire = (name: string, reason: string) => hooks.get(name)!({ type: name, reason }, ctx);
   const restart = { registry, processInventory, coreStartedAt: async () => Number.MAX_SAFE_INTEGER };
   const request = { config, configPath: join(root, 'config.json'), packageRoot: root, journalRoot: join(root, 'journal') };
   const rc = join(root, binary.endsWith('zsh') ? '.zshrc' : 'bashrc');
   await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/__tests__/fixtures/resume-shutdown-process.ts', import.meta.url)), outDir: root, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'background-pi.mjs' } } } });
-  let child: ReturnType<typeof spawn> | undefined, backgroundPid: number | undefined;
+  let child: ReturnType<typeof spawn> | undefined, backgroundPid: number | undefined, backgroundIdentity: string | null = null;
   try {
     const source = await ports.resumeOffer!(request);
     await writeFile(rc, (binary.endsWith('bash') ? 'set +H\n' : '') + source + "\nkill() { return 1; }\nPS1=''\nprintf 'rc-ready\\n'\n");
@@ -63,6 +64,7 @@ it.each(['/bin/bash', '/bin/zsh'])('a returning %s prompt ends pi, while a reboo
     child.stdin!.write(`TEST_ROOT='${root}' TEST_STAY_LIVE=1 PATH=/usr/bin:/bin '${process.execPath}' '${join(root, 'background-pi.mjs')}' resume & _bgpid=$!; printf 'background-pid:%s\\n' "$_bgpid"\n`);
     await until('background-pid:');
     backgroundPid = Number(/background-pid:(\d+)/.exec(output)?.[1]); expect(backgroundPid).toBeGreaterThan(0);
+    backgroundIdentity = processStartTime(backgroundPid); expect(backgroundIdentity).toBeTruthy();
     await until('background-pi-ready');
     child.stdin!.write("printf 'background-one\\n'\nprintf 'background-two\\n'\n"); await until('background-two');
     expect(await offerResume(terminal, restart), 'a still-running pi stays live at the prompt').not.toBeNull();
@@ -85,7 +87,7 @@ it.each(['/bin/bash', '/bin/zsh'])('a returning %s prompt ends pi, while a reboo
     expect(await offerResume(terminal, restart), 'reboot without another prompt').not.toBeNull();
     expect(await offerResume(terminal, { ...restart, autoResumeRoot: state }), 'auto after reboot without a prompt').not.toBeNull();
   } finally {
-    if (backgroundPid) { try { process.kill(backgroundPid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    if (backgroundPid && backgroundIdentity && processStartTime(backgroundPid) === backgroundIdentity) { try { process.kill(backgroundPid, 'SIGKILL'); } catch { /* Already gone. */ } }
     child?.stdin?.end('exit\n');
     if (child && child.exitCode === null && child.signalCode === null) { const exited = new Promise<void>(resolveExit => child!.once('exit', () => resolveExit())); child.kill('SIGKILL'); await exited; }
     await registration.dispose(); await ports.dispose();
@@ -102,7 +104,7 @@ it('a killed shell and pi retain a live marker for the next restart', async () =
   const ports = createProductionHerdrCliPorts(root, { ...process.env, SPIDER_GLOBAL_ROOT: root });
   const registry = createTerminalRegistry(state), processInventory = { presence: createProcessPresence(state), leases: createSessionLeases(state), processes: async () => [], probe: async () => ({ kind: 'absent' as const }) };
   await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/__tests__/fixtures/resume-shutdown-process.ts', import.meta.url)), outDir: root, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'running-pi.mjs' } } } });
-  let shell: ReturnType<typeof spawn> | undefined, piPid: number | undefined;
+  let shell: ReturnType<typeof spawn> | undefined, piPid: number | undefined, piIdentity: string | null = null;
   try {
     const source = await ports.resumeOffer!({ config, configPath: join(root, 'config.json'), packageRoot: root, journalRoot: join(root, 'journal') });
     const rc = join(root, 'bashrc'); await writeFile(rc, source + "\nPS1=''\n");
@@ -114,15 +116,16 @@ it('a killed shell and pi retain a live marker for the next restart', async () =
     const markerDir = join(state, 'resume-starts', (await readdir(join(state, 'resume-starts')))[0]);
     const liveName = (await readdir(markerDir)).find(name => name.startsWith('live-'))!;
     piPid = JSON.parse(await readFile(join(markerDir, liveName), 'utf8')).pid;
+    piIdentity = processStartTime(piPid!); expect(piIdentity).toBeTruthy();
     const shellExit = new Promise<void>(resolveExit => shell!.once('exit', () => resolveExit())); shell.kill('SIGKILL'); await shellExit;
-    process.kill(piPid!, 'SIGKILL');
+    if (processStartTime(piPid!) === piIdentity) process.kill(piPid!, 'SIGKILL');
     let gone = false;
-    for (let i = 0; i < 100; i++) { try { process.kill(piPid!, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') { gone = true; break; } throw error; } await delay(10); }
+    for (let i = 0; i < 100; i++) { if (processStartTime(piPid!) !== piIdentity) { gone = true; break; } await delay(10); }
     expect(gone, 'the isolated pi process exited').toBe(true); piPid = undefined;
     expect(await offerResume(terminal, { registry, processInventory, coreStartedAt: async () => Number.MAX_SAFE_INTEGER })).not.toBeNull();
     expect(await offerResume(terminal, { registry, processInventory, coreStartedAt: async () => Number.MAX_SAFE_INTEGER, autoResumeRoot: state })).not.toBeNull();
   } finally {
-    if (piPid) { try { process.kill(piPid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    if (piPid && piIdentity && processStartTime(piPid) === piIdentity) { try { process.kill(piPid, 'SIGKILL'); } catch { /* Already gone. */ } }
     if (shell && shell.exitCode === null && shell.signalCode === null) { const exited = new Promise<void>(resolveExit => shell!.once('exit', () => resolveExit())); shell.kill('SIGKILL'); await exited; }
     await ports.dispose();
   }
@@ -136,7 +139,7 @@ it.each(['/bin/bash', '/bin/zsh'])('an auto-resumed pi is marked ended before th
   core.terminal = terminal;
   const owner: Owner = { terminal, sessionId: 's1' as SessionId, generation: 'g1' as Generation, sessionFile: file, cwd: root, name: 'Saved' };
   const registry = createTerminalRegistry(state), processInventory = { presence: createProcessPresence(state), leases: createSessionLeases(state), processes: async () => [], probe: async () => ({ kind: 'absent' as const }) };
-  await registry.record({ owner, recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: agent, extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 12345, startIdentity: 'old' });
+  await registry.record({ owner, recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: agent, extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 2147483647, startIdentity: 'old' });
   await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/__tests__/fixtures/resume-shutdown-process.ts', import.meta.url)), outDir: join(root, 'dist/herdr'), emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'cli.mjs' } } } });
   const config = parseHerdrConfig({ app: { binary: '/app', home: root }, core: { binary: '/hc', config: join(root, 'core') }, agentDirectory: agent, globalRoot: root, shellRc: join(root, 'rc'), spaces: [], machines: [], resume: 'auto' });
   const ports = createProductionHerdrCliPorts(root, { ...process.env, SPIDER_GLOBAL_ROOT: root });

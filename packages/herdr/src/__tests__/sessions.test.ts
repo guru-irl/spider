@@ -96,18 +96,18 @@ describe('session ownership', () => {
 it('quit, signal and reload preserve the correct restart eligibility', async () => {
   const entry = fileURLToPath(new URL('./fixtures/resume-shutdown-process.ts', import.meta.url));
   await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: entry, outDir: root, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'shutdown-process.mjs' } } } });
-  for (const reason of ['quit', 'SIGTERM', 'SIGHUP', 'SIGKILL', 'reload'] as const) {
+  for (const reason of ['quit', 'SIGTERM', 'SIGHUP', 'SIGKILL', 'reload', 'new', 'resume', 'fork', 'core-loss'] as const) {
     const state = join(root, reason); await mkdir(state);
     await writeFile(join(state, 's1.jsonl'), JSON.stringify({ type: 'session', version: 3, id: 's1', cwd: state }) + '\n');
-    const start = async () => {
-      const child = spawn(process.execPath, [join(root, 'shutdown-process.mjs'), state], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+    const start = async (mode = 'tui') => {
+      const child = spawn(process.execPath, [join(root, 'shutdown-process.mjs'), state, mode], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
       let errors = ''; child.stderr!.on('data', chunk => errors += chunk);
       const exited = new Promise<void>((resolveExit, reject) => { child.once('error', reject); child.once('exit', () => resolveExit()); });
       await new Promise<void>((resolveReady, reject) => { child.once('message', () => resolveReady()); child.once('exit', () => reject(new Error(`child exited before ready: ${errors}`))); });
       return { child, exited };
     };
     const first = await start();
-    if (reason === 'quit' || reason === 'reload') first.child.send(reason); else first.child.kill(reason);
+    if (reason === 'SIGTERM' || reason === 'SIGHUP' || reason === 'SIGKILL') first.child.kill(reason); else first.child.send(reason);
     await first.exited;
     const stateInventory = { presence: createProcessPresence(state), leases: createSessionLeases(state), processes: async () => [], probe: async () => ({ kind: 'absent' as const }) };
     const restart = { registry: createTerminalRegistry(state), processInventory: stateInventory, coreStartedAt: async () => Number.MAX_SAFE_INTEGER };
@@ -117,6 +117,14 @@ it('quit, signal and reload preserve the correct restart eligibility', async () 
     if (reason === 'quit') {
       const next = await start(); next.child.kill('SIGKILL'); await next.exited;
       expect(await offerResume(terminal, restart), 'starting pi clears the ended mark').not.toBeNull();
+      const older = await start(); const newer = await start();
+      older.child.send('quit'); await older.exited;
+      newer.child.kill('SIGKILL'); await newer.exited;
+      expect(await offerResume(terminal, restart), 'an older process cannot end a newer mapping').not.toBeNull();
+    }
+    if (reason === 'SIGTERM' || reason === 'SIGHUP') {
+      const rpc = await start('rpc'); rpc.child.kill(reason); await rpc.exited;
+      expect(await offerResume(terminal, restart), `RPC ${reason} remains resumable`).not.toBeNull();
     }
   }
 }, 30000);

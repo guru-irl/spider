@@ -260,7 +260,11 @@ class IntercomBroker {
   private inboundRemoteRoutes = new Map<string, { createdAt: number; from: RemoteSessionInfo; to: SessionAddress }>();
   private restoredReceipts = new Map<string, { from: SessionAddress; receipt: MessageReceipt; at: number }>();
   private unobservedLocalReceipts = new Map<string, { from: SessionAddress; to: SessionAddress; activationEpoch: string; unknown: boolean; createdAt: number }>();
-  private federation = createFederation({ agentDir: getAgentDirPath(), locals: () => [...this.sessions.values()].map(session => sessionAddress(session.info, session.scopeId ?? null)), now: () => Date.now() });
+  private federation = createFederation({ agentDir: getAgentDirPath(), locals: () => [...this.sessions.values()].map(session => sessionAddress(session.info, session.scopeId ?? null)),
+    canSupersedeLocal: entry => {
+      const local = [...this.sessions.values()].find(session => addressKey(sessionAddress(session.info, session.scopeId ?? null)) === addressKey(entry.address));
+      return !!local && entry.machineId !== this.bridgeMachineId && entry.homeEpoch !== null && entry.homeEpoch > (local.info.homeEpoch ?? 0);
+    }, now: () => Date.now() });
   private askEdges = new Map<string, AskEdge>();
   private messageReceiptRoutes = new Map<string, MessageReceiptRoute>();
   private disconnectedSessions = new Map<string, DisconnectedSession>();
@@ -935,10 +939,11 @@ class IntercomBroker {
         if (!requester || requester.socket !== socket) {
           throw new Error("List session not found");
         }
+        const remote = requester.federation ? this.federation.roster(requester.scopeId ?? null) : [];
         const sessions = Array.from(this.sessions.values())
-          .filter(session => sameScope(session.scopeId, requester.scopeId))
+          .filter(session => sameScope(session.scopeId, requester.scopeId) && !remote.some(entry => addressKey(entry.address) === addressKey(sessionAddress(session.info, session.scopeId ?? null))))
           .map(s => s.info) as SessionInfo[];
-        if (requester.federation) sessions.push(...this.federation.roster(requester.scopeId ?? null));
+        sessions.push(...remote);
         writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
         break;
       }
@@ -988,7 +993,7 @@ class IntercomBroker {
           catch { this.writeDeliveryFailure(socket, message.id, "Multiple sessions match the target. Use the session ID.", "E_AMBIGUOUS_TARGET"); break; }
         }
         if (message.expectsReply && (this.intakeClosed(sessionAddress(fromSession.info, fromSession.scopeId ?? null)) ||
-            resolved && this.intakeClosed(sessionAddress(resolved, fromSession.scopeId ?? null)))) {
+            resolved && !resolved.remote && this.intakeClosed(sessionAddress(resolved, fromSession.scopeId ?? null)))) {
           this.writeDeliveryFailure(socket, message.id, "intercom-frozen", "E_INTERCOM_FROZEN", true); break;
         }
         const localHome = resolved && !resolved.remote && (this.intakeState !== undefined || resolved.homeEpoch != null || this.intakeClosed(sessionAddress(resolved, fromSession.scopeId ?? null))) ? resolved : null;

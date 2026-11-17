@@ -132,8 +132,8 @@ function createMoveIntake() {
     return fence.generation;
   };
   return { closed, apply,
-    begin(input: FederationDispatch) {
-      if (closed(input.from) || input.message.expectsReply && closed(input.to.address)) return null;
+    begin(input: FederationDispatch, localDestination: boolean) {
+      if (closed(input.from) || localDestination && input.message.expectsReply && closed(input.to.address)) return null;
       let finish!: () => void;
       const item = { id: input.message.id, from: input.from, to: input.to.address, done: new Promise<void>(resolve => { finish = resolve; }), finish: () => {} };
       item.finish = () => { active.delete(item); finish(); };
@@ -279,7 +279,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     }
     const roster = [...entries.values()];
     ports.publishPresence?.(roster);
-    if (brokerReady) ports.broker!.publishPresence(roster.filter(entry => !brokerAddresses.has(addressKey(entry.address))));
+    if (brokerReady) ports.broker!.publishPresence(roster);
   };
   const expirePassiveRoute = (edge: EdgeRuntime): void => {
     const current = state(edge);
@@ -1064,7 +1064,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     },
     ...(intake ? { intake: (action: IntercomIntakeAction, fence: IntercomIntakeFence) => intake.apply(action, fence) } : {}),
     async dispatch(input: FederationDispatch): Promise<FederationDispatchResult> {
-      const ticket = intake?.begin(input);
+      const ticket = intake?.begin(input, input.to.machineId === ports.machineId);
       if (intake && !ticket) return failed("intercom-frozen");
       try {
       if (!started || stopped) return failed("bridge-unavailable");

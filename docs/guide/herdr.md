@@ -135,6 +135,8 @@ Setup accepts these flags:
 
 Stock Herdr 0.1.13 already binds Cmd-F, and stock 0.1.16 binds all three keys. Setup prints no offer when no supported key is missing. Herdr 0.1.12 has no optional key offer.
 
+A custom binding on these four keys stops setup even with `--overwrite-unowned-keys`: global Cmd-T, Cmd-D, and Cmd-Shift-D, and `spider-glass` Cmd-Shift-W. Restore the stock binding first.
+
 ### What setup changes
 
 Setup backs up every file it replaces before the first write and records each step in a journal under `<globalRoot>/herdr/setup`. It changes these things:
@@ -142,7 +144,7 @@ Setup backs up every file it replaces before the first write and records each st
 1. The `herdr.config` entry in spider's global settings, only when you pass a configuration file outside the standard location.
 2. The spider panel mod and picker, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied. Herdr 0.1.13 and 0.1.16 also install Spaces B's cross-machine picker, `spider-menu`, and `spider-new-menu`. Herdr 0.1.16 uses one derived `spider-toast`; 0.1.13 leaves the stock toast untouched.
 3. The `spider-glass` layout and Herdr theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. Only `theme`, `layout` and `sounds.enabled` in the app's settings change. Custom sound paths remain unchanged. A later explicit sound opt-in releases that preference from setup ownership.
-4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space, and the layout-scoped Cmd-Shift-E Send back action. Cmd-T opens the machine picker for a new tab, Cmd-D for a split right, and Cmd-Shift-D for a split down. In `spider-glass`, Cmd-Shift-W uses spider's close confirmation for cross-machine panes. Other layouts keep native close, and Ctrl-V image paste stays unchanged. Supported native keys are offered when absent and never changed automatically.
+4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space, and the layout-scoped Cmd-Shift-E Send back action. On 0.1.13 and 0.1.16, Cmd-T opens the machine picker for a new tab, Cmd-D for a split right, and Cmd-Shift-D for a split down. In `spider-glass`, Cmd-Shift-W uses spider's close confirmation for cross-machine panes. Other layouts keep native close, and Ctrl-V image paste stays unchanged. Supported native keys are offered when absent and never changed automatically. Herdr 0.1.12 keeps the native creation bindings and does not install the machine picker entry mods.
 5. The `dracula-plus-glass` pi theme. Only the `theme` field of the agent directory's settings file changes.
 6. Role templates generated from your global model settings.
 7. `notes = false` in the core's `config.toml`. Only the root `notes` key changes.
@@ -151,7 +153,7 @@ Setup backs up every file it replaces before the first write and records each st
 10. The spaces and tabs for your sessions.
 11. A private `herdr/sessions` folder under `<globalRoot>`, where each session publishes the state that the panel and the sidebar read. Rollback leaves this folder in place.
 
-On Herdr 0.1.13 and 0.1.16, setup verifies the release's complete Spaces A result, applies all B records, and then adds notification hooks. It checks B's input, output, and record digests before writing any files or keys. A stale source, changed output, or missing record stops setup rather than installing a partial picker. The pane split controls, tab `+`, and new-menu terminal and agent choices all use the machine picker. `--decline-native-keys` does not disable B or its Cmd-T, Cmd-D, and Cmd-Shift-D bindings.
+On Herdr 0.1.13 and 0.1.16, setup verifies the release's complete Spaces A result, applies all B records, and then adds notification hooks. It checks B's input, output, and record digests before writing any files or keys. A stale source, changed output, or missing record stops setup rather than installing a partial picker. The pane split controls, tab `+`, terminal context-menu split actions, and new-menu terminal and agent choices all use the machine picker. `--decline-native-keys` does not disable B or its Cmd-T, Cmd-D, and Cmd-Shift-D bindings.
 
 Setup owns only these parts of each file. Edits you make elsewhere in the same files are kept when setup runs again. Setup compares the parts it owns by value, so a file that was saved again with different formatting but the same values is not rewritten. If you change a part that setup owns, such as the pi theme field or the resume block, setup stops with `managed-artifact-changed` and names the recorded value. Restore that value, then run setup again.
 
@@ -160,6 +162,8 @@ A second run with nothing changed writes nothing, makes no backup, changes no fo
 ### Upgrade
 
 After you update spider, run setup again with the same configuration file. Each runtime version is installed under a file name derived from its content, so a new version goes next to the old one instead of replacing it. Setup probes Node again on a machine whose runtime changed. When only spider's installed files change, setup does not close and reopen your sessions. Then run the doctor.
+
+On Herdr 0.1.12, setup refuses previously owned machine picker files or bindings and prints the rollback command. Run rollback first, then restore any remaining custom picker bindings to their stock values before running setup again.
 
 Earlier versions installed a `spider-machines` mod for a Machines panel. Setup no longer installs it or adds it to the layout, so Herdr does not load it. Setup does not delete that folder from the app's `mods` directory.
 
@@ -191,6 +195,8 @@ node <installed-package>/dist/herdr/cli.mjs rollback --config <absolute-config-f
 ```
 
 Rollback exits with 0 when it restored everything, 3 when some parts stay unrestored, 1 for any other failure, and 2 for a usage error. Setup and the doctor use the same codes, except 3. Rollback undoes only the parts that setup owns, and closes the tabs that setup created. Edits you made elsewhere in the same files stay. If you changed a part that setup owns, rollback leaves that file as it is and prints `<file> not restored:` with the reason. Repair that part, then run rollback again. Close the pi sessions in the tabs first, or rollback stops with `cutover-owner-live`. It never closes a terminal it did not create. It prints `Rollback restored <n> matching files`.
+
+Rollback returns to the state before the first setup that owned each file, not to the state before the most recent upgrade. If the original bindings were stock, rollback restores Cmd-T to `tab.new` and both split bindings to stock, and removes spider's Cmd-Shift-W binding. Bindings that were originally absent become absent again.
 
 Like setup, rollback stops with `agent-directory-mismatch` when the configured `agentDirectory` differs from the shell's pi agent directory. It also stops with `global-root-mismatch` when the configured `globalRoot` differs from pi's.
 
@@ -638,7 +644,8 @@ The spider panel's **Run doctor** button runs the same command.
 | `runtime-not-installed` | A remote call found the machine's runtime missing or outdated. | Run setup again. |
 | `native-notes-enabled` | The core's root `notes` key is not exactly `false`. | Fix the root `notes` key, then run setup again from a plain shell. |
 | `launch-notify-enabled` | A spider launch permits native notifications. | Update spider, then run setup and the doctor again. |\n| `launch-history-unavailable` | The doctor could not read the core's terminal event snapshot. | Check that Herdr is running, then run the doctor again. |\n| `inspection-unavailable` | The doctor could not inspect a check, including a launch with no readable notification policy. | Follow the repair line for that check. For launch policy, run setup, start a spider pane or remote command, then run the doctor again. |\n| `installed-artifact-changed` | An installed spider mod or another checked file differs from this spider version. | For a mod, run setup again. For another file, follow the repair line. |\n| `upstream-source-unknown` | A built-in Herdr mod differs from the supported source. | Update spider or restore an unmodified supported Herdr release, then run setup again. |\n| `upstream-version-mismatch` | The installed Herdr app version is not supported. | Update spider, or use a verified supported Herdr release. |\n| `doctor-inspection-failed` | The doctor could not complete a check, including when a built-in source is not recognized. | Follow the message and repair line. |\n| `duplicate-live-session` | Two terminals hold the same session ID. Setup left both alone and continued with the other sessions. | Close one of the sessions, then run setup again. |
-| `key-binding-conflict` | A Herdr key is bound to something spider does not own. | Change the binding, or run setup with `--overwrite-unowned-keys`. |
+| `key-binding-conflict` | A Herdr key is bound to something spider does not own. | Restore stock for the four strict picker keys, or use `--overwrite-unowned-keys` for other keys. |
+| `legacy-picker-binding` | An unsupported release has previously installed picker files or bindings. | Run the rollback command in the message, then restore any remaining picker shortcuts to stock. |
 | `managed-artifact-changed` | A part of a file that setup owns was edited. | Restore the recorded value that the message names, then run setup again. |
 | `role-unresolved` | A configured role model is not available. | Fix that role in `models.defaults`, or sign in to its provider. |
 | `catalog-unavailable` | No eligible models exist. | Sign in to a provider, then run setup again. |

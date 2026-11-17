@@ -43,6 +43,19 @@ test('a nested subagent viewer remains beneath its parent run', () => {
   ]);
 });
 
+test('resumed subagents nest correctly when the child viewer is listed first', () => {
+  const f = feed();
+  f.runs.rows.push({ ...f.runs.rows[0], id: 'nested' as RunId, name: 'Nested' });
+  const parent = { ...terminal('parent-viewer', 'subagent-viewer', { 'spider.run': 'run' }), parent: 'old-owner' };
+  const child = { ...terminal('child-viewer', 'subagent-viewer', { 'spider.run': 'nested' }), parent: 'parent-viewer' };
+  for (const terminals of [[child, parent], [parent, child]]) {
+    const result = projectAgentChildren(terminals, [f], 'agent', contract, { now: 2000 });
+    expect(result.map(row => [row.key, row.parentKey, row.depth])).toEqual([
+      ['run', null, 0], ['nested', 'run', 1],
+    ]);
+  }
+});
+
 test('a retained parent of a live nested subagent stays in the compact tree', () => {
   const f = feed();
   f.runs.rows[0].status = 'done'; f.runs.rows[0].finishedAt = 1500;

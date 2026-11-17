@@ -45,8 +45,12 @@ export interface HubOperationReadiness extends ReadinessOwner { origin: "hub-ope
 export interface BoxLocalReadiness extends ReadinessOwner { origin: "box-local"; machineId: MachineId }
 export type Readiness = HubOperationReadiness | BoxLocalReadiness;
 export interface ExportPolicy { encode(entity: Entity, body: JsonObject, origin: MachineId): JsonObject }
+export interface ReplicaWriter {
+  winning(before: { rowid: number; body: JsonObject } | null, after: { rowid: number } | null, change: Change): void;
+}
 export interface ReplicaEffects {
-  winning(db: Db, before: { rowid: number; body: JsonObject } | null, after: { rowid: number } | null, change: Change): void;
+  /** Create a writer for one apply transaction, never shared across commits or rollbacks. */
+  begin(db: Db): ReplicaWriter;
   committed(storeKey: StoreKey): void;
 }
 export interface ProcessIdentity { bootId: string; pid: number; startTime: string }

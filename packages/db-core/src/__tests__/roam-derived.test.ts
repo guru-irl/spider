@@ -100,12 +100,17 @@ describe("replica derived data", () => {
     const vector = Buffer.alloc(384 * 4);
     const row = root.db.prepare("INSERT INTO vector_map(owner_kind,owner_id,model,dim,embedding) VALUES ('memory','mem-1','fixture',384,?)").safeIntegers().run(vector);
     root.db.prepare("INSERT INTO vectors(rowid,embedding) VALUES (?,?)").run(row.lastInsertRowid, vector);
-    const failing: ReplicaEffects = { ...real, winning(db, before, after, change) {
-      real.winning(db, before, after, change);
-      expect(findMemory(root, "new")).toEqual([{ uuid: "mem-1" }]);
-      expect(root.db.prepare("SELECT COUNT(*) AS n FROM vectors").get()).toEqual({ n: 0 });
-      expect(root.db.prepare("SELECT text FROM embed_queue").all()).toEqual([{ text: "new memory" }]);
-      throw new Error("derived failure");
+    const failing: ReplicaEffects = { ...real, begin(db) {
+      const writer = real.begin(db);
+      return {
+        winning(before, after, change) {
+          writer.winning(before, after, change);
+          expect(findMemory(root, "new")).toEqual([{ uuid: "mem-1" }]);
+          expect(root.db.prepare("SELECT COUNT(*) AS n FROM vectors").get()).toEqual({ n: 0 });
+          expect(root.db.prepare("SELECT text FROM embed_queue").all()).toEqual([{ text: "new memory" }]);
+          throw new Error("derived failure");
+        },
+      };
     } };
     const incoming = await batch(root, [memory("mem-1", "new memory", clock(2000), "new-memory")], { after: 1, id: "fail" });
     expect(() => applyBatch(root.db, incoming, { hubMachine: A, effects: failing, now: NOW, sessionHome: () => null })).toThrow("derived failure");
@@ -197,11 +202,16 @@ describe("replica derived data", () => {
     const real = createReplicaEffects(key => notices.push(key));
     const first = todo("todo-1", 1, "oldword");
     await accept(root, [first], real);
-    const failing: ReplicaEffects = { ...real, winning(db, before, after, change) {
-      real.winning(db, before, after, change);
-      expect(findTodo(root, "oldword")).toEqual([]);
-      expect(findTodo(root, "newword")).toEqual([{ uuid: "todo-1" }]);
-      throw new Error("derived failure");
+    const failing: ReplicaEffects = { ...real, begin(db) {
+      const writer = real.begin(db);
+      return {
+        winning(before, after, change) {
+          writer.winning(before, after, change);
+          expect(findTodo(root, "oldword")).toEqual([]);
+          expect(findTodo(root, "newword")).toEqual([{ uuid: "todo-1" }]);
+          throw new Error("derived failure");
+        },
+      };
     } };
     const incoming = await batch(root, [todo("todo-1", 1, "newword", clock(2000), "new-todo")], { after: 1, id: "fail" });
     expect(() => applyBatch(root.db, incoming, { hubMachine: A, effects: failing, now: NOW, sessionHome: () => null })).toThrow("derived failure");

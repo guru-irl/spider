@@ -170,9 +170,14 @@ const PROJECT_MIGRATIONS: Record<number, readonly string[]> = {
 const reportedIndexFailures = new Set<string>();
 
 function ensureQueryIndexes(db: Db, scope: "global" | "repo" | "worktree"): void {
-  if (scope !== "worktree") return;
-  try {
-    const create = () => db.exec("CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, id)");
+  const indexes = [
+    ...(scope === "worktree" ? [{ label: "run events index", sql: "CREATE INDEX IF NOT EXISTS idx_run_events_run_id ON run_events(run_id, id)" }] : []),
+    ...(scope !== "global" ? [{ label: "embedding owner indexes", sql: `
+      CREATE INDEX IF NOT EXISTS idx_vector_map_owner ON vector_map(owner_kind, owner_id);
+      CREATE INDEX IF NOT EXISTS idx_embed_queue_owner ON embed_queue(owner_kind, owner_id)` }] : []),
+  ];
+  for (const index of indexes) try {
+    const create = () => db.exec(index.sql);
     if (db.raw.inTransaction) {
       db.raw.transaction(create)();
     } else {
@@ -185,10 +190,10 @@ function ensureQueryIndexes(db: Db, scope: "global" | "repo" | "worktree"): void
       }
     }
   } catch (error) {
-    const key = db.raw.name;
-    if (reportedIndexFailures.has(key)) return;
+    const key = `${db.raw.name}:${index.label}`;
+    if (reportedIndexFailures.has(key)) continue;
     reportedIndexFailures.add(key);
-    try { console.error(`Could not create run events index: ${String(error).replace(/[\r\n]+/g, " ")}`); } catch { /* diagnostic is best effort */ }
+    try { console.error(`Could not create ${index.label}: ${String(error).replace(/[\r\n]+/g, " ")}`); } catch { /* diagnostic is best effort */ }
   }
 }
 
@@ -210,7 +215,8 @@ export function migrate(
       const layout = validateRoamLayout(db, actualScope, "inspect");
       return {
         needsWrite: layout.needsWrite,
-        missingIndex: actualScope === "worktree" && !indexPresent(db, "run_events", "idx_run_events_run_id"),
+        missingIndex: actualScope === "worktree" && !indexPresent(db, "run_events", "idx_run_events_run_id") ||
+          actualScope !== "global" && (!indexPresent(db, "vector_map", "idx_vector_map_owner") || !indexPresent(db, "embed_queue", "idx_embed_queue_owner")),
       };
     }).deferred());
     if (!inspection.needsWrite) {

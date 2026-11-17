@@ -5,7 +5,7 @@ import { mkdir, readFile, writeFile, stat, rm } from 'node:fs/promises';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
 import { readJournal, digest } from '../../../herdr/src/setup/backup.js';
 import { basename, join } from 'node:path';
-import { cleanup } from './herdr-setup-fixture.js';
+import { cleanup, fixture } from './herdr-setup-fixture.js';
 import { releaseFixture } from './herdr-setup-release-fixture.js';
 
 vi.mock('node:child_process', async importOriginal => {
@@ -13,6 +13,25 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+
+test('0.1.12 preserves native creation keys and does not install machine pickers', async () => {
+  const f = await fixture(), home = f.h.directories.app, path = join(home, 'keys.json');
+  const before = JSON.parse(await readFile(path, 'utf8'));
+  Object.assign(before.global, { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' });
+  await writeFile(path, JSON.stringify(before));
+  const preflight = await f.parts.preflight(f.request);
+  expect(preflight.mods.map(mod => basename(mod.directory))).not.toEqual(expect.arrayContaining(['spider-machine-picker']));
+  await setupHerdr(f.request, f.parts);
+  const keys = JSON.parse(await readFile(path, 'utf8'));
+  for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) expect(keys.global[key]).toBe(before.global[key]);
+  expect(keys['layout:spider-glass']?.['cmd-shift-w']).toBeUndefined();
+  for (const name of ['spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down']) {
+    await expect(stat(join(home, 'mods', name))).rejects.toMatchObject({ code: 'ENOENT' });
+  }
+  const doctor = await f.ports.doctorParts(f.request);
+  expect((await doctor.inspect('mods', f.request)).failures).toEqual([]);
+  expect((await doctor.inspect('keys', f.request)).failures).toEqual([]);
+});
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
   test(`${version} installs B as one owned set and repeats and rolls back without changing stock`, async () => {

@@ -142,6 +142,10 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const writes = (await setupHerdr(f.request, f.parts)).writes;
     const entries = writes.filter(path => /^spider-[^/]+\/main\.js$/.test(relative(mods, path)));
     expect(entries.length).toBeGreaterThan(5);
+    const layout = join(f.h.directories.app, 'layouts/spider-glass.json');
+    for (const name of ['spider-pane', 'spider-tabs', 'spider-menu', 'spider-new-menu']) {
+      expect(writes.indexOf(layout), name).toBeGreaterThan(writes.indexOf(join(mods, name, 'mod.json')));
+    }
     for (const entry of entries) {
       const source = (await readFile(entry, 'utf8')).replace(/^\s*\/\/[^\n]*$/gm, '');
       for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.[^'"]+)['"]/g)) {

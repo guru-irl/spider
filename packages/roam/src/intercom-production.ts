@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { createProvisionTransport } from "./transport";
 import { openJournal } from "./journal";
 import { runForeground, runLocalPairCleanup, type LocalPairPorts } from "./intercom-local-ops";
+import { DEFAULT_SSH, DEFAULT_SSH_KEYGEN } from "./intercom-ssh-defaults";
 import { requestHelperRevoke } from "./intercom-helper";
 import { invokeCli } from "@spider/herdr/client/hc";
 import { parseCore, selectedSocket } from "@spider/herdr/client/parse";
@@ -191,7 +192,7 @@ export function createProductionIntercomMaintenance(input: { root: string; confi
   localPorts?: LocalPairPorts; transport?: ProvisionTransport; fenceLocal?: RevocationOptions["fenceLocal"]; localCore?: RevocationOptions["localCore"] }): IntercomMaintenance {
   const local = input.config.machineId, registry = createIntercomRegistry(input.root);
   const localPorts: LocalPairPorts = input.localPorts ?? { machineId: local, root: input.root, home: homedir(), node: process.execPath,
-    ssh: "/usr/bin/ssh", keygen: "/usr/bin/ssh-keygen", recipe: input.config.intercom.connector, run: runForeground };
+    ssh: DEFAULT_SSH, keygen: DEFAULT_SSH_KEYGEN, recipe: input.config.intercom.connector, run: runForeground };
   let journal: Journal | undefined;
   return {
     async pairScopedHostReady(pairId: string): Promise<boolean> {

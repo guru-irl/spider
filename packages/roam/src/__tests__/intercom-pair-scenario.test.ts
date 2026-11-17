@@ -10,8 +10,8 @@ afterEach(cleanupPairScenarios);
 
 it("enrolls pair-owned units and revokes a live connection before removing only its reserved route", async () => {
   const f = await scenario();
-  await expect(f.locals.get(B)!.run(["/fixture/ssh-keyscan", "-p", "2223"], { timeoutMs: 10000, maxBytes: 65536 })).rejects.toThrow("unexpected fixture command");
   expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+  expect(f.calls).toContain(`${B}:-T 5 -t ed25519,ecdsa,rsa -p 22 127.0.0.1`);
   const secondRequest = { operation: { ...f.request.operation, id: "enroll-2" }, pairs: [{ ...f.request.pairs[0], pairId: "pair-2", source: f.otherSource, edgeEpoch: "edge-2", connector: { ...f.request.pairs[0].connector, tunnelId: "tunnel-2" } }] };
   const second = createProductionIntercomEnrollmentPorts({ root: f.root, journal: f.journal, transport: f.transport, request: secondRequest, actor: "fixture", now: () => 1000,
     present: async () => {}, approve: async () => true, notify: async () => {}, warn: async () => {} });
@@ -30,13 +30,12 @@ it("enrolls pair-owned units and revokes a live connection before removing only 
   expect(await createIntercomRegistry(f.target.globalRoot).get("pair-1")).toMatchObject({ state: "revoked", cleanupReason: null });
 }, 5000);
 
-it.each(["source", "target"] as const)("leaves enrollment pending with a named missing %s SSH port", async side => {
-  const f = await scenario(), local = f.locals.get(side === "source" ? f.source.machineId : B)!;
-  const { sshPort: _sshPort, ...recipe } = local.recipe!;
-  local.recipe = recipe;
-  expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 3, reason: "intercom-ssh-port-missing",
-    value: { pending: [{ pairId: "pair-1", reason: "intercom-ssh-port-missing" }] } });
-  expect(f.calls.some(call => call.includes("-t ed25519,ecdsa,rsa"))).toBe(false);
+it("enrolls without a separate SSH listener port in either recipe", async () => {
+  const f = await scenario();
+  expect(f.locals.get(f.source.machineId)!.recipe).not.toHaveProperty("sshPort");
+  expect(f.locals.get(B)!.recipe).not.toHaveProperty("sshPort");
+  expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+  expect(f.calls).toContain(`${B}:-T 5 -t ed25519,ecdsa,rsa -p 22 127.0.0.1`);
 }, 5000);
 
 it("a host straggler preserves the key and route until a later retry proves closure", async () => {

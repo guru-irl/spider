@@ -26,7 +26,7 @@ async function fixture(side: "host" | "connect" = "host") {
     if (argv[2] === "stop") { active = "inactive"; pid = 0; processes = straggler ? [124] : []; connection = straggler; }
     return { code: 0, stdout: argv[2] === "show" ? `Id=${wrongName ? "other.service" : name}\nActiveState=${active}\nMainPID=${pid}\nControlGroup=${group}\nKillMode=control-group\nFragmentPath=${file}\nDropInPaths=\nNeedDaemonReload=no\n` : "" };
   };
-  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "{pairId}", "{tunnelId}"], connect: ["/fixture/connector", "connect", "{pairId}"], localPort: 23222, sshPort: 2222 };
+  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "{pairId}", "{tunnelId}"], connect: ["/fixture/connector", "connect", "{pairId}"], localPort: 23222 };
   const ports = { machineId: side === "host" ? B : A, root, home, run, recipe, systemctl: "/fixture/systemctl",
     process: (value: number): NativeProcess => processes.includes(value) ? { kind: "live" as const, startIdentity: "linux:100" } : { kind: "absent" as const },
     cgroup: () => processes };
@@ -45,26 +45,26 @@ it("creates and records a pair host with literal argv and explicit control-group
   expect(f.calls.some(argv => argv[2] === "enable" && argv[3] === "spider-pair-pair-1-host.service")).toBe(true);
 }, 5000);
 
-it("substitutes the configured SSH listener port into the host command", async () => {
+it("substitutes the approved remote port into the host command", async () => {
   const f = await fixture(), api = await import("../intercom-pair-resources");
-  const ports = { ...f.ports, recipe: { ...f.ports.recipe, sshPort: 2222, host: [...f.ports.recipe.host, "--ssh-port={sshPort}"] } };
+  const ports = { ...f.ports, recipe: { ...f.ports.recipe, host: [...f.ports.recipe.host, "--ssh-port={remotePort}"] } };
   await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
   expect(await api.ensurePairUnit(f.pair, "host", ports)).toEqual({ status: "ready" });
-  expect(readFileSync(f.file, "utf8")).toContain('"--ssh-port=2222"');
+  expect(readFileSync(f.file, "utf8")).toContain('"--ssh-port=22"');
 }, 5000);
 
-it("keeps the SSH listener port distinct from the per-pair connect port", async () => {
+it("keeps the approved remote port distinct from the per-pair connect port", async () => {
   const f = await fixture("connect"), api = await import("../intercom-pair-resources");
-  const ports = { ...f.ports, recipe: { ...f.ports.recipe, sshPort: 2222, pairPorts: { "pair-1": 23223 }, connect: [...f.ports.recipe.connect, "{sshPort}", "{localPort}"] } };
+  const ports = { ...f.ports, recipe: { ...f.ports.recipe, pairPorts: { "pair-1": 23223 }, connect: [...f.ports.recipe.connect, "{remotePort}", "{localPort}"] } };
   await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
   expect(await api.ensurePairUnit(f.pair, "connect", ports)).toEqual({ status: "ready" });
-  expect(readFileSync(f.file, "utf8")).toContain('"2222" "23223"');
+  expect(readFileSync(f.file, "utf8")).toContain('"22" "23223"');
   expect(await f.registry.get("pair-1")).toMatchObject({ unit: { localPort: 23223 } });
 }, 5000);
 
-it("does not substitute a missing SSH listener port into a unit", async () => {
+it("rejects the retired SSH port placeholder", async () => {
   const f = await fixture(), api = await import("../intercom-pair-resources");
-  const { sshPort: _sshPort, ...recipe } = f.ports.recipe;
+  const recipe = f.ports.recipe;
   await f.registry.bindResources("pair-1", "enroll-1", api.pairResources(f.pair, "core-b"));
   await expect(api.ensurePairUnit(f.pair, "host", { ...f.ports, recipe: { ...recipe, host: [...recipe.host, "{sshPort}"] } })).rejects.toThrow("intercom-connector-recipe-invalid");
   expect(f.calls).toEqual([]); expect(existsSync(f.file)).toBe(false);

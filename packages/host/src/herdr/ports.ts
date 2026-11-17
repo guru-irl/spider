@@ -57,7 +57,7 @@ import { createProcessPresence } from '@spider/herdr/sessions/presence';
 import { createSessionLeases, assessSessionLiveness, type ProcessIdentity, type ProcessInventoryPorts, type ProcessProbe } from '@spider/herdr/sessions/lease';
 import { claimIdLock } from '@spider/herdr/sessions/id-lock';
 import { readLaunchHandoff, removeLaunchHandoff } from '@spider/herdr/sessions/launch-handoff';
-import { canonicalSessionFile, createTerminalRegistry, readPrivateJson, recordedExtensionArguments } from '@spider/herdr/sessions/registry';
+import { canonicalSessionFile, createTerminalRegistry, readPrivateJson, recordedExtensionArguments, withProcessLock } from '@spider/herdr/sessions/registry';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import { fixtureProcessDomain } from './fixture-process-domain.js';
 import { collectRemoteChunks, createFileLogSink, type LogSink, type RemoteLogLocation, type CollectedLogs } from '@spider/herdr/remote/transfer';
@@ -1170,15 +1170,17 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     },
     resumeOffer: async request => {
       const identity = await client(request).caller(env), root = join(request.config.globalRoot, 'herdr');
-      const offer = await offerResume(identity, { registry: createTerminalRegistry(root), processInventory: createProcessInventory(root), coreStartedAt: () => coreStartedAt(request.config.core.binary, env) });
-      return offer ? resumeOfferShell(offer, { nodePath: process.execPath, cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), configPath: request.configPath, hookPath: join(root, 'resume.sh') }) : '';
+      const mode = request.config.resume ?? 'offer';
+      const offer = await offerResume(identity, { registry: createTerminalRegistry(root), processInventory: createProcessInventory(root), coreStartedAt: () => coreStartedAt(request.config.core.binary, env), ...(mode === 'auto' ? { autoResumeRoot: root } : {}) });
+      return offer ? resumeOfferShell(offer, { nodePath: process.execPath, cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), configPath: request.configPath, hookPath: join(root, 'resume.sh') }, mode) : '';
     },
     resume: async (request, selection) => {
       const root = join(request.config.globalRoot, 'herdr'), rawInventory = createProcessInventory(root);
       const inventory = selection.cutover ? selectedProcessInventory({ ...request.config, spaces: [{ name: selection.sessionId, sessions: [{ file: selection.file }] }] }, rawInventory, [{ file: selection.file, sessionId: selection.sessionId as SessionId }]) : rawInventory;
       const identity = { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' }; if (!identity.startIdentity) throw new HerdrError('process-identity-unavailable', 'Cannot claim a launch lease');
       let childExit: Promise<{ code: number | null; error?: Error }> | undefined;
-      await launchSession({ sessionFile: selection.file, sessionId: selection.sessionId as SessionId, cwd: selection.cwd, environment: { agentDirectory: request.config.agentDirectory, extensionArguments: [] } }, { leases: inventory.leases, processInventory: inventory, processIdentity: identity, env, leasePolicy: selection.cutover ? { mode: 'cutover' } : request.config.enabled === false ? { mode: 'bookkeeping' } : { mode: 'switch', sessionId: selection.sessionId as SessionId },
+      const file = await canonicalSessionFile(selection.file);
+      await withProcessLock(root, `resume-launch:${file}`, () => launchSession({ sessionFile: file, sessionId: selection.sessionId as SessionId, cwd: selection.cwd, environment: { agentDirectory: request.config.agentDirectory, extensionArguments: [] } }, { leases: inventory.leases, processInventory: inventory, processIdentity: identity, env, leasePolicy: selection.cutover ? { mode: 'cutover' } : { mode: 'switch', sessionId: selection.sessionId as SessionId },
         spawnPi: async spawnRequest => {
           const child = spawn(spawnRequest.argv[0], spawnRequest.argv.slice(1), { cwd: spawnRequest.cwd, env: { ...spawnRequest.env }, stdio: 'inherit' });
           // Subscribe before any await: startup failure can precede lease transfer or owner activation.
@@ -1188,7 +1190,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           return { pid: child.pid!, startIdentity };
         },
         // pi activation owns the generation-bound terminal mapping; the lease launcher never publishes one.
-      });
+      }), { reclaimReusedOwner: true });
       if (childExit) { const result = await childExit; if (result.error || result.code !== 0) throw new HerdrError('resume-exited', 'Resumed pi exited unsuccessfully'); }
     },
     stdout: text => process.stdout.write(text), stderr: text => process.stderr.write(text),

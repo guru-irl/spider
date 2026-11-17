@@ -167,7 +167,7 @@ export async function doctorHerdr(request: DoctorRequest, parts: DoctorParts): P
   catch (error) { return { failures: [{ item: 'global-root', code: 'global-root-mismatch', message: error instanceof Error ? error.message : String(error), repair: `Set globalRoot to ${parts.globalRoot} in ${request.configPath}, then rerun setup or doctor.` }], warnings: [], probes: [], passed: 0 }; }
   const failures: DoctorFailure[] = [];
   const warnings: DoctorFailure[] = [];
-  const information: DoctorInformation[] = [];
+  const information: DoctorInformation[] = [{ item: 'resume', code: 'resume-mode', message: request.config.resume ?? 'offer' }];
   const probes: NodeObservation[] = [];
   let passed = 0;
   const fail = (item: string, code: string, message: string, repair: string) => failures.push({ item, code, message, repair });

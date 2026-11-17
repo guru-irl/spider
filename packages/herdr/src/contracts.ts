@@ -306,6 +306,7 @@ export type HerdrViews = Readonly<Record<ViewName,
 export interface HerdrConfigBase {
   enabled: 'auto' | boolean; core: { binary: string; config: string };
   agentDirectory: string; globalRoot: string; shellRc: string;
+  resume?: 'offer' | 'auto';
   layout?: 'panes' | 'tabs';
   automaticSubagentPanes?: boolean;
   look?: { autoHideTabs: boolean; windowBlur?: boolean };

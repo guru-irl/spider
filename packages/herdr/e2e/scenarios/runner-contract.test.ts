@@ -9,7 +9,7 @@ import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, sce
 import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
 import { restorationPending, presentationInProgress } from './roam-recovery.test.js';
-import { moveRecoveryPending } from './roam-move.test.js';
+import { effectJsonLines, moveRecoveryPending } from './roam-move.test.js';
 import { coldCliStartup } from './roam-intercom.test.js';
 
 vi.mock('../harness/scenario.js', async importOriginal => ({
@@ -30,6 +30,18 @@ describe('cold packed CLI startup measurement', () => {
     { exitCode: 0, stdout: '', stderr: '' },
   ])('does not report an unsuccessful or missing help response: $exitCode', async result => {
     await expect(coldCliStartup(async () => result, '/packed/roam-cli.mjs', {})).rejects.toThrow('cold-cli-help-unavailable');
+  });
+});
+
+describe('structured move effect evidence', () => {
+  it('retains the mandatory conflict record beside plain service-manager effects', () => {
+    const conflict = JSON.stringify({ effect: 'participant-wake-conflict', intent: { epoch: 4 } });
+    expect(effectJsonLines(`--user start spider-roam-supervisor.service\n${conflict}\n`).map(line => JSON.parse(line))).toEqual([
+      { effect: 'participant-wake-conflict', intent: { epoch: 4 } },
+    ]);
+  });
+  it('does not silently discard a malformed JSON effect', () => {
+    expect(() => effectJsonLines('{broken').map(line => JSON.parse(line))).toThrow(SyntaxError);
   });
 });
 
@@ -135,7 +147,7 @@ describe('runner boundary and report', () => {
       url: 'https://releases.herdr.dev/core/0.1.16/herdr-core-linux-x86_64.tar.gz',
       sha256: '58d6861176dc6fe905b58880d5bff07a9959be613a98e5d66b4583b04b6cfa45',
       binarySha256: '8c4c0930974e2b31978cbbb14b892cd29d5ace917f4c04ce6dfdd5573e1fe193',
-      timeouts: { R16: 4 },
+      timeouts: { R15: 4, R16: 4 },
     });
     expect(config.stories).toEqual(['R01', 'R03', 'R04', 'R05', 'R09', 'R11', 'R12', 'R13', 'R14', 'R15', 'R16']);
     expect(new Set(config.stories).size).toBe(config.stories.length);

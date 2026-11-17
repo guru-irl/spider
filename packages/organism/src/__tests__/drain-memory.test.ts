@@ -24,7 +24,8 @@ describe("organism activity allocation", () => {
     for (const [table, large] of [["runs", ["task", "result"]], ["run_events", ["payload"]], ["events", ["payload"]]] as const) {
       const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
       db.raw.exec(`ALTER TABLE ${table} RENAME TO fixture_${table}`);
-      db.raw.exec(`CREATE VIEW ${table} AS SELECT ${columns.map(({ name }) => (large as readonly string[]).includes(name) ? `observe_large_column(${name}) AS ${name}` : name).join(",")} FROM fixture_${table}`);
+      const rowid = table === "runs" ? "rowid AS rowid," : "";
+      db.raw.exec(`CREATE VIEW ${table} AS SELECT ${rowid}${columns.map(({ name }) => (large as readonly string[]).includes(name) ? `observe_large_column(${name}) AS ${name}` : name).join(",")} FROM fixture_${table}`);
     }
 
     const bundle = drainSession(db, "s1", "before_compact");

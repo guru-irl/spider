@@ -120,7 +120,7 @@ const moveFactory = async input => {
     runtime.bindings.participant!.wake = async ({ sessionId, operationId }) => {
       const intent = await createRunningIntentAuthority(input.globalDb).get(sessionId);
       if (!intent || intent.desired !== 'running') return { ok: false, reason: 'participant-intent-unavailable' };
-      const launchId = participantLaunchId(input.config.machineId, sessionId, operationId);
+      const launchId = participantLaunchId(input.config.machineId, sessionId, intent.epoch, operationId);
       const config = loadHerdrConfig(root), inventory = createProcessInventory(join(root, 'herdr'));
       const env = { ...process.env }, client = createHcClient({ binary: config.core.binary, env });
       const core = await client.identity(); await client.dispose();

@@ -70,7 +70,7 @@ async function claimAutomaticResume(root: string, identity: TerminalIdentity, st
   }, { reclaimReusedOwner: true });
 }
 export async function offerResume(identity: TerminalIdentity, ports: ResumePorts): Promise<ResumeOffer | null> {
-  const mapping = await ports.registry.get(identity); if (!mapping || mapping.owner.sessionFile === null) return null;
+  const mapping = await ports.registry.get(identity); if (!mapping || mapping.endedAt !== undefined || mapping.owner.sessionFile === null) return null;
   const file = mapping.owner.sessionFile;
   refuseExplicitExtensions(mapping.owner.name ?? mapping.owner.sessionId, mapping.environment.extensionArguments);
   const restartedAt = await ports.coreStartedAt(identity);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { randomUUID } from 'node:crypto';
 import type { Disposable, Owner, ProcessPresence, SessionId, TerminalIdentity } from '../contracts.js';
 import { processContainsCaller } from '../client/hc.js';
 import type { PresenceMetadata, ProcessPresenceStore } from './presence.js';
@@ -27,6 +28,13 @@ export async function hasLiveMappedAncestor(terminal: TerminalIdentity, ports: P
 }
 export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrationPorts): Disposable {
   const held = new Map<string, SessionLease>(); let disposed = false;
+  let interrupted = false;
+  let recorded: { terminal: TerminalIdentity; activityId: string } | undefined;
+  const onSignal = () => { interrupted = true; };
+  const signals: NodeJS.Signals[] = process.platform === 'win32' ? ['SIGTERM'] : ['SIGTERM', 'SIGHUP'];
+  let observingSignals = false;
+  const observeSignals = () => { if (!observingSignals) { observingSignals = true; for (const signal of signals) process.on(signal, onSignal); } };
+  const removeSignalListeners = () => { if (observingSignals) { observingSignals = false; for (const signal of signals) process.off(signal, onSignal); } };
   const isSelf = (p: { pid: number; startIdentity: string | null }) => p.pid === ports.processIdentity.pid && p.startIdentity === ports.processIdentity.startIdentity;
   const ownInventory: ProcessInventoryPorts = {
     ...ports,
@@ -62,7 +70,10 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     if (current.sessionFile !== null && current.kind === 'top-level') await reserve(current.sessionFile, ctx.sessionManager.getSessionId() as SessionId);
     const owner = ports.owner(); if (!owner || ctx.mode !== 'tui' && ctx.mode !== 'rpc' || current.kind !== 'top-level') return;
     if (await hasLiveMappedAncestor(owner.terminal, ports)) return;
-    await ports.registry.record({ owner: { ...owner, sessionFile: current.sessionFile, name: current.sessionName }, recordedAt: Date.now(), coreStartedAt: ports.coreStartedAt(), environment: ports.launchEnvironment });
+    observeSignals();
+    const activityId = randomUUID();
+    await ports.registry.record({ owner: { ...owner, sessionFile: current.sessionFile, name: current.sessionName }, recordedAt: Date.now(), coreStartedAt: ports.coreStartedAt(), environment: ports.launchEnvironment, activityId });
+    recorded = { terminal: owner.terminal, activityId };
   }
   async function cleanup(targetSessionFile?: string): Promise<void> {
     const handoff = targetSessionFile ? await canonicalSessionFile(targetSessionFile) : null;
@@ -74,7 +85,17 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     pi.on('session_start', async (_event, ctx) => activation(ctx)),
     pi.on('session_info_changed', async (_event, ctx) => activation(ctx)),
     pi.on('session_before_switch', async event => { if (ports.admitted?.() === false || !event.targetSessionFile) return; try { await reserve(event.targetSessionFile); } catch (error) { if (!active()) return; warn(herdrErrorNotice(error)); return { cancel: true }; } }),
-    pi.on('session_shutdown', async (event, ctx) => cleanup(event.reason === 'reload' ? ctx.sessionManager?.getSessionFile?.() : event.reason === 'resume' || event.reason === 'new' ? event.targetSessionFile : undefined)),
+    pi.on('session_shutdown', async (event, ctx) => {
+      // Pi prepends its signal handler and reports both signals and interactive exits as 'quit'.
+      // Yield until all listeners in the current signal dispatch have run before deciding.
+      await Promise.resolve();
+      try {
+        if (event.reason === 'quit' && !interrupted && recorded && ports.owner()) await ports.registry.end(recorded.terminal, recorded.activityId);
+      } finally {
+        removeSignalListeners();
+        await cleanup(event.reason === 'reload' ? ctx.sessionManager?.getSessionFile?.() : event.reason === 'resume' || event.reason === 'new' ? event.targetSessionFile : undefined);
+      }
+    }),
   ];
-  return { async dispose() { if (disposed) return; disposed = true; for (const off of unsubscribe) off(); await cleanup(); } };
+  return { async dispose() { if (disposed) return; disposed = true; removeSignalListeners(); for (const off of unsubscribe) off(); await cleanup(); } };
 }

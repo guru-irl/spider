@@ -1,3 +1,4 @@
+import { participantLaunchId } from "./participant-launch";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { isDeepStrictEqual } from "node:util";
@@ -66,7 +67,7 @@ export interface DormantMoveContext {
   onHubRestored(listener: () => void): () => void;
   retryAbort(operation: Operation): Promise<void>;
 }
-export interface ParticipantLaunchRequest { sessionId: string; operationId: string }
+export interface ParticipantLaunchRequest { sessionId: string; operationId: string; launchId?: string }
 export type ParticipantLaunchResult = { ok: true; launchId: string } | { ok: false; reason: string };
 export interface ParticipantReadinessQuery { sessionId: string; launchId: string; epoch: number }
 export interface MoveParticipantBindings {
@@ -859,7 +860,21 @@ async function participantLaunch(operation: Operation, home: Home, participant: 
     if (prior.sessionId !== home.sessionId || prior.epoch !== home.epoch || !prior.launchId || prior.launchId === operation.id) throw new MoveAdapterError("participant-launch-mismatch");
     if (!rows.some(row => row.action === 'restore-reinstalled' && row.result.launchId === prior.launchId)) return prior;
   }
-  const result = await participant.wake({ sessionId: home.sessionId, operationId: operation.id });
+  let launchId: string | undefined;
+  if (prior) {
+    const base = participantLaunchId(participant.config.machineId, home.sessionId, home.epoch, operation.id), id = `${base}-restarts`;
+    const intent = await createRunningIntentAuthority(participant.globalDb).get(home.sessionId);
+    if (!intent) throw new MoveAdapterError("participant-intent-unavailable");
+    journal.begin({ id, kind: "participant-restarts", machineId: home.machineId, expectedEpoch: home.epoch,
+      args: { sessionId: home.sessionId, operationId: operation.id, file: intent.file, cwd: intent.cwd, moveId: intent.moveId } });
+    const entries = journal.read(id).filter(row => row.action === "restart");
+    if (entries.some((row, index) => row.result.sequence !== index + 1)) throw new MoveAdapterError("participant-restart-journal-invalid");
+    const existing = entries.find(row => row.result.previousLaunchId === prior.launchId);
+    const sequence = existing ? Number(existing.result.sequence) : entries.length + 1;
+    if (!existing) journal.record(id, "restart", { sequence, previousLaunchId: prior.launchId });
+    launchId = `${base}-restart-${sequence}`;
+  }
+  const result = await participant.wake({ sessionId: home.sessionId, operationId: operation.id, ...(launchId ? { launchId } : {}) });
   if (!result.ok) throw new MoveAdapterError(result.reason);
   if (!result.launchId || result.launchId === operation.id || result.launchId === prior?.launchId) throw new MoveAdapterError("participant-launch-mismatch");
   const query = { sessionId: home.sessionId, launchId: result.launchId, epoch: home.epoch };

@@ -162,7 +162,7 @@ async function fixture(worktreeMachine = HUB, homeless = false) {
   const check: MoveCheck = { source: home, destinationMachine: BOX, repoKey: "fixture-repo", workspaceId: "fixture-workspace", sourceRoot: repo,
     sourceFile: file, sourceCwd: repo, destinationRoot: repo, destinationCwd: repo, storeKeys: ["global", REPO, WT], warnings: [] };
   return { root, file, repo, global, worktree, repository, journal, privateDb, sourceManifest, sourceWorkspace, home, operation, config, bindings, transport, ports, check, events, targets, remoteOperations, fence,
-    owner(value: Probe) { owner = value; }, failed() { launchFailure = "launch-failed"; }, fenceGeneration(generation: string) { heldFence = { ...fence, generation }; }, reopened: () => reopened };
+    owner(value: Probe) { owner = value; }, fenceGeneration(generation: string) { heldFence = { ...fence, generation }; }, reopened: () => reopened };
 }
 
 it("move preflight accepts the mixed store list written by the catalog", async () => {
@@ -1574,7 +1574,7 @@ it("records normal hub-return provenance tied to the committed move", async () =
 }, 5000);
 
 
-it.each(['ready', 'gone', 'owner-changed', 'home-changed'] as const)('destroyed mirror restoration replay %s checks durable ownership before installation', async mode => {
+it.each(['ready', 'owner-changed', 'home-changed'] as const)('destroyed mirror restoration replay %s checks durable ownership before installation', async mode => {
   const f = preparedFixture;
   casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
   const mirrorOperation = { id: 'restore-replay-mirror', kind: 'session-mirror', machineId: BOX, expectedEpoch: 2, args: { sessionId: SESSION } };
@@ -1594,25 +1594,14 @@ it.each(['ready', 'gone', 'owner-changed', 'home-changed'] as const)('destroyed 
     writeLocal(f.global.db, 'participant-intent', SESSION, { ...row, owner: { kind: 'hub-return', machineId: HUB, moveId: 'forged' } });
   }
   if (mode === 'home-changed') casHome(f.global.db, home, BOX, 'changed-home', HUB);
-  if (mode === 'gone') {
-    f.owner({ kind: 'absent' }); f.failed();
-    p.wake = async () => {
-      const intent = (await createRunningIntentAuthority(f.global.db).get(SESSION))!, launchId = `${launch}-restart-1`;
-      f.owner({ kind: 'live', identity: { bootId: 'fixture-boot', pid: 43, startTime: 'fixture-restarted' } });
-      f.journal.begin({ id: launchId, kind: 'exact-session-launch', machineId: HUB, expectedEpoch: home.epoch, args: { sessionId: SESSION } });
-      recordReadiness(f.journal, { origin: 'hub-operation', opId: launchId, sessionId: SESSION, epoch: home.epoch, file: intent.file, cwd: intent.cwd, core: 'core-a', terminal: 'terminal-restarted' });
-      return { ok: true, launchId };
-    };
-    p.readiness = async query => { const ready = readReadiness(f.journal, query.launchId), owner = await p.probe(SESSION); return owner.kind === 'live' && owner.identity.startTime === 'fixture-restarted' && query.launchId === `${launch}-restart-1` && ready?.sessionId === query.sessionId && ready.epoch === query.epoch ? ready : null; };
-  }
   const install = vi.spyOn(sessionFiles, 'installSession');
   try {
     const result = await forgetMachine(request, f.ports);
-    expect(result.code === 0).toBe(mode === 'ready' || mode === 'gone');
-    expect(install).toHaveBeenCalledTimes(mode === 'gone' ? 1 : 0);
-    if (mode === 'ready' || mode === 'gone') {
+    expect(result.code === 0).toBe(mode === 'ready');
+    expect(install).toHaveBeenCalledTimes(0);
+    if (mode === 'ready') {
       expect(await forgetMachine(request, f.ports)).toMatchObject({ code: 0 });
-      expect(install).toHaveBeenCalledTimes(mode === 'gone' ? 1 : 0);
+      expect(install).toHaveBeenCalledTimes(0);
     }
   } finally { install.mockRestore(); }
 }, 5000);

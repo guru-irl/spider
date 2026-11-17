@@ -24,6 +24,7 @@ export interface Ledger {
   terminals: { side: string; address: string }[]; machines: { side: string; name: string }[];
   appHome?: string; remoteRoot?: string; viaDirectory?: string; nativeProcessDirectory?: string;
   modeRestores?: FileModeRestore[];
+  intercomDirectories?: string[];
 }
 export interface CleanupProof {
   ledger: string; id: string; root: string; reason: string; repeated: boolean; at: string;
@@ -236,6 +237,28 @@ function ownedOpenPath(pid: number, root: string, match: (path: string) => boole
     } catch { return false; }
   });
 }
+function intercomBrokers(ledger: Ledger, proof: CleanupProof): LedgerProcess[] {
+  const brokers: LedgerProcess[] = [];
+  for (const directory of ledger.intercomDirectories ?? []) {
+    try {
+      if (resolve(directory) !== directory || !directory.startsWith(ledger.root + sep)) throw new Error('unowned broker directory');
+      if (!existsSync(directory)) continue;
+      if (realpathSync(directory) !== directory || !lstatSync(directory).isDirectory()) throw new Error('unowned broker directory');
+      const file = join(directory, 'broker.pid');
+      if (!existsSync(file)) continue;
+      const info = lstatSync(file);
+      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > 128 || process.getuid && info.uid !== process.getuid()) throw new Error('unowned broker pid file');
+      const pid = Number(readFileSync(file, 'utf8').trim());
+      if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error('invalid broker pid');
+      const start = processStart(pid); if (!start) continue;
+      const ownsSocket = ownedOpenPath(pid, ledger.root, path => path === join(directory, 'broker.sock'), 'socket');
+      const current = processStart(pid); if (!current) continue;
+      if (!ownsSocket || current !== start) throw new Error('broker socket ownership changed');
+      brokers.push({ pid, start, label: 'intercom-broker', group: false });
+    } catch { proof.survivors.push({ kind: 'broker-identity', id: directory }); }
+  }
+  return brokers;
+}
 function ownsViaRoute(ledger: Ledger, pid: number): boolean {
   const directory = join(ledger.root, 'bin');
   return ownedOpenPath(pid, ledger.root, path => dirname(path) === directory && /^via-(?:d|i\d+)$/.test(basename(path)), 'route');
@@ -386,6 +409,14 @@ export async function cleanupLedger(path: string, reason: string, options: { rem
       signal(p, 'SIGTERM', proof);
     }
     for (const p of owned) if (!(await observeUntil(() => !identityAlive(p), 3000))) signal(p, 'SIGKILL', proof);
+    // Session shutdown can start a replacement broker. Collect only after its producers exit.
+    const brokers = intercomBrokers(ledger, proof);
+    for (const broker of brokers) if (!ledger.processes.some(p => p.pid === broker.pid && p.start === broker.start)) ledger.processes.push(broker);
+    if (brokers.length) {
+      const durable = readLedger(path); durable.processes = ledger.processes; writeAtomic(path, durable);
+      for (const broker of brokers) if (identityAlive(broker)) signal(broker, 'SIGTERM', proof);
+      for (const broker of brokers) if (!(await observeUntil(() => !identityAlive(broker), 3000)) && identityAlive(broker)) signal(broker, 'SIGKILL', proof);
+    }
     // Use only the remaining rounds if a destination reappeared during owned-process cleanup.
     if (localStopped && drained) for (const core of ledger.cores.filter(core => core.side !== 'local')) {
       if (await socketListening(core.socket) || coreHolders(ledger, core).length) await stopCore(ledger, core, proof);

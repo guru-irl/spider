@@ -99,6 +99,7 @@ export async function createSuite(options: SuiteOptions): Promise<Suite> {
     await mkdir(join(root, 'procs'), { recursive: true, mode: 0o700 });
     await writeFile(domainManifest, JSON.stringify({ version: 1, root }), { mode: 0o600 });
     const env = buildEnvironment(process.env, directories, { binDirectory: bin, extra: { SPIDER_HERDR_E2E_PROCESS_DOMAIN: domainManifest } });
+    ledger.update(value => { value.intercomDirectories = [join(env.PI_CODING_AGENT_DIR, 'intercom')]; });
     const cores = options.tier === 'ci' ? null : await startCores(ledger, root, env, bin, options.coreEnvironment);
     const pi = await preparePi(root, env, packed, options.story, options.script);
     const invoke: Suite['invoke'] = async (binary, argv, invokeEnv = env, cwd = root) => {

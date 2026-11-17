@@ -581,7 +581,7 @@ it("runs only on the selected local core and queries finished terminals by opera
   expect(calls[1].argv).toEqual(["ls", "--all", "--json", "--label", "spider.roam.operation=op-1", "--label", "spider.roam.attempt=attempt-1"]);
 }, 5000);
 
-const compactExitedTerminal = { address: "t1", agent: "sh", cwd: "/home/runner/work/spider/spider/.spider/scratch/e2/ltink",
+const compactExitedTerminal = { address: "t1", agent: "sh", cwd: "/fixture/workspace",
   exit_code: 17, reason: "exited", state: "finished", turn: 0 };
 
 async function reconcileCompactTerminal(row: unknown, recordedAddress: string | null = "t1") {

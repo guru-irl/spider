@@ -219,6 +219,18 @@ it("keeps the original pin when a preferred host key appears on retry", async ()
   expect(f.state.registered.get("pair-1")?.hostKey).toEqual(rsa);
 }, 5000);
 
+it("reports an unavailable pin when its key type does not answer on retry", async () => {
+  const f = fixture(); f.state.allow = true; f.state.failAfter = "known-host";
+  expect(await run(f.request, f.ports)).toMatchObject({ code: 3 });
+  const previous = structuredClone(f.state.knownHosts.get("pair-1"));
+  const type = Buffer.from("ssh-rsa"), exponent = Buffer.from([1, 0, 1]), modulus = Buffer.concat([Buffer.from([0]), Buffer.alloc(256, 0x81)]);
+  const field = (value: Buffer) => { const length = Buffer.alloc(4); length.writeUInt32BE(value.length); return Buffer.concat([length, value]); };
+  f.state.hostKey = { type: "ssh-rsa", base64: Buffer.concat([field(type), field(exponent), field(modulus)]).toString("base64") };
+  expect(await run(f.request, f.ports)).toMatchObject({ code: 3, reason: "intercom-ssh-host-unavailable" });
+  expect(f.state.knownHosts.get("pair-1")).toEqual(previous);
+  expect(f.state.machines.size).toBe(0);
+}, 5000);
+
 it("does not silently repin a changed host key on an interrupted enrollment", async () => {
   const f = fixture(); f.state.allow = true; f.state.failAfter = "known-host";
   expect(await run(f.request, f.ports)).toMatchObject({ code: 3 });

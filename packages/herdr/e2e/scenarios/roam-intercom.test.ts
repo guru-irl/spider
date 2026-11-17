@@ -562,15 +562,21 @@ async function topology(suite: Suite): Promise<void> {
     await suite.evidence('R13-staged-rosters.json', await Promise.all(network.machines.map(machine => machine.probe.listSessions())));
     await setLinkFault(hub, [source.alias, target.alias], "exchange");
     await network.restartHub();
+    phase('reject-unverified-peer-key');
+    await pair.presentedKey('other');
+    const unverified = await enrollPair(suite, network, pair);
+    expect(unverified.code, unverified.output).toBe(3);
+    expect(unverified.output).toContain('intercom-ssh-host-unverified');
+    const operation = /Operation:\s*([0-9a-f-]{36})/.exec(unverified.output)?.[1];
+    if (!operation) throw new Error('pending enrollment did not identify its operation');
+    await pair.presentedKey('system');
     phase('enroll-peer-pair');
-    const firstEnrollment = await enrollPair(suite, network, pair);
+    const firstEnrollment = await enrollPair(suite, network, pair, operation, 'verified');
     let enrollment = firstEnrollment;
     if (firstEnrollment.code === 3 && firstEnrollment.output.includes('intercom-verification-pending')) {
-      const operation = /Operation:\s*([0-9a-f-]{36})/.exec(firstEnrollment.output)?.[1];
-      if (!operation) throw new Error('pending enrollment did not identify its operation');
       await waitFor('both real peer bridges become live', () => [edge(source, target), edge(target, source)],
         rows => rows.every(row => row?.status === 'live'), deadline(60_000));
-      enrollment = await enrollPair(suite, network, pair, operation);
+      enrollment = await enrollPair(suite, network, pair, operation, 'retry');
     }
     expect(enrollment.code, enrollment.output).toBe(0);
     expect(enrollment.output).toContain('intercom-enrolled');

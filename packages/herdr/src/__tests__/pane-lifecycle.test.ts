@@ -21,7 +21,7 @@ async function fixture(session = false) {
   const hc = { identity: async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' }), get: vi.fn(async address => { if (removed.has(address)) throw new HerdrError('not_found', 'No terminal'); return terminal(address); }), rm: vi.fn(async address => { if (terminal(address).state !== 'finished') throw new Error('Cannot remove a live terminal'); removed.add(address); }), kill: vi.fn(async address => { const state = await store.read(); order.push(state.presentations[0].visibility + ':' + address); if (address === p.target.address) targetState = 'finished'; if (address === p.proxy) proxyState = 'finished'; }) } as unknown as HcClient;
   const app = { command: vi.fn(async (name: string) => { if (name === 'terminal.park') { expect((await store.read()).presentations[0].visibility).toBe('parked'); shown = false; } return {}; }), tabTerminals: vi.fn(async () => shown ? [p.proxy!] : []) } as unknown as AppClient;
   const ports: PaneLifecyclePorts = { store, hc, app, validateTarget: vi.fn(async target => target), closeSession: vi.fn(async () => { hosting = 'stopped'; order.push(hosting); targetState = 'finished'; children = 'ended-by-session-policy'; return 'ended' as const; }) };
-  return { p, ports, hc, app, order, state: () => ({ targetState, hosting, children }), terminal };
+  return { p, ports, hc, app, order, state: () => ({ targetState, hosting, children }), terminal, disappear: () => { removed.add(p.proxy!); shown = false; } };
 }
 test('spider confirmed close ends exact target after durable intent', async () => {
   const f = await fixture(); const reply = await confirmPresentationClose({ id: f.p.id, expectedRevision: 1, operationId: 'close1', target: f.p.target }, f.ports);
@@ -45,6 +45,24 @@ test('park completes when another display owner removes the verified proxy after
   expect(await parkPresentation(f.p.id, 1, f.ports)).toMatchObject({ status: 'complete', reason: 'parked' });
   expect(f.hc.kill).toHaveBeenCalledExactlyOnceWith(f.p.proxy);
   expect(f.state().targetState).toBe('live');
+});
+test.each(['before park', 'after parked intent'] as const)('park settles when the display disappears %s before its first ownership read', async when => {
+  const f = await fixture(), get = vi.mocked(f.hc.get).getMockImplementation()!;
+  if (when === 'before park') f.disappear();
+  else vi.mocked(f.hc.get).mockImplementationOnce(async (...args) => {
+    expect((await f.ports.store.read()).presentations[0].visibility).toBe('parked');
+    f.disappear(); return get(...args);
+  });
+  expect(await parkPresentation(f.p.id, 1, f.ports)).toMatchObject({ status: 'complete', reason: 'parked', presentation: { visibility: 'parked' } });
+  expect(f.state().targetState).toBe('live');
+  expect(f.hc.kill).not.toHaveBeenCalled(); expect(f.hc.rm).not.toHaveBeenCalled();
+  expect(f.app.command).not.toHaveBeenCalled();
+});
+test('a missing core identity is not proof that the display disappeared', async () => {
+  const f = await fixture();
+  f.hc.identity = async () => { throw new HerdrError('not_found', 'No core identity'); };
+  expect(await parkPresentation(f.p.id, 1, f.ports)).toMatchObject({ status: 'pending', reason: 'park-removal-pending' });
+  expect(f.hc.kill).not.toHaveBeenCalled(); expect(f.hc.rm).not.toHaveBeenCalled();
 });
 test('park records intent before proxy removal and retains target', async () => {
   const f = await fixture(); const result = await parkPresentation(f.p.id, 1, f.ports);

@@ -68,11 +68,13 @@ export async function reconcilePendingClose(id: string, ports: PaneLifecyclePort
     return ended ? result('complete', 'target-ended', ended) : stale(await read(id, ports));
   } catch { return result('pending', 'close-pending', await read(id, ports)); }
 }
-async function ownedProxy(p: PanePresentation, ports: PaneLifecyclePorts): Promise<TerminalSummary | null> {
+async function ownedProxy(p: PanePresentation, ports: PaneLifecyclePorts): Promise<TerminalSummary | 'absent' | null> {
   if (!p.proxy) return null;
   const local = await ports.hc.identity();
   if (p.proxy.includes('/') && !p.proxy.startsWith(`${local.coreId}/`)) return null;
-  const terminal = await ports.hc.get(p.proxy);
+  let terminal: TerminalSummary;
+  try { terminal = await ports.hc.get(p.proxy); }
+  catch (error) { if (error instanceof HerdrError && error.code === 'not_found') return 'absent'; throw error; }
   if (terminal.address !== p.proxy) return null;
   const labels = terminal.labels;
   const generic = labels['spider.kind'] === 'pane-proxy' && labels['spider.pane-id'] === p.id;
@@ -89,14 +91,20 @@ export async function parkPresentation(id: string, expectedRevision: number, por
   if (!ports.app) return result('pending', 'park-removal-pending', parked);
   try {
     const proxy = await ownedProxy(parked, ports); if (!proxy) return result('pending', 'proxy-identity-unavailable', parked);
-    const reply = await ports.app.command('terminal.park', { terminal: p.proxy });
-    if (reply.error || !p.slot || (await ports.app.tabTerminals(p.slot)).includes(p.proxy)) return result('pending', 'park-removal-pending', parked);
+    if (proxy !== 'absent') {
+      const reply = await ports.app.command('terminal.park', { terminal: p.proxy });
+      if (reply.error) return result('pending', 'park-removal-pending', parked);
+    }
+    if (!p.slot || (await ports.app.tabTerminals(p.slot)).includes(p.proxy)) return result('pending', 'park-removal-pending', parked);
     // A late revision or a reopened pane cancels cleanup of its new presentation.
     const current = await read(id, ports); if (!current || current.revision !== parked.revision || current.visibility !== 'parked') return result('pending', 'presentation-changed', current);
+    if (proxy === 'absent') return result('complete', 'parked', parked);
     try {
       const again = await ownedProxy(parked, ports);
+      if (again === 'absent') return result('complete', 'parked', parked);
       if (again?.state === 'live') await ports.hc.kill(p.proxy);
       const finished = await ownedProxy(parked, ports);
+      if (finished === 'absent') return result('complete', 'parked', parked);
       if (finished?.state !== 'finished') return result('pending', 'park-removal-pending', parked);
       await ports.hc.rm(p.proxy);
     } catch (error) {

@@ -21,7 +21,7 @@ beforeEach(async () => {
   terminal = { coreId: 'core', terminalId: 't1', address: 't1', socket: join(root, 'socket'), sessionNamespace: 'g2' } as TerminalIdentity;
   owner = { sessionId: 's1' as SessionId, generation: 'g1' as Generation, terminal, sessionFile: file, cwd: root, name: "session 'quoted' $(false)" };
   await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: 's1', cwd: root }) + '\n');
-  await createTerminalRegistry(root).record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] } });
+  await createTerminalRegistry(root).record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 2147483647, startIdentity: 'old' });
   options = { nodePath: process.execPath, cliPath: join(root, "cli 'quoted'.mjs"), configPath: join(root, 'config.json'), hookPath: fileURLToPath(new URL('../../assets/shell/resume.sh', import.meta.url)) };
 });
 afterEach(async () => rm(root, { recursive: true, force: true }));
@@ -55,6 +55,7 @@ it.each(['/bin/bash', '/bin/zsh'])('the first %s prompts preserve the live marke
 it('a legacy mapping is offer-only until the session reloads with a live marker', async () => {
   const start = Number.MAX_SAFE_INTEGER;
   const registry = createTerminalRegistry(root), inventory = ports(start).processInventory;
+  await registry.record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] } });
   expect(await offerResume(terminal, ports(start))).not.toBeNull();
   expect(await offerResume(terminal, { ...ports(start), autoResumeRoot: root })).toBeNull();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
@@ -70,7 +71,7 @@ it('a legacy mapping is offer-only until the session reloads with a live marker'
 });
 
 it('a mapping with a missing live marker is offer-only', async () => {
-  await createTerminalRegistry(root).record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' });
+  await createTerminalRegistry(root).record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, activityId: 'fedcba9876543210fedcba9876543210' });
   expect(await offerResume(terminal, ports())).not.toBeNull();
   expect(await offerResume(terminal, { ...ports(), autoResumeRoot: root })).toBeNull();
 });
@@ -219,7 +220,7 @@ it('claims automatic resume once per terminal and proved core start, pruning old
   expect(await claims(path)).toEqual(['20']);
   expect(await offerResume(terminal, auto(30))).not.toBeNull();
   expect(await claims(path)).toEqual(['30']);
-  expect(new Set(await readdir(path))).toEqual(new Set(['seen-30', '30']));
+  expect(new Set((await readdir(path)).filter(name => /^(?:seen-)?\d/.test(name)))).toEqual(new Set(['seen-30', '30']));
   expect(await offerResume(terminal, auto(30))).toBeNull();
   expect(await offerResume(terminal, auto(20))).toBeNull();
 });
@@ -228,7 +229,7 @@ it('pruning a terminal removes its marker folder and a delayed offer cannot recr
   const auto = { ...ports(), autoResumeRoot: root };
   expect(await offerResume(terminal, auto)).not.toBeNull();
   const other = { ...terminal, terminalId: 't2', address: 't2' } as TerminalIdentity;
-  await auto.registry.record({ owner: { ...owner, terminal: other }, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] } });
+  await auto.registry.record({ owner: { ...owner, terminal: other }, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 2147483647, startIdentity: 'old' });
   expect(await offerResume(other, auto)).not.toBeNull();
   const markerRoot = join(root, 'resume-starts');
   const key = terminalIdentityKey(terminal), otherKey = terminalIdentityKey(other);
@@ -248,7 +249,7 @@ it('pruning a terminal removes its marker folder and a delayed offer cannot recr
 it('simultaneous automatic claims are exclusive per terminal, not per session', async () => {
   const auto = { ...ports(), autoResumeRoot: root };
   const other = { ...terminal, terminalId: 't2', address: 't2' } as TerminalIdentity;
-  await createTerminalRegistry(root).record({ owner: { ...owner, terminal: other }, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] } });
+  await createTerminalRegistry(root).record({ owner: { ...owner, terminal: other }, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 2147483647, startIdentity: 'old' });
   const claims = await Promise.all([offerResume(terminal, auto), offerResume(terminal, auto)]);
   expect(claims.filter(Boolean)).toHaveLength(1);
   expect(await offerResume(other, auto)).not.toBeNull();
@@ -270,7 +271,7 @@ it.each(['foreign terminal', 'no session file', 'unproved restart', 'same core e
   if (condition === 'missing file') await rm(file);
   if (condition === 'invalid header') await writeFile(file, 'invalid\n');
   if (condition === 'changed id') await writeFile(file, JSON.stringify({ type: 'session', id: 'other', cwd: root }) + '\n');
-  if (condition === 'explicit extensions') await registry.record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: ['--extension', join(root, 'extension.js')] } });
+  if (condition === 'explicit extensions') await registry.record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: ['--extension', join(root, 'extension.js')] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 2147483647, startIdentity: 'old' });
   const result = offerResume(identity, { registry, processInventory: inventory, coreStartedAt: async () => start, autoResumeRoot: root });
   if (condition === 'explicit extensions') await expect(result).rejects.toMatchObject({ code: 'session-explicit-extensions' });
   else expect(await result).toBeNull();
@@ -288,7 +289,7 @@ it('prunes an older marker after a proved restart even when the session is held'
   const live: ProcessInventoryPorts = { ...next.processInventory, probe: async () => ({ kind: 'live', startIdentity: 'start' }) };
   expect(await offerResume(terminal, { ...next, processInventory: live })).toBeNull();
   expect(await claims(path)).toEqual([]);
-  expect(await readdir(path)).toEqual(['seen-30']);
+  expect((await readdir(path)).filter(name => /^(?:seen-)?\d/.test(name))).toEqual(['seen-30']);
   expect(await offerResume(terminal, auto(20))).toBeNull();
 });
 

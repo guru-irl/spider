@@ -2500,16 +2500,16 @@ Usage:
         language: Type.Optional(Type.String()),
       }))),
       replyTo: Type.Optional(Type.String({
-        description: "Message ID to reply to (for threading or responding to an 'ask'). Empty or whitespace-only strings are treated as omitted.",
+        description: "Message ID to reply to (for threading or responding to an 'ask'). Surrounding whitespace is trimmed; blank strings are treated as omitted.",
       })),
       messageId: Type.Optional(Type.String({
-        description: "Message ID for actions that operate on an existing message, such as 'cancel'. Empty or whitespace-only strings are treated as omitted.",
+        description: "Message ID for actions that operate on an existing message, such as 'cancel'. Surrounding whitespace is trimmed; blank strings are treated as omitted.",
       })),
       supersedes: Type.Optional(Type.String({
-        description: "Previous message ID this send/ask explicitly supersedes. Only works for the same sender and receiver. Empty or whitespace-only strings are treated as omitted.",
+        description: "Previous message ID this send/ask explicitly supersedes. Only works for the same sender and receiver. Surrounding whitespace is trimmed; blank strings are treated as omitted.",
       })),
       retryOf: Type.Optional(Type.String({
-        description: "Previous message ID this send/ask is a user-authored retry of. Retries always send a new message ID. Empty or whitespace-only strings are treated as omitted.",
+        description: "Previous message ID this send/ask is a user-authored retry of. Retries always send a new message ID. Surrounding whitespace is trimmed; blank strings are treated as omitted.",
       })),
       cwd: Type.Optional(Type.String({
         description: "Working directory filter for 'list-cwd'. For send/ask, scopes target lookup to that directory; omit 'to' to target the sole live peer there. Absolute, or relative to the current session's cwd; '.' means the current cwd.",
@@ -2561,10 +2561,10 @@ Usage:
       syncPresenceIdentity(ctx.sessionManager.getSessionId());
 
       const { action, to, message, attachments, cwd, openProjectPaneIfMissing, focus } = params;
-      const replyTo = params.replyTo?.trim() ? params.replyTo : undefined;
-      const messageId = params.messageId?.trim() ? params.messageId : undefined;
-      const supersedes = params.supersedes?.trim() ? params.supersedes : undefined;
-      const retryOf = params.retryOf?.trim() ? params.retryOf : undefined;
+      const replyTo = params.replyTo?.trim() || undefined;
+      const messageId = params.messageId?.trim() || undefined;
+      const supersedes = params.supersedes?.trim() || undefined;
+      const retryOf = params.retryOf?.trim() || undefined;
 
       switch (action) {
         case "list": {

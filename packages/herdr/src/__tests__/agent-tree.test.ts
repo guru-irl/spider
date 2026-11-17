@@ -57,6 +57,25 @@ test('a retained parent of a live nested subagent stays in the compact tree', ()
   expect(summary.hiddenFinished).toBe(0);
 });
 
+test('the compact tree retains every finished ancestor of a live nested subagent', () => {
+  const f = feed(), template = f.runs.rows[0];
+  template.status = 'done'; template.finishedAt = 1500;
+  f.runs.rows.push({ ...template, id: 'middle' as RunId, name: 'Middle' },
+    { ...template, id: 'nested' as RunId, name: 'Nested', status: 'running', finishedAt: null });
+  const viewer = (address: string, run: string, parent: string, finished: boolean): AgentTerminal => ({
+    ...terminal(address, 'subagent-viewer', { 'spider.run': run }), parent,
+    ...(finished ? { state: 'finished' as const, finishedAt: 1500, exitCode: 0, reason: 'exited' } : {}),
+  });
+  const summary: { hiddenFinished?: number } = {};
+  const result = projectAgentChildren([viewer('first-viewer', 'run', 'agent', true),
+    viewer('middle-viewer', 'middle', 'first-viewer', true), viewer('last-viewer', 'nested', 'middle-viewer', false)],
+  [f], 'agent', contract, { now: 2000, finishedSummary: summary });
+  expect(result.map(row => [row.key, row.parentKey, row.depth])).toEqual([
+    ['run', null, 0], ['middle', 'run', 1], ['nested', 'middle', 2],
+  ]);
+  expect(summary.hiddenFinished).toBe(0);
+});
+
 test('a subagent without parentage evidence stays at the owner root', () => {
   const f = feed();
   f.runs.rows.push({ ...f.runs.rows[0], id: 'nested' as RunId, name: 'Nested' });

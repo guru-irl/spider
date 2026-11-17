@@ -265,13 +265,18 @@ it.each([false, true])("a reused pid is not the old owner, replacement owns sess
   const f = fixture(), identity = { bootId: "boot-1", pid: 123, startTime: "old-start" };
   const operation = { ...f.operation, id: "retire-reused", kind: "session-retire", args: { ...f.operation.args, moveId: "move-1" } };
   let requested = false, retired = false;
-  const deadline = Date.now() + 20;
+  let now = 0;
+  const deadline = now + 20, replacement = { ...identity, startTime: "new-start" };
   const ports = { journal: f.journal,
-    probe: async () => !requested ? { kind: "live" as const, identity } : replacementOwns ? { kind: "live" as const, identity: { ...identity, startTime: "new-start" } } : { kind: "absent" as const },
+    probe: async () => !requested ? { kind: "live" as const, identity } : replacementOwns ? { kind: "live" as const, identity: replacement } : { kind: "absent" as const },
     withBothLocks: async <T>(_id: string, fn: () => Promise<T>) => fn(),
     live: async () => { requested = true; return { code: 0 as const, reason: "shutdown-requested", operationId: operation.id, epoch: 2, home: null, repairCommand: null, value: {} }; },
     dormant: async () => { retired = true; return { code: 0 as const, reason: "retired", operationId: operation.id, epoch: 2, home: null, repairCommand: null, value: {} }; },
-    exit: { deadline, now: Date.now, exited: async (old: typeof identity) => old.pid === 123 && old.startTime !== "new-start" },
+    exit: { deadline, now: () => now, async exited(old: typeof identity) {
+      // Advance with the simulated observation, not host scheduling.
+      now = deadline;
+      return old.bootId === replacement.bootId && old.pid === replacement.pid && old.startTime !== replacement.startTime;
+    } },
   };
   expect(await control.controlSession(operation, ports)).toMatchObject(replacementOwns ? { code: 3, reason: "process-exit-unproven" } : { code: 0, reason: "retired" });
   expect(retired).toBe(!replacementOwns);

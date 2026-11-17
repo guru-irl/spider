@@ -7,7 +7,11 @@ import type { MachineIntercomOptions } from "../intercom-runtime";
 import { parseConfig } from "../config";
 import { createMachineIntercom } from "../intercom-runtime";
 import { DEFAULT_LIMITS, type RoamConfig } from "../contracts";
-import { IntercomFederationClient } from "@spider/intercom/broker/client";
+import { IntercomClient, IntercomFederationClient } from "@spider/intercom/broker/client";
+import { createIntercomBridge } from "../intercom-bridge";
+import { openIntercomStore } from "../intercom-store";
+import { withHopExchange } from "./intercom-hop-fixture";
+import type { RemoteSessionInfo } from "@spider/intercom/protocol";
 import { machineMoveProxy } from "../machine-move-socket";
 import { startTestBroker, stopTestBroker, testTmpDir } from "../../../intercom/src/test-support";
 
@@ -130,4 +134,52 @@ it("the live broker restores move socket readiness after a failed reconnect", as
     await vi.waitFor(() => expect(machine.readiness()).toEqual({ state: "ready", reason: null }));
     await expect(proxy.bridge(address)).resolves.toEqual(empty);
   } finally { await machine.stop(); await stopTestBroker(child); global.close(); rmSync(agentDir, { recursive: true, force: true }); }
+}, 5000);
+
+
+it("a moved home does not disconnect its broker while the frozen source is still attached", async () => {
+  const global = createReplica("global", HUB), agentDir = mkdtempSync(join(testTmpDir(), "mh-"));
+  const BOX = "00000000-0000-4000-8000-000000000002", address = { sessionId: "moving-session", scopeId: null };
+  const child = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], {
+    env: { ...process.env, HOME: agentDir, PI_CODING_AGENT_DIR: agentDir }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  mkdirSync(join(global.root, "roam"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify({ machineId: HUB, intercom: { enabled: true } }), { mode: 0o600 });
+  const clock = { now: () => 1000, later: () => () => {} }, broker = new IntercomFederationClient(), client = new IntercomClient();
+  const store = openIntercomStore({ file: join(global.root, "queue.db"), machineId: HUB, clock });
+  let ready = false, logical: readonly RemoteSessionInfo[] = [];
+  const remote: RemoteSessionInfo = { remote: true, id: address.sessionId, address, machineId: BOX, machineAlias: "box.invalid", homeEpoch: 2,
+    activationEpoch: "destination-activation", endpointEpoch: "destination-activation", cwd: "/workspace", model: "fixture", startedAt: 1, lastActivity: 1 };
+  const bridge = createIntercomBridge({ machineId: HUB, machineAlias: "hub.invalid", broker, globalRoot: global.root, agentDir, store, clock,
+    edges: [{ peer: { machineId: BOX, alias: "box.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: "/fixture/global" }, edgeEpoch: "edge-1", initiator: false }],
+    transport: {} as never, localPresence: () => [], moveFences: true,
+    authoritativeHome: () => ({ sessionId: address.sessionId, machineId: BOX, epoch: 2, moveId: "move-1", updatedAt: 1 }),
+    publishPresence: entries => { logical = entries; }, onBrokerState: value => { ready = value; },
+  });
+  const previous = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  try {
+    await new Promise<void>((done, reject) => {
+      child.once("exit", code => reject(new Error(`broker exited: ${code}`)));
+      child.stdout!.on("data", chunk => { if (String(chunk).includes("Intercom broker started")) done(); });
+    });
+    await bridge.start();
+    await client.connect({ address, cwd: "/workspace", model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1,
+      activationEpoch: "source-activation", homeEpoch: 1 }, address.sessionId);
+    await broker.inspectBlockers(address);
+    expect(ready).toBe(true);
+    await bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: withHopExchange({ protocol: 5,
+      senderMachine: BOX, recipientMachine: HUB, generation: { edgeEpoch: "edge-1", channel: "push", generation: 1 },
+      frames: [], acknowledgements: [], receipts: [], controls: [], presence: [remote] }) });
+    expect(logical).toMatchObject([{ address, machineId: BOX, homeEpoch: 2 }]);
+    await expect(broker.inspectBlockers(address)).resolves.toEqual({ asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] });
+    expect(ready).toBe(true);
+    await client.disconnect();
+    await broker.inspectBlockers(address);
+    expect(ready).toBe(true);
+  } finally {
+    await client.disconnect(); await bridge.stop(); await stopTestBroker(child); store.close(); global.close();
+    if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
+    rmSync(agentDir, { recursive: true, force: true });
+  }
 }, 5000);

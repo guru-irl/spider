@@ -387,10 +387,14 @@ export function createSync(ports: SyncPorts): SyncAdapter {
       const peer = config.peers.find(peer => peer.machineId === machine); if (!peer || !config.enabled || config.role !== "hub") return false;
       try {
         assertNotRevoked(peer);
+        const satisfied = async () => {
+          const watermarks = await barrierWatermarks(stores, config, required); if (!watermarks) return false;
+          for (const barrier of watermarks) if (await remoteCursor(peer, barrier.storeKey, barrier.stream) < barrier.through) return false;
+          return true;
+        };
+        if (await satisfied()) return true;
         await service.sync(machine);
-        const watermarks = await barrierWatermarks(stores, config, required); if (!watermarks) return false;
-        for (const barrier of watermarks) if (await remoteCursor(peer, barrier.storeKey, barrier.stream) < barrier.through) return false;
-        return true;
+        return await satisfied();
       } catch { return false; }
     },
   };

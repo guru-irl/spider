@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { accessSync, constants, statSync } from "node:fs";
 import { lstat } from "node:fs/promises";
 import { delimiter, isAbsolute, resolve } from "node:path";
-import { HerdrError, object, parseTerminal, text as replyText } from "@spider/herdr/client/parse";
+import { HerdrError, object, text as replyText } from "@spider/herdr/client/parse";
 import { createHcClient, invokeCli as invokeHcCli, observeCoreIdentity } from "@spider/herdr/client/hc";
 import { invokeCli as invokeTransport } from "@spider/herdr/client/cli-transport";
 import { requireCoreAvailable } from "@spider/herdr/client/liveness";
@@ -21,7 +21,7 @@ export interface LaunchReconcilePorts {
   inspectLock(): Promise<IdLockObservation | null>;
   coreId(signal: AbortSignal): Promise<string>;
   bootId(signal: AbortSignal): Promise<string>;
-  terminals(operationId: string, options: { signal: AbortSignal; includeFinished: true; attemptId?: string }): Promise<{
+  terminals(operationId: string, options: { signal: AbortSignal; includeFinished: true; attemptId?: string; terminalId?: string }): Promise<{
     complete: boolean; terminals: readonly { id: string; state: "live" | "finished" }[];
   }>;
   clock: { now(): number; wait(ms: number, signal: AbortSignal): Promise<void> };
@@ -76,6 +76,18 @@ export interface LocalExactHc {
   run(request: PiSpawnRequest, observer: { started(pid: number, startTime: string): void; exited(pid: number): void }): Promise<{ terminal: string }>;
 }
 
+function parseCompactLaunchTerminal(value: unknown, terminalId: string | undefined): { id: string; state: "live" | "finished" } {
+  const row = object(value);
+  if (!text(terminalId) || row.address !== terminalId) {
+    throw new HerdrError("invalid-reply", "Terminal list does not match the recorded launch address");
+  }
+  if (row.state === "live") return { id: terminalId, state: "live" };
+  if (row.state !== "finished" || row.reason !== "exited" || !Number.isSafeInteger(row.exit_code)) {
+    throw new HerdrError("invalid-reply", "Terminal exit is uncertain");
+  }
+  return { id: terminalId, state: "finished" };
+}
+
 /** This adapter never supplies a remote target or forwards secrets in argv. */
 export function createLocalExactHc(input: {
   coreId(signal: AbortSignal): Promise<string>;
@@ -91,12 +103,8 @@ export function createLocalExactHc(input: {
       if (options.attemptId) argv.push("--label", `spider.roam.attempt=${options.attemptId}`);
       const reply = object(await input.invoke(argv, options.signal));
       if (!Array.isArray(reply.terminals)) throw new HerdrError("invalid-reply", "A complete terminal list is required");
-      const terminals = reply.terminals.map(parseTerminal).map(terminal => {
-        if (terminal.labels["spider.roam.operation"] !== operationId || options.attemptId && terminal.labels["spider.roam.attempt"] !== options.attemptId || !text(terminal.address)) {
-          throw new HerdrError("invalid-reply", "Terminal list does not match the launch operation");
-        }
-        return { id: terminal.address as string, state: terminal.state };
-      });
+      if (reply.terminals.length && !options.attemptId) throw new HerdrError("invalid-reply", "A launch attempt is required to identify terminals");
+      const terminals = reply.terminals.map(value => parseCompactLaunchTerminal(value, options.terminalId));
       return { complete: true, terminals };
     },
     async run(request, observer) {
@@ -294,11 +302,13 @@ export function createLaunchReconciler(ports: LaunchReconcilePorts): (operationI
           return { receipt: "unknown", terminal: "unknown", proof: { kind: "prelaunch-error", operationId, beforeLaunch: true, errorCode: failure.errorCode, hcPid: null } };
         }
       }
+      const terminal = one("exact-terminal");
+      const terminalId = terminal && text(terminal.terminalId) ? terminal.terminalId : undefined;
       const receipt = has("exact-terminal") ? "started" as const : "unknown" as const;
       const sample = async (allAttempts = false) => {
         if (await abortable(signal, () => ports.coreId(signal)) !== pinnedCore) return null;
         const issuedAt = ports.clock.now();
-        const result = await abortable(signal, () => ports.terminals(operationId, { signal, includeFinished: true, ...(!allAttempts && typeof attemptId === "string" ? { attemptId } : {}) }));
+        const result = await abortable(signal, () => ports.terminals(operationId, { signal, includeFinished: true, ...(!allAttempts && typeof attemptId === "string" ? { attemptId } : {}), ...(terminalId ? { terminalId } : {}) }));
         if (await abortable(signal, () => ports.coreId(signal)) !== pinnedCore || !result.complete ||
             !Array.isArray(result.terminals) || result.terminals.some(item => !item || !text(item.id) || !["live", "finished"].includes(item.state))) return null;
         return { issuedAt, terminals: result.terminals };

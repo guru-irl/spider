@@ -90,6 +90,26 @@ describe("tailer replay allocation", () => {
     expect(rowsRead).toBeLessThanOrEqual(10);
   });
 
+  it("replays already queued supervisor rows after a terminal event across pages", () => {
+    db = freshDb();
+    const { id } = new RunStore(db).create({ sessionId: "s1", agent: "worker" });
+    const tailer = new RunEventTailer(db);
+    tailer.track(id);
+    db.prepare("UPDATE runs SET status='done' WHERE id=?").run(id);
+    const insert = db.prepare("INSERT INTO run_events(run_id,session_id,ts,type,summary,payload) VALUES (?,'s1',?,?,?,?)");
+    insert.run(id, 0, "status", "done", JSON.stringify({ status: "done" }));
+    db.transaction(() => { for (let i = 0; i < 201; i++) insert.run(id, i + 1, "spider_usage", String(i), null); })();
+    const seen: string[] = [];
+    offs.push(bus.on(event => { if (event.runId === id) seen.push(event.summary ?? ""); }));
+    tailer.poll();
+    expect(seen).toHaveLength(200);
+    tailer.poll();
+    expect(seen).toEqual(["done", ...Array.from({ length: 201 }, (_, i) => String(i))]);
+    const prepare = vi.spyOn(db, "prepare");
+    tailer.poll();
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
   it("stops polling when every tracked run has emitted a terminal event", () => {
     db = freshDb();
     const store = new RunStore(db), tailer = new RunEventTailer(db);

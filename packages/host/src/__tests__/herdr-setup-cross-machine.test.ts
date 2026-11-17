@@ -95,6 +95,16 @@ test('setup refuses a lost version after staging rather than mixing picker plans
   expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
 });
 
+test('setup refuses a changed version after staging rather than mixing picker plans', async () => {
+  const f = await releaseFixture('0.1.13');
+  const context = { ...f.context, modProps: [...f.context.modProps, { directory: join(f.h.directories.app, 'mods/spider-picker'), props: { ...f.context.modProps[0]!.props, modId: 'spider-picker' } }] };
+  await f.parts.stageLook(f.request, context, 'export');
+  const app = join(f.h.root, 'app-selection.mjs');
+  await writeFile(app, (await readFile(app, 'utf8')).replace('herdr-app 0.1.13', 'herdr-app 0.1.12'));
+  await expect(f.parts.installFiles(f.request, context)).rejects.toMatchObject({ code: 'upstream-version-mismatch' });
+  expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+});
+
 test('0.1.12 preserves native creation keys and does not install machine pickers', async () => {
   const f = await fixture(), home = f.h.directories.app, path = join(home, 'keys.json');
   const before = JSON.parse(await readFile(path, 'utf8'));

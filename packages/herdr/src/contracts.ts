@@ -79,7 +79,7 @@ export interface HcArgvClient {
   run(on: string, argv: readonly string[], labels: Readonly<Record<string, string>>, options?: { signal?: AbortSignal }): Promise<{ terminal: string }>;
 }
 export interface HcClient {
-	identity(): Promise<CoreIdentity>;
+	identity(options?: HcCallOptions): Promise<CoreIdentity>;
 	caller(env: Readonly<NodeJS.ProcessEnv>): Promise<TerminalIdentity>;
 	machines(options?: HcCallOptions): Promise<MachineSummary[]>;
 	run(request: HcRunRequest): Promise<TerminalHandle>;

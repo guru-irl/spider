@@ -20,6 +20,7 @@ it("machine move port exposes only named guarded operations without raw objects"
   const address = { sessionId: "session-a", scopeId: "scope-a" };
   await expect(machine.move.bridge(address)).rejects.toThrow("intercom-move-unavailable");
   await expect(machine.move.broker(address)).rejects.toThrow("intercom-move-unavailable");
+  await expect(machine.move.broker(address)).rejects.toThrow("intercom-move-unavailable: roaming-disabled");
   await expect(machine.move.endpoint(address)).rejects.toThrow("intercom-move-unavailable");
   await expect(machine.move.settlement({ messageId: "message-a", fromSessionId: "sender-a", toSessionId: "session-a", scopeId: "scope-a" })).rejects.toThrow("intercom-move-unavailable");
   const home = { sessionId: "session-a", machineId: HUB, epoch: 3, moveId: "rollback-a", updatedAt: 0 };

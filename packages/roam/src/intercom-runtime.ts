@@ -449,7 +449,12 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
     return running;
   };
   const moveAvailable = () => {
-    if (!roamingEnabled() || !enabled || stopped || status.state !== "ready" || !bridge || !store) throw new Error("intercom-move-unavailable");
+    const roaming = roamingEnabled();
+    if (!roaming || !enabled || stopped || status.state !== "ready" || !bridge || !store) {
+      const unavailable = !roaming ? "roaming-disabled" : !enabled ? "disabled" : stopped ? "stopped" :
+        status.state !== "ready" ? status.reason ?? status.state : !bridge ? "bridge-missing" : "store-missing";
+      throw new Error(`intercom-move-unavailable: ${unavailable}`);
+    }
     return { bridge, store };
   };
   const moveEndpoint = async (address: SessionAddress): Promise<SessionEndpoint> => {

@@ -552,7 +552,7 @@ it("stale intercom generation cannot commit the home", async () => {
 
 it.each(["uncertain", "live"] as const)("source stop proof %s retains pending cleanup and the new home", async kind => {
   const f = fixture(); f.ports.retire = async () => kind === "live" ? { kind, identity } : { kind };
-  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3, reason: "move-source-stop-pending" });
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: 'pending', blockers: ['move-source-stop-pending'] } } });
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
   expect(f.registryRemovals).toEqual([]);
   expect(f.held).toBe(true);
@@ -560,7 +560,7 @@ it.each(["uncertain", "live"] as const)("source stop proof %s retains pending cl
 
 it("unproved terminal removal remains pending cleanup without rollback", async () => {
   const f = fixture(); f.setTerminalRemoval(false);
-  expect((await moveSession(f.request, f.ports)).code).toBe(3);
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: 'moved', value: { sourceCleanup: { status: 'pending' } } });
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
   expect(f.registryRemovals).toEqual([]);
   expect(f.states().at(-1)).toBe("source-stopped");
@@ -1187,4 +1187,25 @@ it("a pre-freeze refusal during recovery aborts without retaining power or the r
   const powerEvents = f.events.filter(event => event.startsWith("power-"));
   await recoverMove(f.request.operation.id, f.ports);
   expect(f.events.filter(event => event.startsWith("power-"))).toEqual(powerEvents);
+}, 5000);
+
+
+it('a committed move keeps unproved source exit pending, then retires once', async () => {
+  const f = fixture(), retire = f.ports.retire;
+  let proved = false;
+  f.ports.retire = async (...args) => {
+    if (!proved) throw new MoveError('move-preflight-refused', [validateBlockerId('process-exit-unproven')]);
+    return retire(...args);
+  };
+  const moved = await moveSession(f.request, f.ports);
+  expect(moved).toMatchObject({ code: 0, ok: true, reason: 'moved', value: { sourceCleanup: { status: 'pending', blockers: ['process-exit-unproven'] } } });
+  expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
+  expect(f.events).not.toContain('retire');
+  expect(f.registryRemovals).toEqual([]);
+  expect(f.held).toBe(true);
+  proved = true;
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: 'moved', value: { sourceCleanup: { status: 'done' } } });
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, value: { sourceCleanup: { status: 'done' } } });
+  expect(f.events.filter(event => event === 'retire')).toHaveLength(1);
+  expect(f.events.filter(event => event === 'start')).toHaveLength(1);
 }, 5000);

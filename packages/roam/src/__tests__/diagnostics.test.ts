@@ -483,9 +483,24 @@ it('cached status lists each pending source cleanup and removes completed work',
     const input = { globalDb: global.db, stores: [], journalDb: db, now: 10, observations: [] };
     const pending = diagnostics.readStatus(config(), input);
     expect(pending.sourceCleanups).toEqual([{ sessionId: 'session-a', sourceMachine: BOX, sourceCleanup: { status: 'pending', reason: 'move-source-stop-pending', blockers: ['process-exit-unproven'] } }]);
-    expect(sourceCleanupStatusText(pending.sourceCleanups![0])).toBe(`Session session-a: source cleanup pending on ${BOX}: process-exit-unproven.`);
+    expect(sourceCleanupStatusText(pending.sourceCleanups![0])).toBe(`Session session-a: source cleanup pending on ${BOX}: The source process has not been proved stopped and retired.`);
     expect(pending.incompleteOperations).toEqual(expect.arrayContaining([expect.objectContaining({ id: operation.id })]));
     journal.record(operation.id, 'done', {});
     expect(diagnostics.readStatus(config(), input).sourceCleanups).toEqual([]);
+  } finally { db.close(); global.close(); }
+});
+
+it("one malformed cleanup row does not hide other incomplete operations or valid cleanup", () => {
+  const global = createReplica("global", HUB), file = scratchDbPath("mixed-source-cleanup"), journal = openJournal(file);
+  for (const id of ["valid-cleanup", "bad-cleanup", "other-pending"]) journal.begin({ id, kind: "move", machineId: HUB, expectedEpoch: 1, args: {} });
+  journal.record("valid-cleanup", "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", reason: "move-source-stop-pending", blockers: ["process-exit-unproven"] } });
+  journal.record("bad-cleanup", "move-source-cleanup-pending", { sourceMachine: BOX, sourceCleanup: { status: "unknown" } });
+  const db = openDb(file);
+  try {
+    const status = diagnostics.readStatus(config(), { globalDb: global.db, stores: [], journalDb: db, now: 10, observations: [] });
+    expect(status.incompleteOperations?.map(row => row.id)).toEqual(["bad-cleanup", "other-pending", "valid-cleanup"]);
+    expect(status.sourceCleanups).toEqual([expect.objectContaining({ sessionId: "session-a" })]);
+    expect(status.complete).toBe(false);
+    expect(status.diagnostics).toContainEqual({ severity: "warning", reason: "Source cleanup evidence is invalid.", repairCommand: null });
   } finally { db.close(); global.close(); }
 });

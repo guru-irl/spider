@@ -354,6 +354,12 @@ describe('roaming completion states', () => {
   ] as const)('reconciles restoration code %s reason %s only when explicitly pending', (code, reason, pending) => {
     expect(restorationPending({ code, reason })).toBe(pending);
   });
+  it('replays a recovered home while its presentation is explicitly pending', () => {
+    expect(restorationPending({ code: 0, reason: 'destroyed-machine-recovered', value: { presentation: 'pending' } })).toBe(true);
+    for (const result of [{ code: 0, reason: 'destroyed-machine-recovered', value: { presentation: 'complete' } },
+      { code: 0, reason: 'unknown', value: { presentation: 'pending' } }, { code: 1, reason: 'destroyed-machine-recovered', value: { presentation: 'pending' } },
+      { code: 0, reason: 'destroyed-machine-recovered', value: null }, { code: 0, reason: 'destroyed-machine-recovered', value: {} }]) expect(restorationPending(result)).toBe(false);
+  });
   it.each([
     ['pending', 'operation-in-progress', true], ['complete', 'native-view-converted', false], ['refused', 'operation-in-progress', false],
     ['pending', 'presentation-unavailable', false], ['pending', 'target-changed', false], ['pending', 'unknown', false],

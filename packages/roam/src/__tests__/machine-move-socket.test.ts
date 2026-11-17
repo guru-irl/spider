@@ -54,7 +54,7 @@ it("machine socket exposes named operations and refuses malformed and disabled r
 
 it.each([
   ["connect ENOENT /home/alice/.pi/agent/intercom/broker.sock", "/home/alice"],
-  ["EACCES lstat '/Users/alice/.pi/agent/intercom/broker.pid'", "/Users/alice"],
+  ["EACCES lstat '/fixture/alice/agent/intercom/broker.pid'", "/fixture/alice"],
   [String.raw`connect EACCES C:\Users\alice\agent\broker.sock`, "alice"],
   ["authentication github_pat_" + "a".repeat(32), "github_pat_"],
   ["secret=private-value", "private-value"],

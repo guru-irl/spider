@@ -195,6 +195,17 @@ if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id &&
     (args[4] === 'exchange' || args[4] === 'revoke-local')) {
   const result = spawnSync(process.execPath, [descriptor.entry, ...args], { env: process.env, stdio: 'inherit' });
   process.exitCode = result.status ?? 1;
+} else if (args[0] === 'fixture-native-probe') {
+  const capture = argv => { const result = spawnSync(loadHerdrConfig(root).core.binary, argv, { env: process.env, encoding: 'utf8', timeout: 2000 }); return { status: result.status, stdout: result.stdout, stderr: result.stderr }; };
+  const labels = ['--label', 'spider.roam.operation=fixture-native-proof', '--label', 'spider.roam.attempt=fixture-native-attempt'];
+  const run = capture(['run', '--json', '--bg', '--no-notify', '--outlive-parent', '--no-parent', ...labels, '--', '/bin/sh', '-c', 'exit 17']);
+  let list = capture(['ls', '--all', '--json', ...labels]);
+  for (let i = 0; i < 40; i++) {
+    try { if (JSON.parse(list.stdout).terminals?.some(row => row.state === 'finished')) break; } catch { break; }
+    await new Promise(done => setTimeout(done, 25));
+    list = capture(['ls', '--all', '--json', ...labels]);
+  }
+  process.stdout.write(JSON.stringify({ code: 0, run, list, status: capture(['server', 'status', '--json']), help: capture(['ls', '--help']) }) + '\\n');
 } else if (args[0] === 'fixture-status') {
   const status = await requestHubControl(join(root, 'roam', 'hub.sock'), { op: 'status' });
   process.exitCode = status.code; process.stdout.write(JSON.stringify(status) + '\\n');
@@ -728,6 +739,9 @@ async function exclusion(suite: Suite): Promise<void> {
   const f = await createMoveStory(suite), [hub, box] = f.machines;
   phase('busy-source');
   try {
+    const nativeProbe = await f.cli(box, ['fixture-native-probe']);
+    console.info(JSON.stringify({ story: suite.story, phase: 'native-protocol-probe', probe: nativeProbe }));
+    throw new Error('diagnostic-native-protocol-captured');
     // A real in-flight provider request blocks freeze before ownership can change.
     const pendingTurn = await scripts(suite, { busy: [held('busy-move', 'released')] });
     await f.original.prompt(mark('busy')); await pendingTurn.ready('busy-move', deadline(30_000));

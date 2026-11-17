@@ -96,7 +96,7 @@ export interface IntercomEnrollmentPorts {
   /** Each ensure operation reconciles its own effect after a lost reply. */
   registerPair(pair: IntercomEnrollmentPlan): Promise<void>;
   checkConnector(machine: Peer, pin: IntercomMachinePin): Promise<"ready" | "missing" | "not-signed-in" | "offline" | "invalid">;
-  /** Inspect the key actually served by sshd and the destination account through the pinned peer. */
+  /** Inspect a presented system host key and the destination account through the pinned peer. */
   inspectSshHost(pair: IntercomEnrollmentPlan, pins: IntercomPairPins): Promise<{ targetMachineId: string; sshUser: string; hostKey: IntercomSshHostKey }>;
   bindPair(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<void>;
   hostConnector(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<"ready" | "unhosted" | "offline" | "not-pair-scoped">;

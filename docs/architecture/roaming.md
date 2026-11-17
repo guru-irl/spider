@@ -283,7 +283,10 @@ Each machine's operator supplies a connector recipe with `check`, `host`, and
 `{remotePort}`, and `{localPort}`. The host command must forward to IPv4
 `127.0.0.1` at the pair's approved `remotePort`, not `localhost`. The hub
 requests a scan on that port through the trusted machine channel. The target
-reports the key presented by the listener for pinning.
+pins a presented key only if it matches a root-owned system host public key in
+`/etc/ssh`. The directory and key file must not be writable by other users, and
+the key file must be a regular file, not a symlink. A scan alone does not prove
+that the listener holds the corresponding private key.
 
 ### Protocol versions
 

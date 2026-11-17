@@ -153,7 +153,7 @@ it("explains an unverified listener key to the operator", async () => {
     { transport: f.transport as never, journal: f.journal, tty: true, ask: async () => "approve" });
   expect(code).toBe(3);
   expect(err).toContain("intercom-ssh-host-unverified");
-  expect(err).toContain("the key presented on the pair's port is not one of this machine's system host keys");
+  expect(err).toContain("The key presented on the pair's port is not one of this machine's system host keys");
   expect(err).toContain("Check the SSH listener and its system host keys");
 }, 5000);
 

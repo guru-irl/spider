@@ -200,7 +200,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           record(pair.pairId, "verified");
           return null;
         } catch (error) {
-          return { reason: error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending"].includes(error.message) ? error.message : "intercom-enrollment-pending",
+          return { reason: error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending", "intercom-ssh-host-unverified"].includes(error.message) ? error.message : "intercom-enrollment-pending",
             causeCode: enrollmentCauseCode(error) };
         }
       };

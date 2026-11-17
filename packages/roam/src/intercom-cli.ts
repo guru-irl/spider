@@ -78,6 +78,9 @@ export async function runIntercomEnrollCli(input: { root: string; graphFile: str
     }
     (result.code === 0 ? io.out : io.err)(`${result.reason}\n`);
     if (result.value?.pending) for (const pending of result.value.pending) io.err(`${pending.pairId}: ${pending.reason}${pending.causeCode ? ` [${pending.causeCode}]` : ""}\n`);
+    if (result.value?.pending?.some(pending => pending.reason === "intercom-ssh-host-unverified")) {
+      io.err("The key presented on the pair's port is not one of this machine's system host keys. Check the SSH listener and its system host keys, then retry.\n");
+    }
     return result.code;
   } catch (error) {
     const message = error instanceof Error ? error.message : "";

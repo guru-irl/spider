@@ -20,8 +20,10 @@ export type PanelUsageReader = {
 export function createPanelUsageReader(file: string): PanelUsageReader {
   let reader: ReturnType<typeof openDashboardReader>;
   let identity: { revision: string; sessionId: string; scope: ReturnType<typeof scopeFor> | null } | undefined;
+  let idle: ReturnType<typeof setTimeout> | undefined;
   let now = 0, calibrationMode: 'auto' | 'off' = 'auto';
   function close(): void {
+    clearTimeout(idle); idle = undefined;
     const previous = reader; reader = undefined; identity = undefined;
     previous?.close();
   }
@@ -33,7 +35,7 @@ export function createPanelUsageReader(file: string): PanelUsageReader {
       try {
         reader ??= openDashboardReader(file, { instanceId: 'herdr-panel', serverBuild: 'worker', now: () => now, calibrationMode: () => calibrationMode });
         if (!reader) return null;
-        return reader.snapshot(ctx => {
+        const value = reader.snapshot(ctx => {
           const period = billingPeriod(now, latestValidCounter(ctx.db, now));
           let value: ReturnType<typeof sumValues> = { ...sumValues([]), credits: 0 };
           try {
@@ -61,6 +63,10 @@ export function createPanelUsageReader(file: string): PanelUsageReader {
             pace: counterPace.used !== null && counterPace.ratePerDay !== null ? counterPace
               : computePace({ now, snapshots, budget, correctedMonth, correctedWindow }), updatedAt: snapshots.at(-1)?.ts ?? null };
         });
+        clearTimeout(idle);
+        idle = setTimeout(() => { identity = undefined; idle = undefined; }, 60000);
+        idle.unref?.();
+        return value;
       } catch {
         // Retry with a fresh connection after a failed read.
         close(); return null;

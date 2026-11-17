@@ -20,6 +20,7 @@ export async function inspectServedSshIdentity(options: { machineId: string; ssh
     const host = options.sshPort === 22 ? "127.0.0.1" : `[127.0.0.1]:${options.sshPort}`;
     const keys = new Map<string, IntercomSshHostKey>();
     for (const line of result.stdout.replace(/\r?\n$/, "").split(/\r?\n/)) {
+      if (/^# \S+:\d+ /.test(line)) continue;
       const match = /^(\S+) (\S+) ([A-Za-z0-9+/]+={0,2})$/.exec(line);
       if (!match || match[1] !== host) return unavailable();
       const hostKey = { type: match[2], base64: match[3] };

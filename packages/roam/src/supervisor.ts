@@ -137,6 +137,11 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       await ports.notify(id, reason);
     }
   }
+  async function hostingFailure(id: string, current: VersionedIntent, error: unknown): Promise<void> {
+    console.error(JSON.stringify({ event: "supervisor-hosting-error", sessionId: id,
+      error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : { message: String(error) } }));
+    await suspend(id, current, "Cannot verify hosting state");
+  }
   async function recordCrash(id: string, current: VersionedIntent, stableSince?: number): Promise<void> {
     const state = current.value, now = ports.clock.now();
     if (stableSince !== undefined && now < stableSince || state.failures.some(at => at > now)) {
@@ -184,7 +189,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
     const state = current.value;
     let observation: SupervisorObservation;
     try { observation = await ports.inspect(id); }
-    catch { await suspend(id, current, "Cannot verify hosting state"); return; }
+    catch (error) { await hostingFailure(id, current, error); return; }
     if (!sameAuthority(state.intent, observation.intent)) return;
     if (state.intent.desired === "stopped") {
       cancelRetry(id);
@@ -220,7 +225,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       ? { intent: state.intent, mode: "reconcile", reservation: { operationId: state.supervision.operationId } }
       : { intent: state.intent, mode: "fresh" };
     let check: SupervisorObservation;
-    try { check = await ports.inspect(id); } catch { await suspend(id, current, "Cannot verify hosting state"); return; }
+    try { check = await ports.inspect(id); } catch (error) { await hostingFailure(id, current, error); return; }
     const rechecked = await ports.runningIntents.get(id);
     if (!rechecked || rechecked.suspended !== null || check.intent.suspended !== null || !sameAuthority(state.intent, rechecked) || !sameAuthority(state.intent, check.intent) || check.owner.kind === "uncertain" || request.mode === "fresh" && check.owner.kind !== "absent" ||
         check.unfinishedFreeze || check.diagnostics.some(item => item.severity === "block") || !permitted(check, id)) return;
@@ -259,8 +264,8 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
           if (ports.connection && !await reconnectSupervisor(await ports.connection.handshake(), ports.connection)) continue;
           for (const id of await ports.runningIntents.list()) {
             try { await visit(id); }
-            catch {
-              try { const current = await ports.intents.get(id); if (current) await suspend(id, current, "Cannot verify hosting state"); }
+            catch (error) {
+              try { const current = await ports.intents.get(id); if (current) await hostingFailure(id, current, error); }
               catch { /* An unreadable view stays fenced. */ }
             }
           }

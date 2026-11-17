@@ -382,3 +382,36 @@ it('sync cleanup does no work without pending operations and joins overlapping r
   await service.recoverCleanup();
   expect(calls).toBe(1);
 });
+
+it("source cleanup ignores synchronization with a different machine", async () => {
+  const f = await fixture(), operation = { id: "source-only", machineId: HUB, kind: "move", expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: OTHER } };
+  f.journal.begin(operation);
+  f.journal.record(operation.id, "move-request", { operation, sessionId: "session-a", destinationMachine: OTHER });
+  f.journal.record(operation.id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", blockers: ["process-exit-unproven"] } });
+  await f.service.recoverCleanup(OTHER);
+  expect(f.mounted).toEqual([]);
+  await f.service.recoverCleanup(BOX);
+  expect(f.mounted).toEqual(["session-a"]);
+}, 5000);
+
+it("cleanup coalesces evidence arriving during a flight into one trailing run", async () => {
+  const f = await fixture();
+  const add = (id: string) => {
+    const operation = { id, machineId: HUB, kind: "move", expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: OTHER } };
+    f.journal.begin(operation); f.journal.record(id, "move-request", { operation, sessionId: "session-a", destinationMachine: OTHER });
+    f.journal.record(id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", blockers: ["process-exit-unproven"] } });
+  };
+  add("first-cleanup");
+  let entered!: () => void, release!: () => void, calls = 0;
+  const started = new Promise<void>(resolve => { entered = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  const service = createMoveRuntimeService({ root: f.root, globalDb: f.global.db, config: f.ports.config, journal: f.journal, transport: {} as Transport }, async input => {
+    if (++calls === 1) { entered(); await held; }
+    return f.factory(input);
+  });
+  const first = service.recoverCleanup(BOX); await started;
+  add("second-cleanup");
+  const second = service.recoverCleanup(BOX), third = service.recoverCleanup(BOX);
+  release(); await Promise.all([first, second, third]);
+  expect(f.journal.lookupOperation("second-cleanup")?.state).toBe("done");
+  expect(calls).toBe(2);
+}, 5000);

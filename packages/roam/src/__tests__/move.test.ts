@@ -1222,3 +1222,12 @@ it.each(['throw', 'uncertain', 'live'] as const)('a committed move keeps %s sour
   expect(f.events.filter(event => event === 'retire')).toHaveLength(1);
   expect(f.events.filter(event => event === 'start')).toHaveLength(1);
 }, 5000);
+
+it("offline source cleanup retries do not append unchanged journal evidence", async () => {
+  const f = await fixture();
+  f.ports.retire = async () => { throw new Error("fixture-source-offline"); };
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "pending" } } });
+  const before = f.ports.journal.read(f.request.operation.id).length;
+  for (let i = 0; i < 8; i++) expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved" });
+  expect(f.ports.journal.read(f.request.operation.id)).toHaveLength(before);
+}, 5000);

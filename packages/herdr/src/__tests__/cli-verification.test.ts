@@ -5,7 +5,7 @@ import { HerdrError } from '../client/parse.js';
 import { runHerdrCli } from '../setup/cli.js';
 import { invokeCli } from '../client/cli-transport.js';
 
-async function fail(command: string, error: Error) {
+async function fail(command: string, error: unknown) {
   let stdout = '', stderr = '';
   const code = await runHerdrCli([command], {
     request: async () => { throw error; },

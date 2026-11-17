@@ -199,6 +199,24 @@ it("real adapters preserve expected epoch and exact file", async () => {
   expect((await createRunningIntentAuthority(f.global.db).get(SESSION))?.file).toBe(f.file);
 }, 5000);
 
+it.each(["local", "remote"] as const)("keeps a %s wake launch conflict as a typed refusal", async side => {
+  const f = await fixture(side === "remote" ? BOX : HUB);
+  const outgoing = casHome(f.global.db, f.home, BOX, "outgoing", HUB);
+  const home = side === "remote" ? outgoing : casHome(f.global.db, outgoing, HUB, f.operation.id, HUB);
+  if (side === "remote") f.bindings.participant!.config = { ...f.config, role: "box", machineId: BOX };
+  f.bindings.participant!.wake = async () => ({ ok: false, reason: "participant-launch-conflict" });
+  f.transport.exec = async (_peer, argv) => {
+    const operation = JSON.parse(argv[2]) as Operation;
+    return Buffer.from(JSON.stringify(await handleAgentOperation(operation, {
+      config: f.bindings.participant!.config, root: f.root, journal: f.journal, openStore: () => { throw new Error("unexpected store read"); },
+      move: op => handleMoveParticipantOperation(op, f.journal, f.bindings),
+    })));
+  };
+  expect(await f.ports.start(home, { session: f.sourceManifest, workspace: f.sourceWorkspace } as PreparedMove, f.operation))
+    .toMatchObject({ code: 1, reason: "participant-launch-conflict", operationId: f.operation.id, epoch: home.epoch, value: null });
+  expect(f.journal.read(`${f.operation.id}-session-start-${home.machineId}`).some(row => row.action === "participant-launch")).toBe(false);
+}, 5000);
+
 it("start before pi uses roaming participant ports not socket", async () => {
   const f = await fixture();
   const prepared = { session: f.sourceManifest, workspace: f.sourceWorkspace } as PreparedMove;

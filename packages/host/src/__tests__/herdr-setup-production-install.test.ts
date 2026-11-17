@@ -180,10 +180,9 @@ test('production keeps unrelated edits in all shared settings files', async () =
   const keys = JSON.parse(await readFile(join(f.h.directories.app, 'keys.json'), 'utf8'));
   expect(keys.global).toEqual({
     'cmd-p': 'mod.open:spider-picker', 'cmd-n': { command: 'space.new', args: { machine: '' } },
-    'cmd-t': 'mod.open:spider-machine-picker', 'cmd-d': 'mod.open:spider-machine-picker-right', 'cmd-shift-d': 'mod.open:spider-machine-picker-down',
     'cmd-shift-w': 'pane.close', 'ctrl-q': 'user.action',
   });
-  expect(keys['layout:spider-glass']).toEqual({ 'cmd-shift-e': 'spider-pane.park', 'cmd-shift-w': 'spider-pane.close' });
+  expect(keys['layout:spider-glass']).toEqual({ 'cmd-shift-e': 'spider-pane.park' });
   expect(f.bootstraps).toHaveLength(1);
 });
 

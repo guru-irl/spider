@@ -57,7 +57,7 @@ test('doctor reports mod loading not verified with fenced headless commands', as
     const report = await parts.inspect(item, f.request);
     expect(report.failures).toEqual([]);
     const names = item === 'mods'
-      ? ['spider-panel', 'spider-picker', 'spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down', 'spider-pane-waiting']
+      ? ['spider-panel', 'spider-picker', 'spider-pane-waiting']
       : ['spider-agents', 'spider-spaces', 'spider-pane', 'spider-tabs', 'spider-chrome', 'spider-picker'];
     expect(report.warnings?.map(warning => warning.message).sort()).toEqual(names.map(name => `${name} source content matches; mod loading is not verified`).sort());
     if (item === 'mods') expect(report.warnings?.[1]?.message).toContain('spider-picker');

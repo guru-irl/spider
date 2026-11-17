@@ -66,6 +66,38 @@ it('publishes unavailable immediately while the first usage value is pending', a
   } finally { clearTimeout(timer); finish(emptyUsage); }
 });
 
+it('expires a late owner generation from the original sample time', async () => {
+  const requests: number[] = [];
+  const f = fixture(async now => {
+    requests.push(now);
+    const sampledAt = now < NOW + 30000 ? NOW : NOW + 30000;
+    return { pace: computePace({ ...emptyUsage, now: sampledAt }), updatedAt: null, sampledAt,
+      monthCost: { credits: sampledAt === NOW ? 7 : 9, label: sampledAt === NOW ? '7' : '9' } };
+  });
+  expect((await f.source.snapshot(f.owner)).monthCost.credits).toBe(7);
+  f.advance(29000);
+  const lateOwner = { ...f.owner, generation: 'later' as Owner['generation'] };
+  expect((await f.source.snapshot(lateOwner)).monthCost.credits).toBe(7);
+  f.advance(1000);
+  expect((await f.source.snapshot(lateOwner)).monthCost.credits).toBe(9);
+  expect(requests).toEqual([NOW, NOW + 29000, NOW + 30000]);
+});
+
+it('never displays a sample older than one interval during a slow replacement', async () => {
+  let finish!: (value: typeof emptyUsage & { sampledAt: number; monthCost: { credits: number; label: string } }) => void;
+  const replacement = new Promise<typeof emptyUsage & { sampledAt: number; monthCost: { credits: number; label: string } }>(resolve => { finish = resolve; });
+  let attempt = 0;
+  const f = fixture(() => ++attempt === 1 ? Promise.resolve({ ...emptyUsage, sampledAt: NOW, correctedMonth: 12, monthCost: { credits: 7, label: '7' } }) : replacement);
+  expect((await f.source.snapshot(f.owner)).monthCost.credits).toBe(7);
+  f.advance(29999);
+  expect((await f.source.snapshot(f.owner)).monthCost.credits).toBe(7);
+  f.advance(1);
+  const pending = await f.source.snapshot(f.owner);
+  expect(pending.monthCost).toEqual(unavailable);
+  expect(pending.pace.used).toBeNull();
+  finish({ ...emptyUsage, sampledAt: NOW + 30000, monthCost: { credits: 9, label: '9' } });
+});
+
 it('never opens the usage dashboard reader on the snapshot caller thread', async () => {
   // Moving the month query back into snapshot trips this native-reader boundary.
   const f = fixture(async () => emptyUsage);

@@ -503,7 +503,7 @@ async function topology(suite: Suite): Promise<void> {
   };
   await scripts(suite, values);
   phase('network-setup');
-  const network = await intercomNetwork(suite, { faults: true }), sessions: InteractiveDriver[] = [], sessionIds: string[] = [];
+  const network = await intercomNetwork(suite, { faults: true, virtualClock: 'all' }), sessions: InteractiveDriver[] = [], sessionIds: string[] = [];
   let pair: PairFixture | undefined;
   try {
     phase('cold-cli-startup');
@@ -549,6 +549,8 @@ async function topology(suite: Suite): Promise<void> {
     phase('hub-off-custody');
     const held = await call(sessions[1], 'held'), heldId = String(result(held).details.messageId);
     expect(result(held).details).toMatchObject({ delivered: true, delivery: 'queued', acceptance: { durable: true } });
+    // A passive edge has no disconnect signal; expire its unchanged liveness window.
+    await advanceIntercomClock(source, 35_000);
     await waitFor('hub-only route is down', () => edge(source, hub), state => state?.status === 'down', deadline(60_000));
     expect(copy(source, heldId)?.state).toBe('queued');
     const heldEndpoint = JSON.parse(copy(source, heldId)!.endpoint_json);
@@ -592,10 +594,18 @@ async function topology(suite: Suite): Promise<void> {
       () => Promise.all([source.probe.listSessions(), target.probe.listSessions()]),
       rosters => rosters.every((list, i) => list.some(session => session.id === sessionIds[i + 1] && session.homeEpoch === 1)), deadline(60_000));
     phase('drain-custody');
+    const linkTiming = (point: string) => console.info(JSON.stringify({ story: suite.story, measurement: 'link-wait', point,
+      elapsedMs: Date.now() - phaseStarted, edges: [[hub, source], [hub, target], [source, hub], [source, target]].map(([machine, peer]) => {
+        const state = edge(machine, peer);
+        return { machine: machine.id, peer: peer.id, status: state?.status, reason: state?.reason, lastSuccess: state?.lastSuccess };
+      }) }));
+    linkTiming('release-custody');
     await setLinkFault(hub, []); await setLinkFault(source, []); await setLinkFault(target, []);
     await suite.evidence('R13-drain-rosters.json', await Promise.all(network.machines.map(machine => machine.probe.listSessions())));
     await sessions[2].waitEvent('message_end', event => received(event, 'hub custody before transition'), deadline(60_000));
+    linkTiming('custody-injected');
     const drainedSource = await waitFor('drained relay consumption reaches the original source', () => copy(source, hubHeldId), row => row?.state === 'injected' && row.payload_json === null, deadline(60_000));
+    linkTiming('custody-receipt');
     expect(JSON.parse(drainedSource!.endpoint_json)).toEqual(hubHeldEndpoint);
     expect(JSON.parse(copy(target, hubHeldId, 'inbound')!.endpoint_json)).toEqual(hubHeldEndpoint);
     expect(JSON.parse(drainedSource!.receipt_json!)).toMatchObject({ messageId: hubHeldId, status: 'injected',
@@ -710,12 +720,16 @@ async function topology(suite: Suite): Promise<void> {
     await setLinkFault(source, []); await setLinkFault(target, []);
     await network.restartHub();
     phase('fresh-origin-sync');
+    linkTiming('fresh-hub-reconnect');
     await waitFor('hub links return before fresh origin sync', () => [edge(source, hub), edge(target, hub)],
       states => states.every(state => state?.status === 'live'), deadline(60_000));
+    linkTiming('fresh-hub-live');
     await syncOrigins(suite, network);
+    linkTiming('fresh-origins-synced');
     await waitFor('the same new sessions become reachable after origin sync', async () => Promise.all([source.probe.listSessions(), target.probe.listSessions()]),
       lists => lists[0].some(session => session.remote === true && session.id === freshSessionIds[1] && session.reachability === 'live') &&
         lists[1].some(session => session.remote === true && session.id === freshSessionIds[0] && session.reachability === 'live'), deadline(60_000));
+    linkTiming('fresh-sessions-reachable');
     await hub.service.stop();
     await setLinkFault(source, [hub.alias]); await setLinkFault(target, [hub.alias]);
     phase('fresh-offline-messages');

@@ -6,6 +6,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { pairPorts } from './roam-pair-platform.mjs';
+import { serveFixtureClock } from './roam-hub-clock.mjs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -51,6 +52,12 @@ process.once('SIGTERM', stop);
 const { startProductionSupervisor } = await import(pathToFileURL(entry).href);
 const descriptor = process.env.SPIDER_E2E_PAIR_DESCRIPTOR;
 if (descriptor && !inside(descriptor)) throw new Error('fixture pair descriptor is not owned');
-const service = await startProductionSupervisor(globalRoot, { system, ...(descriptor ? { intercomLocalPorts: pairPorts(descriptor) } : {}) });
-process.stdout.write('fixture supervisor ready\n');
-try { await stopped; } finally { await service.stop(); }
+const clockSocket = process.env.SPIDER_E2E_INTERCOM_CLOCK;
+if (clockSocket && (relative(globalRoot, clockSocket) !== 'clock.sock' || !isAbsolute(clockSocket))) throw new Error('fixture clock is not owned');
+const controlled = clockSocket ? await serveFixtureClock(clockSocket) : undefined;
+try {
+  const service = await startProductionSupervisor(globalRoot, { system, ...(controlled ? { clock: controlled.clock } : {}),
+    ...(descriptor ? { intercomLocalPorts: pairPorts(descriptor) } : {}) });
+  process.stdout.write('fixture supervisor ready\n');
+  try { await stopped; } finally { await service.stop(); }
+} finally { controlled?.close(); }

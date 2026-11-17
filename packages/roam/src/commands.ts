@@ -150,13 +150,14 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
 }
 export function controlText(result: SafeControlOutcome, destinationAlias?: string): string {
   const value = result.value as { presentation?: string; terminal?: string; intercomAddress?: string; warnings?: string[]; candidates?: string[]; sourceCleanup?: SourceCleanup } | null;
+  const movedText = value?.intercomAddress ? `Moved to ${destinationAlias ?? result.home?.machineId ?? "destination"}; terminal ${value.terminal ?? "pending"}; intercom ${value.intercomAddress}.\n${value.warnings?.map(controlWarningText).join("\n") ?? ""}\n` : "Moved.\n";
   if (result.code === 0 && value?.sourceCleanup) switch (value.sourceCleanup.status) {
     case 'done': break;
-    case 'pending': return `Moved. Source cleanup pending: ${MOVE_REFUSAL_MESSAGES['move-source-stop-pending'].replace(/\.$/, '')}. It finishes on its own; check with \`spider roam status\`.\n`;
+    case 'pending': return `${movedText}Source cleanup pending: ${MOVE_REFUSAL_MESSAGES['move-source-stop-pending'].replace(/\.$/, '')}. It finishes on its own; check with \`spider roam status\`.\n`;
     default: { const exhaustive: never = value.sourceCleanup; return exhaustive; }
   }
   if (result.code === 0 && value?.presentation === "pending") return "recovered; the pane appears when Herdr opens\n";
-  if (result.code === 0 && value?.intercomAddress) return `Moved to ${destinationAlias ?? result.home?.machineId ?? "destination"}; terminal ${value.terminal ?? "pending"}; intercom ${value.intercomAddress}.\n${value.warnings?.map(controlWarningText).join("\n") ?? ""}\n`;
+  if (result.code === 0 && value?.intercomAddress) return movedText;
   const explanation = result.refusal?.message, pause = ["destination-unknown", "move-destination-pending"].includes(result.reason) && !explanation?.includes("The source is paused")
     ? "\nThe source is paused to avoid running two copies." : "";
   return `${result.reason === "mac-hub-required" ? "Run this command on the Mac hub." : result.reason}${explanation ? `\n${explanation}` : ""}${result.refusal?.blockers.length ? `\nBlockers: ${result.refusal.blockers.join(", ")}` : ""}${result.home ? `\nCurrent home: ${result.home.machineId} (epoch ${result.home.epoch}).` : ""}${pause}${result.repairCommand ? `\n${result.repairCommand}` : ""}${value?.candidates?.length ? `\nCandidates: ${value.candidates.join(", ")}` : ""}\n`;

@@ -132,7 +132,8 @@ the session's working directory to the destination checkout. Historical usage
 stays on its execution machine, and each machine charges only its local segment.
 Missing tool sign-ins produce warnings rather than permission to copy credentials.
 The result includes the new machine-qualified intercom address and actual route
-warnings.
+warnings. If source cleanup is pending, the destination line and warnings still
+appear first, followed by the cleanup reason and `spider roam status`.
 
 The hub freezes the source before it changes the home. A timeout does not
 unfreeze the source or prove that the destination never started. Use

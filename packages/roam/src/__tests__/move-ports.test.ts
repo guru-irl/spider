@@ -1692,3 +1692,19 @@ it("cleanup retries follow a destination restart while source cleanup is pending
   expect(result).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
   expect(f.journal.lookupOperation(operation.id)?.state).toBe("done");
 }, 5000);
+
+it("destroyed mirror completed restoration replays its start receipt after the owner exits", async () => {
+  const f = preparedFixture;
+  casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
+  f.journal.begin({ id: "completed-restore-mirror", kind: "session-mirror", machineId: BOX, expectedEpoch: 2, args: { sessionId: SESSION } });
+  await appendMirror({ sessionId: SESSION, epoch: 2, source: mirrorPrepared.session, root: f.bindings.recovery!.mirrorRoot, operationId: "completed-restore-mirror" }, f.journal);
+  f.bindings.recovery!.restoreWorkspace = async () => ({ cwd: f.repo, parent: null });
+  expect(await forgetMachine({ machineId: BOX, confirmation: `destroyed ${BOX}` }, f.ports)).toMatchObject({ code: 0 });
+  const home = sessionHome(f.global.db, SESSION) as Home, mirror = await f.ports.recovery.mirror(SESSION, 2);
+  if (!mirror) throw new Error("Missing mirror");
+  f.owner({ kind: "absent" });
+  const operation = { id: home.moveId!, kind: "restore-destroyed-home", machineId: HUB, expectedEpoch: home.epoch, args: { sessionId: SESSION, destroyedMachine: BOX } };
+  const before = f.events.filter(event => event === "wake").length;
+  expect(await f.ports.recovery.restore(home, mirror, operation)).toMatchObject({ code: 0, reason: "ready", value: { sessionId: SESSION, epoch: 3 } });
+  expect(f.events.filter(event => event === "wake")).toHaveLength(before);
+}, 5000);

@@ -550,9 +550,10 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
         for (const key of super[Symbol.iterator]()) { if (drawing) reads++; yield key; }
       }
     }
-    h.view.expandedSubagents = new TrackedSet(Array.from({ length: 400 }, (_, i) => `old-${i}`));
     try {
       await h.ready(); h.render(); await h.flush();
+      h.view.expandedSubagents = new TrackedSet(Array.from({ length: 400 }, (_, i) => `old-${i}`));
+      expect(h.view.expandedSubagents.size).toBe(400);
       drawing = true; h.render(); drawing = false;
       expect(reads).toBe(0);
     } finally { drawing = false; await h.view.close(); }

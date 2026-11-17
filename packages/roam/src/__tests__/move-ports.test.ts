@@ -1708,3 +1708,18 @@ it("destroyed mirror completed restoration replays its start receipt after the o
   expect(await f.ports.recovery.restore(home, mirror, operation)).toMatchObject({ code: 0, reason: "ready", value: { sessionId: SESSION, epoch: 3 } });
   expect(f.events.filter(event => event === "wake")).toHaveLength(before);
 }, 5000);
+
+it.each([70, 90])("participant exit proof at %s ms leaves room inside the transport budget", async exitAt => {
+  const f = await fixture(), p = f.bindings.participant!;
+  let now = 0;
+  f.config.limits = { ...f.config.limits, controlMs: 100 };
+  f.bindings.clock = { now: () => now, later: () => () => {} };
+  p.probe = async () => now < exitAt ? { kind: "live", identity: { bootId: "fixture-boot", pid: 42, startTime: "fixture-start" } } : { kind: "absent" };
+  p.exit = { async exited() { now = exitAt; return true; } };
+  const server = await startSessionControlSocket(p.runtimeRoot, SESSION, async ({ operation }) => ({ code: 0, reason: "shutdown-requested", operationId: operation.id, home: f.home, epoch: 1, repairCommand: null, value: null }));
+  try {
+    const result = await handleMoveParticipantOperation({ id: "bounded-shutdown", kind: "session-shutdown", machineId: HUB, expectedEpoch: 1,
+      args: { sessionId: SESSION, sourceMachine: HUB, moveId: f.operation.id } }, f.journal, f.bindings);
+    expect(result).toMatchObject(exitAt === 70 ? { code: 0, reason: "shutdown-complete" } : { code: 3, reason: "process-exit-unproven" });
+  } finally { await server.close(); }
+}, 5000);

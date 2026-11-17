@@ -130,7 +130,7 @@ describe('story cleanup reserve', () => {
       await runStoryWork(root, 'R17', async () => {});
       const expired: string[] = [], at = Date.now() + 400;
       const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('work'); } }, root, { ids: ['R17'], harness: false });
-      expect(deadline.cleanupAt).toBeLessThanOrEqual(at + 10_000);
+      expect(deadline.cleanupAt).toBe(at + 5_000);
       const result = await command(process.execPath, ['-e', 'setTimeout(() => console.log("clean"), 650)'], process.cwd(), process.env, resolve(root, 'log'), true, undefined, 60_000, deadline);
       expect(result.code).toBe(0);
       expect(result.output).toContain('clean');

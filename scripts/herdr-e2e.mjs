@@ -196,7 +196,7 @@ export async function runStoryWork(root, id, work) {
 export function storyExecutionDeadline(overall, root, options) {
   // Harness files can still be doing work after the selected stories finish.
   if (!overall || options.harness || !options.ids.length) return overall;
-  return { ...overall, cleanupAt: overall.at + cleanupReserveMs, cleanupReady() {
+  return { ...overall, cleanupAt: overall.at + cleanupReserveMs / 2, cleanupReady() {
     return options.ids.every(id => {
       if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(id)) return false;
       try {

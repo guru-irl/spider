@@ -159,7 +159,7 @@ export async function retireParticipantSessions(agent: AgentPorts, stop: (sessio
         const epoch = home && home !== "unknown" ? home.epoch : memberships[0]?.epoch;
         const moveId = home && home !== "unknown" ? home.moveId : memberships[0]?.move_id ?? null;
         if (!epoch || (!home || home === "unknown") && memberships.some(row => row.epoch !== epoch)) throw new Error("retirement-evidence-unavailable");
-        await authority.set({ sessionId: id, epoch, desired: "stopped", suspended: null, file: location.file, cwd: location.cwd, moveId }, `retire-${id}`, { machineId: agent.config.machineId, hubMachineId: agent.config.hubMachineId });
+        await authority.set({ sessionId: id, epoch, desired: "stopped", suspended: null, file: location.file, cwd: location.cwd, moveId }, `retire-${id}`, { kind: "box-participant", machineId: agent.config.machineId, hubMachineId: agent.config.hubMachineId });
       } else await authority.stop(id);
       if ((await stop(id)).kind !== "absent") throw new Error("retirement-pending");
       if (location) for (const key of JSON.parse(location.stores_json) as StoreKey[]) if (key.startsWith("worktree:")) {

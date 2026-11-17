@@ -29,7 +29,7 @@ it("reconnect reports new terminal for placement and durable suspension", async 
   const journal = openJournal(join(f.root, "roam", "journal.db")), authority = createRunningIntentAuthority(f.db), intents = createIntentStore(f.root);
   const intent = { sessionId: "s-1", epoch: 1, file: join(f.root, "s.jsonl"), cwd: f.root, desired: "running" as const, suspended: null, moveId: null };
   f.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("s-1", BOX);
-  await authority.set(intent, "launch-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set(intent, "launch-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const ports = { db: f.db, journal, authority, intents, machineId: BOX, hubMachineId: HUB, async live() { return true; }, async terminalOutcome() { return "unknown" as const; } };
   for (const [operationId, terminal] of [["launch-1", "terminal-1"], ["launch-2", "terminal-2"]]) {
     journal.begin({ id: operationId, kind: "exact-session-launch", machineId: BOX, expectedEpoch: 1, args: {} });
@@ -58,7 +58,7 @@ it.each(["missing-home", "wrong-machine", "new-epoch", "wrong-move", "untrusted-
   const journal = openJournal(join(f.root, "roam", "journal.db")), authority = createRunningIntentAuthority(f.db);
   const intent = { sessionId: "s-1", epoch: 1, file: join(f.root, "s.jsonl"), cwd: f.root, desired: "running" as const, suspended: null, moveId: null };
   if (scenario !== "missing-home") f.db.prepare("INSERT INTO session_homes VALUES (?,?,?,?,1)").run("s-1", scenario === "wrong-machine" ? OTHER : BOX, scenario === "new-epoch" ? 2 : 1, scenario === "wrong-move" ? "move-2" : null);
-  await authority.set(intent, "launch-1", scenario === "untrusted-intent" ? undefined : { machineId: BOX, hubMachineId: HUB });
+  await authority.set(intent, "launch-1", { kind: "box-participant", machineId: scenario === "untrusted-intent" ? OTHER : BOX, hubMachineId: HUB });
   journal.begin({ id: "launch-1", kind: "exact-session-launch", machineId: BOX, expectedEpoch: 1, args: {} });
   const ready = { origin: "hub-operation" as const, opId: "launch-1", sessionId: "s-1", epoch: 1, cwd: f.root, file: intent.file, core: "core-1", terminal: "term-1" };
   recordReadiness(journal, ready); writeLocal(f.db, "participant-ready", "s-1", ready);
@@ -71,7 +71,7 @@ it("stopped or unproved owners never advertise an old readiness receipt", async 
   const authority = createRunningIntentAuthority(f.db), journal = openJournal(join(f.root, "roam", "journal.db"));
   const intent = { sessionId: "s-1", epoch: 1, file: join(f.root, "s.jsonl"), cwd: f.root, desired: "running" as const, suspended: null, moveId: null };
   f.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("s-1", BOX);
-  await authority.set(intent, "launch-1", { machineId: BOX, hubMachineId: HUB }); journal.begin({ id: "launch-1", kind: "exact-session-launch", machineId: BOX, expectedEpoch: 1, args: {} });
+  await authority.set(intent, "launch-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB }); journal.begin({ id: "launch-1", kind: "exact-session-launch", machineId: BOX, expectedEpoch: 1, args: {} });
   const ready = { origin: "hub-operation" as const, opId: "launch-1", sessionId: "s-1", epoch: 1, cwd: f.root, file: intent.file, core: "core-1", terminal: "old-terminal" };
   recordReadiness(journal, ready); writeLocal(f.db, "participant-ready", "s-1", ready);
   const ports = { db: f.db, journal, authority, intents: createIntentStore(f.root), machineId: BOX, hubMachineId: HUB, async live() { return false; }, async terminalOutcome() { return "unknown" as const; } };
@@ -95,7 +95,7 @@ async function executionFixture(epoch = 2) {
   const journal = openJournal(join(global.root, "roam", "journal.db"));
   const authority = createRunningIntentAuthority(global.db), intents = createIntentStore(global.root);
   const intent = { sessionId: "s-1", epoch, file, cwd, desired: "running" as const, suspended: null, moveId: null };
-  await authority.set(intent, "start-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set(intent, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const ready = { origin: "hub-operation" as const, opId: "launch-current", sessionId: "s-1", epoch, file, cwd, core: "execution-core", terminal: "execution-terminal" };
   journal.begin({ id: ready.opId, kind: "exact-session-launch", machineId: BOX, expectedEpoch: epoch, args: {} });
   recordReadiness(journal, ready); writeLocal(global.db, "participant-ready", "s-1", ready);
@@ -163,7 +163,7 @@ it("handoff kill cannot stop successor home", async () => {
   const f = await executionFixture();
   await observeHosting({ ...f.ports, live: async () => false, async terminalOutcome() {
     f.global.db.prepare("UPDATE session_homes SET machine_id=?,epoch=?,move_id=? WHERE session_id=?").run(OTHER, 3, "move-next", "s-1");
-    await f.authority.set({ ...f.intent, epoch: 3, moveId: "move-next" }, "start-next", { machineId: OTHER, hubMachineId: HUB });
+    await f.authority.set({ ...f.intent, epoch: 3, moveId: "move-next" }, "start-next", { kind: "box-participant", machineId: OTHER, hubMachineId: HUB });
     return "killed";
   } });
   expect(await f.authority.get("s-1")).toMatchObject({ desired: "running", epoch: 3, moveId: "move-next" });
@@ -226,7 +226,7 @@ it("a resumed box-local session without a launch ID retains unknown and restart 
     pid: process.pid, startIdentity: "local-owner", stopped: false };
   writeLocal(f.global.db, "participant-origin", "s-1", origin);
   writeLocal(f.global.db, "participant-ready", "s-1", ready);
-  await f.authority.set(f.intent, "resume-1", { machineId: BOX, hubMachineId: HUB });
+  await f.authority.set(f.intent, "resume-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const terminal = executionTerminal(f.ready, { labels: { "spider.kind": "session", "spider.session": "s-1" } });
   const reader = outcomeReader(fakeHc(ready.core, { [ready.terminal]: terminal }));
   expect(await reader(ready)).toBe("unknown");
@@ -258,7 +258,7 @@ it("a new launch reservation cannot be stopped by the old terminal", async () =>
 it("a newer same-epoch authority during liveness checking cannot be stopped by an older launch", async () => {
   const f = await executionFixture();
   await observeHosting({ ...f.ports, async live() {
-    await f.authority.set(f.intent, "start-next", { machineId: BOX, hubMachineId: HUB }); return false;
+    await f.authority.set(f.intent, "start-next", { kind: "box-participant", machineId: BOX, hubMachineId: HUB }); return false;
   }, terminalOutcome: async () => "killed" });
   expect(f.authority.operationId("s-1")).toBe("start-next");
   expect(await f.authority.get("s-1")).toMatchObject({ desired: "running", epoch: 2 });

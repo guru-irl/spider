@@ -81,7 +81,7 @@ it("a hub intent does not change an existing box-local owner's provenance on rel
   const home = { sessionId: input.sessionId, machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 };
   global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
   journal.begin({ id: "start-1", kind: "session-start", machineId: BOX, expectedEpoch: 1, args: {} });
-  await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   await adapter.ready(input.sessionId, input.file, 1, home);
   expect(readLocal(global.db, "participant-ready", input.sessionId)).toMatchObject({ origin: "box-local", machineId: BOX, terminal: "term-1" });
   expect(readLocal(global.db, "participant-ready", input.sessionId)).not.toHaveProperty("opId");
@@ -95,7 +95,7 @@ it("hub intent without a launch operation or a matching local owner cannot creat
   global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
   const journal = openJournal(join(global.root, "roam/journal.db")), authority = createRunningIntentAuthority(global.db);
   journal.begin({ id: "start-1", kind: "session-start", machineId: BOX, expectedEpoch: 1, args: {} });
-  await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const adapter = createParticipantAdmission({ cwd: () => input.cwd, async terminal() { return { core: "core-1", terminal: "term-1", operationId: null, owner: { pid: process.pid, startIdentity: "fixture-owner" } }; },
     async open() { return { config, db: global.db, journal, authority, async stores() { return input.stores; }, close() {} }; } });
   await expect(adapter.ready(input.sessionId, input.file, 1, home)).rejects.toThrow("participant-launch-provenance-unavailable");
@@ -110,7 +110,7 @@ it("a hub-authorized launch records the actual launch operation receipt", async 
   global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
   const journal = openJournal(join(global.root, "roam/journal.db")), authority = createRunningIntentAuthority(global.db);
   journal.begin({ id: "launch-1", kind: "exact-session-launch", machineId: BOX, expectedEpoch: 1, args: {} });
-  await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const adapter = createParticipantAdmission({ cwd: () => input.cwd, async terminal() { return { core: "core-1", terminal: "term-1", operationId: "launch-1", owner: { pid: process.pid, startIdentity: "fixture-owner" } }; },
     async open() { return { config, db: global.db, journal, authority, async stores() { return input.stores; }, close() {} }; } });
   await adapter.ready(input.sessionId, input.file, 1, home);

@@ -162,7 +162,7 @@ it("A11 deliberate stop is durable", async () => {
     const agent = { config, root: join(global.root, "roam", "stage"), journal,
       openStore(key: string) { return { db: key === "global" ? global.db : worktree.db, effects: {} as never, policy: {} as never }; } };
     const authority = createRunningIntentAuthority(global.db);
-    await authority.set({ sessionId, epoch: 1, desired: "running", suspended: null, file, cwd: worktree.root, moveId: null }, "start-1", { machineId: BOX, hubMachineId: HUB });
+    await authority.set({ sessionId, epoch: 1, desired: "running", suspended: null, file, cwd: worktree.root, moveId: null }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
     let owner: Probe = { kind: "live", identity: { bootId: "fixture-boot", pid: 123, startTime: "fixture-start" } }, launches = 0, stops = 0;
     const make = () => createParticipantSupervisor({ root: global.root, agent,
       clock: { now: () => 1, later: () => () => {} }, events: { subscribe: () => () => {} }, owner: async () => owner,

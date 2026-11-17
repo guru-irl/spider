@@ -83,7 +83,7 @@ export async function preparePair(suite: Suite, network: Network): Promise<PairF
       await waitFor('owned pair service manager starts', () => existsSync(socket), Boolean, deadline(20_000));
     }
     const map = suite.ownPath(join(suite.root, 'pair-map.json')), cli = suite.ownPath(join(bin, 'pair-cli.mjs'));
-    await writeFile(map, JSON.stringify({ root: suite.root, helper: join(suite.packed.root, 'dist/roam/intercom-helper.mjs'),
+    await writeFile(map, JSON.stringify({ root: suite.root, entry: suite.packed.roamCli,
       cli: join(suite.packed.root, 'dist/roam/cli-main.mjs'), machines: [source, target].map((machine, i) => ({ global: machine.global, descriptor: descriptors[i] })) }), { mode: 0o600 });
     await writeFile(cli, `import {run} from ${JSON.stringify(pathToFileURL(join(bin, 'roam-pair-cli.mjs')).href)};\nawait run(${JSON.stringify(map)},process.argv.slice(2));\n`, { mode: 0o700 });
     const peers: Peer[] = [source, target].map(machine => ({ machineId: machine.id, alias: machine.alias, node: process.execPath,

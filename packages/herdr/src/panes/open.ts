@@ -223,6 +223,7 @@ export async function convertNativePresentation(input: { presentation: PanePrese
     try {
       let removedProxy = false;
       if (p.visibility === 'parked' && p.proxy) {
+        if (p.proxy.includes('/') && !p.proxy.startsWith(`${local.coreId}/`)) throw new HerdrError('proxy-identity', 'Presentation proxy is not on the selected local core');
         try {
           const proxy = await ports.hc.get(p.proxy);
           removedProxy = proxy.state === 'finished' && proxy.labels['spider.kind'] === 'pane-proxy' && proxy.labels['spider.pane-id'] === p.id;
@@ -238,7 +239,7 @@ export async function convertNativePresentation(input: { presentation: PanePrese
       p = await updatePresentation(p, { target: destination, conversion, ...(removedProxy ? { proxy: null, launch: 'none', proxyLaunchAttempts: 0 } : {}) }, ports);
       if (p.visibility === 'parked' || !ports.app || !p.proxy || !p.slot) return outcome(p.visibility === 'parked' ? 'complete' : 'pending', 'proxy-retargeted', p);
       await ports.awaitPresented(p.proxy, destination, p.slot); p = await updatePresentation(p, { conversion: null }, ports); return outcome('complete', 'proxy-retargeted', p);
-    } catch { return outcome('pending', 'destination-screen-pending', p); }
+    } catch { return outcome('pending', p.visibility === 'parked' ? 'proxy-reconcile-pending' : 'destination-screen-pending', p); }
   }
   if (p.visibility === 'parked') {
     p = await updatePresentation(p, { target: destination, mode: native ? 'native' : 'proxy', proxy: null, launch: 'none', proxyLaunchAttempts: 0, conversion: null }, ports);

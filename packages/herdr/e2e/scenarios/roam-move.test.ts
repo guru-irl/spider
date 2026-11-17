@@ -501,6 +501,8 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       let value: Record<string, any>; try { value = JSON.parse(result.stdout); } catch { throw Error(result.stdout + result.stderr); }
       expect(result.exitCode, result.stderr + result.stdout).toBe(value.code);
       if (suite.story === 'R08' && args[0] === 'roam' && args[1] === 'recover') console.info(JSON.stringify({ story: suite.story, phase: 'recovery-result', result: value }));
+      if (['R15', 'R16'].includes(suite.story) && args[0] !== 'fixture-ingest') console.info(JSON.stringify({ story: suite.story,
+        measurement: 'move-control', code: value.code, reason: value.reason, sourceCleanup: value.value?.sourceCleanup }));
       return value;
     };
     const moveTo: MoveStory['moveTo'] = async (machine, destination) => {

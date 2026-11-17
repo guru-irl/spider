@@ -43,6 +43,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 import { connect } from 'node:net';
+import { spawnSync } from 'node:child_process';
 import { createHostMoveBindings } from ${source('../../../host/src/roam/move-runtime.ts')};
 import { createProcessInventory } from ${source('../../../host/src/herdr/process-inventory.ts')};
 import { createExactLaunchAdapter, createProductionLocalExactHc } from ${source('../../../roam/src/launcher.ts')};
@@ -141,6 +142,10 @@ const moveFactory = async input => {
 const linkFault = JSON.parse(readFileSync(descriptor.faults, 'utf8'));
 if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id && args.includes('intercom') && args.includes('exchange')) {
   record({ effect: 'link-unavailable', machineId: machine.id }); process.exitCode = 1;
+} else if (args.length === 5 && args[0] === '--global-root' && args[2] === 'roam' && args[3] === 'intercom' &&
+    (args[4] === 'exchange' || args[4] === 'revoke-local')) {
+  const result = spawnSync(process.execPath, [descriptor.entry, ...args], { env: process.env, stdio: 'inherit' });
+  process.exitCode = result.status ?? 1;
 } else if (args[0] === 'fixture-status') {
   const status = await requestHubControl(join(root, 'roam', 'hub.sock'), { op: 'status' });
   process.exitCode = status.code; process.stdout.write(JSON.stringify(status) + '\\n');
@@ -338,7 +343,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
     const { storyPresentation } = await import('./roam-recovery.test.js');
     const presentation = await storyPresentation(suite, machines, sessionId);
     services.push({ stop: () => presentation.close() });
-    await writeFile(descriptor, JSON.stringify({ root: suite.root, pi: suite.pi.launcher, effects, faults, cli: join(suite.packed.root, 'dist/roam/cli-main.mjs'),
+    await writeFile(descriptor, JSON.stringify({ root: suite.root, pi: suite.pi.launcher, effects, faults, entry: suite.packed.roamCli, cli: join(suite.packed.root, 'dist/roam/cli-main.mjs'),
       supervisor: suite.packed.roamSupervisor, presentationSocket: presentation.socket, machines }), { mode: 0o600 });
     for (const machine of machines) {
       const baseline = await suite.invoke(process.execPath, [cli, 'fixture-baseline', sessionId], machine.env);

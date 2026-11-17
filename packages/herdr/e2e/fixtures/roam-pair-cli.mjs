@@ -3,6 +3,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { pairPorts } from './roam-pair-platform.mjs';
 
 export async function run(mapPath, argv) {
@@ -15,8 +16,8 @@ export async function run(mapPath, argv) {
   Object.assign(process.env, d.env);
   const io = { out: text => process.stdout.write(text), err: text => process.stderr.write(text) };
   if (argv.length === 5 && argv[2] === 'roam' && argv[3] === 'intercom' && ['exchange', 'revoke-local'].includes(argv[4])) {
-    const helper = await import(pathToFileURL(map.helper).href);
-    process.exitCode = await helper.main(argv[1], argv[4]);
+    const result = spawnSync(process.execPath, [map.entry, ...argv], { env: process.env, stdio: 'inherit' });
+    process.exitCode = result.status ?? 1;
   } else {
     const cli = await import(pathToFileURL(map.cli).href);
     process.exitCode = await cli.main(argv, io, { pairPorts: pairPorts(row.descriptor) });

@@ -21,7 +21,10 @@ function register(directory: string): void {
     process.once("exit", () => { for (const item of snapshots) { try { cleanup(item); } catch { /* process is exiting */ } } });
   }
 }
-class Changed extends Error {}
+class Changed extends Error {
+  readonly code = "diagnostic-snapshot-changing";
+  constructor(message = "Store changed while preparing a diagnostic snapshot") { super(message); }
+}
 function prefix(file: string, length: number, position = 0): Buffer {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
@@ -67,7 +70,7 @@ function constrainWal(walFile: string, index: Buffer | null): void {
     if (size - end < 24) throw new Error("Cannot verify the WAL commit boundary");
     const extra = prefix(walFile, 24, end);
     if (extra.readUInt32BE(0) && extra.subarray(8, 16).equals(header.subarray(16, 24))) {
-      throw new Error("WAL frames beyond the published commit boundary are changing or need recovery");
+      throw new Changed("WAL frames beyond the published commit boundary are changing or need recovery");
     }
   }
   truncateSync(walFile, end);
@@ -143,7 +146,6 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
     } catch (error) {
       cleanup(directory);
       if (error instanceof Changed && attempt < 2) continue;
-      if (error instanceof Changed) throw new Error("Store changed while preparing a diagnostic snapshot");
       throw error;
     }
   }

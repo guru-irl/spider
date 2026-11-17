@@ -74,3 +74,18 @@ it("hub reads box-created session without a checkout", () => {
     expect(global.db.prepare("SELECT total_changes() AS n").get()).toEqual(after);
   } finally { source.close(); }
 }, 5000);
+
+it("cataloguing skips and reports a malformed location without losing other sessions", async () => {
+  const { readLocal } = await import("../roam/local-state");
+  const global = createReplica("global", local), replica = createReplica("worktree", local); fixtures.push(global, replica);
+  const key = replica.storeKey;
+  for (const id of ["bad-session", "valid-session"]) replica.db.prepare("INSERT INTO sessions(id, started_at, origin_machine) VALUES (?, 1, ?)").run(id, local);
+  global.db.prepare("INSERT INTO roam_locations(session_id, stores_json, home_json) VALUES (?, ?, NULL)").run("bad-session", '["unknown:fixture"]');
+  expect(() => catalogReplica(global.db, key, replica.db)).not.toThrow();
+  expect(global.db.prepare("SELECT stores_json FROM roam_locations WHERE session_id='valid-session'").get()).toEqual({ stores_json: JSON.stringify([key]) });
+  expect(global.db.prepare("SELECT stores_json FROM roam_locations WHERE session_id='bad-session'").get()).toEqual({ stores_json: '["unknown:fixture"]' });
+  expect(readLocal(global.db, "catalog-diagnostic", "bad-session")).toEqual({ reason: "location-stores-invalid" });
+  recordLocation(global.db, { sessionId: "bad-session", stores: [key], home: null });
+  catalogReplica(global.db, key, replica.db);
+  expect(readLocal(global.db, "catalog-diagnostic", "bad-session")).toBeUndefined();
+}, 5000);

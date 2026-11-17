@@ -1723,3 +1723,11 @@ it.each([70, 90])("participant exit proof at %s ms leaves room inside the transp
     expect(result).toMatchObject(exitAt === 70 ? { code: 0, reason: "shutdown-complete" } : { code: 3, reason: "process-exit-unproven" });
   } finally { await server.close(); }
 }, 5000);
+
+it("duplicate store keys from a peer are refused before import staging", async () => {
+  const f = await fixture();
+  const operation = { id: "invalid-store-import", kind: "move-import", machineId: HUB, expectedEpoch: 1,
+    args: { sessionId: SESSION, sourceMachine: HUB, moveId: f.operation.id, parent: f.operation, check: { storeKeys: ["global", "global"], destinationRoot: "/fixture/destination" }, exported: { workspace: { moveId: f.operation.id } }, claims: [] } };
+  await expect(handleMoveParticipantOperation(operation, f.journal, f.bindings)).rejects.toThrow("Invalid roaming location stores");
+  expect(f.journal.read(f.operation.id).some(row => row.action === "move-import-intent")).toBe(false);
+}, 5000);

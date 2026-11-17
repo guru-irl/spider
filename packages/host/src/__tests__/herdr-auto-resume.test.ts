@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, it, vi } from 'vitest';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -27,7 +28,7 @@ vi.mock('@spider/herdr/client/hc', async original => {
 let root = '';
 afterEach(async () => { if (root) await rm(root, { recursive: true, force: true }); core.terminal = null; });
 
-it.each(['/bin/bash', '/bin/zsh'])('a returning %s prompt ends pi, while a reboot without a prompt resumes', async binary => {
+it.each(['/bin/bash', '/bin/zsh'].filter(existsSync))('a returning %s prompt ends pi, while a reboot without a prompt resumes', async binary => {
   root = await mkdtemp(join(await realpath(tmpdir()), 'auto-prompt-'));
   const state = join(root, 'herdr'), agent = join(root, 'agent'), bin = join(root, 'bin'); await mkdir(agent); await mkdir(bin);
   const file = join(root, 's1.jsonl'), calls = join(root, 'external-calls');
@@ -131,7 +132,7 @@ it('a killed shell and pi retain a live marker for the next restart', async () =
   }
 }, 20000);
 
-it.each(['/bin/bash', '/bin/zsh'])('an auto-resumed pi is marked ended before the first %s prompt returns', async binary => {
+it.each(['/bin/bash', '/bin/zsh'].filter(existsSync))('an auto-resumed pi is marked ended before the first %s prompt returns', async binary => {
   root = await mkdtemp(join(await realpath(tmpdir()), 'auto-first-'));
   const state = join(root, 'herdr'), agent = join(root, 'agent'); await mkdir(agent);
   const file = join(root, 's1.jsonl'); await writeFile(file, JSON.stringify({ type: 'session', id: 's1', cwd: root }) + '\n');

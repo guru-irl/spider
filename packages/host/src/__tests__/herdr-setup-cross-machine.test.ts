@@ -236,6 +236,31 @@ test('a lost version preserves a relocated picker binding while updating other k
   expect(current.terminal['cmd-shift-o']).toBe('send:\u001b[99;6u');
 });
 
+test('a lost version does not recreate a removed picker key section', async () => {
+  const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  await setupHerdr(f.request, f.parts);
+  const keyPath = join(home, 'keys.json'), before = await readFile(keyPath), journal = await readJournal(f.request.journalRoot);
+  const prior = journal.entries.find(entry => entry.path === keyPath)!.keys!;
+  const extra = { custom: { 'ctrl-p': 'mod.open:spider-machine-picker' } }, owned = { ...prior, ...extra };
+  const plans: InstallFile[] = [{ path: keyPath, expected: digest(before), bytes: mergeKeys(before, extra, prior, false), keys: owned, managed: { kind: 'keys', sections: Object.fromEntries(Object.entries(owned).map(([section, bindings]) => [section, Object.keys(bindings)])) } }];
+  await validateFiles(plans, journal); await prepareBackups(f.request.journalRoot, plans, journal); await applyFiles(plans, journal);
+  const current = JSON.parse(await readFile(keyPath, 'utf8')); delete current.custom; await writeFile(keyPath, JSON.stringify(current));
+  const asset = join(f.root, 'packages/herdr/assets/keys.json'), desired = JSON.parse(await readFile(asset, 'utf8'));
+  desired.terminal['cmd-shift-o'] = 'send:\u001b[99;6u'; await writeFile(asset, JSON.stringify(desired));
+  const stage = f.parts.stageLook;
+  f.parts.stageLook = async (...args) => {
+    const files = await stage(...args);
+    await writeFile(app, (await readFile(app, 'utf8')).replace("console.log('herdr-app 0.1.13')", 'process.exit(1)'));
+    return files;
+  };
+  const result = await setupHerdr(f.request, f.parts);
+  expect(result.doctor.failures).toEqual([]);
+  const updated = JSON.parse(await readFile(keyPath, 'utf8'));
+  expect(updated).not.toHaveProperty('custom');
+  expect(updated.terminal['cmd-shift-o']).toBe('send:\u001b[99;6u');
+  expect((await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)?.keys?.custom['ctrl-p']).toBe('mod.open:spider-machine-picker');
+});
+
 test('a lost version preserves a lone picker helper and still installs the A pane', async () => {
   const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   const helper = join(home, 'mods/spider-pane/machine.js');

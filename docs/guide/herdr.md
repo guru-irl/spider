@@ -605,7 +605,7 @@ Automatic resume makes at most one launch attempt per terminal for each core res
 
 On macOS, Node does not expose `F_FULLFSYNC`. A power failure immediately after a marker changes can lose it, causing a missed or repeated resume attempt.
 
-If the resume hook, the Node binary, or the CLI that setup recorded is missing, the block does nothing and the shell starts without an error. Noninteractive shells and shells outside Herdr are unchanged. The prompt check is installed when a shell starts, so shells already open before the update do not have it. If later rc lines replace `PROMPT_COMMAND` or `precmd_functions`, move the resume block after those lines.
+If the resume hook, the Node binary, or the CLI that setup recorded is missing, the block does nothing and the shell starts without an error. Noninteractive shells and shells outside Herdr are unchanged. The prompt check is installed when a shell starts, so shells already open before the update do not have it. Put the resume block after other prompt-hook setup, including any lines that replace `PROMPT_COMMAND` or `precmd_functions`.
 
 ### Turning on automatic resume
 

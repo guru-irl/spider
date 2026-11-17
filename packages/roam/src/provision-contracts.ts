@@ -97,7 +97,7 @@ export interface IntercomEnrollmentPorts {
   registerPair(pair: IntercomEnrollmentPlan): Promise<void>;
   checkConnector(machine: Peer, pin: IntercomMachinePin): Promise<"ready" | "missing" | "not-signed-in" | "offline" | "invalid">;
   /** Inspect a presented system host key and the destination account through the pinned peer. */
-  inspectSshHost(pair: IntercomEnrollmentPlan, pins: IntercomPairPins): Promise<{ targetMachineId: string; sshUser: string; hostKey: IntercomSshHostKey }>;
+  inspectSshHost(pair: IntercomEnrollmentPlan, pins: IntercomPairPins): Promise<{ targetMachineId: string; sshUser: string; hostKeys: IntercomSshHostKey[] }>;
   bindPair(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<void>;
   hostConnector(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<"ready" | "unhosted" | "offline" | "not-pair-scoped">;
   connect(pair: IntercomEnrollmentPair, pins: IntercomPairPins): Promise<"ready" | "offline" | "peer-port-unreachable">;

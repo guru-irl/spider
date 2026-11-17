@@ -104,7 +104,7 @@ export async function inspectLocalIntercomDoctor(input: DoctorOptions): Promise<
       const observed = input.inspectSsh ? await input.inspectSsh(pair) : await inspectServedSshIdentity({ machineId: input.config.machineId,
         sshUser: userInfo().username, keyscan: "/usr/bin/ssh-keyscan", sshPort: pair.connector.remotePort, run });
       if (observed.targetMachineId !== input.config.machineId || observed.sshUser !== pair.sshUser) add("intercom-ssh-user-changed", `Verify the account for ${pair.pairId}.`);
-      if (compareSshHostKey(pair.hostKey, observed.hostKey) === "host-key-changed") add("host-key-changed", `Verify and re-enroll ${pair.pairId}.`);
+      if (!observed.hostKeys.some(key => compareSshHostKey(pair.hostKey, key) === "match")) add("host-key-changed", `Verify and re-enroll ${pair.pairId}.`);
     } catch { add("intercom-ssh-host-unavailable", `The SSH host identity for ${pair.pairId} could not be inspected.`); }
     if (localSource) try {
       const files = pairPaths(pair), key = lstatSync(files.privateKey), via = lstatSync(files.via);

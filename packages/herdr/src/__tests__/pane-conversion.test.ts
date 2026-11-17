@@ -3,6 +3,7 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { paths } from '@spider/db-core';
+import { HerdrError } from '../client/parse.js';
 import { afterEach, expect, test, vi } from 'vitest';
 import { convertNativePresentation, type PaneOpenPorts } from '../panes/open.js';
 import { createPanePlacementStore } from '../panes/store.js';
@@ -124,4 +125,15 @@ test('a proxy launched before focus changes follows the successor conversion des
   expect(f.ports.launchProxy).not.toHaveBeenCalled();
   expect(f.ports.launchTarget).not.toHaveBeenCalled();
   expect(f.ports.hc.kill).not.toHaveBeenCalled();
+});
+
+test.each([false, true])('parked reconcile preserves an unproved proxy and reports no screen failure, foreign=%s', async foreign => {
+  const f = await fixture(true), p = { ...f.p, visibility: 'parked' as const, proxy: `${foreign ? 'core-other' : 'core-local'}/t8` as TerminalAddress };
+  const destination = { ...f.destination, coreId: 'core-destination' as never, address: 'core-destination/t9' as TerminalAddress, alias: 'box-2.invalid' };
+  await f.ports.store.update(state => ({ ...state, presentations: [p] }));
+  vi.mocked(f.ports.hc.get).mockRejectedValue(new HerdrError(foreign ? 'not_found' : 'unavailable', 'fixture unavailable'));
+  expect(await convertNativePresentation({ ...f.input, presentation: p, destination }, f.ports)).toMatchObject({ status: 'pending', reason: 'proxy-reconcile-pending' });
+  expect((await f.ports.store.read()).presentations[0]).toEqual(p);
+  expect(f.ports.hc.setLabels).not.toHaveBeenCalled();
+  if (foreign) expect(f.ports.hc.get).not.toHaveBeenCalled();
 });

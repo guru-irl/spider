@@ -24,6 +24,14 @@ const intercom = (id: string, args: Record<string, string>) => ({ steps: [{ tool
 const result = (event: ObservedEvent) => event.result as { content: { text?: string }[]; details: Record<string, unknown> };
 const received = (event: ObservedEvent, body: string) => event.type === 'message_end' && event.customType === 'intercom_message' && JSON.stringify(event.content).includes(body);
 
+export async function coldCliStartup(invoke: Suite['invoke'], entry: string, env: Readonly<Record<string, string>>): Promise<number> {
+  const started = Date.now();
+  const result = await invoke(process.execPath, [entry, '--help'], env);
+  const durationMs = Date.now() - started;
+  if (result.exitCode !== 0 || !result.stdout.startsWith('Usage: spider ')) throw new Error('cold-cli-help-unavailable');
+  return durationMs;
+}
+
 async function call(session: InteractiveDriver, marker: string, id = marker): Promise<ObservedEvent> {
   await session.prompt(mark(marker));
   return session.toolResult(id, deadline(30_000));
@@ -467,6 +475,9 @@ async function outages(suite: Suite): Promise<void> {
 }
 
 async function topology(suite: Suite): Promise<void> {
+  const phaseStarted = Date.now();
+  const phase = (name: string) => console.info(JSON.stringify({ story: suite.story, phase: name, elapsedMs: Date.now() - phaseStarted }));
+  phase('scripts');
   const values: ScriptFile['scripts'] = {
     ready: parentTurns(text('ready')),
     relayA: parentTurns(intercom('relayA', { action: 'send', to: 'box-2.invalid/beta', message: 'hub relay A to B' })),
@@ -491,9 +502,16 @@ async function topology(suite: Suite): Promise<void> {
     replyFreshA: parentTurns(intercom('replyFreshA', { action: 'reply', message: 'fresh peer answer A' })),
   };
   await scripts(suite, values);
+  phase('network-setup');
   const network = await intercomNetwork(suite, { faults: true }), sessions: InteractiveDriver[] = [], sessionIds: string[] = [];
   let pair: PairFixture | undefined;
   try {
+    phase('cold-cli-startup');
+    const durationMs = await coldCliStartup(suite.invoke, suite.packed.roamCli, network.machines[0].env);
+    const startup = { story: suite.story, measurement: 'cold-cli-startup', command: '--help', processCold: true, durationMs };
+    console.info(JSON.stringify(startup));
+    await suite.evidence('R13-cold-cli-startup.json', startup);
+    phase('original-sessions');
     await pauseFederation(network);
     for (const [i, name] of ['coordinator', 'alpha', 'beta'].entries()) {
       const session = await launchMachinePi(suite, network.machines[i], await suite.project(`topology-${i}`), name);
@@ -502,8 +520,10 @@ async function topology(suite: Suite): Promise<void> {
       const before = Date.now(); await session.prompt(mark('ready'));
       await session.waitEvent('agent_settled', event => event.at >= before, deadline(30_000));
     }
+    phase('initial-origin-sync');
     const [hub, source, target] = network.machines;
     await syncOrigins(suite, network);
+    phase('initial-hub-relays');
     await resumeFederation(network);
     await waitFor('hub-only boxes see each other through the hub', () => source.probe.listSessions(), list => list.some(session => session.name === 'beta'), deadline(60_000));
     const relayA = await call(sessions[1], 'relayA');
@@ -516,6 +536,7 @@ async function topology(suite: Suite): Promise<void> {
       const id = String(result(relay).details.messageId);
       await waitFor('hub relay receipt returns to its origin', () => copy(machine, id), row => row?.state === 'injected', deadline(60_000));
     }
+    phase('hold-hub-relay');
     await setLinkFault(hub, [target.alias]); await setLinkFault(target, [hub.alias]);
     const hubHeld = await call(sessions[1], 'hubHeld'), hubHeldId = String(result(hubHeld).details.messageId);
     expect(result(hubHeld).details.delivered).toBe(true);
@@ -525,6 +546,7 @@ async function topology(suite: Suite): Promise<void> {
     expect(hubHeldEndpoint).toMatchObject({ machineId: target.id, homeEpoch: null });
     await hub.service.stop();
     await setLinkFault(source, [hub.alias]); await setLinkFault(target, [hub.alias]);
+    phase('hub-off-custody');
     const held = await call(sessions[1], 'held'), heldId = String(result(held).details.messageId);
     expect(result(held).details).toMatchObject({ delivered: true, delivery: 'queued', acceptance: { durable: true } });
     await waitFor('hub-only route is down', () => edge(source, hub), state => state?.status === 'down', deadline(60_000));
@@ -533,10 +555,12 @@ async function topology(suite: Suite): Promise<void> {
     expect(heldEndpoint).toEqual(hubHeldEndpoint);
     expect((await sessions[2].events()).some(event => received(event, 'hub-only retained mail'))).toBe(false);
 
+    phase('prepare-peer-pair');
     pair = await preparePair(suite, network);
     await suite.evidence('R13-staged-rosters.json', await Promise.all(network.machines.map(machine => machine.probe.listSessions())));
     await setLinkFault(hub, [source.alias, target.alias], "exchange");
     await network.restartHub();
+    phase('enroll-peer-pair');
     const firstEnrollment = await enrollPair(suite, network, pair);
     let enrollment = firstEnrollment;
     if (firstEnrollment.code === 3 && firstEnrollment.output.includes('intercom-verification-pending')) {
@@ -556,15 +580,18 @@ async function topology(suite: Suite): Promise<void> {
         return { mode: row.mode, transition: row.transition_json ? JSON.parse(row.transition_json) : null };
       } finally { db.close(); }
     };
+    phase('drain-fence');
     const draining = await waitFor('explicit enrollment durably fences relay intake', topologyState, row => row?.transition?.state === 'draining', deadline(30_000));
     expect(draining?.mode).toBe('hub-only');
     expect(copy(source, heldId)?.peer).toBe(hub.id);
     const beforeRestart = draining!.transition.transitionId;
     await hub.service.stop(); await network.restartHub();
     expect(topologyState()?.transition).toMatchObject({ transitionId: beforeRestart, state: 'draining' });
+    phase('first-home-adoption');
     await waitFor('original registrations adopt their first replicated home without reload',
       () => Promise.all([source.probe.listSessions(), target.probe.listSessions()]),
       rosters => rosters.every((list, i) => list.some(session => session.id === sessionIds[i + 1] && session.homeEpoch === 1)), deadline(60_000));
+    phase('drain-custody');
     await setLinkFault(hub, []); await setLinkFault(source, []); await setLinkFault(target, []);
     await suite.evidence('R13-drain-rosters.json', await Promise.all(network.machines.map(machine => machine.probe.listSessions())));
     await sessions[2].waitEvent('message_end', event => received(event, 'hub custody before transition'), deadline(60_000));
@@ -573,12 +600,14 @@ async function topology(suite: Suite): Promise<void> {
     expect(JSON.parse(copy(target, hubHeldId, 'inbound')!.endpoint_json)).toEqual(hubHeldEndpoint);
     expect(JSON.parse(drainedSource!.receipt_json!)).toMatchObject({ messageId: hubHeldId, status: 'injected',
       evidence: { sessionId: sessionIds[2], activationEpoch: hubHeldEndpoint.activationEpoch } });
+    phase('switch-acknowledgement');
     const complete = await waitFor('both boxes acknowledge the durable topology switch', topologyState, row => row?.transition?.state === 'complete', deadline(60_000));
     expect(complete).toMatchObject({ mode: 'peers', transition: { boxes: { [source.id]: 'switched', [target.id]: 'switched' } } });
     await waitFor('hub edges are live after the completed switch', () => [edge(hub, source), edge(source, hub), edge(hub, target), edge(target, hub)],
       states => states.every(state => state?.status === 'live'), deadline(60_000));
     expect(edge(source, hub)?.roster.every(entry => entry.machineId === hub.id)).toBe(true);
     expect(edge(target, hub)?.roster.every(entry => entry.machineId === hub.id)).toBe(true);
+    phase('hub-message-roundtrips');
     for (const [sender, recipient, marker, body] of [[0, 1, 'hubToA', 'hub to alpha after transition'], [1, 0, 'aToHub', 'alpha to hub after transition'],
       [0, 2, 'hubToB', 'hub to beta after transition'], [2, 0, 'bToHub', 'beta to hub after transition']] as const) {
       const sent = await call(sessions[sender], marker);
@@ -588,6 +617,7 @@ async function topology(suite: Suite): Promise<void> {
     }
     await hub.service.stop();
     await setLinkFault(source, [hub.alias]); await setLinkFault(target, [hub.alias]);
+    phase('original-enrolled-peers');
     const registrations = await Promise.all(network.machines.map(async machine => JSON.parse(await readFile(join(machine.global, 'roam', 'intercom', 'enrollments', `${pair!.pairId}.json`), 'utf8'))));
     expect(registrations.map(record => record.state)).toEqual(['active', 'active', 'active']);
     expect(new Set(registrations.map(record => record.operationId)).size).toBe(1);
@@ -611,6 +641,7 @@ async function topology(suite: Suite): Promise<void> {
       row => row?.state === 'injected', deadline(60_000));
     expect(originalPeerCopy?.peer).toBe(source.id);
     expect((await sessions[1].events()).filter(event => received(event, 'original sessions peer B to A'))).toHaveLength(1);
+    phase('rebind-backlog');
     const rebound = await waitFor('source-held backlog rebinds to the enrolled peer edge', () => copy(source, heldId),
       row => row?.peer === target.id, deadline(30_000));
     const heldReceived = await sessions[2].waitEvent('message_end', event => received(event, 'hub-only retained mail'), deadline(60_000));
@@ -647,6 +678,7 @@ async function topology(suite: Suite): Promise<void> {
     expect(peerAfterCopy?.peer).toBe(target.id);
     // Already-synced sessions still communicate above while the hub is off.
     // New sessions cannot be claimed remotely until their captured origin syncs.
+    phase('fresh-unsynced-sessions');
     const freshSessionIds: string[] = [];
     const originRefusal = (machine: Machine, peer: Machine) => {
       const db = openDbReadOnly(join(machine.global, 'roam', 'intercom', 'queue.db'));
@@ -677,6 +709,7 @@ async function topology(suite: Suite): Promise<void> {
       refusals: [originRefusal(source, target), originRefusal(target, source)] });
     await setLinkFault(source, []); await setLinkFault(target, []);
     await network.restartHub();
+    phase('fresh-origin-sync');
     await waitFor('hub links return before fresh origin sync', () => [edge(source, hub), edge(target, hub)],
       states => states.every(state => state?.status === 'live'), deadline(60_000));
     await syncOrigins(suite, network);
@@ -685,6 +718,7 @@ async function topology(suite: Suite): Promise<void> {
         lists[1].some(session => session.remote === true && session.id === freshSessionIds[0] && session.reachability === 'live'), deadline(60_000));
     await hub.service.stop();
     await setLinkFault(source, [hub.alias]); await setLinkFault(target, [hub.alias]);
+    phase('fresh-offline-messages');
     await waitFor('synced new and original sessions stay reachable with the hub off', async () => Promise.all([source.probe.listSessions(), target.probe.listSessions()]),
       lists => [sessionIds[2], freshSessionIds[1]].every(id => lists[0].some(session => session.remote === true && session.id === id && session.reachability === 'live')) &&
         [sessionIds[1], freshSessionIds[0]].every(id => lists[1].some(session => session.remote === true && session.id === id && session.reachability === 'live')), deadline(60_000));
@@ -695,6 +729,7 @@ async function topology(suite: Suite): Promise<void> {
     await sessions[3].waitEvent('message_end', event => received(event, 'peer B to A'), deadline(60_000));
     for (const [session, body] of [[sessions[4], 'peer A to B'], [sessions[3], 'peer B to A']] as const)
       expect((await session.events()).filter(event => received(event, body))).toHaveLength(1);
+    phase('peer-ask-reply');
     const asks: unknown[] = [];
     for (const [asker, recipient, askMarker, replyMarker, question, answer] of [
       [1, 2, 'askOriginalA', 'replyOriginalB', 'original peer question A', 'original peer answer B'],
@@ -727,6 +762,7 @@ async function topology(suite: Suite): Promise<void> {
     expect(rows.find(row => row.name === pair!.alias)?.id).toBe(target.core.coreId);
     expect(rows.some(row => row.name === target.alias)).toBe(false);
     expect((targetRoutes.json as { machines: { name: string }[] }).machines.some(row => row.name === source.alias)).toBe(false);
+    phase('hub-return');
     const hubExit = { code: hub.service.child.exitCode, signal: hub.service.child.signalCode };
     await setLinkFault(source, []); await setLinkFault(target, []);
     await network.restartHub();
@@ -737,6 +773,7 @@ async function topology(suite: Suite): Promise<void> {
         lists[0].some(session => session.remote === true && session.name === 'beta' && session.reachability === 'live') &&
         lists[1].some(session => session.remote === true && session.name === 'coordinator' && session.reachability === 'live') &&
         lists[2].some(session => session.remote === true && session.name === 'coordinator' && session.reachability === 'live'), deadline(60_000));
+    phase('final-receipts');
     const targetEntries = (await readFile(join(target.sessions, `${sessionIds[2]}.jsonl`), 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
     const heldEntries = targetEntries.filter(entry => entry.type === 'custom_message' && entry.customType === 'intercom_message' && entry.details?.message?.id === heldId);
     expect(heldEntries).toHaveLength(1);
@@ -750,10 +787,15 @@ async function topology(suite: Suite): Promise<void> {
       firstEnrollment, enrollment, originalPeer: originalPeer.result, originalPeerCopy, peerA: peerA.result, peerB: peerB.result, sourceRoutes: sourceRoutes.json, targetRoutes: targetRoutes.json,
       hubExit, draining, complete, audit, heldOrigin, hubHeld: hubHeld.result, hubHeldEndpoint, drainedSource, drainedEntries, drainedOrigin, heldEndpoint, asks, rebound, heldReceived, heldSource, heldTarget, receipt, peerAfter: peerAfter.result, peerAfterCopy, heldEntries, pairId: pair.pairId, connectorProcesses });
   } finally {
+    phase('cleanup-evidence');
     await saveIntercomEvidence(suite, network);
+    phase('cleanup-sessions');
     for (const session of sessions.reverse()) await session.close();
+    phase('cleanup-network');
     await network.close();
+    phase('cleanup-pair');
     await pair?.close();
+    phase('closed');
   }
 }
 

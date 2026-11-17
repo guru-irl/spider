@@ -202,13 +202,21 @@ function json(value: unknown): JsonObject { return JSON.parse(JSON.stringify(val
 function sameHome(a: Home | null | "unknown", b: Home): boolean {
   return !!a && a !== "unknown" && a.sessionId === b.sessionId && a.machineId === b.machineId && a.epoch === b.epoch && a.moveId === b.moveId && a.updatedAt === b.updatedAt;
 }
-function location(db: Db, sessionId: string): { file: string; cwd: string; stores: StoreKey[] } {
-  const row = db.prepare("SELECT file,cwd,stores_json FROM roam_locations WHERE session_id=?").get(sessionId) as { file: string; cwd: string; stores_json: string } | undefined;
-  if (!row || !isAbsolute(row.file) || !isAbsolute(row.cwd)) throw new MoveAdapterError("participant-location-unavailable");
+function checkedLocation(value: unknown): { file: string; cwd: string; stores: StoreKey[] } {
+  const row = value as { file?: unknown; cwd?: unknown; stores?: unknown } | null;
+  if (!row || typeof row.file !== "string" || typeof row.cwd !== "string" || !isAbsolute(row.file) || !isAbsolute(row.cwd)) throw new MoveAdapterError("participant-location-unavailable");
   let stores: StoreKey[];
-  try { stores = parseLocationStores(JSON.parse(row.stores_json)); }
+  try { stores = parseLocationStores(row.stores); }
   catch { throw new MoveAdapterError("participant-stores-unavailable"); }
   return { file: row.file, cwd: row.cwd, stores };
+}
+function location(db: Db, sessionId: string): { file: string; cwd: string; stores: StoreKey[] } {
+  const row = db.prepare("SELECT file,cwd,stores_json FROM roam_locations WHERE session_id=?").get(sessionId) as { file: string; cwd: string; stores_json: string } | undefined;
+  if (!row) throw new MoveAdapterError("participant-location-unavailable");
+  let stores: unknown;
+  try { stores = JSON.parse(row.stores_json); }
+  catch { throw new MoveAdapterError("participant-stores-unavailable"); }
+  return checkedLocation({ ...row, stores });
 }
 function participantOperation(home: Home, operation: Operation, kind: string, hubMachineId: string, args: JsonObject = {}): Operation {
   return { id: `${operation.id}-${kind}-${home.machineId}`, machineId: home.machineId, expectedEpoch: home.epoch, kind,
@@ -381,7 +389,7 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
     },
     async check(request) {
       guard(bindings, "check");
-      const local = location(ports.globalDb, request.sessionId);
+      let local = location(ports.globalDb, request.sessionId);
       const marker = ports.globalDb.prepare("SELECT machine_id FROM session_homes WHERE session_id=?").get(request.sessionId) as { machine_id: string } | undefined;
       if (marker?.machine_id === "") throw new MoveError("initial-home-conflict");
       let home = sessionHome(ports.globalDb, request.sessionId);
@@ -400,6 +408,7 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
         if (origins.size !== 1 || !origins.has(config.machineId)) throw new MoveAdapterError("move-home-invalid");
         home = { sessionId: request.sessionId, machineId: config.machineId, epoch: 1, moveId: null, updatedAt: 0 };
       }
+      if (home.machineId !== config.machineId) local = checkedLocation(successful(await call<unknown>(home, request.operation, "move-location")));
       const mapped = await bindings.mapping!(request, local);
       if (!mapped) throw new MoveAdapterError("workspace-repository-unmapped");
       const inspection = successful(await call<{ blockers: readonly Blocker[] }>(home, request.operation, "session-inspect"));
@@ -575,6 +584,11 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     return { code: 3, reason: "waiting-for-hub-evidence", operationId: operation.id, home: null, epoch: operation.expectedEpoch, repairCommand: `spider roam recover ${operation.args.moveId}`, value: null };
   const id = operation.args.sessionId as string, home = { sessionId: id, machineId: operation.machineId, epoch: operation.expectedEpoch!, moveId: String(operation.args.moveId), updatedAt: 0 };
   const result = (value: unknown): Outcome<JsonObject> => ({ code: 0, reason: "complete", operationId: operation.id, home, epoch: home.epoch, repairCommand: null, value: json(value) });
+  if (operation.kind === "move-location") {
+    const current = sessionHome(participant.globalDb, id);
+    if (!current || current === "unknown" || current.machineId !== home.machineId || current.epoch !== home.epoch) throw new MoveAdapterError("participant-home-mismatch");
+    return result(location(participant.globalDb, id));
+  }
   if (["session-inspect", "session-freeze", "session-unfreeze", "session-shutdown", "session-retire"].includes(operation.kind)) {
     const feeds = evidence(bindings), intercom = required(bindings.intercom, "intercom"), local = location(participant.globalDb, id);
     const now = bindings.clock?.now ?? Date.now, deadline = now() + participant.config.limits.controlMs;

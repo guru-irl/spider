@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
@@ -157,6 +157,17 @@ describe('story cleanup reserve', () => {
       const overall = { at: finishedAt - 1, expire() {} };
       expect(storyExecutionDeadline(overall, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(false);
       expect(storyExecutionDeadline(overall, root, { ids: ['R17'], harness: true })).toBe(overall);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('rejects a marker written late with a misleading completion timestamp', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    try {
+      await runStoryWork(root, 'R17', async () => {});
+      const file = resolve(root, 'work-complete/R17.json');
+      const at = Math.floor(lstatSync(file).mtimeMs) - 1;
+      writeFileSync(file, JSON.stringify({ id: 'R17', finishedAt: at - 1 }));
+      expect(storyExecutionDeadline({ at, expire() {} }, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(false);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

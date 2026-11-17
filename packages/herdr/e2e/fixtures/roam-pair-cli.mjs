@@ -20,11 +20,12 @@ export async function run(mapPath, argv) {
     process.exitCode = result.status ?? 1;
   } else {
     const cli = await import(pathToFileURL(map.cli).href), stdout = [], stderr = [];
+    const begun = Date.now();
     let error;
     try {
       process.exitCode = await cli.main(argv, { out: text => { stdout.push(text); io.out(text); }, err: text => { stderr.push(text); io.err(text); } }, { pairPorts: pairPorts(row.descriptor) });
     } catch (caught) { error = caught instanceof Error ? caught.message : String(caught); throw caught; }
-    finally { appendFileSync(join(map.root, 'pair-replies.jsonl'), JSON.stringify({ at: Date.now(), machineId: d.machineId, command: argv.slice(2),
+    finally { appendFileSync(join(map.root, 'pair-replies.jsonl'), JSON.stringify({ at: Date.now(), durationMs: Date.now() - begun, machineId: d.machineId, command: argv.slice(2),
       code: process.exitCode, stdout: stdout.join(''), stderr: stderr.join(''), error }) + '\n'); }
   }
 }

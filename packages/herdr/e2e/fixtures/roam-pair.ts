@@ -129,6 +129,15 @@ export async function enrollPair(suite: Suite, network: Network, pair: PairFixtu
     }
     await waitFor('packaged enrollment finishes', () => broker.child.exitCode !== null || broker.child.signalCode !== null, Boolean, deadline(120_000));
     const exit = await broker.exited;
+    const replies = await readFile(join(suite.root, 'pair-replies.jsonl'), 'utf8').catch(() => '');
+    const results = replies.trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as { at: number; durationMs: number; machineId: string; command: string[]; code?: number; stdout: string; stderr: string; error?: string });
+    console.info(JSON.stringify({ story: suite.story, measurement: 'enrollment-helpers', attempt: suffix, code: exit.code,
+      results: results.map(row => {
+        let reply: { ok?: boolean; reason?: string } = {};
+        try { reply = JSON.parse(row.stdout); } catch { /* Preserve non-JSON failures below. */ }
+        return { at: row.at, durationMs: row.durationMs, machineId: row.machineId, command: row.command, code: row.code,
+          ok: reply.ok, reason: reply.reason, error: row.error, ...(row.code || row.error || reply.ok === false ? { stderr: row.stderr } : {}) };
+      }) }));
     return { code: exit.code, output: await readFile(log, 'utf8') };
   } finally { await broker.stop(); }
 }

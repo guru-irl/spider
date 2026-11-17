@@ -9,8 +9,9 @@ import { artifactId, privateDirectory } from "./staging";
 import { isUnsafeWorktreeConfig, recordMoveSnapshotRefs } from "./workspace";
 
 type Trees = { head: string; indexTree: string; workingTree: string };
+// A globbed dot keeps ignored directories from becoming explicit add inputs.
 const localMetadataPathspecs = ["spider", "pi-subagents"].flatMap(name => [
-  `:(top,exclude,glob).${name}`, `:(top,exclude,glob).${name}/**`,
+  `:(top,exclude,glob)[.]${name}`, `:(top,exclude,glob)[.]${name}/**`,
 ]);
 
 function checkPath(path: string, kind: "directory" | "file", allowMissing = false): boolean {

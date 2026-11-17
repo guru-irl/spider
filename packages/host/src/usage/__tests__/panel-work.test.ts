@@ -6,12 +6,13 @@ import { openDb } from '@spider/db-core';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { DashboardReader } from '../dashboard-contract.js';
 import { bootUsageWorker, type UsageWorkerDependencies } from '../worker-entry.js';
+import { UsageRuntime, type UsageWorker } from '../runtime.js';
 import { createPanelUsageReader } from '../panel-usage.js';
 import { openUsageLedger } from '../ledger.js';
 import { USAGE_MIGRATIONS } from '../migrate.js';
 import { USAGE_LEASE_SCHEMA } from '../schema.js';
 import { acquireUsageLease, type Lease } from '../lease.js';
-import type { UsageWorkerEvent } from '../protocol.js';
+import type { UsageWorkerCommand, UsageWorkerEvent } from '../protocol.js';
 import { createDashboardFixture, dashboardBatch, dashboardCall, DASHBOARD_DAY as DAY, DASHBOARD_MONTH as START, type DashboardFixture } from './fixtures/dashboard-ledger.js';
 import { assertCallPlans, callPassQueries, captureQueries, explainQueries } from './fixtures/dashboard-plan.js';
 
@@ -61,6 +62,7 @@ class Port extends EventEmitter {
   close() { this.closed = true; }
 }
 let f: DashboardFixture, p: Port, lease: Lease, clock: number;
+const runtimes: UsageRuntime[] = [];
 const now = START + 4.5 * DAY;
 beforeEach(() => {
   vi.useFakeTimers();
@@ -79,6 +81,8 @@ beforeEach(() => {
   lease = acquireUsageLease(f.ledger, 'ingest', 'stalled-owner', () => now, 600000)!;
 });
 afterEach(async () => {
+  const stops = runtimes.splice(0).map(runtime => runtime.stop());
+  await vi.advanceTimersByTimeAsync(0); await Promise.all(stops);
   p.emit('message', { type: 'stop' }); await vi.advanceTimersByTimeAsync(0);
   lease.release(); f.close(); vi.useRealTimers(); vi.restoreAllMocks();
 });
@@ -148,6 +152,55 @@ it('bounds a live stalled owner follower to one inspection per tick and takes ov
   expect(discoveries).toBe(1);
   expect(p.events.filter(event => event.type === 'snapshot').at(-1)?.ingestRole).toBe('owner');
   expect(lease.isCurrent(() => clock)).toBe(false);
+});
+it.each([{ cadence: 1000, kind: 'call' }, { cadence: 30000, kind: 'call' },
+  { cadence: 1000, kind: 'checkpoint' }, { cadence: 30000, kind: 'checkpoint' }])('bounds $kind invalidation fan-out with three followers requesting every $cadence ms', async ({ cadence, kind }) => {
+  vi.setSystemTime(now);
+  let sent = 0;
+  const roots = { ledgerFile: f.file, registryDb: join(f.root, 'absent.db'), sessionsDir: join(f.root, 'sessions'),
+    authPath: join(f.root, 'auth.json'), leaseDir: join(f.root, 'leases') };
+  for (let i = 0; i < 3; i++) {
+    const runtime = new UsageRuntime({ bundleUrl: 'file:///synthetic-worker.mjs', child: false, roots, supportsWorkers: () => true,
+      workerFactory: (_url, options) => {
+        const events = new EventEmitter(), port = new Port();
+        port.postMessage = event => { events.emit('message', event); };
+        void bootUsageWorker(port as unknown as MessagePort,
+          (options.workerData as { command: Extract<UsageWorkerCommand, { type: 'start' }> }).command,
+          { now: () => clock, discover: async () => { throw new Error('follower must not discover'); } });
+        return Object.assign(events, {
+          postMessage(command: UsageWorkerCommand) { if (command.type === 'panel-usage') sent++; port.emit('message', command); },
+          terminate: async () => 0, unref() {},
+        }) as unknown as UsageWorker;
+      } });
+    runtimes.push(runtime); runtime.start(false);
+  }
+  await vi.advanceTimersByTimeAsync(0);
+  const read = async () => {
+    const values = await Promise.all(runtimes.map(runtime => runtime.readPanel(Date.now(), 'human', 5000)));
+    expect(values.map(value => value?.monthCost.credits)).toEqual([5, 5, 5]);
+  };
+  if (kind === 'checkpoint') f.db.prepare('INSERT INTO import_state(path,generation,offset,size,last_ingest_at) VALUES (?,0,1,2,?)').run('unrelated-source.jsonl', now);
+  await read();
+  const fits = work.fits, ownership = work.ownership;
+  const revision = () => f.db.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'").get();
+  const before = revision();
+  for (let second = 1; second <= 60; second++) {
+    // These calls are after the last counter anchor and belong to another known session.
+    if (kind === 'call') f.ledger.apply(dashboardBatch([dashboardCall(`appended-${second}`, { sessionId: 'other', ts: now + second * 1000 })]));
+    else f.db.exec("UPDATE import_state SET offset=offset+1,size=size+1 WHERE path='unrelated-source.jsonl'");
+    clock += 1000; await vi.advanceTimersByTimeAsync(1000);
+    if (second * 1000 % cadence === 0) await read();
+  }
+  expect(revision()).not.toEqual(before);
+  expect(work.fits - fits).toBe(2 * fits);
+  expect(work.ownership - ownership).toBe(2 * ownership);
+  expect(sent).toBe(9);
+  expect(work.totals).toBe(0);
+  const atRest = work.fits;
+  for (let second = 1; second <= 30; second++) {
+    clock += 1000; await vi.advanceTimersByTimeAsync(1000); await read();
+  }
+  expect(work.fits).toBe(atRest);
 });
 it('reads only a trailing fallback when the counter supplies usage but not a rate', async () => {
   f.db.exec(`DELETE FROM counter_snapshots WHERE ts<${START + 3 * DAY}`);

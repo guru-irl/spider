@@ -3,7 +3,13 @@ import { randomUUID } from "node:crypto";
 import { calibrationFallback } from "./calibration.js";
 import { Worker, type WorkerOptions } from "node:worker_threads";
 import type { UsageRoots } from "./discovery.js";
-import type { PanelUsage, SourceErrorDiagnostics, UsageRuntimeSnapshot, UsageWorkerCommand, UsageWorkerEvent } from "./protocol.js";
+import { PANEL_USAGE_INTERVAL_MS, type PanelUsage, type SourceErrorDiagnostics, type UsageRuntimeSnapshot, type UsageWorkerCommand, type UsageWorkerEvent } from "./protocol.js";
+
+type PanelRead = {
+  sessionId: string; budget: number | undefined; at: number; startedAt: number; month: number;
+  period?: PanelUsage['pace']['period']; promise: Promise<PanelUsage | null>; settled: boolean; subscribers: number;
+};
+const copyPanel = (value: PanelUsage | null): PanelUsage | null => value === null ? null : structuredClone(value);
 
 export const USAGE_WORKER_RESOURCE_LIMITS: Readonly<NonNullable<WorkerOptions["resourceLimits"]>> = Object.freeze({ maxOldGenerationSizeMb: 256, maxYoungGenerationSizeMb: 16, stackSizeMb: 4 });
 export type UsageWorker = Pick<Worker, "on" | "off" | "postMessage" | "terminate" | "unref">;
@@ -57,6 +63,7 @@ export class UsageRuntime {
   private stopping: Promise<void> | undefined;
   private stoppedAck: (() => void) | undefined;
   private nextPanelRequest = 0;
+  private panelRead: PanelRead | undefined;
   private readonly panelRequests = new Map<number, { settle(value: PanelUsage | null): void }>();
   private current: UsageRuntimeSnapshot = { health: null, counter: null, backfill: "pending", reconciliation: null, errorCode: null };
   constructor(private readonly options: UsageRuntimeOptions) {}
@@ -95,17 +102,40 @@ export class UsageRuntime {
     this.startup.unref?.();
   }
   readPanel(now: number, sessionId: string, budget?: number): Promise<PanelUsage | null> {
-    if (!this.worker || this.stopped || this.workerFailed || this.panelRequests.size >= 8) return Promise.resolve(null);
+    if (!this.worker || this.stopped || this.workerFailed) return Promise.resolve(null);
+    const date = new Date(now), month = date.getUTCFullYear() * 12 + date.getUTCMonth();
+    const previous = this.panelRead, startedAt = Date.now();
+    // Shared-ledger writes can invalidate every follower's query caches. Sample
+    // display values at the same cadence as the client, including pending reads.
+    if (previous && previous.sessionId === sessionId && previous.budget === budget && previous.month === month
+      && now >= previous.at && now - previous.at < PANEL_USAGE_INTERVAL_MS
+      && startedAt >= previous.startedAt && startedAt - previous.startedAt < PANEL_USAGE_INTERVAL_MS
+      && (!previous.period || now >= previous.period.start && now < previous.period.end)) {
+      if (!previous.settled) {
+        if (previous.subscribers >= 8) return Promise.resolve(null);
+        previous.subscribers++;
+      }
+      return previous.promise.then(copyPanel);
+    }
+    if (this.panelRequests.size >= 8) return Promise.resolve(null);
     const requestId = ++this.nextPanelRequest;
-    return new Promise(resolve => {
-      const timer = setTimeout(() => settle(null), 10000);
-      timer.unref?.();
-      const settle = (value: PanelUsage | null) => { clearTimeout(timer); this.panelRequests.delete(requestId); resolve(value); };
-      this.panelRequests.set(requestId, { settle });
-      this.send({ type: 'panel-usage', requestId, now, sessionId, budget });
-    });
+    let resolve!: (value: PanelUsage | null) => void;
+    const promise = new Promise<PanelUsage | null>(done => { resolve = done; });
+    const reading: PanelRead = { sessionId, budget, at: now, startedAt, month, promise, settled: false, subscribers: 1 };
+    this.panelRead = reading;
+    const timer = setTimeout(() => settle(null), 10000);
+    timer.unref?.();
+    const settle = (value: PanelUsage | null) => {
+      clearTimeout(timer); this.panelRequests.delete(requestId); reading.settled = true;
+      if (value) reading.period = value.pace.period;
+      resolve(value);
+    };
+    this.panelRequests.set(requestId, { settle });
+    this.send({ type: 'panel-usage', requestId, now, sessionId, budget });
+    return promise.then(copyPanel);
   }
   private clearPanelRequests(): void {
+    this.panelRead = undefined;
     for (const request of this.panelRequests.values()) request.settle(null);
   }
   refresh(): void {
@@ -116,6 +146,7 @@ export class UsageRuntime {
     this.poll = !this.options.dashboardMode && poll;
     const modeChanged = calibration !== undefined && calibration !== (this.calibrationMode ?? "auto");
     if (modeChanged) {
+      this.panelRead = undefined;
       this.calibrationMode = calibration;
       this.current = { ...this.current, calibration: calibrationFallback(calibration) };
       this.notify();

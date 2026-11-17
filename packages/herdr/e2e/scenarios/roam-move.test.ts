@@ -190,6 +190,7 @@ export interface MoveOwner { pid: number; terminal: string; file: string; cwd: s
 export interface MoveStory {
   suite: Suite; sessionId: string; originalFile: string; machines: readonly [MoveMachine, MoveMachine, MoveMachine];
   original: InteractiveDriver; cli(machine: MoveMachine, args: readonly string[]): Promise<Record<string, any>>;
+  moveTo(machine: MoveMachine, destination: string): Promise<Record<string, any>>;
   owners(): Promise<MoveOwner[]>; owner(machine: MoveMachine): Promise<MoveOwner>;
   home(): { machine_id: string; epoch: number; move_id: string | null };
   trees(cwd: string): Promise<{ head: string; index: string; working: string }>;
@@ -386,6 +387,16 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       expect(result.exitCode, result.stderr + result.stdout).toBe(value.code);
       return value;
     };
+    const moveTo: MoveStory['moveTo'] = async (machine, destination) => {
+      const initial = await control(machine, ['move', sessionId, destination]);
+      if (initial.code !== 3 || initial.reason !== 'move-destination-pending') return initial;
+      // A pending move requires the documented recovery command after supervision starts its owner.
+      return waitFor('documented recovery completes the pending move', async () => {
+        const recovered = await control(machine, ['roam', 'recover', initial.operationId]);
+        expect(recovered.operationId).toBe(initial.operationId);
+        return recovered;
+      }, recovered => recovered.code !== 3, deadline(60_000), { reconcileMs: 500 });
+    };
     const owners: MoveStory['owners'] = async () => {
       const result: MoveOwner[] = [];
       for (const machine of machines) {
@@ -431,7 +442,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       return { head: await git(directory, ['rev-parse', 'HEAD']), index, working: working.stdout.trim() };
     };
     const sync = async () => { for (const machine of machines.slice(1)) expect(await control(hub, ['roam', 'sync', machine.id])).toMatchObject({ code: 0 }); };
-    return { suite, sessionId, originalFile, original, machines, owners, owner, home, trees, cli: control, sync, effects, faults, untouched, untouchedDigest,
+    return { suite, sessionId, originalFile, original, machines, owners, owner, home, trees, cli: control, moveTo, sync, effects, faults, untouched, untouchedDigest,
       presentation, stopBox: () => supervisors.get(BOX)!.stop(), close };
   } catch (error) { await close(); throw error; }
 }
@@ -497,7 +508,7 @@ async function outward(suite: Suite): Promise<void> {
     await writeFile(f.faults, JSON.stringify({ drop: [], intercomDown: BOX2 }));
     const outage = await waitFor('source reports its actual unavailable intercom route', () => f.cli(hub, ['fixture-status']),
       result => result.value?.intercom?.links?.some((link: { peer: string }) => link.peer === BOX2), deadline(30_000), { reconcileMs: 500 });
-    const result = await f.cli(hub, ['move', f.sessionId, box.alias]);
+    const result = await f.moveTo(hub, box.alias);
     expect(result).toMatchObject({ code: 0, reason: 'moved', value: { home: { machineId: BOX, epoch: 2 } } });
     expect(result.value.intercomAddress).toContain(box.alias);
     expect(result.value.warnings).toContain('tool-auth-unverified');
@@ -519,7 +530,7 @@ async function outward(suite: Suite): Promise<void> {
     await writeFile(f.faults, JSON.stringify({ drop: [] }));
     await waitFor('restored intercom route clears its diagnostic', () => f.cli(hub, ['fixture-status']),
       result => result.value?.intercom?.links?.every((link: { peer: string }) => link.peer !== BOX2), deadline(30_000), { reconcileMs: 500 });
-    expect(await f.cli(hub, ['move', f.sessionId, secondBox.alias])).toMatchObject({ code: 0 });
+    expect(await f.moveTo(hub, secondBox.alias)).toMatchObject({ code: 0 });
     await assertMoveState(f, secondBox, expectedTrees, 3);
     const retargeted = (await f.presentation.store.read()).presentations[0];
     expect(retargeted).toMatchObject({ id: presented.id, proxy: presented.proxy, mode: 'proxy',
@@ -538,12 +549,12 @@ async function returnMove(suite: Suite): Promise<void> {
   const f = await createMoveStory(suite), [hub, box, secondBox] = f.machines;
   try {
     const expectedTrees = await f.trees(hub.cwd), checkout = await stat(join(hub.cwd, '.git'));
-    expect(await f.cli(hub, ['move', f.sessionId, box.alias])).toMatchObject({ code: 0 });
+    expect(await f.moveTo(hub, box.alias)).toMatchObject({ code: 0 });
     await assertMoveState(f, box, expectedTrees, 2);
     const remotePresentation = (await f.presentation.store.read()).presentations[0];
     expect(remotePresentation).toMatchObject({ mode: 'proxy', slot: { space: f.presentation.slot.space, tab: f.presentation.slot.tab } });
     expect(await f.presentation.machineText()).toBe(box.alias);
-    expect(await f.cli(hub, ['move', f.sessionId, secondBox.alias])).toMatchObject({ code: 0 });
+    expect(await f.moveTo(hub, secondBox.alias)).toMatchObject({ code: 0 });
     await assertMoveState(f, secondBox, expectedTrees, 3);
     const retargeted = (await f.presentation.store.read()).presentations[0];
     expect(retargeted).toMatchObject({ id: remotePresentation.id, proxy: remotePresentation.proxy, mode: 'proxy',
@@ -556,7 +567,7 @@ async function returnMove(suite: Suite): Promise<void> {
     const destinationCalls = (await readFile(boxOwner.file, 'utf8')).trimEnd().split('\n').map(line => JSON.parse(line))
       .filter(row => row.type === 'message' && row.message?.role === 'assistant' && JSON.stringify(row.message.content).includes('owned destination responds'));
     expect(destinationCalls).toHaveLength(1);
-    const result = await f.cli(hub, ['move', f.sessionId, 'mac']);
+    const result = await f.moveTo(hub, 'mac');
     expect(result).toMatchObject({ code: 0, reason: 'moved' });
     expect(result.value.intercomAddress).toContain(hub.alias);
     expect(result.value.warnings).toContain('tool-auth-unverified');
@@ -636,7 +647,7 @@ async function exclusion(suite: Suite): Promise<void> {
 async function copiedFile(suite: Suite): Promise<void> {
   const f = await createMoveStory(suite), [hub, box] = f.machines;
   try {
-    expect(await f.cli(hub, ['move', f.sessionId, box.alias])).toMatchObject({ code: 0 });
+    expect(await f.moveTo(hub, box.alias)).toMatchObject({ code: 0 });
     await f.owner(box);
     const copied = suite.ownPath(join(hub.agent, 'sessions', 'copied.jsonl'));
     const boxDb = openDb(join(box.root, 'spider.db'));

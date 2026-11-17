@@ -433,7 +433,7 @@ it.each(["same", "launch", "epoch", "file"] as const)("box wake recovers only it
   const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
   const intent = { sessionId: "s-1", epoch: 2, desired: "running" as const, suspended: null, ...location, moveId: "move-1" };
   await authority.set(intent, "start-1", { machineId: BOX, hubMachineId: HUB });
-  const launchId = participantLaunchId(BOX, "s-1", "start-1"), intents = createIntentStore(f.global.root);
+  const launchId = participantLaunchId(BOX, "s-1", 2, "start-1"), intents = createIntentStore(f.global.root);
   await intents.update("s-1", null, { intent: { ...intent, ...(changed === "epoch" ? { epoch: 1 } : {}), ...(changed === "file" ? { file: join(f.global.root, "other.jsonl") } : {}) }, failures: [], supervision: { kind: "launching", phase: "reserved", operationId: changed === "launch" ? "other-launch" : launchId } });
   let wakes = 0;
   const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, wake: async () => { wakes++; } });
@@ -462,7 +462,7 @@ it.each(["supervisor-first", "wake-first"] as const)("the same intent joins one 
   try {
     if (order === "supervisor-first") await supervisor.reconcile();
     const result = await wake({ sessionId: "s-1", operationId: f.operation.id });
-    expect(result).toEqual({ ok: true, launchId: participantLaunchId(BOX, "s-1", f.operation.id) });
+    expect(result).toEqual({ ok: true, launchId: participantLaunchId(BOX, "s-1", 2, f.operation.id) });
     await supervisor.reconcile();
     expect(launches).toBe(1);
     expect(launchIds).toEqual([result.ok ? result.launchId : "refused"]);
@@ -470,6 +470,49 @@ it.each(["supervisor-first", "wake-first"] as const)("the same intent joins one 
     expect(launches).toBe(1);
     expect(await wake({ sessionId: "s-1", operationId: "different-operation" })).toEqual({ ok: false, reason: "participant-intent-unavailable" });
     expect(launches).toBe(1);
+  } finally { await supervisor.stop(); }
+}, 5000);
+
+it("a confirmed crash gets one durable restart across a supervisor crash", async () => {
+  const f = fixture();
+  await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
+  let now = 1000, launches = 0, crashReply = true;
+  const liveOwners = new Set<string>(), saved = new Map<string, import("../contracts").Outcome<import("@spider/db-core/roam/types").HubOperationReadiness>>();
+  const calls: Array<{ id: string; mode: string }> = [];
+  const create = () => createParticipantSupervisor({ root: f.global.root, agent: f.ports,
+    clock: { now: () => now, later: () => () => {} }, events: { subscribe: () => () => {} },
+    owner: async () => liveOwners.size ? { kind: "live", identity: { bootId: "boot-1", pid: 123, startTime: [...liveOwners][0] } } : { kind: "absent" },
+    diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {},
+    async launch(intent, operationId, mode) {
+      calls.push({ id: operationId, mode });
+      const prior = saved.get(operationId);
+      if (prior) return liveOwners.has(operationId) ? prior : { ...prior, code: 1, reason: "adopted-exited", value: null };
+      launches++; liveOwners.add(operationId);
+      const result = { code: 0 as const, reason: "ready", operationId, epoch: intent.epoch, home: null, repairCommand: null,
+        value: { origin: "hub-operation" as const, opId: operationId, sessionId: intent.sessionId, epoch: intent.epoch, file: intent.file,
+          cwd: intent.cwd, core: "core-1", terminal: `terminal-${launches}` } };
+      saved.set(operationId, result);
+      if (launches === 2 && crashReply) { crashReply = false; throw new Error("supervisor stopped before saving readiness"); }
+      return result;
+    },
+  });
+  let supervisor = create();
+  try {
+    await supervisor.reconcile(); expect(launches).toBe(1);
+    const initialId = calls[0].id; liveOwners.clear();
+    await supervisor.reconcile(); now += 5000;
+    await supervisor.reconcile();
+    expect(launches).toBe(2);
+    const pending = await createIntentStore(f.global.root).get("s-1");
+    expect(pending?.value.supervision.kind).toBe("launching");
+    const restartId = calls.at(-1)!.id;
+    expect(restartId).not.toBe(initialId);
+    await supervisor.stop(); supervisor = create();
+    await supervisor.reconcile(); await supervisor.reconcile();
+    expect(calls.at(-1)).toEqual({ id: restartId, mode: "reconcile" });
+    expect(launches).toBe(2);
+    expect([...liveOwners]).toEqual([restartId]);
+    expect((await createIntentStore(f.global.root).get("s-1"))?.value.supervision.kind).toBe("live");
   } finally { await supervisor.stop(); }
 }, 5000);
 

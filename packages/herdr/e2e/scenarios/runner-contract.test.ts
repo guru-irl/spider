@@ -147,8 +147,8 @@ describe('story cleanup reserve', () => {
     const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
     try {
       await runStoryWork(root, 'R17', async () => {});
-      const at = Date.now() - 1;
-      const overall = { at, expire() {} };
+      const finishedAt = JSON.parse(readFileSync(resolve(root, 'work-complete/R17.json'), 'utf8')).finishedAt as number;
+      const overall = { at: finishedAt - 1, expire() {} };
       expect(storyExecutionDeadline(overall, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(false);
       expect(storyExecutionDeadline(overall, root, { ids: ['R17'], harness: true })).toBe(overall);
     } finally { rmSync(root, { recursive: true, force: true }); }

@@ -65,7 +65,7 @@ function fixture(version: SpacesAVersion, count: number, finished: number, prese
       if (request.op === 'snapshot') return state.paneSnapshot ?? null;
       (state.paneRequests ??= []).push(request); return { status: 'complete' };
     },
-    createFeedReader: () => ({ read: async () => ({ feeds: state.feeds, errors: state.errors }), stamps: () => new Map(state.feeds.map((item: any) => [item.sessionId, String(item.stamp ?? item.revision)])), close: async () => {} }),
+    createFeedReader: () => ({ read: async () => { if (state.throwFeed) throw new Error('read failed'); return { feeds: state.feeds, errors: state.errors }; }, stamps: () => new Map(state.feeds.map((item: any) => [item.sessionId, String(item.stamp ?? item.revision)])), close: async () => {} }),
     initMoveMenu() {}, renderMoveMenu() {}, herdr: { checking: () => false }, props: () => config,
     agents: () => { agentReads++; return structuredClone(state.agents); }, terminals: () => structuredClone(state.terminals), panes: () => structuredClone(state.panes), spaces: () => structuredClone(state.spaces), machines: () => structuredClone(state.machines),
     focused: () => structuredClone(state.focus), theme: () => palette, shared: (key: string) => sharedState.get(key) ?? null, setShared: (key: string, value: unknown) => sharedState.set(key, value), setAgentOrder() {},
@@ -262,7 +262,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   it(`${version}: retains saved keys through feed errors and prunes them after recovery`, async () => {
-    const h = fixture(version, 1, 0);
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
     const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
     h.state.terminals.push({ address: 'child', parent: 'v0', state: 'live', status: 'idle', labels: {} });
     const refresh = async () => {
@@ -277,7 +277,12 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       h.state.feeds[0].runs.rows = []; h.state.errors = [{ source: 's0', message: 'read failed' }];
       await refresh(); expect(h.storage.get('spider.subagents.expanded')).toBe('["live0"]');
       expect(writes()).toBe(1);
-      h.state.errors = []; await refresh();
+      h.state.errors = []; h.state.feeds[0].runs.rows = [first]; await refresh();
+      h.state.feeds[0].runs.rows = []; h.state.throwFeed = true; await refresh();
+      h.view.spiderFeedError = null; h.view.spiderModel.inputKey = null;
+      h.view.spiderRequestRefresh(); await h.flush();
+      expect(h.storage.get('spider.subagents.expanded')).toBe('["live0"]');
+      h.state.throwFeed = false; await refresh();
       expect(h.storage.get('spider.subagents.expanded')).toBe('[]');
       expect(writes()).toBe(2);
     } finally { await h.view.close(); }

@@ -108,7 +108,7 @@ describe('headless story matrix', () => {
 
   it('includes move stories by default with their existing independent budgets', () => {
     const defaults = JSON.parse(select('').stdout) as { include: { story: string; timeout: number }[] };
-    for (const story of ['R06', 'R07', 'R08', 'R10']) {
+    for (const story of ['R06', 'R07', 'R08', 'R10', 'R17']) {
       expect(defaults.include).toContainEqual({ story, timeout: 5 });
       expect(JSON.parse(select(story).stdout).include).toEqual([{ story, timeout: 5 }]);
     }

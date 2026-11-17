@@ -82,7 +82,9 @@ it("persists and routes nullable-scope addresses without crossing scopes", async
   expect(frame.identity).toMatchObject({ from, to: address });
   expect(inbox.acceptInbound({ peer: sourceMachine, frame }).kind).toBe("accepted");
   expect(inbox.pending({ kind: "inbound", address }).map(item => item.id)).toEqual(["one"]);
-  expect(() => source.acceptOutbound({ from: sender, endpoint: target, message: mail("wrong-scope"), nextHop: targetMachine })).toThrow();
+  expect(source.acceptOutbound({ from: sender, endpoint: target, message: mail("wrong-scope"), nextHop: targetMachine })).toEqual({ kind: "refused", reason: "invalid-message" });
+  expect(source.retained("outbound", "wrong-scope")).toBeNull();
+  expect(outgoing(source).map(frame => frame.identity.id)).toEqual(["one"]);
 }, 5000);
 
 it("link ack never deletes source payload", async () => {

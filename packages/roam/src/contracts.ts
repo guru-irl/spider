@@ -186,7 +186,7 @@ export interface FreezeAck {
   intercomGeneration: string;
 }
 export interface MoveRequest { operation: Operation; sessionId: string; destinationMachine: MachineId }
-export type SourceCleanup = { status: "done" } | { status: "pending"; blockers: readonly ValidatedBlockerId[] };
+export type SourceCleanup = { status: "done" } | { status: "pending"; reason: MoveRefusalCode; blockers: readonly ValidatedBlockerId[] };
 export interface MoveResult { home: Home; terminal: string | null; intercomAddress: string; warnings: readonly string[]; sourceCleanup: SourceCleanup }
 /** Validated at the blocker boundary, never inferred from a message body. */
 declare const validatedBlockerId: unique symbol;
@@ -221,6 +221,7 @@ export const MOVE_REFUSAL_MESSAGES = {
   "intercom-fence-unsupported": "The required intercom move ports are unavailable.",
   "intercom-endpoint-not-ready": "The admitted destination intercom endpoint is not ready.",
   "move-destination-pending": "The source is paused to avoid running two copies. Destination readiness needs reconciliation.",
+  "move-cleanup-pending": "The source has stopped; its remaining local cleanup has not finished.",
   "move-source-stop-pending": "The source process has not been proved stopped and retired.",
   "move-home-changed": "The committed home changed before move completion.",
   "move-pending": "This move is pending to avoid running two copies. Reconcile it before retrying.",

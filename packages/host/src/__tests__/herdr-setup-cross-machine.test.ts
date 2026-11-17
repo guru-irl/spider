@@ -39,7 +39,9 @@ test('unreadable app version skips picker keys while install and doctor remain a
   const keyPath = join(home, 'keys.json'), before = JSON.parse(await readFile(keyPath, 'utf8'));
   Object.assign(before.global, { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' });
   await writeFile(keyPath, JSON.stringify(before));
+  const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   const files = await f.parts.installFiles(request, f.context);
+  expect(stderr.mock.calls.map(([text]) => String(text)).filter(text => /picker.*version/i.test(text))).toHaveLength(1);
   const keyPlan = files.find(file => file.path === keyPath)!;
   expect(keyPlan.keys?.global).not.toHaveProperty('cmd-t');
   expect(keyPlan.keys?.global).not.toHaveProperty('cmd-d');
@@ -80,6 +82,7 @@ test('unreadable app version leaves existing picker files and bindings alone', a
     expect.objectContaining({ message: expect.stringMatching(/version.*picker|picker.*version/i) }),
   ]);
   expect(result.warnings?.find(warning => warning.code === 'picker-version-unavailable')?.message).toMatch(/existing.*left in place/i);
+  expect(result.failures.some(failure => failure.message.includes('cmd-shift-w'))).toBe(false);
   expect(result.failures.some(failure => failure.code === 'legacy-picker-binding')).toBe(false);
 });
 

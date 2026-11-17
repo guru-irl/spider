@@ -6,6 +6,9 @@ import type { ProcessIdentity } from "@spider/db-core/roam/types";
 import { hash, jsonFiles, privateDirectory, readPrivateJson, withProcessLock, writePrivateJson } from "@spider/herdr/sessions/registry";
 import type { HostIntent } from "./contracts";
 
+/** Migration key for automatic read fences written by older supervisors. Never use for deliberate stops. */
+export const LEGACY_AUTOMATIC_READ_SUSPENSION = "Cannot verify hosting state";
+
 export type Supervision =
   | { kind: "idle"; nextAttemptAt: number | null }
   | { kind: "launching"; operationId: string; phase: "reserved" | "invoking" }

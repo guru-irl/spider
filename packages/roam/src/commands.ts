@@ -1,3 +1,4 @@
+import { hostingWarningText, validHostingWarning, type HostingWarning } from "./hosting-warning";
 import type { RoamStatus } from "./diagnostics";
 import { isAbsolute } from "node:path";
 import { MOVE_REFUSAL_MESSAGES, type MoveRefusal, type MoveRefusalCode, type SourceCleanup, type Outcome, type RoamConfig } from "./contracts";
@@ -140,10 +141,14 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   let refusal: MoveRefusal | undefined;
   if (result.refusal && typeof result.refusal === "object" && !Array.isArray(result.refusal)) {
     const rawRefusal = result.refusal as Record<string, unknown>, code = rawRefusal.code;
-    if (typeof code === "string" && Object.hasOwn(MOVE_REFUSAL_MESSAGES, code) && code === result.reason && result.code !== 0 &&
-        rawRefusal.message === MOVE_REFUSAL_MESSAGES[code as MoveRefusalCode] && Array.isArray(rawRefusal.blockers)) {
-      try { refusal = { code: code as MoveRefusalCode, message: MOVE_REFUSAL_MESSAGES[code as MoveRefusalCode], blockers: rawRefusal.blockers.map(validateBlockerId) }; }
-      catch { /* Invalid blocker identities are never printed. */ }
+    if (typeof code === "string" && Object.hasOwn(MOVE_REFUSAL_MESSAGES, code) && code === result.reason && result.code !== 0 && Array.isArray(rawRefusal.blockers)) {
+      const rawWarning = rawRefusal.hostingWarning;
+      const warning: HostingWarning | undefined = code === "move-destination-pending" && validHostingWarning(rawWarning)
+        ? { code: rawWarning.code, check: rawWarning.check, since: rawWarning.since, count: rawWarning.count } : undefined;
+      const message = MOVE_REFUSAL_MESSAGES[code as MoveRefusalCode] + (warning ? ` ${hostingWarningText(warning)}` : "");
+      if (rawRefusal.message === message) try {
+        refusal = { code: code as MoveRefusalCode, message, blockers: rawRefusal.blockers.map(validateBlockerId), ...(warning ? { hostingWarning: warning } : {}) };
+      } catch { /* Invalid blocker identities are never printed. */ }
     }
   }
   return { code: [0, 1, 2, 3].includes(result.code) ? result.code : 1, reason: safeReason(result.reason), operationId: token(result.operationId) ?? "",

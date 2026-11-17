@@ -138,7 +138,7 @@ export interface IntercomLifecycle {
   diagnostics(): readonly IntercomDiagnostic[];
   readiness?(): { state: "disabled" | "pending" | "ready"; reason: string | null };
 }
-export interface Diagnostic { reason: string; severity: "warning" | "block"; repairCommand: string | null; writerEpoch?: number }
+export interface Diagnostic { code?: import("./hosting-warning").HostingWarning["code"]; reason: string; severity: "warning" | "block"; repairCommand: string | null; writerEpoch?: number }
 export type NativeHostingOutcome = "live" | "killed" | "core-loss" | "unexpected-exit" | "unknown";
 export interface HostIntent {
   sessionId: string; epoch: number; desired: "running" | "stopped"; suspended: string | null;
@@ -229,7 +229,7 @@ export const MOVE_REFUSAL_MESSAGES = {
   "move-abort-pending": "Waiting for the hub to confirm the cancelled move.",
 } as const;
 export type MoveRefusalCode = keyof typeof MOVE_REFUSAL_MESSAGES;
-export interface MoveRefusal { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string }
+export interface MoveRefusal { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string; hostingWarning?: import("./hosting-warning").HostingWarning }
 export type MoveOutcome = { ok: true; value: MoveResult } | { ok: false; refusal: MoveRefusal };
 /** The existing command envelope is retained; consumers never parse reason to recover refusal structure. */
 export type MoveSessionOutcome = Outcome<MoveResult> & (
@@ -243,6 +243,7 @@ export interface MoveCheck {
 }
 export interface PreparedMove { workspace: PreparedWorkspace; session: SessionManifest }
 export interface DestinationObservation {
+  hostingWarning?: import("./hosting-warning").HostingWarning;
   home: Home; owner: Probe; readiness: HubOperationReadiness | null; launchFailure: string | null; retired: boolean;
   /** True only after durable retirement permanently cancels further activation at this epoch. */
   activationCancelled?: boolean;

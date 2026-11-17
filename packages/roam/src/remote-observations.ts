@@ -1,3 +1,4 @@
+import { HOSTING_WARNING_CODE, validHostingWarnings } from "./hosting-warning";
 import { parseReadiness } from "@spider/db-core/roam/readiness";
 import { validReadiness } from "./session-control";
 import type { HostingObservation } from "./hosting";
@@ -24,9 +25,10 @@ export async function remoteHosting(transport: Transport, peer: Peer, config: Ro
   if (!record(value) || !Array.isArray(value.readiness) || !value.readiness.every(validReadiness) || !Array.isArray(value.suspensions) ||
       value.suspensions.some(item => !record(item) || typeof item.sessionId !== "string" || !item.sessionId || !Number.isSafeInteger(item.epoch) || Number(item.epoch) < 1))
     throw new Error("Invalid hosting observation");
+  if (value.warnings !== undefined && !validHostingWarnings(value.warnings)) throw new Error("Invalid hosting warnings");
   if (value.readiness.some(row => row.terminal.includes("/"))) throw new Error("Invalid local terminal identity");
   return { readiness: value.readiness.map(raw => { const row = parseReadiness(raw); if (row.origin === "box-local" && row.machineId !== peer.machineId) throw new Error("readiness-origin-mismatch"); return { ...row, terminal: `${peer.alias}/${row.terminal}` }; }),
-    suspensions: value.suspensions as HostingObservation["suspensions"] };
+    suspensions: value.suspensions as HostingObservation["suspensions"], ...(value.warnings === undefined ? {} : { warnings: value.warnings as HostingObservation["warnings"] }) };
 }
 
 type ConsumerSnapshot = Awaited<ReturnType<typeof inspectLocalConsumers>>;
@@ -83,6 +85,7 @@ export async function remoteDoctor(transport: Transport, peer: Peer, config: Roa
     throw new Error("Invalid remote doctor report");
   for (const diagnostic of value.diagnostics) {
     if (!record(diagnostic) || !["block", "warning"].includes(String(diagnostic.severity)) || typeof diagnostic.reason !== "string" ||
+        !(diagnostic.code === undefined || diagnostic.code === HOSTING_WARNING_CODE) ||
         !(diagnostic.repairCommand === null || typeof diagnostic.repairCommand === "string")) throw new Error("Invalid remote diagnostic");
   }
   for (const consumer of value.consumers) {

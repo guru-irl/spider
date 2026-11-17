@@ -7,6 +7,7 @@ import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { storeScope } from "@spider/db-core/roam/codec";
 import type { Home, HubOperationReadiness, JsonObject, Probe, StoreBarrier } from "@spider/db-core/roam/types";
 import type { IntercomIntakeFence, SessionEndpoint } from "@spider/intercom/protocol";
+import { validHostingWarning } from "./hosting-warning";
 import { MOVE_REFUSAL_MESSAGES } from "./contracts";
 import type { DestinationObservation, FreezeAck, Journal, MoveCheck, MovePorts, MoveRequest, MoveResult, SourceCleanup, MoveRefusal, MoveRefusalCode, MoveSessionOutcome, ValidatedBlockerId, Operation, Outcome, PreparedMove } from "./contracts";
 import { casHome, sessionHome } from "./homes";
@@ -83,6 +84,7 @@ function readinessReply(value: HubOperationReadiness | null, home: Home, prepare
 }
 function observationReply(value: DestinationObservation, current: Home): void {
   if (!value || !sameHome(value.home, current) || typeof value.retired !== "boolean" || !(value.launchFailure === null || text(value.launchFailure))) refuse("move-observation-invalid");
+  if (value.hostingWarning !== undefined && !validHostingWarning(value.hostingWarning)) refuse("move-observation-invalid");
   probe(value.owner);
 }
 function endpointReply(endpoint: SessionEndpoint, fence: IntercomIntakeFence, current: Home): void {

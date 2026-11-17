@@ -1,8 +1,9 @@
+import * as sessionFiles from "../session-file";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import { isDeepStrictEqual } from "node:util";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -1566,4 +1567,48 @@ it("records normal hub-return provenance tied to the committed move", async () =
   const prepared = { session: f.sourceManifest, workspace: f.sourceWorkspace } as PreparedMove;
   expect((await f.ports.start(home, prepared, f.operation)).code).toBe(0);
   expect(readLocal<{ owner: unknown }>(f.global.db, "participant-intent", SESSION)?.owner).toEqual({ kind: "hub-return", machineId: HUB, moveId: f.operation.id });
+}, 5000);
+
+
+it.each(['ready', 'gone', 'owner-changed', 'home-changed'] as const)('destroyed mirror restoration replay %s checks durable ownership before installation', async mode => {
+  const f = preparedFixture;
+  casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
+  const mirrorOperation = { id: 'restore-replay-mirror', kind: 'session-mirror', machineId: BOX, expectedEpoch: 2, args: { sessionId: SESSION } };
+  f.journal.begin(mirrorOperation);
+  await appendMirror({ sessionId: SESSION, epoch: 2, source: mirrorPrepared.session, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
+  const p = f.bindings.participant!, readiness = p.readiness;
+  p.readiness = async () => null;
+  f.bindings.recovery!.restoreWorkspace = async () => ({ cwd: f.repo, parent: null });
+  const request = { machineId: BOX, confirmation: `destroyed ${BOX}` };
+  expect(await forgetMachine(request, f.ports)).toMatchObject({ code: 3 });
+  const home = sessionHome(f.global.db, SESSION) as Home;
+  const child = `${home.moveId}-move-restore-${HUB}`;
+  const launch = f.journal.read(child).find(row => row.action === 'participant-launch')!.result.launchId as string;
+  p.readiness = readiness;
+  if (mode === 'owner-changed') {
+    const row = readLocal<JsonObject>(f.global.db, 'participant-intent', SESSION)!;
+    writeLocal(f.global.db, 'participant-intent', SESSION, { ...row, owner: { kind: 'hub-return', machineId: HUB, moveId: 'forged' } });
+  }
+  if (mode === 'home-changed') casHome(f.global.db, home, BOX, 'changed-home', HUB);
+  if (mode === 'gone') {
+    f.owner({ kind: 'absent' }); f.failed();
+    p.wake = async () => {
+      const intent = (await createRunningIntentAuthority(f.global.db).get(SESSION))!, launchId = `${launch}-restart-1`;
+      f.owner({ kind: 'live', identity: { bootId: 'fixture-boot', pid: 43, startTime: 'fixture-restarted' } });
+      f.journal.begin({ id: launchId, kind: 'exact-session-launch', machineId: HUB, expectedEpoch: home.epoch, args: { sessionId: SESSION } });
+      recordReadiness(f.journal, { origin: 'hub-operation', opId: launchId, sessionId: SESSION, epoch: home.epoch, file: intent.file, cwd: intent.cwd, core: 'core-a', terminal: 'terminal-restarted' });
+      return { ok: true, launchId };
+    };
+    p.readiness = async query => { const ready = readReadiness(f.journal, query.launchId), owner = await p.probe(SESSION); return owner.kind === 'live' && owner.identity.startTime === 'fixture-restarted' && query.launchId === `${launch}-restart-1` && ready?.sessionId === query.sessionId && ready.epoch === query.epoch ? ready : null; };
+  }
+  const install = vi.spyOn(sessionFiles, 'installSession');
+  try {
+    const result = await forgetMachine(request, f.ports);
+    expect(result.code === 0).toBe(mode === 'ready' || mode === 'gone');
+    expect(install).toHaveBeenCalledTimes(mode === 'gone' ? 1 : 0);
+    if (mode === 'ready' || mode === 'gone') {
+      expect(await forgetMachine(request, f.ports)).toMatchObject({ code: 0 });
+      expect(install).toHaveBeenCalledTimes(mode === 'gone' ? 1 : 0);
+    }
+  } finally { install.mockRestore(); }
 }, 5000);

@@ -806,16 +806,40 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
   }
   if (operation.kind === "move-restore") {
     const mirror = operation.args.mirror as unknown as SessionManifest, current = requiredHome(participant.globalDb, id), restore = required(bindings.recovery, "recovery");
-    await verifyFrozenSession(mirror, participant.config.limits);
-    const workspace = await restore.restoreWorkspace(current, mirror, operation);
-    if (!workspace) return { code: 3, reason: "recovery-workspace-unavailable", operationId: operation.id, home: current, epoch: current.epoch, repairCommand: "spider roam doctor", value: null };
+    const rows = journal.read(operation.id), recorded = rows.filter(row => row.action === 'participant-launch').at(-1)?.result as unknown as ParticipantReadinessQuery | undefined;
     const receipt = journal.read(String(current.moveId)).find(row => row.action === "forget-home")?.result as unknown as { source: Home; home: Home } | undefined;
     if (!receipt || !sameHome(receipt.home, current) || receipt.source.machineId !== operation.args.previousMachine || receipt.source.epoch + 1 !== current.epoch || !isRevoked(required(bindings.privateDb, "privateDb"), receipt.source.machineId)) throw new MoveAdapterError("recovery-home-changed");
     const previous = receipt.source;
+    if (operation.expectedEpoch !== current.epoch || operation.args.moveId !== current.moveId) throw new MoveAdapterError('participant-home-mismatch');
+    let reinstall = false;
+    if (recorded) {
+      const authority = createRunningIntentAuthority(participant.globalDb), owned = authority.owned(id);
+      if (!owned || authority.operationId(id) !== operation.id || !isDeepStrictEqual(owned.owner, recordedIntentOwner(current, operation, participant, journal)) ||
+          owned.intent.epoch !== current.epoch || owned.intent.moveId !== current.moveId || owned.intent.desired !== 'running' || owned.intent.suspended !== null ||
+          recorded.sessionId !== id || recorded.epoch !== current.epoch) throw new MoveAdapterError('participant-owner-unproved');
+      const prior = journal.begin({ ...operation, kind: 'session-start', args: { ...operation.args, home: { ...current }, intent: { ...owned.intent } } });
+      const ready = await participant.readiness(recorded);
+      if (ready) {
+        if (ready.opId !== recorded.launchId || ready.sessionId !== id || ready.epoch !== current.epoch || ready.file !== owned.intent.file || ready.cwd !== owned.intent.cwd) throw new MoveAdapterError('participant-readiness-invalid');
+        return await startParticipant({ ...operation, kind: 'session-start' }, current, owned.intent, { journal, machineId: participant.config.machineId, hubMachineId: participant.config.hubMachineId,
+          identityCurrent: participant.identityCurrent, wake: async () => {}, readiness: async () => ({ ...ready, opId: operation.id }), activate: async () => { throw new MoveAdapterError('participant-owner-unproved'); } }) as unknown as Outcome<JsonObject>;
+      }
+      const observed = await participant.observation(current, operation);
+      if (!sameHome(observed.home, current)) throw new MoveAdapterError('participant-home-mismatch');
+      if (prior.kind === 'done' || observed.owner.kind !== 'absent' || observed.readiness !== null || !observed.launchFailure)
+        return { code: 3, reason: 'readiness-pending', operationId: operation.id, home: current, epoch: current.epoch, repairCommand: null, value: null };
+      reinstall = !rows.some(row => row.action === 'restore-reinstalled' && row.result.launchId === recorded.launchId);
+    }
+    await verifyFrozenSession(mirror, participant.config.limits);
+    const workspace = await restore.restoreWorkspace(current, mirror, operation);
+    if (!workspace) return { code: 3, reason: 'recovery-workspace-unavailable', operationId: operation.id, home: current, epoch: current.epoch, repairCommand: 'spider roam doctor', value: null };
     const staged = await stageSession({ source: mirror, destinationCwd: workspace.cwd, destinationParent: workspace.parent,
       segment: { version: 1, moveId: String(current.moveId), epoch: current.epoch, previousMachine: previous.machineId, nextMachine: current.machineId, historyMachine: await sessionHistoryOrigin(mirror, previous.machineId, participant.config.limits), parentRef: null } }, join(required(bindings.root, "root"), "roam", "staging"));
     const target = await participant.sessionTarget(id, String(current.moveId));
-    await installSession(staged, target, { journal, withBothLocks: participant.withBothLocks, ownership: () => participant.probe(id) });
+    if (!recorded || reinstall) {
+      await installSession(staged, target, { journal, withBothLocks: participant.withBothLocks, ownership: () => participant.probe(id) });
+      if (recorded) journal.record(operation.id, 'restore-reinstalled', { launchId: recorded.launchId });
+    }
     await inspectRestoredSession(target, mirror, previous, current, participant.config.limits);
     const local = location(participant.globalDb, id);
     const mappings = participant.globalDb.prepare("SELECT repo_key,workspace_id,path FROM roam_workspace_maps").all() as { repo_key: string; workspace_id: string; path: string }[];
@@ -830,14 +854,14 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
 }
 
 async function participantLaunch(operation: Operation, home: Home, participant: MoveParticipantBindings, journal: Journal): Promise<ParticipantReadinessQuery> {
-  const prior = journal.read(operation.id).find(row => row.action === "participant-launch")?.result as unknown as ParticipantReadinessQuery | undefined;
+  const rows = journal.read(operation.id), prior = rows.filter(row => row.action === "participant-launch").at(-1)?.result as unknown as ParticipantReadinessQuery | undefined;
   if (prior) {
     if (prior.sessionId !== home.sessionId || prior.epoch !== home.epoch || !prior.launchId || prior.launchId === operation.id) throw new MoveAdapterError("participant-launch-mismatch");
-    return prior;
+    if (!rows.some(row => row.action === 'restore-reinstalled' && row.result.launchId === prior.launchId)) return prior;
   }
   const result = await participant.wake({ sessionId: home.sessionId, operationId: operation.id });
   if (!result.ok) throw new MoveAdapterError(result.reason);
-  if (!result.launchId || result.launchId === operation.id) throw new MoveAdapterError("participant-launch-mismatch");
+  if (!result.launchId || result.launchId === operation.id || result.launchId === prior?.launchId) throw new MoveAdapterError("participant-launch-mismatch");
   const query = { sessionId: home.sessionId, launchId: result.launchId, epoch: home.epoch };
   journal.record(operation.id, "participant-launch", json(query));
   return query;

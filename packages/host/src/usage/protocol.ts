@@ -4,6 +4,8 @@ import type { CounterState } from "./counter.js";
 import type { CalibrationResult, SourceErrorRow, Period } from "./dashboard-contract.js";
 import type { Pace } from "./dashboard-v4-contract.js";
 
+export const PANEL_USAGE_INTERVAL_MS = 30000;
+
 export type PanelUsage = { monthCost: { credits: number | null; label: string }; pace: Pace; updatedAt: number | null };
 
 export type UsageWorkerCommand =

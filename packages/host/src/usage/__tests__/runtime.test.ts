@@ -2,7 +2,8 @@ import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { UsageRuntime, supportsUsageWorkers, type UsageRuntimeOptions } from "../runtime.js";
 import { usageDoctorLines } from "../doctor.js";
-import type { UsageWorkerEvent } from "../protocol.js";
+import type { PanelUsage, UsageWorkerCommand, UsageWorkerEvent } from "../protocol.js";
+import { computePace } from "../billing-pace.js";
 
 class FakeWorker extends EventEmitter {
   commands: unknown[] = [];
@@ -24,6 +25,93 @@ function fixture(extra: Partial<UsageRuntimeOptions> = {}) {
   instances.push(runtime);
   return { runtime, factory, worker, changed };
 }
+const panelCommands = (worker: FakeWorker) => worker.commands.filter((value): value is Extract<UsageWorkerCommand, { type: 'panel-usage' }> => (value as UsageWorkerCommand).type === 'panel-usage');
+const panelValue = (at = Date.now()): PanelUsage => ({ monthCost: { credits: 5, label: '5' },
+  pace: computePace({ now: at, snapshots: [], budget: 5000, correctedMonth: 100, correctedWindow: 10 }), updatedAt: null });
+async function panelFixture() {
+  const f = fixture({ supportsWorkers: () => true }); f.runtime.start(false); await vi.advanceTimersByTimeAsync(0); return f;
+}
+function reply(worker: FakeWorker, index = 0, data: PanelUsage | null = panelValue()) {
+  worker.emit('message', { type: 'panel-usage', requestId: panelCommands(worker)[index]!.requestId, data });
+}
+it('shares pending and completed panel work without sharing mutable results', async () => {
+  const f = await panelFixture(), at = Date.now();
+  const first = f.runtime.readPanel(at, 'human'), second = f.runtime.readPanel(at + 1, 'human');
+  expect(panelCommands(f.worker)).toHaveLength(1);
+  reply(f.worker);
+  const a = await first, b = await second;
+  expect(a).toEqual(b);
+  a!.monthCost.credits = -1;
+  expect(b?.monthCost.credits).toBe(5);
+  expect((await f.runtime.readPanel(at + 2, 'human'))?.monthCost.credits).toBe(5);
+  expect(panelCommands(f.worker)).toHaveLength(1);
+});
+it.each(['session', 'budget', 'mode', 'rewind', 'logical-expiry', 'wall-expiry', 'period'] as const)('starts fresh panel work when %s changes', async change => {
+  const f = await panelFixture(), at = Date.now();
+  const first = f.runtime.readPanel(at, 'human', 5000), value = panelValue(at);
+  if (change === 'period') value.pace.period.end = at + 100;
+  reply(f.worker, 0, value); await first;
+  let requestedAt = at, session = 'human', budget = 5000;
+  if (change === 'session') session = 'other';
+  if (change === 'budget') budget = 2000;
+  if (change === 'mode') f.runtime.configure(false, 'off');
+  if (change === 'rewind') requestedAt--;
+  if (change === 'logical-expiry') requestedAt += 30000;
+  if (change === 'wall-expiry') await vi.advanceTimersByTimeAsync(30000);
+  if (change === 'period') requestedAt += 100;
+  const second = f.runtime.readPanel(requestedAt, session, budget);
+  expect(panelCommands(f.worker)).toHaveLength(2);
+  reply(f.worker, 1); expect(await second).not.toBeNull();
+});
+it('does not share a pending panel across a calendar-month boundary', async () => {
+  vi.setSystemTime(Date.UTC(2026, 9, 31, 23, 59, 59));
+  const f = await panelFixture(), first = f.runtime.readPanel(Date.now(), 'human');
+  await vi.advanceTimersByTimeAsync(2000);
+  const second = f.runtime.readPanel(Date.now(), 'human');
+  expect(panelCommands(f.worker)).toHaveLength(2);
+  reply(f.worker, 0); reply(f.worker, 1); await Promise.all([first, second]);
+});
+it('does not queue replacement work after timeout until the sampling interval expires', async () => {
+  const f = await panelFixture(), first = f.runtime.readPanel(Date.now(), 'human');
+  await vi.advanceTimersByTimeAsync(10000); expect(await first).toBeNull();
+  reply(f.worker); // A late response cannot resurrect a timed-out request.
+  expect(await f.runtime.readPanel(Date.now(), 'human')).toBeNull();
+  expect(panelCommands(f.worker)).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(20000);
+  const next = f.runtime.readPanel(Date.now(), 'human');
+  expect(panelCommands(f.worker)).toHaveLength(2);
+  reply(f.worker, 1); expect((await next)?.monthCost.credits).toBe(5);
+});
+it('rejects a ninth pending subscriber without waiting for the worker deadline', async () => {
+  const f = await panelFixture(), pending = Array.from({ length: 8 }, () => f.runtime.readPanel(Date.now(), 'human'));
+  const excess = f.runtime.readPanel(Date.now(), 'human'); let settled = false;
+  void excess.then(() => { settled = true; });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(settled).toBe(true);
+  expect(await excess).toBeNull();
+  await vi.advanceTimersByTimeAsync(10000);
+  expect(await Promise.all(pending)).toEqual(Array(8).fill(null));
+  expect(panelCommands(f.worker)).toHaveLength(1);
+});
+it('shares an admitted panel even at the outstanding-request limit', async () => {
+  const f = await panelFixture(), pending = Array.from({ length: 8 }, (_, i) => f.runtime.readPanel(Date.now(), `session-${i}`));
+  const shared = f.runtime.readPanel(Date.now(), 'session-7');
+  expect(await f.runtime.readPanel(Date.now(), 'overflow')).toBeNull();
+  expect(panelCommands(f.worker)).toHaveLength(8);
+  reply(f.worker, 7);
+  expect((await shared)?.monthCost.credits).toBe(5);
+  for (let i = 0; i < 7; i++) reply(f.worker, i);
+  expect((await Promise.all(pending)).every(value => value?.monthCost.credits === 5)).toBe(true);
+});
+it('clears sampled panel values on failure and shutdown', async () => {
+  const f = await panelFixture(), first = f.runtime.readPanel(Date.now(), 'human'); reply(f.worker); await first;
+  f.worker.emit('message', { type: 'error', code: 'usage-ledger-unavailable' });
+  const retry = f.runtime.readPanel(Date.now(), 'human');
+  expect(panelCommands(f.worker)).toHaveLength(2);
+  reply(f.worker, 1); await retry;
+  const stop = f.runtime.stop(); f.worker.emit('message', { type: 'stopped' }); await stop;
+  expect(await f.runtime.readPanel(Date.now(), 'human')).toBeNull();
+});
 it("construction starts no resources and startup returns before history work", async () => {
   const f = fixture();
   expect(f.factory).not.toHaveBeenCalled();

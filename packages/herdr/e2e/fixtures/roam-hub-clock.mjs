@@ -45,7 +45,8 @@ export async function serveFixtureClock(socketPath) {
     });
   });
   await new Promise((ok, fail) => { server.once('error', fail); server.listen(socketPath, ok); });
-  return { clock: controlled.clock, close() { server.close(); controlled.close(); } };
+  let closed = false;
+  return { clock: controlled.clock, close() { if (closed) return; closed = true; server.close(); controlled.close(); } };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
@@ -58,6 +59,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   let stopping = false;
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
     if (stopping) return; stopping = true;
-    void hub.stop().then(() => { controlled.close(); process.exitCode = 0; }, error => { controlled.close(); console.error(error); process.exitCode = 1; });
+    controlled.close();
+    void hub.stop().then(() => { process.exitCode = 0; }, error => { console.error(error); process.exitCode = 1; });
   });
 }

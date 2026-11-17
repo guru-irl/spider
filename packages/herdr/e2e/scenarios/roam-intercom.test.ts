@@ -726,6 +726,8 @@ async function topology(suite: Suite): Promise<void> {
     linkTiming('fresh-hub-live');
     await syncOrigins(suite, network);
     linkTiming('fresh-origins-synced');
+    // Direct fixture imports have no broker presence event. Finish the idle poll.
+    await advanceIntercomClock(target, 25_000);
     await waitFor('the same new sessions become reachable after origin sync', async () => Promise.all([source.probe.listSessions(), target.probe.listSessions()]),
       lists => lists[0].some(session => session.remote === true && session.id === freshSessionIds[1] && session.reachability === 'live') &&
         lists[1].some(session => session.remote === true && session.id === freshSessionIds[0] && session.reachability === 'live'), deadline(60_000));

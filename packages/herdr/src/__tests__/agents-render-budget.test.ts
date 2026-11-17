@@ -421,6 +421,20 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     } finally { await h.view.close(); }
   });
 
+  it(`${version}: hidden attention follows a native agent's listed status`, async () => {
+    const h = fixture(version, 1, 0);
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.state.terminals.push({ address: 'native', parent: 'v0', state: 'live', status: 'working', labels: {} });
+    h.state.agents.push({ ...h.state.agents[0], address: 'native', status: 'blocked', seq: 2 });
+    try {
+      await h.ready(); let root = h.render();
+      expect(find(root, 'child-busy-live0')?.styles.tooltip?.[0]).toBe('Needs attention');
+      h.state.agents[1].status = 'working';
+      h.render(); await h.flush(); root = h.render();
+      expect(find(root, 'child-busy-live0')).toBeUndefined();
+    } finally { await h.view.close(); }
+  });
+
   it(`${version}: real nested viewers require each ancestor to be expanded`, async () => {
     const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
     const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);

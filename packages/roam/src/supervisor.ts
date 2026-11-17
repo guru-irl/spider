@@ -168,8 +168,16 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       const previous = current.value.intent;
       if (current.value.supervision.kind === "launching" && (previous.epoch !== authoritative.epoch || previous.file !== authoritative.file ||
           previous.cwd !== authoritative.cwd || previous.moveId !== authoritative.moveId)) return;
-      const merged = { ...authoritative, suspended: previous.suspended ?? authoritative.suspended };
-      if (!await save(id, current, { ...current.value, intent: merged })) return;
+      let next: IntentState;
+      if (authoritative.epoch > previous.epoch) {
+        const observed = await ports.inspect(id);
+        if (!sameIntent(observed.intent, authoritative) || observed.owner.kind !== "absent" || observed.unfinishedFreeze ||
+            observed.diagnostics.some(row => row.severity === "block") || !permitted(observed, id)) return;
+        next = { intent: authoritative, failures: [], supervision: { kind: "idle", nextAttemptAt: null } };
+      } else {
+        next = { ...current.value, intent: { ...authoritative, suspended: previous.suspended ?? authoritative.suspended } };
+      }
+      if (!await save(id, current, next)) return;
       current = await ports.intents.get(id);
       if (!current) return;
     }

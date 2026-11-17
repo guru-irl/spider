@@ -9,7 +9,7 @@ import { controlSessionCatalog } from "./adapter-controls";
 import { resolveControlSession } from "./commands";
 
 import { recoverMove, cancelMove, pendingWorkspaceTransitions, recoverWorkspaceRestores, retryAbortedWorkspace } from "./move-recovery";
-import { readMoveReservation } from "./move";
+import { MoveError, readMoveReservation } from "./move";
 import { recoverMovePresentation } from "./move-ports";
 
 export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionId">, factory: MoveRuntimeFactory): { control: MoveControlHandler; recover(): Promise<void>; recoverCleanup(machineId?: string): Promise<void> } {
@@ -39,8 +39,16 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
         if (!sessionId) { diagnostic(operation_id, 'cleanup-evidence-missing'); continue; }
         try {
           const mounted = await runtime(sessionId);
-          try { await recoverMove(operation_id, mounted.ports); } finally { await mounted.close(); }
-        } catch { diagnostic(operation_id, 'source-cleanup-pending'); }
+          try {
+            const result = await recoverMove(operation_id, mounted.ports);
+            if (result.code !== 0 || result.reason !== "moved") diagnostic(operation_id, result.reason);
+            else writeLocal(input.globalDb, "recovery-diagnostic", operation_id, undefined);
+          } finally { await mounted.close(); }
+        } catch (error) {
+          const detail = error && typeof error === "object" ? error as { reason?: unknown; code?: unknown } : {};
+          const reason = detail.reason ?? detail.code ?? (error instanceof MoveError ? error.refusal.code : null);
+          diagnostic(operation_id, typeof reason === "string" && /^[a-z][a-z0-9:-]{0,80}$/.test(reason) ? reason : "source-cleanup-pending");
+        }
       }
       const rows = db.prepare("SELECT operation_id FROM roam_operations WHERE kind='move-abort-cleanup' AND result_json IS NULL").all() as { operation_id: string }[];
       for (const { operation_id } of rows) {

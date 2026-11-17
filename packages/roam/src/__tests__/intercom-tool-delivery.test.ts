@@ -57,10 +57,10 @@ afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
-async function recipient({ fresh = false, inboundTrigger = "never" }: { fresh?: boolean; inboundTrigger?: "never" | "replies" | "always" } = {}) {
-  const cwd = mkdtempSync(join(root, "session-")), agentDir = getAgentDirPath();
+async function recipient({ fresh = false, inboundTrigger = "never", restored }: { fresh?: boolean; inboundTrigger?: "never" | "replies" | "always"; restored?: SessionManager } = {}) {
+  const cwd = restored?.getCwd() ?? mkdtempSync(join(root, "session-")), agentDir = getAgentDirPath();
   writeFileSync(getConfigPath(), JSON.stringify({ inboundTrigger, confirmSend: false }));
-  const sessionManager = SessionManager.create(cwd, join(cwd, "sessions"));
+  const sessionManager = restored ?? SessionManager.create(cwd, join(cwd, "sessions"));
   if (!fresh) sessionManager.appendMessage({ role: "user", content: "synthetic prior conversation", timestamp: 0 });
   const settingsManager = SettingsManager.inMemory({ packages: [], cacheWarming: "off" });
   let endpoint!: SessionEndpoint, context!: ExtensionContext;
@@ -165,6 +165,48 @@ it("does not consume an unflushed entry on shutdown", async () => {
   await vi.waitFor(() => expect(receipts.some(value => value.receipt.messageId === "shutdown-message" && value.receipt.status === "unknown")).toBe(true));
   expect(receipts.some(value => value.receipt.status === "injected")).toBe(false);
   expect(existsSync(session.sessionManager.getSessionFile()!)).toBe(false);
+});
+
+it("waits for persistence before reporting a reply handed to a waiter", async () => {
+  const { session, endpoint, execute } = await recipient({ fresh: true });
+  const result = execute({ action: "ask", to: "source.invalid/source", message: "synthetic question" });
+  await vi.waitFor(() => expect(frames).toHaveLength(1));
+  await bridge.deliver(remote, endpoint, { id: "waiter-reply", replyTo: frames[0]!.message.id, timestamp: 1, content: { text: "synthetic answer" } });
+  expect((await result).content).toEqual([{ type: "text", text: "**Reply from source.invalid/source:**\nsynthetic answer" }]);
+  await execute({ action: "status" });
+  expect(existsSync(session.sessionManager.getSessionFile()!)).toBe(false);
+  expect(receipts.some(value => value.receipt.status === "matched_waiter")).toBe(false);
+  const message = { role: "user" as const, content: "synthetic first prompt", timestamp: 2 };
+  session.sessionManager.appendMessage(message);
+  await session.extensionRunner.emitMessageEnd({ type: "message_end", message });
+  await vi.waitFor(() => expect(receipts.some(value => value.receipt.status === "matched_waiter")).toBe(true));
+  const evidence = receipts.find(value => value.receipt.status === "matched_waiter")!.receipt.evidence;
+  if (evidence?.kind !== "waiter") throw new Error("Missing waiter evidence");
+  expect(SessionManager.open(session.sessionManager.getSessionFile()!).getEntry(evidence.entryId)).toMatchObject({ type: "custom", customType: "intercom_waiter_receipt", data: { messageId: "waiter-reply" } });
+});
+
+it("does not replay consumption from unflushed restored entries", async () => {
+  const first = await recipient({ fresh: true });
+  await bridge.deliver(remote, first.endpoint, { id: "restored-message", timestamp: 1, content: { text: "synthetic message" } });
+  await vi.waitFor(() => expect(first.session.sessionManager.getEntries().some(entry => entry.type === "custom_message")).toBe(true));
+  await first.execute({ action: "status" });
+  await first.session.extensionRunner.emit({ type: "session_shutdown", reason: "reload" });
+  first.session.dispose();
+  sessions.splice(sessions.indexOf(first.session), 1);
+  const { session, endpoint, execute } = await recipient({ fresh: true, restored: first.session.sessionManager });
+  await bridge.deliver(remote, endpoint, { id: "restored-message", timestamp: 1, content: { text: "synthetic message" } });
+  await execute({ action: "status" });
+  await session.extensionRunner.emitMessageEnd({ type: "message_end", message: { role: "custom", customType: "fixture", content: "synthetic", display: false, timestamp: 1 } });
+  await execute({ action: "status" });
+  expect(receipts.some(value => value.receipt.status === "injected")).toBe(false);
+  expect(existsSync(session.sessionManager.getSessionFile()!)).toBe(false);
+  const message = { role: "user" as const, content: "synthetic first prompt", timestamp: 2 };
+  session.sessionManager.appendMessage(message);
+  await session.extensionRunner.emitMessageEnd({ type: "message_end", message });
+  await vi.waitFor(() => expect(receipts.some(value => value.receipt.messageId === "restored-message" && value.receipt.status === "injected")).toBe(true));
+  const evidence = receipts.find(value => value.receipt.status === "injected")!.receipt.evidence;
+  if (evidence?.kind !== "entry") throw new Error("Missing restored entry evidence");
+  expect(SessionManager.open(session.sessionManager.getSessionFile()!).getEntry(evidence.entryId)).toMatchObject({ customType: "intercom_message", details: { message: { id: "restored-message" } } });
 });
 
 it("reports consumption once when a lifecycle scan precedes its receipt acknowledgement", async () => {

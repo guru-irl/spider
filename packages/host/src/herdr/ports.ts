@@ -380,6 +380,14 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     ...(hasToast ? ['toast'] : []),
   ];
   const filesFor = async (files: readonly { path: string; bytes: Buffer; mode?: number; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[], context: SetupContext): Promise<InstallFile[]> => Promise.all(files.map(async file => ({ ...file, expected: file.terminalKeys || file.keys ? (await snapshot(file.path)).hash : context.installed[file.path] ?? null, collision: file.terminalKeys || file.keys ? 'key' as const : 'clone' as const })));
+  const orderModFiles = <T extends { path: string }>(files: readonly T[], appHome: string): T[] => {
+    const priority = (file: T) => {
+      const name = relative(join(appHome, 'mods'), file.path).split(sep);
+      if (name.length !== 2 || !name[0]!.startsWith('spider-')) return 0;
+      return name[1] === 'main.js' ? 1 : name[1] === 'mod.json' ? 2 : 0;
+    };
+    return [...files].sort((a, b) => priority(a) - priority(b));
+  };
   const pickerFiles = async (request: SetupRequest, context: SetupContext, fonts: Awaited<ReturnType<typeof prepareFonts>>['families'], modIds: readonly string[]): Promise<{ path: string; bytes: Buffer; mode?: number }[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets'), mods = join(request.config.app.home, 'mods');
     const picker = context.modProps.find(copy => copy.props.modId === 'spider-picker');
@@ -668,7 +676,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         if (!target.startsWith(root + sep) || !available.has(target)) throw new HerdrError('picker-import-unresolved', `Unresolved import in ${file.path}: ${specifier}`);
       }
     }
-    return filesFor(files, context);
+    return filesFor(orderModFiles(files, request.config.app.home), context);
   };
   const templates = async (request: SetupRequest, context: SetupContext): Promise<InstallFile[]> => {
     const options: CreateModelRuntimeOptions = { authPath: join(request.config.agentDirectory, 'auth.json'), modelsPath: join(request.config.agentDirectory, 'models.json'), modelsStorePath: join(request.config.agentDirectory, 'models-cache.json'), allowModelNetwork: false };
@@ -1105,7 +1113,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           const sounds = (rawSounds ?? {}) as Record<string, unknown>;
           if (sounds.enabled !== undefined && typeof sounds.enabled !== 'boolean') throw new HerdrError('invalid-app-settings', 'App settings sounds.enabled must be boolean');
           const bytes = Buffer.from(JSON.stringify({ ...appSettings, sounds: { ...sounds, enabled: false } }, null, 2) + '\n');
-          return [...await filesFor(files, context), { path: keyPath, expected: currentKeys.hash, bytes: Buffer.alloc(0), keys, collision: 'key' as const }, { path: settingsPath, expected: settings.hash, bytes, updateAfterCutover: true, managed: { kind: 'json-paths' as const, paths: ['theme', 'layout', 'sounds.enabled'] } }];
+          return [...await filesFor(orderModFiles(files, request.config.app.home), context), { path: keyPath, expected: currentKeys.hash, bytes: Buffer.alloc(0), keys, collision: 'key' as const }, { path: settingsPath, expected: settings.hash, bytes, updateAfterCutover: true, managed: { kind: 'json-paths' as const, paths: ['theme', 'layout', 'sounds.enabled'] } }];
         }, generateTemplates: (request, context) => templates(request, context),
         installResume: async (request, context) => {
           const hookPath = join(request.config.globalRoot, 'herdr/resume.sh'), current = await snapshot(request.config.shellRc);

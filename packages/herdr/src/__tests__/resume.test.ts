@@ -69,6 +69,12 @@ it('a legacy mapping is offer-only until the session reloads with a live marker'
   } finally { await registration.dispose(); }
 });
 
+it('a mapping with a missing live marker is offer-only', async () => {
+  await createTerminalRegistry(root).record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' });
+  expect(await offerResume(terminal, ports())).not.toBeNull();
+  expect(await offerResume(terminal, { ...ports(), autoResumeRoot: root })).toBeNull();
+});
+
 it('a restored shell offers the exact session without auto-running it', async () => {
   await fakeCli(); const block = buildResumeBlock(options); const offered = await shell(block);
   expect(offered.out).toContain('spider_resume'); expect(await readFile(join(root, 'launches.jsonl'), 'utf8')).toBe('');

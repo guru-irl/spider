@@ -243,8 +243,13 @@ export async function runHerdrCli(argv: readonly string[], ports?: HerdrCliPorts
     }
     const error = e instanceof HerdrError ? e : new HerdrError('setup-failed', e instanceof Error ? e.message : String(e));
     stderr(`${error.code}: ${error.message}\n`);
-    if (error.code === 'cli-exit' && error.details && typeof error.details === 'object' && 'stderr' in error.details && typeof error.details.stderr === 'string' && error.details.stderr.trim())
-      stderr(error.details.stderr.trimEnd() + '\n');
+    if (error.code === 'cli-exit' && error.details && typeof error.details === 'object' && 'stderr' in error.details && typeof error.details.stderr === 'string' && error.details.stderr.trim()) {
+      const safe = error.details.stderr.trimEnd().replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '\uFFFD');
+      const bytes = Buffer.from(safe), truncated = bytes.length > 4096;
+      let start = Math.max(0, bytes.length - 4096);
+      while (start < bytes.length && (bytes[start]! & 0xc0) === 0x80) start++;
+      stderr((truncated ? '…(truncated)\n' : '') + bytes.subarray(start).toString('utf8') + '\n');
+    }
     for (const issue of verificationFailures(error.details))
       stderr(`[${issue.item}] ${issue.code}: ${issue.message}\nRepair: ${issue.repair}\n`);
     return error.code === 'cli-usage' || error.code === 'setup-composition-unavailable' ? 2 : 1;

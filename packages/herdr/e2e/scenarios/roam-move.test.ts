@@ -782,6 +782,7 @@ async function exclusion(suite: Suite): Promise<void> {
       evidence: { proof: { kind: 'terminal-exited-without-adoption', operationId: expectedLaunch, terminalExited: true, lockNeverAdopted: true } } },
       observed: { owner: { kind: 'absent' }, readiness: null } });
     expect(launchProof.receipt.terminalId).toBe(launchProof.receipt.evidence.proof.terminalId);
+    expect(launchProof.observed.launchFailure).toBe(`proved-unadopted-exit:${expectedLaunch}:${launchProof.receipt.terminalId}`);
     expect(f.home()).toMatchObject({ machine_id: BOX, epoch: 4 });
     await suite.evidence('R08-unadopted-exit.json', launchProof);
     phase('rollback');

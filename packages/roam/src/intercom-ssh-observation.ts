@@ -36,15 +36,19 @@ function verifiedSystemKeys(keys: ReadonlyMap<string, IntercomSshHostKey>, files
     } catch { return []; }
   });
 }
-/** The hub must call this on the already UUID- and core-fenced destination machine. */
-export async function inspectServedSshIdentity(options: { machineId: string; sshUser: string; keyscan: string; sshPort: number; filesystem?: SystemSshFileSystem;
-  run(argv: readonly string[], options: { timeoutMs: number; maxBytes: number }): Promise<{ code: number; stdout: string }> }):
-  Promise<{ targetMachineId: string; sshUser: string; hostKeys: IntercomSshHostKey[] }> {
-  if (!isMachineId(options.machineId) || !/^[A-Za-z_][A-Za-z0-9._-]{0,62}\$?$/.test(options.sshUser) ||
-      !isAbsolute(options.keyscan) || resolve(options.keyscan) !== options.keyscan || /[\u0000-\u001f\u007f]/.test(options.keyscan) ||
+type ScanType = "ed25519" | "ecdsa" | "rsa";
+type Scanner = { keyscan: string; sshPort: number;
+  run(argv: readonly string[], options: { timeoutMs: number; maxBytes: number }): Promise<{ code: number; stdout: string }> };
+export function sshScanType(key: IntercomSshHostKey): ScanType {
+  if (!validHostKey(key)) return unavailable();
+  return key.type === "ssh-ed25519" ? "ed25519" : key.type === "ssh-rsa" ? "rsa" : "ecdsa";
+}
+/** An unverified scan is suitable only for comparison with an existing pin. */
+export async function scanPresentedSshKeys(options: Scanner, type?: ScanType): Promise<IntercomSshHostKey[]> {
+  if (!isAbsolute(options.keyscan) || resolve(options.keyscan) !== options.keyscan || /[\u0000-\u001f\u007f]/.test(options.keyscan) ||
       !Number.isSafeInteger(options.sshPort) || options.sshPort < 1 || options.sshPort > 65535) return unavailable();
   try {
-    const result = await options.run([options.keyscan, "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", String(options.sshPort), "127.0.0.1"],
+    const result = await options.run([options.keyscan, "-T", "5", "-t", type ?? "ed25519,ecdsa,rsa", "-p", String(options.sshPort), "127.0.0.1"],
       { timeoutMs: 10_000, maxBytes: 64 * 1024 });
     if (result.code !== 0 || typeof result.stdout !== "string" || Buffer.byteLength(result.stdout) > 64 * 1024 || !result.stdout) return unavailable();
     // OpenSSH put_host_port omits the default SSH port from known-hosts output.
@@ -55,17 +59,21 @@ export async function inspectServedSshIdentity(options: { machineId: string; ssh
       const match = /^(\S+) (\S+) ([A-Za-z0-9+/]+={0,2})$/.exec(line);
       if (!match || match[1] !== host) return unavailable();
       const hostKey = { type: match[2], base64: match[3] };
-      if (!validHostKey(hostKey) || keys.has(hostKey.type)) return unavailable();
+      if (!validHostKey(hostKey) || keys.has(hostKey.type) || type && sshScanType(hostKey) !== type) return unavailable();
       keys.set(hostKey.type, hostKey);
     }
     if (!keys.size) return unavailable();
-    const hostKeys = verifiedSystemKeys(keys, options.filesystem ?? systemFiles);
-    if (!hostKeys.length) throw new Error("intercom-ssh-host-unverified");
-    return { targetMachineId: options.machineId, sshUser: options.sshUser, hostKeys };
-  } catch (error) {
-    if (error instanceof Error && error.message === "intercom-ssh-host-unverified") throw error;
-    return unavailable();
-  }
+    return [...keys.values()];
+  } catch { return unavailable(); }
+}
+/** The hub must call this on the already UUID- and core-fenced destination machine. */
+export async function inspectServedSshIdentity(options: Scanner & { machineId: string; sshUser: string; filesystem?: SystemSshFileSystem }):
+  Promise<{ targetMachineId: string; sshUser: string; hostKeys: IntercomSshHostKey[] }> {
+  if (!isMachineId(options.machineId) || !/^[A-Za-z_][A-Za-z0-9._-]{0,62}\$?$/.test(options.sshUser)) return unavailable();
+  const presented = await scanPresentedSshKeys(options);
+  const hostKeys = verifiedSystemKeys(new Map(presented.map(key => [key.type, key])), options.filesystem ?? systemFiles);
+  if (!hostKeys.length) throw new Error("intercom-ssh-host-unverified");
+  return { targetMachineId: options.machineId, sshUser: options.sshUser, hostKeys };
 }
 export function compareSshHostKey(pinned: IntercomSshHostKey, observed: IntercomSshHostKey): "match" | "host-key-changed" {
   if (!validHostKey(pinned) || !validHostKey(observed)) throw new Error("intercom-ssh-host-unavailable");

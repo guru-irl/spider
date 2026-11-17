@@ -9,7 +9,7 @@ import { parseConnectorRecipe } from "./config";
 import { createIntercomRegistry } from "./intercom-registry";
 import { inspectPairUnit, type PairResourcePorts } from "./intercom-pair-resources";
 import { pairPaths } from "./intercom-pair-files";
-import { compareSshHostKey, inspectServedSshIdentity } from "./intercom-ssh-observation";
+import { compareSshHostKey, inspectServedSshIdentity, scanPresentedSshKeys, sshScanType } from "./intercom-ssh-observation";
 import { runForeground } from "./intercom-local-ops";
 import { observeHelperFeatures, requestHelperInspect } from "./intercom-helper";
 import { openDiagnosticSnapshot } from './diagnostic-snapshot';
@@ -85,6 +85,7 @@ export async function inspectLocalIntercomDoctor(input: DoctorOptions): Promise<
     if (!features.includes(HELPER_EXCHANGE_FEATURE)) add("intercom-legacy-broker", "The broker does not offer the current helper protocol.");
     if (!features.includes(FEDERATION_NOTICE_ACK_FEATURE)) add("intercom-feature-missing", "The broker cannot confirm revocation notices.");
   } catch { add("intercom-broker-unavailable", "The local intercom broker could not be inspected."); }
+  let targetScan: { port: number; type: ReturnType<typeof sshScanType>; observation: ReturnType<typeof inspectServedSshIdentity> } | undefined;
   for (const item of await createIntercomRegistry(input.root).list()) {
     if (item.state !== "active" || !("sshUser" in item.pair)) continue;
     const pair = item.pair, localSource = pair.source.machineId === input.config.machineId, localTarget = pair.target.machineId === input.config.machineId;
@@ -101,10 +102,19 @@ export async function inspectLocalIntercomDoctor(input: DoctorOptions): Promise<
           matches[0].via !== true || matches[0].session !== route.session || matches[0].temporary !== false) add("intercom-route-mismatch", `Verify the reserved route for ${pair.pairId}.`);
     } catch { add("intercom-route-unavailable", `The reserved route for ${pair.pairId} could not be inspected.`); }
     if (localTarget) try {
-      const observed = input.inspectSsh ? await input.inspectSsh(pair) : await inspectServedSshIdentity({ machineId: input.config.machineId,
-        sshUser: userInfo().username, keyscan: "/usr/bin/ssh-keyscan", sshPort: pair.connector.remotePort, run });
-      if (observed.targetMachineId !== input.config.machineId || observed.sshUser !== pair.sshUser) add("intercom-ssh-user-changed", `Verify the account for ${pair.pairId}.`);
-      if (!observed.hostKeys.some(key => compareSshHostKey(pair.hostKey, key) === "match")) add("host-key-changed", `Verify and re-enroll ${pair.pairId}.`);
+      const port = pair.connector.remotePort, type = sshScanType(pair.hostKey);
+      if (!targetScan) {
+        const observation = input.inspectSsh ? input.inspectSsh(pair) : scanPresentedSshKeys({ keyscan: "/usr/bin/ssh-keyscan", sshPort: port, run }, type)
+          .then(hostKeys => ({ targetMachineId: input.config.machineId, sshUser: userInfo().username, hostKeys }));
+        targetScan = { port, type, observation };
+      }
+      if (targetScan.port !== port || targetScan.type !== type) {
+        add("intercom-ssh-check-deferred", `The host key for ${pair.pairId} was not scanned; this doctor run checks one port and key type.`);
+      } else {
+        const observed = await targetScan.observation;
+        if (observed.targetMachineId !== input.config.machineId || observed.sshUser !== pair.sshUser) add("intercom-ssh-user-changed", `Verify the account for ${pair.pairId}.`);
+        if (!observed.hostKeys.some(key => compareSshHostKey(pair.hostKey, key) === "match")) add("host-key-changed", `Verify and re-enroll ${pair.pairId}.`);
+      }
     } catch { add("intercom-ssh-host-unavailable", `The SSH host identity for ${pair.pairId} could not be inspected.`); }
     if (localSource) try {
       const files = pairPaths(pair), key = lstatSync(files.privateKey), via = lstatSync(files.via);

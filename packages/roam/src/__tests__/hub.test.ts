@@ -688,3 +688,24 @@ it("revocation during an observation prevents presenting its stale target", asyn
     expect(h.placements).toEqual([]);
   } finally { for (const hub of handles.splice(0)) await hub.stop(); db.close(); }
 }, 5000);
+
+it.each(["success", "failure"] as const)("source cleanup starts after successful sync returns, never after %s sync", async mode => {
+  const h = fixture(); h.f.seed();
+  let calls = 0, entered!: () => void, release!: () => void;
+  const started = new Promise<"blocked">(resolve => { entered = () => resolve("blocked"); }), held = new Promise<void>(resolve => { release = resolve; });
+  const hub = await runStandaloneHub({ ...h.ports, async moveFactory() { calls++; entered(); await held; throw new Error("fixture-cleanup-pending"); } }); handles.push(hub);
+  const { openFreezeJournal } = await import("../journal"), journal = openFreezeJournal(join(h.f.global.root, "roam", "journal.db"));
+  const operation = { id: "sync-source-cleanup", machineId: HUB, kind: "move", expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: HUB } };
+  journal.begin(operation); journal.record(operation.id, "move-request", { operation, sessionId: "session-a", destinationMachine: HUB });
+  journal.record(operation.id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", blockers: ["process-exit-unproven"] } });
+  if (mode === "failure") h.unreachable();
+  const before = h.timers.length;
+  try {
+    const result = await Promise.race([h.request("sync"), started]);
+    expect(result).not.toBe("blocked");
+    expect(calls).toBe(0);
+    const deferred = h.timers.slice(before).filter(timer => timer.delay === 0 && !timer.cancelled);
+    expect(deferred).toHaveLength(mode === "success" ? 1 : 0);
+    if (mode === "success") { deferred[0].fn(); await started; expect(calls).toBe(1); }
+  } finally { release(); }
+}, 5000);

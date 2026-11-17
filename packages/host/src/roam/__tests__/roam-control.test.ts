@@ -251,3 +251,18 @@ it("failed live inspection is complete evidence rather than a permanent pending 
     expect(f.ports.journal.lookupOperation(f.operation.id)?.state).toBe("done");
   } finally { await server.close(); }
 }, 5000);
+
+
+it("live freeze blocker details use the shared sanitizer", async () => {
+  const f = fixture();
+  f.ports.gate.refreshInitialHome = async () => { throw new IntercomFenceError([{ id: "fixture-blocker", kind: "tool", detail: "socket /fixture/agent/broker.sock secret=private-value github_pat_privatevalue" }]); };
+  const operation = { ...f.operation, id: "freeze-redaction-live", kind: "session-freeze" };
+  const server = await serveSessionControl({ sessionId: f.id, runtimeRoot: root, ports: f.ports });
+  try {
+    const reply = await requestSessionControl(root, operation);
+    expect(reply).toMatchObject({ code: 3, reason: "freeze-blocked", value: { blockers: [{ id: "fixture-blocker", kind: "tool" }] } });
+    const text = JSON.stringify(reply);
+    expect(text).not.toContain("/fixture/agent"); expect(text).not.toContain("private-value"); expect(text).not.toContain("github_pat_privatevalue");
+    expect(text).toContain("[path]");
+  } finally { await server.close(); }
+}, 5000);

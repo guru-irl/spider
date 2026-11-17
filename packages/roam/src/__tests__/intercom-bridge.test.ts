@@ -36,6 +36,19 @@ function pair() {
   stores.push(source, inbox); return { source, inbox };
 }
 
+it.each([
+  ["local", "replyTo"], ["local", "supersedes"], ["local", "retryOf"],
+  ["remote", "replyTo"], ["remote", "supersedes"], ["remote", "retryOf"],
+])("refuses a blank %s message's %s before durable acceptance", async (route, field) => {
+  const { source } = pair(), a = await create(A, B, source);
+  const target = { remote: true as const, id: to.sessionId, address: to, machineId: route === "local" ? A : B, machineAlias: "target.invalid", homeEpoch: 1,
+    activationEpoch: endpoint.activationEpoch, endpointEpoch: endpoint.activationEpoch, cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 };
+  const message = { id: "invalid-message", timestamp: 1, content: { text: "synthetic" }, [field]: "" };
+  expect(await a.dispatch({ from, to: target, message })).toMatchObject({ delivery: "failed", reason: "invalid-message", retryable: false, outcomeKnown: true, acceptance: { accepted: false, durable: false } });
+  expect(source.retained("outbound", message.id)).toBeNull();
+  expect(source.retained("inbound", message.id)).toBeNull();
+});
+
 it("proves a new edge live before starting its idle long-poll", async () => {
   const { source, inbox } = pair();
   vi.useFakeTimers();

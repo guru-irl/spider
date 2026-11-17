@@ -227,11 +227,11 @@ it("reports consumption once when a lifecycle scan precedes its receipt acknowle
 
 it.each(["", " \t\n"])("treats blank optional IDs as absent in the real send tool: %j", async blank => {
   const { execute } = await recipient();
-  const result = await execute({ action: "send", to: "source.invalid/source", message: "synthetic message", attachments: [], replyTo: blank, supersedes: blank, retryOf: blank, messageId: blank });
+  const result = await execute({ action: "send", to: "source.invalid/source", message: "synthetic message", attachments: [], replyTo: blank, supersedes: blank, retryOf: blank });
   expect(result.details).toMatchObject({ delivered: true, delivery: "queued" });
   expect(frames).toHaveLength(1);
   expect([frames[0]!.message.replyTo, frames[0]!.message.supersedes, frames[0]!.message.retryOf]).toEqual([undefined, undefined, undefined]);
-  expect(frames[0]!.message.id).not.toBe(blank);
+  expect(result.details).toMatchObject({ messageId: frames[0]!.message.id });
 });
 
 
@@ -253,21 +253,39 @@ it("preserves idle message order and retains the original ask for a later reply"
   expect(session.isIdle).toBe(true);
 });
 
-it.each(["", " \t\n"])("keeps reply inference when optional IDs are blank: %j", async blank => {
+it.each([["send", ""], ["send", " \t\n"], ["reply", ""], ["reply", " \t\n"]])("keeps reply inference for %s when optional IDs are blank: %j", async (action, blank) => {
   const { endpoint, execute } = await recipient();
   await bridge.deliver(remote, endpoint, { id: "infer-question", timestamp: 1, expectsReply: true, remainingMs: 60000, content: { text: "synthetic question" } });
   await vi.waitFor(() => expect(receipts.some(value => value.receipt.messageId === "infer-question" && value.receipt.status === "injected")).toBe(true));
-  const result = await execute({ action: "send", to: "source.invalid/source", message: "synthetic answer", replyTo: blank, supersedes: blank, retryOf: blank });
+  const result = await execute({ action, to: "source.invalid/source", message: "synthetic answer", replyTo: blank, supersedes: blank, retryOf: blank });
   expect(result.details).toMatchObject({ delivered: true, replyTo: "infer-question" });
   expect(frames[0]!.message.replyTo).toBe("infer-question");
   expect([frames[0]!.message.supersedes, frames[0]!.message.retryOf]).toEqual([undefined, undefined]);
 });
 
-it("preserves nonblank optional IDs verbatim", async () => {
+it("trims optional send IDs and settles the ask they answer", async () => {
+  const { endpoint, execute } = await recipient();
+  await bridge.deliver(remote, endpoint, { id: "original-id", timestamp: 1, expectsReply: true, remainingMs: 60000, content: { text: "synthetic question" } });
+  await vi.waitFor(() => expect(receipts.some(value => value.receipt.messageId === "original-id" && value.receipt.status === "injected")).toBe(true));
+  const result = await execute({ action: "send", to: "source.invalid/source", message: "synthetic answer", replyTo: " original-id \n", supersedes: " previous-id ", retryOf: " retry-id " });
+  expect(result.details).toMatchObject({ delivered: true, replyTo: "original-id" });
+  expect([frames[0]!.message.replyTo, frames[0]!.message.supersedes, frames[0]!.message.retryOf]).toEqual(["original-id", "previous-id", "retry-id"]);
+  expect(JSON.stringify((await execute({ action: "pending" })).content)).not.toContain("original-id");
+});
+
+it("trims the reply action's ask ID", async () => {
+  const { endpoint, execute } = await recipient();
+  await bridge.deliver(remote, endpoint, { id: "padded-question", timestamp: 1, expectsReply: true, remainingMs: 60000, content: { text: "synthetic question" } });
+  await vi.waitFor(() => expect(receipts.some(value => value.receipt.status === "injected")).toBe(true));
+  const result = await execute({ action: "reply", replyTo: " padded-question \t", message: "synthetic answer" });
+  expect(result.details).toMatchObject({ delivered: true, replyTo: "padded-question" });
+  expect(frames[0]!.identity.askId).toBe("padded-question");
+  expect(JSON.stringify((await execute({ action: "pending" })).content)).not.toContain("padded-question");
+});
+
+it("trims the message ID sent for cancellation", async () => {
   const { execute } = await recipient();
-  const result = await execute({ action: "send", to: "source.invalid/source", message: "synthetic message", replyTo: " original-id ", supersedes: " previous-id ", retryOf: " retry-id " });
-  expect(result.details).toMatchObject({ delivered: true });
-  expect([frames[0]!.message.replyTo, frames[0]!.message.supersedes, frames[0]!.message.retryOf]).toEqual([" original-id ", " previous-id ", " retry-id "]);
+  expect((await execute({ action: "cancel", messageId: " missing-message \n" })).details).toMatchObject({ messageId: "missing-message", delivered: false });
 });
 
 it.each(["", " \t\n"])("requires a nonblank message ID for cancellation: %j", async blank => {

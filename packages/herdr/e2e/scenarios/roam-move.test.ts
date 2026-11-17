@@ -122,6 +122,7 @@ const moveFactory = async input => {
       const intent = await createRunningIntentAuthority(input.globalDb).get(sessionId);
       if (!intent || intent.desired !== 'running') return { ok: false, reason: 'participant-intent-unavailable' };
       const launchId = participantLaunchId(input.config.machineId, sessionId, intent.epoch, operationId);
+      if (input.journal.lookupOperation(launchId)) return { ok: true, launchId };
       const config = loadHerdrConfig(root), inventory = createProcessInventory(join(root, 'herdr'));
       const env = { ...process.env }, client = createHcClient({ binary: config.core.binary, env });
       const core = await client.identity(); await client.dispose();
@@ -139,6 +140,10 @@ const moveFactory = async input => {
         await adapter.launch({ sessionId, file: intent.file, cwd: intent.cwd, epoch: intent.epoch, moveId: intent.moveId,
           pi: descriptor.pi, sha256: createHash('sha256').update(readFileSync(intent.file)).digest('hex'), operationId: launchId },
           { mode: input.journal.lookupOperation(launchId) ? 'reconcile' : 'fresh' });
+        return { ok: true, launchId };
+      } catch (error) {
+        if (!input.journal.lookupOperation(launchId)) throw error;
+        record({ effect: 'hub-launch-pending', launchId, reason: String(error.message ?? error) });
         return { ok: true, launchId };
       } finally { await hc.dispose(); }
     };

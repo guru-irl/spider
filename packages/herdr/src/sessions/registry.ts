@@ -74,8 +74,9 @@ export function recordedExtensionArguments(value: readonly string[]): readonly s
   }
   return [...value];
 }
+export const terminalSafeText = (value: string): string => value.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ');
 export function refuseExplicitExtensions(session: string, arguments_: readonly string[]): void {
-  if (arguments_.length) throw new HerdrError('session-explicit-extensions', `Session ${JSON.stringify(session)} used explicit extension arguments ${JSON.stringify(arguments_)}. Relaunch it by hand; automatic resume and cutover never replay extension arguments.`);
+  if (arguments_.length) throw new HerdrError('session-explicit-extensions', `Session ${JSON.stringify(terminalSafeText(session))} used explicit extension arguments ${JSON.stringify(arguments_.map(terminalSafeText))}. Relaunch it by hand; automatic resume and cutover never replay extension arguments.`);
 }
 export function launchEnvironment(value: LaunchEnvironment): LaunchEnvironment {
   if (!isAbsolute(value.agentDirectory)) throw new HerdrError('launch-environment-invalid', 'Agent directory must be absolute');

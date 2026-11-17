@@ -5,7 +5,7 @@ import { open, readdir, unlink } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import type { TerminalIdentity, SessionId } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
-import { terminalIdentityKey, privateDirectory, refuseExplicitExtensions, withProcessLock, type TerminalRegistry, type LaunchEnvironment } from './registry.js';
+import { terminalIdentityKey, terminalSafeText, privateDirectory, refuseExplicitExtensions, withProcessLock, type TerminalRegistry, type LaunchEnvironment } from './registry.js';
 import { recordedSessionLiveness, type ProcessInventoryPorts } from './lease.js';
 import { readSessionHeader } from './launcher.js';
 export interface ResumeHookOptions { nodePath: string; cliPath: string; configPath: string; hookPath: string; existingRc?: string }
@@ -63,7 +63,7 @@ fi
 }
 export function resumeOfferShell(offer: ResumeOffer, options: ResumeHookOptions, mode: 'offer' | 'auto' = 'offer'): string {
   const argv = [options.nodePath, options.cliPath, 'resume', '--config', options.configPath, '--file', offer.sessionFile, '--session-id', offer.sessionId, '--cwd', offer.cwd];
-  const name = (offer.name ?? offer.sessionId).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ');
+  const name = terminalSafeText(offer.name ?? offer.sessionId);
   const message = mode === 'auto' ? `Resuming ${name}…` : `Resume ${name}: run spider_resume (or keep this shell).`;
   const functionDefinition = `spider_resume() {\n  (cd -- ${shellQuote(offer.cwd)} && command ${argv.map(shellQuote).join(' ')})\n}\n`;
   if (mode === 'offer') return `printf '%s\\n' ${shellQuote(message)}\n${functionDefinition}`;

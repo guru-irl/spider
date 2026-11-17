@@ -71,3 +71,17 @@ it("another launch for the same intent cannot complete the awaited launch", asyn
     expect(await f.wait()).toBeNull();
   } finally { f.close(); }
 }, 5000);
+
+it.each(["valid", "other-intent", "older-epoch", "unrecorded"] as const)("restart readiness follows only the recorded same-intent chain: %s", async mode => {
+  const f = await launchReadinessFixture();
+  try {
+    const launchId = "launch-a-restart-1";
+    f.journal.begin({ id: "launch-a-restarts", kind: "participant-restarts", machineId: HUB, expectedEpoch: mode === "older-epoch" ? 3 : 4,
+      args: { sessionId: "session-a", operationId: mode === "other-intent" ? "intent-other" : "intent-a", file: f.input.file, cwd: f.input.cwd, moveId: "move-a" } });
+    if (mode !== "unrecorded") f.journal.record("launch-a-restarts", "restart", { sequence: 1, previousLaunchId: "launch-a" });
+    f.journal.begin({ id: launchId, kind: "exact-session-launch", machineId: HUB, expectedEpoch: 4, args: { sessionId: "session-a" } });
+    f.lock.operationId = launchId;
+    const ready = await publishOwnedMoveReadiness(f.input);
+    expect(await f.wait()).toEqual(mode === "valid" ? ready : null);
+  } finally { f.close(); }
+}, 5000);

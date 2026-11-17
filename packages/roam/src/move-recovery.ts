@@ -163,7 +163,8 @@ async function locked(request: MoveRequest, ports: MovePorts, cancel: boolean): 
   if (ready) {
     if (observation.readiness) evidence.readinessReply(observation.readiness, committed, prepared, operation);
     if (!observation.readiness || observation.owner.kind !== "live" || observation.retired) throw new MoveError("move-destination-pending");
-    recordAction(ports, id, "start", { code: 0, reason: "ready", operationId: id, home: committed, epoch: committed.epoch, repairCommand: null, value: observation.readiness });
+    if (actionValue<{ code: number }>(ports, id, "start")?.code !== 0)
+      recordAction(ports, id, "start", { code: 0, reason: "ready", operationId: id, home: committed, epoch: committed.epoch, repairCommand: null, value: observation.readiness });
     return resumeMove(request, ports);
   }
   if (observation.launchFailure !== null) return rollback(request, check, committed, observation, ports);

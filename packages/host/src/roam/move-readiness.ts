@@ -1,3 +1,4 @@
+import { participantLaunchSuccessor } from "@spider/roam/participant-launch";
 import type { Db } from "@spider/db-core";
 import { writeLocal } from "@spider/db-core/roam/local-state";
 import type { Home, HubOperationReadiness, Probe } from "@spider/db-core/roam/types";
@@ -13,12 +14,13 @@ export async function readOwnedLaunchReadiness(ports: {
   lock(sessionId: string): Promise<IdLockObservation | null>;
   probe(sessionId: string): Promise<Probe>;
 }, { sessionId, launchId, epoch }: ParticipantReadinessQuery): Promise<HubOperationReadiness | null> {
-  const ready = readReadiness(ports.journal, launchId);
+  const authority = createRunningIntentAuthority(ports.db), intent = await authority.get(sessionId), home = sessionHome(ports.db, sessionId);
+  const lock = await ports.lock(sessionId), owner = await ports.probe(sessionId), intentOperationId = authority.operationId(sessionId);
+  if (!intent || !intentOperationId || !lock?.operationId || !participantLaunchSuccessor(ports.journal, ports.machineId, intent, intentOperationId, launchId, lock.operationId)) return null;
+  const ready = readReadiness(ports.journal, lock.operationId);
   if (!ready || ready.sessionId !== sessionId || ready.epoch !== epoch) return null;
-  const intent = await createRunningIntentAuthority(ports.db).get(sessionId), home = sessionHome(ports.db, sessionId);
-  const lock = await ports.lock(sessionId), owner = await ports.probe(sessionId);
   if (!intent || intent.desired !== "running" || intent.suspended || !home || home === "unknown" || home.machineId !== ports.machineId || home.epoch !== epoch ||
-      ready.file !== intent.file || ready.cwd !== intent.cwd || intent.epoch !== epoch || !lock || lock.pendingOperationId !== null || lock.operationId !== launchId ||
+      ready.file !== intent.file || ready.cwd !== intent.cwd || intent.epoch !== epoch || !lock || lock.pendingOperationId !== null || lock.operationId !== ready.opId ||
       owner.kind !== "live" || lock.identity.pid !== owner.identity.pid || lock.identity.startIdentity !== owner.identity.startTime) return null;
   return ready;
 }

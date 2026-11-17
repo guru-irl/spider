@@ -12,6 +12,13 @@ const machine = {
   runtime: { cwd: null, directory: '/runtime', commands: { javascript: ['node'] } },
 };
 
+test('resume defaults to an offer and accepts only offer or auto', () => {
+  const base = { ...config, machines: [] };
+  expect(parseHerdrConfig(base)).toMatchObject({ resume: 'offer' });
+  for (const resume of ['offer', 'auto']) expect(parseHerdrConfig({ ...base, resume })).toMatchObject({ resume });
+  for (const resume of ['', 'AUTO', true, null, 0, {}]) expect(() => parseHerdrConfig({ ...base, resume })).toThrow(/resume/);
+});
+
 test('full remains the default', () => {
   const base = { ...config, machines: [] };
   expect(parseHerdrConfig(base).mode).toBe('full');

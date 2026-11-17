@@ -83,6 +83,18 @@ test('unreadable app version leaves existing picker files and bindings alone', a
   expect(result.failures.some(failure => failure.code === 'legacy-picker-binding')).toBe(false);
 });
 
+test('setup refuses a lost version after staging rather than mixing picker plans', async () => {
+  const f = await releaseFixture('0.1.13');
+  const context = { ...f.context, modProps: [...f.context.modProps, ...['picker', 'spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down', 'spider-pane-waiting'].map(name => {
+    const modId = name.startsWith('spider-') ? name : `spider-${name}`;
+    return { directory: join(f.h.directories.app, 'mods', modId), props: { ...f.context.modProps[0]!.props, modId } };
+  })] };
+  await f.parts.stageLook(f.request, context, 'export');
+  await writeFile(f.request.config.app.binary, '#!/bin/sh\nexit 1\n');
+  await expect(f.parts.installFiles(f.request, context)).rejects.toMatchObject({ code: 'upstream-version-unavailable' });
+  expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+});
+
 test('0.1.12 preserves native creation keys and does not install machine pickers', async () => {
   const f = await fixture(), home = f.h.directories.app, path = join(home, 'keys.json');
   const before = JSON.parse(await readFile(path, 'utf8'));

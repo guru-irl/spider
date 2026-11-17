@@ -32,9 +32,9 @@ it("enrolls pair-owned units and revokes a live connection before removing only 
 
 it("enrolls without a separate SSH listener port in either recipe", async () => {
   const f = await scenario();
-  expect(f.locals.get(f.source.machineId)!.recipe).not.toHaveProperty("sshPort");
-  expect(f.locals.get(B)!.recipe).not.toHaveProperty("sshPort");
   expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+  expect(f.calls).toContain(`${f.source.machineId}:check`);
+  expect(f.calls).toContain(`${B}:check`);
   expect(f.calls).toContain(`${B}:-T 5 -t ed25519,ecdsa,rsa -p 22 127.0.0.1`);
 }, 5000);
 

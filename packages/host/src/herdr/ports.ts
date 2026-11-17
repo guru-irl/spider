@@ -837,7 +837,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       if (item === 'patch-version') {
         const patches = selected!;
         const expected = await stagedLook(request, context);
-        const kinds: readonly LookModKind[] = [...lookCloneKinds, ...(patches.mods.menu ? ['menu' as const] : []), ...(patches.crossMachine ? crossMachineKinds : []), ...Object.keys(additionalFor(release)) as LookModKind[]];
+        const kinds: readonly LookModKind[] = [...new Set<LookModKind>([...lookCloneKinds, ...(patches.mods.menu ? ['menu' as const] : []), ...(patches.crossMachine ? crossMachineKinds : []), ...Object.keys(additionalFor(release)) as LookModKind[]])];
         for (const kind of kinds) {
           const directory = join(request.config.app.home, 'mods', kind === 'workspace-chrome' ? 'spider-chrome' : `spider-${kind}`), manifest = JSON.parse(await readFile(join(directory, 'mod.json'), 'utf8'));
           if (manifest.clonedFrom?.name !== kind || manifest.clonedFrom?.version !== patches.upstreamVersion || manifest.patchState?.version !== 1) return failure('upstream-version-mismatch', `Installed ${kind} clone has an unsupported patch or upstream version`);

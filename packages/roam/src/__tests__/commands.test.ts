@@ -125,7 +125,8 @@ it.each([
   { code: "supervisor-hosting-error", check: "restart", since: 1, count: 2 },
 ])("does not expose malformed hosting warning evidence: %j", hostingWarning => {
   const safe = safeControlOutcome({ code: 3, reason: "move-destination-pending", operationId: "move-a", home: null, epoch: 2, repairCommand: null, value: null,
-    refusal: { code: "move-destination-pending", blockers: [], message: "PRIVATE-CONTENT", hostingWarning } });
+    refusal: { code: "move-destination-pending", blockers: [],
+      message: `The source is paused to avoid running two copies. Destination readiness needs reconciliation. ${hostingWarning.code} (${hostingWarning.check}); hosting checks will retry automatically.`, hostingWarning } });
   expect(JSON.stringify(safe)).not.toContain("PRIVATE-CONTENT");
   expect(safe.refusal).toBeUndefined();
 });

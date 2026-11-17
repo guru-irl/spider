@@ -57,7 +57,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(() => applyCrossMachinePatches(afterA, broken)).toThrowError(expect.objectContaining({ code: 'cross-machine-output-mismatch' }));
   });
 
-  for (const state of ['missing-release', 'missing-record', 'changed-record', 'missing-checks', 'missing-digest', 'bad-digest'] as const) {
+  for (const state of ['missing-release', 'missing-record', 'changed-record', 'missing-checks', 'missing-digest', 'bad-digest', 'missing-helper-digest', 'bad-helper-digest'] as const) {
     test(`${version} refuses ${state} in the packaged recipe`, () => {
       const b = manifest();
       if (state === 'missing-release') delete b.versions[version];
@@ -66,6 +66,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       if (state === 'missing-checks') delete b.checks[version];
       if (state === 'missing-digest') delete b.checks[version].inputHashes['tabs/main.js'];
       if (state === 'bad-digest') b.checks[version].inputHashes['tabs/main.js'] = 'bad';
+      if (state === 'missing-helper-digest') delete b.checks[version].helperHashes?.['pane/actions.js'];
+      if (state === 'bad-helper-digest') (b.checks[version].helperHashes ??= {})['machines/picker.js'] = 'bad';
       expect(() => selectCrossMachinePatches(b, version)).toThrowError(expect.objectContaining({ code: 'cross-machine-recipe-mismatch' }));
     });
   }

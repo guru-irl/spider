@@ -1,5 +1,5 @@
 import {
-  FEDERATION_FEATURE, addressKey, sameAddress, resolveSessionTarget,
+  FEDERATION_FEATURE, addressKey, sameAddress, sessionAddress, resolveSessionTarget,
   type BridgeRegistration, type FederationBridge, type FederationBlockers, type FederationDispatchResult,
   type FederationPort, type Message, type MessageControl, type MessageReceipt, type RemoteSessionInfo,
   type SessionAddress, type SessionInfo,
@@ -16,7 +16,7 @@ interface DispatchMetadata {
   unobserved: boolean;
 }
 
-export function createFederation(ports: { agentDir: string; locals(): readonly SessionAddress[]; now(): number }): FederationPort & {
+export function createFederation(ports: { agentDir: string; locals(): readonly SessionAddress[]; canSupersedeLocal?(entry: RemoteSessionInfo): boolean; now(): number }): FederationPort & {
   roster(scopeId: string | null): RemoteSessionInfo[];
   resolve(target: string, scopeId: string | null, local: readonly SessionInfo[]): SessionInfo | null;
   connected(): boolean;
@@ -30,6 +30,7 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
   let remote = new Map<string, RemoteSessionInfo>();
   const dispatches = new Map<string, DispatchMetadata>();
   const asks = new Map<string, { id: string; from: SessionAddress; to: SessionAddress; createdAt: number }>();
+  const shadowsLocal = (entry: RemoteSessionInfo): boolean => ports.locals().some(local => sameAddress(local, entry.address)) && !ports.canSupersedeLocal?.(entry);
   const prune = () => {
     const now = ports.now();
     for (const [id, value] of dispatches) if (now - value.createdAt > 60 * 60 * 1000) dispatches.delete(id);
@@ -117,7 +118,7 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
       for (const entry of entries) {
         if (["pid", "peerUid", "trustedLocal", "tmuxPane", "runtimeFallbackAlias"].some(key => key in entry)) throw new Error("remote-local-handle-refused");
         if (!isRemoteSessionInfo(entry)) throw new Error("invalid-remote-presence");
-        if (ports.locals().some(local => sameAddress(local, entry.address))) throw new Error("remote-cannot-shadow-local-session");
+        if (shadowsLocal(entry)) throw new Error("remote-cannot-shadow-local-session");
         const key = addressKey(entry.address);
         if (next.has(key)) throw new Error("duplicate-remote-address");
         const previous = remote.get(key);
@@ -127,10 +128,11 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
       remote = next;
     },
     roster(scopeId): RemoteSessionInfo[] {
-      return [...remote.values()].filter(entry => entry.address.scopeId === scopeId && !ports.locals().some(local => sameAddress(local, entry.address))).map(entry => structuredClone(entry));
+      return [...remote.values()].filter(entry => entry.address.scopeId === scopeId && !shadowsLocal(entry)).map(entry => structuredClone(entry));
     },
     resolve(target, scopeId, local): SessionInfo | null {
-      return resolveSessionTarget(target, [...local, ...this.roster(scopeId)]);
+      const roster = this.roster(scopeId);
+      return resolveSessionTarget(target, [...local.filter(entry => !roster.some(other => sameAddress(sessionAddress(entry, scopeId), other.address))), ...roster]);
     },
     async dispatch(from, to, message): Promise<FederationDispatchResult> {
       requireBridge();
@@ -138,7 +140,7 @@ export function createFederation(ports: { agentDir: string; locals(): readonly S
       if (sameAddress(from, to.address)) throw new Error("self-target-refused");
       const current = remote.get(addressKey(to.address));
       if (!current || current.activationEpoch !== to.activationEpoch || current.homeEpoch !== to.homeEpoch || current.machineId !== to.machineId) throw new Error("stale-remote-endpoint");
-      if (ports.locals().some(local => sameAddress(local, to.address))) throw new Error("remote-cannot-shadow-local-session");
+      if (shadowsLocal(current)) throw new Error("remote-cannot-shadow-local-session");
       return dispatchTracked(from, current, message);
     },
     async dispatchLocal(from, to, message) {

@@ -41,6 +41,7 @@ export function parseHerdrConfig(value: unknown): HerdrConfig {
   if (look.autoHideTabs !== undefined && typeof look.autoHideTabs !== 'boolean') throw new HerdrError('invalid-config', 'look.autoHideTabs must be boolean');
   if (c.enabled !== undefined && c.enabled !== 'auto' && typeof c.enabled !== 'boolean') throw new HerdrError('invalid-config', 'enabled must be auto or boolean');
   if (c.automaticSubagentPanes !== undefined && typeof c.automaticSubagentPanes !== 'boolean') throw new HerdrError('invalid-config', 'automaticSubagentPanes must be boolean');
+  if (c.resume !== undefined && c.resume !== 'offer' && c.resume !== 'auto') throw new HerdrError('invalid-config', 'resume must be offer or auto');
   const spaces = (c.spaces === undefined && mode === 'core-only' ? [] : list(c.spaces)).map(value => {
     const s = object(value); return { name: text(s.name), ...(s.layout === undefined ? {} : { layout: layout(s.layout) }), sessions: list(s.sessions).map(value => {
       const selector = object(value);
@@ -64,7 +65,7 @@ export function parseHerdrConfig(value: unknown): HerdrConfig {
   }
   const shared: HerdrConfigBase = { notifications: { sound: notifications.sound !== false }, look: { autoHideTabs: look.autoHideTabs !== false, windowBlur: look.windowBlur !== false }, automaticSubagentPanes: c.automaticSubagentPanes === true, layout: c.layout === undefined ? 'panes' : layout(c.layout), enabled: c.enabled === undefined ? 'auto' : c.enabled as 'auto' | boolean,
     core: { binary: absolutePath(core.binary), config: absolutePath(core.config) },
-    agentDirectory: absolutePath(c.agentDirectory), globalRoot: absolutePath(c.globalRoot), shellRc: absolutePath(c.shellRc), spaces, machines,
+    agentDirectory: absolutePath(c.agentDirectory), globalRoot: absolutePath(c.globalRoot), shellRc: absolutePath(c.shellRc), resume: c.resume === 'auto' ? 'auto' : 'offer', spaces, machines,
     ...(fonts ? { fonts } : {}), limits: { auxiliaryPanes: limit(limits.auxiliaryPanes, 2, 1, 6), completedRows: limit(limits.completedRows, 50, 1, 10000), completedHours: limit(limits.completedHours, 24, 1, 8760) },
     retention: { foregroundDays: limit(retention.foregroundDays, 7, 1, 3650) }, admin: { wrappers: list(admin.wrappers ?? []).map(wrapperIdentity) } };
   return app ? { ...shared, mode: 'full', app: { binary: absolutePath(app.binary), home: absolutePath(app.home) } } : { ...shared, mode: 'core-only' };

@@ -206,6 +206,7 @@ The file is JSON. Every path must be absolute. Keep the configuration outside an
 | `agentDirectory` | Required | The pi agent directory. It gets the pi theme, sessions start with it, and it must match the shell's pi agent directory. |
 | `globalRoot` | Required | Spider's global directory, which must match the one pi uses. Feeds, jobs, and setup journals live in its `herdr` folder. |
 | `shellRc` | Required | The bash or zsh rc file that gets the resume block. |
+| `resume` | `"offer"` | `"offer"` prints a manual resume command. `"auto"` starts the saved session after a proved core restart. |
 | `layout` | `"panes"` | Default session layout for new space tabs. `"panes"` or `"tabs"`. A space can override it. |
 | `spaces` | Required | Ordered spaces. See [Spaces](#spaces). |
 | `machines` | Required | Remote machines. See [Machines](#machines). |
@@ -588,15 +589,19 @@ Do not pass a task argument. `hc` would paste it into the new pi editor. Give th
 
 ## Resume after a restart
 
-Spider records which session runs in each Herdr terminal. When the `hc` core restarts and restores a shell, the resume block in your rc file prints the saved session name and defines a `spider_resume` function:
+Spider records which session runs in each Herdr terminal. When the `hc` core restarts and restores a shell, the default `"resume": "offer"` prints the saved session name and defines a `spider_resume` function:
 
 ```text
 Resume <name>: run spider_resume (or keep this shell).
 ```
 
-If the resume hook, the Node binary, or the CLI that setup recorded is missing, the block does nothing and the shell starts without an error.
+Run `spider_resume` to resume the session, or ignore the offer to keep the shell. To start the session without typing, set `"resume": "auto"` in the Herdr configuration file. The shell prints `Resuming <name>…` before pi starts and returns to a normal shell when pi exits.
 
-Run `spider_resume` to start `pi --session <exact file>` in the saved working directory, with `PI_CODING_AGENT_DIR` set to the configured `agentDirectory`. Ignore it to keep a normal shell. Spider never types or starts pi on its own. It offers a resume only after a proved core restart, and only when no other process holds the session file. It never uses `--continue` and never changes the session name or model.
+Both modes run `pi --session <exact file>` in the saved working directory, with `PI_CODING_AGENT_DIR` set to the configured `agentDirectory`. Spider resumes only after a proved core restart and only when no other process holds the session file. It refuses sessions started with explicit extension arguments. It never uses `--continue` or changes the session name or model.
+
+Automatic resume makes at most one attempt per terminal for each core restart. A failed or interrupted attempt is not retried by a later shell. A later proved core restart permits a new attempt.
+
+If the resume hook, the Node binary, or the CLI that setup recorded is missing, the block does nothing and the shell starts without an error. Noninteractive shells and shells outside Herdr are unchanged.
 
 ## Troubleshooting
 
@@ -606,7 +611,7 @@ Run the doctor from a plain shell:
 node <installed-package>/dist/herdr/cli.mjs doctor --config <absolute-config-file>
 ```
 
-Without `--config`, the doctor uses the global `herdr.config` setting or the standard location. The doctor prints each failure or warning as a code, a message, and a `Repair:` line. A check that it cannot run is a warning with an `unavailable` code, not a pass. When there are warnings, it prints a summary of passed, unavailable, and failed checks. When there are no warnings and no failures, it prints `Doctor checks passed`. It exits 1 if any check failed, and 0 otherwise. The doctor never restarts a core, changes the layout, sends terminal input, or edits a user database. It checks Node on each machine with a visible probe every time, and checks each machine's runtime directory. It also checks that the Node binaries that setup recorded for the resume block, the cutover, and the mods still exist and are supported.
+Without `--config`, the doctor uses the global `herdr.config` setting or the standard location. It reports the configured `resume` mode. The doctor prints each failure or warning as a code, a message, and a `Repair:` line. A check that it cannot run is a warning with an `unavailable` code, not a pass. When there are warnings, it prints a summary of passed, unavailable, and failed checks. When there are no warnings and no failures, it prints `Doctor checks passed`. It exits 1 if any check failed, and 0 otherwise. The doctor never restarts a core, changes the layout, sends terminal input, or edits a user database. It checks Node on each machine with a visible probe every time, and checks each machine's runtime directory. It also checks that the Node binaries that setup recorded for the resume block, the cutover, and the mods still exist and are supported.
 
 The spider panel's **Run doctor** button runs the same command.
 

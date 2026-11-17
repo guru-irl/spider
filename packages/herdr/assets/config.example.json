@@ -5,6 +5,7 @@
   "agentDirectory": "/path/to/pi-agent",
   "globalRoot": "/path/to/spider-global",
   "shellRc": "/path/to/shell-rc",
+  "resume": "offer",
   "layout": "panes",
   "spaces": [
     {

@@ -443,7 +443,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
         const recovered = await control(machine, ['roam', 'recover', initial.operationId]);
         expect(recovered.operationId).toBe(initial.operationId);
         return recovered;
-      }, recovered => recovered.code !== 3, deadline(60_000), { reconcileMs: 500 });
+      }, recovered => recovered.code !== 3 || !['move-destination-pending', 'move-pending'].includes(recovered.reason), deadline(60_000), { reconcileMs: 500 });
     };
     const owners: MoveStory['owners'] = async () => {
       const result: MoveOwner[] = [];
@@ -675,7 +675,7 @@ async function exclusion(suite: Suite): Promise<void> {
     expect(recovered.code).toBe(0);
     expect(f.home()).toEqual(before);
     await assertMoveState(f, box, expectedTrees, 2);
-    expect(await f.cli(hub, ['move', f.sessionId, 'mac'])).toMatchObject({ code: 0 });
+    expect(await f.moveTo(hub, 'mac')).toMatchObject({ code: 0 });
     await assertMoveState(f, hub, expectedTrees, 3);
     await writeFile(join(box.root, 'roam', 'fail-launch'), 'refuse before pi starts\n');
     const failed = await f.cli(hub, ['move', f.sessionId, box.alias]);

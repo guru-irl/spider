@@ -99,7 +99,7 @@ export function createTerminalRegistry(root: string): TerminalRegistry {
         await writePrivateJson(path(owner.terminal), association({ version: 1, owner, recordedAt: r.recordedAt, coreStartedAt: r.coreStartedAt, environment: launchEnvironment(r.environment), ...(r.activityId ? { activityId: r.activityId } : {}) }));
       }, { reclaimReusedOwner: true });
     },
-    async get(id) { const r = await readPrivateJson(path(id)); if (r === null) return null; const a = association(r); if (identityKey(a.owner.terminal) !== identityKey(id)) throw new HerdrError('terminal-identity-mismatch', 'Mapping belongs to another terminal'); return a; },
+    async get(id) { const r = await readPrivateJson(path(id)); if (r === null) return null; const a = association(r); if (identityKey(a.owner.terminal) !== identityKey(id)) throw new HerdrError('terminal-identity-mismatch', 'Mapping belongs to another terminal'); return a.owner.terminal.address === id.address ? a : null; },
     async end(id, activityId) {
       await withProcessLock(root, `terminal:${identityKey(id)}`, async () => {
         const raw = await readPrivateJson(path(id)); if (raw === null) return;

@@ -47,10 +47,10 @@ import { createHostMoveBindings } from ${source('../../../host/src/roam/move-run
 import { createProcessInventory } from ${source('../../../host/src/herdr/process-inventory.ts')};
 import { createExactLaunchAdapter, createProductionLocalExactHc } from ${source('../../../roam/src/launcher.ts')};
 import { participantLaunchId } from ${source('../../../roam/src/participant-runtime.ts')};
-import { createRunningIntentAuthority } from ${source('../../../roam/src/session-control.ts')};
+import { createRunningIntentAuthority, readReadiness } from ${source('../../../roam/src/session-control.ts')};
 import { requestHubControl } from ${source('../../../roam/src/control-socket.ts')};
 import { createUsageIngestThrough } from ${source('../../../host/src/roam/usage-ingest.ts')};
-import { localBootId } from ${source('../../src/sessions/id-lock.ts')};
+import { inspectIdLock, localBootId } from ${source('../../src/sessions/id-lock.ts')};
 import { createHcClient } from ${source('../../src/client/hc.ts')};
 import { loadHerdrConfig } from ${source('../../../roam/src/host-config.ts')};
 import { createProcessPresence } from ${source('../../src/sessions/presence.ts')};
@@ -70,6 +70,16 @@ Object.assign(process.env, machine.env);
 const record = value => appendFileSync(descriptor.effects, JSON.stringify(value) + '\\n');
 const moveFactory = async input => {
   const runtime = await createHostMoveBindings(input);
+  const observe = runtime.bindings.participant!.observation;
+  runtime.bindings.participant!.observation = async (home, operation) => {
+    const observed = await observe(home, operation);
+    const launch = input.journal.read(home.moveId + '-session-start-' + input.config.machineId).find(row => row.action === 'participant-launch')?.result;
+    record({ effect: 'move-observation', machineId: machine.id, home, operationId: operation.id,
+      observed, launch, ready: launch ? readReadiness(input.journal, launch.launchId) : null,
+      lock: await inspectIdLock(join(root, 'herdr'), home.sessionId),
+      intent: await createRunningIntentAuthority(input.globalDb).get(home.sessionId) });
+    return observed;
+  };
   const gitRun = runtime.bindings.participant!.git.run;
   runtime.bindings.participant!.git.run = async (cwd, argv, options) => {
     try { return await gitRun(cwd, argv, options); }

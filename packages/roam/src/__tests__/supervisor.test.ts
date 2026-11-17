@@ -559,3 +559,26 @@ it.each([
     }
   } finally { await supervisor.stop(); }
 });
+
+
+it("retries a warning write that failed before it became visible", async () => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), publish = f.ports.hostingWarning!;
+  f.ports.inspect = async () => { throw new Error("unreadable"); };
+  let reject = true;
+  f.ports.hostingWarning = async (id, warning) => {
+    if (warning && reject) { reject = false; throw new Error("warning write failed"); }
+    await publish(id, warning);
+  };
+  const log = vi.spyOn(console, "error").mockImplementation(() => {}), supervisor = module.createSupervisor(f.ports);
+  try {
+    await supervisor.reconcile(); await supervisor.reconcile();
+    await expect(supervisor.reconcile()).rejects.toThrow("warning write failed");
+    await supervisor.reconcile();
+    expect(f.warnings).toEqual([{ sessionId: intent.sessionId,
+      warning: { code: "supervisor-hosting-error", check: "inspection", since: f.now(), count: 3 } }]);
+    expect(f.launches).toEqual([]);
+    expect((await f.state()).intent.suspended).toBeNull();
+    expect(log).toHaveBeenCalledTimes(1);
+  } finally { await supervisor.stop(); log.mockRestore(); }
+});

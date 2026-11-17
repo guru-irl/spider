@@ -333,7 +333,7 @@ it("shows non-stopping hosting warnings in doctor and text and JSON status witho
       expect(text).toContain("session-local");
       if (command[0] === "status") expect(text).toContain("session-remote");
       if (command.includes("--json")) {
-        const report = JSON.parse(text);
+        const parsed = JSON.parse(text), report = command[0] === "doctor" ? parsed.value : parsed;
         expect(report.diagnostics).toContainEqual(expect.objectContaining({ severity: "warning", repairCommand: null,
           reason: expect.stringMatching(/session-local.*supervisor-hosting-error.*restart/) }));
         if (command[0] === "status") expect(report.suspensions).toEqual([]);

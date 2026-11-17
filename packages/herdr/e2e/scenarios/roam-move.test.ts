@@ -69,23 +69,6 @@ if (!machine || !root.startsWith(descriptor.root + '/')) throw Error('unowned mo
 Object.assign(process.env, machine.env);
 const record = value => appendFileSync(descriptor.effects, JSON.stringify(value) + '\\n');
 const moveFactory = async input => {
-  const exec = input.transport.exec.bind(input.transport);
-  input.transport.exec = async (peer, argv, options) => {
-    try { return await exec(peer, argv, options); }
-    catch (error) {
-      if (argv[0] === 'roam' && argv[1] === 'intercom' && argv[2] === 'exchange') {
-        const clean = value => String(value ?? '').replace(/\\b(?:npm_|gh[opsu]_|sk-)[A-Za-z0-9_-]+/g, '[redacted credential]')
-          .replace(/\\bBearer\\s+\\S+/gi, 'Bearer [redacted]')
-          .replace(/\\b(api[_-]?key|authorization|password|token)(\\s*[:=]\\s*)("[^"]*"|'[^']*'|\\S+)/gi, '$1$2[redacted]')
-          .split('\\n').filter(line => !line.trimStart().startsWith('at ')).join(' ').slice(0, 1000);
-        record({ effect: 'intercom-exchange-failed', machineId: machine.id, peer: peer.machineId,
-          name: /^[A-Za-z0-9_.-]{1,128}$/.test(error.name ?? '') ? error.name : null,
-          code: /^[A-Za-z0-9_.-]{1,128}$/.test(error.code ?? '') ? error.code : null,
-          message: clean([error.message, error.details?.stderr].filter(Boolean).join(': ')) });
-      }
-      throw error;
-    }
-  };
   const runtime = await createHostMoveBindings(input);
   const observe = runtime.bindings.participant!.observation;
   runtime.bindings.participant!.observation = async (home, operation) => {

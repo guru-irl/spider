@@ -592,7 +592,8 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
   }
   if (["session-inspect", "session-freeze", "session-unfreeze", "session-shutdown", "session-retire"].includes(operation.kind)) {
     const feeds = evidence(bindings), intercom = required(bindings.intercom, "intercom"), local = location(participant.globalDb, id);
-    const now = bindings.clock?.now ?? Date.now, deadline = now() + participant.config.limits.controlMs;
+    const now = bindings.clock?.now ?? Date.now, budget = participant.config.limits.controlMs;
+    const deadline = now() + budget - Math.min(250, Math.floor(budget / 4));
     const control = async (op: Operation): Promise<Outcome<JsonObject>> => controlSession(op, {
       journal, probe: participant.probe, withBothLocks: participant.withBothLocks,
       exit: participant.exit ? { ...participant.exit, now, deadline } : undefined,

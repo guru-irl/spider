@@ -6,8 +6,8 @@ import type { Todo } from "@spider/todo";
 export type DrainReason = "before_compact" | "shutdown";
 export type PassName = "runMemoryTodo" | "todoMemory" | "learning" | "consolidation" | "reflection" | "insights";
 
-export interface TrackEventRow { id: number; ts: number; phase: "before" | "after"; tool: string; description?: string; flagged?: string; payload?: unknown; }
-export interface RunEventRow { id: number; runId?: string; ts: number; type: string; tool?: string; summary?: string; payload?: unknown; }
+export interface TrackEventRow { id: number; ts: number; phase: "before" | "after"; tool: string; description?: string; }
+export interface RunEventRow { id: number; runId?: string; ts: number; type: string; tool?: string; summary?: string; }
 
 export type RunActivity = Pick<RunRow, "id" | "agent" | "role" | "status" | "step_count" | "token_count">;
 

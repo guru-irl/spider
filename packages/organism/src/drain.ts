@@ -47,14 +47,15 @@ interface TodoDbRow {
  * history is untouched; model inputs cannot grow with the lifetime event log.
  */
 export function drainSession(db: Db, sessionId: string, reason: DrainReason, opts?: DrainOpts): DigestBundle {
+  // Runs have no creation timestamp; rowid orders queued and started runs alike.
   const runs = (db.prepare(`SELECT id, agent, role, status, step_count, token_count
     FROM runs WHERE session_id = ?
-    ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC LIMIT ?`).all(sessionId, RUN_LIMIT) as RunActivity[]).reverse();
+    ORDER BY rowid DESC LIMIT ?`).all(sessionId, RUN_LIMIT) as RunActivity[]).reverse();
 
   const runEvents = (
     db.prepare(`SELECT id, run_id, ts, type, tool, substr(summary, 1, ?) AS summary
-      FROM run_events WHERE session_id = ?
-      AND (type != 'log' OR summary IS NULL OR summary NOT GLOB 'organism *')
+      FROM run_events WHERE session_id = ? AND summary IS NOT NULL
+      AND (type != 'log' OR summary NOT GLOB 'organism *')
       ORDER BY id DESC LIMIT ?`).all(TEXT_CHARS, sessionId, RUN_EVENT_LIMIT) as RunEventDbRow[]
   ).reverse().map<RunEventRow>((r) => ({
     id: r.id,

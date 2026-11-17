@@ -173,11 +173,14 @@ export class Runner {
     let exited = false;
     // Startup can already have finalized the row before the handle is registered.
     handle.runStatus = shared ? this.deps.store.get(run.id)?.status ?? "running" : run.status;
-    const exit = handle.wait().then(value => {
+    const pendingExit = handle.wait();
+    let releaseTracking = () => {};
+    const exit = pendingExit.then(value => {
       exited = true;
       handle.runStatus = value.exitCode === 0 ? "done" : "failed";
+      releaseTracking();
       return value;
-    }, error => { exited = true; handle.runStatus = "failed"; throw error; });
+    }, error => { exited = true; handle.runStatus = "failed"; releaseTracking(); throw error; });
     handle.wait = () => exit;
     // Snapshot BEFORE the cancel bookkeeping below is bound to this activation's DB: a reloaded
     // activation re-wraps the raw handle with its own store instead of calling into ours.
@@ -221,6 +224,7 @@ export class Runner {
       this.removeRoute(run.id);
     };
     registerChild(this.sessionId, run.id, handle);
+    releaseTracking = this.deps.tailer.hold(run.id);
     return handle;
   }
 

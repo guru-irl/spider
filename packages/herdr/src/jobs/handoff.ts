@@ -220,6 +220,7 @@ export function createJobHandoff(options: {
   };
   const lifetime = new AbortController();
   const running = new Map<RunId, Promise<void>>();
+  const pending = new Map<RunId, JobJournal>();
   let scanning: Promise<void> | undefined;
   const reportedRuns = new Set<RunId>();
   const reportRun = (error: unknown, id: RunId) => { if (!lifetime.signal.aborted && !reportedRuns.has(id)) { reportedRuns.add(id); options.reportError?.(error); } };
@@ -253,19 +254,25 @@ export function createJobHandoff(options: {
     closedConsoles.delete(child.id);
     reportedRuns.delete(child.id);
   };
+  const pump = () => {
+    while (!lifetime.signal.aborted && running.size < 4 && pending.size) {
+      const [id, journal] = pending.entries().next().value!;
+      pending.delete(id);
+      const task = reconcileRun(journal).catch(error => reportRun(error, id)).finally(() => { running.delete(id); pump(); });
+      running.set(id, task);
+    }
+  };
   const reconcile = async () => {
+    const occupied = new Set([...running.keys(), ...pending.keys()]);
     const journals = await readChildJobJournals(options.root, options.owner, reportRun);
-    let index = 0;
-    await Promise.all(Array.from({ length: Math.min(4, journals.length) }, async () => {
-      while (index < journals.length && !lifetime.signal.aborted) {
-        const journal = journals[index++], id = journal.child!.id;
-        if (running.has(id)) continue;
-        if (running.size >= 4) return;
-        const task = reconcileRun(journal).catch(error => reportRun(error, id)).finally(() => { running.delete(id); });
-        running.set(id, task);
-        await task;
-      }
-    }));
+    if (lifetime.signal.aborted) return;
+    const found = new Set(journals.map(journal => journal.child!.id));
+    for (const id of pending.keys()) if (!found.has(id)) pending.delete(id);
+    for (const journal of journals) {
+      const id = journal.child!.id;
+      if (!running.has(id) && (!occupied.has(id) || pending.has(id))) pending.set(id, journal);
+    }
+    pump();
   };
   return {
     reconcile() {
@@ -273,9 +280,10 @@ export function createJobHandoff(options: {
       return scanning ??= reconcile().finally(() => { scanning = undefined; });
     },
     async shutdown(reason) {
-      lifetime.abort();
+      lifetime.abort(); pending.clear();
       const existing = new Set(adopted.values()), stopping = [...existing].map(monitor => monitor.shutdown(reason));
       await Promise.allSettled(scanning ? [scanning] : []);
+      await Promise.allSettled([...running.values()]);
       const results = await Promise.allSettled([...stopping, ...[...adopted.values()].filter(monitor => !existing.has(monitor)).map(monitor => monitor.shutdown(reason))]);
       for (const result of results) if (result.status === 'rejected') options.reportError?.(result.reason);
       adopted.clear(); closedConsoles.clear();

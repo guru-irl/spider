@@ -8,6 +8,7 @@ import type { InstallFile } from '../../../herdr/src/setup/installer.js';
 import { basename, join } from 'node:path';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
 import { releaseFixture } from './herdr-setup-release-fixture.js';
+import * as lookPatches from '@spider/herdr/look/patches';
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
@@ -58,6 +59,17 @@ test('0.1.12 refuses previously owned pickers until rollback restores stock keys
   await rollbackHerdr(f.request, f.parts);
   expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(stock);
   await expect(stat(picker)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+test.each(['recipe', 'menu'] as const)('B refuses a missing A %s before staging', async missing => {
+  const f = await releaseFixture('0.1.16'), select = lookPatches.selectLookPatches;
+  vi.spyOn(lookPatches, 'selectLookPatches').mockImplementation((manifest, version) => {
+    const selected = select(manifest, version);
+    if (missing === 'recipe') return { ...selected, recipe: undefined };
+    return { ...selected, mods: { ...selected.mods, menu: undefined } };
+  });
+  await expect(f.parts.stageLook(f.request, f.context, 'export')).rejects.toMatchObject({ code: 'cross-machine-recipe-mismatch' });
+  expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {

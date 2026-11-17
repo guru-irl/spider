@@ -9,7 +9,7 @@ import { seedSession } from "@spider/db-core/roam/seed";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { validateRoamLayout } from "@spider/db-core/roam/layout";
 import { localEntries, readLocal, writeLocal } from "@spider/db-core/roam/local-state";
-import type { Home, JsonObject, HubOperationReadiness, Probe, StoreKey } from "@spider/db-core/roam/types";
+import type { Home, JsonObject, HubOperationReadiness, Probe, ProcessIdentity, StoreKey } from "@spider/db-core/roam/types";
 import type { Diagnostic, HostIntent, Journal, Operation, Outcome, RoamConfig } from "./contracts";
 import { isMachineId } from "./machine-id";
 import { parseHubReadiness, validReadiness } from "@spider/db-core/roam/readiness";
@@ -66,6 +66,12 @@ export interface SessionControlPorts {
   withBothLocks<T>(sessionId: string, fn: () => Promise<T>): Promise<T>;
   live(operation: Operation): Promise<Outcome<JsonObject>>;
   dormant(operation: Operation): Promise<Outcome<JsonObject>>;
+  exit?: {
+    deadline: number;
+    now(): number;
+    exited(identity: ProcessIdentity): Promise<boolean>;
+    wait?(identity: ProcessIdentity, signal: AbortSignal): Promise<void>;
+  };
 }
 
 const CONTROL_KINDS = new Set(["session-inspect", "session-freeze", "session-unfreeze", "session-shutdown", "session-retire"]);
@@ -104,11 +110,30 @@ export async function controlSession(operation: Operation, ports: SessionControl
       }
     }
     if (owner.kind === "live") {
+      const identity = owner.identity;
       const live = await ports.live(operation);
       if (!validControlOutcome(live, operation)) return result(3, "live-control-unavailable");
-      if (operation.kind !== "session-retire" || live.code !== 0) return live;
-      try { owner = await ports.probe(sessionId); } catch { return result(3, "process-exit-unproven"); }
-      if (!validProbe(owner) || owner.kind !== "absent") return result(3, "process-exit-unproven");
+      if (!["session-retire", "session-shutdown"].includes(operation.kind) || live.code !== 0) return live;
+      try {
+        const exit = ports.exit;
+        if (exit?.wait && exit.now() < exit.deadline) {
+          const abort = new AbortController();
+          const expired = new Promise<void>(resolve => abort.signal.addEventListener("abort", () => resolve(), { once: true }));
+          const timer = setTimeout(() => abort.abort(), exit.deadline - exit.now());
+          try { await Promise.race([exit.wait(identity, abort.signal), expired]); }
+          finally { clearTimeout(timer); abort.abort(); }
+        }
+        for (;;) {
+          if (exit && exit.now() > exit.deadline) return result(3, "process-exit-unproven");
+          const gone = !exit || await exit.exited(identity);
+          owner = await ports.probe(sessionId);
+          if (gone && validProbe(owner) && owner.kind === "absent" && (!exit || exit.now() <= exit.deadline)) break;
+          const remaining = exit ? exit.deadline - exit.now() : 0;
+          if (remaining <= 0) return result(3, "process-exit-unproven");
+          await new Promise(resolve => setTimeout(resolve, Math.min(50, remaining)));
+        }
+      } catch { return result(3, "process-exit-unproven"); }
+      if (operation.kind === "session-shutdown") return { ...live, reason: "shutdown-complete" };
     }
     return await ports.withBothLocks(sessionId, async () => {
       const current = await ports.probe(sessionId);

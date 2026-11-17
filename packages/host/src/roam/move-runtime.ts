@@ -206,6 +206,13 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       return { repoKey: row.repo_key, workspaceId: row.workspace_id, sourceRoot: row.path, destinationRoot: destination, destinationCwd: join(destination, relative(row.path, loc.cwd)) };
     },
     participant: { pi, config, root, globalDb, runtimeRoot, stores: roster, withBothLocks, probe, git,
+      exit: { async exited(identity) {
+        const bootId = await localBootId();
+        if (!bootId || !identity.bootId) return false;
+        if (bootId !== identity.bootId) return true;
+        const current = await inventory.probe(identity.pid);
+        return current.kind === "absent" || current.kind === "live" && current.startIdentity !== identity.startTime;
+      } },
       async writers(workspace) {
         const records = await inventory.presence.list(), result: Blocker[] = [];
         const terminals = await createTerminalRegistry(join(root, "herdr")).list();

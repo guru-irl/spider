@@ -164,6 +164,7 @@ const moveFactory = async input => {
 const linkFault = JSON.parse(readFileSync(descriptor.faults, 'utf8'));
 if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id && args.includes('intercom') && args.includes('exchange')) {
   record({ effect: 'link-unavailable', machineId: machine.id }); process.exitCode = 1;
+  process.stdout.write(JSON.stringify({ code: 1, reason: 'fixture-machine-unavailable', machineId: machine.id }) + '\\n');
 } else if (args.length === 5 && args[0] === '--global-root' && args[2] === 'roam' && args[3] === 'intercom' &&
     (args[4] === 'exchange' || args[4] === 'revoke-local')) {
   const result = spawnSync(process.execPath, [descriptor.entry, ...args], { env: process.env, stdio: 'inherit' });
@@ -429,7 +430,10 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
     const untouchedDigest = createHash('sha256').update(await readFile(untouched)).digest('hex');
     let calls = 0;
     const control: MoveStory['cli'] = async (machine, args) => {
+      const startedAt = Date.now();
+      console.info(JSON.stringify({ story: suite.story, phase: 'cli-start', machine: machine.side, args, startedAt }));
       const result = await suite.invoke(process.execPath, [cli, ...args, '--json'], machine.env);
+      console.info(JSON.stringify({ story: suite.story, phase: 'cli-end', machine: machine.side, args, durationMs: Date.now() - startedAt, exitCode: result.exitCode }));
       await suite.evidence(`${suite.story}-${++calls}-${machine.side}-${args.filter(arg => !arg.startsWith('-')).join('-').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100)}.json`, result);
       let value: Record<string, any>; try { value = JSON.parse(result.stdout); } catch { throw Error(result.stdout + result.stderr); }
       expect(result.exitCode, result.stderr + result.stdout).toBe(value.code);
@@ -495,7 +499,8 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
   } catch (error) { await close(); throw error; }
 }
 
-export async function assertMoveState(f: MoveStory, machine: MoveMachine, expectedTrees: Awaited<ReturnType<MoveStory['trees']>>, epoch: number): Promise<MoveOwner> {
+export async function assertMoveState(f: MoveStory, machine: MoveMachine, expectedTrees: Awaited<ReturnType<MoveStory['trees']>>, epoch: number,
+  unavailableMachines: readonly string[] = []): Promise<MoveOwner> {
   const owner = await f.owner(machine), actual = await inspectSession(owner.file, f.sessionId);
   const actualSessionId = actual.sessionId, originalSessionId = f.sessionId, actualCwd = actual.cwd, mappedCwd = machine.cwd;
   expect(actualSessionId).toBe(originalSessionId);
@@ -518,9 +523,11 @@ export async function assertMoveState(f: MoveStory, machine: MoveMachine, expect
     try { file = (catalog.prepare('SELECT file FROM roam_locations WHERE session_id=?').get(f.sessionId) as { file: string } | undefined)?.file ?? null; }
     finally { catalog.close(); }
     if (!file || !existsSync(file)) continue;
-    const bytes = await stat(file);
-    expect(await waitFor('usage reaches the observed transcript prefix', () => f.cli(host, ['fixture-ingest', f.sessionId, file!, String(bytes.size)]),
-      result => result.code === 0, deadline(30_000))).toMatchObject({ code: 0 });
+    if (!unavailableMachines.includes(host.id)) {
+      const bytes = await stat(file);
+      expect(await waitFor('usage reaches the observed transcript prefix', () => f.cli(host, ['fixture-ingest', f.sessionId, file!, String(bytes.size)]),
+        result => result.code === 0, deadline(30_000))).toMatchObject({ code: 0 });
+    }
     const ledger = openDb(join(host.root, 'usage.db'), { fileMustExist: true });
     try {
       const foreignCharges = ledger.prepare('SELECT entry_id,execution_machine FROM calls WHERE session_id=? AND execution_machine IS NOT NULL AND execution_machine<>?').all(f.sessionId, host.id);
@@ -644,7 +651,11 @@ async function returnMove(suite: Suite): Promise<void> {
 }
 
 async function exclusion(suite: Suite): Promise<void> {
+  const startedAt = Date.now();
+  const phase = (name: string) => console.info(JSON.stringify({ story: suite.story, phase: name, elapsedMs: Date.now() - startedAt }));
+  phase('setup');
   const f = await createMoveStory(suite), [hub, box] = f.machines;
+  phase('busy-source');
   try {
     // A real in-flight provider request blocks freeze before ownership can change.
     const pendingTurn = await scripts(suite, { busy: [held('busy-move', 'released')] });
@@ -656,6 +667,7 @@ async function exclusion(suite: Suite): Promise<void> {
     expect((await f.owners()).map(row => row.pid)).toEqual([f.original.pid]);
     pendingTurn.release('busy-move');
     await f.original.waitEvent('agent_settled', () => true, deadline(30_000));
+    phase('lost-readiness');
     const expectedTrees = await f.trees(hub.cwd);
     await writeFile(f.faults, JSON.stringify({ drop: ['session-start', 'session-inspect', 'move-observation', 'move-ready-target'] }));
     const pending = await f.cli(hub, ['move', f.sessionId, box.alias]);
@@ -666,20 +678,25 @@ async function exclusion(suite: Suite): Promise<void> {
     const sourceDb = openDb(join(hub.cwd, '.spider', 'project.db'));
     try { expect(sourceDb.prepare('SELECT state,epoch FROM roam_sessions WHERE session_id=?').get(f.sessionId)).toEqual({ state: 'frozen', epoch: 1 }); }
     finally { sourceDb.close(); }
+    phase('cancel-live-destination');
     const cancel = await f.cli(hub, ['roam', 'cancel', pending.operationId]);
     expect(cancel.code).toBe(3);
     expect(f.home()).toEqual(before);
     expect((await f.owners()).map(row => row.pid)).toEqual([owner.pid]);
     await writeFile(f.faults, JSON.stringify({ drop: [] }));
+    phase('forward-recovery');
     const recovered = await f.cli(hub, ['roam', 'recover', pending.operationId]);
     expect(recovered.code).toBe(0);
     expect(f.home()).toEqual(before);
     await assertMoveState(f, box, expectedTrees, 2);
+    phase('return-home');
     expect(await f.moveTo(hub, 'mac')).toMatchObject({ code: 0 });
     await assertMoveState(f, hub, expectedTrees, 3);
+    phase('failed-launch');
     await writeFile(join(box.root, 'roam', 'fail-launch'), 'refuse before pi starts\n');
     const failed = await f.cli(hub, ['move', f.sessionId, box.alias]);
     expect(failed.code).toBe(3);
+    phase('rollback');
     const rolledBack = await waitFor('proved launch failure permits rollback', () => f.cli(hub, ['roam', 'recover', failed.operationId]),
       result => result.reason === 'rolled-back', deadline(60_000), { reconcileMs: 500 });
     expect(rolledBack).toMatchObject({ code: 0, reason: 'rolled-back', home: { machineId: HUB, epoch: 5 } });
@@ -689,8 +706,9 @@ async function exclusion(suite: Suite): Promise<void> {
       const retirement = db.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-rollback-retired'").get(failed.operationId);
       expect(retirement).toBeTruthy();
     } finally { db.close(); }
+    phase('complete');
     await suite.evidence('R08-exclusion.json', { blocked, pending, cancel, recovered, before, owner, failed, rolledBack });
-  } finally { await f.close(); }
+  } finally { phase('cleanup'); await f.close(); phase('closed'); }
 }
 
 async function copiedFile(suite: Suite): Promise<void> {

@@ -248,7 +248,7 @@ export async function runRecoveryCases(suite: Suite): Promise<void> {
           result => !restorationPending(result), deadline(60_000), { reconcileMs: 500 })
         : initialRestore;
       expect(restored).toMatchObject({ code: 0, reason: 'destroyed-machine-recovered' });
-      const local = await assertMoveState(f, hub, expectedTrees, 3);
+      const local = await assertMoveState(f, hub, expectedTrees, 3, [box.id]);
       const bytes = await readFile(local.file, 'utf8'), entries = bytes.trimEnd().split('\n').map(line => JSON.parse(line));
       expect(bytes).not.toContain('unsent-after-mirror');
       const marker = entries.findIndex(row => row.customType === 'spider-roam-segment' && row.data.epoch === 3);

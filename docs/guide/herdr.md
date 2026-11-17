@@ -597,13 +597,15 @@ Resume <name>: run spider_resume (or keep this shell).
 
 Run `spider_resume` to resume the session, or ignore the offer to keep the shell. In auto mode, the shell prints `Resuming <name>…` at its first prompt, starts pi, and returns to a normal shell when pi exits.
 
-Both modes run `pi --session <exact file>` in the saved working directory, with `PI_CODING_AGENT_DIR` set to the configured `agentDirectory`. Spider resumes only after a proved core restart and only when no other process holds the session file. It skips sessions that you quit. It refuses sessions started with explicit extension arguments and prints an error naming the session. It never uses `--continue` or changes the session name or model.
+Both modes run `pi --session <exact file>` in the saved working directory, with `PI_CODING_AGENT_DIR` set to the configured `agentDirectory`. Spider resumes only after a proved core restart and only when no other process holds the session file. It refuses sessions started with explicit extension arguments and prints an error naming the session. It never uses `--continue` or changes the session name or model.
+
+When pi exits or crashes and its shell returns to a prompt, the shell marks that session ended. A later restart skips it. A backgrounded or suspended pi stays live while its process exists. When the core restart kills both pi and its shell, no prompt runs and the session stays resumable. Starting pi again clears the ended state.
 
 Automatic resume makes at most one launch attempt per terminal for each core restart. A refused session, such as one held by another process, is tried again by the next shell in that terminal. A failed or interrupted launch is not retried until a later proved core restart.
 
 On macOS, Node does not expose `F_FULLFSYNC`. A power failure immediately after the attempt is recorded can lose the marker and allow another attempt.
 
-If the resume hook, the Node binary, or the CLI that setup recorded is missing, the block does nothing and the shell starts without an error. Noninteractive shells and shells outside Herdr are unchanged.
+If the resume hook, the Node binary, or the CLI that setup recorded is missing, the block does nothing and the shell starts without an error. Noninteractive shells and shells outside Herdr are unchanged. The prompt check is installed when a shell starts, so shells already open before the update do not have it. If later rc lines replace `PROMPT_COMMAND` or `precmd_functions`, move the resume block after those lines.
 
 ### Turning on automatic resume
 

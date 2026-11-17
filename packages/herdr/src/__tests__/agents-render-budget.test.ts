@@ -281,6 +281,39 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     } finally { await h.view.close(); }
   });
 
+  it(`${version}: limits an oversized saved list when the view loads`, async () => {
+    const h = fixture(version, 1, 0), keys = Array.from({ length: 250 }, (_, i) => `key-${i}`);
+    let loaded: any, again: any;
+    try {
+      await h.ready(); h.storage.set('spider.subagents.expanded', JSON.stringify(keys));
+      loaded = new h.view.constructor(); loaded.init({}, h.cx);
+      expect(JSON.parse(h.storage.get('spider.subagents.expanded')!)).toEqual(keys.slice(-200));
+      const writes = h.storageWrites.filter(([key]) => key === 'spider.subagents.expanded').length;
+      again = new h.view.constructor(); again.init({}, h.cx);
+      expect(h.storageWrites.filter(([key]) => key === 'spider.subagents.expanded')).toHaveLength(writes);
+    } finally { await again?.close(); await loaded?.close(); await h.view.close(); }
+  });
+
+  it(`${version}: one truncated feed protects keys across every feed`, async () => {
+    const h = fixture(version, 2, 0);
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    for (let i = 0; i < 2; i++) h.state.terminals.push({ address: `native-${i}`, parent: `v${i}`, state: 'live', status: 'idle', labels: {} });
+    const refresh = async () => {
+      h.state.feeds[0].revision++; h.state.feeds[1].revision++; h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+    };
+    try {
+      await h.ready();
+      for (let i = 0; i < 2; i++) find(h.render(), `child-fold-live${i}`).events.on_click({}, h.cx);
+      expect(JSON.parse(h.storage.get('spider.subagents.expanded')!)).toEqual(['live0', 'live1']);
+      h.state.feeds[0].runs.rows = []; h.state.feeds[1].runs.truncated = true;
+      await refresh();
+      expect(JSON.parse(h.storage.get('spider.subagents.expanded')!)).toEqual(['live0', 'live1']);
+      h.state.feeds[1].runs.truncated = false; await refresh();
+      expect(JSON.parse(h.storage.get('spider.subagents.expanded')!)).toEqual(['live1']);
+    } finally { await h.view.close(); }
+  });
+
   it(`${version}: retains saved keys through feed errors and prunes them after recovery`, async () => {
     const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
     const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);

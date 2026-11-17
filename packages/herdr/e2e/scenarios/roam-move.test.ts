@@ -500,6 +500,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
       await suite.evidence(`${suite.story}-${++calls}-${machine.side}-${args.filter(arg => !arg.startsWith('-')).join('-').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 100)}.json`, result);
       let value: Record<string, any>; try { value = JSON.parse(result.stdout); } catch { throw Error(result.stdout + result.stderr); }
       expect(result.exitCode, result.stderr + result.stdout).toBe(value.code);
+      if (suite.story === 'R08' && args[0] === 'roam' && args[1] === 'recover') console.info(JSON.stringify({ story: suite.story, phase: 'recovery-result', result: value }));
       return value;
     };
     const moveTo: MoveStory['moveTo'] = async (machine, destination) => {

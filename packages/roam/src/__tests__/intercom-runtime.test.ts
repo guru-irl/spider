@@ -313,10 +313,12 @@ it("selects the committed remote home without waking the stale local recipient",
     activationEpoch: "destination-generation", endpointEpoch: "destination-generation" };
   await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1, [current])), AbortSignal.timeout(5000));
   expect(await service.move.endpoint(address)).toEqual({ address, machineId: BOX, homeEpoch: 2, activationEpoch: "destination-generation" });
-  expect(f.broker.published.at(-1)).toEqual([expect.objectContaining({ machineId: BOX, homeEpoch: 2 })]);
+  expect(f.broker.published.at(-1)).toEqual([]);
   expect(await f.broker.bridge!.dispatch({ from: { ...from, sessionId: "fresh-sender" }, to: current, message: { id: "new-remote-mail", timestamp: 1000, content: { text: "synthetic" } } }))
     .toMatchObject({ delivery: "queued" });
   expect(queue.retained("outbound", "new-remote-mail")).toMatchObject({ endpoint: { machineId: BOX, homeEpoch: 2, activationEpoch: "destination-generation" } });
+  f.broker.emit("presence", [localPresence(from, "sender-generation")]);
+  expect(f.broker.published.at(-1)).toEqual([expect.objectContaining({ machineId: BOX, homeEpoch: 2 })]);
   expect(f.broker.deliveries).toEqual([]);
 }, 5000);
 

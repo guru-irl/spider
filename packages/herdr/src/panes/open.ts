@@ -65,7 +65,8 @@ async function verifyProxy(address: TerminalAddress, p: PanePresentation, ports:
   const terminal = await ports.hc.get(address); const labels = terminal.labels;
   const targetMatches = labels['spider.target-core'] === p.target.coreId && labels['spider.target-terminal'] === p.target.terminalId;
   const launchMatches = labels['spider.pane-operation'] === (p.proxyOperationId ?? p.id);
-  const matches = match === 'launch' ? launchMatches : targetMatches && (match === 'target' || launchMatches) && (match !== 'retire' || (labels['spider.owner-generation'] ?? null) === p.target.generation);
+  const legacyRetirement = match === 'retire' && p.proxyOperationId === undefined && labels['spider.owner-generation'] === undefined && (labels['spider.pane-operation'] === undefined || launchMatches);
+  const matches = match === 'launch' ? launchMatches : targetMatches && (legacyRetirement || (match === 'target' || launchMatches) && (match !== 'retire' || (labels['spider.owner-generation'] ?? null) === p.target.generation));
   const stateMatches = terminal.state === 'live' || match === 'retire' && terminal.state === 'finished';
   if (terminal.address !== address || !stateMatches || labels['spider.kind'] !== 'pane-proxy' || labels['spider.pane-id'] !== p.id || !matches) throw new HerdrError('proxy-identity', 'Presentation proxy identity is unproved');
   return terminal;
@@ -258,6 +259,13 @@ export async function convertNativePresentation(input: { presentation: PanePrese
   const oldDisplay = original.mode === 'native' ? paneAddress(original.target.terminalId) : original.proxy;
   if (!oldDisplay) return outcome('pending', 'source-view-unavailable', p);
   try {
+    if (original.mode === 'proxy') {
+      try { await verifyProxy(oldDisplay, original, ports, 'retire'); }
+      catch (error) {
+        if (error instanceof HerdrError && error.code === 'proxy-identity') return outcome('refused', 'source-retirement-unverified', p);
+        throw error;
+      }
+    }
     const oldPlacement = await app.ownerPlacement(oldDisplay);
     if (oldPlacement.space !== source.space || oldPlacement.tab !== source.tab || oldPlacement.pane !== source.pane) return outcome('pending', 'source-view-unavailable', p);
     let replacement: TerminalAddress;
@@ -301,12 +309,19 @@ export async function convertNativePresentation(input: { presentation: PanePrese
     }
     const actual = await ports.awaitPresented(replacement, destination, slot);
     if (actual.space !== source.space || actual.tab !== source.tab) return outcome('pending', 'replacement-outside-captured-tab', p);
-    // Publish the acknowledged binding before retiring the old proxy. Its watcher then exits
-    // rather than treating a deliberate handoff as an unexplained process close.
-    p = await updatePresentation(p, { target: destination, mode: native ? 'native' : 'proxy', proxy: native ? null : replacement, slot: actual, launch: 'acknowledged', proxyLaunchAttempts: 0, conversion: null }, ports);
     if (original.mode === 'native') {
       const stillSource = await ports.readNativeTarget(oldDisplay);
       if (stillSource.coreId !== original.target.coreId || stillSource.terminalId !== original.target.terminalId || stillSource.address !== original.target.address || stillSource.createdMs !== original.target.createdMs || !Object.entries(original.target.identityLabels).every(([key, value]) => stillSource.identityLabels[key] === value)) return outcome('pending', 'source-retirement-unverified', p);
+    } else {
+      try { await verifyProxy(oldDisplay, original, ports, 'retire'); }
+      catch (error) {
+        if (error instanceof HerdrError && error.code === 'proxy-identity') return outcome('refused', 'source-retirement-unverified', p);
+        throw error;
+      }
+    }
+    // Prove retirement first, then publish the acknowledged binding so its watcher exits.
+    p = await updatePresentation(p, { target: destination, mode: native ? 'native' : 'proxy', proxy: native ? null : replacement, slot: actual, launch: 'acknowledged', proxyLaunchAttempts: 0, conversion: null }, ports);
+    if (original.mode === 'native') {
       await command(app, 'terminal.park', { terminal: oldDisplay });
       return outcome('complete', 'native-view-converted', p);
     }
@@ -318,7 +333,7 @@ export async function convertNativePresentation(input: { presentation: PanePrese
       if (current.state === 'live') await ports.hc.kill(oldDisplay);
       return outcome('complete', 'native-view-converted', p);
     } catch (error) {
-      if (error instanceof HerdrError && error.code === 'proxy-identity') return outcome('refused', 'source-retirement-unverified', p);
+      if (error instanceof HerdrError && error.code === 'proxy-identity') return outcome('pending', 'source-retirement-unverified', p);
       throw error;
     }
   } catch { return outcome('pending', 'conversion-pending', p); }

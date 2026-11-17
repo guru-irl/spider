@@ -218,8 +218,26 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
         if (live.length) {
           const claim = await readPrivateJson(path);
           const row = claim && typeof claim === 'object' && !Array.isArray(claim) ? claim as Record<string, unknown> : null;
-          if (!row || row.coreId !== selected.coreId || row.operationId !== operationId || row.generation !== owner.generation || row.proxyOperationId !== live[0].labels['spider.pane-operation'] || live[0].labels['spider.owner-generation'] !== owner.generation) throw new HerdrError('auxiliary-launch-uncertain', 'Waiting display launch identity is unproved');
-          return { address: live[0].address, coreId: selected.coreId };
+          const display = live[0];
+          const legacy = !row?.proxyOperationId || display.labels['spider.owner-generation'] === undefined || bound?.proxy === display.address && bound.proxyOperationId === undefined;
+          if (legacy) {
+            const deadline = Date.now() + 5000;
+            let killed = false;
+            for (;;) {
+              let current;
+              try { current = await hc.get(display.address); }
+              catch (error) { if (error instanceof HerdrError && error.code === 'not_found') break; throw error; }
+              if (current.address !== display.address || ['spider.kind', 'spider.pane-id', 'spider.target-core', 'spider.target-terminal', 'spider.pane-operation', 'spider.owner-generation'].some(key => current.labels[key] !== display.labels[key])) throw new HerdrError('pane-view-identity', 'Legacy waiting display identity changed');
+              if (current.state === 'finished') { await hc.rm(display.address); break; }
+              if (!killed) { await hc.kill(display.address); killed = true; }
+              if (Date.now() >= deadline) throw new HerdrError('auxiliary-launch-uncertain', 'Legacy waiting display retirement is pending');
+              await delay(25);
+            }
+            await unlink(path).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+            return 'absent';
+          }
+          if (!row || row.coreId !== selected.coreId || row.operationId !== operationId || row.generation !== owner.generation || row.proxyOperationId !== display.labels['spider.pane-operation'] || display.labels['spider.owner-generation'] !== owner.generation) throw new HerdrError('auxiliary-launch-uncertain', 'Waiting display launch identity is unproved');
+          return { address: display.address, coreId: selected.coreId };
         }
         for (const terminal of found) await hc.rm(terminal.address);
         await unlink(path).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
@@ -273,8 +291,12 @@ export function createPaneRuntime(input: { config: HerdrConfig; hc: HcClient; pa
       await validateTarget(target, 'open');
       const id = 'aux-' + hash(JSON.stringify([reservation.kind, reservation.id, reservation.owner.sessionId, reservation.owner.generation]));
       const slot = await app.ownerPlacement(reservation.viewer), display = await hc.get(reservation.viewer);
-      if (display.labels['spider.pane-id'] !== id || display.labels['spider.owner-generation'] !== reservation.owner.generation) throw new HerdrError('pane-view-identity', 'Waiting display generation changed');
-      const proxyOperationId = paneId(display.labels['spider.pane-operation']);
+      const selected = await identity(), claim = await readPrivateJson(join(root, 'waiting', `${id}.json`));
+      const row = claim && typeof claim === 'object' && !Array.isArray(claim) ? claim as Record<string, unknown> : null;
+      if (display.state !== 'live' || display.address !== reservation.viewer || reservation.viewer.includes('/') && !reservation.viewer.startsWith(`${selected.coreId}/`)
+        || display.labels['spider.kind'] !== 'pane-proxy' || display.labels['spider.pane-id'] !== id || display.labels['spider.owner-generation'] !== reservation.owner.generation
+        || !row || row.operationId !== id || row.coreId !== selected.coreId || row.generation !== reservation.owner.generation || typeof row.proxyOperationId !== 'string' || row.proxyOperationId !== display.labels['spider.pane-operation']) throw new HerdrError('pane-view-identity', 'Waiting display launch identity changed');
+      const proxyOperationId = paneId(row.proxyOperationId);
       await store.update(state => { const old = state.presentations.find(p => p.id === id); const p: PanePresentation = { id, proxyOperationId, revision: (old?.revision ?? 0) + 1, mode: 'proxy', role: reservation.kind === 'console' ? 'console' : 'subagent', target, proxy: reservation.viewer, slot, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null }; return { ...state, presentations: [...state.presentations.filter(p => p.id !== id), p] }; });
       await hc.setLabels(reservation.viewer, { 'spider.target-core': target.coreId, 'spider.target-terminal': target.terminalId });
     },

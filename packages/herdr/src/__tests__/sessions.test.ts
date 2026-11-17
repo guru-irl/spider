@@ -129,6 +129,20 @@ it('quit, signal and reload preserve the correct restart eligibility', async () 
   }
 }, 30000);
 
+it('RPC startup preserves default SIGTERM behavior before pi installs handlers', async () => {
+  const entry = fileURLToPath(new URL('./fixtures/resume-shutdown-process.ts', import.meta.url));
+  await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: entry, outDir: root, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'shutdown-process.mjs' } } } });
+  await session();
+  const child = spawn(process.execPath, [join(root, 'shutdown-process.mjs'), root, 'rpc', 'hold'], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  const exited = new Promise<NodeJS.Signals | null>((resolveExit, reject) => { child.once('error', reject); child.once('exit', (_code, signal) => resolveExit(signal)); });
+  await new Promise<void>((resolveReady, reject) => { child.once('message', () => resolveReady()); child.once('exit', () => reject(new Error('child exited before startup paused'))); });
+  try {
+    child.kill('SIGTERM');
+    const result = await Promise.race([exited, new Promise<'timeout'>(resolve => setTimeout(() => resolve('timeout'), 1000))]);
+    expect(result).toBe('SIGTERM');
+  } finally { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await exited; }
+}, 10000);
+
 it('quit waits for an in-flight activation before ending its mapping', async () => {
   const file = await session(); const api = apiFixture(); const registry = createTerminalRegistry(root);
   let release!: () => void, entered!: () => void;

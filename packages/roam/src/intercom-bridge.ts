@@ -205,7 +205,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   const currentLocalPresence = (): RemoteSessionInfo[] => [...ports.localPresence(), ...brokerLocal].filter(entry => {
     if (intake?.closed(entry.address)) return false;
     const home = ports.authoritativeHome(entry.address);
-    return home ? home.machineId === entry.machineId && home.epoch === entry.homeEpoch : entry.homeEpoch === null;
+    return home ? home.machineId === entry.machineId && home.epoch === entry.homeEpoch : entry.homeEpoch === null || entry.homeEpoch === 1;
   });
   const firstHomePresence = (endpoint: SessionEndpoint, edge: EdgeRuntime | null): RemoteSessionInfo | undefined => {
     const entries = edge ? state(edge).roster : currentLocalPresence();
@@ -227,7 +227,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         ports.store.recordRejection(peer, "presence", "presence-home-mismatch"); return false;
       }
       const home = ports.authoritativeHome(entry.address);
-      if (home && (home.machineId !== entry.machineId || home.epoch !== entry.homeEpoch) || !home && entry.homeEpoch !== null) {
+      if (home && (home.machineId !== entry.machineId || home.epoch !== entry.homeEpoch) || !home && entry.homeEpoch !== null && entry.homeEpoch !== 1) {
         ports.store.recordRejection(peer, "presence", "presence-home-mismatch"); return false;
       }
       const origin = home ? null : ports.sessionOrigin?.(entry.address);
@@ -240,7 +240,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
           (item.machineId !== entry.machineId || item.activationEpoch !== entry.activationEpoch));
       const context = { assigned: home !== null, competing: local.length + others.length > 0,
         knownMachines: [...local, ...others].map(item => item.machineId).concat(ports.knownSessionMachines?.(entry.address) ?? []) };
-      const originMatches = home !== null || origin === entry.machineId;
+      const originMatches = home !== null || origin === entry.machineId || !origin && entry.homeEpoch === 1;
       if (!originMatches && !ports.store.presenceOwner(entry.address) && !context.competing && context.knownMachines.every(machine => machine === entry.machineId)) {
         ports.store.recordRejection(peer, "presence", "presence-origin-unknown"); return false;
       }
@@ -269,7 +269,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         const key = addressKey(candidate.address), prior = entries.get(key);
         const home = ports.authoritativeHome(candidate.address);
         if (local.has(key) || home && (home.machineId !== candidate.machineId || home.epoch !== candidate.homeEpoch) ||
-            !home && (candidate.homeEpoch !== null || !ports.store.presenceOwner(candidate.address) || ports.store.presenceOwner(candidate.address)?.ambiguous)) continue;
+            !home && (candidate.homeEpoch !== null && candidate.homeEpoch !== 1 || !ports.store.presenceOwner(candidate.address) || ports.store.presenceOwner(candidate.address)?.ambiguous || ports.store.presenceOwner(candidate.address)?.machineId !== candidate.machineId)) continue;
         const epoch = candidate.homeEpoch ?? -1, priorEpoch = prior?.homeEpoch ?? -1;
         if (!prior || epoch > priorEpoch || epoch === priorEpoch && prior.stale && !candidate.stale) entries.set(key, candidate);
       }

@@ -384,7 +384,7 @@ it.each([
   const { prepareWorkspace, verifyWorkspace } = await import("../workspace-import");
   const f = fixture(state);
   if (ignored) appendFileSync(join(f.destination, ".git", "info", "exclude"), "\n.spider/\n.pi-subagents/\n");
-  const localFiles = [".spider/state.db", ".pi-subagents/run.json", "nested/.spider/state.db", "nested/.pi-subagents/run.json"];
+  const localFiles = [".spider/state.db", ".pi-subagents/run.json"];
   for (const relative of localFiles) {
     const file = join(f.destination, relative);
     mkdirSync(dirname(file), { recursive: true });
@@ -1607,4 +1607,17 @@ it("abort resumes when the prior checkout was restored before the completion jou
   expect(git(f.destination, "write-tree")).toBe(f.previous.indexTree);
   expect(tree(f.destination, f.root)).toBe(f.previous.workingTree);
   expect(git(f.destination, "symbolic-ref", "HEAD")).toBe("refs/heads/main");
+}, 5000);
+
+it.each([".spider", ".pi-subagents"])("nested tracked %s fixtures remain part of workspace verification", async name => {
+  const { verifyWorkspace } = await import("../workspace-import"), f = fixture();
+  const relative = `nested/${name}/fixture.txt`, file = join(f.destination, relative);
+  mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "original fixture\n");
+  git(f.destination, "add", "--", relative);
+  const baseline = git(f.destination, "write-tree"), snapshot = { ...f.previous, root: f.destination, indexTree: baseline, workingTree: baseline };
+  const prepared = { root: f.destination, moveId: snapshot.moveId, previous: null, adjustments: [], snapshot };
+  await verifyWorkspace(prepared, f.ports);
+  writeFileSync(file, "edited fixture\n");
+  await expect(verifyWorkspace(prepared, f.ports)).rejects.toThrow("workspace-verification-failed");
+  expect(readFileSync(file, "utf8")).toBe("edited fixture\n");
 }, 5000);

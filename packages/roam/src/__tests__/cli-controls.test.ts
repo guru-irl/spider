@@ -562,10 +562,12 @@ it("remote doctor retains non-stopping hosting warnings when scheduling is disab
   vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
   vi.spyOn(transportModule, "createTransport").mockReturnValue({} as never);
   vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: false, consumers: [], diagnostics: [
-    { severity: "warning", reason: "Session session-a: supervisor-hosting-error (restart); hosting checks will retry automatically.", repairCommand: null },
+    { code: "supervisor-hosting-error", severity: "warning", reason: "Session session-a: supervisor-hosting-error (restart); hosting checks will retry automatically.", repairCommand: null },
+    { severity: "warning", reason: "disabled informational diagnostic", repairCommand: null },
     { severity: "block", reason: "disabled hosting prerequisite", repairCommand: null },
   ] });
   expect(await f.invoke(["roam", "doctor", "--", "-box-1.invalid"])).toBe(0);
   expect(f.out.join("")).toContain("supervisor-hosting-error (restart)");
   expect(f.out.join("")).not.toContain("disabled hosting prerequisite");
+  expect(f.out.join("")).not.toContain("disabled informational diagnostic");
 });

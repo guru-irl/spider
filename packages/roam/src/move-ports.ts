@@ -77,7 +77,7 @@ export interface MoveParticipantBindings {
   stores: readonly { key: StoreKey; db: Db }[];
   withBothLocks<T>(sessionId: string, effect: (locks?: import("./session-control").HeldSessionLocks) => Promise<T>): Promise<T>;
   probe(sessionId: string): Promise<Probe>;
-  exit?: Pick<NonNullable<import("./session-control").SessionControlPorts["exit"]>, "exited" | "wait">;
+  exit?: Pick<NonNullable<import("./session-control").SessionControlPorts["exit"]>, "exited">;
   git: Omit<GitPorts, "journal" | "limits">;
   writers(root: string): Promise<readonly Blocker[]>;
   sessionTarget(sessionId: string, moveId: string): Promise<string>;

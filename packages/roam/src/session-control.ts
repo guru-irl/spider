@@ -71,7 +71,6 @@ export interface SessionControlPorts {
     deadline: number;
     now(): number;
     exited(identity: ProcessIdentity): Promise<boolean>;
-    wait?(identity: ProcessIdentity, signal: AbortSignal): Promise<void>;
   };
 }
 
@@ -117,13 +116,6 @@ export async function controlSession(operation: Operation, ports: SessionControl
       if (!["session-retire", "session-shutdown"].includes(operation.kind) || live.code !== 0) return live;
       try {
         const exit = ports.exit;
-        if (exit?.wait && exit.now() < exit.deadline) {
-          const abort = new AbortController();
-          const expired = new Promise<void>(resolve => abort.signal.addEventListener("abort", () => resolve(), { once: true }));
-          const timer = setTimeout(() => abort.abort(), exit.deadline - exit.now());
-          try { await Promise.race([exit.wait(identity, abort.signal), expired]); }
-          finally { clearTimeout(timer); abort.abort(); }
-        }
         for (;;) {
           if (exit && exit.now() > exit.deadline) return result(3, "process-exit-unproven");
           const gone = !exit || await exit.exited(identity);

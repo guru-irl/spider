@@ -87,23 +87,82 @@ function fixture() {
   };
 }
 
-it.each([1, 2, 0])("retains the original hosting failure at inspection %s before suspending", async failureAt => {
+it.each([1, 2, 0])("retries a reserved launch after a hosting read fails at inspection %s", async failureAt => {
   const module = await supervisorModule(); if (!module) return;
-  const f = fixture(), original = new Error("fixture hosting inspection failed"), inspect = f.ports.inspect;
+  const f = fixture(), original = new Error("fixture hosting inspection failed"), inspect = f.ports.inspect, get = f.ports.runningIntents.get;
+  const current = (await f.intents.get(intent.sessionId))!;
+  const reserved: IntentState = { ...current.value, supervision: { kind: "launching", operationId: "reserved-launch", phase: "reserved" } };
+  await f.intents.update(intent.sessionId, current.version, reserved);
   original.name = "FixtureHostingError";
   let calls = 0;
-  if (failureAt === 0) f.ports.runningIntents.get = async () => { throw original; };
+  if (failureAt === 0) f.ports.runningIntents.get = async id => { if (++calls === 1) throw original; return get(id); };
   else f.ports.inspect = async id => { if (++calls === failureAt) throw original; return inspect(id); };
+  const requests: Parameters<SupervisorPorts["launch"]>[0][] = [], launch = f.ports.launch;
+  f.ports.launch = async request => { requests.push(request); return launch(request); };
   const evidence = vi.spyOn(console, "error").mockImplementation(() => {});
+  const supervisor = module.createSupervisor(f.ports);
   try {
-    await module.createSupervisor(f.ports).reconcile();
-    expect((await f.state()).intent.suspended).toBe("Cannot verify hosting state");
+    await supervisor.reconcile();
     expect(f.launches).toEqual([]);
     expect(evidence.mock.calls.map(args => JSON.parse(String(args[0])))).toContainEqual({
       event: "supervisor-hosting-error", sessionId: intent.sessionId,
       error: { name: original.name, message: original.message, stack: original.stack },
     });
-  } finally { evidence.mockRestore(); }
+    expect(await f.state()).toEqual(reserved);
+    await supervisor.reconcile();
+    expect(f.launches).toHaveLength(1);
+    expect(requests).toEqual([{ intent, mode: "reconcile", reservation: { operationId: "reserved-launch" } }]);
+    expect(await f.state()).toMatchObject({ intent, failures: [], supervision: { kind: "live" } });
+    await supervisor.reconcile();
+    expect(f.launches).toHaveLength(1);
+    expect(f.notices).toEqual([]);
+  } finally { await supervisor.stop(); evidence.mockRestore(); }
+});
+
+it("never launches while hosting inspection remains unreadable", async () => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture();
+  f.ports.inspect = async () => { throw new Error("Unsafe hosting state file"); };
+  const evidence = vi.spyOn(console, "error").mockImplementation(() => {});
+  const supervisor = module.createSupervisor(f.ports);
+  try {
+    for (let attempt = 0; attempt < 3; attempt++) await supervisor.reconcile();
+    expect(f.launches).toEqual([]);
+    expect((await f.state()).supervision).toEqual({ kind: "idle", nextAttemptAt: null });
+  } finally { await supervisor.stop(); evidence.mockRestore(); }
+});
+
+it.each(["Cannot verify hosting state", "doctor required"])("reconciles an interrupted reservation without clearing a deliberate suspension: %s", async reason => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), current = (await f.intents.get(intent.sessionId))!;
+  await f.intents.update(intent.sessionId, current.version, { ...current.value, intent: { ...intent, suspended: reason },
+    supervision: { kind: "launching", operationId: "reserved-launch", phase: "reserved" } });
+  const supervisor = module.createSupervisor(f.ports);
+  try {
+    await supervisor.reconcile();
+    const automatic = reason === "Cannot verify hosting state";
+    expect(f.launches).toHaveLength(automatic ? 1 : 0);
+    expect(await f.state()).toMatchObject({ intent: { suspended: automatic ? null : reason },
+      supervision: { kind: automatic ? "live" : "launching" } });
+  } finally { await supervisor.stop(); }
+});
+
+it("a stop received after a failed observation prevents the reserved launch", async () => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), inspect = f.ports.inspect, current = (await f.intents.get(intent.sessionId))!;
+  await f.intents.update(intent.sessionId, current.version, { ...current.value,
+    supervision: { kind: "launching", operationId: "reserved-launch", phase: "reserved" } });
+  let fail = true;
+  f.ports.inspect = async id => { if (fail) { fail = false; throw new Error("read interrupted"); } return inspect(id); };
+  const evidence = vi.spyOn(console, "error").mockImplementation(() => {});
+  const supervisor = module.createSupervisor(f.ports);
+  try {
+    await supervisor.reconcile();
+    f.setAuthoritative({ ...intent, desired: "stopped" });
+    await supervisor.reconcile();
+    expect(f.launches).toEqual([]);
+    expect((await f.state()).intent.desired).toBe("stopped");
+  } finally { await supervisor.stop(); evidence.mockRestore(); }
 });
 
 it.each(["absent", "live", "uncertain", "launching", "frozen"] as const)("a returned home replaces old supervision only with proved absence: %s", async proof => {

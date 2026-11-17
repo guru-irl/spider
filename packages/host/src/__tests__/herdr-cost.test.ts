@@ -74,12 +74,12 @@ it('expires a late owner generation from the original sample time', async () => 
     return { pace: computePace({ ...emptyUsage, now: sampledAt }), updatedAt: null, sampledAt,
       monthCost: { credits: sampledAt === NOW ? 7 : 9, label: sampledAt === NOW ? '7' : '9' } };
   });
-  expect((await f.source.snapshot(f.owner)).monthCost.credits).toBe(7);
+  expect((await f.source.snapshot(f.owner)).monthCost?.credits).toBe(7);
   f.advance(29000);
   const lateOwner = { ...f.owner, generation: 'later' as Owner['generation'] };
-  expect((await f.source.snapshot(lateOwner)).monthCost.credits).toBe(7);
+  expect((await f.source.snapshot(lateOwner)).monthCost?.credits).toBe(7);
   f.advance(1000);
-  expect((await f.source.snapshot(lateOwner)).monthCost.credits).toBe(9);
+  expect((await f.source.snapshot(lateOwner)).monthCost?.credits).toBe(9);
   expect(requests).toEqual([NOW, NOW + 29000, NOW + 30000]);
 });
 
@@ -106,15 +106,15 @@ it('refreshes an out-of-phase owner through the real runtime sampler', async () 
   try {
     runtime.start(false); await vi.advanceTimersByTimeAsync(0);
     await f.source.snapshot(f.owner); await flush();
-    expect((await f.source.snapshot(f.owner)).monthCost.credits).toBe(7);
+    expect((await f.source.snapshot(f.owner)).monthCost?.credits).toBe(7);
     f.advance(29000); await vi.advanceTimersByTimeAsync(29000);
     const lateOwner = { ...f.owner, generation: 'later' as Owner['generation'] };
     await f.source.snapshot(lateOwner); await flush();
-    expect((await f.source.snapshot(lateOwner)).monthCost.credits).toBe(7);
+    expect((await f.source.snapshot(lateOwner)).monthCost?.credits).toBe(7);
     expect(worker.requests).toBe(1);
     f.advance(1000); await vi.advanceTimersByTimeAsync(1000);
     await f.source.snapshot(lateOwner); await flush();
-    expect((await f.source.snapshot(lateOwner)).monthCost.credits).toBe(9);
+    expect((await f.source.snapshot(lateOwner)).monthCost?.credits).toBe(9);
     expect(worker.requests).toBe(2);
   } finally { await runtime.stop(); vi.useRealTimers(); }
 });
@@ -124,9 +124,9 @@ it('never displays a sample older than one interval during a slow replacement', 
   const replacement = new Promise<typeof emptyUsage & { sampledAt: number; monthCost: { credits: number; label: string } }>(resolve => { finish = resolve; });
   let attempt = 0;
   const f = fixture(() => ++attempt === 1 ? Promise.resolve({ ...emptyUsage, sampledAt: NOW, correctedMonth: 12, monthCost: { credits: 7, label: '7' } }) : replacement);
-  expect((await f.source.snapshot(f.owner)).monthCost.credits).toBe(7);
+  expect((await f.source.snapshot(f.owner)).monthCost?.credits).toBe(7);
   f.advance(29999);
-  expect((await f.source.snapshot(f.owner)).monthCost.credits).toBe(7);
+  expect((await f.source.snapshot(f.owner)).monthCost?.credits).toBe(7);
   f.advance(1);
   const pending = await f.source.snapshot(f.owner);
   expect(pending.monthCost).toEqual(unavailable);

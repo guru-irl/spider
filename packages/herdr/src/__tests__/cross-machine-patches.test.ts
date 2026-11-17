@@ -1,21 +1,33 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { expect, test } from 'vitest';
 import { applyCrossMachinePatches, selectCrossMachinePatches, crossMachineKinds } from '../look/cross-machine.js';
 import { loadPublishedSpacesARecipe, loadSpacesAFiles, replaySpacesARecipe } from './spaces-a-fixture.js';
 import { replaySpacesBRecipe } from './spaces-b-fixture.js';
 
 const manifest = () => JSON.parse(readFileSync(new URL('../../assets/look/cross-machine-patches.json', import.meta.url), 'utf8'));
+
+test('published B recipes match their composed fragments', () => {
+  const result = spawnSync(process.execPath, ['scripts/compose-spaces-b.mjs', '--check'], { encoding: 'utf8' });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain('Published Spaces B recipes match composed output');
+});
+
 for (const version of ['0.1.13', '0.1.16'] as const) {
-  const a = loadPublishedSpacesARecipe(version);
-  const clean = loadSpacesAFiles(version);
-  const afterA = replaySpacesARecipe(version, clean, a.aFragments, a);
-  const b = manifest();
-  const expected = replaySpacesBRecipe(version, clean, b.versions[version]);
-  const recipe = selectCrossMachinePatches(b, version);
+  function data() {
+    const a = loadPublishedSpacesARecipe(version);
+    const clean = loadSpacesAFiles(version);
+    const afterA = replaySpacesARecipe(version, clean, a.aFragments, a);
+    const b = manifest();
+    const expected = replaySpacesBRecipe(version, clean, b.versions[version]);
+    const recipe = selectCrossMachinePatches(b, version);
+    return { clean, afterA, expected, recipe };
+  }
 
   test(`${version} applies B only to A's verified result and repeats byte-for-byte`, () => {
+    const { afterA, expected, recipe } = data();
     const before = structuredClone(afterA);
     const output = applyCrossMachinePatches(afterA, recipe);
     expect(output).toEqual(Object.fromEntries(crossMachineKinds.map(kind => [kind, expected[kind]])));
@@ -26,6 +38,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
 
   for (const state of ['stock', 'partial', 'changed-input', 'changed-output', 'missing-file', 'extra-file'] as const) {
     test(`${version} refuses ${state} without mutating its input`, () => {
+      const { clean, afterA, expected, recipe } = data();
       const files = structuredClone(state === 'stock' ? clean : state === 'changed-output' ? expected : afterA);
       if (state === 'partial') files.pane = expected.pane!;
       if (state === 'changed-input' || state === 'changed-output') files.pane!['main.js'] += '\n// changed bytes\n';
@@ -38,6 +51,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   }
 
   test(`${version} checks the resulting B bytes as well as the A input`, () => {
+    const { afterA, recipe } = data();
     const broken = structuredClone(recipe);
     broken.outputHashes = { ...broken.outputHashes, 'agents/main.js': '0'.repeat(64) };
     expect(() => applyCrossMachinePatches(afterA, broken)).toThrowError(expect.objectContaining({ code: 'cross-machine-output-mismatch' }));

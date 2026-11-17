@@ -311,7 +311,7 @@ it("selects the committed remote home without waking the stale local recipient",
   expect(f.broker.deliveries).toEqual([]);
   const current = { ...destination(address), machineId: BOX, machineAlias: "destination.invalid", homeEpoch: 2,
     activationEpoch: "destination-generation", endpointEpoch: "destination-generation" };
-  await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1, [current])), new AbortController().signal);
+  await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1, [current])), AbortSignal.timeout(5000));
   expect(await service.move.endpoint(address)).toEqual({ address, machineId: BOX, homeEpoch: 2, activationEpoch: "destination-generation" });
   expect(f.broker.published.at(-1)).toEqual([expect.objectContaining({ machineId: BOX, homeEpoch: 2 })]);
   expect(await f.broker.bridge!.dispatch({ from: { ...from, sessionId: "fresh-sender" }, to: current, message: { id: "new-remote-mail", timestamp: 1000, content: { text: "synthetic" } } }))

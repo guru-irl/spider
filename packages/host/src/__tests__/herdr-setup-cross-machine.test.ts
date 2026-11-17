@@ -88,6 +88,16 @@ test('0.1.12 refuses an unowned stale picker binding without changing it', async
   expect((await (await f.ports.doctorParts(f.request)).inspect('keys', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'legacy-picker-binding', repair: expect.stringContaining('stock') }));
 });
 
+test('0.1.12 refuses a structured picker binding outside the default section', async () => {
+  const f = await fixture(), path = join(f.h.directories.app, 'keys.json');
+  const keys = JSON.parse(await readFile(path, 'utf8'));
+  keys.terminal['ctrl-p'] = { command: 'mod.open', args: { name: 'spider-machine-picker-right' } };
+  await writeFile(path, JSON.stringify(keys));
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'legacy-picker-binding', message: expect.stringContaining('terminal.ctrl-p') });
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(keys);
+  expect((await (await f.ports.doctorParts(f.request)).inspect('keys', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'legacy-picker-binding', message: expect.stringContaining('terminal.ctrl-p') }));
+});
+
 test('0.1.12 refuses an owned picker file even after its shortcuts are restored', async () => {
   const f = await fixture(), path = join(f.h.directories.app, 'mods/spider-machine-picker/main.js');
   const journal = await readJournal(f.request.journalRoot), plans: InstallFile[] = [{ path, expected: null, bytes: Buffer.from('// old owned picker\n') }];

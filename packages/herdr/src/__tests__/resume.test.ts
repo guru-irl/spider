@@ -69,6 +69,13 @@ it.each(['/bin/bash', '/bin/zsh'])('auto starts at the first %s prompt after the
   expect(JSON.parse(lines[0])).toMatchObject({ cwd: root, postRc: 'loaded' });
 });
 
+it.each(['offer', 'auto'] as const)('cleans control and bidi characters in the %s notice', async mode => {
+  owner = { ...owner, name: 'A\u009bB\u0085C\u202eD\u2066E\u001bF\u007fG' };
+  await fakeCli(mode);
+  const result = await shell(buildResumeBlock(options) + (mode === 'auto' ? firstPrompt() : ''));
+  expect(result.out).toContain(mode === 'auto' ? 'Resuming A B C D E F G…' : 'Resume A B C D E F G:');
+});
+
 it('auto resumes the exact session once and returns to the shell', async () => {
   await fakeCli('auto');
   const result = await shell(buildResumeBlock(options) + firstPrompt() + '\nprintf "shell returned\\n"');

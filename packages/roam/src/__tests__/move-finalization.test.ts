@@ -53,6 +53,7 @@ it.each(["power-release", "state-done", "done", "released"] as const)("proved mo
   };
   expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
   f.ports.journal.record = record;
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
   expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
 }, 5000);
 it("an unknown failure after check but before freeze is pending rather than a preflight refusal", async () => {

@@ -61,6 +61,14 @@ test('0.1.12 refuses previously owned pickers until rollback restores stock keys
   await expect(stat(picker)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+test.each(['pane/actions.js', 'pane/machine.js', 'machines/actions.js', 'machines/picker.js'])('B refuses altered helper %s before staging', async helper => {
+  const f = await releaseFixture('0.1.16'), path = join(f.root, 'packages/herdr/assets', helper);
+  await writeFile(path, Buffer.concat([await readFile(path), Buffer.from('\n// altered helper\n')]));
+  const context = { ...f.context, modProps: [...f.context.modProps, ...['picker', 'toast'].map(name => ({ directory: join(f.h.directories.app, 'mods', `spider-${name}`), props: { ...f.context.modProps[0]!.props, modId: `spider-${name}` } }))] };
+  await expect(f.parts.stageLook(f.request, context, 'export')).rejects.toMatchObject({ code: 'cross-machine-helper-mismatch', message: expect.stringContaining(helper) });
+  expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+});
+
 test.each(['recipe', 'menu'] as const)('B refuses a missing A %s before staging', async missing => {
   const f = await releaseFixture('0.1.16'), select = lookPatches.selectLookPatches;
   vi.spyOn(lookPatches, 'selectLookPatches').mockImplementation((manifest, version) => {

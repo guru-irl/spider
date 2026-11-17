@@ -71,6 +71,22 @@ Object.assign(process.env, machine.env);
 const record = value => appendFileSync(descriptor.effects, JSON.stringify(value) + '\\n');
 const moveFactory = async input => {
   const runtime = await createHostMoveBindings(input);
+  const endpoint = runtime.bindings.intercom!.destinationEndpoint;
+  runtime.bindings.intercom!.destinationEndpoint = async home => {
+    try {
+      const value = await endpoint(home);
+      record({ effect: 'move-endpoint-observed', machineId: machine.id, endpoint: {
+        address: { sessionId: value?.address?.sessionId, scopeId: value?.address?.scopeId }, machineId: value?.machineId,
+        homeEpoch: value?.homeEpoch, activationEpoch: value?.activationEpoch } });
+      return value;
+    } catch (error) {
+      const diagnostic = error.diagnostic;
+      record({ effect: 'move-endpoint-refused', machineId: machine.id,
+        name: diagnostic?.name ?? 'Error', code: diagnostic?.code ?? null,
+        message: diagnostic?.message ?? 'Intercom endpoint lookup failed.' });
+      throw error;
+    }
+  };
   const observe = runtime.bindings.participant!.observation;
   runtime.bindings.participant!.observation = async (home, operation) => {
     const observed = await observe(home, operation);

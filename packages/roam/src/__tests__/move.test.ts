@@ -1,3 +1,4 @@
+import { createMoveRuntimeService } from "../move-runtime-service";
 import { recoverMove, cancelMove } from "../move-recovery";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
@@ -17,9 +18,9 @@ import { createSessionLeases } from "@spider/herdr/sessions/lease";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { createBothLocks } from "../session-control";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
-import type { GitPorts, MovePorts, MoveRequest, Operation, PreparedMove, PreparedWorkspace, WorkspaceSnapshot } from "../contracts";
+import type { GitPorts, Transport, MovePorts, MoveRequest, Operation, PreparedMove, PreparedWorkspace, WorkspaceSnapshot } from "../contracts";
 import { assignInitialHome, casHome, markInitialConflict, sessionHome } from "../homes";
-import { openJournal } from "../journal";
+import { openJournal, openFreezeJournal } from "../journal";
 import { snapshotWorkspace } from "../workspace";
 import { bundleWorkspace } from "../git-bundle";
 import { prepareWorkspace, settingsDigest } from "../workspace-import";
@@ -1190,20 +1191,32 @@ it("a pre-freeze refusal during recovery aborts without retaining power or the r
 }, 5000);
 
 
-it('a committed move keeps unproved source exit pending, then retires once', async () => {
+it.each(['throw', 'uncertain', 'live'] as const)('a committed move keeps %s source exit pending, then retires once on sync', async failure => {
   const f = fixture(), retire = f.ports.retire;
   let proved = false;
   f.ports.retire = async (...args) => {
-    if (!proved) throw new MoveError('move-preflight-refused', [validateBlockerId('process-exit-unproven')]);
+    if (!proved) {
+      if (failure === 'throw') throw new MoveError('move-preflight-refused', [validateBlockerId('process-exit-unproven')]);
+      return failure === 'live' ? { kind: 'live', identity } : { kind: 'uncertain' };
+    }
     return retire(...args);
   };
   const moved = await moveSession(f.request, f.ports);
-  expect(moved).toMatchObject({ code: 0, ok: true, reason: 'moved', value: { sourceCleanup: { status: 'pending', blockers: ['process-exit-unproven'] } } });
+  expect(moved).toMatchObject({ code: 0, ok: true, reason: 'moved', value: { sourceCleanup: { status: 'pending', blockers: [failure === 'throw' ? 'process-exit-unproven' : 'move-source-stop-pending'] } } });
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
   expect(f.events).not.toContain('retire');
   expect(f.registryRemovals).toEqual([]);
   expect(f.held).toBe(true);
+  mkdirSync(join(f.root, 'roam'));
+  cpSync(join(f.root, 'journal.db'), join(f.root, 'roam', 'journal.db'));
+  const journal = openFreezeJournal(join(f.root, 'roam', 'journal.db'));
+  f.ports.journal = journal;
+  const service = createMoveRuntimeService({ root: f.root, globalDb: f.global.db, config: f.ports.config, journal, transport: {} as Transport }, async () => ({
+    ports: f.ports, bindings: {}, control: async () => ({ code: 1, reason: 'unused', value: null }), recover: async () => [], close: async () => {},
+  }));
   proved = true;
+  await service.recoverCleanup();
+  expect(journal.lookupOperation(f.request.operation.id)?.state).toBe('done');
   expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: 'moved', value: { sourceCleanup: { status: 'done' } } });
   expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, value: { sourceCleanup: { status: 'done' } } });
   expect(f.events.filter(event => event === 'retire')).toHaveLength(1);

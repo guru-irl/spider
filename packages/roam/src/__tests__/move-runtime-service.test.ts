@@ -357,3 +357,28 @@ it("reconnect retries a completed move's queued cleanup under its own session", 
   await f.service.recoverCleanup(OTHER);
   expect(f.cleaned).toHaveLength(1);
 }, 5000);
+
+
+it('sync cleanup does no work without pending operations and joins overlapping runs', async () => {
+  const f = await fixture();
+  await f.service.recoverCleanup();
+  expect(f.mounted).toEqual([]);
+  const operation = { id: 'cleanup-move', machineId: HUB, kind: 'move', expectedEpoch: 1, args: { sessionId: 'session-a', destinationMachine: OTHER } };
+  f.journal.begin(operation);
+  f.journal.record(operation.id, 'move-request', { operation, sessionId: 'session-a', destinationMachine: OTHER });
+  f.journal.record(operation.id, 'move-source-cleanup-pending', { sessionId: 'session-a', sourceMachine: BOX, sourceCleanup: { status: 'pending', blockers: ['process-exit-unproven'] } });
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let calls = 0;
+  const service = createMoveRuntimeService({ root: f.root, globalDb: f.global.db, config: f.ports.config, journal: f.journal, transport: {} as Transport }, async input => {
+    calls++; await held; return f.factory(input);
+  });
+  const first = service.recoverCleanup(), second = service.recoverCleanup();
+  await Promise.resolve();
+  expect(calls).toBe(1);
+  release(); await Promise.all([first, second]);
+  expect(calls).toBe(1);
+  expect(f.journal.lookupOperation(operation.id)?.state).toBe('done');
+  await service.recoverCleanup();
+  expect(calls).toBe(1);
+});

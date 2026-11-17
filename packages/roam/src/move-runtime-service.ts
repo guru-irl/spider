@@ -26,9 +26,20 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
     return { code: result.code, reason: result.reason, operationId: result.operationId,
       value: { results: result.results.map(row => ({ ...row, home: row.home ? { ...row.home } : null })), ...(result.ok ? { presentation: result.presentation, homes: result.value.map(home => ({ ...home })) } : {}) } };
   };
-  const recoverCleanup = async (machineId?: string): Promise<void> => {
+  let cleanupFlight: Promise<void> | null = null;
+  const recoverCleanupOnce = async (machineId?: string): Promise<void> => {
     const db = openDb(join(input.root, "roam", "journal.db"), { fileMustExist: true, checkpointOnClose: false });
     try {
+      const source = db.prepare(`SELECT o.operation_id FROM roam_operations o WHERE o.kind='move' AND o.result_json IS NULL
+        AND EXISTS (SELECT 1 FROM roam_operation_actions a WHERE a.operation_id=o.operation_id AND a.action='move-source-cleanup-pending')`).all() as { operation_id: string }[];
+      for (const { operation_id } of source) {
+        const sessionId = requestSession(operation_id);
+        if (!sessionId) { diagnostic(operation_id, 'cleanup-evidence-missing'); continue; }
+        try {
+          const mounted = await runtime(sessionId);
+          try { await recoverMove(operation_id, mounted.ports); } finally { await mounted.close(); }
+        } catch { diagnostic(operation_id, 'source-cleanup-pending'); }
+      }
       const rows = db.prepare("SELECT operation_id FROM roam_operations WHERE kind='move-abort-cleanup' AND result_json IS NULL").all() as { operation_id: string }[];
       for (const { operation_id } of rows) {
         const request = journal.read(operation_id).find(row => row.action === "abort-cleanup-request")?.result;
@@ -41,6 +52,10 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
         } catch { diagnostic(operation_id, "workspace-cleanup-pending"); }
       }
     } finally { db.close(); }
+  };
+  const recoverCleanup = (machineId?: string): Promise<void> => {
+    if (cleanupFlight) return cleanupFlight;
+    return cleanupFlight = Promise.resolve().then(() => recoverCleanupOnce(machineId)).finally(() => { cleanupFlight = null; });
   };
   return {
     recoverCleanup,

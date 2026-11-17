@@ -443,7 +443,7 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
         const recovered = await control(machine, ['roam', 'recover', initial.operationId]);
         expect(recovered.operationId).toBe(initial.operationId);
         return recovered;
-      }, recovered => recovered.code !== 3 || !['move-destination-pending', 'move-pending'].includes(recovered.reason), deadline(60_000), { reconcileMs: 500 });
+      }, recovered => !(recovered.code === 0 && recovered.value?.sourceCleanup?.status === 'pending') && (recovered.code !== 3 || !['move-destination-pending', 'move-pending'].includes(recovered.reason)), deadline(60_000), { reconcileMs: 500 });
     };
     const owners: MoveStory['owners'] = async () => {
       const result: MoveOwner[] = [];

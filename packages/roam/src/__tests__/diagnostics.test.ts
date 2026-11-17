@@ -15,6 +15,7 @@ import type { Diagnostic, Peer, RoamConfig } from "../contracts";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import * as diagnostics from "../diagnostics";
 import { main } from "../cli";
+import { sourceCleanupStatusText } from "../commands";
 import { writeEnabledConfig } from "./fixtures/enabled-config";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -470,3 +471,21 @@ it("trigger drift reports disabled capture without repair", async () => {
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(trigger)).toBeUndefined();
   } finally { db.close(); }
 }, 5000);
+
+
+it('cached status lists each pending source cleanup and removes completed work', () => {
+  const global = createReplica('global', HUB), file = scratchDbPath('pending-source-cleanup');
+  const journal = openJournal(file), operation = { id: 'cleanup-move', kind: 'move', machineId: HUB, expectedEpoch: 1, args: {} };
+  journal.begin(operation);
+  journal.record(operation.id, 'move-source-cleanup-pending', { sessionId: 'session-a', sourceMachine: BOX, sourceCleanup: { status: 'pending', blockers: ['process-exit-unproven'] } });
+  const db = openDb(file);
+  try {
+    const input = { globalDb: global.db, stores: [], journalDb: db, now: 10, observations: [] };
+    const pending = diagnostics.readStatus(config(), input);
+    expect(pending.sourceCleanups).toEqual([{ sessionId: 'session-a', sourceMachine: BOX, sourceCleanup: { status: 'pending', blockers: ['process-exit-unproven'] } }]);
+    expect(sourceCleanupStatusText(pending.sourceCleanups![0])).toBe(`Session session-a: source cleanup pending on ${BOX}: process-exit-unproven.`);
+    expect(pending.incompleteOperations).toEqual(expect.arrayContaining([expect.objectContaining({ id: operation.id })]));
+    journal.record(operation.id, 'done', {});
+    expect(diagnostics.readStatus(config(), input).sourceCleanups).toEqual([]);
+  } finally { db.close(); global.close(); }
+});

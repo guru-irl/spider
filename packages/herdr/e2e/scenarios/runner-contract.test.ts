@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it, vi } from 'vitest';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
@@ -11,6 +12,24 @@ import { restorationPending, presentationInProgress } from './roam-recovery.test
 vi.mock('../harness/scenario.js', async importOriginal => ({
   ...await importOriginal<typeof import('../harness/scenario.js')>(), registerScenarios: () => {},
 }));
+describe('move fixture transport failures', () => {
+  it.each([
+    { fault: { offline: 'box-1.invalid' }, args: ['fixture-ingest', 'session-a'] },
+    { fault: { intercomDown: 'box-1.invalid' }, args: ['--global-root', '/fixture', 'roam', 'intercom', 'exchange'] },
+  ])('prints a structured refusal for $args', ({ fault, args }) => {
+    const source = readFileSync(new URL('./roam-move.test.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('if (linkFault.offline === machine.id');
+    const end = source.indexOf('} else if (args.length === 5', start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const output: string[] = [], process = { exitCode: 0, stdout: { write: (text: string) => output.push(text) } };
+    runInNewContext(source.slice(start, end).replaceAll('\\\\n', '\\n') + '}', { linkFault: fault, args, machine: { id: 'box-1.invalid' }, record: () => {}, process });
+    expect(process.exitCode).toBe(1);
+    expect(output).toHaveLength(1);
+    expect(JSON.parse(output[0])).toEqual({ code: 1, reason: 'fixture-machine-unavailable', machineId: 'box-1.invalid' });
+  });
+});
+
 describe('cross-machine pane story registration', () => {
   const ids = ['B01', 'B02', 'B03', 'B04', 'B05', 'B06', 'B07', 'B08'];
   it('selects every packed pane story serially in headless and app tiers', async () => {

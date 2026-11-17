@@ -25,7 +25,37 @@ export function resumeOfferShell(offer: ResumeOffer, options: ResumeHookOptions,
   const argv = [options.nodePath, options.cliPath, 'resume', '--config', options.configPath, '--file', offer.sessionFile, '--session-id', offer.sessionId, '--cwd', offer.cwd];
   const name = (offer.name ?? offer.sessionId).replace(/[\x00-\x1f\x7f]/g, ' ');
   const message = mode === 'auto' ? `Resuming ${name}…` : `Resume ${name}: run spider_resume (or keep this shell).`;
-  return `printf '%s\\n' ${shellQuote(message)}\nspider_resume() {\n  (cd -- ${shellQuote(offer.cwd)} && command ${argv.map(shellQuote).join(' ')})\n}\n${mode === 'auto' ? 'spider_resume || :\n' : ''}`;
+  const functionDefinition = `spider_resume() {\n  (cd -- ${shellQuote(offer.cwd)} && command ${argv.map(shellQuote).join(' ')})\n}\n`;
+  if (mode === 'offer') return `printf '%s\\n' ${shellQuote(message)}\n${functionDefinition}`;
+  return `${functionDefinition}_spider_auto_resume() {
+  if [ -n "\${ZSH_VERSION:-}" ]; then
+    precmd_functions=("\${(@)precmd_functions:#_spider_auto_resume}")
+    unfunction _spider_auto_resume
+  else
+    case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+      'declare -a '*)
+        local _spider_command
+        local -a _spider_remaining=()
+        for _spider_command in "\${PROMPT_COMMAND[@]}"; do
+          [ "$_spider_command" = _spider_auto_resume ] || _spider_remaining+=("$_spider_command")
+        done
+        PROMPT_COMMAND=("\${_spider_remaining[@]}") ;;
+      *) PROMPT_COMMAND="\${PROMPT_COMMAND%_spider_auto_resume}"; PROMPT_COMMAND="\${PROMPT_COMMAND%; }" ;;
+    esac
+    unset -f _spider_auto_resume
+  fi
+  printf '%s\\n' ${shellQuote(message)}
+  spider_resume || :
+}
+if [ -n "\${ZSH_VERSION:-}" ]; then
+  precmd_functions+=(_spider_auto_resume)
+else
+  case "$(declare -p PROMPT_COMMAND 2>/dev/null)" in
+    'declare -a '*) PROMPT_COMMAND+=( _spider_auto_resume ) ;;
+    *) PROMPT_COMMAND="\${PROMPT_COMMAND:+$PROMPT_COMMAND; }_spider_auto_resume" ;;
+  esac
+fi
+`;
 }
 async function claimAutomaticResume(root: string, identity: TerminalIdentity, startedAt: number, eligible: () => Promise<ResumeOffer | null>): Promise<ResumeOffer | null> {
   const key = hash(JSON.stringify([identity.coreId, identity.terminalId, identity.socket, identity.sessionNamespace]));

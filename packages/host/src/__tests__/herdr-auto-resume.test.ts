@@ -60,7 +60,7 @@ it.each([true, false])('two restored shells racing for one session launch only o
   const source = resumeOfferShell(offer, { nodePath: process.execPath, cliPath: join(root, 'runner.mjs'), configPath, hookPath: join(root, 'unused') }, 'auto');
   const env = { ...process.env, HOME: root, SPIDER_GLOBAL_ROOT: root, PI_CODING_AGENT_DIR: agent, PATH: `${bin}:/usr/bin:/bin` };
   const shells = [1, 2].map(() => {
-    const child = spawn('/bin/bash', ['--noprofile', '--norc', '-i', '-c', source + '\nprintf "shell returned\\n"'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('/bin/bash', ['--noprofile', '--norc', '-i', '-c', source + '\neval "$PROMPT_COMMAND"\nprintf "shell returned\\n"'], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = ''; child.stdout.on('data', chunk => out += chunk); child.stderr.on('data', chunk => err += chunk);
     const result = new Promise<{ out: string; err: string; code: number | null }>((resolveRun, reject) => { child.on('error', reject); child.on('close', code => resolveRun({ out, err, code })); });
     return { child, result };

@@ -32,6 +32,7 @@ async function shell(body: string, hc = true, interactive = true, binary = '/bin
     const child = spawn(binary, [...(binary === '/bin/zsh' ? ['-f'] : ['--noprofile', '--norc']), ...(interactive ? ['-i'] : []), '-c', body], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] }); let out = ''; child.stdout.on('data', b => out += b); child.on('error', reject); child.on('close', code => resolveRun({ out, code }));
   });
 }
+const firstPrompt = (binary = '/bin/bash') => binary.endsWith('zsh') ? '\nfor _hook in "${precmd_functions[@]}"; do "$_hook"; done\n' : '\neval "$PROMPT_COMMAND"\n';
 async function fakeCli(mode: 'offer' | 'auto' = 'offer') {
   const source = resumeOfferShell({ sessionFile: file, sessionId: owner.sessionId, cwd: root, name: owner.name, argv: ['pi', '--session', file], environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, terminal }, options, mode);
   await writeFile(options.cliPath, `import {appendFileSync} from 'node:fs';\nconst a=process.argv.slice(2); if(a[0]==='resume-offer') process.stdout.write(${JSON.stringify(source)}); else appendFileSync(${JSON.stringify(join(root, 'launches.jsonl'))},JSON.stringify({cwd:process.cwd(),argv:a,postRc:process.env.POST_RC})+'\\n');`);
@@ -69,7 +70,7 @@ it.each(['/bin/bash', '/bin/zsh'])('auto starts at the first %s prompt after the
 
 it('auto resumes the exact session once and returns to the shell', async () => {
   await fakeCli('auto');
-  const result = await shell(buildResumeBlock(options) + '\nprintf "shell returned\\n"');
+  const result = await shell(buildResumeBlock(options) + firstPrompt() + '\nprintf "shell returned\\n"');
   expect(result.code).toBe(0);
   expect(result.out).toBe(`Resuming ${owner.name}…\nshell returned\n`);
   const lines = (await readFile(join(root, 'launches.jsonl'), 'utf8')).trim().split('\n');
@@ -85,8 +86,8 @@ it('noninteractive and non-HC shells do not offer, and declining leaves a shell'
 it('the real hook starts only one automatic resume across concurrent and later shells', async () => {
   await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: fileURLToPath(new URL('./fixtures/auto-resume-shell-cli.ts', import.meta.url)), outDir: root, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'shell-cli.mjs' } } } });
   const block = buildResumeBlock({ ...options, cliPath: join(root, 'shell-cli.mjs') });
-  const first = shell(block + '\nprintf "shell returned\\n"');
-  const second = shell(block + '\nprintf "shell returned\\n"');
+  const first = shell(block + firstPrompt() + '\nprintf "shell returned\\n"');
+  const second = shell(block + firstPrompt() + '\nprintf "shell returned\\n"');
   let ready = false;
   for (let i = 0; i < 1000; i++) { if ((await readdir(root)).filter(name => name.startsWith('ready-')).length === 2) { ready = true; break; } await delay(10); }
   expect(ready).toBe(true);
@@ -103,7 +104,7 @@ it('a crash after the automatic claim does not start pi on a later shell', async
   await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: fileURLToPath(new URL('./fixtures/auto-resume-shell-cli.ts', import.meta.url)), outDir: root, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'shell-cli.mjs' } } } });
   await writeFile(join(root, 'go'), '');
   const block = buildResumeBlock({ ...options, cliPath: join(root, 'shell-cli.mjs') });
-  expect((await shell('export RESUME_TEST_CRASH=1\n' + block + '\nprintf "shell returned\\n"')).out).toBe('shell returned\n');
+  expect((await shell('export RESUME_TEST_CRASH=1\n' + block + firstPrompt() + '\nprintf "shell returned\\n"')).out).toBe('shell returned\n');
   expect((await shell(block + '\nprintf "later shell\\n"')).out).toBe('later shell\n');
   expect(existsSync(join(root, 'automatic-launches'))).toBe(false);
 }, 30000);
@@ -215,7 +216,7 @@ it.skipIf(!existsSync('/bin/zsh'))('zsh executes the same hook and keeps quoted 
 
 it.skipIf(!existsSync('/bin/zsh'))('zsh auto resumes and returns to the shell', async () => {
   await fakeCli('auto');
-  const result = await shell(buildResumeBlock(options) + '\nprintf "shell returned\\n"', true, true, '/bin/zsh');
+  const result = await shell(buildResumeBlock(options) + firstPrompt('/bin/zsh') + '\nprintf "shell returned\\n"', true, true, '/bin/zsh');
   expect(result.code).toBe(0);
   expect(result.out).toBe(`Resuming ${owner.name}…\nshell returned\n`);
   const call = JSON.parse((await readFile(join(root, 'launches.jsonl'), 'utf8')).trim());

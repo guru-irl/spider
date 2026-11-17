@@ -160,7 +160,12 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
               !ssh.hostKeys.length || ssh.hostKeys.length > 5 || !ssh.hostKeys.every(validHostKey) || new Set(ssh.hostKeys.map(key => key.type)).size !== ssh.hostKeys.length) return "intercom-ssh-host-unavailable";
           const hostKeyAlias = sshAlias(plan), priorSsh = ports.journal.read(operationId).find(row => row.action === "intercom-ssh-host" && row.result.pairId === plan.pairId);
           const previousKey = priorSsh?.result.hostKey;
-          if (priorSsh && (!validHostKey(previousKey) || !ssh.hostKeys.some(key => key.type === previousKey.type && key.base64 === previousKey.base64))) return "host-key-changed";
+          if (priorSsh && !validHostKey(previousKey)) return "host-key-changed";
+          if (validHostKey(previousKey)) {
+            const observedKey = ssh.hostKeys.find(key => key.type === previousKey.type);
+            if (!observedKey) return "intercom-ssh-host-unavailable";
+            if (observedKey.base64 !== previousKey.base64) return "host-key-changed";
+          }
           if (priorSsh && (priorSsh.result.sshUser !== ssh.sshUser || priorSsh.result.hostKeyAlias !== hostKeyAlias)) return "intercom-ssh-user-changed";
           const hostKey = validHostKey(previousKey) ? previousKey : ssh.hostKeys[0];
           if (!priorSsh) ports.journal.record(operationId, "intercom-ssh-host", { pairId: plan.pairId, sshUser: ssh.sshUser,

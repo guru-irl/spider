@@ -1,4 +1,4 @@
-import { participantLaunchId } from "./participant-launch";
+import { participantLaunchId, participantLaunchSuccessor } from "./participant-launch";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { isDeepStrictEqual } from "node:util";
@@ -821,7 +821,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
       const prior = journal.begin({ ...operation, kind: 'session-start', args: { ...operation.args, home: { ...current }, intent: { ...owned.intent } } });
       const ready = await participant.readiness(recorded);
       if (ready) {
-        if (ready.opId !== recorded.launchId || ready.sessionId !== id || ready.epoch !== current.epoch || ready.file !== owned.intent.file || ready.cwd !== owned.intent.cwd) throw new MoveAdapterError('participant-readiness-invalid');
+        if (!participantLaunchSuccessor(journal, participant.config.machineId, owned.intent, operation.id, recorded.launchId, ready.opId) || ready.sessionId !== id || ready.epoch !== current.epoch || ready.file !== owned.intent.file || ready.cwd !== owned.intent.cwd) throw new MoveAdapterError('participant-readiness-invalid');
         return await startParticipant({ ...operation, kind: 'session-start' }, current, owned.intent, { journal, machineId: participant.config.machineId, hubMachineId: participant.config.hubMachineId,
           identityCurrent: participant.identityCurrent, wake: async () => {}, readiness: async () => ({ ...ready, opId: operation.id }), activate: async () => { throw new MoveAdapterError('participant-owner-unproved'); } }) as unknown as Outcome<JsonObject>;
       }
@@ -884,7 +884,8 @@ async function participantLaunch(operation: Operation, home: Home, participant: 
 async function participantReady(operation: Operation, home: Home, participant: MoveParticipantBindings, journal: Journal): Promise<HubOperationReadiness | null> {
   const query = await participantLaunch(operation, home, participant, journal), ready = await participant.readiness(query);
   if (!ready) return null;
-  if (ready.opId !== query.launchId || ready.sessionId !== query.sessionId || ready.epoch !== query.epoch) throw new MoveAdapterError("participant-readiness-invalid");
+  const intent = await createRunningIntentAuthority(participant.globalDb).get(home.sessionId);
+  if (!intent || !participantLaunchSuccessor(journal, participant.config.machineId, intent, operation.id, query.launchId, ready.opId) || ready.sessionId !== query.sessionId || ready.epoch !== query.epoch) throw new MoveAdapterError("participant-readiness-invalid");
   return { ...ready, opId: operation.id };
 }
 function recordedIntentOwner(home: Home, operation: Operation, participant: MoveParticipantBindings, journal: Journal): ParticipantIntentOwner {

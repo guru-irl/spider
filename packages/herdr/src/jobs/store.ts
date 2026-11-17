@@ -192,8 +192,9 @@ export function createJobStore(root: string, sessionId: SessionId, runId?: RunId
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, sessionId, revision: 0, updatedAt: 0, jobs: [] }; throw error; }
       try {
         const st = await file.stat(); if (!st.isFile() || st.size > MAX_BYTES) throw new HerdrError('invalid-journal', 'Job journal is not a bounded file');
-        const bytes = Buffer.alloc(MAX_BYTES + 1); const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
+        const bytes = Buffer.alloc(st.size + 1); const { bytesRead } = await file.read(bytes, 0, bytes.length, 0);
         if (bytesRead > MAX_BYTES) throw new HerdrError('journal-too-large', 'Job journal exceeds 1 MiB');
+        if (bytesRead > st.size) throw new HerdrError('invalid-journal', 'Job journal grew during its read');
         return parseJobJournal(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, bytesRead))), sessionId);
       } finally { await file.close(); }
     },

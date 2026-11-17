@@ -352,6 +352,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     prunedLogs.set(job.id, task); return task;
   }
   function forgetPrunedJob(job: JournalJob): void {
+    for (const address of [addressOf(job), discovered.get(job.id)]) if (address) { lostOriginals.delete(address); finishedOriginals.delete(address); }
     journal.jobs = journal.jobs.filter(value => value.id !== job.id);
     cleanup.cancel(releaseKey(job)); cleanup.cancel(`${releaseKey(job)}/prune`); cleanup.cancel(failedCleanupKey(job)); cleanup.cancel(failedTerminalKey(job));
     cleanupKeys.delete(releaseKey(job)); cleanupKeys.delete(`${releaseKey(job)}/prune`); cleanupKeys.delete(failedCleanupKey(job)); cleanupKeys.delete(failedTerminalKey(job));
@@ -590,7 +591,13 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   let maintenance: ReturnType<typeof setTimeout> | undefined;
   function scheduleMaintenance(): void {
     if (!activated || sharedCleanup || stopping || closed || maintenance || !handoff && journal.jobs.length === 0) return;
-    maintenance = setTimeout(() => { maintenance = undefined; if (stopping || closed) return; cleanup.start(); void handoff?.reconcile().catch(report); }, 0);
+    maintenance = setTimeout(() => {
+      if (stopping || closed) { maintenance = undefined; return; }
+      cleanup.start();
+      // Keep the latch until the scan settles, not just until this timer fires.
+      if (handoff) void handoff.reconcile().catch(report).finally(() => { maintenance = undefined; });
+      else maintenance = undefined;
+    }, 0);
     maintenance.unref();
   }
   async function drainCollections(): Promise<void> { await Promise.all([...collections.values()].map(({ task, firstIncomplete }) => Promise.race([task, firstIncomplete]))); }

@@ -867,6 +867,9 @@ async function activatePrepared(operation: Operation, prepared: PreparedMove, pa
           ? undefined : { machineId: participant.config.machineId, hubMachineId: participant.config.hubMachineId });
       });
     },
+  }).catch((error: unknown): Outcome<HubOperationReadiness> => {
+    if (!(error instanceof MoveAdapterError) || error.code !== "participant-launch-conflict") throw error;
+    return { code: 1, reason: error.code, operationId: operation.id, home, epoch: home.epoch, repairCommand: null, value: null };
   });
   if (!launchPending || started.code !== 3 || started.reason !== "readiness-pending") return started;
   const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;

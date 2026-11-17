@@ -106,9 +106,9 @@ jobs:
           SHORT_DEADLINE: ${{ inputs.deadline-seconds }}
         run: |
           set -euo pipefail
-          # Observed archive/upload: 4 s. Reserve 10 s for them, 30 s for
-          # owned-process cleanup, and 5 s for initial job setup.
-          seconds=$((JOB_MINUTES * 60 - 45))
+          # Measured cleanup plus archive/upload: under 8 s. Reserve 20 s
+          # including initial job setup and additional upload headroom.
+          seconds=$((JOB_MINUTES * 60 - 20))
           if [ -n "$SHORT_DEADLINE" ]; then
             [[ "$SHORT_DEADLINE" =~ ^[0-9]+$ ]]
             (( SHORT_DEADLINE > 0 && SHORT_DEADLINE <= seconds ))

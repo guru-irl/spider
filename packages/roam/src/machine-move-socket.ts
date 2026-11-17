@@ -31,11 +31,16 @@ function parse(bytes: Buffer): Request | null {
   } catch { /* No malformed request reaches the machine port. */ }
   return null;
 }
-function safeMessage(message: string): string {
-  return message.replace(/\b(?:npm_|gh[opsu]_|sk-)[A-Za-z0-9_-]+/g, "[redacted credential]")
+/** Error details cross the socket and journal boundary only after redaction. */
+export function redactErrorDetail(message: string): string {
+  return message
+    .replace(/\b([\w.-]*(?:key|authorization|password|token|secret|credential)s?)(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1$2[redacted]")
+    .replace(/\b(?:github_pat_|npm_|gh[opsu]_|sk-|xox[bp]-)[A-Za-z0-9_-]+|\bAKIA[A-Z0-9]{16}\b/g, "[redacted credential]")
     .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/\b(api[_-]?key|authorization|password|token)(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1$2[redacted]").slice(0, 500);
+    .replace(/(["'])(?:[A-Za-z]:[\\/]|\\\\|\/)[^"'\r\n]*?\1/g, "[path]")
+    .replace(/(?:[A-Za-z]:[\\/]|\\\\|\/)[^\s'"<>]+/g, "[path]").slice(0, 500);
 }
+
 type FailureDiagnostic = { name: string; code: string | number | null; message: string; blockers?: Pick<Blocker, "kind" | "id" | "detail">[] };
 function validDiagnostic(value: unknown): value is FailureDiagnostic {
   if (!value || typeof value !== "object") return false;
@@ -50,8 +55,8 @@ export function failureDiagnostic(error: unknown): FailureDiagnostic {
   const name = error instanceof IntercomFenceError ? "IntercomFenceError" : error instanceof Error ? error.name : "Error";
   return { name: /^[A-Za-z0-9_.-]{1,128}$/.test(name) ? name : "Error",
     code: typeof rawCode === "string" && /^[A-Za-z0-9_.-]{1,128}$/.test(rawCode) || typeof rawCode === "number" && Number.isSafeInteger(rawCode) ? rawCode : null,
-    message: safeMessage(error instanceof Error ? error.message : "Unknown machine control failure"),
-    ...(error instanceof IntercomFenceError ? { blockers: error.blockers.map(item => ({ kind: safeMessage(item.kind), id: safeMessage(item.id), detail: safeMessage(item.detail) })) } : {}) };
+    message: redactErrorDetail(error instanceof Error ? error.message : "Unknown machine control failure"),
+    ...(error instanceof IntercomFenceError ? { blockers: error.blockers.map(item => ({ kind: redactErrorDetail(item.kind), id: redactErrorDetail(item.id), detail: redactErrorDetail(item.detail) })) } : {}) };
 }
 const path = (root: string) => join(root, "roam", "move.sock");
 export function startMachineMoveSocket(root: string, enabled: () => boolean, port: MachineMovePort): Promise<{ close(): Promise<void> }> {

@@ -570,6 +570,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   const stagedLook = async (request: SetupRequest, context: SetupContext): Promise<InstallFile[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets');
     const patches = await releaseLook(request), appVersion = patches.upstreamVersion;
+    if (patches.crossMachine && (!patches.recipe || !patches.mods.menu)) throw new HerdrError('cross-machine-recipe-mismatch', 'Cross-machine setup needs the verified A recipe and menu clone');
     const additional = additionalFor(appVersion);
     const kinds: readonly (keyof HerdrClones)[] = [...lookCloneKinds, ...(patches.mods.menu ? ['menu' as const] : []), ...(patches.crossMachine || additional['new-menu'] ? ['new-menu' as const] : [])];
     const stock: Record<string, Record<string, string>> = {};

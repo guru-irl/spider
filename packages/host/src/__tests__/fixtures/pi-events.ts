@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { IntercomBrokerPort } from '@spider/intercom';
+import type { CustomMessage, SessionEntry, SessionManager } from '@earendil-works/pi-coding-agent';
 export interface PiEventsFixture { on<T>(name: string, handler: (value: T) => void): () => void; emit(name: string, value?: unknown): void }
 export function createPiEvents(): PiEventsFixture {
   const bus = new EventEmitter();
@@ -25,31 +26,33 @@ export function withPiEvents<T extends object>(pi: T): T & { events: ReturnType<
 }
 type HostFixtureHook = (event: any, ctx: any) => unknown;
 type HostFixtureEntry = Record<string, unknown> & { id: string };
+type HostFixtureMessage = Pick<CustomMessage, 'customType'> & Partial<Pick<CustomMessage, 'content' | 'display' | 'details'>>;
 interface HostFixtureContext {
   cwd: string; mode: string; hasUI: boolean; isIdle(): boolean; model: { id: string };
   ui: { notify(message: string): void; setStatus(): void }; abort(): void;
   sessionManager: { getSessionId(): string; getSessionFile(): string | null; getSessionName(): string | null;
-    getEntries(): HostFixtureEntry[]; getBranch(): never[]; getLeafId(): null };
+    getEntries(): (HostFixtureEntry | SessionEntry)[]; getBranch(): never[]; getLeafId(): null };
 }
 interface HostFixturePi {
   events: PiEventsFixture;
   on(name: string, handler: HostFixtureHook): () => void;
   registerTool(): void; registerCommand(): void; registerShortcut(): void; registerMessageRenderer(): void; registerEntryRenderer(): void;
-  getSessionName(): string | undefined; sendMessage(message: { customType: string; [key: string]: unknown }): void;
+  getSessionName(): string | undefined; sendMessage(message: HostFixtureMessage): void;
   sendUserMessage(): void; appendEntry(): void;
 }
 interface HostSessionFixture { pi: HostFixturePi; ctx: HostFixtureContext; hooks: Map<string, HostFixtureHook[]>; sent: any[]; setPersistMessages(value: boolean): void }
 export function createHostSessionFixture(options: {
   cwd: string; sessionId: string; sessionFile?: string | null; hasUI?: boolean; sessionName?: string;
-  notify?: (message: string) => void; abort?: () => void;
+  notify?: (message: string) => void; abort?: () => void; sessionManager?: SessionManager;
 }): HostSessionFixture {
   const hooks = new Map<string, HostFixtureHook[]>(), sent: any[] = [];
   const entries: HostFixtureEntry[] = [];
   let persist = true;
   const ctx: HostFixtureContext = { cwd: options.cwd, mode: 'tui', hasUI: options.hasUI ?? true, isIdle: () => true,
     model: { id: 'fixture' }, ui: { notify: options.notify ?? (() => {}), setStatus() {} }, abort: options.abort ?? (() => {}),
-    sessionManager: { getSessionId: () => options.sessionId, getSessionFile: (): string | null => options.sessionFile ?? null,
-      getSessionName: () => options.sessionName ?? null, getEntries: () => entries, getBranch: () => [], getLeafId: () => null } };
+    sessionManager: { getSessionId: () => options.sessionManager?.getSessionId() ?? options.sessionId,
+      getSessionFile: (): string | null => options.sessionManager ? options.sessionManager.getSessionFile() : options.sessionFile ?? null,
+      getSessionName: () => options.sessionName ?? null, getEntries: () => options.sessionManager?.getEntries() ?? entries, getBranch: () => [], getLeafId: () => null } };
   const pi = withPiEvents({
     on(name: string, handler: (event: any, ctx: any) => unknown) {
       hooks.set(name, [...hooks.get(name) ?? [], handler]);
@@ -57,9 +60,12 @@ export function createHostSessionFixture(options: {
     },
     registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerEntryRenderer() {},
     getSessionName: () => options.sessionName,
-    sendMessage(message: { customType: string; [key: string]: unknown }) {
+    sendMessage(message: HostFixtureMessage) {
       sent.push(message);
-      if (persist) entries.push({ ...message, type: 'custom_message', id: `physical-entry-${entries.length + 1}` });
+      if (persist) {
+        if (options.sessionManager) options.sessionManager.appendCustomMessageEntry(message.customType, message.content ?? '', message.display ?? true, message.details);
+        else entries.push({ ...message, type: 'custom_message', id: `physical-entry-${entries.length + 1}` });
+      }
       if (message.customType === 'intercom_message') queueMicrotask(() => {
         for (const handler of hooks.get('message_end') ?? []) handler({}, ctx);
       });

@@ -138,6 +138,26 @@ describe("active children in the session registry", () => {
     expect(count()).toBe(1);
   });
 
+  it("replays supervisor usage written after the child reports its final status", async () => {
+    const f = fixture();
+    const row = f.runner.runAsync(task);
+    const seen: string[] = [];
+    const off = bus.on(event => { if (event.runId === row.id && event.type === "spider_usage") seen.push(event.type); });
+    try {
+      db.prepare("UPDATE runs SET status='done' WHERE id=?").run(row.id);
+      db.prepare("INSERT INTO run_events(run_id,session_id,ts,type,payload) VALUES (?,'parent',1,'status',?)")
+        .run(row.id, JSON.stringify({ status: "done" }));
+      tailer.poll();
+      db.prepare("INSERT INTO run_events(run_id,session_id,ts,type) VALUES (?,'parent',2,'spider_usage')").run(row.id);
+      tailer.poll();
+      expect(seen).toEqual(["spider_usage"]);
+    } finally {
+      off();
+      f.settle({ exitCode: 0 });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+  });
+
   it("replays child events while an asynchronous cancellation later fails", async () => {
     const f = fixture();
     let rejectKill!: (error: Error) => void;
@@ -164,7 +184,7 @@ describe("active children in the session registry", () => {
     }
   });
 
-  it("releases tracking after an asynchronous cancellation succeeds", async () => {
+  it("releases tracking after a successfully cancelled child exits", async () => {
     const f = fixture();
     let resolveKill!: () => void;
     f.handle.killAsync = () => new Promise(resolve => { resolveKill = resolve; });
@@ -175,17 +195,21 @@ describe("active children in the session registry", () => {
     tailer.poll();
     db.prepare("INSERT INTO run_events(run_id,session_id,ts,type) VALUES (?,'parent',1,'spider_usage')").run(row.id);
     tailer.poll();
-    off();
     expect(seen).toEqual(["spider_usage"]);
     resolveKill();
     await killing;
+    tailer.poll();
+    db.prepare("INSERT INTO run_events(run_id,session_id,ts,type) VALUES (?,'parent',2,'spider_usage')").run(row.id);
+    tailer.poll();
+    off();
+    expect(seen).toEqual(["spider_usage", "spider_usage"]);
+    f.settle({ exitCode: 143 });
+    await new Promise<void>(resolve => setImmediate(resolve));
     tailer.poll();
     const prepare = vi.spyOn(db, "prepare");
     tailer.poll();
     expect(prepare).not.toHaveBeenCalled();
     prepare.mockRestore();
-    f.settle({ exitCode: 143 });
-    await new Promise<void>(resolve => setImmediate(resolve));
     expect(f.store.get(row.id)?.status).toBe("cancelled");
   });
 

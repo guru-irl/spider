@@ -96,6 +96,12 @@ function checkBrokerBoundary(agentDir: string): void {
 export function createMachineIntercom(options: MachineIntercomOptions): MachineIntercom {
   const roamingEnabled = () => { try { return options.roamingEnabled?.() ?? options.config.enabled; } catch { return false; } };
   const settings = { ...options.config.intercom, routes: [...options.config.intercom.routes] };
+  const nextHop = (destination: string): string | null => {
+    if (destination === options.config.machineId) return destination;
+    const route = settings.routes.find(candidate => candidate.peer.machineId === destination);
+    if (options.config.role === "box" && destination !== options.config.hubMachineId && settings.mode === "hub-only") return options.config.hubMachineId;
+    return route?.kind === "direct" ? route.peer.machineId : settings.mode === "hub-only" ? route?.via ?? null : null;
+  };
   const initiates = (peer: Peer) => options.config.role === "hub" ||
     peer.machineId !== options.config.hubMachineId && options.config.machineId < peer.machineId;
   const stagedRoutes = new Map<string, { kind: "direct"; peer: Peer; edgeEpoch: string }>();
@@ -264,9 +270,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
       };
       bridge = createIntercomBridge({ machineId: local, machineAlias: settings.machineAlias,
         edges: direct.map(route => ({ peer: route.peer, edgeEpoch: route.edgeEpoch, initiator: initiates(route.peer) })),
-        nextHop(destination) { const route = settings.routes.find(candidate => candidate.peer.machineId === destination);
-          if (options.config.role === "box" && destination !== options.config.hubMachineId && settings.mode === "hub-only") return options.config.hubMachineId;
-          return route?.kind === "direct" ? route.peer.machineId : settings.mode === "hub-only" ? route?.via ?? null : null; },
+        nextHop,
         authorizePresence(peer, entry) {
           const route = settings.routes.find(candidate => candidate.peer.machineId === entry.machineId);
           if (!route || (machineAliases.get(entry.machineId) ?? route.peer.alias).toLowerCase() !== entry.machineAlias.toLowerCase()) return false;
@@ -493,6 +497,11 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
         undispatched: address => moveAvailable().bridge.undispatched(address),
         rebindMove: (fence, endpoint, proof) => moveAvailable().bridge.rebindMove(fence, endpoint, proof),
         resumeIntake: fence => moveAvailable().bridge.resumeIntake(fence),
+      },
+      nextHop(endpoint) {
+        const peer = nextHop(endpoint.machineId);
+        if (!peer) throw new Error("machine-not-enrolled");
+        return peer;
       },
       owns: endpoint => options.moveOwns ? options.moveOwns(endpoint) : Promise.resolve(false),
       endpoint: address => {

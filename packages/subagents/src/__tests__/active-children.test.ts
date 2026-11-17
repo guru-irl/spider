@@ -192,25 +192,32 @@ describe("active children in the session registry", () => {
     const killing = f.handle.killAsync!(1, "cancel fixture");
     const seen: string[] = [];
     const off = bus.on(event => { if (event.runId === row.id && event.type === "spider_usage") seen.push(event.type); });
-    tailer.poll();
-    db.prepare("INSERT INTO run_events(run_id,session_id,ts,type) VALUES (?,'parent',1,'spider_usage')").run(row.id);
-    tailer.poll();
-    expect(seen).toEqual(["spider_usage"]);
-    resolveKill();
-    await killing;
-    tailer.poll();
-    db.prepare("INSERT INTO run_events(run_id,session_id,ts,type) VALUES (?,'parent',2,'spider_usage')").run(row.id);
-    tailer.poll();
-    off();
-    expect(seen).toEqual(["spider_usage", "spider_usage"]);
-    f.settle({ exitCode: 143 });
-    await new Promise<void>(resolve => setImmediate(resolve));
-    tailer.poll();
-    const prepare = vi.spyOn(db, "prepare");
-    tailer.poll();
-    expect(prepare).not.toHaveBeenCalled();
-    prepare.mockRestore();
-    expect(f.store.get(row.id)?.status).toBe("cancelled");
+    try {
+      tailer.poll();
+      db.prepare("INSERT INTO run_events(run_id,session_id,ts,type) VALUES (?,'parent',1,'spider_usage')").run(row.id);
+      tailer.poll();
+      expect(seen).toEqual(["spider_usage"]);
+      resolveKill();
+      await killing;
+      tailer.poll();
+      db.prepare("INSERT INTO run_events(run_id,session_id,ts,type) VALUES (?,'parent',2,'spider_usage')").run(row.id);
+      tailer.poll();
+      expect(seen).toEqual(["spider_usage", "spider_usage"]);
+      f.settle({ exitCode: 143 });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      tailer.poll();
+      const prepare = vi.spyOn(db, "prepare");
+      tailer.poll();
+      expect(prepare).not.toHaveBeenCalled();
+      prepare.mockRestore();
+      expect(f.store.get(row.id)?.status).toBe("cancelled");
+    } finally {
+      off();
+      resolveKill();
+      await killing.catch(() => {});
+      f.settle({ exitCode: 143 });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
   });
 
   it("does not count a failed launch", () => {

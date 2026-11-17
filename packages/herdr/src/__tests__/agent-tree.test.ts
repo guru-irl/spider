@@ -32,6 +32,40 @@ test('a job nests under its matching named run even without a native viewer', ()
   ]);
 });
 
+test('a nested subagent viewer remains beneath its parent run', () => {
+  const f = feed();
+  f.runs.rows.push({ ...f.runs.rows[0], id: 'nested' as RunId, name: 'Nested' });
+  const parent = { ...terminal('parent-viewer', 'subagent-viewer', { 'spider.run': 'run' }), parent: 'agent' };
+  const child = { ...terminal('child-viewer', 'subagent-viewer', { 'spider.run': 'nested' }), parent: 'parent-viewer' };
+  const result = projectAgentChildren([parent, child], [f], 'agent', contract, { now: 2000 });
+  expect(result.map(row => [row.key, row.parentKey, row.depth])).toEqual([
+    ['run', null, 0], ['nested', 'run', 1],
+  ]);
+});
+
+test('a retained parent of a live nested subagent stays in the compact tree', () => {
+  const f = feed();
+  f.runs.rows[0].status = 'done'; f.runs.rows[0].finishedAt = 1500;
+  f.runs.rows.push({ ...f.runs.rows[0], id: 'nested' as RunId, name: 'Nested', status: 'running', finishedAt: null });
+  const parent = { ...terminal('parent-viewer', 'subagent-viewer', { 'spider.run': 'run' }), parent: 'agent', state: 'finished' as const, finishedAt: 1500, exitCode: 0, reason: 'exited' };
+  const child = { ...terminal('child-viewer', 'subagent-viewer', { 'spider.run': 'nested' }), parent: 'parent-viewer' };
+  const summary: { hiddenFinished?: number } = {};
+  const result = projectAgentChildren([parent, child], [f], 'agent', contract, { now: 2000, finishedSummary: summary });
+  expect(result.map(row => [row.key, row.parentKey, row.depth])).toEqual([
+    ['run', null, 0], ['nested', 'run', 1],
+  ]);
+  expect(summary.hiddenFinished).toBe(0);
+});
+
+test('a subagent without parentage evidence stays at the owner root', () => {
+  const f = feed();
+  f.runs.rows.push({ ...f.runs.rows[0], id: 'nested' as RunId, name: 'Nested' });
+  const result = projectAgentChildren([], [f], 'agent', contract, { now: 2000 });
+  expect(result.map(row => [row.key, row.parentKey, row.depth])).toEqual([
+    ['run', null, 0], ['nested', null, 0],
+  ]);
+});
+
 test('unmatched or foreign run labels leave jobs under their own session', () => {
   const f = feed(); f.runs.rows[0].ownerSessionId = 'other-session' as never;
   const r = projectAgentChildren([job('child-job', { 'spider.run': 'run' })], [f], 'agent', contract, { now: 2000 });

@@ -569,12 +569,20 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     let current: Record<string, Record<string, unknown>> = {};
     try { current = JSON.parse(bytes?.toString('utf8') ?? '{}'); } catch { /* key validation reports malformed input */ }
     const owned = journal.entries.find(entry => entry.path === join(request.config.app.home, 'keys.json'))?.keys;
-    const stale = bindings.find(([section, key, value]) => current?.[section]?.[key] === value || owned?.[section]?.[key] === value);
+    const pickerNames: ReadonlySet<string> = new Set(PANE_ENTRY_MODS.filter(name => name !== 'spider-pane-waiting'));
+    const pickerBinding = (value: unknown): boolean => {
+      if (typeof value === 'string') return [...pickerNames].some(name => value === `mod.open:${name}`);
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+      const binding = value as { command?: unknown; args?: { name?: unknown } };
+      return typeof binding.command === 'string' && ([...pickerNames].some(name => binding.command === `mod.open:${name}`) || binding.command === 'mod.open' && typeof binding.args?.name === 'string' && pickerNames.has(binding.args.name));
+    };
+    const relocated = current && typeof current === 'object' ? Object.entries(current).flatMap(([section, values]) => values && typeof values === 'object' && !Array.isArray(values) ? Object.entries(values).filter(([, value]) => pickerBinding(value)).map(([key]) => [section, key] as const) : [])[0] : undefined;
+    const stale = bindings.find(([section, key, value]) => current?.[section]?.[key] === value || owned?.[section]?.[key] === value) ?? relocated;
     const modRoots = PANE_ENTRY_MODS.filter(name => name !== 'spider-pane-waiting').map(name => resolve(request.config.app.home, 'mods', name) + sep);
     const oldFile = journal.entries.find(entry => modRoots.some(root => resolve(entry.path).startsWith(root)));
     if (!stale && !oldFile) return undefined;
     const command = [process.execPath, join(packageRoot, 'dist/herdr/cli.mjs'), 'rollback', '--config', request.configPath].map(shellQuote).join(' ');
-    return { message: `Unsupported picker state on ${selected.upstreamVersion}: ${stale ? `${stale[0]}.${stale[1]}` : oldFile!.path}`, repair: `Run ${command}, then restore any remaining picker shortcuts to stock bindings before setup.` };
+    return { message: `Unsupported picker state on ${selected.upstreamVersion}: ${stale ? `${stale[0]}.${stale[1]}` : oldFile!.path}`, repair: `Run ${command}, then restore stock bindings or remove any remaining custom picker shortcuts before setup.` };
   };
   const stagedLook = async (request: SetupRequest, context: SetupContext): Promise<InstallFile[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets');

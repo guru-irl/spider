@@ -108,7 +108,7 @@ it('never opens the usage dashboard reader on the snapshot caller thread', async
   expect(feed.monthCost).toEqual(unavailable);
 });
 
-it('keeps the previous cost and pace during a replacement read but clears them after its failure', async () => {
+it('clears expired cost and pace during a replacement read and reports failure', async () => {
   let reject!: (error: Error) => void;
   const failed = new Promise<typeof emptyUsage>((_resolve, fail) => { reject = fail; });
   let attempt = 0;
@@ -118,8 +118,8 @@ it('keeps the previous cost and pace during a replacement read but clears them a
   expect(first.pace.used).toBe(12);
   f.advance(30000);
   const pending = await f.source.snapshot(f.owner);
-  expect(pending.monthCost).toEqual({ credits: 7, label: '7' });
-  expect(pending.pace).toEqual(first.pace);
+  expect(pending.monthCost).toEqual(unavailable);
+  expect(pending.pace.used).toBeNull();
   reject(new Error('worker unavailable'));
   await Promise.resolve(); await Promise.resolve();
   const failure = await f.source.snapshot(f.owner);
@@ -139,8 +139,8 @@ it('clears a pending replacement at the month boundary and ignores its old-month
   expect(first.pace.periodStart).toBe(Date.UTC(2026, 10, 1));
   f.advance(30000);
   const pending = await f.source.snapshot(f.owner);
-  expect(pending.monthCost).toEqual({ credits: 7, label: '7' });
-  expect(pending.pace).toEqual(first.pace);
+  expect(pending.monthCost).toEqual(unavailable);
+  expect(pending.pace.used).toBeNull();
   f.advance(15000);
   const boundary = await f.source.snapshot(f.owner);
   expect(boundary.monthCost).toEqual(unavailable);
@@ -164,8 +164,8 @@ it('clears kept figures at a mid-month pace reset and ignores a late prior-perio
   expect(first.pace).toMatchObject({ used: 12, periodStart: Date.UTC(2026, 9, 15), periodEnd: Date.UTC(2026, 10, 15) });
   f.advance(30000);
   const pending = await f.source.snapshot(f.owner);
-  expect(pending.monthCost).toEqual({ credits: 7, label: '7' });
-  expect(pending.pace).toEqual(first.pace);
+  expect(pending.monthCost).toEqual(unavailable);
+  expect(pending.pace.used).toBeNull();
   f.advance(15000);
   const reset = await f.source.snapshot(f.owner);
   expect(reset.monthCost).toEqual(unavailable);
@@ -181,7 +181,7 @@ it('keeps figures across a UTC month rollover within the same mid-month pace per
   // A calendar key would cause an unavailable blink despite an unchanged billing period.
   const at = Date.UTC(2026, 10, 30, 23, 59, 15);
   let attempt = 0;
-  const f = fixture(() => ++attempt === 1 ? Promise.resolve({ ...emptyUsage, snapshots: [{ ts: at, creditsUsed: 12, resetDate: '2026-12-15', raw: {} }], monthCost: { credits: 7, label: '7' } }) : new Promise(() => {}), at);
+  const f = fixture(() => { attempt++; return Promise.resolve({ ...emptyUsage, snapshots: [{ ts: at, creditsUsed: 12, resetDate: '2026-12-15', raw: {} }], monthCost: { credits: 7, label: '7' } }); }, at);
   const first = await f.source.snapshot(f.owner);
   expect(first.pace).toMatchObject({ periodStart: Date.UTC(2026, 10, 15), periodEnd: Date.UTC(2026, 11, 15) });
   f.advance(30000);
@@ -192,22 +192,22 @@ it('keeps figures across a UTC month rollover within the same mid-month pace per
   const rollover = await f.source.snapshot(f.owner);
   expect(rollover.monthCost).toEqual({ credits: 7, label: '7' });
   expect(rollover.pace).toEqual(first.pace);
+  expect(attempt).toBe(2);
 });
 
-it('retains a pending value for at most twice the cache TTL without renewing its age', async () => {
-  // Giving a replacement the original value's age prevents an indefinitely stale pending feed.
+it('retains a value for less than one interval without renewing its age', async () => {
   let attempt = 0;
   const f = fixture(() => ++attempt === 1 ? Promise.resolve({ ...emptyUsage, correctedMonth: 12, monthCost: { credits: 7, label: '7' } }) : new Promise(() => {}));
   const first = await f.source.snapshot(f.owner);
-  f.advance(30000);
-  const pending = await f.source.snapshot(f.owner);
-  expect(pending.monthCost).toEqual({ credits: 7, label: '7' });
-  expect(pending.pace).toEqual(first.pace);
-  f.advance(30000);
-  const limit = await f.source.snapshot(f.owner);
-  expect(limit.monthCost).toEqual({ credits: 7, label: '7' });
-  expect(limit.pace).toEqual(first.pace);
+  f.advance(29999);
+  const before = await f.source.snapshot(f.owner);
+  expect(before.monthCost).toEqual({ credits: 7, label: '7' });
+  expect(before.pace).toEqual(first.pace);
   f.advance(1);
+  const limit = await f.source.snapshot(f.owner);
+  expect(limit.monthCost).toEqual(unavailable);
+  expect(limit.pace.used).toBeNull();
+  f.advance(30000);
   const tooOld = await f.source.snapshot(f.owner);
   expect(tooOld.monthCost).toEqual(unavailable);
   expect(tooOld.pace.used).toBeNull();

@@ -1042,3 +1042,30 @@ it("settlement refuses an injected-looking retained row with no dispatch attempt
   vi.spyOn(store!, "retained").mockImplementation((direction, id) => direction === "outbound" && id === "settlement-a" ? { ...retained, payloadRetained: false, state: "injected", latestAttempt: 0 } : null);
   expect(await service.move.settlement({ messageId: "settlement-a", fromSessionId: "sender", toSessionId: "recipient", scopeId: "scope" })).toBeNull();
 }, 5000);
+
+
+it("rebinds a moved box recipient through the same hub-only route as message delivery", async () => {
+  const f = machineFixture(BOX), config = parseConfig({ enabled: true, role: "box", machineId: BOX, hubMachineId: HUB, coreUnit: "fixture",
+    intercom: { enabled: true, mode: "hub-only", machineAlias: "box.invalid", routes: [
+      { kind: "direct", peer: peer(HUB, "hub.invalid"), edgeEpoch: "hub-box" },
+      { kind: "relay", peer: peer(OTHER, "other.invalid"), via: HUB },
+    ] } });
+  const address = { sessionId: "relayed-move", scopeId: null }, from = { sessionId: "sender", scopeId: null };
+  f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,2,NULL,1)").run(address.sessionId, BOX);
+  Object.assign(f.broker, { async intake(action: "close" | "check" | "open", fence: import("@spider/intercom/protocol").IntercomIntakeFence) { return f.broker.bridge!.intake!(action, fence); },
+    async inspectFreezeBlockers() { return { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] }; } });
+  const service = await makeMachine({ ...f.options, config, moveOwns: async () => true }); await service.start();
+  const source = { ...localPresence(address, "source"), homeEpoch: 2 };
+  f.broker.emit("presence", [source, localPresence(from, "sender")]);
+  const fence = await service.move.intake.close(address, "relay-move", 2, "relay-fence");
+  const queue = openIntercomStore({ file: join(f.global.root, "roam", "intercom", "queue.db"), machineId: BOX, clock: f.clock }); replicas.push(queue);
+  const accepted = queue.acceptLocal({ from, endpoint: { address, machineId: BOX, homeEpoch: 2, activationEpoch: "source" },
+    message: { id: "relayed-move-mail", timestamp: 1000, content: { text: "synthetic" } } });
+  expect(accepted.kind).toBe("accepted");
+  f.global.db.prepare("UPDATE session_homes SET machine_id=?,epoch=3,move_id='relay-move' WHERE session_id=?").run(OTHER, address.sessionId);
+  f.broker.emit("presence", [localPresence(from, "sender")]);
+  const entry = { ...remote(OTHER, "other.invalid", address), homeEpoch: 3, activationEpoch: "destination", endpointEpoch: "destination" };
+  await f.broker.helper!(withHopRequest(helperRequest(HUB, BOX, "hub-box", 1, [entry])), AbortSignal.timeout(5000));
+  await expect(service.move.intake.ready(fence, { address, machineId: OTHER, homeEpoch: 3, activationEpoch: "destination" })).resolves.toMatchObject({ intercomAddress: expect.stringContaining("other.invalid") });
+  expect(queue.retained("outbound", "relayed-move-mail")).toMatchObject({ peer: HUB, endpoint: { machineId: OTHER, homeEpoch: 3 }, payloadRetained: true });
+}, 5000);

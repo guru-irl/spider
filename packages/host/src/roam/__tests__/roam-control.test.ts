@@ -237,3 +237,17 @@ it("live control journals only redacted paths and credentials", async () => {
     expect(evidence).not.toContain("private-value");
   } finally { await server.close(); }
 }, 5000);
+
+it("failed live inspection is complete evidence rather than a permanent pending operation", async () => {
+  const f = fixture(); let fails = true;
+  const inspect = f.ports.inspect;
+  f.ports.inspect = async () => { if (fails) throw new Error("fixture-inspect-unavailable"); return inspect(); };
+  const server = await serveSessionControl({ sessionId: f.id, runtimeRoot: root, ports: f.ports });
+  try {
+    expect(await requestSessionControl(root, f.operation)).toMatchObject({ code: 1, reason: "session-control-refused" });
+    expect(f.ports.journal.lookupOperation(f.operation.id)?.state).toBe("done");
+    fails = false;
+    expect(await requestSessionControl(root, f.operation)).toMatchObject({ code: 0, reason: "inspected" });
+    expect(f.ports.journal.lookupOperation(f.operation.id)?.state).toBe("done");
+  } finally { await server.close(); }
+}, 5000);

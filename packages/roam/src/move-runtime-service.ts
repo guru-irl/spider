@@ -68,12 +68,14 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
     requested.add(machineId);
     if (cleanupFlight) return cleanupFlight;
     return cleanupFlight = Promise.resolve().then(async () => {
-      while (requested.size) {
-        const machines = [...requested]; requested.clear();
-        if (machines.includes(undefined)) await recoverCleanupOnce();
-        else for (const machine of machines) await recoverCleanupOnce(machine);
-      }
-    }).finally(() => { cleanupFlight = null; });
+      try {
+        while (requested.size) {
+          const machines = [...requested]; requested.clear();
+          if (machines.includes(undefined)) await recoverCleanupOnce();
+          else for (const machine of machines) await recoverCleanupOnce(machine);
+        }
+      } finally { cleanupFlight = null; }
+    });
   };
   return {
     recoverCleanup,

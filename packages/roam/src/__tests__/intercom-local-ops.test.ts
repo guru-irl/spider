@@ -1,4 +1,5 @@
 import { paths } from "@spider/db-core";
+import { main as setupCli } from "../cli";
 import { createHash } from "node:crypto";
 import { afterEach, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -41,6 +42,25 @@ it("the private CLI refuses credential setup until pair-scoped connector support
   expect(code).toBe(0); expect(err).toBe("");
   expect(JSON.parse(out)).toMatchObject({ version: 1, kind: "intercom-setup", ok: false, reason: "connector-not-pair-scoped" });
   expect(f.calls).toHaveLength(0);
+}, 5000);
+
+it("retains a redacted underlying cause in setup JSON and diagnostics", async () => {
+  const f = fixture(), directory = join(f.sourceRoot, "roam"); mkdirSync(directory, { mode: 0o700 });
+  writeFileSync(join(directory, "config.json"), JSON.stringify({ role: "hub", machineId: A, hubMachineId: A, coreUnit: "fixture.service" }), { mode: 0o600 });
+  writeFileSync(join(directory, "machine.json"), JSON.stringify({ machineId: A }), { mode: 0o600 });
+  const failure = Object.assign(new Error(`EEXIST: file already exists, open '${f.sourceRoot}/private key'; token=secret-value Authorization: Bearer secret-bearer https://private.invalid/key`), { code: "EEXIST" });
+  let out = "", diagnostics = "";
+  expect(await setupCli(["--global-root", f.sourceRoot, "roam", "intercom", "setup-local"], { out: text => { out += text; }, err: text => { diagnostics += text; } }, {
+    stdin: Buffer.from(JSON.stringify({ action: "register-pair", pair: f.pair, approval: f.proof })),
+    get pairPorts(): typeof f.ports { throw failure; },
+  })).toBe(0);
+  const reply = JSON.parse(out);
+  expect(reply).toMatchObject({ ok: false, reason: "intercom-setup-pending", cause: { code: "EEXIST", message: expect.stringContaining("file already exists") } });
+  expect(JSON.parse(diagnostics)).toEqual({ reason: reply.reason, cause: reply.cause });
+  for (const secret of [f.sourceRoot, "private key", "secret-value", "secret-bearer", "private.invalid"]) {
+    expect(out).not.toContain(secret); expect(diagnostics).not.toContain(secret);
+  }
+  expect(f.calls).toEqual([]);
 }, 5000);
 
 it("reads a machine-bound authoritative fence without running setup", async () => {

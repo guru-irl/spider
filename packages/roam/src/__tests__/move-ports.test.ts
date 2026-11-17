@@ -1616,3 +1616,66 @@ it.each(['ready', 'gone', 'owner-changed', 'home-changed'] as const)('destroyed 
     }
   } finally { install.mockRestore(); }
 }, 5000);
+
+
+it("destroyed mirror relaunches twice after exact failed launches through production handoff control", async () => {
+  const { createHostMoveBindings } = await import("../../../host/src/roam/move-runtime");
+  const launchers = await import("../launcher"), hcClients = await import("@spider/herdr/client/hc");
+  const hostConfig = await import("../host-config"), identity = await import("../runtime");
+  const inventories = await import("../../../host/src/herdr/process-inventory");
+  const { createPendingHandoffControl, pendingHandoffLifecycle, readMoveLaunchAbsenceReceipt } = await import("../pending-handoff");
+  const { processStartTime } = await import("../../../subagents/src/process-identity");
+  const { localBootId } = await import("@spider/herdr/sessions/id-lock");
+  const f = preparedFixture;
+  casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
+  const mirrorOperation = { id: "restore-real-mirror", kind: "session-mirror", machineId: BOX, expectedEpoch: 2, args: { sessionId: SESSION } };
+  f.journal.begin(mirrorOperation);
+  await appendMirror({ sessionId: SESSION, epoch: 2, source: mirrorPrepared.session, root: f.bindings.recovery!.mirrorRoot, operationId: mirrorOperation.id }, f.journal);
+  mkdirSync(join(f.root, "roam"), { recursive: true });
+  openFreezeJournal(join(f.root, "roam", "journal.db"));
+  const agentDirectory = join(f.root, "agent"); mkdirSync(agentDirectory);
+  vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
+  vi.spyOn(identity, "readLocalIdentity").mockReturnValue(f.config);
+  vi.spyOn(hostConfig, "loadHerdrConfig").mockReturnValue({ agentDirectory, core: { binary: "/fixture/hc" } } as never);
+  const inventory = inventories.createProcessInventory(join(f.root, "herdr"));
+  vi.spyOn(inventories, "createProcessInventory").mockReturnValue({ ...inventory, processes: async () => [] });
+  vi.spyOn(hcClients, "createHcClient").mockReturnValue({ identity: async () => ({ coreId: "core-a", sessionNamespace: "fixture", socket: join(f.root, "core.sock") }), dispose: async () => {} } as never);
+  let finished = false;
+  const launched: string[] = [];
+  vi.spyOn(launchers, "createProductionLocalExactHc").mockReturnValue({
+    coreId: async () => "core-a", dispose: async () => {},
+    terminals: async (_id, options) => ({ complete: finished, terminals: finished ? [{ id: options.terminalId!, state: "finished" as const }] : [] }),
+    run: async request => { launched.push(request.terminal!.labels["spider.roam.operation"]); return { terminal: `t${launched.length}` }; },
+  });
+  const exact = launchers.createExactLaunchAdapter;
+  vi.spyOn(launchers, "createExactLaunchAdapter").mockImplementation(input => exact({ ...input, base: { ...input.base, launchMs: 1, reconcileMs: 1000 } }));
+  const mounted = await createHostMoveBindings({ root: f.root, globalDb: f.global.db, config: f.config, journal: f.journal, sessionId: SESSION, transport: f.transport,
+    sync: f.bindings.sync, operation: { ...f.operation, args: { check: { storeKeys: ["global"] } } } });
+  const p = f.bindings.participant!, real = mounted.bindings.participant!;
+  p.wake = real.wake; p.readiness = real.readiness; p.observation = real.observation; p.probe = real.probe; p.withBothLocks = real.withBothLocks;
+  f.bindings.recovery!.restoreWorkspace = async () => ({ cwd: f.repo, parent: null });
+  const authority = createRunningIntentAuthority(f.global.db);
+  const lifecycle = pendingHandoffLifecycle(f.root, createPendingHandoffControl({ root: join(f.root, "herdr"), journal: f.journal, authority,
+    inventory, identity: { pid: process.pid, startIdentity: processStartTime(process.pid)! }, bootId: localBootId }));
+  try {
+    await lifecycle.start();
+    const request = { machineId: BOX, confirmation: `destroyed ${BOX}` };
+    expect(await forgetMachine(request, f.ports)).toMatchObject({ code: 3 });
+    expect(launched).toHaveLength(1);
+    expect(await forgetMachine(request, f.ports)).toMatchObject({ code: 3 });
+    expect(launched).toHaveLength(1);
+    finished = true;
+    const home = sessionHome(f.global.db, SESSION) as Home;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await forgetMachine(request, f.ports);
+      expect((await authority.get(SESSION))?.desired).toBe("running");
+      expect(launched).toHaveLength(attempt + 2);
+      expect(readMoveLaunchAbsenceReceipt(f.journal, home.moveId!, launched[attempt])?.launchId).toBe(launched[attempt]);
+    }
+    expect(new Set(launched).size).toBe(3);
+    expect(launched.slice(1)).toEqual([`${launched[0]}-restart-1`, `${launched[0]}-restart-2`]);
+    const restarts = f.journal.read(`${launched[0]}-restarts`).filter(row => row.action === "restart");
+    expect(restarts.map(row => row.result.sequence)).toEqual([1, 2]);
+    expect(restarts.map(row => row.result.previousLaunchId)).toEqual(launched.slice(0, 2));
+  } finally { await lifecycle.stop(); await mounted.close(); vi.restoreAllMocks(); vi.unstubAllEnvs(); }
+}, 5000);

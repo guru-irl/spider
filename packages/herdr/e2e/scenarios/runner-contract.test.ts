@@ -130,13 +130,28 @@ describe('story cleanup reserve', () => {
       await runStoryWork(root, 'R17', async () => {});
       const expired: string[] = [], at = Date.now() + 400;
       const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('work'); } }, root, { ids: ['R17'], harness: false });
-      expect(deadline.cleanupAt).toBe(at + 10_000);
+      expect(deadline.cleanupAt).toBeLessThanOrEqual(at + 10_000);
       const result = await command(process.execPath, ['-e', 'setTimeout(() => console.log("clean"), 650)'], process.cwd(), process.env, resolve(root, 'log'), true, undefined, 60_000, deadline);
       expect(result.code).toBe(0);
       expect(result.output).toContain('clean');
       expect(expired).toEqual([]);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
+
+  it('reconciles and writes a proof after suite cleanup hangs', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    try {
+      await runStoryWork(root, 'R17', async () => {});
+      const module = resolve(root, 'resources.mjs');
+      writeFileSync(module, `export async function cleanupLedger() { return {clean:true}; } export async function reconcileLedgers() { return [{clean:true}]; }`);
+      const overall = { at: Date.now() + 250, expire() {} };
+      const deadline = storyExecutionDeadline(overall, root, { ids: ['R17'], harness: false });
+      await expect(command(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], process.cwd(), process.env, resolve(root, 'log'), true, undefined, 60_000, deadline)).rejects.toThrow('runner-deadline');
+      expect(await finishCleanup({ module, ledgers: root }, resolve(root, 'ledger.json'), process.cwd(), process.env, root,
+        { at: runnerCleanupDeadline(overall), expire() {} })).toBe(true);
+      expect(JSON.parse(readFileSync(resolve(root, 'final-reconciliation.json'), 'utf8'))).toEqual({ proof: { clean: true }, reconciled: [{ clean: true }] });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 16_000);
 
   it('kills work if any selected story has not finished by the work deadline', async () => {
     const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));

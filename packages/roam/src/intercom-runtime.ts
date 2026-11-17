@@ -498,9 +498,20 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
   const move: MachineMovePort = {
     async broker(address) {
       moveAvailable();
+      const info = locals.get(addressKey(address))?.info;
+      if (!info || !options.moveOwns) throw new Error("intercom-owner-unproved");
+      const endpoint = { address: info.address, machineId: info.machineId, homeEpoch: info.homeEpoch, activationEpoch: info.activationEpoch };
+      if (!await options.moveOwns(endpoint)) throw new Error("intercom-owner-unproved");
       const port = (broker as IntercomBroker & Partial<Pick<IntercomFederationClient, "inspectFreezeBlockers">>).inspectFreezeBlockers;
       if (!port) throw new Error("intercom-blocker-source-unavailable");
-      return port.call(broker, address);
+      const snapshot = await port.call(broker, address);
+      moveAvailable();
+      const current = locals.get(addressKey(address))?.info;
+      if (!current || current.activationEpoch !== info.activationEpoch || current.homeEpoch !== info.homeEpoch || !await options.moveOwns(endpoint))
+        throw new Error("intercom-owner-unproved");
+      return { asks: snapshot.asks.map(ask => ({ id: ask.id,
+        from: { sessionId: ask.from.sessionId, scopeId: ask.from.scopeId }, to: { sessionId: ask.to.sessionId, scopeId: ask.to.scopeId } })),
+        pendingDispatch: [...snapshot.pendingDispatch], unknownOutcomes: [...snapshot.unknownOutcomes], unobservedReceipts: [...snapshot.unobservedReceipts] };
     },
     intake: {
       async close(...args) { return intake().close(...args); }, async drain(...args) { return intake().drain(...args); },

@@ -3,6 +3,7 @@
 import { expect, test } from 'vitest';
 import { HerdrError } from '../client/parse.js';
 import { runHerdrCli } from '../setup/cli.js';
+import { invokeCli } from '../client/cli-transport.js';
 
 async function fail(command: string, error: Error) {
   let stdout = '', stderr = '';
@@ -15,6 +16,17 @@ async function fail(command: string, error: Error) {
   });
   return { code, stdout, stderr };
 }
+
+test.each(['setup', 'rollback'])('%s prints native transport stderr rather than only its exit status', async command => {
+  const native = await invokeCli(process.execPath, ['-e', 'process.stdout.write("not diagnostics"); process.stderr.write("Cannot connect to app socket: no window is running\\n"); process.exit(2);'], process.env).catch(error => error);
+  expect(native).toBeInstanceOf(HerdrError);
+  expect(await fail(command, native)).toEqual({ code: 1, stdout: '', stderr: 'cli-exit: CLI exited with 2\nCannot connect to app socket: no window is running\n' });
+});
+
+test.each([null, {}, { stderr: null }, { stderr: 2 }, { stderr: '  \n' }])('malformed or empty native details preserve the original error: %j', async details => {
+  expect(await fail('setup', new HerdrError('cli-exit', 'CLI exited with 2', details)))
+    .toEqual({ code: 1, stdout: '', stderr: 'cli-exit: CLI exited with 2\n' });
+});
 
 // Omitting the structured failures hides the failed check and its repair from the user.
 test.each(['setup', 'rollback'])('%s prints every verification failure and retains the rollback command', async command => {

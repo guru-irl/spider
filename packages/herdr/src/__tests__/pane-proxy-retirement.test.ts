@@ -45,13 +45,20 @@ async function fixture(state: 'live' | 'finished', changed: Record<string, strin
     awaitPresented: async address => app.ownerPlacement(address),
   };
   const run = () => convertNativePresentation({ presentation, destination, source: slot, sourceFocused: true }, ports);
-  return { run, hc, app, presentation, launchTarget };
+  return { run, hc, app, presentation, launchTarget, store, placements };
 }
 test.each(['finished', 'live'] as const)('a matching %s display retires without touching execution', async state => {
   const f = await fixture(state);
   expect(await f.run()).toMatchObject({ status: 'complete', reason: 'native-view-converted' });
   if (state === 'finished') expect(f.hc.kill).not.toHaveBeenCalled();
   else expect(f.hc.kill).toHaveBeenCalledExactlyOnceWith(f.presentation.proxy);
+  expect(f.hc.rm).not.toHaveBeenCalled(); expect(f.launchTarget).not.toHaveBeenCalled();
+});
+test.each(['live', 'finished'] as const)('a legacy %s display converts without leaving its old pane or touching execution', async state => {
+  const f = await fixture(state, { 'spider.owner-generation': undefined, 'spider.pane-operation': undefined });
+  expect(await f.run()).toMatchObject({ status: 'complete', reason: 'native-view-converted', presentation: { mode: 'native', proxy: null, target: { address: 'core-local/t5' } } });
+  expect([...f.placements.keys()]).toEqual(['t5']);
+  expect(f.hc.kill.mock.calls).toEqual(state === 'live' ? [[f.presentation.proxy]] : []);
   expect(f.hc.rm).not.toHaveBeenCalled(); expect(f.launchTarget).not.toHaveBeenCalled();
 });
 test.each([
@@ -64,4 +71,5 @@ test.each([
   expect(await f.run()).toMatchObject({ status: 'refused', reason: 'source-retirement-unverified' });
   expect(f.hc.kill).not.toHaveBeenCalled(); expect(f.hc.rm).not.toHaveBeenCalled(); expect(f.launchTarget).not.toHaveBeenCalled();
   expect(f.app.command).not.toHaveBeenCalledWith('terminal.park', { terminal: f.presentation.proxy });
+  expect((await f.store.read()).presentations[0]).toMatchObject({ target: f.presentation.target, mode: 'proxy', proxy: f.presentation.proxy, conversion: { state: 'waiting-focus' } });
 });

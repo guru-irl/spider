@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { paths } from '@spider/db-core';
@@ -183,7 +183,7 @@ test.each(['restored home', 'parked restored home', 'hosting restart', 'box star
   boundary.rows = [destination];
   const p = { ...presentation('existing'), target: source.target, role: 'agent' as const, proxy: 'old-proxy' as never, slot,
     visibility: scenario === 'parked restored home' ? 'parked' as const : scenario === 'closing presentation' ? 'closing' as const : 'visible' as const, closeOperationId: scenario === 'closing presentation' ? 'close-1' : null, launch: 'acknowledged' as const };
-  boundary.terminals.set('old-proxy', { ...facts(p).terminal, address: 'old-proxy' as never, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.pane-operation': p.id, 'spider.owner-generation': source.target.generation!, 'spider.target-core': source.target.coreId, 'spider.target-terminal': source.target.terminalId } });
+  boundary.terminals.set('old-proxy', { ...facts(p).terminal, address: 'old-proxy' as never, labels: { 'spider.kind': 'pane-proxy', 'spider.pane-id': p.id, 'spider.target-core': source.target.coreId, 'spider.target-terminal': source.target.terminalId } });
   if (scenario !== 'unplaced session') await runtime.store.update(state => ({ ...state, presentations: [p] }));
   const service = runtime.createService();
   const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
@@ -265,6 +265,56 @@ test('production waiting claims are removed on release and do not block the same
   expect(await readdir(join(root, 'herdr/panes/waiting'))).toEqual([]);
   const second = await boundary.auxiliary!.waitingPresentation!('subagent', 'run-1' as never, owner);
   expect(second).toMatchObject({ address: 'proxy-1', coreId: 'core-local' }); expect(hc.run).toHaveBeenCalledTimes(2);
+});
+test.each(['claim', 'label', 'both', 'presentation'] as const)('production replaces a legacy waiting display with missing %s and preserves its slot', async missing => {
+  const { root, runtime, hc } = await fixture(), owner = sessionRow().owner;
+  runtime.createService();
+  const launch = vi.mocked(hc.run).getMockImplementation()!;
+  vi.mocked(hc.run).mockImplementationOnce(async input => {
+    await launch(input);
+    const terminal = boundary.terminals.get('proxy-1')!;
+    boundary.terminals.delete('proxy-1');
+    boundary.terminals.set('legacy-display', { ...terminal, address: 'legacy-display' as never });
+    return { address: 'legacy-display' as never, coreId: 'core-local' as never };
+  });
+  const old = await boundary.auxiliary!.waitingPresentation!('subagent', 'run-1' as never, owner);
+  const directory = join(root, 'herdr/panes/waiting'), file = join(directory, (await readdir(directory))[0]);
+  const claim = JSON.parse(await readFile(file, 'utf8')), launchOperation = claim.proxyOperationId;
+  if (missing === 'claim' || missing === 'both') delete claim.proxyOperationId;
+  await writeFile(file, JSON.stringify(claim), { mode: 0o600 });
+  const display = boundary.terminals.get('legacy-display')!;
+  if (missing === 'label' || missing === 'both') {
+    const labels = { ...display.labels }; delete labels['spider.owner-generation']; delete labels['spider.pane-operation']; display.labels = labels;
+  }
+  const slot = { space: 's1' as never, tab: 'tb1' as never, pane: 'kept-pane' as never };
+  const bound: PanePresentation = { ...presentation(display.labels['spider.pane-id']), ...(missing === 'both' || missing === 'presentation' ? {} : { proxyOperationId: launchOperation }), role: 'subagent', target: sessionRow().target, proxy: old.address, slot, launch: 'acknowledged' };
+  await runtime.store.update(state => ({ ...state, presentations: [bound] }));
+  boundary.terminals.set('real-child', { ...display, address: 'real-child' as never, labels: { ...display.labels, 'spider.kind': 'subagent' } });
+  expect(await boundary.auxiliary!.recoverWaitingPresentation!('subagent', 'run-1' as never, owner)).toBe('absent');
+  expect((await runtime.store.read()).presentations[0]).toMatchObject({ slot });
+  const fresh = await boundary.auxiliary!.waitingPresentation!('subagent', 'run-1' as never, owner);
+  expect(fresh).toMatchObject({ address: 'proxy-1', coreId: 'core-local' });
+  expect([...boundary.terminals.keys()].sort()).toEqual(['proxy-1', 'real-child']);
+  expect(hc.kill).toHaveBeenCalledExactlyOnceWith('legacy-display');
+  expect(hc.rm).toHaveBeenCalledExactlyOnceWith('legacy-display');
+  const target = { ...sessionRow().target, kind: 'subagent' as const, runId: 'run-1' as never, identityLabels: { 'spider.view-generation': owner.generation } };
+  Object.assign(boundary.app, { ownerPlacement: async () => slot });
+  await boundary.auxiliary!.bindTarget({ kind: 'subagent', id: 'run-1', owner, viewer: fresh.address, pane: slot.pane } as never, target, { observe: false });
+  expect((await runtime.store.read()).presentations[0]).toMatchObject({ slot, proxy: 'proxy-1', proxyOperationId: boundary.terminals.get('proxy-1')!.labels['spider.pane-operation'] });
+  expect(hc.run).toHaveBeenCalledTimes(2);
+});
+test('production cannot bind a live waiting display whose persisted launch claim is legacy', async () => {
+  const { root, runtime, hc } = await fixture(), owner = sessionRow().owner;
+  runtime.createService();
+  const display = await boundary.auxiliary!.waitingPresentation!('subagent', 'run-1' as never, owner);
+  const directory = join(root, 'herdr/panes/waiting'), file = join(directory, (await readdir(directory))[0]);
+  const claim = JSON.parse(await readFile(file, 'utf8')); delete claim.proxyOperationId;
+  await writeFile(file, JSON.stringify(claim), { mode: 0o600 });
+  Object.assign(boundary.app, { ownerPlacement: async () => ({ space: 's1', tab: 'tb1', pane: 'view-pane' }) });
+  const target = { ...sessionRow().target, kind: 'subagent' as const, runId: 'run-1' as never, identityLabels: { 'spider.view-generation': owner.generation } };
+  await expect(boundary.auxiliary!.bindTarget({ kind: 'subagent', id: 'run-1', owner, viewer: display.address, pane: 'view-pane' } as never, target, { observe: false })).rejects.toMatchObject({ code: 'pane-view-identity' });
+  expect((await runtime.store.read()).presentations).toEqual([]);
+  expect(hc.setLabels).not.toHaveBeenCalled(); expect(hc.kill).not.toHaveBeenCalled(); expect(hc.rm).not.toHaveBeenCalled();
 });
 test('production recovers a dead waiting claim even after helper state was lost', async () => {
   const { runtime, hc, restart } = await fixture(); const owner = sessionRow().owner; runtime.createService();

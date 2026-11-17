@@ -8,6 +8,9 @@ import { Worker, isMainThread, parentPort, workerData } from 'node:worker_thread
 import Database from 'better-sqlite3';
 
 // Only generated data is opened. No input database or session directory is accepted.
+// This measures worker-side query work, not runtime sampling: direct worker
+// messages bypass the sampler. Runtime coalescing has separate deterministic
+// writer and follower tests rather than a CPU measurement in this harness.
 async function worker() {
   const { bootUsageWorker } = await import(workerData.module);
   let queries = 0;
@@ -66,9 +69,24 @@ async function main() {
   const checkout = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   // Generated modules need an ancestor with this checkout's dependencies.
   const parent = process.env.SPIDER_USAGE_BENCHMARK_ROOT ?? join(checkout, 'node_modules');
-  const root = mkdtempSync(join(parent, 'usage-worker-benchmark-'));
+  let root, cleanupPromise;
   const workers = [];
+  let interrupted = false;
+  const cleanup = () => cleanupPromise ??= (async () => {
+    await Promise.allSettled(workers.map(worker => worker.terminate()));
+    if (root) rmSync(root, { recursive: true, force: true });
+  })();
+  const interrupt = code => {
+    if (interrupted) return;
+    interrupted = true;
+    process.exitCode = code;
+    void cleanup().then(() => process.exit(code), error => { console.error(error); process.exit(1); });
+  };
+  const onInterrupt = () => interrupt(130), onTerminate = () => interrupt(143);
+  process.on('SIGINT', onInterrupt); process.on('SIGTERM', onTerminate);
   try {
+    root = mkdtempSync(join(parent, 'usage-worker-benchmark-'));
+    console.error(`Generated benchmark data: ${root}`);
     for (const [key, name] of [['HOME', 'home'], ['TMPDIR', 'tmp'], ['SQLITE_TMPDIR', 'tmp'], ['SPIDER_GLOBAL_ROOT', 'global'], ['PI_CODING_AGENT_DIR', 'agent']]) {
       process.env[key] = join(root, name); mkdirSync(process.env[key], { recursive: true });
     }
@@ -133,7 +151,10 @@ async function main() {
     await measure('five panel messages at one-second cadence', async () => {
       const requests = [];
       for (let i = 0; i < 5; i++) {
-        requests.push(next(follower, 'panel-usage', () => follower.postMessage({ type: 'panel-usage', requestId: i, now: seed.now + i * 1000, sessionId: seed.sessionId }), response => response.requestId === i));
+        const request = next(follower, 'panel-usage', () => follower.postMessage({ type: 'panel-usage', requestId: i, now: seed.now + i * 1000, sessionId: seed.sessionId }), response => response.requestId === i);
+        // A worker can exit before the cadence loop reaches Promise.all.
+        void request.catch(() => {});
+        requests.push(request);
         await new Promise(resolve => setTimeout(resolve, 1000));
       }
       for (const result of await Promise.all(requests)) {
@@ -151,9 +172,11 @@ async function main() {
     });
     report.owner = await next(owner, 'metrics', () => owner.postMessage({ type: 'metrics' }));
     console.log(JSON.stringify(report, null, 2));
+  } catch (error) {
+    if (!interrupted) throw error;
   } finally {
-    await Promise.all(workers.map(worker => worker.terminate()));
-    rmSync(root, { recursive: true, force: true });
+    await cleanup();
+    process.off('SIGINT', onInterrupt); process.off('SIGTERM', onTerminate);
   }
 }
 if (isMainThread) main().catch(error => { console.error(error); process.exitCode = 1; });

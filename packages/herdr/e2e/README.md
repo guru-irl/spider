@@ -24,6 +24,10 @@ Separate multiple story IDs with commas. Leave `stories` empty to run the defaul
 
 The preparation job has a five-minute limit. Each measured limit uses an initial successful job time plus 40 seconds, rounded up to a minute; unmeasured jobs retain the five-minute limit. R05's story step has a one-minute limit to leave time to archive failures. The job limits are in `controls/ci-stories.json`. The workflow exercises the packed extension and real, isolated local cores without a display. It does not certify the native app, native windows, SSH, or real remote machines. R02 covers app placement with a fixture owner and is outside the default set. R14local needs separately supplied local fixtures.
 
+The workflow sets an absolute overall runner deadline before checkout. It reserves 20 seconds from the job limit for cleanup and failure uploads. When that deadline expires, the runner writes `deadline.json` in the failure archive and marks the selected stories failed. A step or job timeout can still stop the process before it writes those files.
+
+To shorten a manual run without increasing its limit, pass `-f deadline-seconds=30` with the dispatch command. The input must be a positive number no greater than the computed runner allowance. Story-specific waits do not extend the overall deadline.
+
 ## Run an isolated native copy
 
 Use only an executable prepared by `prepareNativeApp` in the current checkout. The helper records a ledger-owned APFS bundle clone, source digests, a distinct bundle identity, an owned app home, and a copied core pinned in `settings.json`. It disables native automatic sounds. The app tier refuses original application bundles, pending updates, launcher links, changed copies, and missing ownership. It never falls back to the live app.
@@ -129,7 +133,7 @@ npm run test:herdr:e2e -- --built --tier headless --story R06,R07,R08,R09,R10,R1
 
 These IDs are explicit members of `headless`, not the no-core `ci` tier. Any
 selection containing them uses one worker. Each story keeps the existing
-startup, per-wait, and 300-second story deadlines. The report records its duration
+startup, per-wait, and 300-second story deadlines. The overall runner, step, or job deadline can end a story sooner. The report records its duration
 and independent cleanup proof.
 
 | Story | Coverage |

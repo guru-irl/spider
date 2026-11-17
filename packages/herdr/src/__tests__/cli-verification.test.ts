@@ -23,6 +23,17 @@ test.each(['setup', 'rollback'])('%s prints native transport stderr rather than 
   expect(await fail(command, native)).toEqual({ code: 1, stdout: '', stderr: 'cli-exit: CLI exited with 2\nCannot connect to app socket: no window is running\n' });
 });
 
+test('native diagnostics are bounded and cannot emit terminal control sequences', async () => {
+  const native = 'x'.repeat(65_536) + '\n\u001b]0;title\u0007\u009b31m\u007f\tend\n';
+  const result = await fail('setup', new HerdrError('cli-exit', 'CLI exited with 2', { stdout: 'secret', stderr: native }));
+  expect(result.code).toBe(1);
+  expect(result.stdout).toBe('');
+  expect(Buffer.byteLength(result.stderr)).toBeLessThanOrEqual(4_200);
+  expect(result.stderr).toContain('…(truncated)');
+  expect(result.stderr).toContain('\n�]0;title��31m�\tend\n');
+  expect(result.stderr).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+});
+
 test.each([null, {}, { stderr: null }, { stderr: 2 }, { stderr: '  \n' }])('malformed or empty native details preserve the original error: %j', async details => {
   expect(await fail('setup', new HerdrError('cli-exit', 'CLI exited with 2', details)))
     .toEqual({ code: 1, stdout: '', stderr: 'cli-exit: CLI exited with 2\n' });

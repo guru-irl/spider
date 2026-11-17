@@ -178,7 +178,7 @@ export function storyTimeoutMs(id) {
 export function storyRunBudgetMs(options) {
   return 60_000 + options.ids.reduce((total, id) => total + storyTimeoutMs(id), 0) + (options.harness ? 10 * 60_000 : 0);
 }
-function command(executable, argv, cwd, env, log, quiet = false, supervisor, timeoutMs = 10 * 60_000) {
+export function command(executable, argv, cwd, env, log, quiet = false, supervisor, timeoutMs = 10 * 60_000) {
   return new Promise((resolve, reject) => {
     writeFileSync(log, '');
     const child = spawn(executable, argv, { cwd, env, detached: Boolean(supervisor), timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });

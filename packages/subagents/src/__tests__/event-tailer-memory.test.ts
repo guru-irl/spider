@@ -80,9 +80,24 @@ describe("tailer replay allocation", () => {
     insert.run(next, JSON.stringify({ status: "done" }));
 
     let rowsRead = 0;
-    db.raw.function("observe_event_id", (id: number) => { rowsRead++; return id; });
+    let observing = true;
+    db.raw.function("observe_event_id", (id: number) => { if (observing) rowsRead++; return id; });
     db.raw.exec(`ALTER TABLE run_events RENAME TO fixture_events;
       CREATE VIEW run_events AS SELECT observe_event_id(id) AS id,run_id,session_id,ts,type,tool,summary,payload FROM fixture_events`);
+    // Wrapping id hides its primary key from the detail lookup. Exclude that
+    // fixture-only scan while measuring candidate and remaining-row queries.
+    const prepare = db.prepare.bind(db);
+    vi.spyOn(db, "prepare").mockImplementation(sql => {
+      const stmt = prepare(sql);
+      if (!sql.startsWith("SELECT session_id, ts, type, tool, summary, payload")) return stmt;
+      return new Proxy(stmt, { get(target, key) {
+        if (key === "get") return (...args: any[]) => {
+          observing = false;
+          try { return target.get(...args); } finally { observing = true; }
+        };
+        return Reflect.get(target, key, target);
+      } });
+    });
     const seen: string[] = [];
     offs.push(bus.on(event => { if (event.runId === next) seen.push(event.type); }));
     tailer.poll();

@@ -73,7 +73,8 @@ test('unreadable app version leaves existing picker files and bindings alone', a
   const installed = await readFile(keyPath), journalBefore = await readFile(join(request.journalRoot, 'journal.json'));
   const files = await f.parts.installFiles(request, f.context);
   expect(files.some(file => file.path === picker)).toBe(false);
-  expect(files.find(file => file.path === keyPath)).toBeUndefined();
+  expect(files.find(file => file.path === keyPath)?.keys?.global['cmd-t']).toBe('mod.open:spider-machine-picker');
+  expect(files.find(file => file.path === keyPath)?.keys?.['layout:spider-glass']['cmd-shift-w']).toBe('spider-pane.close');
   expect(await readFile(keyPath)).toEqual(installed);
   expect(await readFile(picker, 'utf8')).toBe('// installed picker\n');
   expect(await readFile(join(request.journalRoot, 'journal.json'))).toEqual(journalBefore);
@@ -173,6 +174,28 @@ test('a lost version updates independent keys without rebinding an installed pic
   const newJournal = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)!;
   for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) expect(newJournal.keysBefore?.global[key]).toEqual(oldJournal.keysBefore?.global[key]);
   expect(newJournal.keysBefore?.['layout:spider-glass']['cmd-shift-w']).toEqual(oldJournal.keysBefore?.['layout:spider-glass']['cmd-shift-w']);
+});
+
+test('a lost version leaves user-modified picker keys alone', async () => {
+  const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  await setupHerdr(f.request, f.parts);
+  const keyPath = join(home, 'keys.json'), keys = JSON.parse(await readFile(keyPath, 'utf8'));
+  keys.global['cmd-t'] = 'tab.new'; keys['layout:spider-glass']['cmd-shift-w'] = 'custom.close';
+  const modified = Buffer.from(JSON.stringify(keys)); await writeFile(keyPath, modified);
+  const journal = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)!;
+  const stage = f.parts.stageLook;
+  f.parts.stageLook = async (...args) => {
+    const files = await stage(...args);
+    await writeFile(app, (await readFile(app, 'utf8')).replace("console.log('herdr-app 0.1.13')", 'process.exit(1)'));
+    return files;
+  };
+  const result = await setupHerdr(f.request, f.parts);
+  expect(result.doctor.failures).toEqual([]);
+  expect(result.doctor.warnings.filter(warning => warning.code === 'picker-version-unavailable')).toHaveLength(1);
+  expect(await readFile(keyPath)).toEqual(modified);
+  const after = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)!;
+  expect(after.keys).toEqual(journal.keys);
+  expect(after.keysBefore).toEqual(journal.keysBefore);
 });
 
 test('a lost version preserves a lone picker helper and still installs the A pane', async () => {

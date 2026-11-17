@@ -1,7 +1,7 @@
 import { abortCleanupId } from "../move-recovery";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -15,6 +15,8 @@ import { assignInitialHome, casHome, sessionHome } from "../homes";
 import { openJournal } from "../journal";
 import * as moves from "../move";
 import { movePowerKey, releaseMovePower } from "../power";
+import { createIntentStore } from "../intent";
+import { createDurableLaunchPort, createSupervisor } from "../supervisor";
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const identity = { bootId: "fake-boot", pid: 42, startTime: "fake-birth" };
@@ -185,6 +187,49 @@ it.each(forwardFaults)("restart after action and before reply at %s", async poin
   const ownersAtEveryObservation = f.ownersAtEveryObservation;
   expect(ownersAtEveryObservation.every(n => n <= 1)).toBe(true);
   expect(readFileSync(f.file, "utf8")).toBe(f.original);
+}, 5000);
+
+it.each([false, true])("move recovery reconciles a reserved destination only after hosting reads succeed; persistent=%s", async persistent => {
+  const f = fixture(), start = f.ports.start, intents = createIntentStore(dirname(f.target));
+  let unreadable = true, supervisor: ReturnType<typeof createSupervisor> | undefined;
+  const launches: string[] = [], evidence = vi.spyOn(console, "error").mockImplementation(() => {});
+  f.ports.start = async (home, prepared, operation) => {
+    const intent = { sessionId: home.sessionId, epoch: home.epoch, desired: "running" as const, suspended: null,
+      file: prepared.session.file, cwd: prepared.session.cwd, moveId: home.moveId };
+    await intents.update(home.sessionId, null, { intent, failures: [],
+      supervision: { kind: "launching", operationId: operation.id, phase: "reserved" } });
+    supervisor = createSupervisor({ intents, journal: f.journal, clock: { now: () => 1, later: () => () => {} },
+      runningIntents: { list: async () => [home.sessionId], async get() {
+        if (unreadable) throw new Error("Unsafe hosting state file"); return intent;
+      }, subscribe: () => () => {} }, events: { subscribe: () => () => {} },
+      async inspect() {
+        const observed = await f.ports.inspect(home, operation);
+        return { home, intent, localMachine: BOX, origin: HUB, owner: observed.owner, diagnostics: [], unfinishedFreeze: false,
+          states: [{ sessionId: home.sessionId, epoch: home.epoch, state: "active", moveId: home.moveId, freezeSeq: null }] };
+      },
+      launch: createDurableLaunchPort({ intents, authorize: async () => !unreadable, async invoke(request) {
+        launches.push(request.reservation.operationId);
+        return start(home, prepared, { ...operation, id: request.reservation.operationId });
+      } }), stop: async () => { throw new Error("Recovery must not stop the destination"); }, notify: async () => {},
+    });
+    await supervisor.reconcile();
+    return { code: 3, reason: "readiness-pending", operationId: operation.id, home, epoch: home.epoch, repairCommand: null, value: null };
+  };
+  try {
+    expect(await moves.moveSession(f.request, f.ports)).toMatchObject({ code: 3, reason: "move-destination-pending" });
+    expect(await moves.recoverMove("move-a", f.ports)).toMatchObject({ code: 3, reason: "move-destination-pending" });
+    expect(launches).toEqual([]);
+    expect(f.sourceActive).toBe(false);
+    unreadable = persistent;
+    await supervisor!.reconcile();
+    const recovered = await moves.recoverMove("move-a", f.ports);
+    expect(recovered).toMatchObject(persistent ? { code: 3, reason: "move-destination-pending" } : { code: 0, reason: "moved" });
+    expect(launches).toEqual(persistent ? [] : ["move-a"]);
+    expect(f.destinationActive).toBe(!persistent);
+    expect(f.current()).toMatchObject({ machineId: BOX, epoch: 2 });
+    expect(f.sourceActive).toBe(false);
+    expect(f.ownersAtEveryObservation.every(n => n <= 1)).toBe(true);
+  } finally { await supervisor?.stop(); evidence.mockRestore(); }
 }, 5000);
 
 it("lost readiness reply never allows rollback", async () => {

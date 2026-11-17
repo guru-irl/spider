@@ -7,7 +7,7 @@ import { createRunningIntentAuthority, readReadiness, recordReadiness } from "@s
 import { sessionHome } from "@spider/roam/homes";
 import type { ParticipantReadinessQuery } from "@spider/roam/move-ports";
 
-/** The same tuple and owned-process checks gate both fresh launches and replay. */
+/** Use the same tuple and owned-process checks for fresh launches and replay. */
 export async function readOwnedLaunchReadiness(ports: {
   db: Db; journal: FreezeJournal; machineId: string;
   lock(sessionId: string): Promise<IdLockObservation | null>;

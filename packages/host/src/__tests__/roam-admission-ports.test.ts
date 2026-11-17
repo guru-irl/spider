@@ -567,15 +567,15 @@ async function ownedIntent(kind: "box-participant" | "hub-return" | "hub-restora
     const privateDb = openDb(join(f.globalRoot, "roam", "journal.db")); dbs.push(privateDb); revokeMachine(privateDb, BOX);
   }
   f.ports.ready = async () => {};
-  const hooks = new Map<string, Function>(), gate = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, f.ports);
+  const hooks = new Map<string, Function>(), admission = registerAdmission({ on(name: string, handler: Function) { hooks.set(name, handler); } } as unknown as ExtensionAPI, f.ports);
   const start = () => hooks.get("session_start")!({ reason: "startup" }, f.ctx);
-  return { ...f, HUB, BOX, home, owner, row, save, journal, gate, start };
+  return { ...f, HUB, BOX, home, owner, row, save, journal, admission, start };
 }
 
 it.each(["hub-return", "hub-restoration", "box-participant"] as const)("admits the recorded %s owner with its matching provenance", async kind => {
   const f = await ownedIntent(kind);
-  try { await f.start(); expect(f.gate.inspect()).toEqual({ kind: "ordinary", home: f.home, blockers: [] }); }
-  finally { await f.gate.close(); }
+  try { await f.start(); expect(f.admission.inspect()).toEqual({ kind: "ordinary", home: f.home, blockers: [] }); }
+  finally { await f.admission.close(); }
 }, 5000);
 
 it.each(["missing owner", "unknown kind", "different machine", "different epoch", "different move", "missing revocation", "forged revocation", "forged provenance", "on a box"])(
@@ -598,8 +598,8 @@ it.each(["missing owner", "unknown kind", "different machine", "different epoch"
       writeFileSync(join(f.globalRoot, "roam", "machine.json"), JSON.stringify({ machineId: f.BOX }), { mode: 0o600 });
     }
     f.save();
-    try { await f.start(); expect(f.gate.inspect().kind).toBe("blocked"); expect(await inspectIdLock(join(f.globalRoot, "herdr"), "session-1")).toBeNull(); }
-    finally { await f.gate.close(); }
+    try { await f.start(); expect(f.admission.inspect().kind).toBe("blocked"); expect(await inspectIdLock(join(f.globalRoot, "herdr"), "session-1")).toBeNull(); }
+    finally { await f.admission.close(); }
   }, 5000);
 
 it.each(["different hub", "different machine", "not enrolled"])("a box-owned intent still refuses %s", async mismatch => {
@@ -608,15 +608,15 @@ it.each(["different hub", "different machine", "not enrolled"])("a box-owned int
   if (mismatch === "different machine") owner.machineId = f.HUB;
   if (mismatch === "not enrolled") unlinkSync(join(f.globalRoot, "roam", "machine.json"));
   f.save();
-  try { await f.start(); expect(f.gate.inspect().kind).toBe("blocked"); expect(await inspectIdLock(join(f.globalRoot, "herdr"), "session-1")).toBeNull(); }
-  finally { await f.gate.close(); }
+  try { await f.start(); expect(f.admission.inspect().kind).toBe("blocked"); expect(await inspectIdLock(join(f.globalRoot, "herdr"), "session-1")).toBeNull(); }
+  finally { await f.admission.close(); }
 }, 5000);
 
 
 it("admits a normal hub rollback owner only through its original move provenance", async () => {
   const f = await ownedIntent("hub-return", true);
-  try { await f.start(); expect(f.gate.inspect()).toEqual({ kind: "ordinary", home: f.home, blockers: [] }); }
-  finally { await f.gate.close(); }
+  try { await f.start(); expect(f.admission.inspect()).toEqual({ kind: "ordinary", home: f.home, blockers: [] }); }
+  finally { await f.admission.close(); }
 }, 5000);
 
 it.each(["different machine", "different epoch", "different move", "missing move commit", "missing move check", "forged restoration"])(
@@ -631,6 +631,6 @@ it.each(["different machine", "different epoch", "different move", "missing move
     }
     if (mismatch === "forged restoration") { owner.kind = "hub-restoration"; owner.revokedMachineId = f.BOX; }
     f.save();
-    try { await f.start(); expect(f.gate.inspect().kind).toBe("blocked"); expect(await inspectIdLock(join(f.globalRoot, "herdr"), "session-1")).toBeNull(); }
-    finally { await f.gate.close(); }
+    try { await f.start(); expect(f.admission.inspect().kind).toBe("blocked"); expect(await inspectIdLock(join(f.globalRoot, "herdr"), "session-1")).toBeNull(); }
+    finally { await f.admission.close(); }
   }, 5000);

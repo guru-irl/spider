@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'vite';
 import type { Owner, SessionId, Generation, TerminalIdentity } from '../contracts.js';
-import { createTerminalRegistry } from '../sessions/registry.js';
+import { createTerminalRegistry, terminalIdentityKey } from '../sessions/registry.js';
 import { createProcessPresence } from '../sessions/presence.js';
 import { createSessionLeases, type ProcessInventoryPorts } from '../sessions/lease.js';
 import { buildResumeBlock, offerResume, resumeOfferShell, resumeWatchShell, type ResumeHookOptions } from '../sessions/resume.js';
@@ -184,8 +184,11 @@ it('claims automatic resume once per terminal and proved core start, pruning old
 it('pruning a terminal removes its marker folder and a delayed offer cannot recreate it', async () => {
   const auto = { ...ports(), autoResumeRoot: root };
   expect(await offerResume(terminal, auto)).not.toBeNull();
+  const other = { ...terminal, terminalId: 't2', address: 't2' } as TerminalIdentity;
+  await auto.registry.record({ owner: { ...owner, terminal: other }, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] } });
+  expect(await offerResume(other, auto)).not.toBeNull();
   const markerRoot = join(root, 'resume-starts');
-  const [key] = await readdir(markerRoot);
+  const key = terminalIdentityKey(terminal), otherKey = terminalIdentityKey(other);
   let release!: () => void, observed!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const started = new Promise<void>(resolve => { observed = resolve; });
@@ -196,6 +199,7 @@ it('pruning a terminal removes its marker folder and a delayed offer cannot recr
   } finally { release(); }
   expect(await delayed).toBeNull();
   expect(existsSync(join(markerRoot, key))).toBe(false);
+  expect(existsSync(join(markerRoot, otherKey))).toBe(true);
 });
 
 it('simultaneous automatic claims are exclusive per terminal, not per session', async () => {

@@ -345,7 +345,7 @@ it("publishes the committed destination over a stale local copy and sends only t
   expect(outgoing.exchange.presence).toEqual([]);
   expect(await a.dispatch({ from, to: observed.at(-1)[0], message: { id: "after-move", timestamp: 1, content: { text: "synthetic" } } }))
     .toMatchObject({ delivery: "queued" });
-  const sent = batch(A, B, 1); sent.frames = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 });
+  const sent = batch(A, B, 1); sent.frames = [...source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })];
   await b.exchange(request(sent));
   expect(inbox.retained("inbound", "after-move")).toMatchObject({ endpoint: { machineId: B, homeEpoch: 2, activationEpoch: "destination-generation" } });
   expect(destinationDeliveries).toEqual(["after-move"]);
@@ -366,11 +366,29 @@ it("withdraws frozen local presence and holds arriving mail without delivery", a
   expect(poll.exchange.presence).toEqual([]);
   inbox.acceptOutbound({ from, endpoint: { ...endpoint, machineId: A, activationEpoch: "source-generation" }, nextHop: A,
     message: { id: "during-freeze", timestamp: 1, content: { text: "synthetic" } } });
-  const incoming = batch(B, A, 1); incoming.frames = inbox.pending({ kind: "outbound", peer: A, edgeEpoch: "edge-1", hopBudgetMs: 100 });
+  const incoming = batch(B, A, 1); incoming.frames = [...inbox.pending({ kind: "outbound", peer: A, edgeEpoch: "edge-1", hopBudgetMs: 100 })];
   await a.exchange(request(incoming));
   expect(source.retained("inbound", "during-freeze")).toMatchObject({ state: "queued", payloadRetained: true });
   expect(delivered).toEqual([]);
   expect(inbox.retained("inbound", "during-freeze")).toBeNull();
+}, 5000);
+
+it("accepts a sole initial epoch-one claimant but refuses a competing machine", async () => {
+  const { source } = pair(), observed: any[] = [];
+  const initial = { remote: true as const, id: to.sessionId, address: to, machineId: B, machineAlias: "first-home.invalid", homeEpoch: 1,
+    activationEpoch: "first-generation", endpointEpoch: "first-generation", cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 };
+  const a = await create(A, B, source, { edges: [{ peer: peer(B), edgeEpoch: "edge-1", initiator: false }, { peer: peer(C), edgeEpoch: "edge-1", initiator: false }],
+    publishPresence: (entries: unknown[]) => observed.push(entries) });
+  const first = batch(B, A, 1); first.presence = [initial]; await a.exchange(request(first));
+  expect(observed.at(-1)).toEqual([expect.objectContaining({ machineId: B, homeEpoch: 1 })]);
+  expect(await a.dispatch({ from, to: observed.at(-1)[0], message: { id: "initial-home-mail", timestamp: 1, content: { text: "synthetic" } } }))
+    .toMatchObject({ delivery: "queued" });
+  expect(source.retained("outbound", "initial-home-mail")).toMatchObject({ endpoint: { machineId: B, homeEpoch: 1 } });
+  const conflict = batch(C, A, 1); conflict.presence = [{ ...initial, machineId: C }]; await a.exchange(request(conflict));
+  expect(observed.at(-1)).toEqual([]);
+  expect(await a.dispatch({ from, to: initial, message: { id: "conflicting-home-mail", timestamp: 1, content: { text: "synthetic" } } }))
+    .toMatchObject({ delivery: "failed", reason: "presence-ambiguous" });
+  expect(source.retained("outbound", "conflicting-home-mail")).toBeNull();
 }, 5000);
 
 it("does not route from an old presence hint over a newer authoritative home", async () => {

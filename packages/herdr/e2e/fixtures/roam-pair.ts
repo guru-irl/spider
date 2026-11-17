@@ -40,7 +40,8 @@ function socketCall(path: string, value: object): Promise<Record<string, unknown
     socket.setTimeout(5000, () => { socket.destroy(); fail(new Error('fixture socket deadline')); });
   });
 }
-export interface PairFixture { graph: string; pairId: string; alias: string; descriptors: readonly string[]; managers: readonly OwnedProcess[]; close(): Promise<void> }
+export interface PairFixture { graph: string; pairId: string; alias: string; descriptors: readonly string[]; managers: readonly OwnedProcess[];
+  presentedKey(value: 'system' | 'other'): Promise<void>; close(): Promise<void> }
 
 /** No direct box alias survives: enrollment must create its reserved route through the connector. */
 export async function preparePair(suite: Suite, network: Network): Promise<PairFixture> {
@@ -62,18 +63,25 @@ export async function preparePair(suite: Suite, network: Network): Promise<PairF
     const connector = join(bin, 'roam-pair-connector.mjs'), ssh = join(bin, 'pair-ssh');
     await writeFile(ssh, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(join(bin, 'roam-pair-ssh.mjs'))} ${quote(join(source.global, '..', 'pair.json'))} "$@"\n`, { mode: 0o700 });
     const [hostPort, localPort] = await ports(), descriptors: string[] = [];
+    let targetKeys: { served: string; system: string; other: string } | undefined;
     for (const [offset, machine] of [source, target].entries()) {
       const machineRoot = join(machine.global, '..'), home = join(machineRoot, 'h');
       const hostKey = join(machineRoot, 'host-key');
       const keygen = await suite.invoke('/usr/bin/ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', hostKey], machine.env);
       if (keygen.exitCode !== 0) throw new HarnessError('fixture-keygen', keygen.stderr);
-      const sshd = join(machineRoot, 'sshd-info');
-      await writeFile(sshd, `#!/bin/sh\nprintf '%s\\n' ${quote(`hostkey ${hostKey}`)}\n`, { mode: 0o700 });
+      const otherKey = join(machineRoot, 'other-host-key');
+      const otherKeygen = await suite.invoke('/usr/bin/ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', otherKey], machine.env);
+      if (otherKeygen.exitCode !== 0) throw new HarnessError('fixture-keygen', otherKeygen.stderr);
+      const systemSsh = join(machineRoot, 'system-ssh'), systemKey = join(systemSsh, 'ssh_host_ed25519_key.pub'), servedKey = join(machineRoot, 'served-key.pub');
+      await mkdir(systemSsh, { mode: 0o755 }); await copyFile(`${hostKey}.pub`, systemKey); await copyFile(`${hostKey}.pub`, servedKey);
+      if (offset === 1) targetKeys = { served: servedKey, system: systemKey, other: `${otherKey}.pub` };
+      const keyscan = join(machineRoot, 'ssh-keyscan');
+      await writeFile(keyscan, `#!/bin/sh\n[ "$#" -eq 7 ] && [ "$1" = -T ] && [ "$2" = 5 ] && [ "$3" = -t ] && [ "$4" = ed25519,ecdsa,rsa ] && [ "$5" = -p ] && [ "$6" = ${quote(String(hostPort))} ] && [ "$7" = 127.0.0.1 ] || exit 2\nIFS=' ' read -r type key comment < ${quote(servedKey)}\n[ "$type" = ssh-ed25519 ] && [ -n "$key" ] || exit 2\nprintf '# 127.0.0.1:%s SSH-2.0-OpenSSH_9.8\\n[127.0.0.1]:%s %s %s\\n# 127.0.0.1:%s SSH-2.0-OpenSSH_9.8\\n# 127.0.0.1:%s SSH-2.0-OpenSSH_9.8\\n' ${quote(String(hostPort))} ${quote(String(hostPort))} "$type" "$key" ${quote(String(hostPort))} ${quote(String(hostPort))}\n`, { mode: 0o700 });
       const descriptor = suite.ownPath(join(machineRoot, 'pair.json')), socket = assertSocketPath(suite.root, join(machineRoot, 'sd.sock'));
       const stateFile = suite.ownPath(join(machineRoot, 'sd.json'));
       Object.assign(machine.env, { SPIDER_E2E_PAIR_ALIAS: ALIAS });
       const value = { root: suite.root, global: machine.global, machineId: machine.id, home, socket, stateFile, node: process.execPath,
-        connector, systemctl: join(machineRoot, 'systemctl'), ssh, sshd, hc: suite.cores.wrapper, env: machine.env,
+        connector, systemctl: join(machineRoot, 'systemctl'), ssh, keyscan, systemSsh, hc: suite.cores.wrapper, env: machine.env,
         hostPort, localPort, connectCommands: connectCommands(target.core.namespace).map((command: string) => ({ command, envelope: encodePairCommand({ pairId: PAIR, edgeEpoch: EPOCH }, command) })), localCore: machine.core.socket, peerCore: (offset === 0 ? target : source).core.socket,
         via: join(bin, 'via.mjs'), viaDescriptor: join(suite.root, 'via-i2.json'), viaRoute: join(bin, 'via-i2') };
       await writeFile(descriptor, JSON.stringify(value), { mode: 0o600 }); descriptors.push(descriptor);
@@ -103,13 +111,16 @@ export async function preparePair(suite: Suite, network: Network): Promise<PairF
     const graph = suite.ownPath(join(suite.root, 'pair-graph.json'));
     await writeFile(graph, JSON.stringify({ pairs: [{ pairId: PAIR, source: source.alias, target: target.alias, edgeEpoch: EPOCH,
       connector: { tunnelId: 'fixture-tunnel', session: target.core.namespace, remotePort: hostPort } }] }), { mode: 0o600 });
-    return { graph, pairId: PAIR, alias: ALIAS, descriptors, managers, close };
+    if (!targetKeys) throw new HarnessError('fixture-keygen', 'target host keys unavailable');
+    const keys = targetKeys;
+    return { graph, pairId: PAIR, alias: ALIAS, descriptors, managers, close,
+      async presentedKey(value) { await copyFile(value === 'system' ? keys.system : keys.other, keys.served); } };
   } catch (error) { await close(); throw error; }
 }
 
 /** Real TTY approval goes to the packaged CLI; the inner child and broker are ledger-owned. */
-export async function enrollPair(suite: Suite, network: Network, pair: PairFixture, operationId?: string): Promise<{ code: number | null; output: string }> {
-  const suffix = operationId ? 'retry' : 'first';
+export async function enrollPair(suite: Suite, network: Network, pair: PairFixture, operationId?: string, attempt?: 'verified' | 'retry'): Promise<{ code: number | null; output: string }> {
+  const suffix = attempt ?? (operationId ? 'retry' : 'first');
   const hub = network.machines[0], socket = assertSocketPath(suite.root, join(suite.root, `enroll-${suffix}.sock`));
   const log = suite.ownPath(join(suite.root, `enroll-${suffix}.raw`)), envFile = suite.ownPath(join(suite.root, `enroll-${suffix}-env.json`));
   await writeFile(envFile, JSON.stringify(hub.env), { mode: 0o600 });

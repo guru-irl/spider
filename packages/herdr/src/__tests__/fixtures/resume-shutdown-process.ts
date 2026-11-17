@@ -19,8 +19,10 @@ const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Prom
 const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;
 const identity = { pid: process.pid, startIdentity: processStartTime(process.pid)! };
 let active = true;
+const registry = createTerminalRegistry(root);
+const startupRegistry = process.argv[4] === 'hold' ? { ...registry, record: async () => { process.send?.('starting'); await new Promise<void>(() => { setInterval(() => {}, 1000); }); } } : registry;
 registerHerdrSessions(pi, {
-  registry: createTerminalRegistry(root), presence: createProcessPresence(root), leases: createSessionLeases(root),
+  registry: startupRegistry, presence: createProcessPresence(root), leases: createSessionLeases(root),
   processes: async () => [], probe: async () => ({ kind: 'absent' }), processIdentity: identity,
   currentSession: () => ({ ...identity, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address }),
   owner: () => active ? owner : null, coreStartedAt: () => 1, launchEnvironment: { agentDirectory: join(root, 'agent'), extensionArguments: [] },

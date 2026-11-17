@@ -1,12 +1,13 @@
 import { existsSync, lstatSync, readFileSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import path, { resolve } from 'node:path';
+import * as ts from 'typescript';
 import { runInNewContext } from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
 import { describe, expect, it, vi } from 'vitest';
 import { paths } from '@spider/db-core';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
-import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command, finishCleanup, runStoryWork, storyExecutionDeadline, runnerCleanupDeadline } from '../../../../scripts/herdr-e2e.mjs';
+import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command, finishCleanup, markStoryWorkComplete, runStoryWork, storyExecutionDeadline, runnerCleanupDeadline } from '../../../../scripts/herdr-e2e.mjs';
 import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
 import { restorationPending, presentationInProgress } from './roam-recovery.test.js';
@@ -122,6 +123,43 @@ describe('story cleanup reserve', () => {
       await expect(runStoryWork(root, 'R18', async () => { throw new Error('story failed'); })).rejects.toThrow('story failed');
       expect(storyExecutionDeadline(overall, root, { ids: ['R17', 'R18'], harness: false }).cleanupReady()).toBe(true);
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('keeps the story run inside the work boundary until it completes', async () => {
+    const source = readFileSync(new URL('./runner-stories.test.ts', import.meta.url), 'utf8');
+    const file = ts.createSourceFile('runner-stories.test.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const calls: ts.CallExpression[] = [];
+    function visit(node: ts.Node) {
+      if (ts.isCallExpression(node)) calls.push(node);
+      ts.forEachChild(node, visit);
+    }
+    visit(file);
+    const storyRuns = calls.filter(call => ts.isPropertyAccessExpression(call.expression) && call.expression.getText(file) === 'story.run');
+    const boundaries = calls.filter(call => ts.isIdentifier(call.expression) && call.expression.text === 'runStoryWork');
+    expect(storyRuns).toHaveLength(1);
+    expect(boundaries).toHaveLength(1);
+    const callback = boundaries[0].arguments[2];
+    expect(callback && ts.isArrowFunction(callback)).toBe(true);
+    expect(storyRuns[0].pos >= callback.pos && storyRuns[0].end <= callback.end).toBe(true);
+    const driver = calls.find(call => ts.isIdentifier(call.expression) && call.expression.text === 'it' &&
+      call.arguments.length === 3 && ts.isArrowFunction(call.arguments[1]));
+    expect(driver).toBeDefined();
+    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const story = { id: 'R17', run: async () => { entered(); await gate; } };
+    const suite = { root, evidence: async () => {}, close: async () => ({ clean: true }) };
+    const context = { story, root, options: {}, path, process, runStoryWork, markStoryWorkComplete,
+      createSuite: async () => suite, storyOptions: () => ({}), scratchRoot: () => root, readFileSync: () => '{}', existsSync: () => false, record: () => {} };
+    const run = runInNewContext(stripTypeScriptTypes(`(${driver!.arguments[1].getText(file)})`), context) as () => Promise<void>;
+    const work = run();
+    try {
+      await started;
+      expect(storyExecutionDeadline({ at: Date.now() + 10_000, expire() {} }, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(false);
+      release(); await work;
+      expect(storyExecutionDeadline({ at: Date.now() + 10_000, expire() {} }, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(true);
+    } finally { release(); await work; rmSync(root, { recursive: true, force: true }); }
   });
 
   it('finishes already-started cleanup in the existing reserve without expiring work', async () => {

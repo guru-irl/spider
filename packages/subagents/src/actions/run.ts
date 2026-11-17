@@ -226,12 +226,14 @@ export function makeRunHandler(overrides: RunDeps = {}): (args: any, ctx: any) =
     };
 
     if (stages) {
-      const coord = overrides.makePipeline
-        ? overrides.makePipeline({ db: ctx.db, globalDb: ctx.globalDb, store, runner, pi: ctx.pi, sessionId: ctx.sessionId })
-        : new PipelineCoordinator({ db: ctx.db, globalDb: ctx.globalDb, store, runner, pi: ctx.pi, sessionId: ctx.sessionId });
-      coords.pipelines.push(coord);
       const pipeline = stages.map((stage: any) => ({ ...stage, ...resolveMT(stage.model, stage.thinking, stage.agent ?? "worker") }));
-      const { pipelineId, firstRunId } = coord.start({ pipeline, handoff: args.handoff ?? "intercom", async: true });
+      const deps = { db: ctx.db, globalDb: ctx.globalDb, store, runner, pi: ctx.pi, sessionId: ctx.sessionId, onDispose: () => {
+        const index = coords.pipelines.indexOf(coord);
+        if (index >= 0) coords.pipelines.splice(index, 1);
+      } };
+      const coord: PipelineCoordinator = overrides.makePipeline ? overrides.makePipeline(deps) : new PipelineCoordinator(deps);
+      coords.pipelines.push(coord);
+      const { pipelineId, firstRunId } = coord.start({ pipeline, handoff: args.handoff ?? "intercom" });
       return { content: `pipeline ${pipelineId} started (${args.pipeline.length} stages), first run ${firstRunId}`, details: withWarning({ pipelineId, firstRunId }) };
     }
     if (Array.isArray(args.chain)) {

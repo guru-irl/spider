@@ -1,16 +1,23 @@
 import type { Db } from "@spider/db-core";
 import { readTranscript } from "@spider/context";
 import type { DigestMsg } from "@spider/memory";
-import type { RunRow } from "@spider/subagents";
 import type { Todo } from "@spider/todo";
 import { existsSync } from "node:fs";
-import type { DigestBundle, DrainReason, RunEventRow, TrackEventRow } from "./types.js";
+import type { DigestBundle, DrainReason, RunActivity, RunEventRow, TrackEventRow } from "./types.js";
 
 export interface DrainOpts {
   transcriptPath?: string;
   /** Captured at the lifecycle boundary; also supports in-memory pi sessions. */
   transcript?: readonly DigestMsg[];
 }
+
+// Background review consumes recent summaries, never raw tool payloads. Apply
+// limits in SQLite: trimming after .all() still allocates the entire history.
+const RUN_LIMIT = 100;
+const RUN_EVENT_LIMIT = 200;
+const TRACKED_EVENT_LIMIT = 40;
+const TODO_LIMIT = 100;
+const TEXT_CHARS = 2000;
 
 interface RunEventDbRow {
   id: number;
@@ -19,7 +26,6 @@ interface RunEventDbRow {
   type: string;
   tool: string | null;
   summary: string | null;
-  payload: string | null;
 }
 
 interface TrackEventDbRow {
@@ -28,8 +34,6 @@ interface TrackEventDbRow {
   phase: string;
   tool: string;
   description: string | null;
-  flagged: string | null;
-  payload: string | null;
 }
 
 interface TodoDbRow {
@@ -38,51 +42,46 @@ interface TodoDbRow {
   done: number;
 }
 
-function parsePayload(payload: string | null): unknown {
-  if (payload == null) return undefined;
-  try {
-    return JSON.parse(payload);
-  } catch {
-    return payload;
-  }
-}
-
 /**
- * Non-destructively drain a session's activity from the project DB into a
- * `DigestBundle`. Reads only; the event log persists untouched.
+ * Non-destructively read recent activity for background review. Persisted
+ * history is untouched; model inputs cannot grow with the lifetime event log.
  */
 export function drainSession(db: Db, sessionId: string, reason: DrainReason, opts?: DrainOpts): DigestBundle {
-  const runs = db.prepare(`SELECT * FROM runs WHERE session_id = ? ORDER BY id ASC`).all(sessionId) as RunRow[];
+  const runs = (db.prepare(`SELECT id, agent, role, status, step_count, token_count
+    FROM runs WHERE session_id = ?
+    ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC LIMIT ?`).all(sessionId, RUN_LIMIT) as RunActivity[]).reverse();
 
   const runEvents = (
-    db.prepare(`SELECT * FROM run_events WHERE session_id = ? ORDER BY id ASC`).all(sessionId) as RunEventDbRow[]
-  ).filter(r => !(r.type === "log" && r.summary?.startsWith("organism "))).map<RunEventRow>((r) => ({
+    db.prepare(`SELECT id, run_id, ts, type, tool, substr(summary, 1, ?) AS summary
+      FROM run_events WHERE session_id = ?
+      AND (type != 'log' OR summary IS NULL OR summary NOT GLOB 'organism *')
+      ORDER BY id DESC LIMIT ?`).all(TEXT_CHARS, sessionId, RUN_EVENT_LIMIT) as RunEventDbRow[]
+  ).reverse().map<RunEventRow>((r) => ({
     id: r.id,
     runId: r.run_id ?? undefined,
     ts: r.ts,
     type: r.type,
     tool: r.tool ?? undefined,
     summary: r.summary ?? undefined,
-    payload: parsePayload(r.payload),
   }));
 
   const events = (
-    db.prepare(`SELECT * FROM events WHERE session_id = ? ORDER BY id ASC`).all(sessionId) as TrackEventDbRow[]
-  ).map<TrackEventRow>((r) => ({
+    db.prepare(`SELECT id, ts, phase, tool, substr(description, 1, ?) AS description
+      FROM events WHERE session_id = ? ORDER BY id DESC LIMIT ?`).all(TEXT_CHARS, sessionId, TRACKED_EVENT_LIMIT) as TrackEventDbRow[]
+  ).reverse().map<TrackEventRow>((r) => ({
     id: r.id,
     ts: r.ts,
     phase: r.phase === "before" ? "before" : "after",
     tool: r.tool,
     description: r.description ?? undefined,
-    flagged: r.flagged ?? undefined,
-    payload: parsePayload(r.payload),
   }));
 
   const todos = (
-    db.prepare(`SELECT seq, text, done FROM todos WHERE session_id = ? ORDER BY seq ASC`).all(sessionId) as TodoDbRow[]
-  ).map<Todo>((r) => ({ seq: r.seq, text: r.text, done: !!r.done }));
+    db.prepare(`SELECT seq, substr(text, 1, ?) AS text, done FROM todos
+      WHERE session_id = ? ORDER BY seq DESC LIMIT ?`).all(TEXT_CHARS, sessionId, TODO_LIMIT) as TodoDbRow[]
+  ).reverse().map<Todo>((r) => ({ seq: r.seq, text: r.text, done: !!r.done }));
 
-  const sessionRow = db.prepare(`SELECT name FROM sessions WHERE id = ?`).get(sessionId) as
+  const sessionRow = db.prepare(`SELECT substr(name, 1, ?) AS name FROM sessions WHERE id = ?`).get(TEXT_CHARS, sessionId) as
     | { name: string | null }
     | undefined;
   const sessionName = sessionRow?.name ?? undefined;

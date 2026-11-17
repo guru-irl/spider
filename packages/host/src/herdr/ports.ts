@@ -369,12 +369,12 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   const appEnv = (request: SetupRequest) => ({ ...env, HERDR_APP_HOME: request.config.app.home });
   const toastAvailable = async (release: string | undefined, appHome: string) => release ? (await planToastFiles(release, appHome, join(packageRoot, 'packages/herdr/assets/toast'))).length > 0 : false;
   const additionalFor = (release: string | undefined) => release === '0.1.13' || release === '0.1.16' ? additionalPatches[release] ?? {} : {};
-  const auxiliaryModIds = (selected: LookPatchSet | undefined) => [
-    ...PANE_ENTRY_MODS,
+  const auxiliaryModIds = (selected: (LookPatchSet & { crossMachine?: CrossMachineLookRecipe }) | undefined) => [
+    ...PANE_ENTRY_MODS.filter(name => selected?.crossMachine || name === 'spider-pane-waiting'),
     ...(selected?.mods.menu ? ['spider-menu'] : []),
     ...(selected?.upstreamVersion === '0.1.13' || selected?.upstreamVersion === '0.1.16' || additionalFor(selected?.upstreamVersion)['new-menu'] ? ['spider-new-menu'] : []),
   ];
-  const modNames = (selected: LookPatchSet | undefined, hasToast: boolean) => [
+  const modNames = (selected: (LookPatchSet & { crossMachine?: CrossMachineLookRecipe }) | undefined, hasToast: boolean) => [
     'agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'picker',
     ...auxiliaryModIds(selected).map(name => name.slice('spider-'.length)),
     ...(hasToast ? ['toast'] : []),
@@ -541,6 +541,32 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     catch { throw new HerdrError('cross-machine-recipe-missing', 'The packaged cross-machine records are missing or unreadable'); }
     return { ...selected, crossMachine: selectCrossMachinePatches(records, appVersion) };
   };
+  const desiredKeys = async (selected: LookPatchSet & { crossMachine?: CrossMachineLookRecipe }) => {
+    const keys = JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/keys.json'), 'utf8')) as Record<string, Record<string, KeyBinding>>;
+    if (!selected.crossMachine) {
+      for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) delete keys.global?.[key];
+      delete keys['layout:spider-glass']?.['cmd-shift-w'];
+    }
+    return keys;
+  };
+  const legacyPickerIssue = (request: SetupRequest, selected: LookPatchSet & { crossMachine?: CrossMachineLookRecipe }, journal: Awaited<ReturnType<typeof readJournal>>, bytes: Buffer | null) => {
+    if (selected.crossMachine) return undefined;
+    const bindings = [
+      ['global', 'cmd-t', 'mod.open:spider-machine-picker'],
+      ['global', 'cmd-d', 'mod.open:spider-machine-picker-right'],
+      ['global', 'cmd-shift-d', 'mod.open:spider-machine-picker-down'],
+      ['layout:spider-glass', 'cmd-shift-w', 'spider-pane.close'],
+    ] as const;
+    let current: Record<string, Record<string, unknown>> = {};
+    try { current = JSON.parse(bytes?.toString('utf8') ?? '{}'); } catch { /* key validation reports malformed input */ }
+    const owned = journal.entries.find(entry => entry.path === join(request.config.app.home, 'keys.json'))?.keys;
+    const stale = bindings.find(([section, key, value]) => current?.[section]?.[key] === value || owned?.[section]?.[key] === value);
+    const modRoots = PANE_ENTRY_MODS.filter(name => name !== 'spider-pane-waiting').map(name => resolve(request.config.app.home, 'mods', name) + sep);
+    const oldFile = journal.entries.find(entry => modRoots.some(root => resolve(entry.path).startsWith(root)));
+    if (!stale && !oldFile) return undefined;
+    const command = [process.execPath, join(packageRoot, 'dist/herdr/cli.mjs'), 'rollback', '--config', request.configPath].map(shellQuote).join(' ');
+    return { message: `Unsupported picker state on ${selected.upstreamVersion}: ${stale ? `${stale[0]}.${stale[1]}` : oldFile!.path}`, repair: `Run ${command}, then restore any remaining picker shortcuts to stock bindings before setup.` };
+  };
   const stagedLook = async (request: SetupRequest, context: SetupContext): Promise<InstallFile[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets');
     const patches = await releaseLook(request), appVersion = patches.upstreamVersion;
@@ -588,7 +614,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     for (const file of await assetFiles(join(assets, 'agents'))) if (file.relative !== 'children.js') files.push({ path: join(request.config.app.home, 'mods/spider-agents', file.relative), bytes: file.bytes });
     files.push({ path: join(request.config.app.home, 'mods/spider-agents/sound.js'), bytes: await readFile(join(assets, 'mods/spider/sound.js')) });
     for (const file of await assetFiles(join(assets, 'spaces'))) files.push({ path: join(request.config.app.home, 'mods/spider-spaces', file.relative), bytes: file.bytes });
-    files.push(...await pickerFiles(request, context, fonts.families, kinds.map(kind => patched[kind]!.name)));
+    files.push(...await pickerFiles(request, context, fonts.families, [...kinds.map(kind => patched[kind]!.name), ...auxiliaryModIds(patches)]));
     const toast = await planToastFiles(appVersion, request.config.app.home, join(assets, 'toast'));
     if (toast.length && !context.modProps.some(copy => copy.props.modId === 'spider-toast' && resolve(copy.directory) === resolve(request.config.app.home, 'mods/spider-toast'))) throw new HerdrError('missing-mod-id', 'Toast needs validated installed mod props');
     files.push(...toast);
@@ -747,7 +773,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       if (item === 'fonts') { const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(packageRoot, 'packages/herdr/assets/fonts'), readFile }); for (const file of fonts.files) if (!(await snapshot(join(request.config.app.home, 'fonts', file.fileName))).bytes?.equals(file.bytes)) return failure('installed-font-mismatch', `Installed font or notice differs: ${file.fileName}`); return { failures: [] }; }
       if (item === 'spaces-tabs') { await preflightSpaces(request.config, spacePorts(request), { adoptExistingSpaces: request.adoptExistingSpaces }); return { failures: [] }; }
       const journal = await readJournal(request.journalRoot);
-      const selected = ['mods', 'clones', 'patch-version', 'layout-theme'].includes(item) ? await releaseLook(request) : undefined;
+      const selected = ['mods', 'clones', 'patch-version', 'layout-theme', 'keys'].includes(item) ? await releaseLook(request) : undefined;
       const release = selected?.upstreamVersion;
       const hasToast = await toastAvailable(release, request.config.app.home);
       const context: SetupContext = { labelContract: HerdrLabelContract, installed: Object.fromEntries(journal.entries.map(entry => [entry.path, entry.after])), retiredTerminals: [], priorCutover: journal.cutover, recordCutover: async () => { throw new HerdrError('doctor-read-only', 'Doctor cannot record a cutover'); }, modProps: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(request.config.globalRoot, 'herdr'), cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: request.config.app.binary, configPath: request.configPath, labelContract: HerdrLabelContract } })) };
@@ -831,7 +857,9 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         return { failures: [], information };
       }
       if (item === 'keys') {
-        const desired = JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/keys.json'), 'utf8')) as KeySections;
+        const issue = legacyPickerIssue(request, selected!, journal, (await snapshot(join(request.config.app.home, 'keys.json'))).bytes);
+        if (issue) return failure('legacy-picker-binding', issue.message, issue.repair);
+        const desired = await desiredKeys(selected!);
         const keyReport = checkManagedKeyBindings((await snapshot(join(request.config.app.home, 'keys.json'))).bytes, desired);
         if (keyReport.failures.length) return keyReport;
         const nativeFailures: DoctorFailure[] = [], nativeWarnings: DoctorFailure[] = [];
@@ -1016,7 +1044,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           rootProbes.clear();
           // This exported G check is before any backup or asset/config staging.
           await preflightSpaces(request.config, spaces, { adoptExistingSpaces: request.adoptExistingSpaces });
-          const identity = await hc.identity(), snapshot = await spaces.layoutSnapshot(), recovery = await readCutoverRecovery(spaces.journalRoot, snapshot, request.config, spaces), saved = await readJournal(request.journalRoot);
+          const identity = await hc.identity(), layoutSnapshot = await spaces.layoutSnapshot(), recovery = await readCutoverRecovery(spaces.journalRoot, layoutSnapshot, request.config, spaces), saved = await readJournal(request.journalRoot);
           let recoveredCutover: import('@spider/herdr/setup/installer').CutoverResult | undefined, cutoverProvedAbsent = false;
           if (saved.cutoverPending) {
             const verified: import('@spider/herdr/spaces/cutover').LaunchedSession[] = [];
@@ -1034,21 +1062,24 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           } else if (recovery.recoveredCutover) recoveredCutover = { terminals: recovery.createdTabs.map(tab => tab.terminal), identities: Object.fromEntries(recovery.recoveredCutover.launched.map(owner => [owner.sessionId, owner.startIdentity])) };
           const patchBytes = await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'));
           const selected = await releaseLook(request), release = selected.upstreamVersion;
+          const issue = legacyPickerIssue(request, selected, saved, (await snapshot(join(request.config.app.home, 'keys.json'))).bytes);
+          if (issue) throw new HerdrError('legacy-picker-binding', `${issue.message}. ${issue.repair}`);
           const hasToast = await toastAvailable(release, request.config.app.home);
           const patchInputs = [patchBytes];
           if (selected.crossMachine) patchInputs.push(Buffer.from(JSON.stringify(selected.crossMachine)));
           if (Object.keys(additionalFor(release)).length) patchInputs.push(Buffer.from(JSON.stringify(additionalFor(release))));
-          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, cutoverActions: await planSpaceCutover(request.config, spaces, { snapshot, recovery }), fingerprint: digest(Buffer.concat(patchInputs)), coreIdentity: identity, mods: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
+          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, cutoverActions: await planSpaceCutover(request.config, spaces, { snapshot: layoutSnapshot, recovery }), fingerprint: digest(Buffer.concat(patchInputs)), coreIdentity: identity, mods: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
         },
         stageLook: (request, context) => stagedLook(request, context),
         installFiles: async (request, context) => {
           const assets = join(packageRoot, 'packages/herdr/assets'), files: { path: string; bytes: Buffer; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[] = [];
           for (const file of await assetFiles(join(assets, 'mods/spider'))) files.push({ path: join(request.config.app.home, 'mods/spider-panel', file.relative), bytes: file.bytes });
           files.push({ path: join(request.config.agentDirectory, 'themes/dracula-plus-glass.json'), bytes: await readFile(join(assets, 'themes/dracula-plus-glass.json')) }, { path: join(request.config.app.home, 'themes/spider-glass.json'), bytes: await readFile(join(assets, 'themes/spider-glass.json')) });
-          const keys = JSON.parse(await readFile(join(assets, 'keys.json'), 'utf8')) as Record<string, Record<string, KeyBinding>>;
+          const selected = await releaseLook(request);
+          const keys = await desiredKeys(selected);
           const keyPath = join(request.config.app.home, 'keys.json'), currentKeys = await snapshot(keyPath);
           if (request.nativeKeys === 'accept') {
-            const offered = pendingNativeKeys((await releaseLook(request)).upstreamVersion, currentKeys.bytes);
+            const offered = pendingNativeKeys(selected.upstreamVersion, currentKeys.bytes);
             for (const [section, bindings] of Object.entries(offered)) Object.assign(keys[section] ??= {}, bindings);
           }
           const settingsPath = join(request.config.app.home, 'settings.json'), settings = await snapshot(settingsPath);

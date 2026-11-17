@@ -10,6 +10,7 @@ export async function planPaneModFiles(input: { assetsRoot: string; appHome: str
   for (const path of [input.assetsRoot, input.appHome, input.nodePath, input.cliPath]) absolutePath(path);
   const files: { path: string; bytes: Buffer; mode?: number }[] = [];
   for (const [suffix, place] of [['', 'tab'], ['-right', 'right'], ['-down', 'down']] as const) {
+    if (!input.modIds.includes('spider-machine-picker' + suffix)) continue;
     const directory = join(input.appHome, 'mods', 'spider-machine-picker' + suffix), path = join(directory, 'config.json'), current = await snapshot(path);
     if (current.bytes !== null && current.mode !== 0o600) throw new HerdrError('picker-config-insecure', `Machine picker configuration must be private: ${path}. Run chmod 600 ${shellQuote(path)}, then retry.`);
     files.push({ path: join(directory, 'main.js'), bytes: Buffer.from(`// SPDX-License-Identifier: MIT\nimport { machinePickerView } from './picker.js';\nexport default machinePickerView(${JSON.stringify(place)});\n`) },

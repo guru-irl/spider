@@ -49,7 +49,7 @@ test('generated picker mods have isolated private configuration and entry points
   const f = await createClientFixture();
   try {
     const { planPaneModFiles } = await import('../setup/pane-assets.js');
-    const files = await planPaneModFiles({ assetsRoot: new URL('../../assets/', import.meta.url).pathname, appHome: f.root, nodePath: process.execPath, cliPath: join(f.root, 'cli.mjs'), fonts: {}, modIds: [] });
+    const files = await planPaneModFiles({ assetsRoot: new URL('../../assets/', import.meta.url).pathname, appHome: f.root, nodePath: process.execPath, cliPath: join(f.root, 'cli.mjs'), fonts: {}, modIds: ['spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down'] });
     for (const [suffix, place] of [['', 'tab'], ['-right', 'right'], ['-down', 'down']]) {
       const directory = join(f.root, 'mods', 'spider-machine-picker' + suffix);
       expect(files.find(file => file.path === join(directory, 'main.js'))!.bytes.toString()).toContain(`machinePickerView(${JSON.stringify(place)})`);
@@ -123,7 +123,7 @@ test('setup refuses an existing nonprivate picker config without rewriting it', 
   try {
     const { planPaneModFiles } = await import('../setup/pane-assets.js'), directory = join(f.root, 'mods/spider-machine-picker'), config = join(directory, 'config.json');
     await mkdir(directory, { recursive: true }); await writeFile(config, '{"private":"unchanged"}', { mode: 0o600 }); await chmod(config, 0o644);
-    await expect(planPaneModFiles({ assetsRoot: new URL('../../assets/', import.meta.url).pathname, appHome: f.root, nodePath: process.execPath, cliPath: join(f.root, 'cli.mjs'), fonts: {}, modIds: [] })).rejects.toMatchObject({ code: 'picker-config-insecure', message: expect.stringContaining(`chmod 600 '${config}'`) });
+    await expect(planPaneModFiles({ assetsRoot: new URL('../../assets/', import.meta.url).pathname, appHome: f.root, nodePath: process.execPath, cliPath: join(f.root, 'cli.mjs'), fonts: {}, modIds: ['spider-machine-picker'] })).rejects.toMatchObject({ code: 'picker-config-insecure', message: expect.stringContaining(`chmod 600 '${config}'`) });
     expect(await readFile(config, 'utf8')).toBe('{"private":"unchanged"}');
   } finally { await f.close(); }
 });

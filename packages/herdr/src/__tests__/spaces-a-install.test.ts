@@ -128,7 +128,7 @@ test('doctor checks picker and shared helpers without changing installed files',
 });
 
 test('doctor verifies native key commands or reports that inspection is unavailable', async () => {
-  const f = await pickerFixture(), keysPath = join(f.h.directories.app, 'keys.json');
+  const f = await releaseFixture('0.1.13'), keysPath = join(f.h.directories.app, 'keys.json');
   const native = JSON.parse(await readFile(keysPath, 'utf8')) as Record<string, Record<string, unknown>>;
   const desired = JSON.parse(await readFile(join(f.root, 'packages/herdr/assets/keys.json'), 'utf8')) as Record<string, Record<string, unknown>>;
   for (const [section, bindings] of Object.entries(desired)) native[section] = { ...native[section], ...bindings };

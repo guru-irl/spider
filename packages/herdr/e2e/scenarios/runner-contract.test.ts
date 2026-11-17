@@ -306,3 +306,8 @@ describe('roaming completion states', () => {
     expect(presentationInProgress({ status, reason })).toBe(pending);
   });
 });
+
+
+it.each([null, undefined, {}, [], { code: '3', reason: 'readiness-pending' }])('refuses malformed restoration status %j', result => {
+  expect(restorationPending(result)).toBe(false);
+});

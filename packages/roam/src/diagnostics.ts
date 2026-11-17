@@ -1,7 +1,7 @@
 import { parseSourceCleanup } from "./move";
 import { SCHEMA_VERSION, validateRoamLayout, type Db } from "@spider/db-core";
 import type { Home, Scope } from "@spider/db-core/roam/types";
-import { readLocal } from "@spider/db-core/roam/local-state";
+import { localEntries, readLocal } from "@spider/db-core/roam/local-state";
 import type { PresenceBuild, PresenceRecord } from "@spider/herdr/sessions/presence";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
 import type { ProcessProbe } from "@spider/herdr/sessions/lease";
@@ -259,6 +259,12 @@ export function readStatus(config: RoamConfig, ports: StatusPorts): RoamStatus {
       lastSyncAt: observation?.lastSyncAt ?? null, observationAgeMs, backlog, failure: observation?.failure ?? null };
   });
   const diagnostics: Diagnostic[] = [];
+  if (ports.globalDb) try {
+    for (const { key, value } of localEntries<{ reason?: unknown }>(ports.globalDb, "recovery-diagnostic")) {
+      const reason = typeof value?.reason === "string" && /^[a-z][a-z0-9:-]{0,80}$/.test(value.reason) ? value.reason : "recovery-unavailable";
+      diagnostics.push({ severity: "warning", reason: `Move recovery pending: ${reason}.`, repairCommand: /^[A-Za-z0-9._-]+$/.test(key) ? `spider roam recover ${key}` : null });
+    }
+  } catch { diagnostics.push({ severity: "warning", reason: "Move recovery diagnostics are unavailable.", repairCommand: null }); }
   let sourceCleanups: RoamStatus['sourceCleanups'] = ports.journalAvailable === false ? null : [];
   let incompleteOperations: RoamStatus["incompleteOperations"] = ports.journalAvailable === false ? null : [];
   if (ports.journalDb) try {

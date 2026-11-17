@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createConnection, createServer } from 'node:net';
 import { join } from 'node:path';
@@ -73,7 +73,8 @@ export async function preparePair(suite: Suite, network: Network): Promise<PairF
       const otherKeygen = await suite.invoke('/usr/bin/ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', otherKey], machine.env);
       if (otherKeygen.exitCode !== 0) throw new HarnessError('fixture-keygen', otherKeygen.stderr);
       const systemSsh = join(machineRoot, 'system-ssh'), systemKey = join(systemSsh, 'ssh_host_ed25519_key.pub'), servedKey = join(machineRoot, 'served-key.pub');
-      await mkdir(systemSsh, { mode: 0o755 }); await copyFile(`${hostKey}.pub`, systemKey); await copyFile(`${hostKey}.pub`, servedKey);
+      await mkdir(systemSsh, { mode: 0o755 }); await chmod(systemSsh, 0o755);
+      await copyFile(`${hostKey}.pub`, systemKey); await chmod(systemKey, 0o644); await copyFile(`${hostKey}.pub`, servedKey);
       if (offset === 1) targetKeys = { served: servedKey, system: systemKey, other: `${otherKey}.pub` };
       const keyscan = join(machineRoot, 'ssh-keyscan');
       await writeFile(keyscan, `#!/bin/sh\n[ "$#" -eq 7 ] && [ "$1" = -T ] && [ "$2" = 5 ] && [ "$3" = -t ] && [ "$4" = ed25519,ecdsa,rsa ] && [ "$5" = -p ] && [ "$6" = ${quote(String(hostPort))} ] && [ "$7" = 127.0.0.1 ] || exit 2\nIFS=' ' read -r type key comment < ${quote(servedKey)}\n[ "$type" = ssh-ed25519 ] && [ -n "$key" ] || exit 2\nprintf '# 127.0.0.1:%s SSH-2.0-OpenSSH_9.8\\n[127.0.0.1]:%s %s %s\\n# 127.0.0.1:%s SSH-2.0-OpenSSH_9.8\\n# 127.0.0.1:%s SSH-2.0-OpenSSH_9.8\\n' ${quote(String(hostPort))} ${quote(String(hostPort))} "$type" "$key" ${quote(String(hostPort))} ${quote(String(hostPort))}\n`, { mode: 0o700 });
@@ -114,7 +115,13 @@ export async function preparePair(suite: Suite, network: Network): Promise<PairF
     if (!targetKeys) throw new HarnessError('fixture-keygen', 'target host keys unavailable');
     const keys = targetKeys;
     return { graph, pairId: PAIR, alias: ALIAS, descriptors, managers, close,
-      async presentedKey(value) { await copyFile(value === 'system' ? keys.system : keys.other, keys.served); } };
+      async presentedKey(value) {
+        if (value === 'other') {
+          const identity = (text: string) => text.trim().split(/\s+/).slice(0, 2).join(' ');
+          if (identity(await readFile(keys.other, 'utf8')) === identity(await readFile(keys.system, 'utf8'))) throw new HarnessError('fixture-keygen', 'host key control is not distinct');
+        }
+        await copyFile(value === 'system' ? keys.system : keys.other, keys.served);
+      } };
   } catch (error) { await close(); throw error; }
 }
 

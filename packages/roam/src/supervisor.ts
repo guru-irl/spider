@@ -137,10 +137,10 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       await ports.notify(id, reason);
     }
   }
-  async function hostingFailure(id: string, current: VersionedIntent, error: unknown): Promise<void> {
+  function hostingFailure(id: string, error: unknown): void {
     console.error(JSON.stringify({ event: "supervisor-hosting-error", sessionId: id,
       error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : { message: String(error) } }));
-    await suspend(id, current, "Cannot verify hosting state");
+    // The failed pass cannot launch. A later pass must recheck all evidence, not inherit a stop intent.
   }
   async function recordCrash(id: string, current: VersionedIntent, stableSince?: number): Promise<void> {
     const state = current.value, now = ports.clock.now();
@@ -189,7 +189,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
     const state = current.value;
     let observation: SupervisorObservation;
     try { observation = await ports.inspect(id); }
-    catch (error) { await hostingFailure(id, current, error); return; }
+    catch (error) { hostingFailure(id, error); return; }
     if (!sameAuthority(state.intent, observation.intent)) return;
     if (state.intent.desired === "stopped") {
       cancelRetry(id);
@@ -198,7 +198,14 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       return;
     }
     ports.cancelStop?.(id);
-    if (state.intent.suspended !== null) { cancelRetry(id); return; }
+    if (state.intent.suspended !== null) {
+      cancelRetry(id);
+      // Older failed observations persisted this local fence. Clear only that fence after a good read;
+      // keep the reservation and re-enter normal admission with fresh authoritative evidence.
+      if (state.intent.suspended === "Cannot verify hosting state" && authoritative.suspended === null && observation.intent.suspended === null &&
+          await save(id, current, { ...state, intent: { ...state.intent, suspended: null } })) requested = true;
+      return;
+    }
     if (observation.unfinishedFreeze) { await suspend(id, current, "An unfinished freeze needs review"); return; }
     if (observation.owner.kind === "uncertain") { await suspend(id, current, "Cannot prove the session owner absent"); return; }
     if (observation.diagnostics.some(item => item.severity === "block")) { await suspend(id, current, "Hosting prerequisites need review"); return; }
@@ -225,7 +232,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       ? { intent: state.intent, mode: "reconcile", reservation: { operationId: state.supervision.operationId } }
       : { intent: state.intent, mode: "fresh" };
     let check: SupervisorObservation;
-    try { check = await ports.inspect(id); } catch (error) { await hostingFailure(id, current, error); return; }
+    try { check = await ports.inspect(id); } catch (error) { hostingFailure(id, error); return; }
     const rechecked = await ports.runningIntents.get(id);
     if (!rechecked || rechecked.suspended !== null || check.intent.suspended !== null || !sameAuthority(state.intent, rechecked) || !sameAuthority(state.intent, check.intent) || check.owner.kind === "uncertain" || request.mode === "fresh" && check.owner.kind !== "absent" ||
         check.unfinishedFreeze || check.diagnostics.some(item => item.severity === "block") || !permitted(check, id)) return;
@@ -264,10 +271,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
           if (ports.connection && !await reconnectSupervisor(await ports.connection.handshake(), ports.connection)) continue;
           for (const id of await ports.runningIntents.list()) {
             try { await visit(id); }
-            catch (error) {
-              try { const current = await ports.intents.get(id); if (current) await hostingFailure(id, current, error); }
-              catch { /* An unreadable view stays fenced. */ }
-            }
+            catch (error) { hostingFailure(id, error); }
           }
         }
       })();

@@ -85,11 +85,12 @@ it.each(['done', 'pending'] as const)('serializes the exhaustive source cleanup 
     expect(text.indexOf('Source cleanup pending')).toBeGreaterThan(text.indexOf('gh auth status'));
   }
 });
-it('does not expose malformed cleanup evidence', () => {
+it('fails closed without exposing malformed cleanup evidence', () => {
   const safe = safeControlOutcome({ code: 0, reason: 'moved', operationId: 'move-a', home: null, epoch: 2, repairCommand: null,
     value: { sourceCleanup: { status: 'pending', blockers: ['PRIVATE CONTENT'] } } });
   expect(JSON.stringify(safe)).not.toContain('PRIVATE CONTENT');
-  expect(controlText(safe)).not.toContain('Source cleanup pending');
+  expect(safe.value).toMatchObject({ sourceCleanup: { status: 'pending', reason: 'move-journal-invalid', blockers: ['move-journal-invalid'] } });
+  expect(controlText(safe)).toContain('Source cleanup pending');
 });
 
 it("pending cleanup describes its reason rather than an arbitrary blocker identity", () => {

@@ -3,7 +3,7 @@
 import { beforeEach, afterEach, expect, it } from 'vitest';
 import { mkdir, mkdtemp, writeFile, readFile, readdir, stat, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -78,6 +78,24 @@ it.each(['/bin/bash', '/bin/zsh'])('auto starts at the first %s prompt after the
   const lines = (await readFile(join(root, 'launches.jsonl'), 'utf8')).trim().split('\n');
   expect(lines).toHaveLength(1);
   expect(JSON.parse(lines[0])).toMatchObject({ cwd: root, postRc: 'loaded' });
+});
+
+const hasBashArrayPrompt = existsSync('/bin/bash') && spawnSync('/bin/bash', ['-c', '(( BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 1) ))'], { stdio: 'ignore' }).status === 0;
+
+it.skipIf(!hasBashArrayPrompt)('bash preserves existing array prompt commands after automatic resume', async () => {
+  await fakeCli('auto');
+  const rc = join(root, 'array-bashrc');
+  await writeFile(rc, `PROMPT_COMMAND=("printf 'hook-one\\\\n'" "printf 'hook-two\\\\n'")\n${buildResumeBlock(options)}\nPS1=''\n`);
+  const result = await new Promise<{ out: string; err: string; code: number | null }>((resolveRun, reject) => {
+    const child = spawn('/bin/bash', ['--noprofile', '--rcfile', rc, '-i'], { cwd: root, env: { ...process.env, HOME: root, HC_TERMINAL_ID: 't1', HC_TERMINAL_SOCKET: terminal.socket }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '', err = ''; child.stdout.on('data', chunk => out += chunk); child.stderr.on('data', chunk => err += chunk);
+    child.on('error', reject); child.on('close', code => resolveRun({ out, err, code }));
+    child.stdin.end("printf 'first\\n'\nprintf 'second\\n'\nexit\n");
+  });
+  expect(result.code, result.err).toBe(0);
+  expect(result.out.match(/hook-one/g)?.length).toBeGreaterThanOrEqual(2);
+  expect(result.out.match(/hook-two/g)?.length).toBeGreaterThanOrEqual(2);
+  expect((await readFile(join(root, 'launches.jsonl'), 'utf8')).trim().split('\n')).toHaveLength(1);
 });
 
 it.each(['offer', 'auto'] as const)('cleans control and bidi characters in the %s notice', async mode => {

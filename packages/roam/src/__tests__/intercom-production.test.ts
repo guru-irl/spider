@@ -70,6 +70,26 @@ it("the operator CLI refuses noninteractive approval and displays the exact grap
   expect(err).toContain("peer-consent-required");
 }, 5000);
 
+it("explains an unverified listener key to the operator", async () => {
+  const f = fixture(true), config = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture.service", peers: [f.request.pairs[0].source, f.request.pairs[0].target] };
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  const graph = join(f.root, "graph.json"); writeFileSync(graph, JSON.stringify({ pairs: [{ pairId: "pair-1", source: "box-a.invalid", target: "box-b.invalid", edgeEpoch: "edge-1",
+    connector: { tunnelId: "tunnel", remotePort: 22, session: "default" } }] }), { mode: 0o600 });
+  const original = f.transport.transport.exec;
+  f.transport.transport.exec = async (machine, argv, options) => {
+    if (JSON.parse(options.stdin.toString()).action === "inspect-ssh") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: false, machineId: machine.machineId, reason: "intercom-ssh-host-unverified" }));
+    return original(machine, argv, options);
+  };
+  const { runIntercomEnrollCli } = await import("../intercom-cli"); let err = "";
+  const code = await runIntercomEnrollCli({ root: f.root, graphFile: graph, operationId: "production-1" }, { out: () => {}, err: text => { err += text; } },
+    { transport: f.transport as never, journal: f.journal, tty: true, ask: async () => "approve" });
+  expect(code).toBe(3);
+  expect(err).toContain("intercom-ssh-host-unverified");
+  expect(err).toContain("the key presented on the pair's port is not one of this machine's system host keys");
+  expect(err).toContain("Check the SSH listener and its system host keys");
+}, 5000);
+
 it("reports connector-not-pair-scoped before creating any credentials or routes", async () => {
   const f = fixture(true), original = f.transport.transport.exec;
   f.transport.transport.exec = async (machine, argv, options) => {

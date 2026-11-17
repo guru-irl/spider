@@ -144,7 +144,7 @@ describe('story cleanup reserve', () => {
     const driver = calls.find(call => ts.isIdentifier(call.expression) && call.expression.text === 'it' &&
       call.arguments.length === 3 && ts.isArrowFunction(call.arguments[1]));
     expect(driver).toBeDefined();
-    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    const root = mkdtempSync(resolve(paths.scratch('worktree', process.cwd()), 'work-complete-'));
     let release!: () => void, entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });
@@ -155,7 +155,7 @@ describe('story cleanup reserve', () => {
     const run = runInNewContext(stripTypeScriptTypes(`(${driver!.arguments[1].getText(file)})`), context) as () => Promise<void>;
     const work = run();
     try {
-      await started;
+      await Promise.race([started, work.then(() => { throw new Error('story did not start'); })]);
       expect(storyExecutionDeadline({ at: Date.now() + 10_000, expire() {} }, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(false);
       release(); await work;
       expect(storyExecutionDeadline({ at: Date.now() + 10_000, expire() {} }, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(true);
@@ -177,7 +177,7 @@ describe('story cleanup reserve', () => {
   });
 
   it('reconciles and writes a proof after suite cleanup hangs', async () => {
-    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    const root = mkdtempSync(resolve(paths.scratch('worktree', process.cwd()), 'work-complete-'));
     try {
       await runStoryWork(root, 'R17', async () => {});
       const module = resolve(root, 'resources.mjs');
@@ -218,7 +218,7 @@ describe('story cleanup reserve', () => {
     { finished: 1000, modified: -1000, ready: false },
     { finished: -1000, modified: 1000, ready: false },
   ])('checks completion and file times independently: $finished $modified', async ({ finished, modified, ready }) => {
-    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    const root = mkdtempSync(resolve(paths.scratch('worktree', process.cwd()), 'work-complete-'));
     try {
       await runStoryWork(root, 'R17', async () => {});
       const file = resolve(root, 'work-complete/R17.json');

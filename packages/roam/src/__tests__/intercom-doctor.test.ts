@@ -22,7 +22,7 @@ it("reports connector, host-key, legacy extension, broker feature and link issue
   const calls: string[][] = [], { inspectLocalIntercomDoctor } = await import("../intercom-doctor");
   const diagnostics = await inspectLocalIntercomDoctor({ root, config, agentDir,
     async run(argv) { calls.push([...argv]); return { code: 0, stdout: JSON.stringify({ connector: "ready", login: "required", tunnel: "unhosted", peerPort: "unreachable" }) }; },
-    async inspectSsh() { return { targetMachineId: B, sshUser: "fixture", hostKey: { type: "ssh-ed25519", base64: blob(8) } }; },
+    async inspectSsh() { return { targetMachineId: B, sshUser: "fixture", hostKeys: [{ type: "ssh-ed25519", base64: blob(8) }] }; },
     async features() { return ["intercom-exchange-v1"]; }, async link() { return { status: "down", reason: "link-down" }; },
   });
   for (const reason of ["intercom-connector-sign-in-required", "intercom-tunnel-unhosted", "intercom-peer-port-unreachable", "host-key-changed", "intercom-extension-duplicate", "intercom-feature-missing", "intercom-link-down"]) {

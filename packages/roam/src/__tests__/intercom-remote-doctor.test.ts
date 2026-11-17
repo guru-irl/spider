@@ -16,7 +16,7 @@ it("the remote doctor observes the recorded pair unit and never starts, stops or
   const local = f.locals.get(B)!, config = parseConfig(JSON.parse(readFileSync(join(f.target.globalRoot, "roam", "config.json"), "utf8")));
   const inspector = (input: Parameters<typeof inspectLocalIntercomDoctor>[0]) => inspectLocalIntercomDoctor({ ...input, run: local.run,
     resourcePorts: local, features: async () => [HELPER_EXCHANGE_FEATURE, FEDERATION_NOTICE_ACK_FEATURE],
-    inspectSsh: async pair => ({ targetMachineId: B, sshUser: "fixture", hostKey: pair.hostKey }), link: async () => ({ status: "live", reason: null }) });
+    inspectSsh: async pair => ({ targetMachineId: B, sshUser: "fixture", hostKeys: [pair.hostKey] }), link: async () => ({ status: "live", reason: null }) });
   const transport = { resolve: async () => f.target, exec: async (_peer: unknown, argv: readonly string[]) => {
     let out = "";
     expect(await main(["--global-root", f.target.globalRoot, ...argv], { out: text => { out += text; }, err: () => {} }, { intercomDoctor: inspector } as never)).toBe(0);

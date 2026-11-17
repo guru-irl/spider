@@ -156,13 +156,16 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           const pairPins = { source: pins.get(plan.source.machineId)!, target: pins.get(plan.target.machineId)! };
           const ssh = await ports.inspectSshHost(plan, pairPins);
           if (!ssh || ssh.targetMachineId !== plan.target.machineId) return "machine-mismatch";
-          if (typeof ssh.sshUser !== "string" || !/^[A-Za-z_][A-Za-z0-9._-]{0,62}\$?$/.test(ssh.sshUser) || !validHostKey(ssh.hostKey)) return "intercom-ssh-host-unavailable";
+          if (typeof ssh.sshUser !== "string" || !/^[A-Za-z_][A-Za-z0-9._-]{0,62}\$?$/.test(ssh.sshUser) || !Array.isArray(ssh.hostKeys) ||
+              !ssh.hostKeys.length || ssh.hostKeys.length > 5 || !ssh.hostKeys.every(validHostKey) || new Set(ssh.hostKeys.map(key => key.type)).size !== ssh.hostKeys.length) return "intercom-ssh-host-unavailable";
           const hostKeyAlias = sshAlias(plan), priorSsh = ports.journal.read(operationId).find(row => row.action === "intercom-ssh-host" && row.result.pairId === plan.pairId);
-          if (priorSsh && (!validHostKey(priorSsh.result.hostKey) || priorSsh.result.hostKey.type !== ssh.hostKey.type || priorSsh.result.hostKey.base64 !== ssh.hostKey.base64)) return "host-key-changed";
+          const previousKey = priorSsh?.result.hostKey;
+          if (priorSsh && (!validHostKey(previousKey) || !ssh.hostKeys.some(key => key.type === previousKey.type && key.base64 === previousKey.base64))) return "host-key-changed";
           if (priorSsh && (priorSsh.result.sshUser !== ssh.sshUser || priorSsh.result.hostKeyAlias !== hostKeyAlias)) return "intercom-ssh-user-changed";
+          const hostKey = validHostKey(previousKey) ? previousKey : ssh.hostKeys[0];
           if (!priorSsh) ports.journal.record(operationId, "intercom-ssh-host", { pairId: plan.pairId, sshUser: ssh.sshUser,
-            hostKey: { type: ssh.hostKey.type, base64: ssh.hostKey.base64 }, hostKeyAlias });
-          const pair: IntercomEnrollmentPair = { ...plan, sshUser: ssh.sshUser, hostKey: { ...ssh.hostKey }, hostKeyAlias };
+            hostKey: { type: hostKey.type, base64: hostKey.base64 }, hostKeyAlias });
+          const pair: IntercomEnrollmentPair = { ...plan, sshUser: ssh.sshUser, hostKey: { ...hostKey }, hostKeyAlias };
           await ports.bindPair(pair, pairPins);
           const host = await ports.hostConnector(pair, pairPins);
           if (host === "offline") return outage(pair.target.machineId);

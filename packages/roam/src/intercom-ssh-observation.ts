@@ -39,7 +39,7 @@ function verifiedSystemKeys(keys: ReadonlyMap<string, IntercomSshHostKey>, files
 /** The hub must call this on the already UUID- and core-fenced destination machine. */
 export async function inspectServedSshIdentity(options: { machineId: string; sshUser: string; keyscan: string; sshPort: number; filesystem?: SystemSshFileSystem;
   run(argv: readonly string[], options: { timeoutMs: number; maxBytes: number }): Promise<{ code: number; stdout: string }> }):
-  Promise<{ targetMachineId: string; sshUser: string; hostKey: IntercomSshHostKey }> {
+  Promise<{ targetMachineId: string; sshUser: string; hostKeys: IntercomSshHostKey[] }> {
   if (!isMachineId(options.machineId) || !/^[A-Za-z_][A-Za-z0-9._-]{0,62}\$?$/.test(options.sshUser) ||
       !isAbsolute(options.keyscan) || resolve(options.keyscan) !== options.keyscan || /[\u0000-\u001f\u007f]/.test(options.keyscan) ||
       !Number.isSafeInteger(options.sshPort) || options.sshPort < 1 || options.sshPort > 65535) return unavailable();
@@ -59,9 +59,9 @@ export async function inspectServedSshIdentity(options: { machineId: string; ssh
       keys.set(hostKey.type, hostKey);
     }
     if (!keys.size) return unavailable();
-    const [hostKey] = verifiedSystemKeys(keys, options.filesystem ?? systemFiles);
-    if (!hostKey) throw new Error("intercom-ssh-host-unverified");
-    return { targetMachineId: options.machineId, sshUser: options.sshUser, hostKey };
+    const hostKeys = verifiedSystemKeys(keys, options.filesystem ?? systemFiles);
+    if (!hostKeys.length) throw new Error("intercom-ssh-host-unverified");
+    return { targetMachineId: options.machineId, sshUser: options.sshUser, hostKeys };
   } catch (error) {
     if (error instanceof Error && error.message === "intercom-ssh-host-unverified") throw error;
     return unavailable();

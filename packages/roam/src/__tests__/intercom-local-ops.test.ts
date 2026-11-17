@@ -226,7 +226,7 @@ it("scans the port in the approved pair rather than the machine recipe", async (
       if (JSON.stringify(argv) !== JSON.stringify(["/fixture/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "22", "127.0.0.1"])) throw new Error("wrong port");
       return { code: 0, stdout: `127.0.0.1 ${f.pair.hostKey.type} ${f.pair.hostKey.base64}\n` };
     } };
-  expect(await mod.runLocalPairOperation({ action: "inspect-ssh", pair: f.plan, approval: f.proof }, target)).toMatchObject({ hostKey: f.pair.hostKey });
+  expect(await mod.runLocalPairOperation({ action: "inspect-ssh", pair: f.plan, approval: f.proof }, target)).toMatchObject({ hostKeys: [f.pair.hostKey] });
   expect(f.calls[0]).toContain("22");
 }, 5000);
 
@@ -236,7 +236,7 @@ it("reads the served SSH host key and account on the exact approved target", asy
   const target = { ...f.ports, machineId: B, root: f.targetRoot, sshUser: "fixture", keyscan: "/fixture/ssh-keyscan",
     async run(argv: readonly string[]) { f.calls.push([...argv]); if (JSON.stringify(argv) !== JSON.stringify(expected)) throw new Error("unexpected fixture command"); return { code: 0, stdout: `127.0.0.1 ${f.pair.hostKey.type} ${f.pair.hostKey.base64}\n` }; } };
   expect(await mod.runLocalPairOperation({ action: "inspect-ssh", pair: f.plan, approval: f.proof }, target)).toEqual({
-    targetMachineId: B, sshUser: "fixture", hostKey: f.pair.hostKey,
+    targetMachineId: B, sshUser: "fixture", hostKeys: [f.pair.hostKey],
   });
   expect(f.calls).toEqual([expected]);
 }, 5000);

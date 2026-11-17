@@ -27,7 +27,7 @@ function fixture(approved: boolean) {
       if (!journal.read(request.operation.id).some(row => row.action === "intercom-peer-consent" && row.result.approved === true)) throw new Error("setup before consent");
       let value: unknown = { ok: true };
       if (input.action === "check-connector" || input.action === "host-connector" || input.action === "connect-connector") value = { status: "ready" };
-      if (input.action === "inspect-ssh") value = { targetMachineId: B, sshUser: "fixture", hostKey };
+      if (input.action === "inspect-ssh") value = { targetMachineId: B, sshUser: "fixture", hostKeys: [hostKey] };
       if (input.action === "ensure-key") value = { publicKey, privateMode: 0o600, privateOwned: true };
       if (input.action === "verify-transport") value = { sourceMachineId: A, targetMachineId: B, connector: true, key: true, route: true };
       if (input.action === "verify-federation") value = { sourceMachineId: A, targetMachineId: B, federation: true };

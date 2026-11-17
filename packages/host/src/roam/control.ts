@@ -1,3 +1,4 @@
+import { redactErrorDetail } from "@spider/roam/machine-move-socket";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { readSessionState } from "@spider/db-core/roam/state";
 import type { Home, JsonObject, StoreKey } from "@spider/db-core/roam/types";
@@ -103,9 +104,7 @@ function validateTarget(operation: Operation, ports: FreezePorts): void {
 
 function controlErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Unknown session control failure";
-  return message.replace(/\b(?:npm_|gh[opsu]_|sk-)[A-Za-z0-9_-]+/g, "[redacted credential]")
-    .replace(/\bBearer\s+\S+/gi, "Bearer [redacted]")
-    .replace(/\b(api[_-]?key|authorization|password|token)(\s*[:=]\s*)("[^"]*"|'[^']*'|\S+)/gi, "$1$2[redacted]").slice(0, 500);
+  return redactErrorDetail(message);
 }
 function controlFailure(operation: Operation, ports: FreezePorts, error: unknown): JsonObject {
   const inherited = error && typeof error === "object" && "diagnostic" in error && error.diagnostic && typeof error.diagnostic === "object"

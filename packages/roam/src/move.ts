@@ -221,6 +221,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
   const id = request.operation.id, powerKey = movePowerKey(ports, id);
   let checked = false, begunNew = false, slot: string | null = null;
   let moved: { source: Home; value: MoveResult } | null = null;
+  let cleanupDone: MoveResult | null = null;
   const action = async <T>(name: string, effect: () => Promise<T> | T): Promise<T> => {
     if (recovering) {
       const completed = actionReceipt(ports.journal.read(id), name);
@@ -346,6 +347,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     const value: MoveResult = { sourceCleanup: { status: "done" }, home: committed, terminal: readiness.terminal, intercomAddress: intercom.intercomAddress,
       warnings: [...new Set([...check.warnings, ...inspection.warnings, ...intercom.warnings, ...prepared.workspace.snapshot.droppedConfigKeys,
         ...prepared.workspace.adjustments, ...ports.journal.read(id).filter(row => row.action === "move-cleanup-warnings").flatMap(row => row.result.warnings as string[])])] };
+    cleanupDone = value;
     state("done", { result: json(value) });
     const result = outcome(request, ports, 0, "moved", value);
     await action("power-release", () => releaseMovePower(powerKey));
@@ -354,6 +356,10 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     return result;
   } catch (error) {
     const rows = ports.journal.read(id), failedAction = rows.filter(row => row.action === 'move-action-start').at(-1)?.result.action;
+    if (cleanupDone) {
+      await releaseMovePower(powerKey).catch(() => {});
+      return outcome(request, ports, 0, 'moved', cleanupDone);
+    }
     if (moved && (failedAction === 'source-retire' || failedAction === 'cleanup')) {
       const blockers = error instanceof MoveError && error.refusal.blockers.length ? error.refusal.blockers
         : [validateBlockerId(error instanceof MoveError ? error.refusal.code : failedAction === 'source-retire' ? 'move-source-stop-pending' : 'move-pending')];
@@ -361,7 +367,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
       const pending = { sessionId: moved.source.sessionId, sourceMachine: moved.source.machineId, sourceCleanup: json(sourceCleanup) };
       const previous = rows.filter(row => row.action === 'move-source-cleanup-pending').at(-1);
       if (!previous || !isDeepStrictEqual(previous.result, pending)) ports.journal.record(id, 'move-source-cleanup-pending', pending);
-      await releaseMovePower(powerKey);
+      await releaseMovePower(powerKey).catch(() => {});
       return outcome(request, ports, 0, 'moved', { ...moved.value, sourceCleanup });
     }
     const freezeStarted = ports.journal.read(id).some(row => row.action === "move-action-start" && row.result.action === "freeze");
@@ -369,7 +375,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     checked ||= !(error instanceof MoveError) && ports.journal.read(id).some(row => row.action === "move-action-complete" && row.result.action === "check");
     const committed = ports.globalDb.prepare('SELECT committed_home_json FROM roam_home_actions WHERE move_id=?').get(id) as { committed_home_json: string | null } | undefined;
     const reason = error instanceof MoveError && error.refusal.code !== 'move-preflight-refused' ? error.refusal.code
-      : committed?.committed_home_json ? 'move-destination-pending' : freezeStarted ? 'move-pending' : 'move-preflight-refused';
+      : committed?.committed_home_json ? 'move-destination-pending' : freezeStarted || checked ? 'move-pending' : 'move-preflight-refused';
     const code = checked || ["move-journal-invalid", "move-journal-unavailable"].includes(reason) ? 3 : reason === "move-operation-conflict" ? 2 : 1;
     const result = outcome(request, ports, code, reason, null, error instanceof MoveError ? error.refusal.blockers : []);
     if (!checked && (begunNew || recovering) && code !== 3) {

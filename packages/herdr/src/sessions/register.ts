@@ -27,7 +27,8 @@ export async function hasLiveMappedAncestor(terminal: TerminalIdentity, ports: P
   return false;
 }
 export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrationPorts): Disposable {
-  const held = new Map<string, SessionLease>(); let disposed = false;
+  const held = new Map<string, SessionLease>(); let disposed = false, stopping = false;
+  const pendingActivations = new Set<Promise<void>>();
   let interrupted = false;
   let recorded: { terminal: TerminalIdentity; activityId: string } | undefined;
   const onSignal = () => { interrupted = true; };
@@ -75,6 +76,14 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     await ports.registry.record({ owner: { ...owner, sessionFile: current.sessionFile, name: current.sessionName }, recordedAt: Date.now(), coreStartedAt: ports.coreStartedAt(), environment: ports.launchEnvironment, activityId });
     recorded = { terminal: owner.terminal, activityId };
   }
+  function startActivation(ctx: ExtensionContext): Promise<void> {
+    if (disposed || stopping) return Promise.resolve();
+    // Interactive pi installs its own signal handlers before session_start.
+    if (ctx.mode === 'tui') observeSignals();
+    const pending = activation(ctx); pendingActivations.add(pending);
+    void pending.then(() => pendingActivations.delete(pending), () => pendingActivations.delete(pending));
+    return pending;
+  }
   async function cleanup(targetSessionFile?: string): Promise<void> {
     const handoff = targetSessionFile ? await canonicalSessionFile(targetSessionFile) : null;
     for (const [file, lease] of held) if (file !== handoff) { try { await ports.leases.release(file, lease.token, active() ? { mode: 'switch' } : { mode: 'bookkeeping' }); } catch (error) { if (active()) throw error; } }
@@ -82,20 +91,23 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     held.clear(); await ports.presence.remove(ports.processIdentity);
   }
   const unsubscribe = [
-    pi.on('session_start', async (_event, ctx) => activation(ctx)),
-    pi.on('session_info_changed', async (_event, ctx) => activation(ctx)),
+    pi.on('session_start', async (_event, ctx) => startActivation(ctx)),
+    pi.on('session_info_changed', async (_event, ctx) => startActivation(ctx)),
     pi.on('session_before_switch', async event => { if (ports.admitted?.() === false || !event.targetSessionFile) return; try { await reserve(event.targetSessionFile); } catch (error) { if (!active()) return; warn(herdrErrorNotice(error)); return { cancel: true }; } }),
     pi.on('session_shutdown', async (event, ctx) => {
+      stopping = true;
       // Pi prepends its signal handler and reports both signals and interactive exits as 'quit'.
       // Yield until all listeners in the current signal dispatch have run before deciding.
       await Promise.resolve();
+      await Promise.allSettled([...pendingActivations]);
       try {
         if (event.reason === 'quit' && !interrupted && recorded && ports.owner()) await ports.registry.end(recorded.terminal, recorded.activityId);
       } finally {
         removeSignalListeners();
-        await cleanup(event.reason === 'reload' ? ctx.sessionManager?.getSessionFile?.() : event.reason === 'resume' || event.reason === 'new' ? event.targetSessionFile : undefined);
+        try { await cleanup(event.reason === 'reload' ? ctx.sessionManager?.getSessionFile?.() : event.reason === 'resume' || event.reason === 'new' ? event.targetSessionFile : undefined); }
+        finally { stopping = false; }
       }
     }),
   ];
-  return { async dispose() { if (disposed) return; disposed = true; removeSignalListeners(); for (const off of unsubscribe) off(); await cleanup(); } };
+  return { async dispose() { if (disposed) return; disposed = true; for (const off of unsubscribe) off(); await Promise.allSettled([...pendingActivations]); removeSignalListeners(); await cleanup(); } };
 }

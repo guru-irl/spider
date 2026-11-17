@@ -380,7 +380,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     ...(hasToast ? ['toast'] : []),
   ];
   const filesFor = async (files: readonly { path: string; bytes: Buffer; mode?: number; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[], context: SetupContext): Promise<InstallFile[]> => Promise.all(files.map(async file => ({ ...file, expected: file.terminalKeys || file.keys ? (await snapshot(file.path)).hash : context.installed[file.path] ?? null, collision: file.terminalKeys || file.keys ? 'key' as const : 'clone' as const })));
-  const pickerFiles = async (request: SetupRequest, context: SetupContext, fonts: Awaited<ReturnType<typeof prepareFonts>>['families']): Promise<{ path: string; bytes: Buffer; mode?: number }[]> => {
+  const pickerFiles = async (request: SetupRequest, context: SetupContext, fonts: Awaited<ReturnType<typeof prepareFonts>>['families'], modIds: readonly string[]): Promise<{ path: string; bytes: Buffer; mode?: number }[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets'), mods = join(request.config.app.home, 'mods');
     const picker = context.modProps.find(copy => copy.props.modId === 'spider-picker');
     if (!picker || resolve(picker.directory) !== resolve(mods, 'spider-picker')) throw new HerdrError('missing-mod-id', 'Picker needs validated installed mod props');
@@ -417,7 +417,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     for (const name of ['diamond', 'heptagon', 'hexagon', 'octagon', 'pentagon', 'star', 'triangle']) files.push({ path: join(picker.directory, `space-${name}.svg`), bytes: await readFile(join(assets, 'agents', `space-${name}.svg`)) });
     const config = { ...picker.props, version: 1, fonts, machines: request.config.machines, retention: { completedRows: request.config.limits.completedRows, completedHours: request.config.limits.completedHours } };
     files.push({ path: configPath, mode: 0o600, bytes: Buffer.from(JSON.stringify(config, null, 2) + '\n') });
-    files.push(...await planPaneModFiles({ assetsRoot: assets, appHome: request.config.app.home, nodePath: picker.props.nodePath, cliPath: picker.props.cliPath, fonts, modIds: context.modProps.map(copy => copy.props.modId) }));
+    files.push(...await planPaneModFiles({ assetsRoot: assets, appHome: request.config.app.home, nodePath: picker.props.nodePath, cliPath: picker.props.cliPath, fonts, modIds }));
     const available = new Set([...files.map(file => resolve(file.path)), ...['feed.js', 'look.js', 'open-failure.js', 'presentations.js'].map(name => resolve(picker.directory, 'shared', name))]);
     for (const reference of references) {
       const target = resolve(dirname(reference.path), reference.specifier), root = resolve(reference.root);
@@ -588,7 +588,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     for (const file of await assetFiles(join(assets, 'agents'))) if (file.relative !== 'children.js') files.push({ path: join(request.config.app.home, 'mods/spider-agents', file.relative), bytes: file.bytes });
     files.push({ path: join(request.config.app.home, 'mods/spider-agents/sound.js'), bytes: await readFile(join(assets, 'mods/spider/sound.js')) });
     for (const file of await assetFiles(join(assets, 'spaces'))) files.push({ path: join(request.config.app.home, 'mods/spider-spaces', file.relative), bytes: file.bytes });
-    files.push(...await pickerFiles(request, context, fonts.families));
+    files.push(...await pickerFiles(request, context, fonts.families, kinds.map(kind => patched[kind]!.name)));
     const toast = await planToastFiles(appVersion, request.config.app.home, join(assets, 'toast'));
     if (toast.length && !context.modProps.some(copy => copy.props.modId === 'spider-toast' && resolve(copy.directory) === resolve(request.config.app.home, 'mods/spider-toast'))) throw new HerdrError('missing-mod-id', 'Toast needs validated installed mod props');
     files.push(...toast);
@@ -768,7 +768,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const toast = await planToastFiles(release!, request.config.app.home, join(packageRoot, 'packages/herdr/assets/toast'));
         files.push(...toast.map(file => ({ ...file, expected: null })));
         const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(packageRoot, 'packages/herdr/assets/fonts'), readFile });
-        try { for (const file of await pickerFiles(request, context, fonts.families)) files.push({ ...file, expected: null }); }
+        try { for (const file of await pickerFiles(request, context, fonts.families, auxiliaryModIds(selected))) files.push({ ...file, expected: null }); }
         catch (error) { if (error instanceof HerdrError) return failure(error.code, error.message); throw error; }
         const staged = selected?.crossMachine || Object.keys(additionalFor(release)).length ? new Map((await stagedLook(request, context)).map(file => [file.path, file])) : new Map<string, InstallFile>();
         const effectiveFiles = files.map(file => staged.get(file.path) ?? file);

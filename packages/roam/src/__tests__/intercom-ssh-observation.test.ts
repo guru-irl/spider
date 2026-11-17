@@ -1,6 +1,10 @@
 import { createECDH } from "node:crypto";
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { paths } from "@spider/db-core";
 import { compareSshHostKey, inspectServedSshIdentity } from "../intercom-ssh-observation";
+import { systemSshFixture } from "./intercom-ssh-system-fixture";
 
 const B = "00000000-0000-4000-8000-000000000002";
 const sshString = (value: Buffer) => { const length = Buffer.alloc(4); length.writeUInt32BE(value.length); return Buffer.concat([length, value]); };
@@ -16,17 +20,23 @@ const key = (n: number, type = "ssh-ed25519") => {
 };
 const line = (value: ReturnType<typeof key>, port = 2222) => `[127.0.0.1]:${port} ${value.type} ${value.base64}`;
 const argv = ["/fixture/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "2222", "127.0.0.1"];
-const options = (run: (args: readonly string[], options: { timeoutMs: number; maxBytes: number }) => Promise<{ code: number; stdout: string }>) =>
-  ({ machineId: B, sshUser: "fixture", keyscan: "/fixture/ssh-keyscan", sshPort: 2222, run });
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
+const options = (run: (args: readonly string[], options: { timeoutMs: number; maxBytes: number }) => Promise<{ code: number; stdout: string }>) => {
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "system-scan-")); roots.push(root);
+  const { filesystem } = systemSshFixture(root, [key(7), key(8, "ecdsa-sha2-nistp256"), key(9, "ssh-rsa")]);
+  return { machineId: B, sshUser: "fixture", keyscan: "/fixture/ssh-keyscan", sshPort: 2222, filesystem, run };
+};
 
-it("pins the served key when the unprivileged sshd configuration probe cannot read host keys", async () => {
+it("pins the presented system key without invoking sshd", async () => {
+  const calls: string[][] = [];
   const run = async (args: readonly string[], bounds: { timeoutMs: number; maxBytes: number }) => {
-    if (JSON.stringify(args) === JSON.stringify(["/fixture/sshd", "-T"])) return { code: 1, stdout: "" };
+    calls.push([...args]);
     if (JSON.stringify(args) === JSON.stringify(argv) && bounds.timeoutMs <= 10000 && bounds.maxBytes <= 65536) return { code: 0, stdout: `${line(key(7))}\n` };
     throw new Error("unexpected fixture command");
   };
-  await expect(run(["/fixture/ssh-keyscan", "-p", "2223"], { timeoutMs: 5000, maxBytes: 65536 })).rejects.toThrow("unexpected fixture command");
   expect(await inspectServedSshIdentity(options(run))).toEqual({ targetMachineId: B, sshUser: "fixture", hostKey: key(7) });
+  expect(calls).toEqual([argv]);
 }, 5000);
 
 it.each([

@@ -5,6 +5,7 @@ import { afterEach, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IntercomEnrollmentPair, IntercomEnrollmentPlan } from "../provision-contracts";
+import { systemSshFixture } from "./intercom-ssh-system-fixture";
 const A = "00000000-0000-4000-8000-000000000001", B = "00000000-0000-4000-8000-000000000002";
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true }); });
@@ -23,7 +24,8 @@ function fixture() {
     const file = argv[argv.indexOf("-f") + 1]; writeFileSync(file, "private-fixture", { mode: 0o600 }); writeFileSync(`${file}.pub`, `${pair.hostKey.type} ${pair.hostKey.base64}\n`, { mode: 0o644 });
   } return { code: 0, stdout: "" }; };
   const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 23222 };
-  const ports = { machineId: A, root: sourceRoot, home, node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen", recipe, run };
+  const systemSshFiles = systemSshFixture(root, [pair.hostKey]).filesystem;
+  const ports = { machineId: A, root: sourceRoot, home, node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen", recipe, run, systemSshFiles };
   return { root, sourceRoot, targetRoot, home, pair, plan, proof, calls, ports };
 }
 async function registerFixture(f: ReturnType<typeof fixture>) {

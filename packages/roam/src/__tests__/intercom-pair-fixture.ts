@@ -14,6 +14,7 @@ import type { Peer, Journal } from "../contracts";
 import type { IntercomEnrollmentPorts, IntercomEnrollmentRequest, IntercomRevocationPorts } from "../provision-contracts";
 import type { IntercomStore } from "../intercom-contracts";
 import type { ProvisionTransport } from "../transport";
+import { systemSshFixture } from "./intercom-ssh-system-fixture";
 export interface FakePairUnit { name: string; file: string; pid: number; state: string; members: number[] }
 export interface PairScenario {
   root: string; source: Peer; target: Peer; otherSource: Peer; journal: Journal; calls: string[]; locals: Map<string, LocalPairPorts>; queues: Map<string, IntercomStore>;
@@ -68,7 +69,8 @@ export async function scenario(): Promise<PairScenario> {
       if (argv[1] === "exec") return { code: 0, stdout: JSON.stringify({ version: 1, kind: "doctor", machineId: B, value: {} }) };
       throw new Error("unexpected fixture command");
     };
-    locals.set(peer.machineId, { machineId: peer.machineId, root: peer.globalRoot, home, node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen", keyscan: "/fixture/ssh-keyscan", sshUser: "fixture", systemctl: "/fixture/systemctl", recipe, run,
+    const systemSshFiles = systemSshFixture(peer.globalRoot, [{ type: "ssh-ed25519", base64: blob.toString("base64") }]).filesystem;
+    locals.set(peer.machineId, { machineId: peer.machineId, root: peer.globalRoot, home, node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen", keyscan: "/fixture/ssh-keyscan", sshUser: "fixture", systemctl: "/fixture/systemctl", recipe, run, systemSshFiles,
       process: pid => [...units.entries()].some(([key, unit]) => key.startsWith(`${peer.machineId}/`) && unit.members.includes(pid)) ? { kind: "live", startIdentity: `linux:${pid}` } : { kind: "absent" },
       cgroup: group => units.get(`${peer.machineId}/${group.split("/").at(-1)}`)?.members ?? [],
       inspectFence: async input => { const peerId = (input as { peer: string }).peer; return { machineId: peer.machineId, peer: peerId, fence: queues.get(peer.machineId)!.pairFence(peerId) }; },

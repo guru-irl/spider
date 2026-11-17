@@ -248,8 +248,8 @@
         {
           "id": "b-navigation-model-key",
           "file": "main.js",
-          "anchor": "const now = Date.now(), key = agentModelInputKey(input, now, p.retention?.completedHours ?? 24, this.spiderFeedKeys ??= new Map());\n    const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);",
-          "replacement": "const now = Date.now(), key = agentModelInputKey(input, now, p.retention?.completedHours ?? 24, this.spiderFeedKeys ??= new Map());\n    const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);\n    const paneIndex = this.spiderPaneIndex, paneRevision = this.spiderPaneRevision ?? 0;"
+          "anchor": "const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);",
+          "replacement": "const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);\n    const paneIndex = this.spiderPaneIndex, paneRevision = this.spiderPaneRevision ?? 0;"
         },
         {
           "id": "b-navigation-model-unchanged",
@@ -590,8 +590,8 @@
         {
           "id": "b-navigation-model-key",
           "file": "main.js",
-          "anchor": "const now = Date.now(), key = agentModelInputKey(input, now, p.retention?.completedHours ?? 24, this.spiderFeedKeys ??= new Map());\n    const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);",
-          "replacement": "const now = Date.now(), key = agentModelInputKey(input, now, p.retention?.completedHours ?? 24, this.spiderFeedKeys ??= new Map());\n    const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);\n    const paneIndex = this.spiderPaneIndex, paneRevision = this.spiderPaneRevision ?? 0;"
+          "anchor": "const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);",
+          "replacement": "const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);\n    const paneIndex = this.spiderPaneIndex, paneRevision = this.spiderPaneRevision ?? 0;"
         },
         {
           "id": "b-navigation-model-unchanged",
@@ -690,6 +690,98 @@
           "replacement": "  openChild(k) {\n    if (k.action?.kind === \"pane\") return requestPaneService(spiderProps(), exec, k.action.request).catch(error => { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); });\n    if (k.action?.kind === \"focus\") { run(\"pane.focus\", { pane: k.action.pane }); return; }"
         }
       ]
+    }
+  },
+  "checks": {
+    "0.1.13": {
+      "recordsHash": "cffcf5bf1a3348d3eae3cc762f0e30f9103e6f9c8c53e92078f0e34fd121dfcc",
+      "inputHashes": {
+        "agents/main.js": "bd8f555886bbdbdbb5d4c1bb91036d909e1de21cf990adc0139971a21b9890ef",
+        "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
+        "menu/main.js": "f9c0799068984fe289df2b8aa50231435977c7269ee15cea4544d52f31d3bd25",
+        "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "new-menu/main.js": "394ec4218f24263735083b90dc7a7c5f607ab58f9a7a74b823707509e806cb1a",
+        "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
+        "pane/main.js": "4c0f1162fafa86e28b9bafbd44f6239c93ebf70d94a6699b961ceb5214bea1cc",
+        "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
+        "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
+        "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
+        "pane/unzoom.svg": "a061af514f83278f3b5f0bea6388b116ce66969897b202cd5709f4970b8750c6",
+        "pane/zoom.svg": "e2d29d06235819c0b617029291adc8a9f4d31dc59264a50e97e55470e9ad2823",
+        "tabs/main.js": "fcb8007d5dec1876f9cf4ea9abc1835cb6f05f6a0fe04b719ad31c8ea3ae07c9",
+        "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
+        "tabs/win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
+        "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
+        "tabs/win-min.svg": "c2f8d7d1e117f99b73970816877a926becb3da102cd706fd0f0ce1780259cd52",
+        "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
+      },
+      "outputHashes": {
+        "agents/main.js": "32a91ce31a63292a6f0e1d12986a1f77b341afe882e2e2d9c28385dd8873e9c5",
+        "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
+        "menu/main.js": "5ef45102f05cebae0a617564613f195e993130c42d0f0ad56797f6e82c9d09e0",
+        "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "new-menu/main.js": "6812b67392746317ae25f9f819d3ec6212ff151828f1284df6a17187c04157b5",
+        "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
+        "pane/main.js": "f2ebfb330627eca013c51716fb03b6265628c91aee73d9a80b49bc30c6329b51",
+        "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
+        "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
+        "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
+        "pane/unzoom.svg": "a061af514f83278f3b5f0bea6388b116ce66969897b202cd5709f4970b8750c6",
+        "pane/zoom.svg": "e2d29d06235819c0b617029291adc8a9f4d31dc59264a50e97e55470e9ad2823",
+        "tabs/main.js": "e499e698b244b0ec1bc6404a01c89141268f56cdfc5a9e9dbae1487c56115c88",
+        "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
+        "tabs/win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
+        "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
+        "tabs/win-min.svg": "c2f8d7d1e117f99b73970816877a926becb3da102cd706fd0f0ce1780259cd52",
+        "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
+      }
+    },
+    "0.1.16": {
+      "recordsHash": "16c7503abdf83a9f4f7f9590b0ecd7e5e738f9ff3fff66294a023b363fcd63c7",
+      "inputHashes": {
+        "agents/main.js": "39271a9bf763562c5322ed9ee701046232163b91a195d96e0331c108fa207eb6",
+        "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
+        "menu/main.js": "1c27a92ca6378feb166a34adef317aaa2a4f4ee0e969d2fd3737cc3850ac84eb",
+        "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "new-menu/main.js": "2fcc80ed1486c35816f662db2a619cdee1ec1d82997991ca4feb64c1212d2688",
+        "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
+        "pane/main.js": "ee55839a86756eef7f95feaf1dbb0fa1d211b59c375a43ab80a5db5dc4f1f64a",
+        "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
+        "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
+        "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
+        "pane/unzoom.svg": "a061af514f83278f3b5f0bea6388b116ce66969897b202cd5709f4970b8750c6",
+        "pane/zoom.svg": "e2d29d06235819c0b617029291adc8a9f4d31dc59264a50e97e55470e9ad2823",
+        "tabs/main.js": "9977fd738ec697951273e6729cb9185d2d79cd933f851957448cf6c3d3a683f8",
+        "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
+        "tabs/win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
+        "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
+        "tabs/win-min.svg": "c2f8d7d1e117f99b73970816877a926becb3da102cd706fd0f0ce1780259cd52",
+        "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
+      },
+      "outputHashes": {
+        "agents/main.js": "d5aa8db4772969ef15ee262c1186c75eec18a01760e6d3562bce0f68bd640f4d",
+        "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
+        "menu/main.js": "06bc53750bb00caf29578d72a134229171d3fd167bdae3c89fe38bc8137929dd",
+        "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "new-menu/main.js": "84110b585e4de7546e21a99320d9c2c418ff70c950e5829b89ecc3bf124e03dd",
+        "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
+        "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
+        "pane/main.js": "6a4d1f44bb2811ba0afeb589b3153ff1242b9ab6d1e78cebf4c40d2b8712a9ff",
+        "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
+        "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
+        "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
+        "pane/unzoom.svg": "a061af514f83278f3b5f0bea6388b116ce66969897b202cd5709f4970b8750c6",
+        "pane/zoom.svg": "e2d29d06235819c0b617029291adc8a9f4d31dc59264a50e97e55470e9ad2823",
+        "tabs/main.js": "a0af35087c167cc0c64d56b87054c09b15c1ea41d10d54b402d2057a939cf4a3",
+        "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
+        "tabs/win-close.svg": "bc46f314ea68818459856618e10f694e53cccd947b3069286f1988927e8a1fac",
+        "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
+        "tabs/win-min.svg": "c2f8d7d1e117f99b73970816877a926becb3da102cd706fd0f0ce1780259cd52",
+        "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
+      }
     }
   }
 }

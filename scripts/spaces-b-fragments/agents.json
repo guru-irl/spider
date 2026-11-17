@@ -20,8 +20,8 @@
   {
     "id": "b-navigation-model-key",
     "file": "main.js",
-    "anchor": "const now = Date.now(), inputKey = agentModelInputKey(input, now, p.retention?.completedHours ?? 24, this.spiderFeedKeys ??= new Map());",
-    "replacement": "const now = Date.now(), inputKey = agentModelInputKey(input, now, p.retention?.completedHours ?? 24, this.spiderFeedKeys ??= new Map());\n    const paneIndex = this.spiderPaneIndex, paneRevision = this.spiderPaneRevision ?? 0;"
+    "anchor": "const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);",
+    "replacement": "const inputKey = key === null ? null : JSON.stringify([key, Boolean(this.spiderFeedsLoaded), Boolean(this.spiderLoading), Boolean(this.spiderFeedComplete)]);\n    const paneIndex = this.spiderPaneIndex, paneRevision = this.spiderPaneRevision ?? 0;"
   },
   {
     "id": "b-navigation-model-unchanged",

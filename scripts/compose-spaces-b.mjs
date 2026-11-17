@@ -5,8 +5,8 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import ts from 'typescript';
 
-// B records stay separate from the production manifest until native admission.
-// This composes source text only. It never mounts a mod or starts Herdr.
+// Compose source text and the verified A-to-B transition for production setup.
+// This never mounts a mod or starts Herdr.
 function helperUrl(name, imports = {}) {
   const url = new URL(`../packages/herdr/src/__tests__/${name}.ts`, import.meta.url);
   let source = ts.transpileModule(readFileSync(url, 'utf8'), {
@@ -17,7 +17,7 @@ function helperUrl(name, imports = {}) {
   return `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 }
 const aUrl = helperUrl('spaces-a-fixture');
-const { loadSpacesAFiles } = await import(aUrl);
+const { loadSpacesAFiles, loadPublishedSpacesARecipe, replaySpacesARecipe } = await import(aUrl);
 const { replaySpacesBRecipe } = await import(helperUrl('spaces-b-fixture', { './spaces-a-fixture.js': aUrl }));
 const args = process.argv.slice(2);
 if (args.some(arg => !['--check', '--write'].includes(arg)) || new Set(args).size !== args.length || args.length > 1)
@@ -32,8 +32,11 @@ const records = { version: 1, versions: Object.fromEntries(versions.map(version 
   assert.equal(Object.hasOwn(fragments, 'agents'), false, `${version} duplicates shared Agents fragments`);
   return [version, { ...fragments, agents }];
 })) };
+records.checks = {};
 for (const version of versions) {
   const fragments = records.versions[version];
+  const recipe = loadPublishedSpacesARecipe(version);
+  const afterA = replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe);
   const output = replaySpacesBRecipe(version, loadSpacesAFiles(version), fragments);
   assert.deepEqual(replaySpacesBRecipe(version, output, fragments), output);
   const changed = structuredClone(output);
@@ -42,6 +45,12 @@ for (const version of versions) {
   const missing = structuredClone(output);
   delete missing.agents['main.js'];
   assert.throws(() => replaySpacesBRecipe(version, missing, fragments), /missing/);
+  const transitionHashes = files => Object.fromEntries(Object.keys(fragments).sort().flatMap(mod => Object.entries(files[mod]).sort().map(([file, text]) => [`${mod}/${file}`, createHash('sha256').update(text).digest('hex')])));
+  records.checks[version] = {
+    recordsHash: createHash('sha256').update(JSON.stringify(fragments)).digest('hex'),
+    inputHashes: transitionHashes(afterA),
+    outputHashes: transitionHashes(output),
+  };
   const hashes = {};
   for (const [mod, files] of Object.entries(output).sort()) for (const [name, contents] of Object.entries(files).sort()) {
     if (name.endsWith('.js')) {

@@ -35,7 +35,7 @@ it("pins the presented system key without invoking sshd", async () => {
     if (JSON.stringify(args) === JSON.stringify(argv) && bounds.timeoutMs <= 10000 && bounds.maxBytes <= 65536) return { code: 0, stdout: `${line(key(7))}\n` };
     throw new Error("unexpected fixture command");
   };
-  expect(await inspectServedSshIdentity(options(run))).toEqual({ targetMachineId: B, sshUser: "fixture", hostKey: key(7) });
+  expect(await inspectServedSshIdentity(options(run))).toEqual({ targetMachineId: B, sshUser: "fixture", hostKeys: [key(7)] });
   expect(calls).toEqual([argv]);
 }, 5000);
 
@@ -43,7 +43,7 @@ it.each([
   ["older OpenSSH", `${line(key(7))}\n`],
   ["OpenSSH 9.8 and later", `# 127.0.0.1:2222 SSH-2.0-OpenSSH_9.8\n${line(key(7))}\n# 127.0.0.1:2222 SSH-2.0-OpenSSH_9.8\n# 127.0.0.1:2222 SSH-2.0-OpenSSH_9.8\n`],
 ])("accepts %s keyscan stdout", async (_version, stdout) => {
-  expect((await inspectServedSshIdentity(options(async () => ({ code: 0, stdout })))).hostKey).toEqual(key(7));
+  expect((await inspectServedSshIdentity(options(async () => ({ code: 0, stdout })))).hostKeys).toEqual([key(7)]);
 });
 
 it("selects ed25519, then ecdsa, then rsa regardless of scan order", async () => {
@@ -57,11 +57,13 @@ it("selects ed25519, then ecdsa, then rsa regardless of scan order", async () =>
       if (JSON.stringify(args) !== JSON.stringify(argv)) throw new Error("unexpected fixture command");
       return { code: 0, stdout: `${lines.join("\n")}\n` };
     };
-    expect(await inspectServedSshIdentity(options(run))).toEqual({ targetMachineId: B, sshUser: "fixture", hostKey: expected });
+    const observed = await inspectServedSshIdentity(options(run));
+    expect(observed.hostKeys[0]).toEqual(expected);
+    expect(observed.hostKeys).toHaveLength(lines.length);
   }
   const ec384 = key(10, "ecdsa-sha2-nistp384");
   for (const lines of [[line(ec384), line(ec)], [line(ec), line(ec384)]]) {
-    expect((await inspectServedSshIdentity(options(async () => ({ code: 0, stdout: lines.join("\n") })))).hostKey).toEqual(ec);
+    expect((await inspectServedSshIdentity(options(async () => ({ code: 0, stdout: lines.join("\n") })))).hostKeys).toEqual([ec]);
   }
 }, 5000);
 
@@ -72,7 +74,7 @@ it("accepts only the host fields emitted by OpenSSH for the configured port", as
     if (JSON.stringify(args) !== JSON.stringify(expected)) throw new Error("unexpected fixture command");
     return { code: 0, stdout: `${host} ${ed.type} ${ed.base64}\n` };
   }), sshPort });
-  expect((await scan(22, "127.0.0.1")).hostKey).toEqual(ed);
+  expect((await scan(22, "127.0.0.1")).hostKeys).toEqual([ed]);
   await expect(scan(22, "[127.0.0.1]:22")).rejects.toThrow("intercom-ssh-host-unavailable");
   await expect(scan(2222, "127.0.0.1")).rejects.toThrow("intercom-ssh-host-unavailable");
   await expect(scan(2222, "[127.0.0.1]:2223")).rejects.toThrow("intercom-ssh-host-unavailable");

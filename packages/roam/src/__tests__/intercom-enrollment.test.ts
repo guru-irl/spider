@@ -64,7 +64,7 @@ function fixture() {
       return state.connectorIssue === "missing" || state.connectorIssue === "not-signed-in" ? state.connectorIssue : "ready" as const;
     },
     async hostConnector() { step("host", () => {}); return state.connectorIssue === "unhosted" ? "unhosted" as const : "ready" as const; },
-    async inspectSshHost(pair: IntercomEnrollmentPair) { step("inspect-ssh", () => {}); return { targetMachineId: pair.target.machineId, sshUser: state.sshUser, hostKey: { ...state.hostKey } }; },
+    async inspectSshHost(pair: IntercomEnrollmentPair) { step("inspect-ssh", () => {}); return { targetMachineId: pair.target.machineId, sshUser: state.sshUser, hostKeys: [{ ...state.hostKey }] }; },
     async bindPair(pair: IntercomEnrollmentPair) { step("bind-pair", () => { state.registered.set(pair.pairId, structuredClone(pair)); }); },
     async writeKnownHost(pair: IntercomEnrollmentPair) { step("known-host", () => { state.knownHosts.set(pair.pairId, { ...pair.hostKey, alias: pair.hostKeyAlias, user: pair.sshUser }); }); },
     async connect(pair: IntercomEnrollmentPair): Promise<"ready" | "offline"> {
@@ -213,7 +213,7 @@ it("keeps the original pin when a preferred host key appears on retry", async ()
   expect(await run(f.request, f.ports)).toMatchObject({ code: 3 });
   const previous = structuredClone(f.state.knownHosts.get("pair-1"));
   const inspect = f.ports.inspectSshHost;
-  f.ports.inspectSshHost = async pair => ({ ...await inspect(pair), hostKey: ed, hostKeys: [ed, rsa] });
+  f.ports.inspectSshHost = async pair => ({ ...await inspect(pair), hostKeys: [ed, rsa] });
   expect(await run(f.request, f.ports)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
   expect(f.state.knownHosts.get("pair-1")).toEqual(previous);
   expect(f.state.registered.get("pair-1")?.hostKey).toEqual(rsa);

@@ -19,7 +19,7 @@ function fixture(system: number, served: number) {
 
 it("pins a presented system host key but refuses another listener's key", async () => {
   const trusted = fixture(7, 7), other = fixture(7, 8);
-  expect((await inspectServedSshIdentity(trusted.options)).hostKey).toEqual(key(7));
+  expect((await inspectServedSshIdentity(trusted.options)).hostKeys).toEqual([key(7)]);
   await expect(inspectServedSshIdentity(other.options)).rejects.toThrow("intercom-ssh-host-unverified");
 });
 

@@ -1,3 +1,4 @@
+import type { RoamStatus } from "./diagnostics";
 import { isAbsolute } from "node:path";
 import { MOVE_REFUSAL_MESSAGES, type MoveRefusal, type MoveRefusalCode, type SourceCleanup, type Outcome, type RoamConfig } from "./contracts";
 import { validateBlockerId, parseSourceCleanup } from "./move";
@@ -159,4 +160,8 @@ export function controlText(result: SafeControlOutcome, destinationAlias?: strin
   const explanation = result.refusal?.message, pause = ["destination-unknown", "move-destination-pending"].includes(result.reason) && !explanation?.includes("The source is paused")
     ? "\nThe source is paused to avoid running two copies." : "";
   return `${result.reason === "mac-hub-required" ? "Run this command on the Mac hub." : result.reason}${explanation ? `\n${explanation}` : ""}${result.refusal?.blockers.length ? `\nBlockers: ${result.refusal.blockers.join(", ")}` : ""}${result.home ? `\nCurrent home: ${result.home.machineId} (epoch ${result.home.epoch}).` : ""}${pause}${result.repairCommand ? `\n${result.repairCommand}` : ""}${value?.candidates?.length ? `\nCandidates: ${value.candidates.join(", ")}` : ""}\n`;
+}
+
+export function sourceCleanupStatusText(item: NonNullable<RoamStatus['sourceCleanups']>[number]): string {
+  return `Session ${token(item.sessionId) ?? 'unknown'}: source cleanup pending on ${token(item.sourceMachine) ?? 'unknown'}: ${item.sourceCleanup.blockers[0]}.`;
 }

@@ -35,6 +35,20 @@ it("refuses an unsafe or missing host public key instead of guessing", async () 
   await expect(mod.inspectServedSshIdentity({ machineId: B, sshUser: "-bad", sshd: "/fixture/sshd", run: f.run })).rejects.toThrow("intercom-ssh-host-unavailable");
 }, 5000);
 
+it("pins the served key when the unprivileged sshd configuration probe cannot read host keys", async () => {
+  const mod = await api();
+  const run = async (argv: readonly string[], _options: { timeoutMs: number; maxBytes: number }) => {
+    if (JSON.stringify(argv) === JSON.stringify(["/fixture/sshd", "-T"])) return { code: 1, stdout: "" };
+    if (JSON.stringify(argv) === JSON.stringify(["/fixture/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "2222", "127.0.0.1"])) {
+      return { code: 0, stdout: `[127.0.0.1]:2222 ssh-ed25519 ${key(7).base64}\n` };
+    }
+    throw new Error("unexpected fixture command");
+  };
+  await expect(run(["/fixture/ssh-keyscan", "-p", "2223"], { timeoutMs: 5000, maxBytes: 65536 })).rejects.toThrow("unexpected fixture command");
+  const options = { machineId: B, sshUser: "fixture", sshd: "/fixture/sshd", keyscan: "/fixture/ssh-keyscan", sshPort: 2222, run };
+  expect(await mod.inspectServedSshIdentity(options)).toEqual({ targetMachineId: B, sshUser: "fixture", hostKey: key(7) });
+}, 5000);
+
 it("a changed SSH host key is named and never treated as an automatic repair", async () => {
   const mod = await api(); expect(mod.compareSshHostKey).toBeTypeOf("function");
   expect(mod.compareSshHostKey(key(7), key(7))).toBe("match");

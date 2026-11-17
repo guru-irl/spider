@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { Socket } from "node:net";
+import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type AgentSession, type ExtensionContext, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { authorizeTestBridge, startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "../../../intercom/src/test-support.js";
 import { IntercomFederationClient } from "../../../intercom/src/broker/client.js";
@@ -44,6 +45,7 @@ beforeAll(async () => {
 });
 afterEach(async () => {
   for (const session of sessions.splice(0)) {
+    await session.abort();
     await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     session.dispose();
   }
@@ -57,15 +59,49 @@ afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
-async function recipient({ fresh = false, inboundTrigger = "never", restored }: { fresh?: boolean; inboundTrigger?: "never" | "replies" | "always"; restored?: SessionManager } = {}) {
+interface RecipientOptions {
+  fresh?: boolean;
+  inboundTrigger?: "never" | "replies" | "always";
+  restored?: SessionManager;
+  responses?: Array<() => void>;
+  beforeStart?: () => Promise<void>;
+  interactive?: boolean;
+}
+
+async function recipient({ fresh = false, inboundTrigger = "never", restored, responses, beforeStart, interactive = false }: RecipientOptions = {}) {
   const cwd = restored?.getCwd() ?? mkdtempSync(join(root, "session-")), agentDir = getAgentDirPath();
   writeFileSync(getConfigPath(), JSON.stringify({ inboundTrigger, confirmSend: false }));
   const sessionManager = restored ?? SessionManager.create(cwd, join(cwd, "sessions"));
   if (!fresh) sessionManager.appendMessage({ role: "user", content: "synthetic prior conversation", timestamp: 0 });
-  const settingsManager = SettingsManager.inMemory({ packages: [], cacheWarming: "off" });
+  const settingsManager = SettingsManager.inMemory({ packages: [], cacheWarming: "off", retry: { enabled: false }, compaction: { enabled: false },
+    ...(responses ? { defaultProvider: "fixture", defaultModel: "fixture" } : {}) });
   let endpoint!: SessionEndpoint, context!: ExtensionContext;
   const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
     extensionFactories: [pi => {
+      if (responses) pi.registerProvider("fixture", {
+        baseUrl: "https://model.invalid", api: "fixture-chat", apiKey: "synthetic-key",
+        models: [{ id: "fixture", name: "Fixture", reasoning: false, input: ["text"], contextWindow: 65536, maxTokens: 1024, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+        streamSimple: (model, _context, options) => {
+          const stream = createAssistantMessageEventStream();
+          const message: AssistantMessage = { role: "assistant", api: model.api, provider: model.provider, model: model.id, content: [], stopReason: "pending", timestamp: Date.now(),
+            usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+          let finished = false;
+          const finish = (aborted: boolean) => {
+            if (finished) return;
+            finished = true;
+            message.stopReason = aborted ? "aborted" : "stop";
+            if (aborted) message.errorMessage = "Synthetic request aborted";
+            stream.push(aborted ? { type: "error", reason: "aborted", error: message } : { type: "done", reason: "stop", message });
+            stream.end();
+          };
+          stream.push({ type: "start", partial: message });
+          options?.signal?.addEventListener("abort", () => finish(true), { once: true });
+          if (options?.signal?.aborted) finish(true);
+          responses.push(() => finish(false));
+          return stream;
+        },
+      });
+      if (beforeStart) pi.on("before_agent_start", beforeStart);
       pi.events.on(INTERCOM_HOST_EVENT, (value: unknown) => {
         const request = value as IntercomHostRequest;
         endpoint = { address: { sessionId: request.sessionId, scopeId: request.scopeId }, machineId: "11111111-1111-4111-8111-111111111111", homeEpoch: 1, activationEpoch: request.activationEpoch };
@@ -80,7 +116,12 @@ async function recipient({ fresh = false, inboundTrigger = "never", restored }: 
   sessions.push(session);
   expect(extensionsResult.errors).toEqual([]);
   expect(extensionsResult.extensions).toHaveLength(1);
-  await session.bindExtensions({ mode: "rpc" });
+  await session.bindExtensions(interactive ? { mode: "interactive", uiContext: { ...session.extensionRunner.getUIContext() } } : { mode: "rpc" });
+  if (responses) {
+    const model = context.modelRegistry.find("fixture", "fixture");
+    if (!model) throw new Error("Fixture model was not registered");
+    await session.setModel(model);
+  }
   const toolContext: ExtensionToolContext = {
     ...context,
     tools: [],
@@ -223,6 +264,55 @@ it("reports consumption once when a lifecycle scan precedes its receipt acknowle
   expect(sent().filter(receipt => receipt.messageId === "once-message" && receipt.status === "injected")).toHaveLength(1);
   expect(session.sessionManager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "intercom_receipt_ack" &&
     (entry.data as { messageId?: string; status?: string }).messageId === "once-message" && (entry.data as { status?: string }).status === "injected")).toHaveLength(1);
+});
+
+it("waits for a triggering send to append before reporting consumption", async () => {
+  const responses: Array<() => void> = [], release = Promise.withResolvers<void>();
+  let preparing = false;
+  const sent = captureReceiptFrames();
+  const { session, endpoint, execute } = await recipient({ fresh: true, inboundTrigger: "always", responses,
+    beforeStart: async () => { preparing = true; await release.promise; } });
+  expect(session.model?.provider).toBe("fixture");
+  try {
+    await bridge.deliver(remote, endpoint, { id: "trigger-message", timestamp: 1, content: { text: "synthetic message" } });
+    await vi.waitFor(() => expect(preparing).toBe(true));
+    await execute({ action: "status" });
+    expect(session.sessionManager.getEntries().filter(entry => entry.type === "custom_message")).toHaveLength(0);
+    expect(sent().filter(receipt => receipt.messageId === "trigger-message" && receipt.status === "injected")).toHaveLength(0);
+    release.resolve();
+    await vi.waitFor(() => expect(responses).toHaveLength(1));
+    responses.shift()!();
+    await session.waitForIdle();
+    await vi.waitFor(() => expect(receipts.some(value => value.receipt.messageId === "trigger-message" && value.receipt.status === "injected")).toBe(true));
+    const evidence = receipts.find(value => value.receipt.status === "injected")!.receipt.evidence;
+    if (evidence?.kind !== "entry") throw new Error("Missing triggered entry evidence");
+    expect(SessionManager.open(session.sessionManager.getSessionFile()!).getEntry(evidence.entryId)).toMatchObject({ customType: "intercom_message", details: { message: { id: "trigger-message" } } });
+    expect(sent().filter(receipt => receipt.messageId === "trigger-message" && receipt.status === "injected")).toHaveLength(1);
+  } finally { release.resolve(); }
+});
+
+it("waits for a busy recipient's steer to append before reporting consumption", async () => {
+  const responses: Array<() => void> = [], sent = captureReceiptFrames();
+  const { session, endpoint, execute } = await recipient({ responses, interactive: true });
+  expect(session.model?.provider).toBe("fixture");
+  const turn = session.prompt("synthetic active task");
+  void turn.catch(() => undefined);
+  await vi.waitFor(() => expect(responses).toHaveLength(1));
+  expect(session.isStreaming).toBe(true);
+  await bridge.deliver(remote, endpoint, { id: "busy-message", timestamp: 1, content: { text: "synthetic message" } });
+  await vi.waitFor(() => expect(receipts.some(value => value.receipt.messageId === "busy-message" && value.receipt.status === "acknowledged")).toBe(true));
+  await execute({ action: "status" });
+  expect(session.sessionManager.getEntries().filter(entry => entry.type === "custom_message")).toHaveLength(0);
+  expect(sent().filter(receipt => receipt.messageId === "busy-message" && receipt.status === "injected")).toHaveLength(0);
+  responses.shift()!();
+  await vi.waitFor(() => expect(responses).toHaveLength(1));
+  responses.shift()!();
+  await turn;
+  await vi.waitFor(() => expect(receipts.some(value => value.receipt.messageId === "busy-message" && value.receipt.status === "injected")).toBe(true));
+  const evidence = receipts.find(value => value.receipt.status === "injected")!.receipt.evidence;
+  if (evidence?.kind !== "entry") throw new Error("Missing busy entry evidence");
+  expect(SessionManager.open(session.sessionManager.getSessionFile()!).getEntry(evidence.entryId)).toMatchObject({ customType: "intercom_message", details: { message: { id: "busy-message" } } });
+  expect(sent().filter(receipt => receipt.messageId === "busy-message" && receipt.status === "injected")).toHaveLength(1);
 });
 
 it.each(["", " \t\n"])("treats blank optional IDs as absent in the real send tool: %j", async blank => {

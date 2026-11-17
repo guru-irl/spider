@@ -1,11 +1,11 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
 import { describe, expect, it, vi } from 'vitest';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
-import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers } from '../../../../scripts/herdr-e2e.mjs';
+import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command } from '../../../../scripts/herdr-e2e.mjs';
 import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
 import { restorationPending, presentationInProgress } from './roam-recovery.test.js';
@@ -15,6 +15,29 @@ import { coldCliStartup } from './roam-intercom.test.js';
 vi.mock('../harness/scenario.js', async importOriginal => ({
   ...await importOriginal<typeof import('../harness/scenario.js')>(), registerScenarios: () => {},
 }));
+describe('overall runner deadline', () => {
+  it('stops unfinished work and writes evidence before rejecting', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/deadline-'));
+    try {
+      const log = resolve(root, 'command.log');
+      const evidence: unknown[] = [];
+      await expect(command(process.execPath, ['-e', 'console.log("started"); setTimeout(() => {}, 1200)'], process.cwd(), process.env, log, true, undefined, 60_000,
+        { at: Date.now() + 500, expire: () => { evidence.push(JSON.parse(JSON.stringify({ reason: 'runner-deadline' }))); } })).rejects.toThrow('runner-deadline');
+      expect(readFileSync(log, 'utf8')).toContain('started');
+      expect(evidence).toEqual([{ reason: 'runner-deadline' }]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it('does not start another command after the overall deadline', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/deadline-'));
+    try {
+      const log = resolve(root, 'not-started.log');
+      await expect(command(process.execPath, ['-e', 'console.log("wrong")'], process.cwd(), process.env, log, true, undefined, 60_000,
+        { at: Date.now() - 1, expire: () => {} })).rejects.toThrow('runner-deadline');
+      expect(existsSync(log)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe('cold packed CLI startup measurement', () => {
   it('times one fresh successful help process through the packed entry', async () => {
     vi.useFakeTimers(); vi.setSystemTime(1_000);

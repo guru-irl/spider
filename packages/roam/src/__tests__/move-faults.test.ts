@@ -2,6 +2,7 @@ import { abortCleanupId } from "../move-recovery";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, it, vi } from "vitest";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -193,12 +194,16 @@ it.each([false, true])("move recovery reconciles a reserved destination only aft
   const f = fixture(), start = f.ports.start, intents = createIntentStore(dirname(f.target));
   let unreadable = true, supervisor: ReturnType<typeof createSupervisor> | undefined;
   const launches: string[] = [], evidence = vi.spyOn(console, "error").mockImplementation(() => {});
+  const inspect = f.ports.inspect;
+  f.ports.inspect = async (...args) => ({ ...await inspect(...args),
+    hostingWarning: readLocal(f.ports.globalDb, "supervisor-hosting-error", args[0].sessionId) });
   f.ports.start = async (home, prepared, operation) => {
     const intent = { sessionId: home.sessionId, epoch: home.epoch, desired: "running" as const, suspended: null,
       file: prepared.session.file, cwd: prepared.session.cwd, moveId: home.moveId };
     await intents.update(home.sessionId, null, { intent, failures: [],
       supervision: { kind: "launching", operationId: operation.id, phase: "reserved" } });
-    supervisor = createSupervisor({ intents, journal: f.journal, clock: { now: () => 1, later: () => () => {} },
+    supervisor = createSupervisor({ intents, journal: f.journal,
+      async hostingWarning(id, warning) { writeLocal(f.ports.globalDb, "supervisor-hosting-error", id, warning ?? undefined); }, clock: { now: () => 1, later: () => () => {} },
       runningIntents: { list: async () => [home.sessionId], async get() {
         if (unreadable) throw new Error("Unsafe hosting state file"); return intent;
       }, subscribe: () => () => {} }, events: { subscribe: () => () => {} },
@@ -222,8 +227,13 @@ it.each([false, true])("move recovery reconciles a reserved destination only aft
     expect(f.sourceActive).toBe(false);
     unreadable = persistent;
     await supervisor!.reconcile();
+    await supervisor!.reconcile();
     const recovered = await moves.recoverMove("move-a", f.ports);
     expect(recovered).toMatchObject(persistent ? { code: 3, reason: "move-destination-pending" } : { code: 0, reason: "moved" });
+    if (persistent) {
+      expect(recovered).toMatchObject({ refusal: { message: expect.stringMatching(/supervisor-hosting-error.*running-intent/) } });
+      expect(readLocal(f.ports.globalDb, "supervisor-hosting-error", "session-a")).toMatchObject({ count: 3 });
+    }
     expect(launches).toEqual(persistent ? [] : ["move-a"]);
     expect(f.destinationActive).toBe(!persistent);
     expect(f.current()).toMatchObject({ machineId: BOX, epoch: 2 });

@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import * as fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { constants } from "node:fs";
 import { join, resolve } from "node:path";
 import { hash } from "@spider/herdr/sessions/registry";
 import { createIntentStore, inspectIntentReservations, inspectSuspendedIntents, type IntentState } from "../intent";
@@ -70,15 +72,17 @@ it("validates the inode it reads when an unsafe replacement follows the pathname
 
 it.each(["get", "list", "reservations", "suspensions"] as const)("%s refuses a linked state file without repairing it", async reader => {
   const f = await fixture(), alias = join(f.root, "alias.json");
+  await fs.chmod(f.file, 0o640);
   await fs.link(f.file, alias);
   const read = () => reader === "get" ? f.store.get("session-1") : reader === "list" ? f.store.list()
     : reader === "reservations" ? inspectIntentReservations(f.root) : inspectSuspendedIntents(f.root);
   await expect(read()).rejects.toThrow("Unsafe hosting state file");
   expect((await fs.lstat(alias)).nlink).toBe(2);
+  expect((await fs.lstat(alias)).mode & 0o7777).toBe(0o640);
   expect(JSON.parse(await fs.readFile(alias, "utf8"))).toEqual({ version: 1, value: f.state });
 });
 
-it.skipIf(process.platform === "win32")("refuses an intent inode owned by another user", async () => {
+it.skipIf(process.platform === "win32").each(["get", "list", "reservations", "suspensions"] as const)("%s refuses an intent inode owned by another user", async reader => {
   const f = await fixture(), originalLstat = fs.lstat, originalOpen = fs.open;
   vi.spyOn(fs, "lstat").mockImplementation((async (...args: Parameters<typeof fs.lstat>) => {
     const info = await originalLstat(...args);
@@ -95,7 +99,9 @@ it.skipIf(process.platform === "win32")("refuses an intent inode owned by anothe
     }
     return handle;
   });
-  await expect(f.store.get("session-1")).rejects.toThrow("Unsafe hosting state file");
+  const read = () => reader === "get" ? f.store.get("session-1") : reader === "list" ? f.store.list()
+    : reader === "reservations" ? inspectIntentReservations(f.root) : inspectSuspendedIntents(f.root);
+  await expect(read()).rejects.toThrow("Unsafe hosting state file");
 });
 
 it.skipIf(process.platform === "win32")("repairs modes only through a mutable intent read", async () => {
@@ -112,6 +118,43 @@ it.each(["symlink", "directory"] as const)("refuses a %s in place of an intent f
   await fs.rename(f.file, target);
   if (replacement === "symlink") await fs.symlink(target, f.file);
   else await fs.mkdir(f.file, { mode: 0o700 });
-  await expect(f.store.get("session-1")).rejects.toThrow();
+  if (replacement === "symlink") await expect(f.store.get("session-1")).rejects.toMatchObject({ code: "ELOOP" });
+  else await expect(f.store.get("session-1")).rejects.toThrow("Unsafe hosting state file");
   expect(JSON.parse(await fs.readFile(target, "utf8"))).toEqual({ version: 1, value: f.state });
+});
+
+
+it("refuses a retired inode after exactly three opens without reading it", async () => {
+  const f = await fixture(), originalOpen = fs.open;
+  let opens = 0, reads = 0;
+  vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]) === f.file) {
+      if (++opens > 3) { await handle.close(); throw new Error("Retry exceeded three opens"); }
+      const stat = handle.stat.bind(handle);
+      vi.spyOn(handle, "stat").mockImplementation((async () => Object.assign(await stat(), { nlink: 0 })) as typeof handle.stat);
+      const read = handle.readFile.bind(handle);
+      vi.spyOn(handle, "readFile").mockImplementation((async (...args: Parameters<typeof handle.readFile>) => { reads++; return read(...args); }) as typeof handle.readFile);
+    }
+    return handle;
+  });
+  await expect(f.store.get("session-1")).rejects.toThrow("Hosting state file replaced during read");
+  expect(opens).toBe(3);
+  expect(reads).toBe(0);
+});
+
+it.skipIf(process.platform === "win32")("refuses a real FIFO intent without waiting for a writer", async () => {
+  const f = await fixture(), originalOpen = fs.open;
+  await fs.unlink(f.file); execFileSync("mkfifo", [f.file]);
+  let blocking = false;
+  // Refuse the unsafe syscall in the negative control so a regression cannot hang the test worker.
+  vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+    if (String(args[0]) === f.file && (Number(args[1]) & constants.O_NONBLOCK) === 0) {
+      blocking = true; throw new Error("Blocking FIFO open refused by test");
+    }
+    return originalOpen(...args);
+  });
+  await expect(f.store.get("session-1")).rejects.toThrow("Unsafe hosting state file");
+  expect(blocking).toBe(false);
+  expect((await fs.lstat(f.file)).isFIFO()).toBe(true);
 });

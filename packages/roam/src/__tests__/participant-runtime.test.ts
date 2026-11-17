@@ -17,7 +17,7 @@ import * as hcModule from "@spider/herdr/client/hc";
 import { claimIdLock } from "@spider/herdr/sessions/id-lock";
 import { createParticipantSupervisor } from "../participant-supervisor";
 import { recordReadiness } from "../session-control";
-import { writeLocal } from "@spider/db-core/roam/local-state";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
@@ -244,14 +244,24 @@ it.each(["null", "object", "string", "empty", "non-string", "unknown kind", "mis
     "missing separator": ["worktree:fixture"], duplicate: [f.worktree.storeKey, f.worktree.storeKey], "no worktree": ["global", "repo:fixture-repo"],
   };
   f.global.db.prepare("UPDATE roam_locations SET stores_json=? WHERE session_id='s-1'").run(kind === "invalid JSON" ? "[" : JSON.stringify(invalid[kind]));
+  let launches = 0;
   const supervisor = createParticipantSupervisor({ root: f.global.root, agent: f.ports,
     clock: { now: () => 1, later: () => () => {} }, events: { subscribe: () => () => {} }, owner: async () => ({ kind: "absent" }),
-    diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {}, async launch() { throw new Error("must not launch"); } });
+    diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {}, async launch() { launches++; throw new Error("must not launch"); } });
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
   try {
-    await supervisor.reconcile();
-    expect((await createIntentStore(f.global.root).get("s-1"))?.value).toMatchObject({
-      intent: { suspended: "Cannot verify hosting state" }, supervision: { kind: "idle" } });
-  } finally { await supervisor.stop(); }
+    for (let pass = 1; pass <= 4; pass++) {
+      await supervisor.reconcile();
+      expect((await createIntentStore(f.global.root).get("s-1"))?.value).toMatchObject({
+        intent: { suspended: null }, supervision: { kind: "idle", nextAttemptAt: null } });
+      expect(readLocal(f.global.db, "supervisor-hosting-error", "s-1") ?? null).toEqual(pass < 3 ? null
+        : { code: "supervisor-hosting-error", check: "inspection", since: 1, count: 3 });
+    }
+    expect(launches).toBe(0);
+    expect(log.mock.calls.map(args => JSON.parse(String(args[0])))).toEqual([{
+      event: "supervisor-hosting-error", sessionId: "s-1", code: "supervisor-hosting-error", check: "inspection",
+    }]);
+  } finally { await supervisor.stop(); log.mockRestore(); }
 }, 5000);
 
 it("hub readiness is advertised only for the matching live launch owner", async () => {
@@ -619,3 +629,28 @@ it.each(["restart", "foreign"] as const)("box wake reports only a proved live la
     expect(await wake({ sessionId: "s-1", operationId: f.operation.id })).toEqual(mode === "restart" ? { ok: true, launchId } : { ok: false, reason: "participant-launch-conflict" });
   } finally { await adopted.release(); }
 }, 5000);
+
+
+it("reports a corrupt restart journal even when crash history cannot advance", async () => {
+  const f = fixture(); await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
+  const intent = (await createRunningIntentAuthority(f.global.db).get("s-1"))!;
+  const launchId = participantLaunchId(BOX, "s-1", 2, f.operation.id), id = `${launchId}-restarts`;
+  f.ports.journal.begin({ id, kind: "participant-restarts", machineId: BOX, expectedEpoch: 2,
+    args: { sessionId: "s-1", operationId: f.operation.id, file: intent.file, cwd: intent.cwd, moveId: intent.moveId } });
+  f.ports.journal.record(id, "restart", { sequence: 2 });
+  const intents = createIntentStore(f.global.root);
+  const state = { intent, failures: [], supervision: { kind: "live" as const, identity: { bootId: "boot", pid: 9, startTime: "start" }, stableSince: 1 } };
+  await intents.update("s-1", null, state);
+  let launches = 0;
+  const supervisor = createParticipantSupervisor({ root: f.global.root, agent: f.ports,
+    clock: { now: () => 100, later: () => () => {} }, events: { subscribe: () => () => {} }, owner: async () => ({ kind: "absent" }),
+    diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {}, async launch() { launches++; throw new Error("must not launch"); } });
+  const log = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (let pass = 0; pass < 5; pass++) await supervisor.reconcile();
+    expect(readLocal(f.global.db, "supervisor-hosting-error", "s-1")).toEqual({ code: "supervisor-hosting-error", check: "restart", since: 100, count: 3 });
+    expect((await intents.get("s-1"))?.value).toEqual(state);
+    expect(launches).toBe(0);
+    expect(log).toHaveBeenCalledTimes(1);
+  } finally { await supervisor.stop(); log.mockRestore(); }
+});

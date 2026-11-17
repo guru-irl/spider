@@ -764,7 +764,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
       const journal = await store.read(), child = journal.child;
       if (!child || child.ended || child.settled || processStartIdentity(child.pid) === child.startIdentity) return true;
       // Run status and console events can arrive while handoff is still cancelling a crashed writer.
-      if (owner?.sessionId === sessionId) await monitor?.reconcile();
+      if (owner?.sessionId === sessionId) await monitor?.reconcile({ runId: runId as RunId });
       return foregroundJobsStopped(await store.read(), hc);
     },
     runIsLive: async console => {

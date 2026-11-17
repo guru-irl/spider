@@ -63,7 +63,7 @@ export interface JobMonitorOptions {
 }
 export interface JobMonitor extends JobPort {
   activate(owner: Owner, signal?: AbortSignal): Promise<void>;
-  reconcile(): Promise<void>;
+  reconcile(options?: { runId?: RunId }): Promise<void>;
   finishCleanup(): Promise<void>;
   consoleIdle(owner: Owner, on: MachineName, runId?: RunId): Promise<boolean>;
   consoleError(error: unknown): void;
@@ -601,7 +601,7 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     // A resumed activation has no surviving tool waiters. Tool-consumed results were already marked observed.
     for (const job of journal.jobs) if (job.noticeMode === 'tool' && job.notice !== 'observed') job.noticeMode = 'async';
     await reconcileAll(signal);
-    if (!options.adoptedRunId) { timer = setInterval(() => { void reconcile().catch(report); }, 2000); timer.unref(); }
+    if (!options.adoptedRunId) { timer = setInterval(() => { void reconcileLocal().catch(report); }, 2000); timer.unref(); }
   }
   let maintenance: ReturnType<typeof setTimeout> | undefined;
   function scheduleMaintenance(): void {
@@ -610,15 +610,19 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
       if (stopping || closed) { maintenance = undefined; return; }
       cleanup.start();
       // Keep the latch until the scan settles, not just until this timer fires.
-      if (handoff) void handoff.reconcile().catch(report).finally(() => { maintenance = undefined; });
+      if (handoff) void handoff.reconcile({ wait: false }).catch(report).finally(() => { maintenance = undefined; });
       else maintenance = undefined;
     }, 0);
     maintenance.unref();
   }
   async function drainCollections(): Promise<void> { await Promise.all([...collections.values()].map(({ task, firstIncomplete }) => Promise.race([task, firstIncomplete]))); }
-  function reconcile(): Promise<void> {
+  function reconcileLocal(): Promise<void> {
     return reconciliation ??= (async () => { await serial(() => reconcileAll()); await drainCollections(); scheduleMaintenance(); })()
       .finally(() => { reconciliation = undefined; });
+  }
+  async function reconcile(settings?: { runId?: RunId }): Promise<void> {
+    await reconcileLocal();
+    if (!stopping) await handoff?.reconcile(settings);
   }
   function shutdown(reason: 'reload' | 'quit'): Promise<void> {
     if (shutdownPromise) return shutdownPromise;

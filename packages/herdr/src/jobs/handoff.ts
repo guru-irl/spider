@@ -189,7 +189,8 @@ export interface AdoptedJobMonitor { reconcile(): Promise<void>; finishCleanup?(
 export type AgentConsoleOwner = Owner & { runId: RunId };
 export type CloseAgentConsoles = (owner: AgentConsoleOwner) => Promise<void>;
 export interface JobHandoff {
-  reconcile(): Promise<void>;
+  /** Wait for this scan's run work by default; maintenance waits only for the scan. */
+  reconcile(options?: { wait?: boolean; runId?: RunId }): Promise<void>;
   shutdown(reason: 'reload' | 'quit'): Promise<void>;
 }
 /** The parent never writes a live child's journal. Only one monitor owns each abandoned run. */
@@ -220,8 +221,8 @@ export function createJobHandoff(options: {
   };
   const lifetime = new AbortController();
   const running = new Map<RunId, Promise<void>>();
-  const pending = new Map<RunId, JobJournal>();
-  let scanning: Promise<void> | undefined;
+  const pending = new Map<RunId, { journal: JobJournal; done: Promise<void>; complete(): void }>();
+  let scanning: Promise<Map<RunId, Promise<void>>> | undefined;
   const reportedRuns = new Set<RunId>();
   const reportRun = (error: unknown, id: RunId) => { if (!lifetime.signal.aborted && !reportedRuns.has(id)) { reportedRuns.add(id); options.reportError?.(error); } };
   const reconcileRun = async (journal: JobJournal) => {
@@ -256,31 +257,44 @@ export function createJobHandoff(options: {
   };
   const pump = () => {
     while (!lifetime.signal.aborted && running.size < 4 && pending.size) {
-      const [id, journal] = pending.entries().next().value!;
+      const [id, work] = pending.entries().next().value!;
       pending.delete(id);
-      const task = reconcileRun(journal).catch(error => reportRun(error, id)).finally(() => { running.delete(id); pump(); });
+      const task = reconcileRun(work.journal).catch(error => reportRun(error, id)).finally(() => { running.delete(id); work.complete(); pump(); });
       running.set(id, task);
     }
   };
-  const reconcile = async () => {
-    const occupied = new Set([...running.keys(), ...pending.keys()]);
+  const scan = async (): Promise<Map<RunId, Promise<void>>> => {
+    const occupied = new Map<RunId, Promise<void>>([...running, ...[...pending].map(([id, work]) => [id, work.done] as const)]);
     const journals = await readChildJobJournals(options.root, options.owner, reportRun);
-    if (lifetime.signal.aborted) return;
+    if (lifetime.signal.aborted) return new Map();
     const found = new Set(journals.map(journal => journal.child!.id));
-    for (const id of pending.keys()) if (!found.has(id)) pending.delete(id);
+    for (const [id, work] of pending) if (!found.has(id)) { pending.delete(id); work.complete(); }
+    const tasks = new Map<RunId, Promise<void>>();
     for (const journal of journals) {
-      const id = journal.child!.id;
-      if (!running.has(id) && (!occupied.has(id) || pending.has(id))) pending.set(id, journal);
+      const id = journal.child!.id, queued = pending.get(id);
+      if (queued) queued.journal = journal;
+      let task = running.get(id) ?? queued?.done ?? occupied.get(id);
+      if (!task) {
+        let complete!: () => void;
+        task = new Promise<void>(resolve => { complete = resolve; });
+        pending.set(id, { journal, done: task, complete });
+      }
+      tasks.set(id, task);
     }
     pump();
+    return tasks;
   };
   return {
-    reconcile() {
-      if (lifetime.signal.aborted) return Promise.resolve();
-      return scanning ??= reconcile().finally(() => { scanning = undefined; });
+    async reconcile(settings) {
+      if (lifetime.signal.aborted) return;
+      const tasks = await (scanning ??= scan().finally(() => { scanning = undefined; }));
+      if (settings?.wait !== false) {
+        if (settings?.runId) await tasks.get(settings.runId);
+        else await Promise.all(tasks.values());
+      }
     },
     async shutdown(reason) {
-      lifetime.abort(); pending.clear();
+      lifetime.abort(); for (const work of pending.values()) work.complete(); pending.clear();
       const existing = new Set(adopted.values()), stopping = [...existing].map(monitor => monitor.shutdown(reason));
       await Promise.allSettled(scanning ? [scanning] : []);
       await Promise.allSettled([...running.values()]);

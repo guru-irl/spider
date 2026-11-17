@@ -286,8 +286,10 @@ requests a scan on that port through the trusted machine channel. The target
 pins a presented key only if it matches a root-owned system host public key in
 `/etc/ssh`. Both the directory and key file must be root-owned and not writable
 by other users. The key file must be a regular file, not a symlink. A scan alone does not prove
-that the listener holds the corresponding private key. A doctor run scans one
-port and pinned key type, then reports any pairs it could not check as
+that the listener holds the corresponding private key. Machines that share a
+host key cannot be distinguished by that key, so operators must give each
+machine its own host key. A doctor run scans one port and pinned key type, then
+reports any pairs it could not check as
 `intercom-ssh-check-deferred`.
 
 ### Protocol versions

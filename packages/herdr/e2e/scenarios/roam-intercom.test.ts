@@ -24,6 +24,14 @@ const intercom = (id: string, args: Record<string, string>) => ({ steps: [{ tool
 const result = (event: ObservedEvent) => event.result as { content: { text?: string }[]; details: Record<string, unknown> };
 const received = (event: ObservedEvent, body: string) => event.type === 'message_end' && event.customType === 'intercom_message' && JSON.stringify(event.content).includes(body);
 
+export async function coldCliStartup(invoke: Suite['invoke'], entry: string, env: Readonly<Record<string, string>>): Promise<number> {
+  const started = Date.now();
+  const result = await invoke(process.execPath, [entry, '--help'], env);
+  const durationMs = Date.now() - started;
+  if (result.exitCode !== 0 || !result.stdout.startsWith('Usage: spider ')) throw new Error('cold-cli-help-unavailable');
+  return durationMs;
+}
+
 async function call(session: InteractiveDriver, marker: string, id = marker): Promise<ObservedEvent> {
   await session.prompt(mark(marker));
   return session.toolResult(id, deadline(30_000));
@@ -498,6 +506,11 @@ async function topology(suite: Suite): Promise<void> {
   const network = await intercomNetwork(suite, { faults: true }), sessions: InteractiveDriver[] = [], sessionIds: string[] = [];
   let pair: PairFixture | undefined;
   try {
+    phase('cold-cli-startup');
+    const durationMs = await coldCliStartup(suite.invoke, suite.packed.roamCli, network.machines[0].env);
+    const startup = { story: suite.story, measurement: 'cold-cli-startup', command: '--help', processCold: true, durationMs };
+    console.info(JSON.stringify(startup));
+    await suite.evidence('R13-cold-cli-startup.json', startup);
     phase('original-sessions');
     await pauseFederation(network);
     for (const [i, name] of ['coordinator', 'alpha', 'beta'].entries()) {

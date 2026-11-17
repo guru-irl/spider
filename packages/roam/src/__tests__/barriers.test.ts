@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createSync } from "../sync";
 import { barrierWatermarks } from "../barriers";
+import { assignInitialHome } from "../homes";
 import * as staging from "../staging";
 import { network, BOX, HUB } from "./sync-fixture";
 const fixtures: ReturnType<typeof network>[] = [];
@@ -19,6 +20,30 @@ it("move barriers wait for every store", async () => {
   expect(await sync.barriers(peerId, [{ ...required[0] }, { ...required[1], through: 2 }])).toBe(true);
   f.unavailable.add(BOX);
   expect(await sync.barriers(peerId, required.slice(0, 1))).toBe(false);
+}, 5000);
+it("satisfied move barriers only request live cursor proofs", async () => {
+  const f = fixture(); f.seed();
+  const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores });
+  await sync.sync();
+  const key = f.remotes.get(BOX)!.worktree.storeKey;
+  const required = [f.stores.head("global"), f.stores.head(key)];
+  f.calls.length = 0;
+  expect(await sync.barriers(BOX, required)).toBe(true);
+  expect(f.calls.map(call => ({ kind: call.operation.kind, storeKey: call.operation.args.storeKey }))).toEqual([
+    { kind: "cursor", storeKey: "global" }, { kind: "cursor", storeKey: key },
+  ]);
+}, 5000);
+it("move barriers synchronize a missing watermark and prove it again", async () => {
+  const f = fixture(); f.seed();
+  const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores });
+  await sync.sync();
+  assignInitialHome(f.global.db, "session-b", HUB, HUB);
+  const required = [f.stores.head("global")];
+  expect(await sync.barriers(BOX, required)).toBe(true);
+  expect(f.remotes.get(BOX)!.global.db.prepare("SELECT machine_id,epoch FROM session_homes WHERE session_id=?").get("session-b")).toEqual({ machine_id: HUB, epoch: 1 });
+  f.calls.length = 0;
+  expect(await sync.barriers(BOX, required)).toBe(true);
+  expect(f.calls.map(call => call.operation.kind)).toEqual(["cursor"]);
 }, 5000);
 it("barrier watermarks read the store head without writing snapshot batches", async () => {
   const f = fixture(); f.seed();

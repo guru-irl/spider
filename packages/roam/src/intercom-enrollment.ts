@@ -7,7 +7,12 @@ import type { IntercomEnrollmentPair, IntercomEnrollmentPlan, IntercomEnrollment
 
 export const INTERCOM_CONSENT = "Enrolling this pair lets the initiating box execute commands as your user on its peer. A compromised initiating box can access every box reachable through enrolled pairs. This approval is separate from copying pi authentication. Pair keys verify their pair and epoch, but shared loopback SSH does not bind a key to one tunnel. Revoke with `spider roam intercom revoke <pair>` to stop the pair host and remove its key. Deleting the key alone does not close open connections.";
 
-export interface EnrollmentResult { pairs: readonly string[]; pending?: readonly { pairId: string; reason: string }[] }
+export interface EnrollmentResult { pairs: readonly string[]; pending?: readonly { pairId: string; reason: string; causeCode?: string }[] }
+
+export function enrollmentCauseCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(error.code)
+    ? error.code : "unknown";
+}
 
 function outcome(operationId: string, code: 0 | 1 | 2 | 3, reason: string, value: EnrollmentResult | null = null): Outcome<EnrollmentResult> {
   return { code, reason, operationId, home: null, epoch: null, repairCommand: null, value };
@@ -125,8 +130,8 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
         }
         return "link-down";
       };
-      const keys = new Set<string>(), completed: string[] = [], pending: Array<{ pairId: string; reason: string }> = [];
-      const enroll = async (plan: IntercomEnrollmentPlan): Promise<string | null> => {
+      const keys = new Set<string>(), completed: string[] = [], pending: Array<NonNullable<EnrollmentResult["pending"]>[number]> = [];
+      const enroll = async (plan: IntercomEnrollmentPlan): Promise<string | { reason: string; causeCode: string } | null> => {
         try {
           const expectedFenceId = (fences as Record<string, string | null>)[plan.pairId];
           if (expectedFenceId === "unavailable") return "intercom-fence-unavailable";
@@ -195,12 +200,13 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           record(pair.pairId, "verified");
           return null;
         } catch (error) {
-          return error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending"].includes(error.message) ? error.message : "intercom-enrollment-pending";
+          return { reason: error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending"].includes(error.message) ? error.message : "intercom-enrollment-pending",
+            causeCode: enrollmentCauseCode(error) };
         }
       };
       for (const pair of snapshot.pairs) {
-        const reason = await enroll(pair);
-        if (reason) pending.push({ pairId: pair.pairId, reason }); else completed.push(pair.pairId);
+        const failure = await enroll(pair);
+        if (failure) pending.push({ pairId: pair.pairId, ...(typeof failure === "string" ? { reason: failure } : failure) }); else completed.push(pair.pairId);
       }
       if (pending.length) return outcome(operationId, 3, pending.length === 1 && completed.length === 0 ? pending[0].reason : "intercom-enrollment-pending",
         { pairs: completed, pending });

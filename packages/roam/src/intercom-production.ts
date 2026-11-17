@@ -14,7 +14,7 @@ import type { IntercomEnrollmentPair, IntercomEnrollmentPlan, IntercomEnrollment
 import type { ProvisionTransport } from "./transport";
 import type { PairConsentProof } from "./intercom-local-ops";
 import { createIntercomRegistry } from "./intercom-registry";
-import { validPublicKey, revokeIntercomPair } from "./intercom-enrollment";
+import { enrollmentCauseCode, validPublicKey, revokeIntercomPair } from "./intercom-enrollment";
 import type { IntercomStore } from "./intercom-contracts";
 import { pairResources, inspectPairUnit } from "./intercom-pair-resources";
 import { isMachineId } from "./machine-id";
@@ -49,7 +49,9 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
     if (!object(reply) || reply.version !== 1 || reply.kind !== kind || reply.ok !== true || !Object.hasOwn(reply, "value") ||
         command === "setup-local" && reply.machineId !== machine.machineId) {
       const reason = object(reply) && typeof reply.reason === "string" && /^[a-z-]{1,80}$/.test(reply.reason) ? reply.reason : "intercom-verification-pending";
-      throw new Error(reason);
+      const error = new Error(reason);
+      if (object(reply) && object(reply.cause)) Object.assign(error, { code: enrollmentCauseCode(reply.cause) });
+      throw error;
     }
     return reply.value;
   };

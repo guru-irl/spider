@@ -12,7 +12,7 @@ import type { ProcessIdentity, ProcessProbe } from './lease.js';
 export interface LaunchEnvironment { agentDirectory: string; extensionArguments: readonly string[] }
 export interface TerminalAssociation { version: 1; owner: Owner; recordedAt: number; coreStartedAt: number; environment: LaunchEnvironment; activityId?: string }
 export interface TerminalRegistry {
-  record(record: Omit<TerminalAssociation, 'version'>, started?: boolean): Promise<void>;
+  record(record: Omit<TerminalAssociation, 'version'>, started?: ProcessIdentity): Promise<void>;
   get(identity: TerminalIdentity): Promise<TerminalAssociation | null>;
   ended(identity: TerminalIdentity, activityId: string): Promise<boolean>;
   list(onInvalid?: (file: string, error: unknown) => void): Promise<TerminalAssociation[]>;
@@ -93,18 +93,19 @@ function association(value: unknown): TerminalAssociation {
 export function createTerminalRegistry(root: string): TerminalRegistry {
   const directory = join(root, 'terminals'); const path = (id: TerminalIdentity) => join(directory, `${identityKey(id)}.json`);
   return {
-    async record(r, started = false) {
+    async record(r, started) {
       const owner: Owner = { sessionId: r.owner.sessionId, generation: r.owner.generation, terminal: { coreId: r.owner.terminal.coreId, terminalId: r.owner.terminal.terminalId, address: r.owner.terminal.address, socket: r.owner.terminal.socket, sessionNamespace: r.owner.terminal.sessionNamespace }, cwd: r.owner.cwd, name: r.owner.name, sessionFile: r.owner.sessionFile === null ? null : await canonicalSessionFile(r.owner.sessionFile) };
       const key = identityKey(owner.terminal);
       const mapping = association({ version: 1, owner, recordedAt: r.recordedAt, coreStartedAt: r.coreStartedAt, environment: launchEnvironment(r.environment), ...(r.activityId ? { activityId: r.activityId } : {}) });
-      if (started && !mapping.activityId) throw new HerdrError('invalid-terminal-mapping', 'A started session requires an activity identifier');
+      if (started && (!mapping.activityId || !Number.isSafeInteger(started.pid) || started.pid <= 0)) throw new HerdrError('invalid-terminal-mapping', 'A started session requires an activity identifier and process ID');
       await withProcessLock(root, `resume-start:${key}`, async () => {
         await withProcessLock(root, `terminal:${key}`, async () => {
           const markers = join(root, 'resume-starts', key);
-          if (started) await writePrivateJson(join(markers, `live-${mapping.activityId}`), { version: 1 });
+          const live = started ? `live-${mapping.activityId}-${started.pid}` : '';
+          if (started) await writePrivateJson(join(markers, live), { version: 1, ...started });
           await writePrivateJson(path(owner.terminal), mapping);
           if (started) for (const name of await readdir(markers)) {
-            if (/^(?:live|ended)-[a-f0-9]{32}$/.test(name) && name !== `live-${mapping.activityId}`) await unlink(join(markers, name)).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
+            if (/^(?:live-[a-f0-9]{32}-[1-9]\d*|ended-[a-f0-9]{32})$/.test(name) && name !== live) await unlink(join(markers, name)).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
           }
         }, { reclaimReusedOwner: true });
       }, { reclaimReusedOwner: true });

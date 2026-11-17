@@ -147,7 +147,7 @@ it('shutdown waits for an in-flight activation before releasing its mapping', as
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const ready = new Promise<void>(resolve => { entered = resolve; });
-  const delayedRegistry = { ...registry, record: async (record: Parameters<typeof registry.record>[0], started?: boolean) => { entered(); await gate; await registry.record(record, started); } };
+  const delayedRegistry = { ...registry, record: async (record: Parameters<typeof registry.record>[0], started?: Parameters<typeof registry.record>[1]) => { entered(); await gate; await registry.record(record, started); } };
   const registration = registerHerdrSessions(api.pi, { ...inventory(), registry: delayedRegistry, processIdentity: { pid: 300, startIdentity: 'start:300' }, currentSession: () => ({ pid: 300, startIdentity: 'start:300', sessionFile: file, sessionName: 'named session', kind: 'top-level', hcAddress: terminal.address }), owner: () => owner(file), coreStartedAt: () => 1, launchEnvironment: request(file).environment });
   const startup = api.fire('session_start', { reason: 'startup' }, context(file, 'tui'));
   await ready;

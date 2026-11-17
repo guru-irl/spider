@@ -163,6 +163,24 @@ async function fixture(worktreeMachine = HUB, homeless = false) {
     owner(value: Probe) { owner = value; }, failed() { launchFailure = "launch-failed"; }, fenceGeneration(generation: string) { heldFence = { ...fence, generation }; }, reopened: () => reopened };
 }
 
+it("move preflight accepts the mixed store list written by the catalog", async () => {
+  const f = await fixture();
+  expect((await f.ports.check({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX })).storeKeys).toEqual(["global", REPO, WT]);
+}, 5000);
+
+it.each(["null", "object", "string", "empty", "non-string", "unknown kind", "missing repository", "missing worktree repository", "missing workspace", "missing separator", "duplicate", "invalid JSON"])(
+  "move preflight refuses a %s location list before effects", async kind => {
+  const f = await fixture(), invalid: Record<string, unknown> = {
+    null: null, object: {}, string: "[]", empty: [], "non-string": [1], "unknown kind": ["unknown:fixture"],
+    "missing repository": ["repo:"], "missing worktree repository": ["worktree::fixture"], "missing workspace": ["worktree:fixture:"],
+    "missing separator": ["worktree:fixture"], duplicate: [WT, WT],
+  };
+  f.global.db.prepare("UPDATE roam_locations SET stores_json=? WHERE session_id=?").run(kind === "invalid JSON" ? "[" : JSON.stringify(invalid[kind]), SESSION);
+  await expect(f.ports.check({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX })).rejects.toMatchObject({ code: "participant-stores-unavailable" });
+  expect(f.events).toEqual([]);
+  expect(sessionHome(f.global.db, SESSION)).toEqual(f.home);
+}, 5000);
+
 it("real adapters preserve expected epoch and exact file", async () => {
   const f = await fixture(BOX);
   const home = casHome(f.global.db, f.home, BOX, f.operation.id, HUB);

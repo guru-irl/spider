@@ -7,7 +7,7 @@ import { createInterface } from "node:readline";
 import { createReadStream, existsSync, realpathSync, readFileSync, lstatSync, renameSync, unlinkSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { Db } from "@spider/db-core";
-import { recordLocation } from "@spider/db-core/roam/catalog";
+import { parseLocationStores, recordLocation } from "@spider/db-core/roam/catalog";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { seedSession } from "@spider/db-core/roam/seed";
@@ -204,10 +204,10 @@ function sameHome(a: Home | null | "unknown", b: Home): boolean {
 function location(db: Db, sessionId: string): { file: string; cwd: string; stores: StoreKey[] } {
   const row = db.prepare("SELECT file,cwd,stores_json FROM roam_locations WHERE session_id=?").get(sessionId) as { file: string; cwd: string; stores_json: string } | undefined;
   if (!row || !isAbsolute(row.file) || !isAbsolute(row.cwd)) throw new MoveAdapterError("participant-location-unavailable");
-  const stores: unknown = JSON.parse(row.stores_json);
-  if (!Array.isArray(stores) || !stores.length || stores.some(key => typeof key !== "string") || new Set(stores).size !== stores.length) throw new MoveAdapterError("participant-stores-unavailable");
-  for (const key of stores) storeScope(key as StoreKey);
-  return { file: row.file, cwd: row.cwd, stores: stores as StoreKey[] };
+  let stores: StoreKey[];
+  try { stores = parseLocationStores(JSON.parse(row.stores_json)); }
+  catch { throw new MoveAdapterError("participant-stores-unavailable"); }
+  return { file: row.file, cwd: row.cwd, stores };
 }
 function participantOperation(home: Home, operation: Operation, kind: string, hubMachineId: string, args: JsonObject = {}): Operation {
   return { id: `${operation.id}-${kind}-${home.machineId}`, machineId: home.machineId, expectedEpoch: home.epoch, kind,

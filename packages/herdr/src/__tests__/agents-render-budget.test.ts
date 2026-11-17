@@ -306,10 +306,12 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       await h.ready();
       for (let i = 0; i < 2; i++) find(h.render(), `child-fold-live${i}`).events.on_click({}, h.cx);
       expect(JSON.parse(h.storage.get('spider.subagents.expanded')!)).toEqual(['live0', 'live1']);
-      h.state.feeds[0].runs.rows = []; h.state.feeds[1].runs.truncated = true;
+      h.state.feeds[0].runs.rows = []; h.state.feeds[0].runs.total = 0; h.state.feeds[1].runs.truncated = true;
       await refresh();
       expect(JSON.parse(h.storage.get('spider.subagents.expanded')!)).toEqual(['live0', 'live1']);
-      h.state.feeds[1].runs.truncated = false; await refresh();
+      h.state.feeds[1].runs.truncated = false; h.state.feeds[1].runs.total = 2; await refresh();
+      expect(JSON.parse(h.storage.get('spider.subagents.expanded')!)).toEqual(['live0', 'live1']);
+      h.state.feeds[1].runs.total = 1; await refresh();
       expect(JSON.parse(h.storage.get('spider.subagents.expanded')!)).toEqual(['live1']);
     } finally { await h.view.close(); }
   });

@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { paths } from '@spider/db-core';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
-import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command, finishCleanup, runStoryWork, storyExecutionDeadline } from '../../../../scripts/herdr-e2e.mjs';
+import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command, finishCleanup, runStoryWork, storyExecutionDeadline, runnerCleanupDeadline } from '../../../../scripts/herdr-e2e.mjs';
 import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
 import { restorationPending, presentationInProgress } from './roam-recovery.test.js';
@@ -102,6 +102,12 @@ describe('final runner cleanup budget', () => {
 });
 
 describe('story cleanup reserve', () => {
+  it('gives runner reconciliation only the remaining cleanup reserve', () => {
+    expect(runnerCleanupDeadline({ at: 1_000 }, 3_000)).toBe(11_000);
+    expect(runnerCleanupDeadline({ at: 1_000 }, 500)).toBe(10_500);
+    expect(runnerCleanupDeadline(undefined, 500)).toBe(10_500);
+  });
+
   it('marks work only after it finishes, including a failed story', async () => {
     const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
     try {

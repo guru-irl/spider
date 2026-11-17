@@ -793,7 +793,7 @@ async function exclusion(suite: Suite): Promise<void> {
     let nativeShown = false;
     const launchProof = await waitFor('exact launch exited without adopting ownership', async () => {
       const value = await f.cli(box, ['fixture-observe', f.sessionId, failed.operationId]);
-      if (!nativeShown && value.data?.native) { nativeShown = true; console.info(JSON.stringify({ story: suite.story, phase: 'native-launch-evidence', native: value.data.native })); }
+      if (!nativeShown && value.native) { nativeShown = true; console.info(JSON.stringify({ story: suite.story, phase: 'native-launch-evidence', native: value.native })); }
       return value;
     },
       result => result.code !== 3, rollbackDeadline, { reconcileMs: 500 });

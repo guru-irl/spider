@@ -33,6 +33,8 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
       const source = db.prepare(`SELECT o.operation_id FROM roam_operations o WHERE o.kind='move' AND o.result_json IS NULL
         AND EXISTS (SELECT 1 FROM roam_operation_actions a WHERE a.operation_id=o.operation_id AND a.action='move-source-cleanup-pending')`).all() as { operation_id: string }[];
       for (const { operation_id } of source) {
+        const pending = journal.read(operation_id).filter(row => row.action === 'move-source-cleanup-pending').at(-1)?.result;
+        if (machineId && pending?.sourceMachine !== machineId) continue;
         const sessionId = requestSession(operation_id);
         if (!sessionId) { diagnostic(operation_id, 'cleanup-evidence-missing'); continue; }
         try {
@@ -53,9 +55,17 @@ export function createMoveRuntimeService(input: Omit<MoveRuntimeInput, "sessionI
       }
     } finally { db.close(); }
   };
+  const requested = new Set<string | undefined>();
   const recoverCleanup = (machineId?: string): Promise<void> => {
+    requested.add(machineId);
     if (cleanupFlight) return cleanupFlight;
-    return cleanupFlight = Promise.resolve().then(() => recoverCleanupOnce(machineId)).finally(() => { cleanupFlight = null; });
+    return cleanupFlight = Promise.resolve().then(async () => {
+      while (requested.size) {
+        const machines = [...requested]; requested.clear();
+        if (machines.includes(undefined)) await recoverCleanupOnce();
+        else for (const machine of machines) await recoverCleanupOnce(machine);
+      }
+    }).finally(() => { cleanupFlight = null; });
   };
   return {
     recoverCleanup,

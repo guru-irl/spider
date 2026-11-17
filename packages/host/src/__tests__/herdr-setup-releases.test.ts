@@ -6,7 +6,8 @@ import { basename, join } from 'node:path';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { runHerdrCli } from '../../../herdr/src/setup/cli.js';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
-import { loadPublishedSpacesARecipe, loadSpacesAFiles, replaySpacesARecipe } from '../../../herdr/src/__tests__/spaces-a-fixture.js';
+import { loadSpacesAFiles } from '../../../herdr/src/__tests__/spaces-a-fixture.js';
+import { replaySpacesBRecipe } from '../../../herdr/src/__tests__/spaces-b-fixture.js';
 import { cleanup } from './herdr-setup-fixture.js';
 import { releaseFixture } from './herdr-setup-release-fixture.js';
 
@@ -17,17 +18,17 @@ vi.mock('node:child_process', async importOriginal => {
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
-  test(`${version} production setup stages the complete A result and doctor checks its release`, async () => {
+  test(`${version} production setup stages the complete A and B result and doctor checks its release`, async () => {
     const f = await releaseFixture(version), home = f.h.directories.app;
-    const recipe = loadPublishedSpacesARecipe(version);
-    const expected = replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe);
+    const records = JSON.parse(await readFile(join(f.root, 'packages/herdr/assets/look/cross-machine-patches.json'), 'utf8')).versions[version];
+    const expected = replaySpacesBRecipe(version, loadSpacesAFiles(version), records);
     const stockToast = await readFile(join(home, 'mods/toast/main.js'));
     const names = (await f.parts.preflight(f.request)).mods.map(copy => basename(copy.directory));
     expect(names.filter(name => name === 'spider-menu')).toHaveLength(1);
-    expect(names).not.toContain('spider-new-menu');
+    expect(names.filter(name => name === 'spider-new-menu')).toHaveLength(1);
     await setupHerdr(f.request, f.parts);
-    await expect(readFile(join(home, 'mods/spider-new-menu/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
-    for (const mod of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome', 'menu']) {
+    expect(await readFile(join(home, 'mods/spider-new-menu/main.js'), 'utf8')).toBe(expected['new-menu']!['main.js']);
+    for (const mod of ['agents', 'spaces', 'pane', 'tabs', 'workspace-chrome', 'menu', 'new-menu']) {
       const clone = mod === 'workspace-chrome' ? 'spider-chrome' : `spider-${mod}`;
       const manifest = JSON.parse(await readFile(join(home, 'mods', clone, 'mod.json'), 'utf8'));
       expect(manifest.clonedFrom).toEqual({ name: mod, version });
@@ -256,7 +257,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     await expect(readFile(join(f.h.directories.app, 'mods/spider-menu/main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  test(`${version} rejects changes to a stock mod even when it is not cloned`, async () => {
+  test(`${version} rejects changes to the stock new-menu before cloning it`, async () => {
     const f = await releaseFixture(version), manifest = join(f.h.directories.app, 'mods/new-menu/mod.json');
     await writeFile(manifest, (await readFile(manifest, 'utf8')) + '\n');
     await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'upstream-source-unknown', message: expect.stringContaining('new-menu') });

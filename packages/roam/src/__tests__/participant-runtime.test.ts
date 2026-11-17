@@ -599,3 +599,23 @@ it("retire-only durably stops a never-homed local session as well as homed sessi
   expect(stopped).toEqual(["s-1"]);
   expect(await createRunningIntentAuthority(f.global.db).get("s-1")).toMatchObject({ desired: "stopped", epoch: 2 });
 }, 5000);
+
+it.each(["restart", "foreign"] as const)("box wake reports only a proved live launch for the current intent: %s", async mode => {
+  const { createBoxParticipantWake } = await import("../participant-runtime"), f = fixture();
+  await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
+  const authority = createRunningIntentAuthority(f.global.db), intent = (await authority.get("s-1"))!;
+  const base = participantLaunchId(BOX, "s-1", 2, f.operation.id), launchId = mode === "restart" ? `${base}-restart-1` : "foreign-launch";
+  f.ports.journal.begin({ id: `${base}-restarts`, kind: "participant-restarts", machineId: BOX, expectedEpoch: 2,
+    args: { sessionId: "s-1", operationId: f.operation.id, file: intent.file, cwd: intent.cwd, moveId: intent.moveId } });
+  f.ports.journal.record(`${base}-restarts`, "restart", { sequence: 1, previousLaunchId: base });
+  const store = createIntentStore(f.global.root);
+  await store.update("s-1", null, { intent, failures: [], supervision: { kind: "live", identity: { bootId: "boot-a", pid: 43, startTime: "adopted" }, stableSince: 1 } });
+  const root = join(f.global.root, "herdr"), probe = async () => ({ kind: "live" as const, startIdentity: "launcher" });
+  const owner = await claimIdLock(root, "s-1", { pid: 42, startIdentity: "launcher" }, probe, { bootId: async () => "boot-a" });
+  const handoff = await owner.prepareHandoff(launchId, intent.file, "core-a");
+  const adopted = await claimIdLock(root, "s-1", { pid: 43, startIdentity: "adopted" }, probe, { bootId: async () => "boot-a", handoff: { ...handoff, file: intent.file } });
+  try {
+    const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, journal: f.ports.journal, wake: async () => {} });
+    expect(await wake({ sessionId: "s-1", operationId: f.operation.id })).toEqual(mode === "restart" ? { ok: true, launchId } : { ok: false, reason: "participant-launch-conflict" });
+  } finally { await adopted.release(); }
+}, 5000);

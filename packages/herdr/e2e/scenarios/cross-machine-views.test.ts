@@ -119,22 +119,35 @@ async function viewer(suite: Suite): Promise<void> {
   expect(reopened.slot).toMatchObject({ space: parent.slot!.space, tab: parent.slot!.tab });
   expect((await f.terminal(reopened.target.address)).state).toBe('live');
   expect(identityAlive(childIdentity)).toBe(true);
+  const oldLeaseFile = reopened.target.identityLabels['spider.display-lease'];
+  expect(typeof oldLeaseFile).toBe('string');
   const reopenedCurrent = await f.current(reopened.id);
   expect(await f.request({ version: 1, op: 'park', operationId: randomUUID(), presentationId: reopened.id, expectedRevision: reopenedCurrent.revision })).toMatchObject({ kind: 'outcome', outcome: { status: 'complete' } });
   await waitFor('closing the view stops its display lease only', () => leases(f), values => values.filter(lease => lease.runId === child.runId).every(lease => lease.state === 'stopped' || lease.expiresAt <= Date.now()), deadline(25000));
   expect(identityAlive(childIdentity)).toBe(true); expect(identityAlive(owner.pi.identity)).toBe(true);
   const priorLeaseIds = new Set((await leases(f)).map(lease => lease.leaseId));
+  const launchAttempts = async () => (await readFile(join(suite.root, 'pane-hc.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line) as { argv: string[]; exitCode?: number }).filter(record => record.argv[0] === 'run' && record.exitCode === undefined && record.argv.includes(join(f.packageRoot, 'dist/herdr/viewer.mjs')) && record.argv[record.argv.indexOf('--run') + 1] === child.runId);
+  const priorAttempts = (await launchAttempts()).length;
   await writeFile(f.faultFile, JSON.stringify({ disconnected: false, viewerLaunchFailed: true }), { mode: 0o600 });
   let failed;
   try { failed = await f.request({ version: 1, op: 'open-auxiliary', operationId: randomUUID(), sessionId: row.sessionId, generation: row.generation, view: { kind: 'subagent', runId: child.runId } }); }
   finally { await writeFile(f.faultFile, JSON.stringify({ disconnected: false }), { mode: 0o600 }); }
   expect(failed).toMatchObject({ kind: 'outcome', outcome: { status: 'refused' } });
-  const failedLeases = (await leases(f)).filter(lease => !priorLeaseIds.has(lease.leaseId));
-  expect(failedLeases).toHaveLength(1);
-  expect(failedLeases[0]).toMatchObject({ runId: child.runId, state: 'stopped', expiresAt: 0, target: null, address: null });
+  const failedLaunchAttempts = (await launchAttempts()).slice(priorAttempts);
+  expect(failedLaunchAttempts).toHaveLength(1);
+  const failedLeaseFile = failedLaunchAttempts[0].argv[failedLaunchAttempts[0].argv.indexOf('--display-lease') + 1];
+  expect(failedLeaseFile).toMatch(/\/view-leases\/[a-zA-Z0-9-]+\.json$/);
+  expect(failedLeaseFile).not.toBe(oldLeaseFile);
+  const failedLeaseId = failedLeaseFile.split('/').at(-1)!.replace(/\.json$/, '');
+  expect(priorLeaseIds.has(failedLeaseId)).toBe(false);
+  await expect(readFile(failedLeaseFile)).rejects.toMatchObject({ code: 'ENOENT' });
+  await expect(readFile(oldLeaseFile)).rejects.toMatchObject({ code: 'ENOENT' });
+  const remainingLeases = await leases(f), failedLeases = remainingLeases.filter(lease => lease.leaseId === failedLeaseId);
+  expect(failedLeases).toHaveLength(0);
+  expect(remainingLeases.filter(lease => lease.runId === child.runId && lease.state === 'active')).toHaveLength(0);
   expect(identityAlive(childIdentity)).toBe(true); expect(identityAlive(secondIdentity)).toBe(true);
   const processAfter = await paneProcesses(f);
-  await suite.evidence('B06-processes-and-leases.json', { before: processBefore, after: processAfter, idle: { before: cpuBefore, after: cpuAfter, elapsedMs: idleMs, maximumCpuSeconds: 1, maximumRssGrowthKiB: 16 * 1024 }, active, renewed, sleepMs: Date.now() - sleepingAt, children: [childIdentity, secondIdentity], renewals, failed, failedLeases, limits: 'Native small-window fallback needs isolated app geometry' });
+  await suite.evidence('B06-processes-and-leases.json', { before: processBefore, after: processAfter, idle: { before: cpuBefore, after: cpuAfter, elapsedMs: idleMs, maximumCpuSeconds: 1, maximumRssGrowthKiB: 16 * 1024 }, active, renewed, sleepMs: Date.now() - sleepingAt, children: [childIdentity, secondIdentity], renewals, failed, failedLaunchAttempts, failedLeaseFile, oldLeaseFile, failedLeases, limits: 'Native small-window fallback needs isolated app geometry' });
   childControl.release('B06-child-running'); childControl.release('B06-second-running');
   await unchanged(f); await f.evidence('B06-observations.json');
 }

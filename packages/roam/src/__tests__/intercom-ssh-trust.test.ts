@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, linkSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "@spider/db-core";
 import { inspectServedSshIdentity } from "../intercom-ssh-observation";
@@ -22,3 +22,17 @@ it("pins a presented system host key but refuses another listener's key", async 
   expect((await inspectServedSshIdentity(trusted.options)).hostKey).toEqual(key(7));
   await expect(inspectServedSshIdentity(other.options)).rejects.toThrow("intercom-ssh-host-unverified");
 });
+
+it.each(["directory owner", "directory mode", "file owner", "file mode", "symlink", "hardlink", "oversized"])(
+  "does not trust an unsafe system host key: %s", async issue => {
+    const f = fixture(7, 7), file = join(f.directory, "ssh_host_ed25519_key.pub");
+    if (issue === "directory owner") f.directoryUid(1000);
+    if (issue === "directory mode") chmodSync(f.directory, 0o777);
+    if (issue === "file owner") f.fileUid(1000);
+    if (issue === "file mode") chmodSync(file, 0o666);
+    if (issue === "symlink") { const target = `${file}.target`; writeFileSync(target, `ssh-ed25519 ${key(7).base64}\n`); unlinkSync(file); symlinkSync(target, file); }
+    if (issue === "hardlink") linkSync(file, `${file}.link`);
+    if (issue === "oversized") writeFileSync(file, `ssh-ed25519 ${key(7).base64} ${"x".repeat(17000)}\n`);
+    await expect(inspectServedSshIdentity(f.options)).rejects.toThrow("intercom-ssh-host-unverified");
+  },
+);

@@ -186,6 +186,18 @@ it("preflight reads the current remote source location before mapping a return m
   expect(requests[0]).toMatchObject({ kind: "move-location", machineId: BOX, expectedEpoch: 2 });
 }, 5000);
 
+it.each(["file", "cwd", "stores"])("remote source location refuses malformed %s before mapping or effects", async field => {
+  const f = await fixture(), home = casHome(f.global.db, f.home, BOX, "outward", HUB);
+  const value = { file: "/fixture/session.jsonl", cwd: "/fixture/checkout", stores: ["global", REPO, WT], [field]: field === "stores" ? ["unknown:store"] : "relative-path" };
+  f.bindings.mapping = async () => { throw new Error("mapping must not run"); };
+  f.transport.exec = async (_peer, argv) => {
+    const operation = JSON.parse(argv[2]) as Operation;
+    return Buffer.from(JSON.stringify({ code: 0, operationId: operation.id, epoch: home.epoch, value }));
+  };
+  await expect(f.ports.check({ operation: f.operation, sessionId: SESSION, destinationMachine: HUB })).rejects.toMatchObject({ code: field === "stores" ? "participant-stores-unavailable" : "participant-location-unavailable" });
+  expect(f.events).toEqual([]);
+}, 5000);
+
 it("the location query returns only the current participant's authoritative location", async () => {
   const f = await fixture();
   const operation: Operation = { ...f.operation, kind: "move-location", args: { sessionId: SESSION, sourceMachine: HUB, moveId: "next-move" } };

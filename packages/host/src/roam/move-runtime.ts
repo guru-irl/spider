@@ -198,13 +198,17 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
       return { storeKey: key, stream: meta.stream_id, through: (db.prepare("SELECT coalesce(max(seq),0) AS seq FROM roam_changes").get() as { seq: number }).seq };
     } }, sync,
     async mapping(request, loc) {
+      const sourceMachine = localHome(sessionId)?.machineId ?? config.machineId;
       const mapped = globalDb.prepare("SELECT repo_key,workspace_id,path FROM roam_workspace_maps").all() as { repo_key: string; workspace_id: string; path: string }[];
-      const source = mapped.filter(row => loc.stores.includes(`worktree:${row.repo_key}:${row.workspace_id}` as StoreKey) && !relative(row.path, loc.cwd).startsWith(".."));
+      const source = mapped.filter(row => loc.stores.includes(`worktree:${row.repo_key}:${row.workspace_id}` as StoreKey) && (sourceMachine !== config.machineId || !relative(row.path, loc.cwd).startsWith("..")));
       if (source.length !== 1) return null;
       const row = source[0];
-      const destination = request.destinationMachine === config.machineId ? row.path : await evidenceCall<string>("move-workspace-map", { ...request.operation, args: { sessionId, moveId: request.operation.id, repoKey: row.repo_key, workspaceId: row.workspace_id, destinationMachine: request.destinationMachine } });
+      const rootFor = (machineId: string) => machineId === config.machineId ? Promise.resolve(row.path) : evidenceCall<string>("move-workspace-map", { ...request.operation, args: { sessionId, moveId: request.operation.id, repoKey: row.repo_key, workspaceId: row.workspace_id, destinationMachine: machineId } });
+      const sourceRoot = await rootFor(sourceMachine);
+      if (!sourceRoot || !isAbsolute(sourceRoot) || relative(sourceRoot, loc.cwd).startsWith("..")) return null;
+      const destination = await rootFor(request.destinationMachine);
       if (!destination || !isAbsolute(destination)) return null;
-      return { repoKey: row.repo_key, workspaceId: row.workspace_id, sourceRoot: row.path, destinationRoot: destination, destinationCwd: join(destination, relative(row.path, loc.cwd)) };
+      return { repoKey: row.repo_key, workspaceId: row.workspace_id, sourceRoot, destinationRoot: destination, destinationCwd: join(destination, relative(sourceRoot, loc.cwd)) };
     },
     participant: { pi, config, root, globalDb, runtimeRoot, stores: roster, withBothLocks, probe, git,
       exit: { async exited(identity) {

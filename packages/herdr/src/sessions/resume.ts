@@ -44,7 +44,7 @@ _spider_resume_watch() {
     _spider_pid="\${_spider_name##*-}"
     case "$_spider_resume_seen" in *:"$_spider_token":*) continue ;; esac
     case "$_spider_pid" in ''|*[!0-9]*|0) continue ;; esac
-    if kill -0 "$_spider_pid" 2>/dev/null; then continue; fi
+    if builtin kill -0 "$_spider_pid" 2>/dev/null; then continue; fi
     if command mv -f "$_spider_live" "\${_spider_live%/*}/ended-$_spider_token" 2>/dev/null; then
       _spider_resume_seen="\${_spider_resume_seen}\${_spider_token}:"
     fi

@@ -94,7 +94,7 @@ it('the configured auto policy produces one automatic snippet per proved restart
     const first = await ports.resumeOffer!(request);
     expect(first).toContain('Resuming Saved…');
     expect(first).not.toContain('run spider_resume');
-    expect(await ports.resumeOffer!(request)).toBe('');
+    expect(await ports.resumeOffer!(request)).not.toContain('Resuming Saved…');
   } finally { await ports.dispose(); }
 });
 

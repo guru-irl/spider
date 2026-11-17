@@ -93,7 +93,7 @@ describe('session ownership', () => {
     expect(opened).toEqual([]);
   });
 });
-it('quit, signal and reload preserve the correct restart eligibility', async () => {
+it('shutdown, signals and session switches stay resumable until a shell prompt returns', async () => {
   const entry = fileURLToPath(new URL('./fixtures/resume-shutdown-process.ts', import.meta.url));
   await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: entry, outDir: root, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'shutdown-process.mjs' } } } });
   for (const reason of ['quit', 'SIGTERM', 'SIGHUP', 'SIGKILL', 'reload', 'new', 'resume', 'fork', 'core-loss'] as const) {
@@ -111,9 +111,8 @@ it('quit, signal and reload preserve the correct restart eligibility', async () 
     await first.exited;
     const stateInventory = { presence: createProcessPresence(state), leases: createSessionLeases(state), processes: async () => [], probe: async () => ({ kind: 'absent' as const }) };
     const restart = { registry: createTerminalRegistry(state), processInventory: stateInventory, coreStartedAt: async () => Number.MAX_SAFE_INTEGER };
-    const expected = reason !== 'quit';
-    expect(Boolean(await offerResume(terminal, restart)), `${reason}: offer`).toBe(expected);
-    expect(Boolean(await offerResume(terminal, { ...restart, autoResumeRoot: state })), `${reason}: auto`).toBe(expected);
+    expect(await offerResume(terminal, restart), `${reason}: offer`).not.toBeNull();
+    expect(await offerResume(terminal, { ...restart, autoResumeRoot: state }), `${reason}: auto`).not.toBeNull();
     if (reason === 'quit') {
       const next = await start(); next.child.kill('SIGKILL'); await next.exited;
       expect(await offerResume(terminal, restart), 'starting pi clears the ended mark').not.toBeNull();
@@ -143,12 +142,12 @@ it('RPC startup preserves default SIGTERM behavior before pi installs handlers',
   } finally { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await exited; }
 }, 10000);
 
-it('quit waits for an in-flight activation before ending its mapping', async () => {
+it('shutdown waits for an in-flight activation before releasing its mapping', async () => {
   const file = await session(); const api = apiFixture(); const registry = createTerminalRegistry(root);
   let release!: () => void, entered!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const ready = new Promise<void>(resolve => { entered = resolve; });
-  const delayedRegistry = { ...registry, record: async (record: Parameters<typeof registry.record>[0]) => { entered(); await gate; await registry.record(record); } };
+  const delayedRegistry = { ...registry, record: async (record: Parameters<typeof registry.record>[0], started?: boolean) => { entered(); await gate; await registry.record(record, started); } };
   const registration = registerHerdrSessions(api.pi, { ...inventory(), registry: delayedRegistry, processIdentity: { pid: 300, startIdentity: 'start:300' }, currentSession: () => ({ pid: 300, startIdentity: 'start:300', sessionFile: file, sessionName: 'named session', kind: 'top-level', hcAddress: terminal.address }), owner: () => owner(file), coreStartedAt: () => 1, launchEnvironment: request(file).environment });
   const startup = api.fire('session_start', { reason: 'startup' }, context(file, 'tui'));
   await ready;
@@ -156,7 +155,7 @@ it('quit waits for an in-flight activation before ending its mapping', async () 
   await Promise.race([shutdown, new Promise(resolve => setTimeout(resolve, 250))]);
   release(); await Promise.all([startup, shutdown]);
   try {
-    expect(await offerResume(terminal, { registry, processInventory: inventory(), coreStartedAt: async () => Number.MAX_SAFE_INTEGER })).toBeNull();
+    expect(await offerResume(terminal, { registry, processInventory: inventory(), coreStartedAt: async () => Number.MAX_SAFE_INTEGER })).not.toBeNull();
   } finally { await registration.dispose(); }
 });
 

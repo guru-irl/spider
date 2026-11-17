@@ -3,7 +3,7 @@ import { parseLocationStores } from "@spider/db-core/roam/catalog";
 import { startPrivateControl, requestPrivateControl } from "./control-socket";
 import type { IntercomLifecycle, Operation, RoamConfig } from "./contracts";
 import type { SupervisorPorts } from "./supervisor";
-import { participantLaunchId } from "./participant-runtime";
+import { participantLaunchId } from "./participant-launch";
 import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { openDbReadOnly, type Db } from "@spider/db-core";

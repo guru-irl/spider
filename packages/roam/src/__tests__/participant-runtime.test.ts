@@ -28,6 +28,7 @@ import { handleSessionOperation } from "../participant-runtime";
 import { createRunningIntentAuthority } from "../session-control";
 import { createIntentStore } from "../intent";
 import * as intentModule from "../intent";
+import { participantLaunchId } from "../participant-launch";
 
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
@@ -430,7 +431,7 @@ it("box wake reserves exactly the requested session with an idempotent local lau
 }, 5000);
 
 it.each(["same", "launch", "epoch", "file"] as const)("box wake recovers only its own complete reserved launch after a crash (%s)", async changed => {
-  const { createBoxParticipantWake, participantLaunchId } = await import("../participant-runtime"), f = fixture(), authority = createRunningIntentAuthority(f.global.db);
+  const { createBoxParticipantWake } = await import("../participant-runtime"), f = fixture(), authority = createRunningIntentAuthority(f.global.db);
   const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
   const intent = { sessionId: "s-1", epoch: 2, desired: "running" as const, suspended: null, ...location, moveId: "move-1" };
   await authority.set(intent, "start-1", { machineId: BOX, hubMachineId: HUB });
@@ -444,7 +445,7 @@ it.each(["same", "launch", "epoch", "file"] as const)("box wake recovers only it
 }, 5000);
 
 it.each(["supervisor-first", "wake-first"] as const)("the same intent joins one launch when %s", async order => {
-  const { createBoxParticipantWake, participantLaunchId } = await import("../participant-runtime"), f = fixture();
+  const { createBoxParticipantWake } = await import("../participant-runtime"), f = fixture();
   await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
   let launches = 0, live = false;
   const launchIds: string[] = [];

@@ -47,7 +47,7 @@ import { spawnSync } from 'node:child_process';
 import { createHostMoveBindings } from ${source('../../../host/src/roam/move-runtime.ts')};
 import { createProcessInventory } from ${source('../../../host/src/herdr/process-inventory.ts')};
 import { createExactLaunchAdapter, createProductionLocalExactHc } from ${source('../../../roam/src/launcher.ts')};
-import { participantLaunchId } from ${source('../../../roam/src/participant-runtime.ts')};
+import { participantLaunchId } from ${source('../../../roam/src/participant-launch.ts')};
 import { createRunningIntentAuthority, readReadiness } from ${source('../../../roam/src/session-control.ts')};
 import { requestHubControl } from ${source('../../../roam/src/control-socket.ts')};
 import { createUsageIngestThrough } from ${source('../../../host/src/roam/usage-ingest.ts')};

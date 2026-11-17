@@ -261,6 +261,22 @@ it.each([false, true])("shutdown polls exact child identity without depending on
   } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await exited; }
 }, 5000);
 
+it("does not retire when the session is absent but the old process has not exited", async () => {
+  const f = fixture(), identity = { bootId: "boot-1", pid: 123, startTime: "old-start" };
+  const operation = { ...f.operation, id: "retire-unproved", kind: "session-retire", args: { ...f.operation.args, moveId: "move-1" } };
+  let requested = false, retired = false, now = 0;
+  const deadline = 20;
+  const ports: control.SessionControlPorts = { journal: f.journal,
+    probe: async () => requested ? { kind: "absent" } : { kind: "live", identity },
+    withBothLocks: async (_id, fn) => fn(),
+    live: async () => { requested = true; return { code: 0, reason: "shutdown-requested", operationId: operation.id, epoch: 2, home: null, repairCommand: null, value: {} }; },
+    dormant: async () => { retired = true; return { code: 0, reason: "retired", operationId: operation.id, epoch: 2, home: null, repairCommand: null, value: {} }; },
+    exit: { deadline, now: () => now, async exited(old) { expect(old).toEqual(identity); now = deadline; return false; } },
+  };
+  expect(await control.controlSession(operation, ports)).toMatchObject({ code: 3, reason: "process-exit-unproven" });
+  expect(retired).toBe(false);
+}, 5000);
+
 it.each([false, true])("a reused pid is not the old owner, replacement owns session=%s", async replacementOwns => {
   const f = fixture(), identity = { bootId: "boot-1", pid: 123, startTime: "old-start" };
   const operation = { ...f.operation, id: "retire-reused", kind: "session-retire", args: { ...f.operation.args, moveId: "move-1" } };

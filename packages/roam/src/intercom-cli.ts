@@ -77,7 +77,7 @@ export async function runIntercomEnrollCli(input: { root: string; graphFile: str
       io.out(`intercom-transition-${transition.state} ${transition.transitionId}\n`);
     }
     (result.code === 0 ? io.out : io.err)(`${result.reason}\n`);
-    if (result.value?.pending) for (const pending of result.value.pending) io.err(`${pending.pairId}: ${pending.reason}\n`);
+    if (result.value?.pending) for (const pending of result.value.pending) io.err(`${pending.pairId}: ${pending.reason}${pending.causeCode ? ` [${pending.causeCode}]` : ""}\n`);
     return result.code;
   } catch (error) {
     const message = error instanceof Error ? error.message : "";

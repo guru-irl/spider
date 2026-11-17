@@ -1,6 +1,6 @@
 import { pendingWorkspaceTransitions } from "@spider/roam/move-recovery";
 import { recordMoveBindings } from "@spider/roam/move-diagnostics";
-import { cancelPendingHandoff, type MoveNoStartReceipt } from "@spider/roam/pending-handoff";
+import { cancelPendingHandoff, readMoveLaunchAbsenceReceipt, type MoveLaunchAbsenceReceipt } from "@spider/roam/pending-handoff";
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
@@ -26,7 +26,7 @@ import { readLocalIdentity } from "@spider/roam/runtime";
 import { createBoxParticipantWake } from "@spider/roam/participant-runtime";
 import { participantLaunchId } from "@spider/roam/participant-launch";
 import { createProcessInventory } from "../herdr/process-inventory";
-import { inspectIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
+import { inspectIdLock, inspectReleasedIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
 import { processStartTime } from "../../../subagents/src/process-identity";
 import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
 import { createHcClient } from "@spider/herdr/client/hc";
@@ -39,9 +39,17 @@ import { createExactLaunchAdapter, createProductionLocalExactHc, createLaunchRec
 import { inspectSession } from "@spider/roam/session-file";
 import { verifyWorkspace } from "@spider/roam/workspace-import";
 import { createMoveControlHandler } from "@spider/roam/adapter-controls";
-import { recordMoveNoStart } from "./launch-observation";
+import { recordMoveLaunchAbsence } from "./launch-observation";
 import { readOwnedLaunchReadiness } from "./move-readiness";
 import { observeHubRestoration } from "@spider/roam/hub-restoration";
+
+function moveLaunchFailureReason(receipt: MoveLaunchAbsenceReceipt): string {
+  switch (receipt.kind) {
+    case "never-started": return `proved-no-start:${receipt.launchId}`;
+    case "exited-without-adoption": return `proved-unadopted-exit:${receipt.launchId}:${receipt.terminalId}`;
+    default: { const unsupported: never = receipt; throw new Error(`Unknown launch absence receipt: ${unsupported}`); }
+  }
+}
 
 export function moveBindingDiagnostics(bindings: MoveAdapterBindings): Diagnostic[] {
   return unboundMoveEffects(bindings).map(effect => ({ reason: moveEffectReason(effect), severity: "block", repairCommand: "spider roam doctor" }));
@@ -235,23 +243,26 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
             const signal = AbortSignal.timeout(config.limits.controlMs), coreId = await hc.coreId(signal), bootId = await localBootId();
             const reconcile = createLaunchReconciler({ journal, inspectLock: () => inspectIdLock(join(root, "herdr"), home.sessionId), coreId: hc.coreId, bootId: () => localBootId(), terminals: hc.terminals,
               clock: { now: clock.now, wait: (ms, signal) => new Promise((done, reject) => { const timer = setTimeout(done, ms); signal.addEventListener("abort", () => { clearTimeout(timer); reject(new Error("aborted")); }, { once: true }); }) } });
-            const receipt = await recordMoveNoStart({ journal, operationId: home.moveId, launchId: exactId, sessionId: home.sessionId, epoch: home.epoch, coreId, bootId,
-              intent,
+            const receipt = await recordMoveLaunchAbsence({ journal, operationId: home.moveId, launchId: exactId, sessionId: home.sessionId, epoch: home.epoch, coreId, bootId,
+              intent, ownership: async () => {
+                const owner = await inspectIdLock(join(root, "herdr"), home.sessionId);
+                return owner?.operationId === exactId ? owner : inspectReleasedIdLock(join(root, "herdr"), home.sessionId, exactId);
+              },
               readiness: () => readiness({ sessionId: home.sessionId, launchId: exactId, epoch: home.epoch }), evidence: () => reconcile(exactId, { signal }) });
-            if (receipt) { owner = { kind: "absent" }; launchFailure = `proved-no-start:${receipt}`; }
+            if (receipt) { owner = { kind: "absent" }; launchFailure = moveLaunchFailureReason(receipt); }
           } catch { /* Missing exact proof leaves ownership and launch outcome unknown. */ }
         }
         if (launchFailure && exactId && home.moveId) {
-          const receipt = journal.read(home.moveId).find(row => row.action === "move-no-start")?.result as unknown as MoveNoStartReceipt | undefined;
-          if (!receipt || await cancelPendingHandoff(root, { sessionId: home.sessionId, moveId: home.moveId, launchId: exactId, noStartReceipt: receipt }) === "refused") {
+          const receipt = readMoveLaunchAbsenceReceipt(journal, home.moveId);
+          if (!receipt || await cancelPendingHandoff(root, { sessionId: home.sessionId, moveId: home.moveId, launchId: exactId, absenceReceipt: receipt }) === "refused") {
             owner = { kind: "uncertain" }; launchFailure = null;
           }
         }
         if (!launchFailure && !lock && home.moveId) {
-          const receipt = journal.read(home.moveId).find(row => row.action === "move-no-start")?.result as unknown as MoveNoStartReceipt | undefined;
+          const receipt = readMoveLaunchAbsenceReceipt(journal, home.moveId);
           if (receipt && receipt.sessionId === home.sessionId && receipt.epoch === home.epoch && receipt.moveId === home.moveId &&
-              await cancelPendingHandoff(root, { sessionId: home.sessionId, moveId: home.moveId, launchId: receipt.launchId, noStartReceipt: receipt }) === "already-released" && (await probe(home.sessionId)).kind === "absent") {
-            owner = { kind: "absent" }; launchFailure = `proved-no-start:${receipt.launchId}`;
+              await cancelPendingHandoff(root, { sessionId: home.sessionId, moveId: home.moveId, launchId: receipt.launchId, absenceReceipt: receipt }) === "already-released" && (await probe(home.sessionId)).kind === "absent") {
+            owner = { kind: "absent" }; launchFailure = moveLaunchFailureReason(receipt);
           }
         }
         const retired = !!state?.retired && state.epoch === home.epoch && state.moveId === home.moveId && !!launchFailure;

@@ -10,8 +10,45 @@ import type { ProcessIdentity, ProcessInventoryPorts } from "@spider/herdr/sessi
 import type { Journal, IntercomLifecycle } from "./contracts";
 import type { RunningIntentAuthority } from "./session-control";
 import { startPrivateControl, requestPrivateControl } from "./control-socket";
-export interface MoveNoStartReceipt { moveId: string; launchId: string; sessionId: string; epoch: number; coreId: string; bootId: string; launchDigest: string; evidence: LaunchEvidence }
-export interface CancelPendingHandoff { sessionId: string; moveId: string; launchId: string; noStartReceipt: MoveNoStartReceipt }
+interface MoveLaunchAbsenceTuple { moveId: string; launchId: string; sessionId: string; epoch: number; coreId: string; bootId: string; launchDigest: string; evidence: LaunchEvidence }
+export interface MoveNoStartReceipt extends MoveLaunchAbsenceTuple { kind: "never-started" }
+export interface MoveUnadoptedExitReceipt extends MoveLaunchAbsenceTuple { kind: "exited-without-adoption"; terminalId: string }
+export type MoveLaunchAbsenceReceipt = MoveNoStartReceipt | MoveUnadoptedExitReceipt;
+export interface CancelPendingHandoff { sessionId: string; moveId: string; launchId: string; absenceReceipt: MoveLaunchAbsenceReceipt }
+export function moveLaunchAbsenceAction(receipt: MoveLaunchAbsenceReceipt): "move-no-start" | "move-unadopted-launch-exit" {
+  switch (receipt.kind) {
+    case "never-started": return "move-no-start";
+    case "exited-without-adoption": return "move-unadopted-launch-exit";
+    default: { const unsupported: never = receipt; throw new Error(`Unknown launch absence receipt: ${unsupported}`); }
+  }
+}
+function parseMoveLaunchAbsenceReceipt(value: unknown): MoveLaunchAbsenceReceipt | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const receipt = value as Partial<MoveLaunchAbsenceReceipt>;
+  if (![receipt.moveId, receipt.launchId, receipt.sessionId, receipt.coreId, receipt.bootId, receipt.launchDigest].every(value => typeof value === "string" && value.length > 0) ||
+      !Number.isSafeInteger(receipt.epoch) || receipt.epoch! < 1 || !receipt.evidence || typeof receipt.evidence !== "object") return null;
+  switch (receipt.kind) {
+    case "never-started":
+      if (receipt.evidence.proof?.kind === "terminal-exited-without-adoption" || receipt.evidence.receipt === "started" || receipt.evidence.receipt === "finished" || receipt.evidence.terminal === "present") return null;
+      break;
+    case "exited-without-adoption":
+      if (receipt.evidence.terminal !== "present" || receipt.evidence.proof?.kind !== "terminal-exited-without-adoption" || receipt.terminalId !== receipt.evidence.proof.terminalId) return null;
+      break;
+    default: return null;
+  }
+  return provedNoStart(receipt.evidence, receipt.launchId!, receipt.coreId!, receipt.bootId!) ? receipt as MoveLaunchAbsenceReceipt : null;
+}
+export function readMoveLaunchAbsenceReceipt(journal: Journal, moveId: string): MoveLaunchAbsenceReceipt | null {
+  const rows = journal.read(moveId).filter(row => row.action === "move-no-start" || row.action === "move-unadopted-launch-exit");
+  if (rows.length !== 1) return null;
+  const receipt = parseMoveLaunchAbsenceReceipt(rows[0].result);
+  if (!receipt || receipt.moveId !== moveId || moveLaunchAbsenceAction(receipt) !== rows[0].action) return null;
+  if (receipt.kind === "exited-without-adoption") {
+    const terminals = journal.read(receipt.launchId).filter(row => row.action === "exact-terminal");
+    if (terminals.length !== 1 || terminals[0].result.terminalId !== receipt.terminalId) return null;
+  }
+  return receipt;
+}
 export interface PendingHandoffControl { cancelPendingHandoff(input: CancelPendingHandoff): Promise<"released" | "already-released" | "refused"> }
 export function launchJournalDigest(journal: Journal, launchId: string): string { return createHash("sha256").update(JSON.stringify(journal.read(launchId))).digest("hex"); }
 interface CancelContext { file: string; leaseToken: string; owner: ProcessIdentity; bootId: string }
@@ -24,11 +61,11 @@ export function createPendingHandoffControl(input: { root: string; journal: Jour
   const sameIdentity = (a: ProcessIdentity, b: ProcessIdentity) => a.pid === b.pid && a.startIdentity === b.startIdentity;
   return { async cancelPendingHandoff(request) {
     try { return await withProcessLock(root, `cancel-handoff:${request.sessionId}`, async () => {
-      const receipt = request?.noStartReceipt;
+      const receipt = parseMoveLaunchAbsenceReceipt(request?.absenceReceipt);
       if (!receipt || receipt.sessionId !== request.sessionId || receipt.moveId !== request.moveId || receipt.launchId !== request.launchId ||
           !Number.isSafeInteger(receipt.epoch) || receipt.epoch < 1 || !provedNoStart(receipt.evidence, request.launchId, receipt.coreId, receipt.bootId)) return "refused";
-      const durable = journal.read(request.moveId).find(row => row.action === "move-no-start");
-      if (!durable || !isDeepStrictEqual(durable.result, receipt)) return "refused";
+      const durable = readMoveLaunchAbsenceReceipt(journal, request.moveId);
+      if (!durable || !isDeepStrictEqual(durable, receipt)) return "refused";
       const operationId = `cancel-handoff-${createHash("sha256").update(JSON.stringify([request.sessionId, request.moveId, request.launchId])).digest("hex").slice(0, 40)}`;
       const rows = journal.read(operationId);
       if (rows.some(row => row.action === "done")) return "already-released";
@@ -60,7 +97,7 @@ export function createPendingHandoffControl(input: { root: string; journal: Jour
       }
       const machineId = journal.lookupOperation?.(request.moveId)?.machineId;
       if (!machineId || !unchanged()) return "refused";
-      journal.begin({ id: operationId, machineId, expectedEpoch: receipt.epoch, kind: "cancel-pending-handoff", args: { sessionId: request.sessionId, moveId: request.moveId, launchId: request.launchId, launchDigest: receipt.launchDigest } });
+      journal.begin({ id: operationId, machineId, expectedEpoch: receipt.epoch, kind: "cancel-pending-handoff", args: { sessionId: request.sessionId, moveId: request.moveId, launchId: request.launchId, launchDigest: receipt.launchDigest, reason: receipt.kind } });
       if (!rows.some(row => row.action === "cancel-context")) journal.record(operationId, "cancel-context", context as unknown as import("@spider/db-core/roam/types").JsonObject);
       // All refusal checks precede the first mutation. Missing completed resources are resumable only with this durable context.
       await authority.stop(request.sessionId);
@@ -76,7 +113,7 @@ export function createPendingHandoffControl(input: { root: string; journal: Jour
         await id.release();
       }
       journal.record(operationId, "lock-cancelled", {});
-      journal.record(operationId, "done", { sessionId: request.sessionId, moveId: request.moveId, launchId: request.launchId });
+      journal.record(operationId, "done", { sessionId: request.sessionId, moveId: request.moveId, launchId: request.launchId, reason: receipt.kind });
       return "released";
     }); } catch { return "refused"; }
   } };
@@ -86,7 +123,7 @@ function parse(bytes: Buffer): CancelPendingHandoff | null {
   try {
     const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     const token = (x: unknown) => typeof x === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/.test(x);
-    if (!value || Object.keys(value).sort().join() !== "launchId,moveId,noStartReceipt,sessionId" || !token(value.sessionId) || !token(value.moveId) || !token(value.launchId) || !value.noStartReceipt || typeof value.noStartReceipt !== "object") return null;
+    if (!value || Object.keys(value).sort().join() !== "absenceReceipt,launchId,moveId,sessionId" || !token(value.sessionId) || !token(value.moveId) || !token(value.launchId) || !parseMoveLaunchAbsenceReceipt(value.absenceReceipt)) return null;
     return value;
   } catch { return null; }
 }

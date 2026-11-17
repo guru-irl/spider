@@ -277,6 +277,16 @@ for one box pair. Enrollment does not enable unrelated pairs. The bridge and
 transport are implemented in `packages/roam/src/intercom-bridge.ts` and
 `packages/roam/src/intercom-exchange.ts`.
 
+Each machine's operator supplies a connector recipe with `check`, `host`, and
+`connect` argument arrays, `localPort`, and `sshPort`. The optional `pairPorts`
+map overrides `localPort` for individual pairs. The `sshPort` is the local SSH
+listener on `127.0.0.1` that the host command serves to peers. Enrollment
+requires this port on both endpoints. Doctor reports `intercom-ssh-port-missing`
+when it is absent. Unit arguments can use `{pairId}`, `{tunnelId}`, `{remotePort}`,
+`{localPort}`, and `{sshPort}`. The hub requests a scan through the trusted
+machine channel. The target scans its loopback listener and reports the served
+public key for pinning.
+
 ### Protocol versions
 
 Replication batches use protocol 1. Intercom exchanges use federation

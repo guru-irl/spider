@@ -20,7 +20,7 @@ export type LocalPairOperation = Common & ({ action: "ensure-key" } | { action: 
   { action: "enroll-live"; expectedFenceId: string | null }) |
   { action: "inspect-ssh" | "check-connector" | "host-connector" | "connect-connector"; pair: IntercomEnrollmentPlan; approval: PairConsentProof };
 export interface LocalPairPorts extends PairResourcePorts {
-  machineId: string; root: string; home: string; node: string; ssh: string; keygen: string; sshd?: string; sshUser?: string; recipe?: IntercomConnectorRecipe;
+  machineId: string; root: string; home: string; node: string; ssh: string; keygen: string; keyscan?: string; sshUser?: string; recipe?: IntercomConnectorRecipe;
   run(argv: readonly string[], options: { timeoutMs: number; maxBytes: number }): Promise<{ code: number; stdout: string }>;
   enrollBridge?(input: unknown): Promise<unknown>;
   inspectBridge?(input: unknown): Promise<{ machineId: string; peer: string; edgeEpoch: string; status: string; reason: string | null }>;
@@ -182,8 +182,11 @@ async function localPairOperation(input: LocalPairOperation, ports: LocalPairPor
     return ensurePairUnit(record.pair, input.action === "host-connector" ? "host" : "connect", ports);
   }
   if (input.action === "inspect-ssh") {
-    if (!ports.sshd || !ports.sshUser) throw new Error("intercom-ssh-host-unavailable");
-    return inspectServedSshIdentity({ machineId: ports.machineId, sshUser: ports.sshUser, sshd: ports.sshd, run: ports.run });
+    if (!ports.recipe) throw new Error("intercom-connector-recipe-missing");
+    const recipe = parseConnectorRecipe(ports.recipe);
+    if (recipe.sshPort === undefined) throw new Error("intercom-ssh-port-missing");
+    if (!ports.keyscan || !ports.sshUser) throw new Error("intercom-ssh-host-unavailable");
+    return inspectServedSshIdentity({ machineId: ports.machineId, sshUser: ports.sshUser, keyscan: ports.keyscan, sshPort: recipe.sshPort, run: ports.run });
   }
   if (input.action === "ensure-key") {
     const key = await ensurePairKey(input.pair, { binary: ports.keygen,

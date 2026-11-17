@@ -60,7 +60,8 @@ export async function inspectLocalIntercomDoctor(input: DoctorOptions): Promise<
   const add = (reason: string, detail: string) => diagnostics.push({ severity: "warning", reason: `${reason}: ${detail}`, repairCommand: null });
   const run = input.run ?? runForeground, recipe = input.config.intercom.connector;
   if (!recipe) add("intercom-connector-recipe-missing", "Configure the machine-local connector recipe.");
-  else try {
+  else if (recipe.sshPort === undefined) add("intercom-ssh-port-missing", "Set sshPort in the connector recipe to the SSH listener port on 127.0.0.1.");
+  if (recipe) try {
     const parsed = parseConnectorRecipe(recipe), result = await run(parsed.check, { timeoutMs: 10_000, maxBytes: 16 * 1024 });
     const value: unknown = result.code === 0 ? JSON.parse(result.stdout) : null;
     if (!record(value) || !["ready", "missing", "unknown"].includes(String(value.connector)) || !["ready", "required", "unknown"].includes(String(value.login)) ||
@@ -100,9 +101,9 @@ export async function inspectLocalIntercomDoctor(input: DoctorOptions): Promise<
       if (matches.length !== 1 || !record(matches[0]) || matches[0].name !== route.name || matches[0].id !== route.targetCoreId || matches[0].target !== route.via ||
           matches[0].via !== true || matches[0].session !== route.session || matches[0].temporary !== false) add("intercom-route-mismatch", `Verify the reserved route for ${pair.pairId}.`);
     } catch { add("intercom-route-unavailable", `The reserved route for ${pair.pairId} could not be inspected.`); }
-    if (localTarget) try {
+    if (localTarget && (input.inspectSsh || recipe?.sshPort !== undefined)) try {
       const observed = input.inspectSsh ? await input.inspectSsh(pair) : await inspectServedSshIdentity({ machineId: input.config.machineId,
-        sshUser: userInfo().username, sshd: "/usr/sbin/sshd", run });
+        sshUser: userInfo().username, keyscan: "/usr/bin/ssh-keyscan", sshPort: recipe!.sshPort!, run });
       if (observed.targetMachineId !== input.config.machineId || observed.sshUser !== pair.sshUser) add("intercom-ssh-user-changed", `Verify the account for ${pair.pairId}.`);
       if (compareSshHostKey(pair.hostKey, observed.hostKey) === "host-key-changed") add("host-key-changed", `Verify and re-enroll ${pair.pairId}.`);
     } catch { add("intercom-ssh-host-unavailable", `The SSH host identity for ${pair.pairId} could not be inspected.`); }

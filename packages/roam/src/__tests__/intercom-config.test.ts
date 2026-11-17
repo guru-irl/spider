@@ -72,14 +72,25 @@ it("allows only lower queue limits and rejects unknown limit fields", () => {
 
 it("parses a machine-local connector recipe as bounded argv arrays", () => {
   const connector = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "endpoint"],
-    connect: ["/fixture/connector", "connect", "peer"], localPort: 23222 };
+    connect: ["/fixture/connector", "connect", "peer"], localPort: 23222, sshPort: 2222 };
   const config = parseConfig({ ...box, intercom: { enabled: false, connector } });
   expect(config.intercom.connector).toEqual(connector);
   expect(parseConfig(box).intercom.connector).toBeUndefined();
 }, 5000);
 
+it("parses an explicit SSH listener port and preserves a missing port for doctor", () => {
+  const connector = { check: ["/fixture/connector"], host: ["/fixture/connector"], connect: ["/fixture/connector"], localPort: 23222 };
+  for (const sshPort of [1, 2222, 65535]) {
+    expect(parseConfig({ ...box, intercom: { connector: { ...connector, sshPort } } }).intercom.connector).toEqual({ ...connector, sshPort });
+  }
+  expect(parseConfig({ ...box, intercom: { connector } }).intercom.connector).toEqual(connector);
+  for (const sshPort of [0, 65536, -1, 1.5, "2222", null]) {
+    expect(() => parseConfig({ ...box, intercom: { connector: { ...connector, sshPort } } })).toThrow("intercom-connector-recipe-invalid");
+  }
+}, 5000);
+
 it("refuses malformed connector recipes by name without echoing their contents", () => {
-  const connector = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 23222 };
+  const connector = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 23222, sshPort: 2222 };
   const invalid = [
     { ...connector, check: "fixture-secret" }, { ...connector, host: [] }, { ...connector, connect: ["relative", "arg"] },
     { ...connector, check: ["/bin/sh", "-c", "fixture-secret"] }, { ...connector, localPort: 0 }, { ...connector, localPort: 65536 },
@@ -92,7 +103,7 @@ it("refuses malformed connector recipes by name without echoing their contents",
 }, 5000);
 
 it("accepts explicit pair ports and refuses duplicate or unsafe port assignments", () => {
-  const connector = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "{pairId}"], connect: ["/fixture/connector", "connect", "{pairId}", "{localPort}"], localPort: 23222,
+  const connector = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "{pairId}"], connect: ["/fixture/connector", "connect", "{pairId}", "{localPort}"], localPort: 23222, sshPort: 2222,
     pairPorts: { "pair-1": 23222, "pair-2": 23223 } };
   expect(parseConfig({ ...box, intercom: { connector } }).intercom.connector).toEqual(connector);
   for (const pairPorts of [{ "pair-1": 23222, "pair-2": 23222 }, { "../bad": 23222 }, { "pair-1": 65536 }, []]) {

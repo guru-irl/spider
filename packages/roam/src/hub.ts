@@ -379,7 +379,10 @@ export async function runStandaloneHub(ports: StandaloneHubPorts): Promise<{ sto
       try { journal.prune?.(ports.clock.now(), ports.config.limits.retentionMs, value => pendingReference(ports.globalDb, value)); }
       catch (error) { writeLocal(ports.globalDb, "artifact-sweep-problem", "journal", { reason: error instanceof Error ? error.message : "Journal sweep failed" }); }
       sync = createSync({ config: ports.config, globalDb: ports.globalDb, transport: ports.transport,
-        journal: ports.journal, clock: ports.clock, stores, async onPeerSync(peer, results) { await onPeerSync(peer, results); await moves?.recoverCleanup(peer.machineId); },
+        journal: ports.journal, clock: ports.clock, stores, async onPeerSync(peer, results) {
+          await onPeerSync(peer, results);
+          if (results.every(result => result.code === 0)) ports.clock.later(0, () => { void moves?.recoverCleanup(peer.machineId).catch(() => {}); });
+        },
         revocationDb, retireOnly: ports.retireOnly, mirrors: ports.mirrors });
       if (ports.moveFactory) moves = createMoveRuntimeService({ root: dirname(resolve(ports.globalDb.raw.name)), globalDb: ports.globalDb, config: ports.config,
         journal: openFreezeJournal(join(dirname(resolve(ports.globalDb.raw.name)), "roam", "journal.db")), transport: ports.transport, sync }, ports.moveFactory);

@@ -225,9 +225,12 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
       const completed = actionReceipt(ports.journal.read(id), name);
       if (completed) return structuredClone(completed.result.value) as T;
     }
-    ports.journal.record(id, "move-action-start", { action: name });
-    const value = await effect();
-    ports.journal.record(id, "move-action-complete", { action: name, value: value === undefined ? null : json(value) });
+    const cleanupRetry = recovering && (name === "source-retire" || name === "cleanup");
+    if (!cleanupRetry || !ports.journal.read(id).some(row => row.action === "move-action-start" && row.result.action === name))
+      ports.journal.record(id, "move-action-start", { action: name });
+    const value = await effect(), receipt = { action: name, value: value === undefined ? null : json(value) };
+    const previous = cleanupRetry ? ports.journal.read(id).filter(row => row.action === "move-action-complete" && row.result.action === name).at(-1) : null;
+    if (!previous || !isDeepStrictEqual(previous.result, receipt)) ports.journal.record(id, "move-action-complete", receipt);
     return value;
   };
   const state = (state: MoveState, evidence: JsonObject) => {
@@ -354,7 +357,9 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
       const blockers = error instanceof MoveError && error.refusal.blockers.length ? error.refusal.blockers
         : [validateBlockerId(error instanceof MoveError ? error.refusal.code : failedAction === 'source-retire' ? 'move-source-stop-pending' : 'move-pending')];
       const sourceCleanup: SourceCleanup = { status: 'pending', blockers };
-      ports.journal.record(id, 'move-source-cleanup-pending', { sessionId: moved.source.sessionId, sourceMachine: moved.source.machineId, sourceCleanup: json(sourceCleanup) });
+      const pending = { sessionId: moved.source.sessionId, sourceMachine: moved.source.machineId, sourceCleanup: json(sourceCleanup) };
+      const previous = rows.filter(row => row.action === 'move-source-cleanup-pending').at(-1);
+      if (!previous || !isDeepStrictEqual(previous.result, pending)) ports.journal.record(id, 'move-source-cleanup-pending', pending);
       return outcome(request, ports, 0, 'moved', { ...moved.value, sourceCleanup });
     }
     const freezeStarted = ports.journal.read(id).some(row => row.action === "move-action-start" && row.result.action === "freeze");

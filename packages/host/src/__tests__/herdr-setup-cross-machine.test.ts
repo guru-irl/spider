@@ -78,6 +78,26 @@ test('0.1.12 refuses previously owned pickers until rollback restores stock keys
   await expect(stat(picker)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+test('0.1.12 refuses an unowned stale picker binding without changing it', async () => {
+  const f = await fixture(), path = join(f.h.directories.app, 'keys.json');
+  const keys = JSON.parse(await readFile(path, 'utf8'));
+  keys.global['cmd-d'] = 'mod.open:spider-machine-picker-right';
+  await writeFile(path, JSON.stringify(keys));
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'legacy-picker-binding', message: expect.stringContaining('global.cmd-d') });
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(keys);
+  expect((await (await f.ports.doctorParts(f.request)).inspect('keys', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'legacy-picker-binding', repair: expect.stringContaining('stock') }));
+});
+
+test('0.1.12 refuses an owned picker file even after its shortcuts are restored', async () => {
+  const f = await fixture(), path = join(f.h.directories.app, 'mods/spider-machine-picker/main.js');
+  const journal = await readJournal(f.request.journalRoot), plans: InstallFile[] = [{ path, expected: null, bytes: Buffer.from('// old owned picker\n') }];
+  await prepareBackups(f.request.journalRoot, plans, journal); await applyFiles(plans, journal);
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'legacy-picker-binding', message: expect.stringContaining(path) });
+  expect((await (await f.ports.doctorParts(f.request)).inspect('keys', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'legacy-picker-binding', message: expect.stringContaining(path) }));
+  await rollbackHerdr(f.request, f.parts);
+  await expect(stat(path)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
 test('doctor names the insecure machine-picker config and chmod repair', async () => {
   const f = await releaseFixture('0.1.13');
   await setupHerdr(f.request, f.parts);

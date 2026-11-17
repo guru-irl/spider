@@ -308,6 +308,21 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     } finally { await h.view.close(); }
   });
 
+  it(`${version}: defers saved-key pruning until after the first render`, async () => {
+    const h = fixture(version, 1, 0);
+    let reloaded: any;
+    try {
+      await h.ready();
+      h.storage.set('spider.subagents.expanded', '["gone"]');
+      reloaded = new h.view.constructor(); reloaded.init({}, h.cx);
+      reloaded.spiderFeeds = h.state.feeds; reloaded.spiderFeedsLoaded = true; reloaded.spiderFeedComplete = true;
+      reloaded.render(h.cx);
+      expect(h.storage.get('spider.subagents.expanded')).toBe('["gone"]');
+      await h.flush();
+      expect(h.storage.get('spider.subagents.expanded')).toBe('[]');
+    } finally { await reloaded?.close(); await h.view.close(); }
+  });
+
   it(`${version}: finished count follows subagent expansion`, async () => {
     const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0], now = Date.now();
     const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);

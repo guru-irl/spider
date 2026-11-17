@@ -561,7 +561,7 @@ it("runs only on the selected local core and queries finished terminals by opera
     async invoke(argv: readonly string[]) {
       calls.push({ argv });
       return { terminals: [{ address: "terminal-1", parent: null, labels: { "spider.roam.operation": "op-1" },
-        state: "finished", status: null, exit_code: 0, reason: null, signal: null, finished_ms: 20 }] };
+        state: "finished", status: null, exit_code: 0, reason: "exited", signal: null, finished_ms: 20 }] };
     },
     async invokeTracked(argv: readonly string[], env: Readonly<NodeJS.ProcessEnv>, observer: { started(pid: number, startTime: string): void; exited(pid: number): void }) {
       calls.push({ argv, env }); observer.started(41, "hc-start"); observer.exited(41); return { address: "terminal-1" };
@@ -577,8 +577,8 @@ it("runs only on the selected local core and queries finished terminals by opera
     "--label", "spider.roam.operation=op-1", "--", ...request.argv]);
   expect(calls[0].env).toEqual(request.env);
   expect(observed).toEqual(["41:hc-start", "exit:41"]);
-  expect(await local.terminals("op-1", { signal: new AbortController().signal, includeFinished: true })).toEqual({ complete: true, terminals: [{ id: "terminal-1", state: "finished" }] });
-  expect(calls[1].argv).toEqual(["ls", "--all", "--json", "--label", "spider.roam.operation=op-1"]);
+  expect(await local.terminals("op-1", { signal: new AbortController().signal, includeFinished: true, attemptId: "attempt-1", terminalId: "terminal-1" })).toEqual({ complete: true, terminals: [{ id: "terminal-1", state: "finished" }] });
+  expect(calls[1].argv).toEqual(["ls", "--all", "--json", "--label", "spider.roam.operation=op-1", "--label", "spider.roam.attempt=attempt-1"]);
 }, 5000);
 
 const compactExitedTerminal = { address: "t1", agent: "sh", cwd: "/home/runner/work/spider/spider/.spider/scratch/e2/ltink",
@@ -619,6 +619,20 @@ it.each([
 ] as const)("keeps compact launch exit uncertain with %s", async (_name, row) => {
   const { evidence } = await reconcileCompactTerminal(row);
   expect(evidence.proof).toBeUndefined();
+}, 5000);
+
+it("reports a running compact row as present without exit proof", async () => {
+  const { evidence } = await reconcileCompactTerminal({ address: "t1", state: "live" });
+  expect(evidence).toEqual({ receipt: "started", terminal: "present" });
+}, 5000);
+
+it("does not trust a compact terminal without a filtered launch attempt", async () => {
+  const local = launcher.createLocalExactHc({
+    coreId: async () => "core-1", async invoke() { return { terminals: [compactExitedTerminal] }; },
+    async invokeTracked() { throw new Error("Reconciliation must not launch"); },
+  });
+  await expect(local.terminals("op-1", { signal: new AbortController().signal, includeFinished: true, terminalId: "t1" }))
+    .rejects.toMatchObject({ code: "invalid-reply" });
 }, 5000);
 
 it("does not trust a compact terminal without a recorded launch address", async () => {

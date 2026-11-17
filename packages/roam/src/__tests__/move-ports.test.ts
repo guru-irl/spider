@@ -1668,3 +1668,27 @@ it("destroyed mirror relaunches twice after exact failed launches through produc
     expect(restarts.map(row => row.result.previousLaunchId)).toEqual(launched.slice(0, 2));
   } finally { await lifecycle.stop(); await mounted.close(); vi.restoreAllMocks(); vi.unstubAllEnvs(); }
 }, 5000);
+
+it("cleanup retries follow a destination restart while source cleanup is pending", async () => {
+  const { f, operation } = interruptedFixture;
+  f.bindings.handoff!.presentReadyTarget = async () => ({ status: "complete", reason: "presented", presentation: null });
+  let offline = true;
+  f.bindings.participant!.cleanupTerminal = async () => { if (offline) throw new Error("fixture-source-offline"); };
+  expect((await recoverMoveAdapters(f.ports, f.bindings)).find(row => row.operationId === operation.id)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "pending" } } });
+  const { publishOwnedMoveReadiness, readOwnedLaunchReadiness } = await import("../../../host/src/roam/move-readiness");
+  const p = f.remote.participant!, authority = createRunningIntentAuthority(f.remoteGlobal.db), intent = (await authority.get(SESSION))!;
+  const intentOperationId = authority.operationId(SESSION)!, base = f.remoteJournal.read(intentOperationId).find(row => row.action === "participant-launch")!.result.launchId as string;
+  const restarted = `${base}-restart-1`;
+  f.remoteJournal.begin({ id: `${base}-restarts`, kind: "participant-restarts", machineId: BOX, expectedEpoch: intent.epoch,
+    args: { sessionId: SESSION, operationId: intentOperationId, file: intent.file, cwd: intent.cwd, moveId: intent.moveId } });
+  f.remoteJournal.record(`${base}-restarts`, "restart", { sequence: 1, previousLaunchId: base });
+  f.remoteJournal.begin({ id: restarted, kind: "exact-session-launch", machineId: BOX, expectedEpoch: intent.epoch, args: { sessionId: SESSION } });
+  const lock = { identity: { pid: 42, startIdentity: "fixture-start" }, bootId: "fixture-boot", operationId: restarted, pendingOperationId: null, pendingCoreId: null, pendingFile: null };
+  await publishOwnedMoveReadiness({ db: f.remoteGlobal.db, journal: f.remoteJournal, machineId: BOX, sessionId: SESSION, file: intent.file, cwd: intent.cwd, epoch: intent.epoch,
+    home: sessionHome(f.remoteGlobal.db, SESSION) as Home, lock: async () => lock, owner: async () => ({ pid: 42, startTime: "fixture-start" }), caller: async () => ({ coreId: "core-a", address: "terminal-restarted" }) });
+  p.readiness = query => readOwnedLaunchReadiness({ db: f.remoteGlobal.db, journal: f.remoteJournal, machineId: BOX, lock: async () => lock, probe: p.probe }, query);
+  offline = false;
+  const result = await recoverMove(operation.id, f.ports);
+  expect(result).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
+  expect(f.journal.lookupOperation(operation.id)?.state).toBe("done");
+}, 5000);

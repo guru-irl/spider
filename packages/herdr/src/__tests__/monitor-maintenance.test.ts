@@ -26,6 +26,23 @@ it('does not attach another completion handler to a stalled maintenance scan on 
   } finally { await parent.shutdown('reload'); }
 });
 
+it('waits for child handoff when a parent reconcile is explicitly awaited', async () => {
+  const h = await monitorFixture();
+  let release!: () => void;
+  const stalled = new Promise<void>(resolve => { release = resolve; });
+  handoff.reconcile.mockReturnValue(stalled);
+  handoff.shutdown.mockResolvedValue(undefined);
+  const parent = h.monitor(); await parent.activate(h.owner);
+  let done = false;
+  try {
+    const result = parent.reconcile().then(() => { done = true; });
+    await vi.waitFor(() => expect(handoff.reconcile).toHaveBeenCalled());
+    expect(done).toBe(false);
+    release(); await result;
+    expect(done).toBe(true);
+  } finally { release(); await parent.shutdown('reload'); }
+});
+
 it('releases the maintenance slot after failure without a burst of queued retries', async () => {
   const h = await monitorFixture();
   let reject!: (error: Error) => void;

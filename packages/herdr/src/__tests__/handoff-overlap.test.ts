@@ -168,11 +168,44 @@ it('starts waiting child work when a slot opens without waiting for another scan
     },
   });
   try {
-    await handoff.reconcile(); await vi.advanceTimersByTimeAsync(1);
+    void handoff.reconcile(); await vi.advanceTimersByTimeAsync(1);
     expect(started).toEqual(['run-0', 'run-1', 'run-2', 'run-3', 'run-4', 'run-5']);
     expect(peak).toBe(4);
     expect(active).toBe(1);
   } finally { release(); await handoff.shutdown('reload'); }
+});
+
+it('awaits both joined and queued child work for explicit reconciles', async () => {
+  vi.useFakeTimers();
+  const journals = filesystem(6, true);
+  for (const journal of journals) journal.child!.settled = true;
+  let releaseFirst!: () => void, releaseLast!: () => void;
+  const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const last = new Promise<void>(resolve => { releaseLast = resolve; });
+  const started: RunId[] = [], finished: RunId[] = [];
+  const handoff = createJobHandoff({ root: '/fixture/explicit', owner, hc: {} as HcClient,
+    adopt: async () => { throw new Error('Settled journals need no adoption'); },
+    releaseSettled: async journal => {
+      const id = journal.child!.id; started.push(id);
+      if (id === 'run-0' || id === 'run-1' || id === 'run-2' || id === 'run-3') await first;
+      if (id === 'run-5') await last;
+      finished.push(id);
+    },
+  });
+  let firstDone = false, secondDone = false;
+  try {
+    const one = handoff.reconcile().then(() => { firstDone = true; });
+    await vi.advanceTimersByTimeAsync(1);
+    const two = handoff.reconcile().then(() => { secondDone = true; });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(started).toEqual(['run-0', 'run-1', 'run-2', 'run-3']);
+    expect({ firstDone, secondDone }).toEqual({ firstDone: false, secondDone: false });
+    releaseFirst(); await vi.advanceTimersByTimeAsync(1);
+    expect(started).toEqual(['run-0', 'run-1', 'run-2', 'run-3', 'run-4', 'run-5']);
+    expect({ firstDone, secondDone }).toEqual({ firstDone: false, secondDone: false });
+    releaseLast(); await Promise.all([one, two]);
+    expect(finished).toEqual(['run-0', 'run-1', 'run-2', 'run-3', 'run-4', 'run-5']);
+  } finally { releaseFirst(); releaseLast(); await handoff.shutdown('reload'); }
 });
 
 it('releases the scan slot after a failed read and discovers later runs', async () => {

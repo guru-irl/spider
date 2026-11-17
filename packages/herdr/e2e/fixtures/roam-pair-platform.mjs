@@ -41,7 +41,7 @@ export function pairPorts(path) {
   const systemSshFiles = {
     lstat(value) { if (value !== '/etc/ssh') throw new Error('unowned system SSH directory'); const stat = lstatSync(d.systemSsh); stat.uid = 0; return stat; },
     open(value, flags) {
-      if (!/^\/etc\/ssh\/ssh_host_(ed25519|ecdsa|rsa)_key\.pub$/.test(value) || !(flags & constants.O_NOFOLLOW)) throw new Error('unowned system SSH file');
+      if (!/^\/etc\/ssh\/ssh_host_(ed25519|ecdsa|rsa)_key\.pub$/.test(value) || flags !== (constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)) throw new Error('unowned system SSH file');
       const fd = openSync(join(d.systemSsh, basename(value)), flags); openFiles.add(fd); return fd;
     },
     fstat(fd) { if (!openFiles.has(fd)) throw new Error('unowned system SSH descriptor'); const stat = fstatSync(fd); stat.uid = 0; return stat; },

@@ -64,7 +64,7 @@ function fixture() {
       launches.push({ intent: value, at: now });
       owner = { kind: "live", identity: { bootId: "boot-1", pid: 100 + launches.length, startTime: `start-${launches.length}` } };
       return { code: 0, reason: "ready", operationId: reservation.operationId, home: typeof home === "object" ? home : null,
-        epoch: value.epoch, repairCommand: null, value: { ...ready, opId: reservation.operationId } };
+        epoch: value.epoch, repairCommand: null, value: { ...ready, epoch: value.epoch, file: value.file, cwd: value.cwd, opId: reservation.operationId } };
     },
   });
   return { ports, intents, launches, notices, stops, timers, listeners,
@@ -86,6 +86,28 @@ function fixture() {
     state: async (): Promise<IntentState> => (await intents.get(intent.sessionId))!.value,
   };
 }
+
+it.each(["absent", "live", "uncertain", "launching", "frozen"] as const)("a returned home replaces old supervision only with proved absence: %s", async proof => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), current = (await f.intents.get(intent.sessionId))!;
+  const previous = { bootId: "old-boot", pid: 99, startTime: "old-start" };
+  await f.intents.update(intent.sessionId, current.version, { intent: { ...intent, suspended: "An unfinished freeze needs review" }, failures: [5],
+    supervision: proof === "launching" ? { kind: "launching", operationId: "old-launch", phase: "invoking" } : { kind: "live", identity: previous, stableSince: 5 } });
+  const next = { ...intent, epoch: 3, moveId: "return-move" };
+  f.setAuthoritative(next);
+  f.setHome({ sessionId: intent.sessionId, machineId: local, epoch: 3, moveId: next.moveId, updatedAt: 3 });
+  f.setStates([{ ...active, epoch: 3, moveId: next.moveId }]);
+  f.setOwner(proof === "live" ? { kind: "live", identity: previous } : proof === "uncertain" ? { kind: "uncertain" } : { kind: "absent" });
+  f.setFreeze(proof === "frozen");
+  await module.createSupervisor(f.ports).reconcile();
+  expect(f.launches).toHaveLength(proof === "absent" ? 1 : 0);
+  if (proof === "absent") {
+    expect(f.launches[0].intent).toEqual(next);
+    expect(await f.state()).toMatchObject({ intent: next, failures: [], supervision: { kind: "live" } });
+  } else {
+    expect((await f.state()).supervision).toMatchObject({ kind: proof === "launching" ? "launching" : "live" });
+  }
+}, 5000);
 
 it("launch requires local home and active state in every store", async () => {
   const module = await supervisorModule(); if (!module) return;

@@ -180,9 +180,10 @@ export function storyRunBudgetMs(options) {
 }
 export function command(executable, argv, cwd, env, log, quiet = false, supervisor, timeoutMs = 10 * 60_000, deadline) {
   return new Promise((resolve, reject) => {
+    if (deadline && (!Number.isSafeInteger(deadline.at) || deadline.at - Date.now() > 2 ** 31 - 1)) { reject(new Error('invalid runner deadline')); return; }
     if (deadline && Date.now() >= deadline.at) { deadline.expire(); reject(new Error('runner-deadline')); return; }
     writeFileSync(log, '');
-    const child = spawn(executable, argv, { cwd, env, detached: Boolean(supervisor), timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(executable, argv, { cwd, env, detached: Boolean(supervisor || deadline), timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
     if (child.pid && supervisor) {
       try { supervisor.ledger.update(l => l.processes.push({ ...supervisor.identityOf(child.pid), label: path.basename(executable), group: true })); }
       catch (error) { child.kill('SIGKILL'); reject(error); }
@@ -193,13 +194,35 @@ export function command(executable, argv, cwd, env, log, quiet = false, supervis
     const timer = deadline && setTimeout(() => {
       expired = true;
       deadline.expire();
-      try { if (supervisor && child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
+      try { if ((supervisor || deadline) && child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
       catch (error) { if (error.code !== 'ESRCH') reject(error); }
     }, Math.max(0, deadline.at - Date.now()));
     const clear = () => { if (timer) clearTimeout(timer); };
     child.on('error', error => { clear(); reject(error); });
     child.on('close', (code, signal) => { clear(); if (expired) reject(new Error('runner-deadline')); else resolve({ code, signal, output }); });
   });
+}
+export async function finishCleanup(entry, ledgerPath, checkout, env, root, deadline) {
+  const evidence = path.join(root, 'cleanup-deadline.json');
+  const expired = JSON.stringify({ reason: 'cleanup-deadline', deadlineAt: deadline.at });
+  const program = `
+    import { writeFileSync } from 'node:fs';
+    const [module, ledger, directory, at, evidence, expired] = process.argv.slice(1);
+    // The parent enforces at; this fallback also stops cleanup if the parent dies.
+    const timer = setTimeout(() => { writeFileSync(evidence, expired); process.kill(-process.pid, 'SIGKILL'); }, Math.max(0, Number(at) - Date.now()) + 1000);
+    try {
+      const resources = await import(module);
+      const proof = await resources.cleanupLedger(ledger, 'runner-close');
+      const reconciled = await resources.reconcileLedgers(directory);
+      process.stdout.write(JSON.stringify({ proof, reconciled }));
+      process.exitCode = proof.clean && reconciled.every(row => row.clean) ? 0 : 1;
+    } finally { clearTimeout(timer); }
+  `;
+  const result = await command(process.execPath, ['--input-type=module', '-e', program, pathToFileURL(entry.module).href,
+    ledgerPath, entry.ledgers, String(deadline.at), evidence, expired], checkout, env, path.join(root, 'final-reconciliation.json'), true, undefined, undefined,
+    { at: deadline.at, expire() { writeFileSync(evidence, expired); deadline.expire(); } });
+  if (existsSync(evidence)) throw new Error('runner-deadline');
+  return result.code === 0;
 }
 export async function packEntryDigests(checkout, root, pack) {
   const result = await pack();
@@ -294,9 +317,9 @@ export async function main(argv = process.argv.slice(2)) {
     console.error(error.message);
   } finally {
     try {
-      const proof = await resources.cleanupLedger(ledger.path, 'runner-close');
-      const reconcile = await command(process.execPath, [entry.module, 'reconcile', entry.ledgers], checkout, env, path.join(root, 'final-reconciliation.json'), true);
-      cleanupFailed = !proof.clean || reconcile.code !== 0;
+      // Leave half the existing twenty-second reserve for archive and upload.
+      const at = Math.min(Date.now(), overall?.at ?? Infinity) + 10_000;
+      cleanupFailed = !await finishCleanup(entry, ledger.path, checkout, env, root, { at, expire() {} });
     } catch (error) { cleanupFailed = true; writeFileSync(path.join(root, 'cleanup-error.txt'), String(error.stack ?? error)); }
     watchdog.release();
   }

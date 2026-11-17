@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { Home, Probe, SessionState } from "@spider/db-core/roam/types";
 import type { HostIntent } from "../contracts";
 import type { IntentState, IntentStore, VersionedIntent } from "../intent";
@@ -86,6 +86,25 @@ function fixture() {
     state: async (): Promise<IntentState> => (await intents.get(intent.sessionId))!.value,
   };
 }
+
+it.each([1, 2, 0])("retains the original hosting failure at inspection %s before suspending", async failureAt => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), original = new Error("fixture hosting inspection failed"), inspect = f.ports.inspect;
+  original.name = "FixtureHostingError";
+  let calls = 0;
+  if (failureAt === 0) f.ports.runningIntents.get = async () => { throw original; };
+  else f.ports.inspect = async id => { if (++calls === failureAt) throw original; return inspect(id); };
+  const evidence = vi.spyOn(console, "error").mockImplementation(() => {});
+  try {
+    await module.createSupervisor(f.ports).reconcile();
+    expect((await f.state()).intent.suspended).toBe("Cannot verify hosting state");
+    expect(f.launches).toEqual([]);
+    expect(evidence.mock.calls.map(args => JSON.parse(String(args[0])))).toContainEqual({
+      event: "supervisor-hosting-error", sessionId: intent.sessionId,
+      error: { name: original.name, message: original.message, stack: original.stack },
+    });
+  } finally { evidence.mockRestore(); }
+});
 
 it.each(["absent", "live", "uncertain", "launching", "frozen"] as const)("a returned home replaces old supervision only with proved absence: %s", async proof => {
   const module = await supervisorModule(); if (!module) return;

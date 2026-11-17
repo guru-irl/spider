@@ -59,5 +59,5 @@ try {
   const service = await startProductionSupervisor(globalRoot, { system, ...(controlled ? { clock: controlled.clock } : {}),
     ...(descriptor ? { intercomLocalPorts: pairPorts(descriptor) } : {}) });
   process.stdout.write('fixture supervisor ready\n');
-  try { await stopped; } finally { await service.stop(); }
+  try { await stopped; } finally { controlled?.close(); await service.stop(); }
 } finally { controlled?.close(); }

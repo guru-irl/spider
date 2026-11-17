@@ -18,7 +18,7 @@ The left sidebar lists your sessions with their subagent runs, consoles, and liv
 
 The spider panel shows, for the selected space, what needs your attention, each session's todos, triggers, and credits this month, and the month's credit pace.
 
-Setup opens each space in one named tab with your sessions as panes. After the core restarts, each restored shell offers to resume its saved session.
+Setup opens each space in one named tab with your sessions as panes. After the core restarts, each restored shell offers to resume its saved session or resumes it automatically when configured.
 
 Setup also writes `hc` templates that start visible worker, reviewer, and watcher pi sessions. It installs a neutral black glass layout, a Dracula+ pi theme, two bundled fonts, and five Herdr keys that open spider views in pi without touching your draft.
 
@@ -595,13 +595,21 @@ Spider records which session runs in each Herdr terminal. When the `hc` core res
 Resume <name>: run spider_resume (or keep this shell).
 ```
 
-Run `spider_resume` to resume the session, or ignore the offer to keep the shell. To start the session without typing, set `"resume": "auto"` in the Herdr configuration file. The shell prints `Resuming <name>…` before pi starts and returns to a normal shell when pi exits.
+Run `spider_resume` to resume the session, or ignore the offer to keep the shell. In auto mode, the shell prints `Resuming <name>…` at its first prompt, starts pi, and returns to a normal shell when pi exits.
 
-Both modes run `pi --session <exact file>` in the saved working directory, with `PI_CODING_AGENT_DIR` set to the configured `agentDirectory`. Spider resumes only after a proved core restart and only when no other process holds the session file. It refuses sessions started with explicit extension arguments. It never uses `--continue` or changes the session name or model.
+Both modes run `pi --session <exact file>` in the saved working directory, with `PI_CODING_AGENT_DIR` set to the configured `agentDirectory`. Spider resumes only after a proved core restart and only when no other process holds the session file. It skips sessions that you quit. It refuses sessions started with explicit extension arguments and prints an error naming the session. It never uses `--continue` or changes the session name or model.
 
-Automatic resume makes at most one attempt per terminal for each core restart. A failed or interrupted attempt is not retried by a later shell. A later proved core restart permits a new attempt.
+Automatic resume makes at most one launch attempt per terminal for each core restart. A refused session, such as one held by another process, is tried again by the next shell in that terminal. A failed or interrupted launch is not retried until a later proved core restart.
+
+On macOS, Node does not expose `F_FULLFSYNC`. A power failure immediately after the attempt is recorded can lose the marker and allow another attempt.
 
 If the resume hook, the Node binary, or the CLI that setup recorded is missing, the block does nothing and the shell starts without an error. Noninteractive shells and shells outside Herdr are unchanged.
+
+### Turning on automatic resume
+
+1. Set `"resume": "auto"` in the Herdr configuration file. See [Where the configuration file lives](#where-the-configuration-file-lives).
+2. Check that the CLI path in the marked block in your shell rc file points to the updated spider installation. If the path changed, run setup again to update the block.
+3. Run the updated installation's doctor command and check that it reports `resume-mode: auto`. See [Troubleshooting](#troubleshooting).
 
 ## Troubleshooting
 

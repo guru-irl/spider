@@ -1,4 +1,7 @@
 import { afterEach, expect, it } from "vitest";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { createProcessInventory } from "../../../host/src/herdr/process-inventory";
 import { join, resolve, sep } from "node:path";
 import { writeFile } from "node:fs/promises";
 import { createProcessPresence } from "@spider/herdr/sessions/presence";
@@ -225,4 +228,50 @@ it("both locks fail closed on missing identity evidence or file claim failure", 
   await expect(failedFile("session-1", run)).rejects.toThrow("file unavailable");
   expect(await inspectIdLock(f.root, "session-1")).toBeNull();
   expect(entered).toBe(false);
+}, 5000);
+
+
+it.each([false, true])("shutdown waits for owned child exit proof, ignoring signal=%s", async ignore => {
+  const f = fixture(), child = spawn(process.execPath, ["-e", `${ignore ? "process.on('SIGTERM', () => {});" : ""} process.send('ready'); setInterval(() => {}, 1000);`],
+    { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const exited = once(child, "exit"), inventory = createProcessInventory(join(f.root, "herdr"));
+  try {
+    await once(child, "message");
+    const process = await inventory.probe(child.pid!);
+    expect(process.kind).toBe("live");
+    if (process.kind !== "live") throw new Error("child identity unavailable");
+    const identity = { bootId: "boot-1", pid: child.pid!, startTime: process.startIdentity };
+    const operation = { ...f.operation, id: "retire-child", kind: "session-retire", args: { ...f.operation.args, moveId: "move-1" } };
+    let retired = false, waited = false;
+    const ports = { journal: f.journal, probe: async () => child.exitCode !== null || child.signalCode !== null ? { kind: "absent" as const } : { kind: "live" as const, identity },
+      withBothLocks: async <T>(_id: string, fn: () => Promise<T>) => fn(),
+      live: async () => { child.kill("SIGTERM"); return { code: 0 as const, reason: "shutdown-requested", operationId: operation.id, epoch: 2, home: null, repairCommand: null, value: {} }; },
+      dormant: async () => { retired = true; return { code: 0 as const, reason: "retired", operationId: operation.id, epoch: 2, home: null, repairCommand: null, value: {} }; },
+      exit: { deadline: Date.now() + 200, now: Date.now,
+        async exited(owner: typeof identity) { const state = await inventory.probe(owner.pid); return state.kind === "absent" || state.kind === "live" && state.startIdentity !== owner.startTime; },
+        async wait(_owner: typeof identity, signal: AbortSignal) { waited = true; await Promise.race([exited, new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }))]); },
+      },
+    };
+    expect(await control.controlSession(operation, ports)).toMatchObject(ignore ? { code: 3, reason: "process-exit-unproven" } : { code: 0, reason: "retired" });
+    expect(retired).toBe(!ignore);
+    expect(waited).toBe(true);
+    if (!ignore) expect(await inventory.probe(identity.pid)).toEqual({ kind: "absent" });
+    else expect(f.journal.lookupOperation(operation.id)?.state).toBe("pending");
+  } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await exited; }
+}, 5000);
+
+it.each([false, true])("a reused pid is not the old owner, replacement owns session=%s", async replacementOwns => {
+  const f = fixture(), identity = { bootId: "boot-1", pid: 123, startTime: "old-start" };
+  const operation = { ...f.operation, id: "retire-reused", kind: "session-retire", args: { ...f.operation.args, moveId: "move-1" } };
+  let requested = false, retired = false;
+  const deadline = Date.now() + 20;
+  const ports = { journal: f.journal,
+    probe: async () => !requested ? { kind: "live" as const, identity } : replacementOwns ? { kind: "live" as const, identity: { ...identity, startTime: "new-start" } } : { kind: "absent" as const },
+    withBothLocks: async <T>(_id: string, fn: () => Promise<T>) => fn(),
+    live: async () => { requested = true; return { code: 0 as const, reason: "shutdown-requested", operationId: operation.id, epoch: 2, home: null, repairCommand: null, value: {} }; },
+    dormant: async () => { retired = true; return { code: 0 as const, reason: "retired", operationId: operation.id, epoch: 2, home: null, repairCommand: null, value: {} }; },
+    exit: { deadline, now: Date.now, exited: async (old: typeof identity) => old.pid === 123 && old.startTime !== "new-start" },
+  };
+  expect(await control.controlSession(operation, ports)).toMatchObject(replacementOwns ? { code: 3, reason: "process-exit-unproven" } : { code: 0, reason: "retired" });
+  expect(retired).toBe(!replacementOwns);
 }, 5000);

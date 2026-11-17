@@ -279,7 +279,7 @@ it('explicit extensions stay silent when no core restart is proved', async () =>
   expect(await offerResume(terminal, { ...ports(10), autoResumeRoot: root })).toBeNull();
 });
 
-it('extension refusal cleans the session name and extension path for terminal display', async () => {
+it('extension refusal cleans the session name for terminal display', async () => {
   const unsafeOwner = { ...owner, name: 'A\u009bB\u202eC' };
   const foreign = join(root, 'extension\u009b\u2066.js');
   await createTerminalRegistry(root).record({ owner: unsafeOwner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: ['--extension', foreign] } });

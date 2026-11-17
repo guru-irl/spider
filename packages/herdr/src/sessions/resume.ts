@@ -148,7 +148,7 @@ export async function offerResume(identity: TerminalIdentity, ports: ResumePorts
   const file = mapping.owner.sessionFile;
   const restartedAt = await ports.coreStartedAt(identity);
   if (!Number.isFinite(restartedAt) || restartedAt <= 0 || restartedAt <= mapping.recordedAt || restartedAt <= mapping.coreStartedAt) return null;
-  refuseExplicitExtensions(mapping.owner.name ?? mapping.owner.sessionId, mapping.environment.extensionArguments);
+  refuseExplicitExtensions(mapping.owner.name ?? mapping.owner.sessionId, mapping.environment.extensionArguments, true);
   const eligible = async (): Promise<ResumeOffer | null> => {
     if (await ended()) return null;
     if ((await recordedSessionLiveness(file, ports.processInventory, mapping.owner.sessionId)).kind !== 'free') return null;

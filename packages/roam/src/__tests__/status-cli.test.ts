@@ -313,3 +313,32 @@ it("shows disabled, unavailable cached state without creating files", async () =
   expect(existsSync(join(root, "roam"))).toBe(false);
   expect(existsSync(join(root, "spider.db"))).toBe(false);
 }, 5000);
+
+
+it("shows non-stopping hosting warnings in doctor and text and JSON status without modifying state", async () => {
+  const root = fixture(); configure(root);
+  const global = openDb(join(root, "spider.db"));
+  try {
+    migrate(global, "global", { machineId: HUB, globalRoot: root });
+    const warning = { code: "supervisor-hosting-error", check: "restart", since: 1, count: 3 };
+    writeLocal(global, "supervisor-hosting-error", "session-local", warning);
+    writeLocal(global, "peer-hosting-warnings", BOX, [{ ...warning, sessionId: "session-remote" }]);
+    const before = snapshot(root);
+    for (const command of [["status", "--json"], ["status"], ["doctor", "--json"]]) {
+      const out: string[] = [];
+      await main(["roam", ...command], { out: text => out.push(text), err() {} });
+      const text = out.join("");
+      expect(text).toContain("supervisor-hosting-error");
+      expect(text).toContain("restart");
+      expect(text).toContain("session-local");
+      if (command[0] === "status") expect(text).toContain("session-remote");
+      if (command.includes("--json")) {
+        const report = JSON.parse(text);
+        expect(report.diagnostics).toContainEqual(expect.objectContaining({ severity: "warning", repairCommand: null,
+          reason: expect.stringMatching(/session-local.*supervisor-hosting-error.*restart/) }));
+        if (command[0] === "status") expect(report.suspensions).toEqual([]);
+      }
+      expect(snapshot(root)).toEqual(before);
+    }
+  } finally { global.close(); }
+});

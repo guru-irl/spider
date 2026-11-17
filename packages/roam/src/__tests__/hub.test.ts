@@ -709,3 +709,18 @@ it.each(["success", "failure"] as const)("source cleanup starts after successful
     if (mode === "success") { deferred[0].fn(); await started; expect(calls).toBe(1); }
   } finally { release(); }
 }, 5000);
+
+
+it("caches and clears a peer hosting warning independently of suspension and placement", async () => {
+  const h = fixture(); h.home();
+  const observe = h.ports.observe;
+  const warnings = [{ sessionId: "session-1", code: "supervisor-hosting-error" as const, check: "inspection" as const, since: 1, count: 3 }];
+  let current = warnings;
+  h.ports.observe = async () => ({ ...await observe(), warnings: current });
+  await h.start(); await h.request("sync");
+  expect(readLocal(h.f.global.db, "peer-hosting-warnings", BOX)).toEqual(warnings);
+  expect(h.notices).toEqual([]);
+  current = [];
+  await h.request("sync");
+  expect(readLocal(h.f.global.db, "peer-hosting-warnings", BOX)).toEqual([]);
+});

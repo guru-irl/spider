@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import type { Home, Probe, SessionState } from "@spider/db-core/roam/types";
 import type { HostIntent } from "../contracts";
 import type { IntentState, IntentStore, VersionedIntent } from "../intent";
+import { LEGACY_AUTOMATIC_READ_SUSPENSION } from "../intent";
 import { createDurableLaunchPort, type SupervisorPorts } from "../supervisor";
 
 const local = "10e674f6-9567-4109-a66c-a6870586c3e1";
@@ -44,7 +45,9 @@ function fixture() {
   let owner: Probe = { kind: "absent" };
   let diagnostics: Array<{ reason: string; severity: "warning" | "block"; repairCommand: string | null }> = [];
   const launches: Array<{ intent: HostIntent; at: number }> = [], notices: string[] = [], stops: string[] = [];
+  const warnings: Array<{ sessionId: string; warning: unknown }> = [];
   const ports: SupervisorPorts = {
+    async hostingWarning(sessionId, warning) { warnings.push({ sessionId, warning }); },
     clock, intents, runningIntents: {
       async list() { return authoritative ? [authoritative.sessionId] : []; },
       async get(id: string) { return authoritative?.sessionId === id ? { ...authoritative } : null; },
@@ -67,7 +70,7 @@ function fixture() {
         epoch: value.epoch, repairCommand: null, value: { ...ready, epoch: value.epoch, file: value.file, cwd: value.cwd, opId: reservation.operationId } };
     },
   });
-  return { ports, intents, launches, notices, stops, timers, listeners,
+  return { ports, intents, launches, notices, stops, timers, listeners, warnings,
     now() { return now; },
     advance(ms: number) { now += ms; },
     fire(delay: number) {
@@ -106,7 +109,7 @@ it.each([1, 2, 0])("retries a reserved launch after a hosting read fails at insp
     expect(f.launches).toEqual([]);
     expect(evidence.mock.calls.map(args => JSON.parse(String(args[0])))).toContainEqual({
       event: "supervisor-hosting-error", sessionId: intent.sessionId,
-      error: { name: original.name, message: original.message, stack: original.stack },
+      code: "supervisor-hosting-error", check: failureAt === 0 ? "running-intent" : "inspection",
     });
     expect(await f.state()).toEqual(reserved);
     await supervisor.reconcile();
@@ -132,7 +135,7 @@ it("never launches while hosting inspection remains unreadable", async () => {
   } finally { await supervisor.stop(); evidence.mockRestore(); }
 });
 
-it.each(["Cannot verify hosting state", "doctor required"])("reconciles an interrupted reservation without clearing a deliberate suspension: %s", async reason => {
+it.each([LEGACY_AUTOMATIC_READ_SUSPENSION, "doctor required"])("reconciles an interrupted reservation without clearing a deliberate suspension: %s", async reason => {
   const module = await supervisorModule(); if (!module) return;
   const f = fixture(), current = (await f.intents.get(intent.sessionId))!;
   await f.intents.update(intent.sessionId, current.version, { ...current.value, intent: { ...intent, suspended: reason },
@@ -140,7 +143,7 @@ it.each(["Cannot verify hosting state", "doctor required"])("reconciles an inter
   const supervisor = module.createSupervisor(f.ports);
   try {
     await supervisor.reconcile();
-    const automatic = reason === "Cannot verify hosting state";
+    const automatic = reason === LEGACY_AUTOMATIC_READ_SUSPENSION;
     expect(f.launches).toHaveLength(automatic ? 1 : 0);
     expect(await f.state()).toMatchObject({ intent: { suspended: automatic ? null : reason },
       supervision: { kind: automatic ? "live" : "launching" } });
@@ -470,3 +473,89 @@ it("retire-only reconnect prevents supervisor inspection and ordinary launch", a
   expect(actions).toEqual(["handshake", "stop-sessions"]);
   expect(f.launches).toEqual([]);
 }, 5000);
+
+
+it.each(["inspection", "running-intent", "restart", "launch"] as const)("reports a persistent %s failure once per streak without stopping intent", async check => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), inspect = f.ports.inspect, get = f.ports.runningIntents.get, launch = f.ports.launch;
+  let broken = true;
+  const fail = () => { throw new Error("secret file contents must not be copied"); };
+  if (check === "inspection") f.ports.inspect = async id => broken ? fail() : inspect(id);
+  if (check === "running-intent") f.ports.runningIntents.get = async id => broken ? fail() : get(id);
+  if (check === "launch") f.ports.launch = async request => broken ? fail() : launch(request);
+  if (check === "restart") {
+    const row = (await f.intents.get(intent.sessionId))!;
+    await f.intents.update(intent.sessionId, row.version, { ...row.value, supervision: { kind: "live", identity: { bootId: "boot", pid: 7, startTime: "start" }, stableSince: 1 } });
+    f.ports.restart = async () => { if (broken) fail(); };
+  }
+  const original = await f.state(), log = vi.spyOn(console, "error").mockImplementation(() => {});
+  const supervisor = module.createSupervisor(f.ports);
+  try {
+    for (let pass = 1; pass <= 6; pass++) {
+      await supervisor.reconcile();
+      if (pass < 3) expect(f.warnings.filter(row => row.warning !== null)).toEqual([]);
+    }
+    expect(f.warnings.filter(row => row.warning !== null)).toEqual([{ sessionId: intent.sessionId,
+      warning: { code: "supervisor-hosting-error", check, since: f.now(), count: 3 } }]);
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(log.mock.calls)).not.toContain("secret file contents");
+    expect(await f.state()).toEqual(original);
+    expect(f.launches).toEqual([]);
+    expect(f.notices).toEqual([]);
+    broken = false;
+    await supervisor.reconcile();
+    expect(f.warnings.at(-1)).toEqual({ sessionId: intent.sessionId, warning: null });
+    // A successful pass resets the streak, even when the next failure is at the same check.
+    broken = true;
+    if (check === "restart") {
+      const row = (await f.intents.get(intent.sessionId))!;
+      await f.intents.update(intent.sessionId, row.version, original);
+    } else if (check === "launch") {
+      f.setOwner({ kind: "absent" });
+      const row = (await f.intents.get(intent.sessionId))!;
+      await f.intents.update(intent.sessionId, row.version, original);
+    }
+    await supervisor.reconcile(); await supervisor.reconcile();
+    expect(f.warnings.filter(row => row.warning !== null)).toHaveLength(1);
+    await supervisor.reconcile();
+    expect(f.warnings.filter(row => row.warning !== null)).toHaveLength(2);
+    expect(log).toHaveBeenCalledTimes(2);
+  } finally { await supervisor.stop(); log.mockRestore(); }
+});
+
+it.each([
+  ["uncertain owner", "Cannot prove the session owner absent"],
+  ["unfinished freeze", "An unfinished freeze needs review"],
+  ["blocking diagnostic", "Hosting prerequisites need review"],
+  ["home moved", null],
+  ["crashed owner", null],
+] as const)("a cleared automatic suspension still refuses a launch for %s", async (condition, suspended) => {
+  const module = await supervisorModule(); if (!module) return;
+  const f = fixture(), row = (await f.intents.get(intent.sessionId))!;
+  const previous = { bootId: "boot", pid: 7, startTime: "start" };
+  await f.intents.update(intent.sessionId, row.version, { ...row.value, failures: [f.now() - 1],
+    intent: { ...intent, suspended: LEGACY_AUTOMATIC_READ_SUSPENSION },
+    supervision: condition === "crashed owner" ? { kind: "live", identity: previous, stableSince: 1 }
+      : { kind: "launching", operationId: "reserved-launch", phase: "reserved" } });
+  if (condition === "uncertain owner") f.setOwner({ kind: "uncertain" });
+  if (condition === "unfinished freeze") f.setFreeze(true);
+  if (condition === "blocking diagnostic") f.setDiagnostics([{ severity: "block", reason: "prerequisite unavailable", repairCommand: null }]);
+  if (condition === "home moved") f.setHome({ sessionId: intent.sessionId, machineId: remote, epoch: 2, moveId: "returned", updatedAt: 1 });
+  const restarted: unknown[] = [];
+  f.ports.restart = async (_intent, previous) => { restarted.push(previous); };
+  const supervisor = module.createSupervisor(f.ports);
+  try {
+    await supervisor.reconcile();
+    expect(f.launches).toEqual([]);
+    const state = await f.state();
+    expect(state.intent.suspended).toBe(suspended);
+    if (condition === "crashed owner") {
+      expect(state.failures).toEqual([f.now() - 1, f.now()]);
+      expect(state.supervision).toEqual({ kind: "idle", nextAttemptAt: f.now() + 15_000 });
+      expect(restarted).toEqual([{ kind: "live", identity: previous, stableSince: 1 }]);
+    } else {
+      expect(state.failures).toEqual([f.now() - 1]);
+      expect(state.supervision).toEqual({ kind: "launching", operationId: "reserved-launch", phase: "reserved" });
+    }
+  } finally { await supervisor.stop(); }
+});

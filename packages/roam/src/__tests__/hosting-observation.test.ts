@@ -364,3 +364,16 @@ it("roaming is disabled by default and an ordinary session stays unchanged", asy
   expect(terminal).not.toHaveBeenCalled();
   expect(stores).not.toHaveBeenCalled();
 }, 5000);
+
+
+it("reports hosting warnings even when the intent view cannot be read, then clears them", async () => {
+  const f = await executionFixture(), warning = { code: "supervisor-hosting-error", check: "inspection", since: 1, count: 3 };
+  writeLocal(f.global.db, "supervisor-hosting-error", "s-1", warning);
+  const get = vi.spyOn(f.ports.intents, "get").mockRejectedValue(new Error("unreadable"));
+  const ports = { ...f.ports, live: async () => false, terminalOutcome: async () => "unknown" as const };
+  const observed = await observeHosting(ports);
+  expect(observed).toMatchObject({ warnings: [{ sessionId: "s-1", ...warning }], readiness: [], suspensions: [] });
+  get.mockRestore();
+  writeLocal(f.global.db, "supervisor-hosting-error", "s-1", undefined);
+  expect((await observeHosting(ports)).warnings ?? []).toEqual([]);
+});

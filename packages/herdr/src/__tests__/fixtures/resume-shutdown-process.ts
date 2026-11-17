@@ -31,7 +31,10 @@ registerHerdrSessions(pi, {
 });
 const fire = (name: string, event: unknown) => handlers.get(name)!(event, context);
 await fire('session_start', { type: 'session_start', reason: 'startup' });
-if (shellLaunch) { await fire('session_shutdown', { type: 'session_shutdown', reason: 'quit' }); process.exit(0); }
+if (shellLaunch) {
+  if (process.env.TEST_STAY_LIVE === '1') { process.stdout.write('background-pi-ready\n'); await new Promise(resolve => setTimeout(resolve, 30000)); }
+  await fire('session_shutdown', { type: 'session_shutdown', reason: 'quit' }); process.exit(0);
+}
 // Interactive pi prepends its signal handler; RPC appends it. Both dispose with reason 'quit'.
 for (const signal of ['SIGTERM', 'SIGHUP'] as const) {
   const shutdown = () => { void fire('session_shutdown', { type: 'session_shutdown', reason: 'quit' }).then(() => process.exit(0)); };

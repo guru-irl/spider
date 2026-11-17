@@ -392,7 +392,7 @@ export function createSync(ports: SyncPorts): SyncAdapter {
           for (const barrier of watermarks) if (await remoteCursor(peer, barrier.storeKey, barrier.stream) < barrier.through) return false;
           return true;
         };
-        if (await satisfied()) return true;
+        try { if (await satisfied()) return true; } catch { /* Retry through synchronization. */ }
         await service.sync(machine);
         return await satisfied();
       } catch { return false; }

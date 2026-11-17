@@ -457,7 +457,9 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
         if (rows.length === 0 && barrier.through === 0) return true;
         return rows.length === 1 && config.peers.some(peer => peer.machineId === rows[0].peer_machine) && rows[0].last_seq >= barrier.through;
       };
-      if (requiredBarriers.some(barrier => bindings.stores!.head(barrier.storeKey).stream !== barrier.stream && !reached(barrier))) await bindings.sync!.sync();
+      let gather = true;
+      try { gather = requiredBarriers.some(barrier => bindings.stores!.head(barrier.storeKey).stream !== barrier.stream && !reached(barrier)); } catch { /* Retry through synchronization. */ }
+      if (gather) await bindings.sync!.sync();
       if (machine !== config.machineId) return bindings.sync!.barriers(machine, requiredBarriers);
       return requiredBarriers.every(reached);
     },

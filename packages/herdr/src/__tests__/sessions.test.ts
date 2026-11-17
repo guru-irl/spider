@@ -129,6 +129,23 @@ it('quit, signal and reload preserve the correct restart eligibility', async () 
   }
 }, 30000);
 
+it('quit waits for an in-flight activation before ending its mapping', async () => {
+  const file = await session(); const api = apiFixture(); const registry = createTerminalRegistry(root);
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const delayedRegistry = { ...registry, record: async (record: Parameters<typeof registry.record>[0]) => { entered(); await gate; await registry.record(record); } };
+  const registration = registerHerdrSessions(api.pi, { ...inventory(), registry: delayedRegistry, processIdentity: { pid: 300, startIdentity: 'start:300' }, currentSession: () => ({ pid: 300, startIdentity: 'start:300', sessionFile: file, sessionName: 'named session', kind: 'top-level', hcAddress: terminal.address }), owner: () => owner(file), coreStartedAt: () => 1, launchEnvironment: request(file).environment });
+  const startup = api.fire('session_start', { reason: 'startup' }, context(file, 'tui'));
+  await ready;
+  const shutdown = api.fire('session_shutdown', { reason: 'quit' }, context(file, 'tui'));
+  await Promise.race([shutdown, new Promise(resolve => setTimeout(resolve, 250))]);
+  release(); await Promise.all([startup, shutdown]);
+  try {
+    expect(await offerResume(terminal, { registry, processInventory: inventory(), coreStartedAt: async () => Number.MAX_SAFE_INTEGER })).toBeNull();
+  } finally { await registration.dispose(); }
+});
+
 function apiFixture() {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
   const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;

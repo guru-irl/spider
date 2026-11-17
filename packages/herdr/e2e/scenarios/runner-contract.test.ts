@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
 import { describe, expect, it, vi } from 'vitest';
+import { paths } from '@spider/db-core';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
 import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command, finishCleanup } from '../../../../scripts/herdr-e2e.mjs';
@@ -42,7 +43,7 @@ describe('controllable intercom clock', () => {
   it('stops clock requests before service shutdown without cancelling its pending work', async () => {
     // @ts-ignore The same ESM adapter is loaded by the fixture processes.
     const { serveFixtureClock } = await import('../fixtures/roam-hub-clock.mjs');
-    const root = mkdtempSync(resolve('.spider/scratch/clock-stop-'));
+    const root = mkdtempSync(resolve(paths.scratch('worktree', process.cwd()), 'clock-stop-'));
     const socket = resolve(root, 'c.sock');
     const controlled = await serveFixtureClock(socket);
     vi.useFakeTimers();
@@ -75,7 +76,7 @@ describe('controllable intercom clock', () => {
 
 describe('final runner cleanup budget', () => {
   it('bounds cleanup and reconciliation by one absolute deadline', async () => {
-    const root = mkdtempSync(resolve('.spider/scratch/cleanup-budget-'));
+    const root = mkdtempSync(resolve(paths.scratch('worktree', process.cwd()), 'cleanup-budget-'));
     try {
       const module = resolve(root, 'resources.mjs');
       writeFileSync(module, `import {writeFileSync} from 'node:fs';
@@ -90,7 +91,7 @@ describe('final runner cleanup budget', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
   it.each([true, false])('retains the cleanup proof when reconciliation succeeds: %s', async clean => {
-    const root = mkdtempSync(resolve('.spider/scratch/cleanup-proof-'));
+    const root = mkdtempSync(resolve(paths.scratch('worktree', process.cwd()), 'cleanup-proof-'));
     try {
       const module = resolve(root, 'resources.mjs');
       writeFileSync(module, `export async function cleanupLedger() { return {clean:${clean}}; } export async function reconcileLedgers() { return []; }`);

@@ -601,7 +601,7 @@ Both modes run `pi --session <exact file>` in the saved working directory, with 
 
 When pi exits or crashes and its shell returns to a prompt, the shell marks that session ended. A later restart skips it. A backgrounded or suspended pi stays live while its process exists. When the core restart kills both pi and its shell, no prompt runs and the session stays resumable. Starting pi again clears the ended state.
 
-Automatic resume makes at most one launch attempt per terminal for each core restart. A refused session, such as one held by another process, is tried again by the next shell in that terminal. A failed or interrupted launch is not retried until a later proved core restart.
+Automatic resume covers sessions started or reloaded since the update. It makes at most one launch attempt per terminal for each core restart. A refused session, such as one held by another process, is tried again by the next shell in that terminal. A failed or interrupted launch is not retried until a later proved core restart.
 
 On macOS, Node does not expose `F_FULLFSYNC`. A power failure immediately after a marker changes can lose it, causing a missed or repeated resume attempt.
 

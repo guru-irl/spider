@@ -178,7 +178,7 @@ it('an extension refusal gives a short notice without losing the prompt watcher'
     await registry.record({ owner, recordedAt: Number.MAX_SAFE_INTEGER, coreStartedAt: 1, environment });
     const unproved = await ports.resumeOffer!(request);
     expect(unproved).toContain('_spider_resume_watch'); expect(stderr).not.toHaveBeenCalled();
-    await registry.record({ owner, recordedAt: 1, coreStartedAt: 1, environment });
+    await registry.record({ owner, recordedAt: 1, coreStartedAt: 1, environment, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 2147483647, startIdentity: 'old' });
     const refused = await ports.resumeOffer!(request);
     expect(refused).toContain('_spider_resume_watch'); expect(refused).not.toContain('Resuming Saved');
     expect(stderr).toHaveBeenCalledOnce();
@@ -193,7 +193,7 @@ it('the configured auto policy produces one automatic snippet per proved restart
   const file = join(root, 'session.jsonl');
   await writeFile(file, JSON.stringify({ type: 'session', id: 's1', cwd: root }) + '\n');
   const owner: Owner = { terminal, sessionId: 's1' as SessionId, generation: 'g1' as Generation, sessionFile: file, cwd: root, name: 'Saved' };
-  await createTerminalRegistry(join(root, 'herdr')).record({ owner, recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] } });
+  await createTerminalRegistry(join(root, 'herdr')).record({ owner, recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 2147483647, startIdentity: 'old' });
   const config = parseHerdrConfig({ app: { binary: '/app', home: root }, core: { binary: '/hc', config: join(root, 'core') }, agentDirectory: join(root, 'agent'), globalRoot: root, shellRc: join(root, 'rc'), spaces: [], machines: [], resume: 'auto' });
   const ports = createProductionHerdrCliPorts(root, { ...process.env, SPIDER_GLOBAL_ROOT: root });
   try {

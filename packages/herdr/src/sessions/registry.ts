@@ -15,6 +15,7 @@ export interface TerminalRegistry {
   record(record: Omit<TerminalAssociation, 'version'>, started?: ProcessIdentity): Promise<void>;
   get(identity: TerminalIdentity): Promise<TerminalAssociation | null>;
   ended(identity: TerminalIdentity, activityId: string): Promise<boolean>;
+  live(identity: TerminalIdentity, activityId: string): Promise<boolean>;
   list(onInvalid?: (file: string, error: unknown) => void): Promise<TerminalAssociation[]>;
   remove(identity: TerminalIdentity, provedRemoved: boolean): Promise<void>;
 }
@@ -118,6 +119,19 @@ export function createTerminalRegistry(root: string): TerminalRegistry {
     async ended(id, activityId) {
       if (!/^[a-f0-9]{32}$/.test(activityId)) throw new HerdrError('invalid-terminal-mapping', 'Terminal association activity is invalid');
       return await readPrivateJson(join(root, 'resume-starts', identityKey(id), `ended-${activityId}`)) !== null;
+    },
+    async live(id, activityId) {
+      if (!/^[a-f0-9]{32}$/.test(activityId)) throw new HerdrError('invalid-terminal-mapping', 'Terminal association activity is invalid');
+      const directory = join(root, 'resume-starts', identityKey(id));
+      try {
+        if (await realpath(directory) !== resolve(directory)) throw new HerdrError('unsafe-state-path', 'State readers cannot traverse symlinked directories');
+        for (const name of await readdir(directory)) {
+          const match = new RegExp(`^live-${activityId}-([1-9]\\d*)$`).exec(name); if (!match) continue;
+          const marker = await readPrivateJson(join(directory, name)) as Partial<ProcessIdentity> & { version?: number } | null;
+          if (marker?.version === 1 && marker.pid === Number(match[1])) return true;
+        }
+        return false;
+      } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
     },
     async list(onInvalid) {
       const records = [];

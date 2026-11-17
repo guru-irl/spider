@@ -416,7 +416,7 @@ it("startup discovers done moves with unreleased reservations", async () => {
   const f = await fixture();
   f.journal.record(f.operation.id, "move-request", { operation: f.operation as unknown as JsonObject, sessionId: SESSION, destinationMachine: BOX });
   f.journal.record(f.operation.id, "done", { code: 0, ok: true, reason: "moved", operationId: f.operation.id, home: f.home as unknown as JsonObject,
-    epoch: 1, repairCommand: null, value: { home: f.home as unknown as JsonObject, terminal: null, intercomAddress: SESSION, warnings: [] } });
+    epoch: 1, repairCommand: null, value: { home: f.home as unknown as JsonObject, terminal: null, intercomAddress: SESSION, warnings: [], sourceCleanup: { status: "done" } } });
   const { moveSessionSlot, readMoveReservation } = await import("../move");
   const slot = moveSessionSlot(SESSION); f.journal.begin({ id: slot, kind: "move-session", machineId: HUB, expectedEpoch: null, args: { sessionId: SESSION } });
   f.journal.record(slot, "reserved", { moveId: f.operation.id, destinationMachine: BOX });
@@ -975,10 +975,14 @@ it("cleanup retries recognize their removed staging without changing installed f
     if (first) { first = false; throw new Error("fixture-terminal-pending"); }
   };
   const pending = (await recoverMoveAdapters(f.ports, f.bindings)).find(row => row.operationId === operation.id)!;
-  expect(pending.code).toBe(3);
+  expect(pending).toMatchObject({ code: 0, ok: true, reason: "moved", value: { sourceCleanup: { status: "pending", blockers: ["move-pending"] } } });
+  const { readMoveReservation } = await import("../move");
+  expect(readMoveReservation(SESSION, f.journal)).toMatchObject({ moveId: operation.id });
+  expect(f.journal.read(operation.id).some(row => row.action === "done")).toBe(false);
   expect(f.worktree.db.prepare("SELECT state FROM roam_sessions WHERE session_id=?").get(SESSION)).toEqual({ state: "retired" });
   const installed = readFileSync(f.target), retry = (await recoverMoveAdapters(f.ports, f.bindings)).find(row => row.operationId === operation.id)!;
-  expect(retry.code).toBe(0);
+  expect(retry).toMatchObject({ code: 0, ok: true, value: { sourceCleanup: { status: "done" } } });
+  expect(readMoveReservation(SESSION, f.journal)).toBeNull();
   expect(readFileSync(f.target)).toEqual(installed);
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
 }, 5000);

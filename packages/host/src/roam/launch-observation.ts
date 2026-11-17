@@ -22,13 +22,13 @@ export async function recordMoveLaunchAbsence(input: {
       if (evidence.receipt === "started" || evidence.receipt === "finished" || evidence.terminal === "present") return null;
       value = { ...tuple, kind: "never-started" };
     }
-    const prior = readMoveLaunchAbsenceReceipt(input.journal, input.operationId);
+    const prior = readMoveLaunchAbsenceReceipt(input.journal, input.operationId, input.launchId);
     if (prior) {
       if (["moveId", "launchDigest", "launchId", "sessionId", "epoch", "coreId", "bootId", "kind"].some(key => prior[key as keyof MoveLaunchAbsenceReceipt] !== value[key as keyof MoveLaunchAbsenceReceipt])) return null;
       if (prior.kind === "exited-without-adoption" && (value.kind !== prior.kind || prior.terminalId !== value.terminalId)) return null;
       return prior;
     }
-    if (input.journal.read(input.operationId).some(row => row.action === "move-no-start" || row.action === "move-unadopted-launch-exit")) return null;
+    if (input.journal.read(input.operationId).some(row => (row.action === "move-no-start" || row.action === "move-unadopted-launch-exit") && row.result.launchId === input.launchId)) return null;
     input.journal.record(input.operationId, moveLaunchAbsenceAction(value), value as unknown as JsonObject);
     return value;
   } catch { return null; }

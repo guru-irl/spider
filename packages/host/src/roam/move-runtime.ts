@@ -156,7 +156,17 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
     const intent = await authority.get(sessionId), home = localHome(sessionId);
     if (!intent || authority.operationId(sessionId) !== participantOperationId || intent.desired !== "running" || intent.suspended || !home || home.machineId !== config.machineId || home.epoch !== intent.epoch)
       return { ok: false, reason: "participant-intent-unavailable" };
-    const operationId = participantLaunchId(config.machineId, sessionId, intent.epoch, participantOperationId);
+    const base = participantLaunchId(config.machineId, sessionId, intent.epoch, participantOperationId);
+    const operationId = request.launchId ?? base;
+    if (operationId !== base) {
+      const history = journal.lookupOperation?.(`${base}-restarts`), entries = journal.read(`${base}-restarts`).filter(row => row.action === "restart");
+      if (!history || history.machineId !== config.machineId ||
+          entries.some((row, index) => row.result.sequence !== index + 1) || !entries.some(row => operationId === `${base}-restart-${row.result.sequence}`))
+        return { ok: false, reason: "participant-launch-unavailable" };
+      try { journal.begin({ id: `${base}-restarts`, kind: "participant-restarts", machineId: config.machineId, expectedEpoch: intent.epoch,
+        args: { sessionId, operationId: participantOperationId, file: intent.file, cwd: intent.cwd, moveId: intent.moveId } }); }
+      catch { return { ok: false, reason: "participant-launch-unavailable" }; }
+    }
     if (journal.lookupOperation?.(operationId)) return { ok: true, launchId: operationId };
     const herdr = loadHerdrConfig(root), hc = createProductionLocalExactHc({ binary: herdr.core.binary, env: process.env, probe: inventory.probe });
     try {
@@ -253,7 +263,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
           } catch { /* Missing exact proof leaves ownership and launch outcome unknown. */ }
         }
         if (launchFailure && exactId && home.moveId) {
-          const receipt = readMoveLaunchAbsenceReceipt(journal, home.moveId);
+          const receipt = readMoveLaunchAbsenceReceipt(journal, home.moveId, exactId);
           if (!receipt || await cancelPendingHandoff(root, { sessionId: home.sessionId, moveId: home.moveId, launchId: exactId, absenceReceipt: receipt }) === "refused") {
             owner = { kind: "uncertain" }; launchFailure = null;
           }

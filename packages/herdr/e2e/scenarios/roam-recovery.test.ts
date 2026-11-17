@@ -222,7 +222,7 @@ export async function runRecoveryCases(suite: Suite): Promise<void> {
     let f: Awaited<ReturnType<typeof createMoveStory>> | undefined;
     try {
       f = await createMoveStory(owned);
-      const [hub, box] = f.machines;
+      const [hub, box, aliasTarget] = f.machines;
       const expectedTrees = await f.trees(hub.cwd);
       expect(await f.moveTo(hub, box.alias)).toMatchObject({ code: 0 });
       const remote = await assertMoveState(f, box, expectedTrees, 2);
@@ -273,10 +273,13 @@ export async function runRecoveryCases(suite: Suite): Promise<void> {
       try { expect(readLocal(boxDb, 'supervisor-revoked', BOX)).toBe(true); }
       finally { boxDb.close(); }
       expect((await owned.hc(['machine', 'rm', box.alias, '--json'])).exitCode).toBe(0);
-      expect((await owned.hc(['machine', 'add', '--via', join(owned.root, 'bin', 'via-i1'), '--name', box.alias,
-        '--session', owned.cores!.local.namespace, '--json'])).exitCode).toBe(0);
+      expect((await owned.hc(['machine', 'rm', aliasTarget.alias, '--json'])).exitCode).toBe(0);
+      const reusedAlias = await owned.hc(['machine', 'add', '--via', join(owned.root, 'bin', 'via-i2'), '--name', box.alias,
+        '--session', aliasTarget.env.HC_SESSION, '--json']);
+      await suite.evidence(`R15-${parked ? 'parked' : 'visible'}-alias-reused.json`, reusedAlias);
+      expect(reusedAlias.exitCode, reusedAlias.stderr + reusedAlias.stdout).toBe(0);
       const reused = await owned.hc(['machine', 'ls', '--json']);
-      expect((reused.json as { machines: Array<{ name: string; id: string }> }).machines.find(row => row.name === box.alias)?.id).toBe(owned.cores!.local.coreId);
+      expect((reused.json as { machines: Array<{ name: string; id: string }> }).machines.find(row => row.name === box.alias)?.id).toBe(aliasTarget.coreId);
       const rejected = await f.presentation.readyTarget(captured.target) as { status: string };
       expect(rejected.status, recoveryCaseNames[3]).not.toBe('complete');
       expect(await f.presentation.staleClose(captured), recoveryCaseNames[3]).toMatchObject({ status: 'refused', reason: 'Session changed. Close again.' });

@@ -1005,7 +1005,7 @@ async function readmit(operation: Operation, journal: Journal, bindings: MoveAda
     const current = await currentProof();
     await rollback.reopen(fence!, restored, current.rollbackReceipt);
     const outcome: MoveSessionOutcome = { code: 0, ok: true, reason: "rollback-readmitted", operationId: operation.id, home: restored, epoch: restored.epoch, repairCommand: null,
-      value: { home: restored, terminal: cached.terminal, intercomAddress: source.sessionId, warnings: [] } };
+      value: { home: restored, terminal: cached.terminal, intercomAddress: source.sessionId, warnings: [], sourceCleanup: { status: "done" } } };
     journal.record(operation.id, "done", json(outcome)); return outcome;
   } catch (error) { return refusal(error instanceof MoveAdapterError ? [error.code] : []); }
 }

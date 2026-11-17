@@ -66,3 +66,23 @@ it("the public parser has fourteen roam controls and move", () => {
   expect(controls).toHaveLength(14);
   expect(parsePublicControl(["move", "session-a", "mac"])).toMatchObject({ kind: "move" });
 });
+
+
+it.each(['done', 'pending'] as const)('serializes the exhaustive source cleanup status %s', status => {
+  const sourceCleanup = status === 'done' ? { status } : { status, blockers: ['process-exit-unproven'] };
+  const safe = safeControlOutcome({ code: 0, reason: 'moved', operationId: 'move-a', home: null, epoch: 2, repairCommand: null,
+    value: { terminal: 't1', intercomAddress: 'box/session-a', warnings: [], sourceCleanup } });
+  expect(safe.value).toMatchObject({ sourceCleanup });
+  expect(JSON.parse(JSON.stringify(safe)).value.sourceCleanup).toEqual(sourceCleanup);
+  expect(controlText(safe).includes('Source cleanup pending')).toBe(status === 'pending');
+  if (status === 'pending') {
+    expect(controlText(safe)).toContain('Moved. Source cleanup pending: The source process has not been proved stopped and retired. It finishes on its own; check with `spider roam status`.');
+    expect(controlText(safe)).not.toContain('process-exit-unproven');
+  }
+});
+it('does not expose malformed cleanup evidence', () => {
+  const safe = safeControlOutcome({ code: 0, reason: 'moved', operationId: 'move-a', home: null, epoch: 2, repairCommand: null,
+    value: { sourceCleanup: { status: 'pending', blockers: ['PRIVATE CONTENT'] } } });
+  expect(JSON.stringify(safe)).not.toContain('PRIVATE CONTENT');
+  expect(controlText(safe)).not.toContain('Source cleanup pending');
+});

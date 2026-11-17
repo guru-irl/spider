@@ -186,7 +186,8 @@ export interface FreezeAck {
   intercomGeneration: string;
 }
 export interface MoveRequest { operation: Operation; sessionId: string; destinationMachine: MachineId }
-export interface MoveResult { home: Home; terminal: string | null; intercomAddress: string; warnings: readonly string[] }
+export type SourceCleanup = { status: "done" } | { status: "pending"; blockers: readonly ValidatedBlockerId[] };
+export interface MoveResult { home: Home; terminal: string | null; intercomAddress: string; warnings: readonly string[]; sourceCleanup: SourceCleanup }
 /** Validated at the blocker boundary, never inferred from a message body. */
 declare const validatedBlockerId: unique symbol;
 export type ValidatedBlockerId = string & { readonly [validatedBlockerId]: true };

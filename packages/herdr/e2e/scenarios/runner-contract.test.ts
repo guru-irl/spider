@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
+import { stripTypeScriptTypes } from 'node:module';
 import { describe, expect, it, vi } from 'vitest';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
@@ -41,7 +42,8 @@ describe('move launch observation command', () => {
     const observed = { owner: { kind: state === 'uncertain' ? 'uncertain' : 'absent' }, readiness: null };
     const observation = vi.fn(async () => observed), close = vi.fn(), stop = vi.fn(async () => {}), output: string[] = [];
     const process = { exitCode: 0, stdout: { write: (text: string) => output.push(text) } };
-    await runInNewContext('(async () => {' + source.slice(start + 7, end).replaceAll('\\\\n', '\\n') + '}})()', {
+    const script = '(async () => {' + source.slice(start + 7, end).replaceAll('\\\\n', '\\n') + '}})()';
+    await runInNewContext(stripTypeScriptTypes(script), {
       args: ['fixture-observe', 'session-a', 'move-a'], root: '/fixture', machine: { id: 'box-a' }, join: (...parts: string[]) => parts.join('/'), process,
       openLocalCore: () => ({ db: {}, config: {}, close }), openFreezeJournal: () => ({}), sessionHome: () => home,
       moveFactory: async () => ({ bindings: { participant: { observation } }, close: stop }), readMoveLaunchAbsenceReceipt: () => receipt,

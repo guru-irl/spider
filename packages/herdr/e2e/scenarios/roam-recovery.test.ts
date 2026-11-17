@@ -16,7 +16,7 @@ import { confirmPresentationClose, parkPresentation } from '../../src/panes/life
 import { createPaneService } from '../../src/panes/service.js';
 import { createPanePlacementStore } from '../../src/panes/store.js';
 import { createRoamPresentationOperations } from '../../src/roam-placement.js';
-import type { PaneTarget, PanePresentation } from '../../src/panes/types.js';
+import type { PaneTarget, PanePresentation, PaneActionOutcome } from '../../src/panes/types.js';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { readObserved } from '../harness/pi.js';
 import { runHc } from '../harness/hc.js';
@@ -25,6 +25,14 @@ import { deadline, waitFor } from '../harness/wait.js';
 import { createSuite, type Suite } from '../harness/suite.js';
 import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/scenario.js';
 import { createMoveStory, assertMoveState, HUB, BOX, type MoveMachine } from './roam-move.test.js';
+
+export function restorationPending(result: unknown): boolean {
+  return !!result && typeof result === 'object' && 'code' in result && result.code === 3 && 'reason' in result &&
+    (result.reason === 'recovery-pending' || result.reason === 'readiness-pending');
+}
+export function presentationInProgress(result: Pick<PaneActionOutcome, 'status' | 'reason'>): boolean {
+  return result.status === 'pending' && result.reason === 'operation-in-progress';
+}
 
 export interface StoryPresentation {
   socket: string; store: ReturnType<typeof createPanePlacementStore>; slot: OwnerPlacement;
@@ -149,7 +157,9 @@ export async function storyPresentation(suite: Suite, machines: readonly MoveMac
     expect(await operations.prepareHandoff(target.sessionId!, target)).toMatchObject({ status: 'complete' });
   };
   const present = async (machine: MoveMachine, epoch: number) => {
-    const outcome = await operations.presentReadyTarget(await actualTarget(machine, epoch));
+    const target = await actualTarget(machine, epoch);
+    const outcome = await waitFor('existing presentation operation completes', () => operations.presentReadyTarget(target),
+      result => !presentationInProgress(result), deadline(5_000), { reconcileMs: 50 });
     expect(outcome).toMatchObject({ status: 'complete' });
   };
   const socket = assertSocketPath(suite.root, join(suite.root, 'p.s'));
@@ -233,9 +243,9 @@ export async function runRecoveryCases(suite: Suite): Promise<void> {
       expect((await owned.hc(['kill', remote.terminal, '--json'], 'dest')).exitCode).toBe(0);
       await waitFor('destroyed fixture owner exits', () => f!.owners(), rows => !rows.some(row => row.pid === remote.pid), deadline(30_000));
       const initialRestore = await f.cli(hub, ['roam', 'forget', box.alias, '--confirm', `destroyed ${BOX}`]);
-      const restored = initialRestore.code === 3 && initialRestore.reason === 'recovery-pending'
+      const restored = restorationPending(initialRestore)
         ? await waitFor('documented retry completes destroyed-home recovery', () => f!.cli(hub, ['roam', 'forget', BOX, '--confirm', `destroyed ${BOX}`]),
-          result => result.code !== 3 || result.reason !== 'recovery-pending', deadline(60_000), { reconcileMs: 500 })
+          result => !restorationPending(result), deadline(60_000), { reconcileMs: 500 })
         : initialRestore;
       expect(restored).toMatchObject({ code: 0, reason: 'destroyed-machine-recovered' });
       const local = await assertMoveState(f, hub, expectedTrees, 3);

@@ -528,6 +528,7 @@ export async function saveJournal(root: string, journal: SetupJournal): Promise<
 }
 /** The planned content's managed part. A snapshot-only plan of an absent file is the absent state, not empty JSON. */
 function plannedProjection(f: InstallFile, part: ManagedPart): string {
+  if (part.kind === 'keys' && f.keys && f.retainedKeys) return managedProjection(Buffer.from(JSON.stringify(f.keys)), part);
   return managedProjection(f.snapshotOnly && f.expected === null ? null : f.bytes, part);
 }
 function priorManagedPart(prior: BackupEntry, fallback: ManagedPart): ManagedPart {
@@ -556,24 +557,24 @@ async function verifiedBackup(root: string, backup: string | null, before: strin
 function hasKeySection(bytes: Buffer | null, section: string): boolean {
   return bytes !== null && Object.hasOwn(object(JSON.parse(bytes.toString('utf8'))), section);
 }
-async function keyBaselines(root: string, current: Buffer | null, part: Extract<ManagedPart, { kind: 'keys' }>, prior: BackupEntry | undefined, replace: boolean): Promise<KeyBaselines> {
+async function keyBaselines(root: string, current: Buffer | null, part: Extract<ManagedPart, { kind: 'keys' }>, prior: BackupEntry | undefined, replace: boolean, retained?: KeySections): Promise<KeyBaselines> {
   const oldFields = prior ? priorKeyFields(prior) : {};
   const original = prior && !prior.keysBefore ? await verifiedBackup(root, prior.backup, prior.before) : null;
   return Object.fromEntries(Object.entries(part.sections).map(([section, keys]) => [section, Object.fromEntries(keys.map(key => {
     const currentValue = keyBaseline(current, section, key);
     const oldBinding = prior?.keys?.[section]?.[key] ?? (section === 'terminal' ? prior?.terminalKeys?.[key] : undefined);
-    const preserve = prior && oldFields[section]?.includes(key) && (!replace || currentValue.present && canonicalJson(currentValue.value) === canonicalJson(oldBinding));
+    const preserve = prior && oldFields[section]?.includes(key) && (Object.hasOwn(retained?.[section] ?? {}, key) || !replace || currentValue.present && canonicalJson(currentValue.value) === canonicalJson(oldBinding));
     return [key, preserve ? prior.keysBefore?.[section]?.[key] ?? keyBaseline(original, section, key) : currentValue];
   }))]));
 }
-async function keySectionBaselines(root: string, current: Buffer | null, part: Extract<ManagedPart, { kind: 'keys' }>, prior: BackupEntry | undefined, replace: boolean): Promise<Readonly<Record<string, boolean>>> {
+async function keySectionBaselines(root: string, current: Buffer | null, part: Extract<ManagedPart, { kind: 'keys' }>, prior: BackupEntry | undefined, replace: boolean, retained?: KeySections): Promise<Readonly<Record<string, boolean>>> {
   const oldFields = prior ? priorKeyFields(prior) : {};
   const original = prior && !prior.keySectionsBefore ? await verifiedBackup(root, prior.backup, prior.before) : null;
   return Object.fromEntries(Object.entries(part.sections).map(([section, keys]) => {
     const preserve = prior && keys.some(key => {
       const currentValue = keyBaseline(current, section, key);
       const oldBinding = prior.keys?.[section]?.[key] ?? (section === 'terminal' ? prior.terminalKeys?.[key] : undefined);
-      return oldFields[section]?.includes(key) && (!replace || currentValue.present && canonicalJson(currentValue.value) === canonicalJson(oldBinding));
+      return oldFields[section]?.includes(key) && (Object.hasOwn(retained?.[section] ?? {}, key) || !replace || currentValue.present && canonicalJson(currentValue.value) === canonicalJson(oldBinding));
     });
     return [section, preserve ? prior.keySectionsBefore?.[section] ?? hasKeySection(original, section) : hasKeySection(current, section)];
   }));
@@ -640,8 +641,9 @@ export async function validateFiles(files: readonly InstallFile[], journal: Setu
     const identical = current.hash === digest(f.bytes);
     let refusal = f.refusal, unsafeSound = false;
     if ((!identical || f.snapshotOnly || f.updateAfterCutover) && f.managed && prior) {
-      const part = priorManagedPart(prior, f.managed);
-      const recorded = prior.managedAfter ?? (prior.terminalKeys && part.kind === 'json' && part.section === 'terminal'
+      const originalPart = priorManagedPart(prior, f.managed);
+      const part: ManagedPart = originalPart.kind === 'keys' && f.retainedKeys ? { kind: 'keys', sections: Object.fromEntries(Object.entries(originalPart.sections).map(([section, keys]) => [section, keys.filter(key => !Object.hasOwn(f.retainedKeys?.[section] ?? {}, key))])) } : originalPart;
+      const recorded = part !== originalPart && prior.keys ? managedProjection(Buffer.from(JSON.stringify(prior.keys)), part) : prior.managedAfter ?? (prior.terminalKeys && part.kind === 'json' && part.section === 'terminal'
         ? managedProjection(Buffer.from(JSON.stringify({ terminal: prior.terminalKeys })), part) : plannedProjection(f, part));
       const actual = managedProjection(current.bytes, part);
       if (!journal.verified && f.managed.kind === 'json-paths' && part.kind === 'json' && part.section === undefined && f.managed.paths.includes('sounds.enabled') && appSettings && resolve(f.path) === resolve(appSettings.path)) {
@@ -701,8 +703,8 @@ export async function prepareBackups(root: string, files: readonly InstallFile[]
       continue;
     if (current.hash !== f.expected)
       throw new HerdrError('concurrent-settings-edit', `Changed between preflight and backup: ${f.path}`);
-    const keysBefore = keyPart ? await keyBaselines(root, current.bytes, keyPart, prior, !!f.replaceBaseline) : undefined;
-    const keySectionsBefore = keyPart ? await keySectionBaselines(root, current.bytes, keyPart, prior, !!f.replaceBaseline) : undefined;
+    const keysBefore = keyPart ? await keyBaselines(root, current.bytes, keyPart, prior, !!f.replaceBaseline, f.retainedKeys) : undefined;
+    const keySectionsBefore = keyPart ? await keySectionBaselines(root, current.bytes, keyPart, prior, !!f.replaceBaseline, f.retainedKeys) : undefined;
     const pathsBefore = pathPart ? await pathBaselines(root, current.bytes, pathPart, prior, !!f.replaceBaseline) : undefined;
     if (prior && !f.replaceBaseline && !expanded) {
       prior.after = after;
@@ -1074,7 +1076,7 @@ function isNativeKeyBinding(value: unknown): boolean {
 function isKeyBinding(value: unknown): value is KeyBinding {
   return isNativeKeyBinding(value) && (typeof value === 'string' || Object.hasOwn(value as object, 'args'));
 }
-export function mergeKeys(bytes: Buffer | null, desiredSections: KeySections, ownedSections: KeySections, overwrite: boolean): Buffer {
+export function mergeKeys(bytes: Buffer | null, desiredSections: KeySections, ownedSections: KeySections, overwrite: boolean, options: { ignoredKeys?: KeyFields } = {}): Buffer {
   if (bytes === null) throw new HerdrError('keys-defaults-missing', missingKeyMapMessage);
   let settings: Record<string, unknown>;
   try { settings = object(JSON.parse(bytes.toString('utf8'))); }
@@ -1086,11 +1088,11 @@ export function mergeKeys(bytes: Buffer | null, desiredSections: KeySections, ow
   };
   if (desiredSections['layout:spider-glass']?.['cmd-shift-e'] !== undefined) {
     for (const section of ['global', 'terminal'])
-      if (sectionValues(section)['cmd-shift-e'] !== undefined)
+      if (!options.ignoredKeys?.[section]?.includes('cmd-shift-e') && sectionValues(section)['cmd-shift-e'] !== undefined)
         throw new HerdrError('key-binding-conflict', `Competing ${section}.cmd-shift-e needs repair`);
     for (const section of ['global', 'terminal', 'layout:spider-glass']) {
       const close = sectionValues(section)['cmd-shift-w'];
-      if (close !== undefined && close !== 'pane.close' && !(section === 'layout:spider-glass' && desiredSections[section]?.['cmd-shift-w'] === 'spider-pane.close' && close === 'spider-pane.close'))
+      if (!options.ignoredKeys?.[section]?.includes('cmd-shift-w') && close !== undefined && close !== 'pane.close' && !(section === 'layout:spider-glass' && desiredSections[section]?.['cmd-shift-w'] === 'spider-pane.close' && close === 'spider-pane.close'))
         throw new HerdrError('key-binding-conflict', `${section}.cmd-shift-w needs repair`);
     }
   }

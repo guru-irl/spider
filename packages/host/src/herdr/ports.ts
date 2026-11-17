@@ -8,7 +8,7 @@ import { createProductionPaneEndpointPorts } from './bin/pane-endpoint.js';
 import { handleRemotePaneRequest } from './pane-endpoint.js';
 import { spawn } from 'node:child_process';
 import { constants as fileFlags, readlinkSync } from 'node:fs';
-import { stripVTControlCharacters } from 'node:util';
+import { isDeepStrictEqual, stripVTControlCharacters } from 'node:util';
 import { realpath, stat, appendFile, open } from 'node:fs/promises';
 import { scrubSecrets } from '@spider/memory';
 import { ModelRuntime, ModelRegistry, getAgentDir, type CreateModelRuntimeOptions } from '@earendil-works/pi-coding-agent';
@@ -39,7 +39,7 @@ import { paths } from '@spider/db-core';
 import { doctorHerdr, checkNodeVersion, paneCoreVersionSupported, inspectPaneCommands, inspectPaneServiceState, checkManagedKeyBindings, probeLaunch, type DoctorParts, type DoctorItem, type DoctorFailure, type DoctorInformation } from '@spider/herdr/setup/doctor';
 import { feedWriterLiveness } from '@spider/herdr/feed/writer';
 import { sessionFeedIsFresh } from '@spider/herdr/feed/freshness';
-import { snapshot, digest, managedProjection, rootNotesValue, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles, missingKeyMapMessage, type KeyBinding, type KeySections } from '@spider/herdr/setup/backup';
+import { snapshot, digest, managedProjection, rootNotesValue, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections } from '@spider/herdr/setup/backup';
 import { CoreOnlySetupError, runtimeInstallPath, standardHerdrConfigPath, type SetupRequest, type SetupParts, type SetupContext, type InstallFile, type RuntimeFile, type RuntimeRootObservation } from '@spider/herdr/setup/installer';
 import { planToastFiles } from '@spider/herdr/setup/toast';
 import type { HerdrCliPorts } from '@spider/herdr/setup/cli';
@@ -372,7 +372,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   const auxiliaryModIds = (selected: (LookPatchSet & { crossMachine?: CrossMachineLookRecipe }) | undefined) => [
     ...PANE_ENTRY_MODS.filter(name => selected?.crossMachine || name === 'spider-pane-waiting'),
     ...(selected?.mods.menu ? ['spider-menu'] : []),
-    ...(selected?.upstreamVersion === '0.1.13' || selected?.upstreamVersion === '0.1.16' || additionalFor(selected?.upstreamVersion)['new-menu'] ? ['spider-new-menu'] : []),
+    ...(selected?.crossMachine || additionalFor(selected?.upstreamVersion)['new-menu'] ? ['spider-new-menu'] : []),
   ];
   const modNames = (selected: (LookPatchSet & { crossMachine?: CrossMachineLookRecipe }) | undefined, hasToast: boolean) => [
     'agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'picker',
@@ -535,14 +535,15 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       },
     };
   };
-  const releaseLook = async (request: SetupRequest): Promise<LookPatchSet & { crossMachine?: CrossMachineLookRecipe }> => {
+  const releaseLook = async (request: SetupRequest, stagedVersion?: string): Promise<LookPatchSet & { crossMachine?: CrossMachineLookRecipe }> => {
     let appVersion: string;
     try {
-      const output = execFileSync(request.config.app.binary, ['--version'], { env: appEnv(request), encoding: 'utf8', timeout: 5000, maxBuffer: 4096 });
+      const output = execFileSync(request.config.app.binary, ['--version'], { env: appEnv(request), encoding: 'utf8', timeout: 5000, maxBuffer: 4096, stdio: ['ignore', 'pipe', 'pipe'] });
       const match = /^herdr-app\s+(\S+)\s*$/.exec(output);
       if (!match) throw new Error('Unrecognized version output');
       appVersion = match[1];
     } catch { throw new HerdrError('upstream-version-unavailable', 'Cannot determine the installed Herdr app version'); }
+    if (stagedVersion && appVersion !== stagedVersion) throw new HerdrError('upstream-version-mismatch', 'The Herdr version changed during setup; rerun setup');
     const selected = selectLookPatches(JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'), 'utf8')) as LookPatchSet, appVersion);
     if (appVersion !== '0.1.13' && appVersion !== '0.1.16') return selected;
     let records: unknown;
@@ -550,13 +551,44 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     catch { throw new HerdrError('cross-machine-recipe-missing', 'The packaged cross-machine records are missing or unreadable'); }
     return { ...selected, crossMachine: selectCrossMachinePatches(records, appVersion) };
   };
-  const desiredKeys = async (selected: LookPatchSet & { crossMachine?: CrossMachineLookRecipe }) => {
+  const optionalPickerLook = async (request: SetupRequest, stagedVersion?: string) => {
+    try { return await releaseLook(request, stagedVersion); }
+    catch (error) {
+      if (error instanceof HerdrError && error.code === 'upstream-version-unavailable') return undefined;
+      throw error;
+    }
+  };
+  const pickerVersionMessage = 'Cross-machine picker was not installed or updated because the app version could not be determined. Existing picker files and bindings are left in place.';
+  const desiredKeys = async (selected: (LookPatchSet & { crossMachine?: CrossMachineLookRecipe }) | undefined) => {
     const keys = JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/keys.json'), 'utf8')) as Record<string, Record<string, KeyBinding>>;
-    if (!selected.crossMachine) {
+    if (!selected?.crossMachine) {
       for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) delete keys.global?.[key];
       delete keys['layout:spider-glass']?.['cmd-shift-w'];
     }
     return keys;
+  };
+  const pickerBinding = (value: unknown): boolean => {
+    if (typeof value === 'string') return value.startsWith('mod.open:spider-machine-picker') || value === 'spider-pane.close';
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const binding = value as { command?: unknown; args?: { name?: unknown } };
+    return typeof binding.command === 'string' && (binding.command.startsWith('mod.open:spider-machine-picker') || binding.command === 'spider-pane.close' || binding.command === 'mod.open' && typeof binding.args?.name === 'string' && binding.args.name.startsWith('spider-machine-picker'));
+  };
+  const unknownPickerKeys = (bytes: Buffer | null, prior: KeySections | undefined): { ignored: KeyFields; retained: KeySections } => {
+    const ignored = new Map<string, Set<string>>();
+    const add = (section: string, key: string) => { const fields = ignored.get(section) ?? new Set<string>(); fields.add(key); ignored.set(section, fields); };
+    add('layout:spider-glass', 'cmd-shift-w');
+    for (const [section, bindings] of Object.entries(prior ?? {})) for (const [key, value] of Object.entries(bindings)) if (pickerBinding(value)) add(section, key);
+    try {
+      const current: unknown = JSON.parse(bytes?.toString('utf8') ?? '{}');
+      if (current && typeof current === 'object' && !Array.isArray(current)) for (const [section, bindings] of Object.entries(current))
+        if (bindings && typeof bindings === 'object' && !Array.isArray(bindings)) for (const [key, value] of Object.entries(bindings)) if (pickerBinding(value)) add(section, key);
+    } catch { /* Key validation reports malformed input. */ }
+    const retained: Record<string, Record<string, KeyBinding>> = {};
+    for (const [section, fields] of ignored) for (const key of fields) {
+      const binding = prior?.[section]?.[key];
+      if (binding !== undefined) (retained[section] ??= {})[key] = binding;
+    }
+    return { ignored: Object.fromEntries([...ignored].map(([section, fields]) => [section, [...fields]])), retained };
   };
   const legacyPickerIssue = (request: SetupRequest, selected: LookPatchSet & { crossMachine?: CrossMachineLookRecipe }, journal: Awaited<ReturnType<typeof readJournal>>, bytes: Buffer | null) => {
     if (selected.crossMachine) return undefined;
@@ -584,9 +616,9 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     const command = [process.execPath, join(packageRoot, 'dist/herdr/cli.mjs'), 'rollback', '--config', request.configPath].map(shellQuote).join(' ');
     return { message: `Unsupported picker state on ${selected.upstreamVersion}: ${stale ? `${stale[0]}.${stale[1]}` : oldFile!.path}`, repair: `Run ${command}, then restore stock bindings or remove any remaining custom picker shortcuts before setup.` };
   };
-  const stagedLook = async (request: SetupRequest, context: SetupContext): Promise<InstallFile[]> => {
+  const stagedLook = async (request: SetupRequest, context: SetupContext, selection?: Awaited<ReturnType<typeof releaseLook>>): Promise<InstallFile[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets');
-    const patches = await releaseLook(request), appVersion = patches.upstreamVersion;
+    const patches = selection ?? await releaseLook(request), appVersion = patches.upstreamVersion;
     if (patches.crossMachine && (!patches.recipe || !patches.mods.menu)) throw new HerdrError('cross-machine-recipe-mismatch', 'Cross-machine setup needs the verified A recipe and menu clone');
     const additional = additionalFor(appVersion);
     const kinds: readonly (keyof HerdrClones)[] = [...lookCloneKinds, ...(patches.mods.menu ? ['menu' as const] : []), ...(patches.crossMachine || additional['new-menu'] ? ['new-menu' as const] : [])];
@@ -709,7 +741,8 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     const files = await readGlobalHerdrTemplateFiles({ globalModelDefaultLayers: () => ({ global: defaults }), modelRegistry: registry, templateDirectory: join(dirname(request.config.core.config), 'templates'), roleTemplateOptions: { piExecutable: 'pi', instructionPaths }, reportWarning: message => process.stderr.write(message + '\n') }, { strict: true });
     return filesFor(files.map(file => ({ path: file.path, bytes: Buffer.from(file.content) })), context);
   };
-  const doctorParts = async (request: SetupRequest): Promise<DoctorParts> => ({ globalRoot, targets: () => targets(request),
+  type FallbackLook = { selection: Awaited<ReturnType<typeof releaseLook>>; files: readonly InstallFile[]; skipped: ReadonlySet<string> };
+  const doctorParts = async (request: SetupRequest, fallback?: FallbackLook): Promise<DoctorParts> => ({ globalRoot, targets: () => targets(request),
     placementRepairInspection: async () => {
       const hc = client(request), identity = await hc.identity();
       const app = createAppClient({ binary: request.config.app.binary, env: appEnv(request) });
@@ -804,7 +837,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       if (item === 'fonts') { const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(packageRoot, 'packages/herdr/assets/fonts'), readFile }); for (const file of fonts.files) if (!(await snapshot(join(request.config.app.home, 'fonts', file.fileName))).bytes?.equals(file.bytes)) return failure('installed-font-mismatch', `Installed font or notice differs: ${file.fileName}`); return { failures: [] }; }
       if (item === 'spaces-tabs') { await preflightSpaces(request.config, spacePorts(request), { adoptExistingSpaces: request.adoptExistingSpaces }); return { failures: [] }; }
       const journal = await readJournal(request.journalRoot);
-      const selected = ['mods', 'clones', 'patch-version', 'layout-theme', 'keys'].includes(item) ? await releaseLook(request) : undefined;
+      const selected = item === 'keys' ? fallback ? undefined : await optionalPickerLook(request) : ['mods', 'clones', 'patch-version', 'layout-theme'].includes(item) ? fallback?.selection ?? await releaseLook(request) : undefined;
       const release = selected?.upstreamVersion;
       const hasToast = await toastAvailable(release, request.config.app.home);
       const context: SetupContext = { labelContract: HerdrLabelContract, installed: Object.fromEntries(journal.entries.map(entry => [entry.path, entry.after])), retiredTerminals: [], priorCutover: journal.cutover, recordCutover: async () => { throw new HerdrError('doctor-read-only', 'Doctor cannot record a cutover'); }, modProps: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(request.config.globalRoot, 'herdr'), cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), nodePath: process.execPath, appBinary: request.config.app.binary, configPath: request.configPath, labelContract: HerdrLabelContract } })) };
@@ -827,28 +860,30 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(packageRoot, 'packages/herdr/assets/fonts'), readFile });
         try { for (const file of await pickerFiles(request, context, fonts.families, auxiliaryModIds(selected))) files.push({ ...file, expected: null }); }
         catch (error) { if (error instanceof HerdrError) return failure(error.code, error.message); throw error; }
-        const staged = selected?.crossMachine || Object.keys(additionalFor(release)).length ? new Map((await stagedLook(request, context)).map(file => [file.path, file])) : new Map<string, InstallFile>();
-        const effectiveFiles = files.map(file => staged.get(file.path) ?? file);
+        const staged = fallback ? new Map(fallback.files.map(file => [file.path, file])) : selected?.crossMachine || Object.keys(additionalFor(release)).length ? new Map((await stagedLook(request, context)).map(file => [file.path, file])) : new Map<string, InstallFile>();
+        const effectiveFiles = files.filter(file => !fallback?.skipped.has(file.path)).map(file => staged.get(file.path) ?? file);
         const result = await compareFiles(effectiveFiles);
         if (result.failures.length) return result;
         const managedRoots = ['spider-picker', ...auxiliaryModIds(selected), ...(toast.length ? ['spider-toast'] : [])].map(name => resolve(request.config.app.home, 'mods', name) + sep);
-        for (const file of files) if (managedRoots.some(root => resolve(file.path).startsWith(root)) && (await snapshot(file.path)).hash !== context.installed[file.path]) {
+        for (const file of files) if (!fallback?.skipped.has(file.path) && managedRoots.some(root => resolve(file.path).startsWith(root)) && (await snapshot(file.path)).hash !== context.installed[file.path]) {
           const notice = installedModMismatchNotice(file.path); return failure('installed-artifact-changed', notice.message, notice.repair);
         }
         return loadingUnavailable(['spider-panel', 'spider-picker', ...auxiliaryModIds(selected), ...(toast.length ? ['spider-toast'] : [])]);
       }
       if (item === 'clones') {
-        const files = (await stagedLook(request, context)).filter(file => /\/mods\/spider-(?:agents|spaces|pane|tabs|chrome|menu|new-menu|picker)\//.test(file.path));
+        const files = (fallback?.files ?? await stagedLook(request, context)).filter(file => /\/mods\/spider-(?:agents|spaces|pane|tabs|chrome|menu|new-menu|picker)\//.test(file.path));
         const result = await compareFiles(files);
         const names = [...new Set(files.map(file => relative(join(request.config.app.home, 'mods'), file.path).split(sep)[0]!))];
         return result.failures.length ? result : loadingUnavailable(names);
       }
       if (item === 'patch-version') {
         const patches = selected!;
-        const expected = await stagedLook(request, context);
+        const expected = fallback?.files ?? await stagedLook(request, context);
         const kinds: readonly LookModKind[] = [...new Set<LookModKind>([...lookCloneKinds, ...(patches.mods.menu ? ['menu' as const] : []), ...(patches.crossMachine ? crossMachineKinds : []), ...Object.keys(additionalFor(release)) as LookModKind[]])];
         for (const kind of kinds) {
-          const directory = join(request.config.app.home, 'mods', kind === 'workspace-chrome' ? 'spider-chrome' : `spider-${kind}`), manifest = JSON.parse(await readFile(join(directory, 'mod.json'), 'utf8'));
+          const directory = join(request.config.app.home, 'mods', kind === 'workspace-chrome' ? 'spider-chrome' : `spider-${kind}`);
+          if (fallback && fallback.skipped.has(join(directory, 'main.js'))) continue;
+          const manifest = JSON.parse(await readFile(join(directory, 'mod.json'), 'utf8'));
           if (manifest.clonedFrom?.name !== kind || manifest.clonedFrom?.version !== patches.upstreamVersion || manifest.patchState?.version !== 1) return failure('upstream-version-mismatch', `Installed ${kind} clone has an unsupported patch or upstream version`);
           const path = join(directory, 'main.js'), source = await readFile(path, 'utf8');
           const staged = expected.find(file => file.path === path);
@@ -872,10 +907,9 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         };
         const installed = contents(layout);
         for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome']) if (!installed.has(`spider-${name}`)) return failure('layout-mod-mismatch', `Installed layout omits spider-${name}`);
-        const expectedFile = (await stagedLook(request, context)).find(file => file.path === path);
+        const expectedFile = (fallback?.files ?? await stagedLook(request, context)).find(file => file.path === path);
         if (!expectedFile) return failure('layout-props-mismatch', 'Cannot determine expected layout props');
         const expected = contents(JSON.parse(expectedFile.bytes.toString('utf8')));
-        const { isDeepStrictEqual } = await import('node:util');
         for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome']) if (!isDeepStrictEqual(installed.get(`spider-${name}`), expected.get(`spider-${name}`))) return failure('layout-props-mismatch', `Installed spider-${name} props differ from the current configuration`);
         if (!(await snapshot(join(request.config.app.home, 'themes/spider-glass.json'))).bytes?.equals(await readFile(join(packageRoot, 'packages/herdr/assets/themes/spider-glass.json')))) return failure('app-theme-mismatch', 'Installed Herdr theme differs');
         const settings = JSON.parse((await snapshot(join(request.config.app.home, 'settings.json'))).bytes?.toString() ?? '{}');
@@ -888,11 +922,14 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         return { failures: [], information };
       }
       if (item === 'keys') {
-        const issue = legacyPickerIssue(request, selected!, journal, (await snapshot(join(request.config.app.home, 'keys.json'))).bytes);
+        const keyBytes = (await snapshot(join(request.config.app.home, 'keys.json'))).bytes;
+        const issue = selected && legacyPickerIssue(request, selected, journal, keyBytes);
         if (issue) return failure('legacy-picker-binding', issue.message, issue.repair);
-        const desired = await desiredKeys(selected!);
-        const keyReport = checkManagedKeyBindings((await snapshot(join(request.config.app.home, 'keys.json'))).bytes, desired);
-        if (keyReport.failures.length) return keyReport;
+        const desired = await desiredKeys(selected);
+        const pickerWarnings: DoctorFailure[] = selected ? [] : [{ item, code: 'picker-version-unavailable', message: pickerVersionMessage, repair: 'Make the app version available, then rerun setup and doctor.' }];
+        const ignoredKeys = selected ? undefined : unknownPickerKeys(keyBytes, journal.entries.find(entry => entry.path === join(request.config.app.home, 'keys.json'))?.keys).ignored;
+        const keyReport = checkManagedKeyBindings(keyBytes, desired, { ignoredKeys });
+        if (keyReport.failures.length) return { ...keyReport, warnings: [...keyReport.warnings, ...pickerWarnings] };
         const nativeFailures: DoctorFailure[] = [], nativeWarnings: DoctorFailure[] = [];
         try {
           const reply = await invokeAppCli(request.config.app.binary, ['commands'], appEnv(request), undefined, undefined, { timeoutMs: 5000 }) as { commands?: unknown };
@@ -916,7 +953,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const resolved = KeybindingsManager.create(request.config.agentDirectory).getResolvedBindings();
         const bindings = Object.fromEntries(Object.entries(resolved).filter((entry): entry is [string, string | string[]] => entry[1] !== undefined).map(([action, keys]) => [action, typeof keys === 'string' ? normalize(keys) : keys.map(normalize)]));
         const collisions = inspectHerdrShortcutCollisions(bindings);
-        return { failures: [...nativeFailures, ...collisions.filter(c => c.scope === 'editor').map(c => ({ item, code: 'pi-shortcut-collision', message: `${c.key} also binds ${c.action}`, repair: 'Choose another pi keybinding and reload the owner.' }))], warnings: [...keyReport.warnings, ...nativeWarnings, ...collisions.filter(c => c.scope === 'tree').map(c => ({ item, code: 'tree-view-key-collision', message: `${c.key} also binds ${c.action} in tree view`, repair: 'Leave tree view before using the spider shortcut, or change that pi binding.' }))] };
+        return { failures: [...nativeFailures, ...collisions.filter(c => c.scope === 'editor').map(c => ({ item, code: 'pi-shortcut-collision', message: `${c.key} also binds ${c.action}`, repair: 'Choose another pi keybinding and reload the owner.' }))], warnings: [...keyReport.warnings, ...pickerWarnings, ...nativeWarnings, ...collisions.filter(c => c.scope === 'tree').map(c => ({ item, code: 'tree-view-key-collision', message: `${c.key} also binds ${c.action} in tree view`, repair: 'Leave tree view before using the spider shortcut, or change that pi binding.' }))] };
       }
       if (item === 'roles') {
         try { return await compareFiles(await templates(request, context)); }
@@ -1040,6 +1077,8 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       let preparedSpaces: SpaceSetupPorts | undefined;
       const getSpaces = () => preparedSpaces ??= spacePorts(request);
       let runtimes: readonly RuntimeFile[] = [];
+      const stagedVersions = new WeakMap<SetupContext, Awaited<ReturnType<typeof releaseLook>>>();
+      let fallbackContext: SetupContext | undefined, fallbackLook: FallbackLook | undefined;
       // Root probes made during this setup run. Verification reuses them instead of launching another per machine.
       const rootProbes = new Map<string, string>(), rootKey = (launch: HcRunRequest) => JSON.stringify([launch.on, launch.argv]);
       const probeRoot = async (launch: HcRunRequest) => { const output = await probe(request, launch); rootProbes.set(rootKey(launch), output); return output; };
@@ -1101,18 +1140,54 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           if (Object.keys(additionalFor(release)).length) patchInputs.push(Buffer.from(JSON.stringify(additionalFor(release))));
           return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, cutoverActions: await planSpaceCutover(request.config, spaces, { snapshot: layoutSnapshot, recovery }), fingerprint: digest(Buffer.concat(patchInputs)), coreIdentity: identity, mods: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
         },
-        stageLook: (request, context) => stagedLook(request, context),
+        stageLook: async (request, context) => {
+          stagedVersions.delete(context); fallbackContext = undefined; fallbackLook = undefined;
+          const selected = await releaseLook(request);
+          const files = await stagedLook(request, context, selected);
+          stagedVersions.set(context, selected);
+          return files;
+        },
+        finalizeLook: async (request, context, staged) => {
+          if (fallbackContext !== context) return staged;
+          const original = stagedVersions.get(context)!;
+          const selection = { ...original, crossMachine: undefined };
+          const pickerNames: ReadonlySet<string> = new Set(PANE_ENTRY_MODS.filter(name => name !== 'spider-pane-waiting'));
+          const aContext = { ...context, modProps: context.modProps.filter(copy => !pickerNames.has(copy.props.modId) && (copy.props.modId !== 'spider-new-menu' || !!additionalFor(selection.upstreamVersion)['new-menu'])) };
+          const files = await stagedLook(request, aContext, selection), mods = join(request.config.app.home, 'mods');
+          const preservedRoots: string[] = [], preservedFiles = new Set<string>();
+          if (original.crossMachine) for (const kind of crossMachineKinds) {
+            const root = join(mods, `spider-${kind}`);
+            let preserveRoot = false;
+            for (const name of ['main.js', 'mod.json']) {
+              const path = join(root, name), current = (await snapshot(path)).bytes, expected = files.find(file => file.path === path);
+              if (current && expected && !current.equals(expected.bytes)) preserveRoot = true;
+              else if (current && !expected) preservedFiles.add(resolve(path));
+            }
+            if (preserveRoot) preservedRoots.push(resolve(root) + sep);
+            else for (const name of ['actions.js', 'machine.js', 'machines/actions.js']) if ((await snapshot(join(root, name))).bytes !== null) preservedFiles.add(resolve(root, name));
+          }
+          const skipped = new Set(files.filter(file => {
+            const path = resolve(file.path), relativePath = relative(mods, path).split(sep).join('/');
+            return preservedRoots.some(root => path.startsWith(root)) || preservedFiles.has(path) || /^spider-(?:pane|tabs|menu|new-menu)\/machines\/actions\.js$/.test(relativePath) || /^spider-menu\/(?:actions|machine)\.js$/.test(relativePath);
+          }).map(file => file.path));
+          fallbackLook = { selection, files: files.filter(file => !skipped.has(file.path)), skipped };
+          return fallbackLook.files;
+        },
         installFiles: async (request, context) => {
           const assets = join(packageRoot, 'packages/herdr/assets'), files: { path: string; bytes: Buffer; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[] = [];
           for (const file of await assetFiles(join(assets, 'mods/spider'))) files.push({ path: join(request.config.app.home, 'mods/spider-panel', file.relative), bytes: file.bytes });
           files.push({ path: join(request.config.agentDirectory, 'themes/dracula-plus-glass.json'), bytes: await readFile(join(assets, 'themes/dracula-plus-glass.json')) }, { path: join(request.config.app.home, 'themes/spider-glass.json'), bytes: await readFile(join(assets, 'themes/spider-glass.json')) });
-          const selected = await releaseLook(request);
+          const stagedVersion = stagedVersions.get(context);
+          const selected = request.nativeKeys === 'accept' && !stagedVersion ? await releaseLook(request) : await optionalPickerLook(request, stagedVersion?.upstreamVersion);
+          if (!selected) { if (stagedVersion) fallbackContext = context; process.stderr.write(pickerVersionMessage + '\n'); }
           const keys = await desiredKeys(selected);
           const keyPath = join(request.config.app.home, 'keys.json'), currentKeys = await snapshot(keyPath);
-          if (request.nativeKeys === 'accept') {
+          if (request.nativeKeys === 'accept' && selected) {
             const offered = pendingNativeKeys(selected.upstreamVersion, currentKeys.bytes);
             for (const [section, bindings] of Object.entries(offered)) Object.assign(keys[section] ??= {}, bindings);
           }
+          const preserved = selected ? undefined : unknownPickerKeys(currentKeys.bytes, (await readJournal(request.journalRoot)).entries.find(entry => entry.path === keyPath)?.keys);
+          for (const [section, fields] of Object.entries(preserved?.ignored ?? {})) for (const key of fields) delete keys[section]?.[key];
           const settingsPath = join(request.config.app.home, 'settings.json'), settings = await snapshot(settingsPath);
           let parsed: unknown;
           try { parsed = JSON.parse(settings.bytes?.toString('utf8') ?? '{}'); } catch { throw new HerdrError('invalid-app-settings', 'App settings must be a JSON object'); }
@@ -1122,7 +1197,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           const sounds = (rawSounds ?? {}) as Record<string, unknown>;
           if (sounds.enabled !== undefined && typeof sounds.enabled !== 'boolean') throw new HerdrError('invalid-app-settings', 'App settings sounds.enabled must be boolean');
           const bytes = Buffer.from(JSON.stringify({ ...appSettings, sounds: { ...sounds, enabled: false } }, null, 2) + '\n');
-          return [...await filesFor(orderModFiles(files, request.config.app.home), context), { path: keyPath, expected: currentKeys.hash, bytes: Buffer.alloc(0), keys, collision: 'key' as const }, { path: settingsPath, expected: settings.hash, bytes, updateAfterCutover: true, managed: { kind: 'json-paths' as const, paths: ['theme', 'layout', 'sounds.enabled'] } }];
+          return [...await filesFor(orderModFiles(files, request.config.app.home), context), { path: keyPath, expected: currentKeys.hash, bytes: Buffer.alloc(0), keys, retainedKeys: preserved?.retained, ignoredKeys: preserved?.ignored, collision: 'key' as const }, { path: settingsPath, expected: settings.hash, bytes, updateAfterCutover: true, managed: { kind: 'json-paths' as const, paths: ['theme', 'layout', 'sounds.enabled'] } }];
         }, generateTemplates: (request, context) => templates(request, context),
         installResume: async (request, context) => {
           const hookPath = join(request.config.globalRoot, 'herdr/resume.sh'), current = await snapshot(request.config.shellRc);
@@ -1180,7 +1255,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           if (!result) throw new HerdrError('cutover-reconciliation-required', 'No confirmed session owners remain');
           return { terminals: result.tabs.map(tab => tab.terminal), identities: Object.fromEntries(result.launched.map(owner => [owner.sessionId, owner.startIdentity])) };
         },
-        verify: async request => doctorHerdr(request, { ...await doctorParts(request), probeRuntimeRoot: async (_target, launch) => rootProbes.get(rootKey(launch)) ?? probe(request, launch), cachedNodeObservations: async () => (await readJournal(request.journalRoot)).probes }),
+        verify: async request => doctorHerdr(request, { ...await doctorParts(request, fallbackLook), probeRuntimeRoot: async (_target, launch) => rootProbes.get(rootKey(launch)) ?? probe(request, launch), cachedNodeObservations: async () => (await readJournal(request.journalRoot)).probes }),
         rollback: async result => {
           const spaces = getSpaces();
           const recovery = await readCutoverRecovery(spaces.journalRoot, await spaces.layoutSnapshot());

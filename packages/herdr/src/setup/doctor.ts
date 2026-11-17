@@ -6,7 +6,7 @@ import { readAppPaneCapabilities } from '../panes/capabilities.js';
 import { paneAddress, paneId, paneText } from '../panes/codec.js';
 import { readPrivateJson } from '../sessions/registry.js';
 import { runtimeInstallPath, type ProbeTarget, type NodeObservation, type SetupRequest } from './installer.js';
-import { snapshot, rootNotesValue, readJournal, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeySections } from './backup.js';
+import { snapshot, rootNotesValue, readJournal, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyFields, type KeySections } from './backup.js';
 import { isDeepStrictEqual } from 'node:util';
 import { access, lstat, opendir } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -30,7 +30,7 @@ export interface DoctorReport {
   probes: readonly NodeObservation[];
   passed?: number;
 }
-export function checkManagedKeyBindings(bytes: Buffer | null, desired: KeySections): { failures: DoctorFailure[]; warnings: DoctorFailure[] } {
+export function checkManagedKeyBindings(bytes: Buffer | null, desired: KeySections, options: { ignoredKeys?: KeyFields } = {}): { failures: DoctorFailure[]; warnings: DoctorFailure[] } {
   if (bytes === null) return { failures: [{ item: 'keys', code: 'keys-defaults-missing', message: missingKeyMapMessage, repair: missingKeyMapMessage }], warnings: [] };
   const failures: DoctorFailure[] = [], warnings: DoctorFailure[] = [];
   const issue = (message: string): DoctorFailure => ({ item: 'keys', code: 'key-binding-conflict', message, repair: 'Repair the conflicting key and rerun setup and doctor.' });
@@ -47,14 +47,14 @@ export function checkManagedKeyBindings(bytes: Buffer | null, desired: KeySectio
     for (const [name, bindings] of Object.entries(desired)) {
       const actual = section(name);
       for (const [key, value] of Object.entries(bindings))
-        if (!isDeepStrictEqual(actual[key], value)) failures.push(issue(`Managed key differs: ${name}.${key}`));
+        if (!options.ignoredKeys?.[name]?.includes(key) && !isDeepStrictEqual(actual[key], value)) failures.push(issue(`Managed key differs: ${name}.${key}`));
     }
     if (desired['layout:spider-glass']?.['cmd-shift-e'] !== undefined) {
       const global = section('global'), terminal = section('terminal'), layout = section('layout:spider-glass');
       for (const [name, values] of [['global', global], ['terminal', terminal]] as const)
-        if (values['cmd-shift-e'] !== undefined) failures.push(issue(`Competing key: ${name}.cmd-shift-e`));
+        if (!options.ignoredKeys?.[name]?.includes('cmd-shift-e') && values['cmd-shift-e'] !== undefined) failures.push(issue(`Competing key: ${name}.cmd-shift-e`));
       for (const [name, values] of [['global', global], ['terminal', terminal], ['layout:spider-glass', layout]] as const)
-        if (values['cmd-shift-w'] !== undefined && values['cmd-shift-w'] !== 'pane.close' && !(name === 'layout:spider-glass' && desired[name]?.['cmd-shift-w'] === 'spider-pane.close' && values['cmd-shift-w'] === 'spider-pane.close')) failures.push(issue(`Pane close differs: ${name}.cmd-shift-w`));
+        if (!options.ignoredKeys?.[name]?.includes('cmd-shift-w') && values['cmd-shift-w'] !== undefined && values['cmd-shift-w'] !== 'pane.close' && !(name === 'layout:spider-glass' && desired[name]?.['cmd-shift-w'] === 'spider-pane.close' && values['cmd-shift-w'] === 'spider-pane.close')) failures.push(issue(`Pane close differs: ${name}.cmd-shift-w`));
       if (global['cmd-shift-w'] === undefined) warnings.push({ item: 'keys', code: 'inspection-unavailable', message: 'The effective global.cmd-shift-w default is not recorded in keys.json', repair: 'Check the active app key binding before relying on pane close.' });
     }
   } catch (error) {

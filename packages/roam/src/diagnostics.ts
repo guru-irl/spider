@@ -258,6 +258,7 @@ export function readStatus(config: RoamConfig, ports: StatusPorts): RoamStatus {
     return { machineId: peer.machineId, alias: peer.alias, connected: observation?.connected ?? null,
       lastSyncAt: observation?.lastSyncAt ?? null, observationAgeMs, backlog, failure: observation?.failure ?? null };
   });
+  const diagnostics: Diagnostic[] = [];
   let sourceCleanups: RoamStatus['sourceCleanups'] = ports.journalAvailable === false ? null : [];
   let incompleteOperations: RoamStatus["incompleteOperations"] = ports.journalAvailable === false ? null : [];
   if (ports.journalDb) try {
@@ -265,19 +266,25 @@ export function readStatus(config: RoamConfig, ports: StatusPorts): RoamStatus {
       "SELECT operation_id,machine_id,kind,expected_epoch FROM roam_operations WHERE result_json IS NULL ORDER BY operation_id",
     ).all() as { operation_id: string; machine_id: string; kind: string; expected_epoch: number | null }[])
       .map(row => ({ id: row.operation_id, machineId: row.machine_id, kind: row.kind, expectedEpoch: row.expected_epoch }));
+  } catch { incompleteOperations = null; }
+  if (ports.journalDb) try {
     const seen = new Set<string>();
     for (const item of ports.journalDb.prepare(`SELECT a.result_json FROM roam_operation_actions a JOIN roam_operations o ON o.operation_id=a.operation_id
       WHERE o.kind='move' AND o.result_json IS NULL AND a.action='move-source-cleanup-pending' ORDER BY a.seq DESC`).all() as { result_json: string }[]) {
-      const row = JSON.parse(item.result_json), sourceCleanup = parseSourceCleanup(row.sourceCleanup);
-      if (typeof row.sessionId !== 'string' || typeof row.sourceMachine !== 'string') throw new Error('Invalid source cleanup identity');
-      if (sourceCleanup.status === 'pending' && !seen.has(row.sessionId)) {
-        seen.add(row.sessionId); sourceCleanups?.push({ sessionId: row.sessionId, sourceMachine: row.sourceMachine, sourceCleanup });
+      try {
+        const row = JSON.parse(item.result_json), sourceCleanup = parseSourceCleanup(row.sourceCleanup);
+        if (typeof row.sessionId !== 'string' || typeof row.sourceMachine !== 'string') throw new Error('Invalid source cleanup identity');
+        if (sourceCleanup.status === 'pending' && !seen.has(row.sessionId)) {
+          seen.add(row.sessionId); sourceCleanups?.push({ sessionId: row.sessionId, sourceMachine: row.sourceMachine, sourceCleanup });
+        }
+      } catch {
+        if (!diagnostics.length) diagnostics.push({ severity: "warning", reason: "Source cleanup evidence is invalid.", repairCommand: null });
       }
     }
-  } catch { incompleteOperations = null; sourceCleanups = null; }
+  } catch { sourceCleanups = null; }
   const available = ports.globalDb !== null;
-  return { enabled: config.enabled, cached: true, available, complete: available && ports.inventoryComplete !== false && incompleteOperations !== null,
-    homes, homeConflicts, stores, peers, warnings, suspensions, incompleteOperations, sourceCleanups, diagnostics: [] };
+  return { enabled: config.enabled, cached: true, available, complete: available && ports.inventoryComplete !== false && incompleteOperations !== null && sourceCleanups !== null && diagnostics.length === 0,
+    homes, homeConflicts, stores, peers, warnings, suspensions, incompleteOperations, sourceCleanups, diagnostics };
 }
 
 /** Refuse before any enable effect if a live consumer or writer is incompatible. */

@@ -157,6 +157,23 @@ it('claims automatic resume once per terminal and proved core start, pruning old
   expect(await offerResume(terminal, auto(20))).toBeNull();
 });
 
+it('pruning a terminal removes its marker folder and a delayed offer cannot recreate it', async () => {
+  const auto = { ...ports(), autoResumeRoot: root };
+  expect(await offerResume(terminal, auto)).not.toBeNull();
+  const markerRoot = join(root, 'resume-starts');
+  const [key] = await readdir(markerRoot);
+  let release!: () => void, observed!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { observed = resolve; });
+  const delayed = offerResume(terminal, { ...auto, coreStartedAt: async () => { observed(); await gate; return 30; } });
+  await started;
+  try {
+    await auto.registry.remove(terminal, true);
+  } finally { release(); }
+  expect(await delayed).toBeNull();
+  expect(existsSync(join(markerRoot, key))).toBe(false);
+});
+
 it('simultaneous automatic claims are exclusive per terminal, not per session', async () => {
   const auto = { ...ports(), autoResumeRoot: root };
   const other = { ...terminal, terminalId: 't2', address: 't2' } as TerminalIdentity;

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { chmod, mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { expect, test } from 'vitest';
 import { createAppClient } from '../client/app.js';
@@ -380,9 +380,10 @@ test('an exhausted legacy claim stays exhausted across placement instances', asy
 test('refuses a nonprivate state directory before writing lock files', async () => {
   const h = await fixture();
   try {
+    const locks = join(h.stateRoot, 'locks'), before = await readdir(locks);
     await chmod(h.stateRoot, 0o755);
     await expect(rememberRoamSlot(h.stateRoot, 'session-1', slot)).rejects.toMatchObject({ code: 'unsafe-state-path' });
-    expect(await readdir(h.stateRoot)).not.toContain('locks');
+    expect(await readdir(locks)).toEqual(before);
   } finally { await h.close(); }
 }, 5000);
 
@@ -390,10 +391,10 @@ test('refuses a nonprivate state directory before writing lock files', async () 
 test('refuses a nonprivate existing lock directory before writing into it', async () => {
   const h = await fixture();
   try {
-    const locks = join(h.stateRoot, 'locks');
-    await mkdir(locks, { mode: 0o700 }); await chmod(locks, 0o755);
+    const locks = join(h.stateRoot, 'locks'), before = await readdir(locks);
+    await chmod(locks, 0o755);
     await expect(rememberRoamSlot(h.stateRoot, 'session-1', slot)).rejects.toMatchObject({ code: 'unsafe-state-path' });
-    expect(await readdir(locks)).toEqual([]);
+    expect(await readdir(locks)).toEqual(before);
   } finally { await h.close(); }
 }, 5000);
 

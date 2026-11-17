@@ -41,7 +41,7 @@ async function fakeCli(mode: 'offer' | 'auto' = 'offer') {
   await writeFile(options.cliPath, `import {appendFileSync} from 'node:fs';\nconst a=process.argv.slice(2); if(a[0]==='resume-offer') process.stdout.write(${JSON.stringify(source)}); else appendFileSync(${JSON.stringify(join(root, 'launches.jsonl'))},JSON.stringify({cwd:process.cwd(),argv:a,postRc:process.env.POST_RC})+'\\n');`);
   await writeFile(join(root, 'launches.jsonl'), '');
 }
-it.each(['/bin/bash', '/bin/zsh'])('the first %s prompts preserve the live marker inherited after reboot', async binary => {
+it.each(['/bin/bash', '/bin/zsh'].filter(existsSync))('the first %s prompts preserve the live marker inherited after reboot', async binary => {
   if (!existsSync(binary)) return;
   const registry = createTerminalRegistry(root);
   await registry.record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 2147483647, startIdentity: 'old' });
@@ -84,7 +84,7 @@ it('a restored shell offers the exact session without auto-running it', async ()
   expect(call.cwd).toBe(owner.cwd); expect(call.argv).toEqual(['resume', '--config', options.configPath, '--file', file, '--session-id', 's1', '--cwd', root]);
   expect(await offerResume(terminal, ports())).toMatchObject({ argv: ['pi', '--session', file], cwd: root, name: owner.name });
 });
-it.each(['/bin/bash', '/bin/zsh'])('auto starts at the first %s prompt after the rc file and runs once', async binary => {
+it.each(['/bin/bash', '/bin/zsh'].filter(existsSync))('auto starts at the first %s prompt after the rc file and runs once', async binary => {
   if (!existsSync(binary)) return;
   await fakeCli('auto');
   const rc = join(root, binary.endsWith('zsh') ? '.zshrc' : 'bashrc');

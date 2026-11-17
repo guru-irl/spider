@@ -118,6 +118,8 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   const observers = new Map<JobId, JobObserver>();
   const discovered = new Map<JobId, TerminalAddress>();
   const lostOriginals = new Set<TerminalAddress>(), finishedOriginals = new Set<TerminalAddress>();
+  const prunedJobs = new WeakSet<JournalJob>();
+  const activeReleases = new Map<TerminalAddress, number>();
   const holds = new Map<JobId, ReturnType<typeof setTimeout>>();
   const report = (error: unknown) => {
     // The owning host announces core loss and turns routing inactive once.
@@ -156,6 +158,11 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   const sameOwner = (other: Owner) => owner !== null && other.sessionId === owner.sessionId && other.generation === owner.generation && other.terminal.coreId === owner.terminal.coreId && other.terminal.terminalId === owner.terminal.terminalId && other.terminal.socket === owner.terminal.socket;
   const hasExitData = (finish: TerminalFinish) => finish.exitCode !== null || finish.signal !== null;
   const addressOf = (job: JobRecord): TerminalAddress | null => 'address' in job.phase ? job.phase.address : null;
+  function forgetOriginalIfUnused(address: TerminalAddress): void {
+    if (!activeReleases.has(address) && !journal.jobs.some(job => addressOf(job) === address || discovered.get(job.id) === address)) {
+      lostOriginals.delete(address); finishedOriginals.delete(address);
+    }
+  }
   const liveOriginal = (job: JournalJob): TerminalAddress | null => { const address = addressOf(job); return address && !job.uncertain && !job.originalFinish && job.phase.kind !== 'finished' && !lostOriginals.has(address) && !finishedOriginals.has(address) ? address : null; };
   async function release(job: JournalJob): Promise<void> {
     const hold = holds.get(job.id); if (hold) { clearTimeout(hold); holds.delete(job.id); }
@@ -225,31 +232,38 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
   }
   async function releaseSettledTerminal(job: JournalJob, save: () => Promise<void>): Promise<void> {
     if (job.terminalReleased || releaseSkipped.has(job.id) || job.phase.kind !== 'finished' || !job.output?.complete || job.evidenceConflict) return;
-    if (!job.settledMarked) {
-      const marker = Buffer.from(JSON.stringify({ version: 1, jobId: job.id, nonce: job.nonce, finishedAt: job.phase.result.finishedAt }));
-      await cleanupCall(() => options.hc.fileWrite(job.machine, join(job.remoteDirectory, '.spider-settled'), marker, cleanupOptions()));
-      if (lifetime.signal.aborted) return;
-      job.settledMarked = true; await save();
-    }
-    if (job.notice !== 'observed' || holds.has(job.id)) return;
     const address = job.phase.address;
-    const matches = (terminal: TerminalSummary) => terminal.state === 'finished' && !lostOriginals.has(address) && observeJobIdentity(job, address, terminal).kind === 'matched';
-    const skip = async () => { releaseSkipped.add(job.id); if (job.cleanupFailure) { delete job.cleanupFailure; await save(); } };
+    activeReleases.set(address, (activeReleases.get(address) ?? 0) + 1);
     try {
-      const terminal = await cleanupCall(() => options.hc.get(address, cleanupOptions()));
-      if (!matches(terminal)) { await skip(); return; }
-      if (lifetime.signal.aborted) return;
-      await cleanupCall(() => release(job));
-      if (lifetime.signal.aborted) return;
-      // hc cannot bind this identity check atomically to removal; the terminal may change between them.
-      const current = await cleanupCall(() => options.hc.get(address, cleanupOptions()));
-      if (!matches(current)) { await skip(); return; }
-      await cleanupCall(() => options.hc.rm(address, cleanupOptions()));
-    } catch (error) {
-      if (!(error && typeof error === 'object' && 'code' in error && error.code === 'not_found')) throw error;
-      await confirmMissing(address, false, job.machine);
+      if (!job.settledMarked) {
+        const marker = Buffer.from(JSON.stringify({ version: 1, jobId: job.id, nonce: job.nonce, finishedAt: job.phase.result.finishedAt }));
+        await cleanupCall(() => options.hc.fileWrite(job.machine, join(job.remoteDirectory, '.spider-settled'), marker, cleanupOptions()));
+        if (lifetime.signal.aborted) return;
+        job.settledMarked = true; await save();
+      }
+      if (job.notice !== 'observed' || holds.has(job.id)) return;
+      const matches = (terminal: TerminalSummary) => terminal.state === 'finished' && !lostOriginals.has(address) && observeJobIdentity(job, address, terminal).kind === 'matched';
+      const skip = async () => { if (!prunedJobs.has(job)) releaseSkipped.add(job.id); if (job.cleanupFailure) { delete job.cleanupFailure; await save(); } };
+      try {
+        const terminal = await cleanupCall(() => options.hc.get(address, cleanupOptions()));
+        if (!matches(terminal)) { await skip(); return; }
+        if (lifetime.signal.aborted) return;
+        await cleanupCall(() => release(job));
+        if (lifetime.signal.aborted) return;
+        // hc cannot bind this identity check atomically to removal; the terminal may change between them.
+        const current = await cleanupCall(() => options.hc.get(address, cleanupOptions()));
+        if (!matches(current)) { await skip(); return; }
+        await cleanupCall(() => options.hc.rm(address, cleanupOptions()));
+      } catch (error) {
+        if (!(error && typeof error === 'object' && 'code' in error && error.code === 'not_found')) throw error;
+        await confirmMissing(address, false, job.machine);
+      }
+      if (!lifetime.signal.aborted) { job.terminalReleased = true; job.updatedAt = options.clock(); delete job.cleanupFailure; await save(); }
+    } finally {
+      const remaining = activeReleases.get(address)! - 1;
+      if (remaining) activeReleases.set(address, remaining); else activeReleases.delete(address);
+      forgetOriginalIfUnused(address);
     }
-    if (!lifetime.signal.aborted) { job.terminalReleased = true; job.updatedAt = options.clock(); delete job.cleanupFailure; await save(); }
   }
   const releaseKey = (job: JournalJob) => `${job.owner.sessionId}/${job.runId ?? ''}/${job.id}`;
   const failedCleanupKey = (job: JournalJob) => `${releaseKey(job)}/failed`;
@@ -352,8 +366,9 @@ export function createJobMonitor(options: JobMonitorOptions, sharedCleanup?: Cle
     prunedLogs.set(job.id, task); return task;
   }
   function forgetPrunedJob(job: JournalJob): void {
-    for (const address of [addressOf(job), discovered.get(job.id)]) if (address) { lostOriginals.delete(address); finishedOriginals.delete(address); }
+    prunedJobs.add(job);
     journal.jobs = journal.jobs.filter(value => value.id !== job.id);
+    for (const address of [addressOf(job), discovered.get(job.id)]) if (address) forgetOriginalIfUnused(address);
     cleanup.cancel(releaseKey(job)); cleanup.cancel(`${releaseKey(job)}/prune`); cleanup.cancel(failedCleanupKey(job)); cleanup.cancel(failedTerminalKey(job));
     cleanupKeys.delete(releaseKey(job)); cleanupKeys.delete(`${releaseKey(job)}/prune`); cleanupKeys.delete(failedCleanupKey(job)); cleanupKeys.delete(failedTerminalKey(job));
     prunedLogs.delete(job.id); pruneFailures.delete(job.id);

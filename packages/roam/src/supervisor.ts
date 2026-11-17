@@ -54,6 +54,7 @@ export interface SupervisorPorts {
   launch(request: SupervisorLaunch): Promise<Outcome<HubOperationReadiness>>;
   stop(sessionId: string): Promise<Probe>;
   cancelStop?(sessionId: string): void;
+  restart?(intent: HostIntent, previous: IntentState["supervision"]): Promise<void>;
   notify(sessionId: string, reason: string): Promise<void>;
 }
 
@@ -69,7 +70,7 @@ export function createDurableLaunchPort(input: {
   intents: IntentStore;
   authorize(intent: HostIntent): Promise<boolean>;
   invoke(request: { intent: HostIntent; mode: "initial" | "reconcile"; reservation: LaunchReservation }): Promise<Outcome<HubOperationReadiness>>;
-  operationId?: () => string;
+  operationId?: (intent: HostIntent) => string;
 }): SupervisorPorts["launch"] {
   const result = (intent: HostIntent, reason: string, operationId = ""): Outcome<HubOperationReadiness> =>
     ({ code: 2, reason, operationId, home: null, epoch: intent.epoch, repairCommand: null, value: null });
@@ -82,7 +83,7 @@ export function createDurableLaunchPort(input: {
       if (row.value.supervision.kind !== "idle" || !sameIntent(row.value.intent, intent) || intent.desired !== "running" || intent.suspended !== null) {
         return result(intent, "launch-intent-stale");
       }
-      const operationId = (input.operationId ?? randomUUID)();
+      const operationId = input.operationId ? input.operationId(intent) : randomUUID();
       if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operationId)) throw new Error("Invalid launch operation ID");
       const reserved: IntentState = { ...row.value, supervision: { kind: "launching", operationId, phase: "reserved" } };
       if ((await input.intents.update(intent.sessionId, row.version, reserved)).kind !== "updated") return result(intent, "launch-intent-stale", operationId);
@@ -149,6 +150,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
     } else {
       const delay = [5_000, 15_000, 60_000, 300_000][failures.length - 1];
       const nextAttemptAt = now + delay;
+      await ports.restart?.(state.intent, state.supervision);
       if (await save(id, current, { ...state, failures, supervision: { kind: "idle", nextAttemptAt } })) retryAt(id, nextAttemptAt);
     }
   }

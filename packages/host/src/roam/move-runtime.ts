@@ -150,9 +150,9 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
     if (boxWake) return boxWake(request);
     const { sessionId, operationId: participantOperationId } = request;
     const intent = await authority.get(sessionId), home = localHome(sessionId);
-    const operationId = participantLaunchId(config.machineId, sessionId, participantOperationId);
     if (!intent || authority.operationId(sessionId) !== participantOperationId || intent.desired !== "running" || intent.suspended || !home || home.machineId !== config.machineId || home.epoch !== intent.epoch)
       return { ok: false, reason: "participant-intent-unavailable" };
+    const operationId = participantLaunchId(config.machineId, sessionId, intent.epoch, participantOperationId);
     if (journal.lookupOperation?.(operationId)) return { ok: true, launchId: operationId };
     const herdr = loadHerdrConfig(root), hc = createProductionLocalExactHc({ binary: herdr.core.binary, env: process.env, probe: inventory.probe });
     try {

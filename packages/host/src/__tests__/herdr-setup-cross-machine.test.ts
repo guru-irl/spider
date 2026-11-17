@@ -151,6 +151,30 @@ test.each(['0.1.13', '0.1.16'] as const)('a lost version after staging preserves
   await expect(stat(join(home, 'mods/spider-machine-picker'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
+test('a lost version updates independent keys without rebinding an installed picker', async () => {
+  const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  await setupHerdr(f.request, f.parts);
+  const keyPath = join(home, 'keys.json'), before = JSON.parse(await readFile(keyPath, 'utf8'));
+  const oldJournal = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)!;
+  const keysAsset = join(f.root, 'packages/herdr/assets/keys.json'), desired = JSON.parse(await readFile(keysAsset, 'utf8'));
+  desired.terminal['cmd-shift-a'] = 'send:\u001b[99;6u'; await writeFile(keysAsset, JSON.stringify(desired));
+  const stage = f.parts.stageLook;
+  f.parts.stageLook = async (...args) => {
+    const files = await stage(...args);
+    await writeFile(app, (await readFile(app, 'utf8')).replace("console.log('herdr-app 0.1.13')", 'process.exit(1)'));
+    return files;
+  };
+  const result = await setupHerdr(f.request, f.parts);
+  expect(result.doctor.failures).toEqual([]);
+  const after = JSON.parse(await readFile(keyPath, 'utf8'));
+  expect(after.terminal['cmd-shift-a']).toBe('send:\u001b[99;6u');
+  for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) expect(after.global[key]).toEqual(before.global[key]);
+  expect(after['layout:spider-glass']['cmd-shift-w']).toEqual(before['layout:spider-glass']['cmd-shift-w']);
+  const newJournal = (await readJournal(f.request.journalRoot)).entries.find(entry => entry.path === keyPath)!;
+  for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) expect(newJournal.keysBefore?.global[key]).toEqual(oldJournal.keysBefore?.global[key]);
+  expect(newJournal.keysBefore?.['layout:spider-glass']['cmd-shift-w']).toEqual(oldJournal.keysBefore?.['layout:spider-glass']['cmd-shift-w']);
+});
+
 test('a lost version preserves a lone picker helper and still installs the A pane', async () => {
   const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
   const helper = join(home, 'mods/spider-pane/machine.js');

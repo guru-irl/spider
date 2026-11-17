@@ -61,7 +61,7 @@ export async function storyPresentation(suite: Suite, machines: readonly MoveMac
     const target = parsePaneTarget({ coreId, terminalId: event.hcTerminal, address: `${coreId}/${event.hcTerminal}`, createdMs: facts.createdMs,
       identityLabels: facts.identityLabels, alias: machine.id === HUB ? null : machine.alias, machineId: machine.id,
       kind: 'session', sessionId, generation: feed.owner.generation, homeEpoch: epoch, runId: null, consoleId: null, name: feed.owner.name ?? 'Move fixture', cwd: machine.cwd });
-    observedTargets.set(target.terminalId, target);
+    observedTargets.set(target.address, target);
     return target;
   };
   const app = {
@@ -106,7 +106,7 @@ export async function storyPresentation(suite: Suite, machines: readonly MoveMac
     },
     findProxy: async p => proxies.get(p.id) ?? null, findTargetLaunch: async () => null, agentArgv: async () => [],
     readNativeTarget: async address => {
-      const target = observedTargets.get(address.split('/').at(-1)!);
+      const target = observedTargets.get(address.includes('/') ? address : `${hub.coreId}/${address}`);
       if (!target) throw Error('native target was never captured');
       const raw = await suite.hc(['get', address, '--json']);
       expect(raw.exitCode, raw.stderr).toBe(0);
@@ -235,7 +235,7 @@ export async function runRecoveryCases(suite: Suite): Promise<void> {
       const initialRestore = await f.cli(hub, ['roam', 'forget', box.alias, '--confirm', `destroyed ${BOX}`]);
       const restored = initialRestore.code === 3 && initialRestore.reason === 'recovery-pending'
         ? await waitFor('documented retry completes destroyed-home recovery', () => f!.cli(hub, ['roam', 'forget', BOX, '--confirm', `destroyed ${BOX}`]),
-          result => result.code !== 3, deadline(60_000), { reconcileMs: 500 })
+          result => result.code !== 3 || result.reason !== 'recovery-pending', deadline(60_000), { reconcileMs: 500 })
         : initialRestore;
       expect(restored).toMatchObject({ code: 0, reason: 'destroyed-machine-recovered' });
       const local = await assertMoveState(f, hub, expectedTrees, 3);

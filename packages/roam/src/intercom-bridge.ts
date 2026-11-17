@@ -715,7 +715,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
           [...edge.pollSent.keys()], [...edge.refusals.values()]);
         reportExpiries(); armExpiry();
         if (channel === "push") for (const frame of input.frames) edge.pushIds.add(frame.identity.id);
-        const response = await executeExchange(edge.resolved, { exchange: input, holdMs: channel === "poll" && !probe ? 25_000 : 0 }, {
+        const response = await executeExchange(edge.resolved, { exchange: input, holdMs: channel === "poll" && !probe && !handshaking ? 25_000 : 0 }, {
           machineId: ports.machineId, enrollment: edge.config, transport: ports.transport, store: ports.store, clock: ports.clock, probe, maxTotalMs: remaining(), signal: active.abort.signal,
           onConnected: connected => { active.connectedUntil = connected && channel === "poll" && !probe ? begun + total : 0; publish(); armLiveness(edge); },
         });

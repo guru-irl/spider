@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { participantLaunchId } from "./participant-launch";
+import { participantLaunchId, participantLaunchSuccessor } from "./participant-launch";
 import { execFile } from "node:child_process";
 import { dirname, join } from "node:path";
 import type { JsonObject, Readiness, StoreKey } from "@spider/db-core/roam/types";
@@ -7,7 +7,7 @@ import { parseReadiness } from "@spider/db-core/roam/readiness";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { parseLocationStores } from "@spider/db-core/roam/catalog";
 import { readSessionHeader } from "@spider/herdr/sessions/launcher";
-import { localBootId } from "@spider/herdr/sessions/id-lock";
+import { localBootId, inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
 import { createIntentStore } from "./intent";
 import { sessionHome } from "./homes";
@@ -130,7 +130,7 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
 }
 
 export function createBoxParticipantWake(input: { root: string; db: import("@spider/db-core").Db; config: import("./contracts").RoamConfig;
-  wake?(): Promise<void> }): (request: import("./move-ports").ParticipantLaunchRequest) => Promise<import("./move-ports").ParticipantLaunchResult> {
+  journal: import("./contracts").Journal; wake?(): Promise<void> }): (request: import("./move-ports").ParticipantLaunchRequest) => Promise<import("./move-ports").ParticipantLaunchResult> {
   const authority = createRunningIntentAuthority(input.db), intents = createIntentStore(input.root);
   return async ({ sessionId, operationId }) => {
     try {
@@ -153,7 +153,11 @@ export function createBoxParticipantWake(input: { root: string; db: import("@spi
         writeLocal(input.db, "participant-launch", operationId, { sessionId, launchId, epoch: intent.epoch });
       }
       await (input.wake ?? wakeSupervisor)();
-      return { ok: true, launchId };
+      const lock = await inspectIdLock(join(input.root, "herdr"), sessionId), supervision = (await intents.get(sessionId))?.value.supervision;
+      const actual = lock?.pendingOperationId ?? lock?.operationId ?? (supervision?.kind === "launching" ? supervision.operationId : launchId);
+      if (!participantLaunchSuccessor(input.journal, input.config.machineId, intent, operationId, launchId, actual))
+        return { ok: false, reason: "participant-launch-conflict" };
+      return { ok: true, launchId: actual };
     } catch { return { ok: false, reason: "participant-launch-unavailable" }; }
   };
 }

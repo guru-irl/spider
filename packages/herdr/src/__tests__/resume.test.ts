@@ -279,6 +279,19 @@ it('explicit extensions stay silent when no core restart is proved', async () =>
   expect(await offerResume(terminal, { ...ports(10), autoResumeRoot: root })).toBeNull();
 });
 
+it('extension refusal cleans the session name and extension path for terminal display', async () => {
+  const unsafeOwner = { ...owner, name: 'A\u009bB\u202eC' };
+  const foreign = join(root, 'extension\u009b\u2066.js');
+  await createTerminalRegistry(root).record({ owner: unsafeOwner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: ['--extension', foreign] } });
+  try { await offerResume(terminal, ports()); throw new Error('expected refusal'); }
+  catch (error) {
+    expect(error).toMatchObject({ code: 'session-explicit-extensions' });
+    const message = (error as Error).message;
+    expect(message).toContain('A B C');
+    expect(message).not.toMatch(/[\x80-\x9f\u202a-\u202e\u2066-\u2069]/);
+  }
+});
+
 it('a recorded absolute extension argument refuses a resume offer with its session name', async () => {
   const foreign = join(root, 'foreign-extension.js');
   await createTerminalRegistry(root).record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: ['--extension', foreign] } });

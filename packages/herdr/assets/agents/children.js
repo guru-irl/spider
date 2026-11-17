@@ -141,18 +141,22 @@ function summarizeFinished(all, deferred, feed, viewersBySession, labels, now, o
     if (!runs.has(runId)) runs.set(runId, row);
   }
   const parentOf = row => {
-    if (row.kind === 'native' && row.parentKey) return keyByAddress.get(row.parentKey) ?? row.parentKey;
+    if ((row.kind === 'native' || row.kind === 'subagent') && row.parentKey) return keyByAddress.get(row.parentKey) ?? row.parentKey;
     if (row.kind !== 'remote' && row.kind !== 'console') return row.parentKey;
     const runId = row.terminal.labels[labels.run], run = byKey.get(runId);
     const console = row.kind === 'remote' && row.machine ? consoles.get(row.machine)?.get(runId ?? null) : null;
     return console?.key ?? (run?.kind === 'subagent' || selectedRun(runId) ? runId : null);
   };
   const needed = new Set(), live = new Set();
-  for (const row of active) for (let current = row; current && !live.has(current.key);) {
-    live.add(current.key);
-    const parent = parentOf(current);
-    if (selectedRun(parent)) { needed.add(parent); break; }
-    current = byKey.get(parent);
+  for (const row of active) for (let key = row.key; key && !live.has(key);) {
+    live.add(key);
+    if (selectedRun(key)) {
+      needed.add(key);
+      key = keyByAddress.get(viewers?.get(key)?.parent) ?? null;
+    } else {
+      const current = byKey.get(key);
+      key = current ? parentOf(current) : null;
+    }
   }
   const hiddenNative = new Set(), folded = options.folded ?? new Set(), expanded = options.expandedConsoles ?? new Set();
   let hiddenNativeCount = 0;
@@ -260,7 +264,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     rows.set(key, {
       key, kind: rowKind, address: t.address, originalAddress: t.address,
       name, description, status, outcome, completeness: 'unknown', machine,
-      parentKey: rowKind === 'native' && depth > 0 ? t.parent : null,
+      parentKey: (rowKind === 'native' || rowKind === 'subagent') && depth > 0 ? t.parent : null,
       finishedAt: finish ? finishedAt : null, retained: finish, depth, terminal: t,
       action: unreachable ? null : remote || subagent || console ? sessionAction(rowKind, key, sessionId, subagent ? t : null) : { kind: 'peek', terminal: t.address },
     });
@@ -289,7 +293,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     rows.set(run.id, {
       key: run.id, kind: 'subagent', address: run.viewer, originalAddress: native?.address ?? run.viewer,
       name: run.name ?? run.id, description: null, status, outcome: done ? run.status : null, completeness: 'unknown',
-      machine: null, parentKey: null,
+      machine: null, parentKey: previous?.parentKey ?? (native?.parent && native.parent !== ownerAddress ? native.parent : null),
       finishedAt: run.finishedAt, retained: done, depth: previous?.depth ?? 0, terminal: native ?? null,
       action: unreachable ? null : action,
     });
@@ -316,7 +320,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     if (!runs.has(runId)) runs.set(runId, row);
   }
   for (const row of kept) {
-    if (row.kind === 'native' && row.parentKey) row.parentKey = keyByAddress.get(row.parentKey) ?? row.parentKey;
+    if ((row.kind === 'native' || row.kind === 'subagent') && row.parentKey) row.parentKey = keyByAddress.get(row.parentKey) ?? row.parentKey;
     if (row.kind !== 'remote' && row.kind !== 'console') continue;
     const runId = row.terminal.labels[labels.run];
     const run = byKey.get(runId);

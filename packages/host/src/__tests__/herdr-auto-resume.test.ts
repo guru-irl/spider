@@ -44,6 +44,22 @@ it('the configured auto policy produces one automatic snippet per proved restart
   } finally { await ports.dispose(); }
 });
 
+it.each([['exit 130', true], ['kill -TERM $$', true], ['exit 9', false]] as const)('reports resumed pi exit %s appropriately', async (exit, normal) => {
+  root = await mkdtemp(join(await realpath(tmpdir()), 'auto-exit-'));
+  const bin = join(root, 'bin'), agent = join(root, 'agent'); await mkdir(bin); await mkdir(agent);
+  const file = join(root, 'session.jsonl');
+  await writeFile(file, JSON.stringify({ type: 'session', id: 's1', cwd: root }) + '\n');
+  await writeFile(join(bin, 'pi'), `#!/bin/sh\nsleep 0.3\n${exit}\n`, { mode: 0o700 });
+  const config = parseHerdrConfig({ app: { binary: '/app', home: root }, core: { binary: '/hc', config: join(root, 'core') }, agentDirectory: agent, globalRoot: root, shellRc: join(root, 'rc'), spaces: [], machines: [] });
+  const ports = createProductionHerdrCliPorts(root, { ...process.env, PATH: `${bin}:/usr/bin:/bin`, SPIDER_GLOBAL_ROOT: root });
+  try {
+    const request = { config, configPath: join(root, 'config.json'), packageRoot: root, journalRoot: join(root, 'journal') };
+    const launch = ports.resume!(request, { file, sessionId: 's1', cwd: root });
+    if (normal) await expect(launch).resolves.toBeUndefined();
+    else await expect(launch).rejects.toMatchObject({ code: 'resume-exited', message: expect.stringContaining('9') });
+  } finally { await ports.dispose(); }
+});
+
 it.each([true, false])('two restored shells racing for one session launch only one pi with enabled=%s', async enabled => {
   root = await mkdtemp(join(await realpath(tmpdir()), 'auto-race-'));
   await symlink(resolve('node_modules'), join(root, 'node_modules'), 'dir');

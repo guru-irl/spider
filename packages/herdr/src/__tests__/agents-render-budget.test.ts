@@ -353,6 +353,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       const attention = find(root, 'child-busy-live0');
       expect(attention?.styles.tooltip?.[0]).toBe('Needs attention');
       expect(attention?.styles.accessibility_label?.[0]).toBe('Needs attention');
+      expect(h.text(attention)).toContain('!');
       expect(find(root, 'sub-native')).toBeUndefined();
       find(root, 'child-fold-live0').events.on_click({}, h.cx); root = h.render();
       expect(find(root, 'sub-native')).toBeDefined();

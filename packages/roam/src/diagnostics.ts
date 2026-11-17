@@ -260,6 +260,7 @@ export function readStatus(config: RoamConfig, ports: StatusPorts): RoamStatus {
   });
   const diagnostics: Diagnostic[] = [];
   if (ports.globalDb) try {
+    if (localEntries(ports.globalDb, "catalog-diagnostic").length) diagnostics.push({ severity: "warning", reason: "Session catalog pending: invalid location stores.", repairCommand: null });
     for (const { key, value } of localEntries<{ reason?: unknown }>(ports.globalDb, "recovery-diagnostic")) {
       const reason = typeof value?.reason === "string" && /^[a-z][a-z0-9:-]{0,80}$/.test(value.reason) ? value.reason : "recovery-unavailable";
       diagnostics.push({ severity: "warning", reason: `Move recovery pending: ${reason}.`, repairCommand: /^[A-Za-z0-9._-]+$/.test(key) ? `spider roam recover ${key}` : null });

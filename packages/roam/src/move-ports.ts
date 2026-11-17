@@ -690,6 +690,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
   }
   if (operation.kind === "move-import") {
     const exported = operation.args.exported as unknown as MoveExport, check = operation.args.check as unknown as MoveCheck;
+    const stores = parseLocationStores(check.storeKeys);
     const root = join(required(bindings.root, "root"), "roam", "staging"), claims = operation.args.claims as unknown as MoveArtifactClaim[];
     const ports = createMoveWorkspacePorts(participant.globalDb, gitPorts(participant, journal), root, claims);
     journal.record(exported.workspace.moveId, "move-import-intent", { root: check.destinationRoot, exported: json(exported), claims: json(claims) });
@@ -705,7 +706,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
     const target = await participant.sessionTarget(id, String(operation.args.moveId));
     await installSession(session, target, { journal, limits: participant.config.limits, withBothLocks: participant.withBothLocks, ownership: () => participant.probe(id) });
     const installed = { ...session, file: target };
-    recordLocation(participant.globalDb, { sessionId: id, stores: check.storeKeys, home: sessionHome(participant.globalDb, id) === "unknown" ? null : sessionHome(participant.globalDb, id) as Home | null, file: target, cwd: check.destinationCwd });
+    recordLocation(participant.globalDb, { sessionId: id, stores, home: sessionHome(participant.globalDb, id) === "unknown" ? null : sessionHome(participant.globalDb, id) as Home | null, file: target, cwd: check.destinationCwd });
     return result({ workspace, session: installed });
   }
   if (operation.kind === "move-verify") {

@@ -49,7 +49,7 @@ const source = (file: string) => JSON.stringify(fileURLToPath(new URL(file, impo
 async function platformCli(suite: Suite): Promise<string> {
   const entry = suite.ownPath(join(suite.root, 'platform.ts'));
   const code = `
-import { readFileSync, appendFileSync, statSync } from 'node:fs';
+import { readFileSync, appendFileSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -204,12 +204,22 @@ if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id &&
   try {
     const home = sessionHome(core.db, args[1]);
     if (!home || home === 'unknown' || home.machineId !== machine.id || home.moveId !== args[2]) throw Error('fixture observation home mismatch');
+    const nativeFile = join(root, 'roam', 'fixture-launch-native.json');
+    if (!existsSync(nativeFile)) {
+      const lock = await inspectIdLock(join(root, 'herdr'), args[1]);
+      if (lock?.pendingOperationId) {
+        const attempt = journal.read(lock.pendingOperationId).findLast(row => row.action === 'exact-attempt')?.result.attemptId;
+        const capture = argv => { const result = spawnSync(loadHerdrConfig(root).core.binary, argv, { env: process.env, encoding: 'utf8' }); return { status: result.status, stdout: result.stdout, stderr: result.stderr }; };
+        const labels = ['--label', 'spider.roam.operation=' + lock.pendingOperationId, ...(attempt ? ['--label', 'spider.roam.attempt=' + attempt] : [])];
+        writeFileSync(nativeFile, JSON.stringify({ lock, attempt, filtered: capture(['ls', '--all', '--json', ...labels]), all: capture(['ls', '--all', '--json']), help: capture(['ls', '--help']) }), { mode: 0o600 });
+      }
+    }
     runtime = await moveFactory({ root, globalDb: core.db, config: core.config, journal, sessionId: args[1], transport: {} as never });
     const observed = await runtime.bindings.participant!.observation(home, { id: args[2] + '-fixture-inspect', kind: 'move-observation', machineId: machine.id, expectedEpoch: home.epoch, args: { sessionId: args[1] } });
     const receipt = readMoveLaunchAbsenceReceipt(journal, args[2]), complete = receipt && observed.owner.kind === 'absent' && !observed.readiness;
     const code = complete ? 0 : 3;
     process.exitCode = code;
-    process.stdout.write(JSON.stringify({ code, reason: complete ? receipt.kind : 'launch-outcome-pending', receipt, observed }) + '\\n');
+    process.stdout.write(JSON.stringify({ code, reason: complete ? receipt.kind : 'launch-outcome-pending', receipt, observed, native: existsSync(nativeFile) ? JSON.parse(readFileSync(nativeFile, 'utf8')) : null }) + '\\n');
   } finally { await runtime?.close(); core.close(); }
 } else if (args[0] === 'fixture-baseline') {
   const core = openLocalCore(root), journal = openFreezeJournal(join(root, 'roam', 'journal.db'));
@@ -780,7 +790,12 @@ async function exclusion(suite: Suite): Promise<void> {
     } else expect(start).toMatchObject({ code: 3, reason: 'readiness-pending' });
     const rollbackDeadline = deadline(60_000);
     phase('await-exact-launch-exit');
-    const launchProof = await waitFor('exact launch exited without adopting ownership', () => f.cli(box, ['fixture-observe', f.sessionId, failed.operationId]),
+    let nativeShown = false;
+    const launchProof = await waitFor('exact launch exited without adopting ownership', async () => {
+      const value = await f.cli(box, ['fixture-observe', f.sessionId, failed.operationId]);
+      if (!nativeShown && value.data?.native) { nativeShown = true; console.info(JSON.stringify({ story: suite.story, phase: 'native-launch-evidence', native: value.data.native })); }
+      return value;
+    },
       result => result.code !== 3, rollbackDeadline, { reconcileMs: 500 });
     expect(launchProof).toMatchObject({ code: 0, reason: 'exited-without-adoption', receipt: { kind: 'exited-without-adoption', launchId: expectedLaunch, epoch: 4,
       evidence: { proof: { kind: 'terminal-exited-without-adoption', operationId: expectedLaunch, terminalExited: true, lockNeverAdopted: true } } },

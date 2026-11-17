@@ -500,7 +500,6 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       h.state.feeds[0].runs.rows.push({ ...first, id, viewer: `viewer-${i}` });
       h.state.terminals.push({ address: `viewer-${i}`, parent: 'v0', state: 'live', status: 'working',
         labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': id } });
-      h.view.expandedSubagents.add(id);
     }
     let drawing = false, bytes = 0;
     const stringify = JSON.stringify;
@@ -509,10 +508,14 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       if (drawing && typeof value === 'string') bytes += value.length;
       return value;
     }) as typeof JSON.stringify);
+    const measure = () => { bytes = 0; drawing = true; try { h.render(); return bytes; } finally { drawing = false; } };
     try {
       await h.ready(); h.render(); await h.flush();
-      drawing = true; h.render(); drawing = false;
-      expect(bytes).toBeLessThan(4000);
+      const empty = measure();
+      // Hold the rendered tree fixed while stressing the renderer with 400 hidden keys.
+      for (let i = 0; i < 400; i++) h.view.expandedSubagents.add(`nested-${i}`);
+      h.storage.set('spider.subagents.expanded', JSON.stringify([...h.view.expandedSubagents]));
+      expect(measure()).toBe(empty);
     } finally { drawing = false; await h.view.close(); }
   });
 

@@ -437,6 +437,7 @@ it("cleanup does not lose a request at the final microtask boundary of its fligh
   const f = await fixture(), operation = { id: "last-flight-request", machineId: HUB, kind: "move", expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: OTHER } };
   f.journal.begin(operation); f.journal.record(operation.id, "move-request", { operation, sessionId: "session-a", destinationMachine: OTHER });
   f.journal.record(operation.id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", reason: "move-source-stop-pending", blockers: ["process-exit-unproven"] } });
+  f.journal.record(operation.id, "move-action-complete", { action: "start", value: { code: "invalid-fixture-code" } });
   let calls = 0, trailing!: Promise<void>, requested!: () => void;
   const requestArrived = new Promise<void>(resolve => { requested = resolve; });
   const service = createMoveRuntimeService({ root: f.root, globalDb: f.global.db, config: f.ports.config, journal: f.journal, transport: {} as Transport }, async input => {

@@ -1,11 +1,11 @@
-import { existsSync, readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
 import { describe, expect, it, vi } from 'vitest';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
-import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command } from '../../../../scripts/herdr-e2e.mjs';
+import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command, finishCleanup } from '../../../../scripts/herdr-e2e.mjs';
 import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
 import { restorationPending, presentationInProgress } from './roam-recovery.test.js';
@@ -57,7 +57,43 @@ describe('controllable intercom clock', () => {
   });
 });
 
+describe('final runner cleanup budget', () => {
+  it('bounds cleanup and reconciliation by one absolute deadline', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/cleanup-budget-'));
+    try {
+      const module = resolve(root, 'resources.mjs');
+      writeFileSync(module, `import {writeFileSync} from 'node:fs';
+        export async function cleanupLedger() { await new Promise(ok => setTimeout(ok, 100)); writeFileSync(${JSON.stringify(resolve(root, 'cleaned'))}, 'yes'); return {clean:true}; }
+        export async function reconcileLedgers() { writeFileSync(${JSON.stringify(resolve(root, 'reconciling'))}, 'yes'); await new Promise(ok => setTimeout(ok, 5000)); return []; }`);
+      const at = Date.now() + 500;
+      await expect(finishCleanup({ module, ledgers: root }, resolve(root, 'ledger.json'), process.cwd(), process.env, root,
+        { at, expire() {} })).rejects.toThrow('runner-deadline');
+      expect(existsSync(resolve(root, 'cleaned'))).toBe(true);
+      expect(existsSync(resolve(root, 'reconciling'))).toBe(true);
+      expect(JSON.parse(readFileSync(resolve(root, 'cleanup-deadline.json'), 'utf8'))).toEqual({ reason: 'cleanup-deadline', deadlineAt: at });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+  it.each([true, false])('retains the cleanup proof when reconciliation succeeds: %s', async clean => {
+    const root = mkdtempSync(resolve('.spider/scratch/cleanup-proof-'));
+    try {
+      const module = resolve(root, 'resources.mjs');
+      writeFileSync(module, `export async function cleanupLedger() { return {clean:${clean}}; } export async function reconcileLedgers() { return []; }`);
+      expect(await finishCleanup({ module, ledgers: root }, resolve(root, 'ledger.json'), process.cwd(), process.env, root,
+        { at: Date.now() + 2000, expire() {} })).toBe(clean);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
 describe('overall runner deadline', () => {
+  it('refuses overflowing timers without starting the command', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/deadline-overflow-'));
+    try {
+      const log = resolve(root, 'not-started.log');
+      await expect(command(process.execPath, ['-e', 'console.log("wrong")'], process.cwd(), process.env, log, true, undefined, 60_000,
+        { at: Date.now() + 2 ** 31 + 60_000, expire() {} })).rejects.toThrow('invalid runner deadline');
+      expect(existsSync(log)).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it('stops unfinished work and writes evidence before rejecting', async () => {
     const root = mkdtempSync(resolve('.spider/scratch/deadline-'));
     try {

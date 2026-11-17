@@ -22,7 +22,11 @@ gh workflow run herdr-stories.yml --ref <branch> -f stories=R03
 
 Separate multiple story IDs with commas. Leave `stories` empty to run the default set in `controls/ci-stories.json`. A preparation job installs dependencies and builds once, verifies the pinned Linux core, and shares the build with one job per selected story. The jobs run in parallel and report independently. The harness requires an owned `hc` executable rather than a symbolic link. On failure, download the `herdr-headless-failures-<story>` artifact and extract `e2.tar.gz`.
 
-The preparation job has a five-minute limit. Each measured limit uses an initial successful job time plus 40 seconds, rounded up to a minute; unmeasured jobs retain the five-minute limit. R05's story step has a one-minute limit to leave time to archive failures. The job limits are in `controls/ci-stories.json`. The workflow exercises the packed extension and real, isolated local cores without a display. It does not certify the native app, native windows, SSH, or real remote machines. R02 covers app placement with a fixture owner and is outside the default set. R14local needs separately supplied local fixtures.
+The preparation job has a five-minute limit. Initial measured limits use a successful job time plus 40 seconds, rounded up to a minute. Unmeasured jobs retain the five-minute limit. Later near-limit runs require investigation, not an automatic limit increase. The job limits are in `controls/ci-stories.json`. R05's story step retains its one-minute limit.
+
+The workflow sets one absolute runner deadline, twenty seconds before the shorter step or job limit, measured from the first job step. R05 therefore gets a forty-second runner deadline. On expiry, the runner writes `deadline.json` before terminating unfinished command groups. Final cleanup and reconciliation share at most ten seconds, leaving ten seconds for failure archive and upload. An exhausted cleanup budget writes `cleanup-deadline.json` and reports cleanup as unproved. The independent watchdog retains responsibility for unfinished cleanup. The optional `deadline-seconds` dispatch input can shorten the runner deadline, never extend it.
+
+The workflow exercises the packed extension and real, isolated local cores without a display. It does not certify the native app, native windows, SSH, or real remote machines. R02 covers app placement with a fixture owner and is outside the default set. R14local needs separately supplied local fixtures.
 
 ## Run an isolated native copy
 
@@ -120,8 +124,7 @@ R01 exercises sync through the packed CLI and two isolated cores in the headless
 
 ## Run move and recovery stories
 
-Run R06 through R10, R15 and R16 only in the GitHub Linux stories job. Select them with its
-`stories` input. The job builds and packs the release before this command:
+Run R06 through R10, R15 and R16 only in the GitHub Linux stories job. They are in the default pull-request set. Select individual stories with the manual `stories` input. The job builds and packs the release before this command:
 
 ```sh
 npm run test:herdr:e2e -- --built --tier headless --story R06,R07,R08,R09,R10,R15,R16
@@ -129,8 +132,7 @@ npm run test:herdr:e2e -- --built --tier headless --story R06,R07,R08,R09,R10,R1
 
 These IDs are explicit members of `headless`, not the no-core `ci` tier. Any
 selection containing them uses one worker. Each story keeps the existing
-startup, per-wait, and 300-second story deadlines. The report records its duration
-and independent cleanup proof.
+startup, per-wait, and 300-second story deadlines. The job-level runner deadline can end a story sooner. The report records its duration and independent cleanup proof.
 
 | Story | Coverage |
 | --- | --- |

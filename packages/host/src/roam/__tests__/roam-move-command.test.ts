@@ -22,7 +22,7 @@ const context = (): ExtensionCommandContext => ({ mode: "tui", hasUI: true, cwd:
   sessionManager: { getSessionId: () => "session-a", getSessionFile: () => "/fixture/session.jsonl", getHeader: () => ({ type: "session", id: "session-a", version: 3, cwd: "/fixture/workspace" }) } } as unknown as ExtensionCommandContext);
 const result = (code: 0 | 1 | 2 | 3 = 0): Outcome<MoveResult> => ({ code, reason: code === 3 ? "destination-unknown" : "complete", operationId: "move-a",
   home: { sessionId: "session-a", machineId: BOX, epoch: 2, moveId: "move-a", updatedAt: 1 }, epoch: 2, repairCommand: "spider roam recover move-a",
-  value: code === 0 ? { home: { sessionId: "session-a", machineId: BOX, epoch: 2, moveId: "move-a", updatedAt: 1 }, terminal: "terminal-a", intercomAddress: "session-a@box-1.invalid", warnings: ["route-unavailable:peer.invalid", "tool-auth-missing:fixture-tool"] } : null });
+  value: code === 0 ? { sourceCleanup: { status: "done" }, home: { sessionId: "session-a", machineId: BOX, epoch: 2, moveId: "move-a", updatedAt: 1 }, terminal: "terminal-a", intercomAddress: "session-a@box-1.invalid", warnings: ["route-unavailable:peer.invalid", "tool-auth-missing:fixture-tool"] } : null });
 afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
 
 it("Mac slash move targets only persistent top-level current session", async () => {

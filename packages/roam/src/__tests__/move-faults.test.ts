@@ -149,7 +149,7 @@ function fixture(fault = "") {
       if (!intakeOpen) { intakeOpen = true; events.push("rollback-intercom-open"); }
       crash("intake-rollback-release");
       readmitResult = { code: 0, ok: true, reason: "rolled-back", operationId: operation.id, home: restoredHome, epoch: 3, repairCommand: null,
-        value: { home: restoredHome, terminal: sourceAlive ? "original-terminal" : null, intercomAddress: "mac/session-a", warnings: [] } };
+        value: { sourceCleanup: { status: "done" }, home: restoredHome, terminal: sourceAlive ? "original-terminal" : null, intercomAddress: "mac/session-a", warnings: [] } };
       return readmitResult;
     },
     async cleanup() { crash("cleanup"); },

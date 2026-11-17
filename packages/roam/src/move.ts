@@ -8,7 +8,7 @@ import { storeScope } from "@spider/db-core/roam/codec";
 import type { Home, HubOperationReadiness, JsonObject, Probe, StoreBarrier } from "@spider/db-core/roam/types";
 import type { IntercomIntakeFence, SessionEndpoint } from "@spider/intercom/protocol";
 import { MOVE_REFUSAL_MESSAGES } from "./contracts";
-import type { DestinationObservation, FreezeAck, Journal, MoveCheck, MovePorts, MoveRequest, MoveResult, MoveRefusal, MoveRefusalCode, MoveSessionOutcome, ValidatedBlockerId, Operation, Outcome, PreparedMove } from "./contracts";
+import type { DestinationObservation, FreezeAck, Journal, MoveCheck, MovePorts, MoveRequest, MoveResult, SourceCleanup, MoveRefusal, MoveRefusalCode, MoveSessionOutcome, ValidatedBlockerId, Operation, Outcome, PreparedMove } from "./contracts";
 import { casHome, sessionHome } from "./homes";
 import { isMachineId } from "./machine-id";
 import { acquireMovePower, movePowerKey, releaseMovePower } from "./power";
@@ -98,6 +98,18 @@ function outcome(request: MoveRequest, ports: MovePorts, code: Outcome<MoveResul
   if (code === 0 || reason === "moved" || reason === "same-home") refuse("move-journal-invalid");
   return { ...envelope, code, ok: false, value: null, refusal: { code: reason, blockers, message: MOVE_REFUSAL_MESSAGES[reason] } };
 }
+export function parseSourceCleanup(value: unknown): SourceCleanup {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !('status' in value)) refuse('move-journal-invalid');
+  switch (value.status) {
+    case 'done': return { status: 'done' };
+    case 'pending': {
+      if (!('blockers' in value) || !Array.isArray(value.blockers) || !value.blockers.length) refuse('move-journal-invalid');
+      return { status: 'pending', blockers: value.blockers.map(validateBlockerId) };
+    }
+    default: return refuse('move-journal-invalid');
+  }
+}
+
 function completedOutcome(value: unknown, id: string): MoveSessionOutcome {
   const result = value as Outcome<MoveResult> & { ok: boolean; refusal?: MoveRefusal };
   if (!result || ![0, 1, 2, 3].includes(result.code) || result.operationId !== id || !text(result.reason) ||
@@ -107,7 +119,7 @@ function completedOutcome(value: unknown, id: string): MoveSessionOutcome {
   if (result.ok === true) {
     if (result.code !== 0 || !result.home || !result.value || !sameHome(result.value.home, result.home) ||
         !(result.value.terminal === null || text(result.value.terminal)) || !text(result.value.intercomAddress)) refuse("move-journal-invalid");
-    try { home(result.value.home); warnings(result.value.warnings); } catch { refuse("move-journal-invalid"); }
+    try { home(result.value.home); warnings(result.value.warnings); parseSourceCleanup(result.value.sourceCleanup); } catch { refuse("move-journal-invalid"); }
   } else if (result.ok === false) {
     if (result.code === 0 || result.value !== null || !result.refusal || !Object.hasOwn(MOVE_REFUSAL_MESSAGES, result.refusal.code) ||
         result.reason !== result.refusal.code || result.refusal.message !== MOVE_REFUSAL_MESSAGES[result.refusal.code] || !Array.isArray(result.refusal.blockers)) refuse("move-journal-invalid");
@@ -251,7 +263,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
       if (observation.owner.kind === "uncertain" || observation.owner.kind === "live" && observation.retired ||
           observation.owner.kind === "absent" && !observation.retired) refuse("move-source-owner-uncertain");
       if (!sameHome(sessionHome(ports.globalDb, request.sessionId), check.source)) refuse("move-source-home-mismatch");
-      const result = outcome(request, ports, 0, "same-home", { home: check.source, terminal: observation.readiness?.terminal ?? null, intercomAddress: ports.intercom.address.sessionId, warnings: check.warnings });
+      const result = outcome(request, ports, 0, "same-home", { sourceCleanup: { status: "done" }, home: check.source, terminal: observation.readiness?.terminal ?? null, intercomAddress: ports.intercom.address.sessionId, warnings: check.warnings });
       ports.journal.record(id, "done", json(result)); ports.journal.record(slot, "released", { moveId: id });
       return result;
     }
@@ -320,7 +332,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     readinessReply(finalObservation.readiness, committed, prepared, destinationOperation);
     if (!sameHome(sessionHome(ports.globalDb, request.sessionId), committed)) refuse("move-home-changed");
     await action("cleanup", () => ports.cleanup(check, request.operation));
-    const value: MoveResult = { home: committed, terminal: readiness.terminal, intercomAddress: intercom.intercomAddress,
+    const value: MoveResult = { sourceCleanup: { status: "done" }, home: committed, terminal: readiness.terminal, intercomAddress: intercom.intercomAddress,
       warnings: [...new Set([...check.warnings, ...inspection.warnings, ...intercom.warnings, ...prepared.workspace.snapshot.droppedConfigKeys,
         ...prepared.workspace.adjustments, ...ports.journal.read(id).filter(row => row.action === "move-cleanup-warnings").flatMap(row => row.result.warnings as string[])])] };
     state("done", { result: json(value) });

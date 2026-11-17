@@ -174,5 +174,5 @@ export function recoveredForgottenHome(sessionId: string, ports: MovePorts): Mov
   if (!committed?.committed_home_json || !same(JSON.parse(committed.committed_home_json) as Home, home)) return null;
   const parsed = parseHubReadiness(ready);
   if (parsed.opId !== home.moveId || parsed.sessionId !== sessionId || parsed.epoch !== home.epoch) return null;
-  return { home, terminal: parsed.terminal, intercomAddress: sessionId, warnings: [] };
+  return { home, terminal: parsed.terminal, intercomAddress: sessionId, warnings: [], sourceCleanup: { status: "done" } };
 }

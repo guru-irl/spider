@@ -87,7 +87,7 @@ type _FreezeAck = Assert<Equal<FreezeAck, {
   leaf: string; size: number; sha256: string; barriers: readonly StoreBarrier[]; intercomGeneration: string;
 }>>;
 type _MoveRequest = Assert<Equal<MoveRequest, { operation: Operation; sessionId: string; destinationMachine: MachineId }>>;
-type _MoveResult = Assert<Equal<MoveResult, { home: Home; terminal: string | null; intercomAddress: string; warnings: readonly string[] }>>;
+type _MoveResult = Assert<Equal<MoveResult, { home: Home; terminal: string | null; intercomAddress: string; warnings: readonly string[]; sourceCleanup: import("../contracts").SourceCleanup }>>;
 type _MoveRefusalCode = Assert<Equal<MoveRefusalCode, keyof typeof import("../contracts").MOVE_REFUSAL_MESSAGES>>;
 type _MoveRefusal = Assert<Equal<MoveRefusal, { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string }>>;
 type _MoveOutcome = Assert<Equal<MoveOutcome, { ok: true; value: MoveResult } | { ok: false; refusal: MoveRefusal }>>;

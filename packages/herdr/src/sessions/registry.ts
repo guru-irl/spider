@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { constants } from 'node:fs';
-import { mkdir, realpath, lstat, open, rename, unlink, readdir } from 'node:fs/promises';
+import { mkdir, realpath, lstat, open, rename, unlink, readdir, rm } from 'node:fs/promises';
 import { dirname, basename, join, isAbsolute, resolve } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Owner, TerminalIdentity } from '../contracts.js';
@@ -82,7 +82,8 @@ export function launchEnvironment(value: LaunchEnvironment): LaunchEnvironment {
   return { agentDirectory: value.agentDirectory, extensionArguments: recordedExtensionArguments(value.extensionArguments) };
 }
 
-const identityKey = (identity: TerminalIdentity) => hash(JSON.stringify([identity.coreId, identity.terminalId, identity.socket, identity.sessionNamespace]));
+export const terminalIdentityKey = (identity: TerminalIdentity) => hash(JSON.stringify([identity.coreId, identity.terminalId, identity.socket, identity.sessionNamespace]));
+const identityKey = terminalIdentityKey;
 function association(value: unknown): TerminalAssociation {
   const r = value as TerminalAssociation;
   if (!r || r.version !== 1 || !r.owner || typeof r.owner.sessionId !== 'string' || typeof r.owner.generation !== 'string' || !r.owner.terminal || typeof r.owner.terminal.coreId !== 'string' || typeof r.owner.terminal.terminalId !== 'string' || typeof r.owner.terminal.socket !== 'string' || typeof r.owner.terminal.address !== 'string' || typeof r.owner.terminal.sessionNamespace !== 'string' || !isAbsolute(r.owner.cwd) || !(r.owner.sessionFile === null || typeof r.owner.sessionFile === 'string' && isAbsolute(r.owner.sessionFile)) || !(r.owner.name === null || typeof r.owner.name === 'string') || !Number.isFinite(r.recordedAt) || !Number.isFinite(r.coreStartedAt)) throw new HerdrError('invalid-terminal-mapping', 'Terminal association shape is invalid');
@@ -114,7 +115,18 @@ export function createTerminalRegistry(root: string): TerminalRegistry {
       }
       return records;
     },
-    async remove(id, provedRemoved) { if (!provedRemoved) throw new HerdrError('terminal-may-exist', 'Mapping cleanup requires proof of terminal removal'); await withProcessLock(root, `terminal:${identityKey(id)}`, async () => { await unlink(path(id)).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }, { reclaimReusedOwner: true }); },
+    async remove(id, provedRemoved) {
+      if (!provedRemoved) throw new HerdrError('terminal-may-exist', 'Mapping cleanup requires proof of terminal removal');
+      const key = identityKey(id);
+      await withProcessLock(root, `resume-start:${key}`, async () => {
+        await withProcessLock(root, `terminal:${key}`, async () => { await unlink(path(id)).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }, { reclaimReusedOwner: true });
+        const markers = join(root, 'resume-starts');
+        try {
+          if (await realpath(markers) !== resolve(markers)) throw new HerdrError('unsafe-state-path', 'State cleanup cannot traverse symlinked directories');
+          await rm(join(markers, key), { recursive: true, force: true });
+        } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      }, { reclaimReusedOwner: true });
+    },
   };
 }
 

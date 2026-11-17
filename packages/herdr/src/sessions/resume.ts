@@ -5,7 +5,7 @@ import { open, readdir, unlink } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import type { TerminalIdentity, SessionId } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
-import { hash, privateDirectory, refuseExplicitExtensions, withProcessLock, type TerminalRegistry, type LaunchEnvironment } from './registry.js';
+import { terminalIdentityKey, privateDirectory, refuseExplicitExtensions, withProcessLock, type TerminalRegistry, type LaunchEnvironment } from './registry.js';
 import { recordedSessionLiveness, type ProcessInventoryPorts } from './lease.js';
 import { readSessionHeader } from './launcher.js';
 export interface ResumeHookOptions { nodePath: string; cliPath: string; configPath: string; hookPath: string; existingRc?: string }
@@ -57,10 +57,11 @@ else
 fi
 `;
 }
-async function claimAutomaticResume(root: string, identity: TerminalIdentity, startedAt: number, eligible: () => Promise<ResumeOffer | null>): Promise<ResumeOffer | null> {
-  const key = hash(JSON.stringify([identity.coreId, identity.terminalId, identity.socket, identity.sessionNamespace]));
+async function claimAutomaticResume(root: string, identity: TerminalIdentity, startedAt: number, current: () => Promise<boolean>, eligible: () => Promise<ResumeOffer | null>): Promise<ResumeOffer | null> {
+  const key = terminalIdentityKey(identity);
   const directory = join(root, 'resume-starts', key);
   return withProcessLock(root, `resume-start:${key}`, async () => {
+    if (!await current()) return null;
     await privateDirectory(directory);
     const syncDirectory = async (path: string) => {
       const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -111,5 +112,5 @@ export async function offerResume(identity: TerminalIdentity, ports: ResumePorts
     if (header.id !== mapping.owner.sessionId) return null;
     return { terminal: identity, sessionFile: file, sessionId: header.id, cwd: mapping.owner.cwd, name: mapping.owner.name, argv: ['pi', '--session', file], environment: mapping.environment };
   };
-  return ports.autoResumeRoot ? claimAutomaticResume(ports.autoResumeRoot, identity, restartedAt, eligible) : eligible();
+  return ports.autoResumeRoot ? claimAutomaticResume(ports.autoResumeRoot, identity, restartedAt, async () => JSON.stringify(await ports.registry.get(identity)) === JSON.stringify(mapping), eligible) : eligible();
 }

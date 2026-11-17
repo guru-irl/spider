@@ -222,3 +222,18 @@ it("rejects an overlong socket path rather than using TCP", async () => {
   await expect(serveSessionControl({ sessionId: f.id, runtimeRoot: longRoot, ports: f.ports })).rejects.toThrow(/socket.*long|long.*socket/i);
   expect(f.drains()).toBe(0);
 }, 5000);
+
+
+it("live control journals only redacted paths and credentials", async () => {
+  const f = fixture(), secret = "github_pat_" + "a".repeat(32);
+  f.ports.inspect = async () => { throw Object.assign(new Error(`ENOENT /home/alice/.pi/agent/broker.sock ${secret} secret=private-value`), { code: "ENOENT" }); };
+  const server = await serveSessionControl({ sessionId: f.id, runtimeRoot: root, ports: f.ports });
+  try {
+    const reply = await requestSessionControl(root, f.operation);
+    expect(reply).toMatchObject({ code: 1, value: { diagnostic: { code: "ENOENT" } } });
+    const evidence = JSON.stringify([reply, f.ports.journal.read(f.operation.id)]);
+    expect(evidence).not.toContain("/home/alice");
+    expect(evidence).not.toContain(secret);
+    expect(evidence).not.toContain("private-value");
+  } finally { await server.close(); }
+}, 5000);

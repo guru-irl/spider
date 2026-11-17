@@ -3,7 +3,7 @@ import { createReplica } from "@spider/db-core/testutil";
 import { join } from "node:path";
 import { openFreezeJournal } from "@spider/roam/journal";
 import { recordMoveLaunchAbsence } from "../launch-observation";
-import { launchJournalDigest } from "@spider/roam/pending-handoff";
+import { launchJournalDigest, readMoveLaunchAbsenceReceipt } from "@spider/roam/pending-handoff";
 import type { LaunchEvidence } from "@spider/herdr/sessions/launcher";
 const MACHINE = "00000000-0000-4000-8000-000000000001";
 it.each(["timeout", "missing-readiness", "suspended", "wrong-launch", "wrong-core", "started"])("%s never produces a no-start receipt", async bad => {
@@ -36,7 +36,7 @@ it("only the exact existing provedNoStart predicate permits a durable receipt", 
   } finally { fixture.close(); }
 });
 
-it.each(["launch", "core", "boot", "epoch", "session"] as const)("a conflicting second %s no-start receipt is refused rather than reusing the first", async changed => {
+it.each(["launch", "core", "boot", "epoch", "session"] as const)("launch-scoped no-start receipts preserve %s identity evidence", async changed => {
   const fixture = createReplica("global", MACHINE);
   try {
     const journal = openFreezeJournal(join(fixture.root, "journal.db"));
@@ -50,8 +50,15 @@ it.each(["launch", "core", "boot", "epoch", "session"] as const)("a conflicting 
     if (changed === "boot") input.bootId = "boot-b";
     if (changed === "epoch") { input.epoch = 3; input.intent.epoch = 3; }
     if (changed === "session") { input.sessionId = "session-b"; input.intent.sessionId = "session-b"; }
-    expect(await recordMoveLaunchAbsence(input)).toBeNull();
-    expect(journal.read("move-a")).toEqual(rows);
+    if (changed === "launch") {
+      expect(await recordMoveLaunchAbsence(input)).toMatchObject({ launchId: "launch-b" });
+      expect(readMoveLaunchAbsenceReceipt(journal, "move-a", "launch-a")).toEqual(rows[0].result);
+      expect(readMoveLaunchAbsenceReceipt(journal, "move-a", "launch-b")).toMatchObject({ launchId: "launch-b" });
+      expect(journal.read("move-a")).toHaveLength(2);
+    } else {
+      expect(await recordMoveLaunchAbsence(input)).toBeNull();
+      expect(journal.read("move-a")).toEqual(rows);
+    }
   } finally { fixture.close(); }
 }, 5000);
 

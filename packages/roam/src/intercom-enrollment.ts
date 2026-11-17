@@ -156,6 +156,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
             if (status === "offline") return outage(machine.machineId);
             if (status === "missing") return "intercom-connector-missing";
             if (status === "not-signed-in") return "intercom-connector-sign-in-required";
+            if (status === "ssh-port-missing") return "intercom-ssh-port-missing";
             if (status !== "ready") return "intercom-connector-check-invalid";
           }
           const pairPins = { source: pins.get(plan.source.machineId)!, target: pins.get(plan.target.machineId)! };
@@ -200,7 +201,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           record(pair.pairId, "verified");
           return null;
         } catch (error) {
-          return { reason: error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending"].includes(error.message) ? error.message : "intercom-enrollment-pending",
+          return { reason: error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending", "intercom-ssh-port-missing"].includes(error.message) ? error.message : "intercom-enrollment-pending",
             causeCode: enrollmentCauseCode(error) };
         }
       };

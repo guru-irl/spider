@@ -3,7 +3,7 @@ import { parseConnectorRecipe } from "./config";
 
 export type ConnectorStatus = "ready" | "intercom-peer-consent-required" | "intercom-connector-recipe-missing" |
   "intercom-connector-recipe-invalid" | "intercom-connector-missing" | "intercom-connector-sign-in-required" |
-  "intercom-tunnel-unhosted" | "intercom-peer-port-unreachable" | "intercom-connector-check-invalid" | "connector-not-pair-scoped";
+  "intercom-tunnel-unhosted" | "intercom-peer-port-unreachable" | "intercom-connector-check-invalid" | "intercom-ssh-port-missing" | "connector-not-pair-scoped";
 export interface ConnectorRunner {
   consent: boolean;
   run(argv: readonly string[], options: { timeoutMs: number; maxBytes: number }): Promise<{ code: number; stdout: string }>;
@@ -32,6 +32,7 @@ function observation(value: unknown): ConnectorStatus {
 /** The configured check command must be observational and return the four named status fields as JSON. */
 export async function checkConnector(value: IntercomConnectorRecipe | undefined, ports: ConnectorRunner): Promise<{ status: ConnectorStatus }> {
   const recipe = prepared(value, ports); if (typeof recipe === "string") return { status: recipe };
+  if (recipe.sshPort === undefined) return { status: "intercom-ssh-port-missing" };
   try {
     const result = await ports.run(recipe.check, options);
     if (result.code !== 0 || typeof result.stdout !== "string" || Buffer.byteLength(result.stdout) > options.maxBytes) return { status: "intercom-connector-check-invalid" };

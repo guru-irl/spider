@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const recipe: IntercomConnectorRecipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"],
-  connect: ["/fixture/connector", "connect"], localPort: 23222 };
+  connect: ["/fixture/connector", "connect"], localPort: 23222, sshPort: 2222 };
 async function api() { return await import("../intercom-connector").catch(() => ({})) as typeof import("../intercom-connector"); }
 function fixture(status: unknown = { connector: "ready", login: "ready", tunnel: "hosted", peerPort: "reachable" }) {
   const calls: string[][] = [];
@@ -27,6 +27,12 @@ it("reports a missing recipe and malformed check output by name", async () => {
   expect(f.calls).toEqual([]);
   expect(await mod.checkConnector(recipe, { run: f.run, consent: true })).toEqual({ status: "intercom-connector-check-invalid" });
   expect(f.calls).toEqual([["/fixture/connector", "check"]]);
+}, 5000);
+
+it("does not run an enrollment connector check without its SSH listener port", async () => {
+  const mod = await api(), f = fixture(), { sshPort: _sshPort, ...missing } = recipe;
+  expect(await mod.checkConnector(missing, { run: f.run, consent: true })).toEqual({ status: "intercom-ssh-port-missing" });
+  expect(f.calls).toEqual([]);
 }, 5000);
 
 it.each([

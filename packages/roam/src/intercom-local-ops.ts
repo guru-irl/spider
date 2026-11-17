@@ -7,7 +7,7 @@ import type { IntercomEnrollmentPair, IntercomEnrollmentPlan, IntercomRevocation
 import { authorizePairKey, ensurePairKey, pairPaths, readPairPublicKey, removePairKey, pairKeyAbsent, writePairRoute } from "./intercom-pair-files";
 import { ensurePairUnit, pairResources, pairLocalPort, stopPairUnit, removePairMachineRoute, inspectPairTerminals, pairRouteAbsent, type PairTerminalInventory, type PairResourcePorts } from "./intercom-pair-resources";
 import { isMachineId } from "./machine-id";
-import { inspectServedSshIdentity } from "./intercom-ssh-observation";
+import { inspectServedSshIdentity, type SystemSshFileSystem } from "./intercom-ssh-observation";
 import { checkConnector, runConnectorStep } from "./intercom-connector";
 import { createIntercomRegistry, withIntercomPeerLock } from "./intercom-registry";
 import { persistIntercomPairRoute } from "./provision-config";
@@ -21,6 +21,7 @@ export type LocalPairOperation = Common & ({ action: "ensure-key" } | { action: 
   { action: "inspect-ssh" | "check-connector" | "host-connector" | "connect-connector"; pair: IntercomEnrollmentPlan; approval: PairConsentProof };
 export interface LocalPairPorts extends PairResourcePorts {
   machineId: string; root: string; home: string; node: string; ssh: string; keygen: string; keyscan?: string; sshUser?: string; recipe?: IntercomConnectorRecipe;
+  systemSshFiles?: SystemSshFileSystem;
   run(argv: readonly string[], options: { timeoutMs: number; maxBytes: number }): Promise<{ code: number; stdout: string }>;
   enrollBridge?(input: unknown): Promise<unknown>;
   inspectBridge?(input: unknown): Promise<{ machineId: string; peer: string; edgeEpoch: string; status: string; reason: string | null }>;
@@ -183,7 +184,7 @@ async function localPairOperation(input: LocalPairOperation, ports: LocalPairPor
   }
   if (input.action === "inspect-ssh") {
     if (!ports.keyscan || !ports.sshUser) throw new Error("intercom-ssh-host-unavailable");
-    return inspectServedSshIdentity({ machineId: ports.machineId, sshUser: ports.sshUser, keyscan: ports.keyscan, sshPort: input.pair.connector.remotePort, run: ports.run });
+    return inspectServedSshIdentity({ machineId: ports.machineId, sshUser: ports.sshUser, keyscan: ports.keyscan, sshPort: input.pair.connector.remotePort, filesystem: ports.systemSshFiles, run: ports.run });
   }
   if (input.action === "ensure-key") {
     const key = await ensurePairKey(input.pair, { binary: ports.keygen,

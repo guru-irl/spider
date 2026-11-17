@@ -128,7 +128,7 @@ export class UsageRuntime {
     const settle = (value: PanelUsage | null) => {
       clearTimeout(timer); this.panelRequests.delete(requestId); reading.settled = true;
       if (value) reading.period = value.pace.period;
-      resolve(value);
+      resolve(value === null ? null : { ...value, sampledAt: reading.at });
     };
     this.panelRequests.set(requestId, { settle });
     this.send({ type: 'panel-usage', requestId, now, sessionId, budget });

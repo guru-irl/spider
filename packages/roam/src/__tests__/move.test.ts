@@ -1205,6 +1205,7 @@ it.each(['throw', 'uncertain', 'live'] as const)('a committed move keeps %s sour
   expect(moved).toMatchObject({ code: 0, ok: true, reason: 'moved', value: { sourceCleanup: { status: 'pending', blockers: [failure === 'throw' ? 'process-exit-unproven' : 'move-source-stop-pending'] } } });
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
   expect(f.events).not.toContain('retire');
+  expect(f.events).toContain('power-released');
   expect(f.registryRemovals).toEqual([]);
   expect(f.held).toBe(true);
   mkdirSync(join(f.root, 'roam'));

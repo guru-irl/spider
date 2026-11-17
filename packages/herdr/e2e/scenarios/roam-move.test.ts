@@ -29,7 +29,7 @@ import { deadline, waitFor } from '../harness/wait.js';
 
 export function moveRecoveryPending(result: unknown): boolean {
   return !!result && typeof result === 'object' && 'code' in result && result.code === 3 && 'reason' in result &&
-    (result.reason === 'move-destination-pending' || result.reason === 'move-pending');
+    (result.reason === 'move-destination-pending' || result.reason === 'move-pending' || result.reason === 'intercom-endpoint-not-ready');
 }
 
 export const HUB = '00000000-0000-4000-8000-000000000001';

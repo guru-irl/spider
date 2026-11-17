@@ -23,7 +23,7 @@ export function buildResumeBlock(options: ResumeHookOptions): string {
 }
 export function resumeOfferShell(offer: ResumeOffer, options: ResumeHookOptions, mode: 'offer' | 'auto' = 'offer'): string {
   const argv = [options.nodePath, options.cliPath, 'resume', '--config', options.configPath, '--file', offer.sessionFile, '--session-id', offer.sessionId, '--cwd', offer.cwd];
-  const name = (offer.name ?? offer.sessionId).replace(/[\x00-\x1f\x7f]/g, ' ');
+  const name = (offer.name ?? offer.sessionId).replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ');
   const message = mode === 'auto' ? `Resuming ${name}…` : `Resume ${name}: run spider_resume (or keep this shell).`;
   const functionDefinition = `spider_resume() {\n  (cd -- ${shellQuote(offer.cwd)} && command ${argv.map(shellQuote).join(' ')})\n}\n`;
   if (mode === 'offer') return `printf '%s\\n' ${shellQuote(message)}\n${functionDefinition}`;

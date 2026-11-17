@@ -15,6 +15,48 @@ import { coldCliStartup } from './roam-intercom.test.js';
 vi.mock('../harness/scenario.js', async importOriginal => ({
   ...await importOriginal<typeof import('../harness/scenario.js')>(), registerScenarios: () => {},
 }));
+describe('controllable intercom clock', () => {
+  it('can be imported without starting a machine service', async () => {
+    // @ts-ignore The same ESM adapter is loaded by the fixture processes.
+    await expect(import('../fixtures/roam-hub-clock.mjs')).resolves.toHaveProperty('createFixtureClock', expect.any(Function));
+  });
+  it('expires a passive route without waiting in wall time and retains its offset', async () => {
+    // @ts-ignore The same ESM adapter is loaded by the fixture processes.
+    const { createFixtureClock } = await import('../fixtures/roam-hub-clock.mjs');
+    vi.useFakeTimers(); vi.setSystemTime(1_000);
+    const controlled = createFixtureClock(2_000);
+    try {
+      const expired: number[] = [];
+      controlled.clock.later(35_000, () => expired.push(controlled.clock.now()));
+      controlled.advance(34_999);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(expired).toEqual([]);
+      const advanced = controlled.advance(1);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(expired).toEqual([38_000]);
+      expect(advanced.offset).toBe(37_000);
+      const restarted = createFixtureClock(advanced.offset);
+      try { expect(restarted.clock.now()).toBe(38_000); } finally { restarted.close(); }
+    } finally { controlled.close(); vi.useRealTimers(); }
+  });
+  it('does not resurrect cancelled timers when advancing or closing', async () => {
+    // @ts-ignore The same ESM adapter is loaded by the fixture processes.
+    const { createFixtureClock } = await import('../fixtures/roam-hub-clock.mjs');
+    vi.useFakeTimers();
+    const controlled = createFixtureClock();
+    try {
+      const fired: string[] = [];
+      const cancel = controlled.clock.later(35_000, () => fired.push('cancelled'));
+      cancel();
+      controlled.advance(35_000);
+      controlled.clock.later(1, () => fired.push('closed'));
+      controlled.close();
+      await vi.runAllTimersAsync();
+      expect(fired).toEqual([]);
+    } finally { controlled.close(); vi.useRealTimers(); }
+  });
+});
+
 describe('overall runner deadline', () => {
   it('stops unfinished work and writes evidence before rejecting', async () => {
     const root = mkdtempSync(resolve('.spider/scratch/deadline-'));

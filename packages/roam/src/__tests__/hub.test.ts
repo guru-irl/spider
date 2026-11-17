@@ -697,7 +697,7 @@ it.each(["success", "failure"] as const)("source cleanup starts after successful
   const { openFreezeJournal } = await import("../journal"), journal = openFreezeJournal(join(h.f.global.root, "roam", "journal.db"));
   const operation = { id: "sync-source-cleanup", machineId: HUB, kind: "move", expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: HUB } };
   journal.begin(operation); journal.record(operation.id, "move-request", { operation, sessionId: "session-a", destinationMachine: HUB });
-  journal.record(operation.id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", blockers: ["process-exit-unproven"] } });
+  journal.record(operation.id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", reason: "move-source-stop-pending", blockers: ["process-exit-unproven"] } });
   if (mode === "failure") h.unreachable();
   const before = h.timers.length;
   try {

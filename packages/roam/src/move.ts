@@ -104,7 +104,8 @@ export function parseSourceCleanup(value: unknown): SourceCleanup {
     case 'done': return { status: 'done' };
     case 'pending': {
       if (!('blockers' in value) || !Array.isArray(value.blockers) || !value.blockers.length) refuse('move-journal-invalid');
-      return { status: 'pending', blockers: value.blockers.map(validateBlockerId) };
+      if (!('reason' in value) || typeof value.reason !== 'string' || !Object.hasOwn(MOVE_REFUSAL_MESSAGES, value.reason)) refuse('move-journal-invalid');
+      return { status: 'pending', reason: value.reason as MoveRefusalCode, blockers: value.blockers.map(validateBlockerId) };
     }
     default: return refuse('move-journal-invalid');
   }
@@ -356,7 +357,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     if (moved && (failedAction === 'source-retire' || failedAction === 'cleanup')) {
       const blockers = error instanceof MoveError && error.refusal.blockers.length ? error.refusal.blockers
         : [validateBlockerId(error instanceof MoveError ? error.refusal.code : failedAction === 'source-retire' ? 'move-source-stop-pending' : 'move-pending')];
-      const sourceCleanup: SourceCleanup = { status: 'pending', blockers };
+      const sourceCleanup: SourceCleanup = { status: 'pending', reason: failedAction === 'cleanup' ? 'move-cleanup-pending' : 'move-source-stop-pending', blockers };
       const pending = { sessionId: moved.source.sessionId, sourceMachine: moved.source.machineId, sourceCleanup: json(sourceCleanup) };
       const previous = rows.filter(row => row.action === 'move-source-cleanup-pending').at(-1);
       if (!previous || !isDeepStrictEqual(previous.result, pending)) ports.journal.record(id, 'move-source-cleanup-pending', pending);

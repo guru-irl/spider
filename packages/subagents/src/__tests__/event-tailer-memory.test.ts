@@ -105,6 +105,28 @@ describe("tailer replay allocation", () => {
     expect(rowsRead).toBeLessThanOrEqual(10);
   });
 
+  it("replays interleaved tracked runs in order without losing rows across pages", () => {
+    db = freshDb();
+    const store = new RunStore(db), tailer = new RunEventTailer(db);
+    const ids = [store.create({ sessionId: "s1", agent: "worker" }).id, store.create({ sessionId: "s1", agent: "worker" }).id];
+    for (const id of ids) tailer.track(id);
+    const insert = db.prepare("INSERT INTO run_events(run_id,session_id,ts,type,summary) VALUES (?,'s1',?,'message',?)");
+    db.transaction(() => {
+      for (let i = 0; i < 250; i++) {
+        insert.run("foreign", i, "ignored");
+        insert.run(ids[i % 2], i, String(i));
+      }
+    })();
+    const seen: string[] = [];
+    offs.push(bus.on(event => { if (ids.includes(event.runId ?? "")) seen.push(event.summary ?? ""); }));
+    tailer.poll();
+    expect(seen).toEqual(Array.from({ length: 200 }, (_, i) => String(i)));
+    tailer.poll();
+    expect(seen).toEqual(Array.from({ length: 250 }, (_, i) => String(i)));
+    tailer.poll();
+    expect(seen).toHaveLength(250);
+  });
+
   it("replays already queued supervisor rows after a terminal event across pages", () => {
     db = freshDb();
     const { id } = new RunStore(db).create({ sessionId: "s1", agent: "worker" });

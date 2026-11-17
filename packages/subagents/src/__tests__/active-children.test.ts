@@ -164,6 +164,31 @@ describe("active children in the session registry", () => {
     }
   });
 
+  it("releases tracking after an asynchronous cancellation succeeds", async () => {
+    const f = fixture();
+    let resolveKill!: () => void;
+    f.handle.killAsync = () => new Promise(resolve => { resolveKill = resolve; });
+    const row = f.runner.runAsync(task);
+    const killing = f.handle.killAsync!(1, "cancel fixture");
+    const seen: string[] = [];
+    const off = bus.on(event => { if (event.runId === row.id && event.type === "spider_usage") seen.push(event.type); });
+    tailer.poll();
+    db.prepare("INSERT INTO run_events(run_id,session_id,ts,type) VALUES (?,'parent',1,'spider_usage')").run(row.id);
+    tailer.poll();
+    off();
+    expect(seen).toEqual(["spider_usage"]);
+    resolveKill();
+    await killing;
+    tailer.poll();
+    const prepare = vi.spyOn(db, "prepare");
+    tailer.poll();
+    expect(prepare).not.toHaveBeenCalled();
+    prepare.mockRestore();
+    f.settle({ exitCode: 143 });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(f.store.get(row.id)?.status).toBe("cancelled");
+  });
+
   it("does not count a failed launch", () => {
     const runner = new Runner(db, "parent", root, {
       store: new RunStore(db), tailer, dbPath: join(root, "project.db"), scratchRoot: root,

@@ -232,7 +232,7 @@ it("both locks fail closed on missing identity evidence or file claim failure", 
 }, 5000);
 
 
-it.each([false, true])("shutdown waits for owned child exit proof, ignoring signal=%s", async ignore => {
+it.each([false, true])("shutdown polls exact child identity without depending on an exit event, ignoring signal=%s", async ignore => {
   const f = fixture(), child = spawn(process.execPath, ["-e", `${ignore ? "process.on('SIGTERM', () => {});" : ""} process.send('ready'); setInterval(() => {}, 1000);`],
     { stdio: ["ignore", "ignore", "ignore", "ipc"] });
   const exited = once(child, "exit"), inventory = createProcessInventory(join(f.root, "herdr"));
@@ -250,12 +250,12 @@ it.each([false, true])("shutdown waits for owned child exit proof, ignoring sign
       dormant: async () => { retired = true; return { code: 0 as const, reason: "retired", operationId: operation.id, epoch: 2, home: null, repairCommand: null, value: {} }; },
       exit: { deadline: Date.now() + 200, now: Date.now,
         async exited(owner: typeof identity) { const state = await inventory.probe(owner.pid); return state.kind === "absent" || state.kind === "live" && state.startIdentity !== owner.startTime; },
-        async wait(_owner: typeof identity, signal: AbortSignal) { waited = true; await Promise.race([exited, new Promise(resolve => signal.addEventListener("abort", resolve, { once: true }))]); },
+        async wait() { waited = true; throw new Error("This process does not own the child event"); },
       },
     };
     expect(await control.controlSession(operation, ports)).toMatchObject(ignore ? { code: 3, reason: "process-exit-unproven" } : { code: 0, reason: "retired" });
     expect(retired).toBe(!ignore);
-    expect(waited).toBe(true);
+    expect(waited).toBe(false);
     if (!ignore) expect(await inventory.probe(identity.pid)).toEqual({ kind: "absent" });
     else expect(f.journal.lookupOperation(operation.id)?.state).toBe("pending");
   } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await exited; }

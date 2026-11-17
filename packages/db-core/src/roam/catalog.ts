@@ -1,3 +1,4 @@
+import { writeLocal } from "./local-state";
 import type { Db } from "../db";
 import { storeScope } from "./codec";
 import { openRoamStoreReadOnly, roamReplicaPath } from "./reads";
@@ -39,7 +40,14 @@ export function catalogReplica(globalDb: Db, key: StoreKey, replicaDb: Db): void
   globalDb.raw.transaction(() => {
     const locations = globalDb.prepare("SELECT * FROM roam_locations").all() as LocationRow[];
     for (const row of locations) {
-      const existing = parseLocationStores(JSON.parse(row.stores_json), { allowEmpty: true });
+      let existing: StoreKey[];
+      try { existing = parseLocationStores(JSON.parse(row.stores_json), { allowEmpty: true }); }
+      catch {
+        ids.delete(row.session_id);
+        writeLocal(globalDb, "catalog-diagnostic", row.session_id, { reason: "location-stores-invalid" });
+        continue;
+      }
+      writeLocal(globalDb, "catalog-diagnostic", row.session_id, undefined);
       if (!existing.includes(key)) continue;
       const stillPresent = ids.delete(row.session_id);
       recordLocation(globalDb, { sessionId: row.session_id, stores: stillPresent ? existing : existing.filter(value => value !== key), home: homeFor(globalDb, row.session_id) });

@@ -114,7 +114,7 @@ export interface IntercomStoreOptions {
 }
 export type IntercomAcceptance =
   | { kind: "accepted" | "duplicate"; identity: IntercomIdentity; acceptance: Extract<AcceptanceEvidence, { durable: true }>; receipt?: MessageReceipt }
-  | { kind: "refused"; reason: "queue-full" | "message-too-large" | "intercom-topology-changing" };
+  | { kind: "refused"; reason: "queue-full" | "message-too-large" | "invalid-message" | "intercom-topology-changing" };
 export type OutboundMessage = (
   | { from: SessionAddress; endpoint: SessionEndpoint; message: Message; nextHop: MachineId }
   | { frame: IntercomFrame; nextHop: MachineId }

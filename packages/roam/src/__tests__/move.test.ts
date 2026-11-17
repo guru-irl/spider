@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
 import type { ReplicaFixture } from "@spider/db-core/testutil";
 import { seedSession } from "@spider/db-core/roam/seed";
-import type { Home, HubOperationReadiness, Probe, StoreBarrier } from "@spider/db-core/roam/types";
+import type { Home, HubOperationReadiness, JsonObject, Probe, StoreBarrier } from "@spider/db-core/roam/types";
 import type { IntercomIntakeFence, SessionEndpoint } from "@spider/intercom/protocol";
 import type { CoreId, Generation, SessionId, TerminalAddress, TerminalId, TerminalIdentity } from "@spider/herdr/contracts";
 import { createTerminalRegistry } from "@spider/herdr/sessions/registry";
@@ -566,6 +566,69 @@ it("unproved terminal removal remains pending cleanup without rollback", async (
   expect(f.states().at(-1)).toBe("source-stopped");
   expect((await f.registry.list()).map(row => row.owner.terminal.terminalId)).toEqual(["source-terminal"]);
   expect(f.held).toBe(true);
+}, 5000);
+
+it("recovery completes a pending start from durable readiness without a second start", async () => {
+  const f = fixture(), start = f.ports.start, endpoint = f.ports.intercom.destinationEndpoint;
+  f.ports.start = async (...args) => ({ ...await start(...args), code: 3, reason: "readiness-pending", value: null });
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3, reason: "move-destination-pending" });
+  const saved = f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-action-complete" && row.result.action === "start");
+  expect(saved).toHaveLength(1);
+  expect(saved[0].result.value).toMatchObject({ code: 3 });
+  f.ports.intercom.destinationEndpoint = async () => { throw new Error("intercom-endpoint-not-ready"); };
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 3, reason: "intercom-endpoint-not-ready" });
+  const proved = f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-action-complete" && row.result.action === "start");
+  expect(proved).toHaveLength(2);
+  expect(proved[0]).toEqual(saved[0]);
+  expect(proved[1].result.value).toMatchObject({ code: 0, reason: "ready" });
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 3, reason: "intercom-endpoint-not-ready" });
+  expect(f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-action-complete" && row.result.action === "start")).toEqual(proved);
+  f.ports.intercom.destinationEndpoint = endpoint;
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { home: { machineId: BOX, epoch: 2 } } });
+  expect(f.events.filter(event => event === "start")).toHaveLength(1);
+}, 5000);
+
+it.each([3, 1] as const)("recovery never retries a saved start with code %s without readiness", async code => {
+  const f = fixture(); let starts = 0;
+  f.ports.start = async (home, _prepared, operation) => {
+    starts++;
+    return { code, reason: code === 3 ? "readiness-pending" : "participant-start-refused", operationId: operation.id,
+      home, epoch: home.epoch, repairCommand: null, value: null };
+  };
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3, reason: "move-destination-pending" });
+  const saved = f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-action-complete" && row.result.action === "start");
+  expect(saved[0].result.value).toMatchObject({ code, reason: code === 3 ? "readiness-pending" : "participant-start-refused" });
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 3, reason: "move-destination-pending" });
+  expect(f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-action-complete" && row.result.action === "start")).toEqual(saved);
+  expect(starts).toBe(1);
+  expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
+}, 5000);
+
+it("recovery reuses a saved successful start", async () => {
+  const f = fixture(), endpoint = f.ports.intercom.destinationEndpoint;
+  f.ports.intercom.destinationEndpoint = async () => { throw new Error("intercom-endpoint-not-ready"); };
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3, reason: "intercom-endpoint-not-ready" });
+  const saved = f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-action-complete" && row.result.action === "start");
+  expect(saved[0].result.value).toMatchObject({ code: 0 });
+  f.ports.intercom.destinationEndpoint = endpoint;
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved" });
+  expect(f.events.filter(event => event === "start")).toHaveLength(1);
+  expect(f.ports.journal.read(f.request.operation.id).filter(row => row.action === "move-action-complete" && row.result.action === "start")).toEqual(saved);
+}, 5000);
+
+it.each(["readiness", "refusal"] as const)("recovery refuses conflicting final start %s results as corrupt", async conflict => {
+  const f = fixture();
+  f.ports.intercom.destinationEndpoint = async () => { throw new Error("intercom-endpoint-not-ready"); };
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 3, reason: "intercom-endpoint-not-ready" });
+  const prior = f.ports.journal.read(f.request.operation.id).find(row => row.action === "move-action-complete" && row.result.action === "start")!;
+  const value = structuredClone(prior.result.value) as JsonObject;
+  if (conflict === "refusal") { value.code = 1; value.reason = "participant-start-refused"; value.value = null; }
+  else (value.value as JsonObject).terminal = "different-terminal";
+  f.ports.journal.record(f.request.operation.id, "move-action-complete", { action: "start", value: JSON.parse(JSON.stringify(value)) });
+  const saved = f.ports.journal.read(f.request.operation.id);
+  expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 3, reason: "move-journal-invalid" });
+  expect(f.ports.journal.read(f.request.operation.id)).toEqual(saved);
+  expect(f.events.filter(event => event === "start")).toHaveLength(1);
 }, 5000);
 
 it("missing destination endpoint stays pending after durable readiness", async () => {

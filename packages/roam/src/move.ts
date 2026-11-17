@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { storeScope } from "@spider/db-core/roam/codec";
@@ -178,19 +179,33 @@ export function withMoveLock<T>(sessionId: string, ports: MovePorts, effect: () 
   return withProcessLock(join(dirname(resolve(ports.globalDb.raw.name)), "roam", "moves"), sessionId, effect);
 }
 
+function actionReceipt(rows: ReturnType<Journal["read"]>, name: string): ReturnType<Journal["read"]>[number] | undefined {
+  const completed = rows.filter(row => row.action === "move-action-complete" && row.result.action === name);
+  if (name !== "start") return completed[0];
+  const final = completed.filter(row => {
+    const value = row.result.value;
+    if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.code !== "number" || ![0, 1, 2, 3].includes(value.code)) refuse("move-journal-invalid");
+    return value.code !== 3;
+  });
+  if (final.some(row => !isDeepStrictEqual(row.result.value, final[0].result.value))) refuse("move-journal-invalid");
+  // Retain a pending reply when no final proof exists; it must never replay the start effect.
+  return final[0] ?? completed[0];
+}
+
 /** Shared journal-boundary parsers; recovery uses the same validation as the initial move. */
 export const moveEvidence: {
   sameHome: typeof sameHome; checkReply: typeof checkReply; freezeReply: typeof freezeReply;
   preparedReply: typeof preparedReply; readinessReply: typeof readinessReply; observationReply: typeof observationReply;
   completedOutcome: typeof completedOutcome; participantOperation: typeof participantOperation; json: typeof json; outcome: typeof outcome;
-} = { sameHome, checkReply, freezeReply, preparedReply, readinessReply, observationReply, completedOutcome, participantOperation, json, outcome };
+  actionReceipt: typeof actionReceipt;
+} = { sameHome, checkReply, freezeReply, preparedReply, readinessReply, observationReply, completedOutcome, participantOperation, json, outcome, actionReceipt };
 
 async function forward(request: MoveRequest, ports: MovePorts, recovering = false): Promise<MoveSessionOutcome> {
   const id = request.operation.id, powerKey = movePowerKey(ports, id);
   let checked = false, begunNew = false, slot: string | null = null;
   const action = async <T>(name: string, effect: () => Promise<T> | T): Promise<T> => {
     if (recovering) {
-      const completed = ports.journal.read(id).find(row => row.action === "move-action-complete" && row.result.action === name);
+      const completed = actionReceipt(ports.journal.read(id), name);
       if (completed) return structuredClone(completed.result.value) as T;
     }
     ports.journal.record(id, "move-action-start", { action: name });
@@ -202,6 +217,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     if (!recovering || !ports.journal.read(id).some(row => row.action === "move-state" && row.result.state === state)) ports.journal.record(id, "move-state", { state, ...evidence });
   };
   try {
+    actionReceipt(ports.journal.read(id), "start");
     let begun;
     try { begun = ports.journal.begin(request.operation); }
     catch (error) { refuse(error instanceof Error && error.message === "Operation ID already has different arguments" ? "move-operation-conflict" : "move-journal-unavailable"); }

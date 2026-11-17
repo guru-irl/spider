@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { Home, JsonObject } from "@spider/db-core/roam/types";
 import type { DestinationObservation, FreezeAck, MoveCheck, MovePorts, MoveRequest, MoveSessionOutcome, Operation, PreparedMove, WorkspaceRestore } from "./contracts";
 import { recoveredForgottenHome } from "./forget";
@@ -19,12 +20,19 @@ function requestFor(id: string, ports: MovePorts): MoveRequest {
   return request;
 }
 function actionValue<T>(ports: MovePorts, id: string, action: string): T | null {
-  const row = ports.journal.read(id).find(row => row.action === "move-action-complete" && row.result.action === action);
+  const row = evidence.actionReceipt(ports.journal.read(id), action);
   return row ? structuredClone(row.result.value) as T : null;
 }
 function recordAction(ports: MovePorts, id: string, action: string, value: unknown): void {
-  if (!ports.journal.read(id).some(row => row.action === "move-action-complete" && row.result.action === action))
-    ports.journal.record(id, "move-action-complete", { action, value: evidence.json(value) });
+  const prior = evidence.actionReceipt(ports.journal.read(id), action), next = evidence.json(value);
+  if (prior) {
+    if (action !== "start") return;
+    if ((prior.result.value as JsonObject).code !== 3) {
+      if (!isDeepStrictEqual(prior.result.value, next)) throw new MoveError("move-journal-invalid");
+      return;
+    }
+  }
+  ports.journal.record(id, "move-action-complete", { action, value: next });
 }
 function receipt(ports: MovePorts, id: string): Home | null {
   const row = ports.globalDb.prepare("SELECT committed_home_json FROM roam_home_actions WHERE move_id=?").get(id) as { committed_home_json: string | null } | undefined;
@@ -108,6 +116,7 @@ async function complete(request: MoveRequest, ports: MovePorts, result: MoveSess
 }
 async function locked(request: MoveRequest, ports: MovePorts, cancel: boolean): Promise<MoveSessionOutcome> {
   const id = request.operation.id, rows = ports.journal.read(id), done = rows.find(row => row.action === "done");
+  evidence.actionReceipt(rows, "start");
   if (done) {
     await retryAbortedWorkspace(id, ports);
     return complete(request, ports, evidence.completedOutcome(done.result, id));

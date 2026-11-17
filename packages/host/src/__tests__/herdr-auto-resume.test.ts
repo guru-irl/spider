@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -67,8 +67,11 @@ it.each(['/bin/bash', '/bin/zsh'])('a returning %s prompt ends pi, while a reboo
     child.stdin!.write("printf 'background-one\\n'\nprintf 'background-two\\n'\n"); await until('background-two');
     expect(await offerResume(terminal, restart), 'a still-running pi stays live at the prompt').not.toBeNull();
     const live = await registry.get(terminal); expect(live?.activityId).toBeTruthy();
-    const [liveMarker] = (await readdir(join(state, 'resume-starts', (await readdir(join(state, 'resume-starts')))[0]))).filter(name => name.startsWith('live-'));
+    const markerDir = join(state, 'resume-starts', (await readdir(join(state, 'resume-starts')))[0]);
+    const [liveMarker] = (await readdir(markerDir)).filter(name => name.startsWith('live-'));
     expect(liveMarker).toContain(live!.activityId!);
+    expect(JSON.parse(await readFile(join(markerDir, liveMarker), 'utf8'))).toMatchObject({ version: 1, pid: backgroundPid, startIdentity: expect.any(String) });
+    expect((await stat(join(markerDir, liveMarker))).mode & 0o777).toBe(0o600);
     child.stdin!.write("builtin kill -TERM \"$_bgpid\"; wait \"$_bgpid\" 2>/dev/null; printf 'background-stopped\\n'\nprintf 'background-next\\n'\n"); await until('background-next'); backgroundPid = undefined;
     expect(await offerResume(terminal, restart), 'a stopped background pi ends on the next prompt').toBeNull();
     await fire('session_start', 'startup');

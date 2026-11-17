@@ -12,7 +12,7 @@ import type { Owner, SessionId, Generation, TerminalIdentity } from '../contract
 import { createTerminalRegistry } from '../sessions/registry.js';
 import { createProcessPresence } from '../sessions/presence.js';
 import { createSessionLeases, type ProcessInventoryPorts } from '../sessions/lease.js';
-import { buildResumeBlock, offerResume, resumeOfferShell, type ResumeHookOptions } from '../sessions/resume.js';
+import { buildResumeBlock, offerResume, resumeOfferShell, resumeWatchShell, type ResumeHookOptions } from '../sessions/resume.js';
 let root: string; let file: string; let terminal: TerminalIdentity; let owner: Owner; let options: ResumeHookOptions;
 beforeEach(async () => {
   await mkdir(resolve('.spider/scratch/h'), { recursive: true }); root = await mkdtemp(resolve('.spider/scratch/h/g2-')); file = join(root, "session 'quoted'.jsonl");
@@ -39,6 +39,17 @@ async function fakeCli(mode: 'offer' | 'auto' = 'offer') {
   await writeFile(options.cliPath, `import {appendFileSync} from 'node:fs';\nconst a=process.argv.slice(2); if(a[0]==='resume-offer') process.stdout.write(${JSON.stringify(source)}); else appendFileSync(${JSON.stringify(join(root, 'launches.jsonl'))},JSON.stringify({cwd:process.cwd(),argv:a,postRc:process.env.POST_RC})+'\\n');`);
   await writeFile(join(root, 'launches.jsonl'), '');
 }
+it.each(['/bin/bash', '/bin/zsh'])('the first %s prompts preserve the live marker inherited after reboot', async binary => {
+  if (!existsSync(binary)) return;
+  const registry = createTerminalRegistry(root);
+  await registry.record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: 2147483647, startIdentity: 'old' });
+  const watch = resumeWatchShell(root, terminal);
+  const result = await shell(watch + firstPrompt(binary) + firstPrompt(binary), true, true, binary);
+  expect(result.code).toBe(0); expect(result.out).toBe('');
+  expect(await offerResume(terminal, ports())).not.toBeNull();
+  expect(await offerResume(terminal, { ...ports(), autoResumeRoot: root })).not.toBeNull();
+});
+
 it('a restored shell offers the exact session without auto-running it', async () => {
   await fakeCli(); const block = buildResumeBlock(options); const offered = await shell(block);
   expect(offered.out).toContain('spider_resume'); expect(await readFile(join(root, 'launches.jsonl'), 'utf8')).toBe('');

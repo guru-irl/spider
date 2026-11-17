@@ -581,6 +581,50 @@ it("runs only on the selected local core and queries finished terminals by opera
   expect(calls[1].argv).toEqual(["ls", "--all", "--json", "--label", "spider.roam.operation=op-1"]);
 }, 5000);
 
+const compactExitedTerminal = { address: "t1", agent: "sh", cwd: "/home/runner/work/spider/spider/.spider/scratch/e2/ltink",
+  exit_code: 17, reason: "exited", state: "finished", turn: 0 };
+
+async function reconcileCompactTerminal(row: unknown, recordedAddress: string | null = "t1") {
+  const f = fixture();
+  f.actions.unshift({ action: "exact-attempt", result: { attemptId: "attempt-1" } });
+  if (recordedAddress !== null) f.actions.push({ action: "exact-terminal", result: { terminalId: recordedAddress } });
+  const queries: string[][] = [];
+  const local = launcher.createLocalExactHc({
+    coreId: f.ports.coreId,
+    async invoke(argv) { queries.push([...argv]); return { terminals: [row] }; },
+    async invokeTracked() { throw new Error("Reconciliation must not launch"); },
+  });
+  const evidence = await launcher.createLaunchReconciler({ ...f.ports, terminals: local.terminals })("op-1", { signal: new AbortController().signal });
+  return { evidence, queries };
+}
+
+it("proves the recorded launch exited from the compact native terminal row", async () => {
+  const { evidence, queries } = await reconcileCompactTerminal(compactExitedTerminal);
+  expect(evidence.proof).toEqual({ kind: "terminal-exited-without-adoption", operationId: "op-1", coreId: "core-1",
+    terminalId: "t1", terminalExited: true, lockNeverAdopted: true });
+  expect(queries).toEqual([["ls", "--all", "--json", "--label", "spider.roam.operation=op-1", "--label", "spider.roam.attempt=attempt-1"]]);
+}, 5000);
+
+it.each([
+  ["missing exit code", { ...compactExitedTerminal, exit_code: undefined }],
+  ["noninteger exit code", { ...compactExitedTerminal, exit_code: 1.5 }],
+  ["missing reason", { ...compactExitedTerminal, reason: undefined }],
+  ["unknown reason", { ...compactExitedTerminal, reason: "unknown" }],
+  ["killed reason", { ...compactExitedTerminal, reason: "killed" }],
+  ["signal reason", { ...compactExitedTerminal, reason: "signal" }],
+  ["different address", { ...compactExitedTerminal, address: "t2" }],
+  ["missing address", { ...compactExitedTerminal, address: undefined }],
+  ["missing state", { ...compactExitedTerminal, state: undefined }],
+  ["running state", { ...compactExitedTerminal, state: "live" }],
+] as const)("keeps compact launch exit uncertain with %s", async (_name, row) => {
+  const { evidence } = await reconcileCompactTerminal(row);
+  expect(evidence.proof).toBeUndefined();
+}, 5000);
+
+it("does not trust a compact terminal without a recorded launch address", async () => {
+  expect((await reconcileCompactTerminal(compactExitedTerminal, null)).evidence.proof).toBeUndefined();
+}, 5000);
+
 it("observes the actual local fake-hc process through the production adapter", async () => {
   const { createProductionLocalExactHc } = await import("../launcher.js");
   await mkdir(resolve(".spider/scratch/h"), { recursive: true });

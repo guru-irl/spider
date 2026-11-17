@@ -60,7 +60,9 @@ import { createSessionLeases } from ${source('../../src/sessions/lease.ts')};
 import { createLocalDiagnosticPorts } from ${source('../../../roam/src/local-diagnostics.ts')};
 import { fixtureProcessDomain } from ${source('../../../host/src/herdr/fixture-process-domain.ts')};
 import { snapshotWorkspace } from ${source('../../../roam/src/workspace.ts')};
-import { openLocalCore } from ${source('../../../roam/src/runtime.ts')};
+import { openLocalCore, openLocalRuntime } from ${source('../../../roam/src/runtime.ts')};
+import { sessionHome } from ${source('../../../roam/src/homes.ts')};
+import { retireParticipantSessions, supervisorRetirementLifecycle } from ${source('../../../roam/src/participant-supervisor.ts')};
 import { openFreezeJournal } from ${source('../../../roam/src/journal.ts')};
 
 const descriptor = JSON.parse(readFileSync(${JSON.stringify(join(suite.root, 'move-machines.json'))}, 'utf8'));
@@ -200,6 +202,20 @@ if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id &&
   }
   process.exitCode = code;
   process.stdout.write(JSON.stringify({ code }) + '\\n');
+} else if (args[0] === 'fixture-retirement') {
+  const core = openLocalRuntime(root);
+  let runtime, service;
+  try {
+    runtime = await createHostMoveBindings({ root, globalDb: core.db, config: core.config, journal: core.journal, sessionId: args[1], transport: {} as never });
+    service = supervisorRetirementLifecycle(root, core.config, () => retireParticipantSessions(core.agent, async sessionId => {
+      const home = sessionHome(core.db, sessionId);
+      if (!home || home === 'unknown') return { kind: 'uncertain' as const };
+      return (await runtime.bindings.participant!.observation(home, { id: 'reconnect-inspect', kind: 'session-inspect', machineId: machine.id, expectedEpoch: home.epoch, args: { sessionId } })).owner;
+    }));
+    await service.start();
+    process.stdout.write('move retirement ready\\n');
+    await new Promise(resolve => { process.once('SIGTERM', resolve); process.once('SIGINT', resolve); });
+  } finally { await service?.stop(); await runtime?.close(); core.close(); }
 } else if (args[0] === 'fixture-supervisor') {
   const { startProductionSupervisor } = await import(pathToFileURL(descriptor.supervisor).href);
   const herdr = join(root, 'herdr'), domain = fixtureProcessDomain(herdr, process.env);
@@ -244,7 +260,7 @@ export interface MoveStory {
   home(): { machine_id: string; epoch: number; move_id: string | null };
   trees(cwd: string): Promise<{ head: string; index: string; working: string }>;
   sync(): Promise<void>; close(): Promise<void>;
-  effects: string; faults: string; untouched: string; untouchedDigest: string; presentation: StoryPresentation; stopBox(): Promise<void>;
+  effects: string; faults: string; untouched: string; untouchedDigest: string; presentation: StoryPresentation; stopBox(): Promise<void>; reconnectBox(): Promise<void>;
 }
 
 async function secondBoxCore(suite: Suite) {
@@ -495,7 +511,15 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
     };
     const sync = async () => { for (const machine of machines.slice(1)) expect(await control(hub, ['roam', 'sync', machine.id])).toMatchObject({ code: 0 }); };
     return { suite, sessionId, originalFile, original, machines, owners, owner, home, trees, cli: control, moveTo, sync, effects, faults, untouched, untouchedDigest,
-      presentation, stopBox: () => supervisors.get(BOX)!.stop(), close };
+      presentation, stopBox: () => supervisors.get(BOX)!.stop(), async reconnectBox() {
+        const log = suite.ownPath(join(suite.root, 'move-retirement.log'));
+        const service = spawnOwned(suite.ledger, { label: 'move-retirement', command: process.execPath, args: [cli, 'fixture-retirement', sessionId], env: box.env,
+          cwd: suite.root, stdio: { log } });
+        services.push(service);
+        await waitFor('returning machine accepts only retirement', async () => {
+          const text = await readFile(log, 'utf8'); if (service.child.exitCode !== null) throw Error(text); return text;
+        }, text => text.includes('move retirement ready'), deadline(20_000));
+      }, close };
   } catch (error) { await close(); throw error; }
 }
 

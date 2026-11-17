@@ -266,6 +266,7 @@ export async function runRecoveryCases(suite: Suite): Promise<void> {
       try { expect(db.prepare('SELECT machine_id FROM roam_machine_revocations WHERE machine_id=?').get(BOX)).toEqual({ machine_id: BOX }); }
       finally { db.close(); }
       await writeFile(f.faults, JSON.stringify({ drop: [] }));
+      await f.reconnectBox();
       const reconnect = await f.cli(hub, ['roam', 'sync', BOX]);
       expect(reconnect.code).not.toBe(0);
       const boxDb = openDb(join(box.root, 'spider.db'));

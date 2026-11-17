@@ -819,6 +819,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
           owned.intent.epoch !== current.epoch || owned.intent.moveId !== current.moveId || owned.intent.desired !== 'running' || owned.intent.suspended !== null ||
           recorded.sessionId !== id || recorded.epoch !== current.epoch) throw new MoveAdapterError('participant-owner-unproved');
       const prior = journal.begin({ ...operation, kind: 'session-start', args: { ...operation.args, home: { ...current }, intent: { ...owned.intent } } });
+      if (prior.kind === 'done') return prior.result as unknown as Outcome<JsonObject>;
       const ready = await participant.readiness(recorded);
       if (ready) {
         if (!participantLaunchSuccessor(journal, participant.config.machineId, owned.intent, operation.id, recorded.launchId, ready.opId) || ready.sessionId !== id || ready.epoch !== current.epoch || ready.file !== owned.intent.file || ready.cwd !== owned.intent.cwd) throw new MoveAdapterError('participant-readiness-invalid');
@@ -827,7 +828,7 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
       }
       const observed = await participant.observation(current, operation);
       if (!sameHome(observed.home, current)) throw new MoveAdapterError('participant-home-mismatch');
-      if (prior.kind === 'done' || observed.owner.kind !== 'absent' || observed.readiness !== null || !observed.launchFailure)
+      if (observed.owner.kind !== 'absent' || observed.readiness !== null || !observed.launchFailure)
         return { code: 3, reason: 'readiness-pending', operationId: operation.id, home: current, epoch: current.epoch, repairCommand: null, value: null };
       reinstall = !rows.some(row => row.action === 'restore-reinstalled' && row.result.launchId === recorded.launchId);
     }

@@ -415,3 +415,20 @@ it("cleanup coalesces evidence arriving during a flight into one trailing run", 
   expect(f.journal.lookupOperation("second-cleanup")?.state).toBe("done");
   expect(calls).toBe(2);
 }, 5000);
+
+it.each(["outcome", "throw"] as const)("source cleanup exposes its %s reason in cached diagnostics", async mode => {
+  const { readLocal } = await import("@spider/db-core/roam/local-state"), { readStatus } = await import("../diagnostics"), f = await fixture();
+  const operation = { id: "diagnostic-cleanup", machineId: HUB, kind: "move", expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: OTHER } };
+  f.journal.begin(operation); f.journal.record(operation.id, "move-request", { operation, sessionId: "session-a", destinationMachine: OTHER });
+  f.journal.record(operation.id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", reason: "move-source-stop-pending", blockers: ["process-exit-unproven"] } });
+  if (mode === "outcome") f.journal.record(operation.id, "move-state", { phase: "invalid-fixture-state" });
+  const service = createMoveRuntimeService({ root: f.root, globalDb: f.global.db, config: f.ports.config, journal: f.journal, transport: {} as Transport }, async input => {
+    if (mode === "throw") throw Object.assign(new Error("unavailable /fixture/private secret=private-value"), { reason: "fixture-transport-unavailable" });
+    return f.factory(input);
+  });
+  await service.recoverCleanup(BOX);
+  const reason = mode === "outcome" ? "move-journal-invalid" : "fixture-transport-unavailable";
+  expect(readLocal(f.global.db, "recovery-diagnostic", operation.id)).toEqual({ reason });
+  const status = readStatus(f.ports.config, { globalDb: f.global.db, journalDb: f.db, stores: [], now: 10, observations: [] });
+  expect(status.diagnostics).toContainEqual({ severity: "warning", reason: `Move recovery pending: ${reason}.`, repairCommand: `spider roam recover ${operation.id}` });
+}, 5000);

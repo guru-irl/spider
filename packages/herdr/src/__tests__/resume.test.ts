@@ -34,7 +34,7 @@ async function shell(body: string, hc = true, interactive = true, binary = '/bin
 }
 async function fakeCli(mode: 'offer' | 'auto' = 'offer') {
   const source = resumeOfferShell({ sessionFile: file, sessionId: owner.sessionId, cwd: root, name: owner.name, argv: ['pi', '--session', file], environment: { agentDirectory: join(root, 'agent'), extensionArguments: [] }, terminal }, options, mode);
-  await writeFile(options.cliPath, `import {appendFileSync} from 'node:fs';\nconst a=process.argv.slice(2); if(a[0]==='resume-offer') process.stdout.write(${JSON.stringify(source)}); else appendFileSync(${JSON.stringify(join(root, 'launches.jsonl'))},JSON.stringify({cwd:process.cwd(),argv:a})+'\\n');`);
+  await writeFile(options.cliPath, `import {appendFileSync} from 'node:fs';\nconst a=process.argv.slice(2); if(a[0]==='resume-offer') process.stdout.write(${JSON.stringify(source)}); else appendFileSync(${JSON.stringify(join(root, 'launches.jsonl'))},JSON.stringify({cwd:process.cwd(),argv:a,postRc:process.env.POST_RC})+'\\n');`);
   await writeFile(join(root, 'launches.jsonl'), '');
 }
 it('a restored shell offers the exact session without auto-running it', async () => {
@@ -45,6 +45,28 @@ it('a restored shell offers the exact session without auto-running it', async ()
   expect(call.cwd).toBe(owner.cwd); expect(call.argv).toEqual(['resume', '--config', options.configPath, '--file', file, '--session-id', 's1', '--cwd', root]);
   expect(await offerResume(terminal, ports())).toMatchObject({ argv: ['pi', '--session', file], cwd: root, name: owner.name });
 });
+it.each(['/bin/bash', '/bin/zsh'])('auto starts at the first %s prompt after the rc file and runs once', async binary => {
+  if (!existsSync(binary)) return;
+  await fakeCli('auto');
+  const rc = join(root, binary.endsWith('zsh') ? '.zshrc' : 'bashrc');
+  const existingHook = binary.endsWith('zsh') ? "precmd() { printf 'existing hook\\n'; }\n" : "PROMPT_COMMAND=\"printf 'existing hook\\\\n'\"\n";
+  await writeFile(rc, existingHook + buildResumeBlock(options) + "\nexport POST_RC=loaded\nprintf 'rc tail\\n'\nPS1=''\n");
+  const env = { ...process.env, HOME: root, ZDOTDIR: root, HC_TERMINAL_ID: 't1', HC_TERMINAL_SOCKET: terminal.socket };
+  const result = await new Promise<{ out: string; err: string; code: number | null }>((resolveRun, reject) => {
+    const child = spawn(binary, binary.endsWith('zsh') ? ['-i'] : ['--noprofile', '--rcfile', rc, '-i'], { cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '', err = ''; child.stdout.on('data', chunk => out += chunk); child.stderr.on('data', chunk => err += chunk);
+    child.on('error', reject); child.on('close', code => resolveRun({ out, err, code }));
+    child.stdin.end("printf 'first command\\n'\nprintf 'second command\\n'\nexit\n");
+  });
+  expect(result.code, result.err).toBe(0);
+  expect(result.out.indexOf('rc tail')).toBeLessThan(result.out.indexOf('Resuming '));
+  expect(result.out.indexOf('Resuming ')).toBeLessThan(result.out.indexOf('first command'));
+  expect(result.out.match(/existing hook/g)?.length).toBeGreaterThanOrEqual(2);
+  const lines = (await readFile(join(root, 'launches.jsonl'), 'utf8')).trim().split('\n');
+  expect(lines).toHaveLength(1);
+  expect(JSON.parse(lines[0])).toMatchObject({ cwd: root, postRc: 'loaded' });
+});
+
 it('auto resumes the exact session once and returns to the shell', async () => {
   await fakeCli('auto');
   const result = await shell(buildResumeBlock(options) + '\nprintf "shell returned\\n"');

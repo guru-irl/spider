@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, it, vi } from 'vitest';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { SessionId } from '../contracts.js';
 import { createJobStore } from '../jobs/store.js';
 
@@ -27,6 +29,32 @@ it('reserves the journal size plus a growth sentinel, not the journal limit', as
   expect(h.reservations).toEqual([71]);
   expect(h.closed()).toBe(1);
 });
+it('round trips a real journal with a size-bounded read', async () => {
+  const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+  const root = await fs.mkdtemp(join(tmpdir(), 'job-store-bounds-'));
+  const reservations: number[] = [];
+  io.lstat.mockImplementation((path: string) => fs.lstat(path));
+  io.open.mockImplementation(async (path: string, flags: number, mode?: number) => {
+    const file = await fs.open(path, flags, mode);
+    return new Proxy(file, { get(target, property) {
+      const value = Reflect.get(target, property, target);
+      if (property === 'read') return (...args: unknown[]) => {
+        reservations.push((args[0] as Buffer).length);
+        return Reflect.apply(value, target, args);
+      };
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
+  });
+  const journal = { version: 1 as const, sessionId: 'owner' as SessionId, revision: 3, updatedAt: 42, jobs: [] };
+  const store = createJobStore(root, journal.sessionId);
+  try {
+    await store.write(journal);
+    expect((await fs.stat(store.path)).size).toBe(Buffer.byteLength(JSON.stringify(journal)));
+    expect(await store.read()).toEqual(journal);
+    expect(reservations).toEqual([Buffer.byteLength(JSON.stringify(journal)) + 1]);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
+
 it('accepts a journal exactly at the byte limit', async () => {
   const h = fixture(Buffer.from(text.padEnd(1_048_576, ' ')));
   expect((await h.store.read()).jobs).toEqual([]);

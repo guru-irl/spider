@@ -74,12 +74,52 @@ it.each(['directory', 'journal'] as const)('keeps one handoff scan while a %s re
   expect(active).toBe(0);
 });
 
-it('bounds slow terminal cleanup as well as the scans waiting for it', async () => {
+it('takes over a newly ended child while another child is stalled', async () => {
+  vi.useFakeTimers();
+  const journals = filesystem(2);
+  journals[0].child!.ended = true;
+  journals[1].jobs.push({
+    version: 1, id: 'job-1' as never, runId: 'run-1' as RunId, owner, machine: 'remote.invalid' as never,
+    kind: 'exec', phase: { kind: 'running', address: 'remote.invalid/t1' as never, releasedAt: 1 },
+    viewer: null, remoteDirectory: '/fixture/remote', localDirectory: '/fixture/local', detached: false,
+    noticeMode: 'tool', notice: 'pending', nonce: 'nonce', releaseDeadlineAt: 1, originalFinish: null,
+    output: null, callerOwned: false, uncertain: false, evidenceConflict: false, noticeDelivered: false,
+    settledMarked: false, terminalExpired: false, updatedAt: 1,
+  });
+  let release!: () => void, entered!: () => void, liveChecked!: () => void;
+  const stalled = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const checked = new Promise<void>(resolve => { liveChecked = resolve; });
+  const adopted: RunId[] = [];
+  const hc = { get: async () => { entered(); await stalled; } };
+  const handoff = createJobHandoff({ root, owner, hc: hc as unknown as HcClient,
+    processIdentity: async () => { liveChecked(); return 'alive'; },
+    closeAgentConsoles: async child => { if (child.runId === 'run-0') await hc.get(); },
+    adopt: async id => { adopted.push(id); return { reconcile: async () => {}, shutdown: async () => {} }; },
+  });
+  const timer = setInterval(() => { void handoff.reconcile(); }, 2000);
+  void handoff.reconcile();
+  try {
+    await started; await checked;
+    journals[1].child!.ended = true;
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(adopted).toEqual(['run-1']);
+    let stopped = false;
+    const stopping = handoff.shutdown('reload').then(() => { stopped = true; });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(stopped).toBe(false);
+    release(); await stopping;
+    expect(stopped).toBe(true);
+  } finally { clearInterval(timer); release(); await handoff.shutdown('reload'); }
+});
+
+it('bounds slow terminal cleanup while journal scans continue', async () => {
   vi.useFakeTimers(); filesystem(6, true);
   let active = 0, peak = 0;
+  const started: RunId[] = [];
   const hc = { get: async () => { active++; peak = Math.max(peak, active); try { await pause(); } finally { active--; } } };
   const handoff = createJobHandoff({ root, owner, hc: hc as unknown as HcClient,
-    closeAgentConsoles: async () => { await hc.get(); }, adopt: async () => { throw new Error('Empty journals need no adoption'); },
+    closeAgentConsoles: async child => { started.push(child.runId); await hc.get(); }, adopt: async () => { throw new Error('Empty journals need no adoption'); },
   });
   const timer = setInterval(() => { void handoff.reconcile(); }, 2000);
   void handoff.reconcile();
@@ -87,7 +127,8 @@ it('bounds slow terminal cleanup as well as the scans waiting for it', async () 
     await vi.advanceTimersByTimeAsync(120_000);
     expect(active).toBe(4);
     expect(peak).toBe(4);
-    expect(io.open).toHaveBeenCalledTimes(6);
+    expect(started).toEqual(['run-0', 'run-1', 'run-2', 'run-3']);
+    expect(io.open).toHaveBeenCalledTimes(366);
   } finally {
     clearInterval(timer); const stopping = handoff.shutdown('reload');
     await vi.runAllTimersAsync(); await stopping;

@@ -246,15 +246,22 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     if (begun.kind === "done") {
       const result = completedOutcome(begun.result, id);
       if (readMoveReservation(request.sessionId, ports.journal)?.moveId === id) {
-        checked = ports.journal.read(id).some(row => row.action === "move-state" && row.result.state === "checked");
-        if (checked) await acquireMovePower(powerKey, ports.power);
-        return outcome(request, ports, 3, "move-pending");
+        if (result.code === 0 && result.reason === "moved") {
+          cleanupDone = result.value;
+          await releaseMovePower(powerKey);
+          ports.journal.record(moveSessionSlot(request.sessionId), "released", { moveId: id });
+        } else {
+          checked = ports.journal.read(id).some(row => row.action === "move-state" && row.result.state === "checked");
+          if (checked) await acquireMovePower(powerKey, ports.power);
+          return outcome(request, ports, 3, "move-pending");
+        }
       }
       return result;
     }
     begunNew = begun.kind === "new";
     if (begunNew) ports.journal.record(id, "move-request", json(request));
     slot = reserve(request, ports);
+    if (begun.kind === "pending" && actionReceipt(ports.journal.read(id), "cleanup")) recovering = true;
     if (begun.kind === "pending" && !recovering) {
       checked = ports.journal.read(id).some(row => row.action === "move-state" && row.result.state === "checked");
       if (checked) await acquireMovePower(powerKey, ports.power);

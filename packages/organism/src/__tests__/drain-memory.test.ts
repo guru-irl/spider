@@ -39,6 +39,29 @@ describe("organism activity allocation", () => {
     expect(JSON.stringify(bundle)).not.toContain("unused raw output");
   });
 
+  it("reserves the run event window for rows with summaries", () => {
+    ctx = makeOrgDb();
+    const { db } = ctx;
+    const insert = db.prepare("INSERT INTO run_events(run_id,session_id,ts,type,summary) VALUES (NULL,'s1',?,'message',?)");
+    insert.run(1, "useful finding");
+    db.transaction(() => { for (let i = 0; i < 250; i++) insert.run(i + 2, null); })();
+    expect(drainSession(db, "s1", "before_compact").runEvents.map(event => event.summary)).toEqual(["useful finding"]);
+  });
+
+  it("orders queued runs by creation among the recent runs", () => {
+    ctx = makeOrgDb();
+    const { db } = ctx;
+    const insert = db.prepare("INSERT INTO runs(id,session_id,agent,status,started_at) VALUES (?,'s1','worker',?,?)");
+    db.transaction(() => {
+      for (let i = 0; i < 101; i++) insert.run(`old-${i}`, "done", i + 1);
+      insert.run("queued", "queued", null);
+      insert.run("newer", "running", 102);
+    })();
+    const runs = drainSession(db, "s1", "before_compact").runs;
+    expect(runs).toHaveLength(100);
+    expect(runs.slice(-2).map(run => run.id)).toEqual(["queued", "newer"]);
+  });
+
   it("retains only recent, bounded activity in chronological order across repeated drains", () => {
     ctx = makeOrgDb();
     const { db } = ctx;

@@ -31,13 +31,63 @@ describe("tailer replay allocation", () => {
 
     tailer.poll();
     expect(tailer.cursor).toBeGreaterThan(0);
-    expect(tailer.cursor).toBeLessThanOrEqual(200);
+    expect(tailer.cursor).toBe(501);
     for (let i = 0; i < 5; i++) tailer.poll();
     expect(tailer.cursor).toBe(501);
     expect(seen).toEqual([{ text: "exact payload 0" }, { text: "exact payload 250" }, { text: "exact payload 500" }]);
     expect(unrelatedBytes).toBe(0);
     tailer.poll();
     expect(seen).toHaveLength(3);
+  });
+
+  it("keeps tracking a run restored after a failed cancellation", () => {
+    db = freshDb();
+    const store = new RunStore(db);
+    const { id } = store.create({ sessionId: "s1", agent: "worker" });
+    store.start(id);
+    const tailer = new RunEventTailer(db);
+    tailer.track(id);
+    const insert = db.prepare("INSERT INTO run_events(run_id,session_id,ts,type,payload) VALUES (?,'s1',1,?,?)");
+    insert.run(id, "status", JSON.stringify({ status: "cancelled" }));
+    insert.run(id, "status", JSON.stringify({ status: "running" }));
+    const seen: string[] = [];
+    offs.push(bus.on(event => {
+      if (event.runId === id && (event.type === "escalation" || (event.payload as any)?.status === "done")) {
+        seen.push(`${event.type}:${(event.payload as any)?.status ?? ""}`);
+      }
+    }));
+    tailer.poll();
+    insert.run(id, "escalation", JSON.stringify({ severity: "blocked" }));
+    db.prepare("UPDATE runs SET status='done' WHERE id=?").run(id);
+    insert.run(id, "status", JSON.stringify({ status: "done" }));
+    tailer.poll();
+    expect(seen).toEqual(["escalation:", "status:done"]);
+  });
+
+  it("replays a newly tracked run in one poll without reading the unrelated backlog", () => {
+    db = freshDb();
+    const store = new RunStore(db), tailer = new RunEventTailer(db);
+    const first = store.create({ sessionId: "s1", agent: "worker" }).id;
+    const insert = db.prepare("INSERT INTO run_events(run_id,session_id,ts,type,payload) VALUES (?,'s1',1,'status',?)");
+    tailer.track(first);
+    db.prepare("UPDATE runs SET status='done' WHERE id=?").run(first);
+    insert.run(first, JSON.stringify({ status: "done" }));
+    tailer.poll();
+    db.transaction(() => { for (let i = 0; i < 20_000; i++) insert.run("foreign", "{}"); })();
+    const next = store.create({ sessionId: "s1", agent: "worker" }).id;
+    tailer.track(next);
+    db.prepare("UPDATE runs SET status='done' WHERE id=?").run(next);
+    insert.run(next, JSON.stringify({ status: "done" }));
+
+    let rowsRead = 0;
+    db.raw.function("observe_event_id", (id: number) => { rowsRead++; return id; });
+    db.raw.exec(`ALTER TABLE run_events RENAME TO fixture_events;
+      CREATE VIEW run_events AS SELECT observe_event_id(id) AS id,run_id,session_id,ts,type,tool,summary,payload FROM fixture_events`);
+    const seen: string[] = [];
+    offs.push(bus.on(event => { if (event.runId === next) seen.push(event.type); }));
+    tailer.poll();
+    expect.soft(seen).toEqual(["status"]);
+    expect(rowsRead).toBeLessThanOrEqual(10);
   });
 
   it("stops polling when every tracked run has emitted a terminal event", () => {
@@ -47,6 +97,7 @@ describe("tailer replay allocation", () => {
     for (const status of ["done", "failed", "cancelled"] as const) {
       const { id } = store.create({ sessionId: "s1", agent: "worker" });
       tailer.track(id);
+      db.prepare("UPDATE runs SET status=? WHERE id=?").run(status, id);
       insert.run(id, JSON.stringify({ status }));
     }
     const terminal: string[] = [];

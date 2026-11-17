@@ -43,6 +43,28 @@ it('waits for child handoff when a parent reconcile is explicitly awaited', asyn
   } finally { release(); await parent.shutdown('reload'); }
 });
 
+it('keeps maintenance scanning while an explicit caller waits for a child', async () => {
+  const h = await monitorFixture();
+  let release!: () => void, scans = 0;
+  const stalled = new Promise<void>(resolve => { release = resolve; });
+  handoff.reconcile.mockImplementation((settings?: { wait?: boolean }) => {
+    if (settings?.wait === false) { scans++; return Promise.resolve(); }
+    return stalled;
+  });
+  handoff.shutdown.mockResolvedValue(undefined);
+  vi.useFakeTimers();
+  const parent = h.monitor(); await parent.activate(h.owner);
+  let done = false;
+  try {
+    const result = parent.reconcile().then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(4001);
+    expect(done).toBe(false);
+    expect(scans).toBeGreaterThanOrEqual(2);
+    release(); await result;
+    expect(done).toBe(true);
+  } finally { release(); await parent.shutdown('reload'); }
+});
+
 it('releases the maintenance slot after failure without a burst of queued retries', async () => {
   const h = await monitorFixture();
   let reject!: (error: Error) => void;

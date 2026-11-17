@@ -25,6 +25,16 @@ test('the guide describes actionable cards without promising feed toasts', async
   expect(doc).toContain('`workspace-chrome`');
 });
 
+test('the guide explains picker entry points, strict shortcuts, and rollback', async () => {
+  const doc = await guide();
+  expect(doc).toContain('A custom binding on these four keys stops setup even with `--overwrite-unowned-keys`');
+  expect(doc).toContain('terminal context-menu split actions');
+  expect(doc).toContain('the state before the first setup that owned each file');
+  expect(doc).toContain('Cmd-T to `tab.new`');
+  expect(doc).toContain('removes spider\'s Cmd-Shift-W');
+  expect(doc).toContain('Herdr 0.1.12 keeps the native creation bindings');
+});
+
 test('the guide separates subagent pills from session and console paths', async () => {
   const doc = await guide();
   expect(doc).toContain('A subagent viewer has a bot icon, a run-name pill and a parent pill.');

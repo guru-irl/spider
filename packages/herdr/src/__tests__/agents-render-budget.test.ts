@@ -342,6 +342,24 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     } finally { await reloaded?.close(); await h.view.close(); }
   });
 
+  it.each(['blocked', 'error'])(`${version}: collapsed subagents signal a live %s descendant`, async status => {
+    const h = fixture(version, 1, 0);
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.state.terminals.push({ address: 'native', parent: 'v0', state: 'live', status, labels: {} },
+      { address: 'command', parent: 't0', state: 'live', status: 'working',
+        labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': 'live0' } });
+    try {
+      await h.ready(); let root = h.render();
+      const attention = find(root, 'child-busy-live0');
+      expect(attention?.styles.tooltip?.[0]).toBe('Needs attention');
+      expect(attention?.styles.accessibility_label?.[0]).toBe('Needs attention');
+      expect(find(root, 'sub-native')).toBeUndefined();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); root = h.render();
+      expect(find(root, 'sub-native')).toBeDefined();
+      expect(find(root, 'child-busy-live0')).toBeUndefined();
+    } finally { await h.view.close(); }
+  });
+
   it(`${version}: real nested viewers require each ancestor to be expanded`, async () => {
     const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
     const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);

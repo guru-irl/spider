@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { paths } from '@spider/db-core';
 // The runner is also importable; importing it must not launch a suite.
 // @ts-ignore JavaScript runner boundary is exercised at runtime.
-import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command, finishCleanup } from '../../../../scripts/herdr-e2e.mjs';
+import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers, command, finishCleanup, runStoryWork, storyExecutionDeadline } from '../../../../scripts/herdr-e2e.mjs';
 import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
 import { restorationPending, presentationInProgress } from './roam-recovery.test.js';
@@ -97,6 +97,72 @@ describe('final runner cleanup budget', () => {
       writeFileSync(module, `export async function cleanupLedger() { return {clean:${clean}}; } export async function reconcileLedgers() { return []; }`);
       expect(await finishCleanup({ module, ledgers: root }, resolve(root, 'ledger.json'), process.cwd(), process.env, root,
         { at: Date.now() + 2000, expire() {} })).toBe(clean);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('story cleanup reserve', () => {
+  it('marks work only after it finishes, including a failed story', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    try {
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const work = runStoryWork(root, 'R17', () => gate);
+      const overall = { at: Date.now() + 10_000, expire() {} };
+      const deadline = storyExecutionDeadline(overall, root, { ids: ['R17'], harness: false });
+      expect(deadline.cleanupReady()).toBe(false);
+      release(); await work;
+      expect(deadline.cleanupReady()).toBe(true);
+      await expect(runStoryWork(root, 'R18', async () => { throw new Error('story failed'); })).rejects.toThrow('story failed');
+      expect(storyExecutionDeadline(overall, root, { ids: ['R17', 'R18'], harness: false }).cleanupReady()).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('finishes already-started cleanup in the existing reserve without expiring work', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    try {
+      await runStoryWork(root, 'R17', async () => {});
+      const expired: string[] = [], at = Date.now() + 400;
+      const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('work'); } }, root, { ids: ['R17'], harness: false });
+      expect(deadline.cleanupAt).toBe(at + 10_000);
+      const result = await command(process.execPath, ['-e', 'setTimeout(() => console.log("clean"), 650)'], process.cwd(), process.env, resolve(root, 'log'), true, undefined, 60_000, deadline);
+      expect(result.code).toBe(0);
+      expect(result.output).toContain('clean');
+      expect(expired).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('kills work if any selected story has not finished by the work deadline', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    try {
+      await runStoryWork(root, 'R17', async () => {});
+      const expired: string[] = [], at = Date.now() + 350;
+      const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('work'); } }, root, { ids: ['R17', 'R18'], harness: false });
+      await expect(command(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], process.cwd(), process.env, resolve(root, 'log'), true, undefined, 60_000, deadline)).rejects.toThrow('runner-deadline');
+      expect(expired).toEqual(['work']);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('rejects late markers and never grants harness work the story cleanup reserve', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    try {
+      await runStoryWork(root, 'R17', async () => {});
+      const at = Date.now() - 1;
+      const overall = { at, expire() {} };
+      expect(storyExecutionDeadline(overall, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(false);
+      expect(storyExecutionDeadline(overall, root, { ids: ['R17'], harness: true })).toBe(overall);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('stops cleanup at its shared ceiling instead of granting a second reserve', async () => {
+    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    try {
+      await runStoryWork(root, 'R17', async () => {});
+      const expired: string[] = [], at = Date.now() + 300;
+      const deadline = storyExecutionDeadline({ at, expire: () => { expired.push('deadline'); } }, root, { ids: ['R17'], harness: false });
+      deadline.cleanupAt = at + 300; // Accelerate the clock boundary in this unit test only.
+      await expect(command(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], process.cwd(), process.env, resolve(root, 'log'), true, undefined, 60_000, deadline)).rejects.toThrow('runner-deadline');
+      expect(expired).toEqual(['deadline']);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });

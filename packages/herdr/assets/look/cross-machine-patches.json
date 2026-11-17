@@ -736,6 +736,12 @@
         "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
         "tabs/win-min.svg": "c2f8d7d1e117f99b73970816877a926becb3da102cd706fd0f0ce1780259cd52",
         "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
+      },
+      "helperHashes": {
+        "pane/actions.js": "6a52fb639bae96b5eb784f1176266c8f7c75a827e822afce7bce83ed9fe13869",
+        "pane/machine.js": "acd8b260029a1661e0159524069e34a0e51318fd19ea14dbdf9826ff27bea628",
+        "machines/actions.js": "a169b1b5a2a65877f97d46ba37d30581dd03c0da1d162884d78ac40ebc8a266b",
+        "machines/picker.js": "9f4584285b27a07ccfc3e91278e14599aea0f3d8c466c48e1625a96391c3f281"
       }
     },
     "0.1.16": {
@@ -781,6 +787,12 @@
         "tabs/win-max.svg": "d8f2df2b1c3b3416ab765be0ad0b6f453f4c89e0c01ac01e4e10bd12e01b109a",
         "tabs/win-min.svg": "c2f8d7d1e117f99b73970816877a926becb3da102cd706fd0f0ce1780259cd52",
         "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
+      },
+      "helperHashes": {
+        "pane/actions.js": "6a52fb639bae96b5eb784f1176266c8f7c75a827e822afce7bce83ed9fe13869",
+        "pane/machine.js": "acd8b260029a1661e0159524069e34a0e51318fd19ea14dbdf9826ff27bea628",
+        "machines/actions.js": "a169b1b5a2a65877f97d46ba37d30581dd03c0da1d162884d78ac40ebc8a266b",
+        "machines/picker.js": "9f4584285b27a07ccfc3e91278e14599aea0f3d8c466c48e1625a96391c3f281"
       }
     }
   }

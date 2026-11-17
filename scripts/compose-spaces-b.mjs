@@ -50,6 +50,7 @@ for (const version of versions) {
     recordsHash: createHash('sha256').update(JSON.stringify(fragments)).digest('hex'),
     inputHashes: transitionHashes(afterA),
     outputHashes: transitionHashes(output),
+    helperHashes: Object.fromEntries(['pane/actions.js', 'pane/machine.js', 'machines/actions.js', 'machines/picker.js'].map(name => [name, createHash('sha256').update(readFileSync(new URL(`../packages/herdr/assets/${name}`, import.meta.url))).digest('hex')])),
   };
   const hashes = {};
   for (const [mod, files] of Object.entries(output).sort()) for (const [name, contents] of Object.entries(files).sort()) {

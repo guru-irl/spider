@@ -5,6 +5,7 @@ import { HerdrError } from '../client/parse.js';
 import { applyModPatches, type LookPatch } from './patches.js';
 
 export const crossMachineKinds = ['pane', 'tabs', 'menu', 'new-menu', 'agents'] as const;
+export const crossMachineHelpers = ['pane/actions.js', 'pane/machine.js', 'machines/actions.js', 'machines/picker.js'] as const;
 type CrossMachineKind = typeof crossMachineKinds[number];
 type ModFiles = Readonly<Record<string, Readonly<Record<string, string>>>>;
 export interface CrossMachineLookRecipe {
@@ -12,6 +13,7 @@ export interface CrossMachineLookRecipe {
   inputHashes: Readonly<Record<string, string>>;
   outputHashes: Readonly<Record<string, string>>;
   recordsHash: string;
+  helperHashes: Readonly<Record<typeof crossMachineHelpers[number], string>>;
 }
 const digest = (text: string) => createHash('sha256').update(text).digest('hex');
 const fail = (message: string): never => { throw new HerdrError('cross-machine-recipe-mismatch', message); };
@@ -33,8 +35,10 @@ export function selectCrossMachinePatches(value: unknown, version: string): Cros
   const checks = record(record(manifest.checks)[version]);
   if (checks.recordsHash !== digest(JSON.stringify(mods))) return fail('Cross-machine records differ from their verified digest');
   const inputHashes = hashes(checks.inputHashes), outputHashes = hashes(checks.outputHashes);
+  const helperHashes = record(checks.helperHashes);
+  if (Object.keys(helperHashes).length !== crossMachineHelpers.length || crossMachineHelpers.some(name => typeof helperHashes[name] !== 'string' || !/^[a-f0-9]{64}$/.test(helperHashes[name] as string))) return fail('Invalid cross-machine helper digests');
   if (Object.keys(inputHashes).sort().join('\0') !== Object.keys(outputHashes).sort().join('\0') || crossMachineKinds.some(kind => !inputHashes[`${kind}/main.js`])) return fail('Incomplete cross-machine file digests');
-  return { mods: mods as CrossMachineLookRecipe['mods'], inputHashes, outputHashes, recordsHash: checks.recordsHash as string };
+  return { mods: mods as CrossMachineLookRecipe['mods'], inputHashes, outputHashes, recordsHash: checks.recordsHash as string, helperHashes: helperHashes as CrossMachineLookRecipe['helperHashes'] };
 }
 function matches(files: ModFiles, expected: Readonly<Record<string, string>>): boolean {
   const entries = crossMachineKinds.flatMap(kind => Object.entries(files[kind] ?? {}).map(([file, bytes]) => [`${kind}/${file}`, digest(bytes)] as const));

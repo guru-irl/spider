@@ -98,6 +98,21 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     }
   });
 
+  test(`${version} rollback removes created mod directories but preserves existing and populated directories`, async () => {
+    const f = await releaseFixture(version), mods = join(f.h.directories.app, 'mods');
+    const existing = join(mods, 'spider-new-menu'), shared = join(existing, 'shared');
+    await mkdir(shared, { recursive: true });
+    await setupHerdr(f.request, f.parts);
+    const userFile = join(mods, 'spider-machine-picker-down', 'user.txt');
+    await writeFile(userFile, 'keep this');
+    await rollbackHerdr(f.request, f.parts);
+    for (const name of ['spider-machine-picker', 'spider-machine-picker-right', 'spider-pane-waiting']) await expect(stat(join(mods, name))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(stat(join(existing, 'machines'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await stat(existing)).isDirectory()).toBe(true);
+    expect((await stat(shared)).isDirectory()).toBe(true);
+    expect(await readFile(userFile, 'utf8')).toBe('keep this');
+  });
+
   test(`${version} installs B as one owned set and repeats and rolls back without changing stock`, async () => {
     const f = await releaseFixture(version), home = f.h.directories.app;
     const keys = join(home, 'keys.json'), beforeKeys = await readFile(keys);

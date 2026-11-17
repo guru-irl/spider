@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createProductionIntercomEnrollmentPorts } from "../intercom-production";
 import { join } from "node:path";
 import { createIntercomRegistry } from "../intercom-registry";
@@ -36,6 +36,18 @@ it("enrolls without a separate SSH listener port in either recipe", async () => 
   expect(f.locals.get(B)!.recipe).not.toHaveProperty("sshPort");
   expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
   expect(f.calls).toContain(`${B}:-T 5 -t ed25519,ecdsa,rsa -p 22 127.0.0.1`);
+}, 5000);
+
+it("refuses enrollment when the listener key is not a system host key", async () => {
+  const f = await scenario();
+  const file = join(f.target.globalRoot, "system-ssh", "ssh_host_ed25519_key.pub");
+  const parts = readFileSync(file, "utf8").split(" "), bytes = Buffer.from(parts[1], "base64");
+  bytes[bytes.length - 1] ^= 1;
+  writeFileSync(file, `${parts[0]} ${bytes.toString("base64")} fixture\n`);
+  expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 3, reason: "intercom-ssh-host-unverified",
+    value: { pairs: [], pending: [{ pairId: "pair-1", reason: "intercom-ssh-host-unverified" }] } });
+  expect(f.calls.some(call => call.includes("start spider-pair-pair-1-host.service"))).toBe(false);
+  expect(f.machines()).toEqual([]);
 }, 5000);
 
 it("a host straggler preserves the key and route until a later retry proves closure", async () => {

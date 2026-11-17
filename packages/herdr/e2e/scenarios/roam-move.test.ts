@@ -27,6 +27,10 @@ import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/
 import type { Suite } from '../harness/suite.js';
 import { deadline, waitFor } from '../harness/wait.js';
 
+export function effectJsonLines(text: string): string[] {
+  return text.split('\n').map(line => line.trim()).filter(line => line.startsWith('{'));
+}
+
 export function moveRecoveryPending(result: unknown): boolean {
   return !!result && typeof result === 'object' && 'code' in result && result.code === 3 && 'reason' in result &&
     (result.reason === 'move-destination-pending' || result.reason === 'move-pending' || result.reason === 'intercom-endpoint-not-ready');
@@ -767,7 +771,7 @@ async function exclusion(suite: Suite): Promise<void> {
     } finally { boxJournal.close(); startDb.close(); }
     const expectedLaunch = participantLaunchId(BOX, f.sessionId, 4, `${failed.operationId}-session-start-${BOX}`);
     if (start?.reason === 'participant-launch-conflict') {
-      const conflict = (await readFile(f.effects, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).findLast(row =>
+      const conflict = effectJsonLines(await readFile(f.effects, 'utf8')).map(line => JSON.parse(line)).findLast(row =>
         row.effect === 'participant-wake-conflict' && row.operationId === `${failed.operationId}-session-start-${BOX}`);
       expect(conflict).toMatchObject({ launchId: expectedLaunch, before: { value: { intent: { epoch: 2, moveId: pending.operationId } } },
         intent: { epoch: 4, moveId: failed.operationId } });

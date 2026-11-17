@@ -137,7 +137,7 @@ it("the live broker restores move socket readiness after a failed reconnect", as
 }, 5000);
 
 
-it("a moved home does not disconnect its broker while the frozen source is still attached", async () => {
+it.each(["stale", "frozen"] as const)("local senders reach the committed home while a %s source is still attached", async state => {
   const global = createReplica("global", HUB), agentDir = mkdtempSync(join(testTmpDir(), "mh-"));
   const BOX = "00000000-0000-4000-8000-000000000002", address = { sessionId: "moving-session", scopeId: null };
   const child = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], {
@@ -145,7 +145,7 @@ it("a moved home does not disconnect its broker while the frozen source is still
   });
   mkdirSync(join(global.root, "roam"), { recursive: true, mode: 0o700 });
   writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify({ machineId: HUB, intercom: { enabled: true } }), { mode: 0o600 });
-  const clock = { now: () => 1000, later: () => () => {} }, broker = new IntercomFederationClient(), client = new IntercomClient();
+  const clock = { now: () => 1000, later: () => () => {} }, broker = new IntercomFederationClient(), client = new IntercomClient(), sender = new IntercomClient();
   const store = openIntercomStore({ file: join(global.root, "queue.db"), machineId: HUB, clock });
   let ready = false, logical: readonly RemoteSessionInfo[] = [];
   const remote: RemoteSessionInfo = { remote: true, id: address.sessionId, address, machineId: BOX, machineAlias: "box.invalid", homeEpoch: 2,
@@ -153,7 +153,7 @@ it("a moved home does not disconnect its broker while the frozen source is still
   const bridge = createIntercomBridge({ machineId: HUB, machineAlias: "hub.invalid", broker, globalRoot: global.root, agentDir, store, clock,
     edges: [{ peer: { machineId: BOX, alias: "box.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: "/fixture/global" }, edgeEpoch: "edge-1", initiator: false }],
     transport: {} as never, localPresence: () => [], moveFences: true,
-    authoritativeHome: () => ({ sessionId: address.sessionId, machineId: BOX, epoch: 2, moveId: "move-1", updatedAt: 1 }),
+    authoritativeHome: target => target.sessionId === address.sessionId ? { sessionId: address.sessionId, machineId: BOX, epoch: 2, moveId: "move-1", updatedAt: 1 } : null,
     publishPresence: entries => { logical = entries; }, onBrokerState: value => { ready = value; },
   });
   const previous = process.env.PI_CODING_AGENT_DIR;
@@ -166,6 +166,10 @@ it("a moved home does not disconnect its broker while the frozen source is still
     await bridge.start();
     await client.connect({ address, cwd: "/workspace", model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1,
       activationEpoch: "source-activation", homeEpoch: 1 }, address.sessionId);
+    await sender.connect({ address: { sessionId: "sender-session", scopeId: null }, cwd: "/workspace", model: "fixture", pid: process.pid, startedAt: 1, lastActivity: 1,
+      activationEpoch: "sender-activation", homeEpoch: null }, "sender-session");
+    const received: unknown[] = []; client.on("message", message => received.push(message));
+    if (state === "frozen") await broker.intake("close", { address, moveId: "move-1", expectedEpoch: 1, generation: "source-fence" });
     await broker.inspectBlockers(address);
     expect(ready).toBe(true);
     await bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000, exchange: withHopExchange({ protocol: 5,
@@ -174,11 +178,18 @@ it("a moved home does not disconnect its broker while the frozen source is still
     expect(logical).toMatchObject([{ address, machineId: BOX, homeEpoch: 2 }]);
     await expect(broker.inspectBlockers(address)).resolves.toEqual({ asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] });
     expect(ready).toBe(true);
+    const roster = (await sender.listSessions()).filter(entry => entry.address?.sessionId === address.sessionId);
+    expect(roster).toMatchObject([{ remote: true, machineId: BOX, homeEpoch: 2 }]);
+    expect(roster).toHaveLength(1);
+    const sent = await sender.send(address.sessionId, { messageId: "post-move-message", text: "after cutover", expectsReply: true });
+    expect(sent).toMatchObject({ delivered: true, delivery: "queued" });
+    expect(store.inspectMoveBlockers(address).pendingDispatch).toContain("post-move-message");
+    expect(received).toEqual([]);
     await client.disconnect();
     await broker.inspectBlockers(address);
     expect(ready).toBe(true);
   } finally {
-    await client.disconnect(); await bridge.stop(); await stopTestBroker(child); store.close(); global.close();
+    await sender.disconnect(); await client.disconnect(); await bridge.stop(); await stopTestBroker(child); store.close(); global.close();
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = previous;
     rmSync(agentDir, { recursive: true, force: true });
   }

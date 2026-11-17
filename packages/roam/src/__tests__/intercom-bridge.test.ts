@@ -327,6 +327,52 @@ it("does not let a remote presence hint shadow a local session and prefers the n
 }, 5000);
 
 
+it("publishes the committed destination over a stale local copy and sends only there", async () => {
+  const { source, inbox } = pair(), observed: any[] = [], sourceDeliveries: string[] = [], destinationDeliveries: string[] = [];
+  const stale = { remote: true as const, id: to.sessionId, address: to, machineId: A, machineAlias: "source.invalid", homeEpoch: 1,
+    activationEpoch: "source-generation", endpointEpoch: "source-generation", cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 };
+  const current = { ...stale, machineId: B, machineAlias: "destination.invalid", homeEpoch: 2, activationEpoch: "destination-generation", endpointEpoch: "destination-generation" };
+  const authoritativeHome = (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === to.sessionId ? B : A,
+    epoch: address.sessionId === to.sessionId ? 2 : 1, moveId: null, updatedAt: 1 });
+  source.updateEdgeState(B, "edge-1", old => ({ ...old, status: "live", lastSuccess: clock.now(), roster: [current] }));
+  const a = await create(A, B, source, { localPresence: () => [stale], authoritativeHome,
+    publishPresence: (entries: unknown[]) => observed.push(entries), onInbound: ({ id }: { id: string }) => sourceDeliveries.push(id) });
+  const b = await create(B, A, inbox, { localPresence: () => [current], authoritativeHome,
+    onInbound: ({ id }: { id: string }) => destinationDeliveries.push(id) });
+  expect(observed.at(-1)).toEqual([expect.objectContaining({ machineId: B, homeEpoch: 2 })]);
+  const poll = batch(B, A, 1, "poll"); poll.presence = [current];
+  const outgoing = await a.exchange(request(poll));
+  expect(outgoing.exchange.presence).toEqual([]);
+  expect(await a.dispatch({ from, to: observed.at(-1)[0], message: { id: "after-move", timestamp: 1, content: { text: "synthetic" } } }))
+    .toMatchObject({ delivery: "queued" });
+  const sent = batch(A, B, 1); sent.frames = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 });
+  await b.exchange(request(sent));
+  expect(inbox.retained("inbound", "after-move")).toMatchObject({ endpoint: { machineId: B, homeEpoch: 2, activationEpoch: "destination-generation" } });
+  expect(destinationDeliveries).toEqual(["after-move"]);
+  expect(sourceDeliveries).toEqual([]);
+  expect(source.retained("inbound", "after-move")).toBeNull();
+}, 5000);
+
+it("withdraws frozen local presence and holds arriving mail without delivery", async () => {
+  const { source, inbox } = pair(), delivered: string[] = [];
+  const local = { remote: true as const, id: to.sessionId, address: to, machineId: A, machineAlias: "source.invalid", homeEpoch: 1,
+    activationEpoch: "source-generation", endpointEpoch: "source-generation", cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 };
+  const a = await create(A, B, source, { moveFences: true, localPresence: () => [local],
+    authoritativeHome: (address: typeof to) => ({ sessionId: address.sessionId, machineId: address.sessionId === to.sessionId ? A : B, epoch: 1, moveId: null, updatedAt: 1 }),
+    onInbound: ({ id }: { id: string }) => delivered.push(id) });
+  const fence = { address: to, moveId: "move-frozen", expectedEpoch: 1, generation: "freeze-generation" };
+  expect(await a.intake("close", fence)).toBe(fence.generation);
+  const poll = await a.exchange(request(batch(B, A, 1, "poll")));
+  expect(poll.exchange.presence).toEqual([]);
+  inbox.acceptOutbound({ from, endpoint: { ...endpoint, machineId: A, activationEpoch: "source-generation" }, nextHop: A,
+    message: { id: "during-freeze", timestamp: 1, content: { text: "synthetic" } } });
+  const incoming = batch(B, A, 1); incoming.frames = inbox.pending({ kind: "outbound", peer: A, edgeEpoch: "edge-1", hopBudgetMs: 100 });
+  await a.exchange(request(incoming));
+  expect(source.retained("inbound", "during-freeze")).toMatchObject({ state: "queued", payloadRetained: true });
+  expect(delivered).toEqual([]);
+  expect(inbox.retained("inbound", "during-freeze")).toBeNull();
+}, 5000);
+
 it("does not route from an old presence hint over a newer authoritative home", async () => {
   const { source } = pair(), a = await create(A, B, source, { authoritativeHome: () => ({ sessionId: to.sessionId, machineId: C, epoch: 2, moveId: null, updatedAt: 1 }) });
   const hint = { remote: true, id: to.sessionId, address: to, machineId: B, machineAlias: "old.invalid", homeEpoch: 1,

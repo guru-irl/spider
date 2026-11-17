@@ -8,11 +8,13 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'vite';
+import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Owner, SessionId, Generation, TerminalIdentity } from '../contracts.js';
 import { createTerminalRegistry, terminalIdentityKey } from '../sessions/registry.js';
 import { createProcessPresence } from '../sessions/presence.js';
 import { createSessionLeases, type ProcessInventoryPorts } from '../sessions/lease.js';
 import { buildResumeBlock, offerResume, resumeOfferShell, resumeWatchShell, type ResumeHookOptions } from '../sessions/resume.js';
+import { registerHerdrSessions } from '../sessions/register.js';
 let root: string; let file: string; let terminal: TerminalIdentity; let owner: Owner; let options: ResumeHookOptions;
 beforeEach(async () => {
   await mkdir(resolve('.spider/scratch/h'), { recursive: true }); root = await mkdtemp(resolve('.spider/scratch/h/g2-')); file = join(root, "session 'quoted'.jsonl");
@@ -48,6 +50,23 @@ it.each(['/bin/bash', '/bin/zsh'])('the first %s prompts preserve the live marke
   expect(result.code).toBe(0); expect(result.out).toBe('');
   expect(await offerResume(terminal, ports())).not.toBeNull();
   expect(await offerResume(terminal, { ...ports(), autoResumeRoot: root })).not.toBeNull();
+});
+
+it('a legacy mapping is offer-only until the session reloads with a live marker', async () => {
+  const start = Number.MAX_SAFE_INTEGER;
+  const registry = createTerminalRegistry(root), inventory = ports(start).processInventory;
+  expect(await offerResume(terminal, ports(start))).not.toBeNull();
+  expect(await offerResume(terminal, { ...ports(start), autoResumeRoot: root })).toBeNull();
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
+  const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;
+  const ctx = { mode: 'tui', sessionManager: { getSessionFile: () => file, getSessionId: () => 's1', getSessionName: () => owner.name } } as unknown as ExtensionContext;
+  const processIdentity = { pid: 2147483647, startIdentity: 'old' };
+  const registration = registerHerdrSessions(pi, { ...inventory, registry, processIdentity, currentSession: () => ({ ...processIdentity, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address }), owner: () => owner, coreStartedAt: () => 1, launchEnvironment: { agentDirectory: join(root, 'agent'), extensionArguments: [] } });
+  try {
+    await handlers.get('session_start')!({ type: 'session_start', reason: 'reload' }, ctx);
+    await handlers.get('session_shutdown')!({ type: 'session_shutdown', reason: 'reload' }, ctx);
+    expect(await offerResume(terminal, { ...ports(start), autoResumeRoot: root })).not.toBeNull();
+  } finally { await registration.dispose(); }
 });
 
 it('a restored shell offers the exact session without auto-running it', async () => {

@@ -8,7 +8,7 @@ import type { DashboardReader } from '../dashboard-contract.js';
 import { bootUsageWorker, type UsageWorkerDependencies } from '../worker-entry.js';
 import { UsageRuntime, type UsageWorker } from '../runtime.js';
 import { createPanelUsageReader } from '../panel-usage.js';
-import { openUsageLedger } from '../ledger.js';
+import { openUsageLedger, type UsageLedger } from '../ledger.js';
 import { USAGE_MIGRATIONS } from '../migrate.js';
 import { USAGE_LEASE_SCHEMA } from '../schema.js';
 import { acquireUsageLease, type Lease } from '../lease.js';
@@ -18,10 +18,13 @@ import { assertCallPlans, callPassQueries, captureQueries, explainQueries } from
 
 // The message handler is exercised inline; only its thread-identity guard is replaced.
 vi.mock('node:worker_threads', async original => ({ ...await original<typeof import('node:worker_threads')>(), isMainThread: false }));
-const work = vi.hoisted(() => ({ totals: 0, fits: 0, opened: 0, closed: 0, ownership: 0, inspections: 0, failRead: false }));
+const work = vi.hoisted(() => ({ totals: 0, fits: 0, opened: 0, closed: 0, ownership: 0, inspections: 0, failRead: false, failClose: false,
+  writable: undefined as UsageLedger | undefined, readers: [] as DashboardReader[] }));
 vi.mock('../ledger.js', async original => {
   const actual = await original<typeof import('../ledger.js')>();
-  return { ...actual, openUsageLedgerReadOnly: (...args: Parameters<typeof actual.openUsageLedgerReadOnly>) => {
+  return { ...actual, openUsageLedger: (...args: Parameters<typeof actual.openUsageLedger>) => {
+    const ledger = actual.openUsageLedger(...args); work.writable = ledger; return ledger;
+  }, openUsageLedgerReadOnly: (...args: Parameters<typeof actual.openUsageLedgerReadOnly>) => {
     const ledger = actual.openUsageLedgerReadOnly(...args);
     if (ledger) {
       const inspect = ledger.leases.inspect.bind(ledger.leases);
@@ -41,7 +44,7 @@ vi.mock('../dashboard-reader.js', async original => {
   return { ...actual, openDashboardReader: (...args: Parameters<typeof actual.openDashboardReader>) => {
     const reader = actual.openDashboardReader(...args);
     if (!reader) return reader;
-    work.opened++;
+    work.opened++; work.readers.push(reader);
     return { ...reader, snapshot<T>(read: Parameters<DashboardReader['snapshot']>[0]): T {
       if (work.failRead) throw new Error('injected read failure');
       return reader.snapshot(ctx => {
@@ -52,7 +55,7 @@ vi.mock('../dashboard-reader.js', async original => {
         work.ownership += callPassQueries(ctx.db, captured.queries.filter(query => query.sql.includes('AS own FROM json_each'))).length;
         return captured.value as T;
       });
-    }, close() { work.closed++; reader.close(); } };
+    }, close() { work.closed++; reader.close(); if (work.failClose) { work.failClose = false; throw new Error('injected close failure'); } } };
   } };
 });
 class Port extends EventEmitter {
@@ -66,7 +69,7 @@ const runtimes: UsageRuntime[] = [];
 const now = START + 4.5 * DAY;
 beforeEach(() => {
   vi.useFakeTimers();
-  Object.assign(work, { totals: 0, fits: 0, opened: 0, closed: 0, ownership: 0, inspections: 0, failRead: false });
+  Object.assign(work, { totals: 0, fits: 0, opened: 0, closed: 0, ownership: 0, inspections: 0, failRead: false, failClose: false, writable: undefined, readers: [] });
   clock = now;
   f = createDashboardFixture(false); p = new Port();
   const price = (aic: number) => ({ status: 'priced' as const, aic,
@@ -168,6 +171,27 @@ it('bounds a live stalled owner follower to one inspection per tick and takes ov
   expect(discoveries).toBe(1);
   expect(p.events.filter(event => event.type === 'snapshot').at(-1)?.ingestRole).toBe('owner');
   expect(lease.isCurrent(() => clock)).toBe(false);
+});
+it('closes the month reader and ledger when the panel close throws', async () => {
+  await boot(async () => ({ sources: [], runs: [], errors: [] }));
+  expect(panel()?.monthCost.credits).toBe(5);
+  clock += 600001;
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(p.events.filter(event => event.type === 'snapshot').at(-1)?.ingestRole).toBe('owner');
+  expect(panel()?.monthCost.credits).toBe(5);
+  const ledger = work.writable!;
+  expect(work.opened - work.closed).toBe(2);
+  work.failClose = true;
+  try {
+    p.emit('message', { type: 'stop' }); await vi.advanceTimersByTimeAsync(0);
+    expect(p.closed).toBe(true);
+    expect.soft(work.closed).toBe(work.opened);
+    expect.soft(() => ledger.dataVersion()).toThrow();
+  } finally {
+    work.failClose = false;
+    for (const reader of work.readers) try { reader.close(); } catch { /* already closed */ }
+    try { ledger.close(); } catch { /* already closed */ }
+  }
 });
 it.each([{ cadence: 1000, kind: 'call' }, { cadence: 30000, kind: 'call' },
   { cadence: 1000, kind: 'checkpoint' }, { cadence: 30000, kind: 'checkpoint' }])('bounds $kind invalidation fan-out with three followers requesting every $cadence ms', async ({ cadence, kind }) => {

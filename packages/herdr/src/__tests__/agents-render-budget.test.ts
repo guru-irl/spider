@@ -260,6 +260,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
         labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': id } },
       { address: `native-${i}`, parent: viewer, state: 'live', status: 'idle', labels: {} });
     }
+    h.state.feeds[0].runs.total = h.state.feeds[0].runs.rows.length;
     try {
       await h.ready();
       for (let i = 0; i < 250; i++) find(h.render(), `child-fold-saved-${i}`).events.on_click({}, h.cx);
@@ -271,7 +272,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
       expect(saved()).toHaveLength(200);
       // One incomplete run list must not remove keys from the other feeds either.
-      h.state.feeds[0].runs.rows = [first]; h.state.feeds[0].runs.truncated = true;
+      h.state.feeds[0].runs.rows = [first]; h.state.feeds[0].runs.total = 1; h.state.feeds[0].runs.truncated = true;
       h.state.feeds[0].revision++; h.view.spiderReloadAt = -Infinity;
       await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
       expect(saved()).toHaveLength(200);
@@ -329,11 +330,11 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       const writes = () => h.storageWrites.filter(([key]) => key === 'spider.subagents.expanded').length;
       expect(writes()).toBe(1);
       await refresh(); expect(writes()).toBe(1);
-      h.state.feeds[0].runs.rows = []; h.state.errors = [{ source: 's0', message: 'read failed' }];
+      h.state.feeds[0].runs.rows = []; h.state.feeds[0].runs.total = 0; h.state.errors = [{ source: 's0', message: 'read failed' }];
       await refresh(); expect(h.storage.get('spider.subagents.expanded')).toBe('["live0"]');
       expect(writes()).toBe(1);
-      h.state.errors = []; h.state.feeds[0].runs.rows = [first]; await refresh();
-      h.state.feeds[0].runs.rows = []; h.state.throwFeed = true; await refresh();
+      h.state.errors = []; h.state.feeds[0].runs.rows = [first]; h.state.feeds[0].runs.total = 1; await refresh();
+      h.state.feeds[0].runs.rows = []; h.state.feeds[0].runs.total = 0; h.state.throwFeed = true; await refresh();
       h.view.spiderFeedError = null; h.view.spiderModel.inputKey = null;
       h.view.spiderRequestRefresh(); await h.flush();
       expect(h.storage.get('spider.subagents.expanded')).toBe('["live0"]');

@@ -153,7 +153,7 @@ export function controlText(result: SafeControlOutcome, destinationAlias?: strin
   const movedText = value?.intercomAddress ? `Moved to ${destinationAlias ?? result.home?.machineId ?? "destination"}; terminal ${value.terminal ?? "pending"}; intercom ${value.intercomAddress}.\n${value.warnings?.map(controlWarningText).join("\n") ?? ""}\n` : "Moved.\n";
   if (result.code === 0 && value?.sourceCleanup) switch (value.sourceCleanup.status) {
     case 'done': break;
-    case 'pending': return `${movedText}Source cleanup pending: ${MOVE_REFUSAL_MESSAGES['move-source-stop-pending'].replace(/\.$/, '')}. It finishes on its own; check with \`spider roam status\`.\n`;
+    case 'pending': return `${movedText}Source cleanup pending: ${MOVE_REFUSAL_MESSAGES[value.sourceCleanup.reason].replace(/\.$/, '')}. It finishes on its own; check with \`spider roam status\`.\n`;
     default: { const exhaustive: never = value.sourceCleanup; return exhaustive; }
   }
   if (result.code === 0 && value?.presentation === "pending") return "recovered; the pane appears when Herdr opens\n";
@@ -164,5 +164,5 @@ export function controlText(result: SafeControlOutcome, destinationAlias?: strin
 }
 
 export function sourceCleanupStatusText(item: NonNullable<RoamStatus['sourceCleanups']>[number]): string {
-  return `Session ${token(item.sessionId) ?? 'unknown'}: source cleanup pending on ${token(item.sourceMachine) ?? 'unknown'}: ${item.sourceCleanup.blockers[0]}.`;
+  return `Session ${token(item.sessionId) ?? 'unknown'}: source cleanup pending on ${token(item.sourceMachine) ?? 'unknown'}: ${MOVE_REFUSAL_MESSAGES[item.sourceCleanup.reason]}`;
 }

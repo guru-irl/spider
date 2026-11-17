@@ -366,7 +366,7 @@ it('sync cleanup does no work without pending operations and joins overlapping r
   const operation = { id: 'cleanup-move', machineId: HUB, kind: 'move', expectedEpoch: 1, args: { sessionId: 'session-a', destinationMachine: OTHER } };
   f.journal.begin(operation);
   f.journal.record(operation.id, 'move-request', { operation, sessionId: 'session-a', destinationMachine: OTHER });
-  f.journal.record(operation.id, 'move-source-cleanup-pending', { sessionId: 'session-a', sourceMachine: BOX, sourceCleanup: { status: 'pending', blockers: ['process-exit-unproven'] } });
+  f.journal.record(operation.id, 'move-source-cleanup-pending', { sessionId: 'session-a', sourceMachine: BOX, sourceCleanup: { status: 'pending', reason: 'move-source-stop-pending', blockers: ['process-exit-unproven'] } });
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
   let calls = 0;
@@ -387,7 +387,7 @@ it("source cleanup ignores synchronization with a different machine", async () =
   const f = await fixture(), operation = { id: "source-only", machineId: HUB, kind: "move", expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: OTHER } };
   f.journal.begin(operation);
   f.journal.record(operation.id, "move-request", { operation, sessionId: "session-a", destinationMachine: OTHER });
-  f.journal.record(operation.id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", blockers: ["process-exit-unproven"] } });
+  f.journal.record(operation.id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", reason: "move-source-stop-pending", blockers: ["process-exit-unproven"] } });
   await f.service.recoverCleanup(OTHER);
   expect(f.mounted).toEqual([]);
   await f.service.recoverCleanup(BOX);
@@ -399,7 +399,7 @@ it("cleanup coalesces evidence arriving during a flight into one trailing run", 
   const add = (id: string) => {
     const operation = { id, machineId: HUB, kind: "move", expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: OTHER } };
     f.journal.begin(operation); f.journal.record(id, "move-request", { operation, sessionId: "session-a", destinationMachine: OTHER });
-    f.journal.record(id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", blockers: ["process-exit-unproven"] } });
+    f.journal.record(id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", reason: "move-source-stop-pending", blockers: ["process-exit-unproven"] } });
   };
   add("first-cleanup");
   let entered!: () => void, release!: () => void, calls = 0;

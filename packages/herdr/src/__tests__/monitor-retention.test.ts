@@ -56,6 +56,28 @@ it('does not remove a lost terminal when its release outlives the job', async ()
   } finally { blocked.resolve(); await monitor.shutdown('reload'); }
 });
 
+it('finishes a valid release after its job is pruned', async () => {
+  const h = await monitorFixture(); h.early();
+  let now = 1000;
+  const monitor = h.monitor({ clock: () => now });
+  const store = createJobStore(h.f.root, h.owner.sessionId);
+  const blocked = deferred(), entered = deferred();
+  try {
+    const job = await monitor.start(program, h.owner, on, {});
+    await job.finished; await monitor.consumeNotice(job.id); await monitor.toolReturned(job.id);
+    const get = h.hc.get;
+    h.hc.get = async (...args) => { entered.resolve(); await blocked.promise; return get(...args); };
+    const cleanup = monitor.finishCleanup();
+    await entered.promise;
+    now += 8 * 86400000;
+    await monitor.consumeNotice(job.id);
+    await expect.poll(async () => (await store.read()).jobs.length).toBe(0);
+    blocked.resolve(); await cleanup;
+    expect(h.terminals.has(job.address)).toBe(false);
+    expect(h.errors).toEqual([]);
+  } finally { blocked.resolve(); await monitor.shutdown('reload'); }
+});
+
 it('keeps lost-terminal evidence while another job uses the pruned address', async () => {
   const h = await monitorFixture(); h.early();
   let now = 1000;

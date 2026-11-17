@@ -432,3 +432,20 @@ it.each(["outcome", "throw"] as const)("source cleanup exposes its %s reason in 
   const status = readStatus(f.ports.config, { globalDb: f.global.db, journalDb: f.db, stores: [], now: 10, observations: [] });
   expect(status.diagnostics).toContainEqual({ severity: "warning", reason: `Move recovery pending: ${reason}.`, repairCommand: `spider roam recover ${operation.id}` });
 }, 5000);
+
+it("cleanup does not lose a request at the final microtask boundary of its flight", async () => {
+  const f = await fixture(), operation = { id: "last-flight-request", machineId: HUB, kind: "move", expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: OTHER } };
+  f.journal.begin(operation); f.journal.record(operation.id, "move-request", { operation, sessionId: "session-a", destinationMachine: OTHER });
+  f.journal.record(operation.id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", reason: "move-source-stop-pending", blockers: ["process-exit-unproven"] } });
+  let calls = 0, trailing!: Promise<void>, requested!: () => void;
+  const requestArrived = new Promise<void>(resolve => { requested = resolve; });
+  const service = createMoveRuntimeService({ root: f.root, globalDb: f.global.db, config: f.ports.config, journal: f.journal, transport: {} as Transport }, async input => {
+    calls++; const mounted = await f.factory(input);
+    return { ...mounted, async close() {
+      if (calls === 1) queueMicrotask(() => queueMicrotask(() => queueMicrotask(() => { trailing = service.recoverCleanup(BOX); requested(); })));
+    } };
+  });
+  const first = service.recoverCleanup(BOX); await requestArrived;
+  await Promise.all([first, trailing]);
+  expect(calls).toBe(2);
+}, 5000);

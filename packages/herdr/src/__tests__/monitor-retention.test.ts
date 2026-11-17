@@ -96,11 +96,11 @@ it('keeps lost-terminal evidence while another job uses the pruned address', asy
     const second = await monitor.start(program, h.owner, on, {});
     expect(second.address).toBe(first.address);
     h.emit({ type: 'lost', terminal: first.address, data: finish, seq: 5 });
-    await expect(second.cancel()).rejects.toMatchObject({ code: 'job-outcome-unknown' });
+    await expect(second.cancel('abort')).rejects.toMatchObject({ code: 'job-outcome-unknown' });
     now += 8 * 86400000;
     await monitor.toolReturned(second.id);
     await expect.poll(async () => (await store.read()).jobs.map(job => job.id)).toEqual([second.id]);
-    await expect(second.cancel()).rejects.toMatchObject({ code: 'job-outcome-unknown' });
+    await expect(second.cancel('abort')).rejects.toMatchObject({ code: 'job-outcome-unknown' });
     expect(h.kills).toEqual([]);
     expect(h.errors).toEqual([]);
   } finally { await monitor.shutdown('reload'); }

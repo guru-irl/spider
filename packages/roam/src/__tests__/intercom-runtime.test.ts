@@ -1044,7 +1044,7 @@ it("settlement refuses an injected-looking retained row with no dispatch attempt
 }, 5000);
 
 
-it("rebinds a moved box recipient through the same hub-only route as message delivery", async () => {
+it.each([OTHER, BOX])("rebinds a moved recipient through the shared hub-only route to %s", async destination => {
   const f = machineFixture(BOX), config = parseConfig({ enabled: true, role: "box", machineId: BOX, hubMachineId: HUB, coreUnit: "fixture",
     intercom: { enabled: true, mode: "hub-only", machineAlias: "box.invalid", routes: [
       { kind: "direct", peer: peer(HUB, "hub.invalid"), edgeEpoch: "hub-box" },
@@ -1062,10 +1062,10 @@ it("rebinds a moved box recipient through the same hub-only route as message del
   const accepted = queue.acceptLocal({ from, endpoint: { address, machineId: BOX, homeEpoch: 2, activationEpoch: "source" },
     message: { id: "relayed-move-mail", timestamp: 1000, content: { text: "synthetic" } } });
   expect(accepted.kind).toBe("accepted");
-  f.global.db.prepare("UPDATE session_homes SET machine_id=?,epoch=3,move_id='relay-move' WHERE session_id=?").run(OTHER, address.sessionId);
-  f.broker.emit("presence", [localPresence(from, "sender")]);
+  f.global.db.prepare("UPDATE session_homes SET machine_id=?,epoch=3,move_id='relay-move' WHERE session_id=?").run(destination, address.sessionId);
+  f.broker.emit("presence", destination === BOX ? [localPresence(from, "sender"), { ...localPresence(address, "destination"), homeEpoch: 3 }] : [localPresence(from, "sender")]);
   const entry = { ...remote(OTHER, "other.invalid", address), homeEpoch: 3, activationEpoch: "destination", endpointEpoch: "destination" };
-  await f.broker.helper!(withHopRequest(helperRequest(HUB, BOX, "hub-box", 1, [entry])), AbortSignal.timeout(5000));
-  await expect(service.move.intake.ready(fence, { address, machineId: OTHER, homeEpoch: 3, activationEpoch: "destination" })).resolves.toMatchObject({ intercomAddress: expect.stringContaining("other.invalid") });
-  expect(queue.retained("outbound", "relayed-move-mail")).toMatchObject({ peer: HUB, endpoint: { machineId: OTHER, homeEpoch: 3 }, payloadRetained: true });
+  if (destination !== BOX) await f.broker.helper!(withHopRequest(helperRequest(HUB, BOX, "hub-box", 1, [entry])), AbortSignal.timeout(5000));
+  await expect(service.move.intake.ready(fence, { address, machineId: destination, homeEpoch: 3, activationEpoch: "destination" })).resolves.toMatchObject({ intercomAddress: expect.stringContaining(destination === BOX ? "box.invalid" : "other.invalid") });
+  expect(queue.retained("outbound", "relayed-move-mail")).toMatchObject({ peer: destination === BOX ? BOX : HUB, endpoint: { machineId: destination, homeEpoch: 3 }, payloadRetained: true });
 }, 5000);

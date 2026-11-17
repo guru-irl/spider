@@ -287,6 +287,34 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(byId(root, 'sub-console:box-4.invalid/old')).toBeDefined();
   });
 
+  it(`${version}: nested subagents stay collapsed independently of their parent`, async () => {
+    const make = (key: string, kind: string, parentKey: string | null, depth: number) => ({
+      key, kind, parentKey, depth, retained: false, name: key, address: key, originalAddress: key,
+      status: 'working', finishedAt: null, terminal: terminal(key), action: null,
+    });
+    const rows = [make('parent', 'subagent', null, 0), make('nested', 'subagent', 'parent', 1),
+      make('command', 'remote', 'nested', 2)];
+    const test = fixture(version, { ports: { projectAgentChildren: () => rows } });
+    await test.ready();
+    let root = test.view.render(test.cx);
+    expect(byId(root, 'sub-parent')).toBeDefined();
+    expect(byId(root, 'sub-nested')).toBeUndefined();
+    expect(byId(root, 'child-busy-parent')).toBeDefined();
+    byId(root, 'child-fold-parent')!.events.on_click({}, test.cx);
+    root = test.view.render(test.cx);
+    expect(byId(root, 'sub-nested')).toBeDefined();
+    expect(byId(root, 'sub-command')).toBeUndefined();
+    expect(byId(root, 'child-busy-nested')).toBeDefined();
+    byId(root, 'child-fold-nested')!.events.on_click({}, test.cx);
+    root = test.view.render(test.cx);
+    expect(byId(root, 'sub-command')).toBeDefined();
+    byId(root, 'child-fold-parent')!.events.on_click({}, test.cx);
+    root = test.view.render(test.cx);
+    expect(byId(root, 'sub-nested')).toBeUndefined();
+    byId(root, 'child-fold-parent')!.events.on_click({}, test.cx);
+    expect(byId(test.view.render(test.cx), 'sub-command')).toBeDefined();
+  });
+
   it(`${version}: places the root group before finished children and their toggle`, async () => {
     const make = (key: string, kind: string, parentKey: string | null, depth: number, retained = false) => ({
       key, kind, parentKey, depth, retained, name: key, address: key, originalAddress: key,
@@ -297,6 +325,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       make('nested-console', 'console', 'live', 1), make('nested-finished', 'native', 'live', 1, true),
       make('finished', 'subagent', null, 0, true), make('finished-child', 'native', 'finished', 1, true)];
     const test = fixture(version, { ports: { projectAgentChildren: () => rows } });
+    test.view.expandedSubagents.add('live');
+    test.view.expandedSubagents.add('finished');
     await test.ready();
     test.view.expandedConsoleGroups.add(consoleKey('local'));
     test.view.expandedConsoleGroups.add(consoleKey('local', 'live'));
@@ -321,9 +351,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       make('peer-grandchild', 'subagent', 'nested-peer', 2), make('nested-console', 'console', 'parent', 1),
       make('root-console', 'console', null, 0)];
     const test = fixture(version, { ports: { projectAgentChildren: () => rows } });
+    test.view.expandedSubagents.add('parent');
     await test.ready();
-    test.view.folded.add('peer');
-    test.view.folded.add('nested-peer');
     let root = test.view.render(test.cx);
     const compareGroup = (parent: string | null, sibling: string, open: boolean) => {
       const group = byId(root, consoleId('local', parent))!, peer = byId(root, `sub-${sibling}`)!;
@@ -333,8 +362,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     };
     compareGroup(null, 'peer', false);
     compareGroup('parent', 'nested-peer', false);
-    test.view.folded.delete('peer');
-    test.view.folded.delete('nested-peer');
+    byId(root, 'child-fold-peer')!.events.on_click({}, test.cx);
+    byId(root, 'child-fold-nested-peer')!.events.on_click({}, test.cx);
     byId(root, consoleId('local'))!.events.on_click({}, test.cx);
     byId(root, consoleId('local', 'parent'))!.events.on_click({}, test.cx);
     root = test.view.render(test.cx);
@@ -370,6 +399,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const test = fixture(version);
     seedConsoles(test);
     test.nativeTerminals.push({ ...terminal('box-4.invalid/old', { 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid' }), parent: 'local', state: 'finished', finishedAt: Date.now(), exitCode: 0, reason: 'exited' });
+    test.view.expandedSubagents.add('run-local');
     await test.ready();
     const root = test.view.render(test.cx);
     const group = byId(root, consoleId('local'))!;
@@ -398,6 +428,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       make('nested-console', 'console', 'run', 1), make('nested-live', 'native', 'run', 1),
       make('nested-finished', 'native', 'run', 1, true), make('root-live', 'native', null, 0)];
     const test = fixture(version, { ports: { projectAgentChildren: () => rows } });
+    test.view.expandedSubagents.add('run');
     await test.ready();
     const tree = () => test.view.tree(test.nativeTerminals, 'local');
     const shape = () => tree().map((entry: any) => [entry.group ? `group:${entry.group.parentKey}` : entry.t.key, entry.lines]);
@@ -430,6 +461,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       { ...terminal('nested-child'), parent: 'subviewer', name: 'Nested child' },
       { ...terminal('box-4.invalid/nested-old', { 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid', 'spider.run': 'run-local', 'spider.session': 'session-one' }), parent: 'subviewer', state: 'finished', finishedAt: Date.now(), exitCode: 0, reason: 'exited' },
     );
+    test.view.expandedSubagents.add('run-local');
     await test.ready();
     let root = test.view.render(test.cx);
     expect(byId(root, 'finished-toggle-local')).toBeDefined();
@@ -460,6 +492,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: draws expanded console children beneath their groups`, async () => {
     const test = fixture(version);
     seedConsoles(test);
+    test.view.expandedSubagents.add('run-local');
     await test.ready();
     test.view.expandedConsoleGroups.add(consoleKey('local', 'run-local'));
     test.view.expandedConsoleGroups.add(consoleKey('local'));
@@ -484,6 +517,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     });
     const rows = [make(key, 'subagent', null, 0), make('nested-child', 'native', key, 1), make('console-a', 'console', null, 0)];
     const test = fixture(version, { ports: { projectAgentChildren: () => rows } });
+    test.view.expandedSubagents.add(key);
     await test.ready();
     test.view.expandedConsoleGroups.add(key);
     const tree = test.view.tree(test.nativeTerminals, 'local');
@@ -495,6 +529,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const test = fixture(version);
     seedConsoles(test);
     test.nativeTerminals.push({ ...terminal('box-4.invalid/old', { 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid' }), parent: 'local', state: 'finished', finishedAt: Date.now(), exitCode: 0, reason: 'exited' });
+    test.view.expandedSubagents.add('run-local');
     await test.ready();
     let root = test.view.render(test.cx);
     const check = (open: boolean) => {
@@ -794,6 +829,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: the consoles caret shares the subagent column in priority sort`, async () => {
     const test = fixture(version);
     seedConsoles(test);
+    test.view.expandedSubagents.add('run-local');
     await test.ready();
     test.state.set('agents.sort', 'priority');
     const root = test.view.render(test.cx);
@@ -1311,6 +1347,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: shows folded Consoles groups without hiding sibling subagents in every sort`, async () => {
     const test = fixture(version);
     seedConsoles(test);
+    test.view.expandedSubagents.add('run-local');
     await test.ready();
     for (const command of ['sort-priority', 'sort-space', 'sort-machine']) {
       await test.send(command);
@@ -1359,6 +1396,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: expands nested consoles independently of their owner and subagent fold`, async () => {
     const test = fixture(version);
     seedConsoles(test);
+    test.view.expandedSubagents.add('run-local');
     await test.ready();
     let root = test.view.render(test.cx);
     byId(root, consoleId('local', 'run-local'))!.events.on_click({}, test.cx);
@@ -1402,6 +1440,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       { ...terminal('box-1.invalid/sub', { 'spider.kind': 'subagent-viewer', 'spider.run': 'remote-run' }), parent: 'box-1.invalid/pinned', status: 'working' },
       { ...terminal('box-4.invalid/remote-console', { 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid', 'spider.run': 'remote-run' }), parent: 'box-1.invalid/sub' },
     );
+    test.view.expandedSubagents.add('remote-run');
     await test.ready();
     let root = test.view.render(test.cx);
     expect(byId(root, 'sub-remote-run')).toBeDefined();
@@ -1487,6 +1526,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: leaves raw navigation children unchanged by sidebar folds`, async () => {
     const test = fixture(version);
     seedConsoles(test);
+    test.view.expandedSubagents.add('run-local');
     await test.ready();
     const raw = () => children.projectAgentChildren(test.nativeTerminals, test.view.spiderFeeds, 'local', HerdrLabelContract, { machines: test.layouts as any })
       .filter(row => row.kind === 'console').map(row => row.originalAddress).sort();

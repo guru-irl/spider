@@ -383,7 +383,8 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   const orderModFiles = <T extends { path: string }>(files: readonly T[], appHome: string): T[] => {
     const priority = (file: T) => {
       const name = relative(join(appHome, 'mods'), file.path).split(sep);
-      if (name.length !== 2 || !name[0]!.startsWith('spider-')) return 0;
+      if (!name[0]?.startsWith('spider-')) return 3;
+      if (name.length !== 2) return 0;
       return name[1] === 'main.js' ? 1 : name[1] === 'mod.json' ? 2 : 0;
     };
     return [...files].sort((a, b) => priority(a) - priority(b));

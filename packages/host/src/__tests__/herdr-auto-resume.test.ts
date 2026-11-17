@@ -10,7 +10,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { build } from 'vite';
 import type { Generation, Owner, SessionId, TerminalIdentity } from '../../../herdr/src/contracts.js';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
-import { createTerminalRegistry } from '../../../herdr/src/sessions/registry.js';
+import { createTerminalRegistry, withProcessLock } from '../../../herdr/src/sessions/registry.js';
 import { resumeOfferShell } from '../../../herdr/src/sessions/resume.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 
@@ -43,6 +43,23 @@ it('the configured auto policy produces one automatic snippet per proved restart
     expect(await ports.resumeOffer!(request)).toBe('');
   } finally { await ports.dispose(); }
 });
+
+it('reports a busy resume launch rather than an internal lock timeout', async () => {
+  root = await mkdtemp(join(await realpath(tmpdir()), 'auto-busy-'));
+  const file = join(root, 'session.jsonl'), agent = join(root, 'agent'); await mkdir(agent);
+  await writeFile(file, JSON.stringify({ type: 'session', id: 's1', cwd: root }) + '\n');
+  const config = parseHerdrConfig({ app: { binary: '/app', home: root }, core: { binary: '/hc', config: join(root, 'core') }, agentDirectory: agent, globalRoot: root, shellRc: join(root, 'rc'), spaces: [], machines: [] });
+  const ports = createProductionHerdrCliPorts(root, { ...process.env, SPIDER_GLOBAL_ROOT: root });
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const holding = withProcessLock(join(root, 'herdr'), `resume-launch:${file}`, async () => { entered(); await gate; });
+  await ready;
+  try {
+    const request = { config, configPath: join(root, 'config.json'), packageRoot: root, journalRoot: join(root, 'journal') };
+    await expect(ports.resume!(request, { file, sessionId: 's1', cwd: root })).rejects.toMatchObject({ code: 'resume-launch-busy', message: expect.stringContaining('resume') });
+  } finally { release(); await holding; await ports.dispose(); }
+}, 15000);
 
 it.each([['exit 130', true], ['kill -TERM $$', true], ['exit 9', false]] as const)('reports resumed pi exit %s appropriately', async (exit, normal) => {
   root = await mkdtemp(join(await realpath(tmpdir()), 'auto-exit-'));

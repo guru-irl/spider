@@ -29,7 +29,7 @@ export async function scenario(): Promise<PairScenario> {
   const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "pair-scenario-")); roots.push(root);
   const makePeer = (machineId: string, alias: string): Peer => ({ machineId, alias, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: join(root, alias) });
   const source = makePeer(A, "box-a.invalid"), target = makePeer(B, "box-b.invalid"), otherSource = makePeer("00000000-0000-4000-8000-000000000000", "box-c.invalid");
-  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "{pairId}"], connect: ["/fixture/connector", "connect", "{pairId}"], localPort: 23222, sshPort: 2222 };
+  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "{pairId}"], connect: ["/fixture/connector", "connect", "{pairId}"], localPort: 23222 };
   const calls: string[] = [], units = new Map<string, { name: string; file: string; pid: number; state: string; members: number[] }>();
   let nextPid = 100, nextKey = 8, connection = false, straggler = false, offline = false, listError = false, mismatch = false;
   let terminals: Array<{ address: string; state: string }> = [];
@@ -48,8 +48,8 @@ export async function scenario(): Promise<PairScenario> {
       calls.push(`${peer.machineId}:${argv.slice(1).join(" ")}`);
       if (argv[0] === "/fixture/connector") return { code: 0, stdout: JSON.stringify({ connector: "ready", login: "ready", tunnel: "hosted", peerPort: "reachable" }) };
       if (argv[0] === "/fixture/ssh-keyscan") {
-        if (JSON.stringify(argv) !== JSON.stringify(["/fixture/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "2222", "127.0.0.1"])) throw new Error("unexpected fixture command");
-        return { code: 0, stdout: `[127.0.0.1]:2222 ${hostPublicKey}\n` };
+        if (JSON.stringify(argv) !== JSON.stringify(["/fixture/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "22", "127.0.0.1"])) throw new Error("unexpected fixture command");
+        return { code: 0, stdout: `127.0.0.1 ${hostPublicKey}\n` };
       }
       if (argv[0] === "/fixture/keygen") { const file = argv[argv.indexOf("-f") + 1]; writeFileSync(file, "fixture-private", { mode: 0o600 }); const key = Buffer.concat([blob.subarray(0, 19), Buffer.alloc(32, nextKey++)]); writeFileSync(`${file}.pub`, `ssh-ed25519 ${key.toString("base64")}`, { mode: 0o644 }); return { code: 0, stdout: "" }; }
       if (argv[0] === "/fixture/systemctl") {

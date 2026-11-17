@@ -278,14 +278,12 @@ transport are implemented in `packages/roam/src/intercom-bridge.ts` and
 `packages/roam/src/intercom-exchange.ts`.
 
 Each machine's operator supplies a connector recipe with `check`, `host`, and
-`connect` argument arrays, `localPort`, and `sshPort`. The optional `pairPorts`
-map overrides `localPort` for individual pairs. The `sshPort` is the local SSH
-listener on `127.0.0.1` that the host command serves to peers. Enrollment
-requires this port on both endpoints. Doctor reports `intercom-ssh-port-missing`
-when it is absent. Unit arguments can use `{pairId}`, `{tunnelId}`, `{remotePort}`,
-`{localPort}`, and `{sshPort}`. The hub requests a scan through the trusted
-machine channel. The target scans its loopback listener and reports the served
-public key for pinning.
+`connect` argument arrays and `localPort`. The optional `pairPorts` map overrides
+`localPort` for individual pairs. Unit arguments can use `{pairId}`, `{tunnelId}`,
+`{remotePort}`, and `{localPort}`. The host command must forward to IPv4
+`127.0.0.1` at the pair's approved `remotePort`, not `localhost`. The hub
+requests a scan on that port through the trusted machine channel. The target
+reports the key presented by the listener for pinning.
 
 ### Protocol versions
 

@@ -182,11 +182,8 @@ async function localPairOperation(input: LocalPairOperation, ports: LocalPairPor
     return ensurePairUnit(record.pair, input.action === "host-connector" ? "host" : "connect", ports);
   }
   if (input.action === "inspect-ssh") {
-    if (!ports.recipe) throw new Error("intercom-connector-recipe-missing");
-    const recipe = parseConnectorRecipe(ports.recipe);
-    if (recipe.sshPort === undefined) throw new Error("intercom-ssh-port-missing");
     if (!ports.keyscan || !ports.sshUser) throw new Error("intercom-ssh-host-unavailable");
-    return inspectServedSshIdentity({ machineId: ports.machineId, sshUser: ports.sshUser, keyscan: ports.keyscan, sshPort: recipe.sshPort, run: ports.run });
+    return inspectServedSshIdentity({ machineId: ports.machineId, sshUser: ports.sshUser, keyscan: ports.keyscan, sshPort: input.pair.connector.remotePort, run: ports.run });
   }
   if (input.action === "ensure-key") {
     const key = await ensurePairKey(input.pair, { binary: ports.keygen,

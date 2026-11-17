@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:pat
 import { HerdrLabelContract } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
-import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeySections, type ManagedPart, type FileAction } from './backup.js';
+import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction } from './backup.js';
 import { probeLaunch, type DoctorReport } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
 import { shellQuote } from '../sessions/resume.js';
@@ -63,6 +63,8 @@ export interface InstallFile {
   mode?: number;
   terminalKeys?: Readonly<Record<string, string>>;
   keys?: KeySections;
+  retainedKeys?: KeySections;
+  ignoredKeys?: KeyFields;
   managed?: ManagedPart;
   snapshotOnly?: boolean;
   updateAfterCutover?: boolean;
@@ -148,6 +150,7 @@ export interface SetupParts {
   preflight(request: SetupRequest): Promise<SetupPreflight>;
   stageLook(request: SetupRequest, context: SetupContext, mode: 'export' | 'isolated-clone'): Promise<readonly InstallFile[]>;
   installFiles(request: SetupRequest, context: SetupContext): Promise<readonly InstallFile[]>;
+  finalizeLook?(request: SetupRequest, context: SetupContext, staged: readonly InstallFile[]): Promise<readonly InstallFile[]>;
   generateTemplates(request: SetupRequest, context: SetupContext): Promise<readonly InstallFile[]>;
   installResume(request: SetupRequest, context: SetupContext): Promise<readonly InstallFile[]>;
   probeMachineNode(target: ProbeTarget, launch: HcRunRequest): Promise<string>;
@@ -287,10 +290,13 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     if (recordConfigPath) globalJson['herdr.config'] = resolve(request.configPath);
     else if (previouslyManagedConfig) delete globalJson['herdr.config'];
     const globalConfigFiles: InstallFile[] = recordConfigPath || previouslyManagedConfig ? [{ path: globalConfigPath, expected: globalConfig.hash, bytes: Buffer.from(JSON.stringify(globalJson, null, 2) + '\n'), managed: { kind: 'json', fields: ['herdr.config'] } }] : [];
+    const stagedLook = await parts.stageLook(request, context, preflight.layoutExport ? 'export' : 'isolated-clone');
+    const installedFiles = await parts.installFiles(request, context);
+    const finalLook = parts.finalizeLook ? await parts.finalizeLook(request, context, stagedLook) : stagedLook;
     const plans = [
       ...globalConfigFiles,
-      ...await parts.stageLook(request, context, preflight.layoutExport ? 'export' : 'isolated-clone'),
-      ...await parts.installFiles(request, context), settingsFile,
+      ...finalLook,
+      ...installedFiles, settingsFile,
       ...await parts.generateTemplates(request, context), notesFile,
       ...await parts.installResume(request, context),
     ];
@@ -336,21 +342,29 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           desired.terminal = { ...plan.terminalKeys, ...desired.terminal };
         }
         const owned: KeySections = { ...prior?.keys, ...(prior?.terminalKeys || prior?.keys?.terminal ? { terminal: { ...prior?.terminalKeys, ...prior?.keys?.terminal } } : {}) };
-        const managed: ManagedPart = { kind: 'keys', sections: Object.fromEntries(Object.entries(desired).map(([section, bindings]) => [section, Object.keys(bindings)])) };
-        try { mergeKeys(current.bytes, desired, owned, false); }
+        const recorded: Record<string, Readonly<Record<string, KeyBinding>>> = { ...desired };
+        for (const [section, bindings] of Object.entries(plan.retainedKeys ?? {})) {
+          const active = { ...desired[section] };
+          for (const key of Object.keys(bindings)) delete active[key];
+          if (Object.keys(active).length) desired[section] = active;
+          else delete desired[section];
+          recorded[section] = { ...active, ...bindings };
+        }
+        const managed: ManagedPart = { kind: 'keys', sections: Object.fromEntries(Object.entries(recorded).map(([section, bindings]) => [section, Object.keys(bindings)])) };
+        try { mergeKeys(current.bytes, desired, owned, false, { ignoredKeys: plan.ignoredKeys }); }
         catch (error) {
           if (!(error instanceof HerdrError) || error.code !== 'key-binding-conflict') throw error;
           refusal = { code: error.code, message: error.message };
         }
         let bytes: Buffer, refusalRequired = false;
-        try { bytes = mergeKeys(current.bytes, desired, owned, true); }
+        try { bytes = mergeKeys(current.bytes, desired, owned, true, { ignoredKeys: plan.ignoredKeys }); }
         catch (error) {
           if (!(error instanceof HerdrError) || error.code !== 'key-binding-conflict') throw error;
           refusal = { code: error.code, message: `${plan.path}: ${error.message}` };
           refusalRequired = true;
           bytes = current.bytes;
         }
-        files.push({ ...plan, keys: desired, managed, refusal, refusalRequired, bytes });
+        files.push({ ...plan, keys: recorded, managed, refusal, refusalRequired, bytes });
       } else {
         const owned = prior?.terminalKeys ?? {};
         const managed: ManagedPart = { kind: 'json', section: 'terminal', fields: Object.keys(plan.terminalKeys!) };

@@ -85,13 +85,17 @@ const machine = descriptor.machines.find(row => row.root === root);
 if (!machine || !root.startsWith(descriptor.root + '/')) throw Error('unowned move machine');
 Object.assign(process.env, machine.env);
 const record = value => appendFileSync(descriptor.effects, JSON.stringify(value) + '\\n');
+const observedMoveJournals = new WeakSet();
 const moveFactory = async input => {
-  const journalRecord = input.journal.record.bind(input.journal);
-  input.journal.record = (id, action, result) => {
-    journalRecord(id, action, result);
-    if (action === 'move-action-start' || action === 'move-action-complete')
-      record({ effect: 'move-phase', at: Date.now(), operationId: id, event: action, action: result.action });
-  };
+  if (!observedMoveJournals.has(input.journal)) {
+    observedMoveJournals.add(input.journal);
+    const journalRecord = input.journal.record.bind(input.journal);
+    input.journal.record = (id, action, result) => {
+      journalRecord(id, action, result);
+      if (action === 'move-action-start' || action === 'move-action-complete')
+        record({ effect: 'move-phase', at: Date.now(), operationId: id, event: action, action: result.action });
+    };
+  }
   const runtime = await createHostMoveBindings(input);
   const endpoint = runtime.bindings.intercom!.destinationEndpoint;
   runtime.bindings.intercom!.destinationEndpoint = async home => {

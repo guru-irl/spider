@@ -87,7 +87,7 @@ export function launchEnvironment(value: LaunchEnvironment): LaunchEnvironment {
   return { agentDirectory: value.agentDirectory, extensionArguments: recordedExtensionArguments(value.extensionArguments) };
 }
 
-export const terminalIdentityKey = (identity: TerminalIdentity) => hash(JSON.stringify([identity.coreId, identity.terminalId, identity.socket, identity.sessionNamespace]));
+export const terminalIdentityKey = (identity: TerminalIdentity): string => hash(JSON.stringify([identity.coreId, identity.terminalId, identity.socket, identity.sessionNamespace]));
 const identityKey = terminalIdentityKey;
 function association(value: unknown): TerminalAssociation {
   const r = value as TerminalAssociation;

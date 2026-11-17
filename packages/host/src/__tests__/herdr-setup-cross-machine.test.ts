@@ -73,7 +73,7 @@ test('unreadable app version leaves existing picker files and bindings alone', a
   const installed = await readFile(keyPath), journalBefore = await readFile(join(request.journalRoot, 'journal.json'));
   const files = await f.parts.installFiles(request, f.context);
   expect(files.some(file => file.path === picker)).toBe(false);
-  expect(files.find(file => file.path === keyPath)?.keys?.global).not.toHaveProperty('cmd-t');
+  expect(files.find(file => file.path === keyPath)).toBeUndefined();
   expect(await readFile(keyPath)).toEqual(installed);
   expect(await readFile(picker, 'utf8')).toBe('// installed picker\n');
   expect(await readFile(join(request.journalRoot, 'journal.json'))).toEqual(journalBefore);
@@ -102,6 +102,11 @@ test('a lost version after staging installs A without picker files or bindings',
   expect(stderr.mock.calls.map(([text]) => String(text)).filter(text => /picker.*version/i.test(text))).toHaveLength(1);
   expect(await readFile(join(home, 'mods/spider-pane/main.js'), 'utf8')).not.toContain('spider-look:b-pane-entry-imports');
   for (const name of ['spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down']) await expect(stat(join(home, 'mods', name))).rejects.toMatchObject({ code: 'ENOENT' });
+  for (const path of ['spider-menu/actions.js', 'spider-menu/machine.js', 'spider-menu/machines/actions.js', 'spider-pane/machines/actions.js', 'spider-tabs/machines/actions.js']) await expect(stat(join(home, 'mods', path))).rejects.toMatchObject({ code: 'ENOENT' });
+  for (const path of result.writes.filter(path => path.startsWith(join(home, 'mods') + '/') && path.endsWith('.js'))) {
+    const source = (await readFile(path, 'utf8')).replace(/^\s*\/\/[^\n]*$/gm, '');
+    for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.[^'"]+)['"]/g)) expect((await stat(resolve(dirname(path), match[1]!))).isFile(), `${path}: ${match[1]}`).toBe(true);
+  }
   const keys = JSON.parse(await readFile(join(home, 'keys.json'), 'utf8'));
   for (const key of ['cmd-t', 'cmd-d', 'cmd-shift-d']) expect(keys.global[key]).toEqual(stockKeys.global[key]);
   expect(keys['layout:spider-glass']?.['cmd-shift-w']).toBeUndefined();
@@ -109,6 +114,7 @@ test('a lost version after staging installs A without picker files or bindings',
 
 test('a lost version after staging preserves an installed picker and its rollback ownership', async () => {
   const f = await releaseFixture('0.1.13'), home = f.h.directories.app, app = join(f.h.root, 'app-selection.mjs');
+  const stockKeys = await readFile(join(home, 'keys.json'));
   await setupHerdr(f.request, f.parts);
   const pickerRoots = ['spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down', 'spider-pane', 'spider-tabs', 'spider-menu', 'spider-new-menu', 'spider-agents'].map(name => join(home, 'mods', name));
   const before = await Promise.all(pickerRoots.map(tree));
@@ -128,15 +134,23 @@ test('a lost version after staging preserves an installed picker and its rollbac
   expect(newKeys.keys).toEqual(oldKeys.keys);
   expect(newKeys.keysBefore).toEqual(oldKeys.keysBefore);
   expect(newKeys.keySectionsBefore).toEqual(oldKeys.keySectionsBefore);
+  await writeFile(app, (await readFile(app, 'utf8')).replace('process.exit(1)', "console.log('herdr-app 0.1.13')"));
+  await rollbackHerdr(f.request, f.parts);
+  expect(await readFile(keyPath)).toEqual(stockKeys);
+  await expect(stat(join(home, 'mods/spider-machine-picker'))).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
-test('setup refuses a changed version after staging rather than mixing picker plans', async () => {
-  const f = await releaseFixture('0.1.13');
-  const context = { ...f.context, modProps: [...f.context.modProps, { directory: join(f.h.directories.app, 'mods/spider-picker'), props: { ...f.context.modProps[0]!.props, modId: 'spider-picker' } }] };
-  await f.parts.stageLook(f.request, context, 'export');
-  const app = join(f.h.root, 'app-selection.mjs');
-  await writeFile(app, (await readFile(app, 'utf8')).replace('herdr-app 0.1.13', 'herdr-app 0.1.12'));
-  await expect(f.parts.installFiles(f.request, context)).rejects.toMatchObject({ code: 'upstream-version-mismatch', message: expect.stringMatching(/Herdr version changed during setup.*rerun/i) });
+test.each(['0.1.12', '0.1.99'])('setup refuses a change to %s after staging without writing files', async version => {
+  const f = await releaseFixture('0.1.13'), app = join(f.h.root, 'app-selection.mjs');
+  const roots = [f.h.directories.app, f.h.directories.agent], before = await Promise.all(roots.map(tree));
+  const stage = f.parts.stageLook;
+  f.parts.stageLook = async (...args) => {
+    const files = await stage(...args);
+    await writeFile(app, (await readFile(app, 'utf8')).replace('herdr-app 0.1.13', `herdr-app ${version}`));
+    return files;
+  };
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'upstream-version-mismatch', message: expect.stringMatching(/Herdr version changed during setup.*rerun/i) });
+  expect(await Promise.all(roots.map(tree))).toEqual(before);
   expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
 });
 

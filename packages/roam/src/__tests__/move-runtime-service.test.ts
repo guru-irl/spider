@@ -421,7 +421,7 @@ it.each(["outcome", "throw"] as const)("source cleanup exposes its %s reason in 
   const operation = { id: "diagnostic-cleanup", machineId: HUB, kind: "move", expectedEpoch: 1, args: { sessionId: "session-a", destinationMachine: OTHER } };
   f.journal.begin(operation); f.journal.record(operation.id, "move-request", { operation, sessionId: "session-a", destinationMachine: OTHER });
   f.journal.record(operation.id, "move-source-cleanup-pending", { sessionId: "session-a", sourceMachine: BOX, sourceCleanup: { status: "pending", reason: "move-source-stop-pending", blockers: ["process-exit-unproven"] } });
-  if (mode === "outcome") f.journal.record(operation.id, "move-state", { phase: "invalid-fixture-state" });
+  if (mode === "outcome") f.journal.record(operation.id, "move-action-complete", { action: "start", value: { code: "invalid-fixture-code" } });
   const service = createMoveRuntimeService({ root: f.root, globalDb: f.global.db, config: f.ports.config, journal: f.journal, transport: {} as Transport }, async input => {
     if (mode === "throw") throw Object.assign(new Error("unavailable /fixture/private secret=private-value"), { reason: "fixture-transport-unavailable" });
     return f.factory(input);

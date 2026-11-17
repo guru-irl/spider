@@ -126,7 +126,7 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
     readOwnedLaunchReadiness({ db: globalDb, journal, machineId: config.machineId,
       lock: id => inspectIdLock(join(root, "herdr"), id), probe }, query);
   const operationReadiness = async (id: string, operationId: string): Promise<HubOperationReadiness | null> => {
-    const launch = journal.read(operationId).find(row => row.action === "participant-launch")?.result as unknown as import("@spider/roam/move-ports").ParticipantReadinessQuery | undefined;
+    const launch = journal.read(operationId).filter(row => row.action === "participant-launch").at(-1)?.result as unknown as import("@spider/roam/move-ports").ParticipantReadinessQuery | undefined;
     if (!launch || launch.sessionId !== id) return null;
     const ready = await readiness(launch); return ready ? { ...ready, opId: operationId } : null;
   };

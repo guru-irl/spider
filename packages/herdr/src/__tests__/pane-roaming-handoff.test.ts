@@ -178,7 +178,7 @@ test('a parked remote proxy retries a failed target label update before completi
     const before = (await f.store.read()).presentations[0];
     const next = parsePaneTarget({ ...target('core-next', 't4', 3), alias: 'box-2.invalid', machineId: 'machine-next' });
     vi.spyOn(f.hc, 'setLabels').mockRejectedValueOnce(Error('label update unavailable'));
-    expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'pending', reason: 'destination-screen-pending' });
+    expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'pending', reason: 'proxy-reconcile-pending' });
     expect((await f.store.read()).presentations[0]).toMatchObject({ proxy: before.proxy, target: f.remote, visibility: 'parked' });
     expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete', presentation: { proxy: before.proxy, target: next, visibility: 'parked' } });
     expect((await f.hc.get(before.proxy!)).labels).toMatchObject({ 'spider.target-core': 'core-next', 'spider.target-terminal': 't4' });
@@ -199,7 +199,7 @@ test.each(['missing', 'finished', 'unknown'] as const)('a parked remote retarget
     });
     const next = parsePaneTarget({ ...target('core-next', 't4', 3), alias: 'box-2.invalid', machineId: 'machine-next' });
     if (state === 'unknown') {
-      expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'pending', reason: 'destination-screen-pending' });
+      expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'pending', reason: 'proxy-reconcile-pending' });
       expect((await f.store.read()).presentations[0]).toMatchObject({ proxy: before.proxy, target: f.remote });
       expect(await f.operations().presentReadyTarget(next)).toMatchObject({ status: 'complete', presentation: { proxy: before.proxy, target: next, visibility: 'parked' } });
     } else {

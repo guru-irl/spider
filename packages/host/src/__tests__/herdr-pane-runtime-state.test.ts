@@ -226,7 +226,7 @@ test('a remote retarget label failure retains its binding until retry', async ()
   const service = runtime.createService();
   const operations = createRoamPresentationOperations({ stateRoot: join(root, 'roam', 'placement'), hc, app: boundary.app as never, request: request => service.request(request) });
   vi.mocked(hc.setLabels).mockRejectedValueOnce(new Error('Label write failed'));
-  expect(await operations.presentReadyTarget(destination.target)).toMatchObject({ status: 'pending', reason: 'destination-screen-pending' });
+  expect(await operations.presentReadyTarget(destination.target)).toMatchObject({ status: 'pending', reason: 'proxy-reconcile-pending' });
   expect((await runtime.store.read()).presentations[0]).toEqual(p);
   expect(boundary.terminals.get('old-proxy')?.labels).toEqual(labels);
   expect(hc.setLabels).toHaveBeenCalledTimes(1);

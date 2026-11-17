@@ -62,19 +62,40 @@ it("uses the approved target port for host-key doctor checks", async () => {
   const calls: string[][] = [], { inspectLocalIntercomDoctor } = await import("../intercom-doctor");
   const run = async (argv: readonly string[]) => { calls.push([...argv]);
     if (JSON.stringify(argv) === JSON.stringify(["/fixture/connector", "check"])) return { code: 0, stdout: JSON.stringify({ connector: "ready", login: "ready", tunnel: "hosted", peerPort: "reachable" }) };
-    if (JSON.stringify(argv) === JSON.stringify(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "22", "127.0.0.1"])) return { code: 0, stdout: `127.0.0.1 ssh-ed25519 ${blob(8)}\n` };
+    if (JSON.stringify(argv) === JSON.stringify(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519", "-p", "22", "127.0.0.1"])) return { code: 0, stdout: `127.0.0.1 ssh-ed25519 ${blob(8)}\n` };
     throw new Error("unexpected fixture command");
   };
   const common = { root, agentDir: root, run, async features() { return []; }, async link() { return { status: "live", reason: null }; } };
   const observed = await inspectLocalIntercomDoctor({ ...common, config: config({ ...recipe }) });
   expect(observed.some(item => item.reason.startsWith("host-key-changed"))).toBe(true);
   expect(observed.some(item => item.reason.startsWith("intercom-ssh-port-missing"))).toBe(false);
-  expect(calls).toContainEqual(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "22", "127.0.0.1"]);
+  expect(calls).toContainEqual(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519", "-p", "22", "127.0.0.1"]);
   calls.length = 0;
   const missing = await inspectLocalIntercomDoctor({ ...common, config: config(recipe) });
   expect(missing.some(item => item.reason.startsWith("intercom-ssh-port-missing"))).toBe(false);
   expect(missing.some(item => item.reason.startsWith("intercom-ssh-host-unavailable"))).toBe(false);
-  expect(calls).toContainEqual(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "22", "127.0.0.1"]);
+  expect(calls).toContainEqual(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519", "-p", "22", "127.0.0.1"]);
+}, 5000);
+
+it("checks a pinned RSA key without selecting a newly available preferred key", async () => {
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "icdoctor-rsa-")); roots.push(root);
+  const { userInfo } = await import("node:os");
+  const peer = (machineId: string, alias: string) => ({ machineId, alias, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: root });
+  const field = (value: Buffer) => { const length = Buffer.alloc(4); length.writeUInt32BE(value.length); return Buffer.concat([length, value]); };
+  const base64 = Buffer.concat([field(Buffer.from("ssh-rsa")), field(Buffer.from([1, 0, 1])), field(Buffer.concat([Buffer.from([0]), Buffer.alloc(256, 0x81)]))]).toString("base64");
+  const pair = { pairId: "pair-1", source: peer(A, "box-1.invalid"), target: peer(B, "box-2.invalid"), edgeEpoch: "edge-1",
+    connector: { tunnelId: "tunnel", remotePort: 22, session: "default" }, sshUser: userInfo().username, hostKey: { type: "ssh-rsa", base64 }, hostKeyAlias: `spider-${"a".repeat(32)}` };
+  const registry = createIntercomRegistry(root); await registry.register(pair, "approval-1", "a".repeat(64)); await registry.bind(pair, "approval-1"); await registry.activate("pair-1", "approval-1");
+  const config = parseConfig({ role: "box", machineId: B, hubMachineId: A, coreUnit: "fixture.service", intercom: { enabled: true, mode: "peers", machineAlias: "box-2.invalid" } });
+  const calls: string[][] = [], { inspectLocalIntercomDoctor } = await import("../intercom-doctor");
+  const ed = Buffer.concat([field(Buffer.from("ssh-ed25519")), field(Buffer.alloc(32, 7))]).toString("base64");
+  const diagnostics = await inspectLocalIntercomDoctor({ root, config, agentDir: root,
+    async run(argv) { calls.push([...argv]); if (argv[0] !== "/usr/bin/ssh-keyscan") throw new Error("unexpected command");
+      return { code: 0, stdout: `${argv[4] === "rsa" ? "" : `127.0.0.1 ssh-ed25519 ${ed}\n`}127.0.0.1 ssh-rsa ${base64}\n` }; },
+    async features() { return []; }, async link() { return { status: "live", reason: null }; } });
+  expect(calls).toEqual([["/usr/bin/ssh-keyscan", "-T", "5", "-t", "rsa", "-p", "22", "127.0.0.1"]]);
+  expect(diagnostics.some(item => item.reason.startsWith("host-key-changed"))).toBe(false);
+  expect(diagnostics.some(item => item.reason.startsWith("intercom-ssh-host-unavailable"))).toBe(false);
 }, 5000);
 
 it("shares one single-type scan across pairs and reports ports it did not check", async () => {

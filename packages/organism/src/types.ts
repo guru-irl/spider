@@ -9,10 +9,12 @@ export type PassName = "runMemoryTodo" | "todoMemory" | "learning" | "consolidat
 export interface TrackEventRow { id: number; ts: number; phase: "before" | "after"; tool: string; description?: string; flagged?: string; payload?: unknown; }
 export interface RunEventRow { id: number; runId?: string; ts: number; type: string; tool?: string; summary?: string; payload?: unknown; }
 
+export type RunActivity = Pick<RunRow, "id" | "agent" | "role" | "status" | "step_count" | "token_count">;
+
 export interface DigestBundle {
   sessionId: string;
   reason: DrainReason;
-  runs: RunRow[];
+  runs: RunActivity[];
   runEvents: RunEventRow[];
   events: TrackEventRow[];
   todos: Todo[];

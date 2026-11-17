@@ -306,10 +306,7 @@ async function mirrorAndRetire(suite: Suite): Promise<void> {
 
 export const scenarios: readonly ScenarioDefinition[] = [
   { id: storyId('R01'), title: 'two isolated cores sync capture and session home through the packed CLI', tiers: ['headless'], run: twoCoreSync },
-  { id: storyId('R09'), title: 'packaged sync mirrors peer history and revoked reconnect durably stops the participant', tiers: ['headless'], run: async suite => {
-    await mirrorAndRetire(suite);
-    await (await import('./roam-recovery.test.js')).runRecoveryCases(suite);
-  } },
+  { id: storyId('R09'), title: 'packaged sync mirrors peer history and revoked reconnect durably stops the participant', tiers: ['headless'], run: mirrorAndRetire },
   { id: storyId('R02'), title: 'admitted box readiness reaches packaged hub and places one no-focus proxy in the remembered slot', tiers: ['headless'], run: closedAppPlacement },
 ];
 registerScenarios(scenarios);

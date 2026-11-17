@@ -120,11 +120,11 @@ R01 exercises sync through the packed CLI and two isolated cores in the headless
 
 ## Run move and recovery stories
 
-Run R06 through R10 and R15 only in the GitHub Linux stories job. Select them with its
+Run R06 through R10, R15 and R16 only in the GitHub Linux stories job. Select them with its
 `stories` input. The job builds and packs the release before this command:
 
 ```sh
-npm run test:herdr:e2e -- --built --tier headless --story R06,R07,R08,R09,R10,R15
+npm run test:herdr:e2e -- --built --tier headless --story R06,R07,R08,R09,R10,R15,R16
 ```
 
 These IDs are explicit members of `headless`, not the no-core `ci` tier. Any
@@ -139,7 +139,8 @@ and independent cleanup proof.
 | R08 | Busy-source refusal, lost readiness replies, forward recovery, and proved-failure rollback. |
 | R09 | Sync mirrors peer history, and revoked reconnect durably stops the participant. |
 | R10 | A copied participating file refuses ordinary prompts and tools without creating another owner. |
-| R15 | Revoked-home recovery restores the mirrored prefix, preserves visible or parked intent, and refuses a reused alias and stale close. |
+| R15 | Revoked-home recovery restores the mirrored prefix, preserves visible intent, and refuses a reused alias and stale close. |
+| R16 | Revoked-home recovery restores the mirrored prefix, preserves parked intent, and refuses a reused alias and stale close. |
 
 CLI control and remote operations use the packed entry. The platform wrapper
 compiles the real host adapter factory and injects only power, service, launch
@@ -157,7 +158,7 @@ The runner registers its worker process group in its own durable ledger and star
 
 `--tier ci --story S55` kills real runner instances with TERM and KILL while they own a detached daemon and socket; the headless variant also owns two isolated cores and destination terminal processes. It kills both watchdogs in a further case and proves the next real runner reconciles their durable ledgers. It also proves independent retry collects a survivor from a failed ledger and records unchanged default-socket identity without a default-core CLI call. `--cleanup-control daemon|destination` is a fixture-only hold mode restricted to exactly S55 in ci/headless; use the ordinary S55 story to run and collect it.
 
-Each invocation root contains `invocation.json`, entry digests, build/pack/test logs, per-story JSON, and `matrix.md`/`matrix.json`. The matrix lists the registered S, R (including R06 to R10 and R15) and B product IDs and distinguishes **passed**, **failed**, **blocked**, and **not exercised**. An R02 pass names its fixture-owner and native-app coverage limits. Missing selected results fail closed. A cleanup failure overrides any earlier story success. A blocked prerequisite never produces a complete-suite pass. Successful duration includes teardown. Failed runs are not timing samples. IDs that match `H-[a-z0-9-]+` select harness stories, which have a separate matrix section and never count toward the 56 product stories.
+Each invocation root contains `invocation.json`, entry digests, build/pack/test logs, per-story JSON, and `matrix.md`/`matrix.json`. The matrix lists the registered S, R (including R06 to R10, R15 and R16) and B product IDs and distinguishes **passed**, **failed**, **blocked**, and **not exercised**. An R02 pass names its fixture-owner and native-app coverage limits. Missing selected results fail closed. A cleanup failure overrides any earlier story success. A blocked prerequisite never produces a complete-suite pass. Successful duration includes teardown. Failed runs are not timing samples. IDs that match `H-[a-z0-9-]+` select harness stories, which have a separate matrix section and never count toward the 56 product stories.
 
 S56 in CI repeats the actual runtime probe, mod-helper import, and runtime exit/receipt/stream assertions against the public package. Each pristine artifact must pass before its bad copy can count as caught. The headless controls reuse the actual S29, S22, and S34 definitions. A failed baseline, unrelated assertion, missing definition, or unproved cleanup does not count as a caught control. The CI artifact subset does not certify those active-core controls.
 

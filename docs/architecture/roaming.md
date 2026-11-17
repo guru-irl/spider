@@ -174,7 +174,8 @@ attach rendering or native window behavior.
 | R08 | Busy-source exclusion, dropped readiness replies without unsafe rollback, same-operation recovery, and rollback only after proved launch failure. |
 | R09 | Sync mirrors peer history, and revoked reconnect durably stops the participant. |
 | R10 | A copied participating file refuses prompts and tool work without acquiring ownership. |
-| R15 | Revoked-home recovery restores the mirrored prefix, retains visible or parked intent, and refuses a reused alias and stale close. |
+| R15 | Revoked-home recovery restores the mirrored prefix, retains visible intent, and refuses a reused alias and stale close. |
+| R16 | Revoked-home recovery restores the mirrored prefix, retains parked intent, and refuses a reused alias and stale close. |
 
 Native window appearance and real-box survival remain separate observations.
 A blocked observation is not a pass and does not authorize enablement.

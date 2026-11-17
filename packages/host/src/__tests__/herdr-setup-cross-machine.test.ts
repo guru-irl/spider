@@ -3,7 +3,8 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import { mkdir, readFile, writeFile, stat, rm } from 'node:fs/promises';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
-import { readJournal, digest } from '../../../herdr/src/setup/backup.js';
+import { readJournal, digest, mergeKeys, validateFiles, prepareBackups, applyFiles } from '../../../herdr/src/setup/backup.js';
+import type { InstallFile } from '../../../herdr/src/setup/installer.js';
 import { basename, join } from 'node:path';
 import { cleanup, fixture } from './herdr-setup-fixture.js';
 import { releaseFixture } from './herdr-setup-release-fixture.js';
@@ -31,6 +32,32 @@ test('0.1.12 preserves native creation keys and does not install machine pickers
   const doctor = await f.ports.doctorParts(f.request);
   expect((await doctor.inspect('mods', f.request)).failures).toEqual([]);
   expect((await doctor.inspect('keys', f.request)).failures).toEqual([]);
+});
+
+test('0.1.12 refuses previously owned pickers until rollback restores stock keys', async () => {
+  const f = await fixture(), home = f.h.directories.app, path = join(home, 'keys.json');
+  const stock = JSON.parse(await readFile(path, 'utf8'));
+  Object.assign(stock.global, { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' });
+  const baseline = Buffer.from(JSON.stringify(stock)); await writeFile(path, baseline);
+  const keys = { global: { 'cmd-t': 'mod.open:spider-machine-picker', 'cmd-d': 'mod.open:spider-machine-picker-right', 'cmd-shift-d': 'mod.open:spider-machine-picker-down' }, 'layout:spider-glass': { 'cmd-shift-w': 'spider-pane.close' } };
+  const picker = join(home, 'mods/spider-machine-picker/main.js');
+  const plans: InstallFile[] = [
+    { path, expected: digest(baseline), bytes: mergeKeys(baseline, keys, {}, false), keys, managed: { kind: 'keys', sections: { global: ['cmd-t', 'cmd-d', 'cmd-shift-d'], 'layout:spider-glass': ['cmd-shift-w'] } } },
+    { path: picker, expected: null, bytes: Buffer.from('// old owned picker\n') },
+  ];
+  const journal = await readJournal(f.request.journalRoot);
+  await validateFiles(plans, journal); await prepareBackups(f.request.journalRoot, plans, journal); await applyFiles(plans, journal);
+  const settings = join(home, 'settings.json'), before = await readFile(settings), installedKeys = await readFile(path);
+  const command = [process.execPath, join(f.root, 'dist/herdr/cli.mjs'), 'rollback', '--config', f.request.configPath].map(value => `'${value.replace(/'/g, "'\\\\''")}'`).join(' ');
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'legacy-picker-binding', message: expect.stringContaining(command) });
+  expect(await readFile(settings)).toEqual(before);
+  expect(await readFile(path)).toEqual(installedKeys);
+  expect(await readFile(picker, 'utf8')).toBe('// old owned picker\n');
+  const doctor = await f.ports.doctorParts(f.request);
+  expect((await doctor.inspect('keys', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'legacy-picker-binding', message: expect.stringContaining('cmd-t'), repair: expect.stringContaining(command) }));
+  await rollbackHerdr(f.request, f.parts);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(stock);
+  await expect(stat(picker)).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {

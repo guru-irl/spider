@@ -106,6 +106,14 @@ describe('headless story matrix', () => {
     for (const invalid of ['R09,,R13', 'R09,R09', 'R99', 'R09;echo']) expect(select(invalid).status).not.toBe(0);
   });
 
+  it('includes move stories by default with their existing independent budgets', () => {
+    const defaults = JSON.parse(select('').stdout) as { include: { story: string; timeout: number }[] };
+    for (const story of ['R06', 'R07', 'R08', 'R10']) {
+      expect(defaults.include).toContainEqual({ story, timeout: 5 });
+      expect(JSON.parse(select(story).stdout).include).toEqual([{ story, timeout: 5 }]);
+    }
+  });
+
   it('shares one build and keeps each matrix story independently bounded', () => {
     const definition = workflow('herdr-stories'), prepare = definition.jobs.prepare!, story = definition.jobs.stories!;
     expect(definition.on).toHaveProperty('pull_request');

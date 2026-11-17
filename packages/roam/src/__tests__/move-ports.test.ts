@@ -1,3 +1,4 @@
+import { readLocal } from "@spider/db-core/roam/local-state";
 import { isDeepStrictEqual } from "node:util";
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
@@ -235,6 +236,7 @@ it("real adapters preserve expected epoch and exact file", async () => {
   expect(installedFile).toBe(manifest.file);
   expect(result.code).toBe(0);
   expect((await createRunningIntentAuthority(f.global.db).get(SESSION))?.file).toBe(f.file);
+  expect(readLocal<{ owner: unknown }>(f.global.db, "participant-intent", SESSION)?.owner).toEqual({ kind: "box-participant", machineId: BOX, hubMachineId: HUB });
 }, 5000);
 
 it.each(["local", "remote"] as const)("keeps a %s wake launch conflict as a typed refusal", async side => {
@@ -1030,6 +1032,7 @@ it("destroyed mirror with pending presentation returns typed recovery success wi
   expect(recovered.value).toHaveLength(1);
   expect(recovered.value[0]).toMatchObject({ machineId: HUB, epoch: 3 });
   expect((await createRunningIntentAuthority(f.global.db).get(SESSION))?.epoch).toBe(3);
+  expect(readLocal<{ owner: unknown }>(f.global.db, "participant-intent", SESSION)?.owner).toEqual({ kind: "hub-restoration", machineId: HUB, moveId: recovered.value[0].moveId, revokedMachineId: BOX });
   expect(await forgetMachineWithAdapters(input, f.ports)).toEqual(recovered);
   expect(f.global.db.prepare("SELECT COUNT(*) AS count FROM roam_home_actions WHERE session_id=? AND expected_epoch=2").get(SESSION)).toEqual({ count: 1 });
 }, 5000);
@@ -1554,4 +1557,13 @@ it("cancel cleanup resumes its source checkpoint after the original receipt is i
   expect(await recoverMove(f.operation.id, f.ports)).toMatchObject({ code: 0 });
   expect(f.journal.lookupOperation?.(abortCleanupId(f.operation.id))?.state).toBe("done");
   expect(readFileSync(join(f.destination, "tracked.txt"), "utf8")).toBe("fixture\n");
+}, 5000);
+
+
+it("records normal hub-return provenance tied to the committed move", async () => {
+  const f = await fixture(), outgoing = casHome(f.global.db, f.home, BOX, "outgoing-owner", HUB);
+  const home = casHome(f.global.db, outgoing, HUB, f.operation.id, HUB);
+  const prepared = { session: f.sourceManifest, workspace: f.sourceWorkspace } as PreparedMove;
+  expect((await f.ports.start(home, prepared, f.operation)).code).toBe(0);
+  expect(readLocal<{ owner: unknown }>(f.global.db, "participant-intent", SESSION)?.owner).toEqual({ kind: "hub-return", machineId: HUB, moveId: f.operation.id });
 }, 5000);

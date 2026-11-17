@@ -13,6 +13,7 @@ import type { Home, Readiness } from "@spider/db-core/roam/types";
 import type { HostIntent, Operation } from "../contracts";
 import { openJournal } from "../journal";
 import * as control from "../session-control";
+import { readLocal } from "@spider/db-core/roam/local-state";
 
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
@@ -46,7 +47,7 @@ it("start before any pi process records state and intent before waking supervisi
   const f = fixture(), order: string[] = [];
   const authority = control.createRunningIntentAuthority(f.db);
   const ports: control.ParticipantPorts = { journal: f.journal, machineId: BOX, hubMachineId: HUB,
-    async activate(home, intent) { expect(home).toEqual(f.home); order.push("active-durable"); await authority.set(intent, f.operation.id); order.push("intent-durable"); },
+    async activate(home, intent) { expect(home).toEqual(f.home); order.push("active-durable"); await authority.set(intent, f.operation.id, { kind: "box-participant", machineId: BOX, hubMachineId: HUB }); order.push("intent-durable"); },
     async wake() { order.push("wake"); }, async readiness(id) { order.push("readiness"); expect(id).toBe("start-1"); return null; } };
   expect(await control.startParticipant(f.operation, f.home, f.intent, ports)).toMatchObject({ code: 3, reason: "readiness-pending" });
   expect(order).toEqual(["active-durable", "intent-durable", "wake", "readiness"]);
@@ -91,8 +92,8 @@ it.each([
 
 it.each(["stopped", "suspended"])("does not replace a %s authority with running at the same epoch", async kind => {
   const f = fixture(), authority = control.createRunningIntentAuthority(f.db);
-  await authority.set(kind === "stopped" ? { ...f.intent, desired: "stopped" } : { ...f.intent, suspended: "review required" }, f.operation.id);
-  await expect(authority.set(f.intent, "another-start")).rejects.toThrow(/stopped or suspended/i);
+  await authority.set(kind === "stopped" ? { ...f.intent, desired: "stopped" } : { ...f.intent, suspended: "review required" }, f.operation.id, { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
+  await expect(authority.set(f.intent, "another-start", { kind: "box-participant", machineId: BOX, hubMachineId: HUB })).rejects.toThrow(/stopped or suspended/i);
   expect(await control.createRunningIntentAuthority(f.db).get("session-1")).toMatchObject(
     kind === "stopped" ? { desired: "stopped", epoch: f.intent.epoch } : { suspended: "review required", epoch: f.intent.epoch });
 }, 5000);
@@ -100,7 +101,7 @@ it.each(["stopped", "suspended"])("does not replace a %s authority with running 
 it("keeps a stop generation across retries but changes it after resume", async () => {
   const f = fixture(), authority = control.createRunningIntentAuthority(f.db) as control.RunningIntentAuthority & { stopToken?: (id: string) => string | null };
   expect(authority.stopToken).toBeTypeOf("function");
-  await authority.set(f.intent, f.operation.id); expect(authority.stopToken!("session-1")).toBeNull();
+  await authority.set(f.intent, f.operation.id, { kind: "box-participant", machineId: BOX, hubMachineId: HUB }); expect(authority.stopToken!("session-1")).toBeNull();
   await authority.stop("session-1"); const first = authority.stopToken!("session-1"); expect(first).toBeTypeOf("string");
   const reopened = control.createRunningIntentAuthority(f.db) as typeof authority;
   expect(reopened.stopToken!("session-1")).toBe(first);
@@ -111,7 +112,7 @@ it("keeps a stop generation across retries but changes it after resume", async (
 
 it("stopped authority survives reopening and failed doctor cannot resume", async () => {
   const f = fixture(), authority = control.createRunningIntentAuthority(f.db);
-  await authority.set(f.intent, f.operation.id);
+  await authority.set(f.intent, f.operation.id, { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   await authority.stop("session-1");
   expect(await control.createRunningIntentAuthority(f.db).get("session-1")).toMatchObject({ desired: "stopped" });
   await expect(authority.resume("session-1", async () => [{ reason: "missing-auth", severity: "block", repairCommand: null }])).rejects.toThrow("doctor");
@@ -274,4 +275,37 @@ it.each([false, true])("a reused pid is not the old owner, replacement owns sess
   };
   expect(await control.controlSession(operation, ports)).toMatchObject(replacementOwns ? { code: 3, reason: "process-exit-unproven" } : { code: 0, reason: "retired" });
   expect(retired).toBe(!replacementOwns);
+}, 5000);
+
+
+it.each([
+  { kind: "box-participant", machineId: BOX, hubMachineId: HUB },
+  { kind: "hub-return", machineId: HUB, moveId: "move-1" },
+  { kind: "hub-restoration", machineId: HUB, moveId: "move-1", revokedMachineId: BOX },
+] as const)("persists and preserves $kind intent ownership through stop and resume", async owner => {
+  const f = fixture(), authority = control.createRunningIntentAuthority(f.db);
+  await authority.set(f.intent, f.operation.id, owner);
+  const storedOwner = () => readLocal<{ owner: unknown }>(f.db, "participant-intent", f.intent.sessionId)?.owner;
+  expect(storedOwner()).toEqual(owner);
+  await authority.stop(f.intent.sessionId);
+  expect(storedOwner()).toEqual(owner);
+  await authority.resume(f.intent.sessionId, async () => []);
+  expect(storedOwner()).toEqual(owner);
+}, 5000);
+
+it.each([undefined, { kind: "unknown", machineId: HUB }, { kind: "box-participant", machineId: BOX, hubMachineId: BOX },
+  { kind: "hub-return", machineId: "invalid", moveId: "move-1" }, { kind: "hub-restoration", machineId: HUB, moveId: "move-1", revokedMachineId: HUB }])(
+  "refuses missing or invalid intent ownership before persisting it: %j", async owner => {
+    const f = fixture();
+    await expect(control.createRunningIntentAuthority(f.db).set(f.intent, f.operation.id, owner as never)).rejects.toThrow(/owner/i);
+    expect(readLocal(f.db, "participant-intent", f.intent.sessionId)).toBeUndefined();
+  }, 5000);
+
+
+it("refuses replacing an intent's recorded owner at the same epoch", async () => {
+  const f = fixture(), authority = control.createRunningIntentAuthority(f.db);
+  const owner = { kind: "box-participant" as const, machineId: BOX, hubMachineId: HUB };
+  await authority.set(f.intent, f.operation.id, owner);
+  await expect(authority.set(f.intent, "forged-start", { kind: "hub-return", machineId: HUB, moveId: f.intent.moveId! })).rejects.toThrow(/owner/i);
+  expect(readLocal<{ owner: unknown }>(f.db, "participant-intent", f.intent.sessionId)?.owner).toEqual(owner);
 }, 5000);

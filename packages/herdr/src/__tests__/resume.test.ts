@@ -136,6 +136,12 @@ it('two hook installs leave one marked block and one offer', async () => {
   await fakeCli(); const once = buildResumeBlock({ ...options, existingRc: '# retained\n' }); const twice = buildResumeBlock({ ...options, existingRc: once });
   expect(twice).toBe(once); const output = (await shell(twice)).out; expect(output.match(/spider_resume/g)).toHaveLength(1);
 });
+it.each(['coreId', 'terminalId', 'socket', 'sessionNamespace', 'address'] as const)('a different terminal %s never inherits a stale session', async field => {
+  const different = { ...terminal, [field]: `${terminal[field]}-different` } as TerminalIdentity;
+  expect(await offerResume(different, ports())).toBeNull();
+  expect(await offerResume(different, { ...ports(), autoResumeRoot: root })).toBeNull();
+});
+
 it('refuses missing, changed, live and foreign sessions and an unproved restart', async () => {
   expect(await offerResume({ ...terminal, coreId: 'other' as TerminalIdentity['coreId'] }, ports())).toBeNull();
   expect(await offerResume(terminal, ports(10))).toBeNull();

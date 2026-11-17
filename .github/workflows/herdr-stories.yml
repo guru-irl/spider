@@ -80,13 +80,21 @@ jobs:
           cp "$SPIDER_HERDR_E2E_HC" "$RUNNER_TEMP/ci-core/hc"
           cp "$(dirname "$SPIDER_HERDR_E2E_HC")/herdr-core" "$RUNNER_TEMP/ci-core/herdr-core"
           node --version > "$RUNNER_TEMP/ci-core/node-version"
-          tar -czf "$RUNNER_TEMP/herdr-build.tar.gz" -C "$GITHUB_WORKSPACE" node_modules dist -C "$RUNNER_TEMP" ci-core
+          # Stories run on Linux x64; ONNX binaries for other platforms cannot load there.
+          tar -czf "$RUNNER_TEMP/herdr-build.tar.gz" \
+            --exclude='node_modules/onnxruntime-node/bin/*/darwin' \
+            --exclude='node_modules/onnxruntime-node/bin/*/win32' \
+            --exclude='node_modules/onnxruntime-node/bin/*/linux/arm64' \
+            -C "$GITHUB_WORKSPACE" node_modules dist -C "$RUNNER_TEMP" ci-core
+          (cd "$RUNNER_TEMP" && sha256sum herdr-build.tar.gz > herdr-build.sha256)
 
       - name: Upload shared build
         uses: actions/upload-artifact@v4
         with:
           name: herdr-headless-build
-          path: ${{ runner.temp }}/herdr-build.tar.gz
+          path: |
+            ${{ runner.temp }}/herdr-build.tar.gz
+            ${{ runner.temp }}/herdr-build.sha256
           compression-level: 0
           retention-days: 1
           if-no-files-found: error
@@ -133,6 +141,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$HC_RELATIVE_PATH" in .spider/*/herdr-ci/hc) ;; *) exit 1 ;; esac
+          (cd "$RUNNER_TEMP" && sha256sum --check herdr-build.sha256)
           tar -xzf "$RUNNER_TEMP/herdr-build.tar.gz" -C "$GITHUB_WORKSPACE"
           test "$(node --version)" = "$(<ci-core/node-version)"
           directory="$(dirname "$GITHUB_WORKSPACE/$HC_RELATIVE_PATH")"

@@ -104,6 +104,8 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   };
   const claimBothLocks = createBothLocks({ root: join(root, "herdr"), inventory, file: target,
     identity: { pid: process.pid, startIdentity: processStartTime(process.pid) ?? "unavailable" }, bootId: localBootId });
+  // Claims propagate to child callbacks. Keep work here bounded by the lock; start
+  // timers or long-lived tasks through heldClaims.exit so they cannot inherit a released claim.
   const heldClaims = new AsyncLocalStorage<{ sessionId: string; locks: HeldSessionLocks }>();
   const withBothLocks: typeof claimBothLocks = (id, effect) => claimBothLocks(id, async locks => {
     if (!locks) throw new Error("session-lock-evidence-unavailable");

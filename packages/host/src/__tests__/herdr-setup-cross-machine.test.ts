@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
-import { mkdir, readFile, writeFile, stat, lstat, readdir, readlink, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, stat, lstat, readdir, readlink, rm, chmod } from 'node:fs/promises';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
 import { readJournal, digest, mergeKeys, validateFiles, prepareBackups, applyFiles } from '../../../herdr/src/setup/backup.js';
 import type { InstallFile } from '../../../herdr/src/setup/installer.js';
@@ -76,6 +76,16 @@ test('0.1.12 refuses previously owned pickers until rollback restores stock keys
   await rollbackHerdr(f.request, f.parts);
   expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(stock);
   await expect(stat(picker)).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+test('doctor names the insecure machine-picker config and chmod repair', async () => {
+  const f = await releaseFixture('0.1.13');
+  await setupHerdr(f.request, f.parts);
+  const path = join(f.h.directories.app, 'mods/spider-machine-picker-right/config.json');
+  await chmod(path, 0o644);
+  const doctor = await f.ports.doctorParts(f.request);
+  expect((await doctor.inspect('mods', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'picker-config-insecure', message: expect.stringContaining(`chmod 600 '${path}'`) }));
+  expect((await stat(path)).mode & 0o777).toBe(0o644);
 });
 
 test.each(['pane/actions.js', 'pane/machine.js', 'machines/actions.js', 'machines/picker.js'])('B refuses altered helper %s before staging', async helper => {

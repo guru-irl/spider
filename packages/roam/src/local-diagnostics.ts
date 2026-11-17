@@ -1,3 +1,4 @@
+import { hostingWarningReason, readHostingWarnings } from "./hosting-warning";
 import { execFile, execFileSync } from "node:child_process";
 import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
@@ -298,6 +299,18 @@ function readDoctorCatalog(db: Db, projects: DoctorProject[], globalPath: string
   };
 }
 
+function hostingWarningDiagnostics(db: Db): Diagnostic[] {
+  return readHostingWarnings(db).map(warning => ({ code: warning.code, severity: "warning", reason: hostingWarningReason(warning.sessionId, warning), repairCommand: null }));
+}
+
+/** Read hosting warnings even when hub scheduling is disabled. */
+export function localHostingWarningDiagnostics(root: string): Diagnostic[] {
+  let db: Db | undefined;
+  try { db = openOwned(join(root, "spider.db")); return db ? hostingWarningDiagnostics(db) : []; }
+  catch { return [{ severity: "warning", reason: "Cannot inspect hosting warnings.", repairCommand: null }]; }
+  finally { db?.close(); }
+}
+
 /** Inspect registered local stores without modifying them. */
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
   launchRecovery?: { bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe> };
@@ -353,6 +366,9 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   try { global = open(globalPath); }
   catch (error) { inventory.push({ severity, reason: `global: cannot inspect the registered store.${snapshotProblem(error)}`, repairCommand: null }); }
   if (global) try {
+    try {
+      inventory.push(...hostingWarningDiagnostics(global));
+    } catch { inventory.push({ severity: "warning", reason: "Cannot inspect hosting warnings.", repairCommand: null }); }
     let version: number | undefined, key = "global";
     try {
       version = Number(global.pragma("user_version"));
@@ -548,7 +564,7 @@ export function runLocalStatus(input: { root: string; now?: number }): RoamStatu
     catch { journalAvailable = false; local.inventory.push({ severity, reason: "Cannot inspect the local operation journal.", repairCommand: null }); }
     const status = readStatus(local.config, { globalDb, stores: usable, journalDb: journal ?? null, now, observations,
       inventoryComplete: local.inventory.length === 0, journalAvailable });
-    status.diagnostics = local.inventory;
+    status.diagnostics.push(...local.inventory);
     return status;
   } finally { journal?.close(); local.close(); }
 }

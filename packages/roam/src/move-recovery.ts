@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { hostingWarningText } from "./hosting-warning";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { Home, JsonObject } from "@spider/db-core/roam/types";
@@ -90,6 +91,7 @@ export async function recoverWorkspaceRestores(restores: readonly WorkspaceResto
   return failures;
 }
 async function reconcile(id: string, ports: MovePorts, cancel: boolean): Promise<MoveSessionOutcome> {
+  let pendingWarning: DestinationObservation["hostingWarning"];
   let request: MoveRequest = { sessionId: "", destinationMachine: "", operation: { id, kind: "move", machineId: ports.config.hubMachineId, expectedEpoch: null, args: {} } };
   try {
     if (!ports.config.enabled) return evidence.outcome(request, ports, 1, "roaming-disabled");
@@ -99,9 +101,14 @@ async function reconcile(id: string, ports: MovePorts, cancel: boolean): Promise
       const rows = ports.journal.read(id);
       if (!rows.some(row => row.action === "done") && rows.some(row => row.action === "move-action-start" && row.result.action === "freeze"))
         await acquireMovePower(movePowerKey(ports, id), ports.power);
-      try { return await locked(request, ports, cancel); }
+      try { return await locked(request, ports, cancel, warning => { pendingWarning = warning; }); }
       catch (error) {
-        return evidence.outcome(request, ports, 3, error instanceof MoveError ? error.refusal.code : "move-pending");
+        const result = evidence.outcome(request, ports, 3, error instanceof MoveError ? error.refusal.code : "move-pending");
+        if (!result.ok && result.reason === "move-destination-pending" && pendingWarning) {
+          result.refusal.hostingWarning = pendingWarning;
+          result.refusal.message += ` ${hostingWarningText(pendingWarning)}`;
+        }
+        return result;
       }
     });
   } catch (error) { return evidence.outcome(request, ports, 3, error instanceof MoveError ? error.refusal.code : "move-lock-pending"); }
@@ -114,7 +121,7 @@ async function complete(request: MoveRequest, ports: MovePorts, result: MoveSess
     ports.journal.record(moveSessionSlot(request.sessionId), "released", { moveId: request.operation.id });
   return result;
 }
-async function locked(request: MoveRequest, ports: MovePorts, cancel: boolean): Promise<MoveSessionOutcome> {
+async function locked(request: MoveRequest, ports: MovePorts, cancel: boolean, warn: (warning: DestinationObservation["hostingWarning"]) => void): Promise<MoveSessionOutcome> {
   const id = request.operation.id, rows = ports.journal.read(id), done = rows.find(row => row.action === "done");
   evidence.actionReceipt(rows, "start");
   if (done) {
@@ -156,6 +163,7 @@ async function locked(request: MoveRequest, ports: MovePorts, cancel: boolean): 
   const operation = evidence.participantOperation(request, committed);
   const observation = await ports.inspect(committed, { ...operation, kind: "session-inspect" });
   evidence.observationReply(observation, committed);
+  warn(observation.hostingWarning);
   if (!evidence.sameHome(sessionHome(ports.globalDb, request.sessionId), committed)) throw new MoveError("move-home-changed");
   // Either a hub receipt or a participant receipt permanently prohibits rollback.
   const ready = rows.some(row => row.action === "move-state" && row.result.state === "destination-ready") ||

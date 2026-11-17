@@ -42,7 +42,7 @@ export async function readPrivateJson(path: string, inspect?: (handle: FileHandl
     const next = dirname(parent); if (next === parent) break; parent = next;
   }
   let handle;
-  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
   try {
     await inspect?.(handle);

@@ -14,6 +14,7 @@ import { createIntentStore } from "./intent";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority } from "./session-control";
 import { createDurableLaunchPort, createSupervisor, type LaunchReservation } from "./supervisor";
 import { sessionHome } from "./homes";
+import { HOSTING_WARNING_CODE } from "./hosting-warning";
 import { recordSupervisorExits } from "./intercom-exclusion";
 
 export function unfinishedFreeze(root: string, id: string): boolean {
@@ -100,6 +101,7 @@ export function createParticipantSupervisor(input: {
   });
   return createSupervisor({ connection: input.connection, clock: input.clock, journal: input.agent.journal, intents, runningIntents: trusted, events: input.events,
     inspect, launch,
+    async hostingWarning(id, warning) { writeLocal(global, HOSTING_WARNING_CODE, id, warning ?? undefined); },
     async restart(intent, previous) {
       if (previous.kind === "idle") throw new Error("participant-restart-unproved");
       const { id, entries } = restartHistory(intent);

@@ -9,6 +9,7 @@ import { withProcessLock } from "@spider/herdr/sessions/registry";
 import type { BoxLocalOrigin, RunningIntentAuthority } from "./session-control";
 import type { HostIntent, Journal, NativeHostingOutcome } from "./contracts";
 import type { IntentStore } from "./intent";
+import { readHostingWarnings, type SessionHostingWarning } from "./hosting-warning";
 import { readReadiness } from "./session-control";
 
 /** A stop requires the exact source launch, not an event from its presentation. */
@@ -33,13 +34,14 @@ export function createNativeHostingOutcomeReader(hc: HcClient): (ready: Readines
   };
 }
 
-export interface HostingObservation { readiness: readonly Readiness[]; suspensions: readonly { sessionId: string; epoch: number }[] }
+export interface HostingObservation { readiness: readonly Readiness[]; suspensions: readonly { sessionId: string; epoch: number }[]; warnings?: readonly SessionHostingWarning[] }
 export async function observeHosting(ports: { db: Db; journal: Journal; authority: RunningIntentAuthority; intents: IntentStore;
   machineId: string; hubMachineId: string; sessionId?: string; live(ready: Readiness): Promise<boolean>;
   terminalOutcome(ready: Readiness): Promise<NativeHostingOutcome> }): Promise<HostingObservation> {
   const readiness: Readiness[] = [], suspensions: Array<{ sessionId: string; epoch: number }> = [];
   const meta = ports.db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id: string } | undefined;
   if (meta?.machine_id !== ports.machineId) return { readiness, suspensions };
+  const warnings = readHostingWarnings(ports.db).filter(row => ports.sessionId === undefined || row.sessionId === ports.sessionId);
   const ids = ports.sessionId === undefined
     ? new Set([...(await ports.authority.list()), ...localEntries<BoxLocalOrigin>(ports.db, "participant-origin").map(row => row.key)])
     : new Set([ports.sessionId]);
@@ -56,7 +58,11 @@ export async function observeHosting(ports: { db: Db; journal: Journal; authorit
       if (origin.machineId !== ports.machineId || home && (home.machine_id !== origin.machineId || home.epoch !== origin.epoch || home.move_id !== null)) continue;
       intent = { sessionId: id, epoch: origin.epoch, file: origin.file, cwd: origin.cwd, desired: "running", suspended: null, moveId: null };
     }
-    const view = await ports.intents.get(id);
+    const view = await ports.intents.get(id).catch(error => {
+      if (!warnings.some(row => row.sessionId === id)) throw error;
+      return undefined;
+    });
+    if (view === undefined) continue;
     if (intent.suspended || view?.value.intent.epoch === intent.epoch && view.value.intent.suspended) {
       suspensions.push({ sessionId: id, epoch: intent.epoch }); continue;
     }
@@ -93,5 +99,5 @@ export async function observeHosting(ports: { db: Db; journal: Journal; authorit
       }).immediate();
     });
   }
-  return { readiness, suspensions };
+  return { readiness, suspensions, ...(warnings.length ? { warnings } : {}) };
 }

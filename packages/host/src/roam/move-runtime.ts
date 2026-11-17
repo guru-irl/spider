@@ -1,3 +1,4 @@
+import { readHostingWarnings } from "@spider/roam/hosting-warning";
 import { pendingWorkspaceTransitions } from "@spider/roam/move-recovery";
 import { recordMoveBindings } from "@spider/roam/move-diagnostics";
 import { cancelPendingHandoff, readMoveLaunchAbsenceReceipt, type MoveLaunchAbsenceReceipt } from "@spider/roam/pending-handoff";
@@ -280,7 +281,8 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
           }
         }
         const retired = !!state?.retired && state.epoch === home.epoch && state.moveId === home.moveId && !!launchFailure;
-        return { home: localHome(home.sessionId) ?? home, owner, readiness: ready, launchFailure, retired, activationCancelled: retired && state!.activationCancelled };
+        return { home: localHome(home.sessionId) ?? home, owner, readiness: ready, launchFailure, retired, activationCancelled: retired && state!.activationCancelled,
+          hostingWarning: readHostingWarnings(globalDb).find(row => row.sessionId === home.sessionId) };
       },
       dormant(context) {
         return createDormantControl({ ...context, blockerPorts: createBlockerPorts({ sessionId: context.sessionId, address: context.intercom.address,

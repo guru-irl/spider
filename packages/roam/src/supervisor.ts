@@ -3,6 +3,8 @@ import type { Home, MachineId, Probe, HubOperationReadiness, SessionState } from
 import type { Clock, Diagnostic, HostIntent, Journal, Outcome } from "./contracts";
 import type { IntentState, IntentStore, VersionedIntent } from "./intent";
 import type { SyncHandshake } from "./revocation";
+import { LEGACY_AUTOMATIC_READ_SUSPENSION } from "./intent";
+import { HOSTING_WARNING_CODE, type HostingCheck, type HostingWarning } from "./hosting-warning";
 import { isMachineId } from "./machine-id";
 
 export interface SupervisorReconnectPorts {
@@ -56,6 +58,7 @@ export interface SupervisorPorts {
   cancelStop?(sessionId: string): void;
   restart?(intent: HostIntent, previous: IntentState["supervision"]): Promise<void>;
   notify(sessionId: string, reason: string): Promise<void>;
+  hostingWarning?(sessionId: string, warning: HostingWarning | null): Promise<void>;
 }
 
 function sameIntent(a: HostIntent, b: HostIntent): boolean {
@@ -119,6 +122,7 @@ function permitted(observation: SupervisorObservation, id: string): boolean {
 export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise<void>; start(): void; stop(): Promise<void> } {
   let working: Promise<void> | null = null, requested = false, started = false;
   let unsubscribe: (() => void) | undefined, unsubscribeIntent: (() => void) | undefined, cancelSweep: (() => void) | undefined;
+  const failures = new Map<string, HostingWarning>();
   const retries = new Map<string, { at: number; cancel(): void }>();
   const trigger = () => { if (started) void reconcile().catch(() => {}); };
   function cancelRetry(id: string): void { retries.get(id)?.cancel(); retries.delete(id); }
@@ -137,12 +141,15 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       await ports.notify(id, reason);
     }
   }
-  function hostingFailure(id: string, error: unknown): void {
-    console.error(JSON.stringify({ event: "supervisor-hosting-error", sessionId: id,
-      error: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : { message: String(error) } }));
-    // The failed pass cannot launch. A later pass must recheck all evidence, not inherit a stop intent.
+  async function hostingFailure(id: string, check: HostingCheck): Promise<void> {
+    const previous = failures.get(id);
+    if (!previous) console.error(JSON.stringify({ event: HOSTING_WARNING_CODE, sessionId: id, code: HOSTING_WARNING_CODE, check }));
+    const warning: HostingWarning = { code: HOSTING_WARNING_CODE, check, since: previous?.since ?? ports.clock.now(), count: Math.min(3, (previous?.count ?? 0) + 1) };
+    // Three consecutive failed passes tolerate a transient replacement without hiding a persistent failure.
+    if (warning.count === 3 && (previous?.count !== 3 || previous.check !== check)) await ports.hostingWarning?.(id, warning);
+    failures.set(id, warning);
   }
-  async function recordCrash(id: string, current: VersionedIntent, stableSince?: number): Promise<void> {
+  async function recordCrash(id: string, current: VersionedIntent, attempt: { check: HostingCheck }, stableSince?: number): Promise<void> {
     const state = current.value, now = ports.clock.now();
     if (stableSince !== undefined && now < stableSince || state.failures.some(at => at > now)) {
       await suspend(id, current, "Cannot verify the crash history clock"); return;
@@ -155,13 +162,16 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
     } else {
       const delay = [5_000, 15_000, 60_000, 300_000][failures.length - 1];
       const nextAttemptAt = now + delay;
+      attempt.check = "restart";
       await ports.restart?.(state.intent, state.supervision);
+      attempt.check = "intent-view";
       if (await save(id, current, { ...state, failures, supervision: { kind: "idle", nextAttemptAt } })) retryAt(id, nextAttemptAt);
     }
   }
-  async function visit(id: string): Promise<void> {
+  async function visit(id: string, attempt: { check: HostingCheck }): Promise<void> {
     const authoritative = await ports.runningIntents.get(id);
     if (!authoritative || authoritative.sessionId !== id) return;
+    attempt.check = "intent-view";
     let current = await ports.intents.get(id);
     if (!current) {
       const initial: IntentState = { intent: authoritative, failures: [], supervision: { kind: "idle", nextAttemptAt: null } };
@@ -175,6 +185,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
           previous.cwd !== authoritative.cwd || previous.moveId !== authoritative.moveId)) return;
       let next: IntentState;
       if (authoritative.epoch > previous.epoch) {
+        attempt.check = "inspection";
         const observed = await ports.inspect(id);
         if (!sameIntent(observed.intent, authoritative) || observed.owner.kind !== "absent" || observed.unfinishedFreeze ||
             observed.diagnostics.some(row => row.severity === "block") || !permitted(observed, id)) return;
@@ -187,9 +198,8 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       if (!current) return;
     }
     const state = current.value;
-    let observation: SupervisorObservation;
-    try { observation = await ports.inspect(id); }
-    catch (error) { hostingFailure(id, error); return; }
+    attempt.check = "inspection";
+    const observation = await ports.inspect(id);
     if (!sameAuthority(state.intent, observation.intent)) return;
     if (state.intent.desired === "stopped") {
       cancelRetry(id);
@@ -202,7 +212,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       cancelRetry(id);
       // Older failed observations persisted this local fence. Clear only that fence after a good read;
       // keep the reservation and re-enter normal admission with fresh authoritative evidence.
-      if (state.intent.suspended === "Cannot verify hosting state" && authoritative.suspended === null && observation.intent.suspended === null &&
+      if (state.intent.suspended === LEGACY_AUTOMATIC_READ_SUSPENSION && authoritative.suspended === null && observation.intent.suspended === null &&
           await save(id, current, { ...state, intent: { ...state.intent, suspended: null } })) requested = true;
       return;
     }
@@ -220,7 +230,7 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
       return;
     }
     if (state.supervision.kind === "live") {
-      await recordCrash(id, current, state.supervision.stableSince);
+      await recordCrash(id, current, attempt, state.supervision.stableSince);
       return;
     }
     if (state.supervision.kind === "idle" && state.supervision.nextAttemptAt !== null && state.supervision.nextAttemptAt > ports.clock.now()) {
@@ -231,36 +241,39 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
     const request: SupervisorLaunch = state.supervision.kind === "launching"
       ? { intent: state.intent, mode: "reconcile", reservation: { operationId: state.supervision.operationId } }
       : { intent: state.intent, mode: "fresh" };
-    let check: SupervisorObservation;
-    try { check = await ports.inspect(id); } catch (error) { hostingFailure(id, error); return; }
+    attempt.check = "inspection";
+    const check = await ports.inspect(id);
+    attempt.check = "running-intent";
     const rechecked = await ports.runningIntents.get(id);
     if (!rechecked || rechecked.suspended !== null || check.intent.suspended !== null || !sameAuthority(state.intent, rechecked) || !sameAuthority(state.intent, check.intent) || check.owner.kind === "uncertain" || request.mode === "fresh" && check.owner.kind !== "absent" ||
         check.unfinishedFreeze || check.diagnostics.some(item => item.severity === "block") || !permitted(check, id)) return;
-    try {
-      const outcome = await ports.launch(request);
-      const latest = await ports.intents.get(id);
-      if (!latest || !sameIntent(latest.value.intent, state.intent) || latest.value.supervision.kind !== "launching") return;
-      if (request.mode === "reconcile" && outcome.code === 1 && outcome.reason === "adopted-exited" &&
-          outcome.operationId === latest.value.supervision.operationId) {
-        const after = await ports.inspect(id), authorityAfter = await ports.runningIntents.get(id);
-        if (after.owner.kind === "absent" && authorityAfter && authorityAfter.suspended === null && after.intent.suspended === null &&
-            sameAuthority(latest.value.intent, authorityAfter) && sameAuthority(latest.value.intent, after.intent)) await recordCrash(id, latest);
-        return;
+    attempt.check = "launch";
+    const outcome = await ports.launch(request);
+    attempt.check = "intent-view";
+    const latest = await ports.intents.get(id);
+    if (!latest || !sameIntent(latest.value.intent, state.intent) || latest.value.supervision.kind !== "launching") return;
+    if (request.mode === "reconcile" && outcome.code === 1 && outcome.reason === "adopted-exited" &&
+        outcome.operationId === latest.value.supervision.operationId) {
+      attempt.check = "inspection";
+      const after = await ports.inspect(id), authorityAfter = await ports.runningIntents.get(id);
+      if (after.owner.kind === "absent" && authorityAfter && authorityAfter.suspended === null && after.intent.suspended === null &&
+          sameAuthority(latest.value.intent, authorityAfter) && sameAuthority(latest.value.intent, after.intent)) await recordCrash(id, latest, attempt);
+      return;
+    }
+    if (outcome.code === 1 && ["missing-auth", "session-file-invalid", "process-identity-unavailable", "session-may-be-live"].includes(outcome.reason)) {
+      await suspend(id, latest, "Hosting prerequisites need review"); return;
+    }
+    if (outcome.code === 0 && outcome.value && outcome.operationId === latest.value.supervision.operationId &&
+        outcome.value.opId === latest.value.supervision.operationId && outcome.value.sessionId === id && outcome.value.epoch === state.intent.epoch &&
+        outcome.value.file === state.intent.file && outcome.value.cwd === state.intent.cwd) {
+      attempt.check = "inspection";
+      const after = await ports.inspect(id);
+      const authorityAfter = await ports.runningIntents.get(id);
+      if (authorityAfter && authorityAfter.suspended === null && after.intent.suspended === null && sameAuthority(latest.value.intent, authorityAfter) && after.owner.kind === "live" && sameAuthority(latest.value.intent, after.intent) && permitted(after, id) &&
+          !after.unfinishedFreeze && !after.diagnostics.some(item => item.severity === "block")) {
+        await save(id, latest, { ...latest.value, supervision: { kind: "live", identity: after.owner.identity, stableSince: ports.clock.now() } });
       }
-      if (outcome.code === 1 && ["missing-auth", "session-file-invalid", "process-identity-unavailable", "session-may-be-live"].includes(outcome.reason)) {
-        await suspend(id, latest, "Hosting prerequisites need review"); return;
-      }
-      if (outcome.code === 0 && outcome.value && outcome.operationId === latest.value.supervision.operationId &&
-          outcome.value.opId === latest.value.supervision.operationId && outcome.value.sessionId === id && outcome.value.epoch === state.intent.epoch &&
-          outcome.value.file === state.intent.file && outcome.value.cwd === state.intent.cwd) {
-        const after = await ports.inspect(id);
-        const authorityAfter = await ports.runningIntents.get(id);
-        if (authorityAfter && authorityAfter.suspended === null && after.intent.suspended === null && sameAuthority(latest.value.intent, authorityAfter) && after.owner.kind === "live" && sameAuthority(latest.value.intent, after.intent) && permitted(after, id) &&
-            !after.unfinishedFreeze && !after.diagnostics.some(item => item.severity === "block")) {
-          await save(id, latest, { ...latest.value, supervision: { kind: "live", identity: after.owner.identity, stableSince: ports.clock.now() } });
-        }
-      }
-    } catch { /* An uncertain launch keeps the reservation until it can be reconciled. */ }
+    }
   }
   async function reconcile(): Promise<void> {
     requested = true;
@@ -270,8 +283,12 @@ export function createSupervisor(ports: SupervisorPorts): { reconcile(): Promise
           requested = false;
           if (ports.connection && !await reconnectSupervisor(await ports.connection.handshake(), ports.connection)) continue;
           for (const id of await ports.runningIntents.list()) {
-            try { await visit(id); }
-            catch (error) { hostingFailure(id, error); }
+            const attempt: { check: HostingCheck } = { check: "running-intent" };
+            try {
+              await visit(id, attempt);
+              await ports.hostingWarning?.(id, null);
+              failures.delete(id);
+            } catch { await hostingFailure(id, attempt.check); }
           }
         }
       })();

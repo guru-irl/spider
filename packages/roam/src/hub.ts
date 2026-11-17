@@ -1,3 +1,4 @@
+import { validHostingWarnings, type SessionHostingWarning } from "./hosting-warning";
 import { guardMoveControl, type MoveControlHandler } from "./move-control";
 import { parseReadiness, validReadiness } from "@spider/db-core/roam/readiness";
 import { randomUUID } from "node:crypto";
@@ -27,6 +28,7 @@ const LOCK = "roam-hub";
 type PeerResult = readonly Outcome<ApplyReceipt>[];
 export interface HubObservation {
   reachability: "reachable" | "unreachable" | "unknown";
+  warnings?: readonly SessionHostingWarning[] | null;
   /** Null means the terminal inventory could not be observed. */
   readiness: readonly Readiness[] | null;
   /** Null means suspension state could not be observed. */
@@ -117,6 +119,7 @@ function validObservation(value: unknown): value is HubObservation {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as HubObservation;
   return ["reachable", "unreachable", "unknown"].includes(row.reachability) &&
+    (row.warnings === undefined || row.warnings === null || validHostingWarnings(row.warnings)) &&
     (row.readiness === null || Array.isArray(row.readiness) && row.readiness.every(validReadiness)) &&
     (row.suspensions === null || Array.isArray(row.suspensions) && row.suspensions.every(item => item && plain(item.sessionId) && Number.isSafeInteger(item.epoch) && item.epoch > 0));
 }
@@ -215,6 +218,8 @@ export async function runHub(ports: HubRuntimePorts): Promise<{ stop(): Promise<
         await unreachable(peer); return;
       }
       cancelTimer(peer.machineId);
+      if (observation.warnings !== null && observation.suspensions !== null)
+        writeLocal(db, "peer-hosting-warnings", peer.machineId, observation.warnings ?? []);
       state.since = null;
       if (state.unreachable) state.unreachable.clearing = true;
       if (observation.suspensions !== null) {

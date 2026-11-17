@@ -56,7 +56,7 @@ function fixture(version: SpacesAVersion, count: number, finished: number, prese
   const modules = createUiModules(), kit = modules['gpui-kit'], base = modules['gpui-base'];
   const palette = new Proxy({}, { get: () => '#808080' });
   const config = { modId: 'spider-agents', feedRoot: 'feeds', nodePath: 'node', cliPath: 'cli', labelContract: contract, retention: { completedRows: 50, completedHours: 24 } };
-  const storage = new Map<string, string>();
+  const storage = new Map<string, string>(), storageWrites: [string, string][] = [];
   const host: Record<string, any> = {
     ...children, ...grouping, ...connections, ...consoleGroups, ...look, ...feed, ...navigation, ...kit, ...base, beginPresentationDrag,
     projectAgentChildren: (...args: Parameters<typeof children.projectAgentChildren>) => { const rows = children.projectAgentChildren(...args); projections++; projectedFinished += rows.filter(row => row.retained).length; return rows; },
@@ -77,7 +77,7 @@ function fixture(version: SpacesAVersion, count: number, finished: number, prese
       watches.push({ fire }); return Object.assign(promise, { cancel() {} });
     },
     exec: async (...args: unknown[]) => { execCalls.push(args); return { code: 0, stdout: '{}' }; }, hc: async (args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: state.inventory }) }),
-    localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
+    localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => { storageWrites.push([key, value]); storage.set(key, value); }, removeItem: (key: string) => storage.delete(key) },
   };
   const recipe = loadPublishedSpacesARecipe(version);
   const files = presented
@@ -98,7 +98,7 @@ function fixture(version: SpacesAVersion, count: number, finished: number, prese
   const render = () => { rendering = true; try { return view.render(cx); } finally { rendering = false; } };
   const text = (node: any): string[] => typeof node === 'string' ? [node] : node && typeof node === 'object' ? (node.items ?? []).flatMap(text) : [];
   return {
-    state, view, cx, watches, timers, flush, step, render, text, storage, sharedState, execCalls, runCalls,
+    state, view, cx, watches, timers, flush, step, render, text, storage, storageWrites, sharedState, execCalls, runCalls,
     get historyReads() { return historyReads; },
     get allHistoryReads() { return allHistoryReads; },
     get notifications() { return notifications; },
@@ -230,6 +230,59 @@ it('can resolve parked owners without projecting their children', () => {
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  it(`${version}: bounds saved expansions and prunes only after a complete feed load`, async () => {
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    for (let i = 0; i < 250; i++) {
+      const id = `saved-${i}`, viewer = `viewer-${i}`;
+      h.state.feeds[0].runs.rows.push({ ...first, id, viewer });
+      h.state.terminals.push({ address: viewer, parent: 't0', state: 'live', status: 'working',
+        labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': id } },
+      { address: `native-${i}`, parent: viewer, state: 'live', status: 'idle', labels: {} });
+    }
+    try {
+      await h.ready();
+      for (let i = 0; i < 250; i++) find(h.render(), `child-fold-saved-${i}`).events.on_click({}, h.cx);
+      const saved = () => JSON.parse(h.storage.get('spider.subagents.expanded')!);
+      expect(saved()).toEqual(Array.from({ length: 200 }, (_, i) => `saved-${i + 50}`));
+      // Finished runs remain in the feed and still preserve their expansion.
+      for (const run of h.state.feeds[0].runs.rows.slice(1)) { run.status = 'done'; run.finishedAt = Date.now(); }
+      h.state.feeds[0].revision++; h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+      expect(saved()).toHaveLength(200);
+      // One incomplete run list must not remove keys from the other feeds either.
+      h.state.feeds[0].runs.rows = [first]; h.state.feeds[0].runs.truncated = true;
+      h.state.feeds[0].revision++; h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+      expect(saved()).toHaveLength(200);
+      h.state.feeds[0].runs.truncated = false; h.state.feeds[0].revision++;
+      h.view.spiderReloadAt = -Infinity; await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+      expect(saved()).toEqual([]);
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: retains saved keys through feed errors and prunes them after recovery`, async () => {
+    const h = fixture(version, 1, 0);
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.state.terminals.push({ address: 'child', parent: 'v0', state: 'live', status: 'idle', labels: {} });
+    const refresh = async () => {
+      h.state.feeds[0].revision++; h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
+    };
+    try {
+      await h.ready(); find(h.render(), 'child-fold-live0').events.on_click({}, h.cx);
+      const writes = () => h.storageWrites.filter(([key]) => key === 'spider.subagents.expanded').length;
+      expect(writes()).toBe(1);
+      await refresh(); expect(writes()).toBe(1);
+      h.state.feeds[0].runs.rows = []; h.state.errors = [{ source: 's0', message: 'read failed' }];
+      await refresh(); expect(h.storage.get('spider.subagents.expanded')).toBe('["live0"]');
+      expect(writes()).toBe(1);
+      h.state.errors = []; await refresh();
+      expect(h.storage.get('spider.subagents.expanded')).toBe('[]');
+      expect(writes()).toBe(2);
+    } finally { await h.view.close(); }
+  });
+
   it(`${version}: subagent folding survives command activity and a reload`, async () => {
     const h = fixture(version, 1, 0);
     const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);

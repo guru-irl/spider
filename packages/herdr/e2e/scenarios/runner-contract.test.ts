@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, readFileSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
@@ -172,6 +172,23 @@ describe('story cleanup reserve', () => {
       const overall = { at: finishedAt - 1, expire() {} };
       expect(storyExecutionDeadline(overall, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(false);
       expect(storyExecutionDeadline(overall, root, { ids: ['R17'], harness: true })).toBe(overall);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { finished: -1000, modified: -1000, ready: true },
+    { finished: 1000, modified: -1000, ready: false },
+    { finished: -1000, modified: 1000, ready: false },
+  ])('checks completion and file times independently: $finished $modified', async ({ finished, modified, ready }) => {
+    const root = mkdtempSync(resolve('.spider/scratch/work-complete-'));
+    try {
+      await runStoryWork(root, 'R17', async () => {});
+      const file = resolve(root, 'work-complete/R17.json');
+      const at = Math.floor(Date.now() / 1000) * 1000;
+      writeFileSync(file, JSON.stringify({ id: 'R17', finishedAt: at + finished }));
+      utimesSync(file, new Date(at + modified), new Date(at + modified));
+      expect(lstatSync(file).mtimeMs <= at).toBe(modified < 0);
+      expect(storyExecutionDeadline({ at, expire() {} }, root, { ids: ['R17'], harness: false }).cleanupReady()).toBe(ready);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

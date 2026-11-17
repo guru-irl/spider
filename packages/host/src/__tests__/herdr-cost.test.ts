@@ -83,6 +83,42 @@ it('expires a late owner generation from the original sample time', async () => 
   expect(requests).toEqual([NOW, NOW + 29000, NOW + 30000]);
 });
 
+it('refreshes an out-of-phase owner through the real runtime sampler', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(NOW);
+  class ReplyingWorker extends SilentWorker {
+    requests = 0;
+    override postMessage(command: UsageWorkerCommand) {
+      if (command.type === 'stop') { void Promise.resolve().then(() => this.emit('message', { type: 'stopped' })); return; }
+      if (command.type !== 'panel-usage') return;
+      const credits = ++this.requests === 1 ? 7 : 9;
+      const data = { pace: computePace({ ...emptyUsage, now: command.now }), updatedAt: null, monthCost: { credits, label: String(credits) } };
+      void Promise.resolve().then(() => this.emit('message', { type: 'panel-usage', requestId: command.requestId, data }));
+    }
+  }
+  let runtime!: UsageRuntime;
+  const f = fixture(async (now, owner) => {
+    const value = await runtime.readPanel(now, owner.sessionId);
+    if (!value) throw new Error('worker unavailable');
+    return value;
+  });
+  const worker = new ReplyingWorker(); runtime = silentRuntime(f.root, worker);
+  const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
+  try {
+    runtime.start(false); await vi.advanceTimersByTimeAsync(0);
+    await f.source.snapshot(f.owner); await flush();
+    expect((await f.source.snapshot(f.owner)).monthCost.credits).toBe(7);
+    f.advance(29000); await vi.advanceTimersByTimeAsync(29000);
+    const lateOwner = { ...f.owner, generation: 'later' as Owner['generation'] };
+    await f.source.snapshot(lateOwner); await flush();
+    expect((await f.source.snapshot(lateOwner)).monthCost.credits).toBe(7);
+    expect(worker.requests).toBe(1);
+    f.advance(1000); await vi.advanceTimersByTimeAsync(1000);
+    await f.source.snapshot(lateOwner); await flush();
+    expect((await f.source.snapshot(lateOwner)).monthCost.credits).toBe(9);
+    expect(worker.requests).toBe(2);
+  } finally { await runtime.stop(); vi.useRealTimers(); }
+});
+
 it('never displays a sample older than one interval during a slow replacement', async () => {
   let finish!: (value: typeof emptyUsage & { sampledAt: number; monthCost: { credits: number; label: string } }) => void;
   const replacement = new Promise<typeof emptyUsage & { sampledAt: number; monthCost: { credits: number; label: string } }>(resolve => { finish = resolve; });

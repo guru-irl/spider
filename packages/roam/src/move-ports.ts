@@ -35,7 +35,7 @@ import { bundleWorkspace } from "./git-bundle";
 import { pullArtifact, stageArtifact, transferArtifact } from "./artifacts";
 import { recoverMirror } from "./mirrors";
 import { openOutgoingStaging, openStaging, syncStagingDirectory, sourceChunk, validateManifest } from "./staging";
-import { MoveError, validateBlockerId } from "./move";
+import { MoveError, validateBlockerId, moveEvidence } from "./move";
 
 export interface RollbackEvidence {
   currentHome: Home; forwardReceipt: Home; rollbackReceipt: Home; retirement: DestinationObservation;
@@ -511,7 +511,7 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
       guard(bindings, "cleanup");
       const rows = journal.read(operation.id), proof: MoveCleanupProof = { source: check.source,
         destination: rows.find(row => row.action === "move-action-complete" && row.result.action === "final-inspect")?.result.value as unknown as DestinationObservation,
-        stopped: rows.find(row => row.action === "move-action-complete" && row.result.action === "source-retire")?.result.value as unknown as Probe };
+        stopped: moveEvidence.actionReceipt(rows, "source-retire")?.result.value as unknown as Probe };
       if (!validCleanupProof(proof, check, operation.id, ports.globalDb)) throw new MoveAdapterError("move-cleanup-unproved");
       const destination = proof.destination.home;
       const presentation = await presentCapturedHandoff(operation.id, journal, bindings);

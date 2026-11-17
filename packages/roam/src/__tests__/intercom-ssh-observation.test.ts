@@ -29,6 +29,13 @@ it("pins the served key when the unprivileged sshd configuration probe cannot re
   expect(await inspectServedSshIdentity(options(run))).toEqual({ targetMachineId: B, sshUser: "fixture", hostKey: key(7) });
 }, 5000);
 
+it.each([
+  ["older OpenSSH", `${line(key(7))}\n`],
+  ["OpenSSH 9.8 and later", `# 127.0.0.1:2222 SSH-2.0-OpenSSH_9.8\n${line(key(7))}\n# 127.0.0.1:2222 SSH-2.0-OpenSSH_9.8\n# 127.0.0.1:2222 SSH-2.0-OpenSSH_9.8\n`],
+])("accepts %s keyscan stdout", async (_version, stdout) => {
+  expect((await inspectServedSshIdentity(options(async () => ({ code: 0, stdout })))).hostKey).toEqual(key(7));
+});
+
 it("selects ed25519, then ecdsa, then rsa regardless of scan order", async () => {
   const ed = key(7), ec = key(8, "ecdsa-sha2-nistp256"), rsa = key(9, "ssh-rsa");
   for (const [lines, expected] of [

@@ -39,6 +39,22 @@ describe('controllable intercom clock', () => {
       try { expect(restarted.clock.now()).toBe(38_000); } finally { restarted.close(); }
     } finally { controlled.close(); vi.useRealTimers(); }
   });
+  it('stops clock requests before service shutdown without cancelling its pending work', async () => {
+    // @ts-ignore The same ESM adapter is loaded by the fixture processes.
+    const { serveFixtureClock } = await import('../fixtures/roam-hub-clock.mjs');
+    const root = mkdtempSync(resolve('.spider/scratch/clock-stop-'));
+    const socket = resolve(root, 'c.sock');
+    const controlled = await serveFixtureClock(socket);
+    vi.useFakeTimers();
+    try {
+      let finished = false;
+      controlled.clock.later(100, () => { finished = true; });
+      controlled.stopAccepting();
+      expect(existsSync(socket)).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(finished).toBe(true);
+    } finally { controlled.close(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); }
+  });
   it('does not resurrect cancelled timers when advancing or closing', async () => {
     // @ts-ignore The same ESM adapter is loaded by the fixture processes.
     const { createFixtureClock } = await import('../fixtures/roam-hub-clock.mjs');

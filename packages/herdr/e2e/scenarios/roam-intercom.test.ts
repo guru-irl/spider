@@ -601,6 +601,8 @@ async function topology(suite: Suite): Promise<void> {
       }) }));
     linkTiming('release-custody');
     await setLinkFault(hub, []); await setLinkFault(source, []); await setLinkFault(target, []);
+    // The restarted hub retains its outage backoff, capped at thirty seconds.
+    await advanceIntercomClock(hub, 30_000);
     await suite.evidence('R13-drain-rosters.json', await Promise.all(network.machines.map(machine => machine.probe.listSessions())));
     await sessions[2].waitEvent('message_end', event => received(event, 'hub custody before transition'), deadline(60_000));
     linkTiming('custody-injected');

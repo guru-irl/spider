@@ -50,3 +50,21 @@ it("machine socket exposes named operations and refuses malformed and disabled r
   await expect(machineMoveProxy(root).broker(address)).rejects.toThrow("roaming-disabled");
   expect(effects).toEqual([]);
 }, 5000);
+
+
+it.each([
+  ["connect ENOENT /home/alice/.pi/agent/intercom/broker.sock", "/home/alice"],
+  ["EACCES lstat '/Users/alice/.pi/agent/intercom/broker.pid'", "/Users/alice"],
+  [String.raw`connect EACCES C:\Users\alice\agent\broker.sock`, "alice"],
+  ["authentication github_pat_" + "a".repeat(32), "github_pat_"],
+  ["secret=private-value", "private-value"],
+  ["client_secret='private value'", "private value"],
+  ["aws AKIA" + "A".repeat(16), "AKIA"],
+  ["chat xoxb-123456789-abcdefgh", "xoxb-"],
+])("machine failures redact sensitive detail from %s", async (message, forbidden) => {
+  const machine = await failingMachine(Object.assign(new Error(message), { code: "ENOENT" }));
+  const failure = await machine.bridge({ sessionId: "session-a", scopeId: null }).catch(error => error);
+  expect(failure.diagnostic.code).toBe("ENOENT");
+  expect(failure.diagnostic.message).not.toContain(forbidden);
+  expect(failure.diagnostic.message).toMatch(/\[path\]|\[redacted/);
+}, 5000);

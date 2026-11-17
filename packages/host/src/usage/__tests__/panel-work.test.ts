@@ -18,7 +18,7 @@ import { assertCallPlans, callPassQueries, captureQueries, explainQueries } from
 
 // The message handler is exercised inline; only its thread-identity guard is replaced.
 vi.mock('node:worker_threads', async original => ({ ...await original<typeof import('node:worker_threads')>(), isMainThread: false }));
-const work = vi.hoisted(() => ({ totals: 0, fits: 0, opened: 0, closed: 0, ownership: 0, inspections: 0, failRead: false, failClose: false,
+const work = vi.hoisted(() => ({ totals: 0, fits: 0, opened: 0, closed: 0, panelOpened: 0, ownership: 0, inspections: 0, failRead: false, failClose: false,
   writable: undefined as UsageLedger | undefined, readers: [] as DashboardReader[] }));
 vi.mock('../ledger.js', async original => {
   const actual = await original<typeof import('../ledger.js')>();
@@ -44,7 +44,7 @@ vi.mock('../dashboard-reader.js', async original => {
   return { ...actual, openDashboardReader: (...args: Parameters<typeof actual.openDashboardReader>) => {
     const reader = actual.openDashboardReader(...args);
     if (!reader) return reader;
-    work.opened++; work.readers.push(reader);
+    work.opened++; if (args[1].instanceId === 'herdr-panel') work.panelOpened++; work.readers.push(reader);
     return { ...reader, snapshot<T>(read: Parameters<DashboardReader['snapshot']>[0]): T {
       if (work.failRead) throw new Error('injected read failure');
       return reader.snapshot(ctx => {
@@ -69,7 +69,7 @@ const runtimes: UsageRuntime[] = [];
 const now = START + 4.5 * DAY;
 beforeEach(() => {
   vi.useFakeTimers();
-  Object.assign(work, { totals: 0, fits: 0, opened: 0, closed: 0, ownership: 0, inspections: 0, failRead: false, failClose: false, writable: undefined, readers: [] });
+  Object.assign(work, { totals: 0, fits: 0, opened: 0, closed: 0, panelOpened: 0, ownership: 0, inspections: 0, failRead: false, failClose: false, writable: undefined, readers: [] });
   clock = now;
   f = createDashboardFixture(false); p = new Port();
   const price = (aic: number) => ({ status: 'priced' as const, aic,
@@ -166,11 +166,15 @@ it('bounds a live stalled owner follower to one inspection per tick and takes ov
   expect(work.ownership).toBe(0);
   expect(f.db.prepare("SELECT value FROM ledger_metadata WHERE key='call-selection-revision'").get()).toEqual(revision);
   expect(lease.isCurrent(() => clock)).toBe(true);
+  expect(panel()?.monthCost.credits).toBe(5);
+  expect(work.panelOpened).toBe(1);
   clock += 600001;
   await vi.advanceTimersByTimeAsync(3000);
   expect(discoveries).toBe(1);
   expect(p.events.filter(event => event.type === 'snapshot').at(-1)?.ingestRole).toBe('owner');
   expect(lease.isCurrent(() => clock)).toBe(false);
+  expect(panel()?.monthCost.credits).toBe(5);
+  expect(work.panelOpened).toBe(2);
 });
 it('closes the month reader and ledger when the panel close throws', async () => {
   await boot(async () => ({ sources: [], runs: [], errors: [] }));

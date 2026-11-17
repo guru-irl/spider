@@ -1,12 +1,15 @@
 import { expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import type { MachineIntercomOptions } from "../intercom-runtime";
 import { parseConfig } from "../config";
 import { createMachineIntercom } from "../intercom-runtime";
 import { DEFAULT_LIMITS, type RoamConfig } from "../contracts";
+import { IntercomFederationClient } from "@spider/intercom/broker/client";
+import { machineMoveProxy } from "../machine-move-socket";
+import { startTestBroker, stopTestBroker, testTmpDir } from "../../../intercom/src/test-support";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
 const config: RoamConfig = { enabled: false, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [], discoveryRoots: [], coreUnit: "fixture", syncMs: 1000, limits: DEFAULT_LIMITS,
@@ -83,4 +86,48 @@ it("broker evidence is an owned-address snapshot with no reachable broker capabi
     expect(read).toHaveBeenCalledTimes(2);
     expect(mutate).not.toHaveBeenCalled();
   } finally { await machine.stop(); global.close(); rmSync(agentDir, { recursive: true, force: true }); }
+}, 5000);
+
+
+it("the live broker restores move socket readiness after a failed reconnect", async () => {
+  const global = createReplica("global", HUB), agentDir = mkdtempSync(join(testTmpDir(), "mp-"));
+  const child = startTestBroker(process.execPath, ["dist/intercom/broker.mjs"], {
+    env: { ...process.env, HOME: agentDir, PI_CODING_AGENT_DIR: agentDir }, stdio: ["ignore", "pipe", "pipe"],
+  });
+  const broker = new IntercomFederationClient(), timers: Array<{ run(): void; cancelled: boolean }> = [];
+  let failure: Error | undefined;
+  const machine = createMachineIntercom({ config: parseConfig({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB,
+    coreUnit: "fixture.service", intercom: { enabled: true, mode: "peers", machineAlias: "hub.invalid" } }),
+    root: global.root, globalDb: global.db, agentDir, broker, env: { ...process.env, PI_SUBAGENT_CHILD: "0" }, transport: {} as never,
+    clock: { now: () => 1000, later(_delay, run) { const timer = { run, cancelled: false }; timers.push(timer); return () => { timer.cancelled = true; }; } },
+    async ensureBroker() { if (failure) throw failure; },
+  });
+  mkdirSync(join(global.root, "roam"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify({ machineId: HUB, intercom: { enabled: true } }), { mode: 0o600 });
+  const proxy = machineMoveProxy(global.root), address = { sessionId: "owned-session", scopeId: "owned-scope" };
+  const empty = { asks: [], pendingDispatch: [], unknownOutcomes: [], unobservedReceipts: [] };
+  try {
+    await new Promise<void>((done, reject) => {
+      child.once("exit", code => reject(new Error(`broker exited: ${code}`)));
+      child.stdout!.on("data", chunk => { if (String(chunk).includes("Intercom broker started")) done(); });
+    });
+    await machine.start();
+    expect(machine.readiness()).toEqual({ state: "ready", reason: null });
+    await expect(proxy.bridge(address)).resolves.toEqual(empty);
+    await broker.close();
+    expect(machine.readiness()).toEqual({ state: "pending", reason: "broker-unavailable" });
+    await expect(proxy.bridge(address)).rejects.toMatchObject({ diagnostic: { message: "intercom-move-unavailable: broker-unavailable" } });
+    failure = Object.assign(new Error("reconnect refused token=secret-value Bearer private-value"), { code: "ECONNREFUSED", private: "never expose" });
+    const reconnect = timers.find(timer => !timer.cancelled)!; reconnect.cancelled = true; reconnect.run();
+    await vi.waitFor(() => expect(timers.filter(timer => !timer.cancelled)).toHaveLength(1));
+    const refused = await proxy.bridge(address).catch(error => error);
+    expect(refused.diagnostic.message).toContain("reconnect refused token=[redacted] Bearer [redacted]");
+    expect(refused.diagnostic.message).not.toContain("secret-value");
+    expect(refused.diagnostic.message).not.toContain("private-value");
+    expect(refused.diagnostic.message).not.toContain("never expose");
+    failure = undefined;
+    const retry = timers.find(timer => !timer.cancelled)!; retry.cancelled = true; retry.run();
+    await vi.waitFor(() => expect(machine.readiness()).toEqual({ state: "ready", reason: null }));
+    await expect(proxy.bridge(address)).resolves.toEqual(empty);
+  } finally { await machine.stop(); await stopTestBroker(child); global.close(); rmSync(agentDir, { recursive: true, force: true }); }
 }, 5000);

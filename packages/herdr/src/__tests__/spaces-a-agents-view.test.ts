@@ -299,12 +299,12 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     let root = test.view.render(test.cx);
     expect(byId(root, 'sub-parent')).toBeDefined();
     expect(byId(root, 'sub-nested')).toBeUndefined();
-    expect(byId(root, 'child-busy-parent')).toBeDefined();
+    expect(byId(root, 'child-busy-parent')).toBeUndefined();
     byId(root, 'child-fold-parent')!.events.on_click({}, test.cx);
     root = test.view.render(test.cx);
     expect(byId(root, 'sub-nested')).toBeDefined();
     expect(byId(root, 'sub-command')).toBeUndefined();
-    expect(byId(root, 'child-busy-nested')).toBeDefined();
+    expect(byId(root, 'child-busy-nested')).toBeUndefined();
     byId(root, 'child-fold-nested')!.events.on_click({}, test.cx);
     root = test.view.render(test.cx);
     expect(byId(root, 'sub-command')).toBeDefined();

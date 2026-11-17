@@ -360,6 +360,7 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
       const pending = { sessionId: moved.source.sessionId, sourceMachine: moved.source.machineId, sourceCleanup: json(sourceCleanup) };
       const previous = rows.filter(row => row.action === 'move-source-cleanup-pending').at(-1);
       if (!previous || !isDeepStrictEqual(previous.result, pending)) ports.journal.record(id, 'move-source-cleanup-pending', pending);
+      await releaseMovePower(powerKey);
       return outcome(request, ports, 0, 'moved', { ...moved.value, sourceCleanup });
     }
     const freezeStarted = ports.journal.read(id).some(row => row.action === "move-action-start" && row.result.action === "freeze");

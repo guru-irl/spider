@@ -158,7 +158,7 @@ export function teardownCoordinators(sessionId: string): void {
   c.childStatusCleanup?.();
   c.childStatusCleanup = undefined;
   try { c.tailer?.stop(); } catch {}
-  for (const p of c.pipelines) { try { p.dispose(); } catch {} }
+  for (const p of c.pipelines.splice(0)) { try { p.dispose(); } catch {} }
   try { c.escalationNotifierCleanup?.(); } catch {}
   try { c.adoptionCleanup?.(); } catch {}
   registry.delete(sessionId);
@@ -213,7 +213,7 @@ export async function teardownSessionAsync(sessionId: string, opts: TeardownAsyn
     c.childStatusCleanup?.();
     c.childStatusCleanup = undefined;
     try { c.tailer?.stop(); } catch {}
-    for (const p of c.pipelines) { try { p.dispose(); } catch {} }
+    for (const p of c.pipelines.splice(0)) { try { p.dispose(); } catch {} }
     try { c.escalationNotifierCleanup?.(); } catch {}
     try { c.adoptionCleanup?.(); } catch {}
     registry.delete(sessionId);
@@ -272,7 +272,7 @@ export async function detachForReload(sessionId: string, opts: DetachForReloadOp
     if (c) {
       if (c.tailer) shared.tailCursors.set(sessionId, c.tailer.cursor);
       try { c.tailer?.stop(); } catch {}
-      for (const p of c.pipelines) { try { (p as { abandonForReload?: () => void }).abandonForReload?.() ?? p.dispose(); } catch {} }
+      for (const p of c.pipelines.splice(0)) { try { (p as { abandonForReload?: () => void }).abandonForReload?.() ?? p.dispose(); } catch {} }
       try { c.escalationNotifierCleanup?.(); } catch {}
       c.children?.clear();
       c.childStatusCleanup?.();

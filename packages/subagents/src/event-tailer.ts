@@ -2,6 +2,18 @@ import { bus } from "@spider/db-core";
 import type { Db } from "@spider/db-core";
 import { isLocalRun } from "./roam-origin";
 
+// A paused parent may have an arbitrarily large cross-process backlog. Bound
+// each tick before reading payloads, including rows belonging to other runs.
+const POLL_ROW_LIMIT = 200;
+interface EventDbRow {
+  session_id: string;
+  ts: number;
+  type: string;
+  tool: string | null;
+  summary: string | null;
+  payload: string | null;
+}
+
 export class RunEventTailer {
   private tracked = new Set<string>();
   private lastId = 0;
@@ -26,11 +38,17 @@ export class RunEventTailer {
 
   poll(): void {
     if (this.tracked.size === 0) return;
-    const rows = this.db.prepare(`SELECT * FROM run_events WHERE id > ? ORDER BY id`).all(this.lastId) as any[];
-    for (const r of rows) {
-      this.lastId = Math.max(this.lastId, r.id);
-      if (!r.run_id || !this.tracked.has(r.run_id) || !isLocalRun(this.db, r.run_id)) continue;
-      bus.emit({ runId: r.run_id, sessionId: r.session_id, ts: r.ts, type: r.type, tool: r.tool ?? undefined, summary: r.summary ?? undefined, payload: r.payload ? JSON.parse(r.payload) : undefined });
+    const rows = this.db.prepare(`SELECT id, run_id FROM run_events WHERE id > ? ORDER BY id LIMIT ?`)
+      .all(this.lastId, POLL_ROW_LIMIT) as { id: number; run_id: string | null }[];
+    const detail = this.db.prepare(`SELECT session_id, ts, type, tool, summary, payload FROM run_events WHERE id = ?`);
+    for (const row of rows) {
+      this.lastId = row.id;
+      if (!row.run_id || !this.tracked.has(row.run_id) || !isLocalRun(this.db, row.run_id)) continue;
+      const r = detail.get(row.id) as EventDbRow | undefined;
+      if (!r) continue; // Another process may have pruned the event since the page read.
+      const payload = r.payload ? JSON.parse(r.payload) : undefined;
+      bus.emit({ runId: row.run_id, sessionId: r.session_id, ts: r.ts, type: r.type, tool: r.tool ?? undefined, summary: r.summary ?? undefined, payload });
+      if (r.type === "status" && ["done", "failed", "cancelled"].includes(payload?.status)) this.untrack(row.run_id);
     }
   }
 

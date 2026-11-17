@@ -28,7 +28,7 @@ export class PipelineCoordinator {
   private stages: PipelineStage[] = [];
   private lastRun: RunRow | null = null;
   private baseTask = "";
-  constructor(private deps: { db: Db; globalDb: Db; store: RunStore; runner: any; pi: any; sessionId: string }) {}
+  constructor(private deps: { db: Db; globalDb: Db; store: RunStore; runner: any; pi: any; sessionId: string; onDispose?: () => void }) {}
 
   private interpolate(tmpl: string, previous: string): string {
     return tmpl.replace(/\{task\}/g, this.baseTask).replace(/\{previous\}/g, previous).replace(/\{handoff\}/g, previous);
@@ -38,15 +38,20 @@ export class PipelineCoordinator {
     this.stages = args.pipeline;
     this.stageIndex = 0;
     this.baseTask = args.pipeline[0]?.task ?? "";
-    const first = this.spawnStage(0, "");
-    this.off = bus.on((e: RunEvent) => {
-      if (e.type !== "status") return;
-      const status = (e.payload as any)?.status;
-      if (e.runId && e.runId === this.lastRun?.id && (status === "done" || status === "failed" || status === "cancelled")) {
-        this.onRunTerminal(e.runId);
-      }
-    });
-    return { pipelineId: this.pipelineId, firstRunId: first.id };
+    try {
+      const first = this.spawnStage(0, "");
+      this.off = bus.on((e: RunEvent) => {
+        if (e.type !== "status") return;
+        const status = (e.payload as any)?.status;
+        if (e.runId && e.runId === this.lastRun?.id && (status === "done" || status === "failed" || status === "cancelled")) {
+          this.onRunTerminal(e.runId);
+        }
+      });
+      return { pipelineId: this.pipelineId, firstRunId: first.id };
+    } catch (error) {
+      this.dispose();
+      throw error;
+    }
   }
 
   private spawnStage(index: number, previous: string): RunRow {
@@ -89,7 +94,13 @@ export class PipelineCoordinator {
 
   isActive(): boolean { return this.off !== null; }
 
-  dispose(): void { this.off?.(); this.off = null; }
+  dispose(): void {
+    this.off?.(); this.off = null;
+    this.stages = []; this.lastRun = null; this.baseTask = "";
+    const onDispose = this.deps.onDispose;
+    this.deps.onDispose = undefined;
+    onDispose?.();
+  }
 
   /** Reload ends coordination (the coordinator is activation-local). The in-flight stage child
    *  keeps running and notifies, but later stages will not start: say so on its run. */

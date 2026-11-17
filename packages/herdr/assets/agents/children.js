@@ -159,27 +159,44 @@ function summarizeFinished(all, deferred, feed, viewersBySession, labels, now, o
     }
   }
   const hiddenNative = new Set(), folded = options.folded ?? new Set(), expanded = options.expandedConsoles ?? new Set();
-  const expandedSubagents = options.expandedSubagents ?? new Set();
+  const expandedSubagents = options.expandedSubagents ?? new Set(), visibility = new Map();
+  const visibleThroughParents = key => {
+    const path = [], seen = new Set();
+    let current = key, visible = true;
+    while (current && (byKey.has(current) || selectedRun(current))) {
+      if (visibility.has(current)) { visible = visibility.get(current); break; }
+      if (seen.has(current)) { visible = false; break; }
+      seen.add(current); path.push(current);
+      const parent = selectedRun(current) ? keyByAddress.get(viewers?.get(current)?.parent) ?? null : parentOf(byKey.get(current));
+      const parentRow = byKey.get(parent);
+      if (parentRow || selectedRun(parent)) {
+        if ((parentRow?.kind === 'subagent' || selectedRun(parent)) ? !expandedSubagents.has(parent)
+          : folded.has(parent) || parentRow?.kind === 'console' && !expanded.has(parent)) { visible = false; break; }
+      }
+      current = parent;
+    }
+    for (const item of path) visibility.set(item, visible);
+    return visible;
+  };
   let hiddenNativeCount = 0;
   for (const row of retained) {
     if (live.has(row.key)) continue;
-    let current = row, visible = true;
+    let current = row;
     const seen = new Set();
     while (current && !seen.has(current.key)) {
       seen.add(current.key);
       const parent = parentOf(current), parentRow = byKey.get(parent);
-      if ((parentRow?.kind === 'subagent' || selectedRun(parent)) ? !expandedSubagents.has(parent)
-        : folded.has(parent) || parentRow?.kind === 'console' && !expanded.has(parent)) visible = false;
       if (selectedRun(parent)) {
-        if (!needed.has(parent)) { hiddenNative.add(row.key); if (visible) hiddenNativeCount++; }
+        if (!needed.has(parent)) { hiddenNative.add(row.key); if (visibleThroughParents(row.key)) hiddenNativeCount++; }
         break;
       }
       current = parentRow;
     }
   }
-  const selectedDeferred = Math.min(total, limit) - retained.length;
+  let selectedDeferred = 0;
+  for (const key of deferred.keys()) if (selectedRun(key) && !needed.has(key) && visibleThroughParents(key)) selectedDeferred++;
   for (const key of needed) { addRun(deferred.get(key)); retained.push(rows.get(key)); }
-  options.finishedSummary.hiddenFinished = selectedDeferred - needed.size + hiddenNativeCount;
+  options.finishedSummary.hiddenFinished = selectedDeferred + hiddenNativeCount;
   retained.sort(compare);
   return [...active, ...retained.filter(row => !hiddenNative.has(row.key))];
 }

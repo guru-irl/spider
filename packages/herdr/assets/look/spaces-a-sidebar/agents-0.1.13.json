@@ -219,7 +219,7 @@
     "id": "a-agents-model-child-fold",
     "file": "main.js",
     "anchor": "folded.has(k.key) ? folded.delete(k.key) : folded.add(k.key); cx.notify();",
-    "replacement": "const state = k.kind === \"subagent\" ? (this.expandedSubagents ??= new Set()) : folded;\n          state.has(k.key) ? state.delete(k.key) : state.add(k.key);\n          if (k.kind === \"subagent\") {\n            while (state.size > 200) {\n              const oldest = state.values().next().value;\n              state.delete(oldest); this.spiderRecordSubagentExpansion(oldest);\n            }\n            this.spiderRecordSubagentExpansion(k.key);\n            try { localStorage.setItem(\"spider.subagents.expanded\", JSON.stringify([...state])); } catch {}\n          }\n          this.spiderPrepareTree(s.owner); cx.notify();"
+    "replacement": "const state = k.kind === \"subagent\" ? (this.expandedSubagents ??= new Set()) : folded;\n          state.has(k.key) ? state.delete(k.key) : state.add(k.key);\n          if (k.kind === \"subagent\") {\n            while (state.size > 200) {\n              const oldest = state.values().next().value;\n              state.delete(oldest); this.spiderRecordSubagentExpansion(oldest);\n            }\n            this.spiderRecordSubagentExpansion(k.key);\n            try { localStorage.setItem(\"spider.subagents.expanded\", JSON.stringify([...state])); } catch {}\n          }\n          this.spiderPrepareTree(s.owner);\n          if (this.spiderModel) this.spiderModel.inputKey = null;\n          this.spiderRequestRefresh(); cx.notify();"
   },
   {
     "id": "a-agents-model-hover",

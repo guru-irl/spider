@@ -98,7 +98,7 @@ function fixture(version: SpacesAVersion, count: number, finished: number, prese
   const render = () => { rendering = true; try { return view.render(cx); } finally { rendering = false; } };
   const text = (node: any): string[] => typeof node === 'string' ? [node] : node && typeof node === 'object' ? (node.items ?? []).flatMap(text) : [];
   return {
-    state, view, cx, watches, timers, flush, step, render, text, sharedState, execCalls, runCalls,
+    state, view, cx, watches, timers, flush, step, render, text, storage, sharedState, execCalls, runCalls,
     get historyReads() { return historyReads; },
     get allHistoryReads() { return allHistoryReads; },
     get notifications() { return notifications; },
@@ -230,6 +230,98 @@ it('can resolve parked owners without projecting their children', () => {
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
+  it(`${version}: subagent folding survives command activity and a reload`, async () => {
+    const h = fixture(version, 1, 0);
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    const ids = (node: any): string[] => node && typeof node === 'object'
+      ? [...(node.styles?.id?.[0] ? [node.styles.id[0]] : []), ...(node.items ?? []).flatMap(ids)] : [];
+    const command = { address: 'job-terminal', parent: 't0', state: 'live', status: 'working',
+      labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': 'live0' } };
+    let reloaded: any;
+    try {
+      await h.ready();
+      let root = h.render(); await h.flush();
+      expect(find(root, 'ag-t0')).toBeDefined();
+      expect(find(root, 'sub-live0')).toBeDefined();
+      const before = ids(root).filter(id => id.startsWith('sub-')).length;
+      h.state.terminals.push(command);
+      h.render(); await h.flush(); root = h.render();
+      expect(ids(root).filter(id => id.startsWith('sub-'))).toHaveLength(before);
+      expect(find(root, 'sub-job')).toBeUndefined();
+      expect(find(root, 'child-busy-live0')?.styles.tooltip?.[0]).toBe('Active work');
+      expect(find(root, 'child-fold-live0')?.styles.tooltip?.[0]).toBe('Show children');
+      find(root, 'child-fold-live0').events.on_click({}, h.cx);
+      root = h.render();
+      expect(find(root, 'sub-job')).toBeDefined();
+      expect(find(root, 'child-fold-live0')?.styles.tooltip?.[0]).toBe('Hide children');
+      expect(find(h.render(), 'sub-job')).toBeDefined();
+      command.state = 'finished';
+      h.render(); await h.flush(); root = h.render();
+      expect(find(root, 'sub-job')).toBeUndefined();
+      command.state = 'live';
+      h.render(); await h.flush(); root = h.render();
+      expect(find(root, 'sub-job')).toBeDefined();
+      reloaded = new h.view.constructor(); reloaded.init({}, h.cx); reloaded.spiderFeeds = h.state.feeds;
+      const afterReload = reloaded.render(h.cx);
+      expect(find(afterReload, 'sub-job')).toBeDefined();
+      find(afterReload, 'child-fold-live0').events.on_click({}, h.cx);
+      expect(find(reloaded.render(h.cx), 'sub-job')).toBeUndefined();
+      find(reloaded.render(h.cx), 'fold-left-t0').events.on_click({}, h.cx);
+      expect(find(reloaded.render(h.cx), 'sub-live0')).toBeUndefined();
+      find(reloaded.render(h.cx), 'fold-left-t0').events.on_click({}, h.cx);
+      expect(find(reloaded.render(h.cx), 'sub-live0')).toBeDefined();
+      expect(find(reloaded.render(h.cx), 'sub-job')).toBeUndefined();
+    } finally { await reloaded?.close(); await h.view.close(); }
+  });
+
+  it(`${version}: a retained subagent with a live command stays collapsed and shows activity`, async () => {
+    const h = fixture(version, 1, 0), now = Date.now();
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.state.feeds[0].runs.rows[0].status = 'done'; h.state.feeds[0].runs.rows[0].finishedAt = now - 1000;
+    h.state.terminals[1].state = 'finished'; h.state.terminals[1].finishedAt = now - 1000;
+    h.state.terminals.push({ address: 'job-terminal', parent: 't0', state: 'live', status: 'working',
+      labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': 'live0' } });
+    h.storage.set('folded', JSON.stringify(['live0']));
+    try {
+      await h.ready(); const root = h.render();
+      expect(find(root, 'sub-live0')).toBeDefined();
+      expect(find(root, 'sub-job')).toBeUndefined();
+      expect(find(root, 'child-busy-live0')?.styles.tooltip?.[0]).toBe('Active work');
+      expect(find(root, 'child-fold-live0')?.styles.tooltip?.[0]).toBe('Show children');
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: collapsed subagents keep console groups and their commands out of rendered rows`, async () => {
+    const h = fixture(version, 1, 0);
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    for (let i = 0; i < 80; i++) h.state.terminals.push({ address: `console${i}`, parent: 't0', state: 'live', status: 'idle',
+      labels: { 'spider.kind': 'remote-console', 'spider.session': 's0', 'spider.run': 'live0' } });
+    let drawing = false, reads = 0;
+    const project = h.view.projectChildren.bind(h.view), wrapped = new WeakMap<object, any>();
+    h.view.projectChildren = (all: unknown, owner: string) => {
+      const rows = project(all, owner); let proxy = wrapped.get(rows);
+      if (!proxy) {
+        proxy = new Proxy(rows, { get(target, key, receiver) {
+          if (drawing && (key === Symbol.iterator || typeof key === 'string' && /^\d+$/.test(key))) reads++;
+          return Reflect.get(target, key, receiver);
+        } });
+        wrapped.set(rows, proxy); wrapped.set(proxy, proxy);
+        if (h.view.spiderRenderRows?.get(owner) === rows) h.view.spiderRenderRows.set(owner, proxy);
+      }
+      return proxy;
+    };
+    try {
+      await h.ready(); h.render(); await h.flush();
+      reads = 0; drawing = true; const root = h.render(); drawing = false;
+      expect(find(root, 'sub-live0')).toBeDefined();
+      expect(find(root, 'console-group:' + encodeURIComponent(`console-group:${JSON.stringify(['t0', 'live0'])}`))).toBeUndefined();
+      expect(reads).toBeLessThan(10);
+      find(root, 'child-fold-live0').events.on_click({}, h.cx);
+      const expanded = h.render();
+      expect(find(expanded, 'console-group:' + encodeURIComponent(`console-group:${JSON.stringify(['t0', 'live0'])}`))).toBeDefined();
+    } finally { drawing = false; await h.view.close(); }
+  });
+
   it(`${version}: B navigation keeps finished history out of render and opens console rows`, async () => {
     const h = fixture(version, 100, 48, true);
     let drawing = false, historyReads = 0, finishedNameReads = 0;

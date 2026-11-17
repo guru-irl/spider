@@ -216,6 +216,18 @@ it("adds only the pair-owned hc alias with argv and refuses an alias bound to an
   expect(f.calls.filter(argv => argv[2] === "add")).toHaveLength(1);
 }, 5000);
 
+it("scans the port in the approved pair rather than the machine recipe", async () => {
+  const f = fixture(), mod = await api();
+  const target = { ...f.ports, machineId: B, root: f.targetRoot, sshUser: "fixture", keyscan: "/fixture/ssh-keyscan",
+    async run(argv: readonly string[]) {
+      f.calls.push([...argv]);
+      if (JSON.stringify(argv) !== JSON.stringify(["/fixture/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "22", "127.0.0.1"])) throw new Error("wrong port");
+      return { code: 0, stdout: `127.0.0.1 ${f.pair.hostKey.type} ${f.pair.hostKey.base64}\n` };
+    } };
+  expect(await mod.runLocalPairOperation({ action: "inspect-ssh", pair: f.plan, approval: f.proof }, target)).toMatchObject({ hostKey: f.pair.hostKey });
+  expect(f.calls[0]).toContain("22");
+}, 5000);
+
 it("reads the served SSH host key and account on the exact approved target", async () => {
   const f = fixture(), mod = await api(); expect(mod.runLocalPairOperation).toBeTypeOf("function");
   const expected = ["/fixture/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "2222", "127.0.0.1"];

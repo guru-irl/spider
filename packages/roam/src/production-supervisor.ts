@@ -315,7 +315,7 @@ export async function startProductionSupervisor(root: string, options: { system?
     });
     if (platform && platform.machineId !== runtime.config.machineId) throw new Error("machine-mismatch");
     const localPorts = platform && { machineId: platform.machineId, root: platform.root, home: platform.home, node: platform.node,
-      ssh: platform.ssh, keygen: platform.keygen, sshd: platform.sshd, sshUser: platform.sshUser, recipe: platform.recipe,
+      ssh: platform.ssh, keygen: platform.keygen, keyscan: platform.keyscan, sshUser: platform.sshUser, recipe: platform.recipe,
       systemctl: platform.systemctl, run: platform.run, process: platform.process, cgroup: platform.cgroup };
     const direct = runtime.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
     const machineIntercom = runtime.config.intercom.enabled ? createMachineIntercom({ root, globalDb: runtime.db, config: runtime.config, roamingEnabled: () => readLocalIdentity(root).enabled,

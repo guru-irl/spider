@@ -253,7 +253,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as LocalPairCleanup;
 
       const base = options?.pairPorts ?? { machineId: config.machineId, root, home: homedir(), node: process.execPath, ssh: "/usr/bin/ssh",
-        keygen: "/usr/bin/ssh-keygen", sshd: "/usr/sbin/sshd", sshUser: userInfo().username, recipe: config.intercom.connector, run: runForeground };
+        keygen: "/usr/bin/ssh-keygen", keyscan: "/usr/bin/ssh-keyscan", sshUser: userInfo().username, recipe: config.intercom.connector, run: runForeground };
       const value = await runLocalPairCleanup(input, { ...base, machineId: config.machineId, root });
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-cleanup", ok: true, machineId: config.machineId, value })}\n`);
     } catch (error) { io.out(`${JSON.stringify({ version: 1, kind: "intercom-cleanup", ok: false,
@@ -268,7 +268,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       if (await createIntercomRegistry(root).revocationPending(input.pair.pairId, config.machineId === input.pair.source.machineId ? input.pair.target.machineId : input.pair.source.machineId)) throw new Error("revocation-pending");
       if (!["check-connector", "inspect-ssh", "register-pair", "host-connector", "connect-connector"].includes(input?.action) && !pairScopedRecipe(config.intercom.connector ?? options?.pairPorts?.recipe)) throw new Error("connector-not-pair-scoped");
       const base = options?.pairPorts ?? { machineId: config.machineId, root, home: homedir(), node: process.execPath, ssh: "/usr/bin/ssh",
-        keygen: "/usr/bin/ssh-keygen", sshd: "/usr/sbin/sshd", sshUser: userInfo().username, recipe: config.intercom.connector, run: runForeground };
+        keygen: "/usr/bin/ssh-keygen", keyscan: "/usr/bin/ssh-keyscan", sshUser: userInfo().username, recipe: config.intercom.connector, run: runForeground };
       if (!["check-connector", "inspect-ssh", "register-pair", "host-connector", "connect-connector"].includes(input?.action)) {
         const side = input.pair?.source?.machineId === config.machineId ? "connect" : "host";
         if (!await inspectPairUnit(input.pair as import("./provision-contracts").IntercomEnrollmentPair, side, { ...base, machineId: config.machineId, root })) throw new Error("connector-not-pair-scoped");

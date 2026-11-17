@@ -22,7 +22,7 @@ function fixture() {
   const run = async (argv: readonly string[]) => { calls.push([...argv]); if (argv[0] === "/fixture/keygen") {
     const file = argv[argv.indexOf("-f") + 1]; writeFileSync(file, "private-fixture", { mode: 0o600 }); writeFileSync(`${file}.pub`, `${pair.hostKey.type} ${pair.hostKey.base64}\n`, { mode: 0o644 });
   } return { code: 0, stdout: "" }; };
-  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 23222 };
+  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 23222, sshPort: 2222 };
   const ports = { machineId: A, root: sourceRoot, home, node: process.execPath, ssh: "/fixture/ssh", keygen: "/fixture/keygen", recipe, run };
   return { root, sourceRoot, targetRoot, home, pair, plan, proof, calls, ports };
 }
@@ -218,14 +218,21 @@ it("adds only the pair-owned hc alias with argv and refuses an alias bound to an
 
 it("reads the served SSH host key and account on the exact approved target", async () => {
   const f = fixture(), mod = await api(); expect(mod.runLocalPairOperation).toBeTypeOf("function");
-  const hostFile = join(f.root, "host-ed25519");
-  writeFileSync(`${hostFile}.pub`, `${f.pair.hostKey.type} ${f.pair.hostKey.base64}\n`, { mode: 0o644 });
-  const target = { ...f.ports, machineId: B, root: f.targetRoot, sshUser: "fixture", sshd: "/fixture/sshd",
-    async run(argv: readonly string[]) { f.calls.push([...argv]); return { code: 0, stdout: `hostkey ${hostFile}\n` }; } };
+  const expected = ["/fixture/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "2222", "127.0.0.1"];
+  const target = { ...f.ports, machineId: B, root: f.targetRoot, sshUser: "fixture", keyscan: "/fixture/ssh-keyscan", recipe: { ...f.ports.recipe, sshPort: 2222 },
+    async run(argv: readonly string[]) { f.calls.push([...argv]); if (JSON.stringify(argv) !== JSON.stringify(expected)) throw new Error("unexpected fixture command"); return { code: 0, stdout: `[127.0.0.1]:2222 ${f.pair.hostKey.type} ${f.pair.hostKey.base64}\n` }; } };
   expect(await mod.runLocalPairOperation({ action: "inspect-ssh", pair: f.plan, approval: f.proof }, target)).toEqual({
     targetMachineId: B, sshUser: "fixture", hostKey: f.pair.hostKey,
   });
-  expect(f.calls).toEqual([["/fixture/sshd", "-T"]]);
+  expect(f.calls).toEqual([expected]);
+}, 5000);
+
+it("requires the target recipe's SSH port before enrollment inspects a key", async () => {
+  const f = fixture(), mod = await api();
+  const { sshPort: _sshPort, ...recipe } = f.ports.recipe;
+  const target = { ...f.ports, machineId: B, root: f.targetRoot, sshUser: "fixture", keyscan: "/fixture/ssh-keyscan", recipe };
+  await expect(mod.runLocalPairOperation({ action: "inspect-ssh", pair: f.plan, approval: f.proof }, target)).rejects.toThrow("intercom-ssh-port-missing");
+  expect(f.calls).toEqual([]);
 }, 5000);
 
 it("authorizes the target key only on the exact approved target", async () => {

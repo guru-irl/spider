@@ -16,7 +16,7 @@ it("reports connector, host-key, legacy extension, broker feature and link issue
   const pair = { pairId: "pair-1", source: peer(A, "box-a.invalid", "/fixture/source"), target: peer(B, "box-b.invalid", root), edgeEpoch: "edge-1",
     connector: { tunnelId: "tunnel", remotePort: 22, session: "default" }, sshUser: "fixture", hostKey: { type: "ssh-ed25519", base64: blob(7) }, hostKeyAlias: `spider-${"a".repeat(32)}` };
   const registry = createIntercomRegistry(root); await registry.register(pair, "approval-1", "a".repeat(64)); await registry.bind(pair, "approval-1"); await registry.activate("pair-1", "approval-1");
-  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 2222 };
+  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 2222, sshPort: 2222 };
   const config = parseConfig({ enabled: true, role: "box", machineId: B, hubMachineId: A, coreUnit: "fixture.service",
     intercom: { enabled: true, mode: "peers", machineAlias: "box-b.invalid", connector: recipe } });
   const calls: string[][] = [], { inspectLocalIntercomDoctor } = await import("../intercom-doctor");
@@ -35,6 +35,46 @@ it("reports connector, host-key, legacy extension, broker feature and link issue
   await runLocalDoctor({ root, intercomDoctor: inspector }); expect(explicit).toBe(0);
   const report = await runLocalDoctor({ root, inspectIntercomDoctor: true, intercomDoctor: inspector });
   expect(explicit).toBe(1); expect(report.diagnostics.some(item => item.reason.includes("host-key-changed"))).toBe(true);
+}, 5000);
+
+it("names a missing SSH listener port and tells the operator what to configure", async () => {
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "icport-")); roots.push(root);
+  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 23222 };
+  const config = parseConfig({ role: "box", machineId: B, hubMachineId: A, coreUnit: "fixture.service", intercom: { enabled: true, mode: "peers", machineAlias: "box-1.invalid", connector: recipe } });
+  const { inspectLocalIntercomDoctor } = await import("../intercom-doctor");
+  const diagnostics = await inspectLocalIntercomDoctor({ root, config, agentDir: root,
+    async run(argv) { if (argv[0] !== "/fixture/connector") throw new Error("unexpected fixture command"); return { code: 0, stdout: JSON.stringify({ connector: "ready", login: "ready", tunnel: "hosted", peerPort: "reachable" }) }; },
+    async features() { return []; } });
+  expect(diagnostics).toContainEqual(expect.objectContaining({ reason: expect.stringMatching(/intercom-ssh-port-missing:.*sshPort.*127\.0\.0\.1/) }));
+  expect(diagnostics.some(item => item.reason.startsWith("intercom-connector-check-invalid"))).toBe(false);
+}, 5000);
+
+it("uses the target listener for host-key doctor checks and skips a missing port", async () => {
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "icport-pair-")); roots.push(root);
+  const { userInfo } = await import("node:os");
+  const peer = (machineId: string, alias: string) => ({ machineId, alias, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: root });
+  const blob = (n: number) => Buffer.concat([Buffer.from([0, 0, 0, 11]), Buffer.from("ssh-ed25519"), Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, n)]).toString("base64");
+  const pair = { pairId: "pair-1", source: peer(A, "box-1.invalid"), target: peer(B, "box-2.invalid"), edgeEpoch: "edge-1",
+    connector: { tunnelId: "tunnel", remotePort: 22, session: "default" }, sshUser: userInfo().username, hostKey: { type: "ssh-ed25519", base64: blob(7) }, hostKeyAlias: `spider-${"a".repeat(32)}` };
+  const registry = createIntercomRegistry(root); await registry.register(pair, "approval-1", "a".repeat(64)); await registry.bind(pair, "approval-1"); await registry.activate("pair-1", "approval-1");
+  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 23222 };
+  const config = (connector: typeof recipe & { sshPort?: number }) => parseConfig({ role: "box", machineId: B, hubMachineId: A, coreUnit: "fixture.service", intercom: { enabled: true, mode: "peers", machineAlias: "box-2.invalid", connector } });
+  const calls: string[][] = [], { inspectLocalIntercomDoctor } = await import("../intercom-doctor");
+  const run = async (argv: readonly string[]) => { calls.push([...argv]);
+    if (JSON.stringify(argv) === JSON.stringify(["/fixture/connector", "check"])) return { code: 0, stdout: JSON.stringify({ connector: "ready", login: "ready", tunnel: "hosted", peerPort: "reachable" }) };
+    if (JSON.stringify(argv) === JSON.stringify(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "2222", "127.0.0.1"])) return { code: 0, stdout: `[127.0.0.1]:2222 ssh-ed25519 ${blob(8)}\n` };
+    throw new Error("unexpected fixture command");
+  };
+  const common = { root, agentDir: root, run, async features() { return []; }, async link() { return { status: "live", reason: null }; } };
+  const observed = await inspectLocalIntercomDoctor({ ...common, config: config({ ...recipe, sshPort: 2222 }) });
+  expect(observed.some(item => item.reason.startsWith("host-key-changed"))).toBe(true);
+  expect(observed.some(item => item.reason.startsWith("intercom-ssh-port-missing"))).toBe(false);
+  expect(calls).toContainEqual(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "2222", "127.0.0.1"]);
+  calls.length = 0;
+  const missing = await inspectLocalIntercomDoctor({ ...common, config: config(recipe) });
+  expect(missing.some(item => item.reason.startsWith("intercom-ssh-port-missing"))).toBe(true);
+  expect(missing.some(item => item.reason.startsWith("intercom-ssh-host-unavailable"))).toBe(false);
+  expect(calls).toEqual([["/fixture/connector", "check"]]);
 }, 5000);
 
 it("reports failed positive intercom evidence during box preflight even while roaming is disabled", async () => {

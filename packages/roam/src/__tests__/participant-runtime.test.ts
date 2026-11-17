@@ -168,14 +168,14 @@ it('passes only pair platform ports to maintenance, never bridge overrides', asy
     events() { return { subscribe() { return () => {}; }, dispose() {} }; }, async dispose() {} } as never);
   vi.spyOn(participantSupervisor, 'createParticipantSupervisor').mockReturnValue({ reconcile: async () => {}, start() {}, async stop() {} });
   const maintenance = vi.spyOn(intercomProduction, 'createProductionIntercomMaintenance');
-  const platform = { root: f.global.root, machineId: BOX, home: agentDir, node: '/fixture/node', ssh: '/fixture/ssh', keygen: '/fixture/keygen',
+  const platform = { root: f.global.root, machineId: BOX, home: agentDir, node: '/fixture/node', ssh: '/fixture/ssh', keygen: '/fixture/keygen', keyscan: '/fixture/ssh-keyscan',
     run: vi.fn(), enrollBridge: vi.fn(), inspectBridge: vi.fn(), inspectFence: vi.fn() };
   const system = { inventory: { async probe() { return { kind: 'live' as const, startIdentity: 'fixture-process' }; } } } as never;
   const service = await startProductionSupervisor(f.global.root, { system, intercomLocalPorts: platform });
   try {
     expect(maintenance).toHaveBeenCalledOnce();
     const passed = maintenance.mock.calls[0][0].localPorts;
-    expect(passed).toMatchObject({ root: f.global.root, machineId: BOX, run: platform.run });
+    expect(passed).toMatchObject({ root: f.global.root, machineId: BOX, keyscan: '/fixture/ssh-keyscan', run: platform.run });
     for (const key of ['enrollBridge', 'inspectBridge', 'inspectFence']) expect(passed).not.toHaveProperty(key);
   } finally { await service.stop(); }
 }, 5000);

@@ -39,7 +39,7 @@ export function pairScopedRecipe(recipe: IntercomConnectorRecipe | undefined): b
 export function pairLocalPort(recipe: IntercomConnectorRecipe, pairId: string): number { return recipe.pairPorts?.[pairId] ?? recipe.localPort; }
 function quote(value: string): string { return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%").replace(/\$/g, () => "$$")}"`; }
 function unitContents(pair: IntercomEnrollmentPair, side: "host" | "connect", recipe: IntercomConnectorRecipe): string {
-  const substitutions: Record<string, string> = { pairId: pair.pairId, tunnelId: pair.connector.tunnelId, remotePort: String(pair.connector.remotePort), localPort: String(pairLocalPort(recipe, pair.pairId)) };
+  const substitutions: Record<string, string> = { pairId: pair.pairId, tunnelId: pair.connector.tunnelId, remotePort: String(pair.connector.remotePort), localPort: String(pairLocalPort(recipe, pair.pairId)), ...(recipe.sshPort === undefined ? {} : { sshPort: String(recipe.sshPort) }) };
   const argv = recipe[side].map(arg => arg.replace(/\{([^{}]+)\}/g, (_match, key: string) => {
     if (!Object.hasOwn(substitutions, key)) throw new Error("intercom-connector-recipe-invalid"); return substitutions[key];
   }));

@@ -10,6 +10,7 @@ afterEach(cleanupPairScenarios);
 
 it("enrolls pair-owned units and revokes a live connection before removing only its reserved route", async () => {
   const f = await scenario();
+  await expect(f.locals.get(B)!.run(["/fixture/ssh-keyscan", "-p", "2223"], { timeoutMs: 10000, maxBytes: 65536 })).rejects.toThrow("unexpected fixture command");
   expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
   const secondRequest = { operation: { ...f.request.operation, id: "enroll-2" }, pairs: [{ ...f.request.pairs[0], pairId: "pair-2", source: f.otherSource, edgeEpoch: "edge-2", connector: { ...f.request.pairs[0].connector, tunnelId: "tunnel-2" } }] };
   const second = createProductionIntercomEnrollmentPorts({ root: f.root, journal: f.journal, transport: f.transport, request: secondRequest, actor: "fixture", now: () => 1000,
@@ -27,6 +28,15 @@ it("enrolls pair-owned units and revokes a live connection before removing only 
   expect(stopB).toBeGreaterThan(-1); expect(stopA).toBeGreaterThan(stopB); expect(removed).toBeGreaterThan(stopA);
   expect(await createIntercomRegistry(f.source.globalRoot).get("pair-1")).toMatchObject({ state: "revoked", cleanupReason: null });
   expect(await createIntercomRegistry(f.target.globalRoot).get("pair-1")).toMatchObject({ state: "revoked", cleanupReason: null });
+}, 5000);
+
+it.each(["source", "target"] as const)("leaves enrollment pending with a named missing %s SSH port", async side => {
+  const f = await scenario(), local = f.locals.get(side === "source" ? f.source.machineId : B)!;
+  const { sshPort: _sshPort, ...recipe } = local.recipe!;
+  local.recipe = recipe;
+  expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 3, reason: "intercom-ssh-port-missing",
+    value: { pending: [{ pairId: "pair-1", reason: "intercom-ssh-port-missing" }] } });
+  expect(f.calls.some(call => call.includes("-t ed25519,ecdsa,rsa"))).toBe(false);
 }, 5000);
 
 it("a host straggler preserves the key and route until a later retry proves closure", async () => {

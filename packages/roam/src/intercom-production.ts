@@ -98,6 +98,7 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
       const result = await call<{ status: string }>(machine, expected, "check-connector", machinePlan(machine));
       if (result.status === "intercom-connector-missing" || result.status === "intercom-connector-recipe-missing") return "missing";
       if (result.status === "intercom-connector-sign-in-required") return "not-signed-in";
+      if (result.status === "intercom-ssh-port-missing") return "ssh-port-missing";
       if (["ready", "intercom-tunnel-unhosted", "intercom-peer-port-unreachable"].includes(result.status)) return "ready";
       return "invalid";
     },

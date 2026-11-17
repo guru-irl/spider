@@ -8,6 +8,7 @@ import type {
   StorePort, SyncService, Transport, WorkspaceSnapshot,
 } from "@spider/roam/contracts";
 import type { BootstrapOptions, Inventory } from "@spider/roam/provision-contracts";
+import type { HostingWarning } from "../hosting-warning";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Assert<T extends true> = T;
@@ -65,7 +66,9 @@ type _SyncService = Assert<Equal<SyncService, {
 }>>;
 type _PlacementPort = Assert<Equal<PlacementPort, { reconcile(rows: readonly Readiness[]): Promise<{ pending: readonly string[] }> }>>;
 type _HubPorts = Assert<Equal<HubPorts, { config: RoamConfig; sync: SyncService; journal: Journal; clock: Clock; placement: PlacementPort }>>;
-type _Diagnostic = Assert<Equal<Diagnostic, { reason: string; severity: "warning" | "block"; repairCommand: string | null; writerEpoch?: number }>>;
+type _HostingWarning = Assert<Equal<HostingWarning, { code: "supervisor-hosting-error";
+  check: "running-intent" | "intent-view" | "inspection" | "restart" | "launch"; since: number; count: number }>>;
+type _Diagnostic = Assert<Equal<Diagnostic, { code?: HostingWarning["code"]; reason: string; severity: "warning" | "block"; repairCommand: string | null; writerEpoch?: number }>>;
 type _HostIntent = Assert<Equal<HostIntent, {
   sessionId: string; epoch: number; desired: "running" | "stopped"; suspended: string | null; file: string; cwd: string; moveId: string | null;
 }>>;
@@ -89,7 +92,7 @@ type _FreezeAck = Assert<Equal<FreezeAck, {
 type _MoveRequest = Assert<Equal<MoveRequest, { operation: Operation; sessionId: string; destinationMachine: MachineId }>>;
 type _MoveResult = Assert<Equal<MoveResult, { home: Home; terminal: string | null; intercomAddress: string; warnings: readonly string[]; sourceCleanup: import("../contracts").SourceCleanup }>>;
 type _MoveRefusalCode = Assert<Equal<MoveRefusalCode, keyof typeof import("../contracts").MOVE_REFUSAL_MESSAGES>>;
-type _MoveRefusal = Assert<Equal<MoveRefusal, { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string }>>;
+type _MoveRefusal = Assert<Equal<MoveRefusal, { code: MoveRefusalCode; blockers: readonly ValidatedBlockerId[]; message: string; hostingWarning?: HostingWarning }>>;
 type _MoveOutcome = Assert<Equal<MoveOutcome, { ok: true; value: MoveResult } | { ok: false; refusal: MoveRefusal }>>;
 type _MoveSessionOutcome = Assert<Equal<MoveSessionOutcome, Outcome<MoveResult> & (
   ({ code: 0 } & Extract<MoveOutcome, { ok: true }>) |
@@ -112,7 +115,7 @@ type _MoveCheck = Assert<Equal<MoveCheck, {
 }>>;
 type _PreparedMove = Assert<Equal<PreparedMove, { workspace: PreparedWorkspace; session: SessionManifest }>>;
 type _DestinationObservation = Assert<Equal<DestinationObservation, {
-  home: Home; owner: Probe; readiness: HubOperationReadiness | null; launchFailure: string | null; retired: boolean; activationCancelled?: boolean;
+  home: Home; owner: Probe; readiness: HubOperationReadiness | null; launchFailure: string | null; retired: boolean; activationCancelled?: boolean; hostingWarning?: HostingWarning;
 }>>;
 type _MovePorts = Assert<Equal<MovePorts, {
   config: RoamConfig; globalDb: Db; journal: Journal; clock: Clock;

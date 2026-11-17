@@ -137,6 +137,58 @@ describe('headless story matrix', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('transfers only Linux x64 ONNX binaries and rejects a corrupt shared archive', () => {
+    const prepare = workflow('herdr-stories').jobs.prepare!, story = workflow('herdr-stories').jobs.stories!;
+    const root = mkdtempSync(join(process.cwd(), '.spider/scratch/shared-build-'));
+    const workspace = join(root, 'workspace'), restored = join(root, 'restored'), temp = join(root, 'temp');
+    const hc = '.spider/scratch/herdr-ci/hc', binary = 'synthetic core';
+    try {
+      for (const dir of [workspace, restored, temp, join(root, 'bin')]) mkdirSync(dir, { recursive: true });
+      writeFileSync(join(root, 'bin/sha256sum'), `#!/usr/bin/env node
+import * as fs from 'node:fs';
+import * as crypto from 'node:crypto';
+if (process.argv[2] !== '--check') {
+  const file = process.argv[2];
+  console.log(crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') + '  ' + file);
+  process.exit(0);
+}
+const lines = fs.readFileSync(process.argv[3] || 0, 'utf8').trim().split('\\n');
+for (const line of lines) {
+  const match = /^([a-f0-9]{64})  (.+)$/.exec(line);
+  if (!match || crypto.createHash('sha256').update(fs.readFileSync(match[2])).digest('hex') !== match[1]) { console.error('checksum FAILED'); process.exit(1); }
+}
+`, { mode: 0o700 });
+      for (const file of [hc, '.spider/scratch/herdr-ci/herdr-core', 'dist/index.js',
+        'node_modules/onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node',
+        'node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/onnxruntime_binding.node',
+        'node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/onnxruntime_binding.node',
+        'node_modules/onnxruntime-node/bin/napi-v6/win32/x64/onnxruntime_binding.node']) {
+        mkdirSync(join(workspace, file, '..'), { recursive: true });
+        writeFileSync(join(workspace, file), file.startsWith('.spider/') ? binary : file);
+      }
+      const config = join(restored, 'packages/herdr/e2e/controls/ci-stories.json');
+      mkdirSync(join(config, '..'), { recursive: true });
+      writeFileSync(config, JSON.stringify({ binarySha256: createHash('sha256').update(binary).digest('hex') }));
+      const env = { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, RUNNER_TEMP: temp, GITHUB_WORKSPACE: workspace, SPIDER_HERDR_E2E_HC: join(workspace, hc), GITHUB_OUTPUT: join(root, 'output') };
+      const shell = (script: string, cwd: string, extra = {}) => spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], { cwd, env: { ...env, ...extra }, encoding: 'utf8' });
+      const bundle = shell(step(prepare, 'Bundle shared build').run!, workspace);
+      expect(bundle.status, bundle.stderr).toBe(0);
+      const restore = () => shell(step(story, 'Restore shared build').run!, restored, { GITHUB_WORKSPACE: restored, HC_RELATIVE_PATH: hc, GITHUB_ENV: join(root, 'env') });
+      const result = restore();
+      expect(result.status, result.stderr).toBe(0);
+      const listing = spawnSync('tar', ['-tzf', join(temp, 'herdr-build.tar.gz')], { encoding: 'utf8' }).stdout;
+      expect(listing).toContain('node_modules/onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node');
+      expect(listing).not.toContain('node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/');
+      expect(listing).not.toContain('node_modules/onnxruntime-node/bin/napi-v6/darwin/');
+      expect(listing).not.toContain('node_modules/onnxruntime-node/bin/napi-v6/win32/');
+      expect(step(prepare, 'Upload shared build').with?.path).toContain('herdr-build.sha256');
+      writeFileSync(join(temp, 'herdr-build.tar.gz'), 'corrupt');
+      const rejected = restore();
+      expect(rejected.status).not.toBe(0);
+      expect(rejected.stdout + rejected.stderr).toMatch(/FAILED|checksum/i);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('shares one build and keeps each matrix story independently bounded', () => {
     const definition = workflow('herdr-stories'), prepare = definition.jobs.prepare!, story = definition.jobs.stories!;
     expect(definition.on).toHaveProperty('pull_request');

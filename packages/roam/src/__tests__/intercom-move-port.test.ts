@@ -125,6 +125,7 @@ it("the live broker restores move socket readiness after a failed reconnect", as
     const reconnect = timers.find(timer => !timer.cancelled)!; reconnect.cancelled = true; reconnect.run();
     await vi.waitFor(() => expect(timers.filter(timer => !timer.cancelled)).toHaveLength(1));
     const refused = await proxy.bridge(address).catch(error => error);
+    expect(machine.readiness()).toEqual({ state: "pending", reason: "broker-unavailable:ECONNREFUSED" });
     expect(refused.diagnostic.message).toContain("reconnect refused token=[redacted] Bearer [redacted]");
     expect(refused.diagnostic.message).not.toContain("secret-value");
     expect(refused.diagnostic.message).not.toContain("private-value");
@@ -215,5 +216,20 @@ it("a reconnect failure after broker-ready withdraws move readiness", async () =
     fail = true; broker.emit("disconnected"); timers.shift()!(); await closing;
     expect(machine.readiness().state).toBe("pending");
     await expect(machine.move.bridge({ sessionId: "session-a", scopeId: null })).rejects.toThrow("intercom-move-unavailable");
+  } finally { await machine.stop(); global.close(); rmSync(agentDir, { recursive: true, force: true }); }
+}, 5000);
+
+it("initial broker failures retain a redacted cause and expose its code in status", async () => {
+  const global = createReplica("global", HUB), agentDir = mkdtempSync(join(resolve(".spider/scratch"), "bi-"));
+  const machine = createMachineIntercom({ config: parseConfig({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture.service", intercom: { enabled: true, mode: "peers", machineAlias: "hub.invalid" } }),
+    root: global.root, globalDb: global.db, agentDir, env: { ...process.env, PI_SUBAGENT_CHILD: "0" }, transport: {} as never,
+    clock: { now: () => 1000, later: () => () => {} }, async ensureBroker() { throw Object.assign(new Error("connect ENOENT /home/alice/.pi/agent/broker.sock secret=private-value"), { code: "ENOENT" }); } });
+  try {
+    await machine.start();
+    expect(machine.readiness()).toEqual({ state: "pending", reason: "bridge-unavailable:ENOENT" });
+    const failure = await machine.move.bridge({ sessionId: "session-a", scopeId: null }).catch(error => error);
+    expect(failure.message).toContain("ENOENT");
+    expect(failure.message).not.toContain("/home/alice");
+    expect(failure.message).not.toContain("private-value");
   } finally { await machine.stop(); global.close(); rmSync(agentDir, { recursive: true, force: true }); }
 }, 5000);

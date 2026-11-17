@@ -1368,7 +1368,7 @@
             "id": "a-agents-model-child-fold",
             "file": "main.js",
             "anchor": "folded.has(k.key) ? folded.delete(k.key) : folded.add(k.key); cx.notify();",
-            "replacement": "const state = k.kind === \"subagent\" ? (this.expandedSubagents ??= new Set()) : folded;\n          state.has(k.key) ? state.delete(k.key) : state.add(k.key);\n          if (k.kind === \"subagent\") {\n            while (state.size > 200) {\n              const oldest = state.values().next().value;\n              state.delete(oldest); this.spiderRecordSubagentExpansion(oldest);\n            }\n            this.spiderRecordSubagentExpansion(k.key);\n            try { localStorage.setItem(\"spider.subagents.expanded\", JSON.stringify([...state])); } catch {}\n          }\n          this.spiderPrepareTree(s.owner); cx.notify();"
+            "replacement": "const state = k.kind === \"subagent\" ? (this.expandedSubagents ??= new Set()) : folded;\n          state.has(k.key) ? state.delete(k.key) : state.add(k.key);\n          if (k.kind === \"subagent\") {\n            while (state.size > 200) {\n              const oldest = state.values().next().value;\n              state.delete(oldest); this.spiderRecordSubagentExpansion(oldest);\n            }\n            this.spiderRecordSubagentExpansion(k.key);\n            try { localStorage.setItem(\"spider.subagents.expanded\", JSON.stringify([...state])); } catch {}\n          }\n          this.spiderPrepareTree(s.owner);\n          if (this.spiderModel) this.spiderModel.inputKey = null;\n          this.spiderRequestRefresh(); cx.notify();"
           },
           {
             "id": "a-agents-model-hover",
@@ -1790,7 +1790,7 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "62435b5a2fd5832c227696904a81a3193d8b4906679de5536e628db62141eb41",
+        "agents/main.js": "475bc0d5ee73c4ee3f7a3b540d79936062a805f72b6cc1955e1d4b30b8964613",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "f9c0799068984fe289df2b8aa50231435977c7269ee15cea4544d52f31d3bd25",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
@@ -2832,7 +2832,7 @@
             "id": "a-agents-model-child-fold",
             "file": "main.js",
             "anchor": "folded.has(k.key) ? folded.delete(k.key) : folded.add(k.key); cx.notify();",
-            "replacement": "const state = k.kind === \"subagent\" ? (this.expandedSubagents ??= new Set()) : folded;\n          state.has(k.key) ? state.delete(k.key) : state.add(k.key);\n          if (k.kind === \"subagent\") {\n            while (state.size > 200) {\n              const oldest = state.values().next().value;\n              state.delete(oldest); this.spiderRecordSubagentExpansion(oldest);\n            }\n            this.spiderRecordSubagentExpansion(k.key);\n            try { localStorage.setItem(\"spider.subagents.expanded\", JSON.stringify([...state])); } catch {}\n          }\n          this.spiderPrepareTree(s.owner); cx.notify();"
+            "replacement": "const state = k.kind === \"subagent\" ? (this.expandedSubagents ??= new Set()) : folded;\n          state.has(k.key) ? state.delete(k.key) : state.add(k.key);\n          if (k.kind === \"subagent\") {\n            while (state.size > 200) {\n              const oldest = state.values().next().value;\n              state.delete(oldest); this.spiderRecordSubagentExpansion(oldest);\n            }\n            this.spiderRecordSubagentExpansion(k.key);\n            try { localStorage.setItem(\"spider.subagents.expanded\", JSON.stringify([...state])); } catch {}\n          }\n          this.spiderPrepareTree(s.owner);\n          if (this.spiderModel) this.spiderModel.inputKey = null;\n          this.spiderRequestRefresh(); cx.notify();"
           },
           {
             "id": "a-agents-model-hover",
@@ -3272,7 +3272,7 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "42af4941065a7bab5bb2da1de37c7176c3570e39bbd27d77dfd4843cefb43a72",
+        "agents/main.js": "fc1f6505675c043357967de6de3660d58e89eb370b9126aec38d8602fff263e4",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "1c27a92ca6378feb166a34adef317aaa2a4f4ee0e969d2fd3737cc3850ac84eb",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",

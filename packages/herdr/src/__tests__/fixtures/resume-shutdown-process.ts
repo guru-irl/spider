@@ -13,19 +13,27 @@ const root = process.argv[2];
 const file = join(root, 's1.jsonl');
 const terminal = { coreId: 'core-one', terminalId: 't1', address: 't1', socket: '/fixture/core.sock', sessionNamespace: 'fixture' } as TerminalIdentity;
 const owner = { sessionId: 's1', generation: 'g1', terminal, sessionFile: file, name: 'named session', cwd: root } as Owner;
-const context = { mode: 'tui', sessionManager: { getSessionFile: () => file, getSessionId: () => 's1', getSessionName: () => 'named session' } } as unknown as ExtensionContext;
+const mode = process.argv[3] === 'rpc' ? 'rpc' : 'tui';
+const context = { mode, sessionManager: { getSessionFile: () => file, getSessionId: () => 's1', getSessionName: () => 'named session' } } as unknown as ExtensionContext;
 const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
 const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;
 const identity = { pid: process.pid, startIdentity: processStartTime(process.pid)! };
+let active = true;
 registerHerdrSessions(pi, {
   registry: createTerminalRegistry(root), presence: createProcessPresence(root), leases: createSessionLeases(root),
   processes: async () => [], probe: async () => ({ kind: 'absent' }), processIdentity: identity,
   currentSession: () => ({ ...identity, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address }),
-  owner: () => owner, coreStartedAt: () => 1, launchEnvironment: { agentDirectory: join(root, 'agent'), extensionArguments: [] },
+  owner: () => active ? owner : null, coreStartedAt: () => 1, launchEnvironment: { agentDirectory: join(root, 'agent'), extensionArguments: [] },
 });
 const fire = (name: string, event: unknown) => handlers.get(name)!(event, context);
 await fire('session_start', { type: 'session_start', reason: 'startup' });
-// Pi prepends its signal handler after extensions start and disposes with reason 'quit'.
-for (const signal of ['SIGTERM', 'SIGHUP'] as const) process.prependListener(signal, () => { void fire('session_shutdown', { type: 'session_shutdown', reason: 'quit' }).then(() => process.exit(0)); });
-process.on('message', message => { if (message === 'quit' || message === 'reload') void fire('session_shutdown', { type: 'session_shutdown', reason: message }).then(() => process.exit(0)); });
+// Interactive pi prepends its signal handler; RPC appends it. Both dispose with reason 'quit'.
+for (const signal of ['SIGTERM', 'SIGHUP'] as const) {
+  const shutdown = () => { void fire('session_shutdown', { type: 'session_shutdown', reason: 'quit' }).then(() => process.exit(0)); };
+  if (mode === 'tui') process.prependListener(signal, shutdown); else process.on(signal, shutdown);
+}
+process.on('message', message => {
+  if (message === 'core-loss') active = false;
+  if (typeof message === 'string') void fire('session_shutdown', { type: 'session_shutdown', reason: message === 'core-loss' ? 'quit' : message }).then(() => process.exit(0));
+});
 process.send?.('ready');

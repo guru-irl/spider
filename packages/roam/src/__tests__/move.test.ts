@@ -556,7 +556,7 @@ it.each(["uncertain", "live"] as const)("source stop proof %s retains pending cl
   expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: 'pending', blockers: ['move-source-stop-pending'] } } });
   expect(sessionHome(f.global.db, SESSION)).toMatchObject({ machineId: BOX, epoch: 2 });
   expect(f.registryRemovals).toEqual([]);
-  expect(f.held).toBe(true);
+  expect(f.held).toBe(false);
 }, 5000);
 
 it("unproved terminal removal remains pending cleanup without rollback", async () => {
@@ -566,7 +566,7 @@ it("unproved terminal removal remains pending cleanup without rollback", async (
   expect(f.registryRemovals).toEqual([]);
   expect(f.states().at(-1)).toBe("source-stopped");
   expect((await f.registry.list()).map(row => row.owner.terminal.terminalId)).toEqual(["source-terminal"]);
-  expect(f.held).toBe(true);
+  expect(f.held).toBe(false);
 }, 5000);
 
 it("recovery completes a pending start from durable readiness without a second start", async () => {
@@ -780,17 +780,17 @@ it("reports dropped worktree keys without their private values", async () => {
   expect(JSON.stringify(result)).not.toContain("private-identity-sentinel");
 }, 5000);
 
-it("power release failure keeps completion and session reservation pending", async () => {
+it("power release failure preserves moved proof until journal finalization", async () => {
   const f = fixture(), acquire = f.ports.power;
   f.ports.power = async () => {
     const release = await acquire(); let fail = true;
     return async () => { if (fail) { fail = false; throw new Error("fixture release failure"); } await release(); };
   };
-  expect((await moveSession(f.request, f.ports)).code).toBe(3);
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
   expect(f.ports.journal.lookupOperation?.("move-a")?.state).toBe("pending");
   const other = { ...f.request, operation: { ...f.request.operation, id: "move-b" } };
   expect(await moveSession(other, f.ports)).toMatchObject({ code: 1, reason: "move-session-conflict" });
-  expect(f.held).toBe(true);
+  expect(f.held).toBe(false);
 }, 5000);
 
 it.each(["exit-hook", "notice"] as const)("power acquisition cleans up when the %s adapter fails", async failure => {
@@ -974,7 +974,7 @@ it("a box-origin first move returns locally through the same hub CAS", async () 
 }, 5000);
 
 
-it.each(["operation-done", "session-release"] as const)("a lost final %s write keeps recovery power and never replays effects", async failure => {
+it.each(["operation-done", "session-release"] as const)("a lost final %s write preserves moved proof without holding power or replaying effects", async failure => {
   const f = fixture(), record = f.ports.journal.record.bind(f.ports.journal); let failed = false;
   f.ports.journal.record = (id, action, value) => {
     if (!failed && ((failure === "operation-done" && id === "move-a" && action === "done") ||
@@ -983,14 +983,14 @@ it.each(["operation-done", "session-release"] as const)("a lost final %s write k
     }
     record(id, action, value);
   };
-  expect((await moveSession(f.request, f.ports)).code).toBe(3);
-  expect(f.held).toBe(true);
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
+  expect(f.held).toBe(false);
   const starts = f.events.filter(event => event === "start").length, cleanups = f.events.filter(event => event === "cleanup").length;
   expect(starts).toBe(1);
-  expect((await moveSession(f.request, f.ports)).code).toBe(3);
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "done" } } });
   expect(f.events.filter(event => event === "start")).toHaveLength(starts);
   expect(f.events.filter(event => event === "cleanup")).toHaveLength(cleanups);
-  expect(f.held).toBe(true);
+  expect(f.held).toBe(false);
 }, 5000);
 
 

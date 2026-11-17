@@ -23,7 +23,7 @@ async function fixture() {
   const handoff = await id.prepareHandoff("launch-a", file, "core-a");
   await writeLaunchHandoff(root, { version: 1, operationId: "launch-a", sessionId: "session-a", sessionFile: file, nonce: handoff.nonce, leaseToken: lease.token });
   const authority = createRunningIntentAuthority(fixture.db);
-  await authority.set({ sessionId: "session-a", epoch: 2, file, cwd: fixture.root, desired: "running", suspended: null, moveId: "move-a" }, "participant-a");
+  await authority.set({ sessionId: "session-a", epoch: 2, file, cwd: fixture.root, desired: "running", suspended: null, moveId: "move-a" }, "participant-a", { kind: "hub-return", machineId: MACHINE, moveId: "move-a" });
   const receipt: MoveNoStartReceipt = { moveId: "move-a", launchId: "launch-a", sessionId: "session-a", epoch: 2, coreId: "core-a", bootId: "boot-a", launchDigest: "fixture-digest",
     evidence: { receipt: "unknown", terminal: "unknown", proof: { kind: "prelaunch-error", operationId: "launch-a", beforeLaunch: true, errorCode: "missing-hc", hcPid: null } } };
   journal.begin({ id: "move-a", machineId: MACHINE, expectedEpoch: 1, kind: "move", args: {} });

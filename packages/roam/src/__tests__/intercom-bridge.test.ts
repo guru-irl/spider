@@ -49,6 +49,19 @@ it.each([
   expect(source.retained("inbound", message.id)).toBeNull();
 });
 
+it("maps an inbound validation refusal to the existing wire refusal", async () => {
+  const { source, inbox } = pair(), receiver = await create(B, A, inbox);
+  source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "rejected-frame", timestamp: 1, content: { text: "synthetic" } } });
+  const frame = source.pending({ kind: "outbound", peer: B, edgeEpoch: "edge-1", hopBudgetMs: 100 })[0];
+  const incoming = batch(A, B, 1); incoming.frames.push(frame);
+  const accept = vi.spyOn(inbox, "acceptInbound").mockReturnValue({ kind: "refused", reason: "invalid-message" });
+  try {
+    const result = await receiver.exchange(request(incoming));
+    expect(result.exchange.refusals).toEqual([{ identity: frame.identity, hopSequence: 1, reason: "store-rejected" }]);
+    expect(inbox.retained("inbound", frame.identity.id)).toBeNull();
+  } finally { accept.mockRestore(); }
+});
+
 it("proves a new edge live before starting its idle long-poll", async () => {
   const { source, inbox } = pair();
   vi.useFakeTimers();

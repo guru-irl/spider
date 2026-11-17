@@ -7,7 +7,7 @@ import { scratchRoot } from '../harness/environment.js';
 import { holdCleanupFixture } from '../controls/killed-run.js';
 import { failureStatus, storyOptions, suiteEvidence } from '../controls/story-report.js';
 // @ts-ignore Runtime-tested JavaScript runner boundary.
-import { parseOptions, discoverScenarios, selectScenarios, storyTimeoutMs } from '../../../../scripts/herdr-e2e.mjs';
+import { parseOptions, discoverScenarios, selectScenarios, storyTimeoutMs, markStoryWorkComplete, runStoryWork } from '../../../../scripts/herdr-e2e.mjs';
 
 // Foundation story modules may register themselves for standalone runs. The
 // central runner owns registration here; only that test-registration helper is
@@ -35,6 +35,7 @@ describe(`Herdr ${options.tier} stories`, () => {
     const reason = story.notExercised?.(process.env);
     if (reason) {
       record(story.id, 'not exercised', reason, Date.now(), undefined, undefined);
+      markStoryWorkComplete(root!, story.id);
       it.skip(`${story.id} ${story.title} [not exercised: ${reason}]`, () => {});
       continue;
     }
@@ -44,13 +45,15 @@ describe(`Herdr ${options.tier} stories`, () => {
     let failure: unknown, cleanup: unknown;
     let cleanupFailed = false;
     try {
-      suite = await createSuite(storyOptions(story, options));
-      const piReceipt = path.join(scratchRoot(), 'e2/_evidence/_pi', `${process.pid}.json`);
-      await suite.evidence('pi-resolution.json', JSON.parse(readFileSync(piReceipt, 'utf8')));
-      const binaries = path.join(suite.root, 'installed-binaries.json');
-      if (existsSync(binaries)) await suite.keepEvidence(binaries);
-      if (options.cleanupControl) await holdCleanupFixture(suite, root!, options.cleanupControl);
-      else await story.run(suite);
+      await runStoryWork(root!, story.id, async () => {
+        suite = await createSuite(storyOptions(story, options));
+        const piReceipt = path.join(scratchRoot(), 'e2/_evidence/_pi', `${process.pid}.json`);
+        await suite.evidence('pi-resolution.json', JSON.parse(readFileSync(piReceipt, 'utf8')));
+        const binaries = path.join(suite.root, 'installed-binaries.json');
+        if (existsSync(binaries)) await suite.keepEvidence(binaries);
+        if (options.cleanupControl) await holdCleanupFixture(suite, root!, options.cleanupControl);
+        else await story.run(suite);
+      });
     } catch (error) { failure = error; }
     try { cleanup = await suite?.close(); } catch (error) { cleanupFailed = true; failure = new Error(`cleanup failed: ${String(error)}; scenario: ${String(failure ?? 'returned')}`); cleanup = (error as { details?: unknown }).details; }
     if (failure) {

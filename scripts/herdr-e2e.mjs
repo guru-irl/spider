@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { randomBytes, createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, appendFileSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, appendFileSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -178,6 +178,35 @@ export function storyTimeoutMs(id) {
 export function storyRunBudgetMs(options) {
   return 60_000 + options.ids.reduce((total, id) => total + storyTimeoutMs(id), 0) + (options.harness ? 10 * 60_000 : 0);
 }
+const cleanupReserveMs = 10_000;
+export function runnerCleanupDeadline(overall, now = Date.now()) {
+  return Math.min(now, overall?.at ?? Infinity) + cleanupReserveMs;
+}
+export function markStoryWorkComplete(root, id) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(id)) throw new Error('invalid story id');
+  const directory = path.join(root, 'work-complete');
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const file = path.join(directory, `${id}.json`);
+  writeFileSync(`${file}.new`, JSON.stringify({ id, finishedAt: Date.now() }));
+  renameSync(`${file}.new`, file);
+}
+export async function runStoryWork(root, id, work) {
+  try { return await work(); } finally { markStoryWorkComplete(root, id); }
+}
+export function storyExecutionDeadline(overall, root, options) {
+  // Harness files can still be doing work after the selected stories finish.
+  if (!overall || options.harness || !options.ids.length) return overall;
+  return { ...overall, cleanupAt: overall.at + cleanupReserveMs, cleanupReady() {
+    return options.ids.every(id => {
+      if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(id)) return false;
+      try {
+        const file = path.join(root, 'work-complete', `${id}.json`);
+        const info = lstatSync(file), evidence = JSON.parse(readFileSync(file, 'utf8'));
+        return info.isFile() && info.mtimeMs <= overall.at && evidence.id === id && Number.isSafeInteger(evidence.finishedAt) && evidence.finishedAt <= overall.at;
+      } catch { return false; }
+    });
+  } };
+}
 export function command(executable, argv, cwd, env, log, quiet = false, supervisor, timeoutMs = 10 * 60_000, deadline) {
   return new Promise((resolve, reject) => {
     if (deadline && (!Number.isSafeInteger(deadline.at) || deadline.at - Date.now() > 2 ** 31 - 1)) { reject(new Error('invalid runner deadline')); return; }
@@ -190,12 +219,17 @@ export function command(executable, argv, cwd, env, log, quiet = false, supervis
     }
     let output = '';
     for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { output += data; appendFileSync(log, data); if (!quiet) process.stdout.write(data); });
-    let expired = false;
-    const timer = deadline && setTimeout(() => {
+    let expired = false, timer;
+    const expire = () => {
       expired = true;
       deadline.expire();
       try { if ((supervisor || deadline) && child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
       catch (error) { if (error.code !== 'ESRCH') reject(error); }
+    };
+    if (deadline) timer = setTimeout(() => {
+      if (deadline.cleanupReady?.() && deadline.cleanupAt > Date.now()) {
+        timer = setTimeout(expire, deadline.cleanupAt - Date.now());
+      } else expire();
     }, Math.max(0, deadline.at - Date.now()));
     const clear = () => { if (timer) clearTimeout(timer); };
     child.on('error', error => { clear(); reject(error); });
@@ -307,7 +341,7 @@ export async function main(argv = process.argv.slice(2)) {
     env.SPIDER_HERDR_E2E_PACKED_ROOT = packedRoot;
     env.SPIDER_HERDR_E2E_TIER = options.tier;
     env.SPIDER_HERDR_E2E_STORIES = options.ids.join(',');
-    const run = await work(process.execPath, [path.join(checkout, 'node_modules/vitest/vitest.mjs'), 'run', '--config', 'packages/herdr/e2e/vitest.config.ts', '--maxWorkers', String(storyWorkers(options))], checkout, storyWorkerEnvironment(env, process.env, options.tier), path.join(root, 'vitest.log'), false, supervisor, storyRunBudgetMs(options));
+    const run = await command(process.execPath, [path.join(checkout, 'node_modules/vitest/vitest.mjs'), 'run', '--config', 'packages/herdr/e2e/vitest.config.ts', '--maxWorkers', String(storyWorkers(options))], checkout, storyWorkerEnvironment(env, process.env, options.tier), path.join(root, 'vitest.log'), false, supervisor, storyRunBudgetMs(options), storyExecutionDeadline(overall, root, options));
     const selectionPath = path.join(root, 'selection.json');
     if (existsSync(selectionPath)) selected = JSON.parse(readFileSync(selectionPath, 'utf8'));
     runSucceeded = run.code === 0;
@@ -318,7 +352,7 @@ export async function main(argv = process.argv.slice(2)) {
   } finally {
     try {
       // Leave half the existing twenty-second reserve for archive and upload.
-      const at = Math.min(Date.now(), overall?.at ?? Infinity) + 10_000;
+      const at = runnerCleanupDeadline(overall);
       cleanupFailed = !await finishCleanup(entry, ledger.path, checkout, env, root, { at, expire() {} });
     } catch (error) { cleanupFailed = true; writeFileSync(path.join(root, 'cleanup-error.txt'), String(error.stack ?? error)); }
     watchdog.release();

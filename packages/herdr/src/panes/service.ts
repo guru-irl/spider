@@ -52,9 +52,12 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   let loading: InventoryLoad | null = null;
   let refreshing: Promise<void> | null = null;
   let activeRequests = 0;
+  let queuedRequests = 0;
   let initialized = false;
   let refreshRequested = false;
-  let leaseTick = -Infinity;
+  const leaseTicks = new Map<string, number>();
+  const renewing = new Map<string, Promise<void>>();
+  let renewalSweep: Promise<void> | null = null;
   const abort = new AbortController();
   const readInventory = createPaneServiceInventory({ root: ports.root, readPage: ports.inventory, clock: ports.clock });
   const lifecycle: PaneLifecyclePorts = { store: ports.store, hc: ports.hc, app: ports.app, validateTarget: ports.validateTarget, closeSession: ports.closeSession };
@@ -148,7 +151,7 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     if (removed.length || state.presentations.some(p => p.visibility === 'ended')) await ports.store.update(current => prunePaneHistory(current, removed));
   }
   function kickRefresh() {
-    if (!initialized || stopped || activeRequests || refreshing || !refreshRequested) return;
+    if (!initialized || stopped || activeRequests || queuedRequests || refreshing || !refreshRequested) return;
     refreshRequested = false;
     void reconcile().catch(() => {});
   }
@@ -157,38 +160,52 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
     refreshRequested = true;
     kickRefresh();
   }
+  function serialize<T>(work: () => Promise<T>): Promise<T> {
+    const result = queue.then(work);
+    queue = result.then(() => {}, () => {});
+    return result;
+  }
+  function renewLease(machine: MachineChoice): Promise<void> {
+    const running = renewing.get(machine.key);
+    if (running) return running;
+    if (stopped || machine.state !== 'connected' || ports.clock() - (leaseTicks.get(machine.key) ?? -Infinity) < 5000) return Promise.resolve();
+    leaseTicks.set(machine.key, ports.clock());
+    const work = bounded(signal => ports.renewLeases(machine, signal)).catch(() => {}).finally(() => { renewing.delete(machine.key); });
+    renewing.set(machine.key, work);
+    return work;
+  }
   function reconcile(): Promise<void> {
     if (refreshing) return refreshing;
     initialized = true;
     refreshing = withHcOperation(async () => {
-      await live(); await pruneHistory(false);
+      await live(); await serialize(() => pruneHistory(false));
       const inventory = loadInventory(), entries = await inventory.ready;
-      const renew = ports.clock() - leaseTick >= 5000;
-      if (renew) leaseTick = ports.clock();
       await Promise.all([inventory.done, ...entries.map(async ({ machine, refreshed }) => {
         await refreshed;
-        if (renew && machine.state === 'connected') await bounded(signal => ports.renewLeases(machine, signal)).catch(() => {});
+        await renewLease(machine);
       })]);
-      await ports.reconcileInventory?.(privateInventory());
-      try { facts = await ports.targetFacts((await ports.store.read()).presentations.filter(p => p.visibility === 'visible'), abort.signal); } catch { /* Keep the last verified display facts. */ }
-      const before = await ports.store.read();
-      for (const p of before.presentations) {
-        if (p.visibility === 'closing' || p.visibility === 'ended' || p.target.createdMs > 0 && (p.target.kind === 'terminal' || p.target.generation !== null)) continue;
-        try {
-          const target = await bounded(() => ports.validateTarget(p.target, 'open'));
-          if (target.coreId !== p.target.coreId || target.terminalId !== p.target.terminalId || target.address !== p.target.address || target.sessionId !== p.target.sessionId || target.createdMs <= 0 || target.kind !== p.target.kind || target.kind !== 'terminal' && target.generation === null || p.target.generation !== null && target.generation !== p.target.generation || p.target.homeEpoch !== null && target.homeEpoch !== p.target.homeEpoch || !Object.entries(p.target.identityLabels).every(([key, value]) => target.identityLabels[key] === value)) continue;
-          await ports.store.update(state => ({ ...state, presentations: state.presentations.map(current => current.id === p.id && current.revision === p.revision ? { ...current, target, revision: current.revision + 1 } : current) }));
-        } catch { /* Legacy facts remain unverified until their exact source confirms them. */ }
-      }
-      const state = await ports.store.read();
-      for (const p of state.presentations) {
-        if (p.visibility === 'closing') await reconcilePendingClose(p.id, lifecycle);
-        else if (p.mode === 'proxy' && p.visibility === 'visible' && p.proxy) {
-          const terminal = await ports.hc.get(p.proxy).catch(() => null);
-          await reconcilePresentationExit(p, terminal, lifecycle);
+      await serialize(async () => {
+        await ports.reconcileInventory?.(privateInventory());
+        try { facts = await ports.targetFacts((await ports.store.read()).presentations.filter(p => p.visibility === 'visible'), abort.signal); } catch { /* Keep the last verified display facts. */ }
+        const before = await ports.store.read();
+        for (const p of before.presentations) {
+          if (p.visibility === 'closing' || p.visibility === 'ended' || p.target.createdMs > 0 && (p.target.kind === 'terminal' || p.target.generation !== null)) continue;
+          try {
+            const target = await bounded(() => ports.validateTarget(p.target, 'open'));
+            if (target.coreId !== p.target.coreId || target.terminalId !== p.target.terminalId || target.address !== p.target.address || target.sessionId !== p.target.sessionId || target.createdMs <= 0 || target.kind !== p.target.kind || target.kind !== 'terminal' && target.generation === null || p.target.generation !== null && target.generation !== p.target.generation || p.target.homeEpoch !== null && target.homeEpoch !== p.target.homeEpoch || !Object.entries(p.target.identityLabels).every(([key, value]) => target.identityLabels[key] === value)) continue;
+            await ports.store.update(state => ({ ...state, presentations: state.presentations.map(current => current.id === p.id && current.revision === p.revision ? { ...current, target, revision: current.revision + 1 } : current) }));
+          } catch { /* Legacy facts remain unverified until their exact source confirms them. */ }
         }
-      }
-      await pruneHistory(true);
+        const state = await ports.store.read();
+        for (const p of state.presentations) {
+          if (p.visibility === 'closing') await reconcilePendingClose(p.id, lifecycle);
+          else if (p.mode === 'proxy' && p.visibility === 'visible' && p.proxy) {
+            const terminal = await ports.hc.get(p.proxy).catch(() => null);
+            await reconcilePresentationExit(p, terminal, lifecycle);
+          }
+        }
+        await pruneHistory(true);
+      });
     }).finally(() => { refreshing = null; kickRefresh(); });
     return refreshing;
   }
@@ -330,15 +347,21 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
   const cancelTimer = ports.schedule(() => {
     if (initialized && !stopped && !refreshing) requestRefresh();
   }, 5000);
+  const cancelLeaseTimer = ports.schedule(() => {
+    if (!initialized || stopped || renewalSweep) return;
+    renewalSweep = withHcOperation(async () => {
+      const current = await bounded(() => ports.machines());
+      await Promise.all(current.map(renewLease));
+    }).catch(() => {}).finally(() => { renewalSweep = null; });
+  }, 5000);
   const applyOperation = async (request: Exclude<PaneServiceRequest, { op: 'ready-outcome' }>, deadline?: LookupDeadline) => {
     initialized = true; activeRequests++;
     try { return await withHcOperation(() => apply(request, deadline)); }
     finally { activeRequests--; kickRefresh(); }
   };
   function enqueue(request: Exclude<PaneServiceRequest, { op: 'ready-outcome' }>, deadline?: LookupDeadline): Promise<PaneServiceReply> {
-    const reply = queue.then(() => applyOperation(request, deadline));
-    queue = reply.then(() => {}, () => {});
-    return reply;
+    queuedRequests++;
+    return serialize(() => applyOperation(request, deadline)).finally(() => { queuedRequests--; kickRefresh(); });
   }
   function prepareOwner(request: Extract<PaneServiceRequest, { sessionId: unknown }>, arrival: number): Promise<PaneServiceReply> {
     if (ownerLookupReady(request, privateInventory())) return enqueue(request);
@@ -386,6 +409,6 @@ export function createPaneService(ports: PaneServicePorts): PaneService {
       void reply.then(() => { entry.settledAt = ports.clock(); }, () => { entry.settledAt = ports.clock(); });
       return response(reply);
     }, reconcile,
-    async stop() { if (stopped) return; stopped = true; abort.abort(); unsubscribe(); cancelTimer(); await queue; await refreshing?.catch(() => {}); await loading?.done.catch(() => {}); },
+    async stop() { if (stopped) return; stopped = true; abort.abort(); unsubscribe(); cancelTimer(); cancelLeaseTimer(); await queue; await refreshing?.catch(() => {}); await loading?.done.catch(() => {}); await renewalSweep; await Promise.all(renewing.values()); },
   };
 }

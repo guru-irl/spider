@@ -19,7 +19,7 @@ async function fixture() {
   const store = createPanePlacementStore(join(root, 'roam', 'placement'));
   const presentation = parsePanePresentation({ id: 'p1', revision: 1, mode: 'proxy', role: 'agent', target: { coreId: 'core-remote', terminalId: 't7', address: 'core-remote/t7', createdMs: 17, identityLabels: { 'spider.session': 'session-1' }, alias: 'box-1.invalid', machineId: null, kind: 'session', sessionId: 'session-1', generation: 'gen-1', homeEpoch: 2, runId: null, consoleId: null, name: 'Example', cwd: '/home/example/work' }, proxy: 'core-local/t8', slot: null, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null });
   await store.update(s => ({ ...s, presentations: [presentation] }));
-  let tick: (() => void) | null = null;
+  const ticks = new Set<() => void>();
   const hc = { identity: vi.fn(async () => ({ coreId: 'core-local', socket: '/unused', sessionNamespace: 'test' })), get: vi.fn(async (address: string) => ({ address, state: 'live' })), kill: vi.fn() } as unknown as HcClient;
   const ports: PaneServicePorts = {
     root: join(root, 'herdr', 'panes'), store, hc, app: null,
@@ -29,10 +29,10 @@ async function fixture() {
     inventory: vi.fn(async () => ({ version: 1 as const, rows: [], next: null, complete: true })),
     targetFacts: vi.fn(async () => ({})), renewLeases: vi.fn(async () => {}),
     appCapabilities: vi.fn(async () => ({ backgroundTabCreation: false, explicitTargetSwap: false, noFocusConversion: false, commandDigest: 'a'.repeat(64) })),
-    subscribe: vi.fn(() => () => {}), schedule: cb => { tick = cb; return () => { tick = null; }; },
+    subscribe: vi.fn(() => () => {}), schedule: cb => { ticks.add(cb); return () => { ticks.delete(cb); }; },
     dispatch: vi.fn(async () => ({ status: 'complete' as const, reason: 'applied', presentation })),
   };
-  return { ports, hc, presentation, tick: () => tick?.() };
+  return { ports, hc, presentation, tick: () => { for (const tick of ticks) tick(); } };
 }
 test('subscription readiness does not start inventory before the first operation', async () => {
   const f = await fixture();
@@ -81,6 +81,51 @@ test('scheduled reconciliation waits for placement acknowledgement before regist
     await service.stop();
     expect(overlapping).toBe(false);
     expect((await f.ports.store.read()).presentations[0]).toMatchObject({ slot: { pane: 'proxy-pane' }, target: { name: 'Registered agent' } });
+  } finally { release(); await service.stop(); }
+});
+test.each(['move', 'open'] as const)('an earlier inventory refresh cannot rewrite a presentation during %s', async op => {
+  const f = await fixture();
+  let releaseInventory!: () => void, inventoryEntered!: () => void, releasePlacement!: () => void, placementEntered!: () => void;
+  const inventoryStarted = new Promise<void>(resolve => { inventoryEntered = resolve; });
+  const inventoryGate = new Promise<void>(resolve => { releaseInventory = resolve; });
+  const placementStarted = new Promise<void>(resolve => { placementEntered = resolve; });
+  const placementGate = new Promise<void>(resolve => { releasePlacement = resolve; });
+  f.ports.inventory = async () => { inventoryEntered(); await inventoryGate; return { version: 1, rows: [], next: null, complete: true }; };
+  f.ports.reconcileInventory = async () => { await f.ports.store.update(state => ({ ...state, presentations: state.presentations.map(p => ({ ...p, revision: p.revision + 1, target: { ...p.target, name: 'Registered agent' } })) })); };
+  f.ports.dispatch = async () => {
+    placementEntered(); await placementGate;
+    return { status: 'complete', reason: 'placed', presentation: (await f.ports.store.read()).presentations[0] };
+  };
+  const service = createPaneService(f.ports), refreshing = service.reconcile();
+  try {
+    await inventoryStarted;
+    const request = service.request(op === 'open' ? identityOpen : { version: 1, op, operationId: 'earlier-refresh', presentationId: 'p1', expectedRevision: 1, slot: { space: 's1' as never, tab: 'tb1' as never, pane: null } });
+    await placementStarted; releaseInventory();
+    await new Promise<void>(resolve => setTimeout(resolve, 50));
+    expect((await f.ports.store.read()).presentations[0]).toMatchObject({ revision: 1, target: { name: 'Example' } });
+    releasePlacement();
+    expect(await request).toMatchObject({ outcome: { status: 'complete', presentation: { revision: 1 } } });
+    await refreshing;
+    expect((await f.ports.store.read()).presentations[0]).toMatchObject({ revision: 2, target: { name: 'Registered agent' } });
+  } finally { releaseInventory(); releasePlacement(); await refreshing; await service.stop(); }
+});
+test.each([false, true])('lease renewal continues while a request outlasts the display lease, initialized=%s', async initialized => {
+  const f = await fixture(); let now = 0, release!: () => void, entered!: () => void;
+  f.ports.clock = () => now;
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  f.ports.dispatch = async () => { entered(); await gate; return { status: 'complete', reason: 'placed', presentation: f.presentation }; };
+  const service = createPaneService(f.ports);
+  try {
+    if (initialized) await service.reconcile();
+    vi.mocked(f.ports.renewLeases).mockClear();
+    const request = service.request(identityOpen); await started;
+    for (now = 5000; now <= 25000; now += 5000) {
+      f.tick();
+      await vi.waitFor(() => expect(f.ports.renewLeases).toHaveBeenCalledTimes(now / 5000));
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    release(); await request;
   } finally { release(); await service.stop(); }
 });
 test('absent core makes zero hc calls', async () => {
@@ -569,10 +614,10 @@ test('a cold owner lookup cannot launch after its deadline while another mutatio
     const first = service.request({ version: 1, op: 'move', operationId: 'blocking-move', presentationId: 'p1', expectedRevision: 1, slot: { space: 's1' as never, tab: 'tb1' as never, pane: null } });
     await entered;
     const lookup = service.request(coldAuxiliary);
-    await vi.advanceTimersByTimeAsync(0); await service.reconcile();
+    await vi.advanceTimersByTimeAsync(0); const refreshing = service.reconcile();
     await vi.advanceTimersByTimeAsync(3500);
     expect(await Promise.race([lookup, Promise.resolve('blocked')])).toMatchObject({ outcome: { status: 'pending', reason: 'inventory-unavailable' } });
-    release?.(); vi.useRealTimers(); await first; await service.stop();
+    release?.(); vi.useRealTimers(); await first; await refreshing; await service.stop();
     expect(launch).not.toHaveBeenCalled();
   } finally { release?.(); vi.useRealTimers(); await service.stop(); }
 });

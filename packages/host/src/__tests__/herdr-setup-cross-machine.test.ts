@@ -108,6 +108,15 @@ test('doctor names the insecure machine-picker config and chmod repair', async (
   expect((await stat(path)).mode & 0o777).toBe(0o644);
 });
 
+test('cross-machine helper digests affect the setup fingerprint', async () => {
+  const f = await releaseFixture('0.1.16'), path = join(f.root, 'packages/herdr/assets/look/cross-machine-patches.json');
+  const first = await f.parts.preflight(f.request), manifest = JSON.parse(await readFile(path, 'utf8'));
+  manifest.checks['0.1.16'].helperHashes['pane/actions.js'] = '0'.repeat(64);
+  await writeFile(path, JSON.stringify(manifest));
+  const changed = await f.parts.preflight(f.request);
+  expect(changed.fingerprint).not.toBe(first.fingerprint);
+});
+
 test.each(['pane/actions.js', 'pane/machine.js', 'machines/actions.js', 'machines/picker.js'])('B refuses altered helper %s before staging', async helper => {
   const f = await releaseFixture('0.1.16'), path = join(f.root, 'packages/herdr/assets', helper);
   await writeFile(path, Buffer.concat([await readFile(path), Buffer.from('\n// altered helper\n')]));

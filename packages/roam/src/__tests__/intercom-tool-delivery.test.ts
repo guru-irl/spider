@@ -1,8 +1,9 @@
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
-import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type AgentSession, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Socket } from "node:net";
+import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type AgentSession, type ExtensionContext, type ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { authorizeTestBridge, startTestBroker, stopTestBroker, testBrokerEnv, testTmpDir } from "../../../intercom/src/test-support.js";
 import { IntercomFederationClient } from "../../../intercom/src/broker/client.js";
 import { getAgentDirPath } from "../../../intercom/src/broker/paths.js";
@@ -46,6 +47,7 @@ afterEach(async () => {
     await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
     session.dispose();
   }
+  vi.restoreAllMocks();
   receipts.length = 0;
   frames.length = 0;
 });
@@ -55,8 +57,11 @@ afterAll(async () => {
   if (root) rmSync(root, { recursive: true, force: true });
 });
 
-async function recipient() {
+async function recipient({ fresh = false, inboundTrigger = "never" }: { fresh?: boolean; inboundTrigger?: "never" | "replies" | "always" } = {}) {
   const cwd = mkdtempSync(join(root, "session-")), agentDir = getAgentDirPath();
+  writeFileSync(getConfigPath(), JSON.stringify({ inboundTrigger, confirmSend: false }));
+  const sessionManager = SessionManager.create(cwd, join(cwd, "sessions"));
+  if (!fresh) sessionManager.appendMessage({ role: "user", content: "synthetic prior conversation", timestamp: 0 });
   const settingsManager = SettingsManager.inMemory({ packages: [], cacheWarming: "off" });
   let endpoint!: SessionEndpoint, context!: ExtensionContext;
   const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
@@ -71,21 +76,37 @@ async function recipient() {
     }],
   });
   await loader.reload();
-  const { session, extensionsResult } = await createAgentSession({ cwd, agentDir, settingsManager, sessionManager: SessionManager.create(cwd, join(cwd, "sessions")), resourceLoader: loader, noTools: "builtin" });
+  const { session, extensionsResult } = await createAgentSession({ cwd, agentDir, settingsManager, sessionManager, resourceLoader: loader, noTools: "builtin" });
   sessions.push(session);
   expect(extensionsResult.errors).toEqual([]);
   expect(extensionsResult.extensions).toHaveLength(1);
   await session.bindExtensions({ mode: "rpc" });
+  const toolContext: ExtensionToolContext = {
+    ...context,
+    tools: [],
+    executeTool: async () => { throw new Error("Nested tools are not available in this fixture"); },
+  };
   await vi.waitFor(async () => {
-    const result = await session.getToolDefinition("intercom")!.execute("status", { action: "status" }, undefined, undefined, context);
+    const result = await session.getToolDefinition("intercom")!.execute("status", { action: "status" }, undefined, undefined, toolContext);
     expect(result.details).toMatchObject({ connected: true });
   });
-  const execute = (params: Record<string, unknown>) => session.getToolDefinition("intercom")!.execute("tool-call", params, undefined, undefined, context);
+  const execute = (params: Record<string, unknown>) => session.getToolDefinition("intercom")!.execute("tool-call", params, undefined, undefined, toolContext);
   return { session, endpoint, execute };
 }
 
+function captureReceiptFrames() {
+  // Call through to the real socket. These are framed bytes sent to the broker.
+  const writes = vi.spyOn(Socket.prototype, "write");
+  return () => writes.mock.calls.flatMap(([chunk]) => {
+    if (!Buffer.isBuffer(chunk) || chunk.length < 4 || chunk.readUInt32BE(0) !== chunk.length - 4) return [];
+    const frame = JSON.parse(chunk.subarray(4).toString("utf8")) as { type: string; receipt?: MessageReceipt };
+    return frame.type === "message_receipt" && frame.receipt ? [frame.receipt] : [];
+  });
+}
+
 it("returns physical consumption evidence for an idle recipient without a turn", async () => {
-  const { session, endpoint } = await recipient();
+  const sent = captureReceiptFrames();
+  const { session, endpoint, execute } = await recipient();
   let turns = 0;
   session.subscribe(event => { if (event.type === "agent_start") turns++; });
   const result = await bridge.deliver(remote, endpoint, { id: "idle-message", timestamp: 1, content: { text: "synthetic message" } });
@@ -99,13 +120,68 @@ it("returns physical consumption evidence for an idle recipient without a turn",
   expect(receipts.find(value => value.receipt.status === "injected")).toMatchObject({ from: endpoint.address, receipt: { messageId: "idle-message", evidence: { kind: "entry", entryId: entries[0]!.id, sessionId: endpoint.address.sessionId, activationEpoch: endpoint.activationEpoch } } });
   expect(turns).toBe(0);
   expect(session.isIdle).toBe(true);
-  const consumed = receipts.filter(value => value.receipt.status === "injected");
+  const entryAcks = () => session.sessionManager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "intercom_receipt_ack" &&
+    (entry.data as { messageId?: string; status?: string }).messageId === "idle-message" && (entry.data as { status?: string }).status === "injected");
+  await vi.waitFor(() => expect(entryAcks()).toHaveLength(1));
   await session.extensionRunner.emitMessageEnd({ type: "message_end", message: { role: "custom", customType: "fixture", content: "synthetic", display: false, timestamp: 1 } });
-  await bridge.inspectBlockers(endpoint.address);
-  expect(receipts.filter(value => value.receipt.status === "injected")).toEqual(consumed);
+  // Status lists sessions on the recipient's own socket, after any receipt sends.
+  await execute({ action: "status" });
+  expect(entryAcks()).toHaveLength(1);
+  expect(sent().filter(receipt => receipt.messageId === "idle-message" && receipt.status === "injected")).toHaveLength(1);
   expect(physical()).toHaveLength(1);
 });
 
+
+it.each(["never", "replies"] as const)("waits for the session file before reporting consumption with %s triggering", async inboundTrigger => {
+  const { session, endpoint, execute } = await recipient({ fresh: true, inboundTrigger });
+  const file = session.sessionManager.getSessionFile()!;
+  expect(existsSync(file)).toBe(false);
+  await bridge.deliver(remote, endpoint, { id: "unflushed-message", timestamp: 1, content: { text: "synthetic message" } });
+  await vi.waitFor(() => expect(session.sessionManager.getEntries().some(entry => entry.type === "custom_message" && entry.customType === "intercom_message")).toBe(true));
+  await execute({ action: "status" });
+  expect(existsSync(file)).toBe(false);
+  expect(receipts.filter(value => value.receipt.status === "injected")).toHaveLength(0);
+  await session.extensionRunner.emitMessageEnd({ type: "message_end", message: { role: "custom", customType: "fixture", content: "synthetic", display: false, timestamp: 1 } });
+  await session.extensionRunner.emit({ type: "agent_settled", aborted: false });
+  await execute({ action: "status" });
+  expect(receipts.filter(value => value.receipt.status === "injected")).toHaveLength(0);
+  const message = { role: "user" as const, content: "synthetic first prompt", timestamp: 2 };
+  session.sessionManager.appendMessage(message);
+  expect(existsSync(file)).toBe(true);
+  await session.extensionRunner.emitMessageEnd({ type: "message_end", message });
+  await vi.waitFor(() => expect(receipts.filter(value => value.receipt.status === "injected")).toHaveLength(1));
+  const evidence = receipts.find(value => value.receipt.status === "injected")!.receipt.evidence;
+  expect(evidence).toMatchObject({ kind: "entry", sessionId: endpoint.address.sessionId, activationEpoch: endpoint.activationEpoch });
+  if (evidence?.kind !== "entry") throw new Error("Missing physical entry evidence");
+  expect(SessionManager.open(file).getEntry(evidence.entryId)).toMatchObject({ type: "custom_message", customType: "intercom_message", details: { message: { id: "unflushed-message" } } });
+});
+
+it("does not consume an unflushed entry on shutdown", async () => {
+  const { session, endpoint, execute } = await recipient({ fresh: true });
+  await bridge.deliver(remote, endpoint, { id: "shutdown-message", timestamp: 1, content: { text: "synthetic message" } });
+  await vi.waitFor(() => expect(session.sessionManager.getEntries().some(entry => entry.type === "custom_message")).toBe(true));
+  await execute({ action: "status" });
+  await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+  await vi.waitFor(() => expect(receipts.some(value => value.receipt.messageId === "shutdown-message" && value.receipt.status === "unknown")).toBe(true));
+  expect(receipts.some(value => value.receipt.status === "injected")).toBe(false);
+  expect(existsSync(session.sessionManager.getSessionFile()!)).toBe(false);
+});
+
+it("reports consumption once when a lifecycle scan precedes its receipt acknowledgement", async () => {
+  const sent = captureReceiptFrames();
+  const { session, endpoint, execute } = await recipient();
+  session.subscribe(event => {
+    if (event.type === "message_end" && event.message.role === "custom" && event.message.customType === "intercom_message") {
+      queueMicrotask(() => { void session.extensionRunner.emitMessageEnd({ type: "message_end", message: event.message }); });
+    }
+  });
+  await bridge.deliver(remote, endpoint, { id: "once-message", timestamp: 1, content: { text: "synthetic message" } });
+  await vi.waitFor(() => expect(receipts.some(value => value.receipt.messageId === "once-message" && value.receipt.status === "injected")).toBe(true));
+  await execute({ action: "status" });
+  expect(sent().filter(receipt => receipt.messageId === "once-message" && receipt.status === "injected")).toHaveLength(1);
+  expect(session.sessionManager.getEntries().filter(entry => entry.type === "custom" && entry.customType === "intercom_receipt_ack" &&
+    (entry.data as { messageId?: string; status?: string }).messageId === "once-message" && (entry.data as { status?: string }).status === "injected")).toHaveLength(1);
+});
 
 it.each(["", " \t\n"])("treats blank optional IDs as absent in the real send tool: %j", async blank => {
   const { execute } = await recipient();

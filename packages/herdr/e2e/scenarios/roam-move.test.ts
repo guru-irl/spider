@@ -14,6 +14,7 @@ import type { StoryPresentation } from './roam-recovery.test.js';
 import { enableMemoryCapture, seedSession } from '@spider/db-core/roam/seed';
 import { parseConfig } from '@spider/roam/config';
 import { inspectSession } from '@spider/roam/session-file';
+import { createIntentStore } from '@spider/roam/intent';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
 import { readObserved, writeScript, type InteractiveDriver } from '../harness/pi.js';
@@ -720,6 +721,19 @@ async function exclusion(suite: Suite): Promise<void> {
     await writeFile(join(box.root, 'roam', 'fail-launch'), 'refuse before pi starts\n');
     const failed = await f.cli(hub, ['move', f.sessionId, box.alias]);
     expect(failed.code).toBe(3);
+    const startDb = openDb(join(hub.root, 'roam', 'journal.db')), boxJournal = openDb(join(box.root, 'roam', 'journal.db'));
+    let start: Record<string, unknown> | null;
+    try {
+      const row = startDb.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-action-complete' AND json_extract(result_json,'$.action')='start' ORDER BY seq DESC LIMIT 1")
+        .get(failed.operationId) as { result_json: string } | undefined;
+      start = row ? JSON.parse(row.result_json).value : null;
+      const observation = { story: suite.story, phase: 'failed-launch-proof', start, view: await createIntentStore(box.root).get(f.sessionId),
+        lock: await inspectIdLock(join(box.root, 'herdr'), f.sessionId),
+        freezes: boxJournal.prepare('SELECT move_id,epoch,state FROM freeze_journal WHERE session_id=?').all(f.sessionId) };
+      console.info(JSON.stringify(observation));
+      await suite.evidence('R08-failed-launch.json', observation);
+    } finally { boxJournal.close(); startDb.close(); }
+    expect(start).toMatchObject({ code: 3, reason: 'readiness-pending' });
     phase('rollback');
     const rolledBack = await waitFor('proved launch failure permits rollback', () => f.cli(hub, ['roam', 'recover', failed.operationId]),
       result => result.reason === 'rolled-back', deadline(60_000), { reconcileMs: 500 });

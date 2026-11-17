@@ -219,7 +219,7 @@ if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id &&
     const receipt = readMoveLaunchAbsenceReceipt(journal, args[2]), complete = receipt && observed.owner.kind === 'absent' && !observed.readiness;
     const code = complete ? 0 : 3;
     process.exitCode = code;
-    process.stdout.write(JSON.stringify({ code, reason: complete ? receipt.kind : 'launch-outcome-pending', receipt, observed }) + '\\n');
+    process.stdout.write(JSON.stringify({ code, reason: complete ? receipt.kind : 'launch-outcome-pending', receipt, observed, native: existsSync(nativeFile) ? JSON.parse(readFileSync(nativeFile, 'utf8')) : null }) + '\\n');
   } finally { await runtime?.close(); core.close(); }
 } else if (args[0] === 'fixture-baseline') {
   const core = openLocalCore(root), journal = openFreezeJournal(join(root, 'roam', 'journal.db'));
@@ -790,7 +790,12 @@ async function exclusion(suite: Suite): Promise<void> {
     } else expect(start).toMatchObject({ code: 3, reason: 'readiness-pending' });
     const rollbackDeadline = deadline(60_000);
     phase('await-exact-launch-exit');
-    const launchProof = await waitFor('exact launch exited without adopting ownership', () => f.cli(box, ['fixture-observe', f.sessionId, failed.operationId]),
+    let nativeShown = false;
+    const launchProof = await waitFor('exact launch exited without adopting ownership', async () => {
+      const value = await f.cli(box, ['fixture-observe', f.sessionId, failed.operationId]);
+      if (!nativeShown && value.data?.native) { nativeShown = true; phase('native-launch-evidence', { native: value.data.native }); throw new Error('native-evidence-captured'); }
+      return value;
+    },
       result => result.code !== 3, rollbackDeadline, { reconcileMs: 500 });
     expect(launchProof).toMatchObject({ code: 0, reason: 'exited-without-adoption', receipt: { kind: 'exited-without-adoption', launchId: expectedLaunch, epoch: 4,
       evidence: { proof: { kind: 'terminal-exited-without-adoption', operationId: expectedLaunch, terminalExited: true, lockNeverAdopted: true } } },

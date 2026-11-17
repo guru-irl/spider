@@ -501,7 +501,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       const accepted = ports.store.acceptInbound({ peer, frame, hop: { edgeEpoch: edge.config.edgeEpoch, sequence: frame.hopSequence },
         ...(next ? { forward: { peer: next.config.peer.machineId, edgeEpoch: next.config.edgeEpoch, firstHomePresence: firstHomePresence(frame.endpoint, next) } } : {}),
         ...(resume ? { resume: { cursor: resume, owner: ports.authoritativeHome(frame.identity.to) } } : {}) });
-      if (accepted.kind === "refused") { refusals.push({ identity: frame.identity, hopSequence: frame.hopSequence, reason: accepted.reason }); continue; }
+      if (accepted.kind === "refused") { refusals.push({ identity: frame.identity, hopSequence: frame.hopSequence, reason: accepted.reason === "invalid-message" ? "store-rejected" : accepted.reason }); continue; }
       const retained = ports.store.retained("inbound", frame.identity.id);
       if (!retained) { acks.push(ack); continue; }
       if (next) {

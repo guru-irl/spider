@@ -8,7 +8,7 @@ import { isDeepStrictEqual } from "node:util";
 import { join } from "node:path";
 import { openDbReadOnly, type Db } from "@spider/db-core";
 import { readSessionState } from "@spider/db-core/roam/state";
-import type { Probe, HubOperationReadiness, StoreKey } from "@spider/db-core/roam/types";
+import type { Probe, HubOperationReadiness, JsonObject, StoreKey } from "@spider/db-core/roam/types";
 import type { AgentPorts, Clock, Diagnostic, HostIntent, Outcome } from "./contracts";
 import { createIntentStore } from "./intent";
 import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntentAuthority } from "./session-control";
@@ -103,8 +103,10 @@ export function createParticipantSupervisor(input: {
     async restart(intent, previous) {
       if (previous.kind === "idle") throw new Error("participant-restart-unproved");
       const { id, entries } = restartHistory(intent);
-      if (!entries.some(row => isDeepStrictEqual(row.result.previous, previous))) {
-        input.agent.journal.record(id, "restart", { sequence: entries.length + 1, previous });
+      const proof: JsonObject = previous.kind === "launching" ? { ...previous } : { kind: previous.kind, stableSince: previous.stableSince,
+        identity: { bootId: previous.identity.bootId, pid: previous.identity.pid, startTime: previous.identity.startTime } };
+      if (!entries.some(row => isDeepStrictEqual(row.result.previous, proof))) {
+        input.agent.journal.record(id, "restart", { sequence: entries.length + 1, previous: proof });
       }
     },
     async stop(id) {

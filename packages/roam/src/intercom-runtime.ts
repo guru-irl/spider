@@ -140,7 +140,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
     try { return (options.generationKnown ?? ((id, generation) => hasIntercomGeneration(options.globalDb, id, generation)))(session.address.sessionId, session.activationEpoch); }
     catch { return false; }
   };
-  const notifyReady = () => { for (const { info, transition } of locals.values()) void delivery?.ready(info.address, transition).catch(() => {}); };
+  const notifyReady = () => { for (const { info, transition } of locals.values()) if (sender(info.address) === info) void delivery?.ready(info.address, transition).catch(() => {}); };
   const onPresence = (sessions: LocalPresence[]) => {
     const next = new Map<string, { info: RemoteSessionInfo; transition: string }>();
     if (!settings.enabled) return;
@@ -159,7 +159,12 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
     notifyReady();
   };
   const onDisconnected = () => { locals.clear(); remotes.clear(); };
-  const sender = (address: SessionAddress) => locals.get(addressKey(address))?.info ?? remotes.get(addressKey(address)) ?? null;
+  const sender = (address: SessionAddress): RemoteSessionInfo | null => {
+    const home = sessionHome(options.globalDb, address.sessionId);
+    if (home === "unknown" || !home && store?.presenceOwner(address)?.ambiguous) return null;
+    return [locals.get(addressKey(address))?.info, remotes.get(addressKey(address))].find(info => info &&
+      (home ? info.machineId === home.machineId && info.homeEpoch === home.epoch : info.homeEpoch === null || info.homeEpoch === 1)) ?? null;
+  };
 
   const cancelRecoveryTimer = () => { cancelRecovery?.(); cancelRecovery = undefined; };
   const closeAttempt = async () => {
@@ -205,8 +210,8 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
       delivery = createHostIntercomDelivery({ store, broker, sender, now: options.clock.now,
         initialHomeAdoption(endpoint) { return readFirstHomeAdoption(options.globalDb, endpoint); },
         machineAlias(machineId) { return machineId === local ? settings.machineAlias : machineAliases.get(machineId) ?? settings.routes.find(route => route.peer.machineId === machineId)?.peer.alias ?? null; },
-        endpoint(address) { const info = locals.get(addressKey(address))?.info;
-          return info ? { address: info.address, machineId: info.machineId, homeEpoch: info.homeEpoch, activationEpoch: info.activationEpoch } : null; },
+        endpoint(address) { const info = sender(address);
+          return info?.machineId === local ? { address: info.address, machineId: info.machineId, homeEpoch: info.homeEpoch, activationEpoch: info.activationEpoch } : null; },
         wake(peer) { bridge?.wake(peer); },
       });
       broker.on("presence", onPresence); broker.on("disconnected", onDisconnected);

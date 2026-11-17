@@ -1232,3 +1232,8 @@ it("offline source cleanup retries do not append unchanged journal evidence", as
   for (let i = 0; i < 8; i++) expect(await recoverMove(f.request.operation.id, f.ports)).toMatchObject({ code: 0, reason: "moved" });
   expect(f.ports.journal.read(f.request.operation.id)).toHaveLength(before);
 }, 5000);
+
+it("post-retirement cleanup reports the remaining cleanup cause", async () => {
+  const f = fixture(); f.ports.cleanup = async () => { throw new Error("fixture-cleanup-failed"); };
+  expect(await moveSession(f.request, f.ports)).toMatchObject({ code: 0, reason: "moved", value: { sourceCleanup: { status: "pending", reason: "move-cleanup-pending" } } });
+});

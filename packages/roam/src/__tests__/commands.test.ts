@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
+import { validateBlockerId } from "../move";
 import { DEFAULT_LIMITS, type RoamConfig } from "../contracts";
-import { controlRefusal, controlText, parsePublicControl, resolveControlMachine, resolveControlSession, safeControlOutcome } from "../commands";
+import { controlRefusal, controlText, parsePublicControl, resolveControlMachine, resolveControlSession, safeControlOutcome, sourceCleanupStatusText } from "../commands";
 
 const HUB = "00000000-0000-4000-8000-000000000001", BOX = "00000000-0000-4000-8000-000000000002";
 const controls = [
@@ -69,7 +70,7 @@ it("the public parser has fourteen roam controls and move", () => {
 
 
 it.each(['done', 'pending'] as const)('serializes the exhaustive source cleanup status %s', status => {
-  const sourceCleanup = status === 'done' ? { status } : { status, blockers: ['process-exit-unproven'] };
+  const sourceCleanup = status === 'done' ? { status } : { status, reason: 'move-source-stop-pending', blockers: ['process-exit-unproven'] };
   const safe = safeControlOutcome({ code: 0, reason: 'moved', operationId: 'move-a', home: null, epoch: 2, repairCommand: null,
     value: { terminal: 't1', intercomAddress: 'box/session-a', warnings: ['tool-auth-unverified'], sourceCleanup } });
   expect(safe.value).toMatchObject({ sourceCleanup });
@@ -89,4 +90,16 @@ it('does not expose malformed cleanup evidence', () => {
     value: { sourceCleanup: { status: 'pending', blockers: ['PRIVATE CONTENT'] } } });
   expect(JSON.stringify(safe)).not.toContain('PRIVATE CONTENT');
   expect(controlText(safe)).not.toContain('Source cleanup pending');
+});
+
+it("pending cleanup describes its reason rather than an arbitrary blocker identity", () => {
+  const sourceCleanup = { status: "pending" as const, reason: "move-cleanup-pending" as const, blockers: [validateBlockerId("fixture-blocker")] };
+  const safe = safeControlOutcome({ code: 0, reason: "moved", operationId: "move-a", home: null, epoch: 2, repairCommand: null,
+    value: { sourceCleanup, intercomAddress: "session-a@box.invalid" } });
+  expect(safe.value).toMatchObject({ sourceCleanup });
+  expect(controlText(safe)).toContain("The source has stopped; its remaining local cleanup has not finished.");
+  expect(controlText(safe)).not.toContain("not been proved stopped");
+  const status = sourceCleanupStatusText({ sessionId: "session-a", sourceMachine: BOX, sourceCleanup });
+  expect(status).toContain("The source has stopped; its remaining local cleanup has not finished.");
+  expect(status).not.toContain("fixture-blocker");
 });

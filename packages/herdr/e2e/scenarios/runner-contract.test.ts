@@ -77,7 +77,7 @@ describe('move launch observation command', () => {
     const script = '(async () => {' + source.slice(start + 7, end).replaceAll('\\\\n', '\\n') + '}})()';
     await runInNewContext(stripTypeScriptTypes(script), {
       args: ['fixture-observe', 'session-a', 'move-a'], root: '/fixture', machine: { id: 'box-a' }, join: (...parts: string[]) => parts.join('/'), process,
-      openLocalCore: () => ({ db: {}, config: {}, close }), openFreezeJournal: () => ({}), sessionHome: () => home,
+      openLocalCore: () => ({ db: {}, config: {}, close }), openFreezeJournal: () => ({}), sessionHome: () => home, existsSync: () => true,
       moveFactory: async () => ({ bindings: { participant: { observation } }, close: stop }), readMoveLaunchAbsenceReceipt: () => receipt,
     });
     expect(observation).toHaveBeenCalledWith(home, expect.objectContaining({ kind: 'move-observation', expectedEpoch: 4 }));

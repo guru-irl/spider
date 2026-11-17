@@ -49,7 +49,7 @@ const source = (file: string) => JSON.stringify(fileURLToPath(new URL(file, impo
 async function platformCli(suite: Suite): Promise<string> {
   const entry = suite.ownPath(join(suite.root, 'platform.ts'));
   const code = `
-import { readFileSync, appendFileSync, statSync } from 'node:fs';
+import { readFileSync, appendFileSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -204,6 +204,16 @@ if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id &&
   try {
     const home = sessionHome(core.db, args[1]);
     if (!home || home === 'unknown' || home.machineId !== machine.id || home.moveId !== args[2]) throw Error('fixture observation home mismatch');
+    const nativeFile = join(root, 'roam', 'fixture-launch-native.json');
+    if (!existsSync(nativeFile)) {
+      const lock = await inspectIdLock(join(root, 'herdr'), args[1]);
+      if (lock?.pendingOperationId) {
+        const attempt = journal.read(lock.pendingOperationId).findLast(row => row.action === 'exact-attempt')?.result.attemptId;
+        const capture = argv => { const result = spawnSync(loadHerdrConfig(root).core.binary, argv, { env: process.env, encoding: 'utf8' }); return { status: result.status, stdout: result.stdout, stderr: result.stderr }; };
+        const labels = ['--label', 'spider.roam.operation=' + lock.pendingOperationId, ...(attempt ? ['--label', 'spider.roam.attempt=' + attempt] : [])];
+        writeFileSync(nativeFile, JSON.stringify({ lock, attempt, filtered: capture(['ls', '--all', '--json', ...labels]), all: capture(['ls', '--all', '--json']), help: capture(['ls', '--help']) }), { mode: 0o600 });
+      }
+    }
     runtime = await moveFactory({ root, globalDb: core.db, config: core.config, journal, sessionId: args[1], transport: {} as never });
     const observed = await runtime.bindings.participant!.observation(home, { id: args[2] + '-fixture-inspect', kind: 'move-observation', machineId: machine.id, expectedEpoch: home.epoch, args: { sessionId: args[1] } });
     const receipt = readMoveLaunchAbsenceReceipt(journal, args[2]), complete = receipt && observed.owner.kind === 'absent' && !observed.readiness;

@@ -33,6 +33,56 @@ async function tree(root: string): Promise<string[]> {
 }
 
 
+test('unreadable app version skips picker keys while install and doctor remain available', async () => {
+  const f = await fixture(), home = f.h.directories.app;
+  const request = { ...f.request, config: { ...f.request.config, app: { ...f.request.config.app, binary: join(f.h.root, 'missing-app') } } };
+  const keyPath = join(home, 'keys.json'), before = JSON.parse(await readFile(keyPath, 'utf8'));
+  Object.assign(before.global, { 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' });
+  await writeFile(keyPath, JSON.stringify(before));
+  const files = await f.parts.installFiles(request, f.context);
+  const keyPlan = files.find(file => file.path === keyPath)!;
+  expect(keyPlan.keys?.global).not.toHaveProperty('cmd-t');
+  expect(keyPlan.keys?.global).not.toHaveProperty('cmd-d');
+  expect(keyPlan.keys?.global).not.toHaveProperty('cmd-shift-d');
+  expect(keyPlan.keys?.['layout:spider-glass']).not.toHaveProperty('cmd-shift-w');
+  const merged = mergeKeys(Buffer.from(JSON.stringify(before)), keyPlan.keys!, {}, false);
+  await writeFile(keyPath, merged);
+  const doctor = await f.ports.doctorParts(request), result = await doctor.inspect('keys', request);
+  expect(result.failures).toEqual([]);
+  expect(result.warnings?.filter(warning => warning.code === 'picker-version-unavailable')).toEqual([
+    expect.objectContaining({ message: expect.stringMatching(/version.*picker|picker.*version/i) }),
+  ]);
+  expect(JSON.parse(await readFile(keyPath, 'utf8')).global).toMatchObject({ 'cmd-t': 'tab.new', 'cmd-d': 'pane.split:right', 'cmd-shift-d': 'pane.split:down' });
+  await expect(f.parts.stageLook(request, f.context, 'export')).rejects.toMatchObject({ code: 'upstream-version-unavailable' });
+});
+
+test('unreadable app version leaves existing picker files and bindings alone', async () => {
+  const f = await fixture(), home = f.h.directories.app;
+  const request = { ...f.request, config: { ...f.request.config, app: { ...f.request.config.app, binary: join(f.h.root, 'missing-app') } } };
+  const keyPath = join(home, 'keys.json'), before = await readFile(keyPath);
+  const keys = { global: { 'cmd-t': 'mod.open:spider-machine-picker' }, 'layout:spider-glass': { 'cmd-shift-w': 'spider-pane.close' } };
+  const picker = join(home, 'mods/spider-machine-picker/main.js');
+  const plans: InstallFile[] = [
+    { path: keyPath, expected: digest(before), bytes: mergeKeys(before, keys, {}, false), keys, managed: { kind: 'keys', sections: { global: ['cmd-t'], 'layout:spider-glass': ['cmd-shift-w'] } } },
+    { path: picker, expected: null, bytes: Buffer.from('// installed picker\n') },
+  ];
+  const journal = await readJournal(request.journalRoot);
+  await validateFiles(plans, journal); await prepareBackups(request.journalRoot, plans, journal); await applyFiles(plans, journal);
+  const installed = await readFile(keyPath), journalBefore = await readFile(join(request.journalRoot, 'journal.json'));
+  const files = await f.parts.installFiles(request, f.context);
+  expect(files.some(file => file.path === picker)).toBe(false);
+  expect(files.find(file => file.path === keyPath)?.keys?.global).not.toHaveProperty('cmd-t');
+  expect(await readFile(keyPath)).toEqual(installed);
+  expect(await readFile(picker, 'utf8')).toBe('// installed picker\n');
+  expect(await readFile(join(request.journalRoot, 'journal.json'))).toEqual(journalBefore);
+  const result = await (await f.ports.doctorParts(request)).inspect('keys', request);
+  expect(result.warnings?.filter(warning => warning.code === 'picker-version-unavailable')).toEqual([
+    expect.objectContaining({ message: expect.stringMatching(/version.*picker|picker.*version/i) }),
+  ]);
+  expect(result.warnings?.find(warning => warning.code === 'picker-version-unavailable')?.message).toMatch(/existing.*left in place/i);
+  expect(result.failures.some(failure => failure.code === 'legacy-picker-binding')).toBe(false);
+});
+
 test('0.1.12 preserves native creation keys and does not install machine pickers', async () => {
   const f = await fixture(), home = f.h.directories.app, path = join(home, 'keys.json');
   const before = JSON.parse(await readFile(path, 'utf8'));

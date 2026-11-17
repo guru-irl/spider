@@ -1190,7 +1190,10 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           return { pid: child.pid!, startIdentity };
         },
         // pi activation owns the generation-bound terminal mapping; the lease launcher never publishes one.
-      }), { reclaimReusedOwner: true });
+      }), { reclaimReusedOwner: true }).catch(error => {
+        if (error instanceof HerdrError && error.code === 'lock-occupied') throw new HerdrError('resume-launch-busy', 'Another resume launch is still in progress. Try again.');
+        throw error;
+      });
       if (childExit) {
         const result = await childExit;
         if (result.error) throw new HerdrError('resume-exited', `Resumed pi failed: ${result.error.message}`);

@@ -1,9 +1,12 @@
 import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { IntercomSshHostKey } from "../provision-contracts";
+import type { SystemSshFileSystem } from "../intercom-ssh-observation";
 
 /** Map the system directory to owned fixture files while simulating root ownership. */
-export function systemSshFixture(root: string, keys: readonly IntercomSshHostKey[]) {
+export function systemSshFixture(root: string, keys: readonly IntercomSshHostKey[]): {
+  filesystem: SystemSshFileSystem; directory: string; directoryUid(value: number): void; fileUid(value: number): void;
+} {
   const directory = join(root, "system-ssh"); mkdirSync(directory, { mode: 0o755 });
   for (const key of keys) {
     const kind = key.type === "ssh-ed25519" ? "ed25519" : key.type === "ssh-rsa" ? "rsa" : "ecdsa";

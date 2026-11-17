@@ -208,6 +208,33 @@ it('awaits both joined and queued child work for explicit reconciles', async () 
   } finally { releaseFirst(); releaseLast(); await handoff.shutdown('reload'); }
 });
 
+it('waits for the requested child without waiting for another child', async () => {
+  vi.useFakeTimers();
+  const journals = filesystem(2, true);
+  for (const journal of journals) journal.child!.settled = true;
+  let releaseFirst!: () => void, releaseSecond!: () => void;
+  const first = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const second = new Promise<void>(resolve => { releaseSecond = resolve; });
+  const finished: RunId[] = [];
+  const handoff = createJobHandoff({ root: '/fixture/target', owner, hc: {} as HcClient,
+    adopt: async () => { throw new Error('Settled journals need no adoption'); },
+    releaseSettled: async journal => {
+      const id = journal.child!.id;
+      await (id === 'run-0' ? first : second);
+      finished.push(id);
+    },
+  });
+  let done = false;
+  try {
+    const result = handoff.reconcile({ runId: 'run-1' as RunId }).then(() => { done = true; });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(done).toBe(false);
+    releaseSecond(); await vi.advanceTimersByTimeAsync(1);
+    expect({ done, finished: [...finished] }).toEqual({ done: true, finished: ['run-1'] });
+    await result;
+  } finally { releaseFirst(); releaseSecond(); await handoff.shutdown('reload'); }
+});
+
 it('releases the scan slot after a failed read and discovers later runs', async () => {
   filesystem(); io.readdir.mockRejectedValueOnce(new Error('Read failed'));
   const handoff = createJobHandoff({ root, owner, hc: {} as HcClient,

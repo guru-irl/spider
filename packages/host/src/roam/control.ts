@@ -68,7 +68,7 @@ export function createDormantControl(input: DormantControlInput): (operation: Op
       if (operation.kind === "session-shutdown") return result(0, "already-stopped", {});
       return result(2, "invalid-session-control");
     } catch (error) {
-      if (error instanceof FreezeBlockedError || error instanceof IntercomFenceError) return result(3, "freeze-blocked", { blockers: error.blockers as unknown as JsonObject[] });
+      if (error instanceof FreezeBlockedError || error instanceof IntercomFenceError) return result(3, "freeze-blocked", { blockers: sanitizedBlockers(error.blockers) });
       if (error instanceof AbortAuthorizationPendingError) return result(3, error.message);
       return result(3, "dormant-control-refused");
     }
@@ -105,6 +105,9 @@ function validateTarget(operation: Operation, ports: FreezePorts): void {
 function controlErrorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "Unknown session control failure";
   return redactErrorDetail(message);
+}
+function sanitizedBlockers(blockers: FreezeBlockedError["blockers"]): JsonObject[] {
+  return blockers.map(row => ({ kind: controlErrorMessage(row.kind), id: controlErrorMessage(row.id), detail: controlErrorMessage(row.detail) }));
 }
 function controlFailure(operation: Operation, ports: FreezePorts, error: unknown): JsonObject {
   const inherited = error && typeof error === "object" && "diagnostic" in error && error.diagnostic && typeof error.diagnostic === "object"
@@ -164,7 +167,7 @@ export async function serveSessionControl(input: { sessionId: string; runtimeRoo
       return result(0, "shutdown-requested", {});
     } catch (error) {
       if (error instanceof FreezeBlockedError || error instanceof IntercomFenceError) return result(3, "freeze-blocked", {
-        ...controlFailure(operation, ports, error), blockers: error.blockers as unknown as JsonObject[] });
+        ...controlFailure(operation, ports, error), blockers: sanitizedBlockers(error.blockers) });
       if (error instanceof AbortAuthorizationPendingError) return result(3, error.message);
       return result(1, "session-control-refused", controlFailure(operation, ports, error));
     }

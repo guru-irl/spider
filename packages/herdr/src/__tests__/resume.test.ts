@@ -292,6 +292,18 @@ it('extension refusal cleans the session name and extension path for terminal di
   }
 });
 
+it('a refused resume gives a short notice naming the session', async () => {
+  const foreign = join(root, 'a-very-long-extension-path'.repeat(8), 'extension.js');
+  const named = { ...owner, name: 'Saved' };
+  await createTerminalRegistry(root).record({ owner: named, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: ['--extension', foreign] } });
+  try { await offerResume(terminal, ports()); throw new Error('expected refusal'); }
+  catch (error) {
+    expect(error).toMatchObject({ code: 'session-explicit-extensions' });
+    const message = (error as Error).message;
+    expect(message).toContain('Saved'); expect(message.length).toBeLessThan(110);
+  }
+});
+
 it('a recorded absolute extension argument refuses a resume offer with its session name', async () => {
   const foreign = join(root, 'foreign-extension.js');
   await createTerminalRegistry(root).record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: ['--extension', foreign] } });

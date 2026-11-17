@@ -116,7 +116,7 @@ async function recipient({ fresh = false, inboundTrigger = "never", restored, re
   sessions.push(session);
   expect(extensionsResult.errors).toEqual([]);
   expect(extensionsResult.extensions).toHaveLength(1);
-  await session.bindExtensions(interactive ? { mode: "interactive", uiContext: { ...session.extensionRunner.getUIContext() } } : { mode: "rpc" });
+  await session.bindExtensions(interactive ? { mode: "tui", uiContext: { ...session.extensionRunner.getUIContext() } } : { mode: "rpc" });
   if (responses) {
     const model = context.modelRegistry.find("fixture", "fixture");
     if (!model) throw new Error("Fixture model was not registered");
@@ -267,11 +267,13 @@ it("reports consumption once when a lifecycle scan precedes its receipt acknowle
 });
 
 it("waits for a triggering send to append before reporting consumption", async () => {
-  const responses: Array<() => void> = [], release = Promise.withResolvers<void>();
+  const responses: Array<() => void> = [];
+  let release!: () => void;
+  const ready = new Promise<void>(resolve => { release = resolve; });
   let preparing = false;
   const sent = captureReceiptFrames();
   const { session, endpoint, execute } = await recipient({ fresh: true, inboundTrigger: "always", responses,
-    beforeStart: async () => { preparing = true; await release.promise; } });
+    beforeStart: async () => { preparing = true; await ready; } });
   expect(session.model?.provider).toBe("fixture");
   try {
     await bridge.deliver(remote, endpoint, { id: "trigger-message", timestamp: 1, content: { text: "synthetic message" } });
@@ -279,7 +281,7 @@ it("waits for a triggering send to append before reporting consumption", async (
     await execute({ action: "status" });
     expect(session.sessionManager.getEntries().filter(entry => entry.type === "custom_message")).toHaveLength(0);
     expect(sent().filter(receipt => receipt.messageId === "trigger-message" && receipt.status === "injected")).toHaveLength(0);
-    release.resolve();
+    release();
     await vi.waitFor(() => expect(responses).toHaveLength(1));
     responses.shift()!();
     await session.waitForIdle();
@@ -288,7 +290,7 @@ it("waits for a triggering send to append before reporting consumption", async (
     if (evidence?.kind !== "entry") throw new Error("Missing triggered entry evidence");
     expect(SessionManager.open(session.sessionManager.getSessionFile()!).getEntry(evidence.entryId)).toMatchObject({ customType: "intercom_message", details: { message: { id: "trigger-message" } } });
     expect(sent().filter(receipt => receipt.messageId === "trigger-message" && receipt.status === "injected")).toHaveLength(1);
-  } finally { release.resolve(); }
+  } finally { release(); }
 });
 
 it("waits for a busy recipient's steer to append before reporting consumption", async () => {

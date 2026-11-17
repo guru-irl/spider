@@ -295,7 +295,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     rows.set(run.id, {
       key: run.id, kind: 'subagent', address: run.viewer, originalAddress: native?.address ?? run.viewer,
       name: run.name ?? run.id, description: null, status, outcome: done ? run.status : null, completeness: 'unknown',
-      machine: null, parentKey: previous?.parentKey || (native?.parent && native.parent !== ownerAddress ? native.parent : null),
+      machine: null, parentKey: previous?.parentKey ?? (native?.parent && native.parent !== ownerAddress ? native.parent : null),
       finishedAt: run.finishedAt, retained: done, depth: previous?.depth ?? 0, terminal: native ?? null,
       action: unreachable ? null : action,
     });

@@ -104,3 +104,28 @@ it("pending cleanup describes its reason rather than an arbitrary blocker identi
   expect(status).toContain("The source has stopped; its remaining local cleanup has not finished.");
   expect(status).not.toContain("fixture-blocker");
 });
+
+
+it("preserves a typed hosting warning through repeated public outcome sanitization", () => {
+  const warning = { code: "supervisor-hosting-error", check: "restart", since: 1, count: 3 };
+  const message = "The source is paused to avoid running two copies. Destination readiness needs reconciliation. supervisor-hosting-error (restart); hosting checks will retry automatically.";
+  const result = { code: 3 as const, reason: "move-destination-pending", operationId: "move-a", home: null, epoch: 2, repairCommand: null, value: null,
+    refusal: { code: "move-destination-pending", blockers: [], message, hostingWarning: { ...warning, contents: "PRIVATE-CONTENT" } } };
+  const safe = safeControlOutcome(result);
+  expect(safe.refusal).toEqual({ code: "move-destination-pending", blockers: [], message, hostingWarning: warning });
+  expect(controlText(safe)).toContain("supervisor-hosting-error (restart)");
+  expect(JSON.stringify(safe)).not.toContain("PRIVATE-CONTENT");
+  expect(safeControlOutcome(safe)).toEqual(safe);
+});
+
+it.each([
+  { code: "PRIVATE-CONTENT", check: "restart", since: 1, count: 3 },
+  { code: "supervisor-hosting-error", check: "PRIVATE-CONTENT", since: 1, count: 3 },
+  { code: "supervisor-hosting-error", check: "restart", since: -1, count: 3 },
+  { code: "supervisor-hosting-error", check: "restart", since: 1, count: 2 },
+])("does not expose malformed hosting warning evidence: %j", hostingWarning => {
+  const safe = safeControlOutcome({ code: 3, reason: "move-destination-pending", operationId: "move-a", home: null, epoch: 2, repairCommand: null, value: null,
+    refusal: { code: "move-destination-pending", blockers: [], message: "PRIVATE-CONTENT", hostingWarning } });
+  expect(JSON.stringify(safe)).not.toContain("PRIVATE-CONTENT");
+  expect(safe.refusal).toBeUndefined();
+});

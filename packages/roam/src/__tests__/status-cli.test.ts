@@ -315,8 +315,8 @@ it("shows disabled, unavailable cached state without creating files", async () =
 }, 5000);
 
 
-it("shows non-stopping hosting warnings in doctor and text and JSON status without modifying state", async () => {
-  const root = fixture(); configure(root);
+it.each([true, false])("shows non-stopping hosting warnings in doctor and text and JSON status without modifying state; enabled=%s", async enabled => {
+  const root = fixture(); configure(root, enabled);
   const global = openDb(join(root, "spider.db"));
   try {
     migrate(global, "global", { machineId: HUB, globalRoot: root });

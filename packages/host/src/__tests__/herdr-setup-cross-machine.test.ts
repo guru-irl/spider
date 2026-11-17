@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
-import { mkdir, readFile, writeFile, stat, rm } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, stat, lstat, readdir, readlink, rm } from 'node:fs/promises';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
 import { readJournal, digest, mergeKeys, validateFiles, prepareBackups, applyFiles } from '../../../herdr/src/setup/backup.js';
 import type { InstallFile } from '../../../herdr/src/setup/installer.js';
@@ -15,6 +15,23 @@ vi.mock('node:child_process', async importOriginal => {
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+
+async function tree(root: string): Promise<string[]> {
+  const rows: string[] = [];
+  async function visit(path: string): Promise<void> {
+    let info;
+    try { info = await lstat(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') { rows.push(`${relative(root, path)} missing`); return; } throw error; }
+    const name = relative(root, path) || '.';
+    if (info.isSymbolicLink()) { rows.push(`${name} link ${await readlink(path)}`); return; }
+    if (info.isDirectory()) {
+      rows.push(`${name} directory ${info.mode & 0o777}`);
+      for (const entry of (await readdir(path)).sort()) await visit(join(path, entry));
+    } else if (info.isFile()) rows.push(`${name} file ${info.mode & 0o777} ${digest(await readFile(path))}`);
+    else rows.push(`${name} special ${info.mode}`);
+  }
+  await visit(root); return rows;
+}
+
 
 test('0.1.12 preserves native creation keys and does not install machine pickers', async () => {
   const f = await fixture(), home = f.h.directories.app, path = join(home, 'keys.json');
@@ -177,8 +194,13 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       if (change === 'missing-asset') await rm(path);
       if (change === 'stale-stock') await writeFile(join(f.h.directories.app, 'mods/pane/main.js'), '// stale source\n');
       const keys = join(f.h.directories.app, 'keys.json'), before = await readFile(keys);
+      await mkdir(f.request.journalRoot, { recursive: true });
+      const roots = [f.h.directories.app, f.h.directories.agent, f.h.directories.global, f.request.config.shellRc];
+      const beforeTrees = await Promise.all(roots.map(tree));
       await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: expect.stringMatching(change === 'stale-stock' ? /^upstream-source-unknown$/ : /^cross-machine-/) });
       expect(await readFile(keys)).toEqual(before);
+      expect(await Promise.all(roots.map(tree))).toEqual(beforeTrees);
+      expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
       for (const name of ['spider-pane', 'spider-tabs', 'spider-menu', 'spider-new-menu', 'spider-agents', 'spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down']) {
         await expect(readFile(join(f.h.directories.app, 'mods', name, 'main.js'))).rejects.toMatchObject({ code: 'ENOENT' });
       }

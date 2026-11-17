@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { paths } from "@spider/db-core";
+import { openDb, paths } from "@spider/db-core";
 import { openJournal } from "../journal";
 import { provisionIntercomEnrollment } from "../intercom-enrollment";
 import type { Peer } from "../contracts";
@@ -50,12 +50,17 @@ it("does not run connector or key commands without separate human approval", asy
   expect(f.previews).toHaveLength(1);
 }, 5000);
 
-it("the operator CLI refuses noninteractive approval and displays the exact graph before asking", async () => {
-  const f = fixture(true), config = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture.service", peers: [f.request.pairs[0].source, f.request.pairs[0].target] };
+function cliGraph(f: ReturnType<typeof fixture>): string {
+  const config = { enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture.service", peers: [f.request.pairs[0].source, f.request.pairs[0].target] };
   writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
   writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
   const graph = join(f.root, "graph.json"); writeFileSync(graph, JSON.stringify({ pairs: [{ pairId: "pair-1", source: "box-a.invalid", target: "box-b.invalid", edgeEpoch: "edge-1",
     connector: { tunnelId: "tunnel", remotePort: 22, session: "default" } }] }), { mode: 0o600 });
+  return graph;
+}
+
+it("the operator CLI refuses noninteractive approval and displays the exact graph before asking", async () => {
+  const f = fixture(true), graph = cliGraph(f);
   const { runIntercomEnrollCli } = await import("../intercom-cli"); let out = "", err = "", asked = 0;
   const io = { out: (text: string) => { out += text; }, err: (text: string) => { err += text; } };
   const options = { transport: f.transport as never, journal: f.journal, tty: false, ask: async () => { asked++; return "approve"; } };
@@ -68,6 +73,68 @@ it("the operator CLI refuses noninteractive approval and displays the exact grap
   expect(await main(["--global-root", f.root, "roam", "intercom", "enroll", "--graph", graph, "--operation", "production-1"], io,
     { intercomOptions: { ...options, tty: false } } as any)).toBe(1);
   expect(err).toContain("peer-consent-required");
+}, 5000);
+
+it("names an exhausted local snapshot failure after successful retry fence observations", async () => {
+  const f = fixture(true), graph = cliGraph(f), original = f.transport.transport.exec;
+  let retrying = false;
+  f.transport.transport.exec = async (machine, argv, options) => {
+    const input = JSON.parse(options.stdin.toString());
+    if (input.action === "verify-federation") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: true,
+      machineId: machine.machineId, value: { sourceMachineId: A, targetMachineId: B, federation: false } }));
+    const reply = await original(machine, argv, options);
+    if (retrying && argv[2] === "observe-fence" && machine.machineId === B) {
+      const file = join(f.root, "publishing.db"), writer = openDb(file);
+      try {
+        writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('visible')");
+        const earlierIndex = readFileSync(`${file}-shm`);
+        writer.exec("INSERT INTO fixture VALUES ('unpublished')");
+        const queue = join(f.root, "roam", "intercom", "queue.db");
+        copyFileSync(file, queue); copyFileSync(`${file}-wal`, `${queue}-wal`); writeFileSync(`${queue}-shm`, earlierIndex);
+      } finally { writer.close(); }
+    }
+    return reply;
+  };
+  const { runIntercomEnrollCli } = await import("../intercom-cli"); let err = "";
+  const io = { out() {}, err: (text: string) => { err += text; } };
+  const options = { transport: f.transport as never, journal: f.journal, tty: true, ask: async () => "approve" };
+  const input = { root: f.root, graphFile: graph, operationId: "production-1" };
+  expect(await runIntercomEnrollCli(input, io, options)).toBe(3);
+  expect(err).toContain("intercom-verification-pending");
+  const beforeRetry = f.calls.length; retrying = true; err = "";
+  expect(await runIntercomEnrollCli(input, io, options)).toBe(3);
+  expect(f.calls.slice(beforeRetry).map(call => call.command)).toEqual(["observe-fence", "observe-fence"]);
+  expect(err).toContain("pair-1: intercom-enrollment-pending [diagnostic-snapshot-changing]");
+  expect(err).not.toContain("WAL frames");
+  expect(err).not.toContain(f.root);
+}, 5000);
+
+it.each([
+  ["EACCES", "EACCES"],
+  ["diagnostic-snapshot-changing", "diagnostic-snapshot-changing"],
+  ["/private/fixture.key", "unknown"],
+])("reports only a safe helper error code on retry: %s", async (code, expected) => {
+  const f = fixture(true), graph = cliGraph(f), original = f.transport.transport.exec;
+  let retrying = false;
+  f.transport.transport.exec = async (machine, argv, options) => {
+    const input = JSON.parse(options.stdin.toString());
+    if (input.action === "verify-federation") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: true,
+      machineId: machine.machineId, value: { sourceMachineId: A, targetMachineId: B, federation: false } }));
+    if (retrying && input.action === "ensure-key") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: false,
+      machineId: machine.machineId, reason: "intercom-setup-pending", cause: { code, message: "cannot open /private/fixture.key" } }));
+    return original(machine, argv, options);
+  };
+  const { runIntercomEnrollCli } = await import("../intercom-cli"); let err = "";
+  const io = { out() {}, err: (text: string) => { err += text; } };
+  const options = { transport: f.transport as never, journal: f.journal, tty: true, ask: async () => "approve" };
+  const input = { root: f.root, graphFile: graph, operationId: "production-1" };
+  expect(await runIntercomEnrollCli(input, io, options)).toBe(3);
+  expect(err).toContain("intercom-verification-pending");
+  retrying = true; err = "";
+  expect(await runIntercomEnrollCli(input, io, options)).toBe(3);
+  expect(err).toContain(`pair-1: intercom-enrollment-pending [${expected}]`);
+  expect(err).not.toContain("cannot open");
+  expect(err).not.toContain("/private/fixture.key");
 }, 5000);
 
 it("reports connector-not-pair-scoped before creating any credentials or routes", async () => {

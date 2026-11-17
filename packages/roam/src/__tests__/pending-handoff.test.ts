@@ -9,11 +9,11 @@ import { createProcessPresence } from "@spider/herdr/sessions/presence";
 import { writeLaunchHandoff } from "@spider/herdr/sessions/launch-handoff";
 import { openFreezeJournal } from "../journal";
 import { createBothLocks, createRunningIntentAuthority } from "../session-control";
-import { createPendingHandoffControl, pendingHandoffLifecycle, cancelPendingHandoff, type MoveNoStartReceipt } from "../pending-handoff";
+import { createPendingHandoffControl, pendingHandoffLifecycle, cancelPendingHandoff, type MoveLaunchAbsenceReceipt } from "../pending-handoff";
 const MACHINE = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
 afterEach(() => { for (const fixture of fixtures.splice(0)) fixture.close(); });
-async function fixture() {
+async function fixture(kind: "never-started" | "exited-without-adoption" = "never-started") {
   const fixture = createReplica("global", MACHINE); fixtures.push(fixture);
   const root = join(fixture.root, "herdr"), file = join(fixture.root, "session.jsonl"); writeFileSync(file, "fixture\n");
   const identity = { pid: 42, startIdentity: "supervisor-start" }, journal = openFreezeJournal(join(fixture.root, "roam", "journal.db"));
@@ -24,29 +24,35 @@ async function fixture() {
   await writeLaunchHandoff(root, { version: 1, operationId: "launch-a", sessionId: "session-a", sessionFile: file, nonce: handoff.nonce, leaseToken: lease.token });
   const authority = createRunningIntentAuthority(fixture.db);
   await authority.set({ sessionId: "session-a", epoch: 2, file, cwd: fixture.root, desired: "running", suspended: null, moveId: "move-a" }, "participant-a", { kind: "hub-return", machineId: MACHINE, moveId: "move-a" });
-  const receipt: MoveNoStartReceipt = { moveId: "move-a", launchId: "launch-a", sessionId: "session-a", epoch: 2, coreId: "core-a", bootId: "boot-a", launchDigest: "fixture-digest",
+  const receipt: MoveLaunchAbsenceReceipt = { kind: "never-started", moveId: "move-a", launchId: "launch-a", sessionId: "session-a", epoch: 2, coreId: "core-a", bootId: "boot-a", launchDigest: "fixture-digest",
     evidence: { receipt: "unknown", terminal: "unknown", proof: { kind: "prelaunch-error", operationId: "launch-a", beforeLaunch: true, errorCode: "missing-hc", hcPid: null } } };
   journal.begin({ id: "move-a", machineId: MACHINE, expectedEpoch: 1, kind: "move", args: {} });
   journal.begin({ id: "launch-a", machineId: MACHINE, expectedEpoch: 2, kind: "exact-session-launch", args: {} });
-  journal.record("move-a", "move-no-start", receipt as never);
+  if (kind === "exited-without-adoption") {
+    Object.assign(receipt, { kind, terminalId: "t1", evidence: { receipt: "started", terminal: "present", proof: {
+      kind: "terminal-exited-without-adoption", operationId: "launch-a", coreId: "core-a", terminalId: "t1", terminalExited: true, lockNeverAdopted: true,
+    } } });
+    journal.record("launch-a", "exact-terminal", { terminalId: "t1" });
+  }
+  journal.record("move-a", kind === "never-started" ? "move-no-start" : "move-unadopted-launch-exit", receipt as never);
   const control = createPendingHandoffControl({ root, journal, authority, inventory, identity, bootId: async () => "boot-a", launchDigest: () => "fixture-digest" });
-  const request = { sessionId: "session-a", moveId: "move-a", launchId: "launch-a", noStartReceipt: receipt };
+  const request = { sessionId: "session-a", moveId: "move-a", launchId: "launch-a", absenceReceipt: receipt };
   return { ...fixture, root, file, journal, inventory, identity, authority, receipt, request, control };
 }
 it.each(["missing", "move", "launch", "session", "epoch", "core", "boot", "proof", "digest", "owner", "readiness", "receipt-match"])("mismatched %s handoff cancellation refuses without effects", async bad => {
   const f = await fixture(), before = await inspectIdLock(f.root, "session-a"), lease = await f.inventory.leases.get(f.file);
-  if (bad === "missing") f.request.noStartReceipt = null as never;
+  if (bad === "missing") f.request.absenceReceipt = null as never;
   if (bad === "move") f.request.moveId = "other-move";
   if (bad === "launch") f.request.launchId = "other-launch";
   if (bad === "session") f.request.sessionId = "other-session";
-  if (bad === "epoch") f.request.noStartReceipt = { ...f.receipt, epoch: 3 };
-  if (bad === "core") f.request.noStartReceipt = { ...f.receipt, coreId: "other-core" };
-  if (bad === "boot") f.request.noStartReceipt = { ...f.receipt, bootId: "other-boot" };
-  if (bad === "proof") f.request.noStartReceipt = { ...f.receipt, evidence: { receipt: "unknown", terminal: "unknown" } };
-  if (bad === "digest") f.request.noStartReceipt = { ...f.receipt, launchDigest: "other-digest" };
+  if (bad === "epoch") f.request.absenceReceipt = { ...f.receipt, epoch: 3 };
+  if (bad === "core") f.request.absenceReceipt = { ...f.receipt, coreId: "other-core" };
+  if (bad === "boot") f.request.absenceReceipt = { ...f.receipt, bootId: "other-boot" };
+  if (bad === "proof") f.request.absenceReceipt = { ...f.receipt, evidence: { receipt: "unknown", terminal: "unknown" } };
+  if (bad === "digest") f.request.absenceReceipt = { ...f.receipt, launchDigest: "other-digest" };
   if (bad === "owner") f.identity.pid = 43;
   if (bad === "readiness") f.journal.record("launch-a", "ready-durable", { sessionId: "session-a" });
-  if (bad === "receipt-match") f.request.noStartReceipt = { ...f.receipt, evidence: { receipt: "unknown", terminal: "unknown", proof: { kind: "prelaunch-error", operationId: "launch-a", beforeLaunch: true, errorCode: "spawn-error", hcPid: null } } };
+  if (bad === "receipt-match") f.request.absenceReceipt = { ...f.receipt, evidence: { receipt: "unknown", terminal: "unknown", proof: { kind: "prelaunch-error", operationId: "launch-a", beforeLaunch: true, errorCode: "spawn-error", hcPid: null } } };
   expect(await f.control.cancelPendingHandoff(f.request)).toBe("refused");
   expect(await inspectIdLock(f.root, "session-a")).toEqual(before);
   expect(await f.inventory.leases.get(f.file)).toEqual(lease);
@@ -109,10 +115,39 @@ it("a different pending launch cannot be cancelled even with another durable val
   const f = await fixture();
   const pending = await import("@spider/herdr/sessions/launch-handoff").then(module => module.readLaunchHandoff(f.root, module.launchHandoffPath(f.root, "launch-a"), "session-a", f.file));
   await writeLaunchHandoff(f.root, { ...pending, operationId: "launch-b" });
-  const receipt: MoveNoStartReceipt = { ...f.receipt, launchId: "launch-b", evidence: { ...f.receipt.evidence, proof: { kind: "prelaunch-error" as const, operationId: "launch-b", beforeLaunch: true as const, errorCode: "missing-hc", hcPid: null } } };
+  const receipt: MoveLaunchAbsenceReceipt = { ...f.receipt, launchId: "launch-b", evidence: { ...f.receipt.evidence, proof: { kind: "prelaunch-error" as const, operationId: "launch-b", beforeLaunch: true as const, errorCode: "missing-hc", hcPid: null } } };
   const read = f.journal.read;
   f.journal.read = id => id === "move-a" ? read(id).map(row => row.action === "move-no-start" ? { ...row, result: receipt as never } : row) : read(id);
-  expect(await f.control.cancelPendingHandoff({ ...f.request, launchId: "launch-b", noStartReceipt: receipt })).toBe("refused");
+  expect(await f.control.cancelPendingHandoff({ ...f.request, launchId: "launch-b", absenceReceipt: receipt })).toBe("refused");
   expect((await f.authority.get("session-a"))?.desired).toBe("running");
   expect((await inspectIdLock(f.root, "session-a"))?.pendingOperationId).toBe("launch-a");
 }, 5000);
+
+
+it.each(["never-started", "exited-without-adoption"] as const)("%s cancels its pending handoff with its own recorded reason", async kind => {
+  const f = await fixture(kind), recorded: unknown[] = [], record = f.journal.record;
+  f.journal.record = (id, action, result) => { if (action === "done") recorded.push(result); return record(id, action, result); };
+  expect(await f.control.cancelPendingHandoff(f.request)).toBe("released");
+  expect(await inspectIdLock(f.root, "session-a")).toBeNull();
+  expect(await f.inventory.leases.get(f.file)).toBeNull();
+  expect(recorded).toEqual([expect.objectContaining({ reason: kind })]);
+  expect(await f.control.cancelPendingHandoff(f.request)).toBe("already-released");
+});
+it("an unknown receipt kind is refused without cancelling ownership or intent", async () => {
+  const f = await fixture(), before = await inspectIdLock(f.root, "session-a"), lease = await f.inventory.leases.get(f.file);
+  f.request.absenceReceipt = { ...f.receipt, kind: "unknown" } as never;
+  expect(await f.control.cancelPendingHandoff(f.request)).toBe("refused");
+  expect(await inspectIdLock(f.root, "session-a")).toEqual(before);
+  expect(await f.inventory.leases.get(f.file)).toEqual(lease);
+  expect((await f.authority.get("session-a"))?.desired).toBe("running");
+});
+it.each(["running", "adopted", "other-launch", "other-terminal"] as const)("an exited-launch receipt with %s evidence cannot cancel the handoff", async bad => {
+  const f = await fixture("exited-without-adoption"), before = await inspectIdLock(f.root, "session-a");
+  if (bad === "running") delete f.receipt.evidence.proof;
+  if (bad === "adopted") f.journal.record("launch-a", "ready-durable", { opId: "launch-a" });
+  if (bad === "other-launch") f.receipt.evidence.proof!.operationId = "launch-b";
+  if (bad === "other-terminal" && f.receipt.evidence.proof?.kind === "terminal-exited-without-adoption") f.receipt.evidence.proof.terminalId = "t2";
+  expect(await f.control.cancelPendingHandoff(f.request)).toBe("refused");
+  expect(await inspectIdLock(f.root, "session-a")).toEqual(before);
+  expect((await f.authority.get("session-a"))?.desired).toBe("running");
+});

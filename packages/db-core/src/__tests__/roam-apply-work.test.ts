@@ -108,6 +108,41 @@ describe("roaming derived-state work", () => {
     expect(work[1]).toBeLessThan(work[0] * 8);
   });
 
+  it("does not update another session when a deleted lexical rowid is reused", async () => {
+    const root = replica();
+    const first = session();
+    const other = { ...session(clock(3000), "other"), rowKey: "other-session", writerSession: "other-session",
+      body: { ...first.body!, id: "other-session", name: "otherterm" } };
+    const last = { ...session(clock(4000), "last"), body: { ...first.body!, name: "lastterm" } };
+    await measuredApply(root, [first, deleted(first, clock(2000), "removed"), other, last]);
+    expect(root.db.prepare("SELECT id,name FROM sessions_fts ORDER BY id").all()).toEqual([
+      { id: "other-session", name: "otherterm" }, { id: first.rowKey, name: "lastterm" },
+    ]);
+    expect(root.db.prepare("SELECT id FROM sessions_fts WHERE sessions_fts MATCH 'portable'").all()).toEqual([]);
+  });
+
+  it("retries rolled-back lexical changes with a fresh transaction snapshot", async () => {
+    const root = replica("repo");
+    await measuredApply(root, [memory("memory-a", "oldterm")]);
+    const incoming = await batch(root, [memory("memory-a", "newterm", clock(2000), "updated")], { after: 1, id: "retry" });
+    const real = createReplicaEffects(() => {});
+    let fail = true;
+    const effects = { ...real, begin(db: typeof root.db) {
+      const writer = real.begin(db);
+      return { winning(...args: Parameters<typeof writer.winning>) {
+        writer.winning(...args);
+        if (fail) { fail = false; throw new Error("derived failure"); }
+      } };
+    } };
+    const options = { hubMachine: A, effects, now: NOW, sessionHome: () => null };
+    expect(() => applyBatch(root.db, incoming, options)).toThrow("derived failure");
+    expect(root.db.prepare("SELECT content FROM memory_fts").all()).toEqual([{ content: "oldterm" }]);
+    expect(applyBatch(root.db, incoming, options).through).toBe(2);
+    expect(root.db.prepare("SELECT content FROM memory_fts").all()).toEqual([{ content: "newterm" }]);
+    expect(root.db.prepare("SELECT text FROM embed_queue").all()).toEqual([{ text: "newterm" }]);
+    expect(root.db.prepare("SELECT count(*) AS n FROM roam_receipts").get()).toEqual({ n: 2 });
+  });
+
   it("keeps lexical identities current for repeated winners in one batch", async () => {
     const root = replica("repo");
     root.db.prepare("INSERT INTO memory_fts(uuid,content) VALUES ('memory-a','staleterm'),('memory-a','duplicateterm'),('other','unrelatedterm')").run();

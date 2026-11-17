@@ -8,7 +8,7 @@ import { isRoamUuid } from "./codec";
 import { DESCRIPTORS } from "./descriptors";
 import { compareHlc, observeHlc } from "./hlc";
 import { readLocal, writeLocal } from "./local-state";
-import type { ApplyReceipt, Change, Descriptor, Entity, Hlc, Home, JsonObject, MachineId, RecordChange, ReplicaEffects, StoreKey, ValidatedBatch } from "./types";
+import type { ApplyReceipt, Change, Descriptor, Entity, Hlc, Home, JsonObject, MachineId, RecordChange, ReplicaEffects, ReplicaWriter, StoreKey, ValidatedBatch } from "./types";
 
 const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 // Match the memory package's default without making replication enforce write limits.
@@ -145,7 +145,7 @@ function checkHome(db: Db, change: Change, hubMachine: MachineId): void {
 }
 
 function clearTodoCollision(
-  db: Db, change: Change, localMachine: MachineId, effects: ReplicaEffects,
+  db: Db, change: Change, localMachine: MachineId, effects: ReplicaWriter,
   sessionHome: SessionHome,
 ): void {
   if (change.entity !== "todos" || change.op !== "put" || change.body === null) return;
@@ -162,15 +162,15 @@ function clearTodoCollision(
   const before = baseRow(db, DESCRIPTORS.todos, collision.uuid);
   if (!before) throw new Error("Roaming todo collision disappeared");
   db.prepare("DELETE FROM todos WHERE uuid = ?").run(collision.uuid);
-  effects.winning(db, before, null, { ...change, rowKey: collision.uuid, op: "delete", body: null });
+  effects.winning(before, null, { ...change, rowKey: collision.uuid, op: "delete", body: null });
 }
 
-function writeWinner(db: Db, change: Change, meta: Meta, effects: ReplicaEffects, sessionHome: SessionHome): void {
+function writeWinner(db: Db, change: Change, meta: Meta, effects: ReplicaWriter, sessionHome: SessionHome): void {
   const descriptor = DESCRIPTORS[change.entity];
   const before = baseRow(db, descriptor, change.rowKey);
   if (change.op === "delete") {
     if (before) db.prepare(`DELETE FROM ${descriptor.table} WHERE ${descriptor.key} = ?`).run(change.rowKey);
-    effects.winning(db, before, null, change);
+    effects.winning(before, null, change);
     return;
   }
   clearTodoCollision(db, change, meta.machine_id, effects, sessionHome);
@@ -187,7 +187,7 @@ function writeWinner(db: Db, change: Change, meta: Meta, effects: ReplicaEffects
   }
   const after = baseRow(db, descriptor, change.rowKey);
   if (!after) throw new Error("Roaming row was not written");
-  effects.winning(db, before, { rowid: after.rowid }, change);
+  effects.winning(before, { rowid: after.rowid }, change);
 }
 
 type ApplyOptions = { hubMachine: MachineId; effects: ReplicaEffects; now: number; sessionHome: SessionHome };
@@ -205,7 +205,7 @@ export function applyMappingBatch(db: Db, batch: ValidatedBatch, options: ApplyO
 function apply(db: Db, batch: ValidatedBatch, options: ApplyOptions, unassignedTarget: boolean): ApplyReceipt {
   const started = performance.now();
   if (!Number.isSafeInteger(options.now) || options.now < 0 || !isRoamUuid(options.hubMachine) ||
-      typeof options.sessionHome !== "function" || typeof options.effects?.winning !== "function" || typeof options.effects?.committed !== "function") {
+      typeof options.sessionHome !== "function" || typeof options.effects?.begin !== "function" || typeof options.effects?.committed !== "function") {
     throw new Error("Invalid roaming apply options");
   }
   if (db.raw.inTransaction) throw new Error("Cannot apply a roaming batch inside an open transaction");
@@ -239,6 +239,7 @@ function apply(db: Db, batch: ValidatedBatch, options: ApplyOptions, unassignedT
     let local: Hlc = { ms: meta.hlc_ms, count: meta.hlc_count, machine: meta.machine_id, stream: meta.stream_id };
     let changed = false;
     let changedMemory = false;
+    const writer = options.effects.begin(db);
     const findChange = db.prepare(`SELECT change_id, entity, row_key, op, hlc_ms, hlc_count, origin_machine, origin_stream,
       writer_session, writer_epoch, schema_version, coalesce(wire_json, body_json) AS portable_json
       FROM roam_changes WHERE change_id = ?`);
@@ -277,7 +278,7 @@ function apply(db: Db, batch: ValidatedBatch, options: ApplyOptions, unassignedT
         change.clock.machine, change.clock.stream, change.writerSession, change.writerEpoch, change.schema,
         change.body === null ? null : JSON.stringify(change.body));
       if (comparison > 0) {
-        writeWinner(db, change, meta, options.effects, options.sessionHome);
+        writeWinner(db, change, meta, writer, options.sessionHome);
         version.run(change.entity, change.rowKey, change.changeId, change.clock.ms, change.clock.count,
           change.clock.machine, change.clock.stream, change.op === "delete" ? 1 : 0);
         changed = true;

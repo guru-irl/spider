@@ -125,9 +125,12 @@ describe("roaming merge", () => {
     const observer = effects();
     const fail: ReplicaEffects = {
       ...observer.effects,
-      winning(db, before, after, change) {
-        observer.effects.winning(db, before, after, change);
-        if (change.entity === "todos") throw new Error("derived failure");
+      begin(db) {
+        const writer = observer.effects.begin(db);
+        return { winning(before, after, change) {
+          writer.winning(before, after, change);
+          if (change.entity === "todos") throw new Error("derived failure");
+        } };
       },
     };
     const value = await batch(failed, [session(), todo("todo-1", 1, "text", clock(1001))]);
@@ -197,7 +200,7 @@ describe("roaming merge", () => {
     const root = replica();
     const handlers = effects();
     const observer: ReplicaEffects = {
-      winning(_db, before, after, change) { handlers.calls.push({ before, after, change }); },
+      begin() { return { winning(before, after, change) { handlers.calls.push({ before, after, change }); } }; },
       committed: handlers.effects.committed,
     };
     const first = todo("todo-1", 1, "first", clock(100));

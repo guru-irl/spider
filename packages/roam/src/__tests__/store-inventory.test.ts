@@ -24,7 +24,7 @@ function fixture() {
     peers: [], discoveryRoots: [], coreUnit: "core", syncMs: 120_000, limits: DEFAULT_LIMITS, intercom: disabledIntercom() },
     root: join(global.root, "roam", "staging"), journal: openJournal(join(global.root, "journal.db")),
     openStore(key: string) { if (key !== "global") throw new Error("unexpected store"); return { db: global.db,
-      effects: { winning() {}, committed() {} }, policy: { encode: (_: unknown, body: import("@spider/db-core/roam/types").JsonObject) => body } }; } };
+      effects: { begin() { return { winning() {} }; }, committed() {} }, policy: { encode: (_: unknown, body: import("@spider/db-core/roam/types").JsonObject) => body } }; } };
   return { global, worktree, ports };
 }
 it.each(["stores", "inventory"])("keyless %s discovers a registered store and an agent-created unmapped store", async kind => {

@@ -878,7 +878,7 @@ it("corrupt inbound bytes cannot install or advance a replica cursor", async () 
         { storeKey: "global", senderMachine: boxId, senderStream: stream, now: Date.now() });
       const file = store.promoteValidationCopy(manifest, "validation-attempt-1", validated.file);
       applyBatch(replica.db, { ...validated, file }, { hubMachine: hubId, now: Date.now(), sessionHome: () => null,
-        effects: { winning() {}, committed() {} } });
+        effects: { begin() { return { winning() {} }; }, committed() {} } });
       expect(replica.db.prepare("SELECT last_seq FROM roam_cursors WHERE peer_machine = ? AND peer_stream = ?").get(boxId, stream)).toEqual({ last_seq: 8 });
       const receipt = () => !!replica.db.prepare("SELECT 1 FROM roam_receipts WHERE peer_machine = ? AND batch_id = ? AND sha256 = ?")
         .get(boxId, header.batchId, manifest.sha256);

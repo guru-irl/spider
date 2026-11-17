@@ -102,14 +102,16 @@ export function effects(): EffectHarness {
   return {
     notices, calls,
     effects: {
-      winning(db, before, after, change) {
-        calls.push({ before: structuredClone(before), after: structuredClone(after), change: structuredClone(change) });
-        if (change.entity !== "todos") return;
-        if (before) db.prepare("INSERT INTO todos_fts(todos_fts, rowid, text) VALUES ('delete', ?, ?)").run(before.rowid, before.body.text);
-        if (after) {
-          const row = db.prepare("SELECT text FROM todos WHERE rowid = ?").get(after.rowid) as { text: string };
-          db.prepare("INSERT INTO todos_fts(rowid, text) VALUES (?, ?)").run(after.rowid, row.text);
-        }
+      begin(db) {
+        return { winning(before, after, change) {
+          calls.push({ before: structuredClone(before), after: structuredClone(after), change: structuredClone(change) });
+          if (change.entity !== "todos") return;
+          if (before) db.prepare("INSERT INTO todos_fts(todos_fts, rowid, text) VALUES ('delete', ?, ?)").run(before.rowid, before.body.text);
+          if (after) {
+            const row = db.prepare("SELECT text FROM todos WHERE rowid = ?").get(after.rowid) as { text: string };
+            db.prepare("INSERT INTO todos_fts(rowid, text) VALUES (?, ?)").run(after.rowid, row.text);
+          }
+        } };
       },
       committed(key) { notices.push(key); },
     },

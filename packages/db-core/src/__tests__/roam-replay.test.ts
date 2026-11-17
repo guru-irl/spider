@@ -87,7 +87,7 @@ describe("roaming replay and conflicts", () => {
       const { applyBatch } = await import(pathToFileURL(input.applyModule).href);
       const db = openDb(input.store);
       const receipt = applyBatch(db, input.batch, { hubMachine: input.hub, now: input.now,
-        effects: { winning() {}, committed() {} }, sessionHome() { return null; } });
+        effects: { begin() { return { winning() {} }; }, committed() {} }, sessionHome() { return null; } });
       writeFileSync(1, JSON.stringify(receipt));
       process.kill(process.pid, "SIGKILL");
     `;

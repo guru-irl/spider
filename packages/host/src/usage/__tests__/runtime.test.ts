@@ -34,6 +34,19 @@ async function panelFixture() {
 function reply(worker: FakeWorker, index = 0, data: PanelUsage | null = panelValue()) {
   worker.emit('message', { type: 'panel-usage', requestId: panelCommands(worker)[index]!.requestId, data });
 }
+it('reports the original sample time to pending and late subscribers', async () => {
+  const f = await panelFixture(), at = Date.now();
+  const first = f.runtime.readPanel(at, 'human');
+  const pending = f.runtime.readPanel(at + 1000, 'human');
+  reply(f.worker, 0, panelValue(at));
+  expect(await first).toMatchObject({ sampledAt: at });
+  expect(await pending).toMatchObject({ sampledAt: at });
+  expect(await f.runtime.readPanel(at + 29999, 'human')).toMatchObject({ sampledAt: at });
+  expect(panelCommands(f.worker)).toHaveLength(1);
+  const next = f.runtime.readPanel(at + 30000, 'human');
+  reply(f.worker, 1, panelValue(at + 30000));
+  expect(await next).toMatchObject({ sampledAt: at + 30000 });
+});
 it('shares pending and completed panel work without sharing mutable results', async () => {
   const f = await panelFixture(), at = Date.now();
   const first = f.runtime.readPanel(at, 'human'), second = f.runtime.readPanel(at + 1, 'human');

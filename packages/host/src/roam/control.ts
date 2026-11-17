@@ -125,6 +125,10 @@ function controlFailure(operation: Operation, ports: FreezePorts, error: unknown
     const id = typeof moveId === "string" && ports.journal.lookupOperation(moveId)?.state === "pending" ? moveId : operation.id;
     if (id === operation.id) ports.journal.begin(operation);
     ports.journal.record(id, "session-control-refused", { operationId: operation.id, diagnostic });
+    if (id === operation.id && operation.kind === "session-inspect") ports.journal.record(id, "done", {
+      code: 1, reason: "session-control-refused", operationId: operation.id, home: ports.gate.inspect().home,
+      epoch: operation.expectedEpoch, repairCommand: null, value: evidence,
+    } as unknown as JsonObject);
   } catch (journalError) { evidence.journalError = controlErrorMessage(journalError); }
   return evidence;
 }

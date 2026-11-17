@@ -395,7 +395,7 @@ it("source cleanup rejects a replacement lock token even for the same process id
 }, 5000);
 
 
-it("return mapping uses the enrolled current source root rather than the old local root", async () => {
+it.each(["00000000-0000-4000-8000-000000000002", HUB, null])("mapping uses the actual source root with home %s", async sourceMachine => {
   const BOX = "00000000-0000-4000-8000-000000000002", global = createReplica("global", HUB); fixtures.push(global);
   mkdirSync(join(global.root, "roam"), { mode: 0o700 });
   const peer = { machineId: BOX, alias: "remote.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/core", globalRoot: "/fixture/global" };
@@ -404,7 +404,7 @@ it("return mapping uses the enrolled current source root rather than the old loc
   mkdirSync(localRoot);
   const { recordLocation } = await import("@spider/db-core/roam/catalog");
   recordLocation(global.db, { sessionId, stores: ["global"], home: null, file: join(global.root, "session.jsonl"), cwd: localRoot });
-  global.db.prepare("INSERT INTO session_homes VALUES(?,?,2,NULL,1)").run(sessionId, BOX);
+  if (sourceMachine) global.db.prepare("INSERT INTO session_homes VALUES(?,?,2,NULL,1)").run(sessionId, sourceMachine);
   global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path,snapshot_json) VALUES(?,?,?,NULL)").run("fixture", "workspace", localRoot);
   const requests: unknown[] = [], transport = { async resolve(value: unknown) { return value; }, async exec(_peer: unknown, argv: string[]) {
     const operation = JSON.parse(argv[2]); requests.push(operation);
@@ -414,9 +414,10 @@ it("return mapping uses the enrolled current source root rather than the old loc
   try {
     const operation = { id: "return-operation", kind: "move", machineId: HUB, expectedEpoch: 2, args: { sessionId } };
     const request = { sessionId, destinationMachine: HUB, operation };
-    expect(await mounted.bindings.mapping!(request, { file: "/fixture/remote/session.jsonl", cwd: "/fixture/remote/checkout/nested", stores: ["global", "worktree:fixture:workspace"] }))
-      .toEqual({ repoKey: "fixture", workspaceId: "workspace", sourceRoot: "/fixture/remote/checkout", destinationRoot: localRoot, destinationCwd: join(localRoot, "nested") });
-    expect(requests).toMatchObject([{ kind: "move-workspace-map", machineId: BOX, args: { destinationMachine: BOX, repoKey: "fixture", workspaceId: "workspace" } }]);
+    const sourceRoot = sourceMachine === BOX ? "/fixture/remote/checkout" : localRoot;
+    expect(await mounted.bindings.mapping!(request, { file: "/fixture/remote/session.jsonl", cwd: join(sourceRoot, "nested"), stores: ["global", "worktree:fixture:workspace"] }))
+      .toEqual({ repoKey: "fixture", workspaceId: "workspace", sourceRoot, destinationRoot: localRoot, destinationCwd: join(localRoot, "nested") });
+    expect(requests).toMatchObject(sourceMachine === BOX ? [{ kind: "move-workspace-map", machineId: BOX, args: { destinationMachine: BOX, repoKey: "fixture", workspaceId: "workspace" } }] : []);
     expect(await mounted.bindings.mapping!(request, { file: "/fixture/remote/session.jsonl", cwd: "/fixture/outside", stores: ["global", "worktree:fixture:workspace"] })).toBeNull();
   } finally { await mounted.close(); }
 }, 5000);

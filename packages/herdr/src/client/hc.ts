@@ -83,7 +83,7 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
     return trackAvailability({ key, ...(machine ? { machine } : {}) }, () => invokeCli(options.binary, argv, env, options.maxReplyBytes, input, callOptions), available);
   };
   let selectedCore: CoreId | undefined = options.isolationProof?.coreIds[options.isolationProof.sockets.indexOf(selectedSocket(env))];
-  const identity: HcClient['identity'] = async callOptions => {
+  const identity = async (callOptions?: HcCallOptions): Promise<CoreIdentity> => {
     const core = parseCore(await call(['server', 'status', '--json'], undefined, callOptions), env);
     if (selectedCore !== undefined && selectedCore !== core.coreId) throw new HerdrError('core-mismatch', "this session's Herdr terminal belongs to a core that is no longer running; start a new session in Herdr", core);
     selectedCore = core.coreId; return core;

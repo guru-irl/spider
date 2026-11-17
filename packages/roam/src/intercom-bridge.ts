@@ -202,8 +202,13 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     const reachability = link !== "live" ? link : entry.stale && (!entry.reachability || entry.reachability === "live") ? "unknown" : entry.reachability ?? "live";
     return { ...entry, stale: reachability !== "live", reachability };
   };
+  const currentLocalPresence = (): RemoteSessionInfo[] => [...ports.localPresence(), ...brokerLocal].filter(entry => {
+    if (intake?.closed(entry.address)) return false;
+    const home = ports.authoritativeHome(entry.address);
+    return home ? home.machineId === entry.machineId && home.epoch === entry.homeEpoch : entry.homeEpoch === null;
+  });
   const firstHomePresence = (endpoint: SessionEndpoint, edge: EdgeRuntime | null): RemoteSessionInfo | undefined => {
-    const entries = edge ? state(edge).roster : [...ports.localPresence(), ...brokerLocal];
+    const entries = edge ? state(edge).roster : currentLocalPresence();
     return entries.find(entry => sameAddress(entry.address, endpoint.address) && entry.machineId === endpoint.machineId &&
       entry.homeEpoch === endpoint.homeEpoch && entry.activationEpoch === endpoint.activationEpoch &&
       (edge ? (ports.authorizePresence?.(edge.config.peer.machineId, entry) ?? entry.machineId === edge.config.peer.machineId)
@@ -229,7 +234,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
       if (origin && origin !== entry.machineId) {
         ports.store.recordRejection(peer, "presence", "presence-origin-mismatch"); return false;
       }
-      const local = [...ports.localPresence(), ...brokerLocal].filter(item => sameAddress(item.address, entry.address));
+      const local = currentLocalPresence().filter(item => sameAddress(item.address, entry.address));
       const others = [...edges.values()].filter(other => other !== edge).flatMap(other => state(other).roster)
         .concat([...entries]).filter(item => sameAddress(item.address, entry.address) &&
           (item.machineId !== entry.machineId || item.activationEpoch !== entry.activationEpoch));
@@ -255,7 +260,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
   const publish = (): void => {
     if (!ports.publishPresence && !brokerReady) return;
     const entries = new Map<string, RemoteSessionInfo>();
-    const local = new Set([...ports.localPresence(), ...brokerLocal].filter(isRemoteSessionInfo).map(entry => addressKey(entry.address)));
+    const local = new Set(currentLocalPresence().filter(isRemoteSessionInfo).map(entry => addressKey(entry.address)));
     for (const edge of edges.values()) {
       if (fenced(edge)) continue;
       const persisted = state(edge);
@@ -296,7 +301,7 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
     metadataOnly = false, skipIds: readonly string[] = [], refusals: readonly IntercomRefusal[] = []): IntercomExchange => {
     const peer = edge.config.peer.machineId, result = blank(peer, generation), max = INTERCOM_EXCHANGE_BYTES - 4096;
     const topology = ports.topology?.(peer); if (topology) result.topology = topology;
-    const local = [...new Map([...ports.localPresence(), ...brokerLocal].map(entry => [addressKey(entry.address), entry])).values()];
+    const local = [...new Map(currentLocalPresence().map(entry => [addressKey(entry.address), entry])).values()];
     if (local.some(entry => !isRemoteSessionInfo(entry) || entry.machineId !== ports.machineId)) return bad("invalid-presence");
     const advertised = new Map(local.map(entry => [addressKey(entry.address), entry]));
     if (ports.advertiseRelay) for (const other of edges.values()) if (other !== edge && !fenced(other)) {

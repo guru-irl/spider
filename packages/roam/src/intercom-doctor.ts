@@ -10,6 +10,7 @@ import { createIntercomRegistry } from "./intercom-registry";
 import { inspectPairUnit, type PairResourcePorts } from "./intercom-pair-resources";
 import { pairPaths } from "./intercom-pair-files";
 import { compareSshHostKey, inspectServedSshIdentity, scanPresentedSshKeys, sshScanType } from "./intercom-ssh-observation";
+import { DEFAULT_SSH_KEYSCAN } from "./intercom-ssh-defaults";
 import { runForeground } from "./intercom-local-ops";
 import { observeHelperFeatures, requestHelperInspect } from "./intercom-helper";
 import { openDiagnosticSnapshot } from './diagnostic-snapshot';
@@ -104,7 +105,7 @@ export async function inspectLocalIntercomDoctor(input: DoctorOptions): Promise<
     if (localTarget) try {
       const port = pair.connector.remotePort, type = sshScanType(pair.hostKey);
       if (!targetScan) {
-        const observation = input.inspectSsh ? input.inspectSsh(pair) : scanPresentedSshKeys({ keyscan: "/usr/bin/ssh-keyscan", sshPort: port, run }, type)
+        const observation = input.inspectSsh ? input.inspectSsh(pair) : scanPresentedSshKeys({ keyscan: DEFAULT_SSH_KEYSCAN, sshPort: port, run }, type)
           .then(hostKeys => ({ targetMachineId: input.config.machineId, sshUser: userInfo().username, hostKeys }));
         targetScan = { port, type, observation };
       }

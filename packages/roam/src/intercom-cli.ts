@@ -16,6 +16,7 @@ import { createIntercomRegistry } from "./intercom-registry";
 import { topologyTransitionId } from "./intercom-topology";
 import { requestHelperRevoke, requestHelperTopology } from "./intercom-helper";
 import { runForeground, runLocalPairCleanup } from "./intercom-local-ops";
+import { DEFAULT_SSH, DEFAULT_SSH_KEYGEN } from "./intercom-ssh-defaults";
 import { invokeCli } from "@spider/herdr/client/hc";
 import { parseCore, selectedSocket } from "@spider/herdr/client/parse";
 
@@ -110,7 +111,7 @@ export async function runIntercomRevokeCli(input: { root: string; pairId: string
       },
       fenceLocal: value => requestHelperRevoke(input.root, value),
       cleanupLocal: value => runLocalPairCleanup(value, { machineId: config.machineId, root: input.root, home: homedir(), node: process.execPath,
-        ssh: "/usr/bin/ssh", keygen: "/usr/bin/ssh-keygen", recipe: config.intercom.connector, run: runForeground }),
+        ssh: DEFAULT_SSH, keygen: DEFAULT_SSH_KEYGEN, recipe: config.intercom.connector, run: runForeground }),
       async notify() {},
     });
     const result = await revokeIntercomPair(input.pairId, ports);

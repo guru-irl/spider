@@ -114,6 +114,25 @@ describe('headless story matrix', () => {
     }
   });
 
+  it('places the runner deadline before the shorter R05 step limit', () => {
+    const setup = step(workflow('herdr-stories').jobs.stories!, 'Set overall story deadline');
+    const root = mkdtempSync(join(process.cwd(), '.spider/scratch/story-deadline-'));
+    try {
+      mkdirSync(join(root, 'bin'));
+      writeFileSync(join(root, 'bin/date'), '#!/bin/sh\nprintf "1000000\\n"\n', { mode: 0o700 });
+      const output = join(root, 'environment');
+      const run = (short = '') => spawnSync('bash', ['-e', '-o', 'pipefail', '-c', setup.run!], {
+        env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, GITHUB_ENV: output,
+          JOB_MINUTES: '2', STEP_MINUTES: '1', SHORT_DEADLINE: short }, encoding: 'utf8' });
+      expect(run().status).toBe(0);
+      expect(readFileSync(output, 'utf8')).toBe('SPIDER_HERDR_E2E_DEADLINE=1040000\n');
+      expect(run('41').status).not.toBe(0);
+      expect(run('20').status).toBe(0);
+      expect(readFileSync(output, 'utf8')).toContain('SPIDER_HERDR_E2E_DEADLINE=1020000\n');
+      expect(setup.env?.STEP_MINUTES).toBe("${{ matrix.story == 'R05' && 1 || matrix.timeout }}");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('shares one build and keeps each matrix story independently bounded', () => {
     const definition = workflow('herdr-stories'), prepare = definition.jobs.prepare!, story = definition.jobs.stories!;
     expect(definition.on).toHaveProperty('pull_request');

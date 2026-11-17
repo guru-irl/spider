@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { openDbAt, type Db } from "@spider/db-core";
+import { bus, openDbAt, type Db } from "@spider/db-core";
 import * as coordinators from "../coordinators";
 import { adoptShared, resetSharedRegistryForTests } from "../child-registry";
 import { Runner, type ChildHandle } from "../runner";
@@ -136,6 +136,32 @@ describe("active children in the session registry", () => {
     f.runner.runAsync(task);
     expect(() => f.handle.kill("cancel fixture")).toThrow("kill failed");
     expect(count()).toBe(1);
+  });
+
+  it("replays child events while an asynchronous cancellation later fails", async () => {
+    const f = fixture();
+    let rejectKill!: (error: Error) => void;
+    f.handle.killAsync = () => new Promise((_resolve, reject) => { rejectKill = reject; });
+    const row = f.runner.runAsync(task);
+    const killing = f.handle.killAsync!(1, "cancel fixture");
+    const failed = expect(killing).rejects.toThrow("kill failed");
+    const seen: string[] = [];
+    const off = bus.on(event => { if (event.runId === row.id && event.type === "escalation") seen.push(event.summary ?? ""); });
+    try {
+      tailer.poll();
+      db.prepare("INSERT INTO run_events(run_id,session_id,ts,type,summary) VALUES (?,'parent',1,'escalation','during')").run(row.id);
+      tailer.poll();
+      rejectKill(new Error("kill failed"));
+      await failed;
+      expect(f.store.get(row.id)?.status).toBe("running");
+      db.prepare("INSERT INTO run_events(run_id,session_id,ts,type,summary) VALUES (?,'parent',2,'escalation','after')").run(row.id);
+      tailer.poll();
+      expect(seen).toEqual(["during", "after"]);
+    } finally {
+      off();
+      f.settle({ exitCode: 0 });
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
   });
 
   it("does not count a failed launch", () => {

@@ -27,8 +27,10 @@ import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/
 import { createMoveStory, assertMoveState, HUB, BOX, type MoveMachine } from './roam-move.test.js';
 
 export function restorationPending(result: unknown): boolean {
-  return !!result && typeof result === 'object' && 'code' in result && result.code === 3 && 'reason' in result &&
-    (result.reason === 'recovery-pending' || result.reason === 'readiness-pending');
+  if (!result || typeof result !== 'object' || !('code' in result) || !('reason' in result)) return false;
+  if (result.code === 3) return result.reason === 'recovery-pending' || result.reason === 'readiness-pending';
+  return result.code === 0 && result.reason === 'destroyed-machine-recovered' && 'value' in result && !!result.value && typeof result.value === 'object' &&
+    'presentation' in result.value && result.value.presentation === 'pending';
 }
 export function presentationInProgress(result: Pick<PaneActionOutcome, 'status' | 'reason'>): boolean {
   return result.status === 'pending' && result.reason === 'operation-in-progress';

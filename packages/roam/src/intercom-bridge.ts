@@ -858,7 +858,9 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
           for (const edge of edges.values()) if (edge.config.initiator && state(edge).status === "down") failAsks(edge);
         } catch (error) {
           ports.onBrokerError?.(error);
-          brokerReady = false; await ports.broker?.close();
+          const wasReady = brokerReady; brokerReady = false;
+          if (wasReady) ports.onBrokerState?.(false);
+          await ports.broker?.close();
           if (!stopped) scheduleBrokerReconnect();
         }
       })();

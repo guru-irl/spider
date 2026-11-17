@@ -76,6 +76,37 @@ it.each(['/bin/bash', '/bin/zsh'])('a returning %s prompt ends pi, while a reboo
   }
 }, 15000);
 
+it.each(['/bin/bash', '/bin/zsh'])('an auto-resumed pi is marked ended before the first %s prompt returns', async binary => {
+  root = await mkdtemp(join(await realpath(tmpdir()), 'auto-first-'));
+  const state = join(root, 'herdr'), agent = join(root, 'agent'); await mkdir(agent);
+  const file = join(root, 's1.jsonl'); await writeFile(file, JSON.stringify({ type: 'session', id: 's1', cwd: root }) + '\n');
+  const terminal = { coreId: 'core', terminalId: 't1', address: 't1', socket: join(root, 'socket'), sessionNamespace: 'test' } as TerminalIdentity;
+  core.terminal = terminal;
+  const owner: Owner = { terminal, sessionId: 's1' as SessionId, generation: 'g1' as Generation, sessionFile: file, cwd: root, name: 'Saved' };
+  const registry = createTerminalRegistry(state), processInventory = { presence: createProcessPresence(state), leases: createSessionLeases(state), processes: async () => [], probe: async () => ({ kind: 'absent' as const }) };
+  await registry.record({ owner, recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: agent, extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, true);
+  await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: fileURLToPath(new URL('../../../herdr/src/__tests__/fixtures/resume-shutdown-process.ts', import.meta.url)), outDir: join(root, 'dist/herdr'), emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'cli.mjs' } } } });
+  const config = parseHerdrConfig({ app: { binary: '/app', home: root }, core: { binary: '/hc', config: join(root, 'core') }, agentDirectory: agent, globalRoot: root, shellRc: join(root, 'rc'), spaces: [], machines: [], resume: 'auto' });
+  const ports = createProductionHerdrCliPorts(root, { ...process.env, SPIDER_GLOBAL_ROOT: root });
+  const rc = join(root, binary.endsWith('zsh') ? '.zshrc' : 'bashrc');
+  let child: ReturnType<typeof spawn> | undefined;
+  try {
+    const source = await ports.resumeOffer!({ config, configPath: join(root, 'config.json'), packageRoot: root, journalRoot: join(root, 'journal') });
+    await writeFile(rc, source + "\nPS1=''\n");
+    child = spawn(binary, binary.endsWith('zsh') ? ['-i'] : ['--noprofile', '--rcfile', rc, '-i'], { cwd: root, env: { ...process.env, HOME: root, ZDOTDIR: root, TEST_ROOT: root, SPIDER_GLOBAL_ROOT: root }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let output = '', errors = '';
+    child.stdout!.on('data', chunk => { output += chunk; }); child.stderr!.on('data', chunk => { errors += chunk; });
+    child.stdin!.write("printf 'command-started\\n'; read _hold\n");
+    for (let i = 0; i < 1000 && !output.includes('command-started'); i++) await delay(10);
+    expect(output, errors).toContain('Resuming Saved…'); expect(output, errors).toContain('command-started');
+    expect(await offerResume(terminal, { registry, processInventory, coreStartedAt: async () => Number.MAX_SAFE_INTEGER })).toBeNull();
+  } finally {
+    child?.stdin?.end('continue\nexit\n');
+    if (child && child.exitCode === null && child.signalCode === null) { const exited = new Promise<void>(resolveExit => child!.once('exit', () => resolveExit())); child.kill('SIGKILL'); await exited; }
+    await ports.dispose();
+  }
+}, 20000);
+
 it('the configured auto policy produces one automatic snippet per proved restart', async () => {
   root = await mkdtemp(join(await realpath(tmpdir()), 'auto-host-'));
   const terminal = { coreId: 'core', terminalId: 't1', address: 't1', socket: join(root, 'socket'), sessionNamespace: 'test' } as TerminalIdentity;

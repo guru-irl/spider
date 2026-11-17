@@ -9,9 +9,10 @@ import { registerHerdrSessions } from '../../sessions/register.js';
 import { processStartTime } from '../../../../subagents/src/process-identity.js';
 import { join } from 'node:path';
 
-const root = process.argv[2];
+const shellLaunch = process.argv[2] === 'resume';
+const root = shellLaunch ? process.env.TEST_ROOT! : process.argv[2];
 const file = join(root, 's1.jsonl');
-const terminal = { coreId: 'core-one', terminalId: 't1', address: 't1', socket: '/fixture/core.sock', sessionNamespace: 'fixture' } as TerminalIdentity;
+const terminal = (shellLaunch ? { coreId: 'core', terminalId: 't1', address: 't1', socket: join(root, 'socket'), sessionNamespace: 'test' } : { coreId: 'core-one', terminalId: 't1', address: 't1', socket: '/fixture/core.sock', sessionNamespace: 'fixture' }) as TerminalIdentity;
 const owner = { sessionId: 's1', generation: 'g1', terminal, sessionFile: file, name: 'named session', cwd: root } as Owner;
 const mode = process.argv[3] === 'rpc' ? 'rpc' : 'tui';
 const context = { mode, sessionManager: { getSessionFile: () => file, getSessionId: () => 's1', getSessionName: () => 'named session' } } as unknown as ExtensionContext;
@@ -19,16 +20,18 @@ const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Prom
 const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;
 const identity = { pid: process.pid, startIdentity: processStartTime(process.pid)! };
 let active = true;
-const registry = createTerminalRegistry(root);
+const state = shellLaunch ? join(root, 'herdr') : root;
+const registry = createTerminalRegistry(state);
 const startupRegistry = process.argv[4] === 'hold' ? { ...registry, record: async () => { process.send?.('starting'); await new Promise<void>(() => { setInterval(() => {}, 1000); }); } } : registry;
 registerHerdrSessions(pi, {
-  registry: startupRegistry, presence: createProcessPresence(root), leases: createSessionLeases(root),
+  registry: startupRegistry, presence: createProcessPresence(state), leases: createSessionLeases(state),
   processes: async () => [], probe: async () => ({ kind: 'absent' }), processIdentity: identity,
   currentSession: () => ({ ...identity, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address }),
   owner: () => active ? owner : null, coreStartedAt: () => 1, launchEnvironment: { agentDirectory: join(root, 'agent'), extensionArguments: [] },
 });
 const fire = (name: string, event: unknown) => handlers.get(name)!(event, context);
 await fire('session_start', { type: 'session_start', reason: 'startup' });
+if (shellLaunch) { await fire('session_shutdown', { type: 'session_shutdown', reason: 'quit' }); process.exit(0); }
 // Interactive pi prepends its signal handler; RPC appends it. Both dispose with reason 'quit'.
 for (const signal of ['SIGTERM', 'SIGHUP'] as const) {
   const shutdown = () => { void fire('session_shutdown', { type: 'session_shutdown', reason: 'quit' }).then(() => process.exit(0)); };

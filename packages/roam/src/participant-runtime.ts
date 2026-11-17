@@ -146,13 +146,14 @@ export function createBoxParticipantWake(input: { root: string; db: import("@spi
       const saved = readLocal<{ sessionId: string; launchId: string; epoch: number }>(input.db, "participant-launch", operationId);
       if (saved && (saved.sessionId !== sessionId || saved.launchId !== launchId || saved.epoch !== intent.epoch)) return { ok: false, reason: "participant-launch-mismatch" };
       if (!saved) {
-        const previous = await intents.get(sessionId);
-        const joins = (row: typeof previous) => !!row && isDeepStrictEqual(row.value.intent, intent) &&
-          (row.value.supervision.kind === "launching" && row.value.supervision.operationId === launchId || row.value.supervision.kind === "live");
-        const joined = joins(previous);
-        if (previous && (!joined && previous.value.supervision.kind !== "idle" || previous.value.intent.epoch > intent.epoch)) return { ok: false, reason: "participant-launch-conflict" };
-        const next = { intent, failures: [], supervision: { kind: "launching" as const, phase: "reserved" as const, operationId: launchId } };
-        if (!joined && (await intents.update(sessionId, previous?.version ?? null, next)).kind !== "updated" && !joins(await intents.get(sessionId))) return { ok: false, reason: "participant-launch-conflict" };
+        for (;;) {
+          const previous = await intents.get(sessionId);
+          const same = previous && isDeepStrictEqual(previous.value.intent, intent);
+          if (same && (previous.value.supervision.kind === "launching" && previous.value.supervision.operationId === launchId || previous.value.supervision.kind === "live")) break;
+          if (previous && (previous.value.supervision.kind !== "idle" || previous.value.intent.epoch >= intent.epoch && !same)) return { ok: false, reason: "participant-launch-conflict" };
+          const next = { intent, failures: [], supervision: { kind: "launching" as const, phase: "reserved" as const, operationId: launchId } };
+          if ((await intents.update(sessionId, previous?.version ?? null, next)).kind === "updated") break;
+        }
         writeLocal(input.db, "participant-launch", operationId, { sessionId, launchId, epoch: intent.epoch });
       }
       await (input.wake ?? wakeSupervisor)();

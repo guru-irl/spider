@@ -51,7 +51,7 @@ it.each(['/bin/bash', '/bin/zsh'])('a returning %s prompt ends pi, while a reboo
   let child: ReturnType<typeof spawn> | undefined, backgroundPid: number | undefined;
   try {
     const source = await ports.resumeOffer!(request);
-    await writeFile(rc, (binary.endsWith('bash') ? 'set +H\n' : '') + source + "\nPS1=''\nprintf 'rc-ready\\n'\n");
+    await writeFile(rc, (binary.endsWith('bash') ? 'set +H\n' : '') + source + "\nkill() { return 1; }\nPS1=''\nprintf 'rc-ready\\n'\n");
     const env = { ...process.env, HOME: root, ZDOTDIR: root, PATH: bin, HC_TERMINAL_ID: 't1', HC_TERMINAL_SOCKET: terminal.socket };
     child = spawn(binary, binary.endsWith('zsh') ? ['-i'] : ['--noprofile', '--rcfile', rc, '-i'], { cwd: root, env, stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '', errors = '';
@@ -69,7 +69,7 @@ it.each(['/bin/bash', '/bin/zsh'])('a returning %s prompt ends pi, while a reboo
     const live = await registry.get(terminal); expect(live?.activityId).toBeTruthy();
     const [liveMarker] = (await readdir(join(state, 'resume-starts', (await readdir(join(state, 'resume-starts')))[0]))).filter(name => name.startsWith('live-'));
     expect(liveMarker).toContain(live!.activityId!);
-    child.stdin!.write("kill -TERM \"$_bgpid\"; wait \"$_bgpid\" 2>/dev/null; printf 'background-stopped\\n'\nprintf 'background-next\\n'\n"); await until('background-next'); backgroundPid = undefined;
+    child.stdin!.write("builtin kill -TERM \"$_bgpid\"; wait \"$_bgpid\" 2>/dev/null; printf 'background-stopped\\n'\nprintf 'background-next\\n'\n"); await until('background-next'); backgroundPid = undefined;
     expect(await offerResume(terminal, restart), 'a stopped background pi ends on the next prompt').toBeNull();
     await fire('session_start', 'startup');
     await fire('session_shutdown', 'quit');

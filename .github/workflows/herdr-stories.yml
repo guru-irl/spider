@@ -9,6 +9,11 @@ on:
         required: false
         default: ''
         type: string
+      deadline-seconds:
+        description: Optional shorter runner deadline for evidence checks
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -95,6 +100,22 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
+      - name: Set overall story deadline
+        env:
+          JOB_MINUTES: ${{ matrix.timeout }}
+          SHORT_DEADLINE: ${{ inputs.deadline-seconds }}
+        run: |
+          set -euo pipefail
+          # Observed archive/upload: 4 s. Reserve 10 s for them, 30 s for
+          # owned-process cleanup, and 5 s for initial job setup.
+          seconds=$((JOB_MINUTES * 60 - 45))
+          if [ -n "$SHORT_DEADLINE" ]; then
+            [[ "$SHORT_DEADLINE" =~ ^[0-9]+$ ]]
+            (( SHORT_DEADLINE > 0 && SHORT_DEADLINE <= seconds ))
+            seconds="$SHORT_DEADLINE"
+          fi
+          echo "SPIDER_HERDR_E2E_DEADLINE=$(( $(date +%s%3N) + seconds * 1000 ))" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:

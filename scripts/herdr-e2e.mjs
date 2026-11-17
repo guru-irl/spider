@@ -178,8 +178,9 @@ export function storyTimeoutMs(id) {
 export function storyRunBudgetMs(options) {
   return 60_000 + options.ids.reduce((total, id) => total + storyTimeoutMs(id), 0) + (options.harness ? 10 * 60_000 : 0);
 }
-export function command(executable, argv, cwd, env, log, quiet = false, supervisor, timeoutMs = 10 * 60_000) {
+export function command(executable, argv, cwd, env, log, quiet = false, supervisor, timeoutMs = 10 * 60_000, deadline) {
   return new Promise((resolve, reject) => {
+    if (deadline && Date.now() >= deadline.at) { deadline.expire(); reject(new Error('runner-deadline')); return; }
     writeFileSync(log, '');
     const child = spawn(executable, argv, { cwd, env, detached: Boolean(supervisor), timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
     if (child.pid && supervisor) {
@@ -188,8 +189,16 @@ export function command(executable, argv, cwd, env, log, quiet = false, supervis
     }
     let output = '';
     for (const stream of [child.stdout, child.stderr]) stream.on('data', data => { output += data; appendFileSync(log, data); if (!quiet) process.stdout.write(data); });
-    child.on('error', reject);
-    child.on('close', (code, signal) => resolve({ code, signal, output }));
+    let expired = false;
+    const timer = deadline && setTimeout(() => {
+      expired = true;
+      deadline.expire();
+      try { if (supervisor && child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); }
+      catch (error) { if (error.code !== 'ESRCH') reject(error); }
+    }, Math.max(0, deadline.at - Date.now()));
+    const clear = () => { if (timer) clearTimeout(timer); };
+    child.on('error', error => { clear(); reject(error); });
+    child.on('close', (code, signal) => { clear(); if (expired) reject(new Error('runner-deadline')); else resolve({ code, signal, output }); });
   });
 }
 export async function packEntryDigests(checkout, root, pack) {
@@ -212,6 +221,17 @@ export async function main(argv = process.argv.slice(2)) {
   for (const directory of ['tmp', 'home', 'xdg-config', 'xdg-state']) mkdirSync(path.join(root, directory), { mode: 0o700 });
   mkdirSync(path.join(root, 'stories'), { mode: 0o700 });
   const started = Date.now();
+  const deadlineAt = process.env.SPIDER_HERDR_E2E_DEADLINE;
+  if (deadlineAt !== undefined && (!/^\d+$/.test(deadlineAt) || !Number.isSafeInteger(Number(deadlineAt)))) throw new Error('invalid runner deadline');
+  let deadlineExpired = false;
+  const overall = deadlineAt === undefined ? undefined : { at: Number(deadlineAt), expire() {
+    if (deadlineExpired) return;
+    deadlineExpired = true;
+    const evidence = { reason: 'runner-deadline', deadlineAt: Number(deadlineAt), expiredAt: Date.now(), selected: options.ids };
+    writeFileSync(path.join(root, 'deadline.json'), JSON.stringify(evidence, null, 2));
+    console.error(JSON.stringify(evidence));
+  } };
+  const work = (executable, argv, cwd, env, log, quiet = false, supervisor, timeoutMs) => command(executable, argv, cwd, env, log, quiet, supervisor, timeoutMs, overall);
   // Tool credentials and HC ownership are not inherited by fixture processes.
   const env = runnerEnvironment(process.env, root);
   Object.assign(env, { TMPDIR: path.join(root, 'tmp'), SPIDER_HERDR_E2E_RUN_ROOT: root, SPIDER_HERDR_E2E_OPTIONS: JSON.stringify(options), SPIDER_TEST_FIXTURE_CHECKOUT: checkout, npm_config_cache: path.join(root, 'npm-cache'), npm_config_logs_dir: path.join(root, 'npm-logs') });
@@ -230,7 +250,7 @@ export async function main(argv = process.argv.slice(2)) {
   writeFileSync(path.join(root, 'matrix.md'), renderMatrix(interrupted));
   const entry = cleanupEntry(checkout);
   const resources = await import(pathToFileURL(entry.module).href);
-  const recovery = await command(process.execPath, [entry.module, 'reconcile', entry.ledgers], checkout, env, path.join(root, 'startup-reconciliation.json'), true);
+  const recovery = await work(process.execPath, [entry.module, 'reconcile', entry.ledgers], checkout, env, path.join(root, 'startup-reconciliation.json'), true);
   if (recovery.code !== 0) throw new Error('startup cleanup reconciliation failed');
   const ledger = resources.openLedger(entry.ledgers, root);
   const watchdog = resources.startWatchdog(ledger, Date.now() + storyRunBudgetMs(options) + 20 * 60_000, path.join(entry.ledgers, `${ledger.id}.watchdog.log`));
@@ -238,23 +258,23 @@ export async function main(argv = process.argv.slice(2)) {
   writeFileSync(path.join(root, 'runner-ledger.json'), JSON.stringify({ ledgerPath: ledger.path, cleanupProofPath: ledger.path.replace(/\.json$/, '.cleanup.json'), watchdog: watchdog.identity }, null, 2));
   try {
     if (options.build) {
-      const build = await command('npm', ['run', 'build'], checkout, env, path.join(root, 'build.log'), false, supervisor);
+      const build = await work('npm', ['run', 'build'], checkout, env, path.join(root, 'build.log'), false, supervisor);
       if (build.code !== 0) throw new Error('build failed');
     }
     Object.assign(env, { npm_config_cache: path.join(root, 'npm-cache'), npm_config_logs_dir: path.join(root, 'npm-logs') });
-    const { entries, digests } = await packEntryDigests(checkout, root, () => command('npm', ['pack', '--json', '--ignore-scripts', '--foreground-scripts=false', '--pack-destination', root], checkout, env, path.join(root, 'pack.log'), false, supervisor));
+    const { entries, digests } = await packEntryDigests(checkout, root, () => work('npm', ['pack', '--json', '--ignore-scripts', '--foreground-scripts=false', '--pack-destination', root], checkout, env, path.join(root, 'pack.log'), false, supervisor));
     // npm output may include prepare diagnostics; use the actual owned tarball,
     // not an untrusted filename obtained from mixed stdout and stderr.
     const tarballs = readdirSync(root).filter(name => name.endsWith('.tgz'));
     if (tarballs.length !== 1) throw new Error('pack must produce exactly one tarball');
     const tarball = path.join(root, tarballs[0]);
-    const listing = await command('tar', ['-tzf', tarball], checkout, env, path.join(root, 'tar-list.log'), true, supervisor);
+    const listing = await work('tar', ['-tzf', tarball], checkout, env, path.join(root, 'tar-list.log'), true, supervisor);
     if (listing.code !== 0 || listing.output.trim().split('\n').some(name => !name.startsWith('package/') || name.split('/').includes('..'))) throw new Error('unsafe package paths');
-    const metadata = await command('tar', ['-tvzf', tarball], checkout, env, path.join(root, 'tar-metadata.log'), true, supervisor);
+    const metadata = await work('tar', ['-tvzf', tarball], checkout, env, path.join(root, 'tar-metadata.log'), true, supervisor);
     if (metadata.code !== 0 || metadata.output.trim().split('\n').some(line => !['-', 'd'].includes(line[0]))) throw new Error('package links or unsupported entries');
     const unpack = path.join(root, 'packed');
     mkdirSync(unpack, { mode: 0o700 });
-    const extract = await command('tar', ['-xzf', tarball, '-C', unpack], checkout, env, path.join(root, 'extract.log'), false, supervisor);
+    const extract = await work('tar', ['-xzf', tarball, '-C', unpack], checkout, env, path.join(root, 'extract.log'), false, supervisor);
     if (extract.code !== 0) throw new Error('package extraction failed');
     const packedRoot = path.join(unpack, 'package');
     for (const entry of entries) {
@@ -264,7 +284,7 @@ export async function main(argv = process.argv.slice(2)) {
     env.SPIDER_HERDR_E2E_PACKED_ROOT = packedRoot;
     env.SPIDER_HERDR_E2E_TIER = options.tier;
     env.SPIDER_HERDR_E2E_STORIES = options.ids.join(',');
-    const run = await command(process.execPath, [path.join(checkout, 'node_modules/vitest/vitest.mjs'), 'run', '--config', 'packages/herdr/e2e/vitest.config.ts', '--maxWorkers', String(storyWorkers(options))], checkout, storyWorkerEnvironment(env, process.env, options.tier), path.join(root, 'vitest.log'), false, supervisor, storyRunBudgetMs(options));
+    const run = await work(process.execPath, [path.join(checkout, 'node_modules/vitest/vitest.mjs'), 'run', '--config', 'packages/herdr/e2e/vitest.config.ts', '--maxWorkers', String(storyWorkers(options))], checkout, storyWorkerEnvironment(env, process.env, options.tier), path.join(root, 'vitest.log'), false, supervisor, storyRunBudgetMs(options));
     const selectionPath = path.join(root, 'selection.json');
     if (existsSync(selectionPath)) selected = JSON.parse(readFileSync(selectionPath, 'utf8'));
     runSucceeded = run.code === 0;
@@ -282,6 +302,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
   const reports = readdirSync(path.join(root, 'stories')).filter(x => x.endsWith('.json')).map(x => JSON.parse(readFileSync(path.join(root, 'stories', x), 'utf8')));
   const matrix = buildMatrix(options.tier, selected, reports);
+  if (deadlineExpired) for (const row of matrix) if (selected.includes(row.id)) { row.result = 'failed'; row.reason = 'runner-deadline; see deadline.json'; }
   if (cleanupFailed) for (const row of matrix) if (selected.includes(row.id)) { row.result = 'failed'; row.reason = 'runner cleanup unproved; see runner-ledger.json and final-reconciliation.json'; }
   exit = runSucceeded && !runnerFailure && !cleanupFailed && complete(matrix, selected) ? 0 : 1;
   writeFileSync(path.join(root, 'matrix.json'), JSON.stringify(matrix, null, 2));

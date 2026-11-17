@@ -59,6 +59,9 @@ it.each(['/bin/bash', '/bin/zsh'])('a returning %s prompt ends pi, while a reboo
     await until('rc-ready');
     child.stdin!.write("printf 'empty-one\\n'\nprintf 'empty-two\\n'\n"); await until('empty-two');
     await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await registry.record({ owner, recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: agent, extensionArguments: [] }, activityId: '0123456789abcdef0123456789abcdef' }, { pid: process.pid } as never);
+    child.stdin!.write("printf 'background-one\\n'\nprintf 'background-two\\n'\n"); await until('background-two');
+    expect(await offerResume(terminal, restart), 'a still-running pi stays live at the prompt').not.toBeNull();
     await fire('session_start', 'startup');
     await fire('session_shutdown', 'quit');
     expect(await offerResume(terminal, restart), 'before the shell prompt returns').not.toBeNull();

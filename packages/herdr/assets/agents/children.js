@@ -159,6 +159,7 @@ function summarizeFinished(all, deferred, feed, viewersBySession, labels, now, o
     }
   }
   const hiddenNative = new Set(), folded = options.folded ?? new Set(), expanded = options.expandedConsoles ?? new Set();
+  const expandedSubagents = options.expandedSubagents ?? new Set();
   let hiddenNativeCount = 0;
   for (const row of retained) {
     if (live.has(row.key)) continue;
@@ -167,7 +168,8 @@ function summarizeFinished(all, deferred, feed, viewersBySession, labels, now, o
     while (current && !seen.has(current.key)) {
       seen.add(current.key);
       const parent = parentOf(current), parentRow = byKey.get(parent);
-      if (folded.has(parent) || parentRow?.kind === 'console' && !expanded.has(parent)) visible = false;
+      if ((parentRow?.kind === 'subagent' || selectedRun(parent)) ? !expandedSubagents.has(parent)
+        : folded.has(parent) || parentRow?.kind === 'console' && !expanded.has(parent)) visible = false;
       if (selectedRun(parent)) {
         if (!needed.has(parent)) { hiddenNative.add(row.key); if (visible) hiddenNativeCount++; }
         break;
@@ -437,7 +439,7 @@ export function agentModelChildStats(rows, listed, ranks) {
 }
 
 /** Map changed controls to their owners without scanning finished rows during render. */
-export function agentModelTreeStates(model, folded, expandedConsoles, expandedGroups, shownFinished) {
+export function agentModelTreeStates(model, folded, expandedConsoles, expandedGroups, shownFinished, subagentStates = new Map()) {
   const states = new Map();
   const add = (owner, type, key) => {
     if (!states.has(owner)) states.set(owner, []);
@@ -448,6 +450,7 @@ export function agentModelTreeStates(model, folded, expandedConsoles, expandedGr
   };
   fromIndex(model.childOwners, folded, 'fold');
   fromIndex(model.childOwners, expandedConsoles, 'console');
+  for (const [owner, state] of subagentStates) add(owner, 'subagent', state);
   fromIndex(model.groupOwners, expandedGroups, 'group');
   for (const owner of shownFinished) add(owner, 'finished', owner);
   for (const [owner, values] of states) states.set(owner, JSON.stringify(values.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))));

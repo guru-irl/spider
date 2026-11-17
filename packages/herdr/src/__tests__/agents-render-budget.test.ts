@@ -250,6 +250,13 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       expect(find(root, 'sub-job')).toBeUndefined();
       expect(find(root, 'child-busy-live0')?.styles.tooltip?.[0]).toBe('Active work');
       expect(find(root, 'child-fold-live0')?.styles.tooltip?.[0]).toBe('Show children');
+      command.state = 'finished';
+      h.render(); await h.flush(); root = h.render();
+      expect(find(root, 'sub-job')).toBeUndefined();
+      expect(find(root, 'child-busy-live0')).toBeUndefined();
+      command.state = 'live';
+      h.render(); await h.flush(); root = h.render();
+      expect(find(root, 'child-fold-live0')?.styles.tooltip?.[0]).toBe('Show children');
       find(root, 'child-fold-live0').events.on_click({}, h.cx);
       root = h.render();
       expect(find(root, 'sub-job')).toBeDefined();
@@ -266,12 +273,36 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       expect(find(afterReload, 'sub-job')).toBeDefined();
       find(afterReload, 'child-fold-live0').events.on_click({}, h.cx);
       expect(find(reloaded.render(h.cx), 'sub-job')).toBeUndefined();
+      const again = new h.view.constructor(); again.init({}, h.cx); again.spiderFeeds = h.state.feeds;
+      expect(find(again.render(h.cx), 'sub-job')).toBeUndefined();
+      await again.close();
       find(reloaded.render(h.cx), 'fold-left-t0').events.on_click({}, h.cx);
       expect(find(reloaded.render(h.cx), 'sub-live0')).toBeUndefined();
       find(reloaded.render(h.cx), 'fold-left-t0').events.on_click({}, h.cx);
       expect(find(reloaded.render(h.cx), 'sub-live0')).toBeDefined();
       expect(find(reloaded.render(h.cx), 'sub-job')).toBeUndefined();
     } finally { await reloaded?.close(); await h.view.close(); }
+  });
+
+  it(`${version}: real nested viewers require each ancestor to be expanded`, async () => {
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.state.feeds[0].runs.rows.push({ ...first, id: 'nested', viewer: 'nested-viewer', name: 'Nested' });
+    h.state.terminals.push({ address: 'nested-viewer', parent: 'v0', state: 'live', status: 'working',
+      labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': 'nested' } },
+    { address: 'job-terminal', parent: 't0', state: 'live', status: 'working',
+      labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': 'nested' } });
+    try {
+      await h.ready(); let root = h.render();
+      expect(find(root, 'sub-live0')).toBeDefined();
+      expect(find(root, 'sub-nested')).toBeUndefined();
+      expect(find(root, 'sub-job')).toBeUndefined();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); root = h.render();
+      expect(find(root, 'sub-nested')).toBeDefined();
+      expect(find(root, 'sub-job')).toBeUndefined();
+      find(root, 'child-fold-nested').events.on_click({}, h.cx);
+      expect(find(h.render(), 'sub-job')).toBeDefined();
+    } finally { await h.view.close(); }
   });
 
   it(`${version}: a retained subagent with a live command stays collapsed and shows activity`, async () => {
@@ -282,13 +313,15 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     h.state.terminals.push({ address: 'job-terminal', parent: 't0', state: 'live', status: 'working',
       labels: { 'spider.kind': 'exec', 'spider.session': 's0', 'spider.job': 'job', 'spider.run': 'live0' } });
     h.storage.set('folded', JSON.stringify(['live0']));
+    const reloaded = new h.view.constructor(); reloaded.init({}, h.cx); reloaded.spiderFeeds = h.state.feeds;
     try {
-      await h.ready(); const root = h.render();
+      const root = reloaded.render(h.cx);
       expect(find(root, 'sub-live0')).toBeDefined();
       expect(find(root, 'sub-job')).toBeUndefined();
       expect(find(root, 'child-busy-live0')?.styles.tooltip?.[0]).toBe('Active work');
       expect(find(root, 'child-fold-live0')?.styles.tooltip?.[0]).toBe('Show children');
-    } finally { await h.view.close(); }
+      expect(h.storage.get('folded')).toBe(JSON.stringify(['live0']));
+    } finally { await reloaded.close(); await h.view.close(); }
   });
 
   it(`${version}: collapsed subagents keep console groups and their commands out of rendered rows`, async () => {
@@ -319,6 +352,45 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       find(root, 'child-fold-live0').events.on_click({}, h.cx);
       const expanded = h.render();
       expect(find(expanded, 'console-group:' + encodeURIComponent(`console-group:${JSON.stringify(['t0', 'live0'])}`))).toBeDefined();
+    } finally { drawing = false; await h.view.close(); }
+  });
+
+  it(`${version}: rendering does not scan saved expansions for hidden subagents`, async () => {
+    const h = fixture(version, 1, 0);
+    let drawing = false, reads = 0;
+    class TrackedSet extends Set<string> {
+      *[Symbol.iterator](): SetIterator<string> {
+        for (const key of super[Symbol.iterator]()) { if (drawing) reads++; yield key; }
+      }
+    }
+    h.view.expandedSubagents = new TrackedSet(Array.from({ length: 400 }, (_, i) => `old-${i}`));
+    try {
+      await h.ready(); h.render(); await h.flush();
+      drawing = true; h.render(); drawing = false;
+      expect(reads).toBe(0);
+    } finally { drawing = false; await h.view.close(); }
+  });
+
+  it(`${version}: rendering does not serialize hidden subagent expansion keys`, async () => {
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0];
+    for (let i = 0; i < 400; i++) {
+      const id = `nested-${i}`;
+      h.state.feeds[0].runs.rows.push({ ...first, id, viewer: `viewer-${i}` });
+      h.state.terminals.push({ address: `viewer-${i}`, parent: 'v0', state: 'live', status: 'working',
+        labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': id } });
+      h.view.expandedSubagents.add(id);
+    }
+    let drawing = false, bytes = 0;
+    const stringify = JSON.stringify;
+    vi.spyOn(JSON, 'stringify').mockImplementation(((...args: any[]) => {
+      const value = Reflect.apply(stringify, JSON, args);
+      if (drawing && typeof value === 'string') bytes += value.length;
+      return value;
+    }) as typeof JSON.stringify);
+    try {
+      await h.ready(); h.render(); await h.flush();
+      drawing = true; h.render(); drawing = false;
+      expect(bytes).toBeLessThan(4000);
     } finally { drawing = false; await h.view.close(); }
   });
 

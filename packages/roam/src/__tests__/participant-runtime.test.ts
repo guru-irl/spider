@@ -27,6 +27,7 @@ import { openJournal } from "../journal";
 import { handleSessionOperation } from "../participant-runtime";
 import { createRunningIntentAuthority } from "../session-control";
 import { createIntentStore } from "../intent";
+import * as intentModule from "../intent";
 
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
@@ -471,6 +472,26 @@ it.each(["supervisor-first", "wake-first"] as const)("the same intent joins one 
     expect(await wake({ sessionId: "s-1", operationId: "different-operation" })).toEqual({ ok: false, reason: "participant-intent-unavailable" });
     expect(launches).toBe(1);
   } finally { await supervisor.stop(); }
+}, 5000);
+
+it("wake joins when supervision creates the same idle intent before its reservation", async () => {
+  const { createBoxParticipantWake } = await import("../participant-runtime"), f = fixture();
+  await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
+  const store = createIntentStore(f.global.root);
+  let raced = false, wakes = 0;
+  vi.spyOn(intentModule, "createIntentStore").mockReturnValue({ ...store, async update(id, version, next) {
+    if (!raced && version === null) {
+      raced = true;
+      await store.update(id, null, { ...next, supervision: { kind: "idle", nextAttemptAt: null } });
+    }
+    return store.update(id, version, next);
+  } });
+  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, wake: async () => { wakes++; } });
+  const result = await wake({ sessionId: "s-1", operationId: f.operation.id });
+  expect(raced).toBe(true);
+  expect(result).toMatchObject({ ok: true });
+  expect(wakes).toBe(1);
+  expect((await store.get("s-1"))?.value.supervision).toMatchObject({ kind: "launching", phase: "reserved" });
 }, 5000);
 
 it("a confirmed crash gets one durable restart across a supervisor crash", async () => {

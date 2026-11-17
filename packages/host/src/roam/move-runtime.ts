@@ -40,6 +40,7 @@ import { inspectSession } from "@spider/roam/session-file";
 import { verifyWorkspace } from "@spider/roam/workspace-import";
 import { createMoveControlHandler } from "@spider/roam/adapter-controls";
 import { recordMoveNoStart } from "./launch-observation";
+import { readOwnedLaunchReadiness } from "./move-readiness";
 import { observeHubRestoration } from "@spider/roam/hub-restoration";
 
 export function moveBindingDiagnostics(bindings: MoveAdapterBindings): Diagnostic[] {
@@ -121,15 +122,9 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
   const git: Omit<GitPorts, "journal" | "limits"> = { run: (cwd, argv, options) => gitRun(cwd, argv[0] === "git" ? argv : ["git", ...argv], options), scratch, worktreeCommand: null };
   const authority = createRunningIntentAuthority(globalDb);
   const localHome = (id: string): Home | null => { const home = sessionHome(globalDb, id); return home === "unknown" ? null : home; };
-  const readiness = async ({ sessionId: id, launchId, epoch }: import("@spider/roam/move-ports").ParticipantReadinessQuery): Promise<HubOperationReadiness | null> => {
-    const ready = readReadiness(journal, launchId);
-    if (!ready || ready.sessionId !== id || ready.epoch !== epoch) return null;
-    const intent = await authority.get(id), home = localHome(id), lock = await inspectIdLock(join(root, "herdr"), id), owner = await probe(id);
-    if (!intent || intent.desired !== "running" || intent.suspended || !home || home.machineId !== config.machineId || home.epoch !== epoch ||
-        ready.file !== intent.file || ready.cwd !== intent.cwd || intent.epoch !== epoch || !lock || lock.pendingOperationId !== null || lock.operationId !== launchId ||
-        owner.kind !== "live" || lock.identity.pid !== owner.identity.pid || lock.identity.startIdentity !== owner.identity.startTime) return null;
-    return ready;
-  };
+  const readiness = (query: import("@spider/roam/move-ports").ParticipantReadinessQuery): Promise<HubOperationReadiness | null> =>
+    readOwnedLaunchReadiness({ db: globalDb, journal, machineId: config.machineId,
+      lock: id => inspectIdLock(join(root, "herdr"), id), probe }, query);
   const operationReadiness = async (id: string, operationId: string): Promise<HubOperationReadiness | null> => {
     const launch = journal.read(operationId).find(row => row.action === "participant-launch")?.result as unknown as import("@spider/roam/move-ports").ParticipantReadinessQuery | undefined;
     if (!launch || launch.sessionId !== id) return null;

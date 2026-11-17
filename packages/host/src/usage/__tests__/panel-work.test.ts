@@ -135,6 +135,22 @@ it.each([['human', 5], ['new-session', 0]] as const)('does not re-probe unrelate
   }
   expect(work.ownership - probes).toBe(0);
 });
+it('releases an idle ownership scope and rebuilds it on the next panel read', async () => {
+  // Keeping the scope forever prevents an idle worker from releasing its ownership graph.
+  await boot();
+  expect(panel()?.monthCost.credits).toBe(5);
+  const initial = work.ownership;
+  expect(initial).toBeGreaterThan(0);
+  await vi.advanceTimersByTimeAsync(59000);
+  expect(panel()?.monthCost.credits).toBe(5);
+  expect(work.ownership).toBe(initial);
+  await vi.advanceTimersByTimeAsync(59000);
+  expect(panel()?.monthCost.credits).toBe(5);
+  expect(work.ownership).toBe(initial);
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(panel()?.monthCost.credits).toBe(5);
+  expect(work.ownership).toBeGreaterThan(initial);
+});
 it('bounds a live stalled owner follower to one inspection per tick and takes over only at expiry', async () => {
   let discoveries = 0;
   await boot(async () => { discoveries++; return { sources: [], runs: [], errors: [] }; });

@@ -81,6 +81,7 @@ export function resumeOfferShell(offer: ResumeOffer, options: ResumeHookOptions,
   fi
   printf '%s\\n' ${shellQuote(message)}
   spider_resume || :
+  if command -v _spider_resume_watch >/dev/null 2>&1; then _spider_resume_watch; fi
 }
 if [ -n "\${ZSH_VERSION:-}" ]; then
   precmd_functions+=(_spider_auto_resume)

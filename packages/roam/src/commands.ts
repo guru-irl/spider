@@ -102,7 +102,9 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   const raw = result.value && typeof result.value === "object" && !Array.isArray(result.value) ? result.value as Record<string, unknown> : null;
   const value: Record<string, unknown> = {};
   if (raw) {
-    if (raw.sourceCleanup !== undefined) try { value.sourceCleanup = parseSourceCleanup(raw.sourceCleanup); } catch { /* Invalid evidence is never published. */ }
+    if (raw.sourceCleanup !== undefined) try { value.sourceCleanup = parseSourceCleanup(raw.sourceCleanup); } catch {
+      if (result.code === 0) value.sourceCleanup = { status: "pending", reason: "move-journal-invalid", blockers: [validateBlockerId("move-journal-invalid")] } satisfies SourceCleanup;
+    }
     for (const key of ["terminal", "intercomAddress"] as const) if (token(raw[key])) value[key] = raw[key];
     if (Array.isArray(raw.warnings)) value.warnings = raw.warnings.filter(safeWarning);
     if (Array.isArray(raw.candidates)) value.candidates = raw.candidates.filter(candidate => token(candidate));

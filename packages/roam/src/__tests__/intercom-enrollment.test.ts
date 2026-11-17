@@ -203,6 +203,22 @@ it("pins the target's observed SSH user and host key to a pair-specific alias", 
   expect(f.state.effects.indexOf("known-host")).toBeLessThan(f.state.effects.indexOf("machine"));
 }, 5000);
 
+it("keeps the original pin when a preferred host key appears on retry", async () => {
+  const f = fixture(); f.state.allow = true; f.state.failAfter = "known-host";
+  const ed = { ...f.state.hostKey };
+  const type = Buffer.from("ssh-rsa"), exponent = Buffer.from([1, 0, 1]), modulus = Buffer.concat([Buffer.from([0]), Buffer.alloc(256, 0x81)]);
+  const field = (value: Buffer) => { const length = Buffer.alloc(4); length.writeUInt32BE(value.length); return Buffer.concat([length, value]); };
+  const rsa = { type: "ssh-rsa", base64: Buffer.concat([field(type), field(exponent), field(modulus)]).toString("base64") };
+  f.state.hostKey = rsa;
+  expect(await run(f.request, f.ports)).toMatchObject({ code: 3 });
+  const previous = structuredClone(f.state.knownHosts.get("pair-1"));
+  const inspect = f.ports.inspectSshHost;
+  f.ports.inspectSshHost = async pair => ({ ...await inspect(pair), hostKey: ed, hostKeys: [ed, rsa] });
+  expect(await run(f.request, f.ports)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+  expect(f.state.knownHosts.get("pair-1")).toEqual(previous);
+  expect(f.state.registered.get("pair-1")?.hostKey).toEqual(rsa);
+}, 5000);
+
 it("does not silently repin a changed host key on an interrupted enrollment", async () => {
   const f = fixture(); f.state.allow = true; f.state.failAfter = "known-host";
   expect(await run(f.request, f.ports)).toMatchObject({ code: 3 });

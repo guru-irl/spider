@@ -32,6 +32,8 @@ function history(count: number, prefix: string, observed: boolean, acknowledged 
 function session(entries: any[]) {
   const events = new EventEmitter(), handlers = new Map<string, Array<(...args: any[]) => any>>();
   let channel!: IntercomExtensionChannel, stopped = false;
+  const sessionFile = join(root!, "session.jsonl");
+  writeFileSync(sessionFile, entries.map(entry => JSON.stringify(entry)).join("\n"));
   const pi = {
     events: { on(name: string, handler: (...args: any[]) => void) { events.on(name, handler); return () => events.off(name, handler); }, emit: events.emit.bind(events) },
     on(name: string, handler: (...args: any[]) => any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
@@ -40,7 +42,7 @@ function session(entries: any[]) {
     sendMessage() {}, getActiveTools: () => ["intercom"], setActiveTools() {},
   };
   const context = { cwd: process.cwd(), mode: "rpc", model: { id: "fixture" }, hasUI: false, isIdle: () => true, ui: {},
-    sessionManager: { getSessionId: () => "own", getSessionFile: () => "own.jsonl", getEntries: () => entries } };
+    sessionManager: { getSessionId: () => "own", getSessionFile: () => sessionFile, getEntries: () => entries } };
   extension(pi as never);
   events.emit(INTERCOM_EXTENSION_REGISTER_EVENT, { namespace: "replay", ownerEligible: false, onEvent() {}, onReady(value: IntercomExtensionChannel) { channel = value; } });
   const emit = async (name: string, event: unknown = {}) => { for (const handler of handlers.get(name) ?? []) await handler(event, context); };

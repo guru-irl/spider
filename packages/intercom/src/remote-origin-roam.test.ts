@@ -1,5 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
-import "./test-support.js";
+import { testTmpDir } from "./test-support.js";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import type { RemoteSessionInfo } from "./protocol.js";
 import { INTERCOM_HOST_EVENT } from "./host-api.js";
@@ -25,17 +27,20 @@ const remote: RemoteSessionInfo = { remote: true, id: "peer", address: { session
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); state.clients.length = 0; state.receipts.length = 0; vi.useRealTimers(); });
 async function fixture(restored: any[] = [], host?: (request: any) => void) {
+  const root = mkdtempSync(join(testTmpDir(), "origin-session-"));
+  const sessionFile = join(root, "session.jsonl");
+  writeFileSync(sessionFile, restored.map(entry => JSON.stringify(entry)).join("\n"));
   vi.useFakeTimers(); const handlers = new Map<string, any>(), tools: any[] = [], entries: any[] = restored, events = new EventEmitter();
   if (host) events.on(INTERCOM_HOST_EVENT, host);
   const ctx = { cwd: "/workspace", hasUI: false, mode: "rpc", model: { id: "fixture" }, isIdle: () => true,
-    sessionManager: { getSessionId: () => "own", getSessionFile: () => "fixture.jsonl", getEntries: () => entries }, ui: {}, getContextUsage: () => undefined };
+    sessionManager: { getSessionId: () => "own", getSessionFile: () => sessionFile, getEntries: () => entries }, ui: {}, getContextUsage: () => undefined };
   const pi = { on: (name: string, fn: any) => handlers.set(name, fn), events: { on: (name: string, fn: any) => { events.on(name, fn); return () => events.off(name, fn); }, emit: (name: string, payload: any) => events.emit(name, payload) },
     registerTool: (tool: any) => tools.push(tool), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, getSessionName: () => "own", getActiveTools: () => [], sendMessage() {},
     appendEntry: (customType: string, data: any) => entries.push({ type: "custom", customType, data, id: `entry-${entries.length}` }) };
   state.sessions = [{ id: "own", name: "own", cwd: "/workspace", model: "fixture", pid: 1, startedAt: 1, lastActivity: 1 }, remote];
   extension(pi as any); handlers.get("session_start")({}, ctx); await vi.advanceTimersByTimeAsync(0);
   const client = state.clients.at(-1), tool = tools.find(t => t.name === "intercom");
-  cleanups.push(async () => { await handlers.get("session_shutdown")({ reason: "reload" }, ctx); });
+  cleanups.push(async () => { await handlers.get("session_shutdown")({ reason: "reload" }, ctx); rmSync(root, { recursive: true, force: true }); });
   return { client, execute: (params: any) => tool.execute("call", params, new AbortController().signal, undefined, ctx) };
 }
 

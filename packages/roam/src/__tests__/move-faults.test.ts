@@ -3,6 +3,8 @@ import { abortCleanupId } from "../move-recovery";
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, it, vi } from "vitest";
 import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
+import { controlText, safeControlOutcome } from "../commands";
+import type { HostingWarning } from "../hosting-warning";
 import { createHash } from "node:crypto";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -196,7 +198,7 @@ it.each([false, true])("move recovery reconciles a reserved destination only aft
   const launches: string[] = [], evidence = vi.spyOn(console, "error").mockImplementation(() => {});
   const inspect = f.ports.inspect;
   f.ports.inspect = async (...args) => ({ ...await inspect(...args),
-    hostingWarning: readLocal(f.ports.globalDb, "supervisor-hosting-error", args[0].sessionId) });
+    hostingWarning: readLocal<HostingWarning>(f.ports.globalDb, "supervisor-hosting-error", args[0].sessionId) });
   f.ports.start = async (home, prepared, operation) => {
     const intent = { sessionId: home.sessionId, epoch: home.epoch, desired: "running" as const, suspended: null,
       file: prepared.session.file, cwd: prepared.session.cwd, moveId: home.moveId };
@@ -233,6 +235,7 @@ it.each([false, true])("move recovery reconciles a reserved destination only aft
     if (persistent) {
       expect(recovered).toMatchObject({ refusal: { message: expect.stringMatching(/supervisor-hosting-error.*running-intent/) } });
       expect(readLocal(f.ports.globalDb, "supervisor-hosting-error", "session-a")).toMatchObject({ count: 3 });
+      expect(controlText(safeControlOutcome(recovered))).toMatch(/supervisor-hosting-error.*running-intent/);
     }
     expect(launches).toEqual(persistent ? [] : ["move-a"]);
     expect(f.destinationActive).toBe(!persistent);

@@ -555,3 +555,17 @@ it("doctor reports enabled flag drift and preserves both configurations", async 
   expect(await peerEnabledDiagnostics({ ...config, enabled: false }, {} as never)).toEqual([{ reason: `peer-enabled-mismatch:${BOX}`, severity: "warning", repairCommand: "spider roam disable" }]);
   expect(readFileSync(join(f.root, "roam/config.json"), "utf8")).toBe(before);
 }, 5000);
+
+
+it("remote doctor retains non-stopping hosting warnings when scheduling is disabled", async () => {
+  const f = await fixture(HUB, undefined, false);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({} as never);
+  vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: false, consumers: [], diagnostics: [
+    { severity: "warning", reason: "Session session-a: supervisor-hosting-error (restart); hosting checks will retry automatically.", repairCommand: null },
+    { severity: "block", reason: "disabled hosting prerequisite", repairCommand: null },
+  ] });
+  expect(await f.invoke(["roam", "doctor", "--", "-box-1.invalid"])).toBe(0);
+  expect(f.out.join("")).toContain("supervisor-hosting-error (restart)");
+  expect(f.out.join("")).not.toContain("disabled hosting prerequisite");
+});

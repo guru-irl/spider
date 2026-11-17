@@ -46,7 +46,7 @@ it("failed readiness leaves admission closed and runs no ordinary consumer", asy
 
 it.each(["quit", "reload"])("%s preserves the correct durable hosting intent", async reason => {
   const f = fixture(), authority = createRunningIntentAuthority(f.db);
-  await authority.set({ sessionId: f.ready.sessionId, epoch: 1, desired: "running", suspended: null, file: f.ready.file, cwd: f.ready.cwd, moveId: null }, f.ready.opId);
+  await authority.set({ sessionId: f.ready.sessionId, epoch: 1, desired: "running", suspended: null, file: f.ready.file, cwd: f.ready.cwd, moveId: null }, f.ready.opId, { kind: "box-participant", machineId: BOX, hubMachineId: "00000000-0000-4000-8000-000000000001" });
   f.ports.ready = async () => persistReadiness(f.journal, f.ready);
   f.ports.stopped = id => authority.stop(id);
   const before = new Set(process.listeners("SIGTERM"));
@@ -60,7 +60,7 @@ it.each(["quit", "reload"])("%s preserves the correct durable hosting intent", a
 
 it.each((process.platform === "win32" ? ["SIGTERM"] : ["SIGTERM", "SIGHUP"]) as NodeJS.Signals[])("%s shutdown preserves running intent even when the shutdown hook runs first", async signal => {
   const f = fixture(), authority = createRunningIntentAuthority(f.db);
-  await authority.set({ sessionId: f.ready.sessionId, epoch: 1, desired: "running", suspended: null, file: f.ready.file, cwd: f.ready.cwd, moveId: null }, f.ready.opId);
+  await authority.set({ sessionId: f.ready.sessionId, epoch: 1, desired: "running", suspended: null, file: f.ready.file, cwd: f.ready.cwd, moveId: null }, f.ready.opId, { kind: "box-participant", machineId: BOX, hubMachineId: "00000000-0000-4000-8000-000000000001" });
   f.ports.stopped = id => authority.stop(id);
   const before = new Set(process.listeners(signal));
   const gate = registerAdmission(f.pi as never, f.ports);

@@ -86,7 +86,7 @@ it.each(["null", "object", "string", "empty", "non-string", "unknown kind", "mis
 
 it("retrying activation cannot erase a later durable stop", async () => {
   const f = fixture(), authority = createRunningIntentAuthority(f.global.db), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
-  await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, f.operation.id);
+  await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, f.operation.id, { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   await authority.stop("s-1");
   await expect(handleSessionOperation(f.operation, f.ports, { wake: async () => { throw new Error("must not wake"); } })).rejects.toThrow("stopped");
   expect(await authority.get("s-1")).toMatchObject({ desired: "stopped" });
@@ -257,7 +257,7 @@ it.each(["null", "object", "string", "empty", "non-string", "unknown kind", "mis
 it("hub readiness is advertised only for the matching live launch owner", async () => {
   const f = fixture(), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
   const authority = createRunningIntentAuthority(f.global.db);
-  await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, "start-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   f.ports.journal.begin({ id: "launch-1", kind: "exact-session-launch", machineId: BOX, expectedEpoch: 2, args: {} });
   const ready = { origin: "hub-operation" as const, opId: "launch-1", sessionId: "s-1", epoch: 2, ...location, core: "core-1", terminal: "term-1" };
   recordReadiness(f.ports.journal, ready); writeLocal(f.global.db, "participant-ready", "s-1", ready);
@@ -331,14 +331,14 @@ it("an initialized provisioned box without a hub intent launches nothing", async
   await supervisor.reconcile(); expect(launches).toBe(0);
   const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
   f.worktree.db.prepare("UPDATE roam_sessions SET state='active' WHERE session_id='s-1'").run();
-  await createRunningIntentAuthority(f.global.db).set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, "unproved-intent");
+  await createRunningIntentAuthority(f.global.db).set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, "unproved-intent", { kind: "box-participant", machineId: BOX, hubMachineId: "00000000-0000-4000-8000-000000000003" });
   await supervisor.reconcile(); expect(launches).toBe(0); await supervisor.stop();
 }, 5000);
 
 it.each(["absent", "live", "unknown"] as const)("resume clears an adopted reservation only when its owner is %s", async presence => {
   const f = fixture(false), authority = createRunningIntentAuthority(f.global.db), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
   const intent = { sessionId: "s-1", epoch: 2, desired: "stopped" as const, suspended: null, ...location, moveId: "move-1" };
-  await authority.set(intent, "stop-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set(intent, "stop-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const store = createIntentStore(f.global.root);
   await store.update("s-1", null, { intent, failures: [1], supervision: { kind: "launching", operationId: "launch-1", phase: "invoking" } });
   const root = join(f.global.root, "herdr"), old = { pid: 201, startIdentity: "old-launcher" }, child = { pid: 202, startIdentity: "child" };
@@ -366,7 +366,7 @@ it.each(["absent", "live", "unknown"] as const)("resume clears an adopted reserv
 
 it("resume reports a blocking doctor and leaves the stopped intent unchanged", async () => {
   const f = fixture(false), authority = createRunningIntentAuthority(f.global.db), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
-  await authority.set({ sessionId: "s-1", epoch: 2, desired: "stopped", suspended: null, ...location, moveId: "move-1" }, "stop-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set({ sessionId: "s-1", epoch: 2, desired: "stopped", suspended: null, ...location, moveId: "move-1" }, "stop-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const doctor = vi.spyOn(localDiagnostics, "runLocalDoctor").mockResolvedValue({ enabled: false, diagnostics: [{ severity: "block", reason: "fixture prerequisite", repairCommand: null }], consumers: [] });
   const result = await handleAgentOperation({ ...f.operation, id: "resume-1", kind: "session-resume" }, f.ports);
   expect(result).toMatchObject({ code: 1, reason: "participant-doctor-refused" });
@@ -376,7 +376,7 @@ it("resume reports a blocking doctor and leaves the stopped intent unchanged", a
 
 it("resume refuses an unavailable doctor and can retry after it succeeds", async () => {
   const f = fixture(false), authority = createRunningIntentAuthority(f.global.db), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
-  await authority.set({ sessionId: "s-1", epoch: 2, desired: "stopped", suspended: null, ...location, moveId: "move-1" }, "stop-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set({ sessionId: "s-1", epoch: 2, desired: "stopped", suspended: null, ...location, moveId: "move-1" }, "stop-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const doctor = vi.spyOn(localDiagnostics, "runLocalDoctor").mockRejectedValueOnce(new Error("unavailable"))
     .mockResolvedValue({ enabled: false, diagnostics: [], consumers: [] });
   const operation = { ...f.operation, id: "resume-2", kind: "session-resume" }; let wakes = 0;
@@ -389,7 +389,7 @@ it("resume refuses an unavailable doctor and can retry after it succeeds", async
 it.each(["session-stop", "session-resume"])("%s refuses an intent from a different home epoch", async kind => {
   const f = fixture(false), authority = createRunningIntentAuthority(f.global.db), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
   const desired = kind === "session-stop" ? "running" : "stopped";
-  await authority.set({ sessionId: "s-1", epoch: 1, desired, suspended: null, ...location, moveId: null }, "old-op", { machineId: BOX, hubMachineId: HUB });
+  await authority.set({ sessionId: "s-1", epoch: 1, desired, suspended: null, ...location, moveId: null }, "old-op", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const doctor = vi.spyOn(localDiagnostics, "runLocalDoctor").mockResolvedValue({ enabled: false, diagnostics: [], consumers: [] });
   let wakes = 0;
   expect(await handleSessionOperation({ ...f.operation, id: `${kind}-2`, kind }, f.ports, { wake: async () => { wakes++; } })).toMatchObject({ code: 1, reason: "participant-intent-home-mismatch" });
@@ -399,7 +399,7 @@ it.each(["session-stop", "session-resume"])("%s refuses an intent from a differe
 
 it("a non-box machine with an intent refuses before effects", async () => {
   const f = fixture(false), authority = createRunningIntentAuthority(f.global.db), location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
-  await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, f.operation.id, { machineId: BOX, hubMachineId: HUB });
+  await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, f.operation.id, { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   expect(() => createParticipantSupervisor({ root: f.global.root, agent: { ...f.ports, config: { ...f.ports.config, role: "hub" } },
     clock: { now: () => 1, later: () => () => {} }, events: { subscribe: () => () => {} }, owner: async () => { throw new Error("must not inspect"); },
     diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {}, async launch() { throw new Error("must not launch"); } })).toThrow("participant-not-box");
@@ -416,7 +416,7 @@ it("box wake reserves exactly the requested session with an idempotent local lau
   const { createBoxParticipantWake } = await import("../participant-runtime");
   const f = fixture(), authority = createRunningIntentAuthority(f.global.db);
   const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
-  await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, "start-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set({ sessionId: "s-1", epoch: 2, desired: "running", suspended: null, ...location, moveId: "move-1" }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   let wakes = 0;
   const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, wake: async () => { wakes++; } });
   const first = await wake({ sessionId: "s-1", operationId: "start-1" });
@@ -434,7 +434,7 @@ it.each(["same", "launch", "epoch", "file"] as const)("box wake recovers only it
   const { createBoxParticipantWake } = await import("../participant-runtime"), f = fixture(), authority = createRunningIntentAuthority(f.global.db);
   const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
   const intent = { sessionId: "s-1", epoch: 2, desired: "running" as const, suspended: null, ...location, moveId: "move-1" };
-  await authority.set(intent, "start-1", { machineId: BOX, hubMachineId: HUB });
+  await authority.set(intent, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
   const launchId = participantLaunchId(BOX, "s-1", 2, "start-1"), intents = createIntentStore(f.global.root);
   await intents.update("s-1", null, { intent: { ...intent, ...(changed === "epoch" ? { epoch: 1 } : {}), ...(changed === "file" ? { file: join(f.global.root, "other.jsonl") } : {}) }, failures: [], supervision: { kind: "launching", phase: "reserved", operationId: changed === "launch" ? "other-launch" : launchId } });
   let wakes = 0;

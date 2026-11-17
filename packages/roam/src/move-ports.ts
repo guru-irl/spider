@@ -21,7 +21,7 @@ import type { IntercomFederationClient } from "@spider/intercom/broker/client";
 import type { IntercomBridge } from "./intercom-bridge";
 import type { FreezeJournal } from "./journal";
 import { createMovePower, type PowerPorts } from "./power";
-import { controlSession, createRunningIntentAuthority, recordReadiness, startParticipant } from "./session-control";
+import { controlSession, createRunningIntentAuthority, recordReadiness, startParticipant, type ParticipantIntentOwner } from "./session-control";
 import { requestSessionControl } from "./session-socket";
 import { isRevoked } from "./revocation";
 import { isMachineId } from "./machine-id";
@@ -848,6 +848,20 @@ async function participantReady(operation: Operation, home: Home, participant: M
   if (ready.opId !== query.launchId || ready.sessionId !== query.sessionId || ready.epoch !== query.epoch) throw new MoveAdapterError("participant-readiness-invalid");
   return { ...ready, opId: operation.id };
 }
+function recordedIntentOwner(home: Home, operation: Operation, participant: MoveParticipantBindings, journal: Journal): ParticipantIntentOwner {
+  if (home.machineId !== participant.config.hubMachineId)
+    return { kind: "box-participant", machineId: home.machineId, hubMachineId: participant.config.hubMachineId };
+  if (operation.kind === "move-restore") {
+    const record = home.moveId && journal.read(home.moveId).find(row => row.action === "forget-home")?.result;
+    const source = record && record.source as unknown as Home | undefined;
+    if (!source || !isMachineId(source.machineId) || source.sessionId !== home.sessionId || source.epoch + 1 !== home.epoch ||
+        !isDeepStrictEqual(record && record.home, home)) throw new MoveAdapterError("participant-owner-unproved");
+    return { kind: "hub-restoration", machineId: home.machineId, moveId: home.moveId!, revokedMachineId: source.machineId };
+  }
+  const moveId = operation.args.moveId;
+  if (typeof moveId !== "string" || !moveId) throw new MoveAdapterError("participant-owner-unproved");
+  return { kind: "hub-return", machineId: home.machineId, moveId };
+}
 async function activatePrepared(operation: Operation, prepared: PreparedMove, participant: MoveParticipantBindings, journal: Journal): Promise<Outcome<HubOperationReadiness>> {
   const home = requiredHome(participant.globalDb, operation.args.sessionId as string), authority = createRunningIntentAuthority(participant.globalDb);
   const localAuthority = participant.config.role === "hub" && participant.config.machineId === participant.config.hubMachineId;
@@ -880,8 +894,7 @@ async function activatePrepared(operation: Operation, prepared: PreparedMove, pa
           db.prepare("UPDATE roam_sessions SET state='active',epoch=?,move_id=?,freeze_seq=NULL WHERE session_id=?").run(home.epoch, home.moveId, home.sessionId);
         }).immediate();
         persistExportedSnapshot(participant.globalDb, { ...prepared.workspace.snapshot, root: prepared.workspace.root });
-        await authority.set(intent, operation.id, participant.config.role === "hub" && participant.config.machineId === participant.config.hubMachineId
-          ? undefined : { machineId: participant.config.machineId, hubMachineId: participant.config.hubMachineId });
+        await authority.set(intent, operation.id, recordedIntentOwner(home, operation, participant, journal));
       });
     },
   }).catch((error: unknown): Outcome<HubOperationReadiness> => {
@@ -959,8 +972,7 @@ async function readmit(operation: Operation, journal: Journal, bindings: MoveAda
         advanceMembership(participant, source, restored, moveId);
         const authority = createRunningIntentAuthority(participant.globalDb);
         const intent = { sessionId: source.sessionId, epoch: restored.epoch, desired: "running" as const, suspended: null, file: frozen.file, cwd: frozen.cwd, moveId: restored.moveId };
-        await authority.set(intent, operation.id, participant.config.role === "hub" && participant.config.machineId === participant.config.hubMachineId
-          ? undefined : { machineId: participant.config.machineId, hubMachineId: participant.config.hubMachineId });
+        await authority.set(intent, operation.id, recordedIntentOwner(restored, operation, participant, journal));
         journal.record(operation.id, "readmit-prepared", { file: frozen.file, epoch: restored.epoch }); prepared = true;
       };
       if (owner.kind === "absent") await participant.withBothLocks(source.sessionId, prepare); else await prepare();

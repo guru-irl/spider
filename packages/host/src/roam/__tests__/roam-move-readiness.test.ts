@@ -9,7 +9,7 @@ it("proved live readmit publishes readiness for an originally untracked held loc
   const f = createReplica("global", HUB), journal = openFreezeJournal(join(f.root, "journal.db"));
   try {
     const file = join(f.root, "session.jsonl"), home = { sessionId: "session-a", machineId: HUB, epoch: 4, moveId: "rollback-a", updatedAt: 1 };
-    await createRunningIntentAuthority(f.db).set({ sessionId: "session-a", file, cwd: f.root, epoch: 4, desired: "running", suspended: null, moveId: "rollback-a" }, "readmit-a");
+    await createRunningIntentAuthority(f.db).set({ sessionId: "session-a", file, cwd: f.root, epoch: 4, desired: "running", suspended: null, moveId: "rollback-a" }, "readmit-a", { kind: "hub-return", machineId: HUB, moveId: "move-a" });
     journal.begin({ id: "readmit-a", machineId: HUB, kind: "move-readmit", expectedEpoch: 4, args: {} });
     const lock = { identity: { pid: 42, startIdentity: "owned-start" }, bootId: "boot-a", operationId: null, pendingOperationId: null, pendingCoreId: null, pendingFile: null };
     const caller = vi.fn(async () => ({ coreId: "core-a", address: "terminal-a" }));

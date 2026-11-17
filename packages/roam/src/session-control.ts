@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { isAbsolute, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { claimIdLock, localBootId } from "@spider/herdr/sessions/id-lock";
@@ -169,11 +170,33 @@ function validIntent(value: HostIntent): void {
       !text(value.file) || !isAbsolute(value.file) || !text(value.cwd) || !isAbsolute(value.cwd) ||
       !(value.moveId === null || text(value.moveId))) throw new Error("Invalid participant intent");
 }
-export interface ParticipantAuthorization { hubMachineId: string; machineId: string }
+export type ParticipantIntentOwner =
+  | { kind: "box-participant"; machineId: string; hubMachineId: string }
+  | { kind: "hub-return"; machineId: string; moveId: string }
+  | { kind: "hub-restoration"; machineId: string; moveId: string; revokedMachineId: string };
+function validOwner(owner: ParticipantIntentOwner): void {
+  if (!owner || typeof owner !== "object" || !isMachineId(owner.machineId)) throw new Error("Invalid participant intent owner");
+  switch (owner.kind) {
+    case "box-participant":
+      if (!isMachineId(owner.hubMachineId) || owner.hubMachineId === owner.machineId) throw new Error("Invalid participant intent owner");
+      return;
+    case "hub-return":
+      if (!text(owner.moveId)) throw new Error("Invalid participant intent owner");
+      return;
+    case "hub-restoration":
+      if (!text(owner.moveId) || !isMachineId(owner.revokedMachineId) || owner.revokedMachineId === owner.machineId) throw new Error("Invalid participant intent owner");
+      return;
+    default: {
+      const unknown: never = owner;
+      throw new Error(`Unknown participant intent owner: ${String(unknown)}`);
+    }
+  }
+}
 export interface BoxLocalOrigin { kind: "box-local"; machineId: string; epoch: number; file: string; cwd: string; pid: number; startIdentity: string; stopped: boolean }
-interface AuthorityRow { intent: HostIntent; operationId: string; authorization?: ParticipantAuthorization; stopToken?: string }
+interface AuthorityRow { intent: HostIntent; operationId: string; owner: ParticipantIntentOwner; stopToken?: string }
 export interface RunningIntentAuthority extends RunningIntentSource {
-  set(intent: HostIntent, operationId: string, authorization?: ParticipantAuthorization): Promise<void>;
+  set(intent: HostIntent, operationId: string, owner: ParticipantIntentOwner): Promise<void>;
+  owned(sessionId: string): { intent: HostIntent; owner: ParticipantIntentOwner } | null;
   authorized(sessionId: string, hubMachineId: string, machineId: string): boolean;
   operationId(sessionId: string): string | null;
   stopToken(sessionId: string): string | null;
@@ -185,24 +208,25 @@ export function createRunningIntentAuthority(db: Db): RunningIntentAuthority {
   const listeners = new Set<() => void>();
   function read(id: string): AuthorityRow | undefined {
     const row = readLocal<AuthorityRow>(db, "participant-intent", id);
-    if (row) {
-      validIntent(row.intent);
+    if (row !== undefined) {
+      if (!row || typeof row !== "object") throw new Error("Invalid participant authority");
+      validIntent(row.intent); validOwner(row.owner);
       if (row.intent.sessionId !== id || !text(row.operationId) || row.stopToken !== undefined &&
           (typeof row.stopToken !== "string" || !/^[a-f0-9-]{36}$/.test(row.stopToken) || row.intent.desired !== "stopped")) throw new Error("Invalid participant authority");
     }
     return row;
   }
-  async function set(intent: HostIntent, operationId: string, authorization?: ParticipantAuthorization, resume = false, expected?: AuthorityRow): Promise<void> {
-    validIntent(intent); if (!text(operationId)) throw new Error("Invalid participant operation");
+  async function set(intent: HostIntent, operationId: string, owner: ParticipantIntentOwner, resume = false, expected?: AuthorityRow): Promise<void> {
+    validIntent(intent); validOwner(owner); if (!text(operationId)) throw new Error("Invalid participant operation");
     db.raw.transaction(() => {
       const previous = read(intent.sessionId);
       if (expected && JSON.stringify(previous) !== JSON.stringify(expected)) throw new Error("Participant changed during doctor");
       if (previous && previous.intent.epoch > intent.epoch) throw new Error("Stale participant epoch");
+      if (previous?.intent.epoch === intent.epoch && !isDeepStrictEqual(previous.owner, owner)) throw new Error("Participant intent owner changed");
       if (!resume && previous?.intent.epoch === intent.epoch && intent.desired === "running" &&
           (previous.intent.desired === "stopped" || previous.intent.suspended)) throw new Error("Participant is stopped or suspended");
-      if (authorization && (!text(authorization.hubMachineId) || !text(authorization.machineId) || authorization.hubMachineId === authorization.machineId)) throw new Error("Invalid participant authorization");
       const stopToken = intent.desired === "stopped" ? previous?.intent.desired === "stopped" && previous.stopToken || randomUUID() : undefined;
-      writeLocal(db, "participant-intent", intent.sessionId, { intent, operationId, ...(authorization ? { authorization } : {}), ...(stopToken ? { stopToken } : {}) });
+      writeLocal(db, "participant-intent", intent.sessionId, { intent, operationId, owner, ...(stopToken ? { stopToken } : {}) });
     }).immediate();
     for (const listener of listeners) listener();
   }
@@ -210,14 +234,14 @@ export function createRunningIntentAuthority(db: Db): RunningIntentAuthority {
     async list() { return localEntries<AuthorityRow>(db, "participant-intent").map(row => { read(row.key); return row.key; }); },
     async get(id) { return read(id)?.intent ?? null; },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-    set, operationId: id => read(id)?.operationId ?? null,
+    set, owned: id => read(id) ?? null, operationId: id => read(id)?.operationId ?? null,
     stopToken(id) { const row = read(id); return row?.intent.desired === "stopped" ? row.stopToken ?? `legacy:${row.operationId}` : null; },
-    authorized(id, hubMachineId, machineId) { const row = read(id); return row?.authorization?.hubMachineId === hubMachineId && row.authorization.machineId === machineId; },
-    async stop(id) { const row = read(id); if (!row) throw new Error("Participant intent unavailable"); await set({ ...row.intent, desired: "stopped" }, row.operationId, row.authorization); },
+    authorized(id, hubMachineId, machineId) { const owner = read(id)?.owner; return owner?.kind === "box-participant" && owner.hubMachineId === hubMachineId && owner.machineId === machineId; },
+    async stop(id) { const row = read(id); if (!row) throw new Error("Participant intent unavailable"); await set({ ...row.intent, desired: "stopped" }, row.operationId, row.owner); },
     async resume(id, doctor) {
       const row = read(id); if (!row) throw new Error("Participant intent unavailable");
       if ((await doctor()).some(item => item.severity === "block")) throw new Error("Participant doctor refused resume");
-      await set({ ...row.intent, desired: "running", suspended: null }, row.operationId, row.authorization, true, row);
+      await set({ ...row.intent, desired: "running", suspended: null }, row.operationId, row.owner, true, row);
     },
   };
 }

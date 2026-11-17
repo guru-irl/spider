@@ -58,7 +58,7 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
       const header = await readSessionHeader(location.file);
       if (header.id !== id || header.cwd !== location.cwd) return result(1, "participant-file-mismatch");
       await authority.set({ sessionId: id, epoch: home.epoch, file: location.file, cwd: location.cwd, moveId: home.moveId,
-        desired: operation.kind === "session-stop" ? "stopped" : "running", suspended: null }, operation.id, { hubMachineId: pinned.hubMachineId, machineId: pinned.machineId });
+        desired: operation.kind === "session-stop" ? "stopped" : "running", suspended: null }, operation.id, { kind: "box-participant", hubMachineId: pinned.hubMachineId, machineId: pinned.machineId });
     }
     if (operation.kind === "session-stop") await authority.stop(id);
     else {
@@ -108,7 +108,7 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
         if (!currentHome || currentHome === "unknown" || currentHome.epoch !== home.epoch || currentHome.machineId !== home.machineId) throw new Error("Participant home changed");
         store.prepare("UPDATE roam_sessions SET epoch=?,state='active',move_id=?,freeze_seq=NULL WHERE session_id=?").run(home.epoch, home.moveId, id);
       }).immediate();
-      await authority.set(intent, operation.id, { hubMachineId: pinned.hubMachineId, machineId: pinned.machineId });
+      await authority.set(intent, operation.id, { kind: "box-participant", hubMachineId: pinned.hubMachineId, machineId: pinned.machineId });
     },
     wake: options.wake ?? wakeSupervisor,
     async readiness(operationId) {

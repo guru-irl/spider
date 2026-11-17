@@ -5,7 +5,7 @@ import { getBinding, openDbReadOnlyAt, openGlobalReadOnly, paths, type Db } from
 import { readMachineIdentity } from "@spider/db-core/roam/machine";
 import { readLocal } from "@spider/db-core/roam/local-state";
 import { readLocalIdentity } from "@spider/roam/runtime";
-import { assertBoxEnrollment, participantCaptureInitialized } from "@spider/roam/session-control";
+import { assertBoxEnrollment, createRunningIntentAuthority, participantCaptureInitialized, type ParticipantIntentOwner } from "@spider/roam/session-control";
 import { validateRoamLayout } from "@spider/db-core/roam/layout";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import { readSessionState } from "@spider/db-core/roam/state";
@@ -16,7 +16,10 @@ import { AUTO_RELOAD_ARG } from "../auto-reload.js";
 import { productionParticipantAdmission } from "./readiness.js";
 import { lstatSync } from "node:fs";
 import { participantCaptureReady } from "@spider/roam/production-supervisor";
-import type { RoamConfig } from "@spider/roam/contracts";
+import { isDeepStrictEqual } from "node:util";
+import { isMachineId } from "@spider/roam/machine-id";
+import { isRevoked } from "@spider/roam/revocation";
+import type { HostIntent, RoamConfig } from "@spider/roam/contracts";
 
 export interface Admission { kind: "pending" | "ordinary" | "control-only" | "blocked"; home: Home | null; blockers: readonly Blocker[] }
 export interface AdmissionGate {
@@ -406,6 +409,50 @@ function hasTable(db: Db, name: string): boolean {
   return Boolean(db.withRetry(() => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)));
 }
 
+function assertIntentOwner(global: Db, home: Home | null, intent: HostIntent, owner: ParticipantIntentOwner, config: RoamConfig): void {
+  const refuse = () => { throw new Error("participant-owner-unproved"); };
+  if (!home || home.sessionId !== intent.sessionId || home.epoch !== intent.epoch || home.moveId !== intent.moveId ||
+      home.machineId !== owner.machineId || owner.machineId !== config.machineId) return refuse();
+  switch (owner.kind) {
+    case "box-participant":
+      assertBoxEnrollment(config);
+      if (owner.hubMachineId !== config.hubMachineId) return refuse();
+      return;
+    case "hub-return":
+    case "hub-restoration": {
+      if (config.role !== "hub" || owner.machineId !== config.hubMachineId || !home.moveId) return refuse();
+      const privateDb = openDbReadOnlyAt(join(paths.globalRoot, "roam", "journal.db"));
+      if (!privateDb) return refuse();
+      try {
+        const operation = privateDb.prepare("SELECT kind,machine_id,expected_epoch FROM roam_operations WHERE operation_id=?").get(owner.moveId) as
+          { kind: string; machine_id: string; expected_epoch: number | null } | undefined;
+        const committed = global.prepare("SELECT committed_home_json FROM roam_home_actions WHERE move_id=?").get(home.moveId) as { committed_home_json: string | null } | undefined;
+        if (!operation || operation.machine_id !== owner.machineId || !committed?.committed_home_json ||
+            !isDeepStrictEqual(JSON.parse(committed.committed_home_json), home)) return refuse();
+        if (owner.kind === "hub-restoration") {
+          const record = privateDb.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='forget-home'").get(owner.moveId) as { result_json: string } | undefined;
+          const proof = record ? JSON.parse(record.result_json) as { source: Home; home: Home } : null;
+          if (operation.kind !== "restore-destroyed-home" || operation.expected_epoch !== home.epoch || owner.moveId !== home.moveId ||
+              !proof?.source || proof.source.sessionId !== home.sessionId || proof.source.machineId !== owner.revokedMachineId ||
+              proof.source.epoch + 1 !== home.epoch || !isDeepStrictEqual(proof.home, home) || !isRevoked(privateDb, owner.revokedMachineId)) return refuse();
+        } else {
+          if (operation.kind !== "move") return refuse();
+          const records = privateDb.prepare("SELECT result_json FROM roam_operation_actions WHERE operation_id=? AND action='move-action-complete'").all(owner.moveId) as { result_json: string }[];
+          const check = records.map(row => JSON.parse(row.result_json) as { action: string; value?: { source?: Home } }).find(row => row.action === "check");
+          const source = check?.value?.source, rollback = home.moveId === rollbackMoveId(owner.moveId);
+          if (!source || !isMachineId(source.machineId) || source.sessionId !== home.sessionId || source.epoch + (rollback ? 2 : 1) !== home.epoch ||
+              (rollback ? source.machineId !== owner.machineId : home.moveId !== owner.moveId)) return refuse();
+        }
+      } finally { privateDb.close(); }
+      return;
+    }
+    default: {
+      const unknown: never = owner;
+      throw new Error(`Unknown participant intent owner: ${String(unknown)}`);
+    }
+  }
+}
+
 /** Production ports perform read-only discovery before resolving identity or claiming locks. */
 export function createAdmissionPorts(options: ParticipantLockOptions = {}): AdmissionPorts & { setContext(ctx: ExtensionContext): void } {
   let context: ExtensionContext | undefined;
@@ -534,7 +581,9 @@ export function createAdmissionPorts(options: ParticipantLockOptions = {}): Admi
             readLocal(global, "participant-origin", id) !== undefined || readLocal(global, "participant-intent", id) !== undefined)) {
             let config;
             try { config = readLocalIdentity(paths.globalRoot); } catch { throw new Error("participant-config-unavailable"); }
-            assertBoxEnrollment(config);
+            const authority = createRunningIntentAuthority(global), owned = authority.owned(id);
+            if (owned) assertIntentOwner(global, home, owned.intent, owned.owner, config);
+            else assertBoxEnrollment(config);
             if (!participantCaptureInitialized(global, config.machineId, "global")) throw new Error("participant-capture-uninitialized");
           }
           captureSafe = Boolean(global) && missing === 0 && states.length === opened.size;

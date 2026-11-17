@@ -450,16 +450,16 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
     },
     async barriers(machine, requiredBarriers) {
       guard(bindings, "barriers");
-      if (requiredBarriers.some(barrier => bindings.stores!.head(barrier.storeKey).stream !== barrier.stream)) await bindings.sync!.sync();
-      if (machine !== config.machineId) return bindings.sync!.barriers(machine, requiredBarriers);
-      for (const barrier of requiredBarriers) {
+      const reached = (barrier: StoreBarrier) => {
         const head = bindings.stores!.head(barrier.storeKey);
-        if (head.stream === barrier.stream) { if (head.through < barrier.through) return false; continue; }
+        if (head.stream === barrier.stream) return head.through >= barrier.through;
         const rows = bindings.stores!.open(barrier.storeKey).prepare("SELECT peer_machine,last_seq FROM roam_cursors WHERE peer_stream=?").all(barrier.stream) as { peer_machine: string; last_seq: number }[];
-        if (rows.length === 0 && barrier.through === 0) continue;
-        if (rows.length !== 1 || !config.peers.some(peer => peer.machineId === rows[0].peer_machine) || rows[0].last_seq < barrier.through) return false;
-      }
-      return true;
+        if (rows.length === 0 && barrier.through === 0) return true;
+        return rows.length === 1 && config.peers.some(peer => peer.machineId === rows[0].peer_machine) && rows[0].last_seq >= barrier.through;
+      };
+      if (requiredBarriers.some(barrier => bindings.stores!.head(barrier.storeKey).stream !== barrier.stream && !reached(barrier))) await bindings.sync!.sync();
+      if (machine !== config.machineId) return bindings.sync!.barriers(machine, requiredBarriers);
+      return requiredBarriers.every(reached);
     },
     async replicateHome(home) {
       guard(bindings, "replicateHome");

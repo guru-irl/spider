@@ -51,6 +51,19 @@ function operation(id: string, kind: string, args: JsonObject): Operation {
   return { id, kind, args, machineId: BOX, expectedEpoch: null };
 }
 
+it("routes an enrolled epoch-bound location query through the real agent boundary", async () => {
+  const f = fixture(), request = { ...operation("source-location", "move-location", { sessionId: "session-a", moveId: "return-move", sourceMachine: HUB }), expectedEpoch: 2 };
+  const value = { file: "/fixture/current.jsonl", cwd: "/fixture/current", stores: ["global"] };
+  const move = vi.fn(async (op: Operation) => ({ code: 0 as const, reason: "complete", operationId: op.id, home: null, epoch: op.expectedEpoch, repairCommand: null, value }));
+  f.ports.move = move;
+  expect(await handleAgentOperation(request, f.ports)).toMatchObject({ code: 0, operationId: request.id, epoch: 2, value });
+  expect(move).toHaveBeenCalledExactlyOnceWith(request);
+  expect(f.opened).toEqual([]);
+  move.mockClear();
+  expect(await handleAgentOperation({ ...request, args: { ...request.args, sourceMachine: BOX } }, f.ports)).toMatchObject({ code: 1, reason: "move-authority-unavailable" });
+  expect(move).not.toHaveBeenCalled();
+}, 5000);
+
 async function stagedImport() {
   const destination = fixture("worktree");
   const source = createReplica("worktree", HUB);

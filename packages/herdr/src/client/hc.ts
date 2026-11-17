@@ -83,27 +83,23 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
     return trackAvailability({ key, ...(machine ? { machine } : {}) }, () => invokeCli(options.binary, argv, env, options.maxReplyBytes, input, callOptions), available);
   };
   let selectedCore: CoreId | undefined = options.isolationProof?.coreIds[options.isolationProof.sockets.indexOf(selectedSocket(env))];
-  const identity: HcClient['identity'] = async () => {
-    const core = parseCore(await call(['server', 'status', '--json']), env);
+  const identity: HcClient['identity'] = async callOptions => {
+    const core = parseCore(await call(['server', 'status', '--json'], undefined, callOptions), env);
     if (selectedCore !== undefined && selectedCore !== core.coreId) throw new HerdrError('core-mismatch', "this session's Herdr terminal belongs to a core that is no longer running; start a new session in Herdr", core);
     selectedCore = core.coreId; return core;
   };
   const get: HcClient['get'] = async (address, callOptions) => {
+    const terminal = parseTerminal(await call(['get', address, '--json'], undefined, callOptions));
+    if (terminal.address === address) return terminal;
     const parts = address.split('/');
-    let identityError: unknown;
-    const local = parts.length === 2 ? await identity().catch(error => { identityError = error; return null; }) : null;
-    const routes = local && parts[0] !== local.coreId ? await machines(callOptions).catch(error => { identityError = error; return []; }) : [];
+    const local = parts.length === 2 ? await identity(callOptions) : null;
+    const routes = local && parts[0] !== local.coreId ? await machines(callOptions) : [];
     const matching = (rows: readonly MachineSummary[], prefix: string) => rows.filter(row => row.id === prefix || row.name === prefix || row.aliases.includes(prefix));
     const sameCore = (rows: readonly MachineSummary[]) => rows.length > 0 && rows.every(row => row.id === rows[0].id && row.sessionNamespace === rows[0].sessionNamespace);
     const routeSignature = (rows: readonly MachineSummary[]) => rows.map(row => JSON.stringify([row.id, row.name, [...row.aliases].sort(), row.sessionNamespace])).sort().join('\n');
     const matches = matching(routes, parts[0]);
     const route = sameCore(matches) ? matches[0] : null;
     const coreId = route?.id ?? local?.coreId;
-    const terminal = parseTerminal(await call(['get', address, '--json'], undefined, callOptions));
-    if (identityError) {
-      if (terminal.address !== address) throw identityError;
-      return terminal;
-    }
     if (local && parts[0] !== local.coreId && !route) throw new HerdrError('caller-mismatch', 'Requested terminal route is not uniquely verified');
     if (!local) {
       if (terminal.address !== address) throw new HerdrError('caller-mismatch', 'Returned terminal address differs from the requested address', { expectedAddress: address, actualAddress: terminal.address });
@@ -115,7 +111,7 @@ export function createHcClient(options: HcClientOptions, available?: (key: strin
       : route && sameCore(replyRoutes) && replyRoutes[0].id === route.id && replyRoutes[0].sessionNamespace === route.sessionNamespace ? route.id : null;
     if (reply.length > 2 || prefix === null || `${prefix}/${reply.at(-1)}` !== `${coreId}/${parts[1]}`)
       throw new HerdrError('caller-mismatch', 'Returned terminal address differs from the requested address', { expectedAddress: address, actualAddress: terminal.address });
-    const after = await identity();
+    const after = await identity(callOptions);
     if (after.socket !== local.socket || after.sessionNamespace !== local.sessionNamespace) throw new HerdrError('core-mismatch', 'Selected terminal core changed during lookup');
     if (route) {
       const currentRoutes = await machines(callOptions);

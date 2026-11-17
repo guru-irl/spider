@@ -96,10 +96,13 @@ export async function bootUsageWorker(
   }
   // Detach before a fallible close/stop/open, so the next cycle can retry.
   function closeLedger(): void {
-    panelReader.close();
-    monthReader?.close(); monthReader = undefined;
-    const previous = ledger; ledger = undefined;
-    previous?.close();
+    const month = monthReader, previous = ledger;
+    monthReader = undefined; ledger = undefined;
+    let failure: { error: unknown } | undefined;
+    try { panelReader.close(); } catch (error) { failure = { error }; }
+    try { month?.close(); } catch (error) { failure ??= { error }; }
+    try { previous?.close(); } catch (error) { failure ??= { error }; }
+    if (failure) throw failure.error;
   }
   async function stopCounter(): Promise<void> {
     const previous = poller; poller = undefined;

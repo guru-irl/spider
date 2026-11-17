@@ -164,7 +164,7 @@ it('starts waiting child work when a slot opens without waiting for another scan
     adopt: async () => { throw new Error('Settled journals need no adoption'); },
     releaseSettled: async journal => {
       active++; peak = Math.max(peak, active); started.push(journal.child!.id);
-      try { if (journal.child!.id === 'run-0') await stalled; } finally { active--; }
+      try { if (journal.child!.id === 'run-0') await stalled; else await Promise.resolve(); } finally { active--; }
     },
   });
   try {

@@ -212,7 +212,7 @@ export async function runRecoveryCases(suite: Suite): Promise<void> {
       f = await createMoveStory(owned);
       const [hub, box] = f.machines;
       const expectedTrees = await f.trees(hub.cwd);
-      expect(await f.cli(hub, ['move', f.sessionId, box.alias])).toMatchObject({ code: 0 });
+      expect(await f.moveTo(hub, box.alias)).toMatchObject({ code: 0 });
       const remote = await assertMoveState(f, box, expectedTrees, 2);
       await f.sync();
       const mirror = await recoverMirror({ root: join(hub.root, 'roam', 'mirrors'), machineId: BOX, sessionId: f.sessionId, epoch: 2 });

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readFile, rename, link, unlink, chmod, realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { lstat, mkdir, open, readFile, rename, link, unlink, chmod, realpath, rmdir } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { HerdrError, object, text } from '../client/parse.js';
 import type { TerminalAddress } from '../contracts.js';
 import type { InstallFile, NodeObservation, CutoverResult, RuntimeRootObservation } from './installer.js';
@@ -221,6 +221,7 @@ export interface BackupEntry {
 export interface SetupJournal {
   version: 1;
   entries: BackupEntry[];
+  modDirectories?: { path: string; dev: number; ino: number }[];
   fingerprint: string | null;
   probes: NodeObservation[];
   runtimeRootProbes?: RuntimeRootObservation[];
@@ -507,7 +508,16 @@ export async function readJournal(root: string): Promise<SetupJournal> {
   if (!Array.isArray(j.runtimes))
     throw new HerdrError('setup-journal-invalid', 'Invalid runtime journal');
   const runtimes = j.runtimes.map(value => { const r = object(value); return { machine: text(r.machine) as NodeObservation['machine'], path: text(r.path), before: r.before === null ? null : text(r.before), after: text(r.after) }; });
-  return { version: 1, entries, probes, cutover, runtimes, ...(j.runtimeRootProbes === undefined ? {} : { runtimeRootProbes: runtimeRootObservations(j.runtimeRootProbes) }), ...(j.cutoverFingerprint === undefined ? {} : { cutoverFingerprint: text(j.cutoverFingerprint) }), ...(j.launcherNodePath === undefined ? {} : { launcherNodePath: text(j.launcherNodePath) }), fingerprint: j.fingerprint === null ? null : text(j.fingerprint), verified: j.verified, cutoverPending: j.cutoverPending, retiredTerminals: j.retiredTerminals.map(v => text(v) as TerminalAddress) };
+  const modDirectories = j.modDirectories === undefined ? undefined : (() => {
+    if (!Array.isArray(j.modDirectories)) throw new HerdrError('setup-journal-invalid', 'Invalid mod directories');
+    const seen = new Set<string>();
+    return j.modDirectories.map(value => {
+      const directory = object(value), path = text(directory.path);
+      if (!isAbsolute(path) || resolve(path) !== path || path.includes('\0') || seen.has(path) || !Number.isSafeInteger(directory.dev) || !Number.isSafeInteger(directory.ino) || (directory.dev as number) < 0 || (directory.ino as number) <= 0) throw new HerdrError('setup-journal-invalid', 'Invalid mod directory identity');
+      seen.add(path); return { path, dev: directory.dev as number, ino: directory.ino as number };
+    });
+  })();
+  return { version: 1, entries, probes, cutover, runtimes, ...(modDirectories === undefined ? {} : { modDirectories }), ...(j.runtimeRootProbes === undefined ? {} : { runtimeRootProbes: runtimeRootObservations(j.runtimeRootProbes) }), ...(j.cutoverFingerprint === undefined ? {} : { cutoverFingerprint: text(j.cutoverFingerprint) }), ...(j.launcherNodePath === undefined ? {} : { launcherNodePath: text(j.launcherNodePath) }), fingerprint: j.fingerprint === null ? null : text(j.fingerprint), verified: j.verified, cutoverPending: j.cutoverPending, retiredTerminals: j.retiredTerminals.map(v => text(v) as TerminalAddress) };
 }
 export async function saveJournal(root: string, journal: SetupJournal): Promise<void> {
   const path = join(root, 'journal.json');
@@ -743,6 +753,50 @@ export async function prepareBackups(root: string, files: readonly InstallFile[]
   }
   await saveJournal(root, journal);
 }
+export async function prepareModDirectories(root: string, appHome: string, files: readonly InstallFile[], journal: SetupJournal): Promise<void> {
+  const mods = resolve(appHome, 'mods'), directories = new Set<string>();
+  for (const file of files) {
+    const parts = relative(mods, resolve(file.path)).split(sep);
+    if (parts.length < 2 || !parts[0]!.startsWith('spider-') || parts.some(part => part === '..' || !part)) continue;
+    for (let i = 1; i < parts.length; i++) directories.add(join(mods, ...parts.slice(0, i)));
+  }
+  if (directories.size) { await rejectSymlinks(mods); await mkdir(mods, { recursive: true, mode: 0o700 }); }
+  for (const path of [...directories].sort((a, b) => a.length - b.length)) {
+    await rejectSymlinks(path);
+    let created = false;
+    try { await mkdir(path, { mode: 0o700 }); created = true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    const actual = await lstat(path);
+    if (!actual.isDirectory() || actual.isSymbolicLink()) throw new HerdrError('unsafe-path', `Not a mod directory: ${path}`);
+    if (created) {
+      journal.modDirectories = [...(journal.modDirectories ?? []).filter(entry => entry.path !== path), { path, dev: actual.dev, ino: actual.ino }];
+      await saveJournal(root, journal);
+    }
+  }
+}
+
+export async function rollbackModDirectories(appHome: string, journal: SetupJournal, warn?: (message: string) => void): Promise<void> {
+  const mods = resolve(appHome, 'mods'), retained: NonNullable<SetupJournal['modDirectories']> = [];
+  for (const directory of [...journal.modDirectories ?? []].sort((a, b) => b.path.length - a.path.length)) {
+    const parts = relative(mods, directory.path).split(sep);
+    if (!parts[0]?.startsWith('spider-') || parts.some(part => part === '..' || !part)) throw new HerdrError('setup-journal-invalid', 'Mod directory outside the managed root');
+    if (journal.entries.some(entry => resolve(entry.path).startsWith(directory.path + sep))) { retained.push(directory); continue; }
+    try {
+      await rejectSymlinks(directory.path);
+      const current = await lstat(directory.path);
+      if (!current.isDirectory() || current.dev !== directory.dev || current.ino !== directory.ino) { warn?.(`${directory.path} was replaced; leaving it untouched.`); continue; }
+      await rmdir(directory.path);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') continue;
+      if (code !== 'ENOTEMPTY' && code !== 'EEXIST') warn?.(`${directory.path} could not be removed; leaving it untouched.`);
+      retained.push(directory);
+    }
+  }
+  if (retained.length) journal.modDirectories = retained;
+  else delete journal.modDirectories;
+}
+
 export async function applyFiles(files: readonly InstallFile[], journal: SetupJournal): Promise<string[]> {
   const writes: string[] = [];
   for (const f of files) {

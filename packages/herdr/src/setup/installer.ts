@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:pat
 import { HerdrLabelContract } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
-import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeySections, type ManagedPart, type FileAction } from './backup.js';
+import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeySections, type ManagedPart, type FileAction } from './backup.js';
 import { probeLaunch, type DoctorReport } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
 import { shellQuote } from '../sessions/resume.js';
@@ -472,6 +472,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     journal.verified = false;
     journal.retiredTerminals = retiredTerminals;
     await prepareBackups(request.journalRoot, files, journal);
+    await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal);
     const writes = [...endpointWrites, ...await applyFiles(files.filter(file => !file.updateAfterCutover), journal)];
     for (const file of appFiles)
       if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
@@ -589,6 +590,7 @@ export async function rollbackHerdr(request: SetupRequest, parts: SetupParts): P
       [join(request.config.app.home, 'keys.json')]: appArtifacts,
     };
     const restored = await rollbackFiles(request.journalRoot, journal, { dependencies, appSettings, warn: message => parts.warn(message) });
+    await rollbackModDirectories(request.config.app.home, journal, message => parts.warn(message));
     journal.verified = false;
     journal.cutover = null;
     await saveJournal(request.journalRoot, journal);

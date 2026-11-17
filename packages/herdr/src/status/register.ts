@@ -30,22 +30,23 @@ export function registerHerdrStatusContribution(pi: ExtensionAPI, ports: StatusP
     if (!owner) { ports.reportDisabled('status-owner-unavailable'); return; }
     const adapter = installStatusAdapter(terminal, { running: 0, queued: 0, paused: 0 });
     if ('disabled' in adapter) { ports.reportDisabled(adapter.reason); return; }
-    let sequence = 0;
+    let refreshing = false;
     let warned = false;
     let unsubscribe = () => {};
     let timer: ReturnType<typeof setInterval> | undefined;
     const activation = { adapter, owner: { sessionId: owner.sessionId, generation: owner.generation }, stop() { unsubscribe(); clearInterval(timer); adapter.dispose(); } };
     active = activation;
     const refresh = async () => {
-      const request = ++sequence;
+      if (refreshing || active !== activation) return;
+      refreshing = true;
       try {
         const counts = await ports.listPending(owner);
-        if (active === activation && request === sequence) { warned = false; adapter.update(counts); }
+        if (active === activation) { warned = false; adapter.update(counts); }
       } catch {
-        if (active === activation && request === sequence && !warned) {
+        if (active === activation && !warned) {
           warned = true; ports.reportDisabled('status-counts-unavailable');
         }
-      }
+      } finally { refreshing = false; }
     };
     unsubscribe = ports.subscribeRuns(owner, () => { void refresh(); });
     timer = setInterval(() => { void refresh(); }, 2000);

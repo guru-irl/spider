@@ -220,7 +220,7 @@ export function createJobHandoff(options: {
   };
   const lifetime = new AbortController();
   const running = new Map<RunId, Promise<void>>();
-  const scans = new Set<Promise<void>>();
+  let scanning: Promise<void> | undefined;
   const reportedRuns = new Set<RunId>();
   const reportRun = (error: unknown, id: RunId) => { if (!lifetime.signal.aborted && !reportedRuns.has(id)) { reportedRuns.add(id); options.reportError?.(error); } };
   const reconcileRun = async (journal: JobJournal) => {
@@ -270,14 +270,12 @@ export function createJobHandoff(options: {
   return {
     reconcile() {
       if (lifetime.signal.aborted) return Promise.resolve();
-      const task = reconcile().finally(() => { scans.delete(task); });
-      scans.add(task);
-      return task;
+      return scanning ??= reconcile().finally(() => { scanning = undefined; });
     },
     async shutdown(reason) {
       lifetime.abort();
       const existing = new Set(adopted.values()), stopping = [...existing].map(monitor => monitor.shutdown(reason));
-      await Promise.allSettled([...scans]);
+      await Promise.allSettled(scanning ? [scanning] : []);
       const results = await Promise.allSettled([...stopping, ...[...adopted.values()].filter(monitor => !existing.has(monitor)).map(monitor => monitor.shutdown(reason))]);
       for (const result of results) if (result.status === 'rejected') options.reportError?.(result.reason);
       adopted.clear(); closedConsoles.clear();

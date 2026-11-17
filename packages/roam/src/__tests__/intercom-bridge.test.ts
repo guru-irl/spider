@@ -391,6 +391,20 @@ it("accepts a sole initial epoch-one claimant but refuses a competing machine", 
   expect(source.retained("outbound", "conflicting-home-mail")).toBeNull();
 }, 5000);
 
+it.each([null, 1])("withdraws initial local epoch %s presence when another machine claims the session", async homeEpoch => {
+  const { source } = pair();
+  const local = { remote: true as const, id: to.sessionId, address: to, machineId: A, machineAlias: "local.invalid", homeEpoch,
+    activationEpoch: "local-generation", endpointEpoch: "local-generation", cwd: "/fixture", model: "fixture", startedAt: 1, lastActivity: 1 };
+  const a = await create(A, B, source, { localPresence: () => [local] });
+  const incoming = batch(B, A, 1); incoming.presence = [{ ...local, machineId: B, homeEpoch: 1, activationEpoch: "other-generation", endpointEpoch: "other-generation" }];
+  const response = await a.exchange(request(incoming));
+  expect(response.exchange.presence).toEqual([]);
+  expect(source.presenceOwner(to)).toMatchObject({ ambiguous: true });
+  expect(await a.dispatch({ from, to: local, message: { id: "initial-local-conflict", timestamp: 1, content: { text: "synthetic" } } }))
+    .toMatchObject({ delivery: "failed", reason: "presence-ambiguous" });
+  expect(source.retained("inbound", "initial-local-conflict")).toBeNull();
+}, 5000);
+
 it("does not route from an old presence hint over a newer authoritative home", async () => {
   const { source } = pair(), a = await create(A, B, source, { authoritativeHome: () => ({ sessionId: to.sessionId, machineId: C, epoch: 2, moveId: null, updatedAt: 1 }) });
   const hint = { remote: true, id: to.sessionId, address: to, machineId: B, machineAlias: "old.invalid", homeEpoch: 1,

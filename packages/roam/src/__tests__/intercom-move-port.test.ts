@@ -194,3 +194,26 @@ it.each(["stale", "frozen"] as const)("local senders reach the committed home wh
     rmSync(agentDir, { recursive: true, force: true });
   }
 }, 5000);
+
+it("a reconnect failure after broker-ready withdraws move readiness", async () => {
+  const global = createReplica("global", HUB), agentDir = mkdtempSync(join(resolve(".spider/scratch"), "br-"));
+  const timers: Array<() => void> = [];
+  let fail = false, closed!: () => void;
+  const closing = new Promise<void>(resolve => { closed = resolve; });
+  class Broker extends EventEmitter {
+    async connect() { this.emit("presence", []); }
+    async enableHelpers() {}
+    publishPresence() { if (fail) throw Object.assign(new Error("write EPIPE /fixture/agent/broker.sock"), { code: "EPIPE" }); }
+    async close() { this.emit("disconnected"); if (fail) closed(); }
+  }
+  const broker = new Broker();
+  const machine = createMachineIntercom({ config: parseConfig({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB, coreUnit: "fixture.service", intercom: { enabled: true, mode: "peers", machineAlias: "hub.invalid" } }),
+    root: global.root, globalDb: global.db, agentDir, broker: broker as unknown as MachineIntercomOptions["broker"], env: { ...process.env, PI_SUBAGENT_CHILD: "0" }, transport: {} as never,
+    clock: { now: () => 1000, later(_ms, fn) { timers.push(fn); return () => {}; } }, ensureBroker: async () => {} });
+  try {
+    await machine.start(); expect(machine.readiness().state).toBe("ready");
+    fail = true; broker.emit("disconnected"); timers.shift()!(); await closing;
+    expect(machine.readiness().state).toBe("pending");
+    await expect(machine.move.bridge({ sessionId: "session-a", scopeId: null })).rejects.toThrow("intercom-move-unavailable");
+  } finally { await machine.stop(); global.close(); rmSync(agentDir, { recursive: true, force: true }); }
+}, 5000);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { constants } from 'node:fs';
-import { mkdir, realpath, lstat, open, rename, unlink, readdir, rm } from 'node:fs/promises';
+import { mkdir, realpath, lstat, open, rename, unlink, readdir, rm, type FileHandle } from 'node:fs/promises';
 import { dirname, basename, join, isAbsolute, resolve } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import type { Owner, TerminalIdentity } from '../contracts.js';
@@ -34,7 +34,7 @@ export async function privateDirectory(path: string): Promise<void> {
   try { await mkdir(path, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   const info = await lstat(path); if (!info.isDirectory() || info.isSymbolicLink()) throw new HerdrError('unsafe-state-path', 'State directories cannot be symlinks');
 }
-export async function readPrivateJson(path: string): Promise<unknown | null> {
+export async function readPrivateJson(path: string, inspect?: (handle: FileHandle) => Promise<void>): Promise<unknown | null> {
   let parent = dirname(path);
   for (;;) {
     try { const info = await lstat(parent); if (!info.isDirectory() || info.isSymbolicLink()) throw new HerdrError('unsafe-state-path', 'State readers cannot traverse symlinked directories'); }
@@ -45,6 +45,7 @@ export async function readPrivateJson(path: string): Promise<unknown | null> {
   try { handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; }
   try {
+    await inspect?.(handle);
     const info = await handle.stat(); if (!info.isFile() || info.size > 1024 * 1024 || process.platform !== 'win32' && (info.mode & 0o077) !== 0) throw new HerdrError('invalid-state-file', 'State must be a private regular file of at most 1 MiB');
     return JSON.parse(await handle.readFile('utf8')) as unknown;
   } finally { await handle.close(); }

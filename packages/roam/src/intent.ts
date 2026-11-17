@@ -52,6 +52,30 @@ async function syncDirectory(path: string): Promise<void> {
   try { await fd.sync(); } finally { await fd.close(); }
 }
 
+/** Metadata and JSON must describe one inode, not two versions of an atomic write. */
+async function readIntentJson(path: string, repairMode: boolean): Promise<{ record: unknown } | null> {
+  const replaced = new Error("Hosting state file replaced during read");
+  for (let attempt = 0; ; attempt++) {
+    let opened = false;
+    try {
+      const record = await readPrivateJson(path, async handle => {
+        opened = true;
+        const info = await handle.stat();
+        const unsafe = () => new Error(`Unsafe hosting state file (regular=${info.isFile()}, symlink=${info.isSymbolicLink()}, links=${info.nlink}, owned=${owned(info)}, mode=${(info.mode & 0o7777).toString(8)})`);
+        if (!info.isFile() || info.isSymbolicLink() || !owned(info)) throw unsafe();
+        // A rename can detach the inode after lookup. Never trust it; reopen the pathname.
+        if (info.nlink === 0) throw replaced;
+        if (info.nlink !== 1) throw unsafe();
+        if (process.platform !== "win32" && (info.mode & 0o7777) !== 0o600) {
+          if (!repairMode) throw unsafe();
+          await handle.chmod(0o600);
+        }
+      });
+      return opened ? { record } : null;
+    } catch (error) { if (error !== replaced || attempt >= 2) throw error; }
+  }
+}
+
 /** Read local hosting views without repairing modes or acquiring locks. */
 async function inspectIntentViews(globalRoot: string): Promise<IntentState[]> {
   if (!isAbsolute(globalRoot)) throw new Error("Hosting state root must be absolute");
@@ -68,11 +92,7 @@ async function inspectIntentViews(globalRoot: string): Promise<IntentState[]> {
   } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
   const result: IntentState[] = [];
   for (const path of await jsonFiles(base)) {
-    const info = await lstat(path);
-    if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || !owned(info) || process.platform !== "win32" && (info.mode & 0o7777) !== 0o600) {
-      throw new Error("Unsafe hosting state file");
-    }
-    const record = await readPrivateJson(path) as VersionedIntent | null;
+    const record = (await readIntentJson(path, false))?.record as VersionedIntent | null;
     if (!record || !Number.isSafeInteger(record.version) || record.version < 1 || !text(record.value?.intent?.sessionId) ||
         path !== join(base, `${hash(record.value.intent.sessionId)}.json`)) throw new Error("Invalid hosting intent file");
     const id = record.value.intent.sessionId;
@@ -112,12 +132,9 @@ export function createIntentStore(globalRoot: string, options: { rename?: (sourc
   async function read(id: string): Promise<VersionedIntent | null> {
     if (!text(id)) throw new Error("Invalid hosting session ID");
     const path = file(id);
-    try {
-      const info = await lstat(path);
-      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || !owned(info)) throw new Error("Unsafe hosting state file");
-      if (process.platform !== "win32" && (info.mode & 0o7777) !== 0o600) await chmod(path, 0o600);
-    } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
-    const record = await readPrivateJson(path) as VersionedIntent | null;
+    const snapshot = await readIntentJson(path, true);
+    if (!snapshot) return null;
+    const record = snapshot.record as VersionedIntent | null;
     if (!record || !Number.isSafeInteger(record.version) || record.version < 1) throw new Error("Invalid hosting intent version");
     validate(id, record.value);
     return record;
@@ -127,7 +144,7 @@ export function createIntentStore(globalRoot: string, options: { rename?: (sourc
       await prepare();
       const ids: string[] = [];
       for (const path of await jsonFiles(base)) {
-        const record = await readPrivateJson(path) as VersionedIntent | null;
+        const record = (await readIntentJson(path, true))?.record as VersionedIntent | null;
         if (!record || !text(record.value?.intent?.sessionId) || path !== file(record.value.intent.sessionId)) throw new Error("Invalid hosting intent file");
         const id = record.value.intent.sessionId;
         if (!await read(id)) throw new Error("Hosting intent disappeared during listing");

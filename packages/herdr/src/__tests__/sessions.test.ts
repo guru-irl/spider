@@ -10,6 +10,7 @@ import { createProcessPresence } from '../sessions/presence.js';
 import { createSessionLeases, assessSessionLiveness, type ProcessInventoryPorts, type ProcessProbe } from '../sessions/lease.js';
 import { launchSession, type SessionLaunchPorts } from '../sessions/launcher.js';
 import { registerHerdrSessions } from '../sessions/register.js';
+import { offerResume } from '../sessions/resume.js';
 import { build } from 'vite';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFileSync } from 'node:child_process';
@@ -92,6 +93,34 @@ describe('session ownership', () => {
     expect(opened).toEqual([]);
   });
 });
+it('quit, signal and reload preserve the correct restart eligibility', async () => {
+  const entry = fileURLToPath(new URL('./fixtures/resume-shutdown-process.ts', import.meta.url));
+  await build({ configFile: false, logLevel: 'silent', resolve: { alias: { '@spider/db-core': fileURLToPath(new URL('../../../db-core/src/command-env.ts', import.meta.url)) } }, build: { ssr: entry, outDir: root, emptyOutDir: false, rollupOptions: { output: { entryFileNames: 'shutdown-process.mjs' } } } });
+  for (const reason of ['quit', 'SIGTERM', 'SIGHUP', 'SIGKILL', 'reload'] as const) {
+    const state = join(root, reason); await mkdir(state);
+    await writeFile(join(state, 's1.jsonl'), JSON.stringify({ type: 'session', version: 3, id: 's1', cwd: state }) + '\n');
+    const start = async () => {
+      const child = spawn(process.execPath, [join(root, 'shutdown-process.mjs'), state], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+      let errors = ''; child.stderr!.on('data', chunk => errors += chunk);
+      const exited = new Promise<void>((resolveExit, reject) => { child.once('error', reject); child.once('exit', () => resolveExit()); });
+      await new Promise<void>((resolveReady, reject) => { child.once('message', () => resolveReady()); child.once('exit', () => reject(new Error(`child exited before ready: ${errors}`))); });
+      return { child, exited };
+    };
+    const first = await start();
+    if (reason === 'quit' || reason === 'reload') first.child.send(reason); else first.child.kill(reason);
+    await first.exited;
+    const stateInventory = { presence: createProcessPresence(state), leases: createSessionLeases(state), processes: async () => [], probe: async () => ({ kind: 'absent' as const }) };
+    const restart = { registry: createTerminalRegistry(state), processInventory: stateInventory, coreStartedAt: async () => Number.MAX_SAFE_INTEGER };
+    const expected = reason !== 'quit';
+    expect(Boolean(await offerResume(terminal, restart)), `${reason}: offer`).toBe(expected);
+    expect(Boolean(await offerResume(terminal, { ...restart, autoResumeRoot: state })), `${reason}: auto`).toBe(expected);
+    if (reason === 'quit') {
+      const next = await start(); next.child.kill('SIGKILL'); await next.exited;
+      expect(await offerResume(terminal, restart), 'starting pi clears the ended mark').not.toBeNull();
+    }
+  }
+}, 30000);
+
 function apiFixture() {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
   const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;

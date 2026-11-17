@@ -130,8 +130,8 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
 }
 
 /** Launch ids belong to the participant, not the hub operation namespace. */
-export function participantLaunchId(machineId: string, sessionId: string, operationId: string): string {
-  return `launch-${createHash("sha256").update(JSON.stringify([machineId, sessionId, operationId])).digest("hex").slice(0, 40)}`;
+export function participantLaunchId(machineId: string, sessionId: string, epoch: number, operationId: string): string {
+  return `launch-${createHash("sha256").update(JSON.stringify([machineId, sessionId, epoch, operationId])).digest("hex").slice(0, 40)}`;
 }
 export function createBoxParticipantWake(input: { root: string; db: import("@spider/db-core").Db; config: import("./contracts").RoamConfig;
   wake?(): Promise<void> }): (request: import("./move-ports").ParticipantLaunchRequest) => Promise<import("./move-ports").ParticipantLaunchResult> {
@@ -142,15 +142,17 @@ export function createBoxParticipantWake(input: { root: string; db: import("@spi
       const intent = await authority.get(sessionId);
       if (!intent || authority.operationId(sessionId) !== operationId || intent.desired !== "running" || intent.suspended || !authority.authorized(sessionId, input.config.hubMachineId, input.config.machineId))
         return { ok: false, reason: "participant-intent-unavailable" };
-      const launchId = participantLaunchId(input.config.machineId, sessionId, operationId);
+      const launchId = participantLaunchId(input.config.machineId, sessionId, intent.epoch, operationId);
       const saved = readLocal<{ sessionId: string; launchId: string; epoch: number }>(input.db, "participant-launch", operationId);
       if (saved && (saved.sessionId !== sessionId || saved.launchId !== launchId || saved.epoch !== intent.epoch)) return { ok: false, reason: "participant-launch-mismatch" };
       if (!saved) {
         const previous = await intents.get(sessionId);
-        const reserved = previous?.value.supervision.kind === "launching" && previous.value.supervision.phase === "reserved" && previous.value.supervision.operationId === launchId && isDeepStrictEqual(previous.value.intent, intent);
-        if (previous && (!reserved && previous.value.supervision.kind !== "idle" || previous.value.intent.epoch > intent.epoch)) return { ok: false, reason: "participant-launch-conflict" };
+        const joins = (row: typeof previous) => !!row && isDeepStrictEqual(row.value.intent, intent) &&
+          (row.value.supervision.kind === "launching" && row.value.supervision.operationId === launchId || row.value.supervision.kind === "live");
+        const joined = joins(previous);
+        if (previous && (!joined && previous.value.supervision.kind !== "idle" || previous.value.intent.epoch > intent.epoch)) return { ok: false, reason: "participant-launch-conflict" };
         const next = { intent, failures: [], supervision: { kind: "launching" as const, phase: "reserved" as const, operationId: launchId } };
-        if (!reserved && (await intents.update(sessionId, previous?.version ?? null, next)).kind !== "updated") return { ok: false, reason: "participant-launch-conflict" };
+        if (!joined && (await intents.update(sessionId, previous?.version ?? null, next)).kind !== "updated" && !joins(await intents.get(sessionId))) return { ok: false, reason: "participant-launch-conflict" };
         writeLocal(input.db, "participant-launch", operationId, { sessionId, launchId, epoch: intent.epoch });
       }
       await (input.wake ?? wakeSupervisor)();

@@ -15,6 +15,7 @@ import { enableMemoryCapture, seedSession } from '@spider/db-core/roam/seed';
 import { parseConfig } from '@spider/roam/config';
 import { inspectSession } from '@spider/roam/session-file';
 import { createIntentStore } from '@spider/roam/intent';
+import { participantLaunchId } from '@spider/roam/participant-launch';
 import { inspectIdLock } from '../../src/sessions/id-lock.js';
 import { createSessionLeases } from '../../src/sessions/lease.js';
 import { readObserved, writeScript, type InteractiveDriver } from '../harness/pi.js';
@@ -49,6 +50,8 @@ import { createHostMoveBindings } from ${source('../../../host/src/roam/move-run
 import { createProcessInventory } from ${source('../../../host/src/herdr/process-inventory.ts')};
 import { createExactLaunchAdapter, createProductionLocalExactHc } from ${source('../../../roam/src/launcher.ts')};
 import { participantLaunchId } from ${source('../../../roam/src/participant-launch.ts')};
+import { createIntentStore } from ${source('../../../roam/src/intent.ts')};
+import { readMoveLaunchAbsenceReceipt } from ${source('../../../roam/src/pending-handoff.ts')};
 import { createRunningIntentAuthority, readReadiness } from ${source('../../../roam/src/session-control.ts')};
 import { requestHubControl } from ${source('../../../roam/src/control-socket.ts')};
 import { createUsageIngestThrough } from ${source('../../../host/src/roam/usage-ingest.ts')};
@@ -120,6 +123,17 @@ const moveFactory = async input => {
     record({ effect: 'power-acquire', argv }); let done; const exited = new Promise(resolve => { done = resolve; });
     return { exited, async stop() { record({ effect: 'power-release' }); done(); } };
   } };
+  if (input.config.role === 'box') {
+    const wake = runtime.bindings.participant!.wake, views = createIntentStore(root), authority = createRunningIntentAuthority(input.globalDb);
+    runtime.bindings.participant!.wake = async request => {
+      const before = await views.get(request.sessionId), intent = await authority.get(request.sessionId);
+      const outcome = await wake(request);
+      if (!outcome.ok && outcome.reason === 'participant-launch-conflict') record({ effect: 'participant-wake-conflict', machineId: machine.id,
+        before, after: await views.get(request.sessionId), intent, operationId: request.operationId,
+        launchId: intent ? participantLaunchId(machine.id, request.sessionId, intent.epoch, request.operationId) : null, outcome });
+      return outcome;
+    };
+  }
   if (input.config.role === 'hub') {
     runtime.bindings.participant!.wake = async ({ sessionId, operationId }) => {
       const intent = await createRunningIntentAuthority(input.globalDb).get(sessionId);
@@ -175,6 +189,19 @@ if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id &&
 } else if (args[0] === 'fixture-status') {
   const status = await requestHubControl(join(root, 'roam', 'hub.sock'), { op: 'status' });
   process.exitCode = status.code; process.stdout.write(JSON.stringify(status) + '\\n');
+} else if (args[0] === 'fixture-observe') {
+  const core = openLocalCore(root), journal = openFreezeJournal(join(root, 'roam', 'journal.db'));
+  let runtime;
+  try {
+    const home = sessionHome(core.db, args[1]);
+    if (!home || home === 'unknown' || home.machineId !== machine.id || home.moveId !== args[2]) throw Error('fixture observation home mismatch');
+    runtime = await moveFactory({ root, globalDb: core.db, config: core.config, journal, sessionId: args[1], transport: {} as never });
+    const observed = await runtime.bindings.participant!.observation(home, { id: args[2] + '-fixture-inspect', kind: 'move-observation', machineId: machine.id, expectedEpoch: home.epoch, args: { sessionId: args[1] } });
+    const receipt = readMoveLaunchAbsenceReceipt(journal, args[2]), complete = receipt && observed.owner.kind === 'absent' && !observed.readiness;
+    const code = complete ? 0 : 3;
+    process.exitCode = code;
+    process.stdout.write(JSON.stringify({ code, reason: complete ? receipt.kind : 'launch-outcome-pending', receipt, observed }) + '\\n');
+  } finally { await runtime?.close(); core.close(); }
 } else if (args[0] === 'fixture-baseline') {
   const core = openLocalCore(root), journal = openFreezeJournal(join(root, 'roam', 'journal.db'));
   let runtime;
@@ -733,10 +760,28 @@ async function exclusion(suite: Suite): Promise<void> {
       console.info(JSON.stringify(observation));
       await suite.evidence('R08-failed-launch.json', observation);
     } finally { boxJournal.close(); startDb.close(); }
-    expect(start).toMatchObject({ code: 3, reason: 'readiness-pending' });
+    const expectedLaunch = participantLaunchId(BOX, f.sessionId, 4, `${failed.operationId}-session-start-${BOX}`);
+    if (start?.reason === 'participant-launch-conflict') {
+      const conflict = (await readFile(f.effects, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).findLast(row =>
+        row.effect === 'participant-wake-conflict' && row.operationId === `${failed.operationId}-session-start-${BOX}`);
+      expect(conflict).toMatchObject({ launchId: expectedLaunch, before: { value: { intent: { epoch: 2, moveId: pending.operationId } } },
+        intent: { epoch: 4, moveId: failed.operationId } });
+      expect(conflict.before.version).toBe(conflict.after.version);
+      await suite.evidence('R08-intent-conflict.json', conflict);
+    } else expect(start).toMatchObject({ code: 3, reason: 'readiness-pending' });
+    const rollbackDeadline = deadline(60_000);
+    phase('await-exact-launch-exit');
+    const launchProof = await waitFor('exact launch exited without adopting ownership', () => f.cli(box, ['fixture-observe', f.sessionId, failed.operationId]),
+      result => result.code !== 3, rollbackDeadline, { reconcileMs: 500 });
+    expect(launchProof).toMatchObject({ code: 0, reason: 'exited-without-adoption', receipt: { kind: 'exited-without-adoption', launchId: expectedLaunch, epoch: 4,
+      evidence: { proof: { kind: 'terminal-exited-without-adoption', operationId: expectedLaunch, terminalExited: true, lockNeverAdopted: true } } },
+      observed: { owner: { kind: 'absent' }, readiness: null } });
+    expect(launchProof.receipt.terminalId).toBe(launchProof.receipt.evidence.proof.terminalId);
+    expect(f.home()).toMatchObject({ machine_id: BOX, epoch: 4 });
+    await suite.evidence('R08-unadopted-exit.json', launchProof);
     phase('rollback');
     const rolledBack = await waitFor('proved launch failure permits rollback', () => f.cli(hub, ['roam', 'recover', failed.operationId]),
-      result => result.reason === 'rolled-back', deadline(60_000), { reconcileMs: 500 });
+      result => result.reason === 'rolled-back', rollbackDeadline, { reconcileMs: 500 });
     expect(rolledBack).toMatchObject({ code: 0, reason: 'rolled-back', home: { machineId: HUB, epoch: 5 } });
     await assertMoveState(f, hub, expectedTrees, 5);
     const db = openDb(join(hub.root, 'roam', 'journal.db'));

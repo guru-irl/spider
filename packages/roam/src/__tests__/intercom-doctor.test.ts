@@ -77,6 +77,31 @@ it("uses the approved target port for host-key doctor checks", async () => {
   expect(calls).toContainEqual(["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519,ecdsa,rsa", "-p", "22", "127.0.0.1"]);
 }, 5000);
 
+it("shares one single-type scan across pairs and reports ports it did not check", async () => {
+  const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "icdoctor-shared-")); roots.push(root);
+  const { userInfo } = await import("node:os");
+  const peer = (machineId: string, alias: string) => ({ machineId, alias, node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/hc", globalRoot: root });
+  const base64 = Buffer.concat([Buffer.from([0, 0, 0, 11]), Buffer.from("ssh-ed25519"), Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, 7)]).toString("base64");
+  const registry = createIntercomRegistry(root);
+  for (let i = 1; i <= 7; i++) {
+    const pair = { pairId: `pair-${i}`, source: peer(A, "box-1.invalid"), target: peer(B, "box-2.invalid"), edgeEpoch: `edge-${i}`,
+      connector: { tunnelId: `tunnel-${i}`, remotePort: i === 7 ? 2223 : 22, session: "default" }, sshUser: userInfo().username,
+      hostKey: { type: "ssh-ed25519", base64 }, hostKeyAlias: `spider-${"a".repeat(32)}` };
+    await registry.register(pair, `approval-${i}`, "a".repeat(64)); await registry.bind(pair, `approval-${i}`); await registry.activate(pair.pairId, `approval-${i}`);
+  }
+  const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host"], connect: ["/fixture/connector", "connect"], localPort: 23222 };
+  const config = parseConfig({ role: "box", machineId: B, hubMachineId: A, coreUnit: "fixture.service", intercom: { enabled: true, mode: "peers", machineAlias: "box-2.invalid", connector: recipe } });
+  const calls: string[][] = [], { inspectLocalIntercomDoctor } = await import("../intercom-doctor");
+  const diagnostics = await inspectLocalIntercomDoctor({ root, config, agentDir: root,
+    async run(argv) { calls.push([...argv]); if (argv[0] === "/fixture/connector") return { code: 0, stdout: JSON.stringify({ connector: "ready", login: "ready", tunnel: "hosted", peerPort: "reachable" }) };
+      if (argv[0] === "/usr/bin/ssh-keyscan") return { code: 0, stdout: `127.0.0.1 ssh-ed25519 ${base64}\n` }; throw new Error("unexpected command"); },
+    async features() { return []; }, async link() { return { status: "live", reason: null }; } });
+  expect(calls.filter(argv => argv[0] === "/usr/bin/ssh-keyscan")).toEqual([["/usr/bin/ssh-keyscan", "-T", "5", "-t", "ed25519", "-p", "22", "127.0.0.1"]]);
+  expect(diagnostics.some(item => item.reason.startsWith("host-key-changed"))).toBe(false);
+  expect(diagnostics.some(item => item.reason.startsWith("intercom-ssh-host-unavailable"))).toBe(false);
+  expect(diagnostics.some(item => item.reason.startsWith("intercom-ssh-check-deferred") && item.reason.includes("pair-7"))).toBe(true);
+}, 10000);
+
 it("reports failed positive intercom evidence during box preflight even while roaming is disabled", async () => {
   const root = mkdtempSync(join(paths.scratch("worktree", process.cwd()), "icpreflight-")); roots.push(root);
   mkdirSync(join(root, "roam"), { recursive: true, mode: 0o700 });

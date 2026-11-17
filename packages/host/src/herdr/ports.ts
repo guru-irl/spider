@@ -646,6 +646,19 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       manifest.bytes = Buffer.from(JSON.stringify({ ...JSON.parse(manifest.bytes.toString('utf8')), clonedFrom: { name: kind, version: appVersion }, patchState: { version: 1, files: Object.fromEntries(entries.filter(file => file !== manifest).map(file => [file.path.slice(prefix.length), digest(file.bytes)])) } }));
     }
     const staged = [...files, ...panel], available = new Set(staged.map(file => resolve(file.path)));
+    if (patches.crossMachine) {
+      const pickerMods = ['spider-machine-picker', 'spider-machine-picker-right', 'spider-machine-picker-down'];
+      const helperCopies = {
+        'pane/actions.js': ['spider-pane/actions.js', 'spider-menu/actions.js'],
+        'pane/machine.js': ['spider-pane/machine.js', 'spider-menu/machine.js'],
+        'machines/actions.js': [...['spider-pane', 'spider-tabs', 'spider-menu', 'spider-new-menu'].map(name => `${name}/machines/actions.js`), ...pickerMods.map(name => `${name}/actions.js`)],
+        'machines/picker.js': pickerMods.map(name => `${name}/picker.js`),
+      } as const;
+      for (const [helper, copies] of Object.entries(helperCopies) as [keyof typeof helperCopies, readonly string[]][]) for (const copy of copies) {
+        const path = join(mods, copy), matches = staged.filter(file => file.path === path);
+        if (matches.length !== 1 || digest(matches[0]!.bytes) !== patches.crossMachine.helperHashes[helper]) throw new HerdrError('cross-machine-helper-mismatch', `Unverified cross-machine helper: ${helper} (${copy})`);
+      }
+    }
     for (const file of staged) {
       const name = relative(mods, file.path).split(sep)[0];
       if (!name.startsWith('spider-') || !file.path.endsWith('.js')) continue;

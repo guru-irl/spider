@@ -76,6 +76,7 @@ export interface MoveParticipantBindings {
   stores: readonly { key: StoreKey; db: Db }[];
   withBothLocks<T>(sessionId: string, effect: (locks?: import("./session-control").HeldSessionLocks) => Promise<T>): Promise<T>;
   probe(sessionId: string): Promise<Probe>;
+  exit?: Pick<NonNullable<import("./session-control").SessionControlPorts["exit"]>, "exited" | "wait">;
   git: Omit<GitPorts, "journal" | "limits">;
   writers(root: string): Promise<readonly Blocker[]>;
   sessionTarget(sessionId: string, moveId: string): Promise<string>;
@@ -576,9 +577,11 @@ export async function handleMoveParticipantOperation(operation: Operation, journ
   const result = (value: unknown): Outcome<JsonObject> => ({ code: 0, reason: "complete", operationId: operation.id, home, epoch: home.epoch, repairCommand: null, value: json(value) });
   if (["session-inspect", "session-freeze", "session-unfreeze", "session-shutdown", "session-retire"].includes(operation.kind)) {
     const feeds = evidence(bindings), intercom = required(bindings.intercom, "intercom"), local = location(participant.globalDb, id);
+    const now = bindings.clock?.now ?? Date.now, deadline = now() + participant.config.limits.controlMs;
     const control = async (op: Operation): Promise<Outcome<JsonObject>> => controlSession(op, {
       journal, probe: participant.probe, withBothLocks: participant.withBothLocks,
-      live: live => requestSessionControl(participant.runtimeRoot, live, { timeoutMs: participant.config.limits.controlMs }),
+      exit: participant.exit ? { ...participant.exit, now, deadline } : undefined,
+      live: live => requestSessionControl(participant.runtimeRoot, live, { timeoutMs: Math.max(1, deadline - now()) }),
       dormant: async dormant => participant.dormant({ sessionId: id, file: local.file, cwd: local.cwd, home: requiredHome(participant.globalDb, id),
         journal: journal as FreezeJournal, stores: participant.stores.map(row => row.db), expectedStores: local.stores,
         intercom: { address: intercom.address, ports: intercom.ports }, evidence: feeds,

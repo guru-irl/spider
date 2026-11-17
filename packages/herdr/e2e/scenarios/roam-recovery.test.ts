@@ -23,7 +23,7 @@ import { runHc } from '../harness/hc.js';
 import { assertSocketPath } from '../harness/environment.js';
 import { deadline, waitFor } from '../harness/wait.js';
 import { createSuite, type Suite } from '../harness/suite.js';
-import type { ScenarioDefinition } from '../harness/scenario.js';
+import { registerScenarios, storyId, type ScenarioDefinition } from '../harness/scenario.js';
 import { createMoveStory, assertMoveState, HUB, BOX, type MoveMachine } from './roam-move.test.js';
 
 export interface StoryPresentation {
@@ -265,16 +265,18 @@ export async function runRecoveryCases(suite: Suite): Promise<void> {
       expect(await f.presentation.staleClose(captured), recoveryCaseNames[3]).toMatchObject({ status: 'refused', reason: 'Session changed. Close again.' });
       expect((await f.presentation.store.read()).presentations[0]).toEqual(presentation);
       expect((await f.owners()).map(owner => owner.pid)).toEqual([local.pid]);
-      await suite.evidence(`R09-${parked ? 'parked' : 'visible'}-restore.json`, { cases: [recoveryCaseNames[0], recoveryCaseNames[parked ? 2 : 1], recoveryCaseNames[3]], restored, presentation, local, reconnect, digest,
+      await suite.evidence(`R15-${parked ? 'parked' : 'visible'}-restore.json`, { cases: [recoveryCaseNames[0], recoveryCaseNames[parked ? 2 : 1], recoveryCaseNames[3]], restored, presentation, local, reconnect, digest,
         blockedObservations: ['native window appearance requires the app'] });
     } finally {
       try { await f?.close(); } finally {
         const cleanup = await owned.close();
-        await suite.evidence(`R09-${parked ? 'parked' : 'visible'}-cleanup.json`, { cleanup, durationMs: Date.now() - started, evidence: owned.evidenceDirectory });
+        await suite.evidence(`R15-${parked ? 'parked' : 'visible'}-cleanup.json`, { cleanup, durationMs: Date.now() - started, evidence: owned.evidenceDirectory });
       }
     }
   }
 }
 
-// R09 invokes these cases after its existing mirror-and-retire assertions.
-export const scenarios: readonly ScenarioDefinition[] = [];
+export const scenarios: readonly ScenarioDefinition[] = [
+  { id: storyId('R15'), title: 'revoked home restores presentations and mirrored prefix', tiers: ['headless'], run: runRecoveryCases },
+];
+registerScenarios(scenarios);

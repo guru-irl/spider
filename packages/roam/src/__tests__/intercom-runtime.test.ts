@@ -283,6 +283,52 @@ it("a live local presence can close its move intake without leaking roster field
     blockers: [{ kind: "intercom-owner-unknown", id: address.sessionId }] });
 }, 5000);
 
+it.each([null, 1])("delivers for a never-moved local session at initial epoch %s without a home row", async homeEpoch => {
+  const f = machineFixture(), from = { sessionId: "never-moved-sender", scopeId: "scope" }, to = { sessionId: "never-moved-recipient", scopeId: "scope" };
+  const service = await makeMachine(f.options); await service.start();
+  expect(f.global.db.prepare("SELECT 1 FROM session_homes WHERE session_id=?").get(to.sessionId)).toBeUndefined();
+  f.broker.emit("presence", [{ ...localPresence(to, "recipient-generation"), homeEpoch }, localPresence(from, "sender-generation")]);
+  expect(await f.broker.bridge!.dispatch({ from, to: { ...destination(to), homeEpoch },
+    message: { id: "never-moved-mail", timestamp: 1000, content: { text: "synthetic" } } })).toMatchObject({ delivery: "queued" });
+  await vi.waitFor(() => expect(f.broker.deliveries).toMatchObject([{ to: { address: to, machineId: HUB, homeEpoch }, message: { id: "never-moved-mail" } }]));
+}, 5000);
+
+it("selects the committed remote home without waking the stale local recipient", async () => {
+  const f = machineFixture(), address = { sessionId: "moving-recipient", scopeId: "scope" }, from = { sessionId: "sender", scopeId: "scope" };
+  const target = peer(BOX, "destination.invalid"), config = parseConfig({ ...f.options.config, peers: [target],
+    intercom: { ...f.options.config.intercom, routes: [{ kind: "direct", peer: target, edgeEpoch: "edge-1" }] } });
+  f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,1,NULL,1)").run(address.sessionId, HUB);
+  const service = await makeMachine({ ...f.options, config }); await service.start();
+  const stale = { ...localPresence(address, "source-generation"), homeEpoch: 1 };
+  f.broker.emit("presence", [stale, localPresence(from, "sender-generation")]);
+  const queue = openIntercomStore({ file: join(f.global.root, "roam", "intercom", "queue.db"), machineId: HUB, clock: f.clock }); replicas.push(queue);
+  queue.acceptLocal({ from, endpoint: { address, machineId: HUB, homeEpoch: 1, activationEpoch: "source-generation" },
+    message: { id: "old-local-mail", timestamp: 1000, content: { text: "synthetic" } } });
+  f.global.db.prepare("UPDATE session_homes SET machine_id=?,epoch=2 WHERE session_id=?").run(BOX, address.sessionId);
+  f.broker.emit("presence", [{ ...stale, status: "working" }, localPresence(from, "sender-generation")]);
+  f.broker.emit("presence", [stale, localPresence(from, "sender-generation")]);
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+  expect(f.broker.deliveries).toEqual([]);
+  const current = { ...destination(address), machineId: BOX, machineAlias: "destination.invalid", homeEpoch: 2,
+    activationEpoch: "destination-generation", endpointEpoch: "destination-generation" };
+  await f.broker.helper!(withHopRequest(helperRequest(BOX, HUB, "edge-1", 1, [current])), new AbortController().signal);
+  expect(await service.move.endpoint(address)).toEqual({ address, machineId: BOX, homeEpoch: 2, activationEpoch: "destination-generation" });
+  expect(f.broker.published.at(-1)).toEqual([expect.objectContaining({ machineId: BOX, homeEpoch: 2 })]);
+  expect(await f.broker.bridge!.dispatch({ from: { ...from, sessionId: "fresh-sender" }, to: current, message: { id: "new-remote-mail", timestamp: 1000, content: { text: "synthetic" } } }))
+    .toMatchObject({ delivery: "queued" });
+  expect(queue.retained("outbound", "new-remote-mail")).toMatchObject({ endpoint: { machineId: BOX, homeEpoch: 2, activationEpoch: "destination-generation" } });
+  expect(f.broker.deliveries).toEqual([]);
+}, 5000);
+
+it.each(["unknown", "conflict"])("does not activate a local endpoint with %s committed ownership", async kind => {
+  const f = machineFixture(), address = { sessionId: "unproved-recipient", scopeId: null };
+  if (kind === "conflict") f.global.db.prepare("INSERT INTO session_homes VALUES(?,?,2,NULL,1)").run(address.sessionId, BOX);
+  const service = await makeMachine(f.options); await service.start();
+  f.broker.emit("presence", [{ ...localPresence(address, "source-generation"), homeEpoch: 2 }]);
+  await expect(service.move.endpoint(address)).rejects.toThrow("intercom-endpoint-unproved");
+  expect(f.broker.deliveries).toEqual([]);
+}, 5000);
+
 it("a ready roaming bridge exposes strict move blocker snapshots", async () => {
   const f = machineFixture(), service = await makeMachine(f.options);
   await service.start();

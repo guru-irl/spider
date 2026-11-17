@@ -25,10 +25,11 @@ beforeEach(async () => {
 afterEach(async () => rm(root, { recursive: true, force: true }));
 function ports(start = 20) { return { registry: createTerminalRegistry(root), processInventory: { presence: createProcessPresence(root), leases: createSessionLeases(root), processes: async () => [], probe: async () => ({ kind: 'absent' as const }) }, coreStartedAt: async () => start }; }
 async function claims(path: string) { return (await readdir(path)).filter(name => /^\d/.test(name)); }
-async function shell(body: string, hc = true, interactive = true, binary = '/bin/bash') {
+async function shell(body: string, hc: boolean | 'id' | 'socket' = true, interactive = true, binary = '/bin/bash') {
   return new Promise<{ out: string; code: number | null }>((resolveRun, reject) => {
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, TMPDIR: root }; delete env.HC_TERMINAL_ID; delete env.HC_TERMINAL_SOCKET;
-    if (hc) { env.HC_TERMINAL_ID = 't1'; env.HC_TERMINAL_SOCKET = terminal.socket; }
+    if (hc === true || hc === 'id') env.HC_TERMINAL_ID = 't1';
+    if (hc === true || hc === 'socket') env.HC_TERMINAL_SOCKET = terminal.socket;
     const child = spawn(binary, [...(binary === '/bin/zsh' ? ['-f'] : ['--noprofile', '--norc']), ...(interactive ? ['-i'] : []), '-c', body], { cwd: root, env, stdio: ['ignore', 'pipe', 'pipe'] }); let out = ''; child.stdout.on('data', b => out += b); child.on('error', reject); child.on('close', code => resolveRun({ out, code }));
   });
 }
@@ -114,6 +115,14 @@ it('auto leaves noninteractive and non-Herdr shells untouched', async () => {
   expect((await shell(block, false)).out).toBe('');
   expect((await shell(block, true, false)).out).toBe('');
   expect(await readFile(join(root, 'launches.jsonl'), 'utf8')).toBe('');
+});
+
+it.each(['id', 'socket'] as const)('a shell with only the Herdr %s variable does not offer or launch', async hc => {
+  for (const mode of ['offer', 'auto'] as const) {
+    await fakeCli(mode);
+    expect((await shell(buildResumeBlock(options) + firstPrompt(), hc)).out).toBe('');
+    expect(await readFile(join(root, 'launches.jsonl'), 'utf8')).toBe('');
+  }
 });
 
 it('two hook installs leave one marked block and one offer', async () => {
@@ -221,6 +230,12 @@ it.skipIf(!existsSync('/bin/zsh'))('zsh auto resumes and returns to the shell', 
   expect(result.out).toBe(`Resuming ${owner.name}…\nshell returned\n`);
   const call = JSON.parse((await readFile(join(root, 'launches.jsonl'), 'utf8')).trim());
   expect(call.argv).toEqual(['resume', '--config', options.configPath, '--file', file, '--session-id', 's1', '--cwd', root]);
+});
+
+it('explicit extensions stay silent when no core restart is proved', async () => {
+  await createTerminalRegistry(root).record({ owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: join(root, 'agent'), extensionArguments: ['--extension', join(root, 'extension.js')] } });
+  expect(await offerResume(terminal, ports(10))).toBeNull();
+  expect(await offerResume(terminal, { ...ports(10), autoResumeRoot: root })).toBeNull();
 });
 
 it('a recorded absolute extension argument refuses a resume offer with its session name', async () => {

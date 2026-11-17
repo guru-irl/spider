@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { endianness } from "node:os";
@@ -8,12 +8,12 @@ import { scratchDbPath } from "@spider/db-core/testutil";
 import { openDiagnosticSnapshot } from "../diagnostic-snapshot";
 import { runLocalDoctor } from "../local-diagnostics";
 
-const hooks = vi.hoisted(() => ({ afterRead: null as null | (() => void) }));
+const hooks = vi.hoisted(() => ({ afterRead: null as null | ((fd: number, count: number) => void) }));
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, readSync: (...args: unknown[]) => {
     const count = Reflect.apply(actual.readSync, undefined, args);
-    hooks.afterRead?.();
+    if (typeof args[0] === "number") hooks.afterRead?.(args[0], count);
     return count;
   } };
 });
@@ -72,6 +72,34 @@ it("refuses a WAL that extends beyond the published commit index", () => {
     const target = clone("target.db"), before = hashes(target);
     expect(() => openDiagnosticSnapshot(target)).toThrow(/WAL.*commit|changing/i);
     expect(hashes(target)).toEqual(before);
+  } finally { writer.close(); }
+}, 5000);
+
+it("retries when a writer publishes its WAL commit during the snapshot", () => {
+  const { root, file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('visible')");
+    const earlierIndex = readFileSync(`${file}-shm`);
+    writer.exec("INSERT INTO fixture VALUES ('published')");
+    const publishedIndex = readFileSync(`${file}-shm`), target = join(root, "publishing.db");
+    copyFileSync(file, target); copyFileSync(`${file}-wal`, `${target}-wal`); writeFileSync(`${target}-shm`, earlierIndex);
+    const sourceIndex = statSync(`${target}-shm`);
+    let afterPublication: (string | null)[] | undefined;
+    hooks.afterRead = (fd, count) => {
+      if (count !== 96) return;
+      const read = fstatSync(fd);
+      if (read.dev !== sourceIndex.dev || read.ino !== sourceIndex.ino) return;
+      hooks.afterRead = null;
+      writeFileSync(`${target}-shm`, publishedIndex);
+      afterPublication = hashes(target);
+    };
+    const snapshot = openDiagnosticSnapshot(target)!;
+    try {
+      expect(afterPublication).toBeDefined();
+      expect(snapshot.prepare("SELECT value FROM fixture ORDER BY value").all()).toEqual([{ value: "published" }, { value: "visible" }]);
+    } finally { snapshot.close(); }
+    expect(hashes(target)).toEqual(afterPublication);
+    expect(readdirSync(temp)).toEqual([]);
   } finally { writer.close(); }
 }, 5000);
 

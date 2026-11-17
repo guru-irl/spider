@@ -45,7 +45,7 @@ function validDiagnostic(value: unknown): value is FailureDiagnostic {
     (row.blockers === undefined || Array.isArray(row.blockers) && row.blockers.every(item => item &&
       [item.kind, item.id, item.detail].every(text => typeof text === "string" && text.length > 0 && text.length <= 500)));
 }
-function failureDiagnostic(error: unknown): FailureDiagnostic {
+export function failureDiagnostic(error: unknown): FailureDiagnostic {
   const rawCode = error && typeof error === "object" && "code" in error ? error.code : null;
   const name = error instanceof IntercomFenceError ? "IntercomFenceError" : error instanceof Error ? error.name : "Error";
   return { name: /^[A-Za-z0-9_.-]{1,128}$/.test(name) ? name : "Error",

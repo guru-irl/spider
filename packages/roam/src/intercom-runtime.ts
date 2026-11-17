@@ -1,4 +1,4 @@
-import { startMachineMoveSocket } from "./machine-move-socket";
+import { failureDiagnostic, startMachineMoveSocket } from "./machine-move-socket";
 import { randomUUID } from "node:crypto";
 import { localEntries } from "@spider/db-core/roam/local-state";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
@@ -110,6 +110,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
     }
   };
   const enabled = settings.enabled && options.env?.PI_SUBAGENT_CHILD !== "1" && (options.env || process.env).PI_SUBAGENT_CHILD !== "1";
+  let brokerFailure: ReturnType<typeof failureDiagnostic> | undefined;
   let status: ReturnType<MachineIntercom["readiness"]> = { state: enabled ? "pending" : "disabled", reason: enabled ? "starting" : null };
   let bridge: IntercomBridge | undefined, store: IntercomStore | undefined, lease: HelperRouteLease | undefined;
   let delivery: HostIntercomDelivery | undefined;
@@ -417,7 +418,11 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
           else await spawnBrokerIfNeeded("npx", ["--no-install", "tsx"], { agentDir: options.agentDir, env: options.env, signal: abort.signal });
           if (abort.signal.aborted) throw new Error("intercom-stopped");
         },
-        onBrokerState(ready) { if (!stopped) status = ready ? { state: "ready", reason: null } : { state: "pending", reason: "broker-unavailable" }; },
+        onBrokerState(ready) {
+          if (ready) brokerFailure = undefined;
+          if (!stopped) status = ready ? { state: "ready", reason: null } : { state: "pending", reason: "broker-unavailable" };
+        },
+        onBrokerError(error) { brokerFailure = failureDiagnostic(error); },
       });
       const revoke = bridge.revokePair;
       bridge.revokePair = (peer, epoch, requestedFence) => withIntercomPeerLock(options.root, local, peer, async () => {
@@ -453,7 +458,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
     if (!roaming || !enabled || stopped || status.state !== "ready" || !bridge || !store) {
       const unavailable = !roaming ? "roaming-disabled" : !enabled ? "disabled" : stopped ? "stopped" :
         status.state !== "ready" ? status.reason ?? status.state : !bridge ? "bridge-missing" : "store-missing";
-      throw new Error(`intercom-move-unavailable: ${unavailable}`);
+      throw new Error(`intercom-move-unavailable: ${unavailable}${brokerFailure ? `; broker reconnect ${brokerFailure.code ?? brokerFailure.name}: ${brokerFailure.message}` : ""}`);
     }
     return { bridge, store };
   };

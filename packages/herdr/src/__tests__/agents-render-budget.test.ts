@@ -217,6 +217,26 @@ it('does not count a retained terminal hidden under a folded finished run', () =
   void h.view.close();
 });
 
+it('counts deferred history only through expanded subagent ancestors', () => {
+  const h = fixture('0.1.13', 1, 0), first = h.state.feeds[0].runs.rows[0], now = Date.now();
+  for (const [id, parent] of [['done-parent', 'v0'], ['done-child', 'done-parent-viewer']] as const) {
+    h.state.feeds[0].runs.rows.push({ ...first, id, status: 'done', finishedAt: now - 1000, viewer: `${id}-viewer` });
+    h.state.terminals.push({ address: `${id}-viewer`, parent, state: 'finished', status: 'idle', finishedAt: now - 1000, exitCode: 0, reason: 'exited',
+      labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': id } });
+  }
+  const count = (expandedSubagents: string[]) => {
+    const summary: { hiddenFinished?: number } = {};
+    children.projectAgentChildren(h.state.terminals, h.state.feeds, 't0', HerdrLabelContract,
+      { now, finishedSummary: summary, expandedSubagents: new Set(expandedSubagents) });
+    return summary.hiddenFinished;
+  };
+  expect(count([])).toBe(0);
+  expect(count(['done-parent'])).toBe(0);
+  expect(count(['live0'])).toBe(1);
+  expect(count(['live0', 'done-parent'])).toBe(2);
+  void h.view.close();
+});
+
 it('can resolve parked owners without projecting their children', () => {
   const h = fixture('0.1.13', 1, 48);
   h.state.agents[0].pane = null;
@@ -285,6 +305,27 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       h.state.throwFeed = false; await refresh();
       expect(h.storage.get('spider.subagents.expanded')).toBe('[]');
       expect(writes()).toBe(2);
+    } finally { await h.view.close(); }
+  });
+
+  it(`${version}: finished count follows subagent expansion`, async () => {
+    const h = fixture(version, 1, 0), first = h.state.feeds[0].runs.rows[0], now = Date.now();
+    const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
+    h.state.feeds[0].runs.rows.push({ ...first, id: 'nested-done', name: 'Nested done', status: 'done', finishedAt: now - 1000, viewer: 'nested-viewer' },
+      { ...first, id: 'root-done', name: 'Root done', status: 'done', finishedAt: now - 1000, viewer: null });
+    h.state.terminals.push({ address: 'nested-viewer', parent: 'v0', state: 'finished', status: 'idle', finishedAt: now - 1000, exitCode: 0, reason: 'exited',
+      labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 's0', 'spider.run': 'nested-done' } });
+    try {
+      await h.ready(); let root = h.render();
+      expect(h.text(root)).toContain('1 finished');
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      expect(h.text(root)).toContain('2 finished');
+      find(root, 'finished-toggle-t0').events.on_click({}, h.cx); root = h.render();
+      expect(find(root, 'sub-root-done')).toBeDefined();
+      expect(find(root, 'sub-nested-done')).toBeDefined();
+      find(root, 'finished-toggle-t0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      find(root, 'child-fold-live0').events.on_click({}, h.cx); await h.flush(); root = h.render();
+      expect(h.text(root)).toContain('1 finished');
     } finally { await h.view.close(); }
   });
 

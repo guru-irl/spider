@@ -9,7 +9,7 @@ import { scrubSecrets } from '@spider/memory';
 import type { Owner, SessionDataSource, SessionFeed, HerdrConfig, PaceSummary } from '../../../herdr/src/contracts.js';
 import type { SessionScheduler } from '../loop/index.js';
 import { computePace } from '../usage/billing-pace.js';
-import type { PanelUsage } from '../usage/protocol.js';
+import { PANEL_USAGE_INTERVAL_MS, type PanelUsage } from '../usage/protocol.js';
 import { formatCompact, formatExact, formatMonthTitle, formatLocalTime } from '../usage/web/format.js';
 import type { IntentionalNotification, PaceLabels, SessionMonthCost } from '../../../herdr/src/contracts.js';
 import { readNotifications, type StoredNotification } from '../notifications/store.js';
@@ -27,7 +27,6 @@ export interface HostDataSourceOptions {
 }
 const preview = (text: string, limit = 180): string => scrubSecrets(text).text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').slice(0, limit);
 interface OwnedFacts { rows: RunRow[]; total: number; truncated: boolean; todos: SessionFeed['todos']['rows']; approvals: SessionFeed['approvals']; notifications: StoredNotification[] }
-const USAGE_CACHE_TTL = 30000;
 interface UsageCache { at: number; period?: ReturnType<typeof computePace>['period']; valueAt?: number; pending: boolean; publishedPending?: boolean; pace?: PaceSummary; monthCost?: SessionMonthCost }
 interface OwnerCache { sessionId: string; readAt: number; dirty: boolean; revision: number; facts: OwnedFacts | null; lastSnapshot?: SessionFeed; usage?: UsageCache }
 export interface HostSessionDataSource extends SessionDataSource { snapshot(owner: Owner, lifecycle?: SessionFeed['lifecycle']): Promise<SessionFeed> }
@@ -58,7 +57,7 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
   const accountUsage = async (owner: Owner, cache: OwnerCache, now: number): Promise<UsageCache> => {
     const period = cache.usage?.period;
     const periodChanged = period !== undefined && (now < period.start || now >= period.end);
-    if (!cache.usage || periodChanged || !cache.usage.pending && (now - cache.usage.at >= USAGE_CACHE_TTL || now < cache.usage.at)) {
+    if (!cache.usage || periodChanged || !cache.usage.pending && (now - cache.usage.at >= PANEL_USAGE_INTERVAL_MS || now < cache.usage.at)) {
       const previous = periodChanged ? undefined : cache.usage;
       const reading: UsageCache = { at: now, period: previous?.period, pending: true, valueAt: previous?.valueAt, pace: previous?.pace, monthCost: previous?.monthCost };
       cache.usage = reading;
@@ -85,7 +84,7 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
     if (cache.usage.pending) {
       cache.usage.publishedPending = true;
       // A replacement must not renew the age of the number it is replacing.
-      if (cache.usage.valueAt === undefined || now < cache.usage.valueAt || now - cache.usage.valueAt > 2 * USAGE_CACHE_TTL) {
+      if (cache.usage.valueAt === undefined || now < cache.usage.valueAt || now - cache.usage.valueAt > 2 * PANEL_USAGE_INTERVAL_MS) {
         cache.usage.pace = undefined;
         cache.usage.monthCost = undefined;
       }

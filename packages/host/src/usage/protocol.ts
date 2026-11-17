@@ -6,7 +6,7 @@ import type { Pace } from "./dashboard-v4-contract.js";
 
 export const PANEL_USAGE_INTERVAL_MS = 30000;
 
-export type PanelUsage = { monthCost: { credits: number | null; label: string }; pace: Pace; updatedAt: number | null };
+export type PanelUsage = { monthCost: { credits: number | null; label: string }; pace: Pace; updatedAt: number | null; sampledAt?: number };
 
 export type UsageWorkerCommand =
   | { type: "start"; roots: UsageRoots; owner: string; child: boolean; poll: boolean; calibration?: "auto" | "off"; metadataBackfillBytesPerPass?: number; responseMetadataBytesPerPass?: number; dashboardMode?: boolean; sessionId?: string | null }

@@ -70,7 +70,7 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
           reading.pace.labels = paceLabels(reading.pace);
           reading.monthCost = usage.monthCost;
           reading.period = calculated.period;
-          reading.valueAt = now;
+          reading.at = reading.valueAt = 'sampledAt' in usage && typeof usage.sampledAt === 'number' ? usage.sampledAt : now;
         } catch {
           reading.pace = { ...unavailablePace(), unavailableReason: 'usage-read-failed' };
           reading.monthCost = undefined;
@@ -81,13 +81,11 @@ export function createHerdrDataSource(options: HostDataSourceOptions): HostSessi
     }
     // Already-resolved adapters may populate this turn. Never await native work.
     await Promise.resolve();
-    if (cache.usage.pending) {
-      cache.usage.publishedPending = true;
-      // A replacement must not renew the age of the number it is replacing.
-      if (cache.usage.valueAt === undefined || now < cache.usage.valueAt || now - cache.usage.valueAt > 2 * PANEL_USAGE_INTERVAL_MS) {
-        cache.usage.pace = undefined;
-        cache.usage.monthCost = undefined;
-      }
+    if (cache.usage.pending) cache.usage.publishedPending = true;
+    // Neither a late subscriber nor a slow replacement may renew a sample's age.
+    if (cache.usage.valueAt === undefined ? cache.usage.pending : now < cache.usage.valueAt || now - cache.usage.valueAt >= PANEL_USAGE_INTERVAL_MS) {
+      cache.usage.pace = undefined;
+      cache.usage.monthCost = undefined;
     }
     return cache.usage;
   };

@@ -103,14 +103,12 @@ jobs:
       - name: Set overall story deadline
         env:
           JOB_MINUTES: ${{ matrix.timeout }}
-          STEP_MINUTES: ${{ matrix.story == 'R05' && 1 || matrix.timeout }}
           SHORT_DEADLINE: ${{ inputs.deadline-seconds }}
         run: |
           set -euo pipefail
           # Measured cleanup plus archive/upload: under 8 s. Reserve 20 s
           # including initial job setup and additional upload headroom.
-          minutes=$((JOB_MINUTES < STEP_MINUTES ? JOB_MINUTES : STEP_MINUTES))
-          seconds=$((minutes * 60 - 20))
+          seconds=$((JOB_MINUTES * 60 - 20))
           if [ -n "$SHORT_DEADLINE" ]; then
             [[ "$SHORT_DEADLINE" =~ ^[1-9][0-9]{0,2}$ ]] || exit 1
             (( SHORT_DEADLINE <= seconds )) || exit 1
@@ -159,8 +157,13 @@ jobs:
         timeout-minutes: ${{ matrix.story == 'R05' && 1 || matrix.timeout }}
         env:
           STORY: ${{ matrix.story }}
+          STEP_MINUTES: ${{ matrix.story == 'R05' && 1 || matrix.timeout }}
         run: |
           set -euo pipefail
+          step_deadline=$(( $(date +%s%3N) + (STEP_MINUTES * 60 - 20) * 1000 ))
+          if (( step_deadline < SPIDER_HERDR_E2E_DEADLINE )); then
+            export SPIDER_HERDR_E2E_DEADLINE="$step_deadline"
+          fi
           stories="$STORY"
           env -u PI_SUBAGENT_CHILD -u PI_SUBAGENT_RUN_ID -u PI_SPIDER_DB_PATH -u PI_SPIDER_SESSION_ID -u SPIDER_HERDR_E2E -u SPIDER_HERDR_APP_TESTS -u SPIDER_HERDR_REAL_MACHINE -u SPIDER_HERDR_TEST_DISPLAY_UUID XDG_RUNTIME_DIR= TMPDIR="$PWD/.spider/scratch/tmp" npm run test:herdr:e2e -- --built --tier headless --story "$stories"
 

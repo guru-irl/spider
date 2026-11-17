@@ -38,7 +38,7 @@ const source = (file: string) => JSON.stringify(fileURLToPath(new URL(file, impo
 async function platformCli(suite: Suite): Promise<string> {
   const entry = suite.ownPath(join(suite.root, 'platform.ts'));
   const code = `
-import { readFileSync, appendFileSync } from 'node:fs';
+import { readFileSync, appendFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -51,6 +51,7 @@ import { participantLaunchId } from ${source('../../../roam/src/participant-runt
 import { createRunningIntentAuthority, readReadiness } from ${source('../../../roam/src/session-control.ts')};
 import { requestHubControl } from ${source('../../../roam/src/control-socket.ts')};
 import { createUsageIngestThrough } from ${source('../../../host/src/roam/usage-ingest.ts')};
+import { openUsageLedgerReadOnly } from ${source('../../../host/src/usage/ledger.ts')};
 import { inspectIdLock, localBootId } from ${source('../../src/sessions/id-lock.ts')};
 import { createHcClient } from ${source('../../src/client/hc.ts')};
 import { loadHerdrConfig } from ${source('../../../roam/src/host-config.ts')};
@@ -179,9 +180,20 @@ if (linkFault.offline === machine.id || linkFault.intercomDown === machine.id &&
     process.stdout.write(JSON.stringify({ code: 0 }) + '\\n');
   } finally { await runtime?.close(); core.close(); }
 } else if (args[0] === 'fixture-ingest') {
-  await createUsageIngestThrough({ registryDb: join(root, 'spider.db'), ledgerFile: join(root, 'usage.db'), sessionsDir: join(machine.agent, 'sessions'),
-    authPath: join(machine.agent, 'auth.json'), leaseDir: join(root, 'usage-leases') }, args[1], machine.id)(args[2], Number(args[3]));
-  process.stdout.write(JSON.stringify({ code: 0 }) + '\\n');
+  let code = 0;
+  try {
+    await createUsageIngestThrough({ registryDb: join(root, 'spider.db'), ledgerFile: join(root, 'usage.db'), sessionsDir: join(machine.agent, 'sessions'),
+      authPath: join(machine.agent, 'auth.json'), leaseDir: join(root, 'usage-leases') }, args[1], machine.id)(args[2], Number(args[3]));
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'Usage ingest lease unavailable') throw error;
+    const ledger = openUsageLedgerReadOnly(join(root, 'usage.db'));
+    try {
+      const state = ledger?.getImportState(args[2]), file = statSync(args[2]);
+      code = state && state.inode === file.dev + ':' + file.ino && state.offset >= Number(args[3]) ? 0 : 3;
+    } finally { ledger?.close(); }
+  }
+  process.exitCode = code;
+  process.stdout.write(JSON.stringify({ code }) + '\\n');
 } else if (args[0] === 'fixture-supervisor') {
   const { startProductionSupervisor } = await import(pathToFileURL(descriptor.supervisor).href);
   const herdr = join(root, 'herdr'), domain = fixtureProcessDomain(herdr, process.env);
@@ -502,7 +514,8 @@ export async function assertMoveState(f: MoveStory, machine: MoveMachine, expect
     finally { catalog.close(); }
     if (!file || !existsSync(file)) continue;
     const bytes = await stat(file);
-    expect(await f.cli(host, ['fixture-ingest', f.sessionId, file, String(bytes.size)])).toMatchObject({ code: 0 });
+    expect(await waitFor('usage reaches the observed transcript prefix', () => f.cli(host, ['fixture-ingest', f.sessionId, file!, String(bytes.size)]),
+      result => result.code === 0, deadline(30_000))).toMatchObject({ code: 0 });
     const ledger = openDb(join(host.root, 'usage.db'), { fileMustExist: true });
     try {
       const foreignCharges = ledger.prepare('SELECT entry_id,execution_machine FROM calls WHERE session_id=? AND execution_machine IS NOT NULL AND execution_machine<>?').all(f.sessionId, host.id);

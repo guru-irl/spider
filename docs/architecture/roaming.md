@@ -284,8 +284,8 @@ Each machine's operator supplies a connector recipe with `check`, `host`, and
 `127.0.0.1` at the pair's approved `remotePort`, not `localhost`. The hub
 requests a scan on that port through the trusted machine channel. The target
 pins a presented key only if it matches a root-owned system host public key in
-`/etc/ssh`. The directory and key file must not be writable by other users, and
-the key file must be a regular file, not a symlink. A scan alone does not prove
+`/etc/ssh`. Both the directory and key file must be root-owned and not writable
+by other users. The key file must be a regular file, not a symlink. A scan alone does not prove
 that the listener holds the corresponding private key. A doctor run scans one
 port and pinned key type, then reports any pairs it could not check as
 `intercom-ssh-check-deferred`.

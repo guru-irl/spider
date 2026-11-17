@@ -1,6 +1,6 @@
 import { isAbsolute } from "node:path";
-import { MOVE_REFUSAL_MESSAGES, type MoveRefusal, type MoveRefusalCode, type Outcome, type RoamConfig } from "./contracts";
-import { validateBlockerId } from "./move";
+import { MOVE_REFUSAL_MESSAGES, type MoveRefusal, type MoveRefusalCode, type SourceCleanup, type Outcome, type RoamConfig } from "./contracts";
+import { validateBlockerId, parseSourceCleanup } from "./move";
 import { isPeerFailureReason } from "./peer-errors";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { storeScope } from "@spider/db-core/roam/codec";
@@ -101,6 +101,7 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   const raw = result.value && typeof result.value === "object" && !Array.isArray(result.value) ? result.value as Record<string, unknown> : null;
   const value: Record<string, unknown> = {};
   if (raw) {
+    if (raw.sourceCleanup !== undefined) try { value.sourceCleanup = parseSourceCleanup(raw.sourceCleanup); } catch { /* Invalid evidence is never published. */ }
     for (const key of ["terminal", "intercomAddress"] as const) if (token(raw[key])) value[key] = raw[key];
     if (Array.isArray(raw.warnings)) value.warnings = raw.warnings.filter(safeWarning);
     if (Array.isArray(raw.candidates)) value.candidates = raw.candidates.filter(candidate => token(candidate));
@@ -147,7 +148,12 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
     ...(refusal ? { refusal } : {}) };
 }
 export function controlText(result: SafeControlOutcome, destinationAlias?: string): string {
-  const value = result.value as { presentation?: string; terminal?: string; intercomAddress?: string; warnings?: string[]; candidates?: string[] } | null;
+  const value = result.value as { presentation?: string; terminal?: string; intercomAddress?: string; warnings?: string[]; candidates?: string[]; sourceCleanup?: SourceCleanup } | null;
+  if (result.code === 0 && value?.sourceCleanup) switch (value.sourceCleanup.status) {
+    case 'done': break;
+    case 'pending': return `Moved. Source cleanup pending: ${MOVE_REFUSAL_MESSAGES['move-source-stop-pending'].replace(/\.$/, '')}. It finishes on its own; check with \`spider roam status\`.\n`;
+    default: { const exhaustive: never = value.sourceCleanup; return exhaustive; }
+  }
   if (result.code === 0 && value?.presentation === "pending") return "recovered; the pane appears when Herdr opens\n";
   if (result.code === 0 && value?.intercomAddress) return `Moved to ${destinationAlias ?? result.home?.machineId ?? "destination"}; terminal ${value.terminal ?? "pending"}; intercom ${value.intercomAddress}.\n${value.warnings?.map(controlWarningText).join("\n") ?? ""}\n`;
   const explanation = result.refusal?.message, pause = ["destination-unknown", "move-destination-pending"].includes(result.reason) && !explanation?.includes("The source is paused")

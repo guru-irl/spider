@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { paths } from "@spider/db-core";
-import type { MoveRequest, MoveResult, Outcome, RoamConfig } from "@spider/roam/contracts";
+import type { MoveRequest, MoveResult, SourceCleanup, Outcome, RoamConfig } from "@spider/roam/contracts";
 import { readLocalIdentity } from "@spider/roam/runtime";
 import { controlText, resolveControlMachine, safeControlOutcome } from "@spider/roam/commands";
 
@@ -30,11 +30,11 @@ export function createMoveCommand(request: (input: MoveRequest) => Promise<Outco
     timer.unref();
     try {
       const safe = safeControlOutcome(await request({ operation, sessionId, destinationMachine }));
-      const details = safe.value as { terminal?: string; intercomAddress?: string; warnings?: string[] } | null;
+      const details = safe.value as { terminal?: string; intercomAddress?: string; warnings?: string[]; sourceCleanup?: SourceCleanup } | null;
       const warnings = details?.warnings ?? [], intercomAddress = details?.intercomAddress ?? null;
-      if (safe.code === 0 && (!safe.home || !intercomAddress)) return refuse(1, "invalid-move-control-reply");
-      const value: MoveResult | null = safe.code === 0 && safe.home && intercomAddress
-        ? { home: safe.home, terminal: details?.terminal ?? null, intercomAddress, warnings } : null;
+      if (safe.code === 0 && (!safe.home || !intercomAddress || !details?.sourceCleanup)) return refuse(1, "invalid-move-control-reply");
+      const value: MoveResult | null = safe.code === 0 && safe.home && intercomAddress && details?.sourceCleanup
+        ? { home: safe.home, terminal: details?.terminal ?? null, intercomAddress, warnings, sourceCleanup: details.sourceCleanup } : null;
       const alias = safe.home?.machineId === pinned.hubMachineId ? "mac" : pinned.peers.find(peer => peer.machineId === safe.home?.machineId)?.alias;
       return { ...safe, value, text: controlText(safe, alias).trimEnd(), intercomAddress, warnings };
     } catch { return refuse(1, "move-control-unavailable", "Move control is unavailable. Run spider roam doctor on the Mac."); }

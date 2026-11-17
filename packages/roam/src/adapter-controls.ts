@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "@spider/db-core";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import type { Home, JsonObject } from "@spider/db-core/roam/types";
-import type { Journal, MovePorts, Operation, Outcome, RoamConfig, Transport } from "./contracts";
+import type { Journal, MoveResult, MovePorts, Operation, Outcome, RoamConfig, Transport } from "./contracts";
 import { resolveControlMachine, resolveControlSession } from "./commands";
 import { guardMoveControl, type MoveControlHandler } from "./move-control";
 import { moveSession } from "./move";
@@ -11,6 +11,12 @@ import { claimInitialHome } from "./claim";
 import { forgetMachineWithAdapters } from "./move-ports";
 import { sessionHome } from "./homes";
 import { listStoreKeys } from "./store-inventory";
+
+function publicMoveValue(value: MoveResult): JsonObject {
+  const sourceCleanup = value.sourceCleanup.status === 'done' ? value.sourceCleanup
+    : { status: value.sourceCleanup.status, blockers: [...value.sourceCleanup.blockers] };
+  return { ...value, home: { ...value.home }, warnings: [...value.warnings], sourceCleanup };
+}
 
 export function controlSessionCatalog(db: Db): { id: string; name: string | null }[] {
   const catalog = new Map<string, { id: string; name: string | null }>();
@@ -32,7 +38,7 @@ export function createMoveControlHandler(input: { config: RoamConfig; globalDb: 
       const result = await (request.op === "recover" ? recoverMove : cancelMove)(request.operationId, ports);
       const presentations = journal.read(request.operationId).filter(row => row.action === "handoff-presentation");
       const presentation = presentations.at(-1)?.result.status === "pending" ? "pending" : "complete";
-      return { ...result, value: result.value ? { ...result.value, home: { ...result.value.home }, warnings: [...result.value.warnings], ...(request.op === "recover" ? { presentation } : {}) } : null };
+      return { ...result, value: result.value ? { ...publicMoveValue(result.value), ...(request.op === "recover" ? { presentation } : {}) } : null };
     }
     if (request.op === "forget") {
       const machineId = resolveControlMachine(request.machine, config);
@@ -54,7 +60,7 @@ export function createMoveControlHandler(input: { config: RoamConfig; globalDb: 
       }
       const operation: Operation = { id: randomUUID(), kind: "move", machineId: config.machineId, expectedEpoch: null, args: { sessionId, destinationMachine: machineId } };
       const result = await moveSession({ operation, sessionId, destinationMachine: machineId }, ports);
-      return { ...result, value: result.value ? { ...result.value, home: { ...result.value.home }, warnings: [...result.value.warnings] } : null };
+      return { ...result, value: result.value ? publicMoveValue(result.value) : null };
     }
     const home = sessionHome(globalDb, sessionId);
     if (!home || home === "unknown") return refused(1, "participant-home-unavailable");

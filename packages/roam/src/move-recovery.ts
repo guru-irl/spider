@@ -188,7 +188,7 @@ async function abort(request: MoveRequest, check: MoveCheck, ports: MovePorts): 
   await queueAbortedWorkspace(request, check, ports);
   // Cleanup has its own durable retry operation and cannot hold source admission hostage.
   const result = { code: 0 as const, ok: true as const, reason: "cancelled", operationId: id, home: check.source, epoch: check.source.epoch, repairCommand: null,
-    value: { home: check.source, terminal: null, intercomAddress: ports.intercom.address.sessionId, warnings: check.warnings } };
+    value: { sourceCleanup: { status: "done" as const }, home: check.source, terminal: null, intercomAddress: ports.intercom.address.sessionId, warnings: check.warnings } };
   return complete(request, ports, result);
 }
 async function rollback(request: MoveRequest, check: MoveCheck, committed: Home, observation: DestinationObservation, ports: MovePorts): Promise<MoveSessionOutcome> {

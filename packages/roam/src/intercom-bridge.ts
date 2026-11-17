@@ -59,6 +59,7 @@ export interface BridgePorts {
   onControl?(frame: IntercomControlFrame): void;
   onLinkDown?(peer: string, reason: string): void;
   onBrokerState?(ready: boolean): void;
+  onBrokerError?(error: unknown): void;
   maintain?(): void;
   onEnrollRequest?(input: HelperEnrollRequest): Promise<{ machineId: string; peer: string; edgeEpoch: string; applied: true }>;
   onRevokeRequest?(input: { peer: string; edgeEpoch: string; fenceId: string }): Promise<void>;
@@ -851,7 +852,8 @@ export function createIntercomBridge(ports: BridgePorts): IntercomBridge {
         try {
           await connectBroker(); publish();
           for (const edge of edges.values()) if (edge.config.initiator && state(edge).status === "down") failAsks(edge);
-        } catch {
+        } catch (error) {
+          ports.onBrokerError?.(error);
           brokerReady = false; await ports.broker?.close();
           if (!stopped) scheduleBrokerReconnect();
         }

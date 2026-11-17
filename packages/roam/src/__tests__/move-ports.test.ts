@@ -757,6 +757,20 @@ it("missing source barriers still gather and recheck the exact enrolled cursor",
   f.worktree.db.prepare("UPDATE roam_cursors SET peer_machine=? WHERE peer_stream=?").run("00000000-0000-4000-8000-000000000011", stream);
   expect(await f.ports.barriers(HUB, required)).toBe(false);
 }, 5000);
+it("gathers source barriers after a transient shortcut failure", async () => {
+  const f = await fixture(), stream = "00000000-0000-4000-8000-000000000010";
+  f.worktree.db.prepare("INSERT INTO roam_cursors(peer_machine,peer_stream,last_seq) VALUES (?,?,?)").run(BOX, stream, 4);
+  const stores = f.bindings.stores!, head = stores.head;
+  let failed = false;
+  stores.head = key => { if (!failed) { failed = true; throw new Error("transient store failure"); } return head(key); };
+  f.bindings.sync!.sync = async () => {
+    f.worktree.db.prepare("UPDATE roam_cursors SET last_seq=5 WHERE peer_machine=? AND peer_stream=?").run(BOX, stream);
+    return [];
+  };
+  expect(await f.ports.barriers(HUB, [{ storeKey: WT, stream, through: 5 }])).toBe(true);
+  expect(failed).toBe(true);
+}, 5000);
+
 it("destination start retains the enrolled hub even when the caller targets the box", async () => {
   const f = await fixture(), home = casHome(f.global.db, f.home, BOX, f.operation.id, HUB);
   f.bindings.participant!.config = { ...f.config, role: "box", machineId: BOX };

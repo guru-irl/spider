@@ -45,6 +45,19 @@ it("move barriers synchronize a missing watermark and prove it again", async () 
   expect(await sync.barriers(BOX, required)).toBe(true);
   expect(f.calls.map(call => call.operation.kind)).toEqual(["cursor"]);
 }, 5000);
+it("synchronizes after the initial remote cursor check fails transiently", async () => {
+  const f = fixture(); f.seed();
+  const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores });
+  await sync.sync();
+  assignInitialHome(f.global.db, "session-b", HUB, HUB);
+  const required = [f.stores.head("global")];
+  let failed = false;
+  f.hook((_peer, op) => { if (!failed && op.kind === "cursor") { failed = true; throw new Error("transient cursor failure"); } });
+  expect(await sync.barriers(BOX, required)).toBe(true);
+  expect(failed).toBe(true);
+  expect(f.remotes.get(BOX)!.global.db.prepare("SELECT machine_id,epoch FROM session_homes WHERE session_id=?").get("session-b")).toEqual({ machine_id: HUB, epoch: 1 });
+}, 5000);
+
 it("barrier watermarks read the store head without writing snapshot batches", async () => {
   const f = fixture(); f.seed();
   const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores });

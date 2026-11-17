@@ -147,7 +147,7 @@ startup, per-wait, and 300-second story deadlines. The overall runner, step, or 
 | R10 | A copied participating file refuses ordinary prompts and tools without creating another owner. |
 | R15 | Revoked-home recovery restores the mirrored prefix, preserves visible intent, and refuses a reused alias and stale close. |
 | R16 | Revoked-home recovery restores the mirrored prefix, preserves parked intent, and refuses a reused alias and stale close. |
-| R17 | A returned session rolls back only after an exact failed launch proves no destination owner adopted it. |
+| R17 | A returned session rolls back only after an exact failed launch proves no destination owner adopted it. A lost reply followed by a failed launch is not covered. |
 
 CLI control and remote operations use the packed entry. The platform wrapper
 compiles the real host adapter factory and injects only power, service, launch

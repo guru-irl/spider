@@ -27,6 +27,7 @@ import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces
 import { launchSession } from '@spider/herdr/sessions/launcher';
 import { applyLookPatches, selectLookPatches, applyModPatches, lookCloneKinds, type AdditionalLookPatches, type LookModKind, type LookPatch, type HerdrClones, type LookPatchSet } from '@spider/herdr/look/patches';
 import { notificationAgentPatches } from '@spider/herdr/look/notification-patches';
+import { applyCrossMachinePatches, crossMachineKinds, selectCrossMachinePatches, type CrossMachineLookRecipe } from '@spider/herdr/look/cross-machine';
 import { buildGlassLayout } from '@spider/herdr/look/layout';
 import { prepareFonts } from '@spider/herdr/look/fonts';
 import { checkThemeContrast, type PiThemeData } from '@spider/herdr/look/contrast';
@@ -371,7 +372,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
   const auxiliaryModIds = (selected: LookPatchSet | undefined) => [
     ...PANE_ENTRY_MODS,
     ...(selected?.mods.menu ? ['spider-menu'] : []),
-    ...(additionalFor(selected?.upstreamVersion)['new-menu'] ? ['spider-new-menu'] : []),
+    ...(selected?.upstreamVersion === '0.1.13' || selected?.upstreamVersion === '0.1.16' || additionalFor(selected?.upstreamVersion)['new-menu'] ? ['spider-new-menu'] : []),
   ];
   const modNames = (selected: LookPatchSet | undefined, hasToast: boolean) => [
     'agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'picker',
@@ -525,7 +526,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       },
     };
   };
-  const releaseLook = async (request: SetupRequest): Promise<LookPatchSet> => {
+  const releaseLook = async (request: SetupRequest): Promise<LookPatchSet & { crossMachine?: CrossMachineLookRecipe }> => {
     let appVersion: string;
     try {
       const output = execFileSync(request.config.app.binary, ['--version'], { env: appEnv(request), encoding: 'utf8', timeout: 5000, maxBuffer: 4096 });
@@ -533,13 +534,18 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       if (!match) throw new Error('Unrecognized version output');
       appVersion = match[1];
     } catch { throw new HerdrError('upstream-version-unavailable', 'Cannot determine the installed Herdr app version'); }
-    return selectLookPatches(JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'), 'utf8')) as LookPatchSet, appVersion);
+    const selected = selectLookPatches(JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'), 'utf8')) as LookPatchSet, appVersion);
+    if (appVersion !== '0.1.13' && appVersion !== '0.1.16') return selected;
+    let records: unknown;
+    try { records = JSON.parse(await readFile(join(packageRoot, 'packages/herdr/assets/look/cross-machine-patches.json'), 'utf8')); }
+    catch { throw new HerdrError('cross-machine-recipe-missing', 'The packaged cross-machine records are missing or unreadable'); }
+    return { ...selected, crossMachine: selectCrossMachinePatches(records, appVersion) };
   };
   const stagedLook = async (request: SetupRequest, context: SetupContext): Promise<InstallFile[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets');
     const patches = await releaseLook(request), appVersion = patches.upstreamVersion;
     const additional = additionalFor(appVersion);
-    const kinds: readonly (keyof HerdrClones)[] = [...lookCloneKinds, ...(patches.mods.menu ? ['menu' as const] : []), ...(additional['new-menu'] ? ['new-menu' as const] : [])];
+    const kinds: readonly (keyof HerdrClones)[] = [...lookCloneKinds, ...(patches.mods.menu ? ['menu' as const] : []), ...(patches.crossMachine || additional['new-menu'] ? ['new-menu' as const] : [])];
     const stock: Record<string, Record<string, string>> = {};
     const stockKinds = patches.recipe ? [...new Set(Object.keys(patches.recipe.sourceHashes).filter(name => name.startsWith('mods/')).map(name => name.split('/')[1]!))] : kinds;
     for (const kind of stockKinds) {
@@ -558,7 +564,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     }
     const clones = {} as HerdrClones;
     for (const kind of kinds) clones[kind] = { name: kind === 'workspace-chrome' ? 'spider-chrome' : `spider-${kind}`, clonedFrom: { name: kind, version: appVersion }, files: stock[kind]! };
-    let patched = await applyLookPatches(clones, additional['new-menu'] ? { ...patches, mods: { ...patches.mods, 'new-menu': [] } } : patches, { requireCompleteSources: true });
+    let patched = await applyLookPatches(clones, patches.crossMachine || additional['new-menu'] ? { ...patches, mods: { ...patches.mods, 'new-menu': [] } } : patches, { requireCompleteSources: true });
     for (const derived of patches.recipe?.derivedFiles ?? []) {
       const bytes = await readFile(join(assets, derived.asset));
       if (digest(Buffer.from(stock[derived.sourceMod]?.[derived.sourceFile] ?? '')) !== derived.sourceHash || digest(bytes) !== derived.outputHash) throw new HerdrError('derived-source-mismatch', `Unverified derived asset: ${derived.mod}/${derived.file}`);
@@ -570,6 +576,10 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     }
     if (patches.recipe) {
       for (const kind of kinds) for (const [file, bytes] of Object.entries(patched[kind]!.files)) if (digest(Buffer.from(bytes)) !== patches.recipe.outputHashes[`${kind}/${file}`]) throw new HerdrError('look-output-mismatch', `Recipe output differs: ${kind}/${file}`);
+      if (patches.crossMachine) {
+        const output = applyCrossMachinePatches(Object.fromEntries(crossMachineKinds.map(kind => [kind, patched[kind]!.files])), patches.crossMachine);
+        for (const kind of crossMachineKinds) patched[kind] = { ...patched[kind]!, files: output[kind], patchState: { version: 1, files: Object.fromEntries(Object.entries(output[kind]).map(([file, source]) => [file, digest(Buffer.from(source))])) } };
+      }
       patched = await applyLookPatches(patched, { version: 1, upstreamVersion: appVersion, mods: { agents: notificationAgentPatches, spaces: [], pane: [], tabs: [] } });
     }
     const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(assets, 'fonts'), readFile });
@@ -760,7 +770,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(packageRoot, 'packages/herdr/assets/fonts'), readFile });
         try { for (const file of await pickerFiles(request, context, fonts.families)) files.push({ ...file, expected: null }); }
         catch (error) { if (error instanceof HerdrError) return failure(error.code, error.message); throw error; }
-        const staged = Object.keys(additionalFor(release)).length ? new Map((await stagedLook(request, context)).map(file => [file.path, file])) : new Map<string, InstallFile>();
+        const staged = selected?.crossMachine || Object.keys(additionalFor(release)).length ? new Map((await stagedLook(request, context)).map(file => [file.path, file])) : new Map<string, InstallFile>();
         const effectiveFiles = files.map(file => staged.get(file.path) ?? file);
         const result = await compareFiles(effectiveFiles);
         if (result.failures.length) return result;
@@ -779,7 +789,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       if (item === 'patch-version') {
         const patches = selected!;
         const expected = await stagedLook(request, context);
-        const kinds: readonly LookModKind[] = [...lookCloneKinds, ...(patches.mods.menu ? ['menu' as const] : []), ...Object.keys(additionalFor(release)) as LookModKind[]];
+        const kinds: readonly LookModKind[] = [...lookCloneKinds, ...(patches.mods.menu ? ['menu' as const] : []), ...(patches.crossMachine ? crossMachineKinds : []), ...Object.keys(additionalFor(release)) as LookModKind[]];
         for (const kind of kinds) {
           const directory = join(request.config.app.home, 'mods', kind === 'workspace-chrome' ? 'spider-chrome' : `spider-${kind}`), manifest = JSON.parse(await readFile(join(directory, 'mod.json'), 'utf8'));
           if (manifest.clonedFrom?.name !== kind || manifest.clonedFrom?.version !== patches.upstreamVersion || manifest.patchState?.version !== 1) return failure('upstream-version-mismatch', `Installed ${kind} clone has an unsupported patch or upstream version`);
@@ -1025,7 +1035,10 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           const patchBytes = await readFile(join(packageRoot, 'packages/herdr/assets/look/patches.json'));
           const selected = await releaseLook(request), release = selected.upstreamVersion;
           const hasToast = await toastAvailable(release, request.config.app.home);
-          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, cutoverActions: await planSpaceCutover(request.config, spaces, { snapshot, recovery }), fingerprint: digest(Object.keys(additionalFor(release)).length ? Buffer.concat([patchBytes, Buffer.from(JSON.stringify(additionalFor(release)))]) : patchBytes), coreIdentity: identity, mods: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
+          const patchInputs = [patchBytes];
+          if (selected.crossMachine) patchInputs.push(Buffer.from(JSON.stringify(selected.crossMachine)));
+          if (Object.keys(additionalFor(release)).length) patchInputs.push(Buffer.from(JSON.stringify(additionalFor(release))));
+          return { recoveredCutover, cutoverProvedAbsent, cutoverNeedsRecheck: recovery.layoutAdoptionNeeded, cutoverActions: await planSpaceCutover(request.config, spaces, { snapshot, recovery }), fingerprint: digest(Buffer.concat(patchInputs)), coreIdentity: identity, mods: modNames(selected, hasToast).map(name => ({ directory: join(request.config.app.home, 'mods', `spider-${name}`) })), targets: await targets(request), retiredTerminals: saved.cutoverPending ? saved.retiredTerminals : (await spaces.registry.list()).filter(mapping => mapping.owner.terminal.coreId === identity.coreId && mapping.owner.terminal.socket === identity.socket && !recovery.createdTabs.some(tab => tab.terminal === mapping.owner.terminal.address)).map(mapping => mapping.owner.terminal.address), layoutExport: true };
         },
         stageLook: (request, context) => stagedLook(request, context),
         installFiles: async (request, context) => {

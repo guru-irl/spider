@@ -140,9 +140,9 @@ Stock Herdr 0.1.13 already binds Cmd-F, and stock 0.1.16 binds all three keys. S
 Setup backs up every file it replaces before the first write and records each step in a journal under `<globalRoot>/herdr/setup`. It changes these things:
 
 1. The `herdr.config` entry in spider's global settings, only when you pass a configuration file outside the standard location.
-2. The spider panel mod and picker, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied. Herdr 0.1.13 and 0.1.16 also use `spider-menu`. Herdr 0.1.16 uses one derived `spider-toast`; 0.1.13 leaves the stock toast untouched.
+2. The spider panel mod and picker, plus clones of Herdr's current `agents`, `spaces`, `pane`, `tabs`, and `workspace-chrome` mods with spider's patches applied. Herdr 0.1.13 and 0.1.16 also install Spaces B's cross-machine picker, `spider-menu`, and `spider-new-menu`. Herdr 0.1.16 uses one derived `spider-toast`; 0.1.13 leaves the stock toast untouched.
 3. The `spider-glass` layout and Herdr theme. The layout places macOS traffic lights off-window and uses the `spider-chrome` clone for the brand row. The sidebar footer keeps `workspace-chrome`. Only `theme`, `layout` and `sounds.enabled` in the app's settings change. Custom sound paths remain unchanged. A later explicit sound opt-in releases that preference from setup ownership.
-4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space and the layout-scoped Cmd-Shift-E Send back action. Ctrl-V image paste and Cmd-Shift-W close remain unchanged. Supported native keys are offered when absent and never changed automatically.
+4. Five terminal sequences, Cmd-P for Go to, Cmd-N for a local space, and the layout-scoped Cmd-Shift-E Send back action. Cmd-T opens the machine picker for a new tab, Cmd-D for a split right, and Cmd-Shift-D for a split down. In `spider-glass`, Cmd-Shift-W uses spider's close confirmation for cross-machine panes. Other layouts keep native close, and Ctrl-V image paste stays unchanged. Supported native keys are offered when absent and never changed automatically.
 5. The `dracula-plus-glass` pi theme. Only the `theme` field of the agent directory's settings file changes.
 6. Role templates generated from your global model settings.
 7. `notes = false` in the core's `config.toml`. Only the root `notes` key changes.
@@ -150,6 +150,8 @@ Setup backs up every file it replaces before the first write and records each st
 9. The remote runtime on each configured machine. Setup checks each machine's Node version with a visible probe.
 10. The spaces and tabs for your sessions.
 11. A private `herdr/sessions` folder under `<globalRoot>`, where each session publishes the state that the panel and the sidebar read. Rollback leaves this folder in place.
+
+On Herdr 0.1.13 and 0.1.16, setup verifies the release's complete Spaces A result, applies all B records, and then adds notification hooks. It checks B's input, output, and record digests before writing any files or keys. A stale source, changed output, or missing record stops setup rather than installing a partial picker. The pane split controls, tab `+`, and new-menu terminal and agent choices all use the machine picker. `--decline-native-keys` does not disable B or its Cmd-T, Cmd-D, and Cmd-Shift-D bindings.
 
 Setup owns only these parts of each file. Edits you make elsewhere in the same files are kept when setup runs again. Setup compares the parts it owns by value, so a file that was saved again with different formatting but the same values is not rewritten. If you change a part that setup owns, such as the pi theme field or the resume block, setup stops with `managed-artifact-changed` and names the recorded value. Restore that value, then run setup again.
 

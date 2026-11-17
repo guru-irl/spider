@@ -10,7 +10,7 @@ export const notificationAgentPatches: readonly LookPatch[] = [
   },
   {
     id: 'a-notification-arrival',
-    anchor: '      this.spiderFeedError = loaded.errors[0]?.message ?? null;',
-    replacement: '      this.spiderFeedError = loaded.errors[0]?.message ?? null;\n      this.spiderNotificationSound ??= createNotificationSound({ shared, setShared, playSound: spiderPlaySound, props: spiderProps, report: message => { this.spiderFeedError = message; } });\n      this.spiderNotificationSound.observe(loaded);',
+    anchor: '/* spider-look:a-agents-model-feed-failure */} catch',
+    replacement: '      this.spiderNotificationSound ??= createNotificationSound({ shared, setShared, playSound: spiderPlaySound, props: spiderProps, report: message => { this.spiderFeedError = message; } });\n      this.spiderNotificationSound.observe(loaded);\n    /* spider-look:a-agents-model-feed-failure */} catch',
   },
 ];

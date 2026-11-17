@@ -20,6 +20,7 @@ export async function planPaneModFiles(input: { assetsRoot: string; appHome: str
   files.push({ path: join(input.appHome, 'mods/spider-tabs/presentation-move.js'), bytes: await readFile(join(input.assetsRoot, 'agents/move.js')) });
   const actions = await readFile(join(input.assetsRoot, 'machines/actions.js'));
   for (const name of ['spider-pane', 'spider-tabs', ...['spider-menu', 'spider-new-menu'].filter(name => input.modIds.includes(name))]) files.push({ path: join(input.appHome, 'mods', name, 'machines/actions.js'), bytes: actions });
+  if (input.modIds.includes('spider-menu')) for (const name of ['actions.js', 'machine.js']) files.push({ path: join(input.appHome, 'mods/spider-menu', name), bytes: await readFile(join(input.assetsRoot, 'pane', name)) });
   const waiting = join(input.appHome, 'mods/spider-pane-waiting');
   files.push({ path: join(waiting, 'mod.json'), bytes: Buffer.from('{"place":"none","title":"Connecting"}\n') },
     { path: join(waiting, 'main.js'), bytes: Buffer.from("// SPDX-License-Identifier: MIT\nimport { View, div } from 'gpui-kit';\nexport default class WaitingPane extends View { render() { return div().child('Connecting…'); } }\n") });

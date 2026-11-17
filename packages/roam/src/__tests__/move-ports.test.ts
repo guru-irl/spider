@@ -168,6 +168,32 @@ it("move preflight accepts the mixed store list written by the catalog", async (
   expect((await f.ports.check({ operation: f.operation, sessionId: SESSION, destinationMachine: BOX })).storeKeys).toEqual(["global", REPO, WT]);
 }, 5000);
 
+it("preflight reads the current remote source location before mapping a return move", async () => {
+  const f = await fixture(), remote = { file: "/fixture/remote/session.jsonl", cwd: "/fixture/remote/checkout/nested", stores: ["global", REPO, WT] };
+  const home = casHome(f.global.db, f.home, BOX, "outward", HUB);
+  f.bindings.mapping = async (_request, location) => {
+    expect(location).toEqual(remote);
+    return { repoKey: "fixture-repo", workspaceId: "fixture-workspace", sourceRoot: "/fixture/remote/checkout", destinationRoot: f.repo, destinationCwd: join(f.repo, "nested") };
+  };
+  const requests: Operation[] = [];
+  f.transport.exec = async (_peer, argv) => {
+    const operation = JSON.parse(argv[2]) as Operation; requests.push(operation);
+    const value = operation.kind === "move-location" ? remote : operation.kind === "session-inspect" ? { blockers: [] } : [];
+    return Buffer.from(JSON.stringify({ code: 0, reason: "complete", operationId: operation.id, home, epoch: home.epoch, repairCommand: null, value }));
+  };
+  const check = await f.ports.check({ operation: { ...f.operation, id: "return" }, sessionId: SESSION, destinationMachine: HUB });
+  expect(check).toMatchObject({ source: home, sourceRoot: "/fixture/remote/checkout", sourceFile: remote.file, sourceCwd: remote.cwd, destinationCwd: join(f.repo, "nested") });
+  expect(requests[0]).toMatchObject({ kind: "move-location", machineId: BOX, expectedEpoch: 2 });
+}, 5000);
+
+it("the location query returns only the current participant's authoritative location", async () => {
+  const f = await fixture();
+  const operation: Operation = { ...f.operation, kind: "move-location", args: { sessionId: SESSION, sourceMachine: HUB, moveId: "next-move" } };
+  expect(await handleMoveParticipantOperation(operation, f.journal, f.bindings)).toMatchObject({ code: 0, epoch: 1, value: { file: f.file, cwd: f.repo, stores: ["global", REPO, WT] } });
+  casHome(f.global.db, f.home, BOX, "outward", HUB);
+  await expect(handleMoveParticipantOperation(operation, f.journal, f.bindings)).rejects.toMatchObject({ code: "participant-home-mismatch" });
+}, 5000);
+
 it.each(["null", "object", "string", "empty", "non-string", "unknown kind", "missing repository", "missing worktree repository", "missing workspace", "missing separator", "duplicate", "invalid JSON"])(
   "move preflight refuses a %s location list before effects", async kind => {
   const f = await fixture(), invalid: Record<string, unknown> = {

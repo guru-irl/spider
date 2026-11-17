@@ -10,10 +10,29 @@ import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
 import { restorationPending, presentationInProgress } from './roam-recovery.test.js';
 import { moveRecoveryPending } from './roam-move.test.js';
+import { coldCliStartup } from './roam-intercom.test.js';
 
 vi.mock('../harness/scenario.js', async importOriginal => ({
   ...await importOriginal<typeof import('../harness/scenario.js')>(), registerScenarios: () => {},
 }));
+describe('cold packed CLI startup measurement', () => {
+  it('times one fresh successful help process through the packed entry', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(1_000);
+    try {
+      const invoke = vi.fn(async () => { vi.setSystemTime(1_250); return { exitCode: 0, stdout: 'Usage: spider <command>\n', stderr: '' }; });
+      const env = { HOME: '/fixture/home' };
+      expect(await coldCliStartup(invoke, '/packed/roam-cli.mjs', env)).toBe(250);
+      expect(invoke).toHaveBeenCalledExactlyOnceWith(process.execPath, ['/packed/roam-cli.mjs', '--help'], env);
+    } finally { vi.useRealTimers(); }
+  });
+  it.each([
+    { exitCode: 1, stdout: 'Usage: spider <command>\n', stderr: 'failed' },
+    { exitCode: 0, stdout: '', stderr: '' },
+  ])('does not report an unsuccessful or missing help response: $exitCode', async result => {
+    await expect(coldCliStartup(async () => result, '/packed/roam-cli.mjs', {})).rejects.toThrow('cold-cli-help-unavailable');
+  });
+});
+
 describe('move fixture transport failures', () => {
   it.each([
     { fault: { offline: 'box-1.invalid' }, args: ['fixture-ingest', 'session-a'] },

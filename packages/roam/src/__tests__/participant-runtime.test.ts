@@ -442,6 +442,37 @@ it.each(["same", "launch", "epoch", "file"] as const)("box wake recovers only it
   expect(wakes).toBe(changed === "same" ? 1 : 0);
 }, 5000);
 
+it.each(["supervisor-first", "wake-first"] as const)("the same intent joins one launch when %s", async order => {
+  const { createBoxParticipantWake, participantLaunchId } = await import("../participant-runtime"), f = fixture();
+  await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });
+  let launches = 0, live = false;
+  const launchIds: string[] = [];
+  const supervisor = createParticipantSupervisor({ root: f.global.root, agent: f.ports,
+    clock: { now: () => 1000, later: () => () => {} }, events: { subscribe: () => () => {} },
+    owner: async () => live ? { kind: "live", identity: { bootId: "boot-1", pid: 123, startTime: "start-1" } } : { kind: "absent" },
+    diagnostics: async () => [], stop: async () => ({ kind: "absent" }), notify: async () => {},
+    async launch(intent, operationId) {
+      launches++; launchIds.push(operationId); live = true;
+      return { code: 0, reason: "ready", operationId, epoch: intent.epoch, home: null, repairCommand: null,
+        value: { origin: "hub-operation", opId: operationId, sessionId: intent.sessionId, epoch: intent.epoch, file: intent.file,
+          cwd: intent.cwd, core: "core-1", terminal: "terminal-1" } };
+    },
+  });
+  const wake = createBoxParticipantWake({ root: f.global.root, db: f.global.db, config: f.ports.config, wake: () => supervisor.reconcile() });
+  try {
+    if (order === "supervisor-first") await supervisor.reconcile();
+    const result = await wake({ sessionId: "s-1", operationId: f.operation.id });
+    expect(result).toEqual({ ok: true, launchId: participantLaunchId(BOX, "s-1", f.operation.id) });
+    await supervisor.reconcile();
+    expect(launches).toBe(1);
+    expect(launchIds).toEqual([result.ok ? result.launchId : "refused"]);
+    expect(await wake({ sessionId: "s-1", operationId: f.operation.id })).toEqual(result);
+    expect(launches).toBe(1);
+    expect(await wake({ sessionId: "s-1", operationId: "different-operation" })).toEqual({ ok: false, reason: "participant-intent-unavailable" });
+    expect(launches).toBe(1);
+  } finally { await supervisor.stop(); }
+}, 5000);
+
 it("retire-only durably stops every local session through the bounded stop port", async () => {
   const f = fixture();
   await handleSessionOperation(f.operation, f.ports, { wake: async () => {} });

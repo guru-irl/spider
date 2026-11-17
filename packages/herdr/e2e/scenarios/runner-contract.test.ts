@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { parseOptions, selectScenarios, buildMatrix, complete, renderMatrix, scenarioExports, runnerEnvironment, discoverScenarios, cleanupEntry, storyRunBudgetMs, profileIds, storyWorkerEnvironment, storyWorkers } from '../../../../scripts/herdr-e2e.mjs';
 import { runHc, verifyHcBinaryPin } from '../harness/hc.js';
 import { storyId } from '../harness/scenario.js';
+import { restorationPending, presentationInProgress } from './roam-recovery.test.js';
 
 vi.mock('../harness/scenario.js', async importOriginal => ({
   ...await importOriginal<typeof import('../harness/scenario.js')>(), registerScenarios: () => {},
@@ -287,5 +288,21 @@ describe('runner boundary and report', () => {
     expect(() => buildMatrix('ci', ['S52'], [{ id: 'S52', tier: 'app', result: 'passed', evidence: 'x' }])).toThrow(/tier/);
     const report = { id: 'S52', tier: 'ci', result: 'passed', evidence: 'x' };
     expect(() => buildMatrix('ci', ['S52'], [report, report])).toThrow(/duplicate/);
+  });
+});
+
+
+describe('roaming completion states', () => {
+  it.each([
+    [3, 'recovery-pending', true], [3, 'readiness-pending', true], [0, 'destroyed-machine-recovered', false],
+    [1, 'readiness-pending', false], [3, 'participant-owner-unproved', false], [3, 'unknown', false],
+  ] as const)('reconciles restoration code %s reason %s only when explicitly pending', (code, reason, pending) => {
+    expect(restorationPending({ code, reason })).toBe(pending);
+  });
+  it.each([
+    ['pending', 'operation-in-progress', true], ['complete', 'native-view-converted', false], ['refused', 'operation-in-progress', false],
+    ['pending', 'presentation-unavailable', false], ['pending', 'target-changed', false], ['pending', 'unknown', false],
+  ] as const)('joins presentation status %s reason %s only for an existing operation', (status, reason, pending) => {
+    expect(presentationInProgress({ status, reason })).toBe(pending);
   });
 });

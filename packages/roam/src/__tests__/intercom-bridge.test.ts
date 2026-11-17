@@ -36,6 +36,28 @@ function pair() {
   stores.push(source, inbox); return { source, inbox };
 }
 
+it("proves a new edge live before starting its idle long-poll", async () => {
+  const { source, inbox } = pair();
+  vi.useFakeTimers();
+  let a: Awaited<ReturnType<typeof create>> | undefined, b: Awaited<ReturnType<typeof create>> | undefined;
+  try {
+    b = await create(B, A, inbox);
+    const holds: number[] = [];
+    a = await create(A, B, source, { edges: [{ peer: peer(B), edgeEpoch: "edge-1", initiator: true }],
+      transport: { resolve: async (target: unknown) => target,
+        exec: async (_peer: unknown, _argv: unknown, options: { stdinForTimeout(ms: number): Buffer; signal: AbortSignal }) => {
+          const incoming = JSON.parse(options.stdinForTimeout(30_000).toString());
+          holds.push(incoming.holdMs);
+          const response = await b!.exchange(incoming, options.signal);
+          return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-exchange", ok: true, value: response }));
+        } } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(source.edgeState(B, "edge-1").status).toBe("live");
+    expect(inbox.edgeState(A, "edge-1").status).toBe("live");
+    expect(holds).toEqual([0, 25_000]);
+  } finally { await a?.stop(); await b?.stop(); vi.useRealTimers(); }
+}, 5000);
+
 it("acks only durable acceptance and never treats a link ack as consumption", async () => {
   const { source, inbox } = pair(), a = await create(A, B, source), b = await create(B, A, inbox);
   source.acceptOutbound({ from, endpoint, nextHop: B, message: { id: "m1", timestamp: 1, content: { text: "synthetic" } } });

@@ -62,13 +62,15 @@ export async function dropNextReply(machine: Machine, alias: string, messageId: 
 
 export async function advanceIntercomClock(machine: Machine, advanceMs: number): Promise<{ now: number; offset: number; timers: number }> {
   if (!machine.clockSocket) throw new HarnessError('missing-prerequisite', 'no fixture clock');
-  return await new Promise((ok, fail) => {
+  const advanced = await new Promise<{ now: number; offset: number; timers: number }>((ok, fail) => {
     const socket = createConnection(machine.clockSocket!); let text = '';
     socket.on('connect', () => socket.write(`${JSON.stringify({ advanceMs })}\n`));
     socket.on('data', chunk => { text += chunk.toString('utf8'); });
     socket.on('error', fail);
     socket.on('end', () => { try { const value = JSON.parse(text); if (value.error) throw new Error(value.error); ok(value); } catch (error) { fail(error); } });
   });
+  machine.env.SPIDER_E2E_INTERCOM_CLOCK_OFFSET = String(advanced.offset);
+  return advanced;
 }
 
 /** Box admission requires a real terminal and its actual process ancestry. */
@@ -259,7 +261,7 @@ async function rosterProbe(agent: string, index: number, cwd: string): Promise<I
 }
 
 /** Starts the packaged hub, supervisors, brokers, helpers and extension against owned cores. */
-export async function intercomNetwork(suite: Suite, options: { faults?: boolean; virtualClock?: boolean } = {}): Promise<Network> {
+export async function intercomNetwork(suite: Suite, options: { faults?: boolean; virtualClock?: boolean | 'all' } = {}): Promise<Network> {
   if (!suite.cores) throw new HarnessError('missing-prerequisite', 'intercom acceptance requires isolated cores');
   const extra: Core[] = [], machines: Machine[] = [], brokers: OwnedProcess[] = [], services: OwnedProcess[] = [], probes: IntercomClient[] = [];
   let closed = false;
@@ -277,7 +279,8 @@ export async function intercomNetwork(suite: Suite, options: { faults?: boolean;
       : [fileURLToPath(new URL('./roam-supervisor-fixture.mjs', import.meta.url)), suite.packed.roamSupervisor, global];
     const service = spawnOwned(suite.ledger, { label: index === 0 ? 'packed-intercom-hub' : `packed-intercom-supervisor-${index}`,
       command: process.execPath, args, env: { ...env, SPIDER_HERDR_E2E_PACKED_ROOT: suite.packed.root,
-        ...(pairDescriptor ? { SPIDER_E2E_PAIR_DESCRIPTOR: pairDescriptor } : {}) }, cwd: suite.root, stdio: { log: serviceLog } });
+        ...(pairDescriptor ? { SPIDER_E2E_PAIR_DESCRIPTOR: pairDescriptor } : {}),
+        ...(clockSocket ? { SPIDER_E2E_INTERCOM_CLOCK: clockSocket } : {}) }, cwd: suite.root, stdio: { log: serviceLog } });
     services.push(service);
     await waitFor('packed machine service starts', async () => {
       const log = await readFile(serviceLog, 'utf8');
@@ -338,7 +341,7 @@ export async function intercomNetwork(suite: Suite, options: { faults?: boolean;
       const broker = spawnOwned(suite.ledger, { label: `packed-intercom-broker-${i}`, command: process.execPath,
         args: [suite.packed.intercomBroker], env: root.env, cwd: suite.root, stdio: { log: join(root.root, 'broker.log') } });
       brokers.push(broker); await socketReady(join(root.agent, 'intercom', 'broker.sock'));
-      const clockSocket = i === 0 && options.virtualClock ? assertSocketPath(suite.root, join(root.global, 'clock.sock')) : undefined;
+      const clockSocket = (i === 0 && options.virtualClock || options.virtualClock === 'all') ? assertSocketPath(suite.root, join(root.global, 'clock.sock')) : undefined;
       const service = await startService(i, root.root, root.global, root.env, clockSocket);
       const probe = await rosterProbe(root.agent, i, root.root); probes.push(probe);
       machines.push({ id: IDS[i], alias: ALIASES[i], core: cores[i], agent: root.agent, global: root.global,
@@ -358,7 +361,7 @@ export async function intercomNetwork(suite: Suite, options: { faults?: boolean;
       await machine.service.stop();
       await writeFile(join(machine.global, 'roam', 'config.json'), JSON.stringify(config), { mode: 0o600 });
       machine.config = config;
-      machine.service = await startService(index, join(machine.global, '..'), machine.global, machine.env, undefined, pairDescriptor);
+      machine.service = await startService(index, join(machine.global, '..'), machine.global, machine.env, machine.clockSocket, pairDescriptor);
     };
     return { machines, restartHub, restartBox, close };
   } catch (error) { await close(); throw error; }

@@ -107,9 +107,12 @@ it.each(["never-started", "exited-without-adoption"] as const)("rollback retains
     evidence: async () => kind === "never-started" ? { receipt: "unknown", terminal: "unknown", proof: { kind: "prelaunch-error", operationId: "launch-a", beforeLaunch: true, errorCode: "missing-hc", hcPid: null } }
       : { receipt: "started", terminal: "present", proof: { kind: "terminal-exited-without-adoption", operationId: "launch-a", coreId: "core-a", terminalId: "t1", terminalExited: true, lockNeverAdopted: true } } });
   expect(receipt?.kind).toBe(kind);
+  const { createRunningIntentAuthority } = await import("@spider/roam/session-control");
+  await createRunningIntentAuthority(global.db).set({ sessionId, epoch: 2, file, cwd: global.root, desired: "stopped", suspended: null, moveId: "move-a" }, "start-a", { kind: "hub-return", machineId: HUB, moveId: "move-a" });
   vi.spyOn(pending, "cancelPendingHandoff").mockResolvedValue("already-released");
   const inventory = inventoryModule.createProcessInventory(join(global.root, "herdr"));
-  vi.spyOn(inventoryModule, "createProcessInventory").mockReturnValue({ ...inventory, processes: async () => [] });
+  const processes = vi.fn(async () => [] as Awaited<ReturnType<typeof inventory.processes>>);
+  vi.spyOn(inventoryModule, "createProcessInventory").mockReturnValue({ ...inventory, processes });
   const mounted = await createHostMoveBindings({ root: global.root, globalDb: global.db, config, journal, sessionId, transport: {} as never });
   const participant = mounted.bindings.participant!, operation = { id: "retire-a", kind: "session-retire", machineId: HUB, expectedEpoch: 2, args: { sessionId, moveId: "move-a" } };
   const launchFailure = kind === "never-started" ? "proved-no-start:launch-a" : "proved-unadopted-exit:launch-a:t1";
@@ -121,6 +124,9 @@ it.each(["never-started", "exited-without-adoption"] as const)("rollback retains
     locked = participant.withBothLocks(sessionId, async () => {
       entered(); await hold;
       expect(await participant.observation(home, operation)).toMatchObject({ owner: { kind: "absent" }, launchFailure });
+      processes.mockResolvedValue([{ pid: process.pid, startIdentity: "other-process", classification: "pi" }]);
+      expect(await participant.observation(home, operation)).toMatchObject({ owner: { kind: "uncertain" }, launchFailure: null });
+      processes.mockResolvedValue([]);
       expect(await participant.retireFailed(home, operation)).toEqual({ kind: "absent" });
     });
     await Promise.race([ready, locked]);

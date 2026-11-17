@@ -258,7 +258,9 @@ export async function createHostMoveBindings(input: HostMoveInput): Promise<Host
             owner = { kind: "uncertain" }; launchFailure = null;
           }
         }
-        if (!launchFailure && !lock && home.moveId) {
+        const held = heldClaims.getStore();
+        const ownClaim = held?.sessionId === home.sessionId && await held.locks.owns();
+        if (!launchFailure && (!lock || ownClaim) && home.moveId) {
           const receipt = readMoveLaunchAbsenceReceipt(journal, home.moveId);
           if (receipt && receipt.sessionId === home.sessionId && receipt.epoch === home.epoch && receipt.moveId === home.moveId &&
               await cancelPendingHandoff(root, { sessionId: home.sessionId, moveId: home.moveId, launchId: receipt.launchId, absenceReceipt: receipt }) === "already-released" && (await probe(home.sessionId)).kind === "absent") {

@@ -615,7 +615,7 @@
           "id": "b-navigation-list",
           "file": "main.js",
           "anchor": "const list = filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract);",
-          "replacement": "const paneNavigation = paneIndex ? this.spiderProjectNavigation(snapshot, paneIndex, input.focus, now) : null;\n    if (paneNavigation) snapshot.paneNavigation = paneNavigation;\n    const list = paneNavigation?.list ?? filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract).filter(a => !a.address.includes(\"/\"));"
+          "replacement": "const paneNavigation = paneIndex ? this.spiderProjectNavigation(snapshot, paneIndex, input.focus, now) : null;\n    if (paneNavigation) snapshot.paneNavigation = paneNavigation;\n    /* spider-look:b-native-list-fallback */const list = paneNavigation?.list ?? filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract);"
         },
         {
           "id": "b-navigation-collapse",
@@ -639,19 +639,19 @@
           "id": "b-navigation-focus-authority",
           "file": "main.js",
           "anchor": "const remoteMachine = a.address.includes(\"/\") ? a.address.split(\"/\")[0] : null;\n      const canFocus = () => Boolean(a.pane) && (!remoteMachine || !this.spiderConnections?.observed || (machineConnection(remoteMachine, this.spiderConnections?.snapshot ?? null) === \"connected\" && (this.spiderRenderSnapshot?.machines ?? machines()).find(item => item.name === remoteMachine)?.layout !== \"unavailable\"));\n      const focusAvailable = canFocus();\n      const machine = byMachine ? null : remoteMachine;",
-          "replacement": "const remoteMachine = a.navigation ? a.navigation.machine : a.address.includes(\"/\") ? a.address.split(\"/\")[0] : null;\n      const canFocus = () => a.navigation ? Boolean(a.navigation.action) : Boolean(a.pane) && !remoteMachine;\n      const focusAvailable = canFocus();\n      const machine = byMachine ? null : remoteMachine;"
+          "replacement": "const remoteMachine = a.navigation ? a.navigation.machine : a.address.includes(\"/\") ? a.address.split(\"/\")[0] : null;\n      /* spider-look:b-native-focus-fallback */const canFocus = () => a.navigation ? Boolean(a.navigation.action) : !this.spiderPaneIndex && Boolean(a.pane) && (!remoteMachine || !this.spiderConnections?.observed || (machineConnection(remoteMachine, this.spiderConnections?.snapshot ?? null) === \"connected\" && (this.spiderRenderSnapshot?.machines ?? machines()).find(item => item.name === remoteMachine)?.layout !== \"unavailable\"));\n      const focusAvailable = canFocus();\n      const machine = byMachine ? null : remoteMachine;"
         },
         {
           "id": "b-navigation-a-agents-row-focus",
           "file": "main.js",
           "anchor": "\n        .when(focusAvailable, el => el.on_click(() => { if (canFocus()) run(\"pane.focus\", { pane: a.pane }); }))\n        .when(!focusAvailable, el => el.tooltip(a.pane ? \"Machine unavailable\" : \"No pane available\"))",
-          "replacement": "\n        .when(focusAvailable, el => el.on_click(() => { if (canFocus()) void this.peek(a.address); }))\n        .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
+          "replacement": "/* spider-look:b-native-row-focus */\n        .when(focusAvailable, el => el.on_click(() => { if (canFocus()) { if (a.navigation) void this.peek(a.address); else run(\"pane.focus\", { pane: a.pane }); } }))\n        .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
         },
         {
           "id": "b-navigation-a-agents-rail-focus",
           "file": "main.js",
           "anchor": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) run(\"pane.focus\", { pane: a.pane }); }))\n          .when(!focusAvailable, el => el.tooltip(a.pane ? \"Machine unavailable\" : \"No pane available\"))",
-          "replacement": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) void this.peek(a.address); }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
+          "replacement": "/* spider-look:b-native-rail-focus */\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) { if (a.navigation) void this.peek(a.address); else run(\"pane.focus\", { pane: a.pane }); } }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
         },
         {
           "id": "b-navigation-move-session-rail-hook",
@@ -669,7 +669,7 @@
           "id": "b-navigation-peek",
           "file": "main.js",
           "anchor": "  peek(addr) {",
-          "replacement": "  async peek(addr) {\n    const context = this.spiderCurrentNavigation(terminals());\n    if (context) {\n      const target = context.owners.get(addr);\n      if (target?.action?.kind === \"focus\") { run(\"pane.focus\", { pane: target.action.pane }); return; }\n      if (target?.action?.kind !== \"pane\") return;\n      try { await requestPaneService(spiderProps(), exec, target.action.request); this.spiderReloadAt = null; await this.reloadSpiderFeeds(); }\n      catch (error) { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); }\n      return;\n    }\n    if (this.spiderModel?.snapshot?.paneNavigation || addr.includes(\"/\")) return;"
+          "replacement": "  async peek(addr) {\n    const context = this.spiderCurrentNavigation(terminals());\n    if (context) {\n      const target = context.owners.get(addr);\n      if (target?.action?.kind === \"focus\") { run(\"pane.focus\", { pane: target.action.pane }); return; }\n      if (target?.action?.kind !== \"pane\") return;\n      try { await requestPaneService(spiderProps(), exec, target.action.request); this.spiderReloadAt = null; await this.reloadSpiderFeeds(); }\n      catch (error) { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); }\n      return;\n    }\n    /* spider-look:b-native-viewer-peek */if (this.spiderModel?.snapshot?.paneNavigation) return;"
         },
         {
           "id": "b-navigation-children",
@@ -700,36 +700,6 @@
           "file": "main.js",
           "anchor": "  openChild(k) {",
           "replacement": "  openChild(k) {\n    if (k.action?.kind === \"pane\") return requestPaneService(spiderProps(), exec, k.action.request).catch(error => { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); });\n    if (k.action?.kind === \"focus\") { run(\"pane.focus\", { pane: k.action.pane }); return; }"
-        },
-        {
-          "id": "b-native-list-fallback",
-          "file": "main.js",
-          "anchor": "const list = paneNavigation?.list ?? filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract).filter(a => !a.address.includes(\"/\"));",
-          "replacement": "const list = paneNavigation?.list ?? filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract);"
-        },
-        {
-          "id": "b-native-focus-fallback",
-          "file": "main.js",
-          "anchor": "const canFocus = () => a.navigation ? Boolean(a.navigation.action) : Boolean(a.pane) && !remoteMachine;",
-          "replacement": "const canFocus = () => a.navigation ? Boolean(a.navigation.action) : !this.spiderPaneIndex && Boolean(a.pane) && (!remoteMachine || !this.spiderConnections?.observed || (machineConnection(remoteMachine, this.spiderConnections?.snapshot ?? null) === \"connected\" && (this.spiderRenderSnapshot?.machines ?? machines()).find(item => item.name === remoteMachine)?.layout !== \"unavailable\"));"
-        },
-        {
-          "id": "b-native-row-focus",
-          "file": "main.js",
-          "anchor": "\n        .when(focusAvailable, el => el.on_click(() => { if (canFocus()) void this.peek(a.address); }))\n        .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))",
-          "replacement": "\n        .when(focusAvailable, el => el.on_click(() => { if (canFocus()) { if (a.navigation) void this.peek(a.address); else run(\"pane.focus\", { pane: a.pane }); } }))\n        .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
-        },
-        {
-          "id": "b-native-rail-focus",
-          "file": "main.js",
-          "anchor": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) void this.peek(a.address); }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))",
-          "replacement": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) { if (a.navigation) void this.peek(a.address); else run(\"pane.focus\", { pane: a.pane }); } }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
-        },
-        {
-          "id": "b-native-viewer-peek",
-          "file": "main.js",
-          "anchor": "if (this.spiderModel?.snapshot?.paneNavigation || addr.includes(\"/\")) return;",
-          "replacement": "if (this.spiderModel?.snapshot?.paneNavigation) return;"
         }
       ]
     }
@@ -787,7 +757,7 @@
       }
     },
     "0.1.16": {
-      "recordsHash": "cca6d627df825c12079b35800c198e00c2c4cd29efeae3c7b631011ead2f623c",
+      "recordsHash": "d63e2c5bee2a4fe0b526a662f02d5115cede14d645b4379fb794c0373b1293e7",
       "inputHashes": {
         "agents/main.js": "d6409a8ba9ac857e82267a70c1886631f7003e7416a3e28b8257feb36fa4c46d",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",

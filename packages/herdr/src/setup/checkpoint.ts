@@ -338,13 +338,12 @@ export async function undoUpgrade(root: string, options: {
     for (const target of targets) if (target.path !== journalPath && !matches(await snapshot(target.path), target)) meaningful = true;
     if (!meaningful) throw new HerdrError('upgrade-checkpoint-bookkeeping-only', 'This sequence would restore only setup bookkeeping; there is no installed upgrade to undo');
   }
-  const assertLayoutReferences = async () => {
-    const layout = targets.find(file => file.path === options.layoutPath);
+  const assertLayoutReferences = async (layout = targets.find(file => file.path === options.layoutPath)) => {
     if (!layout) return;
     const bytes = await checkpointBytes(root, layout);
     if (!bytes) return;
     const visit = (value: unknown, key = ''): void => {
-      if (typeof value === 'string' && ['mod', 'modId', 'toast', 'terminal_menu'].includes(key) && options.removedMods.includes(value)) throw new HerdrError('upgrade-layout-reference', `Layout ${options.layoutPath} still references mod ${value}, which undo would remove. Retain the mod under a custom name and update this reference, then retry rollback --undo-upgrade.`);
+      if (typeof value === 'string' && ['mod', 'modId', 'toast', 'terminal_menu'].includes(key) && options.removedMods.includes(value)) throw new HerdrError('upgrade-layout-reference', `Layout ${options.layoutPath} still references mod ${value}, which undo would remove. Retain the mod under a custom name and update this reference, or move this layout to a .kept file and retry rollback --undo-upgrade --replace-changed.`);
       if (Array.isArray(value)) value.forEach(child => visit(child, key));
       else if (value && typeof value === 'object') for (const [field, child] of Object.entries(value)) visit(child, field);
     };
@@ -382,6 +381,7 @@ export async function undoUpgrade(root: string, options: {
         targets[index] = { path: owner.path, hash: bytes === null ? null : digest(bytes), mode: owner.mode };
       }
     }
+    await assertLayoutReferences();
     checkpoint.state = 'undoing';
     checkpoint.undo = { phase: 'files', targets, expected: checked.map(file => ownerStates.find(state => state.path === file.path) ?? file) };
     await save(root, checkpoint);
@@ -415,10 +415,11 @@ export async function undoUpgrade(root: string, options: {
       if (bytes !== null) await saveBlob(root, bytes, digest(bytes));
       if (current.bytes !== null) await saveBlob(root, current.bytes, current.hash!);
       if ((part || file.path === options.layoutPath) && current.hash !== null && current.mode !== expected.mode) file.mode = current.mode;
-      file.hash = bytes === null ? null : digest(bytes);
+      const hash = bytes === null ? null : digest(bytes);
+      if (file.path === options.layoutPath) await assertLayoutReferences({ ...file, hash });
+      file.hash = hash;
       Object.assign(expected, { hash: current.hash, mode: current.mode });
       await save(root, checkpoint);
-      if (file.path === options.layoutPath) await assertLayoutReferences();
     }
     if (await restore(root, file, expected)) restored.push(file.path);
   }

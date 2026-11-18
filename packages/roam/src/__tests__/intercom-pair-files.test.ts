@@ -103,3 +103,37 @@ it("binds a pair key's forced command to its own pair and epoch and refuses a re
   await registry.beginRevocation(f.pair.pairId, "00000000-0000-4000-8000-000000000009");
   expect(() => execFileSync(process.execPath, [gate], { env: env(), timeout: 2000 })).toThrow();
 }, 5000);
+
+it("requires exact fresh consent before a pending inherited fence permits command access", async () => {
+  const f = fixture(), mod = await api(); f.pair.target.node = process.execPath;
+  const { createIntercomRegistry } = await import("../intercom-registry");
+  const registry = createIntercomRegistry(f.pair.target.globalRoot), fenceId = "00000000-0000-4000-8000-000000000009";
+  await registry.register(f.pair, "approval-1", "a".repeat(64)); await registry.bind(f.pair, "approval-1");
+  await registry.beginRevocation("pair-1", fenceId); await registry.finishRevocation("pair-1", null);
+  const fresh = { ...f.pair, edgeEpoch: "edge-2" };
+  await registry.register(fresh, "approval-2", "b".repeat(64)); await registry.bind(fresh, "approval-2");
+  await mod.authorizePairKey(f.home, fresh, `${key(4).type} ${key(4).base64}`);
+  const gate = join(fresh.target.globalRoot, "roam", "intercom", "pairs", fresh.pairId, fresh.edgeEpoch, "command.mjs");
+  const execute = () => execFileSync(process.execPath, [gate], { env: { ...process.env, SSH_ORIGINAL_COMMAND: mod.encodePairCommand(fresh, "printf command-ok") }, timeout: 2000, encoding: "utf8" });
+  const approval = { operationId: "approval-2", graphDigest: "b".repeat(64), edgeEpoch: "edge-2", expectedFenceId: fenceId };
+  for (const mismatch of [{ operationId: "approval-1" }, { graphDigest: "a".repeat(64) }, { edgeEpoch: "edge-1" },
+    { expectedFenceId: "00000000-0000-4000-8000-000000000008" }]) {
+    await expect(registry.approveCommands("pair-1", { ...approval, ...mismatch })).rejects.toThrow("fresh-peer-consent-required");
+    expect(execute).toThrow();
+  }
+  await registry.approveCommands("pair-1", approval);
+  expect(execute()).toBe("command-ok");
+  expect(await registry.fences([fresh])).toEqual({ "pair-1": fenceId });
+}, 5000);
+
+it("refuses an unrecognized command artifact without replacing it or changing authorized keys", async () => {
+  const f = fixture(), mod = await api(); f.pair.target.node = process.execPath;
+  const pub = `${key(4).type} ${key(4).base64}`;
+  await mod.authorizePairKey(f.home, f.pair, pub);
+  const gate = join(f.pair.target.globalRoot, "roam", "intercom", "pairs", f.pair.pairId, f.pair.edgeEpoch, "command.mjs");
+  const file = join(f.home, ".ssh", "authorized_keys"), before = readFileSync(file);
+  writeFileSync(gate, "process.exitCode = 126;\n", { mode: 0o600 });
+  await expect(mod.authorizePairKey(f.home, f.pair, pub)).rejects.toThrow();
+  expect(readFileSync(gate, "utf8")).toBe("process.exitCode = 126;\n");
+  expect(readFileSync(file)).toEqual(before);
+}, 5000);

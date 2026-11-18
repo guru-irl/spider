@@ -57,7 +57,7 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
     return reply.value;
   };
   const consent = (): PairConsentProof => {
-    const row = input.journal.read(request.operation.id).find(item => item.action === "intercom-peer-consent" && item.result.approved === true && item.result.graphDigest === digest);
+    const row = input.journal.read(request.operation.id).findLast(item => item.action === "intercom-peer-consent" && item.result.approved === true && item.result.graphDigest === digest);
     if (!row || typeof row.result.actor !== "string" || !Number.isSafeInteger(row.result.at)) throw new Error("peer-consent-required");
     return { approved: true, actor: row.result.actor, at: row.result.at as number, operationId: request.operation.id, graphDigest: digest, pairs: request.pairs };
   };
@@ -138,7 +138,7 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
     },
     verifyTransport: (pair, pins) => call(pair.source, pins.source, "verify-transport", pair, { targetCoreId: pins.target.coreId }),
     async approvePair(pair, approval) {
-      const proof = consent(), row = input.journal.read(request.operation.id).find(item => item.action === "intercom-peer-consent" && item.result.graphDigest === proof.graphDigest);
+      const proof = consent(), row = input.journal.read(request.operation.id).findLast(item => item.action === "intercom-peer-consent" && item.result.graphDigest === proof.graphDigest);
       if (approval.operationId !== proof.operationId || approval.graphDigest !== proof.graphDigest || !object(row?.result.fences) || row.result.fences[pair.pairId] !== approval.expectedFenceId) throw new Error("fresh-peer-consent-required");
       approvals.set(pair.pairId, approval);
     },

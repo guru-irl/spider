@@ -97,6 +97,33 @@ a journal proving no home change is pending. A missing journal is unknown.
 Exit code `0` means complete, `1` means refused, `2` means invalid arguments,
 and `3` means durable pending work or reconciliation is needed.
 
+## Cancel an unbound pending enrollment
+
+If enrollment returns `core-changed`, do not replace the saved pins or reuse
+its approval with a different operation. On the hub, run:
+
+```sh
+spider roam intercom cancel pair-1
+spider roam intercom enroll --graph "$GRAPH_FILE" --operation enrollment-2
+```
+
+Approve the fresh graph at the prompt. Cancellation records that the old
+operation cannot restart, then removes only its pending, unbound pair record.
+It does not contact either destination or require the old core to be running.
+Binding is durable before enrollment creates pair units, keys, routes, or live
+fences, so an unbound operation has none of those resources to remove.
+Predecessor fences remain untouched. Existing keys and other enrollments also
+remain untouched.
+
+A bound pair requires `spider roam intercom revoke pair-1` instead.
+`intercom-pending-resources-present` means the unbound record contains unexpected
+resource ownership metadata. Cancellation refuses rather than guessing which
+resources to delete. Do not remove its metadata by hand.
+
+Retries with saved `unavailable` fence observations probe again and request
+fresh approval before setup. A real fence change still requires fresh consent;
+an unavailable observation never authorizes clearing a fence.
+
 ## Box hosting and recovery
 
 Production hosting stays disabled until phase 4 acceptance succeeds. Provisioning

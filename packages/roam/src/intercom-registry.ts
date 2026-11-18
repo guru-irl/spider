@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { constants, lstatSync, openSync, closeSync, fsyncSync } from "node:fs";
+import { constants, lstatSync, openSync, closeSync, fsyncSync, unlinkSync } from "node:fs";
 import { isAbsolute, join, posix, resolve } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
 import { jsonFiles, readPrivateJson, withProcessLock, writePrivateJson } from "@spider/herdr/sessions/registry";
@@ -173,6 +173,21 @@ export function createIntercomRegistry(root: string) {
           }
         }
         await save({ version: 1, pair: candidate, state: "pending", operationId, graphDigest, fenceId: existing?.fenceId ?? null, cleanupReason: existing?.cleanupReason ?? null });
+      }));
+    },
+    async cancelPending(pairId: string, operationId: string, graphDigest: string): Promise<void> {
+      const observed = await get(pairId);
+      if (!observed) throw new Error("intercom-pair-not-found");
+      await withIntercomPeerLock(root, observed.pair.source.machineId, observed.pair.target.machineId, () => locked(async () => {
+        const existing = await get(pairId);
+        if (!existing || existing.operationId !== operationId || existing.graphDigest !== graphDigest) throw new Error("intercom-pair-conflict");
+        if (existing.state !== "pending" || bound(existing.pair)) throw new Error("intercom-enrollment-bound");
+        if (existing.resources || existing.unit || existing.cleanupReason || existing.revocationEpoch) throw new Error("intercom-pending-resources-present");
+        // Binding precedes every setup effect. An unbound operation owns only this record.
+        // A retained fence belongs to its predecessor and must stay in the queue.
+        unlinkSync(file(pairId));
+        const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try { fsyncSync(fd); } finally { closeSync(fd); }
       }));
     },
     async bind(value: IntercomEnrollmentPair, operationId: string): Promise<void> {

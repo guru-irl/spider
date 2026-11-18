@@ -327,7 +327,7 @@ export function createMachineIntercom(options: MachineIntercomOptions): MachineI
             record.operationId === request.operationId && record.graphDigest === request.graphDigest);
           if (!records.length) throw new Error("peer-consent-required");
           const history = openJournal(join(options.root, "roam", "journal.db")).read(request.operationId);
-          const consent = history.find(row => row.action === "intercom-peer-consent" &&
+          const consent = history.findLast(row => row.action === "intercom-peer-consent" &&
             row.result.approved === true && row.result.graphDigest === request.graphDigest);
           if (request.transitionId !== topologyTransitionId(local, request.operationId, request.graphDigest) || !consent || !Array.isArray(consent.result.pairs) || consent.result.pairs.length !== records.length ||
               consent.result.pairs.some(pair => !pair || typeof pair !== "object" || Array.isArray(pair) || !records.some(record => record.pair.pairId === pair.pairId))) throw new Error("peer-consent-required");

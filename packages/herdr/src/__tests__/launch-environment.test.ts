@@ -426,7 +426,11 @@ it.each(['tui', 'rpc', 'print', 'json', 'child', 'no-session'] as const)('only i
       expect(bytes.includes('rotated-token')).toBe(true);
     } else {
       await expect(stat(secretPath())).rejects.toMatchObject({ code: 'ENOENT' });
-      if (mode === 'no-session') expect(await createTerminalRegistry(root).get(terminal)).toMatchObject({ owner: { sessionFile: null }, launchRecorded: undefined });
+      if (mode === 'no-session') {
+        const mapping = await createTerminalRegistry(root).get(terminal);
+        expect(mapping?.owner.sessionFile).toBeNull();
+        expect(mapping?.launchRecorded).toBeUndefined();
+      }
       else expect(await createTerminalRegistry(root).get(terminal)).toBeNull();
     }
   } finally { await registration.dispose(); }

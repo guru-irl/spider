@@ -84,7 +84,7 @@ export async function doctorPeer(peer: BootstrapPeer, ports: DoctorPorts): Promi
   else if (low(value.softNofile, 65_536)) warning("The soft open-file limit is below 65536. The launcher can raise it only up to the hard limit.");
   if (value.hardNofile === null) warning("The hard open-file limit is unknown.");
   else if (low(value.hardNofile, 65_536)) warning(
-    value.core.transient ? "The hard open-file limit is below 65536. Configure the limit at core startup. A core restart kills its terminals." :
+    value.core.transient ? "The hard open-file limit is below 65536. Set DefaultLimitNOFILE=65536 in the systemd user manager configuration before restarting the manager and core. A core restart kills its terminals." :
       "The hard open-file limit is below 65536. Set LimitNOFILE=65536 for the core service. A core restart kills its terminals.",
     value.core.unit && value.core.unitOwned && value.core.transient === false ? `systemctl --user edit ${value.core.unit}` : null,
   );

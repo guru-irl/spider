@@ -19,7 +19,7 @@ export interface AdapterOptions {
 export type HcProvisionAdapter = ProvisionPorts["transfer"] & { systemd: ProvisionPorts["systemd"]; verifyPeer(): Promise<ProvisionVerification> };
 const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 function failure(error: unknown, action: string): HerdrError {
-  const safe = new Set(["core-changed","core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy",  "core-unavailable", "machine-not-found", "machine-ambiguous", "machine-mismatch", "machine-not-enrolled",
+  const safe = new Set(["core-changed","invalid-config", "core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy",  "core-unavailable", "machine-not-found", "machine-ambiguous", "machine-mismatch", "machine-not-enrolled",
     "peer-invalidated", "unresolved-peer", "cli-timeout", "cli-aborted", "cli-exit", "stdin-error", "missing-hc", "spawn-error", "reply-too-large",
     "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",
     "consent-required", "invalid-provision-request", "invalid-provision-reply", "invalid-request", "unsafe-path", "unsafe-staging", "unsafe-context",

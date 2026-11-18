@@ -37,7 +37,7 @@ const socketStart = coreParserSource.indexOf("export function selectedSocket(");
 const socketEnd = coreParserSource.indexOf("export function parseCore(", socketStart);
 if (socketStart < 0 || socketEnd <= socketStart) throw new Error("Cannot assemble core socket selection");
 // Keep enrollment and the client on one socket-selection implementation, including TOML.
-const enrollmentSocketForRemote = `const enrollmentSocket = (() => {\nconst join = enrollPath.join, win32 = enrollPath.win32, readFileSync = enrollFs.readFileSync, statSync = enrollFs.statSync;\nclass HerdrError extends Error { constructor(_code: string, message: string, _details?: unknown) { super(message); } }\n${coreSocketConfigSource.replace(/^export /gm, "")}\n${coreParserSource.slice(socketStart, socketEnd).replace(/^export /gm, "")}\nreturn selectedSocket;\n})();\n`;
+const enrollmentSocketForRemote = `const enrollmentSocket = (() => {\nconst join = enrollPath.join, win32 = enrollPath.win32, readFileSync = enrollFs.readFileSync, statSync = enrollFs.statSync;\nclass HerdrError extends Error { readonly code: string; constructor(code: string, message: string, _details?: unknown) { super(message); this.code = code; } }\n${coreSocketConfigSource.replace(/^export /gm, "")}\n${coreParserSource.slice(socketStart, socketEnd).replace(/^export /gm, "")}\nreturn selectedSocket;\n})();\n`;
 // Remote verification needs the inspector, not the host's validator or diagnostic formatter.
 const intercomHostStart = intercomReadinessSource.indexOf("export const INTERCOM_UNIQUENESS_DESCRIPTION");
 const intercomHostEnd = intercomReadinessSource.indexOf("function irLegacyPath", intercomHostStart);

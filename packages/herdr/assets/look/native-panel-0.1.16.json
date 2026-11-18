@@ -6,6 +6,12 @@
     "replacement": "import { projectNavigation, indexPaneNavigation } from './shared/navigation.js';"
   },
   {
+    "id": "panel-reload-coalesce",
+    "file": "main.js",
+    "anchor": "  async reload(cx) {\n    if (this.closed || !this.reader) return false;",
+    "replacement": "  reload(cx) {\n    if (this.reloadPromise) { this.pendingReload = true; return this.reloadPromise; }\n    this.reloadPromise = this.reloadFeeds(cx).finally(() => { this.reloadPromise = null; });\n    return this.reloadPromise;\n  }\n  async reloadFeeds(cx) {\n    if (this.closed || !this.reader) return false;"
+  },
+  {
     "id": "panel-snapshot-refresh",
     "file": "main.js",
     "anchor": "      const snapshot = await this.reader.read();\n      if (this.closed) return false;",

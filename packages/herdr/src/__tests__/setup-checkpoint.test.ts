@@ -575,7 +575,7 @@ test('I4 endpoint intent survives a kill after publication but before any observ
   await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('kill before observation');
   vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link);
   await undoHerdrUpgrade(f.request, f.parts);
-  expect(await values([f.paths.registry, f.paths.main])).toEqual(f.before.filter(file => [f.paths.registry, f.paths.main].includes(file.path)));
+  expect(await values([f.paths.main, f.paths.registry])).toEqual(f.before.filter(file => [f.paths.registry, f.paths.main].includes(file.path)));
 });
 
 
@@ -600,4 +600,25 @@ test('N5 the next setup collects private blob temporaries left by a crash', asyn
   await put(abandoned, 'interrupted secret copy');
   await setupHerdr(f.request, f.parts);
   expect((await snapshot(abandoned)).hash).toBeNull();
+});
+
+
+test('N2 a failed batch retry preserves layout edits made between attempts', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const install = f.parts.installFiles;
+  f.parts.installFiles = async (...args) => (await install(...args)).map(file => file.path === f.paths.main ? { ...file, bytes: Buffer.from('third-main') } : file);
+  let killed = false;
+  const publish = (operation: typeof real.rename) => async (from: Parameters<typeof real.rename>[0], to: Parameters<typeof real.rename>[1]) => {
+    if (killed) throw new Error('batch killed');
+    await operation(from, to);
+    if (to === f.paths.main) { killed = true; throw new Error('batch killed'); }
+  };
+  vi.mocked(fs.rename).mockImplementation(publish(real.rename)); vi.mocked(fs.link).mockImplementation(publish(real.link));
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('batch killed');
+  vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link);
+  await put(f.paths.layout, '{"content":[],"generation":2,"userSize":321}');
+  await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(JSON.parse(await fs.readFile(f.paths.layout, 'utf8'))).toEqual({ content: [], generation: 2, userSize: 321 });
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('new-main');
 });

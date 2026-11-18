@@ -9,10 +9,14 @@ import { canonicalSessionFile, type LaunchEnvironment, type TerminalRegistry } f
 import type { ProcessIdentity, ProcessInventoryPorts, SessionLease, SessionLeases } from './lease.js';
 import { herdrErrorNotice } from '../notices.js';
 import { HerdrError } from '../client/parse.js';
+import type { LaunchModel, RecordedLaunch } from './launch-environment.js';
+const LAUNCH_MODELS = Symbol.for('spider.herdr.launch-models.v1');
+const registrationGlobal = globalThis as typeof globalThis & { [LAUNCH_MODELS]?: Map<string, LaunchModel> };
+const launchModels = registrationGlobal[LAUNCH_MODELS] ??= new Map<string, LaunchModel>();
 export interface SessionRegistrationPorts extends ProcessInventoryPorts {
   currentSession(ctx: ExtensionContext): ProcessPresence; owner(): Owner | null;
   registry: TerminalRegistry; presence: ProcessPresenceStore; leases: SessionLeases;
-  processIdentity: ProcessIdentity; launchEnvironment: LaunchEnvironment;
+  processIdentity: ProcessIdentity; launchEnvironment: LaunchEnvironment; captureLaunch?(): RecordedLaunch;
   active?(): boolean; admitted?(): boolean; warn?(message: string): void; metadata?(): PresenceMetadata;
   coreStartedAt(): number; env?: Readonly<NodeJS.ProcessEnv>;
 }
@@ -57,22 +61,29 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     catch (error) { if (error instanceof HerdrError && error.code === 'lease-token-invalid') return claim(); throw error; }
   }
 
-  async function activation(ctx: ExtensionContext, started: boolean): Promise<void> {
+  function capture(ctx: ExtensionContext, startup: boolean): RecordedLaunch {
+    const launch = ports.captureLaunch!();
+    const key = JSON.stringify([ports.processIdentity.pid, ports.processIdentity.startIdentity]);
+    const original = launchModels.get(key) ?? launch.model ?? (startup && ctx.model ? { provider: ctx.model.provider, modelId: ctx.model.id } : undefined);
+    if (original) launchModels.set(key, original);
+    return { ...launch, ...(original ? { model: original } : {}) };
+  }
+  async function activation(ctx: ExtensionContext, started: boolean, startup: boolean): Promise<void> {
     if (disposed) return;
     const current = ports.currentSession(ctx);
     await ports.presence.record({ ...current, ...ports.metadata?.(), sessionId: ctx.sessionManager.getSessionId() as SessionId, mode: ctx.mode, extensionArguments: ports.launchEnvironment.extensionArguments }); // Presence does not depend on HC, enablement, or child status.
     if (ports.admitted?.() === false) return;
     if (current.sessionFile !== null && current.kind === 'top-level') await reserve(current.sessionFile, ctx.sessionManager.getSessionId() as SessionId);
-    const owner = ports.owner(); if (!owner || ctx.mode !== 'tui' && ctx.mode !== 'rpc' || current.kind !== 'top-level') return;
+    const owner = ports.owner(); if (!owner || ctx.mode !== 'tui' || current.kind !== 'top-level') return;
     if (await hasLiveMappedAncestor(owner.terminal, ports)) return;
     const newActivity = started || !recorded;
     const activityId = newActivity ? randomBytes(16).toString('hex') : recorded!.activityId;
-    await ports.registry.record({ owner: { ...owner, sessionFile: current.sessionFile, name: current.sessionName }, recordedAt: Date.now(), coreStartedAt: ports.coreStartedAt(), environment: ports.launchEnvironment, activityId }, newActivity ? ports.processIdentity : undefined);
+    await ports.registry.record({ owner: { ...owner, sessionFile: current.sessionFile, name: current.sessionName }, recordedAt: Date.now(), coreStartedAt: ports.coreStartedAt(), environment: ports.launchEnvironment, activityId, ...(ports.captureLaunch ? { launch: capture(ctx, startup) } : {}) }, newActivity ? ports.processIdentity : undefined);
     recorded = { terminal: owner.terminal, activityId };
   }
-  function startActivation(ctx: ExtensionContext, started: boolean): Promise<void> {
+  function startActivation(ctx: ExtensionContext, started: boolean, startup = false): Promise<void> {
     if (disposed || stopping) return Promise.resolve();
-    const pending = activation(ctx, started); pendingActivations.add(pending);
+    const pending = activation(ctx, started, startup); pendingActivations.add(pending);
     void pending.then(() => pendingActivations.delete(pending), () => pendingActivations.delete(pending));
     return pending;
   }
@@ -83,7 +94,7 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     held.clear(); await ports.presence.remove(ports.processIdentity);
   }
   const unsubscribe = [
-    pi.on('session_start', async (_event, ctx) => startActivation(ctx, true)),
+    pi.on('session_start', async (event, ctx) => startActivation(ctx, true, event.reason === 'startup')),
     pi.on('session_info_changed', async (_event, ctx) => startActivation(ctx, false)),
     pi.on('session_before_switch', async event => { if (ports.admitted?.() === false || !event.targetSessionFile) return; try { await reserve(event.targetSessionFile); } catch (error) { if (!active()) return; warn(herdrErrorNotice(error)); return { cancel: true }; } }),
     pi.on('session_shutdown', async (event, ctx) => {

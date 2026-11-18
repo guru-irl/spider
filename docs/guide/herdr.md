@@ -644,7 +644,34 @@ Resume <name>: run spider_resume (or keep this shell).
 
 Run `spider_resume` to resume the session, or ignore the offer to keep the shell. In auto mode, the shell prints `Resuming <name>…` at its first prompt, starts pi, and returns to a normal shell when pi exits.
 
-Both modes run `pi --session <exact file>` in the saved working directory, with `PI_CODING_AGENT_DIR` set to the configured `agentDirectory`. Spider resumes only after a proved core restart and only when no other process holds the session file. It refuses sessions started with explicit extension arguments and prints an error naming the session. It never uses `--continue` or changes the session name or model.
+Both modes resume the exact session file in its saved working directory, only after a proved core restart and when no other process holds the file. Interactive top-level sessions record their launch environment, program, and arguments at startup and again on `/reload`. Print, JSON, RPC, and subagent sessions do not create resume mappings.
+
+### What resume restores
+
+Resume starts with the restored shell's environment, then overlays recorded variables, including credentials, routing settings, and `PI_INTERCOM_STABLE_ID`. Variables added since launch stay in place. Terminal and login identities keep their current values instead of stale launch values:
+
+- `HC_*`, `HERDR_*`, `TERM_SESSION_ID`, `TERM`, `COLORTERM`, `TERM_PROGRAM*`, and terminfo paths.
+- `SHLVL`, `PWD`, `OLDPWD`, `_`, SSH connection and agent variables, `TMPDIR`, `XPC_*`, `__CF*`, `SECURITYSESSIONID`, and `LaunchInstanceID`.
+- Desktop-session sockets and display variables, plus terminal multiplexer and window identities.
+- Pi's session and model markers, `PI_SPIDER_*`, `PI_SUBAGENT_*`, `PI_INTERCOM_SESSION_ID`, `SPIDER_HERDR_*`, and spider's per-command and viewer markers. The launcher creates fresh lease variables.
+
+Resume uses the recorded program when it is still executable, or `pi` from PATH otherwise. It replays process options such as `--tools`, resource paths, system prompts, trust overrides, and extension-defined flags. It leaves out session selectors, positional prompts, `@file` attachments, and everything after `--`. It also omits the original `--model`, `--provider`, `--thinking`, and `--name`, so the session's current values win.
+
+An original `--api-key` needs an explicit model in pi's CLI. The current model is the latest explicit selection on the active session branch, not a physical model named in a routed response. When the current session model has the same provider as the launch model, resume pairs the key with that current provider-qualified model. If the session has no model, it uses the original launch model. The launch model includes pi's selected default when no `--model` was supplied, and its provider stays fixed across `/reload`.
+
+If the provider changed, resume refuses with `session-key-provider-changed`. The notice names both providers and gives a quoted manual command for the current model, with `<API_KEY>` instead of the key. Supply a key for that provider, and reapply any other process options you need. Resume never silently drops the original key or sends it to another provider.
+
+`session-key-provider-unknown` uses the same visible refusal and placeholder command when the original provider cannot be established. This only affects sessions whose first capture happened at `/reload`, without a recorded startup model or explicit `--provider`. The current model is not evidence of the original provider, and a model string alone can be ambiguous. Environment replay without an argv `--api-key` is unaffected.
+
+Explicit extension paths are replayed when they still exist, resolved against the original launch directory. Built-in extensions remain supported. `session-extensions-missing` lists every missing path. Setup cutover still refuses explicit extensions, and older mappings without complete launch data keep their previous plain `pi --session` behavior and extension refusal.
+
+### Private launch records
+
+The complete launch environment, auth variables included, and argv live only in `<agentDirectory>/spider/herdr/launch-environments/<terminal-hash>.json`. This replaces the earlier no-auth-storage rule because a session can depend on launch-time credentials. Each record is an atomic 0600 file in a 0700 directory, capped at 8 MiB. Readers and writers refuse symlinks and non-regular files. Terminal maps, doctor output, and shell offers do not contain the private data.
+
+Each reload replaces the record, and removing the session's terminal mapping deletes it. A missing, unsafe, or mismatched private record stops resume instead of launching with partial settings. Records never travel with roaming state, workspace snapshots, remote runtimes, or remote file copies. Keep them out of external sync and backup exports too.
+
+### When automatic resume runs
 
 When pi exits or crashes and its shell returns to a prompt, the shell marks that session ended. A later restart skips it. A backgrounded or suspended pi stays live while its process exists. When the core restart kills both pi and its shell, no prompt runs and the session stays resumable. Starting pi again clears the ended state.
 

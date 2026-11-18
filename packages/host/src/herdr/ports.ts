@@ -26,6 +26,7 @@ import { createRoamPresentationPorts, type RoamPresentationPorts } from './roam-
 import { offerResume, resumeOfferShell, resumeWatchShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
 import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces/discovery';
 import { launchSession } from '@spider/herdr/sessions/launcher';
+import { launchFlagTakesValue } from '@spider/herdr/sessions/launch-environment';
 import { applyLookPatches, selectLookPatches, applyModPatches, lookCloneKinds, type AdditionalLookPatches, type LookModKind, type LookPatch, type HerdrClones, type LookPatchSet } from '@spider/herdr/look/patches';
 import { notificationAgentPatches } from '@spider/herdr/look/notification-patches';
 import { applyCrossMachinePatches, crossMachineKinds, selectCrossMachinePatches, type CrossMachineLookRecipe } from '@spider/herdr/look/cross-machine';
@@ -90,7 +91,13 @@ export { lockParticipant, type ParticipantLockOptions } from "./participant-lock
 
 export function explicitExtensionArguments(argv: readonly string[]): readonly string[] {
   const args: string[] = [];
-  for (let i = 0; i < argv.length; i++) if (argv[i] === '--extension' || argv[i] === '-e') { if (!argv[i + 1]) throw new HerdrError('launch-environment-invalid', 'Missing explicit extension path'); args.push('--extension', resolve(argv[++i])); }
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--') break;
+    if (argv[i] === '--extension' || argv[i] === '-e') {
+      if (!argv[i + 1]) throw new HerdrError('launch-environment-invalid', 'Missing explicit extension path');
+      const path = argv[++i]; args.push('--extension', path.startsWith('builtin:') ? path : resolve(path));
+    } else if (launchFlagTakesValue(argv[i])) i++;
+  }
   return recordedExtensionArguments(args);
 }
 
@@ -1368,7 +1375,8 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       const identity = { pid: process.pid, startIdentity: processStartTime(process.pid) ?? '' }; if (!identity.startIdentity) throw new HerdrError('process-identity-unavailable', 'Cannot claim a launch lease');
       let childExit: Promise<{ code: number | null; signal?: NodeJS.Signals | null; error?: Error }> | undefined;
       const file = await canonicalSessionFile(selection.file);
-      await withProcessLock(root, `resume-launch:${file}`, () => launchSession({ sessionFile: file, sessionId: selection.sessionId as SessionId, cwd: selection.cwd, environment: { agentDirectory: request.config.agentDirectory, extensionArguments: [] } }, { leases: inventory.leases, processInventory: inventory, processIdentity: identity, env, leasePolicy: selection.cutover ? { mode: 'cutover' } : { mode: 'switch', sessionId: selection.sessionId as SessionId },
+      const resume = !selection.cutover && env.HC_TERMINAL_ID && env.HC_TERMINAL_SOCKET ? { registry: createTerminalRegistry(root), terminal: await client(request).caller(env) } : undefined;
+      await withProcessLock(root, `resume-launch:${file}`, () => launchSession({ sessionFile: file, sessionId: selection.sessionId as SessionId, cwd: selection.cwd, environment: { agentDirectory: request.config.agentDirectory, extensionArguments: [] } }, { leases: inventory.leases, processInventory: inventory, processIdentity: identity, env, resume, leasePolicy: selection.cutover ? { mode: 'cutover' } : { mode: 'switch', sessionId: selection.sessionId as SessionId },
         spawnPi: async spawnRequest => {
           const child = spawn(spawnRequest.argv[0], spawnRequest.argv.slice(1), { cwd: spawnRequest.cwd, env: { ...spawnRequest.env }, stdio: 'inherit' });
           // Subscribe before any await: startup failure can precede lease transfer or owner activation.

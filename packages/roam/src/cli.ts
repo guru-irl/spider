@@ -45,6 +45,9 @@ const HELP = `Usage: spider <command>
   spider roam enable|disable
   spider roam doctor [machine]
   spider roam provision <machine> [--release <tarball>] [--use-destination-auth] [--no-settings] [--skill <name>]... [--yes --consent copilot-auth] [--consent-provider <name>]... [--operation-id <id>]
+  spider roam intercom enroll --graph <file> [--operation <id>]
+  spider roam intercom cancel <pair-id>
+  spider roam intercom revoke <pair-id>
   spider roam stop|resume <session>
   spider roam recover|cancel <operation-id>
   spider roam claim <session> <machine>
@@ -226,6 +229,11 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     if (!graphFile) { io.err("Usage: spider roam intercom enroll --graph <absolute-private-json> [--operation <id>]\n"); return 2; }
     const { runIntercomEnrollCli } = await import("./intercom-cli");
     return runIntercomEnrollCli({ root, graphFile, operationId }, io, options?.intercomOptions);
+  }
+  if (argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "cancel") {
+    if (argv.length !== 4 || !positional(argv[3], false)) { io.err("Usage: spider roam intercom cancel <pair-id>\n"); return 2; }
+    const { runIntercomCancelCli } = await import("./intercom-cli");
+    return runIntercomCancelCli({ root, pairId: argv[3] }, io, options?.intercomOptions);
   }
   if (argv[0] === "roam" && argv[1] === "intercom" && argv[2] === "revoke") {
     const id = (value: string) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);

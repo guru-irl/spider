@@ -105,6 +105,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
   let approved = false;
   try {
     return await ports.withLock(async () => {
+      if (ports.journal.read(operationId).some(row => row.action === "intercom-enrollment-cancelled")) return outcome(operationId, 1, "intercom-enrollment-cancelled");
       const graph = preview(snapshot.pairs);
       const digest = createHash("sha256").update(JSON.stringify(snapshot.pairs)).digest("hex");
       const previous = ports.journal.begin({ ...snapshot.operation, args: { graphDigest: digest } });
@@ -116,15 +117,19 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
         }
         return outcome(operationId, 3, "invalid-intercom-receipt");
       }
-      const consent = ports.journal.read(operationId).find(({ action, result }) => action === "intercom-peer-consent" &&
+      const consent = ports.journal.read(operationId).findLast(({ action, result }) => action === "intercom-peer-consent" &&
         result.approved === true && result.graphDigest === digest);
-      const fences = consent ? consent.result.fences : await ports.readPairFences(snapshot.pairs);
+      const refreshConsent = consent && consent.result.fences && typeof consent.result.fences === "object" &&
+        Object.values(consent.result.fences).includes("unavailable");
+      const savedFences = consent?.result.fences as Record<string, string | null> | undefined;
+      const fences = refreshConsent ? { ...savedFences, ...await ports.readPairFences(snapshot.pairs.filter(pair => savedFences?.[pair.pairId] === "unavailable")) }
+        : consent ? consent.result.fences : await ports.readPairFences(snapshot.pairs);
       if (!fences || typeof fences !== "object" || Array.isArray(fences) || Object.keys(fences).length !== snapshot.pairs.length ||
           snapshot.pairs.some(pair => !Object.hasOwn(fences, pair.pairId) || !((fences as Record<string, unknown>)[pair.pairId] === null || identifier((fences as Record<string, unknown>)[pair.pairId])))) {
         return outcome(operationId, 3, "intercom-fence-unavailable");
       }
       await ports.present(graph);
-      if (!consent) {
+      if (!consent || refreshConsent) {
         if (!await ports.approve()) return outcome(operationId, 1, "peer-consent-required");
         const at = ports.now();
         if (!Number.isSafeInteger(at) || at < 0 || typeof ports.actor !== "string" || !ports.actor || /[\u0000-\u001f\u007f]/.test(ports.actor)) {
@@ -237,8 +242,12 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
         const failure = await enroll(pair);
         if (failure) pending.push({ pairId: pair.pairId, ...(typeof failure === "string" ? { reason: failure } : failure) }); else completed.push(pair.pairId);
       }
-      if (pending.length) return outcome(operationId, 3, pending.length === 1 && completed.length === 0 ? pending[0].reason : "intercom-enrollment-pending",
-        { pairs: completed, pending });
+      if (pending.length) {
+        const result = outcome(operationId, 3, pending.length === 1 && completed.length === 0 ? pending[0].reason : "intercom-enrollment-pending", { pairs: completed, pending });
+        const changed = pending.find(item => item.reason === "core-changed");
+        if (changed) result.repairCommand = `spider roam intercom cancel ${changed.pairId}`;
+        return result;
+      }
       const result = outcome(operationId, 0, "intercom-enrolled", { pairs: completed });
       ports.journal.record(operationId, "done", result as unknown as import("@spider/db-core/roam/types").JsonObject);
       return result;

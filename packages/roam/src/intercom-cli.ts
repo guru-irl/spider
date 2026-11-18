@@ -3,6 +3,7 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { withProcessLock } from "@spider/herdr/sessions/registry";
 import { assertTestConfigPath } from "@spider/db-core";
 import type { Journal, Peer } from "./contracts";
 import type { IntercomEnrollmentPlan, IntercomRevocationPorts } from "./provision-contracts";
@@ -70,7 +71,7 @@ export async function runIntercomEnrollCli(input: { root: string; graphFile: str
     });
     const result = await provisionIntercomEnrollment(request, ports);
     if (result.code === 0 && config.intercom.mode === "hub-only") {
-      const history = journal.read(operationId), consent = history.find(row => row.action === "intercom-peer-consent" && row.result.approved === true);
+      const history = journal.read(operationId), consent = history.findLast(row => row.action === "intercom-peer-consent" && row.result.approved === true);
       if (!consent || typeof consent.result.graphDigest !== "string") throw new Error("peer-consent-required");
       const transitionId = topologyTransitionId(config.machineId, operationId, consent.result.graphDigest);
       const transition = await requestHelperTopology(input.root, { version: 1, action: "transition-topology", machineId: config.machineId,
@@ -79,6 +80,7 @@ export async function runIntercomEnrollCli(input: { root: string; graphFile: str
     }
     (result.code === 0 ? io.out : io.err)(`${result.reason}\n`);
     if (result.value?.pending) for (const pending of result.value.pending) io.err(`${pending.pairId}: ${pending.reason}${pending.causeCode ? ` [${pending.causeCode}]` : ""}\n`);
+    if (result.repairCommand) io.err(`Core identity changed. Run ${result.repairCommand} for an unbound pending pair, then enroll with a new operation and approval. For a bound pair, use spider roam intercom revoke <pair>.\n`);
     if (result.value?.pending?.some(pending => pending.reason === "intercom-ssh-host-unverified")) {
       io.err("The key presented on the pair's port is not one of this machine's system host keys. Check the SSH listener and its system host keys, then retry.\n");
     }
@@ -121,5 +123,28 @@ export async function runIntercomRevokeCli(input: { root: string; pairId: string
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     io.err(`${message === "intercom-pair-not-found" || message === "machine-mismatch" ? message : "revocation-incomplete"}\n`); return 1;
+  }
+}
+
+
+/** Cancel only pre-binding work; later setup requires fenced revocation. */
+export async function runIntercomCancelCli(input: { root: string; pairId: string }, io: { out(text: string): void; err(text: string): void },
+  options: IntercomCliOptions = {}): Promise<number> {
+  try {
+    if (readLocalIdentity(input.root).role !== "hub") throw new Error("intercom-requires-hub");
+    return await withProcessLock(join(input.root, "roam"), "intercom-graph", async () => {
+      const registry = createIntercomRegistry(input.root), record = await registry.get(input.pairId);
+      if (!record) throw new Error("intercom-pair-not-found");
+      if (record.state !== "pending" || "sshUser" in record.pair) throw new Error("intercom-enrollment-bound");
+      if (record.resources || record.unit || record.cleanupReason || record.revocationEpoch) throw new Error("intercom-pending-resources-present");
+      const journal = options.journal ?? openJournal(join(input.root, "roam", "journal.db"));
+      journal.record(record.operationId, "intercom-enrollment-cancelled", { pairId: input.pairId, graphDigest: record.graphDigest });
+      await registry.cancelPending(input.pairId, record.operationId, record.graphDigest);
+      io.out("intercom-enrollment-cancelled\n"); return 0;
+    });
+  } catch (error) {
+    const reason = error instanceof Error && ["intercom-requires-hub", "intercom-pair-not-found", "intercom-enrollment-bound", "intercom-pending-resources-present", "intercom-pair-conflict"].includes(error.message)
+      ? error.message : "intercom-cancellation-incomplete";
+    io.err(`${reason}${reason === "intercom-enrollment-bound" ? ". Use spider roam intercom revoke <pair>" : ""}\n`); return 1;
   }
 }

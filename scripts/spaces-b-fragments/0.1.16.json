@@ -241,6 +241,12 @@
       "file": "main.js",
       "anchor": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) void this.peek(a.address); }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))",
       "replacement": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) { if (a.navigation) void this.peek(a.address); else run(\"pane.focus\", { pane: a.pane }); } }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
+    },
+    {
+      "id": "b-native-viewer-peek",
+      "file": "main.js",
+      "anchor": "if (this.spiderModel?.snapshot?.paneNavigation || addr.includes(\"/\")) return;",
+      "replacement": "if (this.spiderModel?.snapshot?.paneNavigation) return;"
     }
   ]
 }

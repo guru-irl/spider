@@ -13,6 +13,8 @@ import { openIntercomStore } from "../intercom-store";
 const hooks = vi.hoisted(() => ({
   afterRead: null as null | ((fd: number, count: number) => void),
   fixedStamp: null as string | null,
+  mtimeNs: 0n,
+  ctimeNs: 0n,
   beforePrivateOpen: null as null | ((file: string) => void),
 }));
 vi.mock("@spider/db-core", async importOriginal => {
@@ -28,7 +30,7 @@ vi.mock("node:fs", async importOriginal => {
     if (!stat || !hooks.fixedStamp || !bigint) return stat;
     const source = actual.statSync(hooks.fixedStamp);
     if (stat.dev !== BigInt(source.dev) || stat.ino !== BigInt(source.ino)) return stat;
-    return Object.assign(stat, { mtimeNs: 0n, ctimeNs: 0n });
+    return Object.assign(stat, { mtimeNs: hooks.mtimeNs, ctimeNs: hooks.ctimeNs });
   };
   return { ...actual,
     lstatSync: (...args: Parameters<typeof actual.lstatSync>) => fixed(Reflect.apply(actual.lstatSync, undefined, args), !!args[1]?.bigint),
@@ -43,6 +45,8 @@ const roots: string[] = [];
 afterEach(() => {
   hooks.afterRead = null;
   hooks.fixedStamp = null;
+  hooks.mtimeNs = 0n; hooks.ctimeNs = 0n;
+  vi.useRealTimers(); vi.restoreAllMocks();
   hooks.beforePrivateOpen = null;
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -383,6 +387,120 @@ it("rejects symlinked source files", () => {
   expect(() => { try { openDiagnosticSnapshot(alias); } catch (error) { failure = error; throw error; } }).toThrow(/unsafe/i);
   expect(failure).toMatchObject({ code: "diagnostic-snapshot-unsafe" });
   expect(readdirSync(temp)).toEqual([]);
+}, 5000);
+
+function closedPair(): ReturnType<typeof fixture> {
+  const result = fixture(), writer = openDb(result.file, { checkpointOnClose: false });
+  writer.exec("CREATE TABLE a(value INTEGER); INSERT INTO a VALUES (0); CREATE TABLE filler(bytes BLOB); INSERT INTO filler VALUES (zeroblob(400000)); CREATE TABLE b(value INTEGER); INSERT INTO b VALUES (0)");
+  writer.close();
+  return result;
+}
+
+it("rejects a same-tick commit and clean close with constant main timestamps", () => {
+  const { file, temp } = closedPair();
+  hooks.fixedStamp = file; hooks.mtimeNs = hooks.ctimeNs = 1_000_000_000n;
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
+  let commits = 0, failure: unknown, snapshot: ReturnType<typeof openDiagnosticSnapshot>;
+  hooks.afterRead = fd => {
+    if (!isFile(fd, file)) return;
+    if (++commits !== 1) return;
+    const writer = openDb(file, { checkpointOnClose: false });
+    try { writer.exec("BEGIN; UPDATE a SET value=1; UPDATE b SET value=1; COMMIT"); }
+    finally { writer.close(); }
+  };
+  try { snapshot = openDiagnosticSnapshot(file); } catch (error) { failure = error; }
+  hooks.afterRead = null;
+  try {
+    if (snapshot) expect([{ a: 0, b: 0 }, { a: 1, b: 1 }]).toContainEqual(snapshot.prepare("SELECT a.value AS a,b.value AS b FROM a,b").get());
+  } finally { snapshot?.close(); }
+  expect(failure).toMatchObject({ code: "diagnostic-snapshot-changing" });
+  expect(commits).toBeGreaterThan(0);
+  expect(readdirSync(temp)).toEqual([]);
+}, 5000);
+
+it("snapshots an old inactive store on the first attempt without waiting", () => {
+  const { file, temp } = closedPair();
+  hooks.fixedStamp = file;
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const waits: number[] = [];
+  vi.spyOn(Atomics, "wait").mockImplementation((_array, _index, _value, timeout) => { waits.push(timeout!); return "timed-out"; });
+  let chunks = 0;
+  hooks.afterRead = fd => { if (isFile(fd, file)) chunks++; };
+  const snapshot = openDiagnosticSnapshot(file)!;
+  hooks.afterRead = null;
+  try { expect(snapshot.prepare("SELECT a.value AS a,b.value AS b FROM a,b").get()).toEqual({ a: 0, b: 0 }); }
+  finally { snapshot.close(); }
+  expect(chunks).toBe(2);
+  expect(waits).toEqual([]);
+  expect(readdirSync(temp)).toEqual([]);
+}, 5000);
+
+it.each(["mtimeNs", "ctimeNs"] as const)("lets a recently written inactive store age beyond its %s window", field => {
+  const { file, temp } = fixture(), writer = openDb(file, { checkpointOnClose: false });
+  writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('saved')"); writer.close();
+  hooks.fixedStamp = file; hooks[field] = 1_000_000_000n;
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const waits: number[] = [];
+  vi.spyOn(Atomics, "wait").mockImplementation((_array, _index, _value, timeout) => {
+    waits.push(timeout!); vi.setSystemTime(Date.now() + timeout!); return "timed-out";
+  });
+  let attempts = 0;
+  hooks.afterRead = fd => { if (isFile(fd, file)) attempts++; };
+  const snapshot = openDiagnosticSnapshot(file)!;
+  hooks.afterRead = null;
+  try { expect(snapshot.prepare("SELECT value FROM fixture").all()).toEqual([{ value: "saved" }]); }
+  finally { snapshot.close(); }
+  expect(attempts).toBe(2);
+  expect(waits).toEqual([50]);
+  expect(readdirSync(temp)).toEqual([]);
+}, 5000);
+
+it("bounds retries and waits while inactive-store writes keep stamps recent", () => {
+  const { file, temp } = fixture(), writer = openDb(file, { checkpointOnClose: false });
+  writer.exec("CREATE TABLE fixture(value INTEGER); INSERT INTO fixture VALUES (0)"); writer.close();
+  hooks.fixedStamp = file; hooks.mtimeNs = hooks.ctimeNs = 1_000_000_000n;
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  const waits: number[] = [];
+  vi.spyOn(Atomics, "wait").mockImplementation((_array, _index, _value, timeout) => {
+    waits.push(timeout!); vi.setSystemTime(Date.now() + timeout!);
+    hooks.mtimeNs = hooks.ctimeNs = BigInt(Date.now()) * 1_000_000n;
+    return "timed-out";
+  });
+  let commits = 0, failure: unknown, snapshot: ReturnType<typeof openDiagnosticSnapshot>;
+  hooks.afterRead = fd => {
+    if (!isFile(fd, file)) return;
+    const writer = openDb(file, { checkpointOnClose: false });
+    try { writer.prepare("UPDATE fixture SET value=?").run(++commits); } finally { writer.close(); }
+  };
+  try {
+    expect(() => { try { snapshot = openDiagnosticSnapshot(file); } catch (error) { failure = error; throw error; } }).toThrow(/changed/i);
+  } finally { snapshot?.close(); }
+  hooks.afterRead = null;
+  expect(failure).toMatchObject({ code: "diagnostic-snapshot-changing" });
+  expect(commits).toBe(3);
+  expect(waits).toEqual([50, 50, 50]);
+  expect(readdirSync(temp)).toEqual([]);
+}, 5000);
+
+it("rejects newly appeared sidecars even when old main timestamps stay constant", () => {
+  const { file, temp } = closedPair();
+  hooks.fixedStamp = file;
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  let writer: ReturnType<typeof openDb> | undefined;
+  hooks.afterRead = fd => {
+    if (writer || !isFile(fd, file)) return;
+    writer = openDb(file, { checkpointOnClose: false });
+    writer.exec("BEGIN; UPDATE a SET value=1; UPDATE b SET value=1; COMMIT");
+    writer.raw.pragma("wal_checkpoint(PASSIVE)");
+  };
+  try {
+    const snapshot = openDiagnosticSnapshot(file)!;
+    hooks.afterRead = null;
+    try { expect(snapshot.prepare("SELECT a.value AS a,b.value AS b FROM a,b").get()).toEqual({ a: 1, b: 1 }); }
+    finally { snapshot.close(); }
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer?.close(); }
 }, 5000);
 
 function isFile(fd: number, file: string): boolean {

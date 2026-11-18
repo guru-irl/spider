@@ -276,7 +276,8 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
     return await ports.withLock(async () => {
       const record = await ports.getPair(pairId);
       if (!record) return revocationOutcome(pairId, 1, "intercom-pair-not-found");
-      const pair = structuredClone(record.pair), fenceEpoch = ports.fenceEpoch ?? record.revocationEpoch ?? pair.edgeEpoch;
+      const pair = structuredClone(record.pair);
+      let fenceEpoch = ports.fenceEpoch ?? record.revocationEpoch ?? pair.edgeEpoch;
       if (!identifier(fenceEpoch)) return revocationOutcome(pairId, 1, "invalid-intercom-fence");
       if (!pair || pair.pairId !== pairId || !identifier(pair.edgeEpoch) || !peerValid(pair.source) || !peerValid(pair.target) ||
           pair.source.machineId >= pair.target.machineId || !["pending", "active", "revoking", "revoked"].includes(record.state)) {
@@ -284,6 +285,7 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
       }
       if (record.state === "revoked" && !record.cleanupReason) return revocationOutcome(pairId, 0, "intercom-revoked", null);
       const closure = await ports.fenceAndClose(pair);
+      if (ports.fenceEpoch === undefined && record.fenceId && closure?.fenceId === record.fenceId && identifier(closure.edgeEpoch)) fenceEpoch = closure.edgeEpoch;
       if (!closure || closure.sourceMachineId !== pair.source.machineId || closure.targetMachineId !== pair.target.machineId ||
           ![pair.source.machineId, pair.target.machineId].includes(closure.localMachineId) || closure.edgeEpoch !== fenceEpoch ||
           !identifier(closure.fenceId) || closure.fenceDurable !== true || closure.exchanges !== "closed" || closure.inFlight !== 0) return revocationOutcome(pairId, 3, "revocation-incomplete");

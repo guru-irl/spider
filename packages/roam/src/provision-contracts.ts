@@ -125,7 +125,7 @@ export interface IntercomRevocationPorts {
   fenceEpoch?: string;
   withLock<T>(work: () => Promise<T>): Promise<T>;
   getPair(pairId: string): Promise<{ pair: IntercomEnrollmentPair; state: "pending" | "active" | "revoking" | "revoked";
-    cleanupReason?: IntercomRevocationCleanupReason | null; revocationEpoch?: string } | null>;
+    cleanupReason?: IntercomRevocationCleanupReason | null; revocationEpoch?: string; fenceId?: string | null } | null>;
   /** Persist the local fence before refusing and joining both live exchange directions. */
   fenceAndClose(pair: IntercomEnrollmentPair): Promise<IntercomClosureEvidence>;
   fenceRemote(pair: IntercomEnrollmentPair, pins: IntercomRevocationPins, fenceId: string): Promise<IntercomClosureEvidence>;

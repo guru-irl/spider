@@ -158,7 +158,7 @@ if (config.rawReplyBase64 !== undefined) {
   }
 } else if (argv[0] === 'server' && ['start', 'status'].includes(argv[1])) {
   console.log(JSON.stringify({ core: { id: config.coreId, name: 'fixture' }, version: '0.1.16',
-    pid: config.roamFixture ? config.fixtureCorePid ?? 1000 : process.pid,
+    pid: config.roamFixture ? (argv[1] === 'start' ? config.fixtureStartPid : undefined) ?? config.fixtureCorePid ?? 1000 : process.pid,
     ...(config.roamFixture ? { uptime_ms: config.fixtureCoreUptimeMs ?? 1000 } : {}) }));
 } else if (argv[0] === 'get') {
   const terminal = config.terminals.find(t => t.address === argv[1]);

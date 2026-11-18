@@ -18,6 +18,8 @@ it("renders a private login supervisor without dependencies on the core unit", (
     expect(lines.some(line => line.startsWith("Requires="))).toBe(false);
     expect(lines.some(line => line.startsWith("PartOf="))).toBe(false);
     expect(lines).toContain("Restart=on-failure");
+    expect(lines).toContain("RestartSec=10s");
+    expect(lines).toContain("StartLimitIntervalSec=0");
     expect(lines).toContain("UMask=0077");
     expect(lines).toContain("WantedBy=default.target");
     expect(lines).toContain('ExecStart="/home/agent/bin/node" "/home/agent/spider/supervisor.mjs"');

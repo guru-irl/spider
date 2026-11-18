@@ -382,15 +382,6 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     ...(hasToast ? ['toast'] : []),
   ];
   const filesFor = async (files: readonly { path: string; bytes: Buffer; mode?: number; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[], context: SetupContext): Promise<InstallFile[]> => Promise.all(files.map(async file => ({ ...file, expected: file.terminalKeys || file.keys ? (await snapshot(file.path)).hash : context.installed[file.path] ?? null, collision: file.terminalKeys || file.keys ? 'key' as const : 'clone' as const })));
-  const orderModFiles = <T extends { path: string }>(files: readonly T[], appHome: string): T[] => {
-    const priority = (file: T) => {
-      const name = relative(join(appHome, 'mods'), file.path).split(sep);
-      if (!name[0]?.startsWith('spider-')) return 3;
-      if (name.length !== 2) return 0;
-      return name[1] === 'mod.json' ? -1 : name[1] === 'main.js' ? 1 : 0;
-    };
-    return [...files].sort((a, b) => priority(a) - priority(b));
-  };
   const panelFiles = async (release?: string, paneEnabled = false) => {
     const assets = join(packageRoot, 'packages/herdr/assets');
     const files = await assetFiles(join(assets, 'mods/spider'));

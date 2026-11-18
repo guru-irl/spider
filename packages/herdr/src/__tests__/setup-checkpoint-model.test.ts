@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
 import { HerdrError } from '../client/parse.js';
 import { digest, readJournal, saveJournal, snapshot } from '../setup/backup.js';
+import { modStoreFileName } from '../setup/mod-storage.js';
 import { readCheckpoint } from '../setup/checkpoint.js';
 import { doctorHerdr } from '../setup/doctor.js';
 import { rollbackHerdr, setupHerdr, undoHerdrUpgrade } from '../setup/installer.js';
@@ -40,8 +41,35 @@ async function blobs(f: Awaited<ReturnType<typeof fixture>>) {
 /** Each prefix is checked on disk, then restored at the same absolute paths. */
 async function model(steps: readonly Step[], checkPrefixes = true) {
   const f = await fixture(), root = f.request.packageRoot;
-  let baseline = await values([f.paths.main]);
+  const owned = [f.paths.font, f.paths.theme, f.paths.svg, f.paths.main, f.paths.manifest, f.paths.appSettings, f.paths.notes, f.paths.registry];
+  let baseline = await values(owned);
+  let settingsBaseline = JSON.parse(await fs.readFile(f.paths.settings, 'utf8'));
+  let keysBaseline = JSON.parse(await fs.readFile(f.paths.keys, 'utf8'));
+  let layoutBaseline: string | null = (await snapshot(f.paths.layout)).bytes?.toString() ?? null;
+  let instructionBaseline: string | null = null;
+  const rememberBaseline = async () => {
+    baseline = await values(owned);
+    settingsBaseline = JSON.parse(await fs.readFile(f.paths.settings, 'utf8'));
+    keysBaseline = JSON.parse(await fs.readFile(f.paths.keys, 'utf8'));
+    layoutBaseline = (await snapshot(f.paths.layout)).bytes?.toString() ?? null;
+    instructionBaseline = (await snapshot(f.paths.added)).bytes?.toString() ?? null;
+  };
+  const oldLayout = JSON.stringify({ content: [{ id: 'pane', mod: 'spider-example', props: { version: 1 } }], generation: 1 });
+  const nextLayout = { content: [{ id: 'pane', mod: 'spider-example', props: { version: 2 } }], generation: 2 };
+  await put(f.paths.layout, oldLayout);
+  const legacy = await readJournal(f.request.journalRoot); legacy.entries.find(entry => entry.path === f.paths.layout)!.after = digest(Buffer.from(oldLayout)); await saveJournal(f.request.journalRoot, legacy);
+  layoutBaseline = oldLayout;
+  const storeCopy = join(f.request.config.app.home, 'data/spider-example', modStoreFileName({ version: 2 }));
+  await put(join(dirname(storeCopy), modStoreFileName({ version: 1 })), 'old store');
+  const stage = f.parts.stageLook;
+  f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(JSON.stringify(nextLayout)) } : file);
   let shellEdit = false, settingsEdit = false, keysEdit = false, move = false, templateEdit = false, appEdit = false;
+  const cutover = f.parts.cutover;
+  f.parts.cutover = async (...args) => {
+    const previous = await fs.readFile(f.paths.spaces).catch(() => null);
+    try { return await cutover(...args); }
+    finally { if (move && previous) await fs.writeFile(f.paths.spaces, previous); }
+  };
   const rollback = f.parts.rollback;
   f.parts.rollback = async (...args) => {
     const previous = await fs.readFile(f.paths.spaces).catch(() => null);
@@ -60,18 +88,21 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
       expect(error).toBeInstanceOf(HerdrError);
       const e = error as HerdrError;
       if (e.code === 'upgrade-checkpoint-missing') return false;
-      if (e.code === 'upgrade-checkpoint-bookkeeping-only') { expect(await values([f.paths.main]), 'an installed upgrade still needs its baseline').toEqual(baseline); return false; }
+      if (e.code === 'upgrade-checkpoint-bookkeeping-only') { expect(await values(owned), 'an installed upgrade still needs its baseline').toEqual(baseline); return false; }
       expect(['upgrade-checkpoint-changed', 'upgrade-undo-interrupted']).toContain(e.code);
       if (e.code === 'upgrade-checkpoint-changed') expect(e.message).toMatch(/\/(?:[^\s]+) /);
       await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
     }
-    expect(await values([f.paths.main])).toEqual(baseline);
+    expect(await values(owned)).toEqual(baseline);
     if (shellEdit) expect(await fs.readFile(shell, 'utf8')).toContain('alias user=true');
-    if (settingsEdit) expect(JSON.parse(await fs.readFile(f.paths.settings, 'utf8')).user).toBe('keep');
-    if (keysEdit) expect(JSON.parse(await fs.readFile(f.paths.keys, 'utf8')).global['ctrl-z']).toBe('user.action');
+    expect(JSON.parse(await fs.readFile(f.paths.settings, 'utf8'))).toEqual({ ...settingsBaseline, ...(settingsEdit ? { user: 'keep' } : {}) });
+    expect(JSON.parse(await fs.readFile(f.paths.keys, 'utf8'))).toEqual({ ...keysBaseline, global: { ...keysBaseline.global, ...(keysEdit ? { 'ctrl-z': 'user.action' } : {}) } });
     if (move) expect(await fs.readFile(f.paths.spaces, 'utf8')).toContain('moved');
-    if (templateEdit) expect(await fs.readFile(f.paths.added, 'utf8')).toBe('runtime instructions');
+    expect((await snapshot(f.paths.added)).bytes?.toString() ?? null).toBe(templateEdit ? 'runtime instructions' : instructionBaseline);
     const layout = (await snapshot(f.paths.layout)).bytes?.toString() ?? '';
+    const expectedLayout = layoutBaseline === null ? null : JSON.parse(layoutBaseline);
+    expect(layout ? JSON.parse(layout) : null).toEqual(appEdit ? { ...expectedLayout, userSize: 321 } : expectedLayout);
+    if (appEdit) expect(await fs.readFile(storeCopy, 'utf8')).toBe('runtime store');
     const names = [...layout.matchAll(/spider-[a-z-]+/g)].map(match => match[0]);
     for (const name of names) expect((await snapshot(join(f.request.config.app.home, 'mods', name, 'mod.json'))).hash, `layout reference ${name}`).not.toBeNull();
     if (checkPrefixes) await blobs(f);
@@ -92,6 +123,7 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
   const interrupted = async (work: () => Promise<unknown>, matches: (target: string) => boolean, after: boolean) => {
     let fired = false;
     const hook = (operation: typeof real.rename) => async (from: Parameters<typeof real.rename>[0], to: Parameters<typeof real.rename>[1]) => {
+      if (fired) throw new Error('model crash');
       const hit = matches(String(to));
       if (hit && !after) { fired = true; throw new Error('model crash'); }
       await operation(from, to);
@@ -108,18 +140,18 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
       const cp = await readCheckpoint(f.request.journalRoot);
       const setup = async (replaceChanged = false) => {
         const current = await readCheckpoint(f.request.journalRoot);
-        if (!current || ['undone', 'superseded'].includes(current.state)) baseline = await values([f.paths.main]);
+        if (!current || ['undone', 'superseded'].includes(current.state)) await rememberBaseline();
         try { await setupHerdr({ ...f.request, replaceChanged }, f.parts); }
         catch (error) {
-          if (!(error instanceof HerdrError) || error.code !== 'setup-files-changed') throw error;
+          if (!(error instanceof HerdrError) || !['unowned-clone-collision', 'managed-artifact-changed'].includes(error.code)) throw error;
           expect(error.message).toContain('--replace-changed');
           await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
         }
       };
-      if ((!cp || ['undone', 'superseded'].includes(cp.state)) && ['bookkeeping', 'journal-crash'].includes(step)) baseline = await values([f.paths.main]);
+      if ((!cp || ['undone', 'superseded'].includes(cp.state)) && ['bookkeeping', 'journal-crash'].includes(step)) await rememberBaseline();
       switch (step) {
         case 'setup': case 'replace': await setup(step === 'replace'); break;
-        case 'bookkeeping': await metadataRepeat(f); break;
+        case 'bookkeeping': try { await metadataRepeat(f); } catch (error) { if (!(error instanceof HerdrError) || !['unowned-clone-collision', 'managed-artifact-changed'].includes(error.code)) throw error; expect(error.message).toContain('--replace-changed'); await metadataRepeat(f, true); } break;
         case 'remote': {
           const bytes = Buffer.from('runtime-v2'), machine = 'box-1.invalid' as import('../contracts.js').MachineName;
           let remote: Buffer | null = null;
@@ -129,13 +161,13 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
         }
         case 'layout-only': {
           const stage = f.parts.stageLook;
-          f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(JSON.stringify({ content: [], generation: 3 })) } : file);
+          f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(JSON.stringify({ ...nextLayout, generation: 3 })) } : file);
           await setup(); break;
         }
         case 'shell': shellEdit = true; await fs.appendFile(shell, 'alias user=true\n'); break;
         case 'settings': case 'pi': settingsEdit = true; await put(f.paths.settings, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.settings, 'utf8')), user: 'keep' })); break;
         case 'keys': { keysEdit = true; const keys = JSON.parse(await fs.readFile(f.paths.keys, 'utf8')); keys.global['ctrl-z'] = 'user.action'; await put(f.paths.keys, JSON.stringify(keys)); break; }
-        case 'app': appEdit = true; await put(f.paths.layout, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.layout, 'utf8')), userSize: 321 })); break;
+        case 'app': appEdit = true; await put(f.paths.layout, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.layout, 'utf8')), userSize: 321 })); await put(storeCopy, 'runtime store'); break;
         case 'template': templateEdit = true; await put(f.paths.added, 'runtime instructions'); f.parts.generateTemplates = async () => [{ path: f.paths.added, expected: (await snapshot(f.paths.added)).hash, bytes: Buffer.from('runtime instructions') }]; { const journal = await readJournal(f.request.journalRoot), entry = journal.entries.find(entry => entry.path === f.paths.added); if (entry) { entry.after = digest(Buffer.from('runtime instructions')); await saveJournal(f.request.journalRoot, journal); } } break;
         case 'move': move = true; await put(f.paths.spaces, '{"placements":["moved"]}'); break;
         case 'fail-retry': {
@@ -147,7 +179,12 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
         }
         case 'batch-crash': case 'cutover-crash': {
           f.fail(step === 'cutover-crash');
-          if (step === 'batch-crash') await interrupted(() => setup(true), target => target === f.paths.main, true);
+          if (step === 'batch-crash') {
+            if (cp?.state === 'complete') await rememberBaseline();
+            const install = f.parts.installFiles;
+            f.parts.installFiles = async (...args) => (await install(...args)).map(file => file.path === f.paths.main ? { ...file, bytes: Buffer.from(`model-main-${index}`) } : file);
+            expect(await interrupted(() => setup(true), target => target === f.paths.main, true)).toBe(true);
+          }
           else { const journal = await readJournal(f.request.journalRoot); journal.verified = false; await saveJournal(f.request.journalRoot, journal); await expect(setup(true)).rejects.toThrow('injected cutover interruption'); }
           f.fail(false); break;
         }

@@ -36,7 +36,7 @@ const bad = (code: string): never => { throw new ExchangeError(code); };
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const exact = (value: Record<string, unknown>, fields: readonly string[]): boolean => Object.keys(value).length === fields.length && fields.every(field => Object.hasOwn(value, field));
 function samePeer(a: Peer, b: Peer): boolean {
-  return a.machineId === b.machineId && a.alias === b.alias && a.node === b.node && a.pi === b.pi && a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot;
+  return a.machineId === b.machineId && a.alias === b.alias && a.node === b.node && a.pi === b.pi && a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot && a.agentDir === b.agentDir;
 }
 function safeError(error: unknown): ExchangeError {
   if (error instanceof ExchangeError) return error;

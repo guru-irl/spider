@@ -37,7 +37,7 @@ function peer(value: unknown): value is Peer {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const p = value as Peer;
   return isMachineId(p.machineId) && typeof p.alias === "string" && !!p.alias && p.alias.trim() === p.alias && p.alias.length <= 255 && !/[\u0000-\u001f\u007f]/.test(p.alias) &&
-    [p.node, p.pi, p.cli, p.core, p.globalRoot].every(path => typeof path === "string" && posix.isAbsolute(path) && posix.normalize(path) === path &&
+    [p.node, p.pi, p.cli, p.core, p.globalRoot, ...(p.agentDir === undefined ? [] : [p.agentDir])].every(path => typeof path === "string" && posix.isAbsolute(path) && posix.normalize(path) === path &&
       path.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(path));
 }
 function plan(value: unknown): value is IntercomEnrollmentPlan {
@@ -54,7 +54,7 @@ function bound(value: IntercomEnrollmentPlan | IntercomEnrollmentPair): value is
 }
 function normalizePlan(value: IntercomEnrollmentPlan): IntercomEnrollmentPlan {
   if (!plan(value)) throw new Error("invalid-intercom-pair");
-  const copy = (p: Peer): Peer => ({ machineId: p.machineId, alias: p.alias, node: p.node, pi: p.pi, cli: p.cli, core: p.core, globalRoot: p.globalRoot });
+  const copy = (p: Peer): Peer => ({ machineId: p.machineId, alias: p.alias, node: p.node, pi: p.pi, cli: p.cli, core: p.core, globalRoot: p.globalRoot, ...(p.agentDir === undefined ? {} : { agentDir: p.agentDir }) });
   return { pairId: value.pairId, source: copy(value.source), target: copy(value.target), edgeEpoch: value.edgeEpoch,
     connector: { tunnelId: value.connector.tunnelId, remotePort: value.connector.remotePort, session: value.connector.session } };
 }

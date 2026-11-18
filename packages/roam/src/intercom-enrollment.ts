@@ -44,7 +44,7 @@ function identifier(value: unknown): value is string {
 function peerValid(peer: Peer): boolean {
   return !!peer && isMachineId(peer.machineId) && typeof peer.alias === "string" && peer.alias.length > 0 &&
     peer.alias.length <= 255 && peer.alias.trim() === peer.alias && !/[\u0000-\u001f\u007f]/.test(peer.alias) &&
-    [peer.node, peer.pi, peer.cli, peer.core, peer.globalRoot].every(path => typeof path === "string" && path.length <= 4096 &&
+    [peer.node, peer.pi, peer.cli, peer.core, peer.globalRoot, ...(peer.agentDir === undefined ? [] : [peer.agentDir])].every(path => typeof path === "string" && path.length <= 4096 &&
       posix.isAbsolute(path) && posix.normalize(path) === path && !/[\u0000-\u001f\u007f]/.test(path));
 }
 function valid(request: IntercomEnrollmentRequest): boolean {

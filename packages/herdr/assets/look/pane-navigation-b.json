@@ -1,0 +1,8 @@
+[
+  {
+    "id": "pane-b-remote-focus",
+    "file": "navigation.js",
+    "anchor": "      if (paneId && !paneId.includes('/')) action = { kind: 'focus', pane: paneId };",
+    "replacement": "      if (paneId && !paneId.includes('/') && !(snapshot.paneServiceConfigured && row.machineLabel !== 'This computer')) action = { kind: 'focus', pane: paneId };"
+  }
+]

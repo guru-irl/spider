@@ -4,23 +4,5 @@
     "file": "main.js",
     "anchor": "import { projectNavigation } from './shared/navigation.js';",
     "replacement": "import { projectNavigation, indexPaneNavigation } from './shared/navigation.js';"
-  },
-  {
-    "id": "panel-reload-coalesce",
-    "file": "main.js",
-    "anchor": "  async reload(cx) {\n    if (this.closed || !this.reader) return false;",
-    "replacement": "  reload(cx) {\n    if (this.reloadPromise) { this.pendingReload = true; return this.reloadPromise; }\n    this.reloadPromise = this.reloadFeeds(cx).finally(() => { this.reloadPromise = null; });\n    return this.reloadPromise;\n  }\n  async reloadFeeds(cx) {\n    if (this.closed || !this.reader) return false;"
-  },
-  {
-    "id": "panel-snapshot-refresh",
-    "file": "main.js",
-    "anchor": "      const snapshot = await this.reader.read();\n      if (this.closed) return false;",
-    "replacement": "      const [snapshot, paneSnapshot] = await Promise.all([this.reader.read(), requestPaneService(this.config, exec, { op: 'snapshot' }).catch(() => null)]);\n      if (this.closed) return false;\n      let paneIndex = null;\n      try { paneIndex = paneSnapshot ? indexPaneNavigation(paneSnapshot) : null; } catch { /* Treat an invalid snapshot like an unavailable service. */ }\n      this.paneSnapshot = paneIndex ? paneSnapshot : null;"
-  },
-  {
-    "id": "panel-snapshot-projection",
-    "file": "main.js",
-    "anchor": "        coreId: this.coreId, destination, machines, contract: this.config.labelContract, now: Date.now(),",
-    "replacement": "        coreId: this.coreId, destination, paneSnapshot: this.paneSnapshot, machines, contract: this.config.labelContract, now: Date.now(),"
   }
 ]

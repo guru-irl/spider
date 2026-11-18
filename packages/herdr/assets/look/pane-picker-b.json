@@ -1,0 +1,50 @@
+[
+  {
+    "id": "picker-b-imports",
+    "file": "main.js",
+    "anchor": "import { describeOpenFailure } from './shared/open-failure.js';",
+    "replacement": "import { describeOpenFailure } from './shared/open-failure.js';\nimport { FEED_DISCONNECT_MS } from './shared/feed.js';\nimport { indexPaneNavigation as validatePaneSnapshot } from './shared/navigation.js';\nimport { createPaneServiceState, disableUnavailableRemoteActions } from './shared/pane-service-state.js';"
+  },
+  {
+    "id": "picker-b-start-snapshot",
+    "file": "main.js",
+    "anchor": "            this.reader = createFeedReader(this.config, { exec: herdr.exec, fetch: (url, options) => fetch(url, options), timer: current.timer });",
+    "replacement": "            this.reader = createFeedReader(this.config, { exec: herdr.exec, fetch: (url, options) => fetch(url, options), timer: current.timer });\n            this.paneService = createPaneServiceState(this.config, { exec: herdr.exec, timer: current.timer, request: requestPaneService, index: validatePaneSnapshot,\n              refreshMs: FEED_REFRESH_MS, staleMs: FEED_DISCONNECT_MS, changed: () => {\n                if (this.closed) return;\n                if (this.paneService.state().unavailable) this.problem = 'Pane service unavailable; run doctor';\n                else if (this.problem === 'Pane service unavailable; run doctor') this.problem = null;\n                this.cx.notify();\n              } });\n            void this.paneService.refresh();"
+  },
+  {
+    "id": "picker-b-tick-snapshot",
+    "file": "main.js",
+    "anchor": "            this.timer = current.timer.every(FEED_REFRESH_MS, next => { if (!this.closed) next.spawn(async () => this.refresh()); });",
+    "replacement": "            this.timer = current.timer.every(FEED_REFRESH_MS, next => { if (!this.closed) { void this.paneService.refresh(); next.spawn(async () => this.refresh()); } });"
+  },
+  {
+    "id": "picker-b-feed-refresh",
+    "file": "main.js",
+    "anchor": "      const [snapshot, paneSnapshot] = await Promise.all([this.reader.read(), requestPaneService(this.config, herdr.exec, { op: 'snapshot' }).catch(() => null), this.refreshIdentity()]);\n      this.paneSnapshot = paneSnapshot;\n      if (this.closed) return false;\n      this.feeds = snapshot.feeds; this.targetSource = 'feed'; this.problem = null; success = true;",
+    "replacement": "      const [snapshot] = await Promise.all([this.reader.read(), this.refreshIdentity()]);\n      if (this.closed) return false;\n      this.feeds = snapshot.feeds; this.targetSource = 'feed'; this.problem = this.paneService?.state().unavailable ? 'Pane service unavailable; run doctor' : null; success = true;"
+  },
+  {
+    "id": "picker-b-snapshot-projection",
+    "file": "main.js",
+    "anchor": "      destination, paneSnapshot: this.paneSnapshot, machines, contract: this.config.labelContract, now: Date.now(), completedHours: this.config.retention?.completedHours ?? 24,",
+    "replacement": "      destination, paneSnapshot: this.paneService?.state().snapshot, paneServiceConfigured: this.paneService?.state().configured, machines, contract: this.config.labelContract, now: Date.now(), completedHours: this.config.retention?.completedHours ?? 24,"
+  },
+  {
+    "id": "picker-b-source-names",
+    "file": "main.js",
+    "anchor": "const sourceName = this.paneSnapshot?.rows.some(",
+    "replacement": "const sourceName = this.paneService?.state().snapshot?.rows.some("
+  },
+  {
+    "id": "picker-b-unavailable-targets",
+    "file": "main.js",
+    "anchor": "    const rows = pickerRows(spaces, targets, this.filter);",
+    "replacement": "    targets = disableUnavailableRemoteActions(targets, this.paneService?.state().unavailable, this.coreId);\n    const rows = pickerRows(spaces, targets, this.filter);"
+  },
+  {
+    "id": "picker-b-close-snapshot",
+    "file": "main.js",
+    "anchor": "    this.closed = true; this.watch?.cancel?.();",
+    "replacement": "    this.closed = true; this.paneService?.close(); this.watch?.cancel?.();"
+  }
+]

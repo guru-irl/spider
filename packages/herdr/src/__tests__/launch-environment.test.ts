@@ -117,10 +117,21 @@ it('refuses a changed API-key provider with an exact manual command and no crede
     expect(notice.includes(credential())).toBe(false);
     expect(notice).toContain('provider');
     expect(notice).toContain('other');
-    expect(notice).toContain(`'--api-key' '<API_KEY>' '--tools' 'read' '--model' 'other/current' '--session' '${file}'`);
+    expect(notice).toContain(`cd -- '${root}' && '${process.execPath}' '--session' '${file}' '--model' 'other/current' '--api-key' '<API_KEY>'`);
   }
   expect(launches).toHaveLength(0);
   expect(await inventory.leases.get(file)).toBeNull();
+});
+
+it('does not echo unrelated private launch flags in an API-key provider refusal', async () => {
+  const privateValue = 'synthetic-private-option';
+  await record({ ...launch(['--model', 'provider/old', '--api-key', credential(), '--service-token', privateValue]), variables: { SERVICE_TOKEN: privateValue } });
+  await writeFile(file, (await readFile(file, 'utf8')).replace('"provider":"provider"', '"provider":"other"'));
+  let notice = '';
+  try { await launchSession(request(), resumePorts()); } catch (error) { notice = String(error); }
+  expect(launches).toHaveLength(0);
+  expect(notice.includes('API_KEY')).toBe(true);
+  expect(notice.includes(privateValue)).toBe(false);
 });
 
 it('uses the original launch model with an API key when the session has no model', async () => {

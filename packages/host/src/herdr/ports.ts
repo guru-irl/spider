@@ -1198,7 +1198,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           const assets = join(packageRoot, 'packages/herdr/assets'), files: { path: string; bytes: Buffer; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[] = [];
           const stagedVersion = stagedVersions.get(context);
           const selected = request.nativeKeys === 'accept' && !stagedVersion ? await releaseLook(request) : await optionalPickerLook(request, stagedVersion?.upstreamVersion);
-          for (const file of await panelFiles(selected?.upstreamVersion)) files.push({ path: join(request.config.app.home, 'mods/spider-panel', file.relative), bytes: file.bytes });
+          for (const file of await panelFiles(stagedVersion?.upstreamVersion ?? selected?.upstreamVersion)) files.push({ path: join(request.config.app.home, 'mods/spider-panel', file.relative), bytes: file.bytes });
           files.push({ path: join(request.config.agentDirectory, 'themes/dracula-plus-glass.json'), bytes: await readFile(join(assets, 'themes/dracula-plus-glass.json')) }, { path: join(request.config.app.home, 'themes/spider-glass.json'), bytes: await readFile(join(assets, 'themes/spider-glass.json')) });
           if (!selected) { if (stagedVersion) fallbackContext = context; process.stderr.write(pickerVersionMessage + '\n'); }
           const keys = await desiredKeys(selected);

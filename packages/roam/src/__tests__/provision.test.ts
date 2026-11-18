@@ -576,10 +576,20 @@ it("reprovision backs up once and creates one unit", async () => {
   expect(JSON.parse(readFileSync(join(f.destination, "settings.json"), "utf8"))).toEqual({ theme: "second" });
   expect(readdirSync(f.units).filter(name => name === "spider-roam-supervisor.service")).toHaveLength(1);
   const unit = readFileSync(join(f.units, "spider-roam-supervisor.service"), "utf8");
-  expect(unit).toContain("PartOf=herdr-core.service");
+  expect(unit).not.toMatch(/^(After|Requires|PartOf)=/m);
   expect(unit).toContain('Environment="PI_CODING_AGENT_DIR=/home/fixture/.pi/agent"');
   expect(unit).toContain("WantedBy=default.target");
 }, 5000);
+
+it("provisions when a recorded diagnostic core unit has vanished", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.value.core = { unit: null, unitExists: false, unitOwned: false, transient: null, socketExists: true, socketOwned: true };
+  const before = readFileSync(f.coreFile), terminals = readFileSync(f.terminals);
+  expect(await provision!(f.request("missing-diagnostic-unit"), f.ports)).toMatchObject({ code: 0 });
+  expect(readFileSync(f.coreFile)).toEqual(before);
+  expect(readFileSync(f.terminals)).toEqual(terminals);
+  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"]]);
+});
 
 it("core unit bytes and terminals remain unchanged", async () => {
   expect(provision).toBeTypeOf("function");

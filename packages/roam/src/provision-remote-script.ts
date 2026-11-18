@@ -1,3 +1,5 @@
+import { stripTypeScriptTypes } from "node:module";
+import { gzipSync } from "node:zlib";
 import { selectedRemoteSource } from "./selected-remote-source";
 import authSource from "./auth.ts?raw";
 import receiptSource from "./release-receipt.ts?raw";
@@ -47,7 +49,7 @@ if (authForRemote === authSource || authForRemote.includes('from "./') || config
     enrollmentForRemote === enrollmentSource || enrollmentForRemote.includes('from "./')) throw new Error("Cannot assemble provisioning program");
 const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAULT_LIMITS = ${JSON.stringify(DEFAULT_LIMITS)};\nconst DEFAULT_INTERCOM_LIMITS = ${JSON.stringify(DEFAULT_INTERCOM_LIMITS)};\n${machineIdForRemote}\n${configForRemote}\nreturn parseConfig;\n})();\n`;
 
-export const PROVISION_REMOTE_SCRIPT: string = selectedRemoteSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + "\n" + enrollmentSocketForRemote + intercomForRemote + String.raw`
+const provisionSource: string = selectedRemoteSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + "\n" + enrollmentSocketForRemote + intercomForRemote + String.raw`
 import { readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -643,3 +645,10 @@ catch (error) {
   process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code, ...(operationId ? { operationId } : {}) }));
 }
 `;
+
+// Linux limits each exec argument to 128 KiB, even when ARG_MAX is larger.
+// Keep stdin available for the request and argv[1] for release request files.
+const provisionPayload = gzipSync(stripTypeScriptTypes(provisionSource)).toString("base64");
+export const PROVISION_REMOTE_SCRIPT: string = `import { gunzipSync } from "node:zlib";
+await import("data:text/javascript;base64," + gunzipSync(Buffer.from(${JSON.stringify(provisionPayload)}, "base64")).toString("base64"));`;
+

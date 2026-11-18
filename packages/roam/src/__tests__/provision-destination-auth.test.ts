@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
@@ -13,7 +14,7 @@ import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
 
 const originalRead = selectedModule.readPrivateBytes;
 const fixtures: ReturnType<typeof createReplica>[] = [];
-afterEach(() => { for (const f of fixtures.splice(0)) f.close(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
+afterEach(() => { vi.restoreAllMocks(); syncBuiltinESMExports(); for (const f of fixtures.splice(0)) f.close(); vi.unstubAllEnvs(); });
 function fixture(explicit = true) {
   const hub = "00000000-0000-4000-8000-000000000001", f = createReplica("global", hub); fixtures.push(f);
   const agent = join(f.root, "source"), release = join(f.root, "release.tgz"); mkdirSync(agent, { mode: 0o700 });
@@ -97,6 +98,15 @@ it("leaves every hub credential-bearing selection to the destination without rea
   }
   mkdirSync(join(f.agent, "skills", "fixture"), { recursive: true, mode: 0o700 });
   writeFileSync(join(f.agent, "skills", "fixture", "SKILL.md"), "destination manages this", { mode: 0o600 });
+  const accesses: string[] = [];
+  for (const key of ["lstatSync", "openSync", "readFileSync", "readdirSync"] as const) {
+    const original = fs[key];
+    vi.spyOn(fs, key).mockImplementation(((file: unknown, ...args: unknown[]) => {
+      if (typeof file === "string" && file.startsWith(`${f.agent}/`)) { accesses.push(file.slice(f.agent.length + 1)); throw new Error("hub-inspection-forbidden"); }
+      return Reflect.apply(original, fs, [file, ...args]);
+    }) as never);
+  }
+  syncBuiltinESMExports();
   f.reads.mockImplementation((root, name, maximum) => {
     if (root === f.agent) throw new Error(`hub-read-forbidden:${name}`);
     return originalRead(root, name, maximum);
@@ -106,7 +116,9 @@ it("leaves every hub credential-bearing selection to the destination without rea
     expect(request.expectedFiles).toEqual([]);
     return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
   });
-  expect(await main(["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--skill", "fixture", "--release", f.release], f.io), f.errors()).toBe(0);
+  const code = await main(["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--skill", "fixture", "--release", f.release], f.io);
+  expect(accesses).toEqual([]);
+  expect(code, f.errors()).toBe(0);
   expect(install).toHaveBeenCalledOnce();
   expect(f.reads.mock.calls.filter(([root]) => root === f.agent)).toEqual([]);
   expect(f.output()).not.toContain("Selected ");

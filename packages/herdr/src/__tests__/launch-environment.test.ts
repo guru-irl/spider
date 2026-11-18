@@ -439,7 +439,7 @@ it.each(['tui', 'rpc', 'print', 'json', 'child', 'no-session'] as const)('only i
 it.each(['missing mapping', 'different session', 'different file'])('refuses a stale resume offer: %s', async cause => {
   const registry = createTerminalRegistry(root);
   if (cause !== 'missing mapping') await registry.record({ ...mapping(), owner: { ...owner, ...(cause === 'different session' ? { sessionId: 'newer' as SessionId } : { sessionFile: join(root, 'newer.jsonl') }) }, launch: launch() });
-  await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'resume-offer-stale', message: expect.stringContaining('saved') });
+  await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'resume-offer-stale', message: expect.stringContaining(`cd -- '${root}' && 'pi' '--session' '${file}'`) });
   expect(launches).toHaveLength(0);
 });
 
@@ -582,4 +582,30 @@ it('replays the Node executable and execArgv before a readable script', async ()
   await record({ ...launch(['--tools', 'read']), program: script, node: { execPath: process.execPath, execArgv: ['--max-old-space-size=8192'] } } as RecordedLaunch);
   await launchSession(request(), resumePorts());
   expect(launches[0].argv).toEqual([process.execPath, '--max-old-space-size=8192', script, '--tools', 'read', '--session', file]);
+});
+
+it('replays a private URL verbatim without echoing it in shell code or other extension refusals', async () => {
+  const source = 'https://user:' + credential() + '@example.invalid/tools?key=' + credential();
+  await record(launch(['-e', source]));
+  const offer = await offerResume(terminal, offerPorts(false));
+  expect(offer?.argv.includes(source)).toBe(true);
+  expect(resumeOfferShell(offer!, { nodePath: process.execPath, cliPath: join(root, 'cli.mjs'), configPath: join(root, 'config.json'), hookPath: join(root, 'hook.sh') }).includes(credential())).toBe(false);
+  await launchSession(request(), resumePorts());
+  expect(launches[0].argv.includes(source)).toBe(true);
+  await record(launch(['-e', source, '--extension', './missing.ts']));
+  let notice = '';
+  try { await offerResume(terminal, offerPorts(false)); } catch (e) { notice = String(e); }
+  expect(notice.includes(credential())).toBe(false);
+  expect(notice).toContain('--extension at argument 3');
+});
+
+it('reads the original terminal-keyed private record format', async () => {
+  await record(); const currentPath = secretPath();
+  const originalPath = join(secretDirectory(), terminalIdentityKey(terminal) + '.json');
+  const bytes = await readFile(currentPath); await rm(currentPath); await writeFile(originalPath, bytes, { mode: 0o600 });
+  const mapPath = join(root, 'terminals', terminalIdentityKey(terminal) + '.json');
+  const mapping = JSON.parse(await readFile(mapPath, 'utf8')); delete mapping.launchRecordId;
+  await writeFile(mapPath, JSON.stringify(mapping));
+  await launchSession(request(), resumePorts());
+  expect(launches[0].env.API_TOKEN === credential()).toBe(true);
 });

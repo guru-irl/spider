@@ -16,13 +16,13 @@ import * as children from '../../../herdr/assets/agents/children.js';
 import { FEED_DISCONNECT_MS } from '../../../herdr/assets/shared/feed.js';
 import { projectPanePresentations } from '../../../herdr/assets/shared/presentations.js';
 
-const probe = vi.hoisted(() => ({ fail: false }));
+const probe = vi.hoisted(() => ({ fail: false, version: '0.1.16' }));
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => {
     if (args[0] === '/fixture/version') {
       if (probe.fail) throw new Error('version probe failed');
-      return 'herdr-app 0.1.16\n';
+      return `herdr-app ${probe.version}\n`;
     }
     return actual.execFileSync(...args);
   } };
@@ -30,7 +30,7 @@ vi.mock('node:child_process', async importOriginal => {
 const roots: string[] = [];
 const disposals: (() => Promise<void>)[] = [];
 afterEach(async () => {
-  probe.fail = false;
+  probe.fail = false; probe.version = '0.1.16';
   for (const dispose of disposals.splice(0)) await dispose();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
@@ -119,6 +119,29 @@ test('0.1.16 generated navigation keeps native remote actions until a snapshot i
   const service = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: id, generation, owner: { terminal: { address } }, target, name: 'Parked', status: 'idle', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] };
   const projected = project({ ...snapshot, paneSnapshot: service }).find((row: any) => row.sessionId === id);
   expect(projected.action).toMatchObject({ kind: 'pane', request: { op: 'open-existing', sessionId: id, generation } });
+});
+
+test.each(['0.1.13', '0.1.16'])('%s B staging configures the pane service for all navigation views', async version => {
+  probe.version = version;
+  const f = await fixture();
+  const stock = join(f.packageRoot, `packages/herdr/src/__tests__/fixtures/herdr-${version}`);
+  await cp(join(stock, 'mods'), join(f.appHome, 'mods'), { recursive: true });
+  await mkdir(join(f.appHome, 'layouts')); await cp(join(stock, 'layouts/main.json'), join(f.appHome, 'layouts/main.json'));
+  const names = ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'picker', ...PANE_ENTRY_MODS.map(name => name.slice('spider-'.length)), 'menu', 'new-menu', 'toast'];
+  const modProps = [...new Set(names)].map(name => ({ directory: join(f.appHome, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(f.globalRoot, 'herdr'), cliPath: join(f.root, 'cli'), nodePath: process.execPath, appBinary: '/fixture/version', configPath: f.request.configPath, labelContract: HerdrLabelContract } }));
+  const setup = await f.ports.setupParts(f.request);
+  const context = { labelContract: HerdrLabelContract, installed: {}, retiredTerminals: [], priorCutover: null, recordCutover: async () => {}, modProps };
+  const files = await setup.stageLook(f.request, context, 'export');
+  const picker = JSON.parse(files.find(file => file.path === join(f.appHome, 'mods/spider-picker/config.json'))!.bytes.toString());
+  expect.soft(picker.paneServiceConfigured).toBe(true);
+  for (const name of ['agents', 'panel', 'picker']) {
+    expect.soft(files.some(file => file.path === join(f.appHome, `mods/spider-${name}/shared/pane-service-state.js`))).toBe(true);
+  }
+  const layout = JSON.parse(files.find(file => file.path === join(f.appHome, 'layouts/spider-glass.json'))!.bytes.toString());
+  const nodes: any[] = [];
+  const visit = (value: any) => { if (!value || typeof value !== 'object') return; if (value.mod) nodes.push(value); for (const child of Object.values(value)) visit(child); };
+  visit(layout);
+  for (const name of ['agents', 'panel']) expect.soft(nodes.find(node => node.mod === `spider-${name}`)?.props?.paneServiceConfigured).toBe(true);
 });
 
 test('a failed second version probe installs the staged panel expected by doctor', async () => {

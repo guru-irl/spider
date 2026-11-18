@@ -16,7 +16,7 @@ export function healthyInventory(): Inventory {
     platform: "linux", kernel: "6.8.0", nodeVersion: "26.4.0", nodeAbi: "144", gitVersion: "2.45.0",
     roaming: { rootExists: false, rootSafe: true, identityExists: false, machineId: null },
     systemdUser: true, linger: true,
-    core: { unit: "herdr-core.service", unitExists: true, unitOwned: true, socketExists: true, socketOwned: true },
+    core: { unit: "herdr-core.service", unitExists: true, unitOwned: true, transient: false, socketExists: true, socketOwned: true },
     pi: bootstrapPeer.pi, piVersion: "1.2.0",
     softNofile: 65_536, hardNofile: 65_536, inotifyInstances: 1024, inotifyWatches: 524_288,
     diskFreeBytes: 2_000_000_000,

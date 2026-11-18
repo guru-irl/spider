@@ -42,7 +42,7 @@ it("inventory refuses missing prerequisites without sudo", async () => {
     { ...healthyInventory(), platform: "darwin" },
     { ...healthyInventory(), gitVersion: null },
     { ...healthyInventory(), systemdUser: false },
-    { ...healthyInventory(), core: { unit: null, unitExists: false, unitOwned: false, socketExists: false, socketOwned: false } },
+    { ...healthyInventory(), core: { unit: null, unitExists: false, unitOwned: false, transient: null, socketExists: false, socketOwned: false } },
     { ...healthyInventory(), nodeVersion: "22.18.0" },
     { ...healthyInventory(), nodeVersion: "26.4.1" },
   ];
@@ -196,16 +196,36 @@ it("blocks an unsafe roaming root and an unreadable existing identity", async ()
   expect(second.adminRepairCalls).toEqual([]);
 }, 5000);
 
-it("blocks a missing configured core unit even when another core socket exists", async () => {
+it("warns about a missing diagnostic core unit when the owned core socket exists", async () => {
   const doctor = (doctorModule as { doctorPeer?: DoctorFn }).doctorPeer;
   expect(typeof doctor).toBe("function");
   const value = healthyInventory();
-  value.core = { unit: null, unitExists: false, unitOwned: false, socketExists: true, socketOwned: true };
+  value.core = { unit: null, unitExists: false, unitOwned: false, transient: null, socketExists: true, socketOwned: true };
   const test = fixture(value); test.ports.coreUnit = "session-host.service";
   const report = await doctor!(bootstrapPeer, test.ports);
-  expect(report.some(item => item.severity === "block" && /core unit.*missing/i.test(item.reason))).toBe(true);
+  expect(report.some(item => item.severity === "warning" && /core unit.*missing/i.test(item.reason))).toBe(true);
   expect(test.adminRepairCalls).toEqual([]);
 }, 5000);
+
+it("inventory does not require the recorded diagnostic unit to survive a core restart", async () => {
+  const value = healthyInventory();
+  value.core = { unit: null, unitExists: false, unitOwned: false, transient: null, socketExists: true, socketOwned: true };
+  const test = fixture(value);
+  await expect(inventoryModule.inventory(bootstrapPeer, test.ports.transport, { timeoutMs: 1000, maxBytes: 65536, coreUnit: "stale.service" })).resolves.toEqual(value);
+  expect(test.adminRepairCalls).toEqual([]);
+});
+
+it.each([true, false])("doctor reports the current core unit and transient=%s", async transient => {
+  const value = healthyInventory(); value.core.transient = transient;
+  const report = await doctorModule.doctorPeer(bootstrapPeer, fixture(value).ports);
+  expect(report).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringMatching(transient ? /herdr-core\.service.*transient/ : /herdr-core\.service.*persistent/) })]));
+});
+
+it("does not suggest editing a transient unit to repair startup limits", async () => {
+  const value = healthyInventory(); value.core.transient = true; value.hardNofile = 2048; value.softNofile = 1024;
+  const report = await doctorModule.doctorPeer(bootstrapPeer, fixture(value).ports);
+  expect(report.find(item => /hard.*open.file/i.test(item.reason))?.repairCommand).toBeNull();
+});
 
 it("doctor never installs or logs in and reports named intercom problems", async () => {
   const test = fixture();

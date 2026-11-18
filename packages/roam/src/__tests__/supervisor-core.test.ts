@@ -2,6 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { join } from "node:path";
 import { createClientFixture, type ClientFixture } from "../../../herdr/src/__tests__/testutil";
 import * as supervisor from "../production-supervisor";
+import type { Clock } from "../contracts";
 
 const fixtures: ClientFixture[] = [];
 afterEach(async () => { for (const fixture of fixtures.splice(0)) await fixture.close(); });
@@ -50,6 +51,29 @@ it("detects replacement even when the restarted core retains its identity", asyn
   const core = await supervisor.ensureSupervisorCore(pin, h.localEnv);
   await h.configure({ fixtureCorePid: 5678 });
   await expect(supervisor.assertSupervisorCoreCurrent(core)).rejects.toMatchObject({ code: "core-lost" });
+});
+
+it("stops hosting and reports core loss so the service can restart", async () => {
+  const { h, pin } = await fixture();
+  let tick: (() => void) | undefined, stops = 0;
+  const clock: Clock = { now: () => 0, later(_ms, fn) { tick = fn; return () => { tick = undefined; }; } };
+  const service = await supervisor.startCoreBoundSupervisor(pin, h.localEnv, async () => ({ async stop() { stops++; } }), clock);
+  await h.stopCore();
+  tick!();
+  expect(await service.failed).toBe("core-lost");
+  expect(stops).toBe(1);
+  expect(tick).toBeUndefined();
+  await service.stop();
+  expect(stops).toBe(1);
+});
+
+it("never starts hosting if the core identity does not match enrollment", async () => {
+  const { h, pin } = await fixture();
+  let starts = 0;
+  await expect(supervisor.startCoreBoundSupervisor({ ...pin, coreId: "foreign-core" }, h.localEnv, async () => {
+    starts++; return { async stop() {} };
+  })).rejects.toMatchObject({ code: "core-changed" });
+  expect(starts).toBe(0);
 });
 
 it("detects an identity change while hosting", async () => {

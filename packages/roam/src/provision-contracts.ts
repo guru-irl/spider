@@ -35,6 +35,7 @@ export type ProvisionRequest = {
   expectedAuthBytes?: number; expectedFiles?: readonly SelectedFileMetadata[]; expectedSelectionDigest?: string; replaceCorePin?: boolean;
 };
 export interface ProvisionVerification extends IntercomReadiness {
+  corePin: import("./enrollment").CorePinStatus;
   piSignedIn: boolean; nativeSqlite: boolean; extensionLoaded: boolean; exactSession: boolean; privateModes: boolean;
   bundledIntercom: boolean;
 }

@@ -1,3 +1,5 @@
+import { corePinDiagnostics } from "./core-pin-diagnostics";
+import { inspectSupervisorCorePin } from "./enrollment";
 import { HOSTING_WARNING_CODE } from "./hosting-warning";
 import { peerEnabledDiagnostics } from "./peer-enabled";
 import { readMoveBindingDiagnostics } from "./move-diagnostics";
@@ -529,9 +531,14 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
             } catch { rows = config.peers.map(peer => ({ reason: `peer-enabled-unavailable:${peer.machineId}`, severity: "warning" as const, repairCommand: "spider roam doctor" })); }
           }
           rows.push(...localHostingWarningDiagnostics(root));
-          if (jsonOutput) io.out(`${JSON.stringify({ ...outcome(0, "roaming-disabled"), value: { enabled: false, diagnostics: rows, consumers: [] } })}\n`);
+          if (config?.role === "box") {
+            rows.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));
+            rows.push({ severity: "info", reason: `Recorded core unit ${config.coreUnit ?? "unavailable"} (diagnostic only).`, repairCommand: null });
+          }
+          const code = rows.some(row => row.severity === "block") ? 1 : 0;
+          if (jsonOutput) io.out(`${JSON.stringify({ ...outcome(code, code ? "doctor-blocked" : "roaming-disabled"), value: { enabled: false, diagnostics: rows, consumers: [] } })}\n`);
           else { io.out(`${MOVE_REFUSAL_MESSAGES["roaming-disabled"]}\n`); for (const row of rows) io.out(`${clean(row.reason)}\n`); }
-          return 0;
+          return code;
         }
       }
       let report: Awaited<ReturnType<typeof runLocalDoctor>>;
@@ -544,7 +551,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         const herdr = loadHerdrConfig(root);
         report = await remoteDoctor(createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }), peer, config);
         report = { ...report, consumers: report.enabled ? report.consumers : [], diagnostics: [
-          ...(report.enabled ? report.diagnostics : report.diagnostics.filter(row => row.severity === "warning" && row.code === HOSTING_WARNING_CODE)),
+          ...(report.enabled ? report.diagnostics : report.diagnostics.filter(row => row.reason.startsWith("core-pin-") || row.severity === "info" || row.severity === "warning" && row.code === HOSTING_WARNING_CODE)),
           ...(report.enabled !== config.enabled ? [{ reason: `peer-enabled-mismatch:${peer.machineId}`, severity: "warning" as const,
             repairCommand: config.enabled ? "spider roam enable" : "spider roam disable" }] : []),
         ] };

@@ -1,3 +1,5 @@
+import { corePinDiagnostics } from "./core-pin-diagnostics";
+import { isCorePinStatus } from "./enrollment";
 import type { BootstrapPeer, Diagnostic } from "./contracts";
 import { InventoryError, inventory, prerequisiteDiagnostics } from "./inventory";
 import { normalizeConfiguredClis } from "./bootstrap-reply";
@@ -64,13 +66,18 @@ export async function doctorPeer(peer: BootstrapPeer, ports: DoctorPorts): Promi
   let verified: ProvisionVerification | null = null;
   if (ports.verifyPeer) try {
     const result = await ports.verifyPeer();
-    if (result && typeof result === "object" && Object.keys(result).length === keys.length + 1 &&
+    if (result && typeof result === "object" && Object.keys(result).length === keys.length + 2 && isCorePinStatus(result.corePin) &&
         keys.every(key => typeof result[key] === "boolean") && validIntercomReadiness(result)) verified = result;
   } catch { /* An unavailable verification is not readiness. */ }
 
-  if (value.core.unit) warning(`Herdr core unit ${value.core.unit} (${value.core.transient ? "transient" : "persistent"}; diagnostic only).`);
-  if (ports.coreUnit && (value.core.unit !== ports.coreUnit || !value.core.unitOwned)) warning(`Recorded core unit ${ports.coreUnit} is missing or not owned; startup uses the enrolled core pin.`);
-  else if (!value.core.unit) warning("The core unit is unavailable (diagnostic only).");
+  const target = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,255}$/.test(peer.alias) ? peer.alias : "<machine>";
+  diagnostics.push(...corePinDiagnostics(verified?.corePin ?? "core-pin-invalid", target));
+  const info = (reason: string) => diagnostics.push({ reason, severity: "info", repairCommand: null });
+  if (value.core.unit) info(`Herdr core unit ${value.core.unit} (${value.core.transient ? "transient" : "persistent"}; diagnostic only).`);
+  else info("The core unit is unavailable (diagnostic only).");
+  if (ports.coreUnit && !/^hc-serve-[a-fA-F0-9]+\.service$/.test(ports.coreUnit) && (value.core.unit !== ports.coreUnit || !value.core.unitOwned)) {
+    info(`Recorded core unit ${ports.coreUnit} is missing or not owned; startup uses the enrolled core pin.`);
+  }
   if (value.linger === false) warning("User lingering is disabled and may require administrative permission.", "loginctl enable-linger");
   if (value.linger === null) warning("User lingering could not be verified.");
   if (value.softNofile === null) warning("The soft open-file limit is unknown.");

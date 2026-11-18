@@ -138,7 +138,7 @@ export interface IntercomLifecycle {
   diagnostics(): readonly IntercomDiagnostic[];
   readiness?(): { state: "disabled" | "pending" | "ready"; reason: string | null };
 }
-export interface Diagnostic { code?: import("./hosting-warning").HostingWarning["code"]; reason: string; severity: "warning" | "block"; repairCommand: string | null; writerEpoch?: number }
+export interface Diagnostic { code?: import("./hosting-warning").HostingWarning["code"]; reason: string; severity: "info" | "warning" | "block"; repairCommand: string | null; writerEpoch?: number }
 export type NativeHostingOutcome = "live" | "killed" | "core-loss" | "unexpected-exit" | "unknown";
 export interface HostIntent {
   sessionId: string; epoch: number; desired: "running" | "stopped"; suspended: string | null;

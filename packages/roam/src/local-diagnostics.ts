@@ -1,3 +1,5 @@
+import { corePinDiagnostics } from "./core-pin-diagnostics";
+import { inspectSupervisorCorePin } from "./enrollment";
 import { hostingWarningReason, readHostingWarnings } from "./hosting-warning";
 import { execFile, execFileSync } from "node:child_process";
 import { accessSync, closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync } from "node:fs";
@@ -325,6 +327,8 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   const required = localCaptureRequired(config), severity = required ? "block" : "warning";
   const inventory: Diagnostic[] = [], storeDiagnostics: Diagnostic[] = [], peerFailures: Diagnostic[] = [], consumers: LoadedConsumer[] = [];
   if (config.role === "box") {
+    inventory.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));
+    inventory.push({ severity: "info", reason: `Recorded core unit ${config.coreUnit ?? "unavailable"} (diagnostic only).`, repairCommand: null });
     try {
       const source = openOwned(join(root, "spider.db"));
       if (!source) throw new Error("Participant authority unavailable");

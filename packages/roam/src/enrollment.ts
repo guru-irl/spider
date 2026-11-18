@@ -1,5 +1,6 @@
 import * as enrollFs from "node:fs";
 import * as enrollPath from "node:path";
+import { spawnSync as pinSpawn } from "node:child_process";
 import { createHash as enrollmentHash, randomUUID as enrollmentUuid } from "node:crypto";
 import { beginShortWrite, endShortWrite, type ReleaseOwner } from "./release-receipt";
 import { parseConfig as parseRoamConfig } from "./config";
@@ -160,6 +161,25 @@ export function installSupervisorCorePin(root: string, value: SupervisorCorePin)
     if (prior.coreId !== pin.coreId) return supervisorPinError("core-pin-changed");
     if (JSON.stringify(prior) !== JSON.stringify(pin)) return supervisorPinError("core-pin-conflict");
   });
+}
+export const CORE_PIN_STATUSES = ["ready", "core-pin-required", "core-pin-invalid", "core-pin-changed", "core-pin-unreachable"] as const;
+export type CorePinStatus = typeof CORE_PIN_STATUSES[number];
+export function isCorePinStatus(value: unknown): value is CorePinStatus {
+  return typeof value === "string" && (CORE_PIN_STATUSES as readonly string[]).includes(value);
+}
+/** Doctor must observe the pin without starting or enrolling any core. */
+export function inspectSupervisorCorePin(root: string, base: Readonly<NodeJS.ProcessEnv>): CorePinStatus {
+  let pin: SupervisorCorePin;
+  try { pin = readSupervisorCorePin(root); }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "core-pin-required" ? "core-pin-required" : "core-pin-invalid"; }
+  const status = pinSpawn(pin.binary, ["server", "status", "--json"], { env: supervisorCoreEnvironment(pin, base),
+    encoding: "utf8", timeout: 5000, maxBuffer: 16_384, stdio: ["ignore", "pipe", "ignore"] });
+  if (status.status !== 0) return "core-pin-unreachable";
+  try {
+    const reply = JSON.parse(status.stdout);
+    if (typeof reply?.core?.id !== "string" || !reply.core.id || !Number.isSafeInteger(reply.pid) || reply.pid <= 0) return "core-pin-invalid";
+    return reply.core.id === pin.coreId ? "ready" : "core-pin-changed";
+  } catch { return "core-pin-invalid"; }
 }
 export interface CorePinReplacement { oldCoreId: string; newCoreId: string; oldPinSha256: string; newPinSha256: string }
 /** Explicit recovery journals both identities before atomically replacing the pin. */

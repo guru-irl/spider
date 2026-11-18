@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
-import { chmod, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseHerdrConfig } from '../../../herdr/src/config.js';
 import { doctorHerdr, type DoctorItem, type DoctorParts } from '../../../herdr/src/setup/doctor.js';
 import type { SetupRequest } from '../../../herdr/src/setup/installer.js';
 import { HerdrLabelContract, type Owner } from '../../../herdr/src/contracts.js';
+import { applyModPatches } from '../../../herdr/src/look/patches.js';
 import { createTerminalRegistry } from '../../../herdr/src/sessions/registry.js';
 import { createProductionHerdrCliPorts } from '../herdr/ports.js';
 import { PANE_ENTRY_MODS } from '../../../herdr/src/setup/pane-assets.js';
@@ -77,7 +78,14 @@ test('0.1.16 generated navigation keeps native remote actions until a snapshot i
   const names = ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'picker', ...PANE_ENTRY_MODS.map(name => name.slice('spider-'.length)), 'menu', 'new-menu', 'toast'];
   const modProps = [...new Set(names)].map(name => ({ directory: join(f.appHome, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(f.globalRoot, 'herdr'), cliPath: join(f.root, 'cli'), nodePath: process.execPath, appBinary: '/fixture/version', configPath: f.request.configPath, labelContract: HerdrLabelContract } }));
   const setup = await f.ports.setupParts(f.request);
-  const files = await setup.stageLook(f.request, { labelContract: HerdrLabelContract, installed: {}, retiredTerminals: [], priorCutover: null, recordCutover: async () => {}, modProps }, 'export');
+  const context = { labelContract: HerdrLabelContract, installed: {}, retiredTerminals: [], priorCutover: null, recordCutover: async () => {}, modProps };
+  const files = await setup.stageLook(f.request, context, 'export');
+  const installed = await setup.installFiles(f.request, context);
+  const panelBytes = installed.find(file => file.path === join(f.appHome, 'mods/spider-panel/main.js'))!.bytes;
+  const panelSource = await readFile(join(f.packageRoot, 'packages/herdr/assets/mods/spider/main.js'), 'utf8');
+  const patchPath = join(f.packageRoot, 'packages/herdr/assets/look/native-panel-0.1.16.json');
+  const panelPatches = await readFile(patchPath, 'utf8').then(JSON.parse).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; });
+  expect(panelBytes.toString('utf8')).toBe(applyModPatches({ 'main.js': panelSource }, panelPatches, 'panel')['main.js']);
   const navigationBytes = files.find(file => file.path === join(f.appHome, 'mods/spider-agents/shared/navigation.js'))!.bytes;
   for (const name of ['panel', 'picker']) expect(files.find(file => file.path === join(f.appHome, `mods/spider-${name}/shared/navigation.js`))!.bytes).toEqual(navigationBytes);
   const source = navigationBytes.toString('utf8').replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replaceAll('export function ', 'function ');

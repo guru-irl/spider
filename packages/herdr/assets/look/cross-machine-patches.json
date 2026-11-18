@@ -712,6 +712,12 @@
           "file": "main.js",
           "anchor": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) void this.peek(a.address); }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))",
           "replacement": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) { if (a.navigation) void this.peek(a.address); else run(\"pane.focus\", { pane: a.pane }); } }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
+        },
+        {
+          "id": "b-native-viewer-peek",
+          "file": "main.js",
+          "anchor": "if (this.spiderModel?.snapshot?.paneNavigation || addr.includes(\"/\")) return;",
+          "replacement": "if (this.spiderModel?.snapshot?.paneNavigation) return;"
         }
       ]
     }
@@ -769,7 +775,7 @@
       }
     },
     "0.1.16": {
-      "recordsHash": "bd051c1f2473a7077c77da9f3d21dd1ce4e0bd98802748bd4fe8a8a04b932790",
+      "recordsHash": "83edbada1981d56725898888e568cc795cc0abf949cc177c3ef5c85049aebc9a",
       "inputHashes": {
         "agents/main.js": "d6409a8ba9ac857e82267a70c1886631f7003e7416a3e28b8257feb36fa4c46d",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
@@ -792,7 +798,7 @@
         "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
       },
       "outputHashes": {
-        "agents/main.js": "f13d6acfa51f7569d945eda24bf0786a7d652b98e9fed794c6872aa683a75886",
+        "agents/main.js": "920f91d6e3921b9cf9d2db47941f5310784d563e85d9f27a160f37dc1cc2b519",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "06bc53750bb00caf29578d72a134229171d3fd167bdae3c89fe38bc8137929dd",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",

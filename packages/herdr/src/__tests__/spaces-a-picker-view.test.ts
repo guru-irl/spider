@@ -160,6 +160,22 @@ it.each(['0.1.13', '0.1.16'])('%s picker retains service routing and disables st
   } finally { staleClock.mockRestore(); await stale.view.close(); }
 });
 
+it.each(['0.1.13', '0.1.16'])('%s picker never focuses a remote native pane when its feed reader fails', async version => {
+  const h = host({ configured: true, pickerSource: patchedPickerSource(version) });
+  const address = 'box-1.invalid/t2';
+  h.state.agents.push({ ...agent(address, 'remote-pane', 'Remote'), space: remoteSpace.id, tab: remoteSpace.tabs[0].id });
+  h.state.terms.push({ ...terminal(address), labels: { 'spider.display-name': 'Remote' } });
+  h.state.panes.push({ pane: 'remote-pane', terminal: address, tab: remoteSpace.tabs[0].id });
+  h.state.paneSnapshot = sourceSnapshot('Source writer'); h.state.failSnapshot = true;
+  try {
+    await h.view.ready; for (let i = 0; i < 30; i++) await Promise.resolve();
+    const native = h.view.rows().find((item: any) => item.id === `agent:${address}`);
+    if (native?.enabled) await h.view.activate(native.id);
+    expect.soft(h.calls.filter(call => call[0] === 'run' && call[1] === 'pane.focus' && call[2].pane === 'remote-pane')).toEqual([]);
+    expect.soft(h.view.rows().find((item: any) => item.id === 'session:remote-session')).toBeDefined();
+  } finally { await h.view.close(); }
+});
+
 it('keeps source-owned names and child actions without a local feed or remote app layout', async () => {
   const h = host({ feeds: [] });
   h.state.paneSnapshot = sourceSnapshot('Source writer');

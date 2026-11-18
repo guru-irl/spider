@@ -30,8 +30,11 @@ for (const mode of ['fake', 'hc'] as const) {
       await writeFile(binary, `#!/bin/sh\nif [ "$1 $2" = 'server status' ]; then sleep 2; fi\nexec ${shellQuote(f.h.hcBinary)} "$@"\n`); await chmod(binary, 0o700);
       await writeFile(f.request.configPath, JSON.stringify({ ...f.request.config, core: { ...f.request.config.core, binary } }));
       await writePrivateJson(f.control, { activationDelay: 0 });
-      const command = await f.runInTerminal(['resume', '--config', f.request.configPath, '--file', f.file, '--session-id', 'selected', '--cwd', f.root]);
       const registry = createTerminalRegistry(join(f.request.config.globalRoot, 'herdr'));
+      await registry.record({ owner: { ...f.h.owner!, sessionId: 'selected' as never, generation: 'offered' as never, sessionFile: f.file, cwd: f.root, name: 'Selected' },
+        recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: f.request.config.agentDirectory, extensionArguments: [] } });
+      expect((await registry.get(f.h.owner!.terminal))?.owner.generation).toBe('offered');
+      const command = await f.runInTerminal(['resume', '--config', f.request.configPath, '--file', f.file, '--session-id', 'selected', '--cwd', f.root]);
       let earlyExit: { code: number | null; stderr: string } | undefined;
       void command.result.then(result => { earlyExit = result; });
       await until(async () => {

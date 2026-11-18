@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readFile, rename, link, unlink, chmod, realpath, rmdir } from 'node:fs/promises';
+import { lstat, mkdir, open, readFile, rename, link, unlink, chmod, realpath, rmdir, readdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { HerdrError, object, text } from '../client/parse.js';
 import type { TerminalAddress } from '../contracts.js';
@@ -222,6 +222,7 @@ export interface SetupJournal {
   version: 1;
   entries: BackupEntry[];
   modDirectories?: { path: string; dev: number; ino: number }[];
+  modStages?: { path: string; destination: string; dev: number; ino: number }[];
   fingerprint: string | null;
   probes: NodeObservation[];
   runtimeRootProbes?: RuntimeRootObservation[];
@@ -517,7 +518,17 @@ export async function readJournal(root: string): Promise<SetupJournal> {
       seen.add(path); return { path, dev: directory.dev as number, ino: directory.ino as number };
     });
   })();
-  return { version: 1, entries, probes, cutover, runtimes, ...(modDirectories === undefined ? {} : { modDirectories }), ...(j.runtimeRootProbes === undefined ? {} : { runtimeRootProbes: runtimeRootObservations(j.runtimeRootProbes) }), ...(j.cutoverFingerprint === undefined ? {} : { cutoverFingerprint: text(j.cutoverFingerprint) }), ...(j.launcherNodePath === undefined ? {} : { launcherNodePath: text(j.launcherNodePath) }), fingerprint: j.fingerprint === null ? null : text(j.fingerprint), verified: j.verified, cutoverPending: j.cutoverPending, retiredTerminals: j.retiredTerminals.map(v => text(v) as TerminalAddress) };
+  const modStages = j.modStages === undefined ? undefined : (() => {
+    if (!Array.isArray(j.modStages)) throw new HerdrError('setup-journal-invalid', 'Invalid mod staging directories');
+    const seen = new Set<string>();
+    return j.modStages.map(value => {
+      const stage = object(value), path = text(stage.path), destination = text(stage.destination);
+      if (!isAbsolute(path) || resolve(path) !== path || !/^\.spider-mod-[a-f0-9-]+$/.test(relative(dirname(path), path)) || dirname(destination) !== join(dirname(path), 'mods') || !/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(relative(dirname(destination), destination)) || seen.has(destination) || !Number.isSafeInteger(stage.dev) || !Number.isSafeInteger(stage.ino) || (stage.ino as number) <= 0) throw new HerdrError('setup-journal-invalid', 'Invalid mod staging identity');
+      seen.add(destination);
+      return { path, destination, dev: stage.dev as number, ino: stage.ino as number };
+    });
+  })();
+  return { version: 1, entries, probes, cutover, runtimes, ...(modStages === undefined ? {} : { modStages }), ...(modDirectories === undefined ? {} : { modDirectories }), ...(j.runtimeRootProbes === undefined ? {} : { runtimeRootProbes: runtimeRootObservations(j.runtimeRootProbes) }), ...(j.cutoverFingerprint === undefined ? {} : { cutoverFingerprint: text(j.cutoverFingerprint) }), ...(j.launcherNodePath === undefined ? {} : { launcherNodePath: text(j.launcherNodePath) }), fingerprint: j.fingerprint === null ? null : text(j.fingerprint), verified: j.verified, cutoverPending: j.cutoverPending, retiredTerminals: j.retiredTerminals.map(v => text(v) as TerminalAddress) };
 }
 export async function saveJournal(root: string, journal: SetupJournal): Promise<void> {
   const path = join(root, 'journal.json');
@@ -765,16 +776,68 @@ export async function prepareModDirectories(root: string, appHome: string, files
   if (directories.size) { await rejectSymlinks(mods); await mkdir(mods, { recursive: true, mode: 0o700 }); }
   for (const path of [...directories].sort((a, b) => a.length - b.length)) {
     await rejectSymlinks(path);
+    const top = join(mods, relative(mods, path).split(sep)[0]!);
+    let stage = journal.modStages?.find(entry => entry.destination === top);
+    if (stage) {
+      const staged = await lstat(stage.path).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return null; });
+      const published = await lstat(top).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return null; });
+      if (published) {
+        if (staged || !published.isDirectory() || published.dev !== stage.dev || published.ino !== stage.ino) throw new HerdrError('mod-publication-conflict', 'Published mod directory changed');
+        journal.modStages = journal.modStages!.filter(entry => entry !== stage);
+        stage = undefined;
+        await saveJournal(root, journal);
+      } else if (!staged?.isDirectory() || staged.isSymbolicLink() || staged.dev !== stage.dev || staged.ino !== stage.ino) throw new HerdrError('mod-publication-conflict', 'Mod staging directory changed');
+    }
+    if (path === top && !stage) {
+      try { await lstat(top); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        // Outside the watched mods tree, on the same filesystem for one rename.
+        const temporary = join(resolve(appHome), '.spider-mod-' + randomUUID());
+        await mkdir(temporary, { mode: 0o700 });
+        const info = await lstat(temporary);
+        stage = { path: temporary, destination: top, dev: info.dev, ino: info.ino };
+        journal.modStages = [...journal.modStages ?? [], stage];
+        journal.modDirectories = [...journal.modDirectories ?? [], { path: top, dev: info.dev, ino: info.ino }];
+        await saveJournal(root, journal);
+      }
+    }
+    const physical = stage ? join(stage.path, relative(top, path)) : path;
+    await rejectSymlinks(physical);
     let created = false;
-    try { await mkdir(path, { mode: 0o700 }); created = true; }
+    try { await mkdir(physical, { mode: 0o700 }); created = true; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
-    const actual = await lstat(path);
+    const actual = await lstat(physical);
     if (!actual.isDirectory() || actual.isSymbolicLink()) throw new HerdrError('unsafe-path', `Not a mod directory: ${path}`);
     if (created) {
       journal.modDirectories = [...(journal.modDirectories ?? []).filter(entry => entry.path !== path), { path, dev: actual.dev, ino: actual.ino }];
       await saveJournal(root, journal);
     }
   }
+}
+
+async function discardModStages(journal: SetupJournal): Promise<void> {
+  for (const stage of journal.modStages ?? []) {
+    await rejectSymlinks(stage.path);
+    const info = await lstat(stage.path).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; return null; });
+    if (!info) continue; // Rename completed; normal file rollback owns the published directory.
+    if (!info.isDirectory() || info.dev !== stage.dev || info.ino !== stage.ino) throw new HerdrError('mod-publication-conflict', 'Mod staging directory changed');
+    const remove: string[] = [], directories: string[] = [];
+    const inspect = async (directory: string): Promise<void> => {
+      for (const name of await readdir(directory)) {
+        const path = join(directory, name), stat = await lstat(path);
+        if (stat.isDirectory() && !stat.isSymbolicLink()) { await inspect(path); directories.push(path); continue; }
+        const entry = journal.entries.find(entry => entry.path === join(stage.destination, relative(stage.path, path)));
+        if (!entry || stat.isSymbolicLink() || (await snapshot(path)).hash !== entry.after) throw new HerdrError('mod-publication-conflict', 'Unrecognized file in mod staging directory');
+        remove.push(path);
+      }
+    };
+    await inspect(stage.path);
+    for (const path of remove) await unlink(path);
+    for (const path of directories) await rmdir(path);
+    await rmdir(stage.path);
+  }
+  delete journal.modStages;
 }
 
 export async function rollbackModDirectories(appHome: string, journal: SetupJournal, warn?: (message: string) => void): Promise<void> {
@@ -801,8 +864,12 @@ export async function rollbackModDirectories(appHome: string, journal: SetupJour
 
 export async function applyFiles(files: readonly InstallFile[], journal: SetupJournal): Promise<string[]> {
   const writes: string[] = [];
-  for (const f of files) {
-    const current = await snapshot(f.path);
+  // Placement must be known before any executable change can trigger a reload.
+  const ordered = [...files].sort((a, b) => Number(b.path.endsWith('/mod.json')) - Number(a.path.endsWith('/mod.json')));
+  for (const f of ordered) {
+    const stage = journal.modStages?.find(stage => f.path.startsWith(stage.destination + sep));
+    const target = stage ? join(stage.path, relative(stage.destination, f.path)) : f.path;
+    const current = await snapshot(target);
     if (f.copyFrom) {
       if (current.bytes !== null) continue;
       const source = await snapshot(f.copyFrom);
@@ -820,8 +887,21 @@ export async function applyFiles(files: readonly InstallFile[], journal: SetupJo
     const entry = journal.entries.find(e => e.path === f.path)!;
     if (current.hash !== f.expected && !(entry.after === digest(f.bytes) && current.hash === entry.before))
       throw new HerdrError('concurrent-settings-edit', `Changed after backup: ${f.path}`);
-    await atomicWrite(f.path, f.bytes, f.mode ?? entry.mode, current.hash);
+    await atomicWrite(target, f.bytes, f.mode ?? entry.mode, current.hash);
     writes.push(f.path);
+  }
+  for (const stage of journal.modStages ?? []) {
+    if (!files.some(file => file.path.startsWith(stage.destination + sep))) continue;
+    await rejectSymlinks(stage.path);
+    const info = await lstat(stage.path);
+    if (!info.isDirectory() || info.dev !== stage.dev || info.ino !== stage.ino) throw new HerdrError('mod-publication-conflict', 'Mod staging directory changed');
+    if ((await snapshot(join(stage.path, 'mod.json'))).bytes === null) throw new HerdrError('mod-manifest-missing', 'A new mod needs a placement manifest before publication');
+    for (const entry of journal.entries.filter(entry => entry.path.startsWith(stage.destination + sep)))
+      if ((await snapshot(join(stage.path, relative(stage.destination, entry.path)))).hash !== entry.after) throw new HerdrError('mod-publication-conflict', 'Staged mod is incomplete');
+    await rejectSymlinks(stage.destination);
+    if (await lstat(stage.destination).then(() => true, error => { if (error.code !== 'ENOENT') throw error; return false; })) throw new HerdrError('mod-publication-conflict', 'Mod appeared during publication');
+    await rename(stage.path, stage.destination);
+    await syncDirectory(dirname(stage.destination));
   }
   return writes;
 }
@@ -970,6 +1050,7 @@ export async function rollbackFiles(root: string, journal: SetupJournal, options
   warn?(message: string): void;
   appSettings?: AppSettingsTransition;
 } = {}): Promise<string[]> {
+  await discardModStages(journal);
   const restored: string[] = [], keep = new Set<string>(), settled = new Set<string>();
   const plans: { entry: BackupEntry; current: FileSnapshot; original: Buffer | null; conflict: boolean; alreadyRestored: boolean; keyPlan?: KeyRollbackPlan; pathPlan?: PathRollbackPlan }[] = [];
   // Verify every baseline and decide which referenced files to keep before removing anything.

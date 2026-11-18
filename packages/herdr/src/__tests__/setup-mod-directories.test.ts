@@ -12,7 +12,7 @@ test('rollback leaves a replacement directory untouched', async () => {
     const home = join(f.root, 'app-home'), mods = join(home, 'mods'), directory = join(mods, 'spider-example');
     const root = join(f.root, 'journal'), path = join(directory, 'main.js');
     await mkdir(mods, { recursive: true });
-    const journal = await readJournal(root), files = [{ path, expected: null, bytes: Buffer.from('installed') }];
+    const journal = await readJournal(root), files = [{ path, expected: null, bytes: Buffer.from('installed') }, { path: join(directory, 'mod.json'), expected: null, bytes: Buffer.from('{"place":"none"}') }];
     await prepareBackups(root, files, journal); await prepareModDirectories(root, home, files, journal); await applyFiles(files, journal);
     await rename(directory, join(mods, 'moved')); await mkdir(directory);
     await rollbackFiles(root, journal); await rollbackModDirectories(home, journal);

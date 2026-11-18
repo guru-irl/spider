@@ -42,11 +42,16 @@ async function saveBlob(root: string, bytes: Buffer, hash: string): Promise<void
   catch (error) { if ((await snapshot(path)).hash !== hash) throw error; }
 }
 async function capture(root: string, paths: readonly string[]): Promise<SavedFile[]> {
-  return Promise.all([...new Set(paths)].map(async path => {
+  // A failed writer must not outlive the lock and race the next command's GC.
+  const results = await Promise.allSettled([...new Set(paths)].map(async path => {
     const file = await snapshot(path);
     if (file.bytes !== null) await saveBlob(root, file.bytes, file.hash!);
     return { path, hash: file.hash, mode: file.mode };
   }));
+  return results.map(result => {
+    if (result.status === 'rejected') throw result.reason;
+    return result.value;
+  });
 }
 export async function checkpointBytes(root: string, file: SavedFile): Promise<Buffer | null> {
   if (file.hash === null) return null;

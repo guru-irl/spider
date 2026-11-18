@@ -22,6 +22,7 @@ import { openJournal } from "../journal";
 import { DEFAULT_LIMITS } from "../contracts";
 import { utimesSync } from "node:fs";
 import { acquireTransferLease } from "../staging";
+import { installSupervisorCorePin } from "../enrollment";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
 const BOX = "00000000-0000-4000-8000-000000000002";
@@ -447,7 +448,9 @@ async function twoNodeFixture(capture = true, intercomReady = false, brokerRunni
     hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "fixture" }), { mode: 0o600 });
   writeFileSync(join(f.root, "bin", "sqlite3"), `#!${process.execPath}\nconsole.log('3.45.0');\n`, { mode: 0o700 });
   f.env.PATH = join(f.root, "bin");
-  writeFileSync(join(box, "hc"), `#!${process.execPath}\nconsole.log(JSON.stringify({core:{id:'remote-core'},version:'0.1.16'}));\n`, { mode: 0o700 });
+  writeFileSync(join(box, "hc"), `#!${process.execPath}\nconsole.log(JSON.stringify({core:{id:'remote-core'},pid:4321,version:'0.1.16'}));\n`, { mode: 0o700 });
+  installSupervisorCorePin(box, { binary: peer.core, coreId: "remote-core", socket: join(box, "core.sock"), sessionNamespace: "fixture",
+    stateHome: join(box, "state"), configHome: join(box, "config") });
   const hcScript = join(f.root, "hc.js");
   writeFileSync(hcScript, `#!${process.execPath}\nimport {appendFileSync,readFileSync,unlinkSync,writeFileSync} from 'node:fs'; import {execFile,spawnSync} from 'node:child_process';\n${fixtureIdentitySource}\nconst a=process.argv.slice(2); appendFileSync(${JSON.stringify(calls)},JSON.stringify(a)+'\\n');\nif(process.env.SPIDER_TEST_HC_OFFLINE==='1') process.exit(1);\nif(a[0]==='server') console.log(JSON.stringify({core:{id:'local-core'},version:'0.1.16'}));\nelse if(a[0]==='machine') console.log(JSON.stringify({machines:[{name:${JSON.stringify(alias)},id:'remote-core',state:'connected'}]}));\nelse if(a[0]==='exec' && a.includes(${JSON.stringify(`--on=${alias}`)})) { const cmd=a.slice(a.indexOf('--')+1); if(cmd[0]==='cat' && cmd.at(-1)===${JSON.stringify(join(box, "roam", "machine.json"))}) process.stdout.write(readFileSync(cmd.at(-1))); else if(cmd[0]===${JSON.stringify(process.execPath)} && cmd[1]===${JSON.stringify(f.cli)} && cmd[2]==='--global-root' && cmd[3]===${JSON.stringify(box)}) { const starting=cmd.includes('start-broker'); if(starting) writeFileSync(${JSON.stringify(brokerPid)} + '.pending', '1'); const result=spawnSync(cmd[0],cmd.slice(1),{env:{...process.env,HOME:${JSON.stringify(box)},PI_CODING_AGENT_DIR:${JSON.stringify(agentDir)},SPIDER_GLOBAL_ROOT:${JSON.stringify(box)}},input:a.includes('--stdin')?readFileSync(0):undefined}); if(starting && result.status===0) { await recordIdentity(${JSON.stringify(brokerPid)}, Number(readFileSync(${JSON.stringify(brokerPid)}, 'utf8')), false); unlinkSync(${JSON.stringify(brokerPid)} + '.pending'); } process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status??1; } else if(cmd[0]===${JSON.stringify(process.execPath)} && cmd[1]==='--input-type=module-typescript' && cmd[2]==='-e') { const result=spawnSync(cmd[0],cmd.slice(1),{env:{...process.env,HOME:${JSON.stringify(box)},PI_CODING_AGENT_DIR:${JSON.stringify(agentDir)},SPIDER_GLOBAL_ROOT:${JSON.stringify(box)}},input:a.includes('--stdin')?readFileSync(0):undefined}); process.stdout.write(result.stdout); process.stderr.write(result.stderr); process.exitCode=result.status??1; } else process.exitCode=2; }\nelse process.exitCode=1;\n`, { mode: 0o700 });
   Object.assign(f.env, { SPIDER_TEST_HC_CALLS: calls, SPIDER_TEST_HC_ALIAS: alias, SPIDER_TEST_HC_MACHINE_FILE: join(box, "roam", "machine.json"),

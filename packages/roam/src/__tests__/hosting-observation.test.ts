@@ -20,6 +20,7 @@ import { openJournal } from "../journal";
 import { createIntentStore } from "../intent";
 import { createRunningIntentAuthority, recordReadiness } from "../session-control";
 import { observeHosting } from "../hosting";
+import { enrollFixtureCore } from "./supervisor-core-fixture";
 
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001", OTHER = "00000000-0000-4000-8000-000000000003";
 const roots: ReturnType<typeof createReplica>[] = [];
@@ -279,6 +280,7 @@ async function productionFixture(f: Awaited<ReturnType<typeof executionFixture>>
   mkdirSync(join(f.global.root, "roam"), { recursive: true, mode: 0o700 });
   writeFileSync(join(f.global.root, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
   writeFileSync(join(f.global.root, "roam", "config.json"), JSON.stringify(f.config), { mode: 0o600 });
+  enrollFixtureCore(f.global.root, f.ready.core);
   await f.global.db.raw.backup(join(f.global.root, "spider.db"));
   const agentDir = join(f.global.root, "agent"); mkdirSync(agentDir, { mode: 0o700 });
   writeFileSync(join(agentDir, "auth.json"), '{"fixture":true}', { mode: 0o600 });

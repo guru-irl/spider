@@ -13,6 +13,7 @@ import { text, mark, held, scripts } from '../fixtures/child-scripts.js';
 import type { StoryPresentation } from './roam-recovery.test.js';
 import { enableMemoryCapture, seedSession } from '@spider/db-core/roam/seed';
 import { parseConfig } from '@spider/roam/config';
+import { installSupervisorCorePin } from '@spider/roam/enrollment';
 import { inspectSession } from '@spider/roam/session-file';
 import { createIntentStore } from '@spider/roam/intent';
 import { participantLaunchId } from '@spider/roam/participant-launch';
@@ -420,6 +421,11 @@ export async function createMoveStory(suite: Suite): Promise<MoveStory> {
         intercom: { enabled: true, mode: 'hub-only', machineAlias: machine.alias, routes: others.map(peer => i && peer.machineId !== HUB
           ? { kind: 'relay', via: HUB, peer } : { kind: 'direct', peer, edgeEpoch: 'fixture-edge' }) } });
       await writeFile(join(machine.root, 'roam', 'config.json'), JSON.stringify(config), { mode: 0o600 });
+      if (i > 0) {
+        const core = machineCores[i];
+        installSupervisorCorePin(machine.root, { binary: cores.wrapper, coreId: core.coreId, socket: core.socket,
+          sessionNamespace: core.namespace, stateHome: core.env.XDG_STATE_HOME, configHome: core.env.XDG_CONFIG_HOME });
+      }
       await writeFile(join(machine.root, 'herdr', 'config.json'), JSON.stringify({ app: { binary: join(suite.root, 'closed-app'), home: suite.directories.HERDR_APP_HOME },
         core: { binary: cores.wrapper, config: join(suite.root, 'core.toml') }, globalRoot: machine.root, agentDirectory: machine.agent,
         shellRc: join(suite.root, 'shellrc'), spaces: [], machines: [] }), { mode: 0o600 });

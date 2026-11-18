@@ -104,3 +104,26 @@ test('setup recovery preserves a moved remote presentation and its real owner', 
   expect(await readFile(join(journalRoot, 'spaces.json'), 'utf8')).toBe(bytes);
   expect((await readCutoverRecovery(journalRoot)).entries[0].placement.terminal).toBe('core-remote/t7');
 });
+
+
+const bookkeepingCases = ['checkpoint', 'journal', 'blob'].flatMap(kind => ['before', 'after'].map(timing => [kind, timing] as const));
+test.each(bookkeepingCases)('setup resumes after %s publication fails %s its persisted boundary', async (kind, timing) => {
+  const f = await fixture();
+  let crashed = false;
+  const publish = (operation: typeof realFs.rename) => async (from: Parameters<typeof realFs.rename>[0], to: Parameters<typeof realFs.rename>[1]) => {
+    const path = String(to), name = path.slice(f.request.journalRoot.length + 1);
+    const selected = path.startsWith(f.request.journalRoot + '/') && (kind === 'checkpoint' ? name === 'checkpoint.json' : kind === 'journal' ? name === 'journal.json' : name.startsWith('backups/checkpoint-'));
+    if (crashed) throw new Error('persisted boundary crash');
+    if (selected && timing === 'before') { crashed = true; throw new Error('persisted boundary crash'); }
+    await operation(from, to);
+    if (selected) { crashed = true; throw new Error('persisted boundary crash'); }
+  };
+  vi.mocked(fs.rename).mockImplementation(publish(realFs.rename)); vi.mocked(fs.link).mockImplementation(publish(realFs.link));
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('persisted boundary crash');
+  expect(crashed).toBe(true);
+  vi.mocked(fs.rename).mockImplementation(realFs.rename); vi.mocked(fs.link).mockImplementation(realFs.link);
+  await setupHerdr(f.request, f.parts);
+  expect(JSON.parse(await readFile(f.settings, 'utf8'))).toEqual({ theme: 'dracula-plus-glass', unrelated: 'keep' });
+  expect((await readJournal(f.request.journalRoot)).verified).toBe(true);
+  expect(f.cutovers()).toBe(1);
+});

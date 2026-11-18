@@ -549,3 +549,31 @@ test('N3 undo refuses custom references to a new mod until the mod is retained u
   expect(await fs.readFile(join(dirname(directory), 'custom-example/main.js'), 'utf8')).toBe('new-main');
   expect(JSON.parse(await fs.readFile(f.paths.layout, 'utf8'))).toEqual({ content: [], generation: 1, toast: 'custom-example', userSize: 321 });
 });
+
+
+test('N4 runtime instructions survive a crash after the baseline journal was restored', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => { await real.rename(from, to); if (to === f.paths.journal && (await snapshot(f.paths.main)).bytes?.toString() === 'old-main') throw new Error('stop after journal restore'); });
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toThrow('stop after journal restore');
+  vi.mocked(fs.rename).mockImplementation(real.rename);
+  await put(f.paths.added, 'runtime instructions');
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.added, 'utf8')).toBe('runtime instructions');
+  expect((await readCheckpoint(f.request.journalRoot))?.state).toBe('undone');
+});
+
+test('I4 endpoint intent survives a kill after publication but before any observation', async () => {
+  const f = await fixture(), endpoint = f.parts.stagePaneEndpoint!;
+  const next = '{"version":1,"packageRoot":"/home/fixture","endpoint":{"protocol":1}}\n';
+  f.parts.paneEndpointPlan = async () => ({ paths: [f.paths.registry], changed: true, files: [{ path: f.paths.registry, bytes: Buffer.from(next), expected: (await snapshot(f.paths.registry)).hash }] });
+  f.parts.stagePaneEndpoint = async request => {
+    await endpoint(request);
+    const fail = async () => { throw new Error('kill before observation'); };
+    vi.mocked(fs.rename).mockImplementation(fail); vi.mocked(fs.link).mockImplementation(fail);
+    throw new Error('kill before observation');
+  };
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('kill before observation');
+  vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link);
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await values([f.paths.registry, f.paths.main])).toEqual(f.before.filter(file => [f.paths.registry, f.paths.main].includes(file.path)));
+});

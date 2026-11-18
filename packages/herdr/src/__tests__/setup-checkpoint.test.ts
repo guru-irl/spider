@@ -719,3 +719,24 @@ test('N3 an array added by setup retains custom nodes outside its entries', asyn
   await undoHerdrUpgrade(f.request, f.parts);
   expect(JSON.parse(await fs.readFile(f.paths.layout, 'utf8'))).toEqual({ generation: 1, content: [{ id: 'custom', size: 321 }] });
 });
+
+
+test('N3 a late layout reference refusal remains recoverable by moving the layout aside', async () => {
+  const f = await fixture(), directory = dirname(f.paths.main);
+  await fs.rm(directory, { recursive: true });
+  const journal = await readJournal(f.request.journalRoot); journal.entries = journal.entries.filter(entry => !entry.path.startsWith(directory + '/')); await saveJournal(f.request.journalRoot, journal);
+  await setupHerdr(f.request, f.parts);
+  const pause = (operation: typeof real.rename) => async (from: Parameters<typeof real.rename>[0], to: Parameters<typeof real.rename>[1]) => { if (to === f.paths.layout) throw new Error('paused layout restore'); await operation(from, to); };
+  vi.mocked(fs.rename).mockImplementation(pause(real.rename)); vi.mocked(fs.link).mockImplementation(pause(real.link));
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toThrow('paused layout restore');
+  vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link);
+  const edited = '{"content":[],"generation":2,"toast":"spider-example","userSize":321}';
+  await put(f.paths.layout, edited);
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-layout-reference' });
+  await fs.rename(f.paths.layout, f.paths.layout + '.kept');
+  await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
+  expect(await fs.readFile(f.paths.layout + '.kept', 'utf8')).toBe(edited);
+  expect(await fs.readFile(f.paths.layout, 'utf8')).toBe(f.before[f.paths.layout].bytes?.toString());
+  expect((await snapshot(f.paths.main)).hash).toBeNull();
+  expect((await readCheckpoint(f.request.journalRoot))?.state).toBe('undone');
+});

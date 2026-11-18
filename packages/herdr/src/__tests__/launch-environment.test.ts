@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import type { Generation, Owner, SessionId, TerminalIdentity } from '../contracts.js';
 import { createTerminalRegistry, terminalIdentityKey } from '../sessions/registry.js';
@@ -114,7 +115,9 @@ it('replays process-only tools, resource, prompt, trust and extension-defined fl
   const argv = ['-t', '+spider,-bash', '-xt', 'write', '-nbt', '--models', 'provider/*', '--session-dir', 'sessions', '--system-prompt', 'instructions', '--append-system-prompt', 'extra instructions', '--skill', 'skill.md', '-ns', '--prompt-template', 'prompt.md', '-np', '--theme', 'theme.json', '--use-theme', 'night', '--no-themes', '-nc', '--tui-mode', 'regular', '--verbose', '-a', '--offline', '--no-mcp', '--extension-option', 'configured value', '--extension-switch'];
   await record(launch(argv));
   await launchSession(request(), resumePorts());
-  expect(launches[0].argv).toEqual([process.execPath, ...argv, '--session', file]);
+  const expected = [...argv];
+  for (const flag of ['--session-dir', '--skill', '--prompt-template', '--theme']) expected[expected.indexOf(flag) + 1] = join(root, expected[expected.indexOf(flag) + 1]);
+  expect(launches[0].argv).toEqual([process.execPath, ...expected, '--session', file]);
 });
 
 it.each([['-p'], ['--print'], ['--mode', 'rpc'], ['--mode', 'json'], ['--export', 'session.jsonl'], ['--help'], ['--version'], ['--list-models']].map(argv => ({ argv })))('never launches a noninteractive recorded invocation: $argv', async ({ argv }) => {
@@ -227,11 +230,11 @@ it('replays existing explicit extensions relative to the original launch folder'
   expect(launches[0].argv).toEqual([process.execPath, '-ne', '-e', join(original, 'extension.ts'), '--extension', 'builtin:mcp', '--session', file]);
 });
 
-it('lists all missing extension paths without spawning or retaining a lease', async () => {
+it('identifies missing extension flags without exposing values or retaining a lease', async () => {
   const missing = [join(root, 'gone-one.ts'), join(root, 'gone-two.ts')];
   await record(launch(['-e', missing[0], '--extension', missing[1]]));
-  await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'session-extensions-missing', message: expect.stringContaining('gone-one.ts') });
-  await expect(offerResume(terminal, offerPorts(false))).rejects.toMatchObject({ code: 'session-extensions-missing', message: expect.stringContaining('gone-two.ts') });
+  await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'session-extensions-missing', message: expect.stringContaining('-e at argument 1') });
+  await expect(offerResume(terminal, offerPorts(false))).rejects.toMatchObject({ code: 'session-extensions-missing', message: expect.stringContaining('--extension at argument 3') });
   expect(await inventory.leases.get(file)).toBeNull();
   expect(launches).toHaveLength(0);
 });
@@ -419,4 +422,38 @@ it('legacy launch refusal reads explicit extensions from the terminal mapping', 
   await createTerminalRegistry(root).record({ ...mapping(), environment: { agentDirectory: agent, extensionArguments: ['-e', 'npm:example'] } });
   await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'session-explicit-extensions' });
   expect(launches).toHaveLength(0);
+});
+
+it.each(['npm:@example/tools', 'git:example.invalid/tools@v1', 'github:example/tools', 'https://example.invalid/tools?private=value', 'http://example.invalid/tools', 'ssh://example.invalid/tools', 'builtin:future'])('replays a supported extension source unchanged: %s', async source => {
+  await record(launch(['-e', source]));
+  await launchSession(request(), resumePorts());
+  expect(launches[0].argv).toEqual([process.execPath, '-e', source, '--session', file]);
+});
+
+it('replays file URL extensions verbatim after checking the local file', async () => {
+  const local = join(root, 'extension.ts'); await writeFile(local, 'export default () => {};');
+  const source = pathToFileURL(local).href;
+  await record(launch(['-e', source])); await launchSession(request(), resumePorts());
+  expect(launches[0].argv).toEqual([process.execPath, '-e', source, '--session', file]);
+});
+
+it('never exposes extension values in local-path or legacy refusals', async () => {
+  const source = 'https://user:' + credential() + '@example.invalid/tools?key=' + credential();
+  await createTerminalRegistry(root).record({ ...mapping(), environment: { agentDirectory: agent, extensionArguments: ['-e', source] } });
+  let notice = '';
+  try { await launchSession(request(), resumePorts()); } catch (e) { notice = String(e); }
+  expect(notice.includes(credential())).toBe(false);
+  expect(notice).toContain('explicit extensions');
+  await record(launch(['-e', './' + credential()]));
+  try { await launchSession(request(), resumePorts()); } catch (e) { notice = String(e); }
+  expect(notice.includes(credential())).toBe(false);
+  expect(notice).toContain('-e at argument 1');
+});
+
+it('resolves resource paths and relative agent directory against launch cwd', async () => {
+  const original = join(root, 'original'); await mkdir(original);
+  await record({ ...launch(['--skill', './skills', '--prompt-template', '~/prompt.md', '--theme', './theme.json', '--session-dir', './sessions']), cwd: original, variables: { HOME: root, PI_CODING_AGENT_DIR: './agent' } });
+  await launchSession(request(), resumePorts());
+  expect(launches[0].argv).toEqual([process.execPath, '--skill', join(original, 'skills'), '--prompt-template', join(root, 'prompt.md'), '--theme', join(original, 'theme.json'), '--session-dir', join(original, 'sessions'), '--session', file]);
+  expect(launches[0].env.PI_CODING_AGENT_DIR).toBe(join(original, 'agent'));
 });

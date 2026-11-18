@@ -16,6 +16,29 @@ spider control command:"config" op:"get" key:"memory.reviewer.model"
 spider control command:"config" op:"unset" key:"memory.reviewer.model" scope:"repo"
 ```
 
+## Roaming core units
+
+Roaming uses a separate `<global-root>/roam/config.json`. Its top-level
+`coreUnit` describes that machine, not every destination. A hub peer's optional
+`coreUnit` names the existing systemd user unit on that destination. For example,
+these fields belong in the existing peer entry for `box-1.invalid`:
+
+```json
+{
+	"alias": "box-1.invalid",
+	"coreUnit": "hc-serve-0a1b2c3d.service"
+}
+```
+
+Keep the peer's other fields. If `coreUnit` is omitted, provisioning discovers
+a unit whose main PID matches the peer's configured `core` and verifies the
+core identity. Discovery includes `hc-serve-<hex>.service` names. Zero matches
+return `peer-core-unit-required`. Several matches return
+`peer-core-unit-ambiguous`. Set the peer's `coreUnit` to resolve either refusal.
+The destination retains the unit ownership and safe-directory checks.
+See [Roaming replication](../architecture/roaming.md) for provisioning and
+supervisor dependencies.
+
 ## Results and unset behavior
 
 - A `get` with a key reports `value` and `source`. The source is `default`, `global`, `local`, or `unset`.

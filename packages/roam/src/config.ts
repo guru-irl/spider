@@ -62,8 +62,10 @@ function readLimits(value: unknown): Limits {
 
 function readPeer(value: unknown): Peer {
   const input = object(value, "peer");
-  keys(input, ["machineId", "alias", "node", "pi", "cli", "core", "globalRoot", "agentDir"], "peer");
+  keys(input, ["machineId", "alias", "node", "pi", "cli", "core", "globalRoot", "agentDir", "coreUnit"], "peer");
   const alias = nonempty(input.alias, "peer alias");
+  if (input.coreUnit !== undefined && (typeof input.coreUnit !== "string" || input.coreUnit.length > 255 ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.@:-]*\.service$/.test(input.coreUnit))) throw new Error("Invalid roaming config: peer core unit");
   return {
     machineId: machineIdentity(input.machineId),
     alias,
@@ -73,6 +75,7 @@ function readPeer(value: unknown): Peer {
     core: absolutePath(input.core),
     globalRoot: absolutePath(input.globalRoot),
     ...(input.agentDir === undefined ? {} : { agentDir: absolutePath(input.agentDir) }),
+    ...(input.coreUnit === undefined ? {} : { coreUnit: nonempty(input.coreUnit, "peer core unit") }),
   };
 }
 

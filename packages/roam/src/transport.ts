@@ -40,7 +40,7 @@ function validCore(value: unknown): value is CoreObservation {
 }
 function samePeer(a: Peer, b: Peer): boolean {
   return a.machineId === b.machineId && a.alias === b.alias && a.node === b.node && a.pi === b.pi &&
-    a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot && a.agentDir === b.agentDir;
+    a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot && a.agentDir === b.agentDir && a.coreUnit === b.coreUnit;
 }
 function snapshotCall(options: CallOptions): CallOptions {
   return { timeoutMs: options.timeoutMs, maxBytes: options.maxBytes,
@@ -62,10 +62,10 @@ function remoteArgs(peer: Peer, argv: readonly string[]): string[] {
 function bootstrapTarget(value: BootstrapPeer): BootstrapPeer {
   const invalid = () => { throw new HerdrError('invalid-bootstrap-request', 'Invalid bootstrap probe request'); };
   if (!value || typeof value !== 'object') return invalid();
-  const { alias, node, pi, cli, globalRoot, agentDir } = value;
+  const { alias, node, pi, cli, core, globalRoot, agentDir } = value;
   if (typeof alias !== 'string' || !alias || alias.length > 255 || alias.trim() !== alias || /[\u0000-\u001f\u007f]/.test(alias) ||
-      [node, pi, cli, globalRoot, ...(agentDir === undefined ? [] : [agentDir])].some(file => typeof file !== 'string' || file.length > 4096 || !posix.isAbsolute(file) || /[\u0000-\u001f\u007f]/.test(file))) return invalid();
-  return Object.freeze({ alias, node, pi, cli, globalRoot, ...(agentDir === undefined ? {} : { agentDir }) });
+      [node, pi, cli, core, globalRoot, ...(agentDir === undefined ? [] : [agentDir])].some(file => typeof file !== 'string' || file.length > 4096 || !posix.isAbsolute(file) || /[\u0000-\u001f\u007f]/.test(file))) return invalid();
+  return Object.freeze({ alias, node, pi, cli, core, globalRoot, ...(agentDir === undefined ? {} : { agentDir }) });
 }
 function deadline(value: number): void {
   if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647) {
@@ -229,11 +229,14 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       const pinned = provisionCores.get(target.alias);
       if (pinned && options?.expectedCore && !sameCore(pinned, options.expectedCore)) throw coreChanged();
       const expectedCore = options?.expectedCore ? { ...options.expectedCore } : pinned;
-      const stdin = Buffer.from(JSON.stringify({ pi: target.pi, cli: target.cli, globalRoot: target.globalRoot, ...(target.agentDir ? { agentDir: target.agentDir } : {}), coreUnit,
-        checks: checks.map(({ executable, authFile }) => ({ executable, authFile })) }));
-      if (stdin.length > 300_000) throw new HerdrError('invalid-bootstrap-request', 'Invalid bootstrap probe request');
+      const request = { pi: target.pi, cli: target.cli, core: target.core,
+        globalRoot: target.globalRoot, ...(target.agentDir ? { agentDir: target.agentDir } : {}), coreUnit,
+        checks: checks.map(({ executable, authFile }) => ({ executable, authFile })) };
+      if (Buffer.byteLength(JSON.stringify({ ...request, coreId: '' })) > 300_000) throw new HerdrError('invalid-bootstrap-request', 'Invalid bootstrap probe request');
       const result = await bracket({ kind: 'bootstrap', peer: target }, undefined, timeoutMs, (signal, remainingMs, core) => {
         if (expectedCore && !sameCore(core, expectedCore)) throw coreChanged();
+        const stdin = Buffer.from(JSON.stringify({ ...request, coreId: core.remote }));
+        if (stdin.length > 300_000) throw new HerdrError('invalid-bootstrap-request', 'Invalid bootstrap probe request');
         return client.exec(target.alias, [target.node, '-e', BOOTSTRAP_SCRIPT],
           { timeoutMs: remainingMs, maxBytes: Math.min(maxBytes, 64 * 1024), stdin, signal });
       })

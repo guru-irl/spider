@@ -70,7 +70,7 @@ function safeReason(error: unknown): string {
   const allowed = new Set(["missing-prerequisite", "machine-mismatch", "unsafe-identity", "core-changed", "core-unavailable", "machine-not-found",
     "machine-ambiguous", "cli-timeout", "destination-auth-missing", "destination-auth-unsafe", "consent-required", "invalid-auth", "unsafe-auth", "provider-unavailable", "unsupported-credential-command",
     "auth-cleanup-pending", "auth-install-failed", "auth-preview-changed", "invalid-destination-settings", "settings-preview-changed", "settings-preview-failed", "invalid-settings-preview", "unsafe-destination",
-    "release-digest-mismatch", "invalid-release-path", "core-unit-required", "provider-consent-required", "credential-file-requires-consent",
+    "release-digest-mismatch", "invalid-release-path", "core-unit-required", "peer-core-unit-required", "peer-core-unit-ambiguous", "provider-consent-required", "credential-file-requires-consent",
     "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",
     "release-pending", "release-launch-failed", "release-arguments-changed", "operation-arguments-changed", "short-write-pending", "release-evidence-unavailable", "release-in-progress",
     "installer-interrupted", "release-abandoned", "release-install-failed", "command-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch"]);
@@ -78,7 +78,7 @@ function safeReason(error: unknown): string {
   const message = error instanceof Error ? error.message : "";
   if (message === "Operation ID already has different arguments") return "operation-arguments-changed";
   return ["invalid-provision-request", "invalid-provision-destination", "custom-agent-directory-unsupported", "invalid-release", "release-digest-mismatch", "invalid-release-path",
-    "core-unit-required", "provider-consent-required", "selected-files-changed", "settings-preview-changed", "invalid-journal-result"].includes(message) ? message : "provision-failed";
+    "core-unit-required", "peer-core-unit-required", "peer-core-unit-ambiguous", "provider-consent-required", "selected-files-changed", "settings-preview-changed", "invalid-journal-result"].includes(message) ? message : "provision-failed";
 }
 
 /** Install selected files only after a target-bound consent record exists. */
@@ -191,7 +191,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     if (identity.machineId !== peer.machineId) throw Object.assign(new Error("Identity mismatch"), { code: "machine-mismatch" });
     if (identity.coreId !== agentDirectory.core.remote) throw Object.assign(new Error("Core changed"), { code: "core-changed" });
     mutated = true;
-    await ports.transfer.enroll(peer, ports.hubMachineId);
+    await ports.transfer.enroll(peer, ports.hubMachineId, coreUnit);
     await ports.transfer.cleanupSecrets(peer);
     const installed = await ports.transfer.installRelease(peer, { bytes: release, sha256: ports.release.spiderSha256,
       npmPrefix: ports.destination.npmPrefix, globalRoot: peer.globalRoot, pi: ports.release.pi, intercom: ports.release.intercom });

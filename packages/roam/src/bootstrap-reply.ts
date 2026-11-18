@@ -64,8 +64,8 @@ export function parseBootstrapInventory(bytes: Buffer, peer: BootstrapPeer, expe
   catch { return invalid(); }
   if (value && typeof value === "object" && !Array.isArray(value) && Object.hasOwn(value, "error")) {
     const failure = record(value, ["version", "kind", "error"]);
-    if (failure.version !== 1 || failure.kind !== "inventory" || failure.error !== "bootstrap-probe-failed") return invalid();
-    throw new HerdrError("bootstrap-probe-failed", "Remote bootstrap probe failed");
+    if (failure.version !== 1 || failure.kind !== "inventory" || !["bootstrap-probe-failed", "peer-core-unit-required", "peer-core-unit-ambiguous"].includes(String(failure.error))) return invalid();
+    throw new HerdrError(failure.error as string, "Remote bootstrap probe failed; set the peer coreUnit if discovery failed");
   }
   const envelope = record(value, ["version", "kind", "value"]);
   if (envelope.version !== 1 || envelope.kind !== "inventory") return invalid();

@@ -56,7 +56,7 @@ export async function doctorPeer(peer: BootstrapPeer, ports: DoctorPorts): Promi
     if (!(error instanceof InventoryError)) return [failure(error)];
     value = error.observation;
   }
-  const diagnostics = prerequisiteDiagnostics(value, ports.coreUnit);
+  const diagnostics = prerequisiteDiagnostics(value);
   const warning = (reason: string, repairCommand: string | null = null) => diagnostics.push({ reason, severity: "warning", repairCommand });
   const block = (reason: string) => diagnostics.push({ reason, severity: "block", repairCommand: null });
   const keys = ["piSignedIn", "nativeSqlite", "extensionLoaded", "exactSession", "privateModes",
@@ -68,14 +68,18 @@ export async function doctorPeer(peer: BootstrapPeer, ports: DoctorPorts): Promi
         keys.every(key => typeof result[key] === "boolean") && validIntercomReadiness(result)) verified = result;
   } catch { /* An unavailable verification is not readiness. */ }
 
+  if (value.core.unit) warning(`Herdr core unit ${value.core.unit} (${value.core.transient ? "transient" : "persistent"}; diagnostic only).`);
+  if (ports.coreUnit && (value.core.unit !== ports.coreUnit || !value.core.unitOwned)) warning(`Recorded core unit ${ports.coreUnit} is missing or not owned; startup uses the enrolled core pin.`);
+  else if (!value.core.unit) warning("The core unit is unavailable (diagnostic only).");
   if (value.linger === false) warning("User lingering is disabled and may require administrative permission.", "loginctl enable-linger");
   if (value.linger === null) warning("User lingering could not be verified.");
   if (value.softNofile === null) warning("The soft open-file limit is unknown.");
   else if (low(value.softNofile, 65_536)) warning("The soft open-file limit is below 65536. The launcher can raise it only up to the hard limit.");
   if (value.hardNofile === null) warning("The hard open-file limit is unknown.");
   else if (low(value.hardNofile, 65_536)) warning(
-    "The hard open-file limit is below 65536. Set LimitNOFILE=65536 for the core service. A core restart kills its terminals.",
-    value.core.unit && value.core.unitOwned ? `systemctl --user edit ${value.core.unit}` : null,
+    value.core.transient ? "The hard open-file limit is below 65536. Configure the limit at core startup. A core restart kills its terminals." :
+      "The hard open-file limit is below 65536. Set LimitNOFILE=65536 for the core service. A core restart kills its terminals.",
+    value.core.unit && value.core.unitOwned && value.core.transient === false ? `systemctl --user edit ${value.core.unit}` : null,
   );
   if (value.inotifyInstances === null) warning("The inotify instances limit is unknown.");
   else if (value.inotifyInstances < 1024) warning("The inotify instances limit is below 1024.", "sudo sysctl -w fs.inotify.max_user_instances=1024");

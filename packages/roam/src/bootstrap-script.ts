@@ -201,24 +201,42 @@ try {
   function coreStatus() {
     const unitDir = path.join(home, '.config/systemd/user');
     const unitDirSafe = parents(path.join(unitDir, '.probe')) === 'ok';
-    const candidates = !unitDirSafe ? [] : input.coreUnit ? [input.coreUnit] : list(unitDir).filter(name => /^(?:(?:herdr(?:-core)?|hc(?:-core)?)(?:@[A-Za-z0-9_.-]+)?|hc-serve-[0-9a-f]+)\.service$/.test(name));
-    let names = candidates.filter(name => { try { const stat = fs.lstatSync(path.join(unitDir, name)); return stat.isFile() || stat.isSymbolicLink(); } catch { return false; } });
-    if (!input.coreUnit) {
-      let pid = null;
-      const status = command(input.core, ['server', 'status', '--json'], true, 64 * 1024);
-      if (status.status === 0 && typeof status.stdout === 'string') try {
-        const value = JSON.parse(status.stdout);
-        if (value && value.core && value.core.id === input.coreId && Number.isSafeInteger(value.pid) && value.pid > 0) pid = value.pid;
-      } catch {}
-      names = pid === null ? [] : names.filter(name => {
-        const main = command('systemctl', ['--user', 'show', '--property=MainPID', '--value', name]);
-        return main.status === 0 && typeof main.stdout === 'string' && /^[1-9][0-9]*$/.test(main.stdout.trim()) && Number(main.stdout.trim()) === pid;
-      });
-      if (names.length !== 1) throw new Error(names.length ? 'peer-core-unit-ambiguous' : 'peer-core-unit-required');
+    const transientDir = '/run/user/' + String(uid) + '/systemd/transient';
+    const transientDirSafe = ownedDirectory('/run/user/' + String(uid)) && ownedDirectory(path.dirname(transientDir)) && ownedDirectory(transientDir);
+    const candidatePattern = /^(?:(?:herdr(?:-core)?|hc(?:-core)?)(?:@[A-Za-z0-9_.-]+)?|hc-serve-[0-9a-f]+)\.service$/;
+    const candidates = input.coreUnit ? [input.coreUnit] : [...new Set([...(unitDirSafe ? list(unitDir) : []), ...(transientDirSafe ? list(transientDir) : [])])].filter(name => candidatePattern.test(name));
+    let pid = null;
+    const status = command(input.core, ['server', 'status', '--json'], true, 64 * 1024);
+    if (status.status === 0 && typeof status.stdout === 'string') try {
+      const value = JSON.parse(status.stdout);
+      if (value && value.core && value.core.id === input.coreId && Number.isSafeInteger(value.pid) && value.pid > 0) pid = value.pid;
+    } catch {}
+    function inspectUnit(name) {
+      const result = command('systemctl', ['--user', 'show', '--property=Transient,FragmentPath,MainPID', name], true, 64 * 1024);
+      if (result.status !== 0 || typeof result.stdout !== 'string') return null;
+      const properties = Object.create(null);
+      for (const line of result.stdout.replace(/\n$/, '').split('\n')) {
+        const match = /^(Transient|FragmentPath|MainPID)=(.*)$/.exec(line);
+        if (!match || Object.hasOwn(properties, match[1])) throw new Error('bootstrap-probe-failed');
+        properties[match[1]] = match[2];
+      }
+      if (Object.keys(properties).length !== 3 || !['yes', 'no'].includes(properties.Transient) ||
+          !/^(?:0|[1-9][0-9]*)$/.test(properties.MainPID) || !Number.isSafeInteger(Number(properties.MainPID))) throw new Error('bootstrap-probe-failed');
+      if (properties.Transient === 'no' && properties.MainPID === '0' && properties.FragmentPath === '') return null;
+      if (!validPath(properties.FragmentPath)) throw new Error('bootstrap-probe-failed');
+      const transient = properties.Transient === 'yes', file = path.join(transient ? transientDir : unitDir, name);
+      if (properties.FragmentPath !== file || !(transient ? transientDirSafe : unitDirSafe)) return null;
+      let stat;
+      try { stat = fs.lstatSync(file); } catch { return null; }
+      const owned = stat.isFile() && !stat.isSymbolicLink() && stat.uid === uid;
+      if (!stat.isFile() && !stat.isSymbolicLink() || transient && (!owned || pid === null || Number(properties.MainPID) !== pid) ||
+          !transient && !input.coreUnit && (pid === null || Number(properties.MainPID) !== pid)) return null;
+      return { name, owned, transient };
     }
-    const unit = names.length === 1 ? names[0] : null;
-    let unitOwned = false;
-    if (unit) try { const stat = fs.lstatSync(path.join(unitDir, unit)); unitOwned = stat.isFile() && !stat.isSymbolicLink() && stat.uid === uid; } catch {}
+    const names = candidates.map(inspectUnit).filter(Boolean);
+    if (!input.coreUnit && names.length !== 1) throw new Error(names.length ? 'peer-core-unit-ambiguous' : 'peer-core-unit-required');
+    const selected = names.length === 1 ? names[0] : null;
+    const unit = selected ? selected.name : null, unitOwned = selected ? selected.owned : false, transient = selected ? selected.transient : null;
     let socketExists = false, socketOwned = false;
     function socket(file) {
       try {
@@ -239,7 +257,7 @@ try {
       const dir = path.join(state, name);
       if (parents(path.join(dir, '.probe')) === 'ok') for (const file of list(dir)) if (/^[A-Za-z0-9_.-]+\.sock$/.test(file)) socket(path.join(dir, file));
     }
-    return { unit, unitExists: names.length > 0, unitOwned, socketExists, socketOwned };
+    return { unit, unitExists: names.length > 0, unitOwned, transient, socketExists, socketOwned };
   }
   const piFile = homeFile(input.pi, fs.constants.X_OK);
   const piResult = piFile ? command(input.pi, ['--version']) : { status: null };

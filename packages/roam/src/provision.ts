@@ -140,8 +140,8 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     if (observed.roaming.identityExists && observed.roaming.machineId !== peer.machineId) {
       throw Object.assign(new Error("Identity mismatch"), { code: "machine-mismatch" });
     }
-    const coreUnit = ports.coreUnit ?? observed.core.unit;
-    if (!coreUnit || observed.core.unit !== coreUnit || !observed.core.unitOwned || !observed.core.unitExists) throw new Error("core-unit-required");
+    const coreUnit = ports.coreUnit ?? peer.coreUnit ?? observed.core.unit;
+    if (!coreUnit) throw new Error("core-unit-required");
     const files = selectedFileDigests(selected);
     const digest = createHash("sha256").update(JSON.stringify({ peer, core: agentDirectory.core, selected: [...input.selected].sort(), files,
       includeAuth: input.includeAuth, requireDestinationAuth: input.requireDestinationAuth, selectedAuthSize, expectedAuthBytes: input.expectedAuthBytes, expectedFiles: input.expectedFiles, expectedSelectionDigest: input.expectedSelectionDigest, providers: [...input.confirmedProviders].sort(), piProviders: [...ports.source.piProviders].sort(), source: ports.source,

@@ -87,9 +87,10 @@ export function parseBootstrapInventory(bytes: Buffer, peer: BootstrapPeer, expe
   const existing = roaming.rootExists === true && roaming.rootSafe === true &&
     (roaming.identityExists === false && roaming.machineId === null || roaming.identityExists === true && (roaming.machineId === null || isMachineId(roaming.machineId)));
   if (!unknown && !absent && !unsafe && !existing) return invalid();
-  const core = record(row.core, ["unit", "unitExists", "unitOwned", "socketExists", "socketOwned"]);
+  const core = record(row.core, ["unit", "unitExists", "unitOwned", "transient", "socketExists", "socketOwned"]);
   if (!(core.unit === null || typeof core.unit === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_.@:-]*\.service$/.test(core.unit)) ||
       !bool(core.unitExists) || !bool(core.unitOwned) || !bool(core.socketExists) || !bool(core.socketOwned) ||
+      (core.unit === null ? core.transient !== null : !bool(core.transient)) ||
       !core.unitExists && (core.unit !== null || core.unitOwned) || core.unitOwned && core.unit === null || !core.socketExists && core.socketOwned ||
       expectedCoreUnit !== null && (core.unit !== null && core.unit !== expectedCoreUnit || core.unitExists && core.unit === null)) return invalid();
   const spider = record(row.spider, ["installed", "version", "nativeModuleReady"]);

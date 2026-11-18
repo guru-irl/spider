@@ -3,6 +3,8 @@ import authSource from "./auth.ts?raw";
 import receiptSource from "./release-receipt.ts?raw";
 import releaseRequestSource from "./release-request.ts?raw";
 import enrollmentSource from "./enrollment.ts?raw";
+import coreParserSource from "../../herdr/src/client/parse.ts?raw";
+import coreSocketConfigSource from "../../herdr/src/client/socket-config.ts?raw";
 import configSource from "./config.ts?raw";
 import machineIdSource from "./machine-id.ts?raw";
 import intercomReadinessSource from "./intercom-readiness.ts?raw";
@@ -30,6 +32,11 @@ const configForRemote = configSource
   .replace(/^export /gm, "");
 const machineIdForRemote = machineIdSource.replace(/^export /gm, "");
 const enrollmentForRemote = enrollmentSource.replace('import { parseConfig as parseRoamConfig } from "./config";', "");
+const socketStart = coreParserSource.indexOf("export function selectedSocket(");
+const socketEnd = coreParserSource.indexOf("export function parseCore(", socketStart);
+if (socketStart < 0 || socketEnd <= socketStart) throw new Error("Cannot assemble core socket selection");
+// Keep enrollment and the client on one socket-selection implementation, including TOML.
+const enrollmentSocketForRemote = `const enrollmentSocket = (() => {\nconst join = enrollPath.join, win32 = enrollPath.win32, readFileSync = enrollFs.readFileSync, statSync = enrollFs.statSync;\nclass HerdrError extends Error { constructor(_code: string, message: string, _details?: unknown) { super(message); } }\n${coreSocketConfigSource.replace(/^export /gm, "")}\n${coreParserSource.slice(socketStart, socketEnd).replace(/^export /gm, "")}\nreturn selectedSocket;\n})();\n`;
 // Remote verification needs the inspector, not the host's validator or diagnostic formatter.
 const intercomHostStart = intercomReadinessSource.indexOf("export const INTERCOM_UNIQUENESS_DESCRIPTION");
 const intercomHostEnd = intercomReadinessSource.indexOf("function irLegacyPath", intercomHostStart);
@@ -39,7 +46,7 @@ if (authForRemote === authSource || authForRemote.includes('from "./') || config
     enrollmentForRemote === enrollmentSource || enrollmentForRemote.includes('from "./')) throw new Error("Cannot assemble provisioning program");
 const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAULT_LIMITS = ${JSON.stringify(DEFAULT_LIMITS)};\nconst DEFAULT_INTERCOM_LIMITS = ${JSON.stringify(DEFAULT_INTERCOM_LIMITS)};\n${machineIdForRemote}\n${configForRemote}\nreturn parseConfig;\n})();\n`;
 
-export const PROVISION_REMOTE_SCRIPT: string = selectedRemoteSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + "\n" + intercomForRemote + String.raw`
+export const PROVISION_REMOTE_SCRIPT: string = selectedRemoteSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + "\n" + enrollmentSocketForRemote + intercomForRemote + String.raw`
 import { readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
@@ -223,7 +230,10 @@ async function run(): Promise<unknown> {
   try {
   if (action === "enrollment") {
     releaseCore(text("core"), text("coreId"));
-    const result = installBoxEnrollment(globalRoot, machineId, text("hubMachineId"), text("coreUnit"));
+    const corePin = { binary: text("core"), coreId: text("coreId"), socket: enrollmentSocket(process.env),
+      sessionNamespace: process.env.HC_SESSION || "default", stateHome: process.env.XDG_STATE_HOME || join(home, ".local/state"),
+      configHome: process.env.XDG_CONFIG_HOME || join(home, ".config") };
+    const result = installBoxEnrollment(globalRoot, machineId, text("hubMachineId"), text("coreUnit"), { corePin });
     releaseCore(text("core"), text("coreId"));
     return result;
   }

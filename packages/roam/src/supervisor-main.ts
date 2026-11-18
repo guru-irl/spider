@@ -18,13 +18,21 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
   try {
     const root = process.env.SPIDER_GLOBAL_ROOT || join(homedir(), ".pi", "agent", "spider");
     const service = await startProductionSupervisor(root);
-    try { await new Promise<void>(done => {
-      const stop = () => { process.off("SIGINT", stop); process.off("SIGTERM", stop); done(); };
-      process.once("SIGINT", stop); process.once("SIGTERM", stop);
-    }); } finally { await service.stop(); }
+    let unbind = () => {};
+    try {
+      const signal = new Promise<undefined>(done => {
+        const stop = () => done(undefined);
+        process.once("SIGINT", stop); process.once("SIGTERM", stop);
+        unbind = () => { process.off("SIGINT", stop); process.off("SIGTERM", stop); };
+      });
+      const reason = await Promise.race([signal, service.failed]);
+      if (reason) throw Object.assign(new Error(reason), { code: reason });
+    } finally { unbind(); await service.stop(); }
     return 0;
-  } catch {
-    io.err(`Hosting is unavailable (${RUNNING_INTENT_SOURCE_UNAVAILABLE}). Run spider roam doctor.\n`);
+  } catch (error) {
+    const code = error && typeof error === "object" && "code" in error ? error.code : null;
+    const reason = typeof code === "string" && ["core-changed", "core-lost", "core-unavailable", "core-pin-required", "core-pin-invalid", "core-pin-conflict"].includes(code) ? code : RUNNING_INTENT_SOURCE_UNAVAILABLE;
+    io.err(`Hosting is unavailable (${reason}). Run spider roam doctor.\n`);
     return 1;
   }
 }

@@ -21,7 +21,7 @@ export interface Inventory {
   /** rootSafe covers existing path components and modes; null existence means inspection was unsafe. */
   roaming: RoamingInventory;
   systemdUser: boolean; linger: boolean | null;
-  core: { unit: string | null; unitExists: boolean; unitOwned: boolean; socketExists: boolean; socketOwned: boolean };
+  core: { unit: string | null; unitExists: boolean; unitOwned: boolean; transient: boolean | null; socketExists: boolean; socketOwned: boolean };
   pi: string | null; piVersion: string | null;
   softNofile: FileLimit; hardNofile: FileLimit; inotifyInstances: number | null; inotifyWatches: number | null;
   diskFreeBytes: number | null;

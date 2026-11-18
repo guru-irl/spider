@@ -97,19 +97,28 @@ The top-level `coreUnit` belongs to the machine whose roaming config contains
 it. A hub's value never selects a destination's unit. Each hub peer can set its
 own optional `coreUnit`, as shown for `box-1.invalid` above. A peer's unit must
 name a concrete service, not a template such as `hc@.service`. The first
-provision records the destination unit in the box's top-level `coreUnit`, and
-every provision uses it for the supervisor's `After=`, `Requires=`, and
-`PartOf=` dependencies. Reprovisioning an enrolled box doesn't rewrite the
-recorded value.
+provision records the destination unit in the box's top-level `coreUnit`.
+This name is diagnostic only. The supervisor has no dependency on the core's
+systemd unit. Reprovisioning an enrolled box doesn't rewrite the recorded name,
+and a transient unit's name can change after the core stops and starts.
 
 When a peer omits `coreUnit`, the destination discovers existing `herdr`,
 `herdr-core`, `hc`, or `hc-core` services, including their instance names, and
 `hc-serve-<hex>.service` units. A candidate must have the same systemd main PID
 as the peer's configured `core` reports. The reported core identity must also
-match the transport's identity. Discovery requires exactly one match and keeps
-the unit-name, ownership, and safe-directory checks. No match returns
-`peer-core-unit-required`. Several matches return `peer-core-unit-ambiguous`.
-Both refusals require setting that peer's `coreUnit` before retrying.
+match the transport's identity. Discovery includes persistent user unit files
+and transient units. A transient unit must report `Transient=yes`, and its
+`FragmentPath` must be exactly `/run/user/<uid>/systemd/transient/<name>`.
+That file must be regular, owned by the user, and not a symlink. Its systemd
+`MainPID` must match the core's reported PID. Explicit transient `coreUnit`
+values pass the same checks. Malformed or conflicting systemd properties fail
+closed. Doctor reports the observed unit and whether it is transient.
+
+Discovery requires exactly one match and keeps the unit-name and safe-directory
+checks. No match returns `peer-core-unit-required`. Several matches return
+`peer-core-unit-ambiguous`. Set that peer's `coreUnit` before retrying either
+refusal. A missing recorded unit does not block provisioning when the core's
+socket is owned by the user.
 
 The npm prefix comes from `<prefix>/bin/pi` and need not be named `.local`.
 The configured agent directory must already exist under the destination's home.
@@ -182,11 +191,23 @@ an unavailable observation never authorizes clearing a fence.
 ## Box hosting and recovery
 
 Production hosting stays disabled until phase 4 acceptance succeeds. Provisioning
-installs only the supervisor service and leaves the existing core service and its
-terminals unchanged. The supervisor unit uses `Requires=` and `PartOf=` for the
-core. Starting the enabled supervisor at login starts the core; stopping the core
-stops the supervisor. The hub's enable switch controls hub scheduling, not box
-hosting.
+installs only the supervisor service and leaves the running core and its terminals
+unchanged. The supervisor is enabled under `default.target`, with
+`Restart=on-failure` and a private umask. It has no `After=`, `Requires=`, or
+`PartOf=` dependency on the core unit.
+
+Enrollment saves the peer's absolute `core` executable, core identity, socket,
+session namespace, and state and config directories in private `roam/core.json`.
+At startup, the supervisor uses that pin to run `hc server start --json`.
+This attaches to a running core or starts a stopped one, including at login.
+The supervisor never selects an `hc` from `PATH`. It refuses `core-changed` if
+the core identity differs from enrollment. A missing pin refuses
+`core-pin-required`. Reprovision an existing box to add its missing pin.
+
+While running, the supervisor checks core availability and process identity
+every ten seconds. Core loss stops hosting and exits with a diagnostic so
+systemd can restart the supervisor and ensure the core again. The hub's enable
+switch controls hub scheduling, not box hosting.
 
 Authentication is never copied by default. Copying selected Pi credentials
 requires explicit consent for each target and provider. A missing Pi sign-in

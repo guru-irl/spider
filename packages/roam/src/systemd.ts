@@ -18,7 +18,7 @@ export function renderSupervisorUnit(input: { node: string; supervisor: string; 
   const pi = input.pi === undefined ? null : path(input.pi);
   const agentDir = input.agentDir === undefined ? null : path(input.agentDir);
   if (typeof input.coreUnit !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.@:-]*\.service$/.test(input.coreUnit)) {
-    throw new Error("An existing core service unit is required");
+    throw new Error("A diagnostic core service unit name is required");
   }
   return `[Unit]
 Description=Spider roaming supervisor

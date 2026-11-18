@@ -151,8 +151,10 @@ it('0.1.16 keeps a remote native picker action until a snapshot is available', a
   } finally { await service.view.close(); }
 });
 
-it('keeps the picker usable when a pane snapshot has malformed children', async () => {
-  const h = host();
+it('0.1.16 keeps the picker usable when a pane snapshot has malformed children', async () => {
+  const patchPath = resolve('packages/herdr/assets/look/native-picker-0.1.16.json');
+  const pickerSource = applyModPatches({ 'main.js': readFileSync(source, 'utf8') }, JSON.parse(readFileSync(patchPath, 'utf8')), 'picker')['main.js'];
+  const h = host({ pickerSource });
   const bad = sourceSnapshot('Remote');
   (bad.rows[0] as any).children = null;
   h.state.paneSnapshot = bad;

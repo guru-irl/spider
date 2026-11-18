@@ -1,20 +1,14 @@
 [
   {
-    "id": "picker-snapshot-index-import",
-    "file": "main.js",
-    "anchor": "import { projectNavigation } from ",
-    "replacement": "import { indexPaneNavigation, projectNavigation } from "
-  },
-  {
-    "id": "picker-snapshot-validation",
-    "file": "main.js",
-    "anchor": "      this.paneSnapshot = paneSnapshot;\n      if (this.closed) return false;\n      this.feeds = snapshot.feeds; this.targetSource = 'feed'; this.problem = null; success = true;",
-    "replacement": "      let paneProblem = null;\n      try { if (paneSnapshot) indexPaneNavigation(paneSnapshot); this.paneSnapshot = paneSnapshot; }\n      catch { this.paneSnapshot = null; paneProblem = 'Pane service unavailable; run doctor'; }\n      if (this.closed) return false;\n      this.feeds = snapshot.feeds; this.targetSource = 'feed'; this.problem = paneProblem; success = true;"
-  },
-  {
     "id": "picker-native-action",
     "file": "main.js",
     "anchor": "retained: false, action: pane && !pane.includes('/') && !agent.address.includes('/') ? { kind: 'focus', pane } : null }];",
     "replacement": "retained: false, action: pane ? { kind: 'focus', pane } : null }];"
+  },
+  {
+    "id": "picker-native-no-service",
+    "file": "main.js",
+    "anchor": "requestPaneService(this.config, herdr.exec, { op: 'snapshot' }).catch(() => null)",
+    "replacement": "this.config.paneServiceConfigured ? requestPaneService(this.config, herdr.exec, { op: 'snapshot' }).catch(() => null) : Promise.resolve(null)"
   }
 ]

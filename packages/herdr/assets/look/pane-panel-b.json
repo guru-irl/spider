@@ -1,0 +1,68 @@
+[
+  {
+    "id": "panel-b-imports",
+    "file": "main.js",
+    "anchor": "import { describeOpenFailure } from './shared/open-failure.js';",
+    "replacement": "import { describeOpenFailure } from './shared/open-failure.js';\nimport { FEED_DISCONNECT_MS } from './shared/feed.js';\nimport { indexPaneNavigation as validatePaneSnapshot } from './shared/navigation.js';\nimport { createPaneServiceState, disableUnavailableRemoteActions } from './shared/pane-service-state.js';"
+  },
+  {
+    "id": "panel-b-start-snapshot",
+    "file": "main.js",
+    "anchor": "    this.reader = createFeedReader(config, { exec, fetch: (url, options) => fetch(url, options), timer: cx.timer });",
+    "replacement": "    this.reader = createFeedReader(config, { exec, fetch: (url, options) => fetch(url, options), timer: cx.timer });\n    this.paneService = createPaneServiceState(config, { exec, timer: cx.timer, request: requestPaneService, index: validatePaneSnapshot,\n      refreshMs: FEED_REFRESH_MS, staleMs: FEED_DISCONNECT_MS, changed: () => { if (!this.closed) cx.notify(); } });\n    void this.paneService.refresh();\n    if (config.paneServiceConfigured) void this.discoverPaneCore(cx);"
+  },
+  {
+    "id": "panel-b-tick-snapshot",
+    "file": "main.js",
+    "anchor": "    this.timer = cx.timer.every(PANEL_TICK_MS, cx => {\n      if (this.closed) return;",
+    "replacement": "    this.timer = cx.timer.every(PANEL_TICK_MS, cx => {\n      if (this.closed) return;\n      void this.paneService.refresh();"
+  },
+  {
+    "id": "panel-b-close-snapshot",
+    "file": "main.js",
+    "anchor": "    this.closed = true; this.timer?.cancel();",
+    "replacement": "    this.closed = true; this.paneService?.close(); this.timer?.cancel();"
+  },
+  {
+    "id": "panel-b-reload-coalesce",
+    "file": "main.js",
+    "anchor": "  async reload(cx) {\n    if (this.closed || !this.reader) return false;",
+    "replacement": "  reload(cx) {\n    if (this.reloadPromise) { this.pendingReload = true; return this.reloadPromise; }\n    this.reloadPromise = this.reloadFeeds(cx).finally(() => { this.reloadPromise = null; });\n    return this.reloadPromise;\n  }\n  async reloadFeeds(cx) {\n    if (this.closed || !this.reader) return false;"
+  },
+  {
+    "id": "panel-b-projection",
+    "file": "main.js",
+    "anchor": "      return projectNavigation({ spaces: locations, agents: herdr.agents?.() ?? [], terminals: herdr.terminals?.() ?? [], panes: panes(), feeds: this.feeds,\n        coreId: this.coreId, destination, machines, contract: this.config.labelContract, now: Date.now(),\n        completedHours: this.config.retention?.completedHours ?? 24, completedRows: this.config.retention?.completedRows ?? 50 });",
+    "replacement": "      const state = this.paneService?.state();\n      return disableUnavailableRemoteActions(projectNavigation({ spaces: locations, agents: herdr.agents?.() ?? [], terminals: herdr.terminals?.() ?? [], panes: panes(), feeds: this.feeds,\n        coreId: this.coreId, destination, paneSnapshot: state?.snapshot, paneServiceConfigured: state?.configured, machines, contract: this.config.labelContract, now: Date.now(),\n        completedHours: this.config.retention?.completedHours ?? 24, completedRows: this.config.retention?.completedRows ?? 50 }), state?.unavailable, this.coreId);"
+  },
+  {
+    "id": "panel-b-session-actions",
+    "file": "main.js",
+    "anchor": "  /** Open a run's output in a Herdr viewer pane, or focus the one already shown. */\n  async openRun(feed, row, cx) {\n    try {",
+    "replacement": "  async discoverPaneCore(cx) {\n    if (typeof herdr.hc !== 'function') return;\n    let timer;\n    try {\n      const reply = await Promise.race([herdr.hc(['server', 'status', '--json']), new Promise((_, reject) => { timer = cx.timer.every(FEED_REFRESH_MS, () => reject(new Error('Owner identity check timed out'))); })]);\n      const core = reply.code === 0 ? JSON.parse(reply.stdout)?.core?.id : null;\n      if (!this.closed && !this.coreId && typeof core === 'string' && core) { this.coreId = core; cx.notify(); }\n    } catch { /* Actions still verify identity before dispatch. */ }\n    finally { timer?.cancel(); }\n  }\n  paneRemote(feed) {\n    const address = feed.owner.terminal.address;\n    return (address.includes('/') && (!this.coreId || !address.startsWith(this.coreId + '/'))) || Boolean(this.coreId && feed.owner.terminal.coreId !== this.coreId);\n  }\n  paneRemoteUnavailable(feed) { return this.paneRemote(feed) && Boolean(this.paneService?.state().unavailable); }\n  async openPanelPaneTarget(feed, runId, cx) {\n    if (this.paneRemoteUnavailable(feed)) throw new Error('Pane service unavailable; run doctor');\n    await this.refreshIdentity(cx);\n    if (!this.paneRemote(feed)) return false;\n    await this.refreshIdentity(cx, feed);\n    const latest = this.feeds.find(row => row.sessionId === feed.sessionId);\n    if (!latest || latest.generation !== feed.generation || latest.owner.terminal.address !== feed.owner.terminal.address || latest.owner.terminal.coreId !== feed.owner.terminal.coreId) throw new Error('Owner unavailable');\n    if (this.paneRemoteUnavailable(latest)) throw new Error('Pane service unavailable; run doctor');\n    const target = this.navigationTargets().find(row => row.id === (runId ? `run:${feed.sessionId}:${runId}` : `session:${feed.sessionId}`));\n    if (target?.action?.kind !== 'pane') throw new Error(target?.disabledReason || 'Owner unavailable');\n    await requestPaneService(this.config, exec, target.action.request);\n    return true;\n  }\n  async focusSession(feed, cx) {\n    try {\n      if (this.paneService?.state().configured && await this.openPanelPaneTarget(feed, null, cx)) return;\n      if (panelSessionState(feed, Date.now()) === 'live') run('pane.focus', { terminal: feed.owner.terminal.address });\n    } catch (error) { this.unavailable('Session focus', error.message, cx); }\n  }\n  /** Open a run's output in a Herdr viewer pane, or focus the one already shown. */\n  async openRun(feed, row, cx) {\n    try {\n      if (this.paneService?.state().configured && await this.openPanelPaneTarget(feed, row.id, cx)) return;"
+  },
+  {
+    "id": "panel-b-session-focus-ui",
+    "file": "main.js",
+    "anchor": "        .tooltip(state === 'live' ? 'Focus the session' : `${state}: owner unavailable`)\n        .on_click((_event, cx) => { cx.stop_propagation?.(); if (panelSessionState(feed, Date.now()) === 'live') run('pane.focus', { terminal: feed.owner.terminal.address }); })",
+    "replacement": "        .tooltip(this.paneRemoteUnavailable(feed) ? 'Pane service unavailable; run doctor' : state === 'live' ? 'Focus the session' : `${state}: owner unavailable`)\n        .when(state === 'live' && !this.paneRemoteUnavailable(feed), e => e.on_click((_event, cx) => { cx.stop_propagation?.(); cx.spawn(next => this.focusSession(feed, next)); }))"
+  },
+  {
+    "id": "panel-b-run-view-ui",
+    "file": "main.js",
+    "anchor": "          .rounded(6).px(4).mx(-4).cursor_pointer().hover(s => s.bg(t.hover)).tab_index(0).tooltip('Open the output')\n          .on_click((_event, cx) => cx.spawn(cx => this.openRun(feed, source, cx)));",
+    "replacement": "          .rounded(6).px(4).mx(-4).tooltip(this.paneRemoteUnavailable(feed) ? 'Pane service unavailable; run doctor' : 'Open the output')\n          .when(!this.paneRemoteUnavailable(feed), e => e.cursor_pointer().hover(s => s.bg(t.hover)).tab_index(0)\n            .on_click((_event, cx) => cx.spawn(cx => this.openRun(feed, source, cx))));"
+  },
+  {
+    "id": "panel-b-notification-availability",
+    "file": "main.js",
+    "anchor": "    const enabled = Boolean(feed && panelSessionState(feed, Date.now()) === 'live' && this.config?.labelContract && !this.pendingActions.has(item.key));\n    return { enabled, tip: enabled ? 'Open the agent' : 'Owner unavailable', act: cx => cx.spawn(next => this.activateNotification(item, next)) };",
+    "replacement": "    const paneUnavailable = feed && this.paneRemoteUnavailable(feed);\n    const enabled = Boolean(feed && panelSessionState(feed, Date.now()) === 'live' && this.config?.labelContract && !this.pendingActions.has(item.key) && !paneUnavailable);\n    return { enabled, tip: enabled ? 'Open the agent' : paneUnavailable ? 'Pane service unavailable; run doctor' : 'Owner unavailable', act: cx => cx.spawn(next => this.activateNotification(item, next)) };"
+  },
+  {
+    "id": "panel-b-diagnostic",
+    "file": "main.js",
+    "anchor": "    const count = model.notifications.length, problems = describePanelProblems(this.errors);",
+    "replacement": "    const count = model.notifications.length, problems = describePanelProblems(this.errors);\n    if (this.paneService?.state().unavailable) {\n      problems.all.unshift({ key: 'pane-service', text: 'Pane service unavailable; run doctor', tip: 'Pane service unavailable; run doctor', command: null });\n      problems.rows = problems.all.slice(0, 3); problems.more = Math.max(0, problems.all.length - problems.rows.length);\n    }"
+  }
+]

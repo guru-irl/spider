@@ -11,8 +11,8 @@ function fixture(configured = true) {
   const timers = new Set<{ fire: () => void }>();
   const timer = { every(_ms: number, fire: () => void) { const item = { fire }; timers.add(item); return { cancel() { timers.delete(item); } }; } };
   const request = vi.fn(async (_config: unknown, _exec: unknown, _body: unknown): Promise<any> => snapshot());
-  const changed = vi.fn(), exec = vi.fn();
-  const state = createPaneServiceState({ paneServiceConfigured: configured }, { exec, timer, request, index: indexPaneNavigation, refreshMs: FEED_REFRESH_MS, staleMs: FEED_DISCONNECT_MS, changed });
+  const changed = vi.fn(), exec = vi.fn(async () => ({ code: 0, stdout: '' }));
+  const state = createPaneServiceState({ paneServiceConfigured: configured, nodePath: '/fixture/node', cliPath: '/fixture/cli' }, { exec, timer, request, index: indexPaneNavigation, refreshMs: FEED_REFRESH_MS, staleMs: FEED_DISCONNECT_MS, changed });
   return { state, request, changed, timers };
 }
 

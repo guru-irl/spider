@@ -22,9 +22,6 @@ export function renderSupervisorUnit(input: { node: string; supervisor: string; 
   }
   return `[Unit]
 Description=Spider roaming supervisor
-After=${input.coreUnit}
-Requires=${input.coreUnit}
-PartOf=${input.coreUnit}
 
 [Service]
 Type=simple

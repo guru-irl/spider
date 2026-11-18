@@ -120,7 +120,7 @@
         {
           "id": "mono-space-name",
           "anchor": ".child(div().flex_initial().min_w(SIDE_MIN).truncate().text_color(t.foreground).child(w.name))",
-          "replacement": ".child(div().flex_initial().min_w(SIDE_MIN).font_family(\"JetBrains Mono\").truncate().text_color(t.foreground).child(w.name))",
+          "replacement": ".child(div().flex_initial().min_w(SIDE_MIN).font_family(props()?.fonts?.paths ?? \"JetBrains Mono\").truncate().text_color(t.foreground).child(w.name))",
           "file": "main.js"
         }
       ],
@@ -128,7 +128,7 @@
         {
           "id": "style-1",
           "anchor": "      .bg(t.background)\n      .when(bottom, el => el.border_t(1))\n      .when(!bottom, el => el.border_b(1))\n      .border_color(t.border)\n",
-          "replacement": "      .bg(t.chrome)\n",
+          "replacement": "      .bg(p.focused ? \"#ffffff14\" : \"#00000000\")\n",
           "file": "main.js"
         },
         {

@@ -2126,7 +2126,7 @@
           {
             "id": "mono-space-name",
             "anchor": ".child(div().flex_initial().min_w(SIDE_MIN).truncate().text_color(t.foreground).child(w.name))",
-            "replacement": ".child(div().flex_initial().min_w(SIDE_MIN).font_family(\"JetBrains Mono\").truncate().text_color(t.foreground).child(w.name))",
+            "replacement": ".child(div().flex_initial().min_w(SIDE_MIN).font_family(props()?.fonts?.paths ?? \"JetBrains Mono\").truncate().text_color(t.foreground).child(w.name))",
             "file": "main.js"
           }
         ],
@@ -2134,7 +2134,7 @@
           {
             "id": "style-1",
             "anchor": "      .bg(t.background)\n      .when(bottom, el => el.border_t(1))\n      .when(!bottom, el => el.border_b(1))\n      .border_color(t.border)\n",
-            "replacement": "      .bg(t.chrome)\n",
+            "replacement": "      .bg(p.focused ? \"#ffffff14\" : \"#00000000\")\n",
             "file": "main.js"
           },
           {
@@ -2790,7 +2790,7 @@
             "id": "a-agents-model-duration",
             "file": "main.js",
             "anchor": "this.track(list, now);",
-            "replacement": "this.track(list, now);\n    this.spiderDurationAtRender = this.spiderDurationKey(now);"
+            "replacement": "this.track(list, now);\n    this.hold(list);\n    this.spiderDurationAtRender = this.spiderDurationKey(now);"
           },
           {
             "id": "a-agents-model-priority",
@@ -2839,6 +2839,12 @@
             "file": "main.js",
             "anchor": ".on_hover((on, cx) => { if (on) this.iconHovered = a.address; else if (this.iconHovered === a.address) this.iconHovered = null; cx.notify(); })",
             "replacement": ".on_hover((on, cx) => { const previous = this.iconHovered; if (on) this.iconHovered = a.address; else if (this.iconHovered === a.address) this.iconHovered = null; if (previous !== this.iconHovered) cx.notify(); })"
+          },
+          {
+            "id": "a-agents-hold-done",
+            "file": "main.js",
+            "anchor": "  rank(a) {\n    return RANK[a.status] ?? 0;\n  }",
+            "replacement": "  // A viewed Done agent stays in Done when looking at it makes it idle.\n  hold(list) {\n    const cur = list.find((a) => a.focused);\n    const same = cur && cur.address === this.held?.address;\n    if (!same || cur.status !== \"idle\") this.held = cur ? { address: cur.address, rank: RANK[cur.status] ?? 0 } : null;\n  }\n\n  rank(a) {\n    const sawDone = a.address === this.held?.address && this.held.rank === RANK.done && a.status === \"idle\";\n    return sawDone ? RANK.done : RANK[a.status] ?? 0;\n  }"
           }
         ],
         "spaces": [
@@ -2881,7 +2887,7 @@
           {
             "id": "mono-space-name",
             "anchor": ".child(div().flex_initial().min_w(SIDE_MIN).truncate().text_color(t.foreground).child(w.name))",
-            "replacement": ".child(div().flex_initial().min_w(SIDE_MIN).font_family(\"JetBrains Mono\").truncate().text_color(t.foreground).child(w.name))",
+            "replacement": ".child(div().flex_initial().min_w(SIDE_MIN).font_family(props()?.fonts?.paths ?? \"JetBrains Mono\").truncate().text_color(t.foreground).child(w.name))",
             "file": "main.js"
           },
           {
@@ -3003,7 +3009,7 @@
           {
             "id": "style-1",
             "anchor": "      .bg(t.background)\n      .when(bottom, el => el.border_t(1))\n      .when(!bottom, el => el.border_b(1))\n      .border_color(t.border)\n",
-            "replacement": "      .bg(t.chrome)\n",
+            "replacement": "      .bg(p.focused ? \"#ffffff14\" : \"#00000000\")\n",
             "file": "main.js"
           },
           {
@@ -3272,14 +3278,14 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "39271a9bf763562c5322ed9ee701046232163b91a195d96e0331c108fa207eb6",
+        "agents/main.js": "d6409a8ba9ac857e82267a70c1886631f7003e7416a3e28b8257feb36fa4c46d",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "1c27a92ca6378feb166a34adef317aaa2a4f4ee0e969d2fd3737cc3850ac84eb",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "new-menu/main.js": "2fcc80ed1486c35816f662db2a619cdee1ec1d82997991ca4feb64c1212d2688",
         "new-menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
         "pane/close.svg": "532eb25ce41976594b69b3735e1e2f892f18f39288da7e420832b9ee66dc4ff6",
-        "pane/main.js": "ee55839a86756eef7f95feaf1dbb0fa1d211b59c375a43ab80a5db5dc4f1f64a",
+        "pane/main.js": "91aaa15d8be870b39ac6daa43c8de94eb7586660dc21c6d3c43030d1b5dfd970",
         "pane/mod.json": "a10f79e972a197d0d51b37009180ac0e5518add50d601844b73cfb06539e2989",
         "pane/split-down.svg": "a9cbd394b0fe8bbb1881480dfb84072c2493f85e335b0b4c7de94b53d4a10d69",
         "pane/split-right.svg": "55b7bb600aad8463103f8848219ca8bcdc4cc620cdcb52325dde007f8275a637",
@@ -3287,7 +3293,7 @@
         "pane/zoom.svg": "e2d29d06235819c0b617029291adc8a9f4d31dc59264a50e97e55470e9ad2823",
         "picker/main.js": "d016a63eb7263ad4478152caa6521b218501bcc3539b7c42e13cfca1806b05c2",
         "picker/mod.json": "ca186ee1f13241f1f9b8facf092138214ca840a6a4d2865618a21934ffcda34d",
-        "spaces/main.js": "a69927ca3bb48b2b65edbd87b7851197f7f158db9c1447a76f749176a3aca76c",
+        "spaces/main.js": "32bc0ab27d6006eb2c2a9aef9a04ba5a619475cbeaf5e22961a5777f37c0c470",
         "spaces/mod.json": "8357ce89d375376872b6db414b9555b26936b2e9d61e44275dc2e2bfe2a5783e",
         "tabs/main.js": "9977fd738ec697951273e6729cb9185d2d79cd933f851957448cf6c3d3a683f8",
         "tabs/mod.json": "bd2a09edf56933dd318e75ce134b2c48aed56010b825f3c936f92a995e686c4d",
@@ -3346,6 +3352,7 @@
           "move-menu-init",
           "a-agents-init",
           "feed-lifecycle",
+          "a-agents-hold-done",
           "feed-and-actions",
           "a-agents-child-availability",
           "a-agents-model-feed-stamps",

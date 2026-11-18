@@ -169,10 +169,11 @@ it("copies a fixed published prefix while a live writer appends during every WAL
   } finally { writer.close(); }
 }, 5000);
 
-it("retries a checkpoint and WAL generation reset during the copy", () => {
+it.each([false, true])("retries a checkpoint and WAL generation reset during the copy (already flushed: %s)", flushed => {
   const { file, temp } = fixture(), writer = openDb(file);
   try {
     writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('before')");
+    if (flushed) writer.raw.pragma("wal_checkpoint(PASSIVE)");
     const source = statSync(`${file}-wal`);
     let checkpoints = 0;
     hooks.afterRead = fd => {

@@ -2,8 +2,9 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { Generation, Owner, SessionId, TerminalIdentity } from '../contracts.js';
 import { createTerminalRegistry, terminalIdentityKey } from '../sessions/registry.js';
 import { createProcessPresence } from '../sessions/presence.js';
@@ -32,8 +33,7 @@ async function record(snapshot: RecordedLaunch = launch()) {
 function offerPorts(auto: boolean) { return { registry: createTerminalRegistry(root), processInventory: inventory, coreStartedAt: async () => 20, ...(auto ? { autoResumeRoot: root } : {}) }; }
 function resumePorts() { return { ...ports, ...{ resume: { registry: createTerminalRegistry(root), terminal } } }; }
 beforeEach(async () => {
-  await mkdir(resolve('.spider/scratch/h'), { recursive: true });
-  root = await mkdtemp(resolve('.spider/scratch/h/lenv-')); file = join(root, 'session.jsonl'); agent = join(root, 'agent');
+  root = await mkdtemp(join(await realpath(tmpdir()), 'lenv-')); file = join(root, 'session.jsonl'); agent = join(root, 'agent');
   terminal = { coreId: 'core', terminalId: 'terminal', address: 'terminal', socket: join(root, 'core.sock'), sessionNamespace: 'fixture' } as TerminalIdentity;
   owner = { sessionId: 'saved' as SessionId, generation: 'generation' as Generation, terminal, sessionFile: file, cwd: root, name: 'current name' };
   await writeFile(file, [

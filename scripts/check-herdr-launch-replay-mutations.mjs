@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 // Run in an idle worktree. The runner must accept a test file followed by Vitest arguments.
-// Usage: node scripts/check-herdr-launch-replay-mutations.mjs --runner <single-file-runner.sh>
+// Usage: node scripts/check-herdr-launch-replay-mutations.mjs --runner <runner.sh> --output <scratch-directory>
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { loadavg } from 'node:os';
@@ -10,15 +10,15 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
-if (args.length !== 2 || args[0] !== '--runner' || !existsSync(args[1])) {
-  throw new Error('Pass --runner with a single-file test runner path');
+if (args.length !== 4 || args[0] !== '--runner' || args[2] !== '--output' || !existsSync(args[1])) {
+  throw new Error('Pass --runner with a single-file test runner and --output with an artifact directory');
 }
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const runner = resolve(args[1]);
 const relativeSource = 'packages/herdr/src/sessions/launch-environment.ts';
 const source = join(root, relativeSource);
 const test = 'packages/herdr/src/__tests__/launch-environment.test.ts';
-const scratch = join(root, '.spider', 'scratch', 'launch-replay-mutations');
+const scratch = resolve(root, args[3]);
 mkdirSync(scratch, { recursive: true, mode: 0o700 });
 const lock = join(scratch, 'mutation.lock');
 const descriptor = openSync(lock, 'wx', 0o600);

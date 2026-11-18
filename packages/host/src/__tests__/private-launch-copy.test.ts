@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import type { HcClient, RemoteCopyRequest, RemoteExecutionPort } from '@spider/herdr';
@@ -10,8 +11,7 @@ import { withRemoteCopy } from '../herdr/copy.js';
 
 let root: string, privateFile: string;
 beforeEach(async () => {
-  await mkdir(resolve('.spider/scratch/h'), { recursive: true });
-  root = await mkdtemp(resolve('.spider/scratch/h/lcopy-'));
+  root = await mkdtemp(join(await realpath(tmpdir()), 'lcopy-'));
   const directory = join(root, 'agent', 'spider', 'herdr', 'launch-environments');
   await mkdir(directory, { recursive: true, mode: 0o700 });
   privateFile = join(directory, 'terminal.json');

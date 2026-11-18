@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { createUiModules } from './strict-mod-api.mjs';
 import { runPanelScene } from './acceptance/i.js';
 import { HerdrLabelContract, type IntentionalNotification, type SessionFeed } from '../contracts.js';
-import { projectNavigation } from '../../assets/shared/navigation.js';
+import { indexPaneNavigation, projectNavigation } from '../../assets/shared/navigation.js';
+import * as children from '../../assets/agents/children.js';
+import { projectPanePresentations } from '../../assets/shared/presentations.js';
+import { applyModPatches } from '../look/patches.js';
 import { describeOpenFailure } from '../../assets/shared/open-failure.js';
-import { FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService } from '../../assets/shared/feed.js';
+import { FEED_DISCONNECT_MS, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService } from '../../assets/shared/feed.js';
 import * as data from '../../assets/mods/spider/data.js';
 import * as sound from '../../assets/mods/spider/sound.js';
 
@@ -118,7 +121,7 @@ describe('intentional notification projection', () => {
   });
 });
 
-function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boolean; storage?: Map<string, unknown> } = {}) {
+function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boolean; storage?: Map<string, unknown>; panelSource?: string; navigation?: typeof projectNavigation; paneService?: typeof requestPaneService } = {}) {
   const source = feed('owner'); source.updatedAt = Date.now(); source.notifications = [notice(source, 'notice-1', 'attention', Date.now())];
   const state: any = { feeds: [source], terms: [{ address: 'owner', parent: null, labels: {}, state: 'live', status: 'working' }],
     agents: options.parked ? [] : [{ address: 'owner', pane: 'pane-owner', space: 'space-a', tab: 'tab-a', title: 'Pi', program: { name: 'pi' }, status: 'working' }],
@@ -141,8 +144,8 @@ function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boo
       return state.reply ? state.reply(request) : { code: 0, stdout: JSON.stringify({ ok: true, op: request.op, ...(request.op === 'openSession' ? { terminal: 'owner' } : { viewer: 'viewer' }) }) }; },
   };
   const createFeedReader = () => ({ read: async () => { calls.push(['read']); if (state.failRead) throw new Error('offline'); return { feeds: structuredClone(state.feeds), errors: structuredClone(state.snapshotErrors ?? []) }; }, close: async () => { calls.push(['closeReader']); } });
-  const api = { ...kit, ...base, ...data, ...sound, ...herdr, herdr, createFeedReader, projectNavigation, describeOpenFailure, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService };
-  const text = readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8').replace(/^import .*;\s*$/gm, '').replace('export default class SpiderPanel', 'class SpiderPanel');
+  const api = { ...kit, ...base, ...data, ...sound, ...herdr, herdr, createFeedReader, projectNavigation: options.navigation ?? projectNavigation, indexPaneNavigation, describeOpenFailure, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService: options.paneService ?? requestPaneService };
+  const text = (options.panelSource ?? readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8')).replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace('export default class SpiderPanel', 'class SpiderPanel');
   const Panel = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${text}; return SpiderPanel;`)(api);
   const view = new Panel(); view.init({}, cx);
   const drain = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); await Promise.all(tasks.filter(task => task !== view.watchTask && task !== view.commandTask && task !== view.refreshTask)); };
@@ -363,6 +366,46 @@ it('renders a neutral intentional card named for its owner and does not dismiss 
   byId(root, 'need-intentional:owner:notice-1').events.on_click({}, h.cx); await h.drain();
   expect(h.calls).toContainEqual(['run', 'pane.focus', { pane: 'pane-owner' }]);
   expect(byId(h.view.render(h.cx), 'card-intentional:owner:notice-1')).toBeDefined(); await h.view.close();
+});
+
+it('0.1.16 routes a remote notification through IPC only until a pane snapshot exists', async () => {
+  const patched = (sourcePath: string, patchPath: string, file: string) => {
+    const source = readFileSync(resolve(sourcePath), 'utf8');
+    const records = existsSync(resolve(patchPath)) ? JSON.parse(readFileSync(resolve(patchPath), 'utf8')) : [];
+    return applyModPatches({ [file]: source }, records, file)[file];
+  };
+  const navSource = patched('packages/herdr/assets/shared/navigation.js', 'packages/herdr/assets/look/native-navigation-0.1.16.json', 'navigation.js')
+    .replace(/^import .*;\s*$/gm, '').replaceAll('export function ', 'function ');
+  const navigation = new Function('filterTopLevelAgents', 'projectAgentChildren', 'FEED_DISCONNECT_MS', 'projectPanePresentations', `${navSource}; return projectNavigation;`)(children.filterTopLevelAgents, children.projectAgentChildren, FEED_DISCONNECT_MS, projectPanePresentations);
+  const panelSource = patched('packages/herdr/assets/mods/spider/main.js', 'packages/herdr/assets/look/native-panel-0.1.16.json', 'main.js');
+  const requests: any[] = []; let snapshot: any = null;
+  const paneService: any = async (_config: unknown, _exec: unknown, request: any) => { requests.push(request); if (request.op === 'snapshot') { if (!snapshot) throw Error('unavailable'); return snapshot; } return { status: 'complete' }; };
+  const h = panelHost({ parked: true, navigation, panelSource, paneService });
+  const source = h.state.feeds[0], address = 'box.invalid/owner';
+  source.owner.terminal.address = address; source.owner.terminal.coreId = 'remote-core';
+  h.state.terms = [{ address, parent: null, labels: {}, state: 'live', status: 'working' }];
+  h.herdr.machines = () => [{ name: 'box.invalid', layout: 'ready' }];
+  h.herdr.hc = async (args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [{ name: 'box.invalid', id: 'remote-core', state: 'connected' }] }) });
+  await h.ready; await h.drain();
+  const row = byId(h.view.render(h.cx), 'need-intentional:owner:notice-1');
+  expect(row?.events.on_click).toBeDefined(); row.events.on_click({}, h.cx); await h.drain();
+  const args = h.calls.find(call => call[0] === 'exec')?.[2];
+  const ipc = args?.includes('--request') ? JSON.parse(args[args.indexOf('--request') + 1]) : null;
+  expect.soft(ipc).toMatchObject({ op: 'openSession', generation: 'g' });
+  h.calls.length = 0; requests.length = 0;
+  const target = { coreId: 'remote-core', terminalId: 'owner', address, createdMs: 42, identityLabels: {}, alias: 'box.invalid', machineId: 'm', kind: 'session', sessionId: 'owner', generation: 'g', homeEpoch: 1, runId: null, consoleId: null, name: 'owner', cwd: '/fixture' };
+  snapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'owner', generation: 'g', owner: { terminal: { address } }, target, name: 'owner', status: 'working', machineKey: 'box.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] };
+  row.events.on_click({}, h.cx); await h.drain();
+  expect.soft(requests).toContainEqual({ op: 'snapshot' });
+  expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'owner', generation: 'g' }));
+  expect.soft(h.calls.filter(call => call[0] === 'exec')).toEqual([]);
+  h.calls.length = 0; requests.length = 0; snapshot = null;
+  row.events.on_click({}, h.cx); await h.drain();
+  const retryArgs = h.calls.find(call => call[0] === 'exec')?.[2];
+  const retryIpc = retryArgs?.includes('--request') ? JSON.parse(retryArgs[retryArgs.indexOf('--request') + 1]) : null;
+  expect.soft(requests).toContainEqual({ op: 'snapshot' });
+  expect.soft(retryIpc).toMatchObject({ op: 'openSession', generation: 'g' });
+  await h.view.close();
 });
 
 it('does not focus a reused terminal address after the owner identity changes', async () => {

@@ -417,7 +417,7 @@ export function createMovePorts(config: RoamConfig, transport: Transport, journa
       if (inspection.blockers.length) throw new MoveError("move-preflight-blocked", inspection.blockers.map(row => validateBlockerId(row.id)));
       const destination = { ...home, machineId: request.destinationMachine };
       const diagnostics = successful(await call<readonly Diagnostic[]>(destination, request.operation, "move-diagnostics"));
-      if (!Array.isArray(diagnostics) || diagnostics.some(row => !row || !["warning", "block"].includes(row.severity) || typeof row.reason !== "string")) throw new MoveAdapterError("participant-auth-unavailable");
+      if (!Array.isArray(diagnostics) || diagnostics.some(row => !row || !["warning", "block", "info"].includes(row.severity) || typeof row.reason !== "string")) throw new MoveAdapterError("participant-auth-unavailable");
       if (diagnostics.some(row => row.severity === "block")) throw new MoveAdapterError("participant-auth-unavailable");
       return { source: home, destinationMachine: request.destinationMachine, ...mapped, sourceFile: local.file, sourceCwd: local.cwd, storeKeys: local.stores, warnings: diagnostics.map(row => row.reason) };
     },

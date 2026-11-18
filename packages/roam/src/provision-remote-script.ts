@@ -503,7 +503,7 @@ async function run(): Promise<unknown> {
     return true;
   }
   if (action === "verify") {
-    const verification = { piSignedIn: false, nativeSqlite: false, extensionLoaded: false, exactSession: false,
+    const verification = { corePin: inspectSupervisorCorePin(globalRoot, process.env), piSignedIn: false, nativeSqlite: false, extensionLoaded: false, exactSession: false,
       privateModes: false, bundledIntercom: false, intercomUnique: false, legacyDrained: false, federation: false,
       intercomEvidence: { settings: "settings-resolution-unavailable", legacy: "intercom-broker-unavailable", federation: "intercom-broker-unavailable", otherExtensions: [] } };
     const release = resolve(dirname(text("cli")), "..", ".."), pi = text("pi");

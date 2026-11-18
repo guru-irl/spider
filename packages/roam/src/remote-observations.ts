@@ -84,7 +84,7 @@ export async function remoteDoctor(transport: Transport, peer: Peer, config: Roa
   if (!record(value) || typeof value.enabled !== "boolean" || !Array.isArray(value.diagnostics) || !Array.isArray(value.consumers))
     throw new Error("Invalid remote doctor report");
   for (const diagnostic of value.diagnostics) {
-    if (!record(diagnostic) || !["block", "warning"].includes(String(diagnostic.severity)) || typeof diagnostic.reason !== "string" ||
+    if (!record(diagnostic) || !["block", "warning", "info"].includes(String(diagnostic.severity)) || typeof diagnostic.reason !== "string" ||
         !(diagnostic.code === undefined || diagnostic.code === HOSTING_WARNING_CODE) ||
         !(diagnostic.repairCommand === null || typeof diagnostic.repairCommand === "string")) throw new Error("Invalid remote diagnostic");
   }

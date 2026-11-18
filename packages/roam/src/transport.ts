@@ -7,6 +7,7 @@ import { DEFAULT_LIMITS } from './contracts';
 import { BOOTSTRAP_HOME_SCRIPT, BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_IDENTITY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from './bootstrap-script';
 import { PROVISION_REMOTE_SCRIPT } from './provision-remote-script';
 import { validIntercomReadiness } from './intercom-readiness';
+import { isCorePinStatus } from './enrollment';
 import { isMachineId } from './machine-id';
 import { normalizeConfiguredClis, normalizeCoreUnit, parseBootstrapInventory, sanitizeBootstrapError } from './bootstrap-reply';
 import type { BootstrapPeer, CallOptions, Journal, Peer, Transport } from './contracts';
@@ -412,7 +413,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       } else if (request.action === 'verify') {
         const value = object(reply.value), keys = ['piSignedIn', 'nativeSqlite', 'extensionLoaded', 'exactSession', 'privateModes',
           'bundledIntercom', 'intercomUnique', 'legacyDrained', 'federation'];
-        if (Object.keys(value).length !== keys.length + 1 || keys.some(key => typeof value[key] !== 'boolean') || !validIntercomReadiness(value)) {
+        if (Object.keys(value).length !== keys.length + 2 || !isCorePinStatus(value.corePin) || keys.some(key => typeof value[key] !== 'boolean') || !validIntercomReadiness(value)) {
           throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         }
       } else if (reply.value !== true) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');

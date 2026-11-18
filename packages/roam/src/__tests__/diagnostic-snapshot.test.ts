@@ -13,6 +13,7 @@ import { openIntercomStore } from "../intercom-store";
 const hooks = vi.hoisted(() => ({
   afterRead: null as null | ((fd: number, count: number) => void),
   fixedStamp: null as string | null,
+  reusedSidecars: [] as { file: string; dev: bigint; ino: bigint }[],
   mtimeNs: 0n,
   ctimeNs: 0n,
   beforePrivateOpen: null as null | ((file: string) => void),
@@ -27,10 +28,19 @@ vi.mock("@spider/db-core", async importOriginal => {
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
   const fixed = (stat: ReturnType<typeof actual.fstatSync> | undefined, bigint: boolean) => {
-    if (!stat || !hooks.fixedStamp || !bigint) return stat;
-    const source = actual.statSync(hooks.fixedStamp);
-    if (stat.dev !== BigInt(source.dev) || stat.ino !== BigInt(source.ino)) return stat;
-    return Object.assign(stat, { mtimeNs: hooks.mtimeNs, ctimeNs: hooks.ctimeNs });
+    if (!stat || !bigint) return stat;
+    if (hooks.fixedStamp) {
+      const source = actual.statSync(hooks.fixedStamp);
+      if (stat.dev === BigInt(source.dev) && stat.ino === BigInt(source.ino)) {
+        return Object.assign(stat, { mtimeNs: hooks.mtimeNs, ctimeNs: hooks.ctimeNs });
+      }
+    }
+    for (const reused of hooks.reusedSidecars) {
+      if (!actual.existsSync(reused.file)) continue;
+      const current = actual.statSync(reused.file, { bigint: true });
+      if (stat.dev === current.dev && stat.ino === current.ino) return Object.assign(stat, { dev: reused.dev, ino: reused.ino });
+    }
+    return stat;
   };
   return { ...actual,
     lstatSync: (...args: Parameters<typeof actual.lstatSync>) => fixed(Reflect.apply(actual.lstatSync, undefined, args), !!args[1]?.bigint),
@@ -45,6 +55,7 @@ const roots: string[] = [];
 afterEach(() => {
   hooks.afterRead = null;
   hooks.fixedStamp = null;
+  hooks.reusedSidecars = [];
   hooks.mtimeNs = 0n; hooks.ctimeNs = 0n;
   vi.useRealTimers(); vi.restoreAllMocks();
   hooks.beforePrivateOpen = null;
@@ -682,6 +693,38 @@ it("snapshots a committed prefix while every WAL copy is overtaken by backfill",
     expect(value).toBeGreaterThan(1);
     expect(readdirSync(temp)).toEqual([]);
   } finally { writer.close(); }
+}, 5000);
+
+it("rejects a mixed main copy when close and reopen reuse empty sidecar identities", () => {
+  const { file, temp } = closedPair();
+  const connect = () => {
+    const db = openDb(file, { checkpointOnClose: false });
+    db.prepare("SELECT value FROM a").get();
+    return db;
+  };
+  let writer = connect(), reopened = false;
+  try {
+    expect(statSync(`${file}-wal`).size).toBe(0);
+    hooks.fixedStamp = file;
+    hooks.reusedSidecars = ["-wal", "-shm"].map(suffix => {
+      const path = file + suffix, stat = statSync(path, { bigint: true });
+      return { file: path, dev: stat.dev, ino: stat.ino };
+    });
+    hooks.afterRead = fd => {
+      if (reopened || !isFile(fd, file)) return;
+      reopened = true;
+      writer.exec("BEGIN; UPDATE a SET value=1; UPDATE b SET value=1; COMMIT");
+      writer.close(); writer = connect();
+    };
+    const snapshot = openDiagnosticSnapshot(file)!;
+    hooks.afterRead = null;
+    try {
+      expect([{ a: 0, b: 0 }, { a: 1, b: 1 }]).toContainEqual(snapshot.prepare("SELECT a.value AS a,b.value AS b FROM a,b").get());
+      expect(writer.prepare("SELECT a.value AS a,b.value AS b FROM a,b").get()).toEqual({ a: 1, b: 1 });
+    } finally { snapshot.close(); }
+    expect(reopened).toBe(true);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { hooks.afterRead = null; writer.close(); }
 }, 5000);
 
 function fuzzSnapshots(seed: number, iterations: number, poison = false) {

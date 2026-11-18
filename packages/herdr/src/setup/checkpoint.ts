@@ -36,7 +36,7 @@ async function saveBlob(root: string, bytes: Buffer, hash: string): Promise<void
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);
   const path = blobPath(root, hash), saved = await snapshot(path);
-  if (saved.hash === hash) { await chmod(path, 0o600); return; }
+  if (saved.hash === hash) { if (saved.mode !== 0o600) await chmod(path, 0o600); return; }
   if (saved.bytes !== null) throw new HerdrError('backup-verification-failed', 'Checkpoint blob differs from its content hash');
   try { await atomicWrite(path, bytes, 0o600, null); }
   catch (error) { if ((await snapshot(path)).hash !== hash) throw error; }
@@ -133,7 +133,12 @@ export async function collectCheckpointBlobs(root: string): Promise<void> {
   const names = await readdir(directory).catch(error => { if (error.code !== 'ENOENT') throw error; return [] as string[]; });
   for (const name of names) if (/^checkpoint-[a-f0-9]{64}(?:\.spider-[a-f0-9-]+)?$/.test(name)) {
     if (name.includes('.spider-') || !referenced.has(name.slice('checkpoint-'.length))) await unlink(join(directory, name));
-    else { await rejectSymlinks(join(directory, name)); await chmod(join(directory, name), 0o600); }
+    else {
+      // The vault's ancestors were checked above; validate just this entry.
+      const path = join(directory, name), info = await lstat(path);
+      if (info.isSymbolicLink()) throw new HerdrError('destination-symlink', `Refusing symlink: ${path}`);
+      if ((info.mode & 0o777) !== 0o600) await chmod(path, 0o600);
+    }
   }
   if (names.length) await chmod(directory, 0o700);
 }

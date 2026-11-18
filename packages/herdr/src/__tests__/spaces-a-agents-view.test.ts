@@ -332,7 +332,7 @@ it.each(['0.1.13', '0.1.16'] as const)('%s: an old viewer click cannot bypass pa
   const address = 'box-1.invalid/unpinned';
   const target = { coreId: 'core-1', terminalId: 'unpinned', address, createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'session-one', generation: 'gen-one', homeEpoch: 1, runId: null, consoleId: null, name: 'Writer', cwd: '/home/fixture' };
   const snapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'session-one', generation: 'gen-one', owner: { terminal: { address } }, target, name: 'Writer', status: 'working', machineKey: 'box-1.invalid', children: [{ runId: 'run-one', name: 'Viewer', status: 'running' }], consoles: [], unavailableReason: null }], presentations: [] };
-  const index = navigation.indexPaneNavigation(snapshot); let unavailable = false;
+  const index = navigation.indexPaneNavigation(snapshot as any); let unavailable = false;
   h.view.spiderPaneIndex = index;
   h.view.spiderPaneService = { state: () => ({ configured: true, unavailable, index, snapshot }), close() {} };
   h.setExec(async () => ok({ version: 1, kind: 'outcome', outcome: { status: 'complete' } }));

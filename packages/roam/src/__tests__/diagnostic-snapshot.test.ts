@@ -598,3 +598,16 @@ it("retries an index missing at attempt start and accepts it when it appears", (
     expect(readdirSync(temp)).toEqual([]);
   } finally { writer.close(); }
 }, 5000);
+
+it("doctor describes an absent WAL index as an opening or closing store", async () => {
+  const { root, file } = fixture(), writer = openDb(file);
+  vi.stubEnv("HOME", root); vi.stubEnv("SPIDER_GLOBAL_ROOT", root); vi.stubEnv("PATH", root);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('committed')");
+    const target = join(root, "spider.db");
+    copyFileSync(file, target); copyFileSync(`${file}-wal`, `${target}-wal`);
+    const report = await runLocalDoctor({ root });
+    expect(report.diagnostics.find(item => item.reason.includes("cannot inspect the registered store"))?.reason).toContain("opening or closing");
+    expect(report.diagnostics.find(item => item.reason.includes("cannot inspect the registered store"))?.reason).not.toMatch(/corrupt|recovery/i);
+  } finally { writer.close(); }
+}, 5000);

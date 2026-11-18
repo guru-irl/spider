@@ -1,5 +1,5 @@
 // Files required for Herdr's 0.1.16 native and pane-enabled views.
-export const herdrPackageAssets = [
+export const herdrPackageAssets: string[] = [
   "packages/herdr/assets/look/native-navigation-0.1.16.json",
   "packages/herdr/assets/look/native-panel-0.1.16.json",
   "packages/herdr/assets/look/native-picker-0.1.16.json",

@@ -740,3 +740,14 @@ test('N3 a late layout reference refusal remains recoverable by moving the layou
   expect((await snapshot(f.paths.main)).hash).toBeNull();
   expect((await readCheckpoint(f.request.journalRoot))?.state).toBe('undone');
 });
+
+
+test('N5 collection repairs permissions of a retained baseline blob', async () => {
+  const f = await fixture(), original = await fs.readFile(f.paths.main);
+  await setupHerdr(f.request, f.parts);
+  const blob = join(f.request.journalRoot, 'backups', 'checkpoint-' + digest(original));
+  await fs.chmod(blob, 0o644);
+  await metadataRepeat(f);
+  expect((await fs.stat(blob)).mode & 0o777).toBe(0o600);
+  expect(await fs.readFile(blob)).toEqual(original);
+});

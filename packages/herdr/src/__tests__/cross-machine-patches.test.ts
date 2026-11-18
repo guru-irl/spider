@@ -38,6 +38,29 @@ test('the composer rejects duplicate agent fragment ids across files', () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test.each([
+  ['unknown', 'not-an-agent-fragment', 'replacement'],
+  ['empty', 'b-navigation-list', ''],
+])('the composer rejects an %s agent override', (_kind, id, replacement) => {
+  const root = mkdtempSync(join(tmpdir(), 'composer-'));
+  try {
+    mkdirSync(join(root, 'packages/herdr/src/__tests__'), { recursive: true });
+    mkdirSync(join(root, 'packages/herdr/assets'), { recursive: true });
+    cpSync('scripts', join(root, 'scripts'), { recursive: true });
+    cpSync('packages/herdr/assets', join(root, 'packages/herdr/assets'), { recursive: true });
+    cpSync('packages/herdr/src/__tests__/fixtures', join(root, 'packages/herdr/src/__tests__/fixtures'), { recursive: true });
+    for (const name of ['spaces-a-fixture.ts', 'spaces-b-fixture.ts']) cpSync(`packages/herdr/src/__tests__/${name}`, join(root, 'packages/herdr/src/__tests__', name));
+    symlinkSync(resolve('node_modules'), join(root, 'node_modules'), 'dir');
+    const versionPath = join(root, 'scripts/spaces-b-fragments/0.1.16.json');
+    const version = JSON.parse(readFileSync(versionPath, 'utf8'));
+    version.agentOverrides = { [id]: replacement };
+    writeFileSync(versionPath, JSON.stringify(version));
+    const result = spawnSync(process.execPath, ['scripts/compose-spaces-b.mjs', '--check'], { cwd: root, encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(`Invalid agent override ${id}`);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 for (const version of ['0.1.13', '0.1.16'] as const) {
   function data() {
     const a = loadPublishedSpacesARecipe(version);

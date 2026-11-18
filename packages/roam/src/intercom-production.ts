@@ -137,9 +137,11 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
       await call(pair.source, pins.source, "add-machine", pair, { targetCoreId: pins.target.coreId });
     },
     verifyTransport: (pair, pins) => call(pair.source, pins.source, "verify-transport", pair, { targetCoreId: pins.target.coreId }),
-    async approvePair(pair, approval) {
+    async approvePair(pair, approval, pins) {
       const proof = consent(), row = input.journal.read(request.operation.id).findLast(item => item.action === "intercom-peer-consent" && item.result.graphDigest === proof.graphDigest);
       if (approval.operationId !== proof.operationId || approval.graphDigest !== proof.graphDigest || !object(row?.result.fences) || row.result.fences[pair.pairId] !== approval.expectedFenceId) throw new Error("fresh-peer-consent-required");
+      await call(pair.target, pins.target, "approve-commands", pair, { expectedFenceId: approval.expectedFenceId });
+      await call(pair.source, pins.source, "approve-commands", pair, { expectedFenceId: approval.expectedFenceId });
       approvals.set(pair.pairId, approval);
     },
     async publishPair(pair, pins) {

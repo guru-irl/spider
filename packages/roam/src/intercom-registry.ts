@@ -7,6 +7,7 @@ import type { Peer } from "./contracts";
 import type { IntercomEnrollmentPair, IntercomEnrollmentPlan, IntercomRevocationCleanupReason } from "./provision-contracts";
 import { validHostKey, validPublicKey } from "./intercom-enrollment";
 import type { IntercomPairResources, IntercomUnitRecord } from "./intercom-pair-resources";
+import type { IntercomPairApproval } from "./intercom-contracts";
 import { isMachineId } from "./machine-id";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 
@@ -27,6 +28,7 @@ export interface IntercomPairRecord {
   version: 1; pair: IntercomEnrollmentPlan | IntercomEnrollmentPair; state: "pending" | "active" | "revoking" | "revoked" | "cancelled";
   operationId: string; graphDigest: string; fenceId: string | null; cleanupReason: IntercomRevocationCleanupReason | null;
   resources?: IntercomPairResources; unit?: IntercomUnitRecord; revocationEpoch?: string;
+  commandApprovalFenceId?: string | null;
 }
 const reasons = new Set(["intercom-revocation-unconfirmed", "intercom-revocation-peer-unreachable", "intercom-revocation-identity-mismatch", "intercom-revocation-shared-jobs",
   "intercom-revocation-access-open", "intercom-revocation-verification-pending", "intercom-revocation-remote-fence-pending", "intercom-revocation-cleanup-pending"]);
@@ -84,12 +86,15 @@ function validate(value: unknown, pairId: string): IntercomPairRecord {
   const item = value as IntercomPairRecord;
   if (item.version !== 1 || !plan(item.pair) || item.pair.pairId !== pairId || !["pending", "active", "revoking", "revoked", "cancelled"].includes(item.state) ||
       !id(item.operationId) || !hash(item.graphDigest) || !(item.fenceId === null || isMachineId(item.fenceId)) ||
-      !(item.cleanupReason === null || reasons.has(item.cleanupReason)) || item.revocationEpoch !== undefined && !id(item.revocationEpoch) || !["pending", "cancelled"].includes(item.state) && !bound(item.pair) ||
+      !(item.cleanupReason === null || reasons.has(item.cleanupReason)) || item.revocationEpoch !== undefined && !id(item.revocationEpoch) ||
+      item.commandApprovalFenceId !== undefined && (!(item.commandApprovalFenceId === null || isMachineId(item.commandApprovalFenceId)) || !bound(item.pair)) ||
+      !["pending", "cancelled"].includes(item.state) && !bound(item.pair) ||
       item.state === "cancelled" && (bound(item.pair) || item.resources || item.unit || item.cleanupReason || item.revocationEpoch) ||
       (item.state === "revoking" || item.state === "revoked") && item.fenceId === null) throw new Error("invalid-intercom-registry");
   return { version: 1, pair: bound(item.pair) ? normalizePair(item.pair) : normalizePlan(item.pair), state: item.state,
     operationId: item.operationId, graphDigest: item.graphDigest, fenceId: item.fenceId, cleanupReason: item.cleanupReason,
     ...(item.revocationEpoch === undefined ? {} : { revocationEpoch: item.revocationEpoch }),
+    ...(item.commandApprovalFenceId === undefined ? {} : { commandApprovalFenceId: item.commandApprovalFenceId }),
     ...(item.resources === undefined ? {} : { resources: resources(item.resources, item.pair) }), ...(item.unit === undefined ? {} : { unit: unit(item.unit, item.pair) }) };
 }
 function checkPrivateFile(file: string): boolean {
@@ -237,6 +242,20 @@ export function createIntercomRegistry(root: string) {
         }
         if (previous && (previous.name !== candidate.name || previous.file !== candidate.file || previous.contents !== candidate.contents || previous.localPort !== candidate.localPort)) throw new Error("intercom-unit-mismatch");
         await save({ ...existing, unit: candidate });
+      });
+    },
+    /** Admit the freshly approved key without clearing the bridge's federation fence. */
+    async approveCommands(pairId: string, approval: IntercomPairApproval): Promise<void> {
+      if (!(approval.expectedFenceId === null || isMachineId(approval.expectedFenceId))) throw new Error("invalid-intercom-fence");
+      await locked(async () => {
+        const existing = await get(pairId);
+        if (!existing || !["pending", "active"].includes(existing.state) || !bound(existing.pair) ||
+            existing.operationId !== approval.operationId || existing.graphDigest !== approval.graphDigest || existing.pair.edgeEpoch !== approval.edgeEpoch ||
+            existing.fenceId !== approval.expectedFenceId && !(existing.fenceId === null && existing.commandApprovalFenceId === approval.expectedFenceId)) {
+          throw new Error("fresh-peer-consent-required");
+        }
+        if (existing.commandApprovalFenceId === approval.expectedFenceId) return;
+        await save({ ...existing, commandApprovalFenceId: approval.expectedFenceId });
       });
     },
     async activate(pairId: string, operationId: string): Promise<void> {

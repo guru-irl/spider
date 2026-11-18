@@ -17,7 +17,7 @@ export interface PairConsentProof { approved: true; actor: string; at: number; o
 type Common = { pair: IntercomEnrollmentPair; approval: PairConsentProof; targetCoreId?: string };
 export type LocalPairOperation = Common & ({ action: "ensure-key" } | { action: "write-route" } | { action: "authorize"; publicKey: string } |
   { action: "add-machine" | "verify-transport"; targetCoreId: string } | { action: "register-pair" | "publish-config" | "verify-federation" | "activate-pair" } |
-  { action: "enroll-live"; expectedFenceId: string | null }) |
+  { action: "approve-commands" | "enroll-live"; expectedFenceId: string | null }) |
   { action: "inspect-ssh" | "check-connector" | "host-connector" | "connect-connector"; pair: IntercomEnrollmentPlan; approval: PairConsentProof };
 export interface LocalPairPorts extends PairResourcePorts {
   machineId: string; root: string; home: string; node: string; ssh: string; keygen: string; keyscan?: string; sshUser?: string; recipe?: IntercomConnectorRecipe;
@@ -144,7 +144,7 @@ export async function runLocalPairOperation(input: LocalPairOperation, ports: Lo
 async function localPairOperation(input: LocalPairOperation, ports: LocalPairPorts): Promise<unknown> {
   if (!input || !input.pair || !hasPairConsent(input.pair, input.approval)) throw new Error("peer-consent-required");
   const source = input.action === "ensure-key" || input.action === "write-route" || input.action === "add-machine" || input.action === "verify-transport" || input.action === "connect-connector" ||
-    (input.action === "check-connector" || input.action === "register-pair" || input.action === "publish-config" || input.action === "enroll-live" ||
+    (input.action === "check-connector" || input.action === "register-pair" || input.action === "publish-config" || input.action === "approve-commands" || input.action === "enroll-live" ||
       input.action === "verify-federation" || input.action === "activate-pair") && ports.machineId === input.pair.source.machineId;
   const expected = source ? input.pair.source : input.pair.target;
   if (!expected || !isMachineId(ports.machineId) || expected.machineId !== ports.machineId || expected.globalRoot !== ports.root) throw new Error("machine-mismatch");
@@ -158,6 +158,11 @@ async function localPairOperation(input: LocalPairOperation, ports: LocalPairPor
     if (!federation) throw new Error("intercom-verification-pending");
     await createIntercomRegistry(ports.root).activate(input.pair.pairId, input.approval.operationId);
     return { active: true };
+  }
+  if (input.action === "approve-commands") {
+    await createIntercomRegistry(ports.root).approveCommands(input.pair.pairId, { operationId: input.approval.operationId,
+      graphDigest: input.approval.graphDigest, edgeEpoch: input.pair.edgeEpoch, expectedFenceId: input.expectedFenceId });
+    return { approved: true };
   }
   if (input.action === "enroll-live") {
     const peer = source ? input.pair.target.machineId : input.pair.source.machineId;

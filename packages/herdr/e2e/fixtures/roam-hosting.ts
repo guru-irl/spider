@@ -16,6 +16,7 @@ import { createProcessPresence } from '../../src/sessions/presence.js';
 import { fixtureProcessDomain } from '../../../host/src/herdr/fixture-process-domain.js';
 import { createLocalDiagnosticPorts } from '../../../roam/src/local-diagnostics.js';
 import { createIntentStore } from '../../../roam/src/intent.js';
+import { installSupervisorCorePin } from '../../../roam/src/enrollment.js';
 import { DEFAULT_LIMITS } from '../../../roam/src/contracts.js';
 import { PROVISION_REMOTE_SCRIPT } from '../../../roam/src/provision-remote-script.js';
 import { renderSupervisorUnit } from '../../../roam/src/systemd.js';
@@ -103,6 +104,8 @@ export async function hostingFixture(suite: Suite, name = 'hosting'): Promise<Ho
   await writeFile(join(root, 'roam', 'machine.json'), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
   await writeFile(join(root, 'roam', 'config.json'), JSON.stringify({ enabled: false, role: 'box', machineId: BOX, hubMachineId: HUB,
     peers: [], discoveryRoots: [], coreUnit: 'herdr-core.service' }), { mode: 0o600 });
+  installSupervisorCorePin(root, { binary: cores.wrapper, coreId: cores.local.coreId, socket: cores.local.socket,
+    sessionNamespace: cores.local.namespace, stateHome: cores.local.env.XDG_STATE_HOME, configHome: cores.local.env.XDG_CONFIG_HOME });
   await writeFile(join(herdr, 'config.json'), JSON.stringify({ enabled: true, mode: 'core-only', core: { binary: cores.wrapper, config: join(suite.root, 'core.toml') },
     agentDirectory: agent, globalRoot: root, shellRc: join(suite.root, 'shellrc'), spaces: [], machines: [] }), { mode: 0o600 });
   await writeFile(join(agent, 'auth.json'), JSON.stringify({ fixture: { type: 'api_key', key: 'fixture-only' } }), { mode: 0o600 });

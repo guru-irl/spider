@@ -113,6 +113,7 @@ test('upgrade undo removes only a new pane and keeps the pre-upgrade shared tab'
   expect(JSON.parse(await readFile(f.layoutPath, 'utf8')).spaces[0].tabs[0].terminals.map((row: { terminal: string }) => row.terminal)).toEqual(['terminal-0', 'terminal-1']);
   expect((await readCutoverRecovery(spaces.journalRoot)).entries.map(entry => entry.placement.terminal)).toEqual(['terminal-0', 'terminal-1']);
   expect(beforeClose).toHaveBeenCalledTimes(1);
+  expect(JSON.parse(await readFile(join(spaces.journalRoot, 'spaces.json'), 'utf8')).focused).toBe(true);
 });
 
 test('an owner-close checkpoint failure happens before any app teardown', async () => {

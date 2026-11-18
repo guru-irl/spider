@@ -97,6 +97,7 @@ describe.sequential('published Herdr artifact', () => {
       'packages/herdr/assets/mods/spider/main.js',
       'packages/herdr/assets/agents/children.js', 'packages/herdr/assets/agents/move.js', 'packages/herdr/assets/agents/move-menu.js', 'packages/herdr/assets/agents/bot.svg', 'packages/herdr/assets/agents/list.svg', 'packages/herdr/assets/agents/bell.svg', 'packages/herdr/assets/agents/chevron-up.svg', 'packages/herdr/assets/agents/unreachable.svg',
       'packages/herdr/assets/look/patches.json', 'packages/herdr/assets/look/cross-machine-patches.json', 'packages/herdr/assets/look/layout-edits.json',
+      'packages/herdr/assets/look/native-navigation-0.1.16.json', 'packages/herdr/assets/look/native-panel-0.1.16.json', 'packages/herdr/assets/look/native-picker-0.1.16.json',
       'packages/herdr/assets/fonts/GoogleSansFlex.ttf', 'packages/herdr/assets/fonts/GlassLabel-Bold.ttf',
       'packages/herdr/assets/fonts/GoogleSansFlex-OFL.txt', 'packages/herdr/assets/fonts/GoogleSansFlex-TRADEMARKS.md',
       'packages/herdr/assets/keys.json', 'packages/herdr/assets/templates/role.md',

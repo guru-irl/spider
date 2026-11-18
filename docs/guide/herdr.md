@@ -210,7 +210,7 @@ If a snapshotted installed path or a managed part changed, undo stops with `upgr
 
 For `upgrade-layout-reference`, copy the named mod to a custom mod directory and update its layout reference and `modId` props before retrying undo. Alternatively, remove the reference if you no longer want that mod. Before undo starts, this check leaves the mod installed.
 
-For `upgrade-layout-ambiguous`, preserve the customized layout before retrying:
+For either `upgrade-layout-reference` or `upgrade-layout-ambiguous`, you can preserve the customized layout before retrying:
 
 ```sh
 mv "<app-home>/layouts/spider-glass.json" "<app-home>/layouts/spider-glass.json.kept"

@@ -2,18 +2,37 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { readdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { tmpdir } from 'node:os';
 import type { Generation, Owner, SessionId, TerminalIdentity } from '../contracts.js';
-import { createTerminalRegistry, terminalIdentityKey } from '../sessions/registry.js';
+import { createTerminalRegistry, terminalIdentityKey, readRecordedLaunch } from '../sessions/registry.js';
 import { createProcessPresence } from '../sessions/presence.js';
 import { createSessionLeases, type ProcessInventoryPorts } from '../sessions/lease.js';
 import { launchSession, type PiSpawnRequest, type SessionLaunchPorts } from '../sessions/launcher.js';
 import { offerResume, resumeOfferShell } from '../sessions/resume.js';
 import { registerHerdrSessions } from '../sessions/register.js';
 import type { RecordedLaunch } from '../sessions/launch-environment.js';
+
+const disk = vi.hoisted(() => ({ fail: '', events: [] as string[] }));
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof import('node:fs/promises')>();
+  return { ...actual,
+    rename: async (from: string, to: string) => {
+      if (disk.fail && to.includes(disk.fail)) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+      await actual.rename(from, to); disk.events.push('rename:' + to);
+    },
+    open: async (...args: Parameters<typeof actual.open>) => {
+      if (disk.fail && String(args[0]).includes(disk.fail)) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+      const handle = await actual.open(...args), sync = handle.sync.bind(handle);
+      handle.sync = async () => { await sync(); disk.events.push('sync:' + String(args[0])); };
+      return handle;
+    },
+  };
+});
 
 let root: string, file: string, agent: string, owner: Owner, terminal: TerminalIdentity;
 let inventory: ProcessInventoryPorts, ports: SessionLaunchPorts, launches: PiSpawnRequest[];
@@ -27,13 +46,14 @@ function keyLaunch(argv: string[]) { return { ...launch(argv), model: { provider
 function mapping() { return { owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: agent, extensionArguments: [] as string[] }, activityId }; }
 function request() { return { sessionFile: file, sessionId: owner.sessionId, cwd: root, environment: { agentDirectory: join(root, 'fallback-agent'), extensionArguments: [] } }; }
 function secretDirectory() { return join(agent, 'spider', 'herdr', 'launch-environments'); }
-function secretPath() { return join(secretDirectory(), terminalIdentityKey(terminal) + '.json'); }
+function secretPath() { return join(secretDirectory(), readdirSync(secretDirectory()).find(name => name.endsWith('.json')) ?? terminalIdentityKey(terminal) + '.json'); }
 async function record(snapshot: RecordedLaunch = launch()) {
   await createTerminalRegistry(root).record({ ...mapping(), ...{ launch: snapshot } }, { pid: 2147483647, startIdentity: 'old' });
 }
 function offerPorts(auto: boolean) { return { registry: createTerminalRegistry(root), processInventory: inventory, coreStartedAt: async () => 20, ...(auto ? { autoResumeRoot: root } : {}) }; }
 function resumePorts() { return { ...ports, ...{ resume: { registry: createTerminalRegistry(root), terminal } } }; }
 beforeEach(async () => {
+  disk.fail = ''; disk.events = [];
   root = await mkdtemp(join(await realpath(tmpdir()), 'lenv-')); file = join(root, 'session.jsonl'); agent = join(root, 'agent');
   terminal = { coreId: 'core', terminalId: 'terminal', address: 'terminal', socket: join(root, 'core.sock'), sessionNamespace: 'fixture' } as TerminalIdentity;
   owner = { sessionId: 'saved' as SessionId, generation: 'generation' as Generation, terminal, sessionFile: file, cwd: root, name: 'current name' };
@@ -471,4 +491,69 @@ it('does not replay a custom variable pointing at the old tty', async () => {
   expect(launches[0].env.CUSTOM_TTY).toBe('/dev/ttys004');
   expect(launches[0].env.OTHER_TTY).toBeUndefined();
   expect(launches[0].env.KEEP_PATH).toBe('/dev/null');
+});
+
+it.each(['missing', 'wrong session', 'wrong publication', 'permission drift'])('invalid private record gives an actionable session refusal: %s', async cause => {
+  await record();
+  if (cause === 'missing') await rm(secretPath());
+  else if (cause === 'permission drift') await chmod(secretDirectory(), 0o755);
+  else {
+    const data = JSON.parse(await readFile(secretPath(), 'utf8'));
+    if (cause === 'wrong session') data.sessionId = 'foreign'; else data.recordedAt = 9;
+    await writeFile(secretPath(), JSON.stringify(data));
+  }
+  let notice = '';
+  try { await launchSession(request(), resumePorts()); } catch (e) { notice = String(e); }
+  expect(notice).toContain('saved');
+  expect(notice).toContain(`cd -- '${root}' && 'pi' '--session' '${file}'`);
+  expect(notice).toContain('<API_KEY>');
+  expect(notice.includes(credential())).toBe(false);
+});
+
+it.each(['terminals/', 'live-'])('failed publication preserves the previous matching launch record: %s', async failure => {
+  await record(); const registry = createTerminalRegistry(root), previous = await registry.get(terminal);
+  disk.fail = failure;
+  await expect(registry.record({ ...mapping(), recordedAt: 11, launch: { ...launch(), variables: { REPLACEMENT: 'new' } } }, { pid: 2147483647, startIdentity: 'old' })).rejects.toThrow();
+  disk.fail = '';
+  const retained = await registry.get(terminal);
+  expect(retained).toEqual(previous);
+  const saved = await readRecordedLaunch(retained!);
+  expect(saved?.variables.API_TOKEN === credential()).toBe(true);
+});
+
+it('syncs the containing directory after publishing the launch record and terminal mapping', async () => {
+  await record();
+  const mappingPath = join(root, 'terminals', terminalIdentityKey(terminal) + '.json');
+  for (const path of [secretPath(), mappingPath]) {
+    const published = disk.events.indexOf('rename:' + path);
+    expect(published).toBeGreaterThanOrEqual(0);
+    expect(disk.events.slice(published + 1)).toContain('sync:' + dirname(path));
+  }
+});
+
+it.each([false, true])('reports a private-record refusal only once per terminal publication in auto=%s', async auto => {
+  await record(); await rm(secretPath());
+  const resume = { ...offerPorts(auto), refusalRoot: root };
+  await expect(offerResume(terminal, resume)).rejects.toMatchObject({ code: 'launch-record-invalid' });
+  expect(await offerResume(terminal, resume)).toBeNull();
+  await createTerminalRegistry(root).record({ ...mapping(), recordedAt: 11, launch: launch() }, { pid: 2147483647, startIdentity: 'old' });
+  await rm(secretPath());
+  await expect(offerResume(terminal, resume)).rejects.toMatchObject({ code: 'launch-record-invalid' });
+});
+
+it('removes leftover credential temp files on the next launch record write', async () => {
+  await record(); const stale = join(secretDirectory(), 'old.0123456789abcdef.new');
+  await writeFile(stale, credential(), { mode: 0o600 });
+  await record();
+  expect((await readdir(secretDirectory())).filter(name => name.endsWith('.new'))).toEqual([]);
+});
+
+it('an unreadable API-key session model names the session and manual command', async () => {
+  await record(keyLaunch(['--api-key', credential()]));
+  await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: 'saved', cwd: root }) + '\n' + JSON.stringify({ type: 'model_change', id: 'bad', parentId: null, provider: '', modelId: '' }) + '\n');
+  let notice = '';
+  try { await launchSession(request(), resumePorts()); } catch (e) { notice = String(e); }
+  expect(notice).toContain('saved');
+  expect(notice).toContain(`'--session' '${file}'`);
+  expect(notice).toContain('<API_KEY>');
 });

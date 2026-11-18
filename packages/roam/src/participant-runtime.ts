@@ -49,8 +49,11 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
     let checked: Promise<Awaited<ReturnType<typeof runLocalDoctor>>> | undefined;
     const doctor = async () => (await (checked ??= runLocalDoctor({ root, launchRecovery: options.launchRecovery }))).diagnostics;
     if (operation.kind === "session-resume") {
-      try { if ((await doctor()).some(row => row.severity === "block")) return result(1, "participant-doctor-refused"); }
-      catch { return result(1, "participant-doctor-unavailable"); }
+      try {
+        const blocking = (await doctor()).filter(row => row.severity === "block");
+        if (blocking.length) return { ...result(1, "participant-doctor-refused"), repairCommand: `spider roam doctor ${pinned.machineId}`,
+          value: { diagnostics: blocking.map(row => ({ severity: row.severity, reason: row.reason, repairCommand: row.repairCommand })) } };
+      } catch { return { ...result(1, "participant-doctor-unavailable"), repairCommand: `spider roam doctor ${pinned.machineId}` }; }
     }
     if (!existing) {
       const location = db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id=?").get(id) as { file: string | null; cwd: string | null } | undefined;

@@ -148,7 +148,7 @@ export function createParticipantAdmission(input: {
           origin.file === file && origin.cwd === cwd && !origin.stopped && origin.pid === terminal.owner.pid && origin.startIdentity === terminal.owner.startIdentity;
         if (!previous) {
           if (terminal.operationId) throw new Error("participant-hub-intent-required");
-          if (origin?.stopped && origin.pid === terminal.owner.pid && origin.startIdentity === terminal.owner.startIdentity) throw new Error("Participant is stopped");
+          if (origin?.stopped) throw new Error("participant-stopped");
           if (home && (home.machineId !== runtime.config.machineId || home.epoch !== epoch || !localOwner)) throw new Error("participant-hub-intent-required");
           const local: BoxLocalOrigin = { kind: "box-local", machineId: runtime.config.machineId, epoch, file, cwd, ...terminal.owner, stopped: false };
           runtime.db.raw.transaction(() => writeLocal(runtime.db, "participant-origin", sessionId, local)).immediate();

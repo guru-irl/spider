@@ -113,7 +113,7 @@ it.each([
   ["EACCES", "EACCES"],
   ["diagnostic-snapshot-changing", "diagnostic-snapshot-changing"],
   ["/private/fixture.key", "unknown"],
-  ["ghp_syntheticIdentifierShapedCredential1234", "unknown"],
+  ["ghp" + "_" + "synthetic".padEnd(39, "0"), "unknown"],
   ["ERR_STREAM_DESTROYED", "ERR_STREAM_DESTROYED"],
   ["SQLITE_BUSY", "SQLITE_BUSY"],
 ])("reports only a safe helper error code on retry: %s", async (code, expected) => {

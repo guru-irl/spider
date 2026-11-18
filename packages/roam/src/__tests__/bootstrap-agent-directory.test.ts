@@ -119,13 +119,16 @@ it("fails closed if the user-manager environment cannot be read", () => {
 }, 5000);
 
 
-it("requires the configured directory to exist and match both box environments", () => {
+it("requires the configured directory to exist and match the launching process", () => {
   const f = fixture(), agent = join(f.home, "custom-agent");
   expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("custom");
   mkdirSync(agent, { mode: 0o700 });
   expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("default");
   expect(f.run(undefined, `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("custom");
-  expect(f.run(agent, "", false, f.home, f.home, agent).reply.value).toBe("custom");
+  expect(f.run(agent, "", false, f.home, f.home, agent).reply.value).toBe("default");
+  expect(f.run(agent, "PI_CODING_AGENT_DIR=\n", false, f.home, f.home, agent).reply.value).toBe("default");
+  expect(f.run(agent, `PI_CODING_AGENT_DIR=${join(f.home, "other-agent")}\n`, false, f.home, f.home, agent).reply.value).toBe("custom");
+  expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\nPI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("unknown");
   expect(f.run(join(f.home, "wrong"), `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("custom");
   expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, true, f.home, f.home, agent).reply.value).toBe("unknown");
 }, 5000);

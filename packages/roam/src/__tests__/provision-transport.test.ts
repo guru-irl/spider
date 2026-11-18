@@ -7,7 +7,7 @@ import * as coreClient from "../../../herdr/src/client/hc";
 import * as liveness from "../../../herdr/src/client/liveness";
 import { HerdrError } from "../../../herdr/src/client/parse";
 import * as transportModule from "../transport";
-import { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from "../bootstrap-script";
+import { BOOTSTRAP_HOME_SCRIPT, BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from "../bootstrap-script";
 import { selectedSettingsDigests } from "../selected-files";
 import type { SettingsDestinationPreview, SettingsKeyDigest } from "../selected-files";
 import type { Journal, Peer, Transport } from "../contracts";
@@ -25,7 +25,7 @@ const create = (transportModule as typeof transportModule & { createProvisionTra
 
 afterEach(() => { vi.restoreAllMocks(); });
 
-function fixture() {
+function fixture(peer: Peer = bootstrapPeer) {
   const actions: { action: string; result: Parameters<Journal["record"]>[2] }[] = [];
   const calls: { argv: readonly string[]; stdin?: Buffer }[] = [], controlCalls: (readonly string[])[] = [], events: string[] = [];
   const state = { remoteCore: "remote-core", replaceDuringCall: false,
@@ -50,6 +50,7 @@ function fixture() {
     calls.push({ argv, stdin: options.stdin && Buffer.from(options.stdin) }); events.push("identity");
     if (argv.includes("cat")) return Buffer.from(JSON.stringify({ machineId: bootstrapPeer.machineId }));
     if (state.replaceDuringCall) state.remoteCore = "replacement-core";
+    if (argv.includes(BOOTSTRAP_HOME_SCRIPT)) return Buffer.from(JSON.stringify("/home/fixture"));
     if (argv.includes(BOOTSTRAP_AGENT_DIRECTORY_SCRIPT)) return Buffer.from(JSON.stringify(state.agentDirectoryReply));
     if (argv.includes(BOOTSTRAP_SETTINGS_SCRIPT)) return Buffer.from(JSON.stringify(state.settingsReply));
     if (argv.includes(BOOTSTRAP_SCRIPT)) return Buffer.from(JSON.stringify(inventoryEnvelope()));
@@ -59,7 +60,7 @@ function fixture() {
   });
   const fixtureRoot = process.env.SPIDER_GLOBAL_ROOT ?? resolve(".spider/scratch/fx/global");
   mkdirSync(fixtureRoot, { recursive: true, mode: 0o700 });
-  const options = { binary: "/fixture/hc", env: { HC_SOCKET: resolve(fixtureRoot, "provision-fixture.sock"), HC_SESSION: "fixture" }, enrolled: [bootstrapPeer] };
+  const options = { binary: "/fixture/hc", env: { HC_SOCKET: resolve(fixtureRoot, "provision-fixture.sock"), HC_SESSION: "fixture" }, enrolled: [peer] };
   const consent = (peer: Peer = bootstrapPeer) => journal.record("op-1", "provision-consent", { target: peer.alias, machineId: peer.machineId, approved: true, providers: ["github-copilot"] });
   return { actions, calls, controlCalls, events, state, journal, options, consent };
 }
@@ -405,4 +406,17 @@ it("explicit flag consent accepts only the exact authenticated enabled reply", a
   const count = f.calls.length;
   await expect(port.executeProvision(handle, { ...request, enabled: false })).rejects.toMatchObject({ code: "consent-required" });
   expect(f.calls).toHaveLength(count);
+}, 5000);
+
+
+it("uses configured agent paths for directory, inventory and settings probes", async () => {
+  const peer = { ...bootstrapPeer, agentDir: "/home/fixture/install/agent" }, f = fixture(peer), port = create!(f.options, f.journal);
+  expect(port.probeHome).toBeTypeOf("function");
+  expect(await port.probeHome(peer)).toBe("/home/fixture");
+  await port.probeAgentDirectory(peer, "/home/fixture");
+  expect(JSON.parse(f.calls.at(-1)!.stdin!.toString())).toMatchObject({ agentDir: peer.agentDir });
+  await port.transport.bootstrapProbe(peer, "inventory");
+  expect(JSON.parse(f.calls.at(-1)!.stdin!.toString())).toMatchObject({ agentDir: peer.agentDir });
+  await port.previewSettings(peer, "/home/fixture", [{ path: ["theme"], sha256: "b".repeat(64) }], 1024, coreFence);
+  expect(JSON.parse(f.calls.at(-1)!.stdin!.toString())).toMatchObject({ agentDir: peer.agentDir });
 }, 5000);

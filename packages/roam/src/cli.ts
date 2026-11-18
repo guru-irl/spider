@@ -35,6 +35,7 @@ import { parseHelperFence, requestHelperFence } from "./intercom-helper";
 import { createIntercomRegistry } from "./intercom-registry";
 import { pairScopedRecipe, inspectPairUnit } from "./intercom-pair-resources";
 import type { IntercomCliOptions } from "./intercom-cli";
+import { enrollmentCauseCode } from "./intercom-enrollment";
 
 const HELP = `Usage: spider <command>
 
@@ -113,7 +114,7 @@ async function readArtifactInput(limit: number, supplied?: Buffer): Promise<Buff
 
 /** Parse before loading configuration, a database, or a transport. */
 function setupPendingCause(error: unknown): { code: string; message: string } {
-  const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(error.code) ? error.code : "unknown";
+  const code = enrollmentCauseCode(error);
   const message = (error instanceof Error ? error.message : "Unknown setup failure")
     .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[redacted]")
     .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")

@@ -45,7 +45,7 @@ function fixture(short = false) {
   const destination = { home, agentDir, npmPrefix, supervisor: join(releaseRoot, "dist", "roam", "supervisor.mjs") };
   const calls = join(root, "systemctl-calls"), writes: { path: string; bytes: Buffer }[] = [], requests: { action: string; argv: string[] }[] = [], launches: string[] = [];
   const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false }, terminalFile = join(root, "release-terminals.json");
-  writeFileSync(join(bin, "hc"), `#!${process.execPath}\nimport fs from 'node:fs'; const a=process.argv.slice(2); console.log(JSON.stringify(a[0]==='server'?{core:{id:'fixture-core'}}:(fs.existsSync(${JSON.stringify(terminalFile)})?JSON.parse(fs.readFileSync(${JSON.stringify(terminalFile)},'utf8')):{terminals:[]})));\n`, { mode: 0o700 });
+  writeFileSync(join(bin, "hc"), `#!${process.execPath}\nimport fs from 'node:fs'; const a=process.argv.slice(2); console.log(JSON.stringify(a[0]==='server'?{core:{id:'fixture-core'},pid:4321,version:'0.1.16'}:(fs.existsSync(${JSON.stringify(terminalFile)})?JSON.parse(fs.readFileSync(${JSON.stringify(terminalFile)},'utf8')):{terminals:[]})));\n`, { mode: 0o700 });
   writeFileSync(join(bin, "systemctl"), `#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(2))+'\\n');\n`, { mode: 0o700 });
   const transport: Transport = {
     async resolve(value) { return value; }, async bootstrapProbe() { throw new Error("unexpected probe"); },

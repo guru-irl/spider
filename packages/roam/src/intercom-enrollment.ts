@@ -225,11 +225,11 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           await ports.authorize(pair, authorizedPairLine(pair, key.publicKey), pairPins);
           record(pair.pairId, "authorized");
           await ports.addMachine(pair, machineArgs(pair), pairPins); record(pair.pairId, "machine");
+          await ports.approvePair(pair, { operationId, graphDigest: digest, expectedFenceId }, pairPins);
+          record(pair.pairId, "fence-approved");
           const transport = await ports.verifyTransport(pair, pairPins);
           if (!transport || transport.sourceMachineId !== pair.source.machineId || transport.targetMachineId !== pair.target.machineId ||
               transport.connector !== true || transport.key !== true || transport.route !== true) return "intercom-verification-pending";
-          await ports.approvePair(pair, { operationId, graphDigest: digest, expectedFenceId }, pairPins);
-          record(pair.pairId, "fence-approved");
           await ports.publishPair(pair, pairPins); record(pair.pairId, "published");
           const checked = await ports.verifyPair(pair, pairPins);
           if (!checked || checked.sourceMachineId !== pair.source.machineId || checked.targetMachineId !== pair.target.machineId ||

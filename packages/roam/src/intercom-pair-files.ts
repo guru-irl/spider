@@ -147,7 +147,7 @@ export function authorizedPairLine(pair: IntercomEnrollmentPair, pub: string): s
 function writePairCommand(pair: IntercomEnrollmentPair): void {
   const file = pairCommandPath(pair), registry = join(pair.target.globalRoot, "roam", "intercom", "enrollments", `${pair.pairId}.json`);
   assertTestConfigPath(file); privateDirectory(dirname(file));
-  const script = `import { constants, openSync, fstatSync, readFileSync, closeSync, realpathSync } from 'node:fs';
+  const script = (commandFence: string) => `import { constants, openSync, fstatSync, readFileSync, closeSync, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 const fail = () => { process.exitCode = 126; };
 try {
@@ -163,14 +163,25 @@ try {
     if (!stat.isFile() || stat.nlink !== 1 || stat.size > 1048576 || stat.uid !== process.getuid() || (stat.mode & 0o7777) !== 0o600) throw new Error();
     record = JSON.parse(readFileSync(fd, 'utf8'));
   } finally { closeSync(fd); }
-  if (!['pending','active'].includes(record.state) || record.fenceId !== null || record.pair?.pairId !== ${JSON.stringify(pair.pairId)} || record.pair?.edgeEpoch !== ${JSON.stringify(pair.edgeEpoch)} ||
+  if (!['pending','active'].includes(record.state) || ${commandFence} || record.pair?.pairId !== ${JSON.stringify(pair.pairId)} || record.pair?.edgeEpoch !== ${JSON.stringify(pair.edgeEpoch)} ||
       record.pair?.source?.machineId !== ${JSON.stringify(pair.source.machineId)} || record.pair?.target?.machineId !== ${JSON.stringify(pair.target.machineId)}) throw new Error();
   const child = spawn('/bin/sh', ['-c', command.toString('utf8')], { stdio: 'inherit' });
   for (const signal of ['SIGINT','SIGTERM','SIGHUP']) process.on(signal, () => child.kill(signal));
   child.on('error', fail); child.on('exit', code => { process.exitCode = code ?? 1; });
 } catch { fail(); }
 `;
-  writeImmutable(file, Buffer.from(script)); privateFile(file, 0o600, 32 * 1024);
+  const bytes = Buffer.from(script("record.fenceId !== null && !(record.state === 'pending' && record.commandApprovalFenceId === record.fenceId)"));
+  const legacy = Buffer.from(script("record.fenceId !== null"));
+  if (pathExists(file) && privateFile(file, 0o600, 32 * 1024).equals(legacy)) {
+    const temp = join(dirname(file), `.command.${randomUUID()}.new`);
+    try {
+      writeImmutable(temp, bytes);
+      if (!privateFile(file, 0o600, 32 * 1024).equals(legacy)) throw new Error("intercom-pair-command-changed");
+      renameSync(temp, file);
+      if (process.platform !== "win32") { const dir = openSync(dirname(file), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW); try { fsyncSync(dir); } finally { closeSync(dir); } }
+    } finally { try { unlinkSync(temp); } catch (error) { if (!missing(error)) throw error; } }
+  }
+  writeImmutable(file, bytes); privateFile(file, 0o600, 32 * 1024);
 }
 async function editAuthorization(home: string, pair: IntercomEnrollmentPair, pub: string, remove: boolean): Promise<void> {
   const line = authorizedPairLine(pair, pub), root = pair.target.globalRoot;
@@ -181,6 +192,7 @@ async function editAuthorization(home: string, pair: IntercomEnrollmentPair, pub
     const rows = old.match(/[^\n]*\n|[^\n]+$/g) ?? [], marker = `spider-intercom:${pair.pairId}`;
     if (rows.some(row => row.replace(/\r?\n$/, "").endsWith(` ${marker}`) && row.replace(/\r?\n$/, "") !== line)) throw new Error("intercom-authorized-key-conflict");
     const match = rows.some(row => row.replace(/\r?\n$/, "") === line);
+    if (!remove) writePairCommand(pair);
     if (remove && !match || !remove && match) return;
     const next = remove ? rows.filter(row => row.replace(/\r?\n$/, "") !== line).join("") : `${old}${old && !old.endsWith("\n") ? "\n" : ""}${line}\n`;
     const temp = join(directory, `.authorized_keys.${randomUUID()}.new`);
@@ -207,6 +219,6 @@ export function pairKeyAbsent(home: string, pair: IntercomEnrollmentPair, pub: s
   } catch (error) { if (missing(error)) return true; throw error; }
 }
 export async function authorizePairKey(home: string, pair: IntercomEnrollmentPair, pub: string): Promise<void> {
-  pairIdentity(pair); writePairCommand(pair); await editAuthorization(home, pair, pub, false);
+  pairIdentity(pair); await editAuthorization(home, pair, pub, false);
 }
 export async function removePairKey(home: string, pair: IntercomEnrollmentPair, pub: string): Promise<void> { await editAuthorization(home, pair, pub, true); }

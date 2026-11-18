@@ -7,6 +7,8 @@ import { migrate, openDb, openDbReadOnly } from "@spider/db-core";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { openDiagnosticSnapshot } from "../diagnostic-snapshot";
 import { runLocalDoctor } from "../local-diagnostics";
+import { createIntercomRegistry } from "../intercom-registry";
+import { openIntercomStore } from "../intercom-store";
 
 const hooks = vi.hoisted(() => ({
   afterRead: null as null | ((fd: number, count: number) => void),
@@ -268,6 +270,52 @@ it("does not create sidecars on an inactive source", () => {
   finally { snapshot.close(); }
   expect(hashes(file)).toEqual(before);
   expect(readdirSync(temp)).toEqual([]);
+}, 5000);
+
+it("snapshots a cleanly reopened store whose connections have only read", () => {
+  const { file, temp } = fixture(), writer = openDb(file, { checkpointOnClose: false });
+  writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('saved')");
+  writer.close();
+  const reader = openDb(file, { checkpointOnClose: false });
+  try {
+    reader.prepare("SELECT * FROM fixture").all();
+    const before = hashes(file), snapshot = openDiagnosticSnapshot(file)!;
+    try { expect(snapshot.prepare("SELECT value FROM fixture").all()).toEqual([{ value: "saved" }]); }
+    finally { snapshot.close(); }
+    expect(hashes(file)).toEqual(before);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { reader.close(); }
+}, 5000);
+
+it("doctor inspects a registered store reopened only for reading", async () => {
+  const { root, temp } = fixture(), file = join(root, "spider.db");
+  vi.stubEnv("HOME", root); vi.stubEnv("SPIDER_GLOBAL_ROOT", root); vi.stubEnv("PATH", root);
+  const writer = openDb(file, { checkpointOnClose: false });
+  migrate(writer, "global", { machineId: "00000000-0000-4000-8000-000000000001", globalRoot: root });
+  writer.close();
+  const reader = openDb(file, { checkpointOnClose: false });
+  try {
+    reader.prepare("SELECT * FROM roam_meta").all();
+    const before = hashes(file), report = await runLocalDoctor({ root });
+    expect(report.diagnostics.filter(item => /cannot inspect.*store/.test(item.reason))).toEqual([]);
+    expect(hashes(file)).toEqual(before);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { reader.close(); }
+}, 5000);
+
+it("enrollment reads fences after a clean reopen with no new writes", async () => {
+  const { root, temp } = fixture(), file = join(root, "roam", "intercom", "queue.db");
+  const machineId = "00000000-0000-4000-8000-000000000001", peer = "00000000-0000-4000-8000-000000000002";
+  const store = openIntercomStore({ file, machineId, clock: { now: () => 1 } });
+  store.close();
+  const reader = openDb(file, { checkpointOnClose: false });
+  try {
+    reader.prepare("SELECT * FROM intercom_meta").all();
+    const before = hashes(file);
+    expect(await createIntercomRegistry(root).revocationPending("pair-1", peer)).toBe(false);
+    expect(hashes(file)).toEqual(before);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { reader.close(); }
 }, 5000);
 
 it("refuses a source that changes during every snapshot and removes partial copies", () => {

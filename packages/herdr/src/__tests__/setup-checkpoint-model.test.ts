@@ -214,6 +214,7 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
 test('N1 minimal: setup → settings → bookkeeping → undo', () => model(['setup', 'settings', 'bookkeeping', 'undo'], false));
 test('N2 minimal: setup → remote → undo', () => model(['setup', 'remote', 'undo'], false));
 test('N6 minimal: setup → undo → full rollback', () => model(['setup', 'undo', 'rollback'], false));
+test('N2 minimal: failed join → killed retry → undo retains the original layout', () => model(['setup', 'cutover-crash', 'batch-crash', 'undo'], false));
 for (const seed of seeds) {
   const next = random(seed);
   for (let sequence = 0; sequence < 32; sequence++) {

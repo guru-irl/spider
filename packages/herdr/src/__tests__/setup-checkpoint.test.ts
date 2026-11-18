@@ -694,3 +694,15 @@ test('I4 a selected app preference intent survives a kill before cutover observa
   await undoHerdrUpgrade(f.request, f.parts);
   expect(JSON.parse(await fs.readFile(f.paths.appSettings, 'utf8'))).toEqual({ layout: 'legacy', theme: 'legacy', zoom: 2 });
 });
+
+
+test('N3 an unrelated layout label is not a mod reference', async () => {
+  const f = await fixture(), directory = dirname(f.paths.main);
+  await fs.rm(directory, { recursive: true });
+  const journal = await readJournal(f.request.journalRoot); journal.entries = journal.entries.filter(entry => !entry.path.startsWith(directory + '/')); await saveJournal(f.request.journalRoot, journal);
+  await setupHerdr(f.request, f.parts);
+  await put(f.paths.layout, '{"content":[],"generation":2,"label":"spider-example"}');
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(JSON.parse(await fs.readFile(f.paths.layout, 'utf8'))).toEqual({ content: [], generation: 1, label: 'spider-example' });
+  expect((await snapshot(f.paths.main)).hash).toBeNull();
+});

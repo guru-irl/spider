@@ -74,6 +74,14 @@ it('does not resurrect a denylisted variable absent in the resume shell', async 
   expect(['HC_OBSOLETE', 'XPC_OBSOLETE', '__CF_OBSOLETE', 'PI_SUBAGENT_RUN_ID'].filter(name => launches[0].env[name] !== undefined)).toEqual([]);
 });
 
+it('preserves every valid environment name and empty or multiline launch values', async () => {
+  const variables = Object.fromEntries([['__proto__', 'synthetic-prototype-name'], ['CUSTOM.KEY', 'first line\nsecond line'], ['EMPTY_SETTING', '']]);
+  await record({ ...launch([]), variables });
+  await launchSession(request(), resumePorts());
+  expect(Object.hasOwn(launches[0].env, '__proto__')).toBe(true);
+  expect(Object.entries(variables).every(([name, value]) => launches[0].env[name] === value)).toBe(true);
+});
+
 it('never replays positional prompts, attachments, or anything after the option delimiter', async () => {
   await record(launch(['initial message', '@secret.txt', '--tools', 'read', '--', '--tools', 'bash', 'another message', '@other.txt']));
   await launchSession(request(), resumePorts());

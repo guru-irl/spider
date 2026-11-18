@@ -65,6 +65,24 @@ it("retains a redacted underlying cause in setup JSON and diagnostics", async ()
   expect(f.calls).toEqual([]);
 }, 5000);
 
+it.each([
+  ["EACCES", "EACCES"], ["ERR_STREAM_DESTROYED", "ERR_STREAM_DESTROYED"], ["SQLITE_BUSY", "SQLITE_BUSY"],
+  ["diagnostic-snapshot-changing", "diagnostic-snapshot-changing"], ["ghp_syntheticIdentifierShapedCredential1234", "unknown"],
+  ["identifierShapedSecret", "unknown"], ["/private/fixture.key", "unknown"], ["E".repeat(65), "unknown"],
+])("validates setup cause-code families at the helper boundary: %s", async (code, expected) => {
+  const f = fixture(), directory = join(f.sourceRoot, "roam"); mkdirSync(directory, { mode: 0o700 });
+  writeFileSync(join(directory, "config.json"), JSON.stringify({ role: "hub", machineId: A, hubMachineId: A, coreUnit: "fixture.service" }), { mode: 0o600 });
+  writeFileSync(join(directory, "machine.json"), JSON.stringify({ machineId: A }), { mode: 0o600 });
+  let out = "", diagnostics = "";
+  expect(await setupCli(["--global-root", f.sourceRoot, "roam", "intercom", "setup-local"], { out: text => { out += text; }, err: text => { diagnostics += text; } }, {
+    stdin: Buffer.from(JSON.stringify({ action: "register-pair", pair: f.pair, approval: f.proof })),
+    get pairPorts(): typeof f.ports { throw Object.assign(new Error("setup failed"), { code }); },
+  })).toBe(0);
+  expect(JSON.parse(out)).toMatchObject({ ok: false, cause: { code: expected } });
+  expect(JSON.parse(diagnostics)).toMatchObject({ cause: { code: expected } });
+  expect(f.calls).toEqual([]);
+}, 5000);
+
 it("reads a machine-bound authoritative fence without running setup", async () => {
   const f = fixture(), directory = join(f.sourceRoot, "roam"); mkdirSync(directory, { mode: 0o700 });
   writeFileSync(join(directory, "config.json"), JSON.stringify({ role: "hub", machineId: A, hubMachineId: A, coreUnit: "fixture.service" }), { mode: 0o600 });

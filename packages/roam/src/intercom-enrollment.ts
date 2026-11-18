@@ -10,8 +10,8 @@ export const INTERCOM_CONSENT = "Enrolling this pair lets the initiating box exe
 export interface EnrollmentResult { pairs: readonly string[]; pending?: readonly { pairId: string; reason: string; causeCode?: string }[] }
 
 export function enrollmentCauseCode(error: unknown): string {
-  return error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(error.code)
-    ? error.code : "unknown";
+  return error && typeof error === "object" && "code" in error && typeof error.code === "string" && error.code.length <= 64 &&
+    /^(?:E[A-Z0-9]+|ERR_[A-Z0-9_]+|SQLITE_[A-Z_]+|[a-z]+(?:-[a-z0-9]+)+)$/.test(error.code) ? error.code : "unknown";
 }
 
 function outcome(operationId: string, code: 0 | 1 | 2 | 3, reason: string, value: EnrollmentResult | null = null): Outcome<EnrollmentResult> {
@@ -208,8 +208,8 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           record(pair.pairId, "verified");
           return null;
         } catch (error) {
-          return { reason: error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending", "intercom-ssh-host-unverified"].includes(error.message) ? error.message : "intercom-enrollment-pending",
-            causeCode: enrollmentCauseCode(error) };
+          if (error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending", "intercom-ssh-host-unverified"].includes(error.message)) return error.message;
+          return { reason: "intercom-enrollment-pending", causeCode: enrollmentCauseCode(error) };
         }
       };
       for (const pair of snapshot.pairs) {

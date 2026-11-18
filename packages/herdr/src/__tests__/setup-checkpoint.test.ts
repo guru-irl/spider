@@ -74,6 +74,7 @@ async function fixture() {
     generateTemplates: async (_, context) => [await installed(paths.added, 'new instructions', context)], installResume: async () => [],
     probeMachineNode: async () => 'v22.19.0', ensureRuntime: async () => [], bootstrapRuntime: async () => {},
     hc: { fileRead: async () => Buffer.alloc(0), fileWrite: async () => {} },
+    paneEndpointPlan: async () => ({ paths: [paths.registry], changed: (await fs.readFile(paths.registry, 'utf8')) !== '{"version":1,"packageRoot":"/home/fixture","endpoint":{"protocol":1}}\n' }),
     stagePaneEndpoint: async () => { const next = '{"version":1,"packageRoot":"/home/fixture","endpoint":{"protocol":1}}\n'; if ((await fs.readFile(paths.registry, 'utf8')) === next) return []; await put(paths.registry, next); return [paths.registry]; },
     cutover: async () => {
       await put(paths.spaces, '{"version":2,"spaces":["new"],"placements":["new"]}\n');

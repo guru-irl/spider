@@ -1,4 +1,4 @@
-import { stagePaneEndpointInstallation, probeLocalPaneEndpoint } from './pane-installation.js';
+import { planPaneEndpointInstallation, stagePaneEndpointInstallation, probeLocalPaneEndpoint } from './pane-installation.js';
 import { inspectPaneInstallation } from './pane-doctor.js';
 import { createPaneRemoteRequest } from './pane-transport.js';
 import { createArgvClient } from '../../../herdr/src/client/argv-client.js';
@@ -1239,6 +1239,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           return [...await filesFor([{ path: hookPath, bytes: await readFile(join(packageRoot, 'packages/herdr/assets/shell/resume.sh')) }], context), { path: request.config.shellRc, expected: current.hash, managed: { kind: 'resume' as const }, bytes: Buffer.from(block) }];
         },
         probeMachineNode: (_target, launch) => probe(request, launch),
+        paneEndpointPlan: request => planPaneEndpointInstallation(request.config.globalRoot, packageRoot),
         stagePaneEndpoint: request => stagePaneEndpointInstallation(request.config.globalRoot, packageRoot),
         ensureRuntime: async request => { const bytes = await readFile(join(packageRoot, 'dist/herdr/remote-runtime.mjs')); runtimes = request.config.machines.map(machine => ({ machine: machine.name, path: runtimeInstallPath(machine.runtime.directory, bytes), bytes, sha256: sha256(bytes) })); return runtimes; },
         runtimeRootsHealthy: async (request, runtimes) => {

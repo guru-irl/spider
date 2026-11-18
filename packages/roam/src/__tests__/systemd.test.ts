@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { renderSupervisorUnit } from "../systemd";
 
-it("renders only a private supervisor with the existing core dependencies", () => {
+it("renders a private login supervisor without dependencies on the core unit", () => {
   const parent = dirname(scratchDbPath("roam-systemd"));
   mkdirSync(parent, { recursive: true });
   const root = mkdtempSync(join(parent, "unit-"));
@@ -14,9 +14,9 @@ it("renders only a private supervisor with the existing core dependencies", () =
     const coreUnitBefore = readFileSync(coreFile, "utf8");
     const unit = renderSupervisorUnit({ node: "/home/agent/bin/node", supervisor: "/home/agent/spider/supervisor.mjs", coreUnit: "herdr-core.service", globalRoot: "/home/agent/spider-data" });
     const lines = unit.split("\n");
-    expect(lines).toContain("After=herdr-core.service");
-    expect(lines).toContain("Requires=herdr-core.service");
-    expect(lines).toContain("PartOf=herdr-core.service");
+    expect(lines.some(line => line.startsWith("After="))).toBe(false);
+    expect(lines.some(line => line.startsWith("Requires="))).toBe(false);
+    expect(lines.some(line => line.startsWith("PartOf="))).toBe(false);
     expect(lines).toContain("Restart=on-failure");
     expect(lines).toContain("UMask=0077");
     expect(lines).toContain("WantedBy=default.target");

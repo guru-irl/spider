@@ -416,7 +416,8 @@ async function twoNodeFixture(capture = true, intercomReady = false, brokerRunni
     detachedPidFiles.push(brokerPid);
   }
   if (intercomReady) {
-    const release = join(box, "release"), scripts = join(release, "scripts"), extensionDir = join(agentDir, "extensions");
+    const release = join(box, ".local", "spider-releases", "a".repeat(64), "node_modules", "@guru-irl", "spider");
+    const scripts = join(release, "scripts"), extensionDir = join(agentDir, "extensions");
     mkdirSync(scripts, { recursive: true, mode: 0o700 }); mkdirSync(join(release, "dist"), { mode: 0o700 }); mkdirSync(extensionDir, { mode: 0o700 });
     writeFileSync(join(release, "dist", "extension.js"), "export default () => {};", { mode: 0o600 });
     copyFileSync(join(process.cwd(), "scripts", "extension-shim.mjs"), join(scripts, "extension-shim.mjs"));

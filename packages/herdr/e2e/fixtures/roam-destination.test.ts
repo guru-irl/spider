@@ -19,13 +19,19 @@ it('prepares an isolated agent and routes the packaged CLI through the destinati
     await writeFile(join(sdk, 'dist/index.js'), 'fixture sdk');
     await writeFile(cli, 'console.log(JSON.stringify({home:process.env.HOME,agent:process.env.PI_CODING_AGENT_DIR,arg:process.argv[2]}));');
     const staged = await stageRoamDestination({ root, sourceAgent, box, home, release, checkout, cli });
+    const installed = join(home, '.local/spider-releases', 'a'.repeat(64), 'node_modules/@guru-irl/spider');
     expect(staged.agent).not.toBe(sourceAgent);
-    expect(JSON.parse(await readFile(join(staged.agent, 'settings.json'), 'utf8'))).toEqual({ packages: [release] });
-    expect(JSON.parse(await readFile(join(box, 'roam/active-release.json'), 'utf8'))).toBe(release);
+    expect(JSON.parse(await readFile(join(staged.agent, 'settings.json'), 'utf8'))).toEqual({ packages: [installed] });
+    expect(JSON.parse(await readFile(join(box, 'roam/active-release.json'), 'utf8'))).toBe(installed);
+    expect(await readFile(join(installed, 'dist/extension.js'), 'utf8')).toBe(await readFile(join(release, 'dist/extension.js'), 'utf8'));
     expect(await readlink(join(home, '.local/lib/node_modules/@earendil-works/pi-coding-agent'))).toBe(sdk);
+    await writeFile(cli, "throw new Error('source CLI was used');");
     const run = spawnSync(process.execPath, [staged.cli, 'probe'], { encoding: 'utf8' });
     expect(run.status, run.stderr).toBe(0);
     expect(JSON.parse(run.stdout)).toEqual({ home, agent: staged.agent, arg: 'probe' });
+    await writeFile(join(sourceAgent, 'settings.json'), JSON.stringify({ packages: [] }));
+    await expect(stageRoamDestination({ root, sourceAgent, box, home, release, checkout, cli })).rejects.toThrow('fixture settings must declare the release once');
+    await writeFile(join(sourceAgent, 'settings.json'), JSON.stringify({ packages: [release] }));
     await rm(join(release, 'scripts/extension-shim.mjs'));
     await expect(stageRoamDestination({ root, sourceAgent, box, home, release, checkout, cli })).rejects.toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }

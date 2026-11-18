@@ -126,4 +126,7 @@ test.each(bookkeepingCases)('setup resumes after %s publication fails %s its per
   expect(JSON.parse(await readFile(f.settings, 'utf8'))).toEqual({ theme: 'dracula-plus-glass', unrelated: 'keep' });
   expect((await readJournal(f.request.journalRoot)).verified).toBe(true);
   expect(f.cutovers()).toBe(1);
+  const checkpoint = JSON.parse(await readFile(join(f.request.journalRoot, 'checkpoint.json'), 'utf8'));
+  const references = new Set(checkpoint.runs.flatMap((run: { before: { hash: string }[]; after: { hash: string }[]; written: { hash: string }[]; planned: { hash: string }[] }) => [...run.before, ...run.after, ...run.written, ...run.planned].map(file => file.hash)));
+  expect((await fs.readdir(join(f.request.journalRoot, 'backups'))).filter(name => name.startsWith('checkpoint-')).every(name => references.has(name.slice('checkpoint-'.length)))).toBe(true);
 });

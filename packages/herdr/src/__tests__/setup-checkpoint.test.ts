@@ -622,3 +622,35 @@ test('N2 a failed batch retry preserves layout edits made between attempts', asy
   expect(JSON.parse(await fs.readFile(f.paths.layout, 'utf8'))).toEqual({ content: [], generation: 2, userSize: 321 });
   expect(await fs.readFile(f.paths.main, 'utf8')).toBe('new-main');
 });
+
+
+test('N2 a failed completed-sequence join retains its baseline through a substantive retry', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const journal = await readJournal(f.request.journalRoot); journal.verified = false; await saveJournal(f.request.journalRoot, journal);
+  f.fail(true); await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('injected cutover interruption'); f.fail(false);
+  const interrupted = await readCheckpoint(f.request.journalRoot);
+  expect(interrupted?.state).toBe('complete');
+  expect(interrupted?.runs.at(-1)?.outcome).toBe('failed');
+  const install = f.parts.installFiles;
+  f.parts.installFiles = async (...args) => (await install(...args)).map(file => file.path === f.paths.main ? { ...file, bytes: Buffer.from('third-main') } : file);
+  await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+  expect(await fs.readFile(f.paths.layout, 'utf8')).toBe('{"content":[],"generation":1}\n');
+  await rollbackHerdr(f.request, f.parts);
+  expect((await snapshot(f.paths.registry)).hash).toBeNull();
+  expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+});
+
+
+test('N2 a no-op retry closes an interrupted completed-sequence join before another upgrade', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts); await metadataRepeat(f);
+  const path = join(f.request.journalRoot, 'checkpoint.json'), checkpoint = JSON.parse(await fs.readFile(path, 'utf8'));
+  checkpoint.runs.at(-1).after = null; checkpoint.runs.at(-1).outcome = 'running'; await put(path, JSON.stringify(checkpoint));
+  await setupHerdr(f.request, f.parts);
+  expect((await readCheckpoint(f.request.journalRoot))?.runs.at(-1)?.outcome).toBe('complete');
+  const install = f.parts.installFiles;
+  f.parts.installFiles = async (...args) => (await install(...args)).map(file => file.path === f.paths.main ? { ...file, bytes: Buffer.from('third-main') } : file);
+  await setupHerdr(f.request, f.parts); await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('new-main');
+});

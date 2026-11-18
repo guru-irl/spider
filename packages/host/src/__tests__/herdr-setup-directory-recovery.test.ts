@@ -69,4 +69,5 @@ test('setup reuses an unrecorded empty mod directory left by an older interrupte
   await rollbackHerdr(f.request, f.parts);
   expect((await stat(directory)).ino).toBe(before.ino);
   expect(await readdir(directory)).toEqual([]);
+  expect((await readdir(join(f.request.journalRoot, 'backups'))).filter(name => name.startsWith('checkpoint-'))).toEqual([]);
 });

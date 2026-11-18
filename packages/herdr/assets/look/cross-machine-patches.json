@@ -688,6 +688,30 @@
           "file": "main.js",
           "anchor": "  openChild(k) {",
           "replacement": "  openChild(k) {\n    if (k.action?.kind === \"pane\") return requestPaneService(spiderProps(), exec, k.action.request).catch(error => { this.spiderFeedError = String(error?.message ?? \"Pane unavailable\"); });\n    if (k.action?.kind === \"focus\") { run(\"pane.focus\", { pane: k.action.pane }); return; }"
+        },
+        {
+          "id": "b-native-list-fallback",
+          "file": "main.js",
+          "anchor": "const list = paneNavigation?.list ?? filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract).filter(a => !a.address.includes(\"/\"));",
+          "replacement": "const list = paneNavigation?.list ?? filterTopLevelAgents(snapshot.agents, snapshot.terminals, p.labelContract);"
+        },
+        {
+          "id": "b-native-focus-fallback",
+          "file": "main.js",
+          "anchor": "const canFocus = () => a.navigation ? Boolean(a.navigation.action) : Boolean(a.pane) && !remoteMachine;",
+          "replacement": "const canFocus = () => a.navigation ? Boolean(a.navigation.action) : !this.spiderPaneIndex && Boolean(a.pane) && (!remoteMachine || !this.spiderConnections?.observed || (machineConnection(remoteMachine, this.spiderConnections?.snapshot ?? null) === \"connected\" && (this.spiderRenderSnapshot?.machines ?? machines()).find(item => item.name === remoteMachine)?.layout !== \"unavailable\"));"
+        },
+        {
+          "id": "b-native-row-focus",
+          "file": "main.js",
+          "anchor": "\n        .when(focusAvailable, el => el.on_click(() => { if (canFocus()) void this.peek(a.address); }))\n        .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))",
+          "replacement": "\n        .when(focusAvailable, el => el.on_click(() => { if (canFocus()) { if (a.navigation) void this.peek(a.address); else run(\"pane.focus\", { pane: a.pane }); } }))\n        .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
+        },
+        {
+          "id": "b-native-rail-focus",
+          "file": "main.js",
+          "anchor": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) void this.peek(a.address); }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))",
+          "replacement": "\n          .when(focusAvailable, el => el.on_click(() => { if (canFocus()) { if (a.navigation) void this.peek(a.address); else run(\"pane.focus\", { pane: a.pane }); } }))\n          .when(!focusAvailable, el => el.tooltip(a.navigation?.disabledReason || (a.pane ? \"Machine unavailable\" : \"No pane available\")))"
         }
       ]
     }
@@ -745,7 +769,7 @@
       }
     },
     "0.1.16": {
-      "recordsHash": "16c7503abdf83a9f4f7f9590b0ecd7e5e738f9ff3fff66294a023b363fcd63c7",
+      "recordsHash": "bd051c1f2473a7077c77da9f3d21dd1ce4e0bd98802748bd4fe8a8a04b932790",
       "inputHashes": {
         "agents/main.js": "d6409a8ba9ac857e82267a70c1886631f7003e7416a3e28b8257feb36fa4c46d",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
@@ -768,7 +792,7 @@
         "tabs/win-restore.svg": "69ccde33c78d83ce39972ef129e158dd09fb19d3002bd709047801802fbad51d"
       },
       "outputHashes": {
-        "agents/main.js": "c9ebc170f342eb6eb2e365ad6b8c4427ad81425771f18629893ec6899f485b3a",
+        "agents/main.js": "f13d6acfa51f7569d945eda24bf0786a7d652b98e9fed794c6872aa683a75886",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "06bc53750bb00caf29578d72a134229171d3fd167bdae3c89fe38bc8137929dd",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",

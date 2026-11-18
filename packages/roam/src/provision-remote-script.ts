@@ -1,4 +1,3 @@
-import { stripTypeScriptTypes } from "node:module";
 import { gzipSync } from "node:zlib";
 import { selectedRemoteSource } from "./selected-remote-source";
 import authSource from "./auth.ts?raw";
@@ -648,7 +647,8 @@ catch (error) {
 
 // Linux limits each exec argument to 128 KiB, even when ARG_MAX is larger.
 // Keep stdin available for the request and argv[1] for release request files.
-const provisionPayload = gzipSync(stripTypeScriptTypes(provisionSource)).toString("base64");
+const provisionPayload = gzipSync(provisionSource).toString("base64");
 export const PROVISION_REMOTE_SCRIPT: string = `import { gunzipSync } from "node:zlib";
-await import("data:text/javascript;base64," + gunzipSync(Buffer.from(${JSON.stringify(provisionPayload)}, "base64")).toString("base64"));`;
-
+import { stripTypeScriptTypes } from "node:module";
+const source = gunzipSync(Buffer.from(${JSON.stringify(provisionPayload)}, "base64")).toString("utf8");
+await import("data:text/javascript;base64," + Buffer.from(stripTypeScriptTypes(source)).toString("base64"));`;

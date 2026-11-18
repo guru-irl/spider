@@ -160,6 +160,16 @@ it('uses the active session branch rather than an abandoned model change for key
   expect(launches[0].argv.includes('other/abandoned')).toBe(false);
 });
 
+it.each(['offer', 'launch'])('%s checks live ownership before opening a session to read its API-key model', async mode => {
+  await record(launch(['--model', 'provider/old', '--api-key', credential()]));
+  await inventory.presence.record({ pid: 900, startIdentity: 'live-owner', sessionId: owner.sessionId, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address });
+  inventory.probe = async pid => pid === 900 ? { kind: 'live', startIdentity: 'live-owner' } : { kind: 'absent' };
+  await rm(file); await symlink(join(root, 'missing-target'), file);
+  if (mode === 'offer') expect(await offerResume(terminal, offerPorts(false))).toBeNull();
+  else await expect(launchSession(request(), { ...resumePorts(), processInventory: inventory })).rejects.toMatchObject({ code: 'session-may-be-live' });
+  expect(launches).toHaveLength(0);
+});
+
 it('uses pi on PATH when the recorded program no longer exists', async () => {
   await record({ ...launch([]), program: join(root, 'missing-pi') });
   await launchSession(request(), resumePorts());

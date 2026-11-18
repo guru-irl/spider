@@ -207,7 +207,7 @@ it.each([false, true])("retries a checkpoint and WAL generation reset during the
   } finally { writer.close(); }
 }, 5000);
 
-it("refuses an unindexed WAL and a corrupt published index", () => {
+it("distinguishes a persistently missing WAL index from a corrupt one", () => {
   const { root, file } = fixture(), writer = openDb(file);
   try {
     writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('committed')");
@@ -217,9 +217,12 @@ it("refuses an unindexed WAL and a corrupt published index", () => {
       return target;
     };
     const unindexed = clone("unindexed.db"), before = hashes(unindexed);
-    let failure: unknown;
-    expect(() => { try { openDiagnosticSnapshot(unindexed); } catch (error) { failure = error; throw error; } }).toThrow(/WAL.*commit/i);
-    expect(failure).toMatchObject({ code: "diagnostic-snapshot-wal-invalid" });
+    let failure: unknown, missingAttempts = 0;
+    hooks.afterRead = fd => { if (isFile(fd, unindexed)) missingAttempts++; };
+    expect(() => { try { openDiagnosticSnapshot(unindexed); } catch (error) { failure = error; throw error; } }).toThrow(/WAL.*index/i);
+    hooks.afterRead = null;
+    expect(failure).toMatchObject({ code: "diagnostic-snapshot-wal-index-missing" });
+    expect(missingAttempts).toBe(3);
     expect(hashes(unindexed)).toEqual(before);
     const corrupt = clone("corrupt.db"), index = readFileSync(`${file}-shm`);
     index[40] ^= 1; index[88] ^= 1; // Both header copies agree but neither checksum is valid.
@@ -573,6 +576,25 @@ it("refuses a corrupt checksum earlier than the selected commit without retrying
     expect(failure).toMatchObject({ code: "diagnostic-snapshot-wal-invalid" });
     expect(attempts).toBe(1);
     expect(hashes(target)).toEqual(before);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
+}, 5000);
+
+it("retries an index missing at attempt start and accepts it when it appears", () => {
+  const { root, file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('committed')");
+    const target = join(root, "opening.db"), index = readFileSync(`${file}-shm`);
+    copyFileSync(file, target); copyFileSync(`${file}-wal`, `${target}-wal`);
+    let attempts = 0;
+    hooks.afterRead = fd => {
+      if (isFile(fd, target) && ++attempts === 1) writeFileSync(`${target}-shm`, index);
+    };
+    const snapshot = openDiagnosticSnapshot(target)!;
+    hooks.afterRead = null;
+    try { expect(snapshot.prepare("SELECT value FROM fixture").all()).toEqual([{ value: "committed" }]); }
+    finally { snapshot.close(); }
+    expect(attempts).toBe(2);
     expect(readdirSync(temp)).toEqual([]);
   } finally { writer.close(); }
 }, 5000);

@@ -1,0 +1,45 @@
+import { afterEach, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+function fixture() {
+  const base = resolve(".spider/scratch/provision-core-pin"); mkdirSync(base, { recursive: true, mode: 0o700 });
+  const home = mkdtempSync(join(base, "f-")); roots.push(home);
+  const root = join(home, "global"), configHome = join(home, "config"), stateHome = join(home, "state"), core = join(home, "hc");
+  for (const dir of [root, join(root, "roam"), join(configHome, "herdr-core"), stateHome]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const machineId = "00000000-0000-4000-8000-000000000001", hubMachineId = "00000000-0000-4000-8000-000000000002";
+  writeFileSync(join(root, "roam/machine.json"), JSON.stringify({ machineId }), { mode: 0o600 });
+  writeFileSync(core, `#!${process.execPath}\nconsole.log(JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}));\n`, { mode: 0o700 });
+  const request = { action: "enrollment", operationId: "pin-enrollment", machineId, hubMachineId, home, globalRoot: root,
+    agentDir: join(home, "agent"), npmPrefix: join(home, "prefix"), unitDir: join(home, "units"), core, coreId: "fixture-core",
+    coreUnit: "fixture.service", maximum: 1024 * 1024, chunkBytes: 1024 };
+  const run = (socket: string | null, operationId = request.operationId) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, HC_SESSION: "fixture", XDG_STATE_HOME: stateHome, XDG_CONFIG_HOME: configHome };
+    if (socket === null) delete env.HC_SOCKET; else env.HC_SOCKET = socket;
+    const result = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
+      env, input: JSON.stringify({ ...request, operationId }), encoding: "utf8", timeout: 5000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    return JSON.parse(result.stdout);
+  };
+  return { home, root, core, configHome, stateHome, run };
+}
+
+it("records the peer executable, core identity and selected startup environment", () => {
+  const f = fixture(), socket = join(f.home, "core.sock");
+  expect(f.run(socket)).toMatchObject({ value: "enrolled" });
+  expect(JSON.parse(readFileSync(join(f.root, "roam/core.json"), "utf8"))).toEqual({ binary: f.core, coreId: "fixture-core", socket,
+    sessionNamespace: "fixture", stateHome: f.stateHome, configHome: f.configHome });
+  expect(f.run(socket)).toMatchObject({ value: "already-enrolled" });
+});
+
+it("resolves a configured socket when the core has no HC_SOCKET override", () => {
+  const f = fixture(), socket = join(f.home, "configured.sock");
+  writeFileSync(join(f.configHome, "herdr-core/config.toml"), `socket = '${socket}'\n`);
+  expect(f.run(null)).toMatchObject({ value: "enrolled" });
+  expect(JSON.parse(readFileSync(join(f.root, "roam/core.json"), "utf8"))).toHaveProperty("socket", socket);
+});

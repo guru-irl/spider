@@ -12,7 +12,7 @@ import { shellQuote } from '../sessions/resume.js';
 import { chmod, lstat, mkdir } from 'node:fs/promises';
 import type { RuntimeDirectoryProbe } from '../remote/runtime.js';
 import { planModStorage } from './mod-storage.js';
-import { assertSetupNotUndoing, beginRunCheckpoint, finishRunCheckpoint, readCheckpoint, pendingCheckpointBaselines, recordRemoteWrite, recordCheckpointIntents, recordCheckpointWrites, undoUpgrade, includeRegistryCheckpoint, completeDanglingCheckpoint, supersedeCheckpoint, checkpointBytes, type UpgradeCheckpoint, type UpgradeUndoResult } from './checkpoint.js';
+import { collectCheckpointBlobs, assertSetupNotUndoing, beginRunCheckpoint, finishRunCheckpoint, readCheckpoint, pendingCheckpointBaselines, recordRemoteWrite, recordCheckpointIntents, recordCheckpointEffects, recordCheckpointWrites, undoUpgrade, includeRegistryCheckpoint, completeDanglingCheckpoint, supersedeCheckpoint, checkpointBaseline, checkpointBytes, type UpgradeCheckpoint, type UpgradeUndoResult } from './checkpoint.js';
 
 async function ensureSessionFeedDirectory(globalRoot: string, repair = true): Promise<void> {
   await rejectSymlinks(globalRoot);
@@ -160,7 +160,7 @@ export interface SetupParts {
   installResume(request: SetupRequest, context: SetupContext): Promise<readonly InstallFile[]>;
   probeMachineNode(target: ProbeTarget, launch: HcRunRequest): Promise<string>;
   /** Read-only paths and change detection for endpoint publication. */
-  paneEndpointPlan?(request: SetupRequest): Promise<{ paths: readonly string[]; changed: boolean }>;
+  paneEndpointPlan?(request: SetupRequest): Promise<{ paths: readonly string[]; changed: boolean; files?: readonly InstallFile[] }>;
   /** Explicit setup may stage only this machine’s owned installed endpoint. */
   stagePaneEndpoint?(request: SetupRequest): Promise<readonly string[]>;
   ensureRuntime(request: SetupRequest, context: SetupContext): Promise<readonly RuntimeFile[]>;
@@ -236,13 +236,22 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
   await assertGlobalRoot(request.config.globalRoot, parts.globalRoot);
   await parts.validateSelections?.(request);
   const work = async (): Promise<SetupResult> => {
+    if (!request.dryRun) await collectCheckpointBlobs(request.journalRoot);
     await assertSetupNotUndoing(request.journalRoot);
     const journal = await readJournal(request.journalRoot);
     let checkpoint: UpgradeCheckpoint | undefined, completed = false, setupError: unknown;
     const recordWrites = async (paths: readonly string[]) => { if (checkpoint) await recordCheckpointWrites(request.journalRoot, checkpoint, paths); };
     const saveSetupJournal = async () => { await saveJournal(request.journalRoot, journal); await recordWrites([join(request.journalRoot, 'journal.json')]); };
+    const recordSelectionIntent = async () => {
+      if (!checkpoint) return;
+      const { path, planned } = plannedAppSettings(request), current = await snapshot(path);
+      const settings = JSON.parse(current.bytes?.toString('utf8') ?? '{}') as Record<string, unknown>;
+      const bytes = Buffer.from(JSON.stringify({ ...settings, layout: planned.layout, theme: planned.theme }));
+      await recordCheckpointIntents(request.journalRoot, checkpoint, [{ path, bytes, expected: current.hash, mode: current.mode }], journal);
+    };
     const observeWrites = async <T>(paths: readonly string[], work: () => Promise<T>): Promise<T> => {
       const before = await Promise.all(paths.map(path => snapshot(path)));
+      if (checkpoint) await recordCheckpointEffects(request.journalRoot, checkpoint, paths);
       try { return await work(); }
       finally {
         const changed: string[] = [];
@@ -484,10 +493,12 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     const checkpointPaths = [...files.map(file => file.path), layoutPath, join(request.config.app.home, 'keys.json'),
       plannedAppSettings(request).path, join(request.config.globalRoot, 'herdr/spaces/spaces.json'),
       join(request.config.globalRoot, 'herdr/installation.json'), join(request.journalRoot, 'journal.json'), ...(endpointPlan?.paths ?? [])];
-    const substantive = fileActions.some(action => action.action !== 'unchanged' && files.some(file => file.path === action.path && !file.snapshotOnly && digest(file.bytes) !== file.expected)) || !!endpointPlan?.changed || runtimePlans.some(plan => plan.before !== plan.runtime.sha256);
+    const runtimeRewritten = (file: InstallFile) => file.path === layoutPath || file.copyFrom || file.path.startsWith(join(request.config.globalRoot, 'herdr/instructions') + '/');
+    const substantive = fileActions.some(action => action.action !== 'unchanged' && files.some(file => file.path === action.path && !file.snapshotOnly && !runtimeRewritten(file) && digest(file.bytes) !== file.expected)) || !!endpointPlan?.changed;
     if (!unchanged || endpointPlan?.changed || !endpointPlan && parts.stagePaneEndpoint || cutoverMetadataChanged || runningInPlace && preflight.cutoverNeedsRecheck && parts.persistCutover)
       checkpoint = await beginRunCheckpoint(request.journalRoot, checkpointPaths, substantive);
     try {
+      if (checkpoint && endpointPlan?.files) await recordCheckpointIntents(request.journalRoot, checkpoint, endpointPlan.files, journal);
       if (runningInPlace && preflight.cutoverNeedsRecheck && parts.persistCutover) {
         journal.cutover = await observeWrites([join(request.config.globalRoot, 'herdr/spaces/spaces.json')], () => parts.persistCutover!(request));
         context.priorCutover = journal.cutover;
@@ -536,7 +547,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           continue;
         if (current !== before)
           throw new HerdrError('runtime-digest-mismatch', `Runtime changed after preflight on ${runtime.machine}`);
-        await recordRemoteWrite(request.journalRoot, checkpoint!, runtime.machine, runtime.path);
+        if (checkpoint) await recordRemoteWrite(request.journalRoot, checkpoint, runtime.machine, runtime.path);
         await parts.hc.fileWrite(runtime.machine, runtime.path, runtime.bytes);
         if (digest(await parts.hc.fileRead(runtime.machine, runtime.path)) !== runtime.sha256)
           throw new HerdrError('runtime-digest-mismatch', `Runtime verification failed on ${runtime.machine}`);
@@ -548,6 +559,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
           if (cutoverNeeded) { journal.cutoverPending = true; await saveSetupJournal(); }
           let selectionError: unknown;
           try {
+            await recordSelectionIntent();
             if (cutoverNeeded) cutover = await observeWrites([layoutPath, plannedAppSettings(request).path, join(request.config.globalRoot, 'herdr/spaces/spaces.json')], () => context.priorCutover && !needsAppSelection && parts.reconcileCutover ? parts.reconcileCutover(request, context) : parts.cutover(request, context));
             else {
               if (!parts.selectApp) throw new HerdrError('app-selection-unavailable', 'App selection is unavailable; run setup again');
@@ -668,13 +680,20 @@ export async function undoHerdrUpgrade(request: SetupRequest, parts: SetupParts)
   fenceRequest(request);
   await assertGlobalRoot(request.config.globalRoot, parts.globalRoot);
   return withSetupLock(request.journalRoot, async () => {
+    await collectCheckpointBlobs(request.journalRoot);
     const journal = await readJournal(request.journalRoot);
-    return undoUpgrade(request.journalRoot, {
+    const checkpoint = await readCheckpoint(request.journalRoot);
+    const dataRoot = join(request.config.app.home, 'data') + '/';
+    try { return await undoUpgrade(request.journalRoot, {
       replaceChanged: request.replaceChanged,
       ownerPaths: [join(request.config.globalRoot, 'herdr/spaces/spaces.json'), join(request.journalRoot, 'journal.json'), join(request.config.app.home, 'layouts/spider-glass.json'), plannedAppSettings(request).path],
       managed: new Map(journal.entries.flatMap(entry => entry.managed ? [[entry.path, entry.managed] as const] : [])),
       runtimePaths: [join(request.config.globalRoot, 'herdr/spaces/spaces.json')],
-      runtimeRewrittenPaths: [join(request.config.app.home, 'layouts/spider-glass.json'), ...journal.entries.filter(entry => entry.path.startsWith(join(request.config.globalRoot, 'herdr/instructions') + '/')).map(entry => entry.path)],
+      layoutPath: join(request.config.app.home, 'layouts/spider-glass.json'),
+      removedMods: checkpoint ? checkpointBaseline(checkpoint).filter(file => file.hash === null && dirname(dirname(file.path)) === join(request.config.app.home, 'mods') && basename(file.path) === 'mod.json').map(file => basename(dirname(file.path))) : [],
+      runtimeStorePaths: checkpoint?.runs.flatMap(run => run.before.map(file => file.path)).filter(path => path.startsWith(dataRoot) && /^spider-[a-zA-Z0-9_-]+\/store(?:-[a-f0-9]+)?\.json$/.test(path.slice(dataRoot.length))) ?? [],
+      runtimeRewrittenPaths: [...journal.entries.map(entry => entry.path), ...(checkpoint ? checkpointBaseline(checkpoint).map(file => file.path) : [])].filter(path => path.startsWith(join(request.config.globalRoot, 'herdr/instructions') + '/')),
+      warn: message => parts.warn(message),
       releaseOwners: async (baseline, beforeClose) => {
         const saved = baseline.find(file => file.path === join(request.journalRoot, 'journal.json'));
         const bytes = saved ? await checkpointBytes(request.journalRoot, saved) : null;
@@ -690,7 +709,7 @@ export async function undoHerdrUpgrade(request: SetupRequest, parts: SetupParts)
         const existing = new Set(baseline.filter(file => file.hash !== null).map(file => file.path));
         await rollbackModDirectories(request.config.app.home, { ...journal, entries: journal.entries.filter(entry => existing.has(entry.path)) }, message => parts.warn(message));
       },
-    });
+    }); } finally { await collectCheckpointBlobs(request.journalRoot); }
   });
 }
 export async function rollbackHerdr(request: SetupRequest, parts: SetupParts): Promise<readonly string[]> {
@@ -698,6 +717,7 @@ export async function rollbackHerdr(request: SetupRequest, parts: SetupParts): P
   fenceRequest(request);
   await assertGlobalRoot(request.config.globalRoot, parts.globalRoot);
   return withSetupLock(request.journalRoot, async () => {
+    await collectCheckpointBlobs(request.journalRoot);
     const journal = await readJournal(request.journalRoot);
     const appSettings = journal.verified ? undefined : plannedAppSettings(request);
     await assertSetupNotUndoing(request.journalRoot);

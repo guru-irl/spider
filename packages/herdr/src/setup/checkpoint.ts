@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { lstat, open, unlink, rmdir } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readdir, unlink, rmdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { HerdrError, object } from '../client/parse.js';
 import type { InstallFile } from './installer.js';
 import type { MachineName } from '../contracts.js';
+import { restoreLayout } from './layout-undo.js';
 import { atomicWrite, digest, snapshot, managedProjection, restoredManaged, rejectSymlinks, type ManagedPart, type SetupJournal } from './backup.js';
 
 export interface SavedFile { path: string; hash: string | null; mode: number }
@@ -15,6 +16,7 @@ interface CheckpointRun {
   after: SavedFile[] | null;
   written: SavedFile[];
   planned: SavedFile[];
+  effects: string[];
   outcome: 'running' | 'failed' | 'complete';
   remoteWrites: RecordedRemoteWrite[];
   directories: { path: string; dev: number | null; ino: number | null }[];
@@ -29,8 +31,12 @@ const checkpointPath = (root: string) => join(root, 'checkpoint.json');
 const blobPath = (root: string, hash: string) => join(root, 'backups', 'checkpoint-' + hash);
 const invalid = () => new HerdrError('upgrade-checkpoint-invalid', 'Invalid setup checkpoint. Preserve checkpoint.json and backups, then move checkpoint.json aside to start a new sequence; the old sequence cannot be undone until repaired.');
 async function saveBlob(root: string, bytes: Buffer, hash: string): Promise<void> {
+  const directory = join(root, 'backups');
+  await rejectSymlinks(directory);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await chmod(directory, 0o700);
   const path = blobPath(root, hash), saved = await snapshot(path);
-  if (saved.hash === hash) return;
+  if (saved.hash === hash) { await chmod(path, 0o600); return; }
   if (saved.bytes !== null) throw new HerdrError('backup-verification-failed', 'Checkpoint blob differs from its content hash');
   try { await atomicWrite(path, bytes, 0o600, null); }
   catch (error) { if ((await snapshot(path)).hash !== hash) throw error; }
@@ -88,7 +94,9 @@ export async function readCheckpoint(root: string): Promise<UpgradeCheckpoint | 
         if (typeof d.path !== 'string' || !isAbsolute(d.path) || resolve(d.path) !== d.path || (d.dev !== null && (!Number.isSafeInteger(d.dev) || (d.dev as number) < 0)) || (d.ino !== null && (!Number.isSafeInteger(d.ino) || (d.ino as number) <= 0)) || (d.dev === null) !== (d.ino === null)) throw invalid();
         return { path: d.path, dev: d.dev as number | null, ino: d.ino as number | null };
       });
-      return { planned: await parseFiles(root, run.planned ?? [], c.version === 1), directories: parsedDirectories, before: await parseFiles(root, run.before, c.version === 1), after: run.after === null ? null : await parseFiles(root, run.after, c.version === 1), outcome: run.outcome as CheckpointRun['outcome'], remoteWrites: remote, written: await parseFiles(root, run.written, c.version === 1) };
+      const effects = run.effects ?? [];
+      if (!Array.isArray(effects) || effects.some(path => typeof path !== 'string' || !isAbsolute(path) || resolve(path) !== path || path.includes('\0'))) throw invalid();
+      return { effects: effects as string[], planned: await parseFiles(root, run.planned ?? [], c.version === 1), directories: parsedDirectories, before: await parseFiles(root, run.before, c.version === 1), after: run.after === null ? null : await parseFiles(root, run.after, c.version === 1), outcome: run.outcome as CheckpointRun['outcome'], remoteWrites: remote, written: await parseFiles(root, run.written, c.version === 1) };
     }));
     let undo: UpgradeCheckpoint['undo'];
     if (c.state === 'undoing') {
@@ -104,7 +112,25 @@ export async function readCheckpoint(root: string): Promise<UpgradeCheckpoint | 
 }
 async function save(root: string, checkpoint: UpgradeCheckpoint): Promise<void> {
   const path = checkpointPath(root), current = await snapshot(path);
-  await atomicWrite(path, Buffer.from(JSON.stringify(checkpoint) + '\n'), 0o600, current.hash);
+  try { await atomicWrite(path, Buffer.from(JSON.stringify(checkpoint) + '\n'), 0o600, current.hash); }
+  finally { await collectCheckpointBlobs(root); }
+}
+/** Caller holds the setup lock; collect against what reached disk, not memory. */
+export async function collectCheckpointBlobs(root: string): Promise<void> {
+  const checkpoint = await readCheckpoint(root);
+  const referenced = new Set<string>();
+  if (checkpoint && checkpoint.state !== 'undone' && checkpoint.state !== 'superseded') {
+    for (const run of checkpoint.runs) for (const file of [...run.before, ...run.after ?? [], ...run.planned, ...run.written]) if (file.hash) referenced.add(file.hash);
+    if (checkpoint.undo) for (const file of [...checkpoint.undo.expected, ...checkpoint.undo.targets]) if (file.hash) referenced.add(file.hash);
+  }
+  const directory = join(root, 'backups');
+  await rejectSymlinks(directory);
+  const names = await readdir(directory).catch(error => { if (error.code !== 'ENOENT') throw error; return [] as string[]; });
+  for (const name of names) if (/^checkpoint-[a-f0-9]{64}(?:\.spider-[a-f0-9-]+)?$/.test(name)) {
+    if (name.includes('.spider-') || !referenced.has(name.slice('checkpoint-'.length))) await unlink(join(directory, name));
+    else { await rejectSymlinks(join(directory, name)); await chmod(join(directory, name), 0o600); }
+  }
+  if (names.length) await chmod(directory, 0o700);
 }
 /** A failed batch may have journalled its intent without publishing every file. */
 export async function pendingCheckpointBaselines(root: string): Promise<ReadonlyMap<string, string | null>> {
@@ -125,7 +151,7 @@ export async function beginRunCheckpoint(root: string, paths: readonly string[],
   const previous = await readCheckpoint(root);
   if (previous?.state === 'undoing') throw new HerdrError('upgrade-undo-in-progress', 'Finish rollback --undo-upgrade before running setup');
   if (!substantive && (!previous || !['running', 'complete'].includes(previous.state))) return undefined;
-  const checkpoint: UpgradeCheckpoint = previous && (previous.state === 'running' || previous.state === 'complete' && !substantive) ? previous : { version: 2, state: 'running', runs: [] };
+  const checkpoint: UpgradeCheckpoint = previous && (previous.state === 'running' || previous.state === 'complete' && (!substantive || previous.runs.at(-1)!.outcome !== 'complete')) ? previous : { version: 2, state: 'running', runs: [] };
   for (const run of checkpoint.runs) if (run.after === null) { await settleInterruptedRun(run); run.outcome = 'failed'; }
   const missing = new Set<string>();
   for (const path of paths) {
@@ -134,7 +160,7 @@ export async function beginRunCheckpoint(root: string, paths: readonly string[],
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; missing.add(directory); }
     }
   }
-  checkpoint.runs.push({ before: await capture(root, paths), after: null, outcome: 'running', remoteWrites: [], written: [], planned: [], directories: [...missing].map(path => ({ path, dev: null, ino: null })) });
+  checkpoint.runs.push({ before: await capture(root, paths), after: null, outcome: 'running', remoteWrites: [], written: [], planned: [], effects: [], directories: [...missing].map(path => ({ path, dev: null, ino: null })) });
   await save(root, checkpoint);
   return checkpoint;
 }
@@ -143,15 +169,21 @@ export async function recordCheckpointIntents(root: string, checkpoint: UpgradeC
   const run = checkpoint.runs.at(-1)!;
   const planned = new Map(run.planned.map(file => [file.path, file]));
   for (const file of files) {
-    if (file.copyFrom || file.snapshotOnly || file.updateAfterCutover) continue;
+    if (file.snapshotOnly || file.updateAfterCutover) continue;
     const before = run.before.find(state => state.path === file.path)!;
     const hash = digest(file.bytes);
     if (before.hash === hash) continue;
     await saveBlob(root, file.bytes, hash);
-    const requested = file.mode ?? journal.entries.find(entry => entry.path === file.path)!.mode;
+    const requested = file.mode ?? journal.entries.find(entry => entry.path === file.path)?.mode ?? 0o600;
     planned.set(file.path, { path: file.path, hash, mode: before.hash === null ? requested & ~process.umask() : requested });
   }
   run.planned = [...planned.values()];
+  await save(root, checkpoint);
+}
+/** Record opaque adapter side effects before entering an external writer. */
+export async function recordCheckpointEffects(root: string, checkpoint: UpgradeCheckpoint, paths: readonly string[]): Promise<void> {
+  const run = checkpoint.runs.at(-1)!;
+  run.effects = [...new Set([...run.effects, ...paths])];
   await save(root, checkpoint);
 }
 async function settleInterruptedRun(run: CheckpointRun): Promise<void> {
@@ -195,8 +227,9 @@ export async function finishRunCheckpoint(root: string, checkpoint: UpgradeCheck
 }
 export async function completeDanglingCheckpoint(root: string): Promise<void> {
   const checkpoint = await readCheckpoint(root);
-  if (checkpoint?.state !== 'running') return;
+  if (!checkpoint || !['running', 'complete'].includes(checkpoint.state) || checkpoint.state === 'complete' && checkpoint.runs.at(-1)!.outcome === 'complete') return;
   for (const run of checkpoint.runs) if (run.after === null) { await settleInterruptedRun(run); run.outcome = 'complete'; }
+  checkpoint.runs.at(-1)!.outcome = 'complete';
   checkpoint.state = 'complete'; await save(root, checkpoint);
 }
 export async function supersedeCheckpoint(root: string): Promise<void> {
@@ -220,7 +253,7 @@ function matches(current: { hash: string | null; mode: number }, saved: SavedFil
 async function restore(root: string, file: SavedFile, expected: SavedFile): Promise<boolean> {
   const current = await snapshot(file.path);
   if (matches(current, file)) return false;
-  if (!matches(current, expected)) throw new HerdrError('upgrade-checkpoint-changed', `Changed during undo: ${file.path}`);
+  if (!matches(current, expected)) throw new HerdrError('upgrade-checkpoint-changed', `Changed during undo: ${file.path}. Inspect it or retry rollback --undo-upgrade --replace-changed.`);
   const bytes = await checkpointBytes(root, file);
   if (bytes === null) {
     await unlink(file.path);
@@ -240,6 +273,10 @@ export async function undoUpgrade(root: string, options: {
   releaseOwners(baseline: readonly SavedFile[], beforeClose: () => Promise<void>): Promise<void>;
   unpublish(baseline: readonly SavedFile[], expected: readonly SavedFile[], didWrite: () => Promise<void>): Promise<readonly string[]>;
   cleanup(baseline: readonly SavedFile[]): Promise<void>;
+  layoutPath: string;
+  runtimeStorePaths: readonly string[];
+  removedMods: readonly string[];
+  warn(message: string): void;
 }): Promise<UpgradeUndoResult> {
   const checkpoint = await readCheckpoint(root);
   if (!checkpoint || checkpoint.state === 'undone' || checkpoint.state === 'superseded') throw new HerdrError('upgrade-checkpoint-missing', 'No setup upgrade checkpoint is available');
@@ -249,11 +286,16 @@ export async function undoUpgrade(root: string, options: {
   const runtime = new Set(options.runtimePaths), expected = checkpoint.undo?.expected ?? lastObserved(checkpoint);
   // Never claim edits made between attempts, including edits merged into a later write.
   for (let i = 1; i < checkpoint.runs.length; i++) {
-    const previous = checkpoint.runs[i - 1]!, after = previous.after ?? expectedRun(previous);
+    const previous = checkpoint.runs[i - 1]!;
+    if (previous.outcome !== 'failed') continue;
+    const after = previous.after ?? expectedRun(previous);
     for (const before of checkpoint.runs[i]!.before) {
-      if (before.path === journalPath || runtime.has(before.path)) continue;
+      if (before.path === journalPath || before.path === options.layoutPath || runtime.has(before.path) || options.runtimeRewrittenPaths.includes(before.path) || options.runtimeStorePaths.includes(before.path) || options.replaceChanged) continue;
       const prior = after.find(file => file.path === before.path);
-      if (prior && !matches(before, prior)) throw new HerdrError('upgrade-checkpoint-changed', `Changed between setup attempts: ${before.path}. Preserve the file and reconcile the checkpoint before undo.`);
+      if (!prior) continue;
+      const part = options.managed.get(before.path);
+      const same = part ? managedProjection(await checkpointBytes(root, before), part) === managedProjection(await checkpointBytes(root, prior), part) : matches(before, prior);
+      if (!same) throw new HerdrError('upgrade-checkpoint-changed', `Changed between failed setup attempts: ${before.path}. Inspect it, then retry rollback --undo-upgrade --replace-changed to restore setup's parts.`);
     }
   }
   const targets: SavedFile[] = checkpoint.undo?.targets ?? [];
@@ -263,6 +305,7 @@ export async function undoUpgrade(root: string, options: {
       const file = expected.find(file => file.path === original.path) ?? original, current = await snapshot(original.path);
       if (current.bytes !== null && process.platform !== 'win32' && (await lstat(original.path)).uid !== process.getuid?.()) throw new HerdrError('upgrade-checkpoint-owner', 'Checkpoint target is not owned by the current user');
       if (runtime.has(original.path) || options.runtimeRewrittenPaths.includes(original.path) && !matches(current, file)) continue;
+      if (options.runtimeStorePaths.includes(original.path) && !matches(current, file) && !matches(current, original)) { options.warn(`Runtime store retained: ${original.path}`); continue; }
       const part = options.managed.get(original.path);
       let bytes = await checkpointBytes(root, original), mode = original.mode;
       const observed = await checkpointBytes(root, file);
@@ -271,6 +314,17 @@ export async function undoUpgrade(root: string, options: {
         if (!options.replaceChanged && projection !== managedProjection(observed, part) && projection !== managedProjection(bytes, part)) throw new HerdrError('upgrade-checkpoint-changed', `Managed part changed after setup: ${original.path}`);
         bytes = restoredManaged(current.bytes, bytes, part);
         if (!matches(current, file)) mode = current.mode;
+      } else if (original.path === options.layoutPath) {
+        // Reverse each attempted transition. A later intent may not have been
+        // applied, and a repeat's before-state can contain app or user edits.
+        bytes = current.bytes;
+        for (const run of [...checkpoint.runs].reverse()) {
+          const before = run.before.find(state => state.path === original.path);
+          if (!before) continue;
+          const after = expectedRun(run).find(state => state.path === original.path) ?? before;
+          bytes = restoreLayout(bytes, await checkpointBytes(root, before), await checkpointBytes(root, after), original.path, !!options.replaceChanged);
+        }
+        if (current.mode !== file.mode) mode = current.mode;
       } else if (original.path !== journalPath && !options.replaceChanged && !matches(current, file) && !matches(current, original)) {
         // A killed run may have stopped before an intended write. Its baseline is safe too.
         throw new HerdrError('upgrade-checkpoint-changed', `Changed after setup: ${original.path}. Inspect it or use rollback --undo-upgrade --replace-changed.`);
@@ -283,6 +337,19 @@ export async function undoUpgrade(root: string, options: {
     for (const target of targets) if (target.path !== journalPath && !matches(await snapshot(target.path), target)) meaningful = true;
     if (!meaningful) throw new HerdrError('upgrade-checkpoint-bookkeeping-only', 'This sequence would restore only setup bookkeeping; there is no installed upgrade to undo');
   }
+  const assertLayoutReferences = async () => {
+    const layout = targets.find(file => file.path === options.layoutPath);
+    if (!layout) return;
+    const bytes = await checkpointBytes(root, layout);
+    if (!bytes) return;
+    const visit = (value: unknown, key = ''): void => {
+      if (typeof value === 'string' && ['mod', 'modId', 'toast', 'terminal_menu'].includes(key) && options.removedMods.includes(value)) throw new HerdrError('upgrade-layout-reference', `Layout ${options.layoutPath} still references mod ${value}, which undo would remove. Retain the mod under a custom name and update this reference, then retry rollback --undo-upgrade.`);
+      if (Array.isArray(value)) value.forEach(child => visit(child, key));
+      else if (value && typeof value === 'object') for (const [field, child] of Object.entries(value)) visit(child, field);
+    };
+    visit(JSON.parse(bytes.toString('utf8')));
+  };
+  await assertLayoutReferences();
   if (checkpoint.state !== 'undoing' || resumingOwners) {
     const state = checkpoint.state;
     let closing = resumingOwners;
@@ -300,6 +367,12 @@ export async function undoUpgrade(root: string, options: {
       const index = targets.findIndex(target => target.path === owner.path);
       if (index < 0) continue;
       if (options.runtimeRewrittenPaths.includes(owner.path) && !matches(owner, checked.find(file => file.path === owner.path)!)) targets[index] = owner;
+      if (owner.path === options.layoutPath && !matches(owner, checked.find(file => file.path === owner.path)!)) {
+        const target = targets[index]!, observed = checked.find(file => file.path === owner.path)!;
+        const bytes = restoreLayout(await checkpointBytes(root, owner), await checkpointBytes(root, target), await checkpointBytes(root, observed), owner.path, !!options.replaceChanged);
+        if (bytes !== null) await saveBlob(root, bytes, digest(bytes));
+        targets[index] = { path: owner.path, hash: bytes === null ? null : digest(bytes), mode: owner.mode === observed.mode ? target.mode : owner.mode };
+      }
       const part = options.managed.get(owner.path);
       if (part) {
         const original = baseline.find(file => file.path === owner.path)!;
@@ -312,6 +385,7 @@ export async function undoUpgrade(root: string, options: {
     checkpoint.undo = { phase: 'files', targets, expected: checked.map(file => ownerStates.find(state => state.path === file.path) ?? file) };
     await save(root, checkpoint);
   }
+  await assertLayoutReferences();
   const recordJournalWrite = async () => {
     const journalState = (await capture(root, [journalPath]))[0]!;
     checkpoint.undo!.expected = checkpoint.undo!.expected.map(file => file.path === journalPath ? journalState : file);
@@ -320,6 +394,31 @@ export async function undoUpgrade(root: string, options: {
   const restored = [...await options.unpublish(baseline, checkpoint.undo!.expected, recordJournalWrite)];
   for (const file of targets.filter(file => file.path !== journalPath)) {
     const expected = checkpoint.undo!.expected.find(item => item.path === file.path)!;
+    if ((options.runtimeRewrittenPaths.includes(file.path) || options.runtimeStorePaths.includes(file.path)) && !matches(await snapshot(file.path), expected) && !matches(await snapshot(file.path), file)) {
+      if (options.runtimeStorePaths.includes(file.path)) options.warn(`Runtime store retained: ${file.path}`);
+      const current = (await capture(root, [file.path]))[0]!;
+      Object.assign(file, current);
+      await save(root, checkpoint);
+      continue;
+    }
+    const current = await snapshot(file.path);
+    if (!matches(current, file) && !matches(current, expected)) {
+      const part = options.managed.get(file.path);
+      let bytes = await checkpointBytes(root, file);
+      if (file.path === options.layoutPath) bytes = restoreLayout(current.bytes, bytes, await checkpointBytes(root, expected), file.path, !!options.replaceChanged);
+      else if (part) {
+        const actual = managedProjection(current.bytes, part);
+        if (!options.replaceChanged && actual !== managedProjection(bytes, part) && actual !== managedProjection(await checkpointBytes(root, expected), part)) throw new HerdrError('upgrade-checkpoint-changed', `Managed part changed during undo: ${file.path}. Inspect it or retry rollback --undo-upgrade --replace-changed.`);
+        bytes = restoredManaged(current.bytes, bytes, part);
+      } else if (!options.replaceChanged) throw new HerdrError('upgrade-checkpoint-changed', `Changed during undo: ${file.path}. Inspect it or retry rollback --undo-upgrade --replace-changed.`);
+      if (bytes !== null) await saveBlob(root, bytes, digest(bytes));
+      if (current.bytes !== null) await saveBlob(root, current.bytes, current.hash!);
+      if ((part || file.path === options.layoutPath) && current.hash !== null && current.mode !== expected.mode) file.mode = current.mode;
+      file.hash = bytes === null ? null : digest(bytes);
+      Object.assign(expected, { hash: current.hash, mode: current.mode });
+      await save(root, checkpoint);
+      if (file.path === options.layoutPath) await assertLayoutReferences();
+    }
     if (await restore(root, file, expected)) restored.push(file.path);
   }
   await options.cleanup(baseline);
@@ -333,7 +432,9 @@ export async function undoUpgrade(root: string, options: {
     } catch (error) { if (!['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error; }
   }
   const journal = targets.find(file => file.path === journalPath);
-  if (journal && await restore(root, journal, checkpoint.undo!.expected.find(file => file.path === journalPath)!)) restored.push(journal.path);
+  // This is setup-owned bookkeeping under the setup lock. A crash may have
+  // saved the journal without advancing its checkpoint observation.
+  if (journal && await restore(root, journal, (await capture(root, [journalPath]))[0]!)) restored.push(journal.path);
   for (const file of targets) if (!matches(await snapshot(file.path), file)) throw new HerdrError('upgrade-checkpoint-changed', `Changed while undo completed: ${file.path}`);
   checkpoint.state = 'undone'; delete checkpoint.undo; await save(root, checkpoint);
   const remoteNotRestored = [...new Map(checkpoint.runs.flatMap(run => run.remoteWrites).map(file => [JSON.stringify([file.machine, file.path]), file])).values()];
@@ -344,7 +445,7 @@ export async function includeRegistryCheckpoint(root: string, journal: SetupJour
   const checkpoint = await readCheckpoint(root);
   if (checkpoint?.state === 'undoing') throw new HerdrError('upgrade-undo-in-progress', 'Finish rollback --undo-upgrade before full rollback');
   if (journal.entries.some(entry => entry.path === registry)) return;
-  const expected = checkpoint && lastObserved(checkpoint).find(file => file.path === registry);
+  const expected = checkpoint && checkpoint.state !== 'undone' && checkpoint.state !== 'superseded' ? lastObserved(checkpoint).find(file => file.path === registry) : undefined;
   const current = await snapshot(registry);
   if (expected?.hash === null || !expected && current.hash === null) return;
   journal.entries.push({ path: registry, before: null, after: expected?.hash ?? current.hash!, backup: null, mode: current.mode });

@@ -343,7 +343,7 @@ export async function forgetCutoverTabs(journalRoot: string, placements: readonl
     for (const placement of placements) {
       const entry = journal.tabs.find(t => t.placement.terminal === placement.terminal);
       const present = terminalsOnly || entry?.manuallyMoved
-        ? snapshot.spaces.some(space => space.tabs.some(tab => tabTerminals(tab).some(row => row.terminal === layoutTerminal(entry))))
+        ? snapshot.spaces.some(space => space.tabs.some(tab => tabTerminals(tab).some(row => row.terminal === (entry ? layoutTerminal(entry) : placement.terminal))))
         : snapshot.spaces.some(space => space.tabs.some(tab => tab.id === placement.tab));
       if (present) throw new HerdrError('cutover-tab-still-exists', 'A rollback terminal or tab is still present');
     }

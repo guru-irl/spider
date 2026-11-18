@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
@@ -17,8 +17,8 @@ function fixture() {
   const request = { action: "enrollment", operationId: "pin-enrollment", machineId, hubMachineId, home, globalRoot: root,
     agentDir: join(home, "agent"), npmPrefix: join(home, "prefix"), unitDir: join(home, "units"), core, coreId: "fixture-core",
     coreUnit: "fixture.service", maximum: 1024 * 1024, chunkBytes: 1024 };
-  const run = (socket: string | null, operationId = request.operationId) => {
-    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, HC_SESSION: "fixture", XDG_STATE_HOME: stateHome, XDG_CONFIG_HOME: configHome };
+  const run = (socket: string | null, operationId = request.operationId, inherited: NodeJS.ProcessEnv = {}) => {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, HC_SESSION: "fixture", XDG_STATE_HOME: stateHome, XDG_CONFIG_HOME: configHome, ...inherited };
     if (socket === null) delete env.HC_SOCKET; else env.HC_SOCKET = socket;
     const result = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
       env, input: JSON.stringify({ ...request, operationId }), encoding: "utf8", timeout: 5000,
@@ -35,6 +35,36 @@ it("records the peer executable, core identity and selected startup environment"
   expect(JSON.parse(readFileSync(join(f.root, "roam/core.json"), "utf8"))).toEqual({ binary: f.core, coreId: "fixture-core", socket,
     sessionNamespace: "fixture", stateHome: f.stateHome, configHome: f.configHome });
   expect(f.run(socket)).toMatchObject({ value: "already-enrolled" });
+});
+
+it.each(["identity", "pid"])("does not save a pin whose sanitized settings reach a different %s", field => {
+  const f = fixture(), socket = join(f.home, "core.sock");
+  writeFileSync(f.core, `#!${process.execPath}
+const pinned = !Object.keys(process.env).some(key => key.startsWith('HC_TERMINAL_') || key === 'HC_SCOPE');
+if (process.argv.slice(2).join(' ') !== 'server status --json') process.exit(1);
+console.log(JSON.stringify({core:{id:pinned && ${JSON.stringify(field)} === 'identity' ? 'other-core' : 'fixture-core'},pid:pinned && ${JSON.stringify(field)} === 'pid' ? 5678 : 4321,version:'0.1.16'}));
+`, { mode: 0o700 });
+  expect(f.run(socket, "mismatch-" + field, { HC_TERMINAL_ID: "fixture-terminal", HC_TERMINAL_SOCKET: socket, HC_SCOPE: "fixture" })).toMatchObject({ error: "core-changed" });
+  expect(existsSync(join(f.root, "roam/core.json"))).toBe(false);
+});
+
+it("uses the terminal socket when HC_SOCKET is absent and verifies it without terminal context", () => {
+  const f = fixture(), socket = join(f.home, "terminal.sock");
+  writeFileSync(f.core, `#!${process.execPath}
+const e = process.env;
+if (process.argv.slice(2).join(' ') !== 'server status --json') process.exit(1);
+const selected = e.HC_TERMINAL_SOCKET || e.HC_SOCKET;
+if (selected !== ${JSON.stringify(socket)} || e.HC_SESSION !== 'fixture' || e.XDG_STATE_HOME !== ${JSON.stringify(f.stateHome)} || e.XDG_CONFIG_HOME !== ${JSON.stringify(f.configHome)}) process.exit(1);
+console.log(JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}));
+`, { mode: 0o700 });
+  expect(f.run(null, "terminal-socket", { HC_TERMINAL_ID: "fixture-terminal", HC_TERMINAL_SOCKET: socket })).toMatchObject({ value: "enrolled" });
+  expect(JSON.parse(readFileSync(join(f.root, "roam/core.json"), "utf8"))).toHaveProperty("socket", socket);
+});
+
+it("refuses conflicting terminal and explicit sockets before publishing a pin", () => {
+  const f = fixture();
+  expect(f.run(join(f.home, "core.sock"), "socket-conflict", { HC_TERMINAL_SOCKET: join(f.home, "other.sock") })).toMatchObject({ error: "core-pin-invalid" });
+  expect(existsSync(join(f.root, "roam/core.json"))).toBe(false);
 });
 
 it("resolves a configured socket when the core has no HC_SOCKET override", () => {

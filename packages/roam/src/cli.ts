@@ -44,7 +44,7 @@ const HELP = `Usage: spider <command>
   spider roam sync [machine]
   spider roam enable|disable
   spider roam doctor [machine]
-  spider roam provision <machine> [--release <tarball>] [--no-settings] [--skill <name>]... [--yes --consent copilot-auth] [--consent-provider <name>]... [--operation-id <id>]
+  spider roam provision <machine> [--release <tarball>] [--use-destination-auth] [--no-settings] [--skill <name>]... [--yes --consent copilot-auth] [--consent-provider <name>]... [--operation-id <id>]
   spider roam stop|resume <session>
   spider roam recover|cancel <operation-id>
   spider roam claim <session> <machine>
@@ -55,7 +55,7 @@ const HELP = `Usage: spider <command>
 
 Add --json at the end of a control for machine-readable output.
 For sync or doctor, use -- <machine> or --machine <machine> for names starting with a dash.
-Non-interactive provisioning uses --yes --consent copilot-auth as an explicit user command.
+Prefer --use-destination-auth --yes for a destination that is already signed in.
 Anyone with the user's shell access can invoke it. While disabled, provision does not enable the box or start hosting.
 Before forget, confirm the machine is destroyed. If it is alive, two copies can run until reconnection.
 Conversation after the last mirror and unsent workspace edits will be lost.
@@ -370,14 +370,15 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   }
   if (argv[0] === "roam" && argv[1] === "provision") {
     if (!positional(argv[2], false)) { io.err("Invalid provisioning target.\n"); return 2; }
-    let release: string | undefined, operationId: string | undefined, yes = false, noSettings = false, consent: string | null = null;
+    let release: string | undefined, operationId: string | undefined, yes = false, noSettings = false, useDestinationAuth = false, consent: string | null = null;
     const seen = new Set<string>(), skills: string[] = [], consentedProviders: string[] = [];
     for (let index = 3; index < argv.length; index++) {
       const flag = argv[index];
       if (flag !== "--skill" && flag !== "--consent-provider" && seen.has(flag) ||
-          !["--release", "--yes", "--no-settings", "--consent", "--operation-id", "--skill", "--consent-provider"].includes(flag)) { io.err("Invalid provisioning arguments.\n"); return 2; }
+          !["--release", "--yes", "--use-destination-auth", "--no-settings", "--consent", "--operation-id", "--skill", "--consent-provider"].includes(flag)) { io.err("Invalid provisioning arguments.\n"); return 2; }
       seen.add(flag);
       if (flag === "--yes") { yes = true; continue; }
+      if (flag === "--use-destination-auth") { useDestinationAuth = true; continue; }
       if (flag === "--no-settings") { noSettings = true; continue; }
       const value = argv[++index];
       if (!positional(value, false)) { io.err("Invalid provisioning arguments.\n"); return 2; }
@@ -388,7 +389,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       else operationId = value;
     }
     const provisionIO = jsonOutput ? { out: io.err, err: io.err } : io;
-    const result = await runProvisionCli({ root, target: argv[2], release, yes, consent, operationId, skills, consentedProviders, noSettings }, provisionIO, { bundleUrl: options?.bundleUrl });
+    const result = await runProvisionCli({ root, target: argv[2], release, yes, consent, operationId, skills, consentedProviders, noSettings, useDestinationAuth }, provisionIO, { bundleUrl: options?.bundleUrl });
     return jsonOutput ? emitOutcome(io, result, true) : result.code;
   }
   const parsed = normalize(argv);

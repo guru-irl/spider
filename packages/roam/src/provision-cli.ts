@@ -23,15 +23,15 @@ import type { ProvisionPreview } from "./provision-contracts";
 
 interface ConsentRequest { operationId: string; target: string; machineId: string; hubMachineId: string;
   files: readonly { path: string; size: number; mode: number }[]; releaseHash: string; providers?: readonly string[]; selectionDigest?: string;
-  settingsFingerprint?: string | null; settingsKeys?: readonly string[] }
+  settingsFingerprint?: string | null; settingsKeys?: readonly string[]; useDestinationAuth?: boolean }
 interface ConsentPorts { tty: boolean; yes: boolean; consent: string | null; consentedProviders?: readonly string[];
   actor: string; now(): number; ask(text: string): Promise<string> }
 function consentOperation(request: ConsentRequest) {
-  const providers = [...(request.providers ?? ["github-copilot"])].sort();
-  if (!providers.includes("github-copilot") || providers.length > 64 || new Set(providers).size !== providers.length ||
+  const providers = [...(request.providers ?? (request.useDestinationAuth ? [] : ["github-copilot"]))].sort();
+  if ((!request.useDestinationAuth && !providers.includes("github-copilot")) || providers.length > 64 || new Set(providers).size !== providers.length ||
       providers.some(name => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(name))) throw new Error("provision-provider-invalid");
   return { id: request.operationId, kind: "provision-cli", machineId: request.machineId, expectedEpoch: null,
-    args: { target: request.target, hubMachineId: request.hubMachineId, files: request.files.map(row => ({ ...row })), releaseHash: request.releaseHash, providers,
+    args: { target: request.target, hubMachineId: request.hubMachineId, files: request.files.map(row => ({ ...row })), releaseHash: request.releaseHash, providers, ...(request.useDestinationAuth ? { useDestinationAuth: true } : {}),
       ...(request.selectionDigest ? { selectionDigest: request.selectionDigest } : {}) } };
 }
 export async function confirmProvision(journal: Journal, request: ConsentRequest, ports: ConsentPorts): Promise<boolean> {
@@ -50,11 +50,11 @@ export async function confirmProvision(journal: Journal, request: ConsentRequest
   }
   const extra = providers.filter(name => name !== "github-copilot");
   const supplied = [...(ports.consentedProviders ?? [])].sort();
-  const approved = ports.tty ? /^(?:y|yes)$/i.test((await ports.ask(`Copy copilot-auth${extra.length ? ` and credentials for ${extra.join(", ")}` : ""} to ${request.target} and install this release? This permits box roaming participation when the hub is enabled. [y/N] `)).trim())
-    : ports.yes && ports.consent === "copilot-auth" && JSON.stringify(supplied) === JSON.stringify(extra);
+  const approved = ports.tty ? /^(?:y|yes)$/i.test((await ports.ask(request.useDestinationAuth ? `Use the destination sign-in on ${request.target} without copying hub authentication and install this release? This permits box roaming participation when the hub is enabled. [y/N] ` : `Copy copilot-auth${extra.length ? ` and credentials for ${extra.join(", ")}` : ""} to ${request.target} and install this release? This permits box roaming participation when the hub is enabled. [y/N] `)).trim())
+    : ports.yes && (request.useDestinationAuth || ports.consent === "copilot-auth") && JSON.stringify(supplied) === JSON.stringify(extra);
   if (!approved) return false;
   journal.record(request.operationId, "human-consent", { actor: ports.actor, at: ports.now(), operationId: request.operationId,
-    target: request.target, machineId: request.machineId, consent: "copilot-auth", providers, files: request.files.map(row => ({ ...row })), releaseHash: request.releaseHash,
+    target: request.target, machineId: request.machineId, consent: request.useDestinationAuth ? "destination-auth" : "copilot-auth", providers, files: request.files.map(row => ({ ...row })), releaseHash: request.releaseHash,
     settingsFingerprint, settingsKeys });
   return true;
 }
@@ -140,7 +140,7 @@ function presentInventory(preview: ProvisionPreview, out: (text: string) => void
   for (const warning of preview.warnings) out(`${safe(warning)}\n`);
 }
 export interface ProvisionCliRequest { root: string; target: string; release?: string; yes: boolean; consent: string | null; operationId?: string;
-  skills?: readonly string[]; consentedProviders?: readonly string[]; noSettings?: boolean }
+  skills?: readonly string[]; consentedProviders?: readonly string[]; noSettings?: boolean; useDestinationAuth?: boolean }
 export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text: string): void; err(text: string): void }, options: {
   bundleUrl?: URL; tty?: boolean; ask?(text: string): Promise<string>;
 } = {}): Promise<Outcome<{ hostingReady: boolean }>> {
@@ -152,18 +152,20 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     const configured = config.peers.find(peer => peer.alias === input.target || peer.machineId === input.target);
     if (!configured) throw new Error("provision-target-unavailable");
     const tty = options.tty ?? Boolean(process.stdin.isTTY && process.stdout.isTTY);
-    if (!tty && !(input.yes && input.consent === "copilot-auth")) throw new Error("provision-consent-required");
+    if (!tty && !(input.yes && (input.useDestinationAuth || input.consent === "copilot-auth"))) throw new Error("provision-consent-required");
     const agentRoot = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-    let auth: Buffer | null;
-    try { auth = readPrivateBytes(agentRoot, "auth.json", config.limits.agentBytes); } catch { throw new Error("copilot-auth-unavailable"); }
-    if (!auth) throw new Error("copilot-auth-unavailable");
-    let size: number;
-    try { size = previewPiAuthBytes(auth, ["github-copilot"]); }
-    catch (error) {
-      if (error instanceof AuthError && error.code === "unsupported-credential-command") throw new SelectedFilesError(error.code, ["auth.json"]);
-      throw new Error("copilot-auth-unavailable");
+    let size: number | undefined;
+    if (!input.useDestinationAuth) {
+      let auth: Buffer | null;
+      try { auth = readPrivateBytes(agentRoot, "auth.json", config.limits.agentBytes); } catch { throw new Error("copilot-auth-unavailable"); }
+      if (!auth) throw new Error("copilot-auth-unavailable");
+      try { size = previewPiAuthBytes(auth, ["github-copilot"]); }
+      catch (error) {
+        if (error instanceof AuthError && error.code === "unsupported-credential-command") throw new SelectedFilesError(error.code, ["auth.json"]);
+        throw new Error("copilot-auth-unavailable");
+      }
+      finally { auth.fill(0); }
     }
-    finally { auth.fill(0); }
     const selected = ["settings.json", "models.json", "keybindings.json", "themes", "AGENTS.md"].filter(name => {
       if (name === "settings.json" && input.noSettings) return false;
       try { lstatSync(join(agentRoot, name)); return true; }
@@ -172,10 +174,10 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     selected.push(...(input.skills ?? []).map(name => `skills/${name}`));
     const prepared = prepareSelectedFiles({ sourceRoot: agentRoot, selected, maxBytes: config.limits.agentBytes });
     const selectedFiles = describeSelectedFiles(prepared), selectionDigest = provisionSelectionDigest(prepared);
-    const providers = [...new Set(["github-copilot", ...prepared.providers])].sort();
+    const providers = [...new Set([...(input.useDestinationAuth ? [] : ["github-copilot"]), ...prepared.providers])].sort();
     for (const file of prepared.credentialFiles) file.bytes.fill(0);
     const extra = providers.filter(name => name !== "github-copilot");
-    if (!tty && JSON.stringify([...(input.consentedProviders ?? [])].sort()) !== JSON.stringify(extra)) {
+    if ((input.useDestinationAuth && prepared.credentialFiles.length) || !tty && JSON.stringify([...(input.consentedProviders ?? [])].sort()) !== JSON.stringify(extra)) {
       io.err(`Provider consent required: ${extra.map(safe).join(", ") || "none"}.\n`);
       throw new Error("provision-provider-consent-required");
     }
@@ -198,22 +200,24 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       finally { supplied.bytes.fill(0); }
     }
     const npmPrefix = posix.dirname(posix.dirname(configured.pi));
-    if (posix.basename(npmPrefix) !== ".local" || configured.pi !== posix.join(npmPrefix, "bin", "pi")) throw new Error("provision-destination-unavailable");
-    const home = posix.dirname(npmPrefix), agentDir = posix.join(home, ".pi", "agent");
+    if (configured.pi !== posix.join(npmPrefix, "bin", "pi")) throw new Error("provision-destination-unavailable");
+    if (!configured.agentDir && posix.basename(npmPrefix) !== ".local") throw new Error("provision-agent-directory-required");
     const releaseRoot = posix.join(npmPrefix, "spider-releases", pinned.sha256, "node_modules", "@guru-irl", "spider");
     const peer = { ...configured, cli: posix.join(releaseRoot, "dist", "roam", "cli.mjs") };
+    const herdr = loadHerdrConfig(input.root);
+    const transport = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: [peer] }, journal);
+    const home = configured.agentDir ? await transport.probeHome(peer) : posix.dirname(npmPrefix);
+    const agentDir = configured.agentDir ?? posix.join(home, ".pi", "agent");
     const destination = { home, agentDir, npmPrefix, supervisor: posix.join(releaseRoot, "dist", "roam", "supervisor.mjs") };
     const contextDigest = createHash("sha256").update(JSON.stringify({ peer, destination, hubMachineId: config.machineId,
       agentRoot, limits: config.limits, coreUnit: config.coreUnit })).digest("hex");
-    const files = [{ path: "auth.json", size, mode: 0o600 }, ...selectedFiles];
+    const files = [...(size === undefined ? [] : [{ path: "auth.json", size, mode: 0o600 }]), ...selectedFiles];
     io.out(`Operation: ${operationId}\nRelease SHA-256: ${pinned.sha256}\n`);
     for (const file of files) io.out(`Selected ${safe(file.path)}: ${file.size} bytes, mode ${file.mode.toString(8)}. Destination: ${safe(posix.join(agentDir, file.path))}\n`);
-    const request: ConsentRequest = { operationId, target: peer.alias, machineId: peer.machineId, hubMachineId: config.machineId, files, releaseHash: pinned.sha256, providers, selectionDigest };
+    const request: ConsentRequest = { operationId, target: peer.alias, machineId: peer.machineId, hubMachineId: config.machineId, files, releaseHash: pinned.sha256, providers, selectionDigest, useDestinationAuth: input.useDestinationAuth };
     // Reserve the byte identity before any remote observation. Consent itself is recorded after inventory.
     journal.begin(consentOperation(request));
     if (completed && completed.contextDigest !== contextDigest) throw new Error("Operation ID already has different arguments");
-    const herdr = loadHerdrConfig(input.root);
-    const transport = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: [peer] }, journal);
     if (completed) {
       try { await setProvisionParticipation({ root: input.root, hubMachineId: config.machineId, peer, ready: null, journal, transport }); }
       catch { io.err("provision-participation-unconfirmed. Retry provisioning or run spider roam disable.\n"); return refused(3, "provision-participation-unconfirmed"); }
@@ -224,7 +228,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     }
     let shownSettings: { fingerprint: string | null; keys: readonly string[] } = { fingerprint: null, keys: [] };
     const ports = createProductionProvisionPorts({ root: input.root, hubMachineId: config.machineId, peer, operationId: `${operationId}-install`, transport, journal, limits: config.limits,
-      source: { agentRoot, releaseFile: pinned.file, piProviders: ["github-copilot"] }, destination, coreUnit: config.coreUnit, unitDir: posix.join(home, ".config/systemd/user"),
+      source: { agentRoot, releaseFile: pinned.file, piProviders: input.useDestinationAuth ? [] : ["github-copilot"] }, destination, coreUnit: config.coreUnit, unitDir: posix.join(home, ".config/systemd/user"),
       release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: pinned.sha256, nodeRange: "22.23.4 || 26.4.0" },
       async present(preview) { shownSettings = { fingerprint: preview.settingsFingerprint, keys: [...preview.settingsKeys] }; presentInventory(preview, io.out); },
       async confirm() { return confirmProvision(journal, { ...request, settingsFingerprint: shownSettings.fingerprint, settingsKeys: shownSettings.keys },
@@ -234,7 +238,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       async resources() { throw new Error("Local resource probes are not used for provisioning"); }, async bootId() { throw new Error("Local boot probes are not used for provisioning"); },
     });
     const result = await provision({ operation: { id: `${operationId}-install`, kind: "provision", machineId: peer.machineId, expectedEpoch: null, args: {} },
-      peer, selected, includeAuth: true, confirmedProviders: providers, expectedAuthBytes: size, expectedFiles: selectedFiles, expectedSelectionDigest: selectionDigest }, ports);
+      peer, selected, includeAuth: !input.useDestinationAuth, requireDestinationAuth: input.useDestinationAuth, confirmedProviders: providers, expectedAuthBytes: size, expectedFiles: selectedFiles, expectedSelectionDigest: selectionDigest }, ports);
     if (result.code === 0 && journal.read(`${operationId}-install`).some(row => row.action === "done" && row.result.code === 0)) {
       journal.record(operationId, "provision-completed", { installOperationId: `${operationId}-install`, releaseHash: pinned.sha256, contextDigest });
       await removeProvisionSource(input.root, operationId);

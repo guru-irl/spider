@@ -62,7 +62,7 @@ function readLimits(value: unknown): Limits {
 
 function readPeer(value: unknown): Peer {
   const input = object(value, "peer");
-  keys(input, ["machineId", "alias", "node", "pi", "cli", "core", "globalRoot"], "peer");
+  keys(input, ["machineId", "alias", "node", "pi", "cli", "core", "globalRoot", "agentDir"], "peer");
   const alias = nonempty(input.alias, "peer alias");
   return {
     machineId: machineIdentity(input.machineId),
@@ -72,6 +72,7 @@ function readPeer(value: unknown): Peer {
     cli: absolutePath(input.cli),
     core: absolutePath(input.core),
     globalRoot: absolutePath(input.globalRoot),
+    ...(input.agentDir === undefined ? {} : { agentDir: absolutePath(input.agentDir) }),
   };
 }
 

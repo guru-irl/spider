@@ -1,6 +1,8 @@
 import machineIdentitySource from "../../db-core/src/roam/machine.ts?raw";
 import { selectedRemoteSource } from "./selected-remote-source";
 
+export const BOOTSTRAP_HOME_SCRIPT = `process.stdout.write(JSON.stringify(require("node:fs").realpathSync(require("node:os").homedir())));`;
+
 // Settings values stay on their respective machines. The probe receives only key paths.
 export const BOOTSTRAP_SETTINGS_SCRIPT: string = selectedRemoteSource + String.raw`
 import { readFileSync as bootstrapSettingsRead } from "node:fs";
@@ -12,7 +14,7 @@ try {
   if (!input || typeof input !== "object" || Array.isArray(input) ||
       Object.keys(input).sort().join(",") !== "agentDir,home,maximum,paths" ||
       typeof input.home !== "string" || input.home !== bootstrapSettingsHome() ||
-      input.agentDir !== join(input.home, ".pi", "agent")) throw new Error("request");
+      typeof input.agentDir !== "string") throw new Error("request");
   const value = inspectDestinationSettingsDigests({ home: input.home, destinationRoot: input.agentDir, paths: input.paths, maximum: input.maximum });
   process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", value }));
 } catch (error) {
@@ -73,7 +75,7 @@ try {
   const input = JSON.parse(request);
   const validPath = value => typeof value === 'string' && value.length <= 4096 && path.isAbsolute(value) && !/[\x00-\x1f\x7f]/.test(value);
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
-      Object.keys(input).sort().join(',') !== 'checks,cli,coreUnit,globalRoot,pi' || !validPath(input.pi) || !validPath(input.cli) || !validPath(input.globalRoot) ||
+      !['checks,cli,coreUnit,globalRoot,pi', 'agentDir,checks,cli,coreUnit,globalRoot,pi'].includes(Object.keys(input).sort().join(',')) || !validPath(input.pi) || !validPath(input.cli) || !validPath(input.globalRoot) || input.agentDir !== undefined && !validPath(input.agentDir) ||
       !(input.coreUnit === null || typeof input.coreUnit === 'string' && input.coreUnit.length <= 255 && /^[a-zA-Z0-9][a-zA-Z0-9_.@:-]*\.service$/.test(input.coreUnit)) ||
       !Array.isArray(input.checks) || input.checks.length > 32 || input.checks.some(check => !check || typeof check !== 'object' ||
         Array.isArray(check) || Object.keys(check).sort().join(',') !== 'authFile,executable' ||
@@ -270,7 +272,7 @@ try {
     spider: { installed, version: spiderVersion, nativeModuleReady },
     cli: { gh, gitIdentity: name.status === 0 && email.status === 0,
       configured: input.checks.map(check => ({ executable: executableStatus(check.executable), auth: check.authFile === null ? null : fileStatus(check.authFile) })) },
-    auth: { pi: fixedFileStatus(path.join(home, '.pi/agent/auth.json')), gh: fixedFileStatus(path.join(home, '.config/gh/hosts.yml')), ghSignedIn },
+    auth: { pi: fixedFileStatus(path.join(input.agentDir ?? path.join(home, '.pi/agent'), 'auth.json')), gh: fixedFileStatus(path.join(home, '.config/gh/hosts.yml')), ghSignedIn },
   });
 } catch { fail('bootstrap-probe-failed'); }
 `;
@@ -288,10 +290,14 @@ try {
   const request = fs.readFileSync(0, 'utf8');
   if (request.length > 16384) throw new Error('request');
   const input = JSON.parse(request);
-  if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).join(',') !== 'home' ||
+  if (!input || typeof input !== 'object' || Array.isArray(input) || !['home', 'home,agentDir'].includes(Object.keys(input).join(',')) ||
       typeof input.home !== 'string' || input.home.length > 4096 || !path.isAbsolute(input.home) ||
       path.resolve(input.home) !== input.home || /[\x00-\x1f\x7f]/.test(input.home)) throw new Error('request');
-  const home = fs.realpathSync(os.homedir()), expected = path.join(home, '.pi/agent');
+  const home = fs.realpathSync(os.homedir()), expected = input.agentDir ?? path.join(home, '.pi/agent');
+  if (input.agentDir !== undefined) {
+    if (input.home !== home || typeof expected !== 'string' || !path.isAbsolute(expected) || path.normalize(expected) !== expected || !expected.startsWith(home + '/') || /[\x00-\x1f\x7f]/.test(expected)) throw new Error('request');
+    reply('default');
+  } else {
   function isDefault(value, cwd) {
     if (!value) return true;
     if (typeof value !== 'string' || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value)) return false;
@@ -313,6 +319,7 @@ try {
       if (entries.length > 1) reply('unknown');
       else reply(isDefault(entries.length ? entries[0].slice('PI_CODING_AGENT_DIR='.length) : '', home) ? 'default' : 'custom');
     }
+  }
   }
 } catch { process.stdout.write(JSON.stringify({ version: 1, kind: 'agent-directory', error: 'agent-directory-probe-failed' }) + '\n'); }
 `;

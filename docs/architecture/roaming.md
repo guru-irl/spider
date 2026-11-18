@@ -63,11 +63,32 @@ refuses if the broker cannot start or its health check fails. Reload open Pi
 sessions with `/reload` to update `/move`. A command left over from an enabled
 session still refuses after roaming is disabled.
 
-For non-interactive provisioning, run `spider roam provision <machine> --yes
---consent copilot-auth` as an explicit user command. Anyone with the user's shell
-access can run this command. Before `roam forget`, confirm that the machine is
-destroyed. A live forgotten machine can run a second copy until reconnection.
-Conversation after the last mirror and unsent workspace edits will be lost.
+For an already-signed-in destination, use the no-copy path:
+
+```sh
+spider roam provision box-1.invalid --use-destination-auth --yes --no-settings
+```
+
+This path never opens, previews, hashes, or transfers the hub's auth file. It
+checks the destination's own `auth.json` presence, readability, and private mode
+through the transport. `destination-auth-missing` requires signing in on the
+destination before retrying. `destination-auth-unsafe` requires fixing that
+file's ownership and permissions. Doctor repeats the private-file check after
+installation; complete and verify the sign-in on the destination itself. Credential-bearing selected files require the separate auth-copy
+path and its explicit provider consent.
+
+Set the peer's optional `agentDir` to its absolute destination agent directory
+when it differs from the default. The npm prefix comes from the configured
+`<prefix>/bin/pi`; it need not be named `.local`. An explicit `agentDir` uses the
+destination's observed home for safety checks and the supervisor environment.
+Without `agentDir`, only the default `.local/bin/pi` layout is inferred. Other
+layouts refuse with `provision-agent-directory-required` rather than guessing.
+Use `--no-settings` to preserve the destination's existing settings.
+
+Anyone with the user's shell access can run provisioning. Before `roam forget`,
+confirm that the machine is destroyed. A live forgotten machine can run a second
+copy until reconnection. Conversation after the last mirror and unsent workspace
+edits will be lost.
 
 Enable refuses while a usage worker is starting or being replaced; retry after
 it settles. If the hub socket is unavailable, disable requires the hub lock and
@@ -89,7 +110,7 @@ Authentication is never copied by default. Copying selected Pi credentials
 requires explicit consent for each target and provider. A missing Pi sign-in
 blocks hosting but does not prevent installation. Missing tool authentication is
 a warning; sign in to the affected tool separately if it is needed. Provisioning
-installs Pi 1.2.0 at `~/.local/bin/pi`, replacing an existing installation there.
+installs the pinned runtime at the configured pi path, replacing an existing installation there.
 Use `--no-settings` to omit the local `settings.json` from the copy.
 
 Use `spider roam stop <session>` on the hub to persist a stopped intent. A

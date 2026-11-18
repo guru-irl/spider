@@ -526,6 +526,8 @@ test('a standalone picker receives validated installed-mod properties', async ()
   const f = await fixture(), preflight = f.parts.preflight;
   const directory = join(f.request.config.app.home, 'mods/spider-picker');
   f.parts.preflight = async request => { const result = await preflight(request); return { ...result, mods: [...result.mods, { directory }] }; };
+  const installFiles = f.parts.installFiles;
+  f.parts.installFiles = async (request, context) => [...await installFiles(request, context), { path: join(directory, 'mod.json'), expected: null, bytes: Buffer.from('{"place":"none"}') }];
   await setupHerdr(f.request, f.parts);
   const props = JSON.parse(await readFile(join(directory, 'props.json'), 'utf8'));
   expect(props.modId).toBe('spider-picker');

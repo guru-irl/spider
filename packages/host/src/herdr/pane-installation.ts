@@ -9,7 +9,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
-import { atomicWrite } from '../../../herdr/src/setup/backup.js';
+import { atomicWrite, snapshot } from '../../../herdr/src/setup/backup.js';
 import { HerdrError } from '../../../herdr/src/client/parse.js';
 export const PANE_INSTALLATION_REFUSALS = ['pane-installation-missing', 'pane-installation-unsafe', 'pane-endpoint-build-mismatch', 'pane-endpoint-protocol-mismatch'] as const;
 export class PaneInstallationPermissionsError extends HerdrError {
@@ -53,6 +53,16 @@ async function recordInstallation(globalRoot: string, packageRoot: string, repla
     if (info) throw new HerdrError('pane-installation-unsafe', 'Installation registry is malformed');
     await writePrivateJson(path, { version: 1, packageRoot: canonical });
   });
+}
+/** Read-only checkpoint planning; endpoint admission still happens during explicit setup. */
+export async function planPaneEndpointInstallation(globalRoot: string, packageRoot: string): Promise<{ paths: readonly string[]; changed: boolean }> {
+  const canonical = await realpath(packageRoot);
+  await inspectPackage(canonical);
+  const bytes = await readFile(join(canonical, 'dist/herdr/pane-endpoint.mjs'));
+  const digest = createHash('sha256').update(bytes).digest('hex'), file = `pane-endpoint-${digest}.mjs`;
+  const staged = join(canonical, 'dist/herdr', file), registry = join(globalRoot, 'herdr/installation.json');
+  const next = { version: 1, packageRoot: canonical, endpoint: { file, digest, protocol: 1 } };
+  return { paths: [staged, registry], changed: (await snapshot(staged)).hash !== digest || JSON.stringify(await readPrivateJson(registry)) !== JSON.stringify(next) };
 }
 /** Explicit local setup only. Runtime requests and diagnostics never call this. */
 export async function stagePaneEndpointInstallation(globalRoot: string, packageRoot: string): Promise<string[]> {

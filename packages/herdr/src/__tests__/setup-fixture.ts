@@ -61,6 +61,12 @@ export async function fixture(mode: 'fake' | 'hc' = 'fake'): Promise<{
   const notes = join(h.localEnv.XDG_CONFIG_HOME!, 'herdr-core/config.toml');
   await writeFile(settings, '{"theme":"stock","unrelated":"keep"}\n');
   await writeFile(notes, 'notes = true\nzoom = 2\n[other]\nnotes = true\n');
+  // These fixture copies represent mods already shipped with the app.
+  for (const name of ['spider', 'machines', 'agents', 'spaces', 'pane']) {
+    const directory = join(h.directories.app, 'mods', name);
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, 'mod.json'), '{"place":"none"}');
+  }
   const request: SetupRequest = { config: parseHerdrConfig({
       app: { binary: h.appBinary, home: h.directories.app }, core: { binary: h.hcBinary, config: notes },
       agentDirectory: h.directories.agent, globalRoot: h.directories.global, shellRc: join(h.root, 'shellrc'),

@@ -5,13 +5,14 @@ import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:pat
 import { HerdrLabelContract } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
-import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction } from './backup.js';
+import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, discardModStages, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction, type SetupJournal } from './backup.js';
 import { probeLaunch, type DoctorReport } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
 import { shellQuote } from '../sessions/resume.js';
 import { chmod, lstat, mkdir } from 'node:fs/promises';
 import type { RuntimeDirectoryProbe } from '../remote/runtime.js';
 import { planModStorage } from './mod-storage.js';
+import { assertSetupNotUndoing, beginRunCheckpoint, finishRunCheckpoint, recordRemoteWrite, recordCheckpointWrites, undoUpgrade, includeRegistryCheckpoint, type UpgradeCheckpoint, type UpgradeUndoResult } from './checkpoint.js';
 
 async function ensureSessionFeedDirectory(globalRoot: string): Promise<void> {
   await rejectSymlinks(globalRoot);
@@ -154,6 +155,8 @@ export interface SetupParts {
   generateTemplates(request: SetupRequest, context: SetupContext): Promise<readonly InstallFile[]>;
   installResume(request: SetupRequest, context: SetupContext): Promise<readonly InstallFile[]>;
   probeMachineNode(target: ProbeTarget, launch: HcRunRequest): Promise<string>;
+  /** Read-only paths and change detection for endpoint publication. */
+  paneEndpointPlan?(request: SetupRequest): Promise<{ paths: readonly string[]; changed: boolean }>;
   /** Explicit setup may stage only this machine’s owned installed endpoint. */
   stagePaneEndpoint?(request: SetupRequest): Promise<readonly string[]>;
   ensureRuntime(request: SetupRequest, context: SetupContext): Promise<readonly RuntimeFile[]>;
@@ -171,6 +174,7 @@ export interface SetupParts {
   warn(message: string): void;
 }
 export interface SetupResult {
+  journalChanged?: boolean;
   plan?: { files: readonly FileAction[]; cutover: readonly string[] };
   writes: readonly string[];
   probes: readonly NodeObservation[];
@@ -228,7 +232,23 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
   await assertGlobalRoot(request.config.globalRoot, parts.globalRoot);
   await parts.validateSelections?.(request);
   const work = async (): Promise<SetupResult> => {
+    await assertSetupNotUndoing(request.journalRoot);
     const journal = await readJournal(request.journalRoot);
+    let checkpoint: UpgradeCheckpoint | undefined, completed = false;
+    const recordWrites = async (paths: readonly string[]) => { if (checkpoint) await recordCheckpointWrites(request.journalRoot, checkpoint, paths); };
+    const saveSetupJournal = async () => { await saveJournal(request.journalRoot, journal); await recordWrites([join(request.journalRoot, 'journal.json')]); };
+    const observeWrites = async <T>(paths: readonly string[], work: () => Promise<T>): Promise<T> => {
+      const before = await Promise.all(paths.map(path => snapshot(path)));
+      try { return await work(); }
+      finally {
+        const changed: string[] = [];
+        for (let i = 0; i < paths.length; i++) {
+          const after = await snapshot(paths[i]!);
+          if (before[i]!.hash !== after.hash || before[i]!.mode !== after.mode) changed.push(paths[i]!);
+        }
+        await recordWrites(changed);
+      }
+    };
     const recordRuntimeRootProbes = (): boolean => {
       const observations = parts.runtimeRootProbes?.(request);
       if (!observations || JSON.stringify(observations) === JSON.stringify(journal.runtimeRootProbes)) return false;
@@ -263,7 +283,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         journal.cutoverFingerprint = cutoverFingerprint;
         journal.launcherNodePath = process.execPath;
         journal.cutoverPending = false;
-        await saveJournal(request.journalRoot, journal);
+        await saveSetupJournal();
       } };
     const settingsPath = join(request.config.agentDirectory, 'settings.json');
     const settings = await snapshot(settingsPath);
@@ -408,11 +428,6 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       const cutover = [...(cutoverNeeded ? preflight.cutoverActions ?? ['Recheck recorded sessions and open only closed selections'] : []), ...(needsAppSelection ? ['Select the installed layout and theme'] : [])];
       return { plan: { files: fileActions, cutover }, writes: [], probes: [], cutover: journal.cutover, doctor: { failures: [], warnings: [], probes: [] } };
     }
-    if (runningInPlace && preflight.cutoverNeedsRecheck && parts.persistCutover) {
-      journal.cutover = await parts.persistCutover(request);
-      context.priorCutover = journal.cutover;
-      cutoverMetadataChanged = previousCutover !== JSON.stringify([journal.cutover, journal.cutoverFingerprint]);
-    }
     const runtimes = await parts.ensureRuntime(request, context);
     const priorRuntimes = [...journal.runtimes];
     const runtimePlans: {
@@ -460,130 +475,155 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       }
     };
     const unchanged = releasedSounds.length === 0 && fileActions.every(action => action.action === 'unchanged') && journal.verified && !cutoverNeeded && fingerprint === journal.fingerprint && probes.length === 0 && runtimePlans.every(p => p.before === p.runtime.sha256) && (await Promise.all(files.map(async file => file.snapshotOnly || (await snapshot(file.path)).hash === digest(file.bytes)))).every(Boolean);
-    await ensureSessionFeedDirectory(request.config.globalRoot);
-    const endpointWrites = await parts.stagePaneEndpoint?.(request) ?? [];
-    if (unchanged) {
-      await bootstrap(); // Repair root loss without repeating cutover or unrelated setup writes.
-      const doctor = await parts.verify(request);
-      if (doctor.failures.length) throw new HerdrError('setup-verification-failed', 'Installed setup failed verification', { failures: doctor.failures });
-      if (recordRuntimeRootProbes() || cutoverMetadataChanged) await saveJournal(request.journalRoot, journal);
-      return { writes: [...endpointWrites], probes: [], cutover: journal.cutover, doctor };
-    }
-    const appFiles = files.filter(file => file.updateAfterCutover);
-    const ownedSounds = new Set<string>();
-    for (const file of appFiles) {
-      const prior = journal.entries.find(entry => entry.path === file.path);
-      if (prior?.managed?.kind !== 'json-paths' || !prior.managed.paths.includes('sounds.enabled')) continue;
-      const current = await snapshot(file.path);
-      if (!journal.verified && prior.soundApplied !== true && (current.hash === null || current.hash !== prior.soundIntent)) continue;
-      const rows = JSON.parse(prior.managedAfter ?? '[]') as unknown[];
-      const sound = rows.find(row => Array.isArray(row) && row[0] === 'sounds.enabled');
-      if (Array.isArray(sound) && managedProjection(current.bytes, { kind: 'json-paths', paths: ['sounds.enabled'] }) === JSON.stringify([sound])) ownedSounds.add(file.path);
-    }
-    for (const file of appFiles)
-      if (file.managed?.kind === 'json-paths' && file.managed.paths.includes('sounds.enabled')) file.deferredSoundApplied = ownedSounds.has(file.path);
-    journal.fingerprint = fingerprint;
-    journal.verified = false;
-    journal.retiredTerminals = retiredTerminals;
-    await prepareBackups(request.journalRoot, files, journal);
-    await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal);
-    const writes = [...endpointWrites, ...await applyFiles(files.filter(file => !file.updateAfterCutover), journal)];
-    for (const file of appFiles)
-      if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
-    for (const path of releasedSounds) parts.warn(`${path}: sounds.enabled was changed by the user and released.`);
-    for (const { runtime, before } of runtimePlans) {
-      const installed = await readRuntime(parts, runtime);
-      const current = installed === null ? null : digest(installed);
-      if (current === runtime.sha256)
-        continue;
-      if (current !== before)
-        throw new HerdrError('runtime-digest-mismatch', `Runtime changed after preflight on ${runtime.machine}`);
-      await parts.hc.fileWrite(runtime.machine, runtime.path, runtime.bytes);
-      if (digest(await parts.hc.fileRead(runtime.machine, runtime.path)) !== runtime.sha256)
-        throw new HerdrError('runtime-digest-mismatch', `Runtime verification failed on ${runtime.machine}`);
-    }
-    await bootstrap();
-    let cutover = journal.cutover;
+    const endpointPlan = await parts.paneEndpointPlan?.(request);
+    const checkpointPaths = [...files.map(file => file.path), join(request.config.app.home, 'keys.json'),
+      plannedAppSettings(request).path, join(request.config.globalRoot, 'herdr/spaces/spaces.json'),
+      join(request.config.globalRoot, 'herdr/installation.json'), join(request.journalRoot, 'journal.json'), ...(endpointPlan?.paths ?? [])];
+    if (!unchanged || endpointPlan?.changed || !endpointPlan && parts.stagePaneEndpoint || cutoverMetadataChanged || runningInPlace && preflight.cutoverNeedsRecheck && parts.persistCutover)
+      checkpoint = await beginRunCheckpoint(request.journalRoot, checkpointPaths);
     try {
-      if (cutoverNeeded || selectionReplacement) {
-        if (cutoverNeeded) { journal.cutoverPending = true; await saveJournal(request.journalRoot, journal); }
-        let selectionError: unknown;
-        try {
-          if (cutoverNeeded) cutover = await (context.priorCutover && !needsAppSelection && parts.reconcileCutover ? parts.reconcileCutover(request, context) : parts.cutover(request, context));
-          else {
-            if (!parts.selectApp) throw new HerdrError('app-selection-unavailable', 'App selection is unavailable; run setup again');
-            await parts.selectApp(request);
-          }
-        } catch (error) { selectionError = error; }
-        try {
-          for (const file of files.filter(file => file.snapshotOnly || file.updateAfterCutover)) {
-            const current = await snapshot(file.path);
-            const entry = journal.entries.find(entry => entry.path === file.path)!;
-            entry.after = current.hash ?? digest(Buffer.alloc(0));
-            if (file.managed) entry.managedAfter = managedProjection(current.bytes, file.managed);
-          }
-          await saveJournal(request.journalRoot, journal);
-        } catch (error) { if (selectionError === undefined) selectionError = error; }
-        if (selectionError !== undefined) throw selectionError;
+      if (runningInPlace && preflight.cutoverNeedsRecheck && parts.persistCutover) {
+        journal.cutover = await observeWrites([join(request.config.globalRoot, 'herdr/spaces/spaces.json')], () => parts.persistCutover!(request));
+        context.priorCutover = journal.cutover;
+        cutoverMetadataChanged = previousCutover !== JSON.stringify([journal.cutover, journal.cutoverFingerprint]);
       }
+      await ensureSessionFeedDirectory(request.config.globalRoot);
+      const endpointWrites = await observeWrites([join(request.config.globalRoot, 'herdr/installation.json'), ...(endpointPlan?.paths ?? [])], async () => await parts.stagePaneEndpoint?.(request) ?? []);
+      if (unchanged) {
+        await bootstrap(); // Repair root loss without repeating cutover or unrelated setup writes.
+        const doctor = await parts.verify(request);
+        if (doctor.failures.length) throw new HerdrError('setup-verification-failed', 'Installed setup failed verification', { failures: doctor.failures });
+        if (recordRuntimeRootProbes() || cutoverMetadataChanged) {
+          checkpoint ??= await beginRunCheckpoint(request.journalRoot, checkpointPaths);
+          await saveSetupJournal();
+        }
+        completed = true;
+        return { writes: [...endpointWrites], probes: [], cutover: journal.cutover, doctor };
+      }
+      const appFiles = files.filter(file => file.updateAfterCutover);
+      const ownedSounds = new Set<string>();
       for (const file of appFiles) {
-        if (file.managed?.kind !== 'json-paths' || !file.managed.paths.includes('sounds.enabled')) continue;
-        const sound: ManagedPart = { kind: 'json-paths', paths: ['sounds.enabled'] };
-        let soundError: unknown;
-        try {
-          for (let attempt = 0; attempt < 2; attempt++) {
-            const current = await snapshot(file.path);
-            if (managedProjection(current.bytes, sound) === managedProjection(file.bytes, sound)) break;
-            const settings = JSON.parse(current.bytes?.toString('utf8') ?? '{}') as Record<string, unknown>;
-            const sounds = (settings.sounds ?? {}) as Record<string, unknown>;
-            const bytes = Buffer.from(JSON.stringify({ ...settings, sounds: { ...sounds, enabled: false } }, null, 2) + '\n');
-            journal.entries.find(entry => entry.path === file.path)!.soundIntent = digest(bytes);
-            await saveJournal(request.journalRoot, journal);
-            await atomicWrite(file.path, bytes, current.mode, current.hash);
-            if (!writes.includes(file.path)) writes.push(file.path);
-          }
-          const current = await snapshot(file.path);
-          if (managedProjection(current.bytes, sound) !== managedProjection(file.bytes, sound)) throw new HerdrError('concurrent-settings-edit', `Sound changed after app selection: ${file.path}`);
-          journal.entries.find(entry => entry.path === file.path)!.soundApplied = true;
-        } catch (error) { soundError = error; }
-        try {
-          const current = await snapshot(file.path), entry = journal.entries.find(entry => entry.path === file.path)!;
-          entry.after = current.hash ?? digest(Buffer.alloc(0));
-          entry.managedAfter = managedProjection(current.bytes, file.managed);
-          await saveJournal(request.journalRoot, journal);
-        } catch (error) { if (soundError === undefined) soundError = error; }
-        if (soundError !== undefined) throw soundError;
+        const prior = journal.entries.find(entry => entry.path === file.path);
+        if (prior?.managed?.kind !== 'json-paths' || !prior.managed.paths.includes('sounds.enabled')) continue;
+        const current = await snapshot(file.path);
+        if (!journal.verified && prior.soundApplied !== true && (current.hash === null || current.hash !== prior.soundIntent)) continue;
+        const rows = JSON.parse(prior.managedAfter ?? '[]') as unknown[];
+        const sound = rows.find(row => Array.isArray(row) && row[0] === 'sounds.enabled');
+        if (Array.isArray(sound) && managedProjection(current.bytes, { kind: 'json-paths', paths: ['sounds.enabled'] }) === JSON.stringify([sound])) ownedSounds.add(file.path);
       }
-      if (!cutover) throw new HerdrError('cutover-reconciliation-required', 'No completed cutover was recorded');
-      journal.cutoverFingerprint = cutoverFingerprint;
-      journal.launcherNodePath = process.execPath;
-      if (cutover.terminals.some(t => retiredTerminals.includes(t)))
-        throw new HerdrError('retired-terminal-reused', 'Fresh owners must not reuse identities with pending native notes');
-      journal.cutover = cutover;
-      journal.cutoverPending = false;
-      await saveJournal(request.journalRoot, journal);
-      const doctor = await parts.verify(request);
-      if (doctor.failures.length)
-        throw new HerdrError('setup-verification-failed', 'Setup failed verification; retain the journal and inspect live owners before rollback', { failures: doctor.failures });
-      recordRuntimeRootProbes();
-      journal.verified = true;
-      await saveJournal(request.journalRoot, journal);
-      return { writes, probes, cutover, doctor };
-    } catch (error) {
-      const command = [process.execPath, join(request.packageRoot, 'dist/herdr/cli.mjs'), 'rollback', '--config', request.configPath].map(shellQuote).join(' ');
-      const message = error instanceof Error ? error.message : String(error);
-      throw new HerdrError(error instanceof HerdrError ? error.code : 'setup-failed', error instanceof HerdrError && error.code === 'running-session-unplaced' ? message : `${message}\nRollback: ${command}`, error instanceof HerdrError ? error.details : undefined);
+      for (const file of appFiles)
+        if (file.managed?.kind === 'json-paths' && file.managed.paths.includes('sounds.enabled')) file.deferredSoundApplied = ownedSounds.has(file.path);
+      journal.fingerprint = fingerprint;
+      journal.verified = false;
+      journal.retiredTerminals = retiredTerminals;
+      await prepareBackups(request.journalRoot, files, journal);
+      await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal);
+      const writes = [...endpointWrites, ...await applyFiles(files.filter(file => !file.updateAfterCutover), journal, recordWrites)];
+      for (const file of appFiles)
+        if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
+      for (const path of releasedSounds) parts.warn(`${path}: sounds.enabled was changed by the user and released.`);
+      for (const { runtime, before } of runtimePlans) {
+        const installed = await readRuntime(parts, runtime);
+        const current = installed === null ? null : digest(installed);
+        if (current === runtime.sha256)
+          continue;
+        if (current !== before)
+          throw new HerdrError('runtime-digest-mismatch', `Runtime changed after preflight on ${runtime.machine}`);
+        await recordRemoteWrite(request.journalRoot, checkpoint!, runtime.machine, runtime.path);
+        await parts.hc.fileWrite(runtime.machine, runtime.path, runtime.bytes);
+        if (digest(await parts.hc.fileRead(runtime.machine, runtime.path)) !== runtime.sha256)
+          throw new HerdrError('runtime-digest-mismatch', `Runtime verification failed on ${runtime.machine}`);
+      }
+      await bootstrap();
+      let cutover = journal.cutover;
+      try {
+        if (cutoverNeeded || selectionReplacement) {
+          if (cutoverNeeded) { journal.cutoverPending = true; await saveSetupJournal(); }
+          let selectionError: unknown;
+          try {
+            if (cutoverNeeded) cutover = await observeWrites([layoutPath, plannedAppSettings(request).path, join(request.config.globalRoot, 'herdr/spaces/spaces.json')], () => context.priorCutover && !needsAppSelection && parts.reconcileCutover ? parts.reconcileCutover(request, context) : parts.cutover(request, context));
+            else {
+              if (!parts.selectApp) throw new HerdrError('app-selection-unavailable', 'App selection is unavailable; run setup again');
+              await observeWrites([plannedAppSettings(request).path], () => parts.selectApp!(request));
+            }
+          } catch (error) { selectionError = error; }
+          try {
+            for (const file of files.filter(file => file.snapshotOnly || file.updateAfterCutover)) {
+              const current = await snapshot(file.path);
+              const entry = journal.entries.find(entry => entry.path === file.path)!;
+              entry.after = current.hash ?? digest(Buffer.alloc(0));
+              if (file.managed) entry.managedAfter = managedProjection(current.bytes, file.managed);
+            }
+            await saveSetupJournal();
+          } catch (error) { if (selectionError === undefined) selectionError = error; }
+          if (selectionError !== undefined) throw selectionError;
+        }
+        for (const file of appFiles) {
+          if (file.managed?.kind !== 'json-paths' || !file.managed.paths.includes('sounds.enabled')) continue;
+          const sound: ManagedPart = { kind: 'json-paths', paths: ['sounds.enabled'] };
+          let soundError: unknown;
+          try {
+            for (let attempt = 0; attempt < 2; attempt++) {
+              const current = await snapshot(file.path);
+              if (managedProjection(current.bytes, sound) === managedProjection(file.bytes, sound)) break;
+              const settings = JSON.parse(current.bytes?.toString('utf8') ?? '{}') as Record<string, unknown>;
+              const sounds = (settings.sounds ?? {}) as Record<string, unknown>;
+              const bytes = Buffer.from(JSON.stringify({ ...settings, sounds: { ...sounds, enabled: false } }, null, 2) + '\n');
+              journal.entries.find(entry => entry.path === file.path)!.soundIntent = digest(bytes);
+              await saveSetupJournal();
+              await atomicWrite(file.path, bytes, current.mode, current.hash);
+              await recordWrites([file.path]);
+              if (!writes.includes(file.path)) writes.push(file.path);
+            }
+            const current = await snapshot(file.path);
+            if (managedProjection(current.bytes, sound) !== managedProjection(file.bytes, sound)) throw new HerdrError('concurrent-settings-edit', `Sound changed after app selection: ${file.path}`);
+            journal.entries.find(entry => entry.path === file.path)!.soundApplied = true;
+          } catch (error) { soundError = error; }
+          try {
+            const current = await snapshot(file.path), entry = journal.entries.find(entry => entry.path === file.path)!;
+            entry.after = current.hash ?? digest(Buffer.alloc(0));
+            entry.managedAfter = managedProjection(current.bytes, file.managed);
+            await saveSetupJournal();
+          } catch (error) { if (soundError === undefined) soundError = error; }
+          if (soundError !== undefined) throw soundError;
+        }
+        if (!cutover) throw new HerdrError('cutover-reconciliation-required', 'No completed cutover was recorded');
+        journal.cutoverFingerprint = cutoverFingerprint;
+        journal.launcherNodePath = process.execPath;
+        if (cutover.terminals.some(t => retiredTerminals.includes(t)))
+          throw new HerdrError('retired-terminal-reused', 'Fresh owners must not reuse identities with pending native notes');
+        journal.cutover = cutover;
+        journal.cutoverPending = false;
+        await saveSetupJournal();
+        const doctor = await parts.verify(request);
+        if (doctor.failures.length)
+          throw new HerdrError('setup-verification-failed', 'Setup failed verification; retain the journal and inspect live owners before rollback', { failures: doctor.failures });
+        recordRuntimeRootProbes();
+        journal.verified = true;
+        await saveSetupJournal();
+        completed = true;
+        return { writes, probes, cutover, doctor };
+      } catch (error) {
+        const command = [process.execPath, join(request.packageRoot, 'dist/herdr/cli.mjs'), 'rollback', '--config', request.configPath].map(shellQuote).join(' ');
+        const message = error instanceof Error ? error.message : String(error);
+        throw new HerdrError(error instanceof HerdrError ? error.code : 'setup-failed', error instanceof HerdrError && error.code === 'running-session-unplaced' ? message : `${message}\nRollback: ${command}`, error instanceof HerdrError ? error.details : undefined);
+      }
+    } finally {
+      if (checkpoint) {
+        await recordWrites([join(request.journalRoot, 'journal.json')]);
+        await finishRunCheckpoint(request.journalRoot, checkpoint, completed);
+      }
     }
   };
-  return request.dryRun ? work() : withSetupLock(request.journalRoot, work);
+  const recordedWork = async () => {
+    const before = await snapshot(join(request.journalRoot, 'journal.json'));
+    const result = await work();
+    if (!request.dryRun) result.journalChanged = before.hash !== (await snapshot(join(request.journalRoot, 'journal.json'))).hash;
+    return result;
+  };
+  return request.dryRun ? work() : withSetupLock(request.journalRoot, recordedWork);
 }
-export async function rollbackHerdr(request: SetupRequest, parts: SetupParts): Promise<readonly string[]> {
-  assertPlainShell();
-  fenceRequest(request);
-  await assertGlobalRoot(request.config.globalRoot, parts.globalRoot);
-  return withSetupLock(request.journalRoot, async () => {
-    const journal = await readJournal(request.journalRoot);
-    const appSettings = journal.verified ? undefined : plannedAppSettings(request);
+async function releaseRollbackOwners(request: SetupRequest, parts: SetupParts, journal: SetupJournal): Promise<void> {
     if (journal.cutoverPending) {
       const preflight = await parts.preflight(request);
       if (!preflight.recoveredCutover && !preflight.cutoverProvedAbsent) throw new HerdrError('cutover-reconciliation-required', 'An uncertain live owner must be reconciled before rollback');
@@ -596,6 +636,36 @@ export async function rollbackHerdr(request: SetupRequest, parts: SetupParts): P
       journal.cutover = null; journal.verified = false;
       await saveJournal(request.journalRoot, journal);
     }
+}
+export async function undoHerdrUpgrade(request: SetupRequest, parts: SetupParts): Promise<UpgradeUndoResult> {
+  assertPlainShell();
+  fenceRequest(request);
+  await assertGlobalRoot(request.config.globalRoot, parts.globalRoot);
+  return withSetupLock(request.journalRoot, async () => {
+    const journal = await readJournal(request.journalRoot);
+    return undoUpgrade(request.journalRoot, {
+      replaceChanged: request.replaceChanged,
+      ownerPaths: [join(request.config.globalRoot, 'herdr/spaces/spaces.json'), join(request.journalRoot, 'journal.json')],
+      releaseOwners: () => releaseRollbackOwners(request, parts, journal),
+      cleanup: async baseline => {
+        await discardModStages(journal);
+        const existing = new Set(baseline.filter(file => file.bytes !== null).map(file => file.path));
+        await rollbackModDirectories(request.config.app.home, { ...journal, entries: journal.entries.filter(entry => existing.has(entry.path)) }, message => parts.warn(message));
+      },
+    });
+  });
+}
+export async function rollbackHerdr(request: SetupRequest, parts: SetupParts): Promise<readonly string[]> {
+  assertPlainShell();
+  fenceRequest(request);
+  await assertGlobalRoot(request.config.globalRoot, parts.globalRoot);
+  return withSetupLock(request.journalRoot, async () => {
+    const journal = await readJournal(request.journalRoot);
+    const appSettings = journal.verified ? undefined : plannedAppSettings(request);
+    await assertSetupNotUndoing(request.journalRoot);
+    await releaseRollbackOwners(request, parts, journal);
+    await includeRegistryCheckpoint(request.journalRoot, journal, join(request.config.globalRoot, 'herdr/installation.json'));
+    await saveJournal(request.journalRoot, journal);
     const appArtifacts = journal.entries.filter(entry => !entry.managed && resolve(entry.path).startsWith(resolve(request.config.app.home) + '/')).map(entry => entry.path);
     const dependencies = {
       [request.config.shellRc]: [join(request.config.globalRoot, 'herdr/resume.sh')],

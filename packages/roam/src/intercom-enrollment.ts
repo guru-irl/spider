@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { authorizedPairLine } from "./intercom-pair-files";
 import { posix } from "node:path";
+import { constants as osConstants } from "node:os";
 import type { Outcome, Peer } from "./contracts";
 import { isMachineId } from "./machine-id";
 import type { IntercomEnrollmentPair, IntercomEnrollmentPlan, IntercomEnrollmentPorts, IntercomEnrollmentPreview, IntercomEnrollmentRequest, IntercomMachinePin, IntercomRevocationCleanupReason, IntercomRevocationPorts, IntercomSshHostKey } from "./provision-contracts";
@@ -9,9 +10,29 @@ export const INTERCOM_CONSENT = "Enrolling this pair lets the initiating box exe
 
 export interface EnrollmentResult { pairs: readonly string[]; pending?: readonly { pairId: string; reason: string; causeCode?: string }[] }
 
+export const ENROLLMENT_NODE_CAUSE_CODES = [
+  "ERR_INVALID_ARG_TYPE", "ERR_INVALID_ARG_VALUE", "ERR_OUT_OF_RANGE", "ERR_INVALID_STATE",
+  "ERR_STREAM_DESTROYED", "ERR_STREAM_PREMATURE_CLOSE", "ERR_SOCKET_CLOSED", "ERR_IPC_CHANNEL_CLOSED",
+  "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "ERR_BUFFER_TOO_LARGE", "ERR_FS_FILE_TOO_LARGE",
+] as const;
+export const ENROLLMENT_SQLITE_CAUSE_CODES = [
+  "SQLITE_ERROR", "SQLITE_INTERNAL", "SQLITE_PERM", "SQLITE_ABORT", "SQLITE_BUSY", "SQLITE_LOCKED",
+  "SQLITE_NOMEM", "SQLITE_READONLY", "SQLITE_INTERRUPT", "SQLITE_IOERR", "SQLITE_CORRUPT", "SQLITE_FULL",
+  "SQLITE_CANTOPEN", "SQLITE_PROTOCOL", "SQLITE_SCHEMA", "SQLITE_TOOBIG", "SQLITE_CONSTRAINT", "SQLITE_MISMATCH",
+  "SQLITE_MISUSE", "SQLITE_AUTH", "SQLITE_RANGE", "SQLITE_NOTADB", "SQLITE_BUSY_RECOVERY", "SQLITE_BUSY_SNAPSHOT",
+  "SQLITE_READONLY_RECOVERY", "SQLITE_READONLY_CANTLOCK", "SQLITE_READONLY_DBMOVED",
+  "SQLITE_CONSTRAINT_CHECK", "SQLITE_CONSTRAINT_FOREIGNKEY", "SQLITE_CONSTRAINT_NOTNULL",
+  "SQLITE_CONSTRAINT_PRIMARYKEY", "SQLITE_CONSTRAINT_UNIQUE", "SQLITE_CONSTRAINT_TRIGGER",
+] as const;
+export const SPIDER_ENROLLMENT_CAUSE_CODES = [
+  "diagnostic-snapshot-changing", "diagnostic-snapshot-wal-invalid", "diagnostic-snapshot-wal-unpublished",
+  "diagnostic-snapshot-wal-index-missing", "diagnostic-snapshot-unsafe",
+] as const;
+const enrollmentCauseCodes = new Set<string>([
+  ...Object.keys(osConstants.errno), ...ENROLLMENT_NODE_CAUSE_CODES, ...ENROLLMENT_SQLITE_CAUSE_CODES, ...SPIDER_ENROLLMENT_CAUSE_CODES,
+]);
 export function enrollmentCauseCode(error: unknown): string {
-  return error && typeof error === "object" && "code" in error && typeof error.code === "string" && error.code.length <= 64 &&
-    /^(?:E[A-Z0-9]+|ERR_[A-Z0-9_]+|SQLITE_[A-Z_]+|[a-z]+(?:-[a-z0-9]+)+)$/.test(error.code) ? error.code : "unknown";
+  return error && typeof error === "object" && "code" in error && typeof error.code === "string" && enrollmentCauseCodes.has(error.code) ? error.code : "unknown";
 }
 
 function outcome(operationId: string, code: 0 | 1 | 2 | 3, reason: string, value: EnrollmentResult | null = null): Outcome<EnrollmentResult> {

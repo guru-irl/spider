@@ -50,6 +50,17 @@ describe('duration-balanced test shards', () => {
     expect(Math.max(...shards.map(shard => wallTime(shard, durations)))).toBeLessThanOrEqual(lowerBound * 1.1);
   });
 
+  it('records measured durations for every checkpoint model group', () => {
+    const groups = files.filter(file => /\/setup-checkpoint-model(?:-seed-\d+)?\.test\.ts$/.test(file));
+    expect(groups).toHaveLength(9);
+    for (const file of groups) expect(durations[file], file).toBeGreaterThan(0);
+  });
+
+  it('keeps predicted two-worker test time below seven minutes', () => {
+    const shards = partitionFiles(files, durations, shardCount);
+    expect(Math.max(...shards.map(shard => wallTime(shard, durations)))).toBeLessThan(420_000);
+  });
+
   it('rejects invalid shard counts and permits empty shards', () => {
     expect(() => partitionFiles(files, durations, 0)).toThrow(/positive integer/);
     expect(() => partitionFiles(files, durations, 1.5)).toThrow(/positive integer/);

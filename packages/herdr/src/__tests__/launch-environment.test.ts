@@ -609,3 +609,9 @@ it('reads the original terminal-keyed private record format', async () => {
   await launchSession(request(), resumePorts());
   expect(launches[0].env.API_TOKEN === credential()).toBe(true);
 });
+
+it('restores persistent editor and terminal configuration without treating it as an endpoint', async () => {
+  const variables = { VSCODE_PORTABLE: 'portable-config', KITTY_CONFIG_DIRECTORY: 'kitty-config', ALACRITTY_CONFIG_HOME: 'alacritty-config', WEZTERM_CONFIG_FILE: 'terminal-config.lua', ZELLIJ_AUTO_ATTACH: 'true', MONITOR_API_KEY: credential() };
+  await record({ ...launch([]), variables }); await launchSession(request(), resumePorts());
+  expect(Object.keys(variables).filter(name => launches[0].env[name] !== variables[name as keyof typeof variables])).toEqual([]);
+});

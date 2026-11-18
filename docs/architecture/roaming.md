@@ -483,9 +483,10 @@ another open tunnel, and deleting a key does not close an existing connection.
 Consent states this remaining reach. Pair revocation stops its owned host and
 removes its key rather than claiming closure from key deletion alone.
 Re-enrollment needs fresh consent for the recorded fence and a new edge epoch.
-After fresh consent is approved, the pair key can run commands before transport
-verification, even if the restore remains pending. Messaging stays fenced until
-live enrollment succeeds.
+After fresh consent is approved, the pair key can run commands before the route
+is added and the transport is verified, even if the restore remains pending.
+Adding the route connects through the pair key, so approval comes first.
+Messaging stays fenced until live enrollment succeeds.
 
 To close a pending restore after approval, run
 `spider roam intercom revoke pair-1`. Plain revocation uses the inherited fence's

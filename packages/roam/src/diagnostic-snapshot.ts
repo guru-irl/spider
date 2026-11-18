@@ -6,9 +6,9 @@ import { assertTestDbPath, openDbReadOnly, type Db } from "@spider/db-core";
 
 // SQLite's ordinary read-only open can create -wal/-shm files or modify an
 // existing -shm. Inspect private copies instead; never open a source with SQLite.
-// Published WAL frames are immutable until a checkpoint/reset. Copy a finite
-// prefix, bound it by an observed commit, and keep the main DB stable throughout.
-// Appends may continue; checkpoints and generation changes are retried, then refused.
+// Frames through an index read taken after the main copy and before opening the
+// WAL are immutable within that generation, even when later writes overwrite a
+// stale tail in place. Validate the entire chosen prefix; retry resets/backfill.
 const snapshots = new Set<string>();
 let cleanupRegistered = false;
 function cleanup(directory: string): void {
@@ -28,6 +28,9 @@ class Changed extends Error {
 class Unpublished extends Changed {
   constructor() { super("WAL frames beyond the published commit boundary are changing or need recovery", "diagnostic-snapshot-wal-unpublished"); }
 }
+class MissingIndex extends Changed {
+  constructor() { super("WAL commit index is missing while the store is opening or closing", "diagnostic-snapshot-wal-index-missing"); }
+}
 class InvalidWal extends Error {
   readonly code = "diagnostic-snapshot-wal-invalid";
   constructor() { super("Cannot verify the WAL commit boundary"); }
@@ -45,45 +48,90 @@ function prefix(file: string, length: number, position = 0): Buffer {
     return bytes;
   } finally { closeSync(fd); }
 }
-function walCommit(header: Buffer, index: Buffer | null): { end: number; frames: number; pages: number; first: number; second: number; salt: Buffer } {
-  if (!index || index.length !== 96 || !index.subarray(0, 48).equals(index.subarray(48))) throw new InvalidWal();
-  const little = endianness() === "LE";
-  const word = (offset: number) => little ? index.readUInt32LE(offset) : index.readUInt32BE(offset);
-  const short = (offset: number) => little ? index.readUInt16LE(offset) : index.readUInt16BE(offset);
-  let first = 0, second = 0;
-  for (let offset = 0; offset < 40; offset += 8) {
+interface WalIndex {
+  frames: number;
+  pages: number;
+  pageSize: number;
+  first: number;
+  second: number;
+  salt: Buffer;
+  bigEndChecksum: boolean;
+  backfill: number;
+  attempted: number;
+}
+function checksum(bytes: Buffer, bigEndian: boolean, first = 0, second = 0): [number, number] {
+  const word = (offset: number) => bigEndian ? bytes.readUInt32BE(offset) : bytes.readUInt32LE(offset);
+  for (let offset = 0; offset < bytes.length; offset += 8) {
     first = (first + word(offset) + second) >>> 0;
     second = (second + word(offset + 4) + first) >>> 0;
   }
-  const magic = header.readUInt32BE(0);
-  const pageSize = short(14) === 1 ? 65_536 : short(14), frames = word(16), pages = word(20);
-  if (word(0) !== 3_007_000 || index[12] !== 1 || first !== word(40) || second !== word(44) ||
-      magic !== 0x377f0682 && magic !== 0x377f0683 || index[13] !== (magic & 1) ||
-      pageSize < 512 || pageSize > 65_536 || (pageSize & (pageSize - 1)) !== 0 || header.readUInt32BE(8) !== pageSize) throw new InvalidWal();
-  const end = 32 + frames * (pageSize + 24);
-  if (!Number.isSafeInteger(end)) throw new InvalidWal();
-  return { end, frames, pages, first: word(24), second: word(28), salt: index.subarray(32, 40) };
+  return [first, second];
 }
-function constrainWal(walFile: string, index: Buffer | null, publishedIndex: Buffer | null): void {
-  const size = statSync(walFile).size;
-  if (size === 0) return;
-  if (size < 32) throw new InvalidWal();
-  const header = prefix(walFile, 32), initial = walCommit(header, index), published = walCommit(header, publishedIndex);
-  if (!initial.salt.equals(published.salt) || published.end < initial.end) throw new Changed();
-  if (!initial.salt.equals(header.subarray(16, 24))) throw new InvalidWal();
-  const commit = published.end <= size ? published : initial;
-  const { end, frames, pages } = commit, pageSize = header.readUInt32BE(8);
-  if (end > size) throw new InvalidWal();
-  if (frames) {
-    const last = prefix(walFile, 24, end - pageSize - 24);
-    if (!last.readUInt32BE(0) || !last.readUInt32BE(4) || last.readUInt32BE(4) !== pages ||
-        !last.subarray(8, 16).equals(header.subarray(16, 24)) ||
-        last.readUInt32BE(16) !== commit.first || last.readUInt32BE(20) !== commit.second) throw new InvalidWal();
+function indexBytes(file: string): Buffer {
+  // Keep the duplicate commit headers together; checkpoint fields are outside
+  // their checksum and are checked against the selected commit separately.
+  try { return Buffer.concat([prefix(file, 96), prefix(file, 40, 96)]); }
+  catch (error) {
+    if (error instanceof InvalidWal) throw new Changed();
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new MissingIndex();
+    throw error;
   }
-  if (size > end) {
-    if (size - end < 24) throw new InvalidWal();
-    const extra = prefix(walFile, 24, end);
-    if (extra.readUInt32BE(0) && extra.subarray(8, 16).equals(header.subarray(16, 24)) && published.end < size) throw new Unpublished();
+}
+function walIndex(index: Buffer): WalIndex {
+  if (!index.subarray(0, 48).equals(index.subarray(48, 96)) || index[12] !== 1) throw new Changed();
+  const bigEndian = endianness() === "BE";
+  const word = (offset: number) => bigEndian ? index.readUInt32BE(offset) : index.readUInt32LE(offset);
+  const short = (offset: number) => bigEndian ? index.readUInt16BE(offset) : index.readUInt16LE(offset);
+  const [first, second] = checksum(index.subarray(0, 40), bigEndian);
+  const pageSize = short(14) === 1 ? 65_536 : short(14);
+  if (word(0) !== 3_007_000 || first !== word(40) || second !== word(44) || index[13] > 1 ||
+      !(pageSize === 0 && word(16) === 0) && (pageSize < 512 || pageSize > 65_536 || (pageSize & (pageSize - 1)) !== 0)) throw new InvalidWal();
+  const result = { frames: word(16), pages: word(20), pageSize, first: word(24), second: word(28),
+    salt: index.subarray(32, 40), bigEndChecksum: index[13] === 1, backfill: word(96), attempted: word(128) };
+  if (result.backfill > result.frames || result.attempted > result.frames) throw new Changed();
+  return result;
+}
+function sameGeneration(initial: WalIndex, limit: WalIndex, published: WalIndex): void {
+  if (!initial.salt.equals(limit.salt) || !limit.salt.equals(published.salt) ||
+      initial.pageSize !== limit.pageSize || limit.pageSize !== published.pageSize ||
+      initial.frames > limit.frames || limit.frames > published.frames) throw new Changed();
+  // A checkpoint announces its target before touching the main DB. Never use a
+  // prefix older than an observed backfill, including an in-flight checkpoint.
+  if (published.backfill > limit.frames || published.attempted > limit.frames ||
+      initial.backfill > limit.backfill || limit.backfill > published.backfill) throw new Changed();
+}
+function constrainWal(walFile: string, initial: WalIndex, limit: WalIndex, published: WalIndex): void {
+  sameGeneration(initial, limit, published);
+  const size = statSync(walFile).size;
+  if (size === 0) {
+    if (limit.frames !== 0) throw new Changed();
+    return;
+  }
+  if (size < 32) throw new Changed();
+  const header = prefix(walFile, 32), magic = header.readUInt32BE(0);
+  // walRestartHdr publishes new index salts before rewriting/truncating the WAL.
+  if (!limit.salt.equals(header.subarray(16, 24))) throw new Changed();
+  if (magic !== 0x377f0682 && magic !== 0x377f0683 || header.readUInt32BE(4) !== 3_007_000 ||
+      header.readUInt32BE(8) !== limit.pageSize || !!(magic & 1) !== limit.bigEndChecksum) throw new InvalidWal();
+  let [first, second] = checksum(header.subarray(0, 24), limit.bigEndChecksum);
+  if (first !== header.readUInt32BE(24) || second !== header.readUInt32BE(28)) throw new InvalidWal();
+  const frameSize = limit.pageSize + 24, end = 32 + limit.frames * frameSize;
+  if (end > size) throw new Changed();
+  const available = Math.floor((size - 32) / frameSize);
+  for (let frame = 1; frame <= available; frame++) {
+    const bytes = prefix(walFile, frameSize, 32 + (frame - 1) * frameSize);
+    const [nextFirst, nextSecond] = checksum(bytes.subarray(24), limit.bigEndChecksum,
+      ...checksum(bytes.subarray(0, 8), limit.bigEndChecksum, first, second));
+    const valid = bytes.readUInt32BE(0) !== 0 && bytes.subarray(8, 16).equals(limit.salt) &&
+      nextFirst === bytes.readUInt32BE(16) && nextSecond === bytes.readUInt32BE(20);
+    if (!valid) {
+      if (frame <= limit.frames) throw new InvalidWal();
+      break; // Stale generations, torn tails and uncommitted residue are ignored.
+    }
+    first = nextFirst; second = nextSecond;
+    if (frame === limit.frames && (bytes.readUInt32BE(4) !== limit.pages || !limit.pages ||
+        first !== limit.first || second !== limit.second)) throw new InvalidWal();
+    if (frame > published.frames && bytes.readUInt32BE(4) !== 0) throw new Unpublished();
   }
   truncateSync(walFile, end);
 }
@@ -142,26 +190,50 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
     const shmFile = `${file}-shm`, shm = fileStamp(shmFile, false);
     const directory = mkdtempSync(join(tmpdir(), "spider-roam-inspect-"));
     register(directory);
+    let observed: Buffer | null = null;
     try {
       const copy = join(directory, "snapshot.db");
-      const index = shm === null ? null : prefix(shmFile, 96);
+      observed = shm === null ? null : indexBytes(shmFile);
+      const initial = observed === null ? null : walIndex(observed);
       copyStable(file, copy, main);
+      // This is the commit bound, not the pre-copy or post-WAL publication.
+      const limit = shm === null ? null : walIndex(indexBytes(shmFile));
       if (wal !== null) {
         copyStable(walFile, `${copy}-wal`, wal, false);
-        try { constrainWal(`${copy}-wal`, index, shm === null ? null : prefix(shmFile, 96)); }
+        if (!initial || !limit) throw new MissingIndex();
+        try { constrainWal(`${copy}-wal`, initial, limit, walIndex(indexBytes(shmFile))); }
         catch (error) {
-          if (!(error instanceof Unpublished) || shm === null) throw error;
-          // Publication may follow the index read. Recheck against the same finite
-          // copy, not a new WAL tail that the writer can keep extending.
-          constrainWal(`${copy}-wal`, index, prefix(shmFile, 96));
+          if (!(error instanceof Unpublished)) throw error;
+          // Publication may follow the index read. Recheck the same finite
+          // copy without chasing a newly extended or overwritten WAL tail.
+          constrainWal(`${copy}-wal`, initial, limit, walIndex(indexBytes(shmFile)));
         }
+      } else if (initial && limit) {
+        sameGeneration(initial, limit, walIndex(indexBytes(shmFile)));
+        if (limit.frames !== 0) throw new Changed();
       }
       if (fileStamp(file) !== main || fileStamp(walFile, false) !== wal || fileStamp(shmFile, false) !== shm) throw new Changed();
       const db = openDbReadOnly(copy);
       if (!db) throw new Error("Diagnostic snapshot disappeared");
-      return { ...db, close() { try { db.close(); } finally { cleanup(directory); } } };
-    } catch (error) {
-      cleanup(directory);
+      try {
+        const pages = db.pragma("page_count"); // Force private WAL recovery.
+        if (limit) {
+          const recovered = walIndex(indexBytes(`${copy}-shm`));
+          if (recovered.frames !== limit.frames || pages !== limit.pages ||
+              limit.frames !== 0 && (recovered.first !== limit.first || recovered.second !== limit.second)) throw new Changed();
+        }
+        return { ...db, close() { try { db.close(); } finally { cleanup(directory); } } };
+      } catch (error) { db.close(); throw error; }
+    } catch (caught) {
+      let error = caught;
+      try {
+        if (error instanceof InvalidWal && (fileStamp(file) !== main || fileStamp(walFile, false) !== wal ||
+            fileStamp(shmFile, false) !== shm || observed !== null && !prefix(shmFile, 96).equals(observed.subarray(0, 96)))) error = new Changed();
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") error = new Changed();
+      } catch (changed) {
+        if ((changed as NodeJS.ErrnoException).code === "ENOENT" || changed instanceof InvalidWal) error = new Changed();
+        else error = changed;
+      } finally { cleanup(directory); }
       if (error instanceof Changed && attempt < 2) continue;
       throw error;
     }

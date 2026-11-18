@@ -65,7 +65,7 @@ function readPeer(value: unknown): Peer {
   keys(input, ["machineId", "alias", "node", "pi", "cli", "core", "globalRoot", "agentDir", "coreUnit"], "peer");
   const alias = nonempty(input.alias, "peer alias");
   if (input.coreUnit !== undefined && (typeof input.coreUnit !== "string" || input.coreUnit.length > 255 ||
-      !/^[A-Za-z0-9][A-Za-z0-9_.@:-]*\.service$/.test(input.coreUnit))) throw new Error("Invalid roaming config: peer core unit");
+      !/^[A-Za-z0-9][A-Za-z0-9_.@:-]*\.service$/.test(input.coreUnit) || input.coreUnit.endsWith("@.service"))) throw new Error("Invalid roaming config: peer core unit");
   return {
     machineId: machineIdentity(input.machineId),
     alias,

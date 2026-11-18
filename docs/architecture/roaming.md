@@ -95,9 +95,12 @@ to set `agentDir`. Keep the peer's other fields. For example:
 
 The top-level `coreUnit` belongs to the machine whose roaming config contains
 it. A hub's value never selects a destination's unit. Each hub peer can set its
-own optional `coreUnit`, as shown for `box-1.invalid` above. Provisioning records
-the destination unit in the box's top-level `coreUnit` and uses it for the
-supervisor's `After=`, `Requires=`, and `PartOf=` dependencies.
+own optional `coreUnit`, as shown for `box-1.invalid` above. A peer's unit must
+name a concrete service, not a template such as `hc@.service`. The first
+provision records the destination unit in the box's top-level `coreUnit`, and
+every provision uses it for the supervisor's `After=`, `Requires=`, and
+`PartOf=` dependencies. Reprovisioning an enrolled box doesn't rewrite the
+recorded value.
 
 When a peer omits `coreUnit`, the destination discovers existing `herdr`,
 `herdr-core`, `hc`, or `hc-core` services, including their instance names, and

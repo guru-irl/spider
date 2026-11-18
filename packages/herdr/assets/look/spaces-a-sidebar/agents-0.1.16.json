@@ -183,7 +183,7 @@
     "id": "a-agents-model-duration",
     "file": "main.js",
     "anchor": "this.track(list, now);",
-    "replacement": "this.track(list, now);\n    this.spiderDurationAtRender = this.spiderDurationKey(now);"
+    "replacement": "this.track(list, now);\n    this.hold(list);\n    this.spiderDurationAtRender = this.spiderDurationKey(now);"
   },
   {
     "id": "a-agents-model-priority",
@@ -232,5 +232,11 @@
     "file": "main.js",
     "anchor": ".on_hover((on, cx) => { if (on) this.iconHovered = a.address; else if (this.iconHovered === a.address) this.iconHovered = null; cx.notify(); })",
     "replacement": ".on_hover((on, cx) => { const previous = this.iconHovered; if (on) this.iconHovered = a.address; else if (this.iconHovered === a.address) this.iconHovered = null; if (previous !== this.iconHovered) cx.notify(); })"
+  },
+  {
+    "id": "a-agents-hold-done",
+    "file": "main.js",
+    "anchor": "  rank(a) {\n    return RANK[a.status] ?? 0;\n  }",
+    "replacement": "  // A viewed Done agent stays in Done when looking at it makes it idle.\n  hold(list) {\n    const cur = list.find((a) => a.focused);\n    const same = cur && cur.address === this.held?.address;\n    if (!same || cur.status !== \"idle\") this.held = cur ? { address: cur.address, rank: RANK[cur.status] ?? 0 } : null;\n  }\n\n  rank(a) {\n    const sawDone = a.address === this.held?.address && this.held.rank === RANK.done && a.status === \"idle\";\n    return sawDone ? RANK.done : RANK[a.status] ?? 0;\n  }"
   }
 ]

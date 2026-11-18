@@ -175,6 +175,25 @@ it('uses the active session branch rather than an abandoned model change for key
   expect(launches[0].argv.includes('other/abandoned')).toBe(false);
 });
 
+it('keeps the selected model when an assistant response names a routed physical model', async () => {
+  await record(keyLaunch(['--model', 'provider/old', '--api-key', credential()]));
+  const response = { type: 'message', id: 'response', parentId: 'info', message: { role: 'assistant', provider: 'physical-provider', model: 'physical-model', content: [] } };
+  await writeFile(file, await readFile(file, 'utf8') + JSON.stringify(response) + '\n');
+  await launchSession(request(), resumePorts());
+  expect(launches[0].argv.includes('provider/current')).toBe(true);
+  expect(launches[0].argv.some(value => value.includes('physical-provider'))).toBe(false);
+});
+
+it('does not treat a routed physical response as evidence that the selected key provider stayed the same', async () => {
+  await record(keyLaunch(['--model', 'provider/old', '--api-key', credential()]));
+  const response = { type: 'message', id: 'response', parentId: 'info', message: { role: 'assistant', provider: 'provider', model: 'physical-model', content: [] } };
+  await writeFile(file, (await readFile(file, 'utf8')).replace('"provider":"provider"', '"provider":"other"') + JSON.stringify(response) + '\n');
+  let failure: unknown;
+  try { await launchSession(request(), resumePorts()); } catch (error) { failure = error; }
+  expect(failure).toMatchObject({ code: 'session-key-provider-changed' });
+  expect(launches).toHaveLength(0);
+});
+
 it.each(['offer', 'launch'])('%s checks live ownership before opening a session to read its API-key model', async mode => {
   await record(keyLaunch(['--model', 'provider/old', '--api-key', credential()]));
   await inventory.presence.record({ pid: 900, startIdentity: 'live-owner', sessionId: owner.sessionId, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address });

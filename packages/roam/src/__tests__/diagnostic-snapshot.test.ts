@@ -750,7 +750,7 @@ it.each([1, 0x5eed, 0xc0ffee])("accepts only recorded commits under seeded lifec
   expect(result.accepted).toBeGreaterThan(0);
   expect(result.accepted + result.changing).toBe(200);
   for (const count of Object.values(result.actions)) expect(count).toBeGreaterThan(0);
-  console.info("snapshot-fuzz", JSON.stringify({ seed, ...result }));
+  process.stdout.write(`snapshot-fuzz ${JSON.stringify({ seed, ...result })}\n`);
 }, 5000);
 
 it("detects a never-committed state injected into the fuzz membership check", () => {

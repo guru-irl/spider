@@ -8,7 +8,7 @@ import { assertTestDbPath, openDbReadOnly, type Db } from "@spider/db-core";
 // existing -shm. Inspect private copies instead; never open a source with SQLite.
 // Frames through an index read taken after the main copy and before opening the
 // WAL are immutable within that generation, even when later writes overwrite a
-// stale tail in place. Validate the entire chosen prefix; retry resets/backfill.
+// stale tail in place. Validate the entire chosen prefix; retry generation resets.
 // Linux coarse timestamps use jiffies (10 ms at HZ=100). Allow 50 ms,
 // also covering APFS nanoseconds and the Linux clock used by WSL2 ext4.
 // https://docs.kernel.org/filesystems/multigrain-ts.html
@@ -60,8 +60,6 @@ interface WalIndex {
   second: number;
   salt: Buffer;
   bigEndChecksum: boolean;
-  backfill: number;
-  attempted: number;
 }
 function checksum(bytes: Buffer, bigEndian: boolean, first = 0, second = 0): [number, number] {
   const word = (offset: number) => bigEndian ? bytes.readUInt32BE(offset) : bytes.readUInt32LE(offset);
@@ -72,9 +70,8 @@ function checksum(bytes: Buffer, bigEndian: boolean, first = 0, second = 0): [nu
   return [first, second];
 }
 function indexBytes(file: string): Buffer {
-  // Keep the duplicate commit headers together; checkpoint fields are outside
-  // their checksum and are checked against the selected commit separately.
-  try { return Buffer.concat([prefix(file, 96), prefix(file, 40, 96)]); }
+  // Keep both copies of the checksummed commit header together.
+  try { return prefix(file, 96); }
   catch (error) {
     if (error instanceof InvalidWal) throw new Changed();
     if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new MissingIndex();
@@ -90,19 +87,13 @@ function walIndex(index: Buffer): WalIndex {
   const pageSize = short(14) === 1 ? 65_536 : short(14);
   if (word(0) !== 3_007_000 || first !== word(40) || second !== word(44) || index[13] > 1 ||
       !(pageSize === 0 && word(16) === 0) && (pageSize < 512 || pageSize > 65_536 || (pageSize & (pageSize - 1)) !== 0)) throw new InvalidWal();
-  const result = { frames: word(16), pages: word(20), pageSize, first: word(24), second: word(28),
-    salt: index.subarray(32, 40), bigEndChecksum: index[13] === 1, backfill: word(96), attempted: word(128) };
-  if (result.backfill > result.frames || result.attempted > result.frames) throw new Changed();
-  return result;
+  return { frames: word(16), pages: word(20), pageSize, first: word(24), second: word(28),
+    salt: index.subarray(32, 40), bigEndChecksum: index[13] === 1 };
 }
 function sameGeneration(initial: WalIndex, limit: WalIndex, published: WalIndex): void {
   if (!initial.salt.equals(limit.salt) || !limit.salt.equals(published.salt) ||
       initial.pageSize !== limit.pageSize || limit.pageSize !== published.pageSize ||
       initial.frames > limit.frames || limit.frames > published.frames) throw new Changed();
-  // A checkpoint announces its target before touching the main DB. Never use a
-  // prefix older than an observed backfill, including an in-flight checkpoint.
-  if (published.backfill > limit.frames || published.attempted > limit.frames ||
-      initial.backfill > limit.backfill || limit.backfill > published.backfill) throw new Changed();
 }
 function constrainWal(walFile: string, initial: WalIndex, limit: WalIndex, published: WalIndex): void {
   sameGeneration(initial, limit, published);

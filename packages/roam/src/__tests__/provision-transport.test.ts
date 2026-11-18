@@ -221,12 +221,14 @@ it("accepts only coherent named intercom evidence from remote verification", asy
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   const request = { action: "verify", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
     node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi };
-  const value = { piSignedIn: true, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true, bundledIntercom: true,
+  const value = { corePin: "ready", piSignedIn: true, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true, bundledIntercom: true,
     intercomUnique: true, legacyDrained: true, federation: true,
     intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: [] } };
   f.state.provisionReply = { version: 1, kind: "provision", value };
   expect(await port.executeProvision(handle, request)).toEqual(value);
   for (const invalid of [
+    { ...value, corePin: undefined },
+    { ...value, corePin: "unrecognized-state" },
     { ...value, intercomEvidence: undefined },
     { ...value, intercomEvidence: { ...value.intercomEvidence, settings: "legacy-extension-declared" } },
     { ...value, intercomEvidence: { ...value.intercomEvidence, legacy: "arbitrary-untrusted-text" } },

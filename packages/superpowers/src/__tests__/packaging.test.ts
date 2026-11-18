@@ -3,6 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { testScratchPath } from "./testutil.js";
+import { herdrPackageAssets } from "../../../../scripts/test-herdr-package-assets.js";
 
 const root = resolve(import.meta.dirname, "../../../..");
 const skillDirs = ["packages/superpowers/skills", "packages/pstack/skills", "packages/intercom/skills"];
@@ -51,6 +52,11 @@ describe("release tarball check", () => {
     const result = check([...base, ...skillFiles()].filter(file => file !== missing));
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(missing.endsWith(".css") ? "dashboard JS/CSS missing" : missing);
+  });
+  it.each(herdrPackageAssets)("rejects exactly the missing Herdr asset %s", missing => {
+    const result = check([...base, ...skillFiles()].filter(file => file !== missing));
+    expect(result.status).toBe(1);
+    expect(result.stderr.trim()).toBe(`::error::missing from tarball: ${missing}`);
   });
   it.each(["dist/dashboard/assets/index-abcdefgh.js.map", "dist/dashboard/states.html"])("still rejects development artifact %s", extra => {
     const result = check([...base, ...skillFiles(), extra]);

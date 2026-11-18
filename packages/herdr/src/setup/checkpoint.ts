@@ -331,6 +331,7 @@ export async function undoUpgrade(root: string, options: {
       }
       if (bytes !== null) await saveBlob(root, bytes, digest(bytes));
       targets.push({ path: original.path, hash: bytes === null ? null : digest(bytes), mode });
+      if (current.bytes !== null) await saveBlob(root, current.bytes, current.hash!);
       checked.push({ path: original.path, hash: current.hash, mode: current.mode });
     }
     let meaningful = false;

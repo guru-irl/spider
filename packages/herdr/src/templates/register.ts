@@ -14,6 +14,10 @@ export interface TemplatePorts {
 }
 export type TemplateReadPorts = Omit<TemplatePorts, 'writeVerifiedFile'>;
 export interface GlobalTemplateFile { path: string; content: string }
+/** All files activation may rewrite, including roles currently disabled by policy. */
+export function globalHerdrTemplatePaths(ports: Pick<TemplateReadPorts, 'templateDirectory'> & { roleTemplateOptions: Pick<RoleTemplateOptions, 'instructionPaths'> }): string[] {
+  return TEMPLATE_ROLES.flatMap(role => [ports.roleTemplateOptions.instructionPaths[role], join(ports.templateDirectory, `spider-${role}.md`)]);
+}
 const warningSets = new WeakMap<TemplateReadPorts, Set<string>>();
 /** Setup and activation consume the same normal-parser global policy and rendering path. */
 export async function readGlobalHerdrTemplateFiles(ports: TemplateReadPorts, options: { strict?: boolean } = {}): Promise<GlobalTemplateFile[]> {
@@ -26,11 +30,12 @@ export async function readGlobalHerdrTemplateFiles(ports: TemplateReadPorts, opt
     if (!warnings.has(message)) { warnings.add(message); ports.reportWarning(message); }
   });
   const templates = generateRoleTemplates(policy, ports.modelRegistry, ports.roleTemplateOptions);
-  const files: GlobalTemplateFile[] = TEMPLATE_ROLES.flatMap(role => {
+  const paths = globalHerdrTemplatePaths(ports);
+  const files: GlobalTemplateFile[] = TEMPLATE_ROLES.flatMap((role, index) => {
     const template = templates[role]; const instructions = templates.instructions[role];
     return template && instructions ? [
-      { path: ports.roleTemplateOptions.instructionPaths[role], content: instructions },
-      { path: join(ports.templateDirectory, `spider-${role}.md`), content: template },
+      { path: paths[index * 2]!, content: instructions },
+      { path: paths[index * 2 + 1]!, content: template },
     ] : [];
   });
   if (!options.strict) for (const message of warnings) if (!currentWarnings.has(message)) warnings.delete(message);

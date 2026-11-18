@@ -22,9 +22,10 @@ const identity = { pid: process.pid, startIdentity: processStartTime(process.pid
 let active = true;
 const state = shellLaunch ? join(root, 'herdr') : root;
 const registry = createTerminalRegistry(state);
-const startupRegistry = process.argv[4] === 'hold' ? { ...registry, record: async () => { process.send?.('starting'); await new Promise<void>(() => { setInterval(() => {}, 1000); }); } } : registry;
+const presence = createProcessPresence(state);
+const startupPresence = process.argv[4] === 'hold' ? { ...presence, record: async () => { process.send?.('starting'); await new Promise<void>(() => { setInterval(() => {}, 1000); }); } } : presence;
 registerHerdrSessions(pi, {
-  registry: startupRegistry, presence: createProcessPresence(state), leases: createSessionLeases(state),
+  registry, presence: startupPresence, leases: createSessionLeases(state),
   processes: async () => [], probe: async () => ({ kind: 'absent' }), processIdentity: identity,
   currentSession: () => ({ ...identity, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address }),
   owner: () => active ? owner : null, coreStartedAt: () => 1, launchEnvironment: { agentDirectory: join(root, 'agent'), extensionArguments: [] },

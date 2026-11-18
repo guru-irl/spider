@@ -219,8 +219,8 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
         const pages = db.pragma("page_count"); // Force private WAL recovery.
         if (limit) {
           const recovered = walIndex(indexBytes(`${copy}-shm`));
-          if (recovered.frames !== limit.frames || pages !== limit.pages ||
-              limit.frames !== 0 && (recovered.first !== limit.first || recovered.second !== limit.second)) throw new Changed();
+          if (recovered.frames !== limit.frames || limit.frames !== 0 &&
+              (pages !== limit.pages || recovered.first !== limit.first || recovered.second !== limit.second)) throw new Changed();
         }
         return { ...db, close() { try { db.close(); } finally { cleanup(directory); } } };
       } catch (error) { db.close(); throw error; }

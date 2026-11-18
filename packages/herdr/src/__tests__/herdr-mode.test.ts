@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 import { afterEach, expect, test } from 'vitest';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Owner, ProcessPresence } from '../contracts.js';
 import type { ProcessProbe } from '../sessions/lease.js';
 import { registerHerdrSessions } from '../sessions/register.js';
-import { createTerminalRegistry } from '../sessions/registry.js';
+import { createTerminalRegistry, terminalIdentityKey } from '../sessions/registry.js';
 import { createProcessPresence } from '../sessions/presence.js';
 import { createSessionLeases } from '../sessions/lease.js';
 
@@ -31,7 +31,7 @@ async function fixture(mode: ExtensionContext['mode'], kind: ProcessPresence['ki
     await registry.record({ owner, recordedAt: 1, coreStartedAt: 1, environment });
     if (recordPresence) await presence.record({ pid: process.ppid, startIdentity: 'ancestor-start', sessionId: owner.sessionId, sessionFile: null, sessionName: 'interactive', kind: 'top-level', mode: 'tui', hcAddress: owner.terminal.address });
   };
-  return { owner, registry, presence, registration, seedOwner, exitOwner: () => { ancestor = { kind: 'absent' }; }, reusePid: () => { ancestor = { kind: 'live', startIdentity: 'different-start' }; }, fire: (name: string) => handlers.get(name)!({}, ctx) };
+  return { mappingBytes: () => readFile(join(root, 'terminals', terminalIdentityKey(owner.terminal) + '.json'), 'utf8'), owner, registry, presence, registration, seedOwner, exitOwner: () => { ancestor = { kind: 'absent' }; }, reusePid: () => { ancestor = { kind: 'live', startIdentity: 'different-start' }; }, fire: (name: string) => handlers.get(name)!({}, ctx) };
 }
 
 test.each(['print', 'json', 'rpc'] as const)('%s top-level sessions never create or replace terminal mappings', async mode => {
@@ -54,7 +54,7 @@ test.each(['tui'] as const)('a nonnested %s top-level session records and replac
   } finally { await f.registration.dispose(); }
 });
 
-test.each(['tui', 'rpc'] as const)('a %s descendant of the live mapped TUI owner cannot replace its terminal mapping', async mode => {
+test.each(['tui'] as const)('a %s descendant of the live mapped TUI owner cannot replace its terminal mapping', async mode => {
   const f = await fixture(mode);
   try {
     await f.seedOwner(); const previous = await f.registry.get(f.owner.terminal);
@@ -83,4 +83,13 @@ test.each(['tui', 'rpc'] as const)('a %s child never records a terminal mapping'
   const f = await fixture(mode, 'child');
   try { await f.fire('session_start'); expect(await f.registry.list()).toEqual([]); }
   finally { await f.registration.dispose(); }
+});
+
+test('RPC activation and metadata changes leave the last TUI mapping byte-identical', async () => {
+  const f = await fixture('rpc');
+  try {
+    await f.seedOwner(false); const before = await f.mappingBytes();
+    await f.fire('session_start'); await f.fire('session_info_changed');
+    expect(await f.mappingBytes()).toBe(before);
+  } finally { await f.registration.dispose(); }
 });

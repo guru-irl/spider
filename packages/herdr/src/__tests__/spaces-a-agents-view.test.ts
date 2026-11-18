@@ -9,6 +9,7 @@ import * as look from '../../assets/shared/look.js';
 import * as feed from '../../assets/shared/feed.js';
 import { describeOpenFailure } from '../../assets/shared/open-failure.js';
 import * as navigation from '../../assets/shared/navigation.js';
+import * as paneServiceState from '../../assets/shared/pane-service-state.js';
 import * as moves from '../../assets/agents/move.js';
 import { replaySpacesBRecipe } from './spaces-b-fixture.js';
 import * as grouping from '../../assets/agents/grouping.js';
@@ -131,7 +132,7 @@ function fixture(version: SpacesAVersion, options: { presented?: boolean; checki
   if (options.clipboard === false) delete cx.write_to_clipboard;
   const props = { modId: 'spider-agents', labelContract: HerdrLabelContract, retention: { completedHours: 24, completedRows: 50 }, machines: [{ name: 'box-5.invalid' }], nodePath: 'node', cliPath: 'cli', feedRoot: options.feedRoot ? '/fixture/feeds' : undefined, sortMenu: options.sortMenu ?? false };
   const host = {
-    ...children, ...look, ...feed, ...grouping, ...connections, ...consoleGroups, ...navigation, ...moves, describeOpenFailure,
+    ...children, ...look, ...feed, ...grouping, ...connections, ...consoleGroups, ...navigation, ...paneServiceState, ...moves, describeOpenFailure,
     createFeedReader: () => ({ read: async () => ({ feeds: [], errors: [] }), close: async () => { readerClosed++; } }),
     View: class {}, div: () => element(), h_flex: () => element(), v_flex: () => element(), image: () => element(), svg: (path: string) => element(path),
     Scrollbar: { vertical: () => element() }, TextView: { html: (id: string, value: string) => element(undefined, textViewMethods).id(id).child(value) },
@@ -277,9 +278,11 @@ it('0.1.16: configured Agents retain service routing across snapshot failures', 
     const target = { coreId: 'core-1', terminalId: 'source', address, createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'source-session', generation: 'source-gen', homeEpoch: 1, runId: null, consoleId: null, name: 'Source writer', cwd: '/home/fixture' };
     release(ok({ version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'source-session', generation: 'source-gen', owner: { terminal: { address } }, target, name: 'Source writer', status: 'working', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] }));
     await pending;
+    for (let i = 0; i < 10; i++) await Promise.resolve();
     clock.mockReturnValue(106000);
     test.setExec(async () => ({ code: 1, stdout: '', stderr: 'offline' }));
     await test.view.reloadSpiderFeeds();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
     root = test.view.render(test.cx);
     const projected = byId(root, `ag-${address}`);
     expect.soft(projected?.events.on_click).toBeDefined();
@@ -1838,7 +1841,7 @@ it.each(['0.1.13', '0.1.16'] as const)('%s: B Move menu reloads authority and al
   const target = { coreId: 'core-1', terminalId: 'source', address: 'core-1/source', createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'source-session', generation: 'source-gen', homeEpoch: 1, runId: null, consoleId: null, name: 'Source writer', cwd: '/project' };
   const current = { id: 'pres-menu', revision: 9, mode: 'proxy', role: 'agent', target, proxy: 'menu-proxy', slot: { space: 's1', tab: 'tab', pane: 'old-pane' }, visibility: 'visible', launch: 'acknowledged', closeOperationId: null, conversion: null };
   const service = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, machines: [{ alias: null, coreId: 'local-core' }], rows: [{ sessionId: 'source-session', generation: 'source-gen', owner: { terminal: { address: 'core-1/source' } }, target, name: 'Source writer', status: 'working', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [current] };
-  Object.assign(h.props, { moveMenu: { kind: 'pane', navigationId: 'session:source-session', terminal: 'old-stale-display' }, appBinary: '/fixture/mac-app' });
+  Object.assign(h.props, { paneServiceConfigured: true, moveMenu: { kind: 'pane', navigationId: 'session:source-session', terminal: 'old-stale-display' }, appBinary: '/fixture/mac-app' });
   const displayed: any[] = [], notices: unknown[] = [], pending: unknown[] = [];
   h.setExec(async () => {
     const [binary, args] = h.execCalls.at(-1) as [string, string[]];

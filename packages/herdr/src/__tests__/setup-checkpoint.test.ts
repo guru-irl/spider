@@ -9,6 +9,7 @@ import { applyFiles, digest, mergeTerminalKeys, prepareBackups, readJournal, sav
 import * as installer from '../setup/installer.js';
 import { undoHerdrUpgrade, rollbackHerdr, setupHerdr, type InstallFile, type SetupParts, type SetupRequest } from '../setup/installer.js';
 import { runHerdrCli } from '../setup/cli.js';
+import { doctorHerdr } from '../setup/doctor.js';
 import { beginRunCheckpoint, recordCheckpointWrites, readCheckpoint, finishRunCheckpoint } from '../setup/checkpoint.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -289,7 +290,10 @@ test('the upgrade runbook preserves runtime moves and pre-existing tabs without 
     for (const address of result.terminals) if (!preserve?.terminals.includes(address)) open.delete(address);
   };
   await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
-  expect((await f.parts.verify(f.request)).failures).toEqual([]);
+  const doctor = await doctorHerdr(f.request, {
+    targets: async () => [], inspect: async () => ({ failures: [] }), launchHistory: async () => [], probeMachineNode: async () => 'v22.19.0',
+  });
+  expect(doctor.failures).toEqual([]);
   await metadataRepeat(f);
   await put(f.paths.spaces, '{"placements":["moved-after-upgrade"]}\n');
   await put(f.paths.settings, '{"theme":"dracula-plus-glass","keep":"runtime"}\n');

@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import * as fs from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
 import { HerdrError } from '../client/parse.js';
-import { parseHerdrConfig } from '../config.js';
-import { applyFiles, digest, mergeTerminalKeys, prepareBackups, readJournal, saveJournal, snapshot } from '../setup/backup.js';
+import { digest, readJournal, saveJournal, snapshot } from '../setup/backup.js';
 import * as installer from '../setup/installer.js';
-import { undoHerdrUpgrade, rollbackHerdr, setupHerdr, type InstallFile, type SetupParts, type SetupRequest } from '../setup/installer.js';
+import { undoHerdrUpgrade, rollbackHerdr, setupHerdr } from '../setup/installer.js';
 import { runHerdrCli } from '../setup/cli.js';
 import { doctorHerdr } from '../setup/doctor.js';
 import { beginRunCheckpoint, recordCheckpointWrites, readCheckpoint, finishRunCheckpoint } from '../setup/checkpoint.js';
@@ -17,7 +16,7 @@ vi.mock('node:fs/promises', async importOriginal => {
   return { ...actual, rename: vi.fn(actual.rename), link: vi.fn(actual.link), unlink: vi.fn(actual.unlink) };
 });
 const real = await vi.importActual<typeof fs>('node:fs/promises');
-import { roots, oldKeys, installedLayout, nativeLayout, put, values, fixture, metadataRepeat } from './setup-checkpoint-fixture.js';
+import { roots, installedLayout, nativeLayout, put, values, fixture, metadataRepeat } from './setup-checkpoint-fixture.js';
 afterEach(async () => { vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link); vi.mocked(fs.unlink).mockImplementation(real.unlink); for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
 
 test('undo restores the first failed-attempt checkpoint after a successful retry, including legacy files and registry', async () => {
@@ -579,13 +578,15 @@ test('I4 endpoint intent survives a kill after publication but before any observ
 });
 
 
-test('N3 ambiguous layout arrays have a lossless move-aside recovery', async () => {
-  const f = await fixture(), before = '{"content":[{"size":100}],"generation":1}', stage = f.parts.stageLook;
+test.each([
+  ['{"content":[{"size":100}],"generation":1}', '{"content":[{"size":200},{"size":300}],"generation":2}', '{"content":[{"size":201},{"user":400},{"size":300}],"generation":2}'],
+  ['{"content":[{"mod":"native-a"},{"mod":"native-b"}],"generation":1}', '{"content":[{"mod":"spider-a"},{"mod":"spider-b"}],"generation":2}', '{"content":[{"mod":"spider-b","size":300},{"mod":"spider-a","size":200}],"generation":2}'],
+])('N3 ambiguous layout arrays have a lossless move-aside recovery: %s', async (before, after, edited) => {
+  const f = await fixture(), stage = f.parts.stageLook;
   await put(f.paths.layout, before);
   const journal = await readJournal(f.request.journalRoot); journal.entries.find(entry => entry.path === f.paths.layout)!.after = (await snapshot(f.paths.layout)).hash!; await saveJournal(f.request.journalRoot, journal);
-  f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from('{"content":[{"size":200},{"size":300}],"generation":2}') } : file);
+  f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(after) } : file);
   await setupHerdr(f.request, f.parts);
-  const edited = '{"content":[{"size":201},{"user":400},{"size":300}],"generation":2}';
   await put(f.paths.layout, edited);
   await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-layout-ambiguous' });
   await fs.rename(f.paths.layout, f.paths.layout + '.kept');

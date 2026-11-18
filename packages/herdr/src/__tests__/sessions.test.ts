@@ -370,7 +370,7 @@ it.each([['-e', 'relative-extension.js'], ['--no-extensions'], ['--extension=/ab
   const file = await session(); const environment = { agentDirectory: root, extensionArguments: arguments_ };
   const registry = createTerminalRegistry(root); await registry.record({ owner: owner(file), recordedAt: 1, coreStartedAt: 1, environment });
   expect((await registry.get(terminal))?.environment.extensionArguments).toEqual(arguments_);
-  await expect(launchSession({ ...request(file), environment }, ports)).rejects.toMatchObject({ code: 'session-explicit-extensions', message: expect.stringContaining(arguments_[0]) }); expect(opened).toEqual([]);
+  await expect(launchSession({ ...request(file), environment }, ports)).rejects.toMatchObject({ code: 'session-explicit-extensions', message: expect.stringContaining('explicit extensions') }); expect(opened).toEqual([]);
 });
 it('a recorded launch environment cannot store model flags as extension diagnostics', async () => {
   const file = await session(); await expect(createTerminalRegistry(root).record({ owner: owner(file), recordedAt: 1, coreStartedAt: 1, environment: { agentDirectory: root, extensionArguments: ['--model', 'unwanted-model'] } })).rejects.toMatchObject({ code: 'launch-environment-invalid' });

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -26,7 +26,7 @@ vi.mock('node:fs/promises', async original => {
       await actual.rename(from, to); disk.events.push('rename:' + to);
     },
     open: async (...args: Parameters<typeof actual.open>) => {
-      if (disk.fail && String(args[0]).includes(disk.fail)) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
+      if (disk.fail && args[1] === 'wx' && String(args[0]).includes(disk.fail)) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
       const handle = await actual.open(...args), sync = handle.sync.bind(handle);
       handle.sync = async () => { await sync(); disk.events.push('sync:' + String(args[0])); };
       return handle;
@@ -46,7 +46,7 @@ function keyLaunch(argv: string[]) { return { ...launch(argv), model: { provider
 function mapping() { return { owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: agent, extensionArguments: [] as string[] }, activityId }; }
 function request() { return { sessionFile: file, sessionId: owner.sessionId, cwd: root, environment: { agentDirectory: join(root, 'fallback-agent'), extensionArguments: [] } }; }
 function secretDirectory() { return join(agent, 'spider', 'herdr', 'launch-environments'); }
-function secretPath() { return join(secretDirectory(), readdirSync(secretDirectory()).find(name => name.endsWith('.json')) ?? terminalIdentityKey(terminal) + '.json'); }
+function secretPath() { return join(secretDirectory(), (existsSync(secretDirectory()) ? readdirSync(secretDirectory()) : []).find(name => name.endsWith('.json')) ?? terminalIdentityKey(terminal) + '.json'); }
 async function record(snapshot: RecordedLaunch = launch()) {
   await createTerminalRegistry(root).record({ ...mapping(), ...{ launch: snapshot } }, { pid: 2147483647, startIdentity: 'old' });
 }

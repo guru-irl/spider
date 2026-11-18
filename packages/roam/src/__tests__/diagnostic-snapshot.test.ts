@@ -184,6 +184,32 @@ it.each([false, true])("classifies a changing committed tail as transient (publi
   } finally { hooks.afterRead = null; writer.close(); }
 }, 5000);
 
+it.each(["opening", "advancing"])("does not call an unpublished tail persistent when its index is %s", event => {
+  const { root, file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value INTEGER); INSERT INTO fixture VALUES (1)");
+    const earlier = readFileSync(`${file}-shm`);
+    writer.exec("INSERT INTO fixture VALUES (2)");
+    const middle = readFileSync(`${file}-shm`);
+    writer.exec("INSERT INTO fixture VALUES (3)");
+    const target = join(root, "moving-index.db");
+    copyFileSync(file, target); copyFileSync(`${file}-wal`, `${target}-wal`);
+    if (event === "advancing") writeFileSync(`${target}-shm`, earlier);
+    let attempts = 0, failure: unknown;
+    hooks.afterRead = fd => {
+      if (!isFile(fd, target)) return;
+      attempts++;
+      if (event === "opening" && attempts === 1) writeFileSync(`${target}-shm`, earlier);
+      if (event === "advancing" && attempts === 3) writeFileSync(`${target}-shm`, middle);
+    };
+    expect(() => { try { openDiagnosticSnapshot(target); } catch (error) { failure = error; throw error; } }).toThrow();
+    hooks.afterRead = null;
+    expect(failure).toMatchObject({ code: "diagnostic-snapshot-changing" });
+    expect(attempts).toBe(3);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { hooks.afterRead = null; writer.close(); }
+}, 5000);
+
 it("needs all three attempts while commits keep advancing", () => {
   const { file, temp } = fixture(), writer = openDb(file);
   try {

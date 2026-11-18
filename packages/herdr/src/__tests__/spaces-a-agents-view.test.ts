@@ -190,6 +190,27 @@ function fixture(version: SpacesAVersion, options: { presented?: boolean; checki
   };
 }
 
+it('0.1.16: keeps a viewed Done agent in priority order until it is left', () => {
+  const test = fixture('0.1.16', { presented: true });
+  test.state.set('agents.sort', 'priority');
+  const viewed = test.nativeAgents[1]!;
+  const working = test.nativeAgents[0]!;
+  test.nativeAgents.splice(0, test.nativeAgents.length, viewed, working);
+  viewed.focused = true; viewed.status = 'done'; working.status = 'working';
+  test.view.render(test.cx);
+  viewed.status = 'idle';
+  const held = test.view.render(test.cx);
+  expect(test.view.rank(viewed)).toBe(3);
+  expect(all(held).filter(node => node.id?.startsWith('ag-')).map(node => node.id)).toEqual(['ag-local', 'ag-box-1.invalid/unpinned']);
+  viewed.focused = false; working.focused = true;
+  const left = test.view.render(test.cx);
+  expect(test.view.rank(viewed)).toBe(1);
+  expect(all(left).filter(node => node.id?.startsWith('ag-')).map(node => node.id)).toEqual(['ag-box-1.invalid/unpinned', 'ag-local']);
+  viewed.focused = true; working.focused = false;
+  test.view.render(test.cx);
+  expect(test.view.rank(viewed)).toBe(1);
+});
+
 function seedConsoles(test: ReturnType<typeof fixture>) {
   const session = 'session-one', run = 'run-local';
   const labels = (extra: Record<string, string>) => ({ 'spider.session': session, ...extra });

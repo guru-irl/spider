@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { expect, it } from 'vitest';
 import { localSpaceCreateArgs, localSpaceRows, localSpaces } from '../../assets/spaces/local.js';
 import { assignSpaceIdentities, threadKeylines } from '../../assets/shared/look.js';
-import { loadSpacesAFiles, replaySpacesARecipe, type SpacesAPatch, type SpacesAVersion } from './spaces-a-fixture.js';
+import { loadSpacesAFiles, loadPublishedSpacesARecipe, replaySpacesARecipe, type SpacesAPatch, type SpacesAVersion } from './spaces-a-fixture.js';
 import { modApi } from './strict-mod-api.mjs';
 
 const localB = { id: 's2', index: 2, name: 'Branch B', machine: null, active: false, tabs: [], repository: '/fixture/repo' };
@@ -91,7 +91,7 @@ const palette = { chrome: '#161618', foreground: '#ededed', muted: '#b8b8ba', di
   hover: '#262628', selected: '#29292a', raised: '#303031', accent: '#ededed', ansi1: '#ff5555',
   ansi2: '#50fa7b', blocked: '#ffcb6b', working: '#ededed', idle: '#88888b', done: '#88888b', unknown: '#88888b' };
 
-function renderFixture(version: SpacesAVersion, options: { width?: number; checking?: boolean; spaces?: any[]; hidden?: string[] } = {}) {
+function renderFixture(version: SpacesAVersion, options: { width?: number; checking?: boolean; spaces?: any[]; hidden?: string[]; published?: boolean; pathFont?: string } = {}) {
   const spaces = options.spaces ?? [
     { ...remoteA, folder: '/fixture/remote', status: null },
     { ...localB, folder: '/fixture/branch-b', status: null },
@@ -122,7 +122,7 @@ function renderFixture(version: SpacesAVersion, options: { width?: number; check
     View: class {}, div: () => element(), h_flex: () => element(), v_flex: () => element(),
     image: () => element(), svg: (path: string) => element(path),
     Scrollbar: { vertical: () => element() }, ScrollHandle: { new: () => ({ scroll_to_item: (index: number) => scrolls.push(index) }) },
-    props: () => ({ modId: 'spider-spaces', fonts: { paths: 'JetBrains Mono' } }),
+    props: () => ({ modId: 'spider-spaces', fonts: { paths: options.pathFont } }),
     spaces: () => spaces, panes: () => [], machines: () => { machineReads++; return []; },
     run, openOverlay: (value: unknown) => overlays.push(value), exec: async (...args: unknown[]) => { execCalls.push(args); return { code: 1, stdout: '', stderr: '' }; },
     hc: async (...args: unknown[]) => { hcCalls.push(args); return { code: 0, stdout: '{"machines":[]}', stderr: '' }; },
@@ -132,7 +132,9 @@ function renderFixture(version: SpacesAVersion, options: { width?: number; check
     checking: () => options.checking ?? false, herdr: version === '0.1.13' && !options.checking ? {} : { checking: () => options.checking ?? false },
     localSpaces, localSpaceRows, localSpaceCreateArgs, assignSpaceIdentities, threadKeylines,
   };
-  const code = spacesSource(version).replace(/^(?:(?:\/\* spider-look:[a-z0-9-]+ \*\/)\s*)*import [^\n]+$/gm, '')
+  const recipe = options.published ? loadPublishedSpacesARecipe(version) : null;
+  const source = recipe ? replaySpacesARecipe(version, loadSpacesAFiles(version), recipe.aFragments, recipe).spaces!['main.js']! : spacesSource(version);
+  const code = source.replace(/^(?:(?:\/\* spider-look:[a-z0-9-]+ \*\/)\s*)*import [^\n]+$/gm, '')
     .replace('export default class ', 'class ').replaceAll('export function ', 'function ');
   const View = new Function('ports', `const { ${Object.keys(ports).join(', ')} } = ports; ${code}; return Spaces;`)(ports);
   const view = new View();
@@ -143,6 +145,14 @@ function renderFixture(version: SpacesAVersion, options: { width?: number; check
     flush: async () => { while (pending.length) await pending.shift()!(cx); },
   };
 }
+
+it('0.1.16: uses the configured path font for space names and falls back when absent', () => {
+  for (const [pathFont, expected] of [['Fixture Paths', 'Fixture Paths'], [undefined, 'JetBrains Mono']] as const) {
+    const fixture = renderFixture('0.1.16', { published: true, pathFont, spaces: [localA] });
+    const name = all(fixture.view.render()).find(node => node.items.includes('Branch A'))!;
+    expect(name.calls.find(([method]) => method === 'font_family')?.[1]).toEqual([expected]);
+  }
+});
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: shows branches and counts without a repository name`, () => {

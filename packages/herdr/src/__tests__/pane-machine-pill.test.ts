@@ -42,6 +42,11 @@ function render(version: SpacesAVersion, options: { p?: any; labels?: any; prese
   return pane.render(cx);
 }
 
+test('0.1.16 pane header is filled only while focused', () => {
+  expect(render('0.1.16', { p: { focused: true } }).styles.bg).toEqual(['#ffffff14']);
+  expect(render('0.1.16', { p: { focused: false } }).styles.bg).toEqual(['#00000000']);
+});
+
 test('local agent has This computer after its name pill', () => {
   const localHeader = { ...header, address: 'local-t1', programIsAgent: true, nativeTitle: 'π - Planner - project', nativeStatus: 'working', nativeCwd: '/home/example/work', labels: {} };
   expect(machine().paneMachineFact(localHeader, [])).toEqual({ label: 'This computer', known: true });

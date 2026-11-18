@@ -93,7 +93,7 @@ it('replays process-only tools, resource, prompt, trust and extension-defined fl
   expect(launches[0].argv).toEqual([process.execPath, ...argv, '--session', file]);
 });
 
-it.each([['-p'], ['--print'], ['--mode', 'rpc'], ['--mode', 'json'], ['--export', 'session.jsonl'], ['--help'], ['--version'], ['--list-models']])('never launches a noninteractive recorded invocation: %j', async argv => {
+it.each([['-p'], ['--print'], ['--mode', 'rpc'], ['--mode', 'json'], ['--export', 'session.jsonl'], ['--help'], ['--version'], ['--list-models']].map(argv => ({ argv })))('never launches a noninteractive recorded invocation: $argv', async ({ argv }) => {
   await record(launch(argv));
   await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'session-not-interactive' });
   expect(launches).toHaveLength(0);
@@ -153,6 +153,29 @@ it('replaces tokens on reload, and terminal removal deletes the private launch r
   expect(await readdir(secretDirectory())).toHaveLength(1);
   await registry.remove(terminal, true);
   await expect(stat(secretPath())).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('stores environments above the terminal-map cap without truncating them', async () => {
+  const large = 'x'.repeat(1024 * 1024 + 128);
+  await record({ ...launch([]), variables: { LARGE_CONFIGURATION: large } });
+  await launchSession(request(), resumePorts());
+  expect(launches[0].env.LARGE_CONFIGURATION === large).toBe(true);
+});
+
+it('dropping a launch record during legacy replacement removes the old secret file', async () => {
+  await record();
+  await createTerminalRegistry(root).record(mapping());
+  await expect(stat(secretPath())).rejects.toMatchObject({ code: 'ENOENT' });
+  await launchSession(request(), resumePorts());
+  expect(launches[0].env.SERVICE_ROUTER).toBeUndefined();
+});
+
+it('cutover and other terminals cannot borrow a private launch environment', async () => {
+  await record();
+  await launchSession(request(), ports);
+  expect(launches[0].env.SERVICE_ROUTER).toBeUndefined();
+  await launchSession(request(), { ...ports, ...{ resume: { registry: createTerminalRegistry(root), terminal: { ...terminal, terminalId: 'other' as TerminalIdentity['terminalId'] } } } });
+  expect(launches[1].env.SERVICE_ROUTER).toBeUndefined();
 });
 
 it('removes the previous private record if the agent directory changes', async () => {
@@ -215,6 +238,9 @@ it.each(['tui', 'rpc', 'print', 'json', 'child'] as const)('only interactive top
       const bytes = await readFile(secretPath(), 'utf8');
       expect(bytes.includes(credential())).toBe(false);
       expect(bytes.includes('rotated-token')).toBe(true);
-    } else await expect(stat(secretPath())).rejects.toMatchObject({ code: 'ENOENT' });
+    } else {
+      await expect(stat(secretPath())).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await createTerminalRegistry(root).get(terminal)).toBeNull();
+    }
   } finally { await registration.dispose(); }
 });

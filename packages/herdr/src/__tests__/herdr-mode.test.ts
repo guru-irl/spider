@@ -34,7 +34,7 @@ async function fixture(mode: ExtensionContext['mode'], kind: ProcessPresence['ki
   return { owner, registry, presence, registration, seedOwner, exitOwner: () => { ancestor = { kind: 'absent' }; }, reusePid: () => { ancestor = { kind: 'live', startIdentity: 'different-start' }; }, fire: (name: string) => handlers.get(name)!({}, ctx) };
 }
 
-test.each(['print', 'json'] as const)('%s top-level sessions never create or replace terminal mappings', async mode => {
+test.each(['print', 'json', 'rpc'] as const)('%s top-level sessions never create or replace terminal mappings', async mode => {
   const f = await fixture(mode);
   try {
     await f.fire('session_start'); expect(await f.registry.list()).toEqual([]);
@@ -45,7 +45,7 @@ test.each(['print', 'json'] as const)('%s top-level sessions never create or rep
   } finally { await f.registration.dispose(); }
 });
 
-test.each(['tui', 'rpc'] as const)('a nonnested %s top-level session records and replaces terminal mappings', async mode => {
+test.each(['tui'] as const)('a nonnested %s top-level session records and replaces terminal mappings', async mode => {
   const f = await fixture(mode);
   try {
     await f.fire('session_start'); expect((await f.registry.get(f.owner.terminal))?.owner.sessionId).toBe('candidate-session');
@@ -63,7 +63,7 @@ test.each(['tui', 'rpc'] as const)('a %s descendant of the live mapped TUI owner
   } finally { await f.registration.dispose(); }
 });
 
-test.each(['tui', 'rpc'] as const)('a nested %s session may take over after the mapped owner exits', async mode => {
+test.each(['tui'] as const)('a nested %s session may take over after the mapped owner exits', async mode => {
   const f = await fixture(mode);
   try {
     await f.seedOwner(); f.exitOwner(); await f.fire('session_start');
@@ -72,7 +72,7 @@ test.each(['tui', 'rpc'] as const)('a nested %s session may take over after the 
 });
 
 test('a reused ancestor PID does not hold the mapped terminal', async () => {
-  const f = await fixture('rpc');
+  const f = await fixture('tui');
   try {
     await f.seedOwner(); f.reusePid(); await f.fire('session_start');
     expect((await f.registry.get(f.owner.terminal))?.owner.sessionId).toBe('candidate-session');

@@ -32,7 +32,12 @@ for (const mode of ['fake', 'hc'] as const) {
       await writePrivateJson(f.control, { activationDelay: 0 });
       const command = await f.runInTerminal(['resume', '--config', f.request.configPath, '--file', f.file, '--session-id', 'selected', '--cwd', f.root]);
       const registry = createTerminalRegistry(join(f.request.config.globalRoot, 'herdr'));
-      await until(async () => { try { await access(join(f.root, 'ready')); return true; } catch { return false; } });
+      let earlyExit: { code: number | null; stderr: string } | undefined;
+      void command.result.then(result => { earlyExit = result; });
+      await until(async () => {
+        if (earlyExit) throw new Error(`Resume exited before readiness (${earlyExit.code}): ${earlyExit.stderr}`);
+        try { await access(join(f.root, 'ready')); return true; } catch { return false; }
+      });
       await delay(3000);
       expect((await registry.list())[0].owner).toMatchObject({ generation: 'authoritative', name: 'Selected' });
       await writePrivateJson(f.control, { exit: true }); const result = await command.result; expect(result.code, result.stderr).toBe(0);

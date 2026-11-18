@@ -24,6 +24,18 @@
     "replacement": "      const [snapshot] = await Promise.all([this.reader.read(), this.refreshIdentity()]);\n      if (this.closed) return false;\n      this.feeds = snapshot.feeds; this.targetSource = 'feed'; this.problem = this.paneService?.state().unavailable ? 'Pane service unavailable; run doctor' : null; success = true;"
   },
   {
+    "id": "picker-b-feed-fallback-authority",
+    "file": "main.js",
+    "anchor": "    let targets = this.targetSource === 'feed' ? projectNavigation(",
+    "replacement": "    const useNavigation = this.targetSource === 'feed' || this.paneService?.state().configured;\n    let targets = useNavigation ? projectNavigation("
+  },
+  {
+    "id": "picker-b-feed-fallback-filter",
+    "file": "main.js",
+    "anchor": "    if (this.targetSource === 'feed') {\n      const labels = this.config.labelContract.labels, visible = new Set();",
+    "replacement": "    if (useNavigation) {\n      const labels = this.config.labelContract.labels, visible = new Set();"
+  },
+  {
     "id": "picker-b-snapshot-projection",
     "file": "main.js",
     "anchor": "      destination, paneSnapshot: this.paneSnapshot, machines, contract: this.config.labelContract, now: Date.now(), completedHours: this.config.retention?.completedHours ?? 24,",

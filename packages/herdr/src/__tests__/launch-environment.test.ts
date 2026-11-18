@@ -288,8 +288,8 @@ it('cutover and other terminals cannot borrow a private launch environment', asy
   await record();
   await launchSession(request(), ports);
   expect(launches[0].env.SERVICE_ROUTER).toBeUndefined();
-  await launchSession(request(), { ...ports, ...{ resume: { registry: createTerminalRegistry(root), terminal: { ...terminal, terminalId: 'other' as TerminalIdentity['terminalId'] } } } });
-  expect(launches[1].env.SERVICE_ROUTER).toBeUndefined();
+  await expect(launchSession(request(), { ...ports, resume: { registry: createTerminalRegistry(root), terminal: { ...terminal, terminalId: 'other' as TerminalIdentity['terminalId'] } } })).rejects.toMatchObject({ code: 'resume-offer-stale' });
+  expect(launches).toHaveLength(1);
 });
 
 it('removes the previous private record if the agent directory changes', async () => {
@@ -406,4 +406,17 @@ it.each(['tui', 'rpc', 'print', 'json', 'child'] as const)('only interactive top
       expect(await createTerminalRegistry(root).get(terminal)).toBeNull();
     }
   } finally { await registration.dispose(); }
+});
+
+it.each(['missing mapping', 'different session', 'different file'])('refuses a stale resume offer: %s', async cause => {
+  const registry = createTerminalRegistry(root);
+  if (cause !== 'missing mapping') await registry.record({ ...mapping(), owner: { ...owner, ...(cause === 'different session' ? { sessionId: 'newer' as SessionId } : { sessionFile: join(root, 'newer.jsonl') }) }, launch: launch() });
+  await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'resume-offer-stale', message: expect.stringContaining('saved') });
+  expect(launches).toHaveLength(0);
+});
+
+it('legacy launch refusal reads explicit extensions from the terminal mapping', async () => {
+  await createTerminalRegistry(root).record({ ...mapping(), environment: { agentDirectory: agent, extensionArguments: ['-e', 'npm:example'] } });
+  await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'session-explicit-extensions' });
+  expect(launches).toHaveLength(0);
 });

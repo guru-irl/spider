@@ -36,7 +36,7 @@ it('retains the last valid snapshot through failure, then disables remote action
   clock.mockReturnValue(100001 + FEED_DISCONNECT_MS);
   expect(h.state.state()).toMatchObject({ snapshot: valid, unavailable: true });
   const rows = [
-    { id: 'remote', terminal: 'remote/a', machine: 'remote', action: { kind: 'pane' } },
+    { id: 'remote', terminal: 'box-1.invalid/a', machine: 'box-1.invalid', action: { kind: 'pane' } },
     { id: 'child', ownerId: 'remote', terminal: 'local-viewer', machine: null, action: { kind: 'focus' } },
     { id: 'local', terminal: 'core/a', machine: null, action: { kind: 'focus' } },
   ];
@@ -50,7 +50,7 @@ it('does not replace a good snapshot with an unprojectable target', async () => 
   const clock = vi.spyOn(Date, 'now').mockReturnValue(100000), h = fixture();
   await h.state.refresh(); const valid = h.state.state().snapshot;
   clock.mockReturnValue(105000);
-  h.request.mockResolvedValueOnce({ ...snapshot(), rows: [{ sessionId: 's', generation: 'g', owner: { terminal: { address: 'remote/a' } }, target: { coreId: 'remote', terminalId: 'a', address: 'remote/a' }, name: 'Owner', status: 'working', machineKey: 'remote', children: [], consoles: [], unavailableReason: null }] });
+  h.request.mockResolvedValueOnce({ ...snapshot(), rows: [{ sessionId: 's', generation: 'g', owner: { terminal: { address: 'box-1.invalid/a' } }, target: { coreId: 'remote', terminalId: 'a', address: 'box-1.invalid/a' }, name: 'Owner', status: 'working', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }] });
   await h.state.refresh();
   expect(h.state.state().snapshot).toBe(valid);
 });

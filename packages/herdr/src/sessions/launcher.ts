@@ -40,7 +40,8 @@ export async function launchSession(request: SessionLaunchRequest, ports: Sessio
   if (!isAbsolute(request.cwd)) throw new HerdrError('launch-environment-invalid', 'Session cwd must be absolute');
   const file = await canonicalSessionFile(request.sessionFile);
   const mapping = ports.resume ? await ports.resume.registry.get(ports.resume.terminal) : null;
-  const selected = mapping?.launchRecorded && mapping.owner.sessionFile === file && mapping.owner.sessionId === request.sessionId ? mapping : null;
+  if (ports.resume && (!mapping || mapping.owner.sessionFile !== file || mapping.owner.sessionId !== request.sessionId)) throw new HerdrError('resume-offer-stale', `Resume offer for session ${JSON.stringify(request.sessionId)} is stale. Resume it by hand with pi --session.`);
+  const selected = mapping;
   if (selected && selected.owner.cwd !== request.cwd) throw new HerdrError('launch-environment-invalid', 'Recorded resume directory changed');
   const recorded = selected ? await readRecordedLaunch(selected) : undefined;
   if (selected) environment = selected.environment;

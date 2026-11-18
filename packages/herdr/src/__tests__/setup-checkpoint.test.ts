@@ -736,7 +736,7 @@ test('N3 a late layout reference refusal remains recoverable by moving the layou
   await fs.rename(f.paths.layout, f.paths.layout + '.kept');
   await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
   expect(await fs.readFile(f.paths.layout + '.kept', 'utf8')).toBe(edited);
-  expect(await fs.readFile(f.paths.layout, 'utf8')).toBe(f.before[f.paths.layout].bytes?.toString());
+  expect(await fs.readFile(f.paths.layout, 'utf8')).toBe(Buffer.from(f.before.find(file => file.path === f.paths.layout)!.bytes!, 'base64').toString());
   expect((await snapshot(f.paths.main)).hash).toBeNull();
   expect((await readCheckpoint(f.request.journalRoot))?.state).toBe('undone');
 });

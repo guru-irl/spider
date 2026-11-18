@@ -68,7 +68,7 @@ function safeReason(error: unknown): string {
       typeof details.blockingOperationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(details.blockingOperationId)) {
     return `release-in-progress (${details.blockingOperationId})`;
   }
-  const allowed = new Set(["missing-prerequisite","core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy",  "machine-mismatch", "unsafe-identity", "core-changed", "core-unavailable", "machine-not-found",
+  const allowed = new Set(["missing-prerequisite","invalid-config", "core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy",  "machine-mismatch", "unsafe-identity", "core-changed", "core-unavailable", "machine-not-found",
     "machine-ambiguous", "cli-timeout", "destination-auth-missing", "destination-auth-unsafe", "consent-required", "invalid-auth", "unsafe-auth", "provider-unavailable", "unsupported-credential-command",
     "auth-cleanup-pending", "auth-install-failed", "auth-preview-changed", "invalid-destination-settings", "settings-preview-changed", "settings-preview-failed", "invalid-settings-preview", "unsafe-destination",
     "release-digest-mismatch", "invalid-release-path", "core-unit-required", "peer-core-unit-required", "peer-core-unit-ambiguous", "provider-consent-required", "credential-file-requires-consent",

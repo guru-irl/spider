@@ -63,12 +63,20 @@ test('endpoint planning lists publication paths without writing and recognizes a
   await rm(staged); await writeFile(f.registry, JSON.stringify({ version: 1, packageRoot: f.packageRoot }), { mode: 0o600 });
   const before = await readFile(f.registry), info = await stat(f.registry);
   const plan = await installation.planPaneEndpointInstallation?.(f.root, f.packageRoot);
-  expect(plan).toEqual({ paths: [staged, f.registry], changed: true });
+  const source = await readFile(join(f.packageRoot, 'dist/herdr/pane-endpoint.mjs'));
+  const registry = Buffer.from(JSON.stringify({ version: 1, packageRoot: f.packageRoot, endpoint: { file: `pane-endpoint-${f.digest}.mjs`, digest: f.digest, protocol: 1 } }));
+  expect(plan).toEqual({ paths: [staged, f.registry], changed: true, files: [
+    { path: staged, bytes: source, expected: null, mode: 0o600 },
+    { path: f.registry, bytes: registry, expected: createHash('sha256').update(before).digest('hex'), mode: 0o600 },
+  ] });
   expect(await readFile(f.registry)).toEqual(before);
   expect((await stat(f.registry)).ino).toBe(info.ino);
   await expect(readFile(staged)).rejects.toMatchObject({ code: 'ENOENT' });
   await stagePaneEndpointInstallation(f.root, f.packageRoot);
-  expect(await installation.planPaneEndpointInstallation(f.root, f.packageRoot)).toEqual({ paths: [staged, f.registry], changed: false });
+  expect(await installation.planPaneEndpointInstallation(f.root, f.packageRoot)).toEqual({ paths: [staged, f.registry], changed: false, files: [
+    { path: staged, bytes: source, expected: f.digest, mode: 0o600 },
+    { path: f.registry, bytes: registry, expected: createHash('sha256').update(registry).digest('hex'), mode: 0o600 },
+  ] });
 });
 
 test('local installation probe handshakes without source effects or registry writes', async () => {

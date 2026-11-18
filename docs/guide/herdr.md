@@ -186,9 +186,25 @@ Setup identifies a live session by its session ID, current feed and heartbeat, a
 
 Setup adopts recorded sessions that you merged into one tab. It keeps the names you chose for the space and tab. Other panes stay in place and are not recorded as owned. Rollback refuses to close a tab containing those panes.
 
-### Roll back
+### Undo an upgrade
 
-To undo the installed files, run:
+To restore the local installation files from before the latest upgrade, run:
+
+```sh
+node <installed-package>/dist/herdr/cli.mjs rollback --undo-upgrade --config <absolute-config-file>
+```
+
+Before its first write, each setup attempt records a private checkpoint under `globalRoot/herdr/setup/checkpoint.json`. It records file existence, bytes, and modes, including the whole key map, agent settings, spaces journal, endpoint registry, and setup journal. Failed attempts and their successful retry form one upgrade. Undo uses the checkpoint from before the first attempt, not the retry. An unchanged setup repeat does not replace that checkpoint or rewrite the setup journal. A setup summary that reports `setup journal updated` counts a journal change separately from installed-file writes.
+
+Upgrade undo restores whole files, including files an older spider install already owned. If a file changed after setup last wrote it, undo stops before restoration with `upgrade-checkpoint-changed`. Inspect the file first. To replace those edits, add `--replace-changed` to the undo command. This flag does not bypass session-liveness or owner checks. Close the created pi sessions first.
+
+An interrupted file restore resumes when you repeat the command. Setup refuses to run while an undo is in progress. If owner teardown was interrupted, undo stops with `upgrade-undo-interrupted`. If setup stopped before recording its final state, undo stops with `upgrade-checkpoint-incomplete`. Inspect the recorded owners and files before retrying either case with `--replace-changed`.
+
+Remote runtime files and bootstrap state are not restored; undo returns recorded remote files in `remoteNotRestored` and prints `Remote file not restored: <machine> <path>` without contacting those machines to build the list.
+
+### Remove everything spider installed
+
+Full rollback removes everything spider installed that it still owns, including files and bindings from older installs. To remove the installation instead of undoing one upgrade, run:
 
 ```sh
 node <installed-package>/dist/herdr/cli.mjs rollback --config <absolute-config-file>
@@ -196,7 +212,7 @@ node <installed-package>/dist/herdr/cli.mjs rollback --config <absolute-config-f
 
 Rollback exits with 0 when it restored everything, 3 when some parts stay unrestored, 1 for any other failure, and 2 for a usage error. Setup and the doctor use the same codes, except 3. Rollback undoes only the parts that setup owns, and closes the tabs that setup created. Edits you made elsewhere in the same files stay. If you changed a part that setup owns, rollback leaves that file as it is and prints `<file> not restored:` with the reason. Repair that part, then run rollback again. Close the pi sessions in the tabs first, or rollback stops with `cutover-owner-live`. It never closes a terminal it did not create. It prints `Rollback restored <n> matching files`.
 
-Rollback returns to the state before the first setup that owned each file, not to the state before the most recent upgrade. If the original bindings were stock, rollback restores Cmd-T to `tab.new` and both split bindings to stock, and removes spider's Cmd-Shift-W binding. Bindings that were originally absent become absent again.
+Full rollback uses each file's historical install baseline, not the most recent upgrade checkpoint. The endpoint registry is restored from the upgrade checkpoint in both modes. Keep the checkpoint and backups until recovery is complete. If the original bindings were stock, rollback restores Cmd-T to `tab.new` and both split bindings to stock, and removes spider's Cmd-Shift-W binding. Bindings that were originally absent become absent again.
 
 Like setup, rollback stops with `agent-directory-mismatch` when the configured `agentDirectory` differs from the shell's pi agent directory. It also stops with `global-root-mismatch` when the configured `globalRoot` differs from pi's.
 

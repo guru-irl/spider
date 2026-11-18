@@ -524,6 +524,7 @@ it.each(['terminals/', 'live-'])('failed publication preserves the previous matc
   expect(retained).toEqual(previous);
   const saved = await readRecordedLaunch(retained!);
   expect(saved?.variables.API_TOKEN === credential()).toBe(true);
+  expect(await readdir(secretDirectory())).toHaveLength(1);
 });
 
 it('syncs the containing directory after publishing the launch record and terminal mapping', async () => {

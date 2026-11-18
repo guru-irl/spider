@@ -10,13 +10,25 @@ export const roots: string[] = [];
 export const oldKeys = { 'cmd-shift-a': 'old.a', 'cmd-shift-k': 'old.k', 'cmd-shift-m': 'old.m', 'cmd-shift-o': 'old.o', 'cmd-shift-u': 'old.u' };
 export const installedLayout = '{"content":[],"generation":2}\n';
 export const nativeLayout = '{"content":[{"size":320}],"generation":2}\n';
-export async function put(path: string, bytes: string, mode = 0o600) {
+interface FixtureValue { path: string; bytes: string | null; mode: number | null }
+export interface CheckpointFixture {
+  request: SetupRequest;
+  parts: SetupParts;
+  paths: Record<'font' | 'theme' | 'svg' | 'main' | 'manifest' | 'layout' | 'keys' | 'settings' | 'appSettings' | 'notes' | 'spaces' | 'registry' | 'journal' | 'added', string>;
+  all: string[];
+  before: FixtureValue[];
+  undoExpected: FixtureValue[];
+  fail(value: boolean): void;
+  live(value: boolean): void;
+  badDoctor(): void;
+}
+export async function put(path: string, bytes: string, mode = 0o600): Promise<void> {
   await fs.mkdir(dirname(path), { recursive: true }); await fs.writeFile(path, bytes); await fs.chmod(path, mode);
 }
-export async function values(paths: readonly string[]) {
+export async function values(paths: readonly string[]): Promise<FixtureValue[]> {
   return Promise.all(paths.map(async path => { const s = await snapshot(path); return { path, bytes: s.bytes?.toString('base64') ?? null, mode: s.bytes === null ? null : s.mode }; }));
 }
-export async function fixture() {
+export async function fixture(): Promise<CheckpointFixture> {
   const parent = resolve('.spider/scratch/checkpoint-fixtures'); await fs.mkdir(parent, { recursive: true });
   const root = await fs.mkdtemp(join(parent, 'case-')); roots.push(root);
   const app = join(root, 'app'), global = join(root, 'global'), agent = join(root, 'agent'), journalRoot = join(global, 'herdr/setup');
@@ -76,10 +88,10 @@ export async function fixture() {
     warn: () => {},
   };
   const undoExpected = before.map(file => file.path === paths.spaces ? { ...file, bytes: Buffer.from('{"version":2,"spaces":[]}\n').toString('base64'), mode: 0o600 } : file);
-  return { request, parts, paths, all, before, undoExpected, fail: (value: boolean) => { fail = value; }, live: (value: boolean) => { ownerLive = value; }, badDoctor: () => { verificationFails = true; } };
+  return { request, parts, paths, all, before, undoExpected, fail: (value: boolean): void => { fail = value; }, live: (value: boolean): void => { ownerLive = value; }, badDoctor: (): void => { verificationFails = true; } };
 }
 
-export async function metadataRepeat(f: Awaited<ReturnType<typeof fixture>>, replaceChanged = false) {
+export async function metadataRepeat(f: CheckpointFixture, replaceChanged = false): Promise<void> {
   const preflight = f.parts.preflight;
   f.parts.preflight = async request => ({ ...await preflight(request), recoveredCutover: (await readJournal(request.journalRoot)).cutover!, cutoverActions: [] });
   const journal = await readJournal(f.request.journalRoot);

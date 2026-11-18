@@ -169,6 +169,29 @@ it("copies a fixed published prefix while a live writer appends during every WAL
   } finally { writer.close(); }
 }, 5000);
 
+it("retries a checkpoint and WAL generation reset during the copy", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('before')");
+    const source = statSync(`${file}-wal`);
+    let checkpoints = 0;
+    hooks.afterRead = fd => {
+      const read = fstatSync(fd);
+      if (read.dev !== source.dev || read.ino !== source.ino) return;
+      hooks.afterRead = null;
+      writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+      writer.exec("INSERT INTO fixture VALUES ('after')");
+      checkpoints++;
+    };
+    const snapshot = openDiagnosticSnapshot(file)!;
+    try {
+      expect(checkpoints).toBe(1);
+      expect(snapshot.prepare("SELECT value FROM fixture ORDER BY value").all()).toEqual([{ value: "after" }, { value: "before" }]);
+    } finally { snapshot.close(); }
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
+}, 5000);
+
 it("refuses an unindexed WAL and a corrupt published index", () => {
   const { root, file } = fixture(), writer = openDb(file);
   try {

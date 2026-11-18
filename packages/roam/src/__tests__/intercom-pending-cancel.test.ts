@@ -88,6 +88,11 @@ it("cancelling one pending pair does not prevent its sibling from finishing", as
   ports.checkConnector = async (machine, pin) => machine.machineId === f.source.machineId ? "not-signed-in" : checkConnector(machine, pin);
   ports.hostConnector = async () => "unhosted";
   expect(await provisionIntercomEnrollment(request, ports)).toMatchObject({ code: 3 });
+  expect(await createIntercomRegistry(f.root).get("pair-2")).toMatchObject({ state: "pending", pair: { sshUser: "fixture" } });
+  const pin = f.transport.pinIntercomPeer.bind(f.transport);
+  vi.spyOn(f.transport, "pinIntercomPeer").mockImplementation(async peer => ({ ...await pin(peer), ...(peer.machineId === f.source.machineId ? { coreId: "changed-core" } : {}) }));
+  expect(await provisionIntercomEnrollment(request, ports)).toMatchObject({ value: { pending: expect.arrayContaining([{ pairId: "pair-1", reason: "core-changed" }]) } });
+  expect(await main(["roam", "intercom", "cancel", "pair-2"], f.io, { intercomOptions: { journal: f.journal } })).toBe(1);
   expect(await main(["roam", "intercom", "cancel", "pair-1"], f.io, { intercomOptions: { journal: f.journal } })).toBe(0);
   const real = createProductionIntercomEnrollmentPorts({ root: f.root, journal: f.journal, request, transport: f.transport,
     actor: "fixture", now: () => 2000, present: async () => {}, approve: async () => true, notify: async () => {}, warn: async () => {} });

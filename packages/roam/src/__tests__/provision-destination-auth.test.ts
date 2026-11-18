@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { createReplica } from "@spider/db-core/testutil";
 import { main } from "../cli";
@@ -7,6 +8,8 @@ import * as transportModule from "../transport";
 import * as hubModule from "../production-hub";
 import * as provisionModule from "../provision";
 import * as selectedModule from "../selected-files";
+import { healthyInventory } from "./bootstrap-fixture";
+import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
 
 const originalRead = selectedModule.readPrivateBytes;
 const fixtures: ReturnType<typeof createReplica>[] = [];
@@ -14,7 +17,7 @@ afterEach(() => { for (const f of fixtures.splice(0)) f.close(); vi.restoreAllMo
 function fixture(explicit = true) {
   const hub = "00000000-0000-4000-8000-000000000001", f = createReplica("global", hub); fixtures.push(f);
   const agent = join(f.root, "source"), release = join(f.root, "release.tgz"); mkdirSync(agent, { mode: 0o700 });
-  writeFileSync(join(agent, "auth.json"), JSON.stringify({ fixture: ["private", "credential"].join("-") }), { mode: 0o600 });
+  writeFileSync(join(agent, "auth.json"), JSON.stringify({ [["github", "copilot"].join("-")]: { type: "oauth", access: ["private", "credential"].join("-") } }), { mode: 0o600 });
   writeFileSync(release, "release", { mode: 0o600 }); mkdirSync(join(f.root, "roam"), { mode: 0o700 });
   writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: hub }), { mode: 0o600 });
   writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: false, role: "hub", machineId: hub, hubMachineId: hub,
@@ -43,6 +46,44 @@ it("uses destination sign-in without opening hub auth and retains explicit paths
   expect(f.reads.mock.calls.filter(([, name]) => name === "auth.json")).toEqual([]);
   expect(f.output()).not.toContain("Selected auth.json"); expect(f.errors()).toBe("");
 }, 5000);
+it("carries destination-managed auth from the CLI through the real remote metadata verifier", async () => {
+  const f = fixture(), home = join(f.root, "box-home"), agent = join(home, "install", "agent"), globalRoot = join(home, "state");
+  mkdirSync(agent, { recursive: true, mode: 0o700 }); mkdirSync(join(globalRoot, "roam"), { recursive: true, mode: 0o700 });
+  writeFileSync(join(globalRoot, "roam", "machine.json"), JSON.stringify({ machineId: "00000000-0000-4000-8000-000000000002" }), { mode: 0o600 });
+  const auth = join(agent, "auth.json"), audit = join(home, "auth-read"), hook = join(home, "guard.mjs");
+  writeFileSync(auth, "metadata is sufficient", { mode: 0o600 });
+  writeFileSync(hook, `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+for(const key of ['openSync','readFileSync']){const original=fs[key];fs[key]=function(file,...args){if(file===${JSON.stringify(auth)}){fs.writeFileSync(${JSON.stringify(audit)},'read');throw new Error('auth-read-forbidden');}return original(file,...args);};}syncBuiltinESMExports();`);
+  const verified: Record<string, unknown>[] = [];
+  vi.mocked(transportModule.createProvisionTransport).mockImplementation(({ enrolled }) => {
+    const peer = enrolled[0];
+    const inventory = healthyInventory(); inventory.core.unit = "fixture.service"; inventory.pi = peer.pi;
+    return { transport: { resolve: async () => peer, bootstrapProbe: async () => structuredClone(inventory) },
+      probeHome: async () => "/home/fixture", probeAgentDirectory: async () => ({ status: "default", core: { local: "local-core", remote: "remote-core" } }),
+      previewSettings: async () => ({ fingerprint: "a".repeat(64), changedKeys: [] }),
+      claimIdentity: async () => ({ machineId: peer.machineId, coreId: "remote-core" }),
+      async executeProvision(_peer: unknown, request: Record<string, unknown>) {
+        if (request.action === "release-observe") return { state: "finished", value: { pi: request.pi, cli: request.cli, supervisor: request.supervisor } };
+        if (request.action === "roaming-enabled") return { enabled: request.enabled };
+        if (request.action === "switchover") return { status: "applied" };
+        if (["enrollment", "clear-secrets", "unit-write", "systemctl"].includes(String(request.action))) return true;
+        if (request.action !== "verify") throw new Error(`unexpected-effect:${request.action}`);
+        const mapped = Object.fromEntries(Object.entries(request).map(([key, value]) => [key, typeof value === "string" && value.startsWith("/home/fixture") ? home + value.slice("/home/fixture".length) : value]));
+        const child = spawnSync(process.execPath, ["--import", hook, "--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
+          input: JSON.stringify(mapped), cwd: home, env: { ...process.env, HOME: home, PI_CODING_AGENT_DIR: agent }, encoding: "utf8", timeout: 3000,
+        });
+        expect(child.status, child.stderr).toBe(0);
+        const reply = JSON.parse(child.stdout); verified.push({ providers: request.providers, files: request.files, value: reply.value });
+        return reply.value;
+      },
+    } as never;
+  });
+  expect(await main(["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--release", f.release], f.io), f.errors()).toBe(0);
+  expect(verified).toEqual([{ providers: [], files: [], value: expect.objectContaining({ piSignedIn: true, privateModes: true }) }]);
+  expect(existsSync(audit)).toBe(false);
+  expect(f.reads.mock.calls.filter(([root]) => root === f.agent)).toEqual([]);
+}, 5000);
+
 it("requires an explicit agent directory for a nonstandard prefix", async () => {
   const f = fixture(false), install = vi.spyOn(provisionModule, "provision");
   expect(await main(["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--release", f.release], f.io), f.errors()).toBe(1);

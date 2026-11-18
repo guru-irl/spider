@@ -542,7 +542,7 @@ it.each([false, true])('reports a private-record refusal only once per terminal 
 });
 
 it('removes leftover credential temp files on the next launch record write', async () => {
-  await record(); const stale = join(secretDirectory(), 'old.0123456789abcdef.new');
+  await record(); const stale = join(secretDirectory(), terminalIdentityKey(terminal) + '.0123456789abcdef.new');
   await writeFile(stale, credential(), { mode: 0o600 });
   await record();
   expect((await readdir(secretDirectory())).filter(name => name.endsWith('.new'))).toEqual([]);
@@ -556,4 +556,17 @@ it('an unreadable API-key session model names the session and manual command', a
   expect(notice).toContain('saved');
   expect(notice).toContain(`'--session' '${file}'`);
   expect(notice).toContain('<API_KEY>');
+});
+
+it('permission drift on write preserves the published mapping and names the blocked session', async () => {
+  await record(); const registry = createTerminalRegistry(root), previous = await registry.get(terminal);
+  await chmod(secretDirectory(), 0o755);
+  await expect(registry.record({ ...mapping(), recordedAt: 11, launch: launch() })).rejects.toMatchObject({ code: 'launch-record-invalid', message: expect.stringContaining('saved') });
+  expect(await registry.get(terminal)).toEqual(previous);
+});
+
+it('syncs the new record directory before publishing a mapping that refers to it', async () => {
+  await record();
+  const mappingRename = disk.events.indexOf('rename:' + join(root, 'terminals', terminalIdentityKey(terminal) + '.json'));
+  expect(disk.events.slice(0, mappingRename)).toContain('sync:' + secretDirectory());
 });

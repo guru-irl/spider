@@ -5,6 +5,10 @@ import { spawnSync } from "node:child_process";
 import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
 import { DatabaseSync } from "node:sqlite";
 
+it("keeps the provisioning launch within Linux's single-argument limit", () => {
+  expect(Buffer.byteLength(PROVISION_REMOTE_SCRIPT) + 1).toBeLessThanOrEqual(128 * 1024);
+});
+
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {

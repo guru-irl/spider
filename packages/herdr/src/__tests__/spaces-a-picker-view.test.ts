@@ -7,7 +7,7 @@ import { createUiModules } from './strict-mod-api.mjs';
 import { HerdrLabelContract } from '../contracts.js';
 import { applyModPatches } from '../look/patches.js';
 import { pickerRows, selectPickerRow } from '../../assets/picker/model.js';
-import { projectNavigation } from '../../assets/shared/navigation.js';
+import { indexPaneNavigation, projectNavigation } from '../../assets/shared/navigation.js';
 import { describeOpenFailure } from '../../assets/shared/open-failure.js';
 import { assignSpaceIdentities } from '../../assets/shared/look.js';
 import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService } from '../../assets/shared/feed.js';
@@ -94,7 +94,7 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
     const entries = state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, updatedAt: Date.now() }));
     return { ok: true, json: async () => ({ version: 1, entries, changes: state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, feed: item })), errors: [] }) };
   };
-  const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => Object.assign(kit.div(), { inputElement: true }) }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, describeOpenFailure, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService };
+  const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => Object.assign(kit.div(), { inputElement: true }) }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, indexPaneNavigation, describeOpenFailure, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService };
   const body = (options.pickerSource ?? readFileSync(source, 'utf8')).replace(/^import .*;\s*$/gm, '').replace(/export default class Picker/, 'class Picker').replace(/export class Picker/, 'class Picker').replace(/export default Picker;?/g, '');
   const Picker = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${body}; return Picker;`)(api);
   const view = new Picker(); view.init({}, cx);
@@ -149,6 +149,19 @@ it('0.1.16 keeps a remote native picker action until a snapshot is available', a
     expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'remote-session' }));
     expect.soft(service.calls.filter(call => call[0] === 'run' && call[1] === 'pane.focus')).toEqual([]);
   } finally { await service.view.close(); }
+});
+
+it('keeps the picker usable when a pane snapshot has malformed children', async () => {
+  const h = host();
+  const bad = sourceSnapshot('Remote');
+  (bad.rows[0] as any).children = null;
+  h.state.paneSnapshot = bad;
+  try {
+    await h.view.ready;
+    expect(() => h.view.render()).not.toThrow();
+    expect(text(h.view.render())).toContain('Writer');
+    expect(text(h.view.render())).toContain('Pane service unavailable; run doctor');
+  } finally { await h.view.close(); }
 });
 
 it('hides an unnamed source owner and its children rather than using a generic agent name', async () => {

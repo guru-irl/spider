@@ -635,16 +635,15 @@ it("retries the gap between publishing reset salts and rewriting the WAL header"
   } finally { writer.close(); }
 }, 5000);
 
-it("retries a checkpoint whose backfill target overtakes the copied commit", () => {
+it("accepts a committed state when a checkpoint overtakes the copied commit", () => {
   const { file, temp } = fixture(), writer = openDb(file);
   try {
     writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('base')");
     writer.raw.pragma("wal_checkpoint(TRUNCATE)");
     writer.exec("UPDATE fixture SET value='before'");
     hooks.fixedStamp = file;
-    let checkpoints = 0, attempts = 0;
+    let checkpoints = 0;
     hooks.afterRead = fd => {
-      if (isFile(fd, file)) attempts++;
       if (isFile(fd, `${file}-wal`) && checkpoints++ === 0) {
         writer.exec("INSERT INTO fixture VALUES ('after')");
         writer.raw.pragma("wal_checkpoint(PASSIVE)");
@@ -652,11 +651,110 @@ it("retries a checkpoint whose backfill target overtakes the copied commit", () 
     };
     const snapshot = openDiagnosticSnapshot(file)!;
     hooks.afterRead = null;
-    try { expect(snapshot.prepare("SELECT value FROM fixture ORDER BY value").all()).toEqual([{ value: "after" }, { value: "before" }]); }
-    finally { snapshot.close(); }
-    expect(attempts).toBeGreaterThan(1);
+    try {
+      expect([[{ value: "base" }], [{ value: "before" }], [{ value: "after" }, { value: "before" }]])
+        .toContainEqual(snapshot.prepare("SELECT value FROM fixture ORDER BY value").all());
+    } finally { snapshot.close(); }
+    expect(checkpoints).toBeGreaterThan(0);
     expect(readdirSync(temp)).toEqual([]);
   } finally { writer.close(); }
+}, 5000);
+
+it("snapshots a committed prefix while every WAL copy is overtaken by backfill", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value INTEGER); INSERT INTO fixture VALUES (0)");
+    writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+    writer.exec("UPDATE fixture SET value=1");
+    const committed = new Set([0, 1]);
+    let value = 1;
+    hooks.fixedStamp = file;
+    hooks.afterRead = fd => {
+      if (!isFile(fd, `${file}-wal`)) return;
+      writer.prepare("UPDATE fixture SET value=?").run(++value);
+      committed.add(value);
+      writer.raw.pragma("wal_checkpoint(PASSIVE)");
+    };
+    const snapshot = openDiagnosticSnapshot(file)!;
+    hooks.afterRead = null;
+    try { expect(committed.has((snapshot.prepare("SELECT value FROM fixture").get() as { value: number }).value)).toBe(true); }
+    finally { snapshot.close(); }
+    expect(value).toBeGreaterThan(1);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
+}, 5000);
+
+function fuzzSnapshots(seed: number, iterations: number, poison = false) {
+  const { file, temp } = closedPair();
+  const connect = () => {
+    const db = openDb(file, { busyTimeoutMs: 0, checkpointOnClose: false });
+    db.raw.pragma("wal_autocheckpoint=4");
+    return db;
+  };
+  let writer = connect(), step = 0, accepted = 0, changing = 0;
+  const readers: ReturnType<typeof openDb>[] = [], committed = new Set([JSON.stringify({ a: 0, b: 0 })]);
+  const actions = { commits: 0, PASSIVE: 0, RESTART: 0, TRUNCATE: 0, reopen: 0, readers: 0 };
+  const random = () => { seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0; return seed / 2 ** 32; };
+  const commit = (filler = false) => {
+    const value = ++step;
+    writer.exec(`BEGIN; UPDATE a SET value=${value}; UPDATE b SET value=${value}; ${filler ? "UPDATE filler SET bytes=zeroblob(400000);" : ""} COMMIT`);
+    committed.add(JSON.stringify({ a: value, b: value })); actions.commits++;
+  };
+  const closeReaders = () => { for (const reader of readers.splice(0)) reader.close(); };
+  const act = () => {
+    const event = random();
+    if (event < 0.4) commit();
+    else if (event < 0.6) {
+      const mode = (["PASSIVE", "RESTART", "TRUNCATE"] as const)[Math.floor(random() * 3)];
+      writer.raw.pragma(`wal_checkpoint(${mode})`); actions[mode]++;
+    } else if (event < 0.7 && readers.length < 4) {
+      const reader = connect(); reader.exec("BEGIN"); reader.prepare("SELECT value FROM a").get(); readers.push(reader); actions.readers++;
+    } else if (event < 0.8) readers.shift()?.close();
+    else if (event < 0.9) commit(true);
+    else {
+      closeReaders(); writer.close(); writer = connect();
+      if (random() < 0.5) { commit(); writer.close(); writer = connect(); }
+      writer.prepare("SELECT value FROM a").get(); actions.reopen++;
+    }
+  };
+  hooks.fixedStamp = file;
+  try {
+    for (let iteration = 0; iteration < iterations; iteration++) {
+      const probability = 0.05 + random() * 0.4;
+      hooks.afterRead = fd => {
+        if ((isFile(fd, file) || isFile(fd, `${file}-wal`) || isFile(fd, `${file}-shm`)) && random() < probability) act();
+      };
+      try {
+        const snapshot = openDiagnosticSnapshot(file)!;
+        hooks.afterRead = null;
+        try {
+          const row = snapshot.prepare("SELECT a.value AS a,b.value AS b FROM a,b").get() as { a: number; b: number };
+          if (poison) row.b = -1; // Negative control for the same membership check.
+          expect(committed.has(JSON.stringify(row)), `committed state at iteration ${iteration}: ${JSON.stringify(row)}`).toBe(true);
+          accepted++;
+        } finally { snapshot.close(); }
+      } catch (error) {
+        hooks.afterRead = null;
+        if ((error as NodeJS.ErrnoException).code !== "diagnostic-snapshot-changing") throw error;
+        changing++;
+      }
+      if (random() < 0.3) closeReaders();
+    }
+    expect(readdirSync(temp)).toEqual([]);
+    return { iterations, accepted, changing, commits: committed.size, actions };
+  } finally { hooks.afterRead = null; closeReaders(); writer.close(); }
+}
+
+it.each([1, 0x5eed, 0xc0ffee])("accepts only recorded commits under seeded lifecycle fuzzing (seed %s)", seed => {
+  const result = fuzzSnapshots(seed, 200);
+  expect(result.accepted).toBeGreaterThan(0);
+  expect(result.accepted + result.changing).toBe(200);
+  for (const count of Object.values(result.actions)) expect(count).toBeGreaterThan(0);
+  console.info("snapshot-fuzz", JSON.stringify({ seed, ...result }));
+}, 5000);
+
+it("detects a never-committed state injected into the fuzz membership check", () => {
+  expect(() => fuzzSnapshots(1, 10, true)).toThrow(/committed state/);
 }, 5000);
 
 it("ignores checksum-valid uncommitted frames left by a spilled rollback", () => {

@@ -24,6 +24,8 @@ import { createReplica } from "@spider/db-core/testutil";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
+import { createMoveControlHandler } from "../adapter-controls";
+import { safeControlOutcome, controlText } from "../commands";
 import { handleSessionOperation } from "../participant-runtime";
 import { createRunningIntentAuthority } from "../session-control";
 import { createIntentStore } from "../intent";
@@ -654,3 +656,39 @@ it("reports a corrupt restart journal even when crash history cannot advance", a
     expect(log).toHaveBeenCalledTimes(1);
   } finally { await supervisor.stop(); log.mockRestore(); }
 });
+
+
+it("reports exact doctor blockers and resumes a stopped origin without prior hub intent", async () => {
+  const f = fixture(), authority = createRunningIntentAuthority(f.global.db);
+  f.worktree.db.prepare("UPDATE roam_sessions SET state='active' WHERE session_id='s-1'").run();
+  const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
+  const origin = { kind: "box-local", machineId: BOX, epoch: 2, ...location, pid: 123, startIdentity: "previous-owner", stopped: true };
+  writeLocal(f.global.db, "participant-origin", "s-1", origin);
+  const diagnostic = { severity: "block" as const, reason: "global: roaming capture is not initialized.", repairCommand: "spider roam doctor" };
+  const doctor = vi.spyOn(localDiagnostics, "runLocalDoctor").mockResolvedValue({ enabled: true, diagnostics: [diagnostic], consumers: [] });
+  const operation = { ...f.operation, id: "resume-origin", kind: "session-resume" }; let wakes = 0;
+  expect(await handleSessionOperation(operation, f.ports, { wake: async () => { wakes++; } })).toMatchObject({ code: 1, reason: "participant-doctor-refused",
+    repairCommand: `spider roam doctor ${BOX}`, value: { diagnostics: [diagnostic] } });
+  expect(await authority.get("s-1")).toBeNull(); expect(wakes).toBe(0);
+  doctor.mockResolvedValue({ enabled: true, diagnostics: [], consumers: [] });
+  expect(await handleSessionOperation(operation, f.ports, { wake: async () => { wakes++; } })).toMatchObject({ code: 0, reason: "resumed-intent" });
+  expect(await authority.get("s-1")).toMatchObject({ desired: "running", file: location.file, epoch: 2 });
+  expect(readLocal(f.global.db, "participant-origin", "s-1")).toEqual(origin); expect(wakes).toBe(1);
+}, 5000);
+
+
+it("retains resume diagnostics through hub control routing", async () => {
+  const f = fixture(), diagnostic = { severity: "block" as const, reason: "global: roaming capture is not initialized.", repairCommand: "spider roam doctor" };
+  vi.spyOn(localDiagnostics, "runLocalDoctor").mockResolvedValue({ enabled: true, diagnostics: [diagnostic], consumers: [] });
+  const peer = { machineId: BOX, alias: "box-1.invalid", node: "/fixture/node", pi: "/fixture/pi", cli: "/fixture/cli", core: "/fixture/core", globalRoot: "/fixture/state" };
+  const config = { ...f.ports.config, role: "hub" as const, machineId: HUB, peers: [peer] };
+  const transport = { async resolve() { return peer; }, async exec(_peer: unknown, argv: readonly string[]) {
+    const result = await handleSessionOperation(JSON.parse(argv[2]), f.ports, { wake: async () => { throw new Error("must not wake"); } });
+    return Buffer.from(JSON.stringify(result));
+  } };
+  const handler = createMoveControlHandler({ config, globalDb: f.global.db, journal: f.ports.journal, transport: transport as never, ports: {} as never });
+  const result = await handler({ op: "resume", session: "s-1" });
+  expect(result).toMatchObject({ code: 1, reason: "participant-doctor-refused", value: { diagnostics: [diagnostic] } });
+  const safe = safeControlOutcome({ ...result, operationId: result.operationId ?? "", home: result.home ?? null, epoch: result.epoch ?? null, repairCommand: result.repairCommand ?? null });
+  expect(controlText(safe)).toContain(diagnostic.reason); expect(controlText(safe)).toContain(`spider roam doctor ${BOX}`);
+}, 5000);

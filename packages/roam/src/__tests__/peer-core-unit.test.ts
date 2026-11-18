@@ -11,6 +11,6 @@ it("keeps the hub and peer core units separate and permits discovery when omitte
   expect(parseConfig({ ...hub, peers: [bootstrapPeer] }).peers[0].coreUnit).toBeUndefined();
 });
 
-it.each([null, "", " hc.service", "../hc.service", "hc.service\n", "hc", "a".repeat(256) + ".service"])("rejects unsafe peer core unit %j", coreUnit => {
+it.each([null, "", " hc.service", "../hc.service", "hc.service\n", "hc", "a".repeat(256) + ".service", "hc@.service", "herdr-core@.service"])("rejects unsafe peer core unit %j", coreUnit => {
   expect(() => parseConfig({ ...hub, peers: [{ ...bootstrapPeer, coreUnit }] })).toThrow(/invalid roaming config/i);
 });

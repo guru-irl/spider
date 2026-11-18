@@ -140,7 +140,7 @@ it("fixture teardown waits for the signalled process to exit", async () => {
   try {
     expect(await message()).toBe("ready");
     const pid = child.pid!;
-    const probe = await createLocalDiagnosticPorts(resolve(".spider/scratch"), []).probeProcess({ machineId: HUB, label: "local", peer: null }, pid);
+    const probe = await probeLocal(pid, false);
     expect(probe.kind).toBe("live");
     if (probe.kind !== "live") throw new Error("fixture process identity unavailable");
     const signalled = message();
@@ -150,7 +150,7 @@ it("fixture teardown waits for the signalled process to exit", async () => {
     expect(stopped).toBe(false);
     child.send("exit");
     await stopping;
-    const after = await createLocalDiagnosticPorts(resolve(".spider/scratch"), []).probeProcess({ machineId: HUB, label: "local", peer: null }, pid);
+    const after = await probeLocal(pid, false);
     expect(after.kind).toBe("absent");
   } finally {
     if (child.exitCode === null && child.signalCode === null) { child.send("exit"); await exit(child); }

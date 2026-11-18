@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { HERDR_LABELS, type SessionId, type TerminalIdentity } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { canonicalSessionFile, launchEnvironment, readRecordedLaunch, refuseExplicitExtensions, type LaunchEnvironment, type TerminalRegistry } from './registry.js';
-import { replayLaunchArgv, replayLaunchVariables } from './launch-environment.js';
+import { replayLaunchArgv, replayLaunchVariables, resolveLaunchSource } from './launch-environment.js';
 import { assessSessionLiveness, recordedSessionLiveness, type SessionLeasePolicy, type ProcessIdentity, type ProcessInventoryPorts, type SessionLeases } from './lease.js';
 import { bootIdChanged, claimIdLock, inspectIdLock } from './id-lock.js';
 import { exactLaunchArgv } from './launch-limits.js';
@@ -54,7 +54,7 @@ export async function launchSession(request: SessionLaunchRequest, ports: Sessio
   try {
     const header = await readSessionHeader(file); if (header.id !== request.sessionId) throw new HerdrError('session-id-mismatch', 'Session file identity changed');
     const argv = recorded ? await replayLaunchArgv(recorded, file) : [SESSION_PROGRAM, '--session', file];
-    const env = { ...safeLaunchEnvironment(recorded ? replayLaunchVariables(ports.env, recorded) : ports.env), PI_CODING_AGENT_DIR: recorded?.variables.PI_CODING_AGENT_DIR ?? environment.agentDirectory, SPIDER_HERDR_LEASE_TOKEN: lease.token, SPIDER_HERDR_LEASE_FILE: file };
+    const env = { ...safeLaunchEnvironment(recorded ? replayLaunchVariables(ports.env, recorded) : ports.env), PI_CODING_AGENT_DIR: recorded?.variables.PI_CODING_AGENT_DIR !== undefined ? resolveLaunchSource(recorded.variables.PI_CODING_AGENT_DIR, recorded.cwd, recorded.variables.HOME) : environment.agentDirectory, SPIDER_HERDR_LEASE_TOKEN: lease.token, SPIDER_HERDR_LEASE_FILE: file };
     starting = true;
     let process: ProcessIdentity | void;
     try { process = await ports.spawnPi({ ...request, sessionFile: file, environment, argv, env }); }

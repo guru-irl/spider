@@ -26,7 +26,7 @@ import { createRoamPresentationPorts, type RoamPresentationPorts } from './roam-
 import { offerResume, resumeOfferShell, resumeWatchShell, buildResumeBlock, shellQuote } from '@spider/herdr/sessions/resume';
 import { discoverSessions, selectedProcessInventory } from '@spider/herdr/spaces/discovery';
 import { launchSession } from '@spider/herdr/sessions/launcher';
-import { launchFlagTakesValue } from '@spider/herdr/sessions/launch-environment';
+import { resolveLaunchSource, launchFlagTakesValue } from '@spider/herdr/sessions/launch-environment';
 import { applyLookPatches, selectLookPatches, applyModPatches, lookCloneKinds, type AdditionalLookPatches, type LookModKind, type LookPatch, type HerdrClones, type LookPatchSet } from '@spider/herdr/look/patches';
 import { notificationAgentPatches } from '@spider/herdr/look/notification-patches';
 import { applyCrossMachinePatches, crossMachineKinds, selectCrossMachinePatches, type CrossMachineLookRecipe } from '@spider/herdr/look/cross-machine';
@@ -95,7 +95,7 @@ export function explicitExtensionArguments(argv: readonly string[]): readonly st
     if (argv[i] === '--') break;
     if (argv[i] === '--extension' || argv[i] === '-e') {
       if (!argv[i + 1]) throw new HerdrError('launch-environment-invalid', 'Missing explicit extension path');
-      const path = argv[++i]; args.push('--extension', path.startsWith('builtin:') ? path : resolve(path));
+      const path = argv[++i]; args.push('--extension', resolveLaunchSource(path, process.cwd()));
     } else if (launchFlagTakesValue(argv[i])) i++;
   }
   return recordedExtensionArguments(args);

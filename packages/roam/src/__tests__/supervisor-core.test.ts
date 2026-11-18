@@ -50,6 +50,12 @@ it("starts a stopped core through its pinned binary and socket without using PAT
   }) })]);
 });
 
+it.each(["socket", "stateHome", "configHome"] as const)("refuses an unfenced test %s before starting a core", async field => {
+  const { h, pin } = await fixture();
+  await expect(supervisor.ensureSupervisorCore({ ...pin, [field]: "/outside-fixture/core" }, h.localEnv)).rejects.toThrow(/fixture/i);
+  expect(await h.calls()).toEqual([]);
+});
+
 it("attaches without replacing an already running core", async () => {
   const { h, pin } = await fixture();
   const first = await supervisor.ensureSupervisorCore(pin, h.localEnv);

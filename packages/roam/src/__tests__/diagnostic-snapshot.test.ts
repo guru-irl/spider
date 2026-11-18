@@ -727,6 +727,41 @@ it("rejects a mixed main copy when close and reopen reuse empty sidecar identiti
   } finally { hooks.afterRead = null; writer.close(); }
 }, 5000);
 
+it("rejects a mixed copy when a read-only last close retains empty sidecars", () => {
+  const { file, temp } = closedPair();
+  const connect = () => {
+    const db = openDb(file, { checkpointOnClose: false });
+    db.prepare("SELECT value FROM a").get();
+    return db;
+  };
+  let writer = connect(), reader = openDbReadOnly(file), reopened = false;
+  reader!.prepare("SELECT value FROM a").get();
+  const identities = () => ["-wal", "-shm"].map(suffix => statSync(file + suffix).ino);
+  const before = identities(), waits: number[] = [];
+  hooks.fixedStamp = file; hooks.mtimeNs = hooks.ctimeNs = 1_000_000_000n;
+  vi.useFakeTimers(); vi.setSystemTime(1000);
+  vi.spyOn(Atomics, "wait").mockImplementation((_array, _index, _value, timeout) => {
+    waits.push(timeout!); vi.setSystemTime(Date.now() + timeout!); return "timed-out";
+  });
+  hooks.afterRead = fd => {
+    if (reopened || !isFile(fd, file)) return;
+    reopened = true;
+    writer.exec("BEGIN; UPDATE a SET value=1; UPDATE b SET value=1; COMMIT");
+    writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+    writer.close(); reader!.close(); reader = undefined; writer = connect();
+  };
+  try {
+    const snapshot = openDiagnosticSnapshot(file)!;
+    hooks.afterRead = null;
+    try { expect([{ a: 0, b: 0 }, { a: 1, b: 1 }]).toContainEqual(snapshot.prepare("SELECT a.value AS a,b.value AS b FROM a,b").get()); }
+    finally { snapshot.close(); }
+    expect(reopened).toBe(true);
+    expect(identities()).toEqual(before);
+    expect(waits).toEqual([50]);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { hooks.afterRead = null; reader?.close(); writer.close(); }
+}, 5000);
+
 function fuzzSnapshots(seed: number, iterations: number, poison = false) {
   const { file, temp } = closedPair();
   const connect = () => {

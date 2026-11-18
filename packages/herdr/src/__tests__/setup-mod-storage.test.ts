@@ -40,7 +40,7 @@ test('changed props copy saved state to the new store without replacing existing
   const files = await mod?.planModStorage(root, layout('/path/to/old'), layout('/path/to/new'));
   expect(files?.map(file => file.path)).toEqual([newStore]);
   const journal = await readJournal(join(root, 'setup'));
-  await validateFiles(files!, journal); await prepareBackups(join(root, 'setup'), files!, journal); await applyFiles(files!, journal);
+  await validateFiles(files!, journal); await prepareBackups(join(root, 'setup'), files!, journal); await applyFiles(join(root, 'setup'), files!, journal);
   expect(await readFile(newStore, 'utf8')).toBe(bytes);
   expect(await readFile(oldStore, 'utf8')).toBe(bytes);
   await writeFile(newStore, '{"timer":"99"}');

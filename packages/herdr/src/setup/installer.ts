@@ -5,16 +5,16 @@ import { basename, dirname, join, resolve, relative, isAbsolute } from 'node:pat
 import { HerdrLabelContract } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { VIEW_ON_MAC_MESSAGE } from '../notices.js';
-import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, discardModStages, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction, type SetupJournal } from './backup.js';
+import { digest, snapshot, atomicWrite, readJournal, saveJournal, withSetupLock, validateFiles, prepareBackups, prepareModDirectories, rollbackModDirectories, discardModStages, unpublishNewMods, applyFiles, rejectSymlinks, mergeTheme, mergeKeys, mergeTerminalKeys, disableRootNotes, rollbackFiles, managedProjection, assertGlobalRoot, missingKeyMapMessage, type KeyBinding, type KeyFields, type KeySections, type ManagedPart, type FileAction, type SetupJournal } from './backup.js';
 import { probeLaunch, type DoctorReport } from './doctor.js';
 import { checkRemoteNodeVersion, REMOTE_NODE_MINIMUM } from '../remote/node-version.js';
 import { shellQuote } from '../sessions/resume.js';
 import { chmod, lstat, mkdir } from 'node:fs/promises';
 import type { RuntimeDirectoryProbe } from '../remote/runtime.js';
 import { planModStorage } from './mod-storage.js';
-import { assertSetupNotUndoing, beginRunCheckpoint, finishRunCheckpoint, recordRemoteWrite, recordCheckpointWrites, undoUpgrade, includeRegistryCheckpoint, type UpgradeCheckpoint, type UpgradeUndoResult } from './checkpoint.js';
+import { assertSetupNotUndoing, beginRunCheckpoint, finishRunCheckpoint, readCheckpoint, pendingCheckpointBaselines, recordRemoteWrite, recordCheckpointIntents, recordCheckpointWrites, undoUpgrade, includeRegistryCheckpoint, completeDanglingCheckpoint, supersedeCheckpoint, checkpointBytes, type UpgradeCheckpoint, type UpgradeUndoResult } from './checkpoint.js';
 
-async function ensureSessionFeedDirectory(globalRoot: string): Promise<void> {
+async function ensureSessionFeedDirectory(globalRoot: string, repair = true): Promise<void> {
   await rejectSymlinks(globalRoot);
   const uid = process.getuid?.();
   const checkOwner = async (path: string) => {
@@ -25,6 +25,10 @@ async function ensureSessionFeedDirectory(globalRoot: string): Promise<void> {
   await checkOwner(globalRoot);
   for (const directory of [join(globalRoot, 'herdr'), join(globalRoot, 'herdr/sessions')]) {
     await rejectSymlinks(directory);
+    if (!repair) {
+      try { await checkOwner(directory); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      continue;
+    }
     try { await mkdir(directory, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
     await rejectSymlinks(directory);
     if (((await checkOwner(directory)).mode & 0o777) !== 0o700) await chmod(directory, 0o700);
@@ -170,7 +174,7 @@ export interface SetupParts {
   persistCutover?(request: SetupRequest): Promise<CutoverResult>;
   selectApp?(request: SetupRequest): Promise<void>;
   verify(request: SetupRequest): Promise<DoctorReport>;
-  rollback(result: CutoverResult): Promise<void>;
+  rollback(result: CutoverResult, options?: { preserve?: CutoverResult; beforeClose?: () => Promise<void> }): Promise<void>;
   warn(message: string): void;
 }
 export interface SetupResult {
@@ -234,7 +238,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
   const work = async (): Promise<SetupResult> => {
     await assertSetupNotUndoing(request.journalRoot);
     const journal = await readJournal(request.journalRoot);
-    let checkpoint: UpgradeCheckpoint | undefined, completed = false;
+    let checkpoint: UpgradeCheckpoint | undefined, completed = false, setupError: unknown;
     const recordWrites = async (paths: readonly string[]) => { if (checkpoint) await recordCheckpointWrites(request.journalRoot, checkpoint, paths); };
     const saveSetupJournal = async () => { await saveJournal(request.journalRoot, journal); await recordWrites([join(request.journalRoot, 'journal.json')]); };
     const observeWrites = async <T>(paths: readonly string[], work: () => Promise<T>): Promise<T> => {
@@ -417,7 +421,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         if (!modProps.some(copy => copy.props.modId === modId))
           throw new HerdrError('missing-mod-id', `No validated mod props for installed copy: ${modId}`);
       }
-    const fileActions = await validateFiles(files, journal, request.overwriteUnownedKeys, plannedAppSettings(request), { replaceChanged: request.replaceChanged, planOnly: request.dryRun });
+    const fileActions = await validateFiles(files, journal, request.overwriteUnownedKeys, plannedAppSettings(request), { replaceChanged: request.replaceChanged, planOnly: request.dryRun, pendingBaselines: await pendingCheckpointBaselines(request.journalRoot) });
     const selectionReplacement = fileActions.some(action => action.action === 'replace' && action.path === plannedAppSettings(request).path && files.some(file => file.path === action.path && (file.snapshotOnly || file.updateAfterCutover)));
     needsAppSelection ||= selectionReplacement;
     if (selectionReplacement) {
@@ -475,12 +479,14 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       }
     };
     const unchanged = releasedSounds.length === 0 && fileActions.every(action => action.action === 'unchanged') && journal.verified && !cutoverNeeded && fingerprint === journal.fingerprint && probes.length === 0 && runtimePlans.every(p => p.before === p.runtime.sha256) && (await Promise.all(files.map(async file => file.snapshotOnly || (await snapshot(file.path)).hash === digest(file.bytes)))).every(Boolean);
+    await ensureSessionFeedDirectory(request.config.globalRoot, false);
     const endpointPlan = await parts.paneEndpointPlan?.(request);
-    const checkpointPaths = [...files.map(file => file.path), join(request.config.app.home, 'keys.json'),
+    const checkpointPaths = [...files.map(file => file.path), layoutPath, join(request.config.app.home, 'keys.json'),
       plannedAppSettings(request).path, join(request.config.globalRoot, 'herdr/spaces/spaces.json'),
       join(request.config.globalRoot, 'herdr/installation.json'), join(request.journalRoot, 'journal.json'), ...(endpointPlan?.paths ?? [])];
+    const substantive = fileActions.some(action => action.action !== 'unchanged' && files.some(file => file.path === action.path && !file.snapshotOnly && digest(file.bytes) !== file.expected)) || !!endpointPlan?.changed || runtimePlans.some(plan => plan.before !== plan.runtime.sha256);
     if (!unchanged || endpointPlan?.changed || !endpointPlan && parts.stagePaneEndpoint || cutoverMetadataChanged || runningInPlace && preflight.cutoverNeedsRecheck && parts.persistCutover)
-      checkpoint = await beginRunCheckpoint(request.journalRoot, checkpointPaths);
+      checkpoint = await beginRunCheckpoint(request.journalRoot, checkpointPaths, substantive);
     try {
       if (runningInPlace && preflight.cutoverNeedsRecheck && parts.persistCutover) {
         journal.cutover = await observeWrites([join(request.config.globalRoot, 'herdr/spaces/spaces.json')], () => parts.persistCutover!(request));
@@ -494,7 +500,7 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         const doctor = await parts.verify(request);
         if (doctor.failures.length) throw new HerdrError('setup-verification-failed', 'Installed setup failed verification', { failures: doctor.failures });
         if (recordRuntimeRootProbes() || cutoverMetadataChanged) {
-          checkpoint ??= await beginRunCheckpoint(request.journalRoot, checkpointPaths);
+          checkpoint ??= await beginRunCheckpoint(request.journalRoot, checkpointPaths, substantive);
           await saveSetupJournal();
         }
         completed = true;
@@ -517,8 +523,9 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
       journal.verified = false;
       journal.retiredTerminals = retiredTerminals;
       await prepareBackups(request.journalRoot, files, journal);
-      await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal);
-      const writes = [...endpointWrites, ...await applyFiles(files.filter(file => !file.updateAfterCutover), journal, recordWrites)];
+      if (checkpoint) await recordCheckpointIntents(request.journalRoot, checkpoint, files, journal);
+      await prepareModDirectories(request.journalRoot, request.config.app.home, files, journal, recordWrites);
+      const writes = [...endpointWrites, ...await applyFiles(request.journalRoot, files.filter(file => !file.updateAfterCutover), journal, recordWrites)];
       for (const file of appFiles)
         if ((await snapshot(file.path)).hash !== file.expected) throw new HerdrError('concurrent-settings-edit', `Changed before app selection: ${file.path}`);
       for (const path of releasedSounds) parts.warn(`${path}: sounds.enabled was changed by the user and released.`);
@@ -603,27 +610,37 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
         await saveSetupJournal();
         completed = true;
         return { writes, probes, cutover, doctor };
+      } catch (error) { throw error; }
+    } catch (error) { setupError = error; throw error; }
+    finally {
+      try {
+        if (checkpoint) {
+          await recordWrites([join(request.journalRoot, 'journal.json')]);
+          await finishRunCheckpoint(request.journalRoot, checkpoint, completed);
+        } else if (completed) await completeDanglingCheckpoint(request.journalRoot);
       } catch (error) {
-        const command = [process.execPath, join(request.packageRoot, 'dist/herdr/cli.mjs'), 'rollback', '--config', request.configPath].map(shellQuote).join(' ');
-        const message = error instanceof Error ? error.message : String(error);
-        throw new HerdrError(error instanceof HerdrError ? error.code : 'setup-failed', error instanceof HerdrError && error.code === 'running-session-unplaced' ? message : `${message}\nRollback: ${command}`, error instanceof HerdrError ? error.details : undefined);
-      }
-    } finally {
-      if (checkpoint) {
-        await recordWrites([join(request.journalRoot, 'journal.json')]);
-        await finishRunCheckpoint(request.journalRoot, checkpoint, completed);
+        if (setupError === undefined) throw error;
+        parts.warn(`Setup checkpoint could not be finalized: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
   };
   const recordedWork = async () => {
     const before = await snapshot(join(request.journalRoot, 'journal.json'));
-    const result = await work();
-    if (!request.dryRun) result.journalChanged = before.hash !== (await snapshot(join(request.journalRoot, 'journal.json'))).hash;
-    return result;
+    try {
+      const result = await work();
+      result.journalChanged = before.hash !== (await snapshot(join(request.journalRoot, 'journal.json'))).hash;
+      return result;
+    } catch (error) {
+      let upgrade = false;
+      try { const checkpoint = await readCheckpoint(request.journalRoot); upgrade = !!checkpoint && !['undone', 'superseded'].includes(checkpoint.state); }
+      catch { /* A damaged checkpoint must not hide the original setup failure. */ }
+      const command = [process.execPath, join(request.packageRoot, 'dist/herdr/cli.mjs'), 'rollback', ...(upgrade ? ['--undo-upgrade'] : []), '--config', request.configPath].map(shellQuote).join(' ');
+      throw new HerdrError(error instanceof HerdrError ? error.code : 'setup-failed', `${error instanceof Error ? error.message : String(error)}\nRollback: ${command}`, error instanceof HerdrError ? error.details : undefined);
+    }
   };
   return request.dryRun ? work() : withSetupLock(request.journalRoot, recordedWork);
 }
-async function releaseRollbackOwners(request: SetupRequest, parts: SetupParts, journal: SetupJournal): Promise<void> {
+async function releaseRollbackOwners(request: SetupRequest, parts: SetupParts, journal: SetupJournal, options?: { preserve?: CutoverResult; beforeClose?: () => Promise<void> }): Promise<void> {
     if (journal.cutoverPending) {
       const preflight = await parts.preflight(request);
       if (!preflight.recoveredCutover && !preflight.cutoverProvedAbsent) throw new HerdrError('cutover-reconciliation-required', 'An uncertain live owner must be reconciled before rollback');
@@ -631,9 +648,11 @@ async function releaseRollbackOwners(request: SetupRequest, parts: SetupParts, j
       await saveJournal(request.journalRoot, journal);
     }
     if (journal.cutover) {
-      await parts.rollback(journal.cutover);
+      const preserve = options?.preserve;
+      if (preserve && journal.cutover.terminals.every(terminal => preserve.terminals.includes(terminal)) && Object.entries(journal.cutover.identities).every(([session, identity]) => preserve.identities[session] === identity)) return;
+      await parts.rollback(journal.cutover, options);
       // The created tabs are closed and forgotten. Record it now, so a file-phase failure can be retried.
-      journal.cutover = null; journal.verified = false;
+      journal.cutover = options?.preserve ?? null; journal.verified = false;
       await saveJournal(request.journalRoot, journal);
     }
 }
@@ -645,11 +664,23 @@ export async function undoHerdrUpgrade(request: SetupRequest, parts: SetupParts)
     const journal = await readJournal(request.journalRoot);
     return undoUpgrade(request.journalRoot, {
       replaceChanged: request.replaceChanged,
-      ownerPaths: [join(request.config.globalRoot, 'herdr/spaces/spaces.json'), join(request.journalRoot, 'journal.json')],
-      releaseOwners: () => releaseRollbackOwners(request, parts, journal),
+      ownerPaths: [join(request.config.globalRoot, 'herdr/spaces/spaces.json'), join(request.journalRoot, 'journal.json'), join(request.config.app.home, 'layouts/spider-glass.json'), plannedAppSettings(request).path],
+      managed: new Map(journal.entries.flatMap(entry => entry.managed ? [[entry.path, entry.managed] as const] : [])),
+      runtimePaths: [join(request.config.globalRoot, 'herdr/spaces/spaces.json')],
+      runtimeRewrittenPaths: [join(request.config.app.home, 'layouts/spider-glass.json'), ...journal.entries.filter(entry => entry.path.startsWith(join(request.config.globalRoot, 'herdr/instructions') + '/')).map(entry => entry.path)],
+      releaseOwners: async (baseline, beforeClose) => {
+        const saved = baseline.find(file => file.path === join(request.journalRoot, 'journal.json'));
+        const bytes = saved ? await checkpointBytes(request.journalRoot, saved) : null;
+        const preserve = bytes ? (JSON.parse(bytes.toString('utf8')) as SetupJournal).cutover ?? undefined : undefined;
+        await releaseRollbackOwners(request, parts, journal, { preserve, beforeClose });
+      },
+      unpublish: async (baseline, expected, didWrite) => {
+        const removable = new Map(baseline.filter(file => file.hash === null).map(file => [file.path, expected.find(state => state.path === file.path)?.hash ?? null]));
+        return unpublishNewMods(request.journalRoot, journal, removable, didWrite);
+      },
       cleanup: async baseline => {
         await discardModStages(journal);
-        const existing = new Set(baseline.filter(file => file.bytes !== null).map(file => file.path));
+        const existing = new Set(baseline.filter(file => file.hash !== null).map(file => file.path));
         await rollbackModDirectories(request.config.app.home, { ...journal, entries: journal.entries.filter(entry => existing.has(entry.path)) }, message => parts.warn(message));
       },
     });
@@ -678,6 +709,7 @@ export async function rollbackHerdr(request: SetupRequest, parts: SetupParts): P
     journal.verified = false;
     journal.cutover = null;
     await saveJournal(request.journalRoot, journal);
+    await supersedeCheckpoint(request.journalRoot);
     return restored;
   });
 }

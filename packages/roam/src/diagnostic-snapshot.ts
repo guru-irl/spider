@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, mkdtempSync, openSync, readSync, rmSync, statSync, truncateSync, writeSync } from "node:fs";
 import type { BigIntStats } from "node:fs";
 import { endianness, tmpdir } from "node:os";
@@ -30,7 +31,7 @@ class Changed extends Error {
   constructor(message = "Store changed while preparing a diagnostic snapshot", readonly code = "diagnostic-snapshot-changing") { super(message); }
 }
 class Unpublished extends Changed {
-  constructor() { super("WAL frames beyond the published commit boundary are changing or need recovery", "diagnostic-snapshot-wal-unpublished"); }
+  constructor(readonly fingerprint: string) { super("WAL frames beyond the published commit boundary are changing or need recovery", "diagnostic-snapshot-wal-unpublished"); }
 }
 class MissingIndex extends Changed {
   constructor() { super("WAL commit index is missing while the store is opening or closing", "diagnostic-snapshot-wal-index-missing"); }
@@ -95,7 +96,7 @@ function sameGeneration(initial: WalIndex, limit: WalIndex, published: WalIndex)
       initial.pageSize !== limit.pageSize || limit.pageSize !== published.pageSize ||
       initial.frames > limit.frames || limit.frames > published.frames) throw new Changed();
 }
-function constrainWal(walFile: string, initial: WalIndex, limit: WalIndex, published: WalIndex): void {
+function constrainWal(walFile: string, initial: WalIndex, limit: WalIndex, published: WalIndex): string | undefined {
   sameGeneration(initial, limit, published);
   const size = statSync(walFile).size;
   if (size === 0) {
@@ -112,7 +113,8 @@ function constrainWal(walFile: string, initial: WalIndex, limit: WalIndex, publi
   if (first !== header.readUInt32BE(24) || second !== header.readUInt32BE(28)) throw new InvalidWal();
   const frameSize = limit.pageSize + 24, end = 32 + limit.frames * frameSize;
   if (end > size) throw new Changed();
-  const available = Math.floor((size - 32) / frameSize);
+  const available = Math.floor((size - 32) / frameSize), digest = createHash("sha256").update(header);
+  let tail: string | undefined;
   for (let frame = 1; frame <= available; frame++) {
     const bytes = prefix(walFile, frameSize, 32 + (frame - 1) * frameSize);
     const [nextFirst, nextSecond] = checksum(bytes.subarray(24), limit.bigEndChecksum,
@@ -126,8 +128,10 @@ function constrainWal(walFile: string, initial: WalIndex, limit: WalIndex, publi
     first = nextFirst; second = nextSecond;
     if (frame === limit.frames && (bytes.readUInt32BE(4) !== limit.pages || !limit.pages ||
         first !== limit.first || second !== limit.second)) throw new InvalidWal();
-    if (frame > published.frames && bytes.readUInt32BE(4) !== 0) throw new Unpublished();
+    digest.update(bytes);
+    if (frame > published.frames && bytes.readUInt32BE(4) !== 0) tail = digest.copy().digest("hex");
   }
+  if (tail) return tail;
   truncateSync(walFile, end);
 }
 function stamp(stat: BigIntStats, contentStable = true): string {
@@ -179,7 +183,10 @@ function copyStable(source: string, destination: string, expected: string, conte
 /** A bounded snapshot at an observed WAL commit, removed on close. */
 export function openDiagnosticSnapshot(file: string): Db | undefined {
   assertTestDbPath(file);
+  let unpublished: { fingerprint: string; attempts: number } | undefined;
   for (let attempt = 0; attempt < 3; attempt++) {
+    const previousUnpublished = unpublished;
+    unpublished = undefined;
     const main = fileStamp(file);
     if (main === null) return undefined;
     const walFile = `${file}-wal`, wal = fileStamp(walFile, false);
@@ -197,6 +204,12 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
       }
       observed = shm === null ? null : indexBytes(shmFile);
       const initial = observed === null ? null : walIndex(observed);
+      let indexMoving = false, tail: string | undefined;
+      const readIndex = () => {
+        const bytes = indexBytes(shmFile);
+        indexMoving ||= !observed?.equals(bytes);
+        return walIndex(bytes);
+      };
       const started = Date.now(), copied = copyStable(file, copy, main);
       // An empty recovered index has no WAL generation to bind the main copy.
       // A read-only last close can preserve its inode across another recovery.
@@ -211,25 +224,27 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
         }
       }
       // This is the commit bound, not the pre-copy or post-WAL publication.
-      const limit = shm === null ? null : walIndex(indexBytes(shmFile));
+      const limit = shm === null ? null : readIndex();
       if (wal !== null) {
         copyStable(walFile, `${copy}-wal`, wal, false);
         if (!initial || !limit) throw new MissingIndex();
-        try { constrainWal(`${copy}-wal`, initial, limit, walIndex(indexBytes(shmFile))); }
-        catch (error) {
-          if (!(error instanceof Unpublished)) throw error;
-          // Publication may follow the index read. Recheck the same finite
-          // copy without chasing a newly extended or overwritten WAL tail.
-          constrainWal(`${copy}-wal`, initial, limit, walIndex(indexBytes(shmFile)));
-        }
+        tail = constrainWal(`${copy}-wal`, initial, limit, readIndex());
+        // Publication may follow the index read. Recheck the same finite
+        // copy without chasing a newly extended or overwritten WAL tail.
+        if (tail) tail = constrainWal(`${copy}-wal`, initial, limit, readIndex());
       } else if (initial && limit) {
-        sameGeneration(initial, limit, walIndex(indexBytes(shmFile)));
+        sameGeneration(initial, limit, readIndex());
         if (limit.frames !== 0) throw new Changed();
       }
+      if (tail) readIndex();
       if (fileStamp(file) !== main) throw new Changed();
       // An initially absent WAL and index must still be absent after the copy.
       if (fileStamp(walFile, false) !== wal || fileStamp(shmFile, false) !== shm ||
           indexFd !== undefined && fstatSync(indexFd).nlink === 0) throw new Changed();
+      if (tail) {
+        if (indexMoving) throw new Changed();
+        throw new Unpublished(`${shm}:${observed?.toString("hex")}:${tail}`);
+      }
       const db = openDbReadOnly(copy);
       if (!db) throw new Error("Diagnostic snapshot disappeared");
       try {
@@ -251,6 +266,12 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
         if ((changed as NodeJS.ErrnoException).code === "ENOENT" || changed instanceof InvalidWal) error = new Changed();
         else error = changed;
       } finally { cleanup(directory); }
+      if (error instanceof Unpublished) {
+        unpublished = { fingerprint: error.fingerprint, attempts: previousUnpublished?.fingerprint === error.fingerprint ? previousUnpublished.attempts + 1 : 1 };
+        // A live writer can leave complete commit frames ahead of publication
+        // on every copy. Only the same tail and index on all attempts persist.
+        if (unpublished.attempts !== 3) error = new Changed();
+      }
       if (error instanceof Changed && attempt < 2) continue;
       throw error;
     } finally { if (indexFd !== undefined) closeSync(indexFd); }

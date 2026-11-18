@@ -17,7 +17,7 @@ import { bootstrapPeer, healthyInventory } from "./bootstrap-fixture";
 
 type Provision = (input: { operation: { id: string; machineId: string; expectedEpoch: null; kind: string; args: Record<string, never> }; peer: Peer;
   selected: readonly string[]; includeAuth: boolean; confirmedProviders: readonly string[]; expectedAuthBytes?: number;
-  expectedFiles?: readonly { path: string; size: number; mode: number }[]; expectedSelectionDigest?: string }, ports: unknown) => Promise<Outcome<{ hostingReady: boolean }>>;
+  expectedFiles?: readonly { path: string; size: number; mode: number }[]; expectedSelectionDigest?: string; replaceCorePin?: boolean }, ports: unknown) => Promise<Outcome<{ hostingReady: boolean }>>;
 const provision = (provisionModule as { provision?: Provision }).provision;
 const roots: string[] = [];
 
@@ -134,6 +134,33 @@ function fixture() {
     diagnostics, systemctl, secretCollectionCalls, value, ports, request };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+it.each(["core-pin-invalid", "core-pin-conflict", "core-pin-changed"])("keeps %s actionable across provisioning", async reason => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.enroll = async () => { throw Object.assign(new Error("pin refused"), { code: reason }); };
+  const outcome = await provision!(f.request("pin-error"), f.ports);
+  expect(outcome).toMatchObject({ reason });
+  if (reason !== "core-pin-invalid") expect(outcome.repairCommand).toBe(`spider roam provision ${bootstrapPeer.alias} --replace-core-pin`);
+});
+
+it("checks replacement idleness and journals both identities before continuing installation", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  const receipt = { oldCoreId: "previous-core", newCoreId: "fixture-core", oldPinSha256: "a".repeat(64), newPinSha256: "b".repeat(64) };
+  const ports = { ...f.ports, async assertCorePinReplaceIdle() { f.events.push("replace-idle"); },
+    transfer: { ...f.ports.transfer, async enroll(_peer: Peer, _hub: string, _unit: string, replace?: boolean) {
+      if (!replace) throw new Error("replacement flag missing"); f.events.push("replacement"); return receipt;
+    } } };
+  expect(await provision!({ ...f.request("replace-pin"), replaceCorePin: true }, ports)).toMatchObject({ code: 0 });
+  expect(f.events.indexOf("replace-idle")).toBeLessThan(f.events.indexOf("replacement"));
+  expect(f.journal.read("replace-pin").find(row => row.action === "core-pin-replaced")?.result).toEqual(receipt);
+});
+
+it("refuses explicit pin replacement while the hub still assigns sessions to the box", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  const ports = { ...f.ports, async assertCorePinReplaceIdle() { throw Object.assign(new Error("busy"), { code: "core-pin-in-use" }); } };
+  expect(await provision!({ ...f.request("replace-busy"), replaceCorePin: true }, ports)).toMatchObject({ reason: "core-pin-in-use" });
+  expect(f.events).not.toContain("enrollment");
+});
 
 it("names the earlier operation that blocks provisioning", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");

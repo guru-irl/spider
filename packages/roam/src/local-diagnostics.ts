@@ -36,6 +36,7 @@ function resumeCommand(id: string): string {
   return `spider roam resume ${id.startsWith("-") ? "-- " : ""}${argument}`;
 }
 function snapshotProblem(error: unknown): string {
+  if ((error as NodeJS.ErrnoException)?.code === "diagnostic-snapshot-wal-index-missing") return " The WAL index is missing; the store may be opening or closing. Retry inspection.";
   const message = error instanceof Error ? error.message : "";
   if (/WAL.*commit/i.test(message)) return " The WAL commit boundary is unverified; retry after normal SQLite recovery.";
   if (/store changed/i.test(message)) return " The store changed during inspection; retry.";

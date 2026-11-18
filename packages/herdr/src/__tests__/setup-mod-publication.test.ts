@@ -3,7 +3,7 @@
 import * as fs from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
-import { applyFiles, digest, prepareBackups, prepareModDirectories, readJournal, rollbackFiles, rollbackModDirectories } from '../setup/backup.js';
+import { atomicWrite, applyFiles, digest, prepareBackups, prepareModDirectories, readJournal, rollbackFiles, rollbackModDirectories } from '../setup/backup.js';
 import { createClientFixture } from './testutil.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -150,4 +150,36 @@ test('an existing mod receives its placement manifest before executable updates'
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every(manifest => manifest === '{"place":"none"}')).toBe(true);
   } finally { await f.client.close(); }
+});
+
+
+test('successful publication clears its staging record immediately', async () => {
+  const f = await fixture();
+  try {
+    const journal = await readJournal(f.root);
+    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal); await applyFiles(f.files, journal);
+    expect(journal.modStages ?? []).toEqual([]);
+    expect((await readJournal(f.root)).modStages ?? []).toEqual([]);
+  } finally { await f.client.close(); }
+});
+
+test('full rollback unpublishes before removing a manifest or executable', async () => {
+  const f = await fixture();
+  try {
+    const journal = await readJournal(f.root);
+    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal); await applyFiles(f.files, journal);
+    const states = watch(f.mods);
+    await rollbackFiles(f.root, journal); await rollbackModDirectories(f.home, journal);
+    expect(states.filter(state => state['spider-example']?.includes('main.js') && !state['spider-example'].includes('mod.json'))).toEqual([]);
+    expect(await real.readdir(f.mods)).toEqual([]);
+  } finally { await f.client.close(); }
+});
+
+
+test('new setup writes respect a private umask', async () => {
+  const f = await fixture(), previous = process.umask(0o077);
+  try {
+    await atomicWrite(join(f.home, 'private.json'), Buffer.from('{}'), 0o644, null);
+    expect((await fs.stat(join(f.home, 'private.json'))).mode & 0o777).toBe(0o600);
+  } finally { process.umask(previous); await f.client.close(); }
 });

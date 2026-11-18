@@ -198,7 +198,9 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
       observed = shm === null ? null : indexBytes(shmFile);
       const initial = observed === null ? null : walIndex(observed);
       const started = Date.now(), copied = copyStable(file, copy, main);
-      if (wal === null && shm === null) {
+      // An empty recovered index has no WAL generation to bind the main copy.
+      // A read-only last close can preserve its inode across another recovery.
+      if (wal === null && shm === null || initial?.pageSize === 0) {
         const newest = copied.mtimeNs > copied.ctimeNs ? copied.mtimeNs : copied.ctimeNs;
         const ageMs = Number(BigInt(started) * 1_000_000n - newest) / 1_000_000;
         if (ageMs < timestampWindowMs) {

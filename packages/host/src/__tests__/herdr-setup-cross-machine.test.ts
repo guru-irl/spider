@@ -417,7 +417,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const layout = join(f.h.directories.app, 'layouts/spider-glass.json');
     const incomplete: string[] = [], published: string[] = [];
     const inspect = async (directory: string) => {
-      const files = await readdir(directory).catch(() => []);
+      const files = await readdir(directory).catch((): string[] => []);
       if (!files.includes('mod.json') || !files.includes('main.js')) { incomplete.push(basename(directory)); return; }
       const source = (await readFile(join(directory, 'main.js'), 'utf8')).replace(/^\s*\/\/[^\n]*$/gm, '');
       for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.[^'"]+)['"]/g))

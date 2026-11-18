@@ -416,11 +416,13 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     if (['main.js', 'model.js', 'mod.json'].some(name => !sources.some(file => file.relative === name))) throw new HerdrError('picker-assets-missing', 'The packaged picker is incomplete');
     if (sources.some(file => file.relative === 'config.json')) throw new HerdrError('picker-assets-invalid', 'Picker config must be generated during setup');
     const references: { path: string; root: string; specifier: string }[] = [];
+    const pickerPatches = release === '0.1.16' ? JSON.parse(await readFile(join(assets, 'look/native-picker-0.1.16.json'), 'utf8')) as LookPatch[] : [];
     const files: { path: string; bytes: Buffer; mode?: number }[] = sources.map(file => {
       const path = join(picker.directory, file.relative), source = file.bytes.toString('utf8');
       const rewritten = file.relative.endsWith('.js') ? rewriteImportPrefix(source, '../shared/', './shared/', path) : { source, references: [] };
       for (const specifier of rewritten.references) references.push({ path, root: picker.directory, specifier });
-      return { path, bytes: file.relative.endsWith('.js') ? Buffer.from(rewritten.source) : file.bytes };
+      const output = file.relative === 'main.js' ? applyModPatches({ 'main.js': rewritten.source }, pickerPatches, 'native picker')['main.js'] : rewritten.source;
+      return { path, bytes: file.relative.endsWith('.js') ? Buffer.from(output) : file.bytes };
     });
     const shared = await assetFiles(join(assets, 'shared')), agents = await assetFiles(join(assets, 'agents'));
     const navSource = shared.find(file => file.relative === 'navigation.js'), children = agents.find(file => file.relative === 'children.js')?.bytes;

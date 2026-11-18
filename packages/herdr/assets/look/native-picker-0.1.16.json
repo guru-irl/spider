@@ -1,0 +1,8 @@
+[
+  {
+    "id": "picker-native-action",
+    "file": "main.js",
+    "anchor": "retained: false, action: pane && !pane.includes('/') && !agent.address.includes('/') ? { kind: 'focus', pane } : null }];",
+    "replacement": "retained: false, action: pane ? { kind: 'focus', pane } : null }];"
+  }
+]

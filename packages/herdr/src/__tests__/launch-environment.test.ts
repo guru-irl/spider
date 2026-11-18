@@ -11,6 +11,7 @@ import { createSessionLeases, type ProcessInventoryPorts } from '../sessions/lea
 import { launchSession, type PiSpawnRequest, type SessionLaunchPorts } from '../sessions/launcher.js';
 import { offerResume, resumeOfferShell } from '../sessions/resume.js';
 import { registerHerdrSessions } from '../sessions/register.js';
+import type { RecordedLaunch } from '../sessions/launch-environment.js';
 
 let root: string, file: string, agent: string, owner: Owner, terminal: TerminalIdentity;
 let inventory: ProcessInventoryPorts, ports: SessionLaunchPorts, launches: PiSpawnRequest[];
@@ -25,7 +26,7 @@ function mapping() { return { owner, recordedAt: 10, coreStartedAt: 1, environme
 function request() { return { sessionFile: file, sessionId: owner.sessionId, cwd: root, environment: { agentDirectory: join(root, 'fallback-agent'), extensionArguments: [] } }; }
 function secretDirectory() { return join(agent, 'spider', 'herdr', 'launch-environments'); }
 function secretPath() { return join(secretDirectory(), terminalIdentityKey(terminal) + '.json'); }
-async function record(snapshot = launch()) {
+async function record(snapshot: RecordedLaunch = launch()) {
   await createTerminalRegistry(root).record({ ...mapping(), ...{ launch: snapshot } }, { pid: 2147483647, startIdentity: 'old' });
 }
 function offerPorts(auto: boolean) { return { registry: createTerminalRegistry(root), processInventory: inventory, coreStartedAt: async () => 20, ...(auto ? { autoResumeRoot: root } : {}) }; }

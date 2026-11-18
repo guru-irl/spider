@@ -142,6 +142,23 @@ it.each([{}, { fenceId: "", commandApprovalFenceId: "" }, { fenceId: 7, commandA
     expect(result.stdout).toBe("");
   }, 5000);
 
+it("cleans abandoned command upgrades on authorization without changing installed access", async () => {
+  const f = fixture(), mod = await api(); f.pair.target.node = process.execPath;
+  const pub = `${key(4).type} ${key(4).base64}`;
+  await mod.authorizePairKey(f.home, f.pair, pub);
+  const directory = join(f.pair.target.globalRoot, "roam", "intercom", "pairs", "pair-1", "edge-1");
+  const abandoned = [".command.00000000-0000-4000-8000-000000000008.new", ".command.00000000-0000-4000-8000-000000000009.new.part"];
+  for (const name of abandoned) writeFileSync(join(directory, name), "partial", { mode: 0o600 });
+  const unrelated = join(directory, ".command.keep.new"); writeFileSync(unrelated, "keep", { mode: 0o600 });
+  const gate = join(directory, "command.mjs"), keys = join(f.home, ".ssh", "authorized_keys");
+  const commandBefore = readFileSync(gate), keysBefore = readFileSync(keys);
+  await mod.authorizePairKey(f.home, f.pair, pub);
+  for (const name of abandoned) expect(existsSync(join(directory, name))).toBe(false);
+  expect(readFileSync(unrelated, "utf8")).toBe("keep");
+  expect(readFileSync(gate)).toEqual(commandBefore);
+  expect(readFileSync(keys)).toEqual(keysBefore);
+}, 5000);
+
 it("refuses an unrecognized command artifact without replacing it or changing authorized keys", async () => {
   const f = fixture(), mod = await api(); f.pair.target.node = process.execPath;
   const pub = `${key(4).type} ${key(4).base64}`;

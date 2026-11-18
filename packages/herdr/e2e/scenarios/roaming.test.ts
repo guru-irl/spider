@@ -190,7 +190,12 @@ async function closedAppPlacement(suite: Suite): Promise<void> {
       if (service.child.exitCode !== null) throw new Error(await readFile(join(suite.root, 'logs/roam-hub.log'), 'utf8'));
       return existsSync(join(hub, 'roam/hub.sock'));
     }, Boolean, deadline(20_000));
-    const sync = async () => { const result = await suite.invoke(process.execPath, [cli, 'roam', 'sync', cores.machine], env); expect(result.exitCode, result.stderr + result.stdout).toBe(0); };
+    let syncAttempt = 0;
+    const sync = async () => {
+      const result = await suite.invoke(process.execPath, [cli, 'roam', 'sync', cores.machine, '--json'], env);
+      await suite.evidence(`R02-sync-${++syncAttempt}.json`, result);
+      expect(result.exitCode, result.stderr + result.stdout).toBe(0);
+    };
     await sync();
     const queueDb = openDb(join(hub, 'spider.db'));
     try { expect(readLocal(queueDb, 'hub-placement', BOX)).toEqual([{ ...readiness, terminal: address }]); } finally { queueDb.close(); }

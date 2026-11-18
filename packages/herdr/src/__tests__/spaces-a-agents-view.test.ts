@@ -249,6 +249,32 @@ it('0.1.16: falls back to native remote rows only until a pane snapshot is avail
   await test.view.close();
 });
 
+it('0.1.16: opens a remote viewer natively without a snapshot and through the service with one', async () => {
+  const test = fixture('0.1.16', { presented: true, ports: { projectNavigation: navigation.projectNavigation } });
+  test.nativeTerminals.push({ ...terminal('box-1.invalid/viewer', { 'spider.kind': 'subagent-viewer', 'spider.session': 'session-one', 'spider.run': 'run-one' }), parent: 'box-1.invalid/unpinned', name: 'Viewer' });
+  await test.ready();
+  let root = test.view.render(test.cx);
+  const viewer = byId(root, 'sub-run-one');
+  expect(viewer?.events.on_click).toBeDefined();
+  viewer!.events.on_click({}, test.cx); await Promise.resolve();
+  expect(test.commands).toContainEqual(['terminal.peek', { terminal: 'box-1.invalid/viewer' }]);
+  test.commands.length = 0;
+
+  const target = { coreId: 'core-1', terminalId: 'unpinned', address: 'box-1.invalid/unpinned', createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'session-one', generation: 'gen-one', homeEpoch: 1, runId: null, consoleId: null, name: 'Writer', cwd: '/home/fixture' };
+  test.view.spiderPaneSnapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'session-one', generation: 'gen-one', owner: { terminal: { address: 'box-1.invalid/unpinned' } }, target, name: 'Writer', status: 'working', machineKey: 'box-1.invalid', children: [{ runId: 'run-one', name: 'Viewer', status: 'running' }], consoles: [], unavailableReason: null }], presentations: [] };
+  test.view.spiderPaneIndex = navigation.indexPaneNavigation(test.view.spiderPaneSnapshot);
+  viewer!.events.on_click({}, test.cx); await Promise.resolve();
+  expect(test.commands).not.toContainEqual(['terminal.peek', { terminal: 'box-1.invalid/viewer' }]);
+  test.setExec(async () => ok({ version: 1, kind: 'outcome', outcome: { status: 'complete', reason: 'presented', presentation: null } }));
+  root = test.view.render(test.cx);
+  const projected = byId(root, 'sub-run:session-one:run-one');
+  expect(projected?.events.on_click).toBeDefined();
+  projected!.events.on_click({}, test.cx); await Promise.resolve();
+  expect(test.execCalls.some(args => { const request = JSON.parse((args[1] as string[]).at(-1)!); return request.op === 'open-auxiliary' && request.view.runId === 'run-one'; })).toBe(true);
+  expect(test.commands).not.toContainEqual(['terminal.peek', { terminal: 'box-1.invalid/viewer' }]);
+  await test.view.close();
+});
+
 function seedConsoles(test: ReturnType<typeof fixture>) {
   const session = 'session-one', run = 'run-local';
   const labels = (extra: Record<string, string>) => ({ 'spider.session': session, ...extra });

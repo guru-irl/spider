@@ -735,3 +735,19 @@ it("a refused admission freeze never closes the ordinary session intake", async 
   expect(closes).toBe(0);
   expect(f.gate.inspect().kind).toBe("ordinary");
 }, 5000);
+
+
+it.each(["prepare", "load", "ownership", "lock", "readiness"] as const)("names the initial admission %s failure without exposing arbitrary errors", async stage => {
+  const f = fixture(), privateDetail = ["private", "diagnostic", "value"].join("-");
+  if (stage === "prepare") f.ports.prepare = async () => { throw new Error(privateDetail); };
+  else if (stage === "load") f.failRead(new Error(privateDetail), true);
+  else if (stage === "ownership") f.failIdentity(new Error(privateDetail));
+  else if (stage === "lock") f.failLock(new Error(privateDetail));
+  else f.ports.ready = async () => { throw new Error("participant-stopped"); };
+  await f.emit("session_start", { reason: "startup" });
+  expect(f.gate.inspect().kind).toBe("blocked");
+  const detail = f.gate.inspect().blockers[0].detail;
+  expect(detail).toContain(`admission-${stage}-failed`); expect(detail).not.toContain(privateDetail);
+  if (stage === "readiness") { expect(detail).toContain("participant-stopped"); expect(detail).toContain("spider roam resume session-1"); }
+  expect(await f.emit("input", { text: "continue" })).toEqual({ action: "handled" });
+}, 5000);

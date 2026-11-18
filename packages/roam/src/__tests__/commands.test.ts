@@ -130,3 +130,15 @@ it.each([
   expect(JSON.stringify(safe)).not.toContain("PRIVATE-CONTENT");
   expect(safe.refusal).toBeUndefined();
 });
+
+
+it("prints verified resume doctor blockers and the next command in text and JSON", () => {
+  const diagnostic = { severity: "block", reason: "global: roaming capture is not initialized.", repairCommand: "spider roam doctor" };
+  const result = { code: 1 as const, reason: "participant-doctor-refused", operationId: "resume-1", home: null, epoch: null,
+    repairCommand: `spider roam doctor ${BOX}`, value: { diagnostics: [diagnostic, { severity: "block", reason: "invalid\ntext", repairCommand: "unsafe" }] } };
+  const safe = safeControlOutcome(result);
+  expect(safe.value).toEqual({ diagnostics: [diagnostic] });
+  expect(controlText(safe)).toContain(diagnostic.reason); expect(controlText(safe)).toContain(`spider roam doctor ${BOX}`);
+  expect(JSON.parse(JSON.stringify(safe)).value.diagnostics).toEqual([diagnostic]);
+  expect(safeControlOutcome({ ...result, reason: "unrelated-failure" }).value).toBeNull();
+});

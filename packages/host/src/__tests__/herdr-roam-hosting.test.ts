@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { readLocal } from "@spider/db-core/roam/local-state";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createParticipantAdmission, openAdmissionRuntime } from "../roam/readiness";
 import { createRunningIntentAuthority, readReadiness } from "@spider/roam/session-control";
@@ -216,4 +216,21 @@ it.each(["conflict", "foreign-origin", "retired"])("new admission does not overr
   expect(() => seedNewParticipant(input)).toThrow();
   expect(worktree.db.prepare("SELECT * FROM roam_sessions").all()).toEqual(before);
   expect(worktree.db.prepare("SELECT count(*) AS n FROM roam_changes").get()).toEqual({ n: 0 });
+}, 5000);
+
+
+it.each([false, true])("a stopped box-local owner needs explicit resume after replacement, homed=%s", async homed => {
+  const { global, config, input } = fixture(); seedNewParticipant(input);
+  writeFileSync(input.file, JSON.stringify({ type: "session", version: 3, id: input.sessionId, cwd: input.cwd }) + "\n", { mode: 0o600 });
+  const home = homed ? { sessionId: input.sessionId, machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 } : null;
+  if (homed) global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
+  const origin = { kind: "box-local", machineId: BOX, epoch: 1, file: input.file, cwd: input.cwd, pid: 123, startIdentity: "previous-owner", stopped: true };
+  writeLocal(global.db, "participant-origin", input.sessionId, origin);
+  const journal = openJournal(join(global.root, "roam/journal.db")), authority = createRunningIntentAuthority(global.db);
+  const adapter = createParticipantAdmission({ cwd: () => input.cwd, async terminal() { return { core: "core-2", terminal: "term-2", operationId: null, owner: { pid: 456, startIdentity: "new-owner" } }; },
+    async open() { return { config, db: global.db, journal, authority, async stores() { return input.stores; }, close() {} }; } });
+  await expect(adapter.ready(input.sessionId, input.file, 1, home)).rejects.toThrow("participant-stopped");
+  expect(readLocal(global.db, "participant-origin", input.sessionId)).toEqual(origin);
+  expect(readLocal(global.db, "participant-ready", input.sessionId)).toBeUndefined();
+  expect(await authority.get(input.sessionId)).toBeNull();
 }, 5000);

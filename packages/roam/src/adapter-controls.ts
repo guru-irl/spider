@@ -3,7 +3,7 @@ import type { Db } from "@spider/db-core";
 import { openRoamStoreReadOnly } from "@spider/db-core/roam/reads";
 import type { Home, JsonObject } from "@spider/db-core/roam/types";
 import type { Journal, MoveResult, MovePorts, Operation, Outcome, RoamConfig, Transport } from "./contracts";
-import { resolveControlMachine, resolveControlSession } from "./commands";
+import { resolveControlMachine, resolveControlSession, safeControlOutcome } from "./commands";
 import { guardMoveControl, type MoveControlHandler } from "./move-control";
 import { moveSession } from "./move";
 import { recoverMove, cancelMove } from "./move-recovery";
@@ -70,6 +70,7 @@ export function createMoveControlHandler(input: { config: RoamConfig; globalDb: 
     const bytes = await transport.exec(await transport.resolve(peer), ["roam", "agent", JSON.stringify(operation)], { timeoutMs: config.limits.controlMs, maxBytes: config.limits.replyBytes });
     const result = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Outcome<JsonObject>;
     if (!result || result.operationId !== operation.id || ![0, 1, 2, 3].includes(result.code) || typeof result.reason !== "string") return refused(1, "participant-control-unavailable");
-    return { ...result, home: { ...(home as Home) }, epoch: home.epoch, value: null };
+    return { ...result, home: { ...(home as Home) }, epoch: home.epoch,
+      value: result.reason === "participant-doctor-refused" ? safeControlOutcome(result).value as JsonObject | null : null };
   });
 }

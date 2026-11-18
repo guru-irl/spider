@@ -149,6 +149,23 @@ terminals. The supervisor restores an eligible running session from its exact
 file, while a deliberate stop remains stopped. Repeated crashes suspend the
 session until a successful doctor and resume.
 
+
+A stopped box-local origin remains stopped even if a replacement native process
+has a different PID or core. A local home does not grant that replacement launch
+authority. Close the blocked copy, then run `spider roam resume <session>` on the
+hub. Resume verifies the exact file and doctor checks before it creates running
+intent and wakes the supervisor. It does not change the home or bypass a live or
+uncertain owner.
+
+Initial admission failures name the stage, such as
+`admission-readiness-failed`, and a named participant reason when available.
+`participant-stopped` and `participant-hub-intent-required` name the resume
+command. A refused resume includes the blocking doctor diagnostics in text and
+JSON, plus `spider roam doctor <machine>` as the next command. Fix those
+prerequisites and retry resume. Restarting services does not clear a deliberate
+stop. This follows the stopped-intent and doctor requirements in the
+[supervisor design](../superpowers/specs/2026-11-11-roaming-agents-design.md#supervisor-and-availability).
+
 Windows updates can silently restart WSL. After a WSL restart, the supervisor
 relaunches eligible running sessions. Once it proves an owner is gone, it counts
 that loss once toward crash suspension. After a Windows restart, agents stay stopped

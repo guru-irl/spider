@@ -103,6 +103,14 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   const raw = result.value && typeof result.value === "object" && !Array.isArray(result.value) ? result.value as Record<string, unknown> : null;
   const value: Record<string, unknown> = {};
   if (raw) {
+    if (result.code === 1 && result.reason === "participant-doctor-refused" && Array.isArray(raw.diagnostics)) {
+      value.diagnostics = raw.diagnostics.slice(0, 32).flatMap(item => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+        const row = item as Record<string, unknown>;
+        if (row.severity !== "block" || typeof row.reason !== "string" || !row.reason || row.reason.length > 1024 || /[\u0000-\u001f\u007f]/.test(row.reason)) return [];
+        return [{ severity: "block", reason: row.reason, repairCommand: safeRepair(row.repairCommand) }];
+      });
+    }
     if (raw.sourceCleanup !== undefined) try { value.sourceCleanup = parseSourceCleanup(raw.sourceCleanup); } catch {
       if (result.code === 0) value.sourceCleanup = { status: "pending", reason: "move-journal-invalid", blockers: [validateBlockerId("move-journal-invalid")] } satisfies SourceCleanup;
     }
@@ -156,7 +164,7 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
     ...(refusal ? { refusal } : {}) };
 }
 export function controlText(result: SafeControlOutcome, destinationAlias?: string): string {
-  const value = result.value as { presentation?: string; terminal?: string; intercomAddress?: string; warnings?: string[]; candidates?: string[]; sourceCleanup?: SourceCleanup } | null;
+  const value = result.value as { presentation?: string; terminal?: string; intercomAddress?: string; warnings?: string[]; candidates?: string[]; sourceCleanup?: SourceCleanup; diagnostics?: { reason: string; repairCommand: string | null }[] } | null;
   const movedText = value?.intercomAddress ? `Moved to ${destinationAlias ?? result.home?.machineId ?? "destination"}; terminal ${value.terminal ?? "pending"}; intercom ${value.intercomAddress}.\n${value.warnings?.map(controlWarningText).join("\n") ?? ""}\n` : "Moved.\n";
   if (result.code === 0 && value?.sourceCleanup) switch (value.sourceCleanup.status) {
     case 'done': break;
@@ -165,9 +173,10 @@ export function controlText(result: SafeControlOutcome, destinationAlias?: strin
   }
   if (result.code === 0 && value?.presentation === "pending") return "recovered; the pane appears when Herdr opens\n";
   if (result.code === 0 && value?.intercomAddress) return movedText;
+  const diagnosticText = value?.diagnostics?.map(row => `\n${row.reason}${row.repairCommand ? `\n${row.repairCommand}` : ""}`).join("") ?? "";
   const explanation = result.refusal?.message, pause = ["destination-unknown", "move-destination-pending"].includes(result.reason) && !explanation?.includes("The source is paused")
     ? "\nThe source is paused to avoid running two copies." : "";
-  return `${result.reason === "mac-hub-required" ? "Run this command on the Mac hub." : result.reason}${explanation ? `\n${explanation}` : ""}${result.refusal?.blockers.length ? `\nBlockers: ${result.refusal.blockers.join(", ")}` : ""}${result.home ? `\nCurrent home: ${result.home.machineId} (epoch ${result.home.epoch}).` : ""}${pause}${result.repairCommand ? `\n${result.repairCommand}` : ""}${value?.candidates?.length ? `\nCandidates: ${value.candidates.join(", ")}` : ""}\n`;
+  return `${result.reason === "mac-hub-required" ? "Run this command on the Mac hub." : result.reason}${explanation ? `\n${explanation}` : ""}${result.refusal?.blockers.length ? `\nBlockers: ${result.refusal.blockers.join(", ")}` : ""}${result.home ? `\nCurrent home: ${result.home.machineId} (epoch ${result.home.epoch}).` : ""}${pause}${diagnosticText}${result.repairCommand ? `\n${result.repairCommand}` : ""}${value?.candidates?.length ? `\nCandidates: ${value.candidates.join(", ")}` : ""}\n`;
 }
 
 export function sourceCleanupStatusText(item: NonNullable<RoamStatus['sourceCleanups']>[number]): string {

@@ -56,6 +56,14 @@ const homeMessage = (machine: string) => `This session is at ${machine}. Run /sp
 const admissionFailure = (error: unknown) => error instanceof Error && ["participant-config-unavailable", "participant-not-box", "participant-capture-uninitialized"].includes(error.message)
   ? `${error.message}. Run /spider roam doctor for details.` : VERIFY;
 
+function initialAdmissionFailure(stage: string, error: unknown, sessionId: string): string {
+  const code = error instanceof Error && /^participant-[a-z-]+$/.test(error.message) ? error.message : null;
+  const resume = code && ["participant-stopped", "participant-hub-intent-required", "participant-launch-provenance-unavailable"].includes(code);
+  const session = /^[A-Za-z0-9][A-Za-z0-9._-]{0,255}$/.test(sessionId) ? sessionId : "<session>";
+  return `admission-${stage}-failed. ${code ? `${code}. ` : ""}${resume
+    ? `Close this copy, then run spider roam resume ${session} on the hub. Resume runs doctor before starting the exact session.` : admissionFailure(error)}`;
+}
+
 /** A blocked send must be distinguishable from a delivered message. */
 export class AdmissionClosedError extends Error {
   readonly code = "SPIDER_ADMISSION_CLOSED";
@@ -142,7 +150,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           state = await ports.load(id);
         } catch (error) {
           if (ticket !== generation) return;
-          if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publishResult("blocked", null, admissionFailure(error));
+          if (handoffRequired || observed.has(id) || ports.knownParticipant(id)) publishResult("blocked", null, initialAdmissionFailure("load", error, id));
           else { if (!late) ports.warnOnce(id, VERIFY); publishResult("ordinary", null, late && error instanceof Error ? error.message : undefined); }
           return;
         }
@@ -174,7 +182,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
         }
         if (!late) observed.add(id);
         const home = state.home;
-        if (preparationFailed) { publishResult("blocked", home, admissionFailure(preparationFailure)); return; }
+        if (preparationFailed) { publishResult("blocked", home, initialAdmissionFailure("prepare", preparationFailure, id)); return; }
         epoch = home?.epoch ?? state.states[0]?.epoch ?? null;
         if (state.initialConflict) { publishResult("blocked", home, "This session has conflicting initial homes. Run /spider roam doctor for details."); return; }
         const frozenState = state.states.find(row => row.state === "frozen");
@@ -231,7 +239,7 @@ export function registerAdmission(pi: ExtensionAPI, ports: AdmissionPorts): Admi
           publishResult("ordinary", home);
           if (!late) watchSignals();
         } catch (error) {
-          if (ticket === generation) publishResult("blocked", home, late && error instanceof Error ? error.message : VERIFY);
+          if (ticket === generation) publishResult("blocked", home, late && error instanceof Error ? error.message : initialAdmissionFailure(stage, error, id));
         }
       } finally {
         if (late && ticket === generation) {

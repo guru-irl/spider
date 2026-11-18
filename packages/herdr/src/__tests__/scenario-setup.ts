@@ -171,6 +171,7 @@ setInterval(()=>{},1000);
     installFiles: async (_request, context) => {
       const files: InstallFile[] = [];
       for (const copy of context.modProps) {
+        if (copy.props.modId !== 'test-spider') files.push(install(join(copy.directory, 'mod.json'), Buffer.from(JSON.stringify({ name: copy.props.modId, place: 'none' })), context));
         files.push(install(join(copy.directory, 'props.json'), Buffer.from(JSON.stringify(copy.props)), context));
         for (const name of await filesBelow(join(assets, 'shared'))) files.push(install(join(copy.directory, 'shared', name), await readFile(join(assets, 'shared', name)), context));
       }

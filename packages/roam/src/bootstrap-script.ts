@@ -328,7 +328,11 @@ try {
     else {
       const entries = manager.stdout.split('\n').filter(line => line.startsWith('PI_CODING_AGENT_DIR='));
       if (entries.length > 1) reply('unknown');
-      else reply(isDefault(entries.length ? entries[0].slice('PI_CODING_AGENT_DIR='.length) : '', home) ? 'default' : 'custom');
+      else {
+        const value = entries.length ? entries[0].slice('PI_CODING_AGENT_DIR='.length) : '';
+        // Configured launches set their own directory without a manager override.
+        reply((input.agentDir !== undefined && !value) || isDefault(value, home) ? 'default' : 'custom');
+      }
     }
   }
 } catch { process.stdout.write(JSON.stringify({ version: 1, kind: 'agent-directory', error: 'agent-directory-probe-failed' }) + '\n'); }

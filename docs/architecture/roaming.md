@@ -94,10 +94,12 @@ to set `agentDir`. Keep the peer's other fields. For example:
 
 The npm prefix comes from `<prefix>/bin/pi` and need not be named `.local`.
 The configured agent directory must already exist under the destination's home.
-Set the box's core environment and systemd user-manager environment so both
-export `PI_CODING_AGENT_DIR` with that directory. The box's `agentDirectory`
-setting must agree too. Provisioning refuses a mismatch with
-`agent-directory-mismatch` before installation. It does not change or restart
+Set the box's core environment to export `PI_CODING_AGENT_DIR` with that
+directory. The box's `agentDirectory` setting must agree too. Spider's units
+and hosted-session launcher set the directory explicitly, so the systemd user
+manager does not need an override. If the manager has a non-empty override,
+it must resolve to the configured directory. Provisioning refuses a mismatch
+with `agent-directory-mismatch` before installation. It does not change or restart
 the core. Changing the core environment can require a restart that kills its
 terminals, so arrange that separately before provisioning.
 

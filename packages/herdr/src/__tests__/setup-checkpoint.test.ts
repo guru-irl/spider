@@ -9,14 +9,15 @@ import { applyFiles, digest, mergeTerminalKeys, prepareBackups, readJournal, sav
 import * as installer from '../setup/installer.js';
 import { undoHerdrUpgrade, rollbackHerdr, setupHerdr, type InstallFile, type SetupParts, type SetupRequest } from '../setup/installer.js';
 import { runHerdrCli } from '../setup/cli.js';
+import { beginRunCheckpoint, recordCheckpointWrites, readCheckpoint } from '../setup/checkpoint.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof fs>();
-  return { ...actual, rename: vi.fn(actual.rename) };
+  return { ...actual, rename: vi.fn(actual.rename), unlink: vi.fn(actual.unlink) };
 });
 const real = await vi.importActual<typeof fs>('node:fs/promises');
 const roots: string[] = [];
-afterEach(async () => { vi.mocked(fs.rename).mockImplementation(real.rename); for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.unlink).mockImplementation(real.unlink); for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
 const oldKeys = { 'cmd-shift-a': 'old.a', 'cmd-shift-k': 'old.k', 'cmd-shift-m': 'old.m', 'cmd-shift-o': 'old.o', 'cmd-shift-u': 'old.u' };
 const installedLayout = '{"content":[],"generation":2}\n';
 const nativeLayout = '{"content":[{"size":320}],"generation":2}\n';
@@ -224,4 +225,182 @@ test('the CLI exposes undo-upgrade and retains liveness refusals even with repla
   expect(code).toBe(1);
   expect(output.join('')).toContain('cutover-owner-live');
   expect(await values(f.all)).toEqual(before);
+});
+
+
+async function metadataRepeat(f: Awaited<ReturnType<typeof fixture>>) {
+  const preflight = f.parts.preflight;
+  f.parts.preflight = async request => ({ ...await preflight(request), recoveredCutover: (await readJournal(request.journalRoot)).cutover!, cutoverActions: [] });
+  const journal = await readJournal(f.request.journalRoot);
+  delete journal.cutoverFingerprint;
+  await saveJournal(f.request.journalRoot, journal);
+  await setupHerdr(f.request, f.parts);
+}
+
+test('a metadata-only repeat retains the completed upgrade baseline', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  await metadataRepeat(f);
+  expect((await readCheckpoint(f.request.journalRoot))?.state).toBe('complete');
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await values([f.paths.main, f.paths.registry])).toEqual(f.before.filter(file => [f.paths.main, f.paths.registry].includes(file.path)));
+});
+
+test('a bookkeeping-only sequence refuses undo rather than claiming success', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  await fs.unlink(join(f.request.journalRoot, 'checkpoint.json'));
+  await metadataRepeat(f);
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-bookkeeping-only' });
+});
+
+test('undo preserves later shared-file edits even with replacement', async () => {
+  const f = await fixture();
+  const shell = f.request.config.shellRc;
+  await put(shell, 'alias old=true\n');
+  f.parts.installResume = async () => [{ path: shell, expected: (await snapshot(shell)).hash, bytes: Buffer.from('alias old=true\n# spider:resume:start\nnew hook\n# spider:resume:end\n'), managed: { kind: 'resume' } }];
+  await setupHerdr(f.request, f.parts);
+  await fs.appendFile(shell, 'alias later=true\n');
+  await put(f.paths.settings, '{"theme":"dracula-plus-glass","keep":"later"}\n');
+  const keys = JSON.parse(await fs.readFile(f.paths.keys, 'utf8')); keys.global['ctrl-z'] = 'user.action';
+  await put(f.paths.keys, JSON.stringify(keys));
+  await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
+  expect(await fs.readFile(shell, 'utf8')).toBe('alias old=true\nalias later=true\n');
+  expect(JSON.parse(await fs.readFile(f.paths.settings, 'utf8'))).toEqual({ theme: 'dracula-plus-glass', keep: 'later' });
+  expect(JSON.parse(await fs.readFile(f.paths.keys, 'utf8')).global).toEqual({ 'ctrl-z': 'user.action' });
+});
+
+test('the upgrade runbook preserves runtime moves and pre-existing tabs without replacement', async () => {
+  const f = await fixture();
+  const old = 'terminal-old' as import('../contracts.js').TerminalAddress, fresh = 'terminal-new' as import('../contracts.js').TerminalAddress;
+  const journal = await readJournal(f.request.journalRoot); journal.cutover = { terminals: [old], identities: { old: 'owner-1' } }; await saveJournal(f.request.journalRoot, journal);
+  const open = new Set([old]);
+  f.parts.cutover = async () => { open.add(fresh); await put(f.paths.spaces, '{"placements":["new"]}\n'); return { terminals: [old, fresh], identities: { old: 'owner-1', new: 'owner-2' } }; };
+  f.parts.rollback = async (result, ...args: unknown[]) => {
+    const preserve = (args[0] as { preserve?: { terminals: readonly string[] } } | undefined)?.preserve;
+    for (const address of result.terminals) if (!preserve?.terminals.includes(address)) open.delete(address);
+  };
+  await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
+  expect((await f.parts.verify(f.request)).failures).toEqual([]);
+  await metadataRepeat(f);
+  await put(f.paths.spaces, '{"placements":["moved-after-upgrade"]}\n');
+  await put(f.paths.settings, '{"theme":"dracula-plus-glass","keep":"runtime"}\n');
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+  expect((await fs.stat(f.paths.main)).mode & 0o777).toBe(0o664);
+  expect(JSON.parse(await fs.readFile(f.paths.keys, 'utf8')).global).toEqual({});
+  expect(JSON.parse(await fs.readFile(f.paths.settings, 'utf8')).keep).toBe('runtime');
+  expect(await fs.readFile(f.paths.spaces, 'utf8')).toBe('{"placements":["moved-after-upgrade"]}\n');
+  expect([...open]).toEqual([old]);
+});
+
+test('a transient owner failure leaves undo retryable without replacement', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const rollback = f.parts.rollback;
+  f.parts.rollback = async () => { throw new Error('connection lost before close'); };
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toThrow('connection lost before close');
+  f.parts.rollback = rollback;
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+});
+
+test('a crashed run closes on a no-op repeat and does not merge the next upgrade', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const path = join(f.request.journalRoot, 'checkpoint.json'), checkpoint = JSON.parse(await fs.readFile(path, 'utf8'));
+  checkpoint.state = 'running'; checkpoint.runs.at(-1).after = null; checkpoint.runs.at(-1).outcome = 'running';
+  await put(path, JSON.stringify(checkpoint));
+  await setupHerdr(f.request, f.parts);
+  expect((await readCheckpoint(f.request.journalRoot))?.state).toBe('complete');
+  f.parts.installFiles = async (_, context) => [{ path: f.paths.main, expected: context.installed[f.paths.main]!, bytes: Buffer.from('third-main') }];
+  await setupHerdr(f.request, f.parts); await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('new-main');
+});
+
+test('a crashed run can be undone from its durable written states', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const path = join(f.request.journalRoot, 'checkpoint.json'), checkpoint = JSON.parse(await fs.readFile(path, 'utf8'));
+  checkpoint.state = 'running'; checkpoint.runs.at(-1).after = null; checkpoint.runs.at(-1).outcome = 'running';
+  await put(path, JSON.stringify(checkpoint));
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+});
+
+test('undo refuses an edit between attempts even when the retry rewrites the key map', async () => {
+  const f = await fixture(); f.fail(true);
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('injected cutover interruption');
+  const keys = JSON.parse(await fs.readFile(f.paths.keys, 'utf8')); keys.global['ctrl-z'] = 'user.action'; await put(f.paths.keys, JSON.stringify(keys));
+  const install = f.parts.installFiles;
+  f.parts.installFiles = async (request, context) => (await install(request, context)).map(file => file.path === f.paths.keys ? { ...file, keys: { ...file.keys, global: { ...file.keys?.global, 'cmd-y': 'new.action' } } } : file);
+  f.fail(false); await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
+  const before = await values(f.all);
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-discontinuous' });
+  expect(await values(f.all)).toEqual(before);
+});
+
+test('setup failure points at upgrade undo and full rollback retires the sequence', async () => {
+  const f = await fixture(); f.fail(true);
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow(/rollback.*--undo-upgrade/);
+  await rollbackHerdr(f.request, f.parts);
+  expect((await readCheckpoint(f.request.journalRoot))?.state).toBe('superseded');
+  f.fail(false);
+  await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect((await snapshot(f.paths.main)).bytes).toBeNull();
+});
+
+test('an interrupted mod publish resumes through setup and remains undoable', async () => {
+  const f = await fixture(), directory = dirname(f.paths.main);
+  await fs.rm(directory, { recursive: true });
+  const journal = await readJournal(f.request.journalRoot); journal.entries = journal.entries.filter(entry => !entry.path.startsWith(directory + '/')); await saveJournal(f.request.journalRoot, journal);
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => { if (to === directory) throw new Error('publish stopped'); return real.rename(from, to); });
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('publish stopped');
+  vi.mocked(fs.rename).mockImplementation(real.rename);
+  await setupHerdr(f.request, f.parts); await undoHerdrUpgrade(f.request, f.parts);
+  expect((await snapshot(f.paths.main)).bytes).toBeNull();
+  expect(await fs.readdir(join(f.request.config.app.home, 'mods'))).toEqual([]);
+});
+
+test('undo unpublishes a new mod before deleting any of its files', async () => {
+  const f = await fixture(), directory = dirname(f.paths.main);
+  const install = f.parts.installFiles;
+  f.parts.installFiles = async (request, context) => [...await install(request, context)].sort((a, b) => Number(b.path === f.paths.manifest) - Number(a.path === f.paths.manifest));
+  await fs.rm(directory, { recursive: true });
+  const journal = await readJournal(f.request.journalRoot); journal.entries = journal.entries.filter(entry => !entry.path.startsWith(directory + '/')); await saveJournal(f.request.journalRoot, journal);
+  await setupHerdr(f.request, f.parts);
+  await put(join(directory, 'jsconfig.json'), '{}'); await put(join(directory, 'types.d.ts'), 'export {};');
+  const broken: string[] = [];
+  vi.mocked(fs.unlink).mockImplementation(async path => {
+    await real.unlink(path);
+    if ((await real.readdir(directory).catch(() => [])).includes('main.js') && !(await real.readdir(directory)).includes('mod.json')) broken.push(String(path));
+  });
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(broken).toEqual([]);
+  expect(await fs.readdir(join(f.request.config.app.home, 'mods'))).toEqual([]);
+});
+
+test('checkpoint JSON stays bounded and contains no copied file contents', async () => {
+  const f = await fixture(); await put(f.paths.font, 'F'.repeat(4_000_000));
+  const checkpoint = await beginRunCheckpoint(f.request.journalRoot, [f.paths.font]);
+  await recordCheckpointWrites(f.request.journalRoot, checkpoint, [f.paths.font]);
+  const bytes = await fs.readFile(join(f.request.journalRoot, 'checkpoint.json'));
+  expect(bytes.length).toBeLessThan(12_000);
+  expect(JSON.parse(bytes.toString()).runs[0].before[0]).not.toHaveProperty('bytes');
+  expect((await fs.readdir(join(f.request.journalRoot, 'backups'))).filter(name => name === 'checkpoint-' + digest(Buffer.from('F'.repeat(4_000_000))))).toHaveLength(1);
+});
+
+test('malformed checkpoints provide a named recovery error', async () => {
+  const f = await fixture(); await put(join(f.request.journalRoot, 'checkpoint.json'), '{broken');
+  await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-invalid' });
+});
+
+
+test('undo resumes after observing a layout outside the install plan', async () => {
+  const f = await fixture(), stage = f.parts.stageLook;
+  f.parts.stageLook = async (request, context, mode) => (await stage(request, context, mode)).filter(file => file.path !== f.paths.layout);
+  const cutover = f.parts.cutover;
+  f.parts.cutover = async (request, context) => { await put(f.paths.layout, installedLayout); return cutover(request, context); };
+  await setupHerdr(f.request, f.parts);
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => { if (to === f.paths.main) throw new Error('restore stopped'); return real.rename(from, to); });
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toThrow('restore stopped');
+  vi.mocked(fs.rename).mockImplementation(real.rename);
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.layout, 'utf8')).toBe('{"content":[],"generation":1}\n');
 });

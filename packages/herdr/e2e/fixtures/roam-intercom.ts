@@ -15,6 +15,7 @@ import { seedNewParticipant } from '../../../roam/src/session-control.js';
 import { createStorePort } from '../../../roam/src/stores.js';
 import { IntercomClient } from '@spider/intercom/broker/client';
 import { parseConfig } from '../../../roam/src/config.js';
+import { installSupervisorCorePin } from '../../../roam/src/enrollment.js';
 import type { IntercomRoute, Peer, RoamConfig } from '../../../roam/src/contracts.js';
 import { assertSocketPath, HarnessError } from '../harness/environment.js';
 import { realHcBinary, runHc, type HcResult } from '../harness/hc.js';
@@ -327,6 +328,11 @@ export async function intercomNetwork(suite: Suite, options: { faults?: boolean;
       const config = parseConfig({ enabled: i === 0, role: i === 0 ? 'hub' : 'box', machineId: IDS[i], hubMachineId: IDS[0], coreUnit: 'fixture.service',
         intercom: { enabled: true, mode, machineAlias: ALIASES[i], routes } });
       await writeFile(join(root.global, 'roam', 'config.json'), JSON.stringify(config), { mode: 0o600 });
+      if (i > 0) {
+        const core = cores[i];
+        installSupervisorCorePin(root.global, { binary: root.binary, coreId: core.coreId, socket: core.socket,
+          sessionNamespace: core.namespace, stateHome: core.env.XDG_STATE_HOME, configHome: core.env.XDG_CONFIG_HOME });
+      }
       await mkdir(join(root.global, 'herdr'), { recursive: true, mode: 0o700 });
       await writeFile(join(root.global, 'herdr', 'config.json'), JSON.stringify({
         app: { binary: join(suite.root, 'bin', 'unused-app'), home: suite.directories.HERDR_APP_HOME },

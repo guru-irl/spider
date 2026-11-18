@@ -15,6 +15,7 @@ import { createRunningIntentAuthority } from '@spider/roam/session-control';
 import { handleSessionOperation } from '@spider/roam/participant-runtime';
 import { openJournal } from '@spider/roam/journal';
 import { createIntentStore } from '@spider/roam/intent';
+import { installSupervisorCorePin } from '@spider/roam/enrollment';
 import { readLocal } from '@spider/db-core/roam/local-state';
 import { recordLocation } from '@spider/db-core/roam/catalog';
 import { recoverMirror } from '@spider/roam/mirrors';
@@ -70,6 +71,8 @@ async function twoCoreSync(suite: Suite): Promise<void> {
     cli: destination.cli, core: cores.wrapper, globalRoot: box };
   await configureStore(hub, HUB, 'hub', [peer]);
   await configureStore(box, BOX, 'box', []);
+  installSupervisorCorePin(box, { binary: cores.wrapper, coreId: cores.dest.coreId, socket: cores.dest.socket,
+    sessionNamespace: cores.dest.namespace, stateHome: cores.dest.env.XDG_STATE_HOME, configHome: cores.dest.env.XDG_CONFIG_HOME });
   await mkdir(join(hub, 'herdr'), { recursive: true, mode: 0o700 });
   await writeFile(join(hub, 'herdr/config.json'), JSON.stringify({ app: { binary: join(suite.root, 'unused-app'), home: suite.directories.HERDR_APP_HOME },
     core: { binary: cores.wrapper, config: join(suite.root, 'core.toml') }, agentDirectory: suite.directories.PI_CODING_AGENT_DIR,
@@ -145,6 +148,8 @@ async function closedAppPlacement(suite: Suite): Promise<void> {
   const address = `${cores.machine}/${terminal}`, sessionId = 'session-r02', file = join(workspace, 'session.jsonl');
   const cli = await releaseCli(suite), peer = { machineId: BOX, alias: cores.machine, node: process.execPath, pi: process.execPath, cli, core: cores.wrapper, globalRoot: box };
   await configureStore(hub, HUB, 'hub', [peer], true); await configureStore(box, BOX, 'box', [], true);
+  installSupervisorCorePin(box, { binary: cores.wrapper, coreId: cores.dest.coreId, socket: cores.dest.socket,
+    sessionNamespace: cores.dest.namespace, stateHome: cores.dest.env.XDG_STATE_HOME, configHome: cores.dest.env.XDG_CONFIG_HOME });
   await writeFile(join(box, 'roam/config.json'), JSON.stringify({ ...readLocalIdentity(box), enabled: false }), { mode: 0o600 });
   for (const globalRoot of [hub, box]) {
     await mkdir(join(globalRoot, 'herdr'), { recursive: true, mode: 0o700 });
@@ -255,6 +260,8 @@ async function mirrorAndRetire(suite: Suite): Promise<void> {
   await writeFile(file, bytes, { mode: 0o600 });
   const peer = { machineId: BOX, alias: cores.machine, node: process.execPath, pi: suite.pi.launcher, cli, core: cores.wrapper, globalRoot: box };
   await configureStore(hub, HUB, 'hub', [peer], true); await configureStore(box, BOX, 'box', [], true);
+  installSupervisorCorePin(box, { binary: cores.wrapper, coreId: cores.dest.coreId, socket: cores.dest.socket,
+    sessionNamespace: cores.dest.namespace, stateHome: cores.dest.env.XDG_STATE_HOME, configHome: cores.dest.env.XDG_CONFIG_HOME });
   for (const root of [hub, box]) {
     await mkdir(join(root, 'herdr'), { recursive: true, mode: 0o700 });
     await writeFile(join(root, 'herdr/config.json'), JSON.stringify({ app: { binary: join(suite.root, 'closed-app'), home: suite.directories.HERDR_APP_HOME },

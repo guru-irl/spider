@@ -56,7 +56,8 @@ function privateProtocol(argv: readonly string[]): boolean {
     argv[1] === 'intercom' && (argv[2] === 'exchange' || argv[2] === 'revoke-local' || argv[2] === 'setup-local' || argv[2] === 'observe-fence' || argv[2] === 'cleanup-local' || argv[2] === 'start-broker'));
 }
 function remoteArgs(peer: Peer, argv: readonly string[]): string[] {
-  return [peer.node, peer.cli, ...(privateProtocol(argv) ? ['--global-root', peer.globalRoot] : []), ...argv];
+  return [...(peer.agentDir ? ['/usr/bin/env', `PI_CODING_AGENT_DIR=${peer.agentDir}`] : []),
+    peer.node, peer.cli, ...(privateProtocol(argv) ? ['--global-root', peer.globalRoot] : []), ...argv];
 }
 function bootstrapTarget(value: BootstrapPeer): BootstrapPeer {
   const invalid = () => { throw new HerdrError('invalid-bootstrap-request', 'Invalid bootstrap probe request'); };

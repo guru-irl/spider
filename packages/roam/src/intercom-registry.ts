@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { constants, lstatSync, openSync, closeSync, fsyncSync, unlinkSync } from "node:fs";
+import { constants, lstatSync, openSync, closeSync, fsyncSync } from "node:fs";
 import { isAbsolute, join, posix, resolve } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
 import { jsonFiles, readPrivateJson, withProcessLock, writePrivateJson } from "@spider/herdr/sessions/registry";
@@ -24,7 +24,7 @@ export async function withIntercomPeerLock<T>(root: string, first: string, secon
 }
 
 export interface IntercomPairRecord {
-  version: 1; pair: IntercomEnrollmentPlan | IntercomEnrollmentPair; state: "pending" | "active" | "revoking" | "revoked";
+  version: 1; pair: IntercomEnrollmentPlan | IntercomEnrollmentPair; state: "pending" | "active" | "revoking" | "revoked" | "cancelled";
   operationId: string; graphDigest: string; fenceId: string | null; cleanupReason: IntercomRevocationCleanupReason | null;
   resources?: IntercomPairResources; unit?: IntercomUnitRecord; revocationEpoch?: string;
 }
@@ -82,9 +82,10 @@ function unit(value: IntercomUnitRecord, pair: IntercomEnrollmentPlan): Intercom
 function validate(value: unknown, pairId: string): IntercomPairRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid-intercom-registry");
   const item = value as IntercomPairRecord;
-  if (item.version !== 1 || !plan(item.pair) || item.pair.pairId !== pairId || !["pending", "active", "revoking", "revoked"].includes(item.state) ||
+  if (item.version !== 1 || !plan(item.pair) || item.pair.pairId !== pairId || !["pending", "active", "revoking", "revoked", "cancelled"].includes(item.state) ||
       !id(item.operationId) || !hash(item.graphDigest) || !(item.fenceId === null || isMachineId(item.fenceId)) ||
-      !(item.cleanupReason === null || reasons.has(item.cleanupReason)) || item.revocationEpoch !== undefined && !id(item.revocationEpoch) || item.state !== "pending" && !bound(item.pair) ||
+      !(item.cleanupReason === null || reasons.has(item.cleanupReason)) || item.revocationEpoch !== undefined && !id(item.revocationEpoch) || !["pending", "cancelled"].includes(item.state) && !bound(item.pair) ||
+      item.state === "cancelled" && (bound(item.pair) || item.resources || item.unit || item.cleanupReason || item.revocationEpoch) ||
       (item.state === "revoking" || item.state === "revoked") && item.fenceId === null) throw new Error("invalid-intercom-registry");
   return { version: 1, pair: bound(item.pair) ? normalizePair(item.pair) : normalizePlan(item.pair), state: item.state,
     operationId: item.operationId, graphDigest: item.graphDigest, fenceId: item.fenceId, cleanupReason: item.cleanupReason,
@@ -126,7 +127,8 @@ export function createIntercomRegistry(root: string) {
       if (!fence) return false;
       if (existing?.state === "revoked" && existing.fenceId === fence.fence_id && (existing.revocationEpoch ?? existing.pair.edgeEpoch) === fence.edge_epoch) return false;
       // A pending fresh enrollment may retain its completed predecessor until approved admission clears it.
-      if (existing?.state === "pending" && existing.fenceId === fence.fence_id && existing.pair.edgeEpoch !== fence.edge_epoch) return false;
+      if ((existing?.state === "pending" || existing?.state === "cancelled") && existing.fenceId === fence.fence_id &&
+          existing.pair.edgeEpoch !== fence.edge_epoch && candidate?.edgeEpoch !== fence.edge_epoch) return false;
       return true;
     } finally { snapshot.close(); }
   };
@@ -165,8 +167,8 @@ export function createIntercomRegistry(root: string) {
         if (pending(existing, candidate)) throw new Error("revocation-pending");
         if (existing) {
           if (existing.pair.source.machineId !== candidate.source.machineId || existing.pair.target.machineId !== candidate.target.machineId) throw new Error("intercom-pair-conflict");
-          if (existing.state === "revoked") {
-            if (existing.operationId === operationId || existing.pair.edgeEpoch === candidate.edgeEpoch) throw new Error("fresh-peer-consent-required");
+          if (existing.state === "revoked" || existing.state === "cancelled") {
+            if (existing.operationId === operationId || existing.state === "revoked" && existing.pair.edgeEpoch === candidate.edgeEpoch) throw new Error("fresh-peer-consent-required");
           } else {
             if (existing.operationId === operationId && existing.graphDigest === graphDigest && samePlan(existing.pair, candidate)) return;
             throw new Error("intercom-pair-conflict");
@@ -181,13 +183,13 @@ export function createIntercomRegistry(root: string) {
       await withIntercomPeerLock(root, observed.pair.source.machineId, observed.pair.target.machineId, () => locked(async () => {
         const existing = await get(pairId);
         if (!existing || existing.operationId !== operationId || existing.graphDigest !== graphDigest) throw new Error("intercom-pair-conflict");
+        if (existing.state === "cancelled") return;
         if (existing.state !== "pending" || bound(existing.pair)) throw new Error("intercom-enrollment-bound");
-        if (existing.resources || existing.unit || existing.cleanupReason || existing.revocationEpoch) throw new Error("intercom-pending-resources-present");
-        // Binding precedes every setup effect. An unbound operation owns only this record.
-        // A retained fence belongs to its predecessor and must stay in the queue.
-        unlinkSync(file(pairId));
-        const fd = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-        try { fsyncSync(fd); } finally { closeSync(fd); }
+        if (existing.cleanupReason) throw new Error("intercom-predecessor-cleanup-pending");
+        if (existing.resources || existing.unit || existing.revocationEpoch) throw new Error("intercom-pending-resources-present");
+        // Binding precedes setup effects. Keep the receipt and any predecessor fence
+        // so a retry is a no-op and fresh approved enrollment can reconcile the fence.
+        await save({ ...existing, state: "cancelled" });
       }));
     },
     async bind(value: IntercomEnrollmentPair, operationId: string): Promise<void> {

@@ -166,18 +166,20 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       }
       finally { auth.fill(0); }
     }
-    const selected = ["settings.json", "models.json", "keybindings.json", "themes", "AGENTS.md"].filter(name => {
+    // Destination-managed authentication also leaves all agent files on the destination.
+    // Any selected file can contain credentials, so do not inspect hub selections in this mode.
+    const selected = input.useDestinationAuth ? [] : ["settings.json", "models.json", "keybindings.json", "themes", "AGENTS.md"].filter(name => {
       if (name === "settings.json" && input.noSettings) return false;
       try { lstatSync(join(agentRoot, name)); return true; }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
     });
-    selected.push(...(input.skills ?? []).map(name => `skills/${name}`));
+    if (!input.useDestinationAuth) selected.push(...(input.skills ?? []).map(name => `skills/${name}`));
     const prepared = prepareSelectedFiles({ sourceRoot: agentRoot, selected, maxBytes: config.limits.agentBytes });
     const selectedFiles = describeSelectedFiles(prepared), selectionDigest = provisionSelectionDigest(prepared);
     const providers = [...new Set([...(input.useDestinationAuth ? [] : ["github-copilot"]), ...prepared.providers])].sort();
     for (const file of prepared.credentialFiles) file.bytes.fill(0);
     const extra = providers.filter(name => name !== "github-copilot");
-    if ((input.useDestinationAuth && prepared.credentialFiles.length) || !tty && JSON.stringify([...(input.consentedProviders ?? [])].sort()) !== JSON.stringify(extra)) {
+    if (!input.useDestinationAuth && !tty && JSON.stringify([...(input.consentedProviders ?? [])].sort()) !== JSON.stringify(extra)) {
       io.err(`Provider consent required: ${extra.map(safe).join(", ") || "none"}.\n`);
       throw new Error("provision-provider-consent-required");
     }

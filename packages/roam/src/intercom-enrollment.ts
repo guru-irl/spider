@@ -105,7 +105,9 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
   let approved = false;
   try {
     return await ports.withLock(async () => {
-      if (ports.journal.read(operationId).some(row => row.action === "intercom-enrollment-cancelled")) return outcome(operationId, 1, "intercom-enrollment-cancelled");
+      const cancelled = new Set(ports.journal.read(operationId).filter(row => row.action === "intercom-enrollment-cancelled").map(row => row.result.pairId));
+      const remaining = snapshot.pairs.filter(pair => !cancelled.has(pair.pairId));
+      if (!remaining.length) return outcome(operationId, 1, "intercom-enrollment-cancelled");
       const graph = preview(snapshot.pairs);
       const digest = createHash("sha256").update(JSON.stringify(snapshot.pairs)).digest("hex");
       const previous = ports.journal.begin({ ...snapshot.operation, args: { graphDigest: digest } });
@@ -122,7 +124,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
       const refreshConsent = consent && consent.result.fences && typeof consent.result.fences === "object" &&
         Object.values(consent.result.fences).includes("unavailable");
       const savedFences = consent?.result.fences as Record<string, string | null> | undefined;
-      const fences = refreshConsent ? { ...savedFences, ...await ports.readPairFences(snapshot.pairs.filter(pair => savedFences?.[pair.pairId] === "unavailable")) }
+      const fences = refreshConsent ? { ...savedFences, ...await ports.readPairFences(remaining.filter(pair => savedFences?.[pair.pairId] === "unavailable")) }
         : consent ? consent.result.fences : await ports.readPairFences(snapshot.pairs);
       if (!fences || typeof fences !== "object" || Array.isArray(fences) || Object.keys(fences).length !== snapshot.pairs.length ||
           snapshot.pairs.some(pair => !Object.hasOwn(fences, pair.pairId) || !((fences as Record<string, unknown>)[pair.pairId] === null || identifier((fences as Record<string, unknown>)[pair.pairId])))) {
@@ -146,7 +148,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
         }
       };
       const machines = new Map<string, Peer>();
-      for (const pair of snapshot.pairs) { machines.set(pair.source.machineId, pair.source); machines.set(pair.target.machineId, pair.target); }
+      for (const pair of remaining) { machines.set(pair.source.machineId, pair.source); machines.set(pair.target.machineId, pair.target); }
       await ports.notify([...machines.values()]);
       const outage = async (machineId: string): Promise<string> => {
         const prior = ports.journal.read(operationId).filter(row => row.action === "intercom-outage" && row.result.machineId === machineId).at(-1);
@@ -158,6 +160,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
       };
       const keys = new Set<string>(), completed: string[] = [], pending: Array<NonNullable<EnrollmentResult["pending"]>[number]> = [];
       const enroll = async (plan: IntercomEnrollmentPlan): Promise<string | { reason: string; causeCode: string } | null> => {
+        if (cancelled.has(plan.pairId)) return "intercom-enrollment-cancelled";
         try {
           const expectedFenceId = (fences as Record<string, string | null>)[plan.pairId];
           if (expectedFenceId === "unavailable") return "intercom-fence-unavailable";

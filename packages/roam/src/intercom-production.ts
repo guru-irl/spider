@@ -276,7 +276,7 @@ export function createProductionIntercomRevocationPorts(input: RevocationOptions
     withLock: work => withProcessLock(join(input.root, "roam"), "intercom-graph", work),
     async getPair(pairId) {
       const record = await registry.get(pairId);
-      if (!record || !("sshUser" in record.pair)) return null;
+      if (!record || record.state === "cancelled" || !("sshUser" in record.pair)) return null;
       return { pair: record.pair, state: record.state, cleanupReason: record.cleanupReason, revocationEpoch: record.revocationEpoch };
     },
     async fenceAndClose(pair) {

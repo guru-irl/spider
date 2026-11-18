@@ -44,7 +44,8 @@ const HELP = `Usage: spider <command>
   spider roam sync [machine]
   spider roam enable|disable
   spider roam doctor [machine]
-  spider roam provision <machine> [--release <tarball>] [--use-destination-auth] [--no-settings] [--skill <name>]... [--yes --consent copilot-auth] [--consent-provider <name>]... [--operation-id <id>]
+  spider roam provision <machine> --use-destination-auth [--release <tarball>] [--yes] [--operation-id <id>]
+  spider roam provision <machine> [--release <tarball>] [--no-settings] [--skill <name>]... [--yes --consent copilot-auth] [--consent-provider <name>]... [--operation-id <id>]
   spider roam intercom enroll --graph <file> [--operation <id>]
   spider roam intercom cancel <pair-id>
   spider roam intercom revoke <pair-id>
@@ -59,6 +60,8 @@ const HELP = `Usage: spider <command>
 Add --json at the end of a control for machine-readable output.
 For sync or doctor, use -- <machine> or --machine <machine> for names starting with a dash.
 Prefer --use-destination-auth --yes for a destination that is already signed in.
+This mode selects no hub agent files, including auth, models, settings, and skills.
+The destination manages those files. Copy-selection and copy-consent flags apply only to the other provision mode.
 Anyone with the user's shell access can invoke it. While disabled, provision does not enable the box or start hosting.
 Before forget, confirm the machine is destroyed. If it is alive, two copies can run until reconnection.
 Conversation after the last mirror and unsent workspace edits will be lost.

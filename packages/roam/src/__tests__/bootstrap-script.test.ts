@@ -124,6 +124,20 @@ function fakeSystem() {
   };
 }
 
+it.each([[0o600, true], [0o400, false], [0o000, false], [0o644, false], [0o1600, false]] as const)("accepts only destination auth mode 0600, observed %s", (mode, modeSafe) => {
+  const system = fakeSystem();
+  system.entries.set(system.authPi, { kind: "file", mode });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT).value.auth.pi).toMatchObject({ present: true, modeSafe });
+  expect(system.reads).not.toContain(system.authPi);
+}, 5000);
+
+it("classifies a symlinked destination auth parent as unsafe rather than missing", () => {
+  const system = fakeSystem();
+  system.entries.set(posix.dirname(system.authPi), { kind: "symlink", target: "/home/fixture/other-agent" });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT).value.auth.pi).toEqual({ present: true, readable: false, modeSafe: false });
+  expect(system.reads).not.toContain(system.authPi);
+}, 5000);
+
 it("reports only approved inventory fields from fake system resources", () => {
   const source = (bootstrap as { BOOTSTRAP_SCRIPT?: string }).BOOTSTRAP_SCRIPT;
   expect(typeof source).toBe("string");
@@ -331,7 +345,7 @@ it("returns a negative auth status rather than following an unsafe fixed parent"
   system.entries.set("/home/fixture/.pi", { kind: "symlink", target: "/outside/private" });
   const reply = system.run(source!);
   expect(reply).toHaveProperty("value");
-  expect(reply.value.auth.pi).toEqual({ present: false, readable: false, modeSafe: false });
+  expect(reply.value.auth.pi).toEqual({ present: true, readable: false, modeSafe: false });
   expect(reply.value.roaming).toEqual({ rootExists: null, rootSafe: false, identityExists: null, machineId: null });
   expect(system.reads).not.toContain(system.authPi);
 }, 5000);

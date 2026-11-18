@@ -118,6 +118,31 @@ it("a hub-authorized launch records the actual launch operation receipt", async 
   expect(readLocal(global.db, "participant-ready", input.sessionId)).toEqual(readReadiness(journal, "launch-1"));
 }, 5000);
 
+it("a hub-stopped intent gives native admission the explicit resume hint", async () => {
+  vi.stubEnv("PI_SUBAGENT_CHILD", "0");
+  const { global, config, input } = fixture(); seedNewParticipant(input);
+  writeFileSync(input.file, JSON.stringify({ type: "session", version: 3, id: input.sessionId, cwd: input.cwd }) + "\n", { mode: 0o600 });
+  const home = { sessionId: input.sessionId, machineId: BOX, epoch: 1, moveId: null, updatedAt: 1 };
+  global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run(input.sessionId, BOX);
+  const journal = openJournal(join(global.root, "roam/journal.db")), authority = createRunningIntentAuthority(global.db);
+  await authority.set({ sessionId: input.sessionId, epoch: 1, desired: "running", suspended: null, file: input.file, cwd: input.cwd, moveId: null }, "start-1", { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
+  await authority.stop(input.sessionId);
+  const adapter = createParticipantAdmission({ cwd: () => input.cwd, async terminal() { throw new Error("must not observe a stopped terminal"); },
+    async open() { return { config, db: global.db, journal, authority, async stores() { return input.stores; }, close() {} }; } });
+  const hooks = new Map<string, any>();
+  const gate = registerAdmission({ on(name: string, handler: unknown) { hooks.set(name, handler); } } as never, { ...adapter,
+    expectedEpoch: null, localMachine: async () => BOX, knownParticipant: () => true, warnOnce() {}, lock: async () => async () => {},
+    async load() { return { home, states: [{ sessionId: input.sessionId, epoch: 1, state: "active", moveId: null, freezeSeq: null }], origin: BOX,
+      participating: true, captureSafe: true, unfinishedFreeze: false, initialConflict: false }; } });
+  try {
+    await hooks.get("session_start")({}, { cwd: input.cwd, sessionManager: { getSessionId: () => input.sessionId, getSessionFile: () => input.file } });
+    const detail = gate.inspect().blockers[0]?.detail;
+    expect(detail).toContain("participant-stopped");
+    expect(detail).toContain("spider roam resume new-session");
+    expect(readLocal(global.db, "participant-ready", input.sessionId)).toBeUndefined();
+  } finally { await gate.close(); }
+}, 5000);
+
 it("a launch-labeled process without hub intent is not a box-local owner", async () => {
   const { global, config, input } = fixture();
   writeFileSync(input.file, JSON.stringify({ type: "session", version: 3, id: input.sessionId, cwd: input.cwd }) + "\n", { mode: 0o600 });

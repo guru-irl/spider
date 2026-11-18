@@ -96,6 +96,13 @@ it.each(["idle", "sessions", "active", "enabled"])("replaces a pin only on an id
   }
 });
 
+it("reports invalid-config when the configured socket is malformed", () => {
+  const f = fixture();
+  writeFileSync(join(f.configHome, "herdr-core/config.toml"), "socket = 42\n");
+  expect(f.run(null)).toMatchObject({ error: "invalid-config" });
+  expect(existsSync(join(f.root, "roam/core.json"))).toBe(false);
+});
+
 it("resolves a configured socket when the core has no HC_SOCKET override", () => {
   const f = fixture(), socket = join(f.home, "configured.sock");
   writeFileSync(join(f.configHome, "herdr-core/config.toml"), `socket = '${socket}'\n`);

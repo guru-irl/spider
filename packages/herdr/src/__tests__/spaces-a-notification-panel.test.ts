@@ -381,11 +381,11 @@ it('0.1.16 routes a remote notification through IPC only until a pane snapshot e
   const requests: any[] = []; let snapshot: any = null;
   const paneService: any = async (_config: unknown, _exec: unknown, request: any) => { requests.push(request); if (request.op === 'snapshot') { if (!snapshot) throw Error('unavailable'); return snapshot; } return { status: 'complete' }; };
   const h = panelHost({ parked: true, navigation, panelSource, paneService });
-  const source = h.state.feeds[0], address = 'box.invalid/owner';
-  source.owner.terminal.address = address; source.owner.terminal.coreId = 'remote-core';
+  const source = h.state.feeds[0], address = 'box-1.invalid/owner';
+  source.owner.terminal.address = address; source.owner.terminal.coreId = 'remote-core'; source.owner.cwd = '/home/fixture';
   h.state.terms = [{ address, parent: null, labels: {}, state: 'live', status: 'working' }];
-  h.herdr.machines = () => [{ name: 'box.invalid', layout: 'ready' }];
-  h.herdr.hc = async (args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [{ name: 'box.invalid', id: 'remote-core', state: 'connected' }] }) });
+  h.herdr.machines = () => [{ name: 'box-1.invalid', layout: 'ready' }];
+  h.herdr.hc = async (args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [{ name: 'box-1.invalid', id: 'remote-core', state: 'connected' }] }) });
   await h.ready; await h.drain();
   const row = byId(h.view.render(h.cx), 'need-intentional:owner:notice-1');
   expect(row?.events.on_click).toBeDefined(); row.events.on_click({}, h.cx); await h.drain();
@@ -393,8 +393,8 @@ it('0.1.16 routes a remote notification through IPC only until a pane snapshot e
   const ipc = args?.includes('--request') ? JSON.parse(args[args.indexOf('--request') + 1]) : null;
   expect.soft(ipc).toMatchObject({ op: 'openSession', generation: 'g' });
   h.calls.length = 0; requests.length = 0;
-  const target = { coreId: 'remote-core', terminalId: 'owner', address, createdMs: 42, identityLabels: {}, alias: 'box.invalid', machineId: 'm', kind: 'session', sessionId: 'owner', generation: 'g', homeEpoch: 1, runId: null, consoleId: null, name: 'owner', cwd: '/fixture' };
-  snapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'owner', generation: 'g', owner: { terminal: { address } }, target, name: 'owner', status: 'working', machineKey: 'box.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] };
+  const target = { coreId: 'remote-core', terminalId: 'owner', address, createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'm', kind: 'session', sessionId: 'owner', generation: 'g', homeEpoch: 1, runId: null, consoleId: null, name: 'owner', cwd: '/home/fixture' };
+  snapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'owner', generation: 'g', owner: { terminal: { address } }, target, name: 'owner', status: 'working', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] };
   row.events.on_click({}, h.cx); await h.drain();
   expect.soft(requests).toContainEqual({ op: 'snapshot' });
   expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'owner', generation: 'g' }));

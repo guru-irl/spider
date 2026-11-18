@@ -212,6 +212,43 @@ it('0.1.16: keeps a viewed Done agent in priority order until it is left', () =>
   expect(test.view.rank(viewed)).toBe(1);
 });
 
+it('0.1.16: focuses the native local pane when no pane snapshot is available', async () => {
+  const test = fixture('0.1.16', { presented: true });
+  await test.ready();
+  const row = byId(test.view.render(test.cx), 'ag-local');
+  expect(row?.events.on_click).toBeDefined();
+  row!.events.on_click();
+  expect(test.commands).toContainEqual(['pane.focus', { pane: 'p2' }]);
+  expect(test.commands).not.toContainEqual(['terminal.peek', { terminal: 'local' }]);
+  await test.view.close();
+});
+
+it('0.1.16: falls back to native remote rows only until a pane snapshot is available', async () => {
+  const test = fixture('0.1.16', { presented: true, ports: { projectNavigation: navigation.projectNavigation } });
+  await test.ready();
+  let root = test.view.render(test.cx);
+  const remote = byId(root, 'ag-box-1.invalid/unpinned');
+  expect(remote?.events.on_click).toBeDefined();
+  remote!.events.on_click();
+  expect(test.commands).toContainEqual(['pane.focus', { pane: 'p1' }]);
+  test.commands.length = 0;
+
+  const target = { coreId: 'core-1', terminalId: 'source', address: 'core-1/source', createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'source-session', generation: 'source-gen', homeEpoch: 1, runId: null, consoleId: null, name: 'Source writer', cwd: '/home/fixture' };
+  test.view.spiderPaneSnapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'source-session', generation: 'source-gen', owner: { terminal: { address: 'core-1/source' } }, target, name: 'Source writer', status: 'working', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] };
+  test.view.spiderPaneIndex = navigation.indexPaneNavigation(test.view.spiderPaneSnapshot);
+  remote!.events.on_click();
+  expect(test.commands).not.toContainEqual(['pane.focus', { pane: 'p1' }]);
+  test.setExec(async () => ok({ version: 1, kind: 'outcome', outcome: { status: 'complete', reason: 'presented', presentation: null } }));
+  root = test.view.render(test.cx);
+  expect(byId(root, 'ag-box-1.invalid/unpinned')).toBeUndefined();
+  const projected = byId(root, 'ag-core-1/source');
+  expect(projected?.events.on_click).toBeDefined();
+  projected!.events.on_click(); await Promise.resolve();
+  expect(test.execCalls.some(args => JSON.parse((args[1] as string[]).at(-1)!).op === 'open-existing')).toBe(true);
+  expect(test.commands).not.toContainEqual(['pane.focus', { pane: 'p1' }]);
+  await test.view.close();
+});
+
 function seedConsoles(test: ReturnType<typeof fixture>) {
   const session = 'session-one', run = 'run-local';
   const labels = (extra: Record<string, string>) => ({ 'spider.session': session, ...extra });

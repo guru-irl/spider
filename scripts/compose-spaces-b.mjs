@@ -28,8 +28,13 @@ const original = check ? readFileSync(manifestPath, 'utf8') : null;
 const versions = ['0.1.13', '0.1.16'];
 const agents = JSON.parse(readFileSync(new URL('./spaces-b-fragments/agents.json', import.meta.url), 'utf8'));
 const records = { version: 1, versions: Object.fromEntries(versions.map(version => {
-  const { agents: agentAdditions = [], ...fragments } = JSON.parse(readFileSync(new URL(`./spaces-b-fragments/${version}.json`, import.meta.url), 'utf8'));
-  const combined = [...agents, ...agentAdditions];
+  const { agents: agentAdditions = [], agentOverrides = {}, ...fragments } = JSON.parse(readFileSync(new URL(`./spaces-b-fragments/${version}.json`, import.meta.url), 'utf8'));
+  for (const [id, replacement] of Object.entries(agentOverrides)) {
+    assert(agents.some(fragment => fragment.id === id) && typeof replacement === 'string' && replacement.length > 0, `Invalid agent override ${id} in ${version}`);
+  }
+  const sharedAgents = agents.map(fragment => Object.hasOwn(agentOverrides, fragment.id)
+    ? { ...fragment, replacement: agentOverrides[fragment.id] } : fragment);
+  const combined = [...sharedAgents, ...agentAdditions];
   assert.equal(new Set(combined.map(fragment => fragment.id)).size, combined.length, `Duplicate agent fragment id in ${version}`);
   return [version, { ...fragments, agents: combined }];
 })) };

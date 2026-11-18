@@ -89,7 +89,7 @@ async function executeAgentFixture(command, input) {
   });
 }
 const argv = process.argv.slice(2);
-appendFileSync(`${root}/calls.jsonl`, JSON.stringify({ argv, pid: process.pid, parentPid: process.ppid, env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('HC_') || ['PI_SUBAGENT_CHILD', 'PI_SUBAGENT_RUN_ID'].includes(k))) }) + '\n');
+appendFileSync(`${root}/calls.jsonl`, JSON.stringify({ argv, pid: process.pid, parentPid: process.ppid, env: Object.fromEntries(Object.entries(process.env).filter(([k]) => k.startsWith('HC_') || ['PI_SUBAGENT_CHILD', 'PI_SUBAGENT_RUN_ID'].includes(k) || config.roamFixture && ['XDG_STATE_HOME', 'XDG_CONFIG_HOME'].includes(k))) }) + '\n');
 function nameArgument(args) {
   const end = args.indexOf('--'), flags = end < 0 ? args : args.slice(0, end);
   const at = flags.indexOf('--name'); return at >= 0 ? flags[at + 1] : flags.find(arg => arg.startsWith('--name='))?.slice(7);
@@ -156,7 +156,7 @@ if (config.rawReplyBase64 !== undefined) {
       }
     }
   }
-} else if (argv[0] === 'server' && argv[1] === 'status') {
+} else if (argv[0] === 'server' && ['start', 'status'].includes(argv[1])) {
   console.log(JSON.stringify({ core: { id: config.coreId, name: 'fixture' }, version: '0.1.16',
     pid: config.roamFixture ? config.fixtureCorePid ?? 1000 : process.pid,
     ...(config.roamFixture ? { uptime_ms: config.fixtureCoreUptimeMs ?? 1000 } : {}) }));

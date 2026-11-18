@@ -30,6 +30,71 @@ import { createMachineIntercom } from "./intercom-runtime";
 import { createProductionIntercomMaintenance } from "./intercom-production";
 import type { LocalPairPorts } from "./intercom-local-ops";
 import { createTransport } from "./transport";
+import { invokeCli as invokeCoreCli } from "@spider/herdr/client/cli-transport";
+import { HerdrError, parseCore } from "@spider/herdr/client/parse";
+import { requireCoreAvailable } from "@spider/herdr/client/liveness";
+
+import { readSupervisorCorePin, type SupervisorCorePin } from "./enrollment";
+export interface SupervisorCore {
+  pin: SupervisorCorePin; identity: import("@spider/herdr").CoreIdentity; pid: number; env: Readonly<NodeJS.ProcessEnv>;
+}
+function coreReply(value: unknown, pin: SupervisorCorePin, env: Readonly<NodeJS.ProcessEnv>) {
+  const identity = parseCore(value, env);
+  if (identity.coreId !== pin.coreId) throw new HerdrError("core-changed", "The enrolled core identity has changed; hosting refused");
+  const pid = (value as { pid?: unknown }).pid;
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) throw new HerdrError("core-unavailable", "Core process identity is unavailable");
+  return { identity, pid };
+}
+/** This is the only supervisor call allowed to start a stopped core. */
+export async function ensureSupervisorCore(pin: SupervisorCorePin, base: Readonly<NodeJS.ProcessEnv>): Promise<SupervisorCore> {
+  for (const file of [pin.socket, pin.stateHome, pin.configHome]) assertTestConfigPath(file);
+  const env = Object.freeze({ ...base, HC_SOCKET: pin.socket, HC_SESSION: pin.sessionNamespace, XDG_STATE_HOME: pin.stateHome, XDG_CONFIG_HOME: pin.configHome });
+  const reply = await invokeCoreCli(pin.binary, ["server", "start", "--json"], env, 64 * 1024);
+  return { pin, env, ...coreReply(reply, pin, env) };
+}
+/** Do not let a health check auto-start a core after hosting has lost it. */
+export async function assertSupervisorCoreCurrent(core: SupervisorCore, signal?: AbortSignal): Promise<void> {
+  try {
+    await requireCoreAvailable(core.env, signal);
+    const reply = await invokeCoreCli(core.pin.binary, ["server", "status", "--json"], core.env, 64 * 1024, undefined, { signal });
+    if (coreReply(reply, core.pin, core.env).pid !== core.pid) throw new HerdrError("core-lost", "The hosting core process was replaced");
+  } catch (error) {
+    if (error instanceof HerdrError && error.code === "core-changed") throw error;
+    throw new HerdrError("core-lost", "The hosting core was lost; the supervisor must restart");
+  }
+}
+
+const supervisorClock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
+type CoreLoss = "core-lost" | "core-changed";
+export interface CoreBoundSupervisor { stop(): Promise<void>; failed: Promise<CoreLoss> }
+/** Startup may ensure the core; monitoring may only observe it and retire hosting. */
+export async function startCoreBoundSupervisor(pin: SupervisorCorePin, env: Readonly<NodeJS.ProcessEnv>,
+  startHosting: (core: SupervisorCore) => Promise<{ stop(): Promise<void> }>, clock: Clock = supervisorClock): Promise<CoreBoundSupervisor> {
+  const core = await ensureSupervisorCore(pin, env), hosting = await startHosting(core);
+  let closed = false, cancel: (() => void) | undefined, checking: Promise<void> | undefined, stopping: Promise<void> | undefined;
+  const controller = new AbortController();
+  let failed!: (reason: CoreLoss) => void;
+  const failure = new Promise<CoreLoss>(done => { failed = done; });
+  const stop = (): Promise<void> => stopping ??= (async () => {
+    closed = true; cancel?.(); controller.abort();
+    try { await checking; } finally { await hosting.stop(); }
+  })();
+  function schedule(): void {
+    cancel = clock.later(10_000, () => {
+      checking = (async () => {
+        try { await assertSupervisorCoreCurrent(core, controller.signal); }
+        catch (error) {
+          if (!closed) {
+            const reason: CoreLoss = error instanceof HerdrError && error.code === "core-changed" ? "core-changed" : "core-lost";
+            void stop().then(() => failed(reason), () => failed(reason));
+          }
+        } finally { if (!closed) schedule(); }
+      })();
+    });
+  }
+  schedule();
+  return { stop, failed: failure };
+}
 
 export function createSupervisorEvents(databaseFile: string, core: Pick<HcClient, "events">): { subscribe(listener: () => void): () => void } {
   return { subscribe(listener) {
@@ -228,7 +293,13 @@ export function createProductionSupervisorConnection(input: { root: string; conf
 }
 
 export async function startProductionSupervisor(root: string, options: { system?: SupervisorSystemPorts; clock?: Clock;
-  intercomLocalPorts?: Omit<LocalPairPorts, "enrollBridge" | "inspectBridge" | "inspectFence"> } = {}): Promise<{ stop(): Promise<void> }> {
+  intercomLocalPorts?: Omit<LocalPairPorts, "enrollBridge" | "inspectBridge" | "inspectFence"> } = {}): Promise<CoreBoundSupervisor> {
+  assertBoxEnrollment(readLocalIdentity(root));
+  return startCoreBoundSupervisor(readSupervisorCorePin(root), process.env, coreState => startEnrolledSupervisor(root, { ...options, coreState }), options.clock);
+}
+
+async function startEnrolledSupervisor(root: string, options: { coreState: SupervisorCore; system?: SupervisorSystemPorts; clock?: Clock;
+  intercomLocalPorts?: Omit<LocalPairPorts, "enrollBridge" | "inspectBridge" | "inspectFence"> }): Promise<{ stop(): Promise<void> }> {
   const enrolled = readLocalIdentity(root);
   assertBoxEnrollment(enrolled);
   const platform = options.intercomLocalPorts;
@@ -237,7 +308,7 @@ export async function startProductionSupervisor(root: string, options: { system?
     let active: { stop(): Promise<void> } | undefined, closed = false, checking: Promise<void> | undefined;
     const timer = setInterval(() => {
       if (closed || checking || active) return;
-      checking = (async () => { const current = readLocalIdentity(root); assertBoxEnrollment(current); if (participantCaptureReady(root, current.machineId)) active = await startProductionSupervisor(root, options); })()
+      checking = (async () => { const current = readLocalIdentity(root); assertBoxEnrollment(current); if (participantCaptureReady(root, current.machineId)) active = await startEnrolledSupervisor(root, options); })()
         .catch(() => undefined).finally(() => { checking = undefined; });
     }, 1000);
     return { async stop() { closed = true; clearInterval(timer); await checking; await active?.stop(); } };
@@ -250,13 +321,11 @@ export async function startProductionSupervisor(root: string, options: { system?
     const herdr = loadHerdrConfig(root), system = options.system ?? productionSupervisorSystem(root, runtime.config.machineId);
     const identity = await system.inventory.probe(process.pid);
     if (identity.kind !== "live") throw new Error("process-identity-unavailable");
-    const observer = createHcClient({ binary: herdr.core.binary, env: process.env });
-    let core;
-    try { core = await observer.identity(); } finally { await observer.dispose(); }
-    const env: Readonly<NodeJS.ProcessEnv> = Object.freeze({ ...process.env, HC_SESSION: core.sessionNamespace, HC_SOCKET: core.socket,
+    const core = options.coreState.identity;
+    const env: Readonly<NodeJS.ProcessEnv> = Object.freeze({ ...options.coreState.env, HC_SESSION: core.sessionNamespace, HC_SOCKET: core.socket,
       SPIDER_GLOBAL_ROOT: root, PI_CODING_AGENT_DIR: herdr.agentDirectory });
-    const hc = createProductionLocalExactHc({ binary: herdr.core.binary, env, probe: pid => system.inventory.probe(pid) }); dispose = () => hc.dispose();
-    const eventClient = createHcClient({ binary: herdr.core.binary, env });
+    const hc = createProductionLocalExactHc({ binary: options.coreState.pin.binary, env, probe: pid => system.inventory.probe(pid) }); dispose = () => hc.dispose();
+    const eventClient = createHcClient({ binary: options.coreState.pin.binary, env });
     dispose = async () => { await Promise.all([hc.dispose(), eventClient.dispose()]); };
     const clock = options.clock ?? { now: () => Date.now(), later(ms: number, fn: () => void) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
     const diagnostics = async (intent: HostIntent): Promise<readonly Diagnostic[]> => {
@@ -282,7 +351,7 @@ export async function startProductionSupervisor(root: string, options: { system?
       // Owner liveness is probed separately; every inspection must classify the execution terminal.
       live: async () => false, terminalOutcome: createNativeHostingOutcomeReader(eventClient) };
     const stopSessions = () => retireParticipantSessions(runtime.agent, stop.stop);
-    const recoveryTransport = createTransport({ binary: herdr.core.binary, env, enrolled: runtime.config.peers });
+    const recoveryTransport = createTransport({ binary: options.coreState.pin.binary, env, enrolled: runtime.config.peers });
     const connection = createProductionSupervisorConnection({ root, config: runtime.config, globalDb: runtime.db, transport: recoveryTransport, stopSessions });
     const supervisor = createParticipantSupervisor({ root, agent: runtime.agent, clock, diagnostics, connection,
       async identityCurrent() { const current = readLocalIdentity(root); return current.role === "box" && current.machineId === runtime.config.machineId && current.hubMachineId === runtime.config.hubMachineId && participantCaptureReady(root, current.machineId); },
@@ -319,9 +388,9 @@ export async function startProductionSupervisor(root: string, options: { system?
       systemctl: platform.systemctl, run: platform.run, process: platform.process, cgroup: platform.cgroup };
     const direct = runtime.config.intercom.routes.filter(route => route.kind === "direct").map(route => route.peer);
     const machineIntercom = runtime.config.intercom.enabled ? createMachineIntercom({ root, globalDb: runtime.db, config: runtime.config, roamingEnabled: () => readLocalIdentity(root).enabled,
-      ...machineMoveEvidence({ db: runtime.db, config: runtime.config, journal: openFreezeJournal(join(root, "roam", "journal.db")), transport: createTransport({ binary: herdr.core.binary, env, enrolled: runtime.config.peers }) }),
-      agentDir: herdr.agentDirectory, clock, env, directPeers: direct, transport: createTransport({ binary: herdr.core.binary, env, enrolled: direct }),
-      ...createProductionIntercomMaintenance({ root, config: runtime.config, binary: herdr.core.binary, env, localPorts }) }) : undefined;
+      ...machineMoveEvidence({ db: runtime.db, config: runtime.config, journal: openFreezeJournal(join(root, "roam", "journal.db")), transport: createTransport({ binary: options.coreState.pin.binary, env, enrolled: runtime.config.peers }) }),
+      agentDir: herdr.agentDirectory, clock, env, directPeers: direct, transport: createTransport({ binary: options.coreState.pin.binary, env, enrolled: direct }),
+      ...createProductionIntercomMaintenance({ root, config: runtime.config, binary: options.coreState.pin.binary, env, localPorts }) }) : undefined;
     const intercom = supervisorRetirementLifecycle(root, runtime.config, stopSessions, pendingHandoffLifecycle(root, createPendingHandoffControl({ root: join(root, "herdr"), journal: runtime.journal,
       authority, inventory: system.inventory, identity: { pid: process.pid, startIdentity: identity.startIdentity }, bootId: system.bootId }), machineIntercom));
     const running = await runLockedSupervisor({ root, supervisor, intercom,

@@ -5,7 +5,7 @@ import { parseConfig as parseRoamConfig } from "./config";
 
 /** A matching enrollment is never rewritten. Call only after consent and identity claim. */
 export function installBoxEnrollment(root: string, machineId: string, hubMachineId: string, coreUnit: string,
-  ports: { publish?(source: string, target: string): void } = {}): "enrolled" | "already-enrolled" {
+  ports: { publish?(source: string, target: string): void; corePin?: SupervisorCorePin } = {}): "enrolled" | "already-enrolled" {
   const refuse = (reason: string): never => { throw Object.assign(new Error(reason), { code: reason }); };
   const enrollment = { enabled: false, role: "box", machineId, hubMachineId, peers: [], coreUnit };
   if (!/^[A-Za-z0-9][A-Za-z0-9_.@:-]*\.service$/.test(coreUnit)) refuse("invalid-enrollment");
@@ -39,7 +39,9 @@ export function installBoxEnrollment(root: string, machineId: string, hubMachine
     if (config.machineId !== machineId || config.hubMachineId !== hubMachineId || config.role !== "box") refuse("enrollment-conflict");
     return true;
   }
-  if (matching()) return "already-enrolled";
+  const existing = matching();
+  if (ports.corePin) installSupervisorCorePin(root, ports.corePin);
+  if (existing) return "already-enrolled";
   const temporary = enrollPath.join(roam, `.enrollment-${enrollmentUuid()}`);
   const fd = enrollFs.openSync(temporary, enrollFs.constants.O_WRONLY | enrollFs.constants.O_CREAT | enrollFs.constants.O_EXCL | enrollFs.constants.O_NOFOLLOW, 0o600);
   try { enrollFs.fchmodSync(fd, 0o600); enrollFs.writeFileSync(fd, JSON.stringify(enrollment) + "\n"); enrollFs.fsyncSync(fd); }
@@ -52,6 +54,68 @@ export function installBoxEnrollment(root: string, machineId: string, hubMachine
   try { enrollFs.fsyncSync(directory); } finally { enrollFs.closeSync(directory); }
   if (!matching()) refuse("enrollment-publication-pending");
   return "enrolled";
+}
+
+export interface SupervisorCorePin {
+  binary: string; coreId: string; socket: string; sessionNamespace: string; stateHome: string; configHome: string;
+}
+function supervisorPinError(code: string): never { throw Object.assign(new Error(code), { code }); }
+function parseSupervisorCorePin(value: unknown): SupervisorCorePin {
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "binary,configHome,coreId,sessionNamespace,socket,stateHome") return supervisorPinError("core-pin-invalid");
+  const pin = value as SupervisorCorePin;
+  for (const field of [pin.binary, pin.socket, pin.stateHome, pin.configHome]) {
+    if (typeof field !== "string" || field.length > 4096 || !enrollPath.isAbsolute(field) || enrollPath.resolve(field) !== field || /[\u0000-\u001f\u007f]/.test(field)) return supervisorPinError("core-pin-invalid");
+  }
+  if (typeof pin.coreId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(pin.coreId) || typeof pin.sessionNamespace !== "string" ||
+      !/^[A-Za-z0-9_.-]{1,128}$/.test(pin.sessionNamespace) || [".", ".."].includes(pin.sessionNamespace)) return supervisorPinError("core-pin-invalid");
+  return { binary: pin.binary, coreId: pin.coreId, socket: pin.socket, sessionNamespace: pin.sessionNamespace, stateHome: pin.stateHome, configHome: pin.configHome };
+}
+function supervisorPinDirectory(root: string): string {
+  if (!enrollPath.isAbsolute(root) || enrollFs.realpathSync(root) !== root) return supervisorPinError("core-pin-invalid");
+  const roam = enrollPath.join(root, "roam");
+  for (const file of [root, roam]) {
+    const stat = enrollFs.lstatSync(file);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || typeof process.getuid === "function" && stat.uid !== process.getuid() ||
+        file === roam && (stat.mode & 0o7777) !== 0o700) return supervisorPinError("core-pin-invalid");
+  }
+  return roam;
+}
+/** An absent pin must never turn the current core into a newly trusted identity. */
+export function readSupervisorCorePin(root: string): SupervisorCorePin {
+  let fd: number | undefined;
+  try {
+    const roam = supervisorPinDirectory(root);
+    fd = enrollFs.openSync(enrollPath.join(roam, "core.json"), enrollFs.constants.O_RDONLY | enrollFs.constants.O_NOFOLLOW | enrollFs.constants.O_NONBLOCK);
+    const stat = enrollFs.fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16_384 || (stat.mode & 0o7777) !== 0o600 ||
+        typeof process.getuid === "function" && stat.uid !== process.getuid()) return supervisorPinError("core-pin-invalid");
+    return parseSupervisorCorePin(JSON.parse(enrollFs.readFileSync(fd, "utf8")));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return supervisorPinError("core-pin-required");
+    return supervisorPinError("core-pin-invalid");
+  } finally { if (fd !== undefined) enrollFs.closeSync(fd); }
+}
+/** Enrollment may add a missing pin, but may never replace an existing one. */
+export function installSupervisorCorePin(root: string, value: SupervisorCorePin): void {
+  const pin = parseSupervisorCorePin(value), roam = supervisorPinDirectory(root), file = enrollPath.join(roam, "core.json");
+  function matching(): boolean {
+    let prior: SupervisorCorePin;
+    try { prior = readSupervisorCorePin(root); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "core-pin-required") return false; throw error; }
+    if (prior.coreId !== pin.coreId) return supervisorPinError("core-changed");
+    if (JSON.stringify(prior) !== JSON.stringify(pin)) return supervisorPinError("core-pin-conflict");
+    return true;
+  }
+  if (matching()) return;
+  const temporary = enrollPath.join(roam, `.core-${enrollmentUuid()}`);
+  const fd = enrollFs.openSync(temporary, enrollFs.constants.O_WRONLY | enrollFs.constants.O_CREAT | enrollFs.constants.O_EXCL | enrollFs.constants.O_NOFOLLOW, 0o600);
+  try { enrollFs.fchmodSync(fd, 0o600); enrollFs.writeFileSync(fd, JSON.stringify(pin) + "\n"); enrollFs.fsyncSync(fd); }
+  finally { enrollFs.closeSync(fd); }
+  try { try { enrollFs.linkSync(temporary, file); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } }
+  finally { enrollFs.unlinkSync(temporary); }
+  const directory = enrollFs.openSync(roam, enrollFs.constants.O_RDONLY | enrollFs.constants.O_DIRECTORY | enrollFs.constants.O_NOFOLLOW);
+  try { enrollFs.fsyncSync(directory); } finally { enrollFs.closeSync(directory); }
+  if (!matching()) return supervisorPinError("core-pin-invalid");
 }
 
 /** Only the authenticated provisioning channel calls this; it cannot enroll a box. */

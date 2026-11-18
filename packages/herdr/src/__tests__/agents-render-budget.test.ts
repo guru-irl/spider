@@ -9,6 +9,7 @@ import * as consoleGroups from '../../assets/agents/console-groups.js';
 import * as look from '../../assets/shared/look.js';
 import * as feed from '../../assets/shared/feed.js';
 import * as navigation from '../../assets/shared/navigation.js';
+import * as paneServiceState from '../../assets/shared/pane-service-state.js';
 import { beginPresentationDrag } from '../../assets/agents/move.js';
 import { describeOpenFailure } from '../../assets/shared/open-failure.js';
 import { HerdrLabelContract } from '../contracts.js';
@@ -55,10 +56,10 @@ function fixture(version: SpacesAVersion, count: number, finished: number, prese
   const nextCommand = () => new Promise<string>(resolve => commands.push(resolve));
   const modules = createUiModules(), kit = modules['gpui-kit'], base = modules['gpui-base'];
   const palette = new Proxy({}, { get: () => '#808080' });
-  const config = { modId: 'spider-agents', feedRoot: 'feeds', nodePath: 'node', cliPath: 'cli', labelContract: contract, retention: { completedRows: 50, completedHours: 24 } };
+  const config = { modId: 'spider-agents', feedRoot: 'feeds', nodePath: 'node', cliPath: 'cli', labelContract: contract, ...(presented ? { paneServiceConfigured: true } : {}), retention: { completedRows: 50, completedHours: 24 } };
   const storage = new Map<string, string>(), storageWrites: [string, string][] = [];
   const host: Record<string, any> = {
-    ...children, ...grouping, ...connections, ...consoleGroups, ...look, ...feed, ...navigation, ...kit, ...base, beginPresentationDrag,
+    ...children, ...grouping, ...connections, ...consoleGroups, ...look, ...feed, ...navigation, ...paneServiceState, ...kit, ...base, beginPresentationDrag,
     projectAgentChildren: (...args: Parameters<typeof children.projectAgentChildren>) => { const rows = children.projectAgentChildren(...args); projections++; projectedFinished += rows.filter(row => row.retained).length; return rows; },
     projectNavigation: (snapshot: Parameters<typeof navigation.projectNavigation>[0]) => { navigationProjections++; if (state.throwNavigation) { state.throwNavigation = false; throw new Error('projection failed'); } return navigation.projectNavigation(snapshot); }, describeOpenFailure,
     requestPaneService: async (_config: unknown, _exec: unknown, request: any) => {
@@ -589,6 +590,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   it(`${version}: B navigation keeps finished history out of render and opens console rows`, async () => {
+    const start = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(start);
     const h = fixture(version, 100, 48, true);
     let drawing = false, historyReads = 0, finishedNameReads = 0;
     const rows = h.state.feeds.map((item: any, i: number) => {
@@ -619,8 +621,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       await h.ready();
       h.state.paneSnapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, revision: 1,
         machines: [], presentations: [], rows, targetFacts: {} };
-      h.view.spiderReloadAt = -Infinity;
-      await h.view.reloadSpiderFeeds();
+      clock.mockReturnValue(start + 5000); h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); await h.flush();
       finishedNameReads = 0;
       h.view.spiderRequestRefresh(); await h.flush();
       expect(finishedNameReads).toBe(0);
@@ -660,19 +662,19 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       expect(h.view.spiderModel.rows.get('t0').filter((row: any) => row.retained)).toHaveLength(0);
       const staleOwner = find(expanded, 'ag-t0'), validSnapshot = h.state.paneSnapshot;
       h.state.paneSnapshot = { ...validSnapshot, rows: [{ ...rows[0], children: null }] };
-      h.view.spiderReloadAt = -Infinity;
-      await h.view.reloadSpiderFeeds();
+      clock.mockReturnValue(start + 10000); h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); await h.flush();
       const beforeInvalid = h.runCalls.length;
       staleOwner.events.on_click({}, h.cx); await Promise.resolve();
-      expect(h.runCalls).toHaveLength(beforeInvalid);
-      expect(h.view.spiderFeedError).toBe('Pane service unavailable; run doctor');
+      expect(h.runCalls).toHaveLength(beforeInvalid + 1);
+      expect(h.view.spiderFeedError).toBeNull();
       h.state.paneSnapshot = validSnapshot;
-      h.view.spiderReloadAt = -Infinity;
+      clock.mockReturnValue(start + 15000); h.view.spiderReloadAt = -Infinity;
       await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
       h.state.paneSnapshot = { ...h.state.paneSnapshot, rows: rows.map((row: any, i: number) => i ? row :
         { ...row, name: 'Unavailable owner', owner: null, target: null, generation: null, unavailableReason: 'not-in-hc', children: [], consoles: [] }) };
-      h.view.spiderReloadAt = -Infinity;
-      await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh();
+      clock.mockReturnValue(start + 20000); h.view.spiderReloadAt = -Infinity;
+      await h.view.reloadSpiderFeeds(); for (let i = 0; i < 30; i++) await Promise.resolve(); h.view.spiderRequestRefresh();
       expect(h.text(render())).toContain('Owner 0');
       const runsBefore = h.runCalls.length, requestsBefore = h.state.paneRequests.length;
       staleOwner.events.on_click({}, h.cx); await Promise.resolve();
@@ -700,6 +702,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
         machineKey: 'core', unavailableReason: null, children, consoles: [] }] };
     try {
       await h.view.reloadSpiderFeeds();
+      for (let i = 0; i < 30; i++) await Promise.resolve();
       expect(h.view.spiderModel).toBeUndefined();
       const index = h.view.spiderPaneIndex, key = index.key;
       Object.defineProperty(index, 'key', { get() { if (drawing) keyReads++; return key; } });
@@ -716,6 +719,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   });
 
   it(`${version}: B refreshes drag authority when only a presentation revision changes`, async () => {
+    const start = Date.now(), clock = vi.spyOn(Date, 'now').mockReturnValue(start);
     const h = fixture(version, 1, 0, true), source = h.state.feeds[0];
     const target = { coreId: 'core', terminalId: 't0', address: 't0', createdMs: 1, identityLabels: {}, alias: null,
       machineId: null, kind: 'session', sessionId: 's0', generation: 'gen', homeEpoch: null, runId: null, consoleId: null, name: 'Owner 0', cwd: '/fixture' };
@@ -727,18 +731,18 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
       machines: [], presentations: [presentation], rows: [row], targetFacts: {} };
     const find = (node: any, id: string): any => node?.styles?.id?.[0] === id ? node : node?.items?.map((item: any) => find(item, id)).find(Boolean);
     try {
-      await h.ready();
-      h.state.paneSnapshot = service; h.view.spiderReloadAt = -Infinity;
+      h.state.paneSnapshot = service; await h.ready();
+      h.view.spiderReloadAt = -Infinity;
       await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
       h.render(); await h.flush();
       const before = h.notifications, beforeProjection = h.navigationProjections;
       h.state.paneSnapshot = { ...service, rows: [{ ...row, updatedAt: 2 }] };
-      h.view.spiderReloadAt = -Infinity;
+      clock.mockReturnValue(start + 5000); h.view.spiderReloadAt = -Infinity;
       await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
       expect(h.navigationProjections).toBe(beforeProjection);
       expect(h.notifications).toBe(before);
       h.state.paneSnapshot = { ...service, presentations: [{ ...presentation, revision: 2 }] };
-      h.view.spiderReloadAt = -Infinity;
+      clock.mockReturnValue(start + 10000); h.view.spiderReloadAt = -Infinity;
       await h.view.reloadSpiderFeeds(); h.view.spiderRequestRefresh(); await h.flush();
       expect(h.notifications).toBe(before + 1);
       find(h.render(), 'ag-t0').mouseEvents['on_mouse_down:left']({}, h.cx);

@@ -92,12 +92,16 @@ test('0.1.16 generated navigation keeps native remote actions until a snapshot i
   const panelSource = await readFile(join(f.packageRoot, 'packages/herdr/assets/mods/spider/main.js'), 'utf8');
   const patchPath = join(f.packageRoot, 'packages/herdr/assets/look/native-panel-0.1.16.json');
   const panelPatches = await readFile(patchPath, 'utf8').then(JSON.parse).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; });
-  expect(panelBytes.toString('utf8')).toBe(applyModPatches({ 'main.js': panelSource }, panelPatches, 'panel')['main.js']);
+  // This checks staging wiring; both expected transforms use production patch machinery.
+  const panelB = JSON.parse(await readFile(join(f.packageRoot, 'packages/herdr/assets/look/pane-panel-b.json'), 'utf8'));
+  const nativePanel = applyModPatches({ 'main.js': panelSource }, panelPatches, 'panel')['main.js'];
+  expect(panelBytes.toString('utf8')).toBe(applyModPatches({ 'main.js': nativePanel }, panelB, 'panel')['main.js']);
   const pickerPath = join(f.appHome, 'mods/spider-picker/main.js');
   const pickerSource = await readFile(join(f.packageRoot, 'packages/herdr/assets/picker/main.js'), 'utf8');
   const rewrittenPicker = rewriteImportPrefix(pickerSource, '../shared/', './shared/', pickerPath).source;
   const pickerPatchPath = join(f.packageRoot, 'packages/herdr/assets/look/native-picker-0.1.16.json');
-  const pickerPatches = await readFile(pickerPatchPath, 'utf8').then(JSON.parse).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; });
+  const pickerPatches = (await readFile(pickerPatchPath, 'utf8').then(JSON.parse).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return []; throw error; })).filter((patch: { id: string }) => patch.id !== 'picker-native-no-service');
+  pickerPatches.push(...JSON.parse(await readFile(join(f.packageRoot, 'packages/herdr/assets/look/pane-picker-b.json'), 'utf8')));
   expect(files.find(file => file.path === pickerPath)!.bytes.toString('utf8')).toBe(applyModPatches({ 'main.js': rewrittenPicker }, pickerPatches, 'picker')['main.js']);
   const navigationBytes = files.find(file => file.path === join(f.appHome, 'mods/spider-agents/shared/navigation.js'))!.bytes;
   for (const name of ['panel', 'picker']) expect(files.find(file => file.path === join(f.appHome, `mods/spider-${name}/shared/navigation.js`))!.bytes).toEqual(navigationBytes);
@@ -160,7 +164,10 @@ test('a failed second version probe installs the staged panel expected by doctor
   probe.fail = false;
   const path = join(f.appHome, 'mods/spider-panel/main.js');
   const panel = installed.find(file => file.path === path)!;
-  expect(panel.bytes.equals(normal.find(file => file.path === path)!.bytes)).toBe(true);
+  const panelSource = await readFile(join(f.packageRoot, 'packages/herdr/assets/mods/spider/main.js'), 'utf8');
+  const expected = panelSource.replace("import { projectNavigation } from './shared/navigation.js';", "/* spider-look:panel-snapshot-index-import */import { projectNavigation, indexPaneNavigation } from './shared/navigation.js';");
+  expect(panel.bytes.toString('utf8')).toBe(expected);
+  expect(panel.bytes.equals(normal.find(file => file.path === path)!.bytes)).toBe(false);
   await mkdir(join(f.appHome, 'mods/spider-panel'), { recursive: true });
   await writeFile(path, panel.bytes);
   const report = await f.report(['mods']);

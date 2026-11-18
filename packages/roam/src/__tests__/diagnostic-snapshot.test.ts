@@ -142,6 +142,7 @@ it("needs all three attempts while commits keep advancing", () => {
       if (read.ino === source.ino && read.dev === source.dev) {
         attempts++;
         if (attempts < 3) writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+        else writer.prepare("INSERT INTO fixture VALUES (?)").run(`published-${++publications}`);
       }
       if (read.ino === wal.ino && read.dev === wal.dev) writer.prepare("INSERT INTO fixture VALUES (?)").run(`published-${++publications}`);
     };
@@ -411,7 +412,7 @@ it("keeps the earlier commit when a restart overwrites a copied stale tail", () 
   } finally { writer.close(); }
 }, 5000);
 
-it.each(["close", "short-index", "torn-index"])("retries the transient %s lifecycle window", event => {
+it.each(["close", "short-index", "zero-index", "torn-index"])("retries the transient %s lifecycle window", event => {
   const { file, temp } = fixture();
   let writer: ReturnType<typeof openDb> | undefined = openDb(file);
   try {
@@ -425,10 +426,11 @@ it.each(["close", "short-index", "torn-index"])("retries the transient %s lifecy
         if (event === "close") { writer!.close(); writer = undefined; }
         else if (event === "short-index") truncateSync(`${file}-shm`, 3);
         else {
-          const torn = Buffer.from(index); torn[48 + 8] ^= 1;
+          const torn = Buffer.from(index);
+          if (event === "zero-index") torn.fill(0, 0, 96); else torn[48 + 8] ^= 1;
           writeFileSync(`${file}-shm`, torn);
         }
-      } else if (fired && !restored && event !== "close" && isFile(fd, `${file}-shm`) && (event === "torn-index" || count === 0)) {
+      } else if (fired && !restored && event !== "close" && isFile(fd, `${file}-shm`) && (event === "torn-index" || event === "zero-index" || count === 0)) {
         restored = true; writeFileSync(`${file}-shm`, index);
       }
     };
@@ -467,7 +469,7 @@ it("retries the gap between publishing reset salts and rewriting the WAL header"
 it("retries a checkpoint whose backfill target overtakes the copied commit", () => {
   const { file, temp } = fixture(), writer = openDb(file);
   try {
-    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('before')");
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('base')");
     writer.raw.pragma("wal_checkpoint(TRUNCATE)");
     writer.exec("UPDATE fixture SET value='before'");
     hooks.fixedStamp = file;
@@ -550,6 +552,27 @@ it("accepts only recorded commits through automatic, RESTART and TRUNCATE checkp
       }
     }
     expect(accepted).toBe(9);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
+}, 5000);
+
+it("refuses a corrupt checksum earlier than the selected commit without retrying", () => {
+  const { root, file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('before'); INSERT INTO fixture VALUES ('after')");
+    const target = join(root, "corrupt-frame.db"), wal = readFileSync(`${file}-wal`);
+    wal[32 + 24 + 100] ^= 1;
+    copyFileSync(file, target); copyFileSync(`${file}-shm`, `${target}-shm`); writeFileSync(`${target}-wal`, wal);
+    const before = hashes(target);
+    let failure: unknown, snapshot: ReturnType<typeof openDiagnosticSnapshot>, attempts = 0;
+    hooks.afterRead = fd => { if (isFile(fd, target)) attempts++; };
+    try {
+      expect(() => { try { snapshot = openDiagnosticSnapshot(target); } catch (error) { failure = error; throw error; } }).toThrow(/WAL.*commit/i);
+    } finally { snapshot?.close(); }
+    hooks.afterRead = null;
+    expect(failure).toMatchObject({ code: "diagnostic-snapshot-wal-invalid" });
+    expect(attempts).toBe(1);
+    expect(hashes(target)).toEqual(before);
     expect(readdirSync(temp)).toEqual([]);
   } finally { writer.close(); }
 }, 5000);

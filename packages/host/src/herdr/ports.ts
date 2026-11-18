@@ -385,7 +385,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       const name = relative(join(appHome, 'mods'), file.path).split(sep);
       if (!name[0]?.startsWith('spider-')) return 3;
       if (name.length !== 2) return 0;
-      return name[1] === 'main.js' ? 1 : name[1] === 'mod.json' ? 2 : 0;
+      return name[1] === 'mod.json' ? -1 : name[1] === 'main.js' ? 1 : 0;
     };
     return [...files].sort((a, b) => priority(a) - priority(b));
   };

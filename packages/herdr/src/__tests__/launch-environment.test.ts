@@ -99,6 +99,56 @@ it.each([['-p'], ['--print'], ['--mode', 'rpc'], ['--mode', 'json'], ['--export'
   expect(launches).toHaveLength(0);
 });
 
+it('pairs an API key only with the session current provider-qualified model', async () => {
+  await record(launch(['--model', 'provider/old', '--api-key', credential(), '--tools', 'read']));
+  await launchSession(request(), resumePorts());
+  const argv = launches[0].argv.map(value => value === credential() ? '<redacted>' : value);
+  expect(argv).toEqual([process.execPath, '--api-key', '<redacted>', '--tools', 'read', '--model', 'provider/current', '--session', file]);
+});
+
+it('refuses a changed API-key provider with an exact manual command and no credential value', async () => {
+  await record(launch(['--model', 'provider/old', '--api-key', credential(), '--tools', 'read']));
+  await writeFile(file, (await readFile(file, 'utf8')).replace('"provider":"provider"', '"provider":"other"'));
+  for (const action of [() => offerResume(terminal, offerPorts(true)), () => launchSession(request(), resumePorts())]) {
+    let failure: unknown;
+    try { await action(); } catch (error) { failure = error; }
+    expect(failure).toMatchObject({ code: 'session-key-provider-changed' });
+    const notice = String(failure);
+    expect(notice.includes(credential())).toBe(false);
+    expect(notice).toContain('provider');
+    expect(notice).toContain('other');
+    expect(notice).toContain(`'--api-key' '<API_KEY>' '--tools' 'read' '--model' 'other/current' '--session' '${file}'`);
+  }
+  expect(launches).toHaveLength(0);
+  expect(await inventory.leases.get(file)).toBeNull();
+});
+
+it('uses the original launch model with an API key when the session has no model', async () => {
+  await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: 'saved', cwd: root }) + '\n');
+  await record(launch(['--model', 'provider/old:high', '--api-key', credential()]));
+  await launchSession(request(), resumePorts());
+  const argv = launches[0].argv.map(value => value === credential() ? '<redacted>' : value);
+  expect(argv).toEqual([process.execPath, '--api-key', '<redacted>', '--model', 'provider/old', '--session', file]);
+});
+
+it('uses the recorded default model provider to check an API key without an original model flag', async () => {
+  await record({ ...launch(['--api-key', credential()]), ...{ model: { provider: 'default-provider', modelId: 'default-model' } } });
+  await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'session-key-provider-changed' });
+  expect(launches).toHaveLength(0);
+});
+
+it('uses the active session branch rather than an abandoned model change for key pairing', async () => {
+  await record(launch(['--model', 'provider/old', '--api-key', credential()]));
+  const entries = [
+    { type: 'model_change', id: 'abandoned', parentId: 'info', provider: 'other', modelId: 'abandoned' },
+    { type: 'custom', id: 'leaf', parentId: 'info', customType: 'fixture', data: null },
+  ];
+  await writeFile(file, await readFile(file, 'utf8') + entries.map(value => JSON.stringify(value)).join('\n') + '\n');
+  await launchSession(request(), resumePorts());
+  expect(launches[0].argv.includes('provider/current')).toBe(true);
+  expect(launches[0].argv.includes('other/abandoned')).toBe(false);
+});
+
 it('uses pi on PATH when the recorded program no longer exists', async () => {
   await record({ ...launch([]), program: join(root, 'missing-pi') });
   await launchSession(request(), resumePorts());

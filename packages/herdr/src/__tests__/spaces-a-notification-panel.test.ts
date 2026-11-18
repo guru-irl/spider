@@ -145,7 +145,7 @@ function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boo
       return state.reply ? state.reply(request) : { code: 0, stdout: JSON.stringify({ ok: true, op: request.op, ...(request.op === 'openSession' ? { terminal: 'owner' } : { viewer: 'viewer' }) }) }; },
   };
   const createFeedReader = () => ({ read: async () => { calls.push(['read']); if (state.readGate) await state.readGate; if (state.failRead) throw new Error('offline'); return { feeds: structuredClone(state.feeds), errors: structuredClone(state.snapshotErrors ?? []) }; }, close: async () => { calls.push(['closeReader']); } });
-  const api = { ...kit, ...base, ...data, ...sound, ...herdr, ...paneServiceState, herdr, createFeedReader, projectNavigation: options.navigation ?? projectNavigation, indexPaneNavigation, describeOpenFailure, FEED_DISCONNECT_MS, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService: options.paneService ?? requestPaneService };
+  const api = { ...kit, ...base, ...data, ...sound, ...herdr, ...paneServiceState, herdr, createFeedReader, projectNavigation: options.navigation ?? projectNavigation, indexPaneNavigation, validatePaneSnapshot: indexPaneNavigation, describeOpenFailure, FEED_DISCONNECT_MS, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService: options.paneService ?? requestPaneService };
   const text = (options.panelSource ?? readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8')).replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace('export default class SpiderPanel', 'class SpiderPanel');
   const Panel = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${text}; return SpiderPanel;`)(api);
   const view = new Panel(); view.init({}, cx);
@@ -370,9 +370,8 @@ it('renders a neutral intentional card named for its owner and does not dismiss 
 });
 
 it('0.1.16 opens a notification clicked during a feed reload', async () => {
-  const patchPath = resolve('packages/herdr/assets/look/native-panel-0.1.16.json');
-  const panelSource = applyModPatches({ 'main.js': readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8') }, JSON.parse(readFileSync(patchPath, 'utf8')), 'panel')['main.js'];
-  const h = panelHost({ parked: true, panelSource });
+  const panelSource = patchedPanelSource();
+  const h = panelHost({ parked: true, configured: true, panelSource });
   await h.ready; await h.drain();
   let release!: () => void;
   h.state.readGate = new Promise<void>(resolve => { release = resolve; });
@@ -432,6 +431,34 @@ it.each(['0.1.13', '0.1.16'])('%s configured remote notifications retain service
     clock.mockReturnValue(127001); h.state.feeds[0].updatedAt = Date.now(); h.timers.find(timer => timer.ms === 2000)!.fn(h.cx); await h.drain();
     expect.soft(byId(h.view.render(h.cx), 'need-intentional:owner:notice-1')?.events.on_click).toBeUndefined();
     expect.soft(h.calls.filter(call => call[0] === 'exec' && call[2].includes('--request'))).toEqual([]);
+  } finally { clock.mockRestore(); await h.view.close(); }
+});
+
+it.each(['0.1.13', '0.1.16'])('%s routes remote session and viewer actions through the pane service', async version => {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(100000), requests: any[] = [];
+  const address = 'box-1.invalid/owner';
+  const target = { coreId: 'remote-core', terminalId: 'owner', address, createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'm', kind: 'session', sessionId: 'owner', generation: 'g', homeEpoch: 1, runId: null, consoleId: null, name: 'owner', cwd: '/home/fixture' };
+  const snapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'owner', generation: 'g', owner: { terminal: { address } }, target, name: 'owner', status: 'working', machineKey: 'box-1.invalid', children: [{ runId: 'run-one', name: 'Child', status: 'running' }], consoles: [], unavailableReason: null }], presentations: [] };
+  const paneService: any = async (_config: unknown, _exec: unknown, request: any) => { requests.push(request); return request.op === 'snapshot' ? snapshot : { status: 'complete' }; };
+  const h = panelHost({ configured: true, parked: true, navigation: patchedNavigation(), panelSource: patchedPanelSource(version), paneService });
+  const feed = h.state.feeds[0]; feed.owner.terminal.address = address; feed.owner.terminal.coreId = 'remote-core';
+  feed.runs = { rows: [{ id: 'run-one', ownerSessionId: 'owner', name: 'Child', status: 'running', childMode: 'rpc', canSteer: true, startedAt: Date.now(), finishedAt: null, viewer: 'box-1.invalid/viewer', result: null }], total: 1, truncated: false };
+  h.state.terms = [{ address, parent: null, labels: {}, state: 'live', status: 'working' }];
+  h.herdr.machines = () => [{ name: 'box-1.invalid', layout: 'ready' }];
+  h.herdr.hc = async (args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [{ name: 'box-1.invalid', id: 'remote-core', state: 'connected' }] }) });
+  try {
+    await h.ready; await h.drain();
+    byId(h.view.render(h.cx), 'focus-owner').events.on_click({}, h.cx); await h.drain();
+    expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'owner', generation: 'g' }));
+    h.view.showSession('owner', h.cx);
+    byId(h.view.render(h.cx), 'session-run-run-one').events.on_click({}, h.cx); await h.drain();
+    expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-auxiliary', sessionId: 'owner', view: { kind: 'subagent', runId: 'run-one' } }));
+    expect.soft(h.calls.filter(call => call[0] === 'run' && call[1] === 'pane.focus')).toEqual([]);
+    expect.soft(h.calls.filter(call => call[0] === 'exec' && call[2].includes('--request'))).toEqual([]);
+    clock.mockReturnValue(121001); h.state.feeds[0].updatedAt = Date.now(); await h.view.reload(h.cx);
+    expect.soft(byId(h.view.render(h.cx), 'session-run-run-one')?.events.on_click).toBeUndefined();
+    h.view.showHome(h.cx);
+    expect.soft(byId(h.view.render(h.cx), 'focus-owner')?.events.on_click).toBeUndefined();
   } finally { clock.mockRestore(); await h.view.close(); }
 });
 

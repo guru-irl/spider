@@ -35,8 +35,8 @@ const { createRequire } = require('node:module');
 
 function reply(value) { process.stdout.write(JSON.stringify({ version: 1, kind: 'inventory', value }) + '\n'); }
 function fail(error) { process.stdout.write(JSON.stringify({ version: 1, kind: 'inventory', error }) + '\n'); }
-function command(file, args, capture = true) {
-  try { return spawnSync(file, args, { encoding: 'utf8', timeout: 1500, maxBuffer: 1024, stdio: ['ignore', capture ? 'pipe' : 'ignore', 'ignore'] }); }
+function command(file, args, capture = true, maxBuffer = 1024) {
+  try { return spawnSync(file, args, { encoding: 'utf8', timeout: 1500, maxBuffer, stdio: ['ignore', capture ? 'pipe' : 'ignore', 'ignore'] }); }
   catch { return { status: null }; }
 }
 function version(text, pattern) {
@@ -75,7 +75,7 @@ try {
   const input = JSON.parse(request);
   const validPath = value => typeof value === 'string' && value.length <= 4096 && path.isAbsolute(value) && !/[\x00-\x1f\x7f]/.test(value);
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
-      !['checks,cli,coreUnit,globalRoot,pi', 'agentDir,checks,cli,coreUnit,globalRoot,pi'].includes(Object.keys(input).sort().join(',')) || !validPath(input.pi) || !validPath(input.cli) || !validPath(input.globalRoot) || input.agentDir !== undefined && !validPath(input.agentDir) ||
+      !['checks,cli,core,coreId,coreUnit,globalRoot,pi', 'agentDir,checks,cli,core,coreId,coreUnit,globalRoot,pi'].includes(Object.keys(input).sort().join(',')) || !validPath(input.core) || typeof input.coreId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(input.coreId) || !validPath(input.pi) || !validPath(input.cli) || !validPath(input.globalRoot) || input.agentDir !== undefined && !validPath(input.agentDir) ||
       !(input.coreUnit === null || typeof input.coreUnit === 'string' && input.coreUnit.length <= 255 && /^[a-zA-Z0-9][a-zA-Z0-9_.@:-]*\.service$/.test(input.coreUnit)) ||
       !Array.isArray(input.checks) || input.checks.length > 32 || input.checks.some(check => !check || typeof check !== 'object' ||
         Array.isArray(check) || Object.keys(check).sort().join(',') !== 'authFile,executable' ||
@@ -201,8 +201,21 @@ try {
   function coreStatus() {
     const unitDir = path.join(home, '.config/systemd/user');
     const unitDirSafe = parents(path.join(unitDir, '.probe')) === 'ok';
-    const candidates = !unitDirSafe ? [] : input.coreUnit ? [input.coreUnit] : list(unitDir).filter(name => /^(?:herdr(?:-core)?|hc(?:-core)?)(?:@[A-Za-z0-9_.-]+)?\.service$/.test(name));
-    const names = candidates.filter(name => { try { const stat = fs.lstatSync(path.join(unitDir, name)); return stat.isFile() || stat.isSymbolicLink(); } catch { return false; } });
+    const candidates = !unitDirSafe ? [] : input.coreUnit ? [input.coreUnit] : list(unitDir).filter(name => /^(?:(?:herdr(?:-core)?|hc(?:-core)?)(?:@[A-Za-z0-9_.-]+)?|hc-serve-[0-9a-f]+)\.service$/.test(name));
+    let names = candidates.filter(name => { try { const stat = fs.lstatSync(path.join(unitDir, name)); return stat.isFile() || stat.isSymbolicLink(); } catch { return false; } });
+    if (!input.coreUnit) {
+      let pid = null;
+      const status = command(input.core, ['server', 'status', '--json'], true, 64 * 1024);
+      if (status.status === 0 && typeof status.stdout === 'string') try {
+        const value = JSON.parse(status.stdout);
+        if (value && value.core && value.core.id === input.coreId && Number.isSafeInteger(value.pid) && value.pid > 0) pid = value.pid;
+      } catch {}
+      names = pid === null ? [] : names.filter(name => {
+        const main = command('systemctl', ['--user', 'show', '--property=MainPID', '--value', name]);
+        return main.status === 0 && typeof main.stdout === 'string' && /^[1-9][0-9]*$/.test(main.stdout.trim()) && Number(main.stdout.trim()) === pid;
+      });
+      if (names.length !== 1) throw new Error(names.length ? 'peer-core-unit-ambiguous' : 'peer-core-unit-required');
+    }
     const unit = names.length === 1 ? names[0] : null;
     let unitOwned = false;
     if (unit) try { const stat = fs.lstatSync(path.join(unitDir, unit)); unitOwned = stat.isFile() && !stat.isSymbolicLink() && stat.uid === uid; } catch {}
@@ -274,7 +287,7 @@ try {
       configured: input.checks.map(check => ({ executable: executableStatus(check.executable), auth: check.authFile === null ? null : fileStatus(check.authFile, true) })) },
     auth: { pi: fixedFileStatus(path.join(input.agentDir ?? path.join(home, '.pi/agent'), 'auth.json')), gh: fixedFileStatus(path.join(home, '.config/gh/hosts.yml')), ghSignedIn },
   });
-} catch { fail('bootstrap-probe-failed'); }
+} catch (error) { fail(error && ['peer-core-unit-required', 'peer-core-unit-ambiguous'].includes(error.message) ? error.message : 'bootstrap-probe-failed'); }
 `;
 
 // The reply contains only the directory classification, never environment values.

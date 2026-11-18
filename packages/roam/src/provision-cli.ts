@@ -212,7 +212,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     const agentDir = configured.agentDir ?? posix.join(home, ".pi", "agent");
     const destination = { home, agentDir, npmPrefix, supervisor: posix.join(releaseRoot, "dist", "roam", "supervisor.mjs") };
     const contextDigest = createHash("sha256").update(JSON.stringify({ peer, destination, hubMachineId: config.machineId,
-      agentRoot, limits: config.limits, coreUnit: config.coreUnit })).digest("hex");
+      agentRoot, limits: config.limits, coreUnit: peer.coreUnit })).digest("hex");
     const files = [...(size === undefined ? [] : [{ path: "auth.json", size, mode: 0o600 }]), ...selectedFiles];
     io.out(`Operation: ${operationId}\nRelease SHA-256: ${pinned.sha256}\n`);
     for (const file of files) io.out(`Selected ${safe(file.path)}: ${file.size} bytes, mode ${file.mode.toString(8)}. Destination: ${safe(posix.join(agentDir, file.path))}\n`);
@@ -230,7 +230,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     }
     let shownSettings: { fingerprint: string | null; keys: readonly string[] } = { fingerprint: null, keys: [] };
     const ports = createProductionProvisionPorts({ root: input.root, hubMachineId: config.machineId, peer, operationId: `${operationId}-install`, transport, journal, limits: config.limits,
-      source: { agentRoot, releaseFile: pinned.file, piProviders: input.useDestinationAuth ? [] : ["github-copilot"] }, destination, coreUnit: config.coreUnit, unitDir: posix.join(home, ".config/systemd/user"),
+      source: { agentRoot, releaseFile: pinned.file, piProviders: input.useDestinationAuth ? [] : ["github-copilot"] }, destination, unitDir: posix.join(home, ".config/systemd/user"),
       release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: pinned.sha256, nodeRange: "22.23.4 || 26.4.0" },
       async present(preview) { shownSettings = { fingerprint: preview.settingsFingerprint, keys: [...preview.settingsKeys] }; presentInventory(preview, io.out); },
       async confirm() { return confirmProvision(journal, { ...request, settingsFingerprint: shownSettings.fingerprint, settingsKeys: shownSettings.keys },
@@ -251,6 +251,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       io.err(`Installation is still finishing on ${safe(peer.alias)}. Rerun ${repairCommand} with the same options to confirm.\n`);
       return { ...result, repairCommand };
     }
+    if (["peer-core-unit-required", "peer-core-unit-ambiguous"].includes(result.reason)) io.err("Set coreUnit on this destination's peer entry in the hub roaming config, then retry.\n");
     (result.code === 0 ? io.out : io.err)(`${safe(result.reason)}\n`); return result;
   } catch (error) {
     if (error instanceof SelectedFilesError) {

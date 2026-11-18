@@ -164,7 +164,7 @@ export interface ProvisionPorts extends DoctorPorts {
   };
   systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<void> };
   transfer: {
-    enroll(peer: Peer, hubMachineId: string): Promise<void>;
+    enroll(peer: Peer, hubMachineId: string, coreUnit: string): Promise<void>;
     setEnabled(peer: Peer, hubMachineId: string, enabled: boolean): Promise<void>;
     cleanupSecrets(peer: Peer): Promise<void>;
     installRelease(peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }):

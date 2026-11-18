@@ -13,7 +13,7 @@ import { PROVISION_REMOTE_SCRIPT } from "./provision-remote-script";
 export { PROVISION_REMOTE_SCRIPT };
 interface Chunk { name: string; size: number; sha256: string }
 export interface AdapterOptions {
-  peer: Peer; operationId: string; destination: ProvisionDestination; unitDir: string; coreUnit: string;
+  peer: Peer; operationId: string; destination: ProvisionDestination; unitDir: string;
   limits: Limits; transport: ProvisionTransport; piProviders: readonly string[];
 }
 export type HcProvisionAdapter = ProvisionPorts["transfer"] & { systemd: ProvisionPorts["systemd"]; verifyPeer(): Promise<ProvisionVerification> };
@@ -39,7 +39,7 @@ function failure(error: unknown, action: string): HerdrError {
 }
 function samePeer(expected: Peer, actual: Peer): boolean {
   return expected.machineId === actual.machineId && expected.alias === actual.alias && expected.node === actual.node &&
-    expected.pi === actual.pi && expected.cli === actual.cli && expected.core === actual.core && expected.globalRoot === actual.globalRoot && expected.agentDir === actual.agentDir;
+    expected.pi === actual.pi && expected.cli === actual.cli && expected.core === actual.core && expected.globalRoot === actual.globalRoot && expected.agentDir === actual.agentDir && expected.coreUnit === actual.coreUnit;
 }
 
 /** A provisioning adapter is bound to one consented peer, operation and destination. */
@@ -176,7 +176,7 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
   };
   return {
     async setEnabled(target, hubMachineId, enabled) { await action(target, "roaming-enabled", { hubMachineId, enabled }); },
-    async enroll(target, hubMachineId) { await action(target, "enrollment", { hubMachineId, coreUnit: options.coreUnit }); },
+    async enroll(target, hubMachineId, coreUnit) { await action(target, "enrollment", { hubMachineId, coreUnit }); },
     async cleanupSecrets(target: Peer) { await action(target, "clear-secrets"); },
     async installRelease(target: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }) {
       if (input.npmPrefix !== destination.npmPrefix || input.globalRoot !== peer.globalRoot || input.pi !== "1.2.0" ||

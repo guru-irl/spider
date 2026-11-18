@@ -88,9 +88,25 @@ to set `agentDir`. Keep the peer's other fields. For example:
 {
 	"alias": "box-1.invalid",
 	"pi": "/home/example/prefix/bin/pi",
-	"agentDir": "/home/example/agent"
+	"agentDir": "/home/example/agent",
+	"coreUnit": "hc-serve-0a1b2c3d.service"
 }
 ```
+
+The top-level `coreUnit` belongs to the machine whose roaming config contains
+it. A hub's value never selects a destination's unit. Each hub peer can set its
+own optional `coreUnit`, as shown for `box-1.invalid` above. Provisioning records
+the destination unit in the box's top-level `coreUnit` and uses it for the
+supervisor's `After=`, `Requires=`, and `PartOf=` dependencies.
+
+When a peer omits `coreUnit`, the destination discovers existing `herdr`,
+`herdr-core`, `hc`, or `hc-core` services, including their instance names, and
+`hc-serve-<hex>.service` units. A candidate must have the same systemd main PID
+as the peer's configured `core` reports. The reported core identity must also
+match the transport's identity. Discovery requires exactly one match and keeps
+the unit-name, ownership, and safe-directory checks. No match returns
+`peer-core-unit-required`. Several matches return `peer-core-unit-ambiguous`.
+Both refusals require setting that peer's `coreUnit` before retrying.
 
 The npm prefix comes from `<prefix>/bin/pi` and need not be named `.local`.
 The configured agent directory must already exist under the destination's home.

@@ -11,14 +11,14 @@ import { setEnrolledPeerEnabled } from "./peer-enabled";
 
 export interface ProductionProvisionOptions {
   root: string; hubMachineId: string; peer: Peer; operationId: string; transport: ProvisionTransport; journal: Journal; limits: Limits;
-  source: ProvisionPorts["source"]; destination: ProvisionPorts["destination"]; unitDir: string; coreUnit: string;
+  source: ProvisionPorts["source"]; destination: ProvisionPorts["destination"]; unitDir: string;
   release: ProvisionPorts["release"]; configuredClis?: ProvisionPorts["configuredClis"];
   present: ProvisionPorts["present"]; confirm: ProvisionPorts["confirm"]; report: ProvisionPorts["report"];
   resources: ProvisionPorts["resources"]; bootId: ProvisionPorts["bootId"]; lockOptions?: ProcessLockOptions;
 }
 function samePeer(a: Peer, b: Peer): boolean {
   return a.machineId === b.machineId && a.alias === b.alias && a.node === b.node && a.pi === b.pi &&
-    a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot && a.agentDir === b.agentDir;
+    a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot && a.agentDir === b.agentDir && a.coreUnit === b.coreUnit;
 }
 
 /** Never use stale readiness to re-enable a box after a completed provisioning retry. */
@@ -38,10 +38,10 @@ export async function setProvisionParticipation(input: Pick<ProductionProvisionO
 /** Bind production effects to one peer and operation; UI and resource probes stay injected. */
 export function createProductionProvisionPorts(input: ProductionProvisionOptions): ProvisionPorts {
   const adapter = createHcProvisionAdapter({ peer: input.peer, operationId: input.operationId, destination: input.destination,
-    unitDir: input.unitDir, coreUnit: input.coreUnit, limits: input.limits, transport: input.transport, piProviders: input.source.piProviders });
+    unitDir: input.unitDir, limits: input.limits, transport: input.transport, piProviders: input.source.piProviders });
   const lock = createProvisionLock(input.root, input.lockOptions);
   return {
-    hubMachineId: input.hubMachineId, transport: input.transport.transport, journal: input.journal, limits: input.limits, coreUnit: input.coreUnit,
+    hubMachineId: input.hubMachineId, transport: input.transport.transport, journal: input.journal, limits: input.limits, ...(input.peer.coreUnit ? { coreUnit: input.peer.coreUnit } : {}),
     ...(input.configuredClis ? { configuredClis: input.configuredClis } : {}),
     source: input.source, destination: input.destination, release: input.release,
     confirm: input.confirm, present: input.present, report: input.report, resources: input.resources, bootId: input.bootId,

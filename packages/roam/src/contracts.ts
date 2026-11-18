@@ -20,9 +20,9 @@ import type { BootstrapOptions, Inventory } from "./provision-contracts";
 import { INTERCOM_QUEUE_BYTES, INTERCOM_QUEUE_MESSAGES } from "./intercom-contracts";
 
 export interface Peer {
-  machineId: MachineId; alias: string; node: string; pi: string; cli: string; core: string; globalRoot: string; agentDir?: string;
+  machineId: MachineId; alias: string; node: string; pi: string; cli: string; core: string; globalRoot: string; agentDir?: string; coreUnit?: string;
 }
-export type BootstrapPeer = Pick<Peer, "alias" | "node" | "pi" | "cli" | "globalRoot" | "agentDir">;
+export type BootstrapPeer = Pick<Peer, "alias" | "node" | "pi" | "cli" | "core" | "globalRoot" | "agentDir">;
 export interface Limits {
   chunkBytes: number; replyBytes: number; manifestBytes: number; targetBatchBytes: number; hardBatchBytes: number;
   applyTargetMs: number; workspaceBytes: number; sessionBytes: number; agentBytes: number; stagingBytes: number;

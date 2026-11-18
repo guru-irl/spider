@@ -7,7 +7,7 @@ import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
 import { ProcessTerminal } from '@earendil-works/pi-tui';
 import { openDbAt } from '@spider/db-core';
 import { setupHerdr } from '../../../herdr/src/setup/installer.js';
-import { createTerminalRegistry } from '../../../herdr/src/sessions/registry.js';
+import { createTerminalRegistry, terminalIdentityKey } from '../../../herdr/src/sessions/registry.js';
 import { createProcessPresence } from '../../../herdr/src/sessions/presence.js';
 import { createMachineCache } from '../../../herdr/src/ssh/cache.js';
 import { createExecutionEnvironmentPolicy, installSshShim, sshShimDirectory } from '../../../herdr/src/ssh/shim.js';
@@ -79,14 +79,26 @@ test.each(['json', 'print'] as const)('a %s mount leaves the interactive mapping
   expect(f.mount.owner()).toBeNull(); expect(existsSync(f.feed)).toBe(false); expect(f.errors).toEqual([]);
 }, 60000);
 
-test.each(['tui', 'rpc'] as const)('a nonnested %s top-level mount activates, publishes and replaces the terminal mapping', async mode => {
-  const f = await fixture(mode);
+test('a nonnested tui top-level mount activates, publishes and replaces the terminal mapping', async () => {
+  const f = await fixture('tui');
   await f.registry.record({ owner: f.h.owner!, recordedAt: 1, coreStartedAt: 1,
     environment: { agentDirectory: f.h.directories.agent, extensionArguments: [] } });
   await f.fire('session_start');
   expect(f.mount.enabled()).toBe(true);
   expect((await f.registry.get(f.h.owner!.terminal))?.owner.sessionId).toBe('candidate-session');
-  expect(existsSync(f.feed)).toBe(true); expect(f.captured).toEqual(mode === 'tui' ? ['spider-herdr-status'] : []); expect(f.errors).toEqual([]);
+  expect(existsSync(f.feed)).toBe(true); expect(f.captured).toEqual(['spider-herdr-status']); expect(f.errors).toEqual([]);
+}, 60000);
+
+test('a nonnested rpc top-level mount activates without changing the terminal mapping', async () => {
+  const f = await fixture('rpc');
+  await f.registry.record({ owner: f.h.owner!, recordedAt: 1, coreStartedAt: 1,
+    environment: { agentDirectory: f.h.directories.agent, extensionArguments: [] } });
+  const mapping = join(f.h.directories.global, 'herdr/terminals', terminalIdentityKey(f.h.owner!.terminal) + '.json');
+  const before = await readFile(mapping);
+  await f.fire('session_start');
+  expect(f.mount.enabled()).toBe(true);
+  expect(await readFile(mapping)).toEqual(before);
+  expect(existsSync(f.feed)).toBe(true); expect(f.captured).toEqual([]); expect(f.errors).toEqual([]);
 }, 60000);
 
 test.each(['tui', 'rpc'] as const)('a nested %s session stays inactive without publishing, opening IPC or rewriting the parent shim', async mode => {

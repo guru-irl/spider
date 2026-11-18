@@ -4,6 +4,7 @@ import { access, copyFile, cp, mkdir, readFile, writeFile, rename } from 'node:f
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { openDbAt } from '@spider/db-core';
+import { ProcessTerminal } from '@earendil-works/pi-tui';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { crashFakeCore } from '../../../herdr/src/__tests__/fake-core-crash.js';
 import { createTerminalRegistry } from '../../../herdr/src/sessions/registry.js';
@@ -53,9 +54,12 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
     openDbAt(dbPath, 'worktree').close(); openDbAt(globalPath, 'global').close();
     const hooks = new Map<string, Function[]>(), notices: string[] = [], noticeLevels: string[] = [], errors: unknown[] = [];
     let session = 'owner-session';
-    const ctx = { cwd: h.directories.local, mode: 'rpc', hasUI: true, isIdle: () => true,
+    const terminal = Object.create(ProcessTerminal.prototype) as ProcessTerminal;
+    Reflect.set(terminal, 'programStatusSupported', false); terminal.setProgramStatus({ state: 'done' });
+    const ctx = { cwd: h.directories.local, mode: 'tui', hasUI: true, isIdle: () => true,
       sessionManager: { getSessionId: () => session, getSessionFile: () => undefined, getEntries: () => [], getBranch: () => [] },
-      ui: { notify: (message: string, level: string) => { notices.push(message); noticeLevels.push(level); }, setStatus() {}, setWidget() {}, setFooter() {} } };
+      ui: { notify: (message: string, level: string) => { notices.push(message); noticeLevels.push(level); }, setStatus() {},
+        setWidget(_name: string, factory: unknown) { if (typeof factory === 'function') factory({ terminal }); }, setFooter() {} } };
     const pi = { on: (name: string, handler: Function) => { hooks.set(name, [...hooks.get(name) ?? [], handler]); return () => {}; }, registerTool() {}, registerCommand() {}, registerShortcut() {}, sendMessage() {} };
     const environment = (synthetic = true) => {
       for (const [key, value] of Object.entries(h.localEnv)) if (value !== undefined) vi.stubEnv(key, value);

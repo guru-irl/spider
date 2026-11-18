@@ -4,6 +4,7 @@ import { copyFile, cp, mkdir, readFile, writeFile, symlink } from 'node:fs/promi
 import { execFileSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { openDbAt } from '@spider/db-core';
+import { ProcessTerminal } from '@earendil-works/pi-tui';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { createTerminalRegistry } from '../../../herdr/src/sessions/registry.js';
 import { createProcessPresence } from '../../../herdr/src/sessions/presence.js';
@@ -17,6 +18,12 @@ import { processStartTime } from '../../../subagents/src/process-identity.js';
 
 const mounts: HerdrMount[] = [];
 afterEach(async () => { for (const m of mounts.splice(0)) await m.dispose(); vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+function terminalUi(notices: string[], noticeLevels: string[]) {
+  const terminal = Object.create(ProcessTerminal.prototype) as ProcessTerminal;
+  Reflect.set(terminal, 'programStatusSupported', false); terminal.setProgramStatus({ state: 'done' });
+  return { notify: (message: string, level: string) => { notices.push(message); noticeLevels.push(level); }, setStatus() {},
+    setWidget(_name: string, factory: unknown) { if (typeof factory === 'function') factory({ terminal }); }, setFooter() {} };
+}
 async function fixture(mode: 'fake' | 'hc' = 'fake') {
   const h = await createHerdrHarness(mode);
   try {
@@ -49,9 +56,9 @@ async function fixture(mode: 'fake' | 'hc' = 'fake') {
     openDbAt(dbPath, 'worktree').close(); openDbAt(globalPath, 'global').close();
     const hooks = new Map<string, Function[]>(), notices: string[] = [], noticeLevels: string[] = [], errors: unknown[] = [];
     let session = 'owner-session';
-    const ctx = { cwd: h.directories.local, mode: 'rpc', hasUI: true, isIdle: () => true,
+    const ctx = { cwd: h.directories.local, mode: 'tui', hasUI: true, isIdle: () => true,
       sessionManager: { getSessionId: () => session, getSessionFile: () => undefined, getEntries: () => [], getBranch: () => [] },
-      ui: { notify: (message: string, level: string) => { notices.push(message); noticeLevels.push(level); }, setStatus() {}, setWidget() {}, setFooter() {} } };
+      ui: terminalUi(notices, noticeLevels) };
     const pi = { on: (name: string, handler: Function) => { hooks.set(name, [...hooks.get(name) ?? [], handler]); return () => {}; }, registerTool() {}, registerCommand() {}, registerShortcut() {}, sendMessage() {} };
     const environment = (synthetic = true) => {
       for (const [key, value] of Object.entries(h.localEnv)) if (value !== undefined) vi.stubEnv(key, value);
@@ -117,7 +124,7 @@ test.each(['print', 'rpc'])('a headless %s session cannot replace the interactiv
     const parent = f.mounted(); await f.start(); expect(parent.enabled()).toBe(true);
     const hooks = new Map<string, Function[]>();
     const pi = { on: (name: string, handler: Function) => { hooks.set(name, [...hooks.get(name) ?? [], handler]); return () => {}; }, registerTool() {}, registerCommand() {}, registerShortcut() {}, sendMessage() {} };
-    const ctx = { ...f.ctx, hasUI: mode === 'rpc', mode, sessionManager: { ...f.ctx.sessionManager, getSessionId: () => 'one-shot-session' } };
+    const ctx = { ...f.ctx, ui: terminalUi(f.notices, f.noticeLevels), hasUI: mode === 'rpc', mode, sessionManager: { ...f.ctx.sessionManager, getSessionId: () => 'one-shot-session' } };
     const presenceStore = createProcessPresence(join(f.h.directories.global, 'herdr'));
     const terminal = await f.h.cli(['get', parent.owner()!.terminal.address, '--json']) as { pid: number };
     const ancestor = { pid: terminal.pid, startIdentity: processStartTime(terminal.pid)! };
@@ -131,7 +138,7 @@ test.each(['print', 'rpc'])('a headless %s session cannot replace the interactiv
     expect(presence.some(record => record.sessionId === 'one-shot-session' && record.mode === mode)).toBe(true);
     // An interactive destination still replaces the mapping on a session change.
     await presenceStore.remove(ancestor);
-    const interactive = { ...ctx, mode: 'rpc', hasUI: true };
+    const interactive = { ...ctx, mode: 'tui', hasUI: true };
     for (const hook of hooks.get('session_start') ?? []) await hook({}, interactive);
     for (const hook of hooks.get('session_info_changed') ?? []) await hook({}, interactive);
     expect((await f.registry.get(parent.owner()!.terminal))?.owner.sessionId).toBe('one-shot-session');

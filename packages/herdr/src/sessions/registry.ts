@@ -9,12 +9,12 @@ import { HerdrError } from '../client/parse.js';
 import { setTimeout as delay } from 'node:timers/promises';
 import { processStartTime } from '../../../subagents/src/process-identity.js';
 import type { ProcessIdentity, ProcessProbe } from './lease.js';
-import { recordedLaunch, type RecordedLaunch } from './launch-environment.js';
+import { recordedLaunch, resumeRefusal, type RecordedLaunch } from './launch-environment.js';
 import { PRIVATE_LAUNCH_DIRECTORY } from './launch-path.js';
 export interface LaunchEnvironment { agentDirectory: string; extensionArguments: readonly string[] }
-export interface TerminalAssociation { version: 1; owner: Owner; recordedAt: number; coreStartedAt: number; environment: LaunchEnvironment; activityId?: string; launchRecorded?: true }
+export interface TerminalAssociation { version: 1; owner: Owner; recordedAt: number; coreStartedAt: number; environment: LaunchEnvironment; activityId?: string; launchRecorded?: true; launchRecordId?: string }
 export interface TerminalRegistry {
-  record(record: Omit<TerminalAssociation, 'version' | 'launchRecorded'> & { launch?: RecordedLaunch }, started?: ProcessIdentity): Promise<void>;
+  record(record: Omit<TerminalAssociation, 'version' | 'launchRecorded' | 'launchRecordId'> & { launch?: RecordedLaunch }, started?: ProcessIdentity): Promise<void>;
   get(identity: TerminalIdentity): Promise<TerminalAssociation | null>;
   ended(identity: TerminalIdentity, activityId: string): Promise<boolean>;
   live(identity: TerminalIdentity, activityId: string): Promise<boolean>;
@@ -58,8 +58,12 @@ export async function writePrivateJson(path: string, value: unknown, publish?: (
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   const bytes = JSON.stringify(value); if (Buffer.byteLength(bytes) > maximumBytes) throw new HerdrError('state-too-large', 'State exceeds its size limit');
   const temporary = `${path}.${randomBytes(8).toString('hex')}.new`;
-  try { const handle = await open(temporary, 'wx', 0o600); try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); } if (publish) await publish(temporary, path); else { await rename(temporary, path); } }
+  try { const handle = await open(temporary, 'wx', 0o600); try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); } if (publish) await publish(temporary, path); else { await rename(temporary, path); } await syncStateDirectory(dirname(path)); }
   finally { await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }
+}
+export async function syncStateDirectory(path: string): Promise<void> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try { await handle.sync(); } finally { await handle.close(); }
 }
 export async function jsonFiles(directory: string): Promise<string[]> {
   try {
@@ -93,8 +97,8 @@ export function launchEnvironment(value: LaunchEnvironment): LaunchEnvironment {
 export const terminalIdentityKey = (identity: TerminalIdentity): string => hash(JSON.stringify([identity.coreId, identity.terminalId, identity.socket, identity.sessionNamespace]));
 const identityKey = terminalIdentityKey;
 const LAUNCH_RECORD_BYTES = 8 * 1024 * 1024;
-const launchRecordPath = (mapping: TerminalAssociation): string => join(mapping.environment.agentDirectory, ...PRIVATE_LAUNCH_DIRECTORY, `${identityKey(mapping.owner.terminal)}.json`);
-const invalidLaunchRecord = () => new HerdrError('launch-record-invalid', 'Private launch record is missing, unsafe, or invalid');
+const launchRecordPath = (mapping: TerminalAssociation): string => join(mapping.environment.agentDirectory, ...PRIVATE_LAUNCH_DIRECTORY, `${identityKey(mapping.owner.terminal)}${mapping.launchRecordId ? '-' + mapping.launchRecordId : ''}.json`);
+const invalidLaunchRecord = (mapping?: TerminalAssociation) => mapping ? resumeRefusal('launch-record-invalid', 'Private launch record is missing, unsafe, or invalid', mapping.owner) : new HerdrError('launch-record-invalid', 'Private launch record is missing, unsafe, or invalid');
 async function checkLaunchDirectory(path: string): Promise<void> {
   const directory = dirname(path), info = await lstat(directory);
   if (!info.isDirectory() || info.isSymbolicLink() || await realpath(directory) !== resolve(directory) ||
@@ -105,7 +109,7 @@ async function writeRecordedLaunch(mapping: TerminalAssociation, launch: Recorde
     const path = launchRecordPath(mapping);
     await privateDirectory(dirname(path)); await checkLaunchDirectory(path);
     await writePrivateJson(path, { version: 1, sessionId: mapping.owner.sessionId, sessionFile: mapping.owner.sessionFile, generation: mapping.owner.generation, recordedAt: mapping.recordedAt, launch: recordedLaunch(launch) }, undefined, LAUNCH_RECORD_BYTES);
-  } catch { throw invalidLaunchRecord(); } // JSON and OS errors must never expose an environment value.
+  } catch { throw invalidLaunchRecord(mapping); } // JSON and OS errors must never expose an environment value.
 }
 export async function readRecordedLaunch(mapping: TerminalAssociation): Promise<RecordedLaunch | undefined> {
   if (!mapping.launchRecorded) return undefined;
@@ -117,7 +121,7 @@ export async function readRecordedLaunch(mapping: TerminalAssociation): Promise<
     }, LAUNCH_RECORD_BYTES) as { version?: unknown; sessionId?: unknown; sessionFile?: unknown; generation?: unknown; recordedAt?: unknown; launch?: unknown } | null;
     if (!raw || raw.version !== 1 || raw.sessionId !== mapping.owner.sessionId || raw.sessionFile !== mapping.owner.sessionFile || raw.generation !== mapping.owner.generation || raw.recordedAt !== mapping.recordedAt) throw invalidLaunchRecord();
     return recordedLaunch(raw.launch);
-  } catch { throw invalidLaunchRecord(); }
+  } catch { throw invalidLaunchRecord(mapping); }
 }
 async function removeRecordedLaunch(mapping: TerminalAssociation): Promise<void> {
   if (!mapping.launchRecorded) return;
@@ -132,6 +136,7 @@ function association(value: unknown): TerminalAssociation {
   const r = value as TerminalAssociation;
   if (!r || r.version !== 1 || !r.owner || typeof r.owner.sessionId !== 'string' || typeof r.owner.generation !== 'string' || !r.owner.terminal || typeof r.owner.terminal.coreId !== 'string' || typeof r.owner.terminal.terminalId !== 'string' || typeof r.owner.terminal.socket !== 'string' || typeof r.owner.terminal.address !== 'string' || typeof r.owner.terminal.sessionNamespace !== 'string' || !isAbsolute(r.owner.cwd) || !(r.owner.sessionFile === null || typeof r.owner.sessionFile === 'string' && isAbsolute(r.owner.sessionFile)) || !(r.owner.name === null || typeof r.owner.name === 'string') || !Number.isFinite(r.recordedAt) || !Number.isFinite(r.coreStartedAt)) throw new HerdrError('invalid-terminal-mapping', 'Terminal association shape is invalid');
   if (r.activityId !== undefined && (typeof r.activityId !== 'string' || !/^[a-f0-9]{32}$/.test(r.activityId))) throw new HerdrError('invalid-terminal-mapping', 'Terminal association activity is invalid');
+  if (r.launchRecordId !== undefined && (r.launchRecorded !== true || typeof r.launchRecordId !== 'string' || !/^[a-f0-9]{32}$/.test(r.launchRecordId))) throw new HerdrError('invalid-terminal-mapping', 'Terminal launch record identity is invalid');
   if (r.launchRecorded !== undefined && r.launchRecorded !== true) throw new HerdrError('invalid-terminal-mapping', 'Terminal launch record marker is invalid');
   launchEnvironment(r.environment); return r;
 }
@@ -141,18 +146,30 @@ export function createTerminalRegistry(root: string): TerminalRegistry {
     async record(r, started) {
       const owner: Owner = { sessionId: r.owner.sessionId, generation: r.owner.generation, terminal: { coreId: r.owner.terminal.coreId, terminalId: r.owner.terminal.terminalId, address: r.owner.terminal.address, socket: r.owner.terminal.socket, sessionNamespace: r.owner.terminal.sessionNamespace }, cwd: r.owner.cwd, name: r.owner.name, sessionFile: r.owner.sessionFile === null ? null : await canonicalSessionFile(r.owner.sessionFile) };
       const key = identityKey(owner.terminal);
-      const mapping = association({ version: 1, owner, recordedAt: r.recordedAt, coreStartedAt: r.coreStartedAt, environment: launchEnvironment(r.environment), ...(r.activityId ? { activityId: r.activityId } : {}), ...(r.launch ? { launchRecorded: true } : {}) });
+      const mapping = association({ version: 1, owner, recordedAt: r.recordedAt, coreStartedAt: r.coreStartedAt, environment: launchEnvironment(r.environment), ...(r.activityId ? { activityId: r.activityId } : {}), ...(r.launch ? { launchRecorded: true, launchRecordId: randomBytes(16).toString('hex') } : {}) });
       if (started && (!mapping.activityId || !Number.isSafeInteger(started.pid) || started.pid <= 0)) throw new HerdrError('invalid-terminal-mapping', 'A started session requires an activity identifier and process ID');
       await withProcessLock(root, `resume-start:${key}`, async () => {
         await withProcessLock(root, `terminal:${key}`, async () => {
           const previousRaw = await readPrivateJson(path(owner.terminal));
           const previous = previousRaw === null ? null : association(previousRaw);
-          if (r.launch) await writeRecordedLaunch(mapping, r.launch);
+          if (r.launch) {
+            const privatePath = launchRecordPath(mapping);
+            try { await privateDirectory(dirname(privatePath)); await checkLaunchDirectory(privatePath); }
+            catch { throw invalidLaunchRecord(mapping); }
+            // Same-terminal writers hold this lock. Do not sweep another terminal's in-flight files.
+            for (const name of await readdir(dirname(privatePath))) if (name.startsWith(key) && name.endsWith('.new')) await unlink(join(dirname(privatePath), name));
+            await writeRecordedLaunch(mapping, r.launch);
+          }
           const markers = join(root, 'resume-starts', key);
           const live = started ? `live-${mapping.activityId}-${started.pid}` : '';
           if (started) await writePrivateJson(join(markers, live), { version: 1, ...started });
           await writePrivateJson(path(owner.terminal), mapping);
           if (previous?.launchRecorded && (!mapping.launchRecorded || launchRecordPath(previous) !== launchRecordPath(mapping))) await removeRecordedLaunch(previous);
+          if (mapping.launchRecorded) {
+            const currentPath = launchRecordPath(mapping), directory = dirname(currentPath);
+            for (const name of await readdir(directory)) if (name.startsWith(key) && name.endsWith('.json') && join(directory, name) !== currentPath) await unlink(join(directory, name));
+            await syncStateDirectory(directory);
+          }
           if (started) for (const name of await readdir(markers)) {
             if (/^(?:live-[a-f0-9]{32}-[1-9]\d*|ended-[a-f0-9]{32})$/.test(name) && name !== live) await unlink(join(markers, name)).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; });
           }

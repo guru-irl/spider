@@ -85,6 +85,12 @@ const PATH_FLAGS = new Set(['--extension', '-e', '--skill', '--prompt-template',
 const safePathText = (value: string) => value.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ');
 
 export function shellQuote(value: string): string { return "'" + value.replace(/'/g, "'\\''") + "'"; }
+export function resumeRefusal(code: string, reason: string, session: { sessionId: string; sessionFile: string | null; cwd: string }, launch?: RecordedLaunch): HerdrError {
+  const command = [launch?.program ?? 'pi', '--session', session.sessionFile ?? '<SESSION_FILE>'];
+  if (launch?.argv.some(arg => arg === '--api-key' || arg.startsWith('--api-key='))) command.push('--model', '<PROVIDER/MODEL>', '--api-key', '<API_KEY>');
+  const manual = `cd -- ${shellQuote(session.cwd)} && ${command.map(shellQuote).join(' ')}`;
+  return new HerdrError(code, safePathText(`Session ${JSON.stringify(session.sessionId)}: ${reason}. Resume manually: ${manual}. Restore any required launch options; for an argv key use --api-key '<API_KEY>'.`));
+}
 async function sessionModel(file: string): Promise<LaunchModel | null> {
   let handle;
   try {
@@ -110,7 +116,7 @@ async function sessionModel(file: string): Promise<LaunchModel | null> {
   } catch { throw new HerdrError('session-model-invalid', 'Cannot read the session model for API-key replay'); }
   finally { await handle?.close(); }
 }
-export async function replayLaunchArgv(launch: RecordedLaunch, sessionFile: string): Promise<string[]> {
+export async function replayLaunchArgv(launch: RecordedLaunch, sessionFile: string, sessionId: string = sessionFile): Promise<string[]> {
   const args: string[] = [], missing: string[] = [];
   let launchedProvider: string | undefined, hasApiKey = false;
   for (let i = 0; i < launch.argv.length; i++) {
@@ -154,7 +160,9 @@ export async function replayLaunchArgv(launch: RecordedLaunch, sessionFile: stri
   try { await access(program, constants.X_OK); } catch { program = 'pi'; }
   if (hasApiKey) {
     const originalProvider = launch.model?.provider ?? launchedProvider;
-    const model = await sessionModel(sessionFile) ?? launch.model;
+    let model: LaunchModel | undefined;
+    try { model = await sessionModel(sessionFile) ?? launch.model; }
+    catch { throw resumeRefusal('session-model-invalid', 'Cannot read the session model for API-key replay', { sessionId, sessionFile, cwd: launch.cwd }, launch); }
     if (!model || !originalProvider || model.provider.toLowerCase() !== originalProvider.toLowerCase()) {
       // Other argv values can also contain secrets. Show only the arguments needed to select the session and key provider.
       const manualArgs = [program, '--session', sessionFile];

@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { HERDR_LABELS, type SessionId, type TerminalIdentity } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
 import { canonicalSessionFile, launchEnvironment, readRecordedLaunch, refuseExplicitExtensions, type LaunchEnvironment, type TerminalRegistry } from './registry.js';
-import { replayLaunchArgv, replayLaunchVariables, resolveLaunchSource } from './launch-environment.js';
+import { replayLaunchArgv, replayLaunchVariables, resolveLaunchSource, resumeRefusal } from './launch-environment.js';
 import { assessSessionLiveness, recordedSessionLiveness, type SessionLeasePolicy, type ProcessIdentity, type ProcessInventoryPorts, type SessionLeases } from './lease.js';
 import { bootIdChanged, claimIdLock, inspectIdLock } from './id-lock.js';
 import { exactLaunchArgv } from './launch-limits.js';
@@ -40,7 +40,7 @@ export async function launchSession(request: SessionLaunchRequest, ports: Sessio
   if (!isAbsolute(request.cwd)) throw new HerdrError('launch-environment-invalid', 'Session cwd must be absolute');
   const file = await canonicalSessionFile(request.sessionFile);
   const mapping = ports.resume ? await ports.resume.registry.get(ports.resume.terminal) : null;
-  if (ports.resume && (!mapping || mapping.owner.sessionFile !== file || mapping.owner.sessionId !== request.sessionId)) throw new HerdrError('resume-offer-stale', `Resume offer for session ${JSON.stringify(request.sessionId)} is stale. Resume it by hand with pi --session.`);
+  if (ports.resume && (!mapping || mapping.owner.sessionFile !== file || mapping.owner.sessionId !== request.sessionId)) throw resumeRefusal('resume-offer-stale', 'This terminal resume offer is stale', request);
   const selected = mapping;
   if (selected && selected.owner.cwd !== request.cwd) throw new HerdrError('launch-environment-invalid', 'Recorded resume directory changed');
   const recorded = selected ? await readRecordedLaunch(selected) : undefined;
@@ -53,7 +53,7 @@ export async function launchSession(request: SessionLaunchRequest, ports: Sessio
   let starting = false;
   try {
     const header = await readSessionHeader(file); if (header.id !== request.sessionId) throw new HerdrError('session-id-mismatch', 'Session file identity changed');
-    const argv = recorded ? await replayLaunchArgv(recorded, file) : [SESSION_PROGRAM, '--session', file];
+    const argv = recorded ? await replayLaunchArgv(recorded, file, request.sessionId) : [SESSION_PROGRAM, '--session', file];
     const env = { ...safeLaunchEnvironment(recorded ? replayLaunchVariables(ports.env, recorded) : ports.env), PI_CODING_AGENT_DIR: recorded?.variables.PI_CODING_AGENT_DIR !== undefined ? resolveLaunchSource(recorded.variables.PI_CODING_AGENT_DIR, recorded.cwd, recorded.variables.HOME) : environment.agentDirectory, SPIDER_HERDR_LEASE_TOKEN: lease.token, SPIDER_HERDR_LEASE_FILE: file };
     starting = true;
     let process: ProcessIdentity | void;

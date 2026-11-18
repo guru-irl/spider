@@ -114,13 +114,13 @@ The file's `agentDirectory` must be the pi agent directory that your shell uses:
 6. On the first run, setup opens each configured session in its space and focuses the first space. It prints `Setup verified` with the number of file writes and visible probes.
 7. Run the printed doctor command to check the result.
 
-If setup fails after it starts opening sessions, it keeps its journal and ends the error with the exact command that undoes it:
+If setup fails, it keeps its journal and prints a rollback command. When an upgrade checkpoint exists, the command undoes that upgrade:
 
 ```text
-Rollback: <node> <installed-package>/dist/herdr/cli.mjs rollback --config <absolute-config-file>
+Rollback: <node> <installed-package>/dist/herdr/cli.mjs rollback --undo-upgrade --config <absolute-config-file>
 ```
 
-Run that command from a plain shell, or fix the cause and run setup again. See [Roll back](#roll-back).
+Run that command from a plain shell, or fix the cause and run setup again. See [Undo an upgrade](#undo-an-upgrade). Without a checkpoint, the printed command uses full rollback instead.
 
 Setup accepts these flags:
 
@@ -194,13 +194,21 @@ To restore the local installation files from before the latest upgrade, run:
 node <installed-package>/dist/herdr/cli.mjs rollback --undo-upgrade --config <absolute-config-file>
 ```
 
-Before its first write, each setup attempt records a private checkpoint under `globalRoot/herdr/setup/checkpoint.json`. It records file existence, bytes, and modes, including the whole key map, agent settings, spaces journal, endpoint registry, and setup journal. Failed attempts and their successful retry form one upgrade. Undo uses the checkpoint from before the first attempt, not the retry. An unchanged setup repeat does not replace that checkpoint or rewrite the setup journal. A setup summary that reports `setup journal updated` counts a journal change separately from installed-file writes.
+Before setup changes installed files or an endpoint, it records a private checkpoint under `globalRoot/herdr/setup/checkpoint.json`. The JSON records paths, content hashes, and modes. Private content-addressed files under `backups/` hold the bytes once. Failed attempts and their successful retry form one upgrade. Undo uses the state before the first attempt, not the retry.
 
-Upgrade undo restores whole files, including files an older spider install already owned. If a file changed after setup last wrote it, undo stops before restoration with `upgrade-checkpoint-changed`. Inspect the file first. To replace those edits, add `--replace-changed` to the undo command. This flag does not bypass session-liveness or owner checks. Close the created pi sessions first.
+A repeat that changes only the setup journal, cutover metadata, or probe records keeps the completed upgrade checkpoint. It does not create an upgrade checkpoint when none exists. An unchanged repeat does not rewrite the setup journal. The summary reports `setup journal updated` separately from installed-file writes. Undo refuses with `upgrade-checkpoint-bookkeeping-only` if it would restore only setup bookkeeping.
 
-An interrupted file restore resumes when you repeat the command. Setup refuses to run while an undo is in progress. If owner teardown was interrupted, undo stops with `upgrade-undo-interrupted`. If setup stopped before recording its final state, undo stops with `upgrade-checkpoint-incomplete`. Inspect the recorded owners and files before retrying either case with `--replace-changed`.
+Undo restores installed artifacts, including files an older spider install already owned. In shared files, it restores only setup's parts: the theme field, resume block, root notes setting, app preferences, and managed key sections. Later aliases, key bindings, and unrelated settings stay. Session moves in `spaces.json` stay, and runtime-rewritten layouts and instructions are not replaced wholesale.
 
-Remote runtime files and bootstrap state are not restored; undo returns recorded remote files in `remoteNotRestored` and prints `Remote file not restored: <machine> <path>` without contacting those machines to build the list.
+Close the pi sessions that the upgrade created before undo. Undo removes only those new owners, not tabs or sessions that existed before the upgrade. In a shared tab, it removes only the new panes. New mod directories disappear through a verified rename before their files are deleted. Generated app files are removed with them; unrelated user files stay.
+
+If a snapshotted installed path or a managed part changed, undo stops with `upgrade-checkpoint-changed` before restoration. This includes paths that setup did not rewrite. Inspect the named path first. `--replace-changed` permits replacement of an artifact or setup's managed part, never the rest of a shared file. It does not bypass liveness, ownership, or edits detected between failed attempts and their retries.
+
+An interrupted file restore resumes when you repeat the command. Setup refuses to run while undo is in progress. A setup process that died before its final snapshot can be undone from its recorded writes without the replacement flag. An owner error before any close leaves undo retryable. After a close has begun, `upgrade-undo-interrupted` requires you to inspect the recorded owners before retrying with `--replace-changed`.
+
+For `upgrade-checkpoint-invalid`, preserve `checkpoint.json` and `backups/`. Repair the checkpoint to retain upgrade undo. If you instead move it aside and rerun setup, setup starts a new checkpoint and cannot undo the old sequence. Full rollback is not a substitute for restoring the pre-upgrade state.
+
+Undo does not downgrade the installed spider package. A restored endpoint registry can refer to an older endpoint file that a package update removed. Reinstall the matching package version if necessary, then run the doctor. Remote runtime files and bootstrap state are not restored. The CLI prints `Remote file not restored: <machine> <path>` for each recorded remote file without contacting the machine.
 
 ### Remove everything spider installed
 
@@ -212,7 +220,7 @@ node <installed-package>/dist/herdr/cli.mjs rollback --config <absolute-config-f
 
 Rollback exits with 0 when it restored everything, 3 when some parts stay unrestored, 1 for any other failure, and 2 for a usage error. Setup and the doctor use the same codes, except 3. Rollback undoes only the parts that setup owns, and closes the tabs that setup created. Edits you made elsewhere in the same files stay. If you changed a part that setup owns, rollback leaves that file as it is and prints `<file> not restored:` with the reason. Repair that part, then run rollback again. Close the pi sessions in the tabs first, or rollback stops with `cutover-owner-live`. It never closes a terminal it did not create. It prints `Rollback restored <n> matching files`.
 
-Full rollback uses each file's historical install baseline, not the most recent upgrade checkpoint. The endpoint registry is restored from the upgrade checkpoint in both modes. Keep the checkpoint and backups until recovery is complete. If the original bindings were stock, rollback restores Cmd-T to `tab.new` and both split bindings to stock, and removes spider's Cmd-Shift-W binding. Bindings that were originally absent become absent again.
+Full rollback restores the state before the first setup that owned each file, not the most recent upgrade checkpoint. It removes the endpoint registry, including one created by an older installation without a checkpoint. Full rollback retires the upgrade checkpoint, so a later setup cannot merge with the old sequence. Keep the checkpoint and backups until recovery is complete. If the original bindings were stock, rollback restores Cmd-T to `tab.new` and both split bindings to stock, and removes spider's Cmd-Shift-W binding. Bindings that were originally absent become absent again.
 
 Like setup, rollback stops with `agent-directory-mismatch` when the configured `agentDirectory` differs from the shell's pi agent directory. It also stops with `global-root-mismatch` when the configured `globalRoot` differs from pi's.
 

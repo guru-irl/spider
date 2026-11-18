@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { createUiModules } from './strict-mod-api.mjs';
 import { HerdrLabelContract } from '../contracts.js';
+import { applyModPatches } from '../look/patches.js';
 import { pickerRows, selectPickerRow } from '../../assets/picker/model.js';
 import { projectNavigation } from '../../assets/shared/navigation.js';
 import { describeOpenFailure } from '../../assets/shared/open-failure.js';
@@ -46,7 +47,7 @@ function inheritedStyle(root: any, matches: (node: any) => boolean): any {
 }
 const textStyle = (root: any, label: string) => inheritedStyle(root, node => node.items?.includes(label));
 
-function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missing' | 'invalid'; parked?: boolean; feeds?: any[]; status?: string; snapshotGate?: Promise<void>; fonts?: { body: string; label: string; paths: string } } = {}) {
+function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missing' | 'invalid'; parked?: boolean; feeds?: any[]; status?: string; snapshotGate?: Promise<void>; fonts?: { body: string; label: string; paths: string }; pickerSource?: string } = {}) {
   const modules = createUiModules(), kit = modules['gpui-kit'], base = modules['gpui-base'];
   const inputs: any[] = [], calls: any[] = [], timers = new Set<any>(), watches = new Set<any>();
   let closed!: () => void;
@@ -94,7 +95,7 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
     return { ok: true, json: async () => ({ version: 1, entries, changes: state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, feed: item })), errors: [] }) };
   };
   const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => Object.assign(kit.div(), { inputElement: true }) }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, describeOpenFailure, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService };
-  const body = readFileSync(source, 'utf8').replace(/^import .*;\s*$/gm, '').replace(/export default class Picker/, 'class Picker').replace(/export class Picker/, 'class Picker').replace(/export default Picker;?/g, '');
+  const body = (options.pickerSource ?? readFileSync(source, 'utf8')).replace(/^import .*;\s*$/gm, '').replace(/export default class Picker/, 'class Picker').replace(/export class Picker/, 'class Picker').replace(/export default Picker;?/g, '');
   const Picker = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${body}; return Picker;`)(api);
   const view = new Picker(); view.init({}, cx);
   return { view, cx, state, calls, inputs, timers, watches, config, herdr };
@@ -122,6 +123,32 @@ it('keeps source-owned names and child actions without a local feed or remote ap
     expect(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'remote-session', generation: 'remote-generation', slot: { space: 's1', tab: 'tb1', pane: null } }));
     expect(h.calls.filter(call => call[0] === 'run' && call[1] === 'pane.focus')).toEqual([]);
   } finally { await h.view.close(); }
+});
+
+it('0.1.16 keeps a remote native picker action until a snapshot is available', async () => {
+  const patchPath = resolve('packages/herdr/assets/look/native-picker-0.1.16.json');
+  const records = existsSync(patchPath) ? JSON.parse(readFileSync(patchPath, 'utf8')) : [];
+  const pickerSource = applyModPatches({ 'main.js': readFileSync(source, 'utf8') }, records, 'picker')['main.js'];
+  const h = host({ config: 'missing', pickerSource });
+  const address = 'box-1.invalid/t2';
+  h.state.agents = [{ ...agent(address, 'remote-pane', 'Remote'), space: remoteSpace.id, tab: remoteSpace.tabs[0].id }];
+  h.state.terms = [{ ...terminal(address), labels: { 'spider.display-name': 'Remote' } }];
+  h.state.panes = [{ pane: 'remote-pane', terminal: address, tab: remoteSpace.tabs[0].id }];
+  try {
+    await h.view.ready;
+    const row = h.view.rows().find((item: any) => item.id === `agent:${address}`);
+    expect.soft(row?.enabled).toBe(true);
+    await h.view.activate(`agent:${address}`);
+    expect.soft(h.calls).toContainEqual(['run', 'pane.focus', { pane: 'remote-pane' }]);
+  } finally { await h.view.close(); }
+  const service = host({ feeds: [], pickerSource }); service.state.paneSnapshot = sourceSnapshot('Source writer');
+  try {
+    await service.view.ready;
+    await service.view.activate('session:remote-session');
+    const requests = service.calls.filter(call => call[0] === 'exec' && call[2].includes('panes')).map(call => JSON.parse(call[2].at(-1)));
+    expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'remote-session' }));
+    expect.soft(service.calls.filter(call => call[0] === 'run' && call[1] === 'pane.focus')).toEqual([]);
+  } finally { await service.view.close(); }
 });
 
 it('hides an unnamed source owner and its children rather than using a generic agent name', async () => {

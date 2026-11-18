@@ -95,7 +95,7 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
     return { ok: true, json: async () => ({ version: 1, entries, changes: state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, feed: item })), errors: [] }) };
   };
   const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => Object.assign(kit.div(), { inputElement: true }) }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, indexPaneNavigation, describeOpenFailure, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService };
-  const body = (options.pickerSource ?? readFileSync(source, 'utf8')).replace(/^import .*;\s*$/gm, '').replace(/export default class Picker/, 'class Picker').replace(/export class Picker/, 'class Picker').replace(/export default Picker;?/g, '');
+  const body = (options.pickerSource ?? readFileSync(source, 'utf8')).replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace(/export default class Picker/, 'class Picker').replace(/export class Picker/, 'class Picker').replace(/export default Picker;?/g, '');
   const Picker = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${body}; return Picker;`)(api);
   const view = new Picker(); view.init({}, cx);
   return { view, cx, state, calls, inputs, timers, watches, config, herdr };

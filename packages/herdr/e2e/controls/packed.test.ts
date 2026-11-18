@@ -22,6 +22,7 @@ const spacesAssets = [
   'toast/main.js', 'toast/mod.json', 'toast/filter.js', 'toast/NOTICE',
   'look/spaces-a-sidebar/agents-0.1.13.json', 'look/spaces-a-sidebar/agents-0.1.16.json',
   'look/spaces-a-sidebar/spaces-0.1.13.json', 'look/spaces-a-sidebar/spaces-0.1.16.json',
+  'look/native-navigation-0.1.16.json', 'look/native-panel-0.1.16.json', 'look/native-picker-0.1.16.json',
 ];
 
 describe('Spaces packed inventories', () => {

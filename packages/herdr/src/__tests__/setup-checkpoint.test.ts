@@ -86,7 +86,8 @@ async function fixture() {
     rollback: async () => { if (ownerLive) throw new HerdrError('cutover-owner-live', 'owner live'); await put(paths.spaces, '{"version":2,"spaces":[]}\n'); },
     warn: () => {},
   };
-  return { request, parts, paths, all, before, fail: (value: boolean) => { fail = value; }, live: (value: boolean) => { ownerLive = value; }, badDoctor: () => { verificationFails = true; } };
+  const undoExpected = before.map(file => file.path === paths.spaces ? { ...file, bytes: Buffer.from('{"version":2,"spaces":[]}\n').toString('base64'), mode: 0o600 } : file);
+  return { request, parts, paths, all, before, undoExpected, fail: (value: boolean) => { fail = value; }, live: (value: boolean) => { ownerLive = value; }, badDoctor: () => { verificationFails = true; } };
 }
 
 test('undo restores the first failed-attempt checkpoint after a successful retry, including legacy files and registry', async () => {
@@ -95,12 +96,12 @@ test('undo restores the first failed-attempt checkpoint after a successful retry
   expect(await fs.readFile(f.paths.layout, 'utf8')).toBe(nativeLayout);
   f.fail(false); await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
   await undoHerdrUpgrade(f.request, f.parts);
-  expect(await values(f.all.filter(path => path !== f.paths.spaces))).toEqual(f.before.filter(file => file.path !== f.paths.spaces));
+  expect(await values(f.all)).toEqual(f.undoExpected);
 });
 
-test('undo restores a single successful upgrade byte for byte and mode for mode', async () => {
+test('undo restores upgrade bytes and modes while retaining owner-updated runtime state', async () => {
   const f = await fixture(); await setupHerdr(f.request, f.parts); await undoHerdrUpgrade(f.request, f.parts);
-  expect(await values(f.all.filter(path => path !== f.paths.spaces))).toEqual(f.before.filter(file => file.path !== f.paths.spaces));
+  expect(await values(f.all)).toEqual(f.undoExpected);
 });
 
 test('undo refuses a later user edit before touching any path unless replacement is explicit', async () => {
@@ -109,7 +110,7 @@ test('undo refuses a later user edit before touching any path unless replacement
   await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-changed' });
   expect(await values(f.all)).toEqual(edited);
   await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
-  expect(await values(f.all.filter(path => path !== f.paths.spaces))).toEqual(f.before.filter(file => file.path !== f.paths.spaces));
+  expect(await values(f.all)).toEqual(f.undoExpected);
 });
 
 test('a retry does not claim user edits to a file it leaves unchanged', async () => {
@@ -145,8 +146,9 @@ test('full rollback retains a changed registry and reports incomplete restoratio
 
 test('a failed attempt is undoable before any successful retry', async () => {
   const f = await fixture(); f.fail(true); await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('injected cutover interruption');
+  const runtime = (await values([f.paths.spaces]))[0]!;
   await undoHerdrUpgrade(f.request, f.parts);
-  expect(await values(f.all.filter(path => path !== f.paths.spaces))).toEqual(f.before.filter(file => file.path !== f.paths.spaces));
+  expect(await values(f.all)).toEqual(f.undoExpected.map(file => file.path === f.paths.spaces ? runtime : file));
 });
 
 test('an interrupted undo resumes without replacing a later user edit silently', async () => {
@@ -155,7 +157,7 @@ test('an interrupted undo resumes without replacing a later user edit silently',
   await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toThrow('interrupted undo');
   vi.mocked(fs.rename).mockImplementation(real.rename);
   await undoHerdrUpgrade(f.request, f.parts);
-  expect(await values(f.all.filter(path => path !== f.paths.spaces))).toEqual(f.before.filter(file => file.path !== f.paths.spaces));
+  expect(await values(f.all)).toEqual(f.undoExpected);
 });
 
 test('setup reports journal changes and an unchanged repeat does not rewrite it', async () => {
@@ -204,7 +206,7 @@ test('undo returns and prints remote files from every recorded run without conta
   const result = await installer.undoHerdrUpgrade?.(f.request, f.parts);
   expect(result?.remoteNotRestored).toEqual([{ machine: 'box-1.invalid', path: '/home/fixture/runtime-v2.mjs' }]);
   expect(remote.bytes?.toString()).toBe('runtime-v2');
-  expect(await values(f.all.filter(path => path !== f.paths.spaces))).toEqual(f.before.filter(file => file.path !== f.paths.spaces));
+  expect(await values(f.all)).toEqual(f.undoExpected);
 
   const g = await fixture(), output: string[] = [];
   let uploaded = false;
@@ -381,7 +383,8 @@ test('undo unpublishes a new mod before deleting any of its files', async () => 
   const broken: string[] = [];
   vi.mocked(fs.unlink).mockImplementation(async path => {
     await real.unlink(path);
-    if ((await real.readdir(directory).catch(() => [])).includes('main.js') && !(await real.readdir(directory)).includes('mod.json')) broken.push(String(path));
+    const files = await real.readdir(directory).catch((): string[] => []);
+    if (files.includes('main.js') && !files.includes('mod.json')) broken.push(String(path));
   });
   await undoHerdrUpgrade(f.request, f.parts);
   expect(broken).toEqual([]);
@@ -469,4 +472,12 @@ test('a killed file batch can undo completed write intents without the replaceme
   await put(path, JSON.stringify(checkpoint));
   await undoHerdrUpgrade(f.request, f.parts);
   expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+});
+
+
+test('full rollback removes a valid endpoint registry from an installation without a checkpoint', async () => {
+  const f = await fixture();
+  expect((await snapshot(f.paths.registry)).hash).not.toBeNull();
+  await rollbackHerdr(f.request, f.parts);
+  expect((await snapshot(f.paths.registry)).hash).toBeNull();
 });

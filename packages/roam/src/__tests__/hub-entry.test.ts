@@ -76,6 +76,47 @@ async function exit(child: ChildProcess): Promise<{ code: number | null; signal:
     child.once("error", error => { clearTimeout(timer); reject(error); });
   });
 }
+type FixtureProcess = { pid: number; startIdentity: string };
+async function stopFixtureProcess(owned: FixtureProcess): Promise<void> {
+  process.kill(owned.pid, "SIGTERM");
+}
+
+it("fixture teardown waits for the signalled process to exit", async () => {
+  const child = spawn(process.execPath, ["-e", `process.on('SIGTERM', () => process.send('signalled')); process.on('message', message => { if (message === 'exit') process.exit(0); }); process.send('ready');`],
+    { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  const message = () => new Promise<unknown>(done => child.once("message", done));
+  try {
+    expect(await message()).toBe("ready");
+    const pid = child.pid!;
+    const probe = await createLocalDiagnosticPorts(resolve(".spider/scratch"), []).probeProcess({ machineId: HUB, label: "local", peer: null }, pid);
+    expect(probe.kind).toBe("live");
+    if (probe.kind !== "live") throw new Error("fixture process identity unavailable");
+    const signalled = message();
+    let stopped = false;
+    const stopping = stopFixtureProcess({ pid, startIdentity: probe.startIdentity }).then(() => { stopped = true; });
+    expect(await signalled).toBe("signalled");
+    expect(stopped).toBe(false);
+    child.send("exit");
+    await stopping;
+    const after = await createLocalDiagnosticPorts(resolve(".spider/scratch"), []).probeProcess({ machineId: HUB, label: "local", peer: null }, pid);
+    expect(after.kind).toBe("absent");
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { child.send("exit"); await exit(child); }
+  }
+});
+
+it("fixture teardown refuses to signal a different process identity", async () => {
+  const child = spawn(process.execPath, ["-e", `process.on('SIGTERM', () => {}); process.on('message', () => process.exit(0)); process.send('ready');`],
+    { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  try {
+    await new Promise<void>(done => child.once("message", () => done()));
+    await expect(stopFixtureProcess({ pid: child.pid!, startIdentity: "not-the-child" })).rejects.toThrow();
+    expect(child.exitCode).toBeNull();
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) { child.send("exit"); await exit(child); }
+  }
+});
+
 async function ready(socket: string, child: ChildProcess) {
   const deadline = Date.now() + 3000;
   while (Date.now() < deadline && child.exitCode === null && child.signalCode === null) {

@@ -1,11 +1,14 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import { mkdir, writeFile } from "node:fs/promises";
+import { installSupervisorCorePin } from "../enrollment";
+import { main } from "../supervisor-main";
 import { join } from "node:path";
 import { createClientFixture, type ClientFixture } from "../../../herdr/src/__tests__/testutil";
 import * as supervisor from "../production-supervisor";
 import type { Clock } from "../contracts";
 
 const fixtures: ClientFixture[] = [];
-afterEach(async () => { for (const fixture of fixtures.splice(0)) await fixture.close(); });
+afterEach(async () => { vi.unstubAllEnvs(); for (const fixture of fixtures.splice(0)) await fixture.close(); });
 async function fixture() {
   const h = await createClientFixture(); fixtures.push(h);
   await h.configure({ roamFixture: {}, fixtureCorePid: 4321 });
@@ -13,6 +16,29 @@ async function fixture() {
     stateHome: h.localEnv.XDG_STATE_HOME!, configHome: h.localEnv.XDG_CONFIG_HOME! };
   return { h, pin };
 }
+
+async function enroll(h: ClientFixture) {
+  const machineId = "00000000-0000-4000-8000-000000000001", hubMachineId = "00000000-0000-4000-8000-000000000002";
+  await mkdir(join(h.root, "roam"), { mode: 0o700 });
+  await writeFile(join(h.root, "roam/machine.json"), JSON.stringify({ machineId }), { mode: 0o600 });
+  await writeFile(join(h.root, "roam/config.json"), JSON.stringify({ enabled: true, role: "box", machineId, hubMachineId, peers: [], coreUnit: "fixture.service" }), { mode: 0o600 });
+  vi.stubEnv("HERDR_FAKE_ROOT", h.root);
+}
+
+it("ensures the enrolled core at production startup even while capture is pending", async () => {
+  const { h, pin } = await fixture(); await enroll(h); installSupervisorCorePin(h.root, pin);
+  const service = await supervisor.startProductionSupervisor(h.root);
+  try { expect((await h.calls()).map(call => call.argv)).toEqual([["server", "start", "--json"]]); }
+  finally { await service.stop(); }
+});
+
+it("prints core-changed and fails the service for a mismatching enrollment", async () => {
+  const { h, pin } = await fixture(); await enroll(h); installSupervisorCorePin(h.root, { ...pin, coreId: "foreign-core" });
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", h.root);
+  let err = "";
+  expect(await main([], { out() {}, err(text) { err += text; } })).toBe(1);
+  expect(err).toContain("core-changed");
+});
 
 it("starts a stopped core through its pinned binary and socket without using PATH", async () => {
   const { h, pin } = await fixture();

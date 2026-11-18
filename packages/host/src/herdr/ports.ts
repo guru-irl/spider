@@ -301,7 +301,7 @@ export async function verifiedHerdrFile(journalRoot: string, file: InstallFile):
     const journal = await readJournal(journalRoot);
     await validateFiles([file], journal, false);
     await prepareBackups(journalRoot, [file], journal);
-    await applyFiles([file], journal); await saveJournal(journalRoot, journal);
+    await applyFiles(journalRoot, [file], journal); await saveJournal(journalRoot, journal);
   });
 }
 export async function coreStartedAt(binary: string, env: Readonly<NodeJS.ProcessEnv>): Promise<number> {
@@ -380,15 +380,6 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     ...(hasToast ? ['toast'] : []),
   ];
   const filesFor = async (files: readonly { path: string; bytes: Buffer; mode?: number; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[], context: SetupContext): Promise<InstallFile[]> => Promise.all(files.map(async file => ({ ...file, expected: file.terminalKeys || file.keys ? (await snapshot(file.path)).hash : context.installed[file.path] ?? null, collision: file.terminalKeys || file.keys ? 'key' as const : 'clone' as const })));
-  const orderModFiles = <T extends { path: string }>(files: readonly T[], appHome: string): T[] => {
-    const priority = (file: T) => {
-      const name = relative(join(appHome, 'mods'), file.path).split(sep);
-      if (!name[0]?.startsWith('spider-')) return 3;
-      if (name.length !== 2) return 0;
-      return name[1] === 'mod.json' ? -1 : name[1] === 'main.js' ? 1 : 0;
-    };
-    return [...files].sort((a, b) => priority(a) - priority(b));
-  };
   const pickerFiles = async (request: SetupRequest, context: SetupContext, fonts: Awaited<ReturnType<typeof prepareFonts>>['families'], modIds: readonly string[]): Promise<{ path: string; bytes: Buffer; mode?: number }[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets'), mods = join(request.config.app.home, 'mods');
     const picker = context.modProps.find(copy => copy.props.modId === 'spider-picker');
@@ -717,7 +708,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         if (!target.startsWith(root + sep) || !available.has(target)) throw new HerdrError('picker-import-unresolved', `Unresolved import in ${file.path}: ${specifier}`);
       }
     }
-    return filesFor(orderModFiles(files, request.config.app.home), context);
+    return filesFor(files, context);
   };
   const templates = async (request: SetupRequest, context: SetupContext): Promise<InstallFile[]> => {
     const options: CreateModelRuntimeOptions = { authPath: join(request.config.agentDirectory, 'auth.json'), modelsPath: join(request.config.agentDirectory, 'models.json'), modelsStorePath: join(request.config.agentDirectory, 'models-cache.json'), allowModelNetwork: false };
@@ -1197,7 +1188,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           const sounds = (rawSounds ?? {}) as Record<string, unknown>;
           if (sounds.enabled !== undefined && typeof sounds.enabled !== 'boolean') throw new HerdrError('invalid-app-settings', 'App settings sounds.enabled must be boolean');
           const bytes = Buffer.from(JSON.stringify({ ...appSettings, sounds: { ...sounds, enabled: false } }, null, 2) + '\n');
-          return [...await filesFor(orderModFiles(files, request.config.app.home), context), { path: keyPath, expected: currentKeys.hash, bytes: Buffer.alloc(0), keys, retainedKeys: preserved?.retained, ignoredKeys: preserved?.ignored, collision: 'key' as const }, { path: settingsPath, expected: settings.hash, bytes, updateAfterCutover: true, managed: { kind: 'json-paths' as const, paths: ['theme', 'layout', 'sounds.enabled'] } }];
+          return [...await filesFor(files, context), { path: keyPath, expected: currentKeys.hash, bytes: Buffer.alloc(0), keys, retainedKeys: preserved?.retained, ignoredKeys: preserved?.ignored, collision: 'key' as const }, { path: settingsPath, expected: settings.hash, bytes, updateAfterCutover: true, managed: { kind: 'json-paths' as const, paths: ['theme', 'layout', 'sounds.enabled'] } }];
         }, generateTemplates: (request, context) => templates(request, context),
         installResume: async (request, context) => {
           const hookPath = join(request.config.globalRoot, 'herdr/resume.sh'), current = await snapshot(request.config.shellRc);
@@ -1257,17 +1248,19 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
           return { terminals: result.tabs.map(tab => tab.terminal), identities: Object.fromEntries(result.launched.map(owner => [owner.sessionId, owner.startIdentity])) };
         },
         verify: async request => doctorHerdr(request, { ...await doctorParts(request, fallbackLook), probeRuntimeRoot: async (_target, launch) => rootProbes.get(rootKey(launch)) ?? probe(request, launch), cachedNodeObservations: async () => (await readJournal(request.journalRoot)).probes }),
-        rollback: async result => {
+        rollback: async (result, options) => {
           const spaces = getSpaces();
           const recovery = await readCutoverRecovery(spaces.journalRoot, await spaces.layoutSnapshot());
           if (result.terminals.length !== recovery.createdTabs.length || result.terminals.some(address => !recovery.createdTabs.some(tab => tab.terminal === address)) || recovery.entries.some(entry => entry.result && result.identities[entry.target.sessionId] !== entry.result.startIdentity)) throw new HerdrError('cutover-owner-conflict', 'Rollback does not match G-created tab identities');
-          if (recovery.createdTabs.some(tab => tab.terminal.includes('/'))) {
+          const entries = recovery.entries.filter(entry => !options?.preserve || !options.preserve.terminals.includes(entry.placement.terminal) && !(entry.result && options.preserve.identities[entry.target.sessionId] === entry.result.startIdentity));
+          const selected = entries.map(entry => entry.placement);
+          if (selected.some(tab => tab.terminal.includes('/'))) {
             const localCore = (await spaces.coreIdentity()).coreId;
-            if (recovery.createdTabs.some(tab => tab.terminal.includes('/') && tab.terminal.split('/')[0] !== localCore)) throw new HerdrError('cutover-owner-live', 'Cannot prove that the remote session owner has stopped');
+            if (selected.some(tab => tab.terminal.includes('/') && tab.terminal.split('/')[0] !== localCore)) throw new HerdrError('cutover-owner-live', 'Cannot prove that the remote session owner has stopped');
           }
           const snapshot = await spaces.layoutSnapshot();
-          const close: typeof recovery.createdTabs = [];
-          for (const entry of recovery.entries) {
+          const close: typeof recovery.createdTabs = [], panes: import('@spider/herdr/contracts').PaneId[] = [];
+          for (const entry of entries) {
             const live = await assessSessionLiveness(entry.target.file, selectedProcessInventory(request.config, spaces.processInventory)), process = entry.result ? await spaces.processInventory.probe(entry.result.pid) : null;
             if (live.kind !== 'free' || process?.kind === 'unknown' || process?.kind === 'live' && process.startIdentity === entry.result!.startIdentity) throw new HerdrError('cutover-owner-live', 'Close the created session owner before rolling back its tab');
             // A session can switch files while remaining in the same terminal.
@@ -1275,7 +1268,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
               const current = await spaces.processInventory.probe(record.pid);
               if (current.kind === 'unknown' || current.kind === 'live' && current.startIdentity === record.startIdentity) throw new HerdrError('cutover-owner-live', `Close the pi in the recorded terminal (PID ${record.pid}) before rollback`);
             }
-            if (entry.manuallyMoved) {
+            if (entry.manuallyMoved && !options?.preserve) {
               if (snapshot.spaces.some(s => s.tabs.some(t => tabTerminals(t).some(row => row.terminal === entry.placement.terminal)))) throw new HerdrError('cutover-owner-conflict', 'Close the moved session before rollback');
               continue;
             }
@@ -1286,12 +1279,19 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
             }
             const owned = new Set(recovery.entries.filter(e => e.placement.space === space!.id && e.placement.tab === tab.id).map(e => e.placement.terminal));
             const foreign = tabTerminals(tab).filter(row => !owned.has(row.terminal)).map(row => row.terminal);
+            if (options?.preserve && tabTerminals(tab).some(row => !selected.some(placement => placement.terminal === row.terminal))) {
+              const placement = await spaces.app.ownerPlacement(entry.placement.terminal);
+              if (!panes.includes(placement.pane)) panes.push(placement.pane);
+              continue;
+            }
             if (foreign.length) throw new HerdrError('cutover-owner-conflict', rollbackForeignPanesNotice(space!.name, tab.name, foreign));
             if (tab.name !== (entry.tabName ?? entry.target.name ?? entry.target.sessionId) && tab.name !== entry.label || !tabTerminals(tab).some(row => row.terminal === entry.placement.terminal)) throw new HerdrError('cutover-owner-conflict', 'A created tab no longer has its recorded identity');
             if (!close.some(p => p.space === entry.placement.space && p.tab === entry.placement.tab)) close.push(entry.placement);
           }
+          if (close.length || panes.length) await options?.beforeClose?.();
+          for (const pane of panes) { const reply = await spaces.app.command('pane.close', { pane }); if (reply.error) throw new HerdrError(reply.error.code, reply.error.message); }
           for (const tab of close) { const reply = await spaces.app.command('tab.close', { id: tab.tab, confirmed: true }); if (reply.error) throw new HerdrError(reply.error.code, reply.error.message); }
-          await forgetCutoverTabs(spaces.journalRoot, recovery.createdTabs, await spaces.layoutSnapshot());
+          await forgetCutoverTabs(spaces.journalRoot, selected, await spaces.layoutSnapshot(), !!options?.preserve);
         },
         warn: message => process.stderr.write(message + '\n'),
       };

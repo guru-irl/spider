@@ -20,7 +20,7 @@ test('identical unowned bytes become owned and rollback preserves the adopted fi
   const files: InstallFile[] = [{ path, bytes: Buffer.from('planned'), expected: null, collision: 'clone' }];
   await validateFiles(files, journal);
   await prepareBackups(root, files, journal);
-  expect(await applyFiles(files, journal)).toEqual([]);
+  expect(await applyFiles(root, files, journal)).toEqual([]);
   const entry = (await readJournal(root)).entries[0];
   expect(entry).toMatchObject({ path, before: digest(Buffer.from('planned')), after: digest(Buffer.from('planned')) });
   expect(await readFile(entry.backup!, 'utf8')).toBe('planned');
@@ -32,7 +32,7 @@ test('identical bytes replace stale ownership while retaining the original rollb
   const { root, journal } = await fixture(), path = join(root, 'mod.js');
   await writeFile(path, 'original');
   const files: InstallFile[] = [{ path, bytes: Buffer.from('old'), expected: digest(Buffer.from('original')), collision: 'clone' }];
-  await validateFiles(files, journal); await prepareBackups(root, files, journal); await applyFiles(files, journal);
+  await validateFiles(files, journal); await prepareBackups(root, files, journal); await applyFiles(root, files, journal);
   await writeFile(path, 'new');
   files[0] = { path, bytes: Buffer.from('new'), expected: digest(Buffer.from('old')), collision: 'clone' };
   await validateFiles(files, journal); await prepareBackups(root, files, journal);
@@ -57,11 +57,11 @@ test('all changed targets are listed with an explicit replacement option before 
 test.each([false, true])('replacement saves the current user bytes for rollback, prior ownership %s', async owned => {
   const { root, journal } = await fixture(), path = join(root, 'mod.js');
   const files: InstallFile[] = [{ path, bytes: Buffer.from('old'), expected: null, collision: 'clone' }];
-  if (owned) { await validateFiles(files, journal); await prepareBackups(root, files, journal); await applyFiles(files, journal); }
+  if (owned) { await validateFiles(files, journal); await prepareBackups(root, files, journal); await applyFiles(root, files, journal); }
   await writeFile(path, 'user edit');
   files[0] = { path, bytes: Buffer.from('planned'), expected: owned ? digest(Buffer.from('old')) : null, collision: 'clone' };
   await validateFiles(files, journal, false, undefined, { replaceChanged: true });
-  await prepareBackups(root, files, journal); await applyFiles(files, journal);
+  await prepareBackups(root, files, journal); await applyFiles(root, files, journal);
   const entry = (await readJournal(root)).entries[0];
   expect(await readFile(entry.backup!, 'utf8')).toBe('user edit');
   expect(await readFile(path, 'utf8')).toBe('planned');
@@ -73,7 +73,7 @@ test('snapshot-only plans do not adopt changed app selections as intended bytes'
   const { root, journal } = await fixture(), path = join(root, 'settings.json');
   await writeFile(path, '{"theme":"original"}');
   const files: InstallFile[] = [{ path, bytes: Buffer.from('{"theme":"installed"}'), expected: digest(Buffer.from('{"theme":"original"}')), managed: { kind: 'json', fields: ['theme'] } }];
-  await validateFiles(files, journal); await prepareBackups(root, files, journal); await applyFiles(files, journal);
+  await validateFiles(files, journal); await prepareBackups(root, files, journal); await applyFiles(root, files, journal);
   journal.verified = true;
   await writeFile(path, '{"theme":"user-choice"}');
   files[0] = { path, bytes: Buffer.from('{"theme":"user-choice"}'), expected: digest(Buffer.from('{"theme":"user-choice"}')), snapshotOnly: true, managed: { kind: 'json', fields: ['theme'] } };
@@ -87,11 +87,11 @@ test('managed replacements restore the user values and preserve later unrelated 
   const { root, journal } = await fixture(), path = join(root, 'settings.json');
   await writeFile(path, '{"theme":"original","other":1}');
   const files: InstallFile[] = [{ path, bytes: Buffer.from('{"theme":"installed","other":1}'), expected: digest(Buffer.from('{"theme":"original","other":1}')), managed: { kind: 'json', fields: ['theme'] } }];
-  await validateFiles(files, journal); await prepareBackups(root, files, journal); await applyFiles(files, journal); journal.verified = true;
+  await validateFiles(files, journal); await prepareBackups(root, files, journal); await applyFiles(root, files, journal); journal.verified = true;
   await writeFile(path, '{"theme":"user-choice","other":2}');
   files[0] = { path, bytes: Buffer.from('{"theme":"installed","other":2}'), expected: digest(Buffer.from('{"theme":"user-choice","other":2}')), managed: { kind: 'json', fields: ['theme'] } };
   await validateFiles(files, journal, false, undefined, { replaceChanged: true });
-  await prepareBackups(root, files, journal); await applyFiles(files, journal);
+  await prepareBackups(root, files, journal); await applyFiles(root, files, journal);
   await writeFile(path, '{"theme":"installed","other":3}');
   await rollbackFiles(root, journal);
   expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ theme: 'user-choice', other: 3 });

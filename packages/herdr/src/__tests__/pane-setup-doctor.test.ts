@@ -37,7 +37,7 @@ test('B key ownership rolls back only unchanged fields', async () => {
   try {
     const root = join(f.root, 'setup'), path = join(f.root, 'keys.json'), original = Buffer.from(JSON.stringify(stock())); await writeFile(path, original);
     const journal = await readJournal(root), file: InstallFile = { path, expected: digest(original), bytes: mergeKeys(original, b, {}, false), keys: b, managed: { kind: 'keys', sections: Object.fromEntries(Object.entries(b).map(([section, keys]) => [section, Object.keys(keys)])) } };
-    await validateFiles([file], journal); await prepareBackups(root, [file], journal); await applyFiles([file], journal);
+    await validateFiles([file], journal); await prepareBackups(root, [file], journal); await applyFiles(root, [file], journal);
     const edited = JSON.parse(await readFile(path, 'utf8')); edited.global['cmd-d'] = 'my.split'; await writeFile(path, JSON.stringify(edited));
     await rollbackFiles(root, await readJournal(root), { warn: () => {} }); const result = JSON.parse(await readFile(path, 'utf8'));
     expect(result.global).toEqual({ ...stock().global, 'cmd-d': 'my.split' }); expect(result['layout:spider-glass']).toBeUndefined(); expect(result.terminal).toEqual(stock().terminal);

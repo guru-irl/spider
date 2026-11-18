@@ -222,7 +222,7 @@ const sections = {
 async function publishKeys(root: string, file: InstallFile, journal: backup.SetupJournal) {
   await backup.validateFiles([file], journal);
   await backup.prepareBackups(root, [file], journal);
-  return backup.applyFiles([file], journal);
+  return backup.applyFiles(root, [file], journal);
 }
 
 test('records all managed key sections across a restart and preserves unrelated edits', async () => {
@@ -338,7 +338,7 @@ test('reports an edited managed key and preserves baselines on explicit takeover
   await expect(backup.validateFiles([update], journal)).rejects.toMatchObject({ code: 'managed-artifact-changed' });
   await backup.validateFiles([update], journal, true);
   await backup.prepareBackups(root, [update], journal);
-  await backup.applyFiles([update], journal);
+  await backup.applyFiles(root, [update], journal);
   await backup.rollbackFiles(root, await backup.readJournal(root));
   expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ global: { 'cmd-p': 'my.picker', 'cmd-n': 'space.new', 'cmd-shift-w': 'pane.close' } });
 });

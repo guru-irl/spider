@@ -14,7 +14,7 @@ async function fx() {
 }
 const desired = JSON.parse(await readFile(join(process.cwd(), 'packages/herdr/assets/keys.json'), 'utf8'));
 async function publish(root: string, file: InstallFile, journal: backup.SetupJournal) {
-  await backup.validateFiles([file], journal); await backup.prepareBackups(root, [file], journal); return backup.applyFiles([file], journal);
+  await backup.validateFiles([file], journal); await backup.prepareBackups(root, [file], journal); return backup.applyFiles(root, [file], journal);
 }
 test('keys: pre-A install, A upgrade, rollback without user edits restores the pre-spider bytes', async () => {
   const { root, path, journal } = await fx();

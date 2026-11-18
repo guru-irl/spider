@@ -143,7 +143,7 @@ function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boo
     exec: async (command: string, args: string[]) => { calls.push(['exec', command, args]); if (args.includes('panes')) return { code: 0, stdout: JSON.stringify({ version: 1, kind: 'outcome', outcome: { status: 'complete', reason: 'presented', presentation: null } }) }; const request = JSON.parse(args[args.indexOf('--request') + 1]);
       return state.reply ? state.reply(request) : { code: 0, stdout: JSON.stringify({ ok: true, op: request.op, ...(request.op === 'openSession' ? { terminal: 'owner' } : { viewer: 'viewer' }) }) }; },
   };
-  const createFeedReader = () => ({ read: async () => { calls.push(['read']); if (state.failRead) throw new Error('offline'); return { feeds: structuredClone(state.feeds), errors: structuredClone(state.snapshotErrors ?? []) }; }, close: async () => { calls.push(['closeReader']); } });
+  const createFeedReader = () => ({ read: async () => { calls.push(['read']); if (state.readGate) await state.readGate; if (state.failRead) throw new Error('offline'); return { feeds: structuredClone(state.feeds), errors: structuredClone(state.snapshotErrors ?? []) }; }, close: async () => { calls.push(['closeReader']); } });
   const api = { ...kit, ...base, ...data, ...sound, ...herdr, herdr, createFeedReader, projectNavigation: options.navigation ?? projectNavigation, indexPaneNavigation, describeOpenFailure, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService: options.paneService ?? requestPaneService };
   const text = (options.panelSource ?? readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8')).replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace('export default class SpiderPanel', 'class SpiderPanel');
   const Panel = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${text}; return SpiderPanel;`)(api);
@@ -366,6 +366,25 @@ it('renders a neutral intentional card named for its owner and does not dismiss 
   byId(root, 'need-intentional:owner:notice-1').events.on_click({}, h.cx); await h.drain();
   expect(h.calls).toContainEqual(['run', 'pane.focus', { pane: 'pane-owner' }]);
   expect(byId(h.view.render(h.cx), 'card-intentional:owner:notice-1')).toBeDefined(); await h.view.close();
+});
+
+it('0.1.16 opens a notification clicked during a feed reload', async () => {
+  const patchPath = resolve('packages/herdr/assets/look/native-panel-0.1.16.json');
+  const panelSource = applyModPatches({ 'main.js': readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8') }, JSON.parse(readFileSync(patchPath, 'utf8')), 'panel')['main.js'];
+  const h = panelHost({ parked: true, panelSource });
+  await h.ready; await h.drain();
+  let release!: () => void;
+  h.state.readGate = new Promise<void>(resolve => { release = resolve; });
+  const reload = h.view.reload(h.cx);
+  const row = byId(h.view.render(h.cx), 'need-intentional:owner:notice-1');
+  row.events.on_click({}, h.cx);
+  await Promise.resolve();
+  h.state.readGate = null; release();
+  await reload; await h.drain();
+  const args = h.calls.find(call => call[0] === 'exec' && call[2].includes('--request'))?.[2];
+  expect(args).toBeDefined();
+  expect(JSON.parse(args[args.indexOf('--request') + 1])).toMatchObject({ op: 'openSession', generation: 'g' });
+  await h.view.close();
 });
 
 it('0.1.16 routes a remote notification through IPC only until a pane snapshot exists', async () => {

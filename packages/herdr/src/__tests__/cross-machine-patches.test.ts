@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { expect, test } from 'vitest';
 import { applyCrossMachinePatches, selectCrossMachinePatches, crossMachineKinds } from '../look/cross-machine.js';
@@ -13,6 +15,27 @@ test('published B recipes match their composed fragments', () => {
   const result = spawnSync(process.execPath, ['scripts/compose-spaces-b.mjs', '--check'], { encoding: 'utf8' });
   expect(result.status, result.stderr).toBe(0);
   expect(result.stdout).toContain('Published Spaces B recipes match composed output');
+});
+
+test('the composer rejects duplicate agent fragment ids across files', () => {
+  const root = mkdtempSync(join(tmpdir(), 'composer-'));
+  try {
+    mkdirSync(join(root, 'packages/herdr/src/__tests__'), { recursive: true });
+    mkdirSync(join(root, 'packages/herdr/assets'), { recursive: true });
+    cpSync('scripts', join(root, 'scripts'), { recursive: true });
+    cpSync('packages/herdr/assets', join(root, 'packages/herdr/assets'), { recursive: true });
+    cpSync('packages/herdr/src/__tests__/fixtures', join(root, 'packages/herdr/src/__tests__/fixtures'), { recursive: true });
+    for (const name of ['spaces-a-fixture.ts', 'spaces-b-fixture.ts']) cpSync(`packages/herdr/src/__tests__/${name}`, join(root, 'packages/herdr/src/__tests__', name));
+    symlinkSync(resolve('node_modules'), join(root, 'node_modules'), 'dir');
+    const shared = JSON.parse(readFileSync(join(root, 'scripts/spaces-b-fragments/agents.json'), 'utf8'));
+    const versionPath = join(root, 'scripts/spaces-b-fragments/0.1.16.json');
+    const version = JSON.parse(readFileSync(versionPath, 'utf8'));
+    version.agents.push({ ...shared[0], file: 'another.js' });
+    writeFileSync(versionPath, JSON.stringify(version));
+    const result = spawnSync(process.execPath, ['scripts/compose-spaces-b.mjs', '--check'], { cwd: root, encoding: 'utf8' });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr.match(/^Error:.*$/m)?.[0]).toMatch(/duplicate.*id/i);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {

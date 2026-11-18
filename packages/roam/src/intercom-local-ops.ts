@@ -112,7 +112,7 @@ async function localPairCleanup(input: LocalPairCleanup, ports: LocalPairPorts):
 }
 function samePlan(pair: IntercomEnrollmentPlan, candidate: IntercomEnrollmentPlan): boolean {
   const samePeer = (a: IntercomEnrollmentPlan["source"], b: IntercomEnrollmentPlan["source"]) => !!a && !!b && a.machineId === b.machineId &&
-    a.alias === b.alias && a.node === b.node && a.pi === b.pi && a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot;
+    a.alias === b.alias && a.node === b.node && a.pi === b.pi && a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot && a.agentDir === b.agentDir;
   return !!pair && !!candidate && pair.pairId === candidate.pairId && pair.edgeEpoch === candidate.edgeEpoch && samePeer(pair.source, candidate.source) &&
     samePeer(pair.target, candidate.target) && !!pair.connector && !!candidate.connector && pair.connector.tunnelId === candidate.connector.tunnelId &&
     pair.connector.remotePort === candidate.connector.remotePort && pair.connector.session === candidate.connector.session;

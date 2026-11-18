@@ -22,12 +22,14 @@ export function renderSupervisorUnit(input: { node: string; supervisor: string; 
   }
   return `[Unit]
 Description=Spider roaming supervisor
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=${quote(node, true)} ${quote(supervisor, true)}
 Environment=${quote(`SPIDER_GLOBAL_ROOT=${root}`, false)}
 ${pi === null ? "" : `Environment=${quote(`SPIDER_ROAM_PI=${pi}`, false)}\n`}${agentDir === null ? "" : `Environment=${quote(`PI_CODING_AGENT_DIR=${agentDir}`, false)}\n`}Restart=on-failure
+RestartSec=10s
 UMask=0077
 
 [Install]

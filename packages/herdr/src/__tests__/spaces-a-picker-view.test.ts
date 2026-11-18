@@ -108,9 +108,12 @@ function sourceSnapshot(name: string | null) {
 }
 
 function patchedPickerSource(version: string) {
-  let main = readFileSync(source, 'utf8');
+  let main = readFileSync(source, 'utf8').replaceAll('../shared/', './shared/');
   for (const patch of [version === '0.1.16' ? 'packages/herdr/assets/look/native-picker-0.1.16.json' : '', 'packages/herdr/assets/look/pane-picker-b.json']) {
-    if (patch && existsSync(resolve(patch))) main = applyModPatches({ 'main.js': main }, JSON.parse(readFileSync(resolve(patch), 'utf8')), 'picker')['main.js'];
+    if (patch && existsSync(resolve(patch))) {
+      const records = JSON.parse(readFileSync(resolve(patch), 'utf8')).filter((item: any) => item.id !== 'picker-native-no-service');
+      main = applyModPatches({ 'main.js': main }, records, 'picker')['main.js'];
+    }
   }
   return main;
 }
@@ -192,7 +195,7 @@ it('0.1.16 keeps a remote native picker action until a snapshot is available', a
     await h.view.activate(`agent:${address}`);
     expect.soft(h.calls).toContainEqual(['run', 'pane.focus', { pane: 'remote-pane' }]);
   } finally { await h.view.close(); }
-  const service = host({ feeds: [], pickerSource }); service.state.paneSnapshot = sourceSnapshot('Source writer');
+  const service = host({ feeds: [], configured: true, pickerSource: patchedPickerSource('0.1.16') }); service.state.paneSnapshot = sourceSnapshot('Source writer');
   try {
     await service.view.ready;
     await service.view.activate('session:remote-session');
@@ -203,14 +206,13 @@ it('0.1.16 keeps a remote native picker action until a snapshot is available', a
 });
 
 it('0.1.16 keeps the picker usable when a pane snapshot has malformed children', async () => {
-  const patchPath = resolve('packages/herdr/assets/look/native-picker-0.1.16.json');
-  const pickerSource = applyModPatches({ 'main.js': readFileSync(source, 'utf8') }, JSON.parse(readFileSync(patchPath, 'utf8')), 'picker')['main.js'];
-  const h = host({ pickerSource });
+  const pickerSource = patchedPickerSource('0.1.16');
+  const h = host({ configured: true, pickerSource });
   const bad = sourceSnapshot('Remote');
   (bad.rows[0] as any).children = null;
   h.state.paneSnapshot = bad;
   try {
-    await h.view.ready;
+    await h.view.ready; for (let i = 0; i < 30; i++) await Promise.resolve();
     expect(() => h.view.render()).not.toThrow();
     expect(text(h.view.render())).toContain('Writer');
     expect(text(h.view.render())).toContain('Pane service unavailable; run doctor');

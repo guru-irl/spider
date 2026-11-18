@@ -23,6 +23,7 @@ const spacesAssets = [
   'look/spaces-a-sidebar/agents-0.1.13.json', 'look/spaces-a-sidebar/agents-0.1.16.json',
   'look/spaces-a-sidebar/spaces-0.1.13.json', 'look/spaces-a-sidebar/spaces-0.1.16.json',
   'look/native-navigation-0.1.16.json', 'look/native-panel-0.1.16.json', 'look/native-picker-0.1.16.json',
+  'look/pane-navigation-b.json', 'look/pane-panel-b.json', 'look/pane-picker-b.json', 'shared/pane-service-state.js',
 ];
 
 describe('Spaces packed inventories', () => {

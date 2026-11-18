@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import * as enrollment from "../enrollment";
 
@@ -26,8 +26,33 @@ it("refuses an identity change without replacing the enrollment pin", () => {
   const { root, pin, file } = fixture();
   enrollment.installSupervisorCorePin(root, pin);
   const before = readFileSync(file, "utf8");
-  expect(() => enrollment.installSupervisorCorePin(root, { ...pin, coreId: "foreign-core" })).toThrowError(expect.objectContaining({ code: "core-changed" }));
+  expect(() => enrollment.installSupervisorCorePin(root, { ...pin, coreId: "foreign-core" })).toThrowError(expect.objectContaining({ code: "core-pin-changed" }));
   expect(readFileSync(file, "utf8")).toBe(before);
+});
+
+it("replaces a pin only after the idle check and retains both identities across retries", () => {
+  const { root, pin, file } = fixture(); enrollment.installSupervisorCorePin(root, pin);
+  const next = { ...pin, coreId: "replacement-core", binary: "/home/fixture/bin/hc-next" };
+  const replace = (enrollment as typeof enrollment & { replaceSupervisorCorePin?: (root: string, pin: typeof next, operationId: string, idle: () => void) => { oldCoreId: string; newCoreId: string; oldPinSha256: string; newPinSha256: string } }).replaceSupervisorCorePin;
+  expect(replace).toBeTypeOf("function");
+  expect(() => replace!(root, next, "replace-pin", () => { throw Object.assign(new Error("busy"), { code: "core-pin-in-use" }); })).toThrowError(expect.objectContaining({ code: "core-pin-in-use" }));
+  expect(enrollment.readSupervisorCorePin(root)).toEqual(pin);
+  const receipt = replace!(root, next, "replace-pin", () => { expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(pin); });
+  expect(receipt).toMatchObject({ oldCoreId: "fixture-core", newCoreId: "replacement-core", oldPinSha256: expect.stringMatching(/^[a-f0-9]{64}$/), newPinSha256: expect.stringMatching(/^[a-f0-9]{64}$/) });
+  expect(receipt.oldPinSha256).not.toBe(receipt.newPinSha256);
+  expect(enrollment.readSupervisorCorePin(root)).toEqual(next);
+  expect(replace!(root, next, "replace-pin", () => {})).toEqual(receipt);
+  const journal = JSON.parse(readFileSync(join(root, "roam/core-pin-replacement-replace-pin.json"), "utf8"));
+  expect(journal).toEqual({ version: 1, previous: pin, replacement: next });
+  expect(() => replace!(root, { ...next, coreId: "different-core" }, "replace-pin", () => {})).toThrowError(expect.objectContaining({ code: "operation-arguments-changed" }));
+});
+
+it.each(["read", "write"])("repairs a crashed pin publication before the next %s", action => {
+  const { root, pin, file } = fixture(); enrollment.installSupervisorCorePin(root, pin);
+  const temporary = join(root, "roam/.core-00000000-0000-4000-8000-000000000001"); linkSync(file, temporary);
+  if (action === "write") enrollment.installSupervisorCorePin(root, pin);
+  expect(enrollment.readSupervisorCorePin(root)).toEqual(pin);
+  expect(existsSync(temporary)).toBe(false);
 });
 
 it.each(["binary", "socket", "stateHome", "configHome"] as const)("refuses an unpinned change to %s", key => {

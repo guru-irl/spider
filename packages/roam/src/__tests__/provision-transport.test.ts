@@ -195,6 +195,16 @@ it("reconciles an uncertain launch using a validated core-fenced receipt", async
   await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
 }, 5000);
 
+it.each(["core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy"])("reports %s without invalidating the resolved peer", async reason => {
+  const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "enrollment", operationId: "op-1", machineId: bootstrapPeer.machineId,
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi };
+  f.state.provisionReply = { version: 1, kind: "provision", error: reason };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: reason });
+  f.state.provisionReply = { version: 1, kind: "provision", value: "already-enrolled" };
+  expect(await port.executeProvision(handle, request)).toBe("already-enrolled");
+});
+
 it("reports only a valid blocking operation from a release-in-progress reply", async () => {
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   const request = { action: "clear-secrets", operationId: "op-1", machineId: bootstrapPeer.machineId,

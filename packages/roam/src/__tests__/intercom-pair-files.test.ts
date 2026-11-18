@@ -1,6 +1,6 @@
 import { paths } from "@spider/db-core";
 import { afterEach, expect, it } from "vitest";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { IntercomEnrollmentPair } from "../provision-contracts";
@@ -125,6 +125,22 @@ it("requires exact fresh consent before a pending inherited fence permits comman
   expect(execute()).toBe("command-ok");
   expect(await registry.fences([fresh])).toEqual({ "pair-1": fenceId });
 }, 5000);
+
+it.each([{}, { fenceId: "", commandApprovalFenceId: "" }, { fenceId: 7, commandApprovalFenceId: 7 }])(
+  "refuses malformed pending fence approval %j", async fields => {
+    const f = fixture(), mod = await api(); f.pair.target.node = process.execPath;
+    const { createIntercomRegistry } = await import("../intercom-registry");
+    const registry = createIntercomRegistry(f.pair.target.globalRoot);
+    await registry.register(f.pair, "approval-1", "a".repeat(64)); await registry.bind(f.pair, "approval-1");
+    await mod.authorizePairKey(f.home, f.pair, `${key(4).type} ${key(4).base64}`);
+    const file = join(f.pair.target.globalRoot, "roam", "intercom", "enrollments", "pair-1.json");
+    const record = JSON.parse(readFileSync(file, "utf8")); delete record.fenceId; delete record.commandApprovalFenceId;
+    writeFileSync(file, JSON.stringify({ ...record, ...fields }), { mode: 0o600 });
+    const gate = join(f.pair.target.globalRoot, "roam", "intercom", "pairs", "pair-1", "edge-1", "command.mjs");
+    const result = spawnSync(process.execPath, [gate], { env: { ...process.env, SSH_ORIGINAL_COMMAND: mod.encodePairCommand(f.pair, "printf forbidden") }, timeout: 2000, encoding: "utf8" });
+    expect(result.status).toBe(126);
+    expect(result.stdout).toBe("");
+  }, 5000);
 
 it("refuses an unrecognized command artifact without replacing it or changing authorized keys", async () => {
   const f = fixture(), mod = await api(); f.pair.target.node = process.execPath;

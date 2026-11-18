@@ -68,6 +68,8 @@ it("retains a redacted underlying cause in setup JSON and diagnostics", async ()
 it.each([
   ["EACCES", "EACCES"], ["ERR_STREAM_DESTROYED", "ERR_STREAM_DESTROYED"], ["SQLITE_BUSY", "SQLITE_BUSY"],
   ["diagnostic-snapshot-changing", "diagnostic-snapshot-changing"], ["ghp_syntheticIdentifierShapedCredential1234", "unknown"],
+  ["key-3ax6xnjp29jd6fds4gc373sgvjxteol0", "unknown"], ["E0123456789ABCDEF0123456789ABCDEF", "unknown"],
+  ["ERR_PRIVATE_TOKEN", "unknown"], ["SQLITE_PRIVATE_TOKEN", "unknown"], ["word-0123456789abcdef", "unknown"],
   ["identifierShapedSecret", "unknown"], ["/private/fixture.key", "unknown"], ["E".repeat(65), "unknown"],
 ])("validates setup cause-code families at the helper boundary: %s", async (code, expected) => {
   const f = fixture(), directory = join(f.sourceRoot, "roam"); mkdirSync(directory, { mode: 0o700 });

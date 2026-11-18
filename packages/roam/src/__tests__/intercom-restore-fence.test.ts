@@ -7,7 +7,7 @@ import type { Peer, Transport } from "../contracts";
 import type { IntercomEnrollmentPair, IntercomRevocationPorts } from "../provision-contracts";
 import { createIntercomBridge, type IntercomBridge } from "../intercom-bridge";
 import { provisionIntercomEnrollment, revokeIntercomPair } from "../intercom-enrollment";
-import { runLocalPairOperation, type LocalPairOperation } from "../intercom-local-ops";
+import { runLocalPairCleanup, runLocalPairOperation, type LocalPairOperation } from "../intercom-local-ops";
 import { encodePairCommand, pairKeyAbsent, removePairKey } from "../intercom-pair-files";
 import { createProductionIntercomEnrollmentPorts, createProductionIntercomRevocationPorts } from "../intercom-production";
 import { createIntercomRegistry } from "../intercom-registry";
@@ -170,8 +170,9 @@ it("restores a revoked pair with a fresh epoch without admitting fenced federati
 it.each(["hub", "endpoint", "explicit"] as const)("closes a command-approved pending restore with production %s revocation", async mode => {
   const f = await scenario();
   expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0 });
+  let revocationTransport = f.transport;
   const hubPorts = (fenceEpoch?: string) => createProductionIntercomRevocationPorts({ root: f.root, localMachineId: HUB, hub: true, fenceEpoch,
-    transport: f.transport, localCore: async () => "core-hub", fenceLocal: unavailable, cleanupLocal: unavailable, notify: async () => {} });
+    transport: revocationTransport, localCore: async () => "core-hub", fenceLocal: unavailable, cleanupLocal: unavailable, notify: async () => {} });
   expect(await revokeIntercomPair("pair-1", hubPorts())).toMatchObject({ code: 0, value: { cleanupReason: null } });
   const request = { ...f.request, operation: { ...f.request.operation, id: "approval-2" }, pairs: [{ ...f.request.pairs[0], edgeEpoch: "edge-2" }] };
   const local = f.locals.get(A)!, originalRun = local.run;
@@ -191,11 +192,24 @@ it.each(["hub", "endpoint", "explicit"] as const)("closes a command-approved pen
     edges: [{ peer: pair.source, edgeEpoch: "edge-2", initiator: false }], store: f.queues.get(B)!, clock, transport: noTransport,
     localPresence: () => [], authoritativeHome: () => null });
   bridges.push(bridge); await bridge.start();
+  const sourceBridge = createIntercomBridge({ machineId: A, machineAlias: pair.source.alias,
+    edges: [{ peer: pair.target, edgeEpoch: "edge-2", initiator: false }], store: f.queues.get(A)!, clock, transport: noTransport,
+    localPresence: () => [], authoritativeHome: () => null });
+  bridges.push(sourceBridge); await sourceBridge.start();
+  revocationTransport = { ...f.transport, transport: { ...f.transport.transport, async exec(machine, argv, options) {
+    if (argv[2] !== "revoke-local") return f.transport.transport.exec(machine, argv, options);
+    const input = JSON.parse(options.stdin!.toString());
+    const value = await (machine.machineId === A ? sourceBridge : bridge).revokePair(input.peer, input.edgeEpoch, input.fenceId);
+    return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-revoke", ok: true, value: { ...value, machineId: machine.machineId } }));
+  } } };
   const exchange = () => bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000,
     exchange: withHopExchange({ protocol: 5, senderMachine: A, recipientMachine: B,
       generation: { edgeEpoch: "edge-2", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] }) });
   await expect(exchange()).rejects.toThrow("peer-revoked");
-  const ports = mode === "endpoint" ? f.revokePorts : hubPorts(mode === "explicit" ? "edge-1" : undefined);
+  const ports = mode === "endpoint" ? createProductionIntercomRevocationPorts({ root: f.source.globalRoot, localMachineId: A,
+    transport: revocationTransport, localCore: async () => "core-a",
+    fenceLocal: async input => ({ ...await sourceBridge.revokePair(input.peer, input.edgeEpoch, input.fenceId), machineId: A }),
+    cleanupLocal: input => runLocalPairCleanup(input, local), notify: async () => {} }) : hubPorts(mode === "explicit" ? "edge-1" : undefined);
   expect(await revokeIntercomPair("pair-1", ports)).toMatchObject({ code: 0, value: { cleanupReason: null } });
   expect(command().status).toBe(126);
   expect(pairKeyAbsent(f.locals.get(B)!.home, pair, record.resources!.publicKey!)).toBe(true);

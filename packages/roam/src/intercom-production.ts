@@ -255,6 +255,7 @@ interface RevocationOptions {
 export function createProductionIntercomRevocationPorts(input: RevocationOptions): IntercomRevocationPorts {
   const registry = createIntercomRegistry(input.root), handles = new Map<string, Handle>();
   const hostClosed = new Set<string>(), keyRemoved = new Set<string>(), routeRemoved = new Set<string>(), fencedEndpoint = new Map<string, string>();
+  const closureEpochs = new Map<string, string>();
   const remoteCall = async (machine: Peer, pin: IntercomMachinePin, command: "revoke-local" | "cleanup-local" | "observe-fence", value: unknown): Promise<unknown> => {
     const handle = handles.get(machine.machineId);
     if (!handle || handle.machineId !== pin.machineId || handle.coreId !== pin.coreId) throw new Error("core-changed");
@@ -265,10 +266,10 @@ export function createProductionIntercomRevocationPorts(input: RevocationOptions
         command === "cleanup-local" && reply.machineId !== machine.machineId) throw new Error("intercom-revocation-cleanup-pending");
     return reply.value;
   };
-  const epochFor = async (pair: IntercomEnrollmentPair) => input.fenceEpoch ?? (await registry.get(pair.pairId))?.revocationEpoch ?? pair.edgeEpoch;
+  const epochFor = async (pair: IntercomEnrollmentPair) => input.fenceEpoch ?? closureEpochs.get(pair.pairId) ?? (await registry.get(pair.pairId))?.revocationEpoch ?? pair.edgeEpoch;
   const cleanup = async (machine: Peer, pin: IntercomMachinePin | null, value: LocalPairCleanup): Promise<unknown> => {
     const record = await registry.get(value.pairId);
-    value = { ...value, fenceEpoch: input.fenceEpoch ?? record?.revocationEpoch ?? record?.pair.edgeEpoch };
+    value = { ...value, fenceEpoch: input.fenceEpoch ?? closureEpochs.get(value.pairId) ?? record?.revocationEpoch ?? record?.pair.edgeEpoch };
     if (machine.machineId === input.localMachineId) return input.cleanupLocal(value);
     if (!pin) throw new Error("intercom-revocation-cleanup-pending");
     return remoteCall(machine, pin, "cleanup-local", value);
@@ -279,10 +280,12 @@ export function createProductionIntercomRevocationPorts(input: RevocationOptions
     async getPair(pairId) {
       const record = await registry.get(pairId);
       if (!record || record.state === "cancelled" || !("sshUser" in record.pair)) return null;
-      return { pair: record.pair, state: record.state, cleanupReason: record.cleanupReason, revocationEpoch: record.revocationEpoch };
+      return { pair: record.pair, state: record.state, cleanupReason: record.cleanupReason, revocationEpoch: record.revocationEpoch, fenceId: record.fenceId };
     },
     async fenceAndClose(pair) {
-      const epoch = await epochFor(pair);
+      let epoch = await epochFor(pair);
+      const inheritedEpoch = (proof: Record<string, unknown>, fenceId: string | null | undefined): string | null =>
+        input.fenceEpoch === undefined && fenceId && proof.fenceId === fenceId && typeof proof.edgeEpoch === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(proof.edgeEpoch) ? proof.edgeEpoch : null;
       if (input.fenceEpoch !== undefined) {
         if (!input.hub || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(input.fenceEpoch)) throw new Error("intercom-fence-mismatch");
         const record = await registry.get(pair.pairId);
@@ -303,8 +306,11 @@ export function createProductionIntercomRevocationPorts(input: RevocationOptions
           const other = machine.machineId === pair.source.machineId ? pair.target : pair.source;
           const handle = await input.transport.pinIntercomPeer(machine); handles.set(machine.machineId, handle);
           const proof = await remoteCall(machine, handle, "revoke-local", { version: 1, action: "revoke-pair", machineId: machine.machineId, peer: other.machineId, edgeEpoch: epoch, fenceId });
-          if (!object(proof) || proof.machineId !== machine.machineId || proof.peer !== other.machineId || proof.edgeEpoch !== epoch ||
+          if (!object(proof) || proof.machineId !== machine.machineId || proof.peer !== other.machineId || proof.edgeEpoch !== epoch && !inheritedEpoch(proof, record?.fenceId) ||
               proof.fenceId !== fenceId || proof.exchanges !== "closed" || proof.inFlight !== 0) continue;
+          epoch = inheritedEpoch(proof, record?.fenceId) ?? epoch;
+          closureEpochs.set(pair.pairId, epoch);
+          await registry.beginRevocation(pair.pairId, fenceId, epoch);
           await cleanup(machine, handle, { action: "mark-revoked", pairId: pair.pairId, fenceId });
           fencedEndpoint.set(pair.pairId, machine.machineId);
           return { sourceMachineId: pair.source.machineId, targetMachineId: pair.target.machineId, localMachineId: machine.machineId,
@@ -317,6 +323,8 @@ export function createProductionIntercomRevocationPorts(input: RevocationOptions
       const record = await registry.get(pair.pairId);
       const proof = await input.fenceLocal({ version: 1, action: "revoke-pair", machineId: local.machineId, peer: remote.machineId, edgeEpoch: epoch,
         ...(record?.fenceId ? { fenceId: record.fenceId } : {}) });
+      const inherited = inheritedEpoch(proof, record?.fenceId);
+      if (inherited) closureEpochs.set(pair.pairId, inherited);
       return { sourceMachineId: pair.source.machineId, targetMachineId: pair.target.machineId, localMachineId: proof.machineId,
         edgeEpoch: proof.edgeEpoch, fenceId: proof.fenceId, fenceDurable: true, exchanges: proof.exchanges, inFlight: proof.inFlight };
     },

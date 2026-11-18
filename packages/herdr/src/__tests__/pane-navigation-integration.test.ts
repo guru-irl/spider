@@ -45,6 +45,10 @@ test.each(['0.1.13', '0.1.16'])('%s configured remote presentations focus throug
   const project = new Function('filterTopLevelAgents', 'projectAgentChildren', 'FEED_DISCONNECT_MS', 'projectPanePresentations', `${source}; return projectNavigation;`)(childNavigation.filterTopLevelAgents, childNavigation.projectAgentChildren, FEED_DISCONNECT_MS, projectPanePresentations);
   const target = project({ ...snapshot(), paneServiceConfigured: true }).find((item: any) => item.id === 'session:writer');
   expect(target.action).toMatchObject({ kind: 'pane', request: { op: 'open-existing', sessionId: 'writer', generation: 'gen-1' } });
+  const unaliased = { ...execution, alias: null };
+  const unknownCore = snapshot([{ ...presentation, target: unaliased }], [{ ...row, target: unaliased }]);
+  const beforeIdentity = project({ ...unknownCore, coreId: null, paneServiceConfigured: true }).find((item: any) => item.id === 'session:writer');
+  expect(beforeIdentity.action).toMatchObject({ kind: 'pane', request: { op: 'open-existing', sessionId: 'writer', generation: 'gen-1' } });
 });
 test('owner-only pane navigation never walks child or console history', () => {
   const input = snapshot(), service = input.paneSnapshot!;

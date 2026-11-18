@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { constants } from 'node:fs';
 import { access, open } from 'node:fs/promises';
-import type { SessionContext } from '@earendil-works/pi-coding-agent';
+import type { FileEntry, SessionContext } from '@earendil-works/pi-coding-agent';
 import { isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -98,12 +98,20 @@ export function resumeRefusal(code: string, reason: string, session: { sessionId
   const manual = `cd -- ${shellQuote(session.cwd)} && ${command.map(shellQuote).join(' ')}`;
   return new HerdrError(code, safePathText(`Session ${JSON.stringify(session.sessionId)}: ${reason}. Resume manually: ${manual}. Restore any required launch options; for an argv key use --api-key '<API_KEY>'.`));
 }
+/** Same rules as pi's parseSessionEntries, kept local because the roaming bundle must not import pi at runtime. */
+function parseSessionEntries(content: string): FileEntry[] {
+  const entries: FileEntry[] = [];
+  for (const line of content.trim().split('\n')) {
+    if (!line.trim()) continue;
+    try { entries.push(JSON.parse(line) as FileEntry); } catch { /* pi skips malformed lines too */ }
+  }
+  return entries;
+}
 async function sessionModel(file: string): Promise<LaunchModel | null> {
   let handle;
   try {
     handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     if (!(await handle.stat()).isFile()) throw new Error('Not a regular session file');
-    const { parseSessionEntries } = await import('@earendil-works/pi-coding-agent');
     const entries = parseSessionEntries(await handle.readFile('utf8')).filter(entry => entry.type !== 'session');
     const byId = new Map(entries.map(entry => [entry.id, entry] as const)), seen = new Set<string>();
     const identity = (provider: unknown, modelId: unknown): LaunchModel => {

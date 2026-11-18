@@ -198,7 +198,7 @@ export async function inspectPairTerminals(core: string, run: PairResourcePorts[
     const reply = await run([core, "ls", "--all", "--json"], options), value: unknown = reply.code === 0 ? JSON.parse(reply.stdout) : null;
     if (!value || typeof value !== "object" || Array.isArray(value)) return "unknown";
     const list = value as { terminals?: unknown; hidden_finished?: unknown; machines?: unknown };
-    if (!Array.isArray(list.terminals) || !Array.isArray(list.machines) || list.hidden_finished !== 0) return "unknown";
+    if (!Array.isArray(list.terminals) || list.machines !== undefined && !Array.isArray(list.machines) || list.hidden_finished !== 0) return "unknown";
     const addresses = new Set<string>(); let occupied = false;
     for (const terminal of list.terminals) {
       if (!terminal || typeof terminal !== "object" || Array.isArray(terminal) || typeof (terminal as { address?: unknown }).address !== "string") return "unknown";

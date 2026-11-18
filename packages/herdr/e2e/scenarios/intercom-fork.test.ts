@@ -84,8 +84,7 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
       const initialProbes = (await readFile(probeLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
       expect(initialProbes.find(row => row.pid === oldPid)?.runId).toBe(oldRun.id);
       const before = owner.prompt(mark('before'));
-      await waitForOwnedSteer({ cwd, runId: oldRun.id, message: 'R14 before switch' }, deadline(30_000),
-        async () => (await owner.events()).some(e => e.type === 'tool_execution_start' && e.toolCallId === 'steer-before'));
+      await waitForOwnedSteer({ cwd, runId: oldRun.id, message: 'R14 before switch' }, deadline(30_000));
       gates.release('old-initial');
       await gates.ready('old-after-first', deadline(60_000));
       await before;
@@ -100,8 +99,7 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
       expect(switchover.status).toBe('migration-pending');
       await owner.prompt('/reload');
       const after = owner.prompt(mark('after'));
-      await waitForOwnedSteer({ cwd, runId: oldRun.id, message: 'R14 after switch' }, deadline(30_000),
-        async () => (await owner.events()).some(e => e.type === 'tool_execution_start' && e.toolCallId === 'steer-after'));
+      await waitForOwnedSteer({ cwd, runId: oldRun.id, message: 'R14 after switch' }, deadline(30_000));
       gates.release('old-after-first');
       await gates.ready('old-final', deadline(60_000));
       await after;

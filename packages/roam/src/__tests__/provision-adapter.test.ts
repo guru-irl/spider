@@ -17,7 +17,7 @@ import * as adapterModule from "../provision-adapter";
 
 const roots: string[] = [];
 type Factory = (input: unknown) => {
-  enroll(peer: Peer, hubMachineId: string): Promise<void>;
+  enroll(peer: Peer, hubMachineId: string, coreUnit: string): Promise<void>;
   setEnabled(peer: Peer, hubMachineId: string, enabled: boolean): Promise<void>;
   installRelease(peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }): Promise<{ pi: string; cli: string; supervisor: string }>;
   installFiles(peer: Peer, files: readonly { path: string; bytes: Buffer; mode: 0o600 | 0o700 }[], expectedSettingsFingerprint?: string): Promise<void>;
@@ -85,7 +85,7 @@ function fixture(short = false) {
       return { terminal: "box-1.invalid/t1" };
     },
   };
-  const options = { peer, operationId: "op-1", destination, unitDir, coreUnit: "herdr-core.service", limits: { ...DEFAULT_LIMITS, chunkBytes: 32 }, transport: remote,
+  const options = { peer, operationId: "op-1", destination, unitDir, limits: { ...DEFAULT_LIMITS, chunkBytes: 32 }, transport: remote,
     piProviders: ["github-copilot"] };
   const input = { bytes: Buffer.from("fixture archive"), sha256: releaseSha, npmPrefix, globalRoot, pi: "1.2.0" as const, intercom: "spider-owned" as const };
   return { root, home, globalRoot, agentDir, npmPrefix, unitDir, bin, releaseRoot, peer, destination, calls, writes, requests, launches, launchState, terminalFile, remote, options, input };
@@ -107,10 +107,10 @@ it("enrollment short writes converge after a lost reply and reject a changed hub
     if (request.action === "enrollment" && !lost) { lost = true; throw Object.assign(new Error("lost"), { code: "cli-timeout" }); }
     return result;
   };
-  await adapter.enroll(f.peer, hub);
+  await adapter.enroll(f.peer, hub, "herdr-core.service");
   expect(JSON.parse(readFileSync(join(f.globalRoot, "roam", "config.json"), "utf8"))).toMatchObject({ enabled: false, machineId: f.peer.machineId, hubMachineId: hub, peers: [] });
-  await adapter.enroll(f.peer, hub);
-  await expect(adapter.enroll(f.peer, "00000000-0000-4000-8000-000000000003")).rejects.toMatchObject({ code: "operation-arguments-changed" });
+  await adapter.enroll(f.peer, hub, "herdr-core.service");
+  await expect(adapter.enroll(f.peer, "00000000-0000-4000-8000-000000000003", "herdr-core.service")).rejects.toMatchObject({ code: "operation-arguments-changed" });
   expect(f.requests.filter(row => row.action === "enrollment")).toHaveLength(4);
 }, 5000);
 
@@ -118,7 +118,7 @@ it("remote enrollment refuses malformed matching configuration without replacing
   const f = fixture(), hub = "00000000-0000-4000-8000-000000000001", file = join(f.globalRoot, "roam", "config.json");
   const saved = Buffer.from(JSON.stringify({ enabled: "yes", role: "box", machineId: f.peer.machineId, hubMachineId: hub, peers: [], coreUnit: "herdr-core.service" }));
   writeFileSync(file, saved, { mode: 0o600 });
-  await expect(create!(f.options).enroll(f.peer, hub)).rejects.toMatchObject({ code: "enrollment-conflict" });
+  await expect(create!(f.options).enroll(f.peer, hub, "herdr-core.service")).rejects.toMatchObject({ code: "enrollment-conflict" });
   expect(readFileSync(file)).toEqual(saved);
 }, 5000);
 
@@ -776,7 +776,7 @@ it.each([
 
 it("starts the real Spider broker on a fresh box and then proves broker health", async () => {
   const f = fixture(true); readyIntercomDeclarations(f);
-  await create!(f.options).enroll(f.peer, "00000000-0000-4000-8000-000000000001");
+  await create!(f.options).enroll(f.peer, "00000000-0000-4000-8000-000000000001", "herdr-core.service");
   vi.stubEnv("HOME", f.home); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.globalRoot); vi.stubEnv("PI_CODING_AGENT_DIR", f.agentDir);
   const out: string[] = [], err: string[] = [];
   const { main } = await import("../cli");
@@ -950,7 +950,7 @@ it("explicit authenticated provisioning toggles only the enrolled hub's box flag
   const f = fixture(), adapter = create!(f.options), hub = "00000000-0000-4000-8000-000000000001", file = join(f.globalRoot, "roam", "config.json");
   await expect(adapter.setEnabled(f.peer, hub, true)).rejects.toThrow();
   expect(existsSync(file)).toBe(false);
-  await adapter.enroll(f.peer, hub);
+  await adapter.enroll(f.peer, hub, "herdr-core.service");
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
   const before = readFileSync(file, "utf8");
   await expect(adapter.setEnabled(f.peer, "00000000-0000-4000-8000-000000000009", true)).rejects.toThrow();

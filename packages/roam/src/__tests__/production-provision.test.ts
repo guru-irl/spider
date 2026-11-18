@@ -41,7 +41,7 @@ it("composes target-fenced ports, peer locking and durable launcher configuratio
   const ports = create!({ root, hubMachineId: machineId, peer: bootstrapPeer, operationId: "op-1", transport: port, journal, limits: DEFAULT_LIMITS,
     source: { agentRoot: root, releaseFile: join(root, "release.tgz"), piProviders: [] },
     destination: { home: "/home/fixture", agentDir: "/home/fixture/.pi/agent", npmPrefix: "/home/fixture/.local", supervisor: "/home/fixture/.local/supervisor.mjs" },
-    unitDir: "/home/fixture/.config/systemd/user", coreUnit: "herdr-core.service", release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: "a".repeat(64), nodeRange: "22.23.4 || 26.4.0" },
+    unitDir: "/home/fixture/.config/systemd/user", release: { pi: "1.2.0", intercom: "spider-owned", spiderSha256: "a".repeat(64), nodeRange: "22.23.4 || 26.4.0" },
     present: async () => {}, confirm: async () => true, report: async () => {}, resources: async () => ({}), bootId: async () => "fixture", lockOptions: options });
   expect(ports.transport).toBe(transport);
   expect(ports.bootstrap.probeAgentDirectory).toBeTypeOf("function");

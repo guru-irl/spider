@@ -22,8 +22,8 @@ vi.mock("@spider/db-core", async importOriginal => {
 });
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  const fixed = (stat: ReturnType<typeof actual.fstatSync>, bigint: boolean) => {
-    if (!hooks.fixedStamp || !bigint) return stat;
+  const fixed = (stat: ReturnType<typeof actual.fstatSync> | undefined, bigint: boolean) => {
+    if (!stat || !hooks.fixedStamp || !bigint) return stat;
     const source = actual.statSync(hooks.fixedStamp);
     if (stat.dev !== BigInt(source.dev) || stat.ino !== BigInt(source.ino)) return stat;
     return Object.assign(stat, { mtimeNs: 0n, ctimeNs: 0n });

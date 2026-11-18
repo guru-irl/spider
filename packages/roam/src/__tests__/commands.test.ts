@@ -36,6 +36,12 @@ it.each([
   ["roam", "provision", "box-1.invalid", "--consent"], ["roam", "enable", "extra"], ["roam", "recover", "--bad"],
 ])("rejects invalid arguments %j", (...argv) => expect(parsePublicControl(argv)).toBeNull());
 
+it("parses an explicit core-pin replacement once", () => {
+  const args = ["roam", "provision", "box-1.invalid", "--replace-core-pin", "--use-destination-auth", "--yes"];
+  expect(parsePublicControl(args)).toEqual({ kind: "provision", machine: "box-1.invalid", options: args.slice(3) });
+  expect(parsePublicControl([...args, "--replace-core-pin"])).toBeNull();
+});
+
 it("parses a literal dash-prefixed memory-tag alias without permitting extra arguments", () => {
   const args = ["roam", "memory", "tag", "global", "memory-a", "--", "-box-1.invalid"];
   expect(parsePublicControl(args)).toEqual({ kind: "memory-tag", storeKey: "global", uuid: "memory-a", machine: "-box-1.invalid" });

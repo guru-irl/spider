@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+import { DatabaseSync } from "node:sqlite";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -17,11 +18,11 @@ function fixture() {
   const request = { action: "enrollment", operationId: "pin-enrollment", machineId, hubMachineId, home, globalRoot: root,
     agentDir: join(home, "agent"), npmPrefix: join(home, "prefix"), unitDir: join(home, "units"), core, coreId: "fixture-core",
     coreUnit: "fixture.service", maximum: 1024 * 1024, chunkBytes: 1024 };
-  const run = (socket: string | null, operationId = request.operationId, inherited: NodeJS.ProcessEnv = {}) => {
+  const run = (socket: string | null, operationId = request.operationId, inherited: NodeJS.ProcessEnv = {}, extra: Record<string, unknown> = {}) => {
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, HC_SESSION: "fixture", XDG_STATE_HOME: stateHome, XDG_CONFIG_HOME: configHome, ...inherited };
     if (socket === null) delete env.HC_SOCKET; else env.HC_SOCKET = socket;
     const result = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
-      env, input: JSON.stringify({ ...request, operationId }), encoding: "utf8", timeout: 5000,
+      env, input: JSON.stringify({ ...request, operationId, ...extra }), encoding: "utf8", timeout: 5000,
     });
     expect(result.status, result.stderr).toBe(0);
     return JSON.parse(result.stdout);
@@ -65,6 +66,34 @@ it("refuses conflicting terminal and explicit sockets before publishing a pin", 
   const f = fixture();
   expect(f.run(join(f.home, "core.sock"), "socket-conflict", { HC_TERMINAL_SOCKET: join(f.home, "other.sock") })).toMatchObject({ error: "core-pin-invalid" });
   expect(existsSync(join(f.root, "roam/core.json"))).toBe(false);
+});
+
+it.each(["idle", "sessions", "active", "enabled"])("replaces a pin only on an idle stopped box: %s", condition => {
+  const f = fixture(), socket = join(f.home, "core.sock"), file = join(f.root, "roam/core.json");
+  expect(f.run(socket)).toMatchObject({ value: "enrolled" });
+  const old = { ...JSON.parse(readFileSync(file, "utf8")), coreId: "previous-core" };
+  writeFileSync(file, JSON.stringify(old), { mode: 0o600 });
+  writeFileSync(join(f.home, "systemctl"), `#!${process.execPath}\nconsole.log(${JSON.stringify(condition === "active" ? "active" : "inactive")});\n`, { mode: 0o700 });
+  if (condition === "enabled") {
+    const config = join(f.root, "roam/config.json");
+    writeFileSync(config, JSON.stringify({ ...JSON.parse(readFileSync(config, "utf8")), enabled: true }), { mode: 0o600 });
+  }
+  const db = new DatabaseSync(join(f.root, "spider.db"));
+  try {
+    db.exec("CREATE TABLE roam_meta (id INTEGER, machine_id TEXT); CREATE TABLE session_homes (session_id TEXT, machine_id TEXT)");
+    db.prepare("INSERT INTO roam_meta VALUES(1, ?)").run("00000000-0000-4000-8000-000000000001");
+    if (condition === "sessions") db.prepare("INSERT INTO session_homes VALUES('fixture-session', ?)").run("00000000-0000-4000-8000-000000000001");
+  } finally { db.close(); }
+  const result = f.run(socket, "replace-pin", { PATH: f.home }, { replaceCorePin: true });
+  if (condition !== "idle") {
+    expect(result).toMatchObject({ error: "core-pin-in-use" });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toEqual(old);
+    expect(existsSync(join(f.root, "roam/core-pin-replacement-replace-pin.json"))).toBe(false);
+  } else {
+    expect(result).toMatchObject({ value: { enrollment: "already-enrolled", replacement: { oldCoreId: "previous-core", newCoreId: "fixture-core" } } });
+    expect(JSON.parse(readFileSync(file, "utf8"))).toHaveProperty("coreId", "fixture-core");
+    expect(f.run(socket, "replace-pin", { PATH: f.home }, { replaceCorePin: true })).toEqual(result);
+  }
 });
 
 it("resolves a configured socket when the core has no HC_SOCKET override", () => {

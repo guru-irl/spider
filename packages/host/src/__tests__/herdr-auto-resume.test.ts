@@ -163,13 +163,13 @@ it.each(['/bin/bash', '/bin/zsh'].filter(existsSync))('an auto-resumed pi is mar
   }
 }, 20000);
 
-it('an extension refusal gives a short notice without losing the prompt watcher', async () => {
+it.each(['auto', 'offer'] as const)('an extension refusal gives a short notice without losing the prompt watcher in %s mode', async mode => {
   root = await mkdtemp(join(await realpath(tmpdir()), 'auto-refusal-'));
   const terminal = { coreId: 'core', terminalId: 't1', address: 't1', socket: join(root, 'socket'), sessionNamespace: 'test' } as TerminalIdentity;
   core.terminal = terminal;
   const file = join(root, 'session.jsonl'); await writeFile(file, JSON.stringify({ type: 'session', id: 's1', cwd: root }) + '\n');
   const owner: Owner = { terminal, sessionId: 's1' as SessionId, generation: 'g1' as Generation, sessionFile: file, cwd: root, name: 'Saved' };
-  const config = parseHerdrConfig({ app: { binary: '/app', home: root }, core: { binary: '/hc', config: join(root, 'core') }, agentDirectory: join(root, 'agent'), globalRoot: root, shellRc: join(root, 'rc'), spaces: [], machines: [], resume: 'auto' });
+  const config = parseHerdrConfig({ app: { binary: '/app', home: root }, core: { binary: '/hc', config: join(root, 'core') }, agentDirectory: join(root, 'agent'), globalRoot: root, shellRc: join(root, 'rc'), spaces: [], machines: [], resume: mode });
   const registry = createTerminalRegistry(join(root, 'herdr')), ports = createProductionHerdrCliPorts(root, { ...process.env, SPIDER_GLOBAL_ROOT: root });
   const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   try {
@@ -183,6 +183,8 @@ it('an extension refusal gives a short notice without losing the prompt watcher'
     expect(refused).toContain('_spider_resume_watch'); expect(refused).not.toContain('Resuming Saved');
     expect(stderr).toHaveBeenCalledOnce();
     expect(String(stderr.mock.calls[0][0])).toContain('Saved'); expect(String(stderr.mock.calls[0][0]).length).toBeLessThan(140);
+    expect(await ports.resumeOffer!(request)).toContain('_spider_resume_watch');
+    expect(stderr).toHaveBeenCalledOnce();
   } finally { stderr.mockRestore(); await ports.dispose(); }
 });
 

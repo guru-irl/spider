@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { expect, it } from 'vitest';
+import { resolve } from 'node:path';
+import { expect, it, vi } from 'vitest';
 import * as children from '../../assets/agents/children.js';
 import emptyRunName from './fixtures/empty-run-name.json' with { type: 'json' };
 import * as look from '../../assets/shared/look.js';
@@ -247,6 +248,53 @@ it('0.1.16: falls back to native remote rows only until a pane snapshot is avail
   expect(test.execCalls.some(args => JSON.parse((args[1] as string[]).at(-1)!).op === 'open-existing')).toBe(true);
   expect(test.commands).not.toContainEqual(['pane.focus', { pane: 'p1' }]);
   await test.view.close();
+});
+
+it('0.1.16: configured Agents retain service routing across snapshot failures', async () => {
+  const patchPath = resolve('packages/herdr/assets/look/native-navigation-0.1.16.json');
+  const patches = JSON.parse(readFileSync(patchPath, 'utf8'));
+  const nav = (await import('../look/patches.js')).applyModPatches({ 'navigation.js': readFileSync(resolve('packages/herdr/assets/shared/navigation.js'), 'utf8') }, patches, 'navigation')['navigation.js']
+    .replace(/^import .*;\s*$/gm, '').replaceAll('export function ', 'function ');
+  const projectNavigation = new Function('filterTopLevelAgents', 'projectAgentChildren', 'FEED_DISCONNECT_MS', 'projectPanePresentations', `${nav}; return projectNavigation;`)(children.filterTopLevelAgents, children.projectAgentChildren, feed.FEED_DISCONNECT_MS, (await import('../../assets/shared/presentations.js')).projectPanePresentations);
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(100000);
+  const test = fixture('0.1.16', { presented: true, ports: { projectNavigation } });
+  (test.props as any).paneServiceConfigured = true;
+  test.props.feedRoot = '/fixture/feeds';
+  let release!: (value: any) => void;
+  test.setExec(() => new Promise(resolve => { release = resolve; }));
+  try {
+    await test.ready();
+    const pending = test.view.reloadSpiderFeeds();
+    await Promise.resolve();
+    let root = test.view.render(test.cx);
+    expect.soft(byId(root, 'ag-box-1.invalid/unpinned')?.events.on_click).toBeUndefined();
+    const local = byId(root, 'ag-local');
+    expect.soft(local?.events.on_click).toBeDefined();
+    local?.events.on_click();
+    expect.soft(test.commands).toContainEqual(['pane.focus', { pane: 'p2' }]);
+    test.commands.length = 0;
+    const address = 'core-1/source';
+    const target = { coreId: 'core-1', terminalId: 'source', address, createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'source-session', generation: 'source-gen', homeEpoch: 1, runId: null, consoleId: null, name: 'Source writer', cwd: '/home/fixture' };
+    release(ok({ version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'source-session', generation: 'source-gen', owner: { terminal: { address } }, target, name: 'Source writer', status: 'working', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] }));
+    await pending;
+    clock.mockReturnValue(106000);
+    test.setExec(async () => ({ code: 1, stdout: '', stderr: 'offline' }));
+    await test.view.reloadSpiderFeeds();
+    root = test.view.render(test.cx);
+    const projected = byId(root, `ag-${address}`);
+    expect.soft(projected?.events.on_click).toBeDefined();
+    test.setExec(async () => ok({ version: 1, kind: 'outcome', outcome: { status: 'complete' } }));
+    projected?.events.on_click(); await Promise.resolve();
+    expect.soft(test.execCalls.some(args => { const argv = args[1] as string[]; try { return JSON.parse(argv.at(-1)!).op === 'open-existing'; } catch { return false; } })).toBe(true);
+    expect.soft(test.commands.filter(([name]) => name === 'pane.focus')).toEqual([]);
+    clock.mockReturnValue(121001);
+    test.setExec(async () => ({ code: 1, stdout: '', stderr: 'offline' }));
+    await test.view.reloadSpiderFeeds();
+    root = test.view.render(test.cx);
+    expect.soft(byId(root, `ag-${address}`)).toBeDefined();
+    expect.soft(byId(root, `ag-${address}`)?.events.on_click).toBeUndefined();
+    expect.soft(test.commands.filter(([name]) => name === 'pane.focus')).toEqual([]);
+  } finally { clock.mockRestore(); await test.view.close(); }
 });
 
 it('0.1.16: opens a remote viewer natively without a snapshot and through the service with one', async () => {

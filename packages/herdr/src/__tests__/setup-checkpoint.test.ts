@@ -9,7 +9,7 @@ import { applyFiles, digest, mergeTerminalKeys, prepareBackups, readJournal, sav
 import * as installer from '../setup/installer.js';
 import { undoHerdrUpgrade, rollbackHerdr, setupHerdr, type InstallFile, type SetupParts, type SetupRequest } from '../setup/installer.js';
 import { runHerdrCli } from '../setup/cli.js';
-import { beginRunCheckpoint, recordCheckpointWrites, readCheckpoint } from '../setup/checkpoint.js';
+import { beginRunCheckpoint, recordCheckpointWrites, readCheckpoint, finishRunCheckpoint } from '../setup/checkpoint.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof fs>();
@@ -246,13 +246,21 @@ test('a metadata-only repeat retains the completed upgrade baseline', async () =
 });
 
 test('a bookkeeping-only sequence refuses undo rather than claiming success', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts);
-  await fs.unlink(join(f.request.journalRoot, 'checkpoint.json'));
-  await metadataRepeat(f);
+  const f = await fixture(), checkpoint = await beginRunCheckpoint(f.request.journalRoot, [f.paths.journal]);
+  await fs.appendFile(f.paths.journal, '\n');
+  await recordCheckpointWrites(f.request.journalRoot, checkpoint, [f.paths.journal]);
+  await finishRunCheckpoint(f.request.journalRoot, checkpoint, true);
   await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-bookkeeping-only' });
 });
 
-test('undo preserves later shared-file edits even with replacement', async () => {
+test('a metadata-only repeat without an upgrade checkpoint does not create one', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  await fs.unlink(join(f.request.journalRoot, 'checkpoint.json'));
+  await metadataRepeat(f);
+  expect(await readCheckpoint(f.request.journalRoot)).toBeNull();
+});
+
+test.each([false, true])('undo preserves later shared-file edits with replacement=%s', async replaceChanged => {
   const f = await fixture();
   const shell = f.request.config.shellRc;
   await put(shell, 'alias old=true\n');
@@ -262,7 +270,7 @@ test('undo preserves later shared-file edits even with replacement', async () =>
   await put(f.paths.settings, '{"theme":"dracula-plus-glass","keep":"later"}\n');
   const keys = JSON.parse(await fs.readFile(f.paths.keys, 'utf8')); keys.global['ctrl-z'] = 'user.action';
   await put(f.paths.keys, JSON.stringify(keys));
-  await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
+  await undoHerdrUpgrade({ ...f.request, replaceChanged }, f.parts);
   expect(await fs.readFile(shell, 'utf8')).toBe('alias old=true\nalias later=true\n');
   expect(JSON.parse(await fs.readFile(f.paths.settings, 'utf8'))).toEqual({ theme: 'dracula-plus-glass', keep: 'later' });
   expect(JSON.parse(await fs.readFile(f.paths.keys, 'utf8')).global).toEqual({ 'ctrl-z': 'user.action' });
@@ -346,12 +354,16 @@ test('setup failure points at upgrade undo and full rollback retires the sequenc
   expect((await snapshot(f.paths.main)).bytes).toBeNull();
 });
 
-test('an interrupted mod publish resumes through setup and remains undoable', async () => {
+test.each(['before', 'after'] as const)('a mod publish interrupted %s its rename resumes through setup and remains undoable', async timing => {
   const f = await fixture(), directory = dirname(f.paths.main);
   await fs.rm(directory, { recursive: true });
   const journal = await readJournal(f.request.journalRoot); journal.entries = journal.entries.filter(entry => !entry.path.startsWith(directory + '/')); await saveJournal(f.request.journalRoot, journal);
-  vi.mocked(fs.rename).mockImplementation(async (from, to) => { if (to === directory) throw new Error('publish stopped'); return real.rename(from, to); });
-  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('publish stopped');
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => {
+    if (to === directory && timing === 'before') throw new Error('publish stopped');
+    await real.rename(from, to);
+    if (to === directory && timing === 'after') throw new Error('publish stopped');
+  });
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow(/publish stopped[\s\S]*rollback.*--undo-upgrade/);
   vi.mocked(fs.rename).mockImplementation(real.rename);
   await setupHerdr(f.request, f.parts); await undoHerdrUpgrade(f.request, f.parts);
   expect((await snapshot(f.paths.main)).bytes).toBeNull();

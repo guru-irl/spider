@@ -41,7 +41,13 @@ async function blobs(f: Awaited<ReturnType<typeof fixture>>) {
 async function model(steps: readonly Step[], checkPrefixes = true) {
   const f = await fixture(), root = f.request.packageRoot;
   let baseline = await values([f.paths.main]);
-  let shellEdit = false, settingsEdit = false, keysEdit = false, move = false, templateEdit = false;
+  let shellEdit = false, settingsEdit = false, keysEdit = false, move = false, templateEdit = false, appEdit = false;
+  const rollback = f.parts.rollback;
+  f.parts.rollback = async (...args) => {
+    const previous = await fs.readFile(f.paths.spaces).catch(() => null);
+    await rollback(...args);
+    if (move && previous) await fs.writeFile(f.paths.spaces, previous);
+  };
   const shell = f.request.config.shellRc;
   await put(shell, 'alias original=true\n');
   f.parts.installResume = async () => {
@@ -76,7 +82,7 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
     await fs.cp(root, copy, { recursive: true, preserveTimestamps: true });
     try {
       const undone = await attemptUndo();
-      if (undone && !shellEdit && !settingsEdit && !keysEdit && !templateEdit && !move) {
+      if (undone && !shellEdit && !settingsEdit && !keysEdit && !templateEdit && !move && !appEdit) {
         await rollbackHerdr(f.request, f.parts);
         expect((await snapshot(f.paths.registry)).hash, 'full rollback after undo removes the registry').toBeNull();
         expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
@@ -101,9 +107,16 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
     try {
       const cp = await readCheckpoint(f.request.journalRoot);
       const setup = async (replaceChanged = false) => {
-        if (!cp || ['undone', 'superseded'].includes(cp.state)) baseline = await values([f.paths.main]);
-        await setupHerdr({ ...f.request, replaceChanged }, f.parts);
+        const current = await readCheckpoint(f.request.journalRoot);
+        if (!current || ['undone', 'superseded'].includes(current.state)) baseline = await values([f.paths.main]);
+        try { await setupHerdr({ ...f.request, replaceChanged }, f.parts); }
+        catch (error) {
+          if (!(error instanceof HerdrError) || error.code !== 'setup-files-changed') throw error;
+          expect(error.message).toContain('--replace-changed');
+          await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
+        }
       };
+      if ((!cp || ['undone', 'superseded'].includes(cp.state)) && ['bookkeeping', 'journal-crash'].includes(step)) baseline = await values([f.paths.main]);
       switch (step) {
         case 'setup': case 'replace': await setup(step === 'replace'); break;
         case 'bookkeeping': await metadataRepeat(f); break;
@@ -122,15 +135,15 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
         case 'shell': shellEdit = true; await fs.appendFile(shell, 'alias user=true\n'); break;
         case 'settings': case 'pi': settingsEdit = true; await put(f.paths.settings, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.settings, 'utf8')), user: 'keep' })); break;
         case 'keys': { keysEdit = true; const keys = JSON.parse(await fs.readFile(f.paths.keys, 'utf8')); keys.global['ctrl-z'] = 'user.action'; await put(f.paths.keys, JSON.stringify(keys)); break; }
-        case 'app': await put(f.paths.layout, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.layout, 'utf8')), userSize: 321 })); break;
-        case 'template': templateEdit = true; await put(f.paths.added, 'runtime instructions'); break;
+        case 'app': appEdit = true; await put(f.paths.layout, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.layout, 'utf8')), userSize: 321 })); break;
+        case 'template': templateEdit = true; await put(f.paths.added, 'runtime instructions'); f.parts.generateTemplates = async () => [{ path: f.paths.added, expected: (await snapshot(f.paths.added)).hash, bytes: Buffer.from('runtime instructions') }]; { const journal = await readJournal(f.request.journalRoot), entry = journal.entries.find(entry => entry.path === f.paths.added); if (entry) { entry.after = digest(Buffer.from('runtime instructions')); await saveJournal(f.request.journalRoot, journal); } } break;
         case 'move': move = true; await put(f.paths.spaces, '{"placements":["moved"]}'); break;
         case 'fail-retry': {
           const verify = f.parts.verify; f.parts.verify = async () => { throw new Error('model failure'); };
-          await expect(setup()).rejects.toThrow('model failure'); f.parts.verify = verify; await setup(true); break;
+          await expect(setup(true)).rejects.toThrow('model failure'); f.parts.verify = verify; await setup(true); break;
         }
         case 'journal-crash': {
-          await interrupted(() => metadataRepeat(f), target => target === join(f.request.journalRoot, 'checkpoint.json'), false); break;
+          await interrupted(() => metadataRepeat(f, true), target => target === join(f.request.journalRoot, 'checkpoint.json'), false); break;
         }
         case 'batch-crash': case 'cutover-crash': {
           f.fail(step === 'cutover-crash');
@@ -141,7 +154,7 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
         case 'undo-crash': case 'pi-during-undo': {
           if (cp && !['undone', 'superseded'].includes(cp.state)) {
             await interrupted(() => undoHerdrUpgrade(f.request, f.parts), target => target === f.paths.main, false);
-            if (step === 'pi-during-undo') { await put(f.paths.added, 'runtime instructions'); templateEdit = true; }
+            if (step === 'pi-during-undo') { await put(f.paths.added, 'runtime instructions'); templateEdit = true; f.parts.generateTemplates = async () => [{ path: f.paths.added, expected: (await snapshot(f.paths.added)).hash, bytes: Buffer.from('runtime instructions') }]; }
             await attemptUndo(true);
           } break;
         }

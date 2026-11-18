@@ -79,11 +79,11 @@ export async function fixture() {
   return { request, parts, paths, all, before, undoExpected, fail: (value: boolean) => { fail = value; }, live: (value: boolean) => { ownerLive = value; }, badDoctor: () => { verificationFails = true; } };
 }
 
-export async function metadataRepeat(f: Awaited<ReturnType<typeof fixture>>) {
+export async function metadataRepeat(f: Awaited<ReturnType<typeof fixture>>, replaceChanged = false) {
   const preflight = f.parts.preflight;
   f.parts.preflight = async request => ({ ...await preflight(request), recoveredCutover: (await readJournal(request.journalRoot)).cutover!, cutoverActions: [] });
   const journal = await readJournal(f.request.journalRoot);
   delete journal.cutoverFingerprint;
   await saveJournal(f.request.journalRoot, journal);
-  await setupHerdr(f.request, f.parts);
+  await setupHerdr({ ...f.request, replaceChanged }, f.parts);
 }

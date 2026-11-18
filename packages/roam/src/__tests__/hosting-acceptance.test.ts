@@ -6,6 +6,7 @@ import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
 import { recordLocation } from "@spider/db-core/roam/catalog";
 import type { Probe } from "@spider/db-core/roam/types";
 import { installPiAuth } from "../auth";
+import { installSupervisorCorePin } from "../enrollment";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import type { Transport } from "../contracts";
 import { openJournal } from "../journal";
@@ -213,6 +214,10 @@ it("uses the fixture shell for a supervised exact launch", async () => {
     const agentDir = join(global.root, "agent"); mkdirSync(agentDir, { mode: 0o700 });
     writeFileSync(join(global.root, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
     writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+    const binary = join(global.root, "hc");
+    writeFileSync(binary, `#!${process.execPath}\nconsole.log(JSON.stringify({version:'0.1.16',core:{id:'core-1'},pid:4321}));\n`, { mode: 0o700 });
+    installSupervisorCorePin(global.root, { binary, coreId: "core-1", socket: join(global.root, "core.sock"), sessionNamespace: "owned",
+      stateHome: join(global.root, "state"), configHome: join(global.root, "config") });
     global.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
     await global.db.raw.backup(join(global.root, "spider.db"));
     const file = join(global.root, "session.jsonl"); writeFileSync(file, "session", { mode: 0o600 });

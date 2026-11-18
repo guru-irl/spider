@@ -54,6 +54,8 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
     layoutBaseline = (await snapshot(f.paths.layout)).bytes?.toString() ?? null;
     instructionBaseline = (await snapshot(f.paths.added)).bytes?.toString() ?? null;
   };
+  const preflight = f.parts.preflight;
+  f.parts.preflight = async (...args) => ({ ...await preflight(...args), cutoverProvedAbsent: true });
   const oldLayout = JSON.stringify({ content: [{ id: 'pane', mod: 'spider-example', props: { version: 1 } }], generation: 1 });
   const nextLayout = { content: [{ id: 'pane', mod: 'spider-example', props: { version: 2 } }], generation: 2 };
   await put(f.paths.layout, oldLayout);
@@ -195,7 +197,7 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
             await attemptUndo(true);
           } break;
         }
-        case 'doctor': expect((await doctorHerdr(f.request, { targets: async () => [], inspect: async () => ({ failures: [] }), launchHistory: async () => [], probeMachineNode: async () => 'v22.19.0' })).failures).toEqual([]); break;
+        case 'doctor': { const report = await doctorHerdr(f.request, { targets: async () => [], inspect: async () => ({ failures: [] }), launchHistory: async () => [], probeMachineNode: async () => 'v22.19.0' }); expect(report.failures.map(failure => failure.code)).toEqual((await fs.readFile(f.paths.notes, 'utf8')).includes('notes = true') ? ['native-notes-enabled'] : []); break; }
         case 'undo': case 'undo-replace': await attemptUndo(step === 'undo-replace'); break;
         case 'rollback': if (cp?.state === 'undoing') await attemptUndo(true); await rollbackHerdr(f.request, f.parts); expect((await snapshot(f.paths.registry)).hash).toBeNull(); break;
       }

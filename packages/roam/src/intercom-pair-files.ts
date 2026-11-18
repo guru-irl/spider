@@ -170,7 +170,7 @@ try {
   child.on('error', fail); child.on('exit', code => { process.exitCode = code ?? 1; });
 } catch { fail(); }
 `;
-  const bytes = Buffer.from(script("record.fenceId !== null && !(record.state === 'pending' && record.commandApprovalFenceId === record.fenceId)"));
+  const bytes = Buffer.from(script("record.fenceId !== null && !(record.state === 'pending' && typeof record.fenceId === 'string' && record.fenceId.length > 0 && record.commandApprovalFenceId === record.fenceId)"));
   const legacy = Buffer.from(script("record.fenceId !== null"));
   if (pathExists(file) && privateFile(file, 0o600, 32 * 1024).equals(legacy)) {
     const temp = join(dirname(file), `.command.${randomUUID()}.new`);

@@ -14,7 +14,7 @@ interface FixtureValue { path: string; bytes: string | null; mode: number | null
 export interface CheckpointFixture {
   request: SetupRequest;
   parts: SetupParts;
-  paths: Record<'font' | 'theme' | 'svg' | 'main' | 'manifest' | 'layout' | 'keys' | 'settings' | 'appSettings' | 'notes' | 'spaces' | 'registry' | 'journal' | 'added', string>;
+  paths: Record<'font' | 'theme' | 'svg' | 'main' | 'manifest' | 'layout' | 'keys' | 'settings' | 'appSettings' | 'notes' | 'spaces' | 'registry' | 'journal' | 'added' | 'roleTemplate', string>;
   all: string[];
   before: FixtureValue[];
   undoExpected: FixtureValue[];
@@ -37,7 +37,7 @@ export async function fixture(): Promise<CheckpointFixture> {
     main: join(app, 'mods/spider-example/main.js'), manifest: join(app, 'mods/spider-example/mod.json'), layout: join(app, 'layouts/spider-glass.json'),
     keys: join(app, 'keys.json'), settings: join(agent, 'settings.json'), appSettings: join(app, 'settings.json'), notes: join(root, 'core/config.toml'),
     spaces: join(global, 'herdr/spaces/spaces.json'), registry: join(global, 'herdr/installation.json'), journal: join(journalRoot, 'journal.json'),
-    added: join(global, 'herdr/instructions/worker.md') };
+    added: join(global, 'herdr/instructions/worker.md'), roleTemplate: join(root, 'core/templates/spider-worker.md') };
   const request: SetupRequest = { config: parseHerdrConfig({ app: { binary: '/usr/bin/true', home: app }, core: { binary: '/usr/bin/true', config: paths.notes },
     agentDirectory: agent, globalRoot: global, shellRc: join(root, 'shellrc'), spaces: [], machines: [] }), configPath: join(global, 'herdr/config.json'), packageRoot: root, journalRoot };
   await put(paths.keys, '{\n "terminal": {"ctrl-v":"terminal.paste_image"}, "global": {}\n}\n', 0o644);
@@ -73,7 +73,7 @@ export async function fixture(): Promise<CheckpointFixture> {
     stageLook: async (_, context) => [await installed(paths.font, 'old-font', context), await installed(paths.theme, 'old-theme', context), await installed(paths.layout, installedLayout, context)],
     installFiles: async (_, context) => [await installed(paths.svg, '<svg/>', context), await installed(paths.main, 'new-main', context), await installed(paths.manifest, '{"place":"none"}', context),
       { path: paths.keys, bytes: Buffer.alloc(0), expected: (await snapshot(paths.keys)).hash, keys: { terminal: oldKeys, global: { 'cmd-x': 'new.action' } }, collision: 'key' }],
-    generateTemplates: async (_, context) => [await installed(paths.added, 'new instructions', context)], installResume: async () => [],
+    generateTemplates: async (_, context) => [await installed(paths.added, 'new instructions', context), await installed(paths.roleTemplate, 'new role template', context)], installResume: async () => [],
     probeMachineNode: async () => 'v22.19.0', ensureRuntime: async () => [], bootstrapRuntime: async () => {},
     hc: { fileRead: async () => Buffer.alloc(0), fileWrite: async () => {} },
     paneEndpointPlan: async () => ({ paths: [paths.registry], changed: (await snapshot(paths.registry)).bytes?.toString('utf8') !== '{"version":1,"packageRoot":"/home/fixture","endpoint":{"protocol":1}}\n' }),

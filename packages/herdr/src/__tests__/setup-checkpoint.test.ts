@@ -751,3 +751,30 @@ test('N5 collection repairs permissions of a retained baseline blob', async () =
   expect((await fs.stat(blob)).mode & 0o777).toBe(0o600);
   expect(await fs.readFile(blob)).toEqual(original);
 });
+
+
+test('a role-template-only repeat joins the completed upgrade after pi rewrites it', async () => {
+  const f = await fixture();
+  await setupHerdr(f.request, f.parts);
+  const sequence = (await readCheckpoint(f.request.journalRoot))!.runs[0]!.before;
+  const generate = f.parts.generateTemplates;
+  f.parts.generateTemplates = async (...args) => (await generate(...args)).map(file => file.path === f.paths.roleTemplate ? { ...file, bytes: Buffer.from('resolved role template') } : file);
+  await put(f.paths.roleTemplate, 'pi role template');
+  const journal = await readJournal(f.request.journalRoot);
+  journal.entries.find(entry => entry.path === f.paths.roleTemplate)!.after = digest(Buffer.from('pi role template'));
+  await saveJournal(f.request.journalRoot, journal);
+  await setupHerdr(f.request, f.parts);
+  expect((await readCheckpoint(f.request.journalRoot))!.runs[0]!.before).toEqual(sequence);
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+  expect(await values(f.all)).toEqual(f.undoExpected);
+});
+
+test('undo accepts a pi role-template rewrite without replacement', async () => {
+  const f = await fixture();
+  await setupHerdr(f.request, f.parts);
+  await put(f.paths.roleTemplate, 'pi role template');
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.roleTemplate, 'utf8')).toBe('pi role template');
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+});

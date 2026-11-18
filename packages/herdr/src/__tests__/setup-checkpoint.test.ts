@@ -3,6 +3,7 @@
 import * as fs from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, expect, test, vi } from 'vitest';
+import { HerdrError } from '../client/parse.js';
 import { parseHerdrConfig } from '../config.js';
 import { applyFiles, digest, mergeTerminalKeys, prepareBackups, readJournal, saveJournal, snapshot } from '../setup/backup.js';
 import { rollbackHerdr, setupHerdr, type InstallFile, type SetupParts, type SetupRequest } from '../setup/installer.js';
@@ -79,7 +80,7 @@ async function fixture() {
       return { terminals: [], identities: { new: 'owner-2' } };
     },
     verify: async () => ({ failures: verificationFails ? [{ item: 'layout', code: 'fixture-failure', message: 'not ready', repair: 'retry' }] : [], warnings: [], probes: [] }),
-    rollback: async () => { if (ownerLive) throw Object.assign(new Error('owner live'), { code: 'cutover-owner-live' }); await put(paths.spaces, '{"version":2,"spaces":[]}\n'); },
+    rollback: async () => { if (ownerLive) throw new HerdrError('cutover-owner-live', 'owner live'); await put(paths.spaces, '{"version":2,"spaces":[]}\n'); },
     warn: () => {},
   };
   return { request, parts, paths, all, before, fail: (value: boolean) => { fail = value; }, live: (value: boolean) => { ownerLive = value; }, badDoctor: () => { verificationFails = true; } };
@@ -142,6 +143,26 @@ test('setup reports journal changes and an unchanged repeat does not rewrite it'
   expect(repeat.writes).toEqual([]);
   expect(await fs.readFile(f.paths.journal)).toEqual(bytes);
   expect((await fs.stat(f.paths.journal)).ino).toBe(before.ino);
+});
+
+test('undo refuses a setup-journal edit racing the file restoration phase', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => {
+    await real.rename(from, to);
+    if (to === f.paths.main) await real.writeFile(f.paths.journal, '{"user":"changed during undo"}\n');
+  });
+  await expect(rollbackHerdr(undo(f.request), f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-changed' });
+  expect(await real.readFile(f.paths.journal, 'utf8')).toBe('{"user":"changed during undo"}\n');
+});
+
+test('an endpoint-only upgrade is checkpointed before its first registry write', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const before = await values(f.all), next = '{"version":1,"packageRoot":"/home/fixture","endpoint":{"protocol":1,"generation":3}}\n';
+  f.parts.paneEndpointPlan = async () => ({ paths: [f.paths.registry], changed: (await fs.readFile(f.paths.registry, 'utf8')) !== next });
+  f.parts.stagePaneEndpoint = async () => { await put(f.paths.registry, next); return [f.paths.registry]; };
+  await setupHerdr(f.request, f.parts);
+  await rollbackHerdr(undo(f.request), f.parts);
+  expect(await values(f.all)).toEqual(before);
 });
 
 test('the CLI exposes undo-upgrade and retains liveness refusals even with replacement', async () => {

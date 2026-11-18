@@ -110,7 +110,7 @@ try {
       return actual;
     } catch { return null; }
   }
-  function fileStatus(file) {
+  function fileStatus(file, credential = false) {
     if (!inside(path.resolve(file))) return null;
     const parent = parents(file);
     if (parent === 'unsafe') return null;
@@ -121,7 +121,7 @@ try {
       if (stat.isFile() && !stat.isSymbolicLink() && stat.uid === uid) {
         try { fs.accessSync(file, fs.constants.R_OK); readable = true; } catch {}
       }
-      return { present: true, readable, modeSafe: stat.isFile() && !stat.isSymbolicLink() && stat.uid === uid && stat.nlink === 1 && (stat.mode & 0o077) === 0 };
+      return { present: true, readable, modeSafe: stat.isFile() && !stat.isSymbolicLink() && stat.uid === uid && stat.nlink === 1 && (credential ? (stat.mode & 0o7777) === 0o600 : (stat.mode & 0o077) === 0) };
     } catch { return { present: false, readable: false, modeSafe: false }; }
   }
   function roamingStatus(file) {
@@ -167,7 +167,7 @@ try {
     return result;
   }
   function fixedFileStatus(file) {
-    return fileStatus(file) || { present: false, readable: false, modeSafe: false };
+    return fileStatus(file, true) || { present: true, readable: false, modeSafe: false };
   }
   function executableStatus(file) {
     const status = fileStatus(file);
@@ -271,7 +271,7 @@ try {
     diskFreeBytes: diskFree(input.cli),
     spider: { installed, version: spiderVersion, nativeModuleReady },
     cli: { gh, gitIdentity: name.status === 0 && email.status === 0,
-      configured: input.checks.map(check => ({ executable: executableStatus(check.executable), auth: check.authFile === null ? null : fileStatus(check.authFile) })) },
+      configured: input.checks.map(check => ({ executable: executableStatus(check.executable), auth: check.authFile === null ? null : fileStatus(check.authFile, true) })) },
     auth: { pi: fixedFileStatus(path.join(input.agentDir ?? path.join(home, '.pi/agent'), 'auth.json')), gh: fixedFileStatus(path.join(home, '.config/gh/hosts.yml')), ghSignedIn },
   });
 } catch { fail('bootstrap-probe-failed'); }
@@ -296,10 +296,9 @@ try {
   const home = fs.realpathSync(os.homedir()), expected = input.agentDir ?? path.join(home, '.pi/agent');
   if (input.agentDir !== undefined) {
     if (input.home !== home || typeof expected !== 'string' || !path.isAbsolute(expected) || path.normalize(expected) !== expected || !expected.startsWith(home + '/') || /[\x00-\x1f\x7f]/.test(expected)) throw new Error('request');
-    reply('default');
-  } else {
+  }
   function isDefault(value, cwd) {
-    if (!value) return true;
+    if (!value) return expected === path.join(home, '.pi/agent');
     if (typeof value !== 'string' || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value)) return false;
     try {
       let expanded = value;
@@ -309,7 +308,19 @@ try {
       return path.resolve(cwd, expanded) === expected;
     } catch { return false; }
   }
-  if (input.home !== home || !isDefault(process.env.PI_CODING_AGENT_DIR, process.cwd())) reply('custom');
+  function configuredDirectorySafe() {
+    if (input.agentDir === undefined) return true;
+    try {
+      let cursor = home;
+      for (const part of path.relative(home, expected).split(path.sep)) {
+        cursor = path.join(cursor, part);
+        const stat = fs.lstatSync(cursor);
+        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0) return false;
+      }
+      return fs.realpathSync(expected) === expected;
+    } catch { return false; }
+  }
+  if (input.home !== home || !configuredDirectorySafe() || !isDefault(process.env.PI_CODING_AGENT_DIR, process.cwd())) reply('custom');
   else {
     const manager = spawnSync('systemctl', ['--user', 'show-environment'],
       { encoding: 'utf8', timeout: 1500, maxBuffer: 65536, stdio: ['ignore', 'pipe', 'ignore'] });
@@ -319,7 +330,6 @@ try {
       if (entries.length > 1) reply('unknown');
       else reply(isDefault(entries.length ? entries[0].slice('PI_CODING_AGENT_DIR='.length) : '', home) ? 'default' : 'custom');
     }
-  }
   }
 } catch { process.stdout.write(JSON.stringify({ version: 1, kind: 'agent-directory', error: 'agent-directory-probe-failed' }) + '\n'); }
 `;

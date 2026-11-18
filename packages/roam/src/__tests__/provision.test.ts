@@ -168,6 +168,15 @@ it("refuses custom pi agent directories before consent or provisioning effects",
   expect(environment.journal.read("custom-environment")).toEqual([]);
 }, 5000);
 
+it("names an explicit agent-directory mismatch before consent or effects", async () => {
+  const f = fixture(); f.state.agentDirectory = "custom";
+  f.ports.destination.agentDir = "/home/fixture/custom-agent";
+  const request = f.request("directory-mismatch");
+  expect(await provision!({ ...request, peer: { ...request.peer, agentDir: f.ports.destination.agentDir } }, f.ports)).toMatchObject({ code: 1, reason: "agent-directory-mismatch" });
+  expect(f.events).toEqual(["lock", "agent-directory-probe", "unlock"]);
+  expect(f.journal.read("directory-mismatch")).toEqual([]);
+}, 5000);
+
 it("refuses a supervisor unit outside the user systemd directory", async () => {
   expect(provision).toBeTypeOf("function");
   const f = fixture(); f.ports.systemd.unitDir = "/home/fixture/not-systemd";

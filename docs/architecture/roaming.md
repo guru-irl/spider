@@ -66,24 +66,46 @@ session still refuses after roaming is disabled.
 For an already-signed-in destination, use the no-copy path:
 
 ```sh
-spider roam provision box-1.invalid --use-destination-auth --yes --no-settings
+spider roam provision box-1.invalid --use-destination-auth --yes --release "$RELEASE_FILE"
 ```
 
-This path never opens, previews, hashes, or transfers the hub's auth file. It
-checks the destination's own `auth.json` presence, readability, and private mode
-through the transport. `destination-auth-missing` requires signing in on the
-destination before retrying. `destination-auth-unsafe` requires fixing that
-file's ownership and permissions. Doctor repeats the private-file check after
-installation; complete and verify the sign-in on the destination itself. Credential-bearing selected files require the separate auth-copy
-path and its explicit provider consent.
+Set `RELEASE_FILE` to the release archive, or omit `--release` to use the bundled
+release. This mode never inspects or transfers hub agent files. The destination
+keeps its own auth, models, settings, keybindings, themes, instructions, and
+skills. Copy-selection flags do not opt files into this mode.
 
-Set the peer's optional `agentDir` to its absolute destination agent directory
-when it differs from the default. The npm prefix comes from the configured
-`<prefix>/bin/pi`; it need not be named `.local`. An explicit `agentDir` uses the
-destination's observed home for safety checks and the supervisor environment.
+Provisioning checks the destination's own `auth.json` presence, readability,
+ownership, and exact mode `0600` through the transport without reading its contents.
+`destination-auth-missing` requires signing in on the destination before retrying.
+`destination-auth-unsafe` requires fixing the file or its parent directories.
+The post-install check uses the same mode requirement. Complete and verify
+sign-in on the destination itself.
+
+On the hub, edit the existing peer entry in `<hub-global-root>/roam/config.json`
+to set `agentDir`. Keep the peer's other fields. For example:
+
+```json
+{
+	"alias": "box-1.invalid",
+	"pi": "/home/example/prefix/bin/pi",
+	"agentDir": "/home/example/agent"
+}
+```
+
+The npm prefix comes from `<prefix>/bin/pi` and need not be named `.local`.
+The configured agent directory must already exist under the destination's home.
+Set the box's core environment and systemd user-manager environment so both
+export `PI_CODING_AGENT_DIR` with that directory. The box's `agentDirectory`
+setting must agree too. Provisioning refuses a mismatch with
+`agent-directory-mismatch` before installation. It does not change or restart
+the core. Changing the core environment can require a restart that kills its
+terminals, so arrange that separately before provisioning.
+
+Remote agent operations, broker startup, doctor, and the supervisor all receive
+the configured directory. Local box commands use the box environment.
+Box doctor resolves the pi SDK from the active release's npm prefix.
 Without `agentDir`, only the default `.local/bin/pi` layout is inferred. Other
 layouts refuse with `provision-agent-directory-required` rather than guessing.
-Use `--no-settings` to preserve the destination's existing settings.
 
 Anyone with the user's shell access can run provisioning. Before `roam forget`,
 confirm that the machine is destroyed. A live forgotten machine can run a second
@@ -107,21 +129,27 @@ spider roam intercom cancel pair-1
 spider roam intercom enroll --graph "$GRAPH_FILE" --operation enrollment-2
 ```
 
-For a partially completed graph, cancel its pending pairs and include only
-those pairs in the fresh graph. Keep active pairs in place.
+For a partially completed graph, cancel only its unbound pending pairs.
+Unchanged siblings can resume with the original graph and operation.
+Include only cancelled pairs in the fresh graph, with fresh epochs when a
+predecessor was revoked. Keep active pairs in place.
 
-Approve the fresh graph at the prompt. Cancellation records that the old
-operation cannot restart, then removes only its pending, unbound pair record.
-It does not contact either destination or require the old core to be running.
+Approve the fresh graph at the prompt. Cancellation prevents only that pair
+from restarting under the old operation and leaves a durable cancellation
+receipt. Repeating cancel exits `0` without further effects. An already-absent
+record also exits `0` with `intercom-pair-absent`. Cancellation does
+not contact either destination or require the old core to be running.
 Binding is durable before enrollment creates pair units, keys, routes, or live
 fences, so an unbound operation has none of those resources to remove.
-Predecessor fences remain untouched. Existing keys and other enrollments also
-remain untouched.
+The receipt retains any inherited predecessor fence until fresh approved
+enrollment clears it. Existing keys and other enrollments remain untouched.
 
 A bound pair requires `spider roam intercom revoke pair-1` instead.
 `intercom-pending-resources-present` means the unbound record contains unexpected
 resource ownership metadata. Cancellation refuses rather than guessing which
-resources to delete. Do not remove its metadata by hand.
+resources to delete. `intercom-predecessor-cleanup-pending` means an earlier
+revocation still needs cleanup. Run `spider roam doctor` to inspect it.
+Do not remove the metadata by hand.
 
 Retries with saved `unavailable` fence observations probe again and request
 fresh approval before setup. A real fence change still requires fresh consent;
@@ -155,8 +183,10 @@ session until a successful doctor and resume.
 
 A stopped box-local origin remains stopped even if a replacement native process
 has a different PID or core. A local home does not grant that replacement launch
-authority. Close the blocked copy, then run `spider roam resume <session>` on the
-hub. Resume verifies the exact file and doctor checks before it creates running
+authority. If the origin has no assigned home yet, first run
+`spider roam sync <machine>` on the hub to assign its initial home.
+Close the blocked copy, then run `spider roam resume <session>` on the hub.
+Resume verifies the exact file and doctor checks before it creates running
 intent and wakes the supervisor. It does not change the home or bypass a live or
 uncertain owner.
 

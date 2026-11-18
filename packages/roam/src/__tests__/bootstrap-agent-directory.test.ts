@@ -18,10 +18,10 @@ function fixture() {
   const systemctl = join(bin, "systemctl");
   writeFileSync(systemctl, '#!/bin/sh\n[ "$1" = --user ] && [ "$2" = show-environment ] || exit 2\n[ "$FIXTURE_SYSTEMD_FAIL" = 1 ] && exit 1\nprintf "%s" "$FIXTURE_SYSTEMD_ENV"\n');
   chmodSync(systemctl, 0o700);
-  function run(agentDir?: string, manager = "", fail = false, requestedHome = home, cwd = home) {
+  function run(agentDir?: string, manager = "", fail = false, requestedHome = home, cwd = home, configured?: string) {
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PATH: bin, FIXTURE_SYSTEMD_ENV: manager, FIXTURE_SYSTEMD_FAIL: fail ? "1" : "0" };
     if (agentDir === undefined) delete env.PI_CODING_AGENT_DIR; else env.PI_CODING_AGENT_DIR = agentDir;
-    const child = spawnSync(process.execPath, ["-e", source!], { input: JSON.stringify({ home: requestedHome }), cwd, env, encoding: "utf8", timeout: 3000 });
+    const child = spawnSync(process.execPath, ["-e", source!], { input: JSON.stringify({ home: requestedHome, ...(configured ? { agentDir: configured } : {}) }), cwd, env, encoding: "utf8", timeout: 3000 });
     expect(child.status).toBe(0); expect(child.stderr).toBe("");
     return { reply: JSON.parse(child.stdout) as { version: number; kind: string; value: string }, output: child.stdout };
   }
@@ -118,6 +118,17 @@ it("fails closed if the user-manager environment cannot be read", () => {
   expect(f.run(undefined, "", true).reply.value).toBe("unknown");
 }, 5000);
 
+
+it("requires the configured directory to exist and match both box environments", () => {
+  const f = fixture(), agent = join(f.home, "custom-agent");
+  expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("custom");
+  mkdirSync(agent, { mode: 0o700 });
+  expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("default");
+  expect(f.run(undefined, `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("custom");
+  expect(f.run(agent, "", false, f.home, f.home, agent).reply.value).toBe("custom");
+  expect(f.run(join(f.home, "wrong"), `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("custom");
+  expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, true, f.home, f.home, agent).reply.value).toBe("unknown");
+}, 5000);
 
 it("verifies destination sign-in by metadata without reading credential contents", () => {
   const f = fixture(), agentDir = join(f.home, "agent"), globalRoot = join(f.home, "state"), prefix = join(f.home, "prefix");

@@ -473,7 +473,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     for (const record of records) {
       const pair = record.pair, peer = pair.source.machineId === config.machineId ? pair.target.machineId : pair.target.machineId === config.machineId ? pair.source.machineId : null;
       const fence = peer === null ? undefined : fences.get(peer);
-      const completed = !record.cleanupReason && record.fenceId === fence?.fenceId && (record.state === "revoked" && (record.revocationEpoch ?? pair.edgeEpoch) === fence?.edgeEpoch || record.state === "pending" && pair.edgeEpoch !== fence?.edgeEpoch);
+      const completed = !record.cleanupReason && record.fenceId === fence?.fenceId && (record.state === "revoked" && (record.revocationEpoch ?? pair.edgeEpoch) === fence?.edgeEpoch || (record.state === "pending" || record.state === "cancelled") && pair.edgeEpoch !== fence?.edgeEpoch);
       if (fence && !completed && fence.edgeEpoch !== (record.revocationEpoch ?? pair.edgeEpoch)) {
         const repairCommand = `spider roam intercom revoke ${pair.pairId} --fence-epoch ${fence.edgeEpoch}`;
         inventory.push({ severity: "block", reason: `intercom-fence-mismatch: On the hub, run ${repairCommand} with both boxes reachable to stop the pair units and confirm closure of the historical fence.`, repairCommand });
@@ -496,9 +496,11 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
         const bytes = readPrivateBytes(join(root, "roam"), "active-release.json", 4096);
         if (!bytes) throw new Error("active-release-unavailable");
         const release: unknown = JSON.parse(bytes.toString("utf8")); bytes.fill(0);
-        if (typeof release !== "string" || !isAbsolute(release)) throw new Error("active-release-unavailable");
+        if (typeof release !== "string" || !isAbsolute(release) || resolve(release) !== release) throw new Error("active-release-unavailable");
+        const layout = release.match(/^(\/.+)\/spider-releases\/[a-f0-9]{64}\/node_modules\/@guru-irl\/spider$/);
+        if (!layout) throw new Error("active-release-layout-invalid");
         const home = homedir(), agentDir = process.env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent");
-        const sdk = join(home, ".local", "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
+        const sdk = join(layout[1], "lib", "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js");
         readiness = await inspectIntercomReadiness({ agentDir, release, sdk, cwd: home });
       }
       if (!validIntercomReadiness(readiness)) throw new Error("invalid-intercom-readiness");

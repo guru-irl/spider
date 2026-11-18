@@ -104,7 +104,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
       return result(operationId, 3, ["core-changed", "core-unavailable", "machine-not-found", "machine-ambiguous", "cli-timeout"].includes(reason)
         ? reason : "agent-directory-unverified", null);
     }
-    if (agentDirectory.status === "custom") return result(operationId, 1, "custom-agent-directory-unsupported", null);
+    if (agentDirectory.status === "custom") return result(operationId, 1, peer.agentDir ? "agent-directory-mismatch" : "custom-agent-directory-unsupported", null);
     if (agentDirectory.status !== "default") return result(operationId, 3, "agent-directory-unverified", null);
     const selected = prepareSelectedFiles({ sourceRoot: ports.source.agentRoot, selected: input.selected, maxBytes: ports.limits.agentBytes });
     credentialFiles = selected.credentialFiles;

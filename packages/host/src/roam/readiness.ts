@@ -140,7 +140,7 @@ export function createParticipantAdmission(input: {
         if (unfinishedFreeze(dirname(runtime.db.raw.name), sessionId)) throw new Error("Participant has an unfinished freeze");
         const previous = await runtime.authority.get(sessionId);
         if (previous && !runtime.authority.authorized(sessionId, runtime.config.hubMachineId, runtime.config.machineId)) throw new Error("participant-intent-untrusted");
-        if (previous && (previous.desired === "stopped" || previous.suspended)) throw new Error("Participant is stopped or suspended");
+        if (previous && (previous.desired === "stopped" || previous.suspended)) throw new Error("participant-stopped");
         if (previous && (previous.epoch !== epoch || previous.cwd !== cwd || previous.file !== file)) throw new Error("Participant authority mismatch");
         const terminal = await input.terminal(sessionId);
         const origin = readLocal<BoxLocalOrigin>(runtime.db, "participant-origin", sessionId);

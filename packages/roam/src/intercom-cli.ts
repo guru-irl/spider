@@ -134,17 +134,19 @@ export async function runIntercomCancelCli(input: { root: string; pairId: string
     if (readLocalIdentity(input.root).role !== "hub") throw new Error("intercom-requires-hub");
     return await withProcessLock(join(input.root, "roam"), "intercom-graph", async () => {
       const registry = createIntercomRegistry(input.root), record = await registry.get(input.pairId);
-      if (!record) throw new Error("intercom-pair-not-found");
+      if (!record) { io.out("intercom-pair-absent\n"); return 0; }
+      if (record.state === "cancelled") { io.out("intercom-enrollment-cancelled\n"); return 0; }
       if (record.state !== "pending" || "sshUser" in record.pair) throw new Error("intercom-enrollment-bound");
-      if (record.resources || record.unit || record.cleanupReason || record.revocationEpoch) throw new Error("intercom-pending-resources-present");
+      if (record.cleanupReason) throw new Error("intercom-predecessor-cleanup-pending");
+      if (record.resources || record.unit || record.revocationEpoch) throw new Error("intercom-pending-resources-present");
       const journal = options.journal ?? openJournal(join(input.root, "roam", "journal.db"));
       journal.record(record.operationId, "intercom-enrollment-cancelled", { pairId: input.pairId, graphDigest: record.graphDigest });
       await registry.cancelPending(input.pairId, record.operationId, record.graphDigest);
       io.out("intercom-enrollment-cancelled\n"); return 0;
     });
   } catch (error) {
-    const reason = error instanceof Error && ["intercom-requires-hub", "intercom-pair-not-found", "intercom-enrollment-bound", "intercom-pending-resources-present", "intercom-pair-conflict"].includes(error.message)
+    const reason = error instanceof Error && ["intercom-requires-hub", "intercom-pair-not-found", "intercom-enrollment-bound", "intercom-pending-resources-present", "intercom-predecessor-cleanup-pending", "intercom-pair-conflict"].includes(error.message)
       ? error.message : "intercom-cancellation-incomplete";
-    io.err(`${reason}${reason === "intercom-enrollment-bound" ? ". Use spider roam intercom revoke <pair>" : ""}\n`); return 1;
+    io.err(`${reason}${reason === "intercom-enrollment-bound" ? ". Use spider roam intercom revoke <pair>" : reason === "intercom-predecessor-cleanup-pending" ? ". Run spider roam doctor" : ""}\n`); return 1;
   }
 }

@@ -226,6 +226,7 @@ it("does not suggest editing a transient unit to repair startup limits", async (
   const value = healthyInventory(); value.core.transient = true; value.hardNofile = 2048; value.softNofile = 1024;
   const report = await doctorModule.doctorPeer(bootstrapPeer, fixture(value).ports);
   expect(report.find(item => /hard.*open.file/i.test(item.reason))?.repairCommand).toBeNull();
+  expect(report.find(item => /hard.*open.file/i.test(item.reason))?.reason).toContain("DefaultLimitNOFILE=65536");
 });
 
 it.each([

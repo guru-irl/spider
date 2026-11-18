@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { appendFileSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { endianness } from "node:os";
@@ -8,10 +8,30 @@ import { scratchDbPath } from "@spider/db-core/testutil";
 import { openDiagnosticSnapshot } from "../diagnostic-snapshot";
 import { runLocalDoctor } from "../local-diagnostics";
 
-const hooks = vi.hoisted(() => ({ afterRead: null as null | ((fd: number, count: number) => void) }));
+const hooks = vi.hoisted(() => ({
+  afterRead: null as null | ((fd: number, count: number) => void),
+  fixedStamp: null as string | null,
+  beforePrivateOpen: null as null | ((file: string) => void),
+}));
+vi.mock("@spider/db-core", async importOriginal => {
+  const actual = await importOriginal<typeof import("@spider/db-core")>();
+  return { ...actual, openDbReadOnly: (file: string) => {
+    hooks.beforePrivateOpen?.(file);
+    return actual.openDbReadOnly(file);
+  } };
+});
 vi.mock("node:fs", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs")>();
-  return { ...actual, readSync: (...args: unknown[]) => {
+  const fixed = (stat: ReturnType<typeof actual.fstatSync>, bigint: boolean) => {
+    if (!hooks.fixedStamp || !bigint) return stat;
+    const source = actual.statSync(hooks.fixedStamp);
+    if (stat.dev !== BigInt(source.dev) || stat.ino !== BigInt(source.ino)) return stat;
+    return Object.assign(stat, { mtimeNs: 0n, ctimeNs: 0n });
+  };
+  return { ...actual,
+    lstatSync: (...args: Parameters<typeof actual.lstatSync>) => fixed(Reflect.apply(actual.lstatSync, undefined, args), !!args[1]?.bigint),
+    fstatSync: (...args: Parameters<typeof actual.fstatSync>) => fixed(Reflect.apply(actual.fstatSync, undefined, args), !!args[1]?.bigint),
+    readSync: (...args: unknown[]) => {
     const count = Reflect.apply(actual.readSync, undefined, args);
     if (typeof args[0] === "number") hooks.afterRead?.(args[0], count);
     return count;
@@ -20,6 +40,8 @@ vi.mock("node:fs", async importOriginal => {
 const roots: string[] = [];
 afterEach(() => {
   hooks.afterRead = null;
+  hooks.fixedStamp = null;
+  hooks.beforePrivateOpen = null;
   vi.unstubAllEnvs();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -109,37 +131,28 @@ it("retries when a writer publishes its WAL commit during the snapshot", () => {
   } finally { writer.close(); }
 }, 5000);
 
-it("stops at a published commit while publication keeps advancing past three attempts", () => {
-  const { root, file, temp } = fixture(), writer = openDb(file);
+it("needs all three attempts while commits keep advancing", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
   try {
     writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('visible')");
-    const versions: Array<{ index: Buffer; wal: Buffer }> = [];
-    for (let i = 1; i <= 8; i++) {
-      const index = readFileSync(`${file}-shm`);
-      writer.prepare("INSERT INTO fixture VALUES (?)").run(`published-${i}`);
-      versions.push({ index, wal: readFileSync(`${file}-wal`) });
-    }
-    const target = join(root, "continuous.db"); copyFileSync(file, target);
-    const publish = (i: number) => {
-      writeFileSync(`${target}-wal`, versions[i].wal);
-      writeFileSync(`${target}-shm`, versions[i].index);
-    };
-    publish(0);
-    const source = statSync(`${target}-shm`);
-    let publications = 0;
-    hooks.afterRead = (fd, count) => {
+    const source = statSync(file), wal = statSync(`${file}-wal`);
+    let attempts = 0, publications = 0;
+    hooks.afterRead = fd => {
       const read = fstatSync(fd);
-      if (count === 96 && read.dev === source.dev && read.ino === source.ino && publications < versions.length - 1) publish(++publications);
+      if (read.ino === source.ino && read.dev === source.dev) {
+        attempts++;
+        if (attempts < 3) writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+      }
+      if (read.ino === wal.ino && read.dev === wal.dev) writer.prepare("INSERT INTO fixture VALUES (?)").run(`published-${++publications}`);
     };
-    const snapshot = openDiagnosticSnapshot(target)!;
+    const snapshot = openDiagnosticSnapshot(file)!;
     hooks.afterRead = null;
     try {
+      expect(attempts).toBe(3);
       expect(publications).toBeGreaterThan(0);
-      expect(publications).toBeLessThan(versions.length - 1);
-      const rows = snapshot.prepare("SELECT value FROM fixture WHERE value != 'visible' ORDER BY value").all() as { value: string }[];
-      expect(rows.length).toBeGreaterThan(0);
-      expect(rows.length).toBeLessThanOrEqual(publications);
-      expect(rows.map(row => row.value)).toEqual(Array.from({ length: rows.length }, (_, i) => `published-${i + 1}`));
+      expect(snapshot.prepare("SELECT value FROM fixture WHERE value = 'visible'").all()).toEqual([{ value: "visible" }]);
+      const count = snapshot.prepare("SELECT count(*) AS count FROM fixture").get() as { count: number };
+      expect(count.count).toBeLessThanOrEqual(publications + 1);
     } finally { snapshot.close(); }
     expect(readdirSync(temp)).toEqual([]);
   } finally { writer.close(); }
@@ -318,4 +331,225 @@ it("rejects symlinked source files", () => {
   expect(() => { try { openDiagnosticSnapshot(alias); } catch (error) { failure = error; throw error; } }).toThrow(/unsafe/i);
   expect(failure).toMatchObject({ code: "diagnostic-snapshot-unsafe" });
   expect(readdirSync(temp)).toEqual([]);
+}, 5000);
+
+function isFile(fd: number, file: string): boolean {
+  if (!existsSync(file)) return false;
+  const a = fstatSync(fd), b = statSync(file);
+  return a.dev === b.dev && a.ino === b.ino;
+}
+it("bounds the commit after the main copy even with coarse timestamps", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
+  let reader: ReturnType<typeof openDb> | undefined;
+  try {
+    writer.exec("CREATE TABLE a(value TEXT); CREATE TABLE b(value TEXT); INSERT INTO a VALUES ('old'); INSERT INTO b VALUES ('old')");
+    writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+    writer.exec("UPDATE a SET value='base'");
+    hooks.fixedStamp = file;
+    let indexReads = 0, walReads = 0;
+    hooks.afterRead = (fd, count) => {
+      if (isFile(fd, `${file}-shm`) && count === 96 && ++indexReads === 1) {
+        writer.exec("BEGIN; UPDATE a SET value='new'; UPDATE b SET value='new'; COMMIT");
+        reader = openDb(file);
+        reader.exec("BEGIN"); reader.prepare("SELECT * FROM a").all();
+        writer.raw.pragma("wal_checkpoint(PASSIVE)");
+      }
+      if (isFile(fd, `${file}-wal`) && ++walReads === 1) writer.exec("UPDATE a SET value='end'");
+    };
+    const snapshot = openDiagnosticSnapshot(file)!;
+    hooks.afterRead = null;
+    try {
+      expect(snapshot.prepare("SELECT a.value AS a, b.value AS b FROM a,b").get()).toEqual({ a: "new", b: "new" });
+      expect(walReads).toBeGreaterThan(0);
+    } finally { snapshot.close(); }
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { reader?.close(); writer.close(); }
+}, 5000);
+
+it("retries a half-backfilled main copy when the WAL becomes empty", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE a(value TEXT); INSERT INTO a VALUES ('o'||hex(zeroblob(180000))); CREATE TABLE b(value TEXT); INSERT INTO b VALUES ('o'||hex(zeroblob(180000)))");
+    writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+    writer.exec("BEGIN; UPDATE a SET value='n'||substr(value,2); UPDATE b SET value='n'||substr(value,2); COMMIT");
+    hooks.fixedStamp = file;
+    let chunks = 0;
+    hooks.afterRead = fd => {
+      if (isFile(fd, file) && ++chunks === 1) writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+    };
+    const snapshot = openDiagnosticSnapshot(file)!;
+    hooks.afterRead = null;
+    try { expect(snapshot.prepare("SELECT substr(a.value,1,1) AS a, substr(b.value,1,1) AS b FROM a,b").get()).toEqual({ a: "n", b: "n" }); }
+    finally { snapshot.close(); }
+    expect(chunks).toBeGreaterThan(3);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
+}, 5000);
+
+it("keeps the earlier commit when a restart overwrites a copied stale tail", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT)");
+    writer.raw.transaction(() => { for (let i = 0; i < 80; i++) writer.prepare("INSERT INTO fixture VALUES (?)").run(`item-${i}`); })();
+    writer.raw.pragma("wal_checkpoint(RESTART)");
+    writer.exec("INSERT INTO fixture VALUES ('new-generation')");
+    let copied = false;
+    hooks.fixedStamp = file;
+    hooks.afterRead = fd => {
+      if (!copied && isFile(fd, `${file}-wal`)) {
+        copied = true;
+        writer.exec("INSERT INTO fixture VALUES ('later')");
+      }
+    };
+    const snapshot = openDiagnosticSnapshot(file)!;
+    hooks.afterRead = null;
+    try {
+      expect(copied).toBe(true);
+      expect(snapshot.prepare("SELECT count(*) AS count FROM fixture").get()).toEqual({ count: 81 });
+    } finally { snapshot.close(); }
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
+}, 5000);
+
+it.each(["close", "short-index", "torn-index"])("retries the transient %s lifecycle window", event => {
+  const { file, temp } = fixture();
+  let writer: ReturnType<typeof openDb> | undefined = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('committed')");
+    const index = readFileSync(`${file}-shm`);
+    let fired = false, restored = false, attempts = 0;
+    hooks.afterRead = (fd, count) => {
+      if (isFile(fd, file)) attempts++;
+      if (!fired && isFile(fd, event === "close" ? `${file}-wal` : file)) {
+        fired = true;
+        if (event === "close") { writer!.close(); writer = undefined; }
+        else if (event === "short-index") truncateSync(`${file}-shm`, 3);
+        else {
+          const torn = Buffer.from(index); torn[48 + 8] ^= 1;
+          writeFileSync(`${file}-shm`, torn);
+        }
+      } else if (fired && !restored && event !== "close" && isFile(fd, `${file}-shm`) && (event === "torn-index" || count === 0)) {
+        restored = true; writeFileSync(`${file}-shm`, index);
+      }
+    };
+    const snapshot = openDiagnosticSnapshot(file)!;
+    hooks.afterRead = null;
+    try { expect(snapshot.prepare("SELECT value FROM fixture").all()).toEqual([{ value: "committed" }]); }
+    finally { snapshot.close(); }
+    expect(fired).toBe(true);
+    expect(attempts).toBeGreaterThan(1);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer?.close(); }
+}, 5000);
+
+it("retries the gap between publishing reset salts and rewriting the WAL header", () => {
+  const { root, file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('committed')");
+    const oldWal = readFileSync(`${file}-wal`);
+    writer.raw.pragma("wal_checkpoint(RESTART)");
+    writer.exec("INSERT INTO fixture VALUES ('next')");
+    const nextWal = readFileSync(`${file}-wal`), target = join(root, "reset.db");
+    copyFileSync(file, target); copyFileSync(`${file}-shm`, `${target}-shm`); writeFileSync(`${target}-wal`, oldWal);
+    let rewritten = false;
+    hooks.afterRead = fd => {
+      if (!rewritten && isFile(fd, `${target}-wal`)) { rewritten = true; writeFileSync(`${target}-wal`, nextWal); }
+    };
+    const snapshot = openDiagnosticSnapshot(target)!;
+    hooks.afterRead = null;
+    try { expect(snapshot.prepare("SELECT value FROM fixture ORDER BY value").all()).toEqual([{ value: "committed" }, { value: "next" }]); }
+    finally { snapshot.close(); }
+    expect(rewritten).toBe(true);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
+}, 5000);
+
+it("retries a checkpoint whose backfill target overtakes the copied commit", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('before')");
+    writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+    writer.exec("UPDATE fixture SET value='before'");
+    hooks.fixedStamp = file;
+    let checkpoints = 0, attempts = 0;
+    hooks.afterRead = fd => {
+      if (isFile(fd, file)) attempts++;
+      if (isFile(fd, `${file}-wal`) && checkpoints++ === 0) {
+        writer.exec("INSERT INTO fixture VALUES ('after')");
+        writer.raw.pragma("wal_checkpoint(PASSIVE)");
+      }
+    };
+    const snapshot = openDiagnosticSnapshot(file)!;
+    hooks.afterRead = null;
+    try { expect(snapshot.prepare("SELECT value FROM fixture ORDER BY value").all()).toEqual([{ value: "after" }, { value: "before" }]); }
+    finally { snapshot.close(); }
+    expect(attempts).toBeGreaterThan(1);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
+}, 5000);
+
+it("ignores checksum-valid uncommitted frames left by a spilled rollback", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('committed')");
+    writer.raw.pragma("cache_size=1");
+    writer.exec("BEGIN; INSERT INTO fixture VALUES (hex(zeroblob(100000))); ROLLBACK");
+    const before = hashes(file), snapshot = openDiagnosticSnapshot(file)!;
+    try { expect(snapshot.prepare("SELECT value FROM fixture").all()).toEqual([{ value: "committed" }]); }
+    finally { snapshot.close(); }
+    expect(hashes(file)).toEqual(before);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
+}, 5000);
+
+it("checks that private recovery reached the selected commit", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE fixture(value TEXT); INSERT INTO fixture VALUES ('before')");
+    const earlier = readFileSync(`${file}-wal`);
+    writer.exec("INSERT INTO fixture VALUES ('after')");
+    let opens = 0;
+    hooks.beforePrivateOpen = copy => {
+      if (++opens === 1) writeFileSync(`${copy}-wal`, earlier);
+    };
+    const snapshot = openDiagnosticSnapshot(file)!;
+    try { expect(snapshot.prepare("SELECT value FROM fixture ORDER BY value").all()).toEqual([{ value: "after" }, { value: "before" }]); }
+    finally { snapshot.close(); }
+    expect(opens).toBe(2);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
+}, 5000);
+
+it("accepts only recorded commits through automatic, RESTART and TRUNCATE checkpoints", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE a(value INTEGER); CREATE TABLE b(value INTEGER); INSERT INTO a VALUES (0); INSERT INTO b VALUES (0)");
+    writer.raw.pragma("wal_autocheckpoint=4");
+    const committed = new Set([JSON.stringify({ a: 0, b: 0 })]);
+    let step = 0, accepted = 0;
+    hooks.fixedStamp = file;
+    for (const phase of ["index", "main", "wal"] as const) {
+      for (const mode of ["PASSIVE", "RESTART", "TRUNCATE"]) {
+        let fired = false;
+        hooks.afterRead = (fd, count) => {
+          if (fired || !isFile(fd, phase === "main" ? file : `${file}-${phase === "index" ? "shm" : "wal"}`) || phase === "index" && count !== 96) return;
+          fired = true;
+          step++;
+          writer.exec(`BEGIN; UPDATE a SET value=${step}; UPDATE b SET value=${step}; COMMIT`);
+          committed.add(JSON.stringify({ a: step, b: step }));
+          writer.raw.pragma(`wal_checkpoint(${mode})`);
+        };
+        const snapshot = openDiagnosticSnapshot(file)!;
+        hooks.afterRead = null;
+        try { expect(committed.has(JSON.stringify(snapshot.prepare("SELECT a.value AS a,b.value AS b FROM a,b").get()))).toBe(true); }
+        finally { snapshot.close(); }
+        expect(fired).toBe(true);
+        accepted++;
+        writer.exec(`BEGIN; UPDATE a SET value=${++step}; UPDATE b SET value=${step}; COMMIT`);
+        committed.add(JSON.stringify({ a: step, b: step }));
+      }
+    }
+    expect(accepted).toBe(9);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { writer.close(); }
 }, 5000);

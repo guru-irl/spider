@@ -414,11 +414,15 @@ it.each(['0.1.13', '0.1.16'])('%s configured remote notifications retain service
   h.herdr.hc = async (args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [{ name: 'box-1.invalid', id: 'remote-core', state: 'connected' }] }) });
   try {
     await h.ready; await h.drain();
-    expect.soft(byId(h.view.render(h.cx), 'need-intentional:owner:notice-1')?.events.on_click).toBeUndefined();
+    const startup = h.view.render(h.cx);
+    expect.soft(byId(startup, 'need-intentional:owner:notice-1')?.events.on_click).toBeUndefined();
+    expect.soft(flatten(startup).some(node => node.items?.includes('Pane service unavailable; run doctor'))).toBe(true);
     const target = { coreId: 'remote-core', terminalId: 'owner', address, createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'm', kind: 'session', sessionId: 'owner', generation: 'g', homeEpoch: 1, runId: null, consoleId: null, name: 'owner', cwd: '/home/fixture' };
     snapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'owner', generation: 'g', owner: { terminal: { address } }, target, name: 'owner', status: 'working', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] };
     clock.mockReturnValue(106000); h.timers.find(timer => timer.ms === 2000)!.fn(h.cx); await h.drain();
-    let row = byId(h.view.render(h.cx), 'need-intentional:owner:notice-1');
+    const recovered = h.view.render(h.cx);
+    expect.soft(flatten(recovered).some(node => node.items?.includes('Pane service unavailable; run doctor'))).toBe(false);
+    let row = byId(recovered, 'need-intentional:owner:notice-1');
     expect.soft(row?.events.on_click).toBeDefined(); row?.events.on_click?.({}, h.cx); await h.drain();
     expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'owner', generation: 'g' }));
     expect.soft(h.calls.filter(call => call[0] === 'exec' && call[2].includes('--request'))).toEqual([]);

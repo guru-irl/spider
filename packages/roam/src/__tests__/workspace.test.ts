@@ -111,6 +111,29 @@ it("snapshot preserves real index bytes and untracked bytes", async () => {
   );
 }, 5000);
 
+it("excludes private Herdr launch records from roaming workspace snapshots", async () => {
+  const f = fixture(true);
+  const directory = join(f.root, "agent", "spider", "herdr", "launch-environments");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const token = "ghp" + "_" + "synthetic".padEnd(39, "0");
+  writeFileSync(join(directory, "terminal.json"), JSON.stringify({ API_TOKEN: token }), { mode: 0o600 });
+  writeFileSync(join(f.root, "ordinary.txt"), "include this file\n");
+  const snapshot = await snapshotWorkspace(input(f), f.ports);
+  const files = treeFiles(f, snapshot.workingTree);
+  expect(files).toContain("ordinary.txt");
+  expect(files.some(path => path.includes("launch-environments"))).toBe(false);
+}, 10000);
+
+it("refuses tracked private Herdr launch records before publishing roaming refs", async () => {
+  const f = fixture(true);
+  const directory = join(f.root, "agent", "spider", "herdr", "launch-environments");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  writeFileSync(join(directory, "terminal.json"), "private local state\n", { mode: 0o600 });
+  git(f, "add", "agent");
+  await expect(snapshotWorkspace(input(f), f.ports)).rejects.toThrow(/tracked local state/);
+  expect(git(f, "for-each-ref", "--format=%(refname)", "refs/spider-roam")).toBe("");
+}, 10000);
+
 it("captures staged-only binary deletion rename and mode changes", async () => {
   const f = fixture();
   const staged = Buffer.from([9, 0, 250]), working = Buffer.from([8, 0, 251]);

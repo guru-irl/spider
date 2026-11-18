@@ -17,7 +17,7 @@ import { offerResume, resumeOfferShell } from '../sessions/resume.js';
 import { registerHerdrSessions } from '../sessions/register.js';
 import type { RecordedLaunch } from '../sessions/launch-environment.js';
 
-const disk = vi.hoisted(() => ({ fail: '', events: [] as string[] }));
+const disk = vi.hoisted(() => ({ fail: '', failSync: '', events: [] as string[] }));
 vi.mock('node:fs/promises', async original => {
   const actual = await original<typeof import('node:fs/promises')>();
   return { ...actual,
@@ -28,7 +28,7 @@ vi.mock('node:fs/promises', async original => {
     open: async (...args: Parameters<typeof actual.open>) => {
       if (disk.fail && args[1] === 'wx' && String(args[0]).includes(disk.fail)) throw Object.assign(new Error('disk full'), { code: 'ENOSPC' });
       const handle = await actual.open(...args), sync = handle.sync.bind(handle);
-      handle.sync = async () => { await sync(); disk.events.push('sync:' + String(args[0])); };
+      handle.sync = async () => { if (disk.failSync && String(args[0]) === disk.failSync) throw Object.assign(new Error('disk sync failed'), { code: 'EIO' }); await sync(); disk.events.push('sync:' + String(args[0])); };
       return handle;
     },
   };
@@ -53,7 +53,7 @@ async function record(snapshot: RecordedLaunch = launch()) {
 function offerPorts(auto: boolean) { return { registry: createTerminalRegistry(root), processInventory: inventory, coreStartedAt: async () => 20, ...(auto ? { autoResumeRoot: root } : {}) }; }
 function resumePorts() { return { ...ports, ...{ resume: { registry: createTerminalRegistry(root), terminal } } }; }
 beforeEach(async () => {
-  disk.fail = ''; disk.events = [];
+  disk.fail = ''; disk.failSync = ''; disk.events = [];
   root = await mkdtemp(join(await realpath(tmpdir()), 'lenv-')); file = join(root, 'session.jsonl'); agent = join(root, 'agent');
   terminal = { coreId: 'core', terminalId: 'terminal', address: 'terminal', socket: join(root, 'core.sock'), sessionNamespace: 'fixture' } as TerminalIdentity;
   owner = { sessionId: 'saved' as SessionId, generation: 'generation' as Generation, terminal, sessionFile: file, cwd: root, name: 'current name' };
@@ -515,7 +515,7 @@ it.each(['missing', 'wrong session', 'wrong publication', 'permission drift'])('
   expect(notice.includes(credential())).toBe(false);
 });
 
-it.each(['terminals/', 'live-'])('failed publication preserves the previous matching launch record: %s', async failure => {
+it.each(['terminals/', 'live-', 'launch-environments/'])('failed publication preserves the previous matching launch record: %s', async failure => {
   await record(); const registry = createTerminalRegistry(root), previous = await registry.get(terminal);
   disk.fail = failure;
   await expect(registry.record({ ...mapping(), recordedAt: 11, launch: { ...launch(), variables: { REPLACEMENT: 'new' } } }, { pid: 2147483647, startIdentity: 'old' })).rejects.toThrow();
@@ -614,4 +614,16 @@ it('restores persistent editor and terminal configuration without treating it as
   const variables = { VSCODE_PORTABLE: 'portable-config', KITTY_CONFIG_DIRECTORY: 'kitty-config', ALACRITTY_CONFIG_HOME: 'alacritty-config', WEZTERM_CONFIG_FILE: 'terminal-config.lua', ZELLIJ_AUTO_ATTACH: 'true', MONITOR_API_KEY: credential() };
   await record({ ...launch([]), variables }); await launchSession(request(), resumePorts());
   expect(Object.keys(variables).filter(name => launches[0].env[name] !== variables[name as keyof typeof variables])).toEqual([]);
+});
+
+it('retains the newly published record when mapping directory sync fails after rename', async () => {
+  await record(); const registry = createTerminalRegistry(root);
+  disk.failSync = join(root, 'terminals');
+  await expect(registry.record({ ...mapping(), recordedAt: 11, launch: { ...launch(), variables: { REPLACEMENT: 'new' } } })).rejects.toMatchObject({ code: 'EIO' });
+  disk.failSync = '';
+  const published = await registry.get(terminal);
+  expect(published?.recordedAt).toBe(11);
+  expect((await readRecordedLaunch(published!))?.variables.REPLACEMENT === 'new').toBe(true);
+  await record();
+  expect(await readdir(secretDirectory())).toHaveLength(1);
 });

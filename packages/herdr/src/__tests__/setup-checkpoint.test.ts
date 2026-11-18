@@ -459,3 +459,14 @@ test('undo refuses when runtime changes leave only bookkeeping to restore', asyn
   await put(f.paths.layout, '{"content":[],"generation":4,"user":true}\n');
   await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-bookkeeping-only' });
 });
+
+
+test('a killed file batch can undo completed write intents without the replacement flag', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const path = join(f.request.journalRoot, 'checkpoint.json'), checkpoint = JSON.parse(await fs.readFile(path, 'utf8'));
+  checkpoint.state = 'running'; checkpoint.runs.at(-1).after = null; checkpoint.runs.at(-1).outcome = 'running';
+  checkpoint.runs.at(-1).written = checkpoint.runs.at(-1).written.filter((file: { path: string }) => file.path !== f.paths.main);
+  await put(path, JSON.stringify(checkpoint));
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+});

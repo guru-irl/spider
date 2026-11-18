@@ -6,6 +6,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { HerdrError } from '../client/parse.js';
 import { parseHerdrConfig } from '../config.js';
 import { applyFiles, digest, mergeTerminalKeys, prepareBackups, readJournal, saveJournal, snapshot } from '../setup/backup.js';
+import * as installer from '../setup/installer.js';
 import { rollbackHerdr, setupHerdr, type InstallFile, type SetupParts, type SetupRequest } from '../setup/installer.js';
 import { runHerdrCli } from '../setup/cli.js';
 
@@ -163,6 +164,33 @@ test('an endpoint-only upgrade is checkpointed before its first registry write',
   await setupHerdr(f.request, f.parts);
   await rollbackHerdr(undo(f.request), f.parts);
   expect(await values(f.all)).toEqual(before);
+});
+
+test('undo returns and prints remote files from every recorded run without contacting the machine', async () => {
+  const f = await fixture(), machine = 'box-1.invalid' as import('../contracts.js').MachineName, path = '/home/fixture/runtime-v2.mjs';
+  let remote: Buffer | null = null;
+  f.parts.ensureRuntime = async () => [{ machine, path, bytes: Buffer.from('runtime-v2'), sha256: digest(Buffer.from('runtime-v2')) }];
+  f.parts.hc = {
+    fileRead: async () => { if (remote === null) throw new HerdrError('file-not-found', 'absent'); return remote; },
+    fileWrite: async (_machine, _path, bytes) => { remote = bytes; },
+  };
+  f.fail(true); await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('injected cutover interruption');
+  f.fail(false); await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
+  f.parts.hc = { fileRead: async () => { throw new Error('undo contacted machine'); }, fileWrite: async () => { throw new Error('undo contacted machine'); } };
+  const result = await installer.undoHerdrUpgrade?.(f.request, f.parts);
+  expect(result?.remoteNotRestored).toEqual([{ machine: 'box-1.invalid', path: '/home/fixture/runtime-v2.mjs' }]);
+  expect(remote?.toString()).toBe('runtime-v2');
+  expect(await values(f.all)).toEqual(f.before);
+
+  const g = await fixture(), output: string[] = [];
+  let uploaded = false;
+  g.parts.ensureRuntime = async () => [{ machine, path, bytes: Buffer.from('runtime-v2'), sha256: digest(Buffer.from('runtime-v2')) }];
+  g.parts.hc = { fileRead: async () => { if (!uploaded) throw new HerdrError('file-not-found', 'absent'); return Buffer.from('runtime-v2'); }, fileWrite: async () => { uploaded = true; } };
+  await setupHerdr(g.request, g.parts);
+  g.parts.hc = { fileRead: async () => { throw new Error('undo contacted machine'); }, fileWrite: async () => { throw new Error('undo contacted machine'); } };
+  expect(await runHerdrCli(['rollback', '--undo-upgrade'], { request: async () => g.request, setupParts: async () => g.parts,
+    doctorParts: async () => { throw new Error('unused'); }, stdout: text => output.push(text), stderr: text => output.push(text) })).toBe(0);
+  expect(output.join('')).toContain('Remote file not restored: box-1.invalid /home/fixture/runtime-v2.mjs');
 });
 
 test('the CLI exposes undo-upgrade and retains liveness refusals even with replacement', async () => {

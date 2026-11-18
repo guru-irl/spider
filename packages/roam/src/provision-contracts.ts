@@ -32,7 +32,7 @@ export interface Inventory {
 
 export type ProvisionRequest = {
   operation: Operation; peer: Peer; selected: readonly string[]; includeAuth: boolean; requireDestinationAuth?: boolean; confirmedProviders: readonly string[];
-  expectedAuthBytes?: number; expectedFiles?: readonly SelectedFileMetadata[]; expectedSelectionDigest?: string;
+  expectedAuthBytes?: number; expectedFiles?: readonly SelectedFileMetadata[]; expectedSelectionDigest?: string; replaceCorePin?: boolean;
 };
 export interface ProvisionVerification extends IntercomReadiness {
   piSignedIn: boolean; nativeSqlite: boolean; extensionLoaded: boolean; exactSession: boolean; privateModes: boolean;
@@ -147,6 +147,7 @@ export interface IntercomRevocationPorts {
 
 export interface ProvisionPorts extends DoctorPorts {
   hubMachineId: string;
+  assertCorePinReplaceIdle(peer: Peer): Promise<void>;
   source: { agentRoot: string; releaseFile: string; piProviders: readonly string[] };
   destination: ProvisionDestination;
   withPeerLock<T>(machineId: Peer["machineId"], work: () => Promise<T>): Promise<T>;
@@ -164,7 +165,7 @@ export interface ProvisionPorts extends DoctorPorts {
   };
   systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<void> };
   transfer: {
-    enroll(peer: Peer, hubMachineId: string, coreUnit: string): Promise<void>;
+    enroll(peer: Peer, hubMachineId: string, coreUnit: string, replaceCorePin?: boolean): Promise<import("./enrollment").CorePinReplacement | void>;
     setEnabled(peer: Peer, hubMachineId: string, enabled: boolean): Promise<void>;
     cleanupSecrets(peer: Peer): Promise<void>;
     installRelease(peer: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }):

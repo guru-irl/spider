@@ -1,6 +1,7 @@
 import * as enrollFs from "node:fs";
 import * as enrollPath from "node:path";
-import { randomUUID as enrollmentUuid } from "node:crypto";
+import { createHash as enrollmentHash, randomUUID as enrollmentUuid } from "node:crypto";
+import { beginShortWrite, endShortWrite, type ReleaseOwner } from "./release-receipt";
 import { parseConfig as parseRoamConfig } from "./config";
 
 /** A matching enrollment is never rewritten. Call only after consent and identity claim. */
@@ -85,42 +86,106 @@ function supervisorPinDirectory(root: string): string {
   }
   return roam;
 }
-/** An absent pin must never turn the current core into a newly trusted identity. */
-export function readSupervisorCorePin(root: string): SupervisorCorePin {
+function supervisorPinOwner(): ReleaseOwner {
+  if (process.platform !== "linux") return { pid: process.pid, bootId: "nonlinux", start: "0" };
+  return { pid: process.pid, bootId: enrollFs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
+    start: enrollFs.readFileSync("/proc/self/stat", "utf8").split(") ")[1].split(" ")[19] };
+}
+function supervisorPinOwnerState(owner: ReleaseOwner): "live" | "absent" | "unknown" {
+  try {
+    if (process.platform !== "linux") { process.kill(owner.pid, 0); return "live"; }
+    if (enrollFs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim() !== owner.bootId) return "absent";
+    const fields = enrollFs.readFileSync(`/proc/${owner.pid}/stat`, "utf8").split(") ")[1].split(" ");
+    return fields[0] === "Z" || fields[19] !== owner.start ? "absent" : "live";
+  } catch (error) { return ["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "") ? "absent" : "unknown"; }
+}
+function supervisorPinSync(roam: string): void {
+  const fd = enrollFs.openSync(roam, enrollFs.constants.O_RDONLY | enrollFs.constants.O_DIRECTORY | enrollFs.constants.O_NOFOLLOW);
+  try { enrollFs.fsyncSync(fd); } finally { enrollFs.closeSync(fd); }
+}
+function withSupervisorPinLock<T>(root: string, work: (roam: string) => T): T {
+  const roam = supervisorPinDirectory(root);
+  const input = { directory: roam, operationId: "core-pin", digest: "0".repeat(64), owner: supervisorPinOwner() };
+  const claim = beginShortWrite(input, supervisorPinOwnerState);
+  if (claim.kind === "busy") return supervisorPinError("core-pin-busy");
+  try {
+    // All pin readers and writers use this lock, including crash cleanup.
+    for (const entry of enrollFs.readdirSync(roam)) {
+      if (!/^\.core-[a-f0-9-]{36}$/.test(entry)) continue;
+      const file = enrollPath.join(roam, entry), stat = enrollFs.lstatSync(file);
+      if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o7777) !== 0o600 ||
+          typeof process.getuid === "function" && stat.uid !== process.getuid()) return supervisorPinError("core-pin-invalid");
+      enrollFs.unlinkSync(file);
+    }
+    supervisorPinSync(roam);
+    return work(roam);
+  } finally { endShortWrite(input, claim.token); }
+}
+function supervisorPinJson(roam: string, name: string): unknown {
   let fd: number | undefined;
   try {
-    const roam = supervisorPinDirectory(root);
-    fd = enrollFs.openSync(enrollPath.join(roam, "core.json"), enrollFs.constants.O_RDONLY | enrollFs.constants.O_NOFOLLOW | enrollFs.constants.O_NONBLOCK);
+    fd = enrollFs.openSync(enrollPath.join(roam, name), enrollFs.constants.O_RDONLY | enrollFs.constants.O_NOFOLLOW | enrollFs.constants.O_NONBLOCK);
     const stat = enrollFs.fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > 16_384 || (stat.mode & 0o7777) !== 0o600 ||
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > (name === "core.json" ? 16_384 : 40_000) || (stat.mode & 0o7777) !== 0o600 ||
         typeof process.getuid === "function" && stat.uid !== process.getuid()) return supervisorPinError("core-pin-invalid");
-    return parseSupervisorCorePin(JSON.parse(enrollFs.readFileSync(fd, "utf8")));
+    return JSON.parse(enrollFs.readFileSync(fd, "utf8"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return supervisorPinError("core-pin-required");
     return supervisorPinError("core-pin-invalid");
   } finally { if (fd !== undefined) enrollFs.closeSync(fd); }
 }
+function writeSupervisorPinJson(roam: string, name: string, value: unknown, replace: boolean): void {
+  const temporary = enrollPath.join(roam, `.core-${enrollmentUuid()}`), file = enrollPath.join(roam, name);
+  const fd = enrollFs.openSync(temporary, enrollFs.constants.O_WRONLY | enrollFs.constants.O_CREAT | enrollFs.constants.O_EXCL | enrollFs.constants.O_NOFOLLOW, 0o600);
+  try { enrollFs.fchmodSync(fd, 0o600); enrollFs.writeFileSync(fd, JSON.stringify(value) + "\n"); enrollFs.fsyncSync(fd); }
+  finally { enrollFs.closeSync(fd); }
+  try { if (replace) enrollFs.renameSync(temporary, file); else enrollFs.linkSync(temporary, file); }
+  finally { if (enrollFs.existsSync(temporary)) enrollFs.unlinkSync(temporary); }
+  supervisorPinSync(roam);
+}
+/** An absent pin must never turn the current core into a newly trusted identity. */
+export function readSupervisorCorePin(root: string): SupervisorCorePin {
+  return withSupervisorPinLock(root, roam => parseSupervisorCorePin(supervisorPinJson(roam, "core.json")));
+}
 /** Enrollment may add a missing pin, but may never replace an existing one. */
 export function installSupervisorCorePin(root: string, value: SupervisorCorePin): void {
-  const pin = parseSupervisorCorePin(value), roam = supervisorPinDirectory(root), file = enrollPath.join(roam, "core.json");
-  function matching(): boolean {
+  const pin = parseSupervisorCorePin(value);
+  withSupervisorPinLock(root, roam => {
     let prior: SupervisorCorePin;
-    try { prior = readSupervisorCorePin(root); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "core-pin-required") return false; throw error; }
-    if (prior.coreId !== pin.coreId) return supervisorPinError("core-changed");
+    try { prior = parseSupervisorCorePin(supervisorPinJson(roam, "core.json")); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "core-pin-required") throw error;
+      writeSupervisorPinJson(roam, "core.json", pin, false); return;
+    }
+    if (prior.coreId !== pin.coreId) return supervisorPinError("core-pin-changed");
     if (JSON.stringify(prior) !== JSON.stringify(pin)) return supervisorPinError("core-pin-conflict");
-    return true;
-  }
-  if (matching()) return;
-  const temporary = enrollPath.join(roam, `.core-${enrollmentUuid()}`);
-  const fd = enrollFs.openSync(temporary, enrollFs.constants.O_WRONLY | enrollFs.constants.O_CREAT | enrollFs.constants.O_EXCL | enrollFs.constants.O_NOFOLLOW, 0o600);
-  try { enrollFs.fchmodSync(fd, 0o600); enrollFs.writeFileSync(fd, JSON.stringify(pin) + "\n"); enrollFs.fsyncSync(fd); }
-  finally { enrollFs.closeSync(fd); }
-  try { try { enrollFs.linkSync(temporary, file); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; } }
-  finally { enrollFs.unlinkSync(temporary); }
-  const directory = enrollFs.openSync(roam, enrollFs.constants.O_RDONLY | enrollFs.constants.O_DIRECTORY | enrollFs.constants.O_NOFOLLOW);
-  try { enrollFs.fsyncSync(directory); } finally { enrollFs.closeSync(directory); }
-  if (!matching()) return supervisorPinError("core-pin-invalid");
+  });
+}
+export interface CorePinReplacement { oldCoreId: string; newCoreId: string; oldPinSha256: string; newPinSha256: string }
+/** Explicit recovery journals both identities before atomically replacing the pin. */
+export function replaceSupervisorCorePin(root: string, value: SupervisorCorePin, operationId: string, assertIdle: () => void): CorePinReplacement {
+  const pin = parseSupervisorCorePin(value);
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(operationId)) return supervisorPinError("core-pin-invalid");
+  return withSupervisorPinLock(root, roam => {
+    assertIdle();
+    const current = parseSupervisorCorePin(supervisorPinJson(roam, "core.json"));
+    const name = `core-pin-replacement-${operationId}.json`;
+    let previous = current;
+    try {
+      const raw = supervisorPinJson(roam, name) as { version?: unknown; previous?: unknown; replacement?: unknown };
+      if (!raw || Object.keys(raw).sort().join() !== "previous,replacement,version" || raw.version !== 1) return supervisorPinError("core-pin-invalid");
+      previous = parseSupervisorCorePin(raw.previous);
+      const replacement = parseSupervisorCorePin(raw.replacement);
+      if (JSON.stringify(replacement) !== JSON.stringify(pin)) return supervisorPinError("operation-arguments-changed");
+      if (![JSON.stringify(previous), JSON.stringify(pin)].includes(JSON.stringify(current))) return supervisorPinError("core-pin-conflict");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "core-pin-required") throw error;
+      writeSupervisorPinJson(roam, name, { version: 1, previous, replacement: pin }, false);
+    }
+    if (JSON.stringify(current) !== JSON.stringify(pin)) writeSupervisorPinJson(roam, "core.json", pin, true);
+    const hash = (pin: SupervisorCorePin) => enrollmentHash("sha256").update(JSON.stringify(pin)).digest("hex");
+    return { oldCoreId: previous.coreId, newCoreId: pin.coreId, oldPinSha256: hash(previous), newPinSha256: hash(pin) };
+  });
 }
 
 /** Only the authenticated provisioning channel calls this; it cannot enroll a box. */

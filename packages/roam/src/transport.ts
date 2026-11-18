@@ -361,7 +361,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
       }
       if (Object.hasOwn(reply, 'error')) {
-        const allowed = new Set(['invalid-enrollment', 'unsafe-enrollment', 'enrollment-identity-mismatch', 'enrollment-conflict', 'enrollment-publication-pending',
+        const allowed = new Set(['invalid-enrollment','core-pin-required', 'core-pin-invalid', 'core-pin-conflict', 'core-pin-changed', 'core-pin-in-use', 'core-pin-busy',  'unsafe-enrollment', 'enrollment-identity-mismatch', 'enrollment-conflict', 'enrollment-publication-pending',
           'invalid-request', 'invalid-staging-name', 'unsafe-path', 'unsafe-staging', 'invalid-chunk', 'invalid-chunks',
           'chunk-mismatch', 'too-large', 'command-failed', 'unsafe-context', 'machine-mismatch', 'invalid-limits', 'invalid-file',
           'invalid-release', 'release-hash-mismatch', 'incomplete-release', 'pi-version-mismatch', 'invalid-unit', 'invalid-systemctl',
@@ -377,7 +377,15 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       }
       if (!Object.hasOwn(reply, 'value')) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
       if (request.action === 'enrollment') {
-        if (reply.value !== 'enrolled' && reply.value !== 'already-enrolled') throw new HerdrError('invalid-provision-reply', 'Invalid enrollment reply');
+        if (request.replaceCorePin === true) {
+          const value = object(reply.value), replacement = object(value.replacement);
+          if (Object.keys(value).sort().join() !== 'enrollment,replacement' || !['enrolled', 'already-enrolled'].includes(String(value.enrollment)) ||
+              Object.keys(replacement).sort().join() !== 'newCoreId,newPinSha256,oldCoreId,oldPinSha256' ||
+              ![replacement.oldCoreId, replacement.newCoreId].every(id => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(id)) ||
+              ![replacement.oldPinSha256, replacement.newPinSha256].every(hash => typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash))) {
+            throw new HerdrError('invalid-provision-reply', 'Invalid core pin replacement reply');
+          }
+        } else if (reply.value !== 'enrolled' && reply.value !== 'already-enrolled') throw new HerdrError('invalid-provision-reply', 'Invalid enrollment reply');
       } else if (request.action === 'roaming-enabled') {
         const value = object(reply.value);
         if (Object.keys(value).length !== 1 || typeof value.enabled !== 'boolean' || value.enabled !== request.enabled)

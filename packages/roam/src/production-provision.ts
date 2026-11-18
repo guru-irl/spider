@@ -6,7 +6,7 @@ import { createHcProvisionAdapter } from "./provision-adapter";
 import { persistProvisionPeer } from "./provision-config";
 import { createProvisionLock } from "./provision-lock";
 import type { ProvisionTransport } from "./transport";
-import { readLocalIdentity } from "./runtime";
+import { openLocalCore, readLocalIdentity } from "./runtime";
 import { setEnrolledPeerEnabled } from "./peer-enabled";
 
 export interface ProductionProvisionOptions {
@@ -47,6 +47,14 @@ export function createProductionProvisionPorts(input: ProductionProvisionOptions
     confirm: input.confirm, present: input.present, report: input.report, resources: input.resources, bootId: input.bootId,
     systemd: adapter.systemd, transfer: adapter, verifyPeer: adapter.verifyPeer,
     withPeerLock: lock,
+    async assertCorePinReplaceIdle(peer) {
+      const core = openLocalCore(input.root);
+      try {
+        if (core.config.enabled || core.db.prepare("SELECT 1 FROM session_homes WHERE machine_id = ? LIMIT 1").get(peer.machineId)) {
+          throw Object.assign(new Error("Stop hosting and move sessions off this box before replacing its core pin"), { code: "core-pin-in-use" });
+        }
+      } finally { core.close(); }
+    },
     bootstrap: { async probeAgentDirectory(peer, home) {
       if (!samePeer(input.peer, peer) || home !== input.destination.home) throw new Error("Provision target changed");
       return input.transport.probeAgentDirectory(peer, home);

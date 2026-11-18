@@ -23,7 +23,7 @@ import type { ProvisionPreview } from "./provision-contracts";
 
 interface ConsentRequest { operationId: string; target: string; machineId: string; hubMachineId: string;
   files: readonly { path: string; size: number; mode: number }[]; releaseHash: string; providers?: readonly string[]; selectionDigest?: string;
-  settingsFingerprint?: string | null; settingsKeys?: readonly string[]; useDestinationAuth?: boolean }
+  settingsFingerprint?: string | null; settingsKeys?: readonly string[]; useDestinationAuth?: boolean; replaceCorePin?: boolean }
 interface ConsentPorts { tty: boolean; yes: boolean; consent: string | null; consentedProviders?: readonly string[];
   actor: string; now(): number; ask(text: string): Promise<string> }
 function consentOperation(request: ConsentRequest) {
@@ -31,7 +31,7 @@ function consentOperation(request: ConsentRequest) {
   if ((!request.useDestinationAuth && !providers.includes("github-copilot")) || providers.length > 64 || new Set(providers).size !== providers.length ||
       providers.some(name => !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(name))) throw new Error("provision-provider-invalid");
   return { id: request.operationId, kind: "provision-cli", machineId: request.machineId, expectedEpoch: null,
-    args: { target: request.target, hubMachineId: request.hubMachineId, files: request.files.map(row => ({ ...row })), releaseHash: request.releaseHash, providers, ...(request.useDestinationAuth ? { useDestinationAuth: true } : {}),
+    args: { target: request.target, hubMachineId: request.hubMachineId, files: request.files.map(row => ({ ...row })), releaseHash: request.releaseHash, providers, ...(request.useDestinationAuth ? { useDestinationAuth: true } : {}), ...(request.replaceCorePin ? { replaceCorePin: true } : {}),
       ...(request.selectionDigest ? { selectionDigest: request.selectionDigest } : {}) } };
 }
 export async function confirmProvision(journal: Journal, request: ConsentRequest, ports: ConsentPorts): Promise<boolean> {
@@ -140,7 +140,7 @@ function presentInventory(preview: ProvisionPreview, out: (text: string) => void
   for (const warning of preview.warnings) out(`${safe(warning)}\n`);
 }
 export interface ProvisionCliRequest { root: string; target: string; release?: string; yes: boolean; consent: string | null; operationId?: string;
-  skills?: readonly string[]; consentedProviders?: readonly string[]; noSettings?: boolean; useDestinationAuth?: boolean }
+  skills?: readonly string[]; consentedProviders?: readonly string[]; noSettings?: boolean; useDestinationAuth?: boolean; replaceCorePin?: boolean }
 export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text: string): void; err(text: string): void }, options: {
   bundleUrl?: URL; tty?: boolean; ask?(text: string): Promise<string>;
 } = {}): Promise<Outcome<{ hostingReady: boolean }>> {
@@ -212,11 +212,11 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     const agentDir = configured.agentDir ?? posix.join(home, ".pi", "agent");
     const destination = { home, agentDir, npmPrefix, supervisor: posix.join(releaseRoot, "dist", "roam", "supervisor.mjs") };
     const contextDigest = createHash("sha256").update(JSON.stringify({ peer, destination, hubMachineId: config.machineId,
-      agentRoot, limits: config.limits, coreUnit: peer.coreUnit })).digest("hex");
+      agentRoot, limits: config.limits, coreUnit: peer.coreUnit, ...(input.replaceCorePin ? { replaceCorePin: true } : {}) })).digest("hex");
     const files = [...(size === undefined ? [] : [{ path: "auth.json", size, mode: 0o600 }]), ...selectedFiles];
     io.out(`Operation: ${operationId}\nRelease SHA-256: ${pinned.sha256}\n`);
     for (const file of files) io.out(`Selected ${safe(file.path)}: ${file.size} bytes, mode ${file.mode.toString(8)}. Destination: ${safe(posix.join(agentDir, file.path))}\n`);
-    const request: ConsentRequest = { operationId, target: peer.alias, machineId: peer.machineId, hubMachineId: config.machineId, files, releaseHash: pinned.sha256, providers, selectionDigest, useDestinationAuth: input.useDestinationAuth };
+    const request: ConsentRequest = { operationId, target: peer.alias, machineId: peer.machineId, hubMachineId: config.machineId, files, releaseHash: pinned.sha256, providers, selectionDigest, useDestinationAuth: input.useDestinationAuth, replaceCorePin: input.replaceCorePin };
     // Reserve the byte identity before any remote observation. Consent itself is recorded after inventory.
     journal.begin(consentOperation(request));
     if (completed && completed.contextDigest !== contextDigest) throw new Error("Operation ID already has different arguments");
@@ -240,7 +240,14 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       async resources() { throw new Error("Local resource probes are not used for provisioning"); }, async bootId() { throw new Error("Local boot probes are not used for provisioning"); },
     });
     const result = await provision({ operation: { id: `${operationId}-install`, kind: "provision", machineId: peer.machineId, expectedEpoch: null, args: {} },
-      peer, selected, includeAuth: !input.useDestinationAuth, requireDestinationAuth: input.useDestinationAuth, confirmedProviders: providers, expectedAuthBytes: size, expectedFiles: selectedFiles, expectedSelectionDigest: selectionDigest }, ports);
+      peer, selected, replaceCorePin: input.replaceCorePin, includeAuth: !input.useDestinationAuth, requireDestinationAuth: input.useDestinationAuth, confirmedProviders: providers, expectedAuthBytes: size, expectedFiles: selectedFiles, expectedSelectionDigest: selectionDigest }, ports);
+    const replaced = journal.read(`${operationId}-install`).find(row => row.action === "core-pin-replaced")?.result;
+    if (replaced && typeof replaced.oldCoreId === "string" && typeof replaced.newCoreId === "string") {
+      const hash = (id: string) => createHash("sha256").update(id).digest("hex");
+      io.out(`Core pin replaced. Previous identity SHA-256: ${hash(replaced.oldCoreId)}. New identity SHA-256: ${hash(replaced.newCoreId)}.\n`);
+    }
+    if (result.repairCommand) io.err(`Stop hosting and move sessions off the box, then run ${result.repairCommand} with the same authentication options.\n`);
+    if (result.reason === "core-pin-in-use") io.err("Move sessions off this box, run spider roam disable on the hub, and stop spider-roam-supervisor.service on the box before retrying.\n");
     if (result.code === 0 && journal.read(`${operationId}-install`).some(row => row.action === "done" && row.result.code === 0)) {
       journal.record(operationId, "provision-completed", { installOperationId: `${operationId}-install`, releaseHash: pinned.sha256, contextDigest });
       await removeProvisionSource(input.root, operationId);

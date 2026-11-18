@@ -78,7 +78,7 @@ export function registerHerdrSessions(pi: ExtensionAPI, ports: SessionRegistrati
     if (await hasLiveMappedAncestor(owner.terminal, ports)) return;
     const newActivity = started || !recorded;
     const activityId = newActivity ? randomBytes(16).toString('hex') : recorded!.activityId;
-    await ports.registry.record({ owner: { ...owner, sessionFile: current.sessionFile, name: current.sessionName }, recordedAt: Date.now(), coreStartedAt: ports.coreStartedAt(), environment: ports.launchEnvironment, activityId, ...(ports.captureLaunch ? { launch: capture(ctx, startup) } : {}) }, newActivity ? ports.processIdentity : undefined);
+    await ports.registry.record({ owner: { ...owner, sessionFile: current.sessionFile, name: current.sessionName }, recordedAt: Date.now(), coreStartedAt: ports.coreStartedAt(), environment: ports.launchEnvironment, activityId, ...(current.sessionFile !== null && ports.captureLaunch ? { launch: capture(ctx, startup) } : {}) }, newActivity ? ports.processIdentity : undefined);
     recorded = { terminal: owner.terminal, activityId };
   }
   function startActivation(ctx: ExtensionContext, started: boolean, startup = false): Promise<void> {

@@ -14,6 +14,16 @@ import type { RuntimeDirectoryProbe } from '../remote/runtime.js';
 import { planModStorage } from './mod-storage.js';
 import { collectCheckpointBlobs, assertSetupNotUndoing, beginRunCheckpoint, finishRunCheckpoint, readCheckpoint, pendingCheckpointBaselines, recordRemoteWrite, recordCheckpointIntents, recordCheckpointEffects, recordCheckpointWrites, undoUpgrade, includeRegistryCheckpoint, completeDanglingCheckpoint, supersedeCheckpoint, checkpointBaseline, checkpointBytes, type UpgradeCheckpoint, type UpgradeUndoResult } from './checkpoint.js';
 
+import { globalHerdrTemplatePaths } from '../templates/register.js';
+
+function runtimeTemplatePaths(request: SetupRequest): string[] {
+  const instructions = join(request.config.globalRoot, 'herdr/instructions');
+  return globalHerdrTemplatePaths({
+    templateDirectory: join(dirname(request.config.core.config), 'templates'),
+    roleTemplateOptions: { instructionPaths: { worker: join(instructions, 'worker.md'), reviewer: join(instructions, 'reviewer.md'), watcher: join(instructions, 'watcher.md') } },
+  });
+}
+
 async function ensureSessionFeedDirectory(globalRoot: string, repair = true): Promise<void> {
   await rejectSymlinks(globalRoot);
   const uid = process.getuid?.();
@@ -493,7 +503,8 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
     const checkpointPaths = [...files.map(file => file.path), layoutPath, join(request.config.app.home, 'keys.json'),
       plannedAppSettings(request).path, join(request.config.globalRoot, 'herdr/spaces/spaces.json'),
       join(request.config.globalRoot, 'herdr/installation.json'), join(request.journalRoot, 'journal.json'), ...(endpointPlan?.paths ?? [])];
-    const runtimeRewritten = (file: InstallFile) => file.path === layoutPath || file.copyFrom || file.path.startsWith(join(request.config.globalRoot, 'herdr/instructions') + '/');
+    const runtimeTemplates = new Set(runtimeTemplatePaths(request));
+    const runtimeRewritten = (file: InstallFile) => file.path === layoutPath || file.copyFrom || runtimeTemplates.has(file.path);
     const substantive = fileActions.some(action => action.action !== 'unchanged' && files.some(file => file.path === action.path && !file.snapshotOnly && !runtimeRewritten(file) && digest(file.bytes) !== file.expected)) || !!endpointPlan?.changed;
     if (!unchanged || endpointPlan?.changed || !endpointPlan && parts.stagePaneEndpoint || cutoverMetadataChanged || runningInPlace && preflight.cutoverNeedsRecheck && parts.persistCutover)
       checkpoint = await beginRunCheckpoint(request.journalRoot, checkpointPaths, substantive);
@@ -692,7 +703,7 @@ export async function undoHerdrUpgrade(request: SetupRequest, parts: SetupParts)
       layoutPath: join(request.config.app.home, 'layouts/spider-glass.json'),
       removedMods: checkpoint ? checkpointBaseline(checkpoint).filter(file => file.hash === null && dirname(dirname(file.path)) === join(request.config.app.home, 'mods') && basename(file.path) === 'mod.json').map(file => basename(dirname(file.path))) : [],
       runtimeStorePaths: checkpoint?.runs.flatMap(run => run.before.map(file => file.path)).filter(path => path.startsWith(dataRoot) && /^spider-[a-zA-Z0-9_-]+\/store(?:-[a-f0-9]+)?\.json$/.test(path.slice(dataRoot.length))) ?? [],
-      runtimeRewrittenPaths: [...journal.entries.map(entry => entry.path), ...(checkpoint ? checkpointBaseline(checkpoint).map(file => file.path) : [])].filter(path => path.startsWith(join(request.config.globalRoot, 'herdr/instructions') + '/')),
+      runtimeRewrittenPaths: runtimeTemplatePaths(request),
       warn: message => parts.warn(message),
       releaseOwners: async (baseline, beforeClose) => {
         const saved = baseline.find(file => file.path === join(request.journalRoot, 'journal.json'));

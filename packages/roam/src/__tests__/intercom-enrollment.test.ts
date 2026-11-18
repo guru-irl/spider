@@ -474,3 +474,33 @@ it("keeps revocation unconfirmed when key verification fails alongside route ver
   expect(await revoke("pair-1", f.ports)).toMatchObject({ code: 3, reason: "intercom-revocation-unconfirmed" });
   expect(f.state.pendingCleanup.get("pair-1")).toBe("intercom-revocation-unconfirmed");
 }, 5000);
+
+
+it("refreshes unavailable consent fences and asks again before setup", async () => {
+  const f = fixture(); f.state.allow = true; let available = false, observations = 0;
+  const ports = { ...f.ports, async readPairFences(pairs: readonly IntercomEnrollmentPair[]) {
+    observations++; return Object.fromEntries(pairs.map(pair => [pair.pairId, available ? null : "unavailable"]));
+  } };
+  expect(await run(f.request, ports)).toMatchObject({ code: 3, reason: "intercom-fence-unavailable" });
+  const before = observations; available = true; f.state.allow = false;
+  expect(await run(f.request, ports)).toMatchObject({ code: 1, reason: "peer-consent-required" });
+  expect(observations).toBeGreaterThan(before); expect(f.state.routes.size).toBe(0);
+  f.state.allow = true;
+  expect(await run(f.request, ports)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+  expect(f.journal.read("approval-1").filter(row => row.action === "intercom-peer-consent").at(-1)?.result.fences).toEqual({ "pair-1": null });
+}, 5000);
+
+
+it("retains completed fence consent while refreshing only unavailable pairs", async () => {
+  const f = fixture(); f.state.allow = true; let available = false;
+  f.request.pairs.push({ pairId: "pair-2", source: peer(THIRD, "box-3.invalid"), target: peer(FOURTH, "box-4.invalid"), edgeEpoch: "edge-2",
+    connector: { tunnelId: "tunnel-2", remotePort: 2222, session: "default" } });
+  f.state.fences.set("pair-2", "predecessor-fence");
+  const ports = { ...f.ports, async readPairFences(pairs: readonly IntercomEnrollmentPair[]) {
+    return Object.fromEntries(pairs.map(pair => [pair.pairId, pair.pairId === "pair-1" && !available ? "unavailable" : f.state.fences.get(pair.pairId) ?? null]));
+  } };
+  expect(await run(f.request, ports)).toMatchObject({ code: 3, value: { pairs: ["pair-2"] } });
+  available = true;
+  expect(await run(f.request, ports)).toMatchObject({ code: 0, value: { pairs: ["pair-1", "pair-2"] } });
+  expect(f.journal.read("approval-1").filter(row => row.action === "intercom-peer-consent").at(-1)?.result.fences).toEqual({ "pair-1": null, "pair-2": "predecessor-fence" });
+}, 5000);

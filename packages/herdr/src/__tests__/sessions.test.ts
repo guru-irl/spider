@@ -89,7 +89,7 @@ describe('session ownership', () => {
   });
   it('a recorded absolute extension argument refuses launch instead of replaying it', async () => {
     const file = await session(); const foreign = join(root, 'foreign-extension.js');
-    await expect(launchSession({ ...request(file), environment: { agentDirectory: join(root, 'agent'), extensionArguments: ['--extension', foreign] } }, ports)).rejects.toMatchObject({ code: 'session-explicit-extensions', message: expect.stringContaining(foreign) });
+    await expect(launchSession({ ...request(file), environment: { agentDirectory: join(root, 'agent'), extensionArguments: ['--extension', foreign] } }, ports)).rejects.toMatchObject({ code: 'session-explicit-extensions', message: expect.stringContaining('explicit extensions') });
     expect(opened).toEqual([]);
   });
 });

@@ -80,6 +80,12 @@ it('never replays positional prompts, attachments, or anything after the option 
   expect(launches[0].argv).toEqual([process.execPath, '--tools', 'read', '--session', file]);
 });
 
+it('keeps extension flag equals values from becoming prompts or options', async () => {
+  await record(launch(['--extension-setting=@not-an-attachment', '--extension-option=--not-an-option', '--tools', 'read', 'initial message']));
+  await launchSession(request(), resumePorts());
+  expect(launches[0].argv).toEqual([process.execPath, '--extension-setting=@not-an-attachment', '--extension-option=--not-an-option', '--tools', 'read', '--session', file]);
+});
+
 it('drops every session selector and persisted state flag, including aliases and equals forms', async () => {
   await record(launch(['-c', '--continue', '-r', '--resume', '--session', 'old.jsonl', '--session-id', 'old-id', '--fork', 'old-fork', '--no-session', '-n', 'old name', '--name=old', '--provider', 'old-provider', '--model=old-model', '--thinking', 'low', '--tools', 'read']));
   await launchSession(request(), resumePorts());
@@ -184,7 +190,7 @@ it('replays existing explicit extensions relative to the original launch folder'
   expect(launches[0].argv).toEqual([process.execPath, '-ne', '-e', join(original, 'extension.ts'), '--extension', 'builtin:mcp', '--session', file]);
 });
 
-it('lists all missing extension paths in a named error before claiming or spawning', async () => {
+it('lists all missing extension paths without spawning or retaining a lease', async () => {
   const missing = [join(root, 'gone-one.ts'), join(root, 'gone-two.ts')];
   await record(launch(['-e', missing[0], '--extension', missing[1]]));
   await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'session-extensions-missing', message: expect.stringContaining('gone-one.ts') });

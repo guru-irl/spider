@@ -85,6 +85,13 @@ it('preserves every valid environment name and empty or multiline launch values'
   expect(Object.entries(variables).every(([name, value]) => launches[0].env[name] === value)).toBe(true);
 });
 
+it('preserves an explicitly recorded agent-directory variable rather than its canonical spelling', async () => {
+  const original = agent + '/.';
+  await record({ ...launch([]), variables: { PI_CODING_AGENT_DIR: original } });
+  await launchSession(request(), resumePorts());
+  expect(launches[0].env.PI_CODING_AGENT_DIR === original).toBe(true);
+});
+
 it('never replays positional prompts, attachments, or anything after the option delimiter', async () => {
   await record(launch(['initial message', '@secret.txt', '--tools', 'read', '--', '--tools', 'bash', 'another message', '@other.txt']));
   await launchSession(request(), resumePorts());

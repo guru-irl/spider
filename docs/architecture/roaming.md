@@ -164,7 +164,8 @@ Binding is durable before enrollment creates pair units, keys, routes, or live
 fences, so an unbound operation has none of those resources to remove.
 The receipt retains any inherited predecessor fence until live enrollment
 clears it. After fresh consent is approved, the pair key can run commands before
-transport verification. Messaging stays fenced until live enrollment succeeds.
+the route is added and the transport is verified. Messaging stays fenced until
+live enrollment succeeds.
 Existing keys and other enrollments remain untouched.
 
 A bound pair requires `spider roam intercom revoke pair-1` instead.

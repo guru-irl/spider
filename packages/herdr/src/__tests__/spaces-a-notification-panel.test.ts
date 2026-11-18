@@ -14,6 +14,7 @@ import { describeOpenFailure } from '../../assets/shared/open-failure.js';
 import { FEED_DISCONNECT_MS, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService } from '../../assets/shared/feed.js';
 import * as data from '../../assets/mods/spider/data.js';
 import * as sound from '../../assets/mods/spider/sound.js';
+import * as paneServiceState from '../../assets/shared/pane-service-state.js';
 
 const now = Date.UTC(2026, 10, 15, 12), day = 86400000;
 function feed(session: string, space = 'space-a'): SessionFeed {
@@ -121,14 +122,14 @@ describe('intentional notification projection', () => {
   });
 });
 
-function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boolean; storage?: Map<string, unknown>; panelSource?: string; navigation?: typeof projectNavigation; paneService?: typeof requestPaneService } = {}) {
+function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boolean; configured?: boolean; storage?: Map<string, unknown>; panelSource?: string; navigation?: typeof projectNavigation; paneService?: typeof requestPaneService } = {}) {
   const source = feed('owner'); source.updatedAt = Date.now(); source.notifications = [notice(source, 'notice-1', 'attention', Date.now())];
   const state: any = { feeds: [source], terms: [{ address: 'owner', parent: null, labels: {}, state: 'live', status: 'working' }],
     agents: options.parked ? [] : [{ address: 'owner', pane: 'pane-owner', space: 'space-a', tab: 'tab-a', title: 'Pi', program: { name: 'pi' }, status: 'working' }],
     panes: options.parked ? [] : [{ pane: 'pane-owner', terminal: 'owner', tab: 'tab-a' }], failRead: false, reply: null, layout: { id: 'panel', hidden: options.hidden ?? false, content: { mod: 'spider-panel' } } };
   const modules = createUiModules(), kit = modules['gpui-kit'], base = modules['gpui-base'], calls: any[] = [], tasks: any[] = [], timers: any[] = [];
   const storage = options.storage ?? new Map<string, unknown>();
-  const config: any = { modId: 'spider-panel', feedRoot: '/fixture/feed', nodePath: '/fixture/node', cliPath: '/fixture/cli.mjs', configPath: '/fixture/config.json', labelContract: HerdrLabelContract, retention: { completedRows: 50, completedHours: 24 } };
+  const config: any = { modId: 'spider-panel', feedRoot: '/fixture/feed', nodePath: '/fixture/node', cliPath: '/fixture/cli.mjs', configPath: '/fixture/config.json', labelContract: HerdrLabelContract, retention: { completedRows: 50, completedHours: 24 }, ...(options.configured ? { paneServiceConfigured: true } : {}) };
   const cx: any = { notify() {}, stop_propagation() {}, focus_handle: () => ({ focus() {} }), timer: { every(ms: number, fn: Function) { const timer = { ms, fn, cancelled: false, cancel() { this.cancelled = true; } }; timers.push(timer); return timer; } },
     spawn(fn: Function) { const task: any = Promise.resolve().then(() => fn(cx)); task.cancel = () => {}; task.catch(() => {}); tasks.push(task); return task; } };
   const herdr: any = { props: () => config, checking: options.checking ? () => true : undefined,
@@ -144,7 +145,7 @@ function panelHost(options: { checking?: boolean; hidden?: boolean; parked?: boo
       return state.reply ? state.reply(request) : { code: 0, stdout: JSON.stringify({ ok: true, op: request.op, ...(request.op === 'openSession' ? { terminal: 'owner' } : { viewer: 'viewer' }) }) }; },
   };
   const createFeedReader = () => ({ read: async () => { calls.push(['read']); if (state.readGate) await state.readGate; if (state.failRead) throw new Error('offline'); return { feeds: structuredClone(state.feeds), errors: structuredClone(state.snapshotErrors ?? []) }; }, close: async () => { calls.push(['closeReader']); } });
-  const api = { ...kit, ...base, ...data, ...sound, ...herdr, herdr, createFeedReader, projectNavigation: options.navigation ?? projectNavigation, indexPaneNavigation, describeOpenFailure, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService: options.paneService ?? requestPaneService };
+  const api = { ...kit, ...base, ...data, ...sound, ...herdr, ...paneServiceState, herdr, createFeedReader, projectNavigation: options.navigation ?? projectNavigation, indexPaneNavigation, describeOpenFailure, FEED_DISCONNECT_MS, FEED_REFRESH_MS, panelIpcArgv, parseSessionIpcReply, requestPaneService: options.paneService ?? requestPaneService };
   const text = (options.panelSource ?? readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8')).replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace('export default class SpiderPanel', 'class SpiderPanel');
   const Panel = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${text}; return SpiderPanel;`)(api);
   const view = new Panel(); view.init({}, cx);
@@ -387,44 +388,96 @@ it('0.1.16 opens a notification clicked during a feed reload', async () => {
   await h.view.close();
 });
 
-it('0.1.16 routes a remote notification through IPC only until a pane snapshot exists', async () => {
-  const patched = (sourcePath: string, patchPath: string, file: string) => {
-    const source = readFileSync(resolve(sourcePath), 'utf8');
-    const records = existsSync(resolve(patchPath)) ? JSON.parse(readFileSync(resolve(patchPath), 'utf8')) : [];
-    return applyModPatches({ [file]: source }, records, file)[file];
-  };
-  const navSource = patched('packages/herdr/assets/shared/navigation.js', 'packages/herdr/assets/look/native-navigation-0.1.16.json', 'navigation.js')
+function patchedPanelSource(version = '0.1.16') {
+  let main = readFileSync(resolve('packages/herdr/assets/mods/spider/main.js'), 'utf8');
+  for (const path of [version === '0.1.16' ? 'packages/herdr/assets/look/native-panel-0.1.16.json' : '', 'packages/herdr/assets/look/pane-panel-b.json']) {
+    if (path && existsSync(resolve(path))) main = applyModPatches({ 'main.js': main }, JSON.parse(readFileSync(resolve(path), 'utf8')), 'panel')['main.js'];
+  }
+  return main;
+}
+
+function patchedNavigation() {
+  const navSource = applyModPatches({ 'navigation.js': readFileSync(resolve('packages/herdr/assets/shared/navigation.js'), 'utf8') }, JSON.parse(readFileSync(resolve('packages/herdr/assets/look/native-navigation-0.1.16.json'), 'utf8')), 'navigation')['navigation.js']
     .replace(/^import .*;\s*$/gm, '').replaceAll('export function ', 'function ');
-  const navigation = new Function('filterTopLevelAgents', 'projectAgentChildren', 'FEED_DISCONNECT_MS', 'projectPanePresentations', `${navSource}; return projectNavigation;`)(children.filterTopLevelAgents, children.projectAgentChildren, FEED_DISCONNECT_MS, projectPanePresentations);
-  const panelSource = patched('packages/herdr/assets/mods/spider/main.js', 'packages/herdr/assets/look/native-panel-0.1.16.json', 'main.js');
+  return new Function('filterTopLevelAgents', 'projectAgentChildren', 'FEED_DISCONNECT_MS', 'projectPanePresentations', `${navSource}; return projectNavigation;`)(children.filterTopLevelAgents, children.projectAgentChildren, FEED_DISCONNECT_MS, projectPanePresentations);
+}
+
+it.each(['0.1.13', '0.1.16'])('%s configured remote notifications retain service routing until the snapshot becomes stale', async version => {
+  const navigation = patchedNavigation();
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(100000);
   const requests: any[] = []; let snapshot: any = null;
   const paneService: any = async (_config: unknown, _exec: unknown, request: any) => { requests.push(request); if (request.op === 'snapshot') { if (!snapshot) throw Error('unavailable'); return snapshot; } return { status: 'complete' }; };
-  const h = panelHost({ parked: true, navigation, panelSource, paneService });
+  const h = panelHost({ parked: true, configured: true, navigation, panelSource: patchedPanelSource(version), paneService });
   const source = h.state.feeds[0], address = 'box-1.invalid/owner';
   source.owner.terminal.address = address; source.owner.terminal.coreId = 'remote-core'; source.owner.cwd = '/home/fixture';
   h.state.terms = [{ address, parent: null, labels: {}, state: 'live', status: 'working' }];
   h.herdr.machines = () => [{ name: 'box-1.invalid', layout: 'ready' }];
   h.herdr.hc = async (args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [{ name: 'box-1.invalid', id: 'remote-core', state: 'connected' }] }) });
-  await h.ready; await h.drain();
-  const row = byId(h.view.render(h.cx), 'need-intentional:owner:notice-1');
-  expect(row?.events.on_click).toBeDefined(); row.events.on_click({}, h.cx); await h.drain();
-  const args = h.calls.find(call => call[0] === 'exec')?.[2];
-  const ipc = args?.includes('--request') ? JSON.parse(args[args.indexOf('--request') + 1]) : null;
-  expect.soft(ipc).toMatchObject({ op: 'openSession', generation: 'g' });
-  h.calls.length = 0; requests.length = 0;
-  const target = { coreId: 'remote-core', terminalId: 'owner', address, createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'm', kind: 'session', sessionId: 'owner', generation: 'g', homeEpoch: 1, runId: null, consoleId: null, name: 'owner', cwd: '/home/fixture' };
-  snapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'owner', generation: 'g', owner: { terminal: { address } }, target, name: 'owner', status: 'working', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] };
-  row.events.on_click({}, h.cx); await h.drain();
-  expect.soft(requests).toContainEqual({ op: 'snapshot' });
-  expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'owner', generation: 'g' }));
-  expect.soft(h.calls.filter(call => call[0] === 'exec')).toEqual([]);
-  h.calls.length = 0; requests.length = 0; snapshot = null;
-  row.events.on_click({}, h.cx); await h.drain();
-  const retryArgs = h.calls.find(call => call[0] === 'exec')?.[2];
-  const retryIpc = retryArgs?.includes('--request') ? JSON.parse(retryArgs[retryArgs.indexOf('--request') + 1]) : null;
-  expect.soft(requests).toContainEqual({ op: 'snapshot' });
-  expect.soft(retryIpc).toMatchObject({ op: 'openSession', generation: 'g' });
-  await h.view.close();
+  try {
+    await h.ready; await h.drain();
+    expect.soft(byId(h.view.render(h.cx), 'need-intentional:owner:notice-1')?.events.on_click).toBeUndefined();
+    const target = { coreId: 'remote-core', terminalId: 'owner', address, createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'm', kind: 'session', sessionId: 'owner', generation: 'g', homeEpoch: 1, runId: null, consoleId: null, name: 'owner', cwd: '/home/fixture' };
+    snapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'owner', generation: 'g', owner: { terminal: { address } }, target, name: 'owner', status: 'working', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] };
+    clock.mockReturnValue(106000); h.timers.find(timer => timer.ms === 2000)!.fn(h.cx); await h.drain();
+    let row = byId(h.view.render(h.cx), 'need-intentional:owner:notice-1');
+    expect.soft(row?.events.on_click).toBeDefined(); row?.events.on_click?.({}, h.cx); await h.drain();
+    expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'owner', generation: 'g' }));
+    expect.soft(h.calls.filter(call => call[0] === 'exec' && call[2].includes('--request'))).toEqual([]);
+    requests.length = 0; snapshot = null;
+    clock.mockReturnValue(112000); h.state.feeds[0].updatedAt = Date.now(); h.timers.find(timer => timer.ms === 2000)!.fn(h.cx); await h.drain();
+    row = byId(h.view.render(h.cx), 'need-intentional:owner:notice-1');
+    expect.soft(row?.events.on_click).toBeDefined(); row?.events.on_click?.({}, h.cx); await h.drain();
+    expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'owner' }));
+    expect.soft(h.calls.filter(call => call[0] === 'exec' && call[2].includes('--request'))).toEqual([]);
+    clock.mockReturnValue(127001); h.state.feeds[0].updatedAt = Date.now(); h.timers.find(timer => timer.ms === 2000)!.fn(h.cx); await h.drain();
+    expect.soft(byId(h.view.render(h.cx), 'need-intentional:owner:notice-1')?.events.on_click).toBeUndefined();
+    expect.soft(h.calls.filter(call => call[0] === 'exec' && call[2].includes('--request'))).toEqual([]);
+  } finally { clock.mockRestore(); await h.view.close(); }
+});
+
+it('an unconfigured remote notification still opens natively', async () => {
+  const h = panelHost({ parked: true, panelSource: patchedPanelSource(), navigation: patchedNavigation() });
+  const address = 'box-1.invalid/owner', source = h.state.feeds[0];
+  source.owner.terminal.address = address; source.owner.terminal.coreId = 'remote-core';
+  h.state.terms = [{ address, parent: null, labels: {}, state: 'live', status: 'working' }];
+  h.herdr.machines = () => [{ name: 'box-1.invalid', layout: 'ready' }];
+  h.herdr.hc = async (args: string[]) => ({ code: 0, stdout: JSON.stringify(args[0] === 'server' ? { core: { id: 'core' } } : { machines: [{ name: 'box-1.invalid', id: 'remote-core', state: 'connected' }] }) });
+  try {
+    await h.ready; await h.drain();
+    const row = byId(h.view.render(h.cx), 'need-intentional:owner:notice-1');
+    expect(row?.events.on_click).toBeDefined(); row.events.on_click({}, h.cx); await h.drain();
+    const args = h.calls.find(call => call[0] === 'exec' && call[2].includes('--request'))?.[2];
+    expect(JSON.parse(args[args.indexOf('--request') + 1])).toMatchObject({ op: 'openSession', generation: 'g' });
+  } finally { await h.view.close(); }
+});
+
+it.each(['0.1.13', '0.1.16'])('%s panel snapshots are throttled and retry failures with backoff', async version => {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(100000), requests: any[] = [];
+  const paneService: any = async (_config: unknown, _exec: unknown, request: any) => { requests.push(request); throw Error('offline'); };
+  const h = panelHost({ configured: true, panelSource: patchedPanelSource(version), paneService });
+  try {
+    await h.ready; await h.drain();
+    expect.soft(requests).toHaveLength(1);
+    await h.view.reload(h.cx); await h.view.reload(h.cx); await h.drain();
+    expect.soft(requests).toHaveLength(1);
+    clock.mockReturnValue(104999); h.timers.find(timer => timer.ms === 2000)!.fn(h.cx); await h.drain(); expect.soft(requests).toHaveLength(1);
+    clock.mockReturnValue(105000); h.timers.find(timer => timer.ms === 2000)!.fn(h.cx); await h.drain(); expect.soft(requests).toHaveLength(2);
+    clock.mockReturnValue(114999); h.timers.find(timer => timer.ms === 2000)!.fn(h.cx); await h.drain(); expect.soft(requests).toHaveLength(2);
+    clock.mockReturnValue(115000); h.timers.find(timer => timer.ms === 2000)!.fn(h.cx); await h.drain(); expect.soft(requests).toHaveLength(3);
+  } finally { clock.mockRestore(); await h.view.close(); }
+});
+
+it.each(['0.1.13', '0.1.16'])('%s updates feeds and badge while the pane snapshot request is hung', async version => {
+  let release!: () => void, starts = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const paneService: any = async () => { starts++; await gate; throw Error('offline'); };
+  const h = panelHost({ configured: true, panelSource: patchedPanelSource(version), paneService });
+  try {
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect.soft(starts).toBe(1);
+    expect.soft(h.view.feeds).toHaveLength(1);
+    expect.soft(h.calls.filter(call => call[0] === 'badge')).toContainEqual(['badge', '1']);
+  } finally { release(); await h.ready; await h.drain(); await h.view.close(); }
 });
 
 it('does not focus a reused terminal address after the owner identity changes', async () => {

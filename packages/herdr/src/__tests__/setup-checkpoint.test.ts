@@ -677,3 +677,20 @@ test.each(['layout', 'settings', 'keys', 'main'] as const)('N4 an interrupted un
   if (kind === 'keys') expect(JSON.parse(await fs.readFile(path, 'utf8')).global).toEqual({ 'ctrl-z': 'user.action' });
   else if (kind !== 'main') expect(JSON.parse(await fs.readFile(path, 'utf8')).user).toBe('kept');
 });
+
+
+test('I4 a selected app preference intent survives a kill before cutover observation', async () => {
+  const f = await fixture(), stage = f.parts.stageLook;
+  await put(f.paths.appSettings, '{"layout":"legacy","theme":"legacy","zoom":1}', 0o644);
+  f.parts.stageLook = async (...args) => [...await stage(...args), { path: f.paths.appSettings, bytes: (await snapshot(f.paths.appSettings)).bytes!, expected: (await snapshot(f.paths.appSettings)).hash, snapshotOnly: true, managed: { kind: 'json', fields: ['layout', 'theme'] } }];
+  f.parts.cutover = async () => {
+    await put(f.paths.appSettings, '{"layout":"spider-glass","theme":"spider-glass","zoom":2}', 0o644);
+    const fail = async () => { throw new Error('kill before cutover observation'); };
+    vi.mocked(fs.rename).mockImplementation(fail); vi.mocked(fs.link).mockImplementation(fail);
+    throw new Error('kill before cutover observation');
+  };
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('kill before cutover observation');
+  vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link);
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(JSON.parse(await fs.readFile(f.paths.appSettings, 'utf8'))).toEqual({ layout: 'legacy', theme: 'legacy', zoom: 2 });
+});

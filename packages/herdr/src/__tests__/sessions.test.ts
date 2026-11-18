@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, writeFile, chmo
 import { resolve, join, dirname } from 'node:path';
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 import type { Owner, SessionId, Generation, TerminalIdentity } from '../contracts.js';
-import { createTerminalRegistry, withProcessLock, hash, jsonFiles } from '../sessions/registry.js';
+import { createTerminalRegistry, withProcessLock, hash, jsonFiles, terminalIdentityKey } from '../sessions/registry.js';
 import { createProcessPresence } from '../sessions/presence.js';
 import { createSessionLeases, assessSessionLiveness, type ProcessInventoryPorts, type ProcessProbe } from '../sessions/lease.js';
 import { launchSession, type SessionLaunchPorts } from '../sessions/launcher.js';
@@ -122,8 +122,10 @@ it('shutdown, signals and session switches stay resumable until a shell prompt r
       expect(await offerResume(terminal, restart), 'an older process cannot end a newer mapping').not.toBeNull();
     }
     if (reason === 'SIGTERM' || reason === 'SIGHUP') {
+      const mappingFile = join(state, 'terminals', terminalIdentityKey(terminal) + '.json');
+      const beforeRpc = await readFile(mappingFile, 'utf8');
       const rpc = await start('rpc'); rpc.child.kill(reason); await rpc.exited;
-      expect(await offerResume(terminal, restart), `RPC ${reason} remains resumable`).not.toBeNull();
+      expect(await readFile(mappingFile, 'utf8'), `RPC ${reason} preserves the TUI mapping bytes`).toBe(beforeRpc);
     }
   }
 }, 30000);

@@ -10,7 +10,8 @@ import { pickerRows, selectPickerRow } from '../../assets/picker/model.js';
 import { indexPaneNavigation, projectNavigation } from '../../assets/shared/navigation.js';
 import { describeOpenFailure } from '../../assets/shared/open-failure.js';
 import { assignSpaceIdentities } from '../../assets/shared/look.js';
-import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService } from '../../assets/shared/feed.js';
+import { FEED_DISCONNECT_MS, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService } from '../../assets/shared/feed.js';
+import * as paneServiceState from '../../assets/shared/pane-service-state.js';
 
 const source = resolve('packages/herdr/assets/picker/main.js');
 const localSpace = { id: 's1', index: 1, name: 'Work', machine: null, active: true, tabs: [{ id: 'tb1', name: 'Coding', active: true, status: null }] };
@@ -47,14 +48,14 @@ function inheritedStyle(root: any, matches: (node: any) => boolean): any {
 }
 const textStyle = (root: any, label: string) => inheritedStyle(root, node => node.items?.includes(label));
 
-function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missing' | 'invalid'; parked?: boolean; feeds?: any[]; status?: string; snapshotGate?: Promise<void>; fonts?: { body: string; label: string; paths: string }; pickerSource?: string } = {}) {
+function host(options: { checking?: boolean; configured?: boolean; config?: 'props' | 'file' | 'missing' | 'invalid'; parked?: boolean; feeds?: any[]; status?: string; snapshotGate?: Promise<void>; fonts?: { body: string; label: string; paths: string }; pickerSource?: string } = {}) {
   const modules = createUiModules(), kit = modules['gpui-kit'], base = modules['gpui-base'];
   const inputs: any[] = [], calls: any[] = [], timers = new Set<any>(), watches = new Set<any>();
   let closed!: () => void;
   const state: any = { feeds: options.feeds ?? [feed()], spaces: [localSpace, remoteSpace], terms: [terminal()], agents: options.parked ? [] : [agent()],
     panes: options.parked ? [] : [{ pane: 'p1', terminal: 't1', tab: 'tb1', cwd: '/fixture' }], focus: { space: 's1', tab: 'tb1', pane: 'p1' }, closedReaders: 0, ipcReply: null, failSnapshot: false,
     closed: new Promise<void>(resolve => { closed = resolve; }) };
-  const config = { version: 1, modId: 'spider-picker', feedRoot: '/fixture/feed', cliPath: '/fixture/cli.mjs', nodePath: '/fixture/node', labelContract: HerdrLabelContract, retention: { completedRows: 50, completedHours: 24 }, ...(options.fonts ? { fonts: options.fonts } : {}) };
+  const config = { version: 1, modId: 'spider-picker', feedRoot: '/fixture/feed', cliPath: '/fixture/cli.mjs', nodePath: '/fixture/node', labelContract: HerdrLabelContract, retention: { completedRows: 50, completedHours: 24 }, ...(options.configured ? { paneServiceConfigured: true } : {}), ...(options.fonts ? { fonts: options.fonts } : {}) };
   const inputState = { new() { const handlers: Record<string, Function> = {}; const input = { handlers, valueText: '', on(name: string, fn: Function) { handlers[name] = fn; }, value() { return this.valueText; }, focus() {} }; inputs.push(input); return input; } };
   const timer = { every(ms: number, fn: Function) { const handle = { ms, fn, cancel() { timers.delete(handle); } }; timers.add(handle); calls.push(['timer', ms]); return handle; }, after(ms: number, fn: Function) { return this.every(ms, fn); } };
   const cx: any = { timer, notify() {}, stop_propagation() {}, focus_handle: () => ({ focus() {} }), spawn(fn: Function) { const work: any = Promise.resolve().then(() => fn(cx)); work.cancel = () => {}; work.catch(() => {}); return work; } };
@@ -94,7 +95,7 @@ function host(options: { checking?: boolean; config?: 'props' | 'file' | 'missin
     const entries = state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, updatedAt: Date.now() }));
     return { ok: true, json: async () => ({ version: 1, entries, changes: state.feeds.map((item: any) => ({ source: item.sessionId, stamp: item.generation, feed: item })), errors: [] }) };
   };
-  const api = { ...kit, ...base, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => Object.assign(kit.div(), { inputElement: true }) }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, indexPaneNavigation, describeOpenFailure, assignSpaceIdentities, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService };
+  const api = { ...kit, ...base, ...paneServiceState, svg: (path: string) => Object.assign(kit.svg(), { svgPath: path }), InputState: inputState, Input: { new: () => Object.assign(kit.div(), { inputElement: true }) }, herdr, fetch, pickerRows, selectPickerRow, projectNavigation, indexPaneNavigation, validatePaneSnapshot: indexPaneNavigation, describeOpenFailure, assignSpaceIdentities, FEED_DISCONNECT_MS, FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService };
   const body = (options.pickerSource ?? readFileSync(source, 'utf8')).replace(/^(?:\/\* spider-look:[a-z0-9-]+ \*\/)*import .*;\s*$/gm, '').replace(/export default class Picker/, 'class Picker').replace(/export class Picker/, 'class Picker').replace(/export default Picker;?/g, '');
   const Picker = new Function('api', `const { ${Object.keys(api).join(', ')} } = api; ${body}; return Picker;`)(api);
   const view = new Picker(); view.init({}, cx);
@@ -105,6 +106,56 @@ function sourceSnapshot(name: string | null) {
   const target = { coreId: 'remote-core', terminalId: 'remote-owner', address: 'remote-core/remote-owner', createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'machine-1', kind: 'session', sessionId: 'remote-session', generation: 'remote-generation', homeEpoch: 1, runId: null, consoleId: null, name, cwd: '/project' };
   return { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, presentations: [], rows: [{ sessionId: target.sessionId, generation: target.generation, owner: { terminal: { address: target.address } }, target, name, status: 'working', machineKey: 'box-1.invalid', updatedAt: Date.now(), children: [{ runId: 'remote-child', name: 'Source child', status: 'working' }], consoles: [], unavailableReason: null }] };
 }
+
+function patchedPickerSource(version: string) {
+  let main = readFileSync(source, 'utf8');
+  for (const patch of [version === '0.1.16' ? 'packages/herdr/assets/look/native-picker-0.1.16.json' : '', 'packages/herdr/assets/look/pane-picker-b.json']) {
+    if (patch && existsSync(resolve(patch))) main = applyModPatches({ 'main.js': main }, JSON.parse(readFileSync(resolve(patch), 'utf8')), 'picker')['main.js'];
+  }
+  return main;
+}
+
+it.each(['0.1.13', '0.1.16'])('%s picker retains service routing and disables stale remote rows', async version => {
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(100000);
+  const h = host({ configured: true, pickerSource: patchedPickerSource(version) });
+  const address = 'box-1.invalid/t2';
+  h.state.agents.push({ ...agent(address, 'remote-pane', 'Remote'), space: remoteSpace.id, tab: remoteSpace.tabs[0].id });
+  h.state.terms.push({ ...terminal(address), labels: { 'spider.display-name': 'Remote' } });
+  h.state.panes.push({ pane: 'remote-pane', terminal: address, tab: remoteSpace.tabs[0].id });
+  const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+  const tick = async (now: number) => { clock.mockReturnValue(now); const timer = [...h.timers].find((item: any) => item.ms === FEED_REFRESH_MS); timer!.fn(h.cx); await settle(); };
+  try {
+    await h.view.ready; await settle();
+    const remote = h.view.rows().find((item: any) => item.id === `agent:${address}`);
+    expect.soft(remote).toBeDefined(); expect.soft(remote?.enabled).toBe(false);
+    expect.soft(h.view.rows().find((item: any) => item.id === 'session:session')?.enabled).toBe(true);
+    await h.view.activate(`agent:${address}`);
+    expect.soft(h.calls.filter(call => call[0] === 'run' && call[1] === 'pane.focus')).toEqual([]);
+    h.state.paneSnapshot = sourceSnapshot('Source writer'); await tick(106000);
+    let target = h.view.rows().find((item: any) => item.id === 'session:remote-session');
+    expect.soft(target?.enabled).toBe(true);
+    h.state.paneSnapshot = null; await tick(112000);
+    target = h.view.rows().find((item: any) => item.id === 'session:remote-session');
+    expect.soft(target?.enabled).toBe(true);
+    await h.view.activate('session:remote-session');
+    const requests = h.calls.filter(call => call[0] === 'exec' && call[2].includes('panes')).map(call => JSON.parse(call[2].at(-1)));
+    expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-existing', sessionId: 'remote-session' }));
+    expect.soft(h.calls.filter(call => call[0] === 'run' && call[1] === 'pane.focus')).toEqual([]);
+  } finally { clock.mockRestore(); await h.view.close(); }
+  const staleClock = vi.spyOn(Date, 'now').mockReturnValue(100000);
+  const stale = host({ configured: true, feeds: [], pickerSource: patchedPickerSource(version) }); stale.state.paneSnapshot = sourceSnapshot('Source writer');
+  try {
+    await stale.view.ready; for (let i = 0; i < 30; i++) await Promise.resolve();
+    staleClock.mockReturnValue(121001); stale.state.paneSnapshot = null;
+    const timer = [...stale.timers].find((item: any) => item.ms === FEED_REFRESH_MS); timer!.fn(stale.cx);
+    for (let i = 0; i < 30; i++) await Promise.resolve();
+    const target = stale.view.rows().find((item: any) => item.id === 'session:remote-session');
+    expect.soft(target).toBeDefined(); expect.soft(target?.enabled).toBe(false);
+    await stale.view.activate('session:remote-session');
+    expect.soft(stale.calls.filter(call => call[0] === 'run' && call[1] === 'pane.focus')).toEqual([]);
+    expect.soft(stale.calls.filter(call => call[0] === 'exec' && call[2].includes('panes')).map(call => JSON.parse(call[2].at(-1))).some(request => request.op !== 'snapshot')).toBe(false);
+  } finally { staleClock.mockRestore(); await stale.view.close(); }
+});
 
 it('keeps source-owned names and child actions without a local feed or remote app layout', async () => {
   const h = host({ feeds: [] });

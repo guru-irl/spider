@@ -143,7 +143,7 @@ and `3` means durable pending work or reconciliation is needed.
 ## Cancel an unbound pending enrollment
 
 If enrollment returns `core-changed`, do not replace the saved pins or reuse
-its approval with a different operation. On the hub, run:
+its approval with a different operation. For an unbound pair, run on the hub:
 
 ```sh
 spider roam intercom cancel pair-1
@@ -162,8 +162,10 @@ record also exits `0` with `intercom-pair-absent`. Cancellation does
 not contact either destination or require the old core to be running.
 Binding is durable before enrollment creates pair units, keys, routes, or live
 fences, so an unbound operation has none of those resources to remove.
-The receipt retains any inherited predecessor fence until fresh approved
-enrollment clears it. Existing keys and other enrollments remain untouched.
+The receipt retains any inherited predecessor fence until live enrollment
+clears it. After fresh consent is approved, the pair key can run commands before
+transport verification. Messaging stays fenced until live enrollment succeeds.
+Existing keys and other enrollments remain untouched.
 
 A bound pair requires `spider roam intercom revoke pair-1` instead.
 `intercom-pending-resources-present` means the unbound record contains unexpected
@@ -481,6 +483,17 @@ another open tunnel, and deleting a key does not close an existing connection.
 Consent states this remaining reach. Pair revocation stops its owned host and
 removes its key rather than claiming closure from key deletion alone.
 Re-enrollment needs fresh consent for the recorded fence and a new edge epoch.
+After fresh consent is approved, the pair key can run commands before transport
+verification, even if the restore remains pending. Messaging stays fenced until
+live enrollment succeeds.
+
+To close a pending restore after approval, run
+`spider roam intercom revoke pair-1`. Plain revocation uses the inherited fence's
+epoch when its identity matches the recorded fence. For explicit historical
+recovery on the hub, use
+`spider roam intercom revoke pair-1 --fence-epoch edge-1` with the epoch reported
+by doctor. Both paths close fresh-epoch command access and leave messaging fenced.
+
 The implementation is in `packages/roam/src/intercom-store.ts`,
 `packages/roam/src/intercom-bridge.ts`, and
 `packages/roam/src/intercom-enrollment.ts`.

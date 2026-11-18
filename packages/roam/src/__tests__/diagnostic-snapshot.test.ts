@@ -611,3 +611,33 @@ it("doctor describes an absent WAL index as an opening or closing store", async 
     expect(report.diagnostics.find(item => item.reason.includes("cannot inspect the registered store"))?.reason).not.toMatch(/corrupt|recovery/i);
   } finally { writer.close(); }
 }, 5000);
+
+it("takes its bound after checkpointed pages interleave with the main copy", () => {
+  const { file, temp } = fixture(), writer = openDb(file);
+  let reader: ReturnType<typeof openDb> | undefined;
+  try {
+    writer.exec("CREATE TABLE a(value TEXT); INSERT INTO a VALUES ('o'||hex(zeroblob(180000))); CREATE TABLE b(value TEXT); INSERT INTO b VALUES ('o'||hex(zeroblob(180000)))");
+    writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+    writer.exec("UPDATE a SET value='b'||substr(value,2)");
+    hooks.fixedStamp = file;
+    let changed = false, advanced = false;
+    hooks.afterRead = fd => {
+      if (!changed && isFile(fd, file)) {
+        changed = true;
+        writer.exec("BEGIN; UPDATE a SET value='n'||substr(value,2); UPDATE b SET value='n'||substr(value,2); COMMIT");
+        reader = openDb(file); reader.exec("BEGIN"); reader.prepare("SELECT * FROM a").all();
+        writer.raw.pragma("wal_checkpoint(PASSIVE)");
+      }
+      if (!advanced && isFile(fd, `${file}-wal`)) {
+        advanced = true;
+        writer.exec("UPDATE a SET value='e'||substr(value,2)");
+      }
+    };
+    const snapshot = openDiagnosticSnapshot(file)!;
+    hooks.afterRead = null;
+    try { expect(snapshot.prepare("SELECT substr(a.value,1,1) AS a, substr(b.value,1,1) AS b FROM a,b").get()).toEqual({ a: "n", b: "n" }); }
+    finally { snapshot.close(); }
+    expect(changed && advanced).toBe(true);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { reader?.close(); writer.close(); }
+}, 5000);

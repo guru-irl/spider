@@ -72,7 +72,7 @@ function fixture() {
     async present(value: unknown) { events.push("present"); preview.push(value); },
     async report(value: unknown) { events.push("report"); diagnostics.push(value); },
     async verifyPeer() {
-      return { piSignedIn: state.verified, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
+      return { corePin: "ready", piSignedIn: state.verified, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
         bundledIntercom: true, intercomUnique: true, legacyDrained: true, federation: true,
         intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: [] } };
     },
@@ -704,7 +704,7 @@ it("requires every readiness check before declaring hosting ready", async () => 
   const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.verified = true;
   const result = await provision!(f.request("verified"), f.ports);
   expect(result).toMatchObject({ code: 0, value: { hostingReady: true } });
-  f.ports.verifyPeer = async () => ({ piSignedIn: true, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
+  f.ports.verifyPeer = async () => ({ corePin: "ready", piSignedIn: true, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
     bundledIntercom: true, intercomUnique: true, legacyDrained: false, federation: true,
     intercomEvidence: { settings: "settings-unique", legacy: "legacy-pending-asks", federation: "federation-v1", otherExtensions: [] } });
   const blocked = await provision!(f.request("legacy"), f.ports);

@@ -78,7 +78,7 @@ function provisionFixture() {
     source: { agentRoot: source, releaseFile: release, piProviders: ["fixture"] },
     destination: { home, agentDir, npmPrefix, supervisor },
     async present() {}, async report(rows) { diagnostics.push(...rows); },
-    async verifyPeer() { return { piSignedIn: state.signedIn, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
+    async verifyPeer() { return { corePin: "ready", piSignedIn: state.signedIn, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
       bundledIntercom: true, intercomUnique: true, legacyDrained: true, federation: true,
       intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: [] } }; },
     bootstrap: {

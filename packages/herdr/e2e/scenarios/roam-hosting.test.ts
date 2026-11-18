@@ -44,7 +44,7 @@ async function coreOnly(suite: Suite): Promise<void> {
   try {
     const owner = await start(fixture);
     await fixture.provisionUnit();
-    expect(await readFile(fixture.supervisorUnit, 'utf8')).toContain('Requires=herdr-core.service');
+    expect(await readFile(fixture.supervisorUnit, 'utf8')).not.toMatch(/^(After|Requires|PartOf)=/m);
     expect(await readFile(fixture.systemctlLog, 'utf8')).toContain('--user enable spider-roam-supervisor.service');
     expect((await suite.hc(['server', 'status', '--json'])).json).toMatchObject({ core: { id: suite.cores!.local.coreId } });
     expect((await suite.hc(['get', owner.terminal, '--json'])).json).toMatchObject({ state: 'live' });

@@ -9,6 +9,17 @@ it("keeps the provisioning launch within Linux's single-argument limit", () => {
   expect(Buffer.byteLength(PROVISION_REMOTE_SCRIPT) + 1).toBeLessThanOrEqual(128 * 1024);
 });
 
+it("loads provisioning definitions without runtime compiler warnings", () => {
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+import { createServer } from 'vite';
+const server = await createServer({ configFile: false, logLevel: 'silent', server: { middlewareMode: true }, optimizeDeps: { noDiscovery: true } });
+try { await server.ssrLoadModule('/packages/roam/src/provision-remote-script.ts'); }
+finally { await server.close(); }
+`], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" }, timeout: 5000 });
+  expect(child.status, child.stderr).toBe(0);
+  expect(child.stderr).toBe("");
+});
+
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture() {

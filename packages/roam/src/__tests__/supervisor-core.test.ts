@@ -40,6 +40,13 @@ it("prints core-pin-changed and fails the service for a mismatching enrollment",
   expect(err).toContain("core-pin-changed");
 });
 
+it("names a missing pinned executable instead of reporting an intent failure", async () => {
+  const { h, pin } = await fixture(); await enroll(h); installSupervisorCorePin(h.root, { ...pin, binary: join(h.root, "missing-hc") });
+  vi.stubEnv("SPIDER_GLOBAL_ROOT", h.root); let err = "";
+  expect(await main([], { out() {}, err(text) { err += text; } })).toBe(1);
+  expect(err).toContain("missing-hc");
+});
+
 it("starts a stopped core through its pinned binary and socket without using PATH", async () => {
   const { h, pin } = await fixture();
   await h.stopCore();

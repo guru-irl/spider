@@ -31,7 +31,7 @@ test.each(publicationCases)('verified backup recovery resumes %s installed file 
   let crashed = false;
   const publish = (operation: typeof realFs.rename) => async (from: Parameters<typeof realFs.rename>[0], to: Parameters<typeof realFs.rename>[1]) => {
     const target = String(to);
-    const isInstalled = target !== join(f.request.journalRoot, 'journal.json') && target.startsWith(f.h.root + '/');
+    const isInstalled = !target.startsWith(f.request.journalRoot + '/') && target.startsWith(f.h.root + '/');
     const fail = isInstalled && writes++ === index && !crashed;
     if (fail && timing === 'before') {
       crashed = true;

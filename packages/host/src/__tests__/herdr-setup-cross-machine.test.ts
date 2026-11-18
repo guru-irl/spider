@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import * as fs from 'node:fs/promises';
 import { afterEach, expect, test, vi } from 'vitest';
 import { mkdir, readFile, writeFile, stat, lstat, readdir, readlink, rm, chmod } from 'node:fs/promises';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
@@ -10,11 +11,16 @@ import { cleanup, fixture } from './herdr-setup-fixture.js';
 import { releaseFixture } from './herdr-setup-release-fixture.js';
 import * as lookPatches from '@spider/herdr/look/patches';
 
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof fs>();
+  return { ...actual, rename: vi.fn(actual.rename), link: vi.fn(actual.link), mkdir: vi.fn(actual.mkdir) };
+});
+const realFs = await vi.importActual<typeof fs>('node:fs/promises');
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => args[0] === 'ps' && args[1]?.[0] === '-U' ? '' : actual.execFileSync(...args) };
 });
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); });
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); vi.restoreAllMocks(); for (const name of ['rename', 'link', 'mkdir'] as const) vi.mocked(fs[name]).mockImplementation(realFs[name] as never); });
 
 async function tree(root: string): Promise<string[]> {
   const rows: string[] = [];
@@ -69,7 +75,7 @@ test('unreadable app version leaves existing picker files and bindings alone', a
     { path: picker, expected: null, bytes: Buffer.from('// installed picker\n') },
   ];
   const journal = await readJournal(request.journalRoot);
-  await validateFiles(plans, journal); await prepareBackups(request.journalRoot, plans, journal); await applyFiles(plans, journal);
+  await validateFiles(plans, journal); await prepareBackups(request.journalRoot, plans, journal); await applyFiles(request.journalRoot, plans, journal);
   const installed = await readFile(keyPath), journalBefore = await readFile(join(request.journalRoot, 'journal.json'));
   const files = await f.parts.installFiles(request, f.context);
   expect(files.some(file => file.path === picker)).toBe(false);
@@ -243,7 +249,7 @@ test('a lost version does not recreate a removed picker key section', async () =
   const prior = journal.entries.find(entry => entry.path === keyPath)!.keys!;
   const extra = { custom: { 'ctrl-p': 'mod.open:spider-machine-picker' } }, owned = { ...prior, ...extra };
   const plans: InstallFile[] = [{ path: keyPath, expected: digest(before), bytes: mergeKeys(before, extra, prior, false), keys: owned, managed: { kind: 'keys', sections: Object.fromEntries(Object.entries(owned).map(([section, bindings]) => [section, Object.keys(bindings)])) } }];
-  await validateFiles(plans, journal); await prepareBackups(f.request.journalRoot, plans, journal); await applyFiles(plans, journal);
+  await validateFiles(plans, journal); await prepareBackups(f.request.journalRoot, plans, journal); await applyFiles(f.request.journalRoot, plans, journal);
   const current = JSON.parse(await readFile(keyPath, 'utf8')); delete current.custom; await writeFile(keyPath, JSON.stringify(current));
   const asset = join(f.root, 'packages/herdr/assets/keys.json'), desired = JSON.parse(await readFile(asset, 'utf8'));
   desired.terminal['cmd-shift-o'] = 'send:\u001b[99;6u'; await writeFile(asset, JSON.stringify(desired));
@@ -323,7 +329,7 @@ test('0.1.12 refuses previously owned pickers until rollback restores stock keys
     { path: picker, expected: null, bytes: Buffer.from('// old owned picker\n') },
   ];
   const journal = await readJournal(f.request.journalRoot);
-  await validateFiles(plans, journal); await prepareBackups(f.request.journalRoot, plans, journal); await applyFiles(plans, journal);
+  await validateFiles(plans, journal); await prepareBackups(f.request.journalRoot, plans, journal); await applyFiles(f.request.journalRoot, plans, journal);
   const settings = join(home, 'settings.json'), before = await readFile(settings), installedKeys = await readFile(path);
   const command = [process.execPath, join(f.root, 'dist/herdr/cli.mjs'), 'rollback', '--config', f.request.configPath].map(value => `'${value.replace(/'/g, "'\\\\''")}'`).join(' ');
   await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'legacy-picker-binding', message: expect.stringContaining(command) });
@@ -360,7 +366,7 @@ test('0.1.12 refuses a structured picker binding outside the default section', a
 test('0.1.12 refuses an owned picker file even after its shortcuts are restored', async () => {
   const f = await fixture(), path = join(f.h.directories.app, 'mods/spider-machine-picker/main.js');
   const journal = await readJournal(f.request.journalRoot), plans: InstallFile[] = [{ path, expected: null, bytes: Buffer.from('// old owned picker\n') }];
-  await prepareBackups(f.request.journalRoot, plans, journal); await applyFiles(plans, journal);
+  await prepareBackups(f.request.journalRoot, plans, journal); await applyFiles(f.request.journalRoot, plans, journal);
   await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'legacy-picker-binding', message: expect.stringContaining(path) });
   expect((await (await f.ports.doctorParts(f.request)).inspect('keys', f.request)).failures).toContainEqual(expect.objectContaining({ code: 'legacy-picker-binding', message: expect.stringContaining(path) }));
   await rollbackHerdr(f.request, f.parts);
@@ -406,24 +412,35 @@ test.each(['recipe', 'menu'] as const)('B refuses a missing A %s before staging'
 });
 
 for (const version of ['0.1.13', '0.1.16'] as const) {
-  test(`${version} writes mod entry points only after their relative dependencies`, async () => {
+  test(`${version} publishes complete mods before the layout can reference them`, async () => {
     const f = await releaseFixture(version), mods = join(f.h.directories.app, 'mods');
+    const layout = join(f.h.directories.app, 'layouts/spider-glass.json');
+    const incomplete: string[] = [], published: string[] = [];
+    const inspect = async (directory: string) => {
+      const files = await readdir(directory).catch(() => []);
+      if (!files.includes('mod.json') || !files.includes('main.js')) { incomplete.push(basename(directory)); return; }
+      const source = (await readFile(join(directory, 'main.js'), 'utf8')).replace(/^\s*\/\/[^\n]*$/gm, '');
+      for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.[^'"]+)['"]/g))
+        if (!await stat(resolve(directory, match[1]!)).then(info => info.isFile(), () => false)) incomplete.push(`${basename(directory)} imports ${match[1]}`);
+    };
+    for (const name of ['mkdir', 'rename', 'link'] as const) {
+      const original = realFs[name] as (...args: any[]) => Promise<any>;
+      vi.mocked(fs[name]).mockImplementation((async (...args: any[]) => {
+        const result = await original(...args), destination = String(name === 'mkdir' ? args[0] : args[1]);
+        if (dirname(destination) === mods && basename(destination).startsWith('spider-')) { published.push(basename(destination)); await inspect(destination); }
+        if (destination === layout) for (const mod of ['spider-pane', 'spider-tabs', 'spider-menu', 'spider-new-menu']) await inspect(join(mods, mod));
+        return result;
+      }) as never);
+    }
     const writes = (await setupHerdr(f.request, f.parts)).writes;
     const entries = writes.filter(path => /^spider-[^/]+\/main\.js$/.test(relative(mods, path)));
     expect(entries.length).toBeGreaterThan(5);
-    const layout = join(f.h.directories.app, 'layouts/spider-glass.json');
-    for (const name of ['spider-pane', 'spider-tabs', 'spider-menu', 'spider-new-menu']) {
-      expect(writes.indexOf(layout), name).toBeGreaterThan(writes.indexOf(join(mods, name, 'mod.json')));
-    }
+    expect(incomplete).toEqual([]);
+    expect(published.sort()).toEqual(entries.map(entry => basename(dirname(entry))).sort());
     for (const entry of entries) {
+      expect(writes).toContain(join(dirname(entry), 'mod.json'));
       const source = (await readFile(entry, 'utf8')).replace(/^\s*\/\/[^\n]*$/gm, '');
-      for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.[^'"]+)['"]/g)) {
-        const target = resolve(dirname(entry), match[1]!);
-        expect(writes.indexOf(target), `${relative(mods, entry)} imports ${match[1]}`).toBeGreaterThanOrEqual(0);
-        expect(writes.indexOf(target), `${relative(mods, entry)} imports ${match[1]}`).toBeLessThan(writes.indexOf(entry));
-      }
-      const manifest = join(dirname(entry), 'mod.json');
-      if (writes.includes(manifest)) expect(writes.indexOf(manifest)).toBeGreaterThan(writes.indexOf(entry));
+      for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"](\.[^'"]+)['"]/g)) expect(writes).toContain(resolve(dirname(entry), match[1]!));
     }
   });
 

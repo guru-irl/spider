@@ -96,7 +96,7 @@ it.each(['explicit', 'standard'] as const)('starts the production session feed f
       setupParts: async request => ({ ...await setupPorts.setupParts(request),
         preflight: async () => ({ fingerprint: 'fixture', coreIdentity: h.owner!.terminal, mods: [], targets: [], retiredTerminals: [], layoutExport: true }),
         stageLook: async () => [], installFiles: async () => [], generateTemplates: async () => [], installResume: async () => [],
-        ensureRuntime: async () => [], bootstrapRuntime: async () => {}, stagePaneEndpoint: async () => [],
+        ensureRuntime: async () => [], bootstrapRuntime: async () => {}, paneEndpointPlan: async () => ({ paths: [], changed: false }), stagePaneEndpoint: async () => [],
         cutover: async () => ({ terminals: [], identities: {} }), verify: async () => ({ failures: [], warnings: [], probes: [] }),
       }), stdout: text => { setupOutput += text; }, stderr: text => { throw new Error(text); },
     })).toBe(0);

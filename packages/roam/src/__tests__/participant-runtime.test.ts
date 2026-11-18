@@ -31,6 +31,7 @@ import { createRunningIntentAuthority } from "../session-control";
 import { createIntentStore } from "../intent";
 import * as intentModule from "../intent";
 import { participantLaunchId } from "../participant-launch";
+import { enrollFixtureCore } from "./supervisor-core-fixture";
 
 const BOX = "00000000-0000-4000-8000-000000000002", HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
@@ -41,6 +42,7 @@ function fixture(enabled = true, homed = true) {
   mkdirSync(join(global.root, "roam"), { mode: 0o700 });
   writeFileSync(join(global.root, "roam", "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
   writeFileSync(join(global.root, "roam", "config.json"), JSON.stringify(config), { mode: 0o600 });
+  enrollFixtureCore(global.root);
   const file = join(worktree.root, "s.jsonl"); writeFileSync(file, JSON.stringify({ type: "session", version: 3, id: "s-1", cwd: worktree.root }) + "\n", { mode: 0o600 });
   global.db.prepare("UPDATE roam_meta SET capture_enabled=1 WHERE id=1").run();
   if (homed) global.db.prepare("INSERT INTO session_homes VALUES (?,?,2,?,1)").run("s-1", BOX, "move-1");

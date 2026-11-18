@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
 import { DEFAULT_UPSTREAM_REFS } from "../../../superpowers/src/upstream-watch";
+import { herdrPackageAssets } from "../../../../scripts/test-herdr-package-assets.js";
 
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
 let scratch: string;
@@ -131,7 +132,7 @@ SOFTWARE.`;
       readdirSync(join(root, dir), { recursive: true, encoding: "utf8" })
         .filter(file => file === "SKILL.md" || file.endsWith("/SKILL.md")).map(file => `${dir}/${file}`));
     const requiredLicences = ["LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md"];
-    const requiredAssets = ["packages/herdr/assets/shared/presentations.js"];
+    const requiredAssets = ["packages/herdr/assets/shared/presentations.js", ...herdrPackageAssets];
     const files = [
       "dist/extension.js", "dist/extension.js.ready", "dist/dashboard/index.html", "README.md",
       "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "dist/intercom/broker.mjs", "scripts/intercom-switchover.mjs",

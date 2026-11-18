@@ -15,7 +15,7 @@ test('CLI help marks doctor and rollback configuration paths optional', async ()
     stderr: text => { throw new Error(text); },
   })).toBe(0);
   expect(output).toContain('doctor [--config <absolute-user-file>]');
-  expect(output).toContain('rollback [--config <absolute-user-file>]');
+  expect(output).toContain('rollback [--undo-upgrade [--replace-changed]] [--config <absolute-user-file>]');
 });
 
 test('Herdr NOTICE names the published spider package root licence', async () => {

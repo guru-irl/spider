@@ -1,4 +1,5 @@
 import { planPaneEndpointInstallation, stagePaneEndpointInstallation, probeLocalPaneEndpoint } from './pane-installation.js';
+import { assertSetupNotUndoing } from '../../../herdr/src/setup/checkpoint.js';
 import { inspectPaneInstallation } from './pane-doctor.js';
 import { createPaneRemoteRequest } from './pane-transport.js';
 import { createArgvClient } from '../../../herdr/src/client/argv-client.js';
@@ -298,6 +299,7 @@ export async function readAppLayout(binary: string, env: Readonly<NodeJS.Process
 
 export async function verifiedHerdrFile(journalRoot: string, file: InstallFile): Promise<void> {
   await withSetupLock(journalRoot, async () => {
+    await assertSetupNotUndoing(journalRoot);
     const journal = await readJournal(journalRoot);
     await validateFiles([file], journal, false);
     await prepareBackups(journalRoot, [file], journal);

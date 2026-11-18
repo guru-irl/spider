@@ -31,11 +31,12 @@ describe("npm skill packaging", () => {
     const files = JSON.parse(output)[0].files.map((file: { path: string }) => file.path) as string[];
     expect(skillFiles().length).toBeGreaterThanOrEqual(46);
     expect([...skillFiles(), "packages/pstack/LICENSE"].filter(file => !files.includes(file))).toEqual([]);
+    expect(herdrPackageAssets.filter(file => !files.includes(file))).toEqual([]);
   });
 });
 
 describe("release tarball check", () => {
-  const base = ["dist/intercom/broker.mjs", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "dist/extension.js", "dist/extension.js.ready", "dist/dashboard/index.html", "dist/dashboard/assets/index-abcdefgh.js", "dist/dashboard/assets/index-abcdefgh.css", "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "packages/herdr/assets/shared/presentations.js", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs", "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE"];
+  const base = ["dist/intercom/broker.mjs", "packages/intercom/LICENSE", "packages/intercom/ORIGIN.md", "scripts/intercom-switchover.mjs", "dist/extension.js", "dist/extension.js.ready", "dist/dashboard/index.html", "dist/dashboard/assets/index-abcdefgh.js", "dist/dashboard/assets/index-abcdefgh.css", "dist/roam/cli.mjs", "dist/roam/cli-main.mjs", "dist/roam/intercom-helper.mjs", "dist/roam/supervisor.mjs", "packages/herdr/assets/shared/presentations.js", "scripts/link.mjs", "scripts/dev-link.mjs", "scripts/link-roam.mjs", "scripts/extension-shim.mjs", "scripts/pi-agent-dir.mjs", "README.md", "LICENSE", "NOTICE.md", "packages/context/LICENSE", "packages/pstack/LICENSE", ...herdrPackageAssets];
   function check(files: string[]) {
     const workflow = readFileSync(join(root, ".github/workflows/ci.yml"), "utf8");
     const code = workflow.match(/npm pack --json --ignore-scripts \| node -e "([\s\S]*?)"\n/)?.[1];

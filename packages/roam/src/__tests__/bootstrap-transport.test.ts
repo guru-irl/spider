@@ -49,8 +49,8 @@ function fixture(peers: readonly Peer[] = [bootstrapPeer], enrolled: readonly Pe
 
 it("inventories an unenrolled peer using only the before-and-after core fence", async () => {
   const test = fixture([bootstrapPeer], []);
-  const { alias, node, pi, cli, globalRoot } = bootstrapPeer;
-  const candidate = { alias, node, pi, cli, globalRoot };
+  const { alias, node, pi, cli, core, globalRoot } = bootstrapPeer;
+  const candidate = { alias, node, pi, cli, core, globalRoot };
   await expect(test.transport.bootstrapProbe(candidate, "inventory")).resolves.toEqual(healthyInventory());
   expect(test.events).toEqual(["server", "machine", "probe", "server", "machine"]);
   expect(test.calls).toHaveLength(1);
@@ -85,8 +85,8 @@ it("reports an existing machine ID without treating it as prior enrollment", asy
   const value = healthyInventory();
   value.roaming = { rootExists: true, rootSafe: true, identityExists: true, machineId: existing };
   test.state.reply = Buffer.from(JSON.stringify({ version: 1, kind: "inventory", value }));
-  const { alias, node, pi, cli, globalRoot } = bootstrapPeer;
-  await expect(test.transport.bootstrapProbe({ alias, node, pi, cli, globalRoot }, "inventory")).resolves.toEqual(value);
+  const { alias, node, pi, cli, core, globalRoot } = bootstrapPeer;
+  await expect(test.transport.bootstrapProbe({ alias, node, pi, cli, core, globalRoot }, "inventory")).resolves.toEqual(value);
 }, 5000);
 
 it("runs one constant inventory script through hc without interpolating input", async () => {
@@ -108,7 +108,7 @@ it("runs one constant inventory script through hc without interpolating input", 
     expect(args.slice(end + 1, end + 3)).toEqual([bootstrapPeer.node, "-e"]);
     expect(args.slice(end + 4)).toEqual([]);
     const request = JSON.parse(call.stdin!.toString("utf8"));
-    expect(request).toEqual({ pi: bootstrapPeer.pi, cli: index === 0 ? bootstrapPeer.cli : second.cli, globalRoot: bootstrapPeer.globalRoot, checks: [], coreUnit: null });
+    expect(request).toEqual({ pi: bootstrapPeer.pi, cli: index === 0 ? bootstrapPeer.cli : second.cli, core: bootstrapPeer.core, coreId: index === 0 ? "remote-core-1" : "remote-core-2", globalRoot: bootstrapPeer.globalRoot, checks: [], coreUnit: null });
     expect(call.maxBytes).toBe(65_536);
     return args[end + 3];
   });
@@ -117,6 +117,12 @@ it("runs one constant inventory script through hc without interpolating input", 
     expect(scripts[0]).not.toContain(value);
   }
 }, 5000);
+
+it.each(["peer-core-unit-required", "peer-core-unit-ambiguous"])("preserves the named discovery refusal %s", async code => {
+  const test = fixture();
+  test.state.reply = Buffer.from(JSON.stringify({ version: 1, kind: "inventory", error: code }));
+  await expect(test.transport.bootstrapProbe(bootstrapPeer, "inventory")).rejects.toMatchObject({ code });
+});
 
 it("passes configured checks only as data and binds their boolean-only results", async () => {
   const test = fixture();

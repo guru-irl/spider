@@ -30,13 +30,15 @@ function fakeSystem() {
   ]) entries.set(dir, { kind: "directory" });
   const reads: string[] = [], readLimits: number[] = [], calls: string[][] = [], filesystems: string[] = [], opens: { name: string; flags: number }[] = [];
   const commandIO: { command: string; args: string[]; stdio: unknown }[] = [];
-  let input: Record<string, unknown> = { pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, globalRoot: bootstrapPeer.globalRoot, checks: [], coreUnit: null };
+  let input: Record<string, unknown> = { core: bootstrapPeer.core, coreId: "remote-core", pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, globalRoot: bootstrapPeer.globalRoot, checks: [], coreUnit: null };
   const descriptors = new Map<number, string>(); let nextFd = 3;
   const commands = new Map<string, { status: number | null; stdout?: string; error?: Error }>([
     ["git --version", { status: 0, stdout: "git version 2.45.0\n" }],
     ["git config --get user.name", { status: 0 }],
     ["git config --get user.email", { status: 0 }],
     ["systemctl --user is-system-running", { status: 0, stdout: "running\n" }],
+    [`${bootstrapPeer.core} server status --json`, { status: 0, stdout: JSON.stringify({ core: { id: "remote-core" }, pid: 4321 }) }],
+    ["systemctl --user show --property=MainPID --value herdr-core.service", { status: 0, stdout: "4321\n" }],
     ["loginctl show-user 1000 --property=Linger --value", { status: 0, stdout: "yes\n" }],
     [`${bootstrapPeer.pi} --version`, { status: 0, stdout: "1.2.0\n" }],
     ["gh --version", { status: 0, stdout: "gh version 2.0.0\n" }],
@@ -90,16 +92,17 @@ function fakeSystem() {
       return entry.content;
     },
     readdirSync(name: string) {
-      if (name === unitDir) return ["herdr-core.service"];
+      if (name === unitDir) return [...entries.keys()].filter(file => posix.dirname(file) === unitDir).map(file => posix.basename(file));
       if (name === socketDir) return ["default.sock"];
       throw new Error("missing fixture directory");
     },
     statfsSync(name: string) { filesystems.push(name); return { bavail: 2_000_000_000n, bsize: 1n }; },
   };
   const os = { homedir: () => home, platform: () => "linux", release: () => "6.8.0" };
-  const spawnSync = (command: string, args: string[], options: { stdio: unknown }) => {
+  const spawnSync = (command: string, args: string[], options: { stdio: unknown; maxBuffer: number }) => {
     calls.push([command, ...args]); commandIO.push({ command, args, stdio: options.stdio });
-    return commands.get([command, ...args].join(" ")) ?? { status: 1 };
+    const result = commands.get([command, ...args].join(" ")) ?? { status: 1 };
+    return Buffer.byteLength(result.stdout ?? "") > options.maxBuffer ? { status: null } : result;
   };
   const native = { ready: true, opens: 0, closes: 0, entry: nativeEntry };
   class Database { constructor(name: string) { if (!native.ready || name !== ":memory:") throw new Error("native unavailable"); native.opens++; } close() { native.closes++; } }
@@ -115,7 +118,7 @@ function fakeSystem() {
   };
   return {
     entries, reads, readLimits, calls, commandIO, commands, filesystems, native, opens, authPi, authGh,
-    setInput(value: Record<string, unknown>) { input = { globalRoot: bootstrapPeer.globalRoot, ...value }; },
+    setInput(value: Record<string, unknown>) { input = { globalRoot: bootstrapPeer.globalRoot, core: bootstrapPeer.core, coreId: "remote-core", ...value }; },
     run(source: string) {
       output = "";
       runInNewContext(source, { process: fakeProcess, require: (name: string) => { if (!(name in modules)) throw new Error("unexpected module"); return modules[name]; }, Buffer, JSON }, { timeout: 1000 });
@@ -365,6 +368,40 @@ it("refuses configured files beneath a symlinked parent", () => {
   expect(system.reads).not.toContain(auth);
   expect(JSON.stringify(reply)).not.toContain("/outside/private");
 }, 5000);
+
+it("discovers only the hc service whose main PID is the configured core", () => {
+  const system = fakeSystem(), dir = "/home/fixture/.config/systemd/user";
+  system.entries.delete(`${dir}/herdr-core.service`);
+  system.entries.set(`${dir}/hc-serve-0a1b2c3d.service`, { kind: "file" });
+  system.entries.set(`${dir}/hc-serve-1234abcd.service`, { kind: "file" });
+  system.commands.set("systemctl --user show --property=MainPID --value hc-serve-0a1b2c3d.service", { status: 0, stdout: "4321\n" });
+  system.commands.set("systemctl --user show --property=MainPID --value hc-serve-1234abcd.service", { status: 0, stdout: "5432\n" });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT).value.core).toMatchObject({ unit: "hc-serve-0a1b2c3d.service", unitExists: true, unitOwned: true });
+});
+
+it("discovers a unit when core status contains a bounded list of holders", () => {
+  const system = fakeSystem();
+  system.commands.set(`${bootstrapPeer.core} server status --json`, { status: 0, stdout: JSON.stringify({ core: { id: "remote-core" }, pid: 4321, holders: Array.from({ length: 100 }, (_, index) => ({ pid: 5000 + index })) }) });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT).value?.core).toMatchObject({ unit: "herdr-core.service", unitOwned: true });
+});
+
+it("refuses ambiguous hc services matching the configured core", () => {
+  const system = fakeSystem(), dir = "/home/fixture/.config/systemd/user";
+  system.entries.delete(`${dir}/herdr-core.service`);
+  for (const unit of ["hc-serve-0a1b2c3d.service", "hc-serve-1234abcd.service"]) {
+    system.entries.set(`${dir}/${unit}`, { kind: "file" });
+    system.commands.set(`systemctl --user show --property=MainPID --value ${unit}`, { status: 0, stdout: "4321\n" });
+  }
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT)).toEqual({ version: 1, kind: "inventory", error: "peer-core-unit-ambiguous" });
+});
+
+it.each(["unrelated PID", "unavailable core", "changed core identity"])("requires a peer core unit for %s", condition => {
+  const system = fakeSystem();
+  if (condition === "unrelated PID") system.commands.set("systemctl --user show --property=MainPID --value herdr-core.service", { status: 0, stdout: "5432\n" });
+  if (condition === "unavailable core") system.commands.delete(`${bootstrapPeer.core} server status --json`);
+  if (condition === "changed core identity") system.commands.set(`${bootstrapPeer.core} server status --json`, { status: 0, stdout: JSON.stringify({ core: { id: "other-core" }, pid: 4321 }) });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT)).toEqual({ version: 1, kind: "inventory", error: "peer-core-unit-required" });
+});
 
 it("checks the explicitly configured core unit without returning its file path", () => {
   const source = (bootstrap as { BOOTSTRAP_SCRIPT?: string }).BOOTSTRAP_SCRIPT;

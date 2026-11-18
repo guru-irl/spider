@@ -85,6 +85,40 @@ for(const key of ['openSync','readFileSync']){const original=fs[key];fs[key]=fun
   expect(f.reads.mock.calls.filter(([root]) => root === f.agent)).toEqual([]);
 }, 5000);
 
+it.each(["hc-serve-0a1b2c3d.service", undefined])("provisions with the peer unit %s rather than the hub unit", async coreUnit => {
+  const f = fixture(), unit = "hc-serve-0a1b2c3d.service";
+  const file = join(f.root, "roam", "config.json"), config = JSON.parse(fs.readFileSync(file, "utf8"));
+  config.coreUnit = "hub-core.service";
+  if (coreUnit) config.peers[0].coreUnit = coreUnit;
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const probes: unknown[] = [], enrollments: unknown[] = [], units: unknown[] = [];
+  vi.mocked(transportModule.createProvisionTransport).mockImplementation(({ enrolled }) => {
+    const peer = enrolled[0], inventory = healthyInventory(); inventory.core.unit = unit; inventory.pi = peer.pi;
+    return { transport: { resolve: async () => peer, bootstrapProbe: async (_peer: unknown, _kind: unknown, options: unknown) => {
+      probes.push(options); return structuredClone(inventory);
+    } }, probeHome: async () => "/home/fixture",
+      previewSettings: async () => ({ fingerprint: "a".repeat(64), changedKeys: [] }),
+      probeAgentDirectory: async () => ({ status: "default", core: { local: "local-core", remote: "remote-core" } }),
+      claimIdentity: async () => ({ machineId: peer.machineId, coreId: "remote-core" }),
+      async executeProvision(_peer: unknown, request: Record<string, unknown>) {
+        if (request.action === "enrollment") enrollments.push(request.coreUnit);
+        if (request.action === "unit-write") units.push(request.contents);
+        if (request.action === "release-observe") return { state: "finished", value: { pi: request.pi, cli: request.cli, supervisor: request.supervisor } };
+        if (request.action === "roaming-enabled") return { enabled: request.enabled };
+        if (request.action === "switchover") return { status: "applied" };
+        if (request.action === "verify") return { providers: [], piSignedIn: true, selectedFiles: true, nativeModuleReady: true, extensionReady: true, cliReady: true, privateModes: true, releasePaths: true, sessionModes: true, launcherNofile: 65_536 };
+        return true;
+      },
+    } as never;
+  });
+  expect(await main(["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--no-settings", "--release", f.release], f.io), f.errors()).toBe(0);
+  expect(probes.length).toBeGreaterThan(0);
+  for (const probe of probes) expect((probe as { coreUnit?: string }).coreUnit).toBe(coreUnit);
+  expect(enrollments).toEqual([unit]);
+  expect(units).toHaveLength(1);
+  expect(units[0]).toContain(`Requires=${unit}`);
+}, 5000);
+
 it("requires an explicit agent directory for a nonstandard prefix", async () => {
   const f = fixture(false), install = vi.spyOn(provisionModule, "provision");
   expect(await main(["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--release", f.release], f.io), f.errors()).toBe(1);

@@ -13,7 +13,7 @@ import type { HostingWarning } from "../hosting-warning";
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
 type Assert<T extends true> = T;
 
-type _Peer = Assert<Equal<Peer, { machineId: MachineId; alias: string; node: string; pi: string; cli: string; core: string; globalRoot: string; agentDir?: string }>>;
+type _Peer = Assert<Equal<Peer, { machineId: MachineId; alias: string; node: string; pi: string; cli: string; core: string; globalRoot: string; agentDir?: string; coreUnit?: string }>>;
 type _Limits = Assert<Equal<Limits, {
   chunkBytes: number; replyBytes: number; manifestBytes: number; targetBatchBytes: number; hardBatchBytes: number;
   applyTargetMs: number; workspaceBytes: number; sessionBytes: number; agentBytes: number; stagingBytes: number;

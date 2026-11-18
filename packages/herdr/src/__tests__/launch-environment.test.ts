@@ -273,6 +273,27 @@ it('never exposes recorded variable values through shell offers, diagnostics, or
   expect(output.join('\n').includes(credential())).toBe(false);
 });
 
+it('keeps the original default-model provider across reload while replacing environment tokens', async () => {
+  const identity = { pid: 2147483646, startIdentity: 'original-model-fixture' };
+  async function activate(provider: string, value: string) {
+    const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
+    const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;
+    const registration = registerHerdrSessions(pi, { ...inventory, registry: createTerminalRegistry(root), processIdentity: identity, launchEnvironment: mapping().environment, coreStartedAt: () => 1, owner: () => owner, currentSession: () => ({ ...identity, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address }), ...{ captureLaunch: () => ({ ...launch(['--api-key', credential()]), variables: { API_TOKEN: value } }) } });
+    const ctx = { mode: 'tui', model: { provider, id: 'default' }, sessionManager: { getSessionFile: () => file, getSessionId: () => owner.sessionId } } as unknown as ExtensionContext;
+    try {
+      await handlers.get('session_start')!({ reason: 'reload' }, ctx);
+      await handlers.get('session_shutdown')!({ reason: 'reload' }, ctx);
+    } finally { await registration.dispose(); }
+  }
+  await activate('provider', credential());
+  await activate('other', 'rotated-token');
+  const bytes = await readFile(secretPath(), 'utf8');
+  const snapshot = JSON.parse(bytes);
+  expect(snapshot.launch.model).toEqual({ provider: 'provider', modelId: 'default' });
+  expect(bytes.includes(credential())).toBe(true); // The original argv key is still present.
+  expect(snapshot.launch.variables.API_TOKEN === 'rotated-token').toBe(true);
+});
+
 it.each(['tui', 'rpc', 'print', 'json', 'child'] as const)('only interactive top-level registration captures new private launch data: %s', async mode => {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
   const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;

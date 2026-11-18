@@ -389,7 +389,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     };
     return [...files].sort((a, b) => priority(a) - priority(b));
   };
-  const pickerFiles = async (request: SetupRequest, context: SetupContext, fonts: Awaited<ReturnType<typeof prepareFonts>>['families'], modIds: readonly string[]): Promise<{ path: string; bytes: Buffer; mode?: number }[]> => {
+  const pickerFiles = async (request: SetupRequest, context: SetupContext, fonts: Awaited<ReturnType<typeof prepareFonts>>['families'], modIds: readonly string[], inspection = false): Promise<{ path: string; bytes: Buffer; mode?: number }[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets'), mods = join(request.config.app.home, 'mods');
     const picker = context.modProps.find(copy => copy.props.modId === 'spider-picker');
     if (!picker || resolve(picker.directory) !== resolve(mods, 'spider-picker')) throw new HerdrError('missing-mod-id', 'Picker needs validated installed mod props');
@@ -398,7 +398,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       if (typeof value !== 'string' || !isAbsolute(value) || value.includes('\0')) throw new HerdrError('invalid-mod-path', `Picker ${name} must be an absolute path`);
     }
     const configPath = join(picker.directory, 'config.json'), current = await snapshot(configPath);
-    if (current.bytes !== null && current.mode !== 0o600) throw new HerdrError('picker-config-insecure', 'Set mode 0600 on the picker config, then rerun setup');
+    if (!inspection && current.bytes !== null && current.mode !== 0o600) throw new HerdrError('picker-config-insecure', 'Set mode 0600 on the picker config, then rerun setup');
     let sources: Awaited<ReturnType<typeof assetFiles>>;
     try { sources = await assetFiles(join(assets, 'picker')); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new HerdrError('picker-assets-missing', 'The packaged picker is incomplete'); throw error; }
@@ -616,7 +616,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     const command = [process.execPath, join(packageRoot, 'dist/herdr/cli.mjs'), 'rollback', '--config', request.configPath].map(shellQuote).join(' ');
     return { message: `Unsupported picker state on ${selected.upstreamVersion}: ${stale ? `${stale[0]}.${stale[1]}` : oldFile!.path}`, repair: `Run ${command}, then restore stock bindings or remove any remaining custom picker shortcuts before setup.` };
   };
-  const stagedLook = async (request: SetupRequest, context: SetupContext, selection?: Awaited<ReturnType<typeof releaseLook>>): Promise<InstallFile[]> => {
+  const stagedLook = async (request: SetupRequest, context: SetupContext, selection?: Awaited<ReturnType<typeof releaseLook>>, inspection = false): Promise<InstallFile[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets');
     const patches = selection ?? await releaseLook(request), appVersion = patches.upstreamVersion;
     if (patches.crossMachine && (!patches.recipe || !patches.mods.menu)) throw new HerdrError('cross-machine-recipe-mismatch', 'Cross-machine setup needs the verified A recipe and menu clone');
@@ -664,7 +664,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     for (const file of await assetFiles(join(assets, 'agents'))) if (file.relative !== 'children.js') files.push({ path: join(request.config.app.home, 'mods/spider-agents', file.relative), bytes: file.bytes });
     files.push({ path: join(request.config.app.home, 'mods/spider-agents/sound.js'), bytes: await readFile(join(assets, 'mods/spider/sound.js')) });
     for (const file of await assetFiles(join(assets, 'spaces'))) files.push({ path: join(request.config.app.home, 'mods/spider-spaces', file.relative), bytes: file.bytes });
-    files.push(...await pickerFiles(request, context, fonts.families, [...kinds.map(kind => patched[kind]!.name), ...auxiliaryModIds(patches)]));
+    files.push(...await pickerFiles(request, context, fonts.families, [...kinds.map(kind => patched[kind]!.name), ...auxiliaryModIds(patches)], inspection));
     const toast = await planToastFiles(appVersion, request.config.app.home, join(assets, 'toast'));
     if (toast.length && !context.modProps.some(copy => copy.props.modId === 'spider-toast' && resolve(copy.directory) === resolve(request.config.app.home, 'mods/spider-toast'))) throw new HerdrError('missing-mod-id', 'Toast needs validated installed mod props');
     files.push(...toast);
@@ -860,7 +860,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(packageRoot, 'packages/herdr/assets/fonts'), readFile });
         try { for (const file of await pickerFiles(request, context, fonts.families, auxiliaryModIds(selected))) files.push({ ...file, expected: null }); }
         catch (error) { if (error instanceof HerdrError) return failure(error.code, error.message); throw error; }
-        const staged = fallback ? new Map(fallback.files.map(file => [file.path, file])) : selected?.crossMachine || Object.keys(additionalFor(release)).length ? new Map((await stagedLook(request, context)).map(file => [file.path, file])) : new Map<string, InstallFile>();
+        const staged = fallback ? new Map(fallback.files.map(file => [file.path, file])) : selected?.crossMachine || Object.keys(additionalFor(release)).length ? new Map((await stagedLook(request, context, undefined, true)).map(file => [file.path, file])) : new Map<string, InstallFile>();
         const effectiveFiles = files.filter(file => !fallback?.skipped.has(file.path)).map(file => staged.get(file.path) ?? file);
         const result = await compareFiles(effectiveFiles);
         if (result.failures.length) return result;
@@ -871,14 +871,14 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         return loadingUnavailable(['spider-panel', 'spider-picker', ...auxiliaryModIds(selected), ...(toast.length ? ['spider-toast'] : [])]);
       }
       if (item === 'clones') {
-        const files = (fallback?.files ?? await stagedLook(request, context)).filter(file => /\/mods\/spider-(?:agents|spaces|pane|tabs|chrome|menu|new-menu|picker)\//.test(file.path));
+        const files = (fallback?.files ?? await stagedLook(request, context, undefined, true)).filter(file => /\/mods\/spider-(?:agents|spaces|pane|tabs|chrome|menu|new-menu|picker)\//.test(file.path));
         const result = await compareFiles(files);
         const names = [...new Set(files.map(file => relative(join(request.config.app.home, 'mods'), file.path).split(sep)[0]!))];
         return result.failures.length ? result : loadingUnavailable(names);
       }
       if (item === 'patch-version') {
         const patches = selected!;
-        const expected = fallback?.files ?? await stagedLook(request, context);
+        const expected = fallback?.files ?? await stagedLook(request, context, undefined, true);
         const kinds: readonly LookModKind[] = [...new Set<LookModKind>([...lookCloneKinds, ...(patches.mods.menu ? ['menu' as const] : []), ...(patches.crossMachine ? crossMachineKinds : []), ...Object.keys(additionalFor(release)) as LookModKind[]])];
         for (const kind of kinds) {
           const directory = join(request.config.app.home, 'mods', kind === 'workspace-chrome' ? 'spider-chrome' : `spider-${kind}`);
@@ -907,7 +907,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         };
         const installed = contents(layout);
         for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome']) if (!installed.has(`spider-${name}`)) return failure('layout-mod-mismatch', `Installed layout omits spider-${name}`);
-        const expectedFile = (fallback?.files ?? await stagedLook(request, context)).find(file => file.path === path);
+        const expectedFile = (fallback?.files ?? await stagedLook(request, context, undefined, true)).find(file => file.path === path);
         if (!expectedFile) return failure('layout-props-mismatch', 'Cannot determine expected layout props');
         const expected = contents(JSON.parse(expectedFile.bytes.toString('utf8')));
         for (const name of ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome']) if (!isDeepStrictEqual(installed.get(`spider-${name}`), expected.get(`spider-${name}`))) return failure('layout-props-mismatch', `Installed spider-${name} props differ from the current configuration`);
@@ -1014,13 +1014,18 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
             continue;
           }
           const path = join(request.config.globalRoot, 'herdr/sessions', mapping.owner.sessionId, 'session.json');
-          const feed = parseFeed(await readFile(path, 'utf8'));
+          const missing = () => failures.push(...failure('feed-stale', `Owner feed for ${mapping.owner.sessionId} is missing`).failures);
+          let contents: string;
+          try { contents = await readFile(path, 'utf8'); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; missing(); continue; }
+          const feed = parseFeed(contents);
           if (!feed || feed.generation !== mapping.owner.generation || feed.owner.terminal.address !== mapping.owner.terminal.address || !await sessionFeedIsFresh(join(request.config.globalRoot, 'herdr'), feed, Date.now())) {
-            failures.push(...failure('feed-stale', 'Owner feed is stale or has a different generation').failures); continue;
+            failures.push(...failure('feed-stale', `Owner feed for ${mapping.owner.sessionId} is stale or has a different generation`).failures); continue;
           }
           if (item === 'feed-freshness') continue;
           if (item === 'feed-permissions') {
-            for (const file of [path, dirname(path)]) if ((await stat(file)).mode & 0o077) failures.push(...failure('feed-permissions', 'Owner feed permissions allow other users').failures);
+            try { for (const file of [path, dirname(path)]) if ((await stat(file)).mode & 0o077) failures.push(...failure('feed-permissions', 'Owner feed permissions allow other users').failures); }
+            catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; missing(); }
             continue;
           }
           if (!feed.ipc) { failures.push(...failure('ipc-unavailable', 'The owner has no authenticated IPC descriptor').failures); continue; }

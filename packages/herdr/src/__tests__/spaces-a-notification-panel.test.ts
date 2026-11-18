@@ -439,7 +439,8 @@ it.each(['0.1.13', '0.1.16'])('%s routes remote session and viewer actions throu
   const address = 'box-1.invalid/owner';
   const target = { coreId: 'remote-core', terminalId: 'owner', address, createdMs: 42, identityLabels: {}, alias: 'box-1.invalid', machineId: 'm', kind: 'session', sessionId: 'owner', generation: 'g', homeEpoch: 1, runId: null, consoleId: null, name: 'owner', cwd: '/home/fixture' };
   const snapshot = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: 'owner', generation: 'g', owner: { terminal: { address } }, target, name: 'owner', status: 'working', machineKey: 'box-1.invalid', children: [{ runId: 'run-one', name: 'Child', status: 'running' }], consoles: [], unavailableReason: null }], presentations: [] };
-  const paneService: any = async (_config: unknown, _exec: unknown, request: any) => { requests.push(request); return request.op === 'snapshot' ? snapshot : { status: 'complete' }; };
+  let paneDown = false;
+  const paneService: any = async (_config: unknown, _exec: unknown, request: any) => { requests.push(request); if (request.op === 'snapshot' && paneDown) throw new Error('offline'); return request.op === 'snapshot' ? snapshot : { status: 'complete' }; };
   const h = panelHost({ configured: true, parked: true, navigation: patchedNavigation(), panelSource: patchedPanelSource(version), paneService });
   const feed = h.state.feeds[0]; feed.owner.terminal.address = address; feed.owner.terminal.coreId = 'remote-core';
   feed.runs = { rows: [{ id: 'run-one', ownerSessionId: 'owner', name: 'Child', status: 'running', childMode: 'rpc', canSteer: true, startedAt: Date.now(), finishedAt: null, viewer: 'box-1.invalid/viewer', result: null }], total: 1, truncated: false };
@@ -455,11 +456,23 @@ it.each(['0.1.13', '0.1.16'])('%s routes remote session and viewer actions throu
     expect.soft(requests).toContainEqual(expect.objectContaining({ op: 'open-auxiliary', sessionId: 'owner', view: { kind: 'subagent', runId: 'run-one' } }));
     expect.soft(h.calls.filter(call => call[0] === 'run' && call[1] === 'pane.focus')).toEqual([]);
     expect.soft(h.calls.filter(call => call[0] === 'exec' && call[2].includes('--request'))).toEqual([]);
-    clock.mockReturnValue(121001); h.state.feeds[0].updatedAt = Date.now(); await h.view.reload(h.cx);
+    clock.mockReturnValue(121001); paneDown = true; h.state.feeds[0].updatedAt = Date.now(); await h.view.reload(h.cx);
     expect.soft(byId(h.view.render(h.cx), 'session-run-run-one')?.events.on_click).toBeUndefined();
     h.view.showHome(h.cx);
     expect.soft(byId(h.view.render(h.cx), 'focus-owner')?.events.on_click).toBeUndefined();
   } finally { clock.mockRestore(); await h.view.close(); }
+});
+
+it.each(['0.1.13', '0.1.16'])('%s keeps core-qualified local session focus when the service is down', async version => {
+  const h = panelHost({ configured: true, panelSource: patchedPanelSource(version), paneService: async () => { throw new Error('offline'); } });
+  h.state.feeds[0].owner.terminal.address = 'core/owner';
+  try {
+    await h.ready; await h.drain();
+    const focus = byId(h.view.render(h.cx), 'focus-owner');
+    expect(focus?.events.on_click).toBeDefined();
+    focus.events.on_click({}, h.cx); await h.drain();
+    expect(h.calls).toContainEqual(['run', 'pane.focus', { terminal: 'core/owner' }]);
+  } finally { await h.view.close(); }
 });
 
 it('an unconfigured remote notification still opens natively', async () => {

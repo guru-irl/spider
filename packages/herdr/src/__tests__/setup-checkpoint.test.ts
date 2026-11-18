@@ -213,9 +213,9 @@ test('the upgrade runbook preserves runtime moves and pre-existing tabs without 
     targets: async () => [], inspect: async () => ({ failures: [] }), launchHistory: async () => [], probeMachineNode: async () => 'v22.19.0',
   });
   expect(doctor.failures).toEqual([]);
+  await put(f.paths.settings, '{"theme":"dracula-plus-glass","keep":"runtime"}\n');
   await metadataRepeat(f);
   await put(f.paths.spaces, '{"placements":["moved-after-upgrade"]}\n');
-  await put(f.paths.settings, '{"theme":"dracula-plus-glass","keep":"runtime"}\n');
   await undoHerdrUpgrade(f.request, f.parts);
   expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
   expect((await fs.stat(f.paths.main)).mode & 0o777).toBe(0o664);

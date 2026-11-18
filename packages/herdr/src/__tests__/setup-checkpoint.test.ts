@@ -654,3 +654,26 @@ test('N2 a no-op retry closes an interrupted completed-sequence join before anot
   await setupHerdr(f.request, f.parts); await undoHerdrUpgrade(f.request, f.parts);
   expect(await fs.readFile(f.paths.main, 'utf8')).toBe('new-main');
 });
+
+
+test.each(['layout', 'settings', 'keys', 'main'] as const)('N4 an interrupted undo safely reconciles a later %s edit', async kind => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => { if (to === f.paths.main) throw new Error('restore paused'); return real.rename(from, to); });
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toThrow('restore paused');
+  vi.mocked(fs.rename).mockImplementation(real.rename);
+  const path = f.paths[kind], current = await snapshot(path);
+  if (kind === 'main') await put(path, 'changed during undo', current.mode);
+  else {
+    const value = JSON.parse(current.bytes!.toString());
+    if (kind === 'keys') value.global['ctrl-z'] = 'user.action';
+    else value.user = 'kept';
+    await put(path, JSON.stringify(value), current.mode);
+  }
+  if (kind === 'main') {
+    await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-changed' });
+    await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
+  } else await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+  if (kind === 'keys') expect(JSON.parse(await fs.readFile(path, 'utf8')).global).toEqual({ 'ctrl-z': 'user.action' });
+  else if (kind !== 'main') expect(JSON.parse(await fs.readFile(path, 'utf8')).user).toBe('kept');
+});

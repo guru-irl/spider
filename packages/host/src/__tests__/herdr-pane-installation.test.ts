@@ -5,6 +5,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterEach, expect, test } from 'vitest';
+import * as installation from '../herdr/pane-installation.js';
 import { PANE_ENDPOINT_BOOTSTRAP, stagePaneEndpointInstallation, recordPaneInstallation, probeLocalPaneEndpoint } from '../herdr/pane-installation.js';
 import { inspectPaneInstallation } from '../herdr/pane-doctor.js';
 import { createRemotePaneInventoryReader } from '../../../herdr/src/panes/inventory.js';
@@ -55,6 +56,19 @@ test('explicit local setup stages from its owned installation and records a veri
   expect(await stagePaneEndpointInstallation(f.root, f.packageRoot)).toEqual([]);
   expect(await readFile(f.marker).catch(() => null)).toBeNull();
   await writeFile(staged, 'tampered'); await expect(stagePaneEndpointInstallation(f.root, f.packageRoot)).rejects.toMatchObject({ code: 'pane-endpoint-build-mismatch' });
+});
+
+test('endpoint planning lists publication paths without writing and recognizes an unchanged installation', async () => {
+  const f = await fixture(), staged = join(f.packageRoot, 'dist/herdr', `pane-endpoint-${f.digest}.mjs`);
+  await rm(staged); await writeFile(f.registry, JSON.stringify({ version: 1, packageRoot: f.packageRoot }), { mode: 0o600 });
+  const before = await readFile(f.registry), info = await stat(f.registry);
+  const plan = await installation.planPaneEndpointInstallation?.(f.root, f.packageRoot);
+  expect(plan).toEqual({ paths: [staged, f.registry], changed: true });
+  expect(await readFile(f.registry)).toEqual(before);
+  expect((await stat(f.registry)).ino).toBe(info.ino);
+  await expect(readFile(staged)).rejects.toMatchObject({ code: 'ENOENT' });
+  await stagePaneEndpointInstallation(f.root, f.packageRoot);
+  expect(await installation.planPaneEndpointInstallation(f.root, f.packageRoot)).toEqual({ paths: [staged, f.registry], changed: false });
 });
 
 test('local installation probe handshakes without source effects or registry writes', async () => {

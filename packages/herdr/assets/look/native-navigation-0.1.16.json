@@ -1,0 +1,32 @@
+[
+  {
+    "id": "native-proxy-classification",
+    "file": "navigation.js",
+    "anchor": "const isProxy = (terminal, labels) => Boolean(terminal && !terminal.address.includes('/') && ['roam-proxy', 'pane-proxy'].includes(terminal.labels?.[labels.kind]));",
+    "replacement": "const isProxy = (terminal, labels) => Boolean(terminal && (terminal.labels?.[labels.kind] === 'roam-proxy' || !terminal.address.includes('/') && terminal.labels?.[labels.kind] === 'pane-proxy'));"
+  },
+  {
+    "id": "native-session-action",
+    "file": "navigation.js",
+    "anchor": "    const localPane = pane && !pane.includes('/') ? pane : null;\n    const action = proxy && localPane ? { kind: 'focus', pane: localPane } : machine ? { kind: 'pane', request: { op: 'open-existing', sessionId: feed.sessionId, generation: feed.generation, slot: null } } : !available(machine) ? null : localPane ? { kind: 'focus', pane: localPane } : feed.ipc ? {",
+    "replacement": "    const action = proxy && pane ? { kind: 'focus', pane } : !available(machine) ? null : pane ? { kind: 'focus', pane } : feed.ipc ? {"
+  },
+  {
+    "id": "native-child-action",
+    "file": "navigation.js",
+    "anchor": "      if (ownerAvailable && childAvailable && !address?.includes('/') && childPane && !childPane.includes('/')) childAction = { kind: 'focus', pane: childPane };\n      else if (ownerAvailable && machine && child.kind === 'subagent') childAction = { kind: 'pane', request: { op: 'open-auxiliary', sessionId: feed.sessionId, generation: feed.generation, view: { kind: 'subagent', runId: child.key } } };\n      else if (!machine && ownerAvailable && (childAvailable || savedRun) && child.action?.kind === 'ipc') childAction = child.action;",
+    "replacement": "      if (ownerAvailable && childAvailable && childPane) childAction = { kind: 'focus', pane: childPane };\n      else if (ownerAvailable && (childAvailable || savedRun) && child.action?.kind === 'ipc') childAction = child.action;"
+  },
+  {
+    "id": "native-agent-action",
+    "file": "navigation.js",
+    "anchor": "      action: pane && !pane.includes('/') && (isProxy(terminal, labels) || !machine && available(machine)) ? { kind: 'focus', pane } : null });",
+    "replacement": "      action: pane && (isProxy(terminal, labels) || available(machine)) ? { kind: 'focus', pane } : null });"
+  },
+  {
+    "id": "native-proxy-pane",
+    "file": "navigation.js",
+    "anchor": "    if (!pane || pane.pane.includes('/')) continue;",
+    "replacement": "    if (!pane) continue;"
+  }
+]

@@ -389,7 +389,18 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     };
     return [...files].sort((a, b) => priority(a) - priority(b));
   };
-  const pickerFiles = async (request: SetupRequest, context: SetupContext, fonts: Awaited<ReturnType<typeof prepareFonts>>['families'], modIds: readonly string[], inspection = false): Promise<{ path: string; bytes: Buffer; mode?: number }[]> => {
+  const panelFiles = async (release?: string) => {
+    const assets = join(packageRoot, 'packages/herdr/assets');
+    const files = await assetFiles(join(assets, 'mods/spider'));
+    if (release === '0.1.16') {
+      const main = files.find(file => file.relative === 'main.js');
+      if (!main) throw new HerdrError('picker-assets-missing', 'The packaged panel is incomplete');
+      const patches = JSON.parse(await readFile(join(assets, 'look/native-panel-0.1.16.json'), 'utf8')) as LookPatch[];
+      main.bytes = Buffer.from(applyModPatches({ 'main.js': main.bytes.toString('utf8') }, patches, 'native panel')['main.js']);
+    }
+    return files;
+  };
+  const pickerFiles = async (request: SetupRequest, context: SetupContext, fonts: Awaited<ReturnType<typeof prepareFonts>>['families'], modIds: readonly string[], inspection = false, release?: string): Promise<{ path: string; bytes: Buffer; mode?: number }[]> => {
     const assets = join(packageRoot, 'packages/herdr/assets'), mods = join(request.config.app.home, 'mods');
     const picker = context.modProps.find(copy => copy.props.modId === 'spider-picker');
     if (!picker || resolve(picker.directory) !== resolve(mods, 'spider-picker')) throw new HerdrError('missing-mod-id', 'Picker needs validated installed mod props');
@@ -416,11 +427,14 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     if (!navSource || !children) throw new HerdrError('picker-assets-missing', 'The packaged picker dependencies are incomplete');
     const navigation = rewriteImportPrefix(navSource.bytes.toString('utf8'), '../agents/children.js', '../spider-children.js', join(assets, 'shared/navigation.js'));
     if (navigation.references.length !== 1) throw new HerdrError('picker-assets-invalid', 'Navigation needs one declared children import');
+    const navigationSource = release === '0.1.16'
+      ? applyModPatches({ 'navigation.js': navigation.source }, JSON.parse(await readFile(join(assets, 'look/native-navigation-0.1.16.json'), 'utf8')) as LookPatch[], 'native navigation')['navigation.js']
+      : navigation.source;
     for (const name of ['spider-agents', 'spider-panel', 'spider-picker']) {
       const directory = join(mods, name);
       if (!context.modProps.some(copy => copy.props.modId === name && resolve(copy.directory) === resolve(directory))) throw new HerdrError('missing-mod-id', `Missing validated mod props: ${name}`);
       const navPath = join(directory, 'shared/navigation.js');
-      files.push({ path: join(directory, 'spider-children.js'), bytes: children }, { path: navPath, bytes: Buffer.from(navigation.source) });
+      files.push({ path: join(directory, 'spider-children.js'), bytes: children }, { path: navPath, bytes: Buffer.from(navigationSource) });
       references.push({ path: navPath, root: directory, specifier: navigation.references[0] });
     }
     for (const name of ['diamond', 'heptagon', 'hexagon', 'octagon', 'pentagon', 'star', 'triangle']) files.push({ path: join(picker.directory, `space-${name}.svg`), bytes: await readFile(join(assets, 'agents', `space-${name}.svg`)) });
@@ -664,7 +678,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     for (const file of await assetFiles(join(assets, 'agents'))) if (file.relative !== 'children.js') files.push({ path: join(request.config.app.home, 'mods/spider-agents', file.relative), bytes: file.bytes });
     files.push({ path: join(request.config.app.home, 'mods/spider-agents/sound.js'), bytes: await readFile(join(assets, 'mods/spider/sound.js')) });
     for (const file of await assetFiles(join(assets, 'spaces'))) files.push({ path: join(request.config.app.home, 'mods/spider-spaces', file.relative), bytes: file.bytes });
-    files.push(...await pickerFiles(request, context, fonts.families, [...kinds.map(kind => patched[kind]!.name), ...auxiliaryModIds(patches)], inspection));
+    files.push(...await pickerFiles(request, context, fonts.families, [...kinds.map(kind => patched[kind]!.name), ...auxiliaryModIds(patches)], inspection, appVersion));
     const toast = await planToastFiles(appVersion, request.config.app.home, join(assets, 'toast'));
     if (toast.length && !context.modProps.some(copy => copy.props.modId === 'spider-toast' && resolve(copy.directory) === resolve(request.config.app.home, 'mods/spider-toast'))) throw new HerdrError('missing-mod-id', 'Toast needs validated installed mod props');
     files.push(...toast);
@@ -683,7 +697,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
     for (const font of fonts.files) files.push({ path: join(request.config.app.home, 'fonts', font.fileName), bytes: font.bytes });
     for (const copy of context.modProps.filter(copy => copy.props.modId !== 'spider-toast')) for (const name of ['feed.js', 'look.js', 'open-failure.js', 'presentations.js']) files.push({ path: join(copy.directory, 'shared', name), bytes: await readFile(join(assets, 'shared', name)) });
     const mods = join(request.config.app.home, 'mods');
-    const panel = (await assetFiles(join(assets, 'mods/spider'))).map(file => ({ path: join(mods, 'spider-panel', file.relative), bytes: file.bytes }));
+    const panel = (await panelFiles(appVersion)).map(file => ({ path: join(mods, 'spider-panel', file.relative), bytes: file.bytes }));
     for (const [kind, records] of Object.entries(additional) as [LookModKind, readonly LookPatch[]][]) {
       if (![...lookCloneKinds, 'menu', 'new-menu', 'picker'].includes(kind)) throw new HerdrError('invalid-look-patches', `Unknown additional mod: ${kind}`);
       const directory = join(mods, kind === 'workspace-chrome' ? 'spider-chrome' : `spider-${kind}`), prefix = directory + sep;
@@ -853,12 +867,12 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         const files: InstallFile[] = [];
         const configPath = join(request.config.app.home, 'mods/spider-picker/config.json'), config = await snapshot(configPath);
         if (config.bytes !== null && config.mode !== 0o600) return failure('picker-config-insecure', 'Picker config must have mode 0600', `Set mode 0600 on ${configPath}, then rerun doctor.`);
-        for (const file of await assetFiles(join(packageRoot, 'packages/herdr/assets/mods/spider'))) files.push({ path: join(request.config.app.home, 'mods/spider-panel', file.relative), bytes: file.bytes, expected: null });
+        for (const file of await panelFiles(release)) files.push({ path: join(request.config.app.home, 'mods/spider-panel', file.relative), bytes: file.bytes, expected: null });
         for (const mod of context.modProps.filter(copy => copy.props.modId !== 'spider-toast')) for (const name of ['feed.js', 'look.js', 'open-failure.js', 'presentations.js']) files.push({ path: join(mod.directory, 'shared', name), bytes: await readFile(join(packageRoot, 'packages/herdr/assets/shared', name)), expected: null });
         const toast = await planToastFiles(release!, request.config.app.home, join(packageRoot, 'packages/herdr/assets/toast'));
         files.push(...toast.map(file => ({ ...file, expected: null })));
         const fonts = await prepareFonts(request.config.fonts ?? {}, { bundledRoot: join(packageRoot, 'packages/herdr/assets/fonts'), readFile });
-        try { for (const file of await pickerFiles(request, context, fonts.families, auxiliaryModIds(selected))) files.push({ ...file, expected: null }); }
+        try { for (const file of await pickerFiles(request, context, fonts.families, auxiliaryModIds(selected), false, release)) files.push({ ...file, expected: null }); }
         catch (error) { if (error instanceof HerdrError) return failure(error.code, error.message); throw error; }
         const staged = fallback ? new Map(fallback.files.map(file => [file.path, file])) : selected?.crossMachine || Object.keys(additionalFor(release)).length ? new Map((await stagedLook(request, context, undefined, true)).map(file => [file.path, file])) : new Map<string, InstallFile>();
         const effectiveFiles = files.filter(file => !fallback?.skipped.has(file.path)).map(file => staged.get(file.path) ?? file);
@@ -1180,10 +1194,10 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
         },
         installFiles: async (request, context) => {
           const assets = join(packageRoot, 'packages/herdr/assets'), files: { path: string; bytes: Buffer; terminalKeys?: Readonly<Record<string, string>>; keys?: KeySections }[] = [];
-          for (const file of await assetFiles(join(assets, 'mods/spider'))) files.push({ path: join(request.config.app.home, 'mods/spider-panel', file.relative), bytes: file.bytes });
-          files.push({ path: join(request.config.agentDirectory, 'themes/dracula-plus-glass.json'), bytes: await readFile(join(assets, 'themes/dracula-plus-glass.json')) }, { path: join(request.config.app.home, 'themes/spider-glass.json'), bytes: await readFile(join(assets, 'themes/spider-glass.json')) });
           const stagedVersion = stagedVersions.get(context);
           const selected = request.nativeKeys === 'accept' && !stagedVersion ? await releaseLook(request) : await optionalPickerLook(request, stagedVersion?.upstreamVersion);
+          for (const file of await panelFiles(selected?.upstreamVersion)) files.push({ path: join(request.config.app.home, 'mods/spider-panel', file.relative), bytes: file.bytes });
+          files.push({ path: join(request.config.agentDirectory, 'themes/dracula-plus-glass.json'), bytes: await readFile(join(assets, 'themes/dracula-plus-glass.json')) }, { path: join(request.config.app.home, 'themes/spider-glass.json'), bytes: await readFile(join(assets, 'themes/spider-glass.json')) });
           if (!selected) { if (stagedVersion) fallbackContext = context; process.stderr.write(pickerVersionMessage + '\n'); }
           const keys = await desiredKeys(selected);
           const keyPath = join(request.config.app.home, 'keys.json'), currentKeys = await snapshot(keyPath);

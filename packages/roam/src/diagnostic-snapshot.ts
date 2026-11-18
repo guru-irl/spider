@@ -186,9 +186,15 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
     const shmFile = `${file}-shm`, shm = fileStamp(shmFile, false);
     const directory = mkdtempSync(join(tmpdir(), "spider-roam-inspect-"));
     register(directory);
-    let observed: Buffer | null = null;
+    let observed: Buffer | null = null, indexFd: number | undefined;
     try {
       const copy = join(directory, "snapshot.db");
+      if (shm !== null) {
+        // A full close deletes the index; a reopen can recover the same empty
+        // header. Pin its inode so reuse cannot hide that generation change.
+        indexFd = openSync(shmFile, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        if (stamp(fstatSync(indexFd, { bigint: true }), false) !== shm) throw new Changed();
+      }
       observed = shm === null ? null : indexBytes(shmFile);
       const initial = observed === null ? null : walIndex(observed);
       const started = Date.now(), copied = copyStable(file, copy, main);
@@ -220,7 +226,8 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
       }
       if (fileStamp(file) !== main) throw new Changed();
       // An initially absent WAL and index must still be absent after the copy.
-      if (fileStamp(walFile, false) !== wal || fileStamp(shmFile, false) !== shm) throw new Changed();
+      if (fileStamp(walFile, false) !== wal || fileStamp(shmFile, false) !== shm ||
+          indexFd !== undefined && fstatSync(indexFd).nlink === 0) throw new Changed();
       const db = openDbReadOnly(copy);
       if (!db) throw new Error("Diagnostic snapshot disappeared");
       try {
@@ -244,7 +251,7 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
       } finally { cleanup(directory); }
       if (error instanceof Changed && attempt < 2) continue;
       throw error;
-    }
+    } finally { if (indexFd !== undefined) closeSync(indexFd); }
   }
   throw new Error("Cannot prepare a diagnostic snapshot");
 }

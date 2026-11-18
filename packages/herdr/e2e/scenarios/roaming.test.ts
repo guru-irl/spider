@@ -148,8 +148,6 @@ async function closedAppPlacement(suite: Suite): Promise<void> {
   const address = `${cores.machine}/${terminal}`, sessionId = 'session-r02', file = join(workspace, 'session.jsonl');
   const cli = await releaseCli(suite), peer = { machineId: BOX, alias: cores.machine, node: process.execPath, pi: process.execPath, cli, core: cores.wrapper, globalRoot: box };
   await configureStore(hub, HUB, 'hub', [peer], true); await configureStore(box, BOX, 'box', [], true);
-  installSupervisorCorePin(box, { binary: cores.wrapper, coreId: cores.dest.coreId, socket: cores.dest.socket,
-    sessionNamespace: cores.dest.namespace, stateHome: cores.dest.env.XDG_STATE_HOME, configHome: cores.dest.env.XDG_CONFIG_HOME });
   await writeFile(join(box, 'roam/config.json'), JSON.stringify({ ...readLocalIdentity(box), enabled: false }), { mode: 0o600 });
   for (const globalRoot of [hub, box]) {
     await mkdir(join(globalRoot, 'herdr'), { recursive: true, mode: 0o700 });
@@ -158,9 +156,7 @@ async function closedAppPlacement(suite: Suite): Promise<void> {
       globalRoot, shellRc: join(suite.root, 'shellrc'), spaces: [], machines: [] }), { mode: 0o600 });
   }
   await mkdir(join(workspace, '.spider'), { recursive: true, mode: 0o700 });
-  await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: sessionId, cwd: workspace, timestamp: '2026-01-01T00:00:00.000Z' }) + '\n' +
-    JSON.stringify({ type: 'message', id: 'entry-r02', parentId: null, timestamp: '2026-01-01T00:00:00.000Z',
-      message: { role: 'user', content: 'fixture conversation', timestamp: 1 } }) + '\n', { mode: 0o600 });
+  await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: sessionId, cwd: workspace }) + '\n', { mode: 0o600 });
   const boxDb = openDb(join(box, 'spider.db')), worktree = openDb(join(workspace, '.spider/project.db'));
   migrate(worktree, 'worktree', { machineId: BOX, globalRoot: box });
   const repoKey = '00000000-0000-4000-8000-000000000003', workspaceId = '00000000-0000-4000-8000-000000000004';
@@ -192,12 +188,7 @@ async function closedAppPlacement(suite: Suite): Promise<void> {
       if (service.child.exitCode !== null) throw new Error(await readFile(join(suite.root, 'logs/roam-hub.log'), 'utf8'));
       return existsSync(join(hub, 'roam/hub.sock'));
     }, Boolean, deadline(20_000));
-    let syncAttempt = 0;
-    const sync = async () => {
-      const result = await suite.invoke(process.execPath, [cli, 'roam', 'sync', cores.machine, '--json'], env);
-      await suite.evidence(`R02-sync-${++syncAttempt}.json`, result);
-      expect(result.exitCode, result.stderr + result.stdout).toBe(0);
-    };
+    const sync = async () => { const result = await suite.invoke(process.execPath, [cli, 'roam', 'sync', cores.machine], env); expect(result.exitCode, result.stderr + result.stdout).toBe(0); };
     await sync();
     const queueDb = openDb(join(hub, 'spider.db'));
     try { expect(readLocal(queueDb, 'hub-placement', BOX)).toEqual([{ ...readiness, terminal: address }]); } finally { queueDb.close(); }

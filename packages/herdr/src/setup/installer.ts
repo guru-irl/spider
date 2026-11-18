@@ -626,16 +626,23 @@ export async function setupHerdr(request: SetupRequest, parts: SetupParts): Prom
   };
   const recordedWork = async () => {
     const before = await snapshot(join(request.journalRoot, 'journal.json'));
+    const previousCheckpoint = await snapshot(join(request.journalRoot, 'checkpoint.json'));
     try {
       const result = await work();
       result.journalChanged = before.hash !== (await snapshot(join(request.journalRoot, 'journal.json'))).hash;
       return result;
     } catch (error) {
-      let upgrade = false;
-      try { const checkpoint = await readCheckpoint(request.journalRoot); upgrade = !!checkpoint && !['undone', 'superseded'].includes(checkpoint.state); }
-      catch { /* A damaged checkpoint must not hide the original setup failure. */ }
+      let upgrade = false, recorded = false;
+      try {
+        recorded = before.hash !== (await snapshot(join(request.journalRoot, 'journal.json'))).hash;
+        recorded ||= previousCheckpoint.hash !== (await snapshot(join(request.journalRoot, 'checkpoint.json'))).hash;
+        const checkpoint = await readCheckpoint(request.journalRoot);
+        upgrade = !!checkpoint && !['undone', 'superseded'].includes(checkpoint.state);
+      } catch { /* Recovery metadata must not hide the original setup failure. */ }
+      if (!recorded) throw error;
       const command = [process.execPath, join(request.packageRoot, 'dist/herdr/cli.mjs'), 'rollback', ...(upgrade ? ['--undo-upgrade'] : []), '--config', request.configPath].map(shellQuote).join(' ');
-      throw new HerdrError(error instanceof HerdrError ? error.code : 'setup-failed', `${error instanceof Error ? error.message : String(error)}\nRollback: ${command}`, error instanceof HerdrError ? error.details : undefined);
+      const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : 'setup-failed';
+      throw new HerdrError(code, `${error instanceof Error ? error.message : String(error)}\nRollback: ${command}`, error instanceof HerdrError ? error.details : undefined);
     }
   };
   return request.dryRun ? work() : withSetupLock(request.journalRoot, recordedWork);

@@ -9,6 +9,10 @@ import { assertTestDbPath, openDbReadOnly, type Db } from "@spider/db-core";
 // Frames through an index read taken after the main copy and before opening the
 // WAL are immutable within that generation, even when later writes overwrite a
 // stale tail in place. Validate the entire chosen prefix; retry resets/backfill.
+// Linux coarse timestamps use jiffies (10 ms at HZ=100). Allow 50 ms,
+// also covering APFS nanoseconds and the Linux clock used by WSL2 ext4.
+// https://docs.kernel.org/filesystems/multigrain-ts.html
+const timestampWindowMs = 50;
 const snapshots = new Set<string>();
 let cleanupRegistered = false;
 function cleanup(directory: string): void {
@@ -150,7 +154,7 @@ function fileStamp(file: string, contentStable = true): string | null {
     throw error;
   }
 }
-function copyStable(source: string, destination: string, expected: string, contentStable = true): void {
+function copyStable(source: string, destination: string, expected: string, contentStable = true): BigIntStats {
   let input: number | undefined, output: number | undefined;
   try {
     try { input = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
@@ -174,6 +178,7 @@ function copyStable(source: string, destination: string, expected: string, conte
       position += length;
     }
     if (stamp(fstatSync(input, { bigint: true }), contentStable) !== expected) throw new Changed();
+    return stat;
   } finally {
     if (output !== undefined) closeSync(output);
     if (input !== undefined) closeSync(input);
@@ -195,7 +200,17 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
       const copy = join(directory, "snapshot.db");
       observed = shm === null ? null : indexBytes(shmFile);
       const initial = observed === null ? null : walIndex(observed);
-      copyStable(file, copy, main);
+      const started = Date.now(), copied = copyStable(file, copy, main);
+      if (wal === null && shm === null) {
+        const newest = copied.mtimeNs > copied.ctimeNs ? copied.mtimeNs : copied.ctimeNs;
+        const ageMs = Number(BigInt(started) * 1_000_000n - newest) / 1_000_000;
+        if (ageMs < timestampWindowMs) {
+          // Same-tick writes can leave the stamps equal. Discard this copy,
+          // waiting at most one window so the next attempt can use aged stamps.
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(timestampWindowMs, Math.ceil(timestampWindowMs - ageMs)));
+          throw new Changed();
+        }
+      }
       // This is the commit bound, not the pre-copy or post-WAL publication.
       const limit = shm === null ? null : walIndex(indexBytes(shmFile));
       if (wal !== null) {
@@ -212,7 +227,9 @@ export function openDiagnosticSnapshot(file: string): Db | undefined {
         sameGeneration(initial, limit, walIndex(indexBytes(shmFile)));
         if (limit.frames !== 0) throw new Changed();
       }
-      if (fileStamp(file) !== main || fileStamp(walFile, false) !== wal || fileStamp(shmFile, false) !== shm) throw new Changed();
+      if (fileStamp(file) !== main) throw new Changed();
+      // An initially absent WAL and index must still be absent after the copy.
+      if (fileStamp(walFile, false) !== wal || fileStamp(shmFile, false) !== shm) throw new Changed();
       const db = openDbReadOnly(copy);
       if (!db) throw new Error("Diagnostic snapshot disappeared");
       try {

@@ -577,3 +577,27 @@ test('I4 endpoint intent survives a kill after publication but before any observ
   await undoHerdrUpgrade(f.request, f.parts);
   expect(await values([f.paths.registry, f.paths.main])).toEqual(f.before.filter(file => [f.paths.registry, f.paths.main].includes(file.path)));
 });
+
+
+test('N3 ambiguous layout arrays have a lossless move-aside recovery', async () => {
+  const f = await fixture(), before = '{"content":[{"size":100}],"generation":1}', stage = f.parts.stageLook;
+  await put(f.paths.layout, before);
+  const journal = await readJournal(f.request.journalRoot); journal.entries.find(entry => entry.path === f.paths.layout)!.after = (await snapshot(f.paths.layout)).hash!; await saveJournal(f.request.journalRoot, journal);
+  f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from('{"content":[{"size":200},{"size":300}],"generation":2}') } : file);
+  await setupHerdr(f.request, f.parts);
+  const edited = '{"content":[{"size":201},{"user":400},{"size":300}],"generation":2}';
+  await put(f.paths.layout, edited);
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-layout-ambiguous' });
+  await fs.rename(f.paths.layout, f.paths.layout + '.kept');
+  await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
+  expect(await fs.readFile(f.paths.layout + '.kept', 'utf8')).toBe(edited);
+  expect(await fs.readFile(f.paths.layout, 'utf8')).toBe(before);
+});
+
+test('N5 the next setup collects private blob temporaries left by a crash', async () => {
+  const f = await fixture(), backup = join(f.request.journalRoot, 'backups');
+  const abandoned = join(backup, 'checkpoint-' + 'a'.repeat(64) + '.spider-00000000-0000-4000-8000-000000000000');
+  await put(abandoned, 'interrupted secret copy');
+  await setupHerdr(f.request, f.parts);
+  expect((await snapshot(abandoned)).hash).toBeNull();
+});

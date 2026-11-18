@@ -457,3 +457,18 @@ it('resolves resource paths and relative agent directory against launch cwd', as
   expect(launches[0].argv).toEqual([process.execPath, '--skill', join(original, 'skills'), '--prompt-template', join(root, 'prompt.md'), '--theme', join(original, 'theme.json'), '--session-dir', join(original, 'sessions'), '--session', file]);
   expect(launches[0].env.PI_CODING_AGENT_DIR).toBe(join(original, 'agent'));
 });
+
+const loginVariables = ['GPG_TTY', 'VSCODE_IPC_HOOK_CLI', 'VSCODE_GIT_IPC_HANDLE', 'VSCODE_GIT_ASKPASS_NODE', 'VSCODE_GIT_ASKPASS_MAIN', 'VSCODE_GIT_ASKPASS_EXTRA_ARGS', 'GIT_ASKPASS', 'SSH_ASKPASS', 'KITTY_LISTEN_ON', 'KITTY_WINDOW_ID', 'KITTY_PID', 'ALACRITTY_SOCKET', 'ALACRITTY_WINDOW_ID', 'WEZTERM_UNIX_SOCKET', 'WEZTERM_EXECUTABLE', 'NVIM', 'NVIM_LISTEN_ADDRESS', 'ZELLIJ', 'ZELLIJ_SESSION_NAME', 'ZELLIJ_PANE_ID', 'XAUTHORITY', 'KRB5CCNAME', 'SESSION_MANAGER', 'XDG_SESSION_ID', 'XDG_SESSION_TYPE', 'XDG_SEAT', 'XDG_VTNR', 'INVOCATION_ID', 'JOURNAL_STREAM', 'MANAGERPID', 'SYSTEMD_EXEC_PID', 'NOTIFY_SOCKET', 'LISTEN_PID', 'LISTEN_FDS', 'LISTEN_FDNAMES', 'GNOME_KEYRING_CONTROL', 'GPG_AGENT_INFO', 'LC_TERMINAL', 'LC_TERMINAL_VERSION', 'TERM_FEATURES', 'TERMINAL_EMULATOR', 'ITERM_PROFILE', 'KONSOLE_DBUS_SERVICE', 'KONSOLE_DBUS_SESSION', 'KONSOLE_DBUS_WINDOW', 'GNOME_TERMINAL_SCREEN', 'GNOME_TERMINAL_SERVICE', 'VTE_VERSION', 'VTE_SHELL_PID', 'PI_INTERCOM_SCOPE_ID'];
+it.each([true, false])('keeps fresh login and terminal endpoints including their absence: %s', async present => {
+  await record({ ...launch([]), variables: Object.fromEntries(loginVariables.map(name => [name, 'stale'])) });
+  await launchSession(request(), { ...resumePorts(), env: present ? Object.fromEntries(loginVariables.map(name => [name, 'current'])) : {} });
+  expect(loginVariables.filter(name => launches[0].env[name] !== (present ? 'current' : undefined))).toEqual([]);
+});
+
+it('does not replay a custom variable pointing at the old tty', async () => {
+  await record({ ...launch([]), variables: { CUSTOM_TTY: '/dev/ttys003', OTHER_TTY: '/dev/pts/2', KEEP_PATH: '/dev/null' } });
+  await launchSession(request(), { ...resumePorts(), env: { CUSTOM_TTY: '/dev/ttys004' } });
+  expect(launches[0].env.CUSTOM_TTY).toBe('/dev/ttys004');
+  expect(launches[0].env.OTHER_TTY).toBeUndefined();
+  expect(launches[0].env.KEEP_PATH).toBe('/dev/null');
+});

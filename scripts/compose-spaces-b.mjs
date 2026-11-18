@@ -29,7 +29,9 @@ const versions = ['0.1.13', '0.1.16'];
 const agents = JSON.parse(readFileSync(new URL('./spaces-b-fragments/agents.json', import.meta.url), 'utf8'));
 const records = { version: 1, versions: Object.fromEntries(versions.map(version => {
   const { agents: agentAdditions = [], ...fragments } = JSON.parse(readFileSync(new URL(`./spaces-b-fragments/${version}.json`, import.meta.url), 'utf8'));
-  return [version, { ...fragments, agents: [...agents, ...agentAdditions] }];
+  const combined = [...agents, ...agentAdditions];
+  assert.equal(new Set(combined.map(fragment => fragment.id)).size, combined.length, `Duplicate agent fragment id in ${version}`);
+  return [version, { ...fragments, agents: combined }];
 })) };
 records.checks = {};
 for (const version of versions) {

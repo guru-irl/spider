@@ -1,8 +1,9 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { Disposable } from '../contracts.js';
 import { generateRoleTemplates, resolveTemplateRolePolicy, TEMPLATE_ROLES, type ModelRegistryPort, type GlobalRolePolicyLayers, type RoleTemplateOptions } from './generate.js';
-import { join } from 'node:path';
+import { globalHerdrTemplatePaths } from './paths.js';
 import { readFile } from 'node:fs/promises';
+export { globalHerdrTemplatePaths };
 export interface TemplatePorts {
   /** Supply modelDefaultLayers(cwd).global from the host's normal config parser. */
   globalModelDefaultLayers(): GlobalRolePolicyLayers | Promise<GlobalRolePolicyLayers>;
@@ -14,10 +15,6 @@ export interface TemplatePorts {
 }
 export type TemplateReadPorts = Omit<TemplatePorts, 'writeVerifiedFile'>;
 export interface GlobalTemplateFile { path: string; content: string }
-/** All files activation may rewrite, including roles currently disabled by policy. */
-export function globalHerdrTemplatePaths(ports: Pick<TemplateReadPorts, 'templateDirectory'> & { roleTemplateOptions: Pick<RoleTemplateOptions, 'instructionPaths'> }): string[] {
-  return TEMPLATE_ROLES.flatMap(role => [ports.roleTemplateOptions.instructionPaths[role], join(ports.templateDirectory, `spider-${role}.md`)]);
-}
 const warningSets = new WeakMap<TemplateReadPorts, Set<string>>();
 /** Setup and activation consume the same normal-parser global policy and rendering path. */
 export async function readGlobalHerdrTemplateFiles(ports: TemplateReadPorts, options: { strict?: boolean } = {}): Promise<GlobalTemplateFile[]> {

@@ -14,7 +14,7 @@ import type { RuntimeDirectoryProbe } from '../remote/runtime.js';
 import { planModStorage } from './mod-storage.js';
 import { collectCheckpointBlobs, assertSetupNotUndoing, beginRunCheckpoint, finishRunCheckpoint, readCheckpoint, pendingCheckpointBaselines, recordRemoteWrite, recordCheckpointIntents, recordCheckpointEffects, recordCheckpointWrites, undoUpgrade, includeRegistryCheckpoint, completeDanglingCheckpoint, supersedeCheckpoint, checkpointBaseline, checkpointBytes, type UpgradeCheckpoint, type UpgradeUndoResult } from './checkpoint.js';
 
-import { globalHerdrTemplatePaths } from '../templates/register.js';
+import { globalHerdrTemplatePaths } from '../templates/paths.js';
 
 function runtimeTemplatePaths(request: SetupRequest): string[] {
   const instructions = join(request.config.globalRoot, 'herdr/instructions');

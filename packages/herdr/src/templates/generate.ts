@@ -4,8 +4,8 @@ import { HerdrError } from '../client/parse.js';
 import { isAbsolute } from 'node:path';
 import roleTemplate from '../../assets/templates/role.md?raw';
 import roleInstructions from '../../assets/templates/role-instructions.md?raw';
-export const TEMPLATE_ROLES = ['worker', 'reviewer', 'watcher'] as const;
-export type TemplateRole = typeof TEMPLATE_ROLES[number];
+import { TEMPLATE_ROLES, type TemplateRole } from './paths.js';
+export { TEMPLATE_ROLES, type TemplateRole };
 export interface RegistryModel { provider: string; id: string; reasoning?: boolean; input?: readonly string[]; contextWindow?: number }
 export interface ModelRegistryPort { getAll(): readonly RegistryModel[]; getAvailable(): readonly RegistryModel[]; find(provider: string, id: string): RegistryModel | undefined }
 export type RolePolicy = Readonly<Record<TemplateRole, { model: string; thinking: ThinkingLevel }>>;

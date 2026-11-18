@@ -94,6 +94,7 @@ function fakeSystem() {
     readdirSync(name: string) {
       if (name === unitDir) return [...entries.keys()].filter(file => posix.dirname(file) === unitDir).map(file => posix.basename(file));
       if (name === socketDir) return ["default.sock"];
+      if (name === "/run/user/1000/systemd/transient") return [...entries.keys()].filter(file => posix.dirname(file) === name).map(file => posix.basename(file));
       throw new Error("missing fixture directory");
     },
     statfsSync(name: string) { filesystems.push(name); return { bavail: 2_000_000_000n, bsize: 1n }; },
@@ -101,7 +102,13 @@ function fakeSystem() {
   const os = { homedir: () => home, platform: () => "linux", release: () => "6.8.0" };
   const spawnSync = (command: string, args: string[], options: { stdio: unknown; maxBuffer: number }) => {
     calls.push([command, ...args]); commandIO.push({ command, args, stdio: options.stdio });
-    const result = commands.get([command, ...args].join(" ")) ?? { status: 1 };
+    let result = commands.get([command, ...args].join(" "));
+    if (!result && command === "systemctl" && args[1] === "show" && args[2] === "--property=Transient,FragmentPath,MainPID") {
+      const unit = args[3], persistent = entries.has(`${unitDir}/${unit}`);
+      const main = commands.get(`systemctl --user show --property=MainPID --value ${unit}`);
+      if (persistent) result = { status: main?.status ?? 0, stdout: `Transient=no\nFragmentPath=${unitDir}/${unit}\nMainPID=${main?.stdout?.trim() ?? "4321"}\n` };
+    }
+    result ??= { status: 1 };
     return Buffer.byteLength(result.stdout ?? "") > options.maxBuffer ? { status: null } : result;
   };
   const native = { ready: true, opens: 0, closes: 0, entry: nativeEntry };
@@ -368,6 +375,48 @@ it("refuses configured files beneath a symlinked parent", () => {
   expect(system.reads).not.toContain(auth);
   expect(JSON.stringify(reply)).not.toContain("/outside/private");
 }, 5000);
+
+const transientUnit = "hc-serve-0a1b2c3d.service", transientDirectory = "/run/user/1000/systemd/transient";
+const transientShow = (unit = transientUnit) => `systemctl --user show --property=Transient,FragmentPath,MainPID ${unit}`;
+function transientSystem() {
+  const system = fakeSystem();
+  system.entries.delete("/home/fixture/.config/systemd/user/herdr-core.service");
+  system.entries.set("/run/user/1000/systemd", { kind: "directory" });
+  system.entries.set(transientDirectory, { kind: "directory" });
+  system.entries.set(`${transientDirectory}/${transientUnit}`, { kind: "file" });
+  system.commands.set(transientShow(), { status: 0, stdout: `Transient=yes\nFragmentPath=${transientDirectory}/${transientUnit}\nMainPID=4321\n` });
+  return system;
+}
+
+it.each([false, true])("accepts an owned transient core unit (explicit=%s)", explicit => {
+  const system = transientSystem();
+  if (explicit) system.setInput({ pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, checks: [], coreUnit: transientUnit });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT)).toMatchObject({ value: { core: { unit: transientUnit, transient: true, unitExists: true, unitOwned: true } } });
+});
+
+it.each(["foreign file", "symlink", "wrong PID", "outside fragment", "persistent flag", "unsafe directory"])("does not accept a transient core with %s", condition => {
+  const system = transientSystem(), file = `${transientDirectory}/${transientUnit}`;
+  if (condition === "foreign file") system.entries.set(file, { kind: "file", uid: 2000 });
+  if (condition === "symlink") system.entries.set(file, { kind: "symlink", target: "/outside/unit" });
+  if (condition === "unsafe directory") system.entries.set(transientDirectory, { kind: "directory", uid: 2000 });
+  const fragment = condition === "outside fragment" ? `/home/fixture/${transientUnit}` : file;
+  const pid = condition === "wrong PID" ? 5432 : 4321;
+  const transient = condition === "persistent flag" ? "no" : "yes";
+  system.commands.set(transientShow(), { status: 0, stdout: `Transient=${transient}\nFragmentPath=${fragment}\nMainPID=${pid}\n` });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT)).toEqual({ version: 1, kind: "inventory", error: "peer-core-unit-required" });
+});
+
+it.each([
+  "Transient=yes\nTransient=no\nFragmentPath=/unexpected\nMainPID=4321\n",
+  `Transient=yes\nFragmentPath=${transientDirectory}/${transientUnit}\nMainPID=4321\nMainPID=5432\n`,
+  `Transient=maybe\nFragmentPath=${transientDirectory}/${transientUnit}\nMainPID=4321\n`,
+  `Transient=yes\nFragmentPath=${transientDirectory}/${transientUnit}\nMainPID=4321\nOther=yes\n`,
+  "Transient=yes\nMainPID=4321\n",
+  `Transient=yes\nFragmentPath=${transientDirectory}/${transientUnit}\nMainPID=NaN\n`,
+])("fails closed on malformed or conflicting unit properties %j", stdout => {
+  const system = transientSystem(); system.commands.set(transientShow(), { status: 0, stdout });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT)).toEqual({ version: 1, kind: "inventory", error: "bootstrap-probe-failed" });
+});
 
 it("discovers only the hc service whose main PID is the configured core", () => {
   const system = fakeSystem(), dir = "/home/fixture/.config/systemd/user";

@@ -34,20 +34,28 @@ export function captureLaunch(program: string, argv: readonly string[], cwd: str
   return recordedLaunch({ program: resolve(program), argv, cwd, variables: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)) });
 }
 
-const CURRENT_VARIABLES = new Set([
+export const CURRENT_LAUNCH_VARIABLES: { readonly names: readonly string[]; readonly prefixes: readonly string[] } = { names: [
   'TERM_SESSION_ID', 'SHLVL', 'PWD', 'OLDPWD', '_', 'SSH_AUTH_SOCK', 'TMPDIR', 'SECURITYSESSIONID', 'LaunchInstanceID',
   'TERM', 'COLORTERM', 'PI_SESSION_ID', 'PI_SESSION_FILE', 'PI_PROVIDER', 'PI_MODEL', 'PI_REASONING_LEVEL',
   'PI_INTERCOM_SESSION_ID', 'SPIDER_TOOL_NAME', 'SPIDER_PARAMETERS',
   'TERMINFO', 'TERMINFO_DIRS', 'SSH_AGENT_PID', 'SSH_CONNECTION', 'SSH_CLIENT', 'SSH_TTY',
   'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS', 'DISPLAY', 'WAYLAND_DISPLAY',
   'TMUX', 'TMUX_PANE', 'STY', 'WINDOW', 'WINDOWID', 'ITERM_SESSION_ID', 'WT_SESSION', 'WEZTERM_PANE',
-]);
+  'GPG_TTY', 'GIT_ASKPASS', 'SSH_ASKPASS', 'NVIM', 'NVIM_LISTEN_ADDRESS',
+  'XAUTHORITY', 'KRB5CCNAME', 'SESSION_MANAGER', 'XDG_SEAT', 'XDG_VTNR',
+  'INVOCATION_ID', 'JOURNAL_STREAM', 'MANAGERPID', 'SYSTEMD_EXEC_PID', 'NOTIFY_SOCKET', 'LISTEN_PID', 'LISTEN_FDS', 'LISTEN_FDNAMES',
+  'GNOME_KEYRING_CONTROL', 'GPG_AGENT_INFO', 'TERM_FEATURES', 'TERMINAL_EMULATOR', 'VTE_VERSION', 'VTE_SHELL_PID',
+  'PI_INTERCOM_SCOPE_ID',
+], prefixes: [
+  'HC_', 'HERDR_', 'XPC_', '__CF', 'TERM_PROGRAM', 'PI_SPIDER_', 'PI_SUBAGENT_', 'SPIDER_HERDR_', 'SPIDER_VIEWER_',
+  'VSCODE_', 'KITTY_', 'ALACRITTY_', 'WEZTERM_', 'ZELLIJ', 'XDG_SESSION_', 'LC_TERMINAL', 'ITERM_', 'KONSOLE_', 'GNOME_TERMINAL_',
+] };
 /** Keep process and terminal identities current, but replay configuration, including credentials and stable IDs. */
 export function currentLaunchVariable(name: string): boolean {
-  return CURRENT_VARIABLES.has(name) || /^(?:HC_|HERDR_|XPC_|__CF|TERM_PROGRAM|PI_SPIDER_|PI_SUBAGENT_|SPIDER_HERDR_|SPIDER_VIEWER_)/.test(name);
+  return CURRENT_LAUNCH_VARIABLES.names.includes(name) || CURRENT_LAUNCH_VARIABLES.prefixes.some(prefix => name.startsWith(prefix));
 }
 export function replayLaunchVariables(current: Readonly<NodeJS.ProcessEnv>, launch: RecordedLaunch): NodeJS.ProcessEnv {
-  const variables = Object.entries(launch.variables).filter(([name]) => !currentLaunchVariable(name));
+  const variables = Object.entries(launch.variables).filter(([name, value]) => !currentLaunchVariable(name) && !/^\/dev\/(?:tty|pts\/)/.test(value));
   return { ...current, ...Object.fromEntries(variables) };
 }
 

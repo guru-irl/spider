@@ -114,7 +114,7 @@ The file's `agentDirectory` must be the pi agent directory that your shell uses:
 6. On the first run, setup opens each configured session in its space and focuses the first space. It prints `Setup verified` with the number of file writes and visible probes.
 7. Run the printed doctor command to check the result.
 
-If setup fails, it keeps its journal and prints a rollback command. When an upgrade checkpoint exists, the command undoes that upgrade:
+If setup fails after it records work, it keeps its journal and prints a rollback command. When an upgrade checkpoint exists, the command undoes that upgrade:
 
 ```text
 Rollback: <node> <installed-package>/dist/herdr/cli.mjs rollback --undo-upgrade --config <absolute-config-file>

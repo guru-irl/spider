@@ -34,13 +34,13 @@ import { invokeCli as invokeCoreCli } from "@spider/herdr/client/cli-transport";
 import { HerdrError, parseCore } from "@spider/herdr/client/parse";
 import { requireCoreAvailable } from "@spider/herdr/client/liveness";
 
-import { readSupervisorCorePin, type SupervisorCorePin } from "./enrollment";
+import { readSupervisorCorePin, supervisorCoreEnvironment, type SupervisorCorePin } from "./enrollment";
 export interface SupervisorCore {
   pin: SupervisorCorePin; identity: import("@spider/herdr").CoreIdentity; pid: number; env: Readonly<NodeJS.ProcessEnv>;
 }
 function coreReply(value: unknown, pin: SupervisorCorePin, env: Readonly<NodeJS.ProcessEnv>) {
   const identity = parseCore(value, env);
-  if (identity.coreId !== pin.coreId) throw new HerdrError("core-changed", "The enrolled core identity has changed; hosting refused");
+  if (identity.coreId !== pin.coreId) throw new HerdrError("core-pin-changed", "The enrolled core identity has changed; stop hosting and run spider roam provision <machine> --replace-core-pin on the hub");
   const pid = (value as { pid?: unknown }).pid;
   if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) throw new HerdrError("core-unavailable", "Core process identity is unavailable");
   return { identity, pid };
@@ -48,30 +48,34 @@ function coreReply(value: unknown, pin: SupervisorCorePin, env: Readonly<NodeJS.
 /** This is the only supervisor call allowed to start a stopped core. */
 export async function ensureSupervisorCore(pin: SupervisorCorePin, base: Readonly<NodeJS.ProcessEnv>): Promise<SupervisorCore> {
   for (const file of [pin.socket, pin.stateHome, pin.configHome]) assertTestConfigPath(file);
-  const env = Object.freeze({ ...base, HC_SOCKET: pin.socket, HC_SESSION: pin.sessionNamespace, XDG_STATE_HOME: pin.stateHome, XDG_CONFIG_HOME: pin.configHome });
-  const reply = await invokeCoreCli(pin.binary, ["server", "start", "--json"], env, 64 * 1024);
+  const env = supervisorCoreEnvironment(pin, base);
+  await invokeCoreCli(pin.binary, ["server", "start", "--json"], env, 64 * 1024);
+  const reply = await invokeCoreCli(pin.binary, ["server", "status", "--json"], env, 64 * 1024);
   return { pin, env, ...coreReply(reply, pin, env) };
+}
+class CoreProcessReplaced extends HerdrError {
+  constructor() { super("core-lost", "The hosting core process was replaced"); }
 }
 /** Do not let a health check auto-start a core after hosting has lost it. */
 export async function assertSupervisorCoreCurrent(core: SupervisorCore, signal?: AbortSignal): Promise<void> {
   try {
     await requireCoreAvailable(core.env, signal);
     const reply = await invokeCoreCli(core.pin.binary, ["server", "status", "--json"], core.env, 64 * 1024, undefined, { signal });
-    if (coreReply(reply, core.pin, core.env).pid !== core.pid) throw new HerdrError("core-lost", "The hosting core process was replaced");
+    if (coreReply(reply, core.pin, core.env).pid !== core.pid) throw new CoreProcessReplaced();
   } catch (error) {
-    if (error instanceof HerdrError && error.code === "core-changed") throw error;
+    if (error instanceof CoreProcessReplaced || error instanceof HerdrError && error.code === "core-pin-changed") throw error;
     throw new HerdrError("core-lost", "The hosting core was lost; the supervisor must restart");
   }
 }
 
 const supervisorClock: Clock = { now: () => Date.now(), later(ms, fn) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
-type CoreLoss = "core-lost" | "core-changed";
+type CoreLoss = "core-lost" | "core-pin-changed";
 export interface CoreBoundSupervisor { stop(): Promise<void>; failed: Promise<CoreLoss> }
 /** Startup may ensure the core; monitoring may only observe it and retire hosting. */
 export async function startCoreBoundSupervisor(pin: SupervisorCorePin, env: Readonly<NodeJS.ProcessEnv>,
   startHosting: (core: SupervisorCore) => Promise<{ stop(): Promise<void> }>, clock: Clock = supervisorClock): Promise<CoreBoundSupervisor> {
   const core = await ensureSupervisorCore(pin, env), hosting = await startHosting(core);
-  let closed = false, cancel: (() => void) | undefined, checking: Promise<void> | undefined, stopping: Promise<void> | undefined;
+  let closed = false, failures = 0, cancel: (() => void) | undefined, checking: Promise<void> | undefined, stopping: Promise<void> | undefined;
   const controller = new AbortController();
   let failed!: (reason: CoreLoss) => void;
   const failure = new Promise<CoreLoss>(done => { failed = done; });
@@ -82,10 +86,11 @@ export async function startCoreBoundSupervisor(pin: SupervisorCorePin, env: Read
   function schedule(): void {
     cancel = clock.later(10_000, () => {
       checking = (async () => {
-        try { await assertSupervisorCoreCurrent(core, controller.signal); }
+        try { await assertSupervisorCoreCurrent(core, controller.signal); failures = 0; }
         catch (error) {
-          if (!closed) {
-            const reason: CoreLoss = error instanceof HerdrError && error.code === "core-changed" ? "core-changed" : "core-lost";
+          const changed = error instanceof HerdrError && error.code === "core-pin-changed";
+          if (!closed && (changed || error instanceof CoreProcessReplaced || ++failures >= 3)) {
+            const reason: CoreLoss = changed ? "core-pin-changed" : "core-lost";
             void stop().then(() => failed(reason), () => failed(reason));
           }
         } finally { if (!closed) schedule(); }

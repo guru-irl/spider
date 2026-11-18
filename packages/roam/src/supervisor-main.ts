@@ -31,7 +31,7 @@ export async function main(argv: readonly string[], io: { out(text: string): voi
     return 0;
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? error.code : null;
-    const reason = typeof code === "string" && ["core-changed", "core-lost", "core-unavailable", "core-pin-required", "core-pin-invalid", "core-pin-conflict"].includes(code) ? code : RUNNING_INTENT_SOURCE_UNAVAILABLE;
+    const reason = typeof code === "string" && ["core-changed", "core-lost", "core-unavailable", "core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-busy", "missing-hc"].includes(code) ? code : RUNNING_INTENT_SOURCE_UNAVAILABLE;
     io.err(`Hosting is unavailable (${reason}). Run spider roam doctor.\n`);
     return 1;
   }

@@ -193,7 +193,9 @@ an unavailable observation never authorizes clearing a fence.
 Production hosting stays disabled until phase 4 acceptance succeeds. Provisioning
 installs only the supervisor service and leaves the running core and its terminals
 unchanged. The supervisor is enabled under `default.target`, with
-`Restart=on-failure` and a private umask. It has no `After=`, `Requires=`, or
+`Restart=on-failure`, `RestartSec=10s`, `StartLimitIntervalSec=0`, and a private
+umask. Persistent startup failures therefore retry without a start-rate lockout.
+The unit has no `After=`, `Requires=`, or
 `PartOf=` dependency on the core unit.
 
 Enrollment saves the peer's absolute `core` executable, core identity, socket,
@@ -228,10 +230,27 @@ their SHA-256 hashes. Repeat the same operation ID and options after a lost repl
 Ordinary provisioning never replaces a conflicting pin. A changed identity is
 `core-pin-changed`; changed pin settings are `core-pin-conflict`.
 
+After `server start`, the supervisor takes its baseline PID from the first
+`server status` reply. Both commands use the pin's environment without inherited
+`HC_TERMINAL_*`, `HC_SCOPE`, or other per-terminal hc settings.
+
 While running, the supervisor checks core availability and process identity
-every ten seconds. Core loss stops hosting and exits with a diagnostic so
-systemd can restart the supervisor and ensure the core again. The hub's enable
-switch controls hub scheduling, not box hosting.
+every ten seconds. Three consecutive unavailable checks stop hosting and exit
+with a diagnostic so systemd can restart the supervisor and ensure the core
+again. A successful check clears the failure count. A confirmed PID or core
+identity change stops hosting immediately.
+
+The supervisor restarts a stopped pinned core, so `hc server stop` does not stay
+stopped while hosting runs. First run
+`systemctl --user stop spider-roam-supervisor.service` on the box to stop
+hosting, then stop the core. The hub's enable switch controls hub scheduling,
+not the systemd supervisor's restart policy.
+
+Doctor blocks hosting for a missing, unsafe, unreadable, or changed pin. A
+missing pin requires reprovisioning. A changed identity requires the explicit
+replacement procedure above. An unreachable pinned core is a warning because
+the supervisor starts it. Doctor reports the core unit as information, not as a
+hosting prerequisite.
 
 Authentication is never copied by default. Copying selected Pi credentials
 requires explicit consent for each target and provider. A missing Pi sign-in

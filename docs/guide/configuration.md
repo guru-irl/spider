@@ -20,13 +20,14 @@ spider control command:"config" op:"unset" key:"memory.reviewer.model" scope:"re
 
 Roaming uses a separate `<global-root>/roam/config.json`. Its top-level
 `coreUnit` describes that machine, not every destination. A hub peer's optional
-`coreUnit` names the existing systemd user unit on that destination. For example,
+`coreUnit` records diagnostic systemd unit metadata on that destination. It does
+not create a dependency or choose the core the supervisor starts. For example,
 these fields belong in the existing peer entry for `box-1.invalid`:
 
 ```json
 {
 	"alias": "box-1.invalid",
-	"coreUnit": "hc-serve-0a1b2c3d.service"
+	"coreUnit": "herdr-core.service"
 }
 ```
 
@@ -35,9 +36,13 @@ a unit whose main PID matches the peer's configured `core` and verifies the
 core identity. Discovery includes `hc-serve-<hex>.service` names. Zero matches
 return `peer-core-unit-required`. Several matches return
 `peer-core-unit-ambiguous`. Set the peer's `coreUnit` to resolve either refusal.
-The destination retains the unit ownership and safe-directory checks.
-See [Roaming replication](../architecture/roaming.md) for provisioning and
-supervisor dependencies.
+Discovery verifies unit ownership and safe directories. Transient unit names
+can change after a core restart, so do not treat them as persistent service names.
+A missing recorded unit does not block provisioning when the core socket is
+owned by the user. Startup trusts the enrolled executable, identity, socket,
+namespace, and XDG directories in private `roam/core.json`, not the unit name.
+See [Roaming replication](../architecture/roaming.md#box-hosting-and-recovery)
+for startup behavior and explicit core-pin replacement.
 
 ## Results and unset behavior
 

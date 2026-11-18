@@ -14,11 +14,11 @@ import { beginRunCheckpoint, recordCheckpointWrites, readCheckpoint, finishRunCh
 
 vi.mock('node:fs/promises', async importOriginal => {
   const actual = await importOriginal<typeof fs>();
-  return { ...actual, rename: vi.fn(actual.rename), unlink: vi.fn(actual.unlink) };
+  return { ...actual, rename: vi.fn(actual.rename), link: vi.fn(actual.link), unlink: vi.fn(actual.unlink) };
 });
 const real = await vi.importActual<typeof fs>('node:fs/promises');
 import { roots, oldKeys, installedLayout, nativeLayout, put, values, fixture, metadataRepeat } from './setup-checkpoint-fixture.js';
-afterEach(async () => { vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.unlink).mockImplementation(real.unlink); for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
+afterEach(async () => { vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link); vi.mocked(fs.unlink).mockImplementation(real.unlink); for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
 
 test('undo restores the first failed-attempt checkpoint after a successful retry, including legacy files and registry', async () => {
   const f = await fixture(); f.fail(true);
@@ -492,4 +492,40 @@ test('I4 endpoint and cutover side effects have durable intents before writing',
     return cutover(request, context);
   };
   await setupHerdr(f.request, f.parts);
+});
+
+
+test('N3 keyed layout nodes retain resize edits and remove only upgrade entries', async () => {
+  const f = await fixture(), stage = f.parts.stageLook;
+  const before = { generation: 1, children: [{ id: 'existing', content: { mod: 'spider-example' }, size: 200 }] };
+  await put(f.paths.layout, JSON.stringify(before));
+  const journal = await readJournal(f.request.journalRoot); journal.entries.find(entry => entry.path === f.paths.layout)!.after = (await snapshot(f.paths.layout)).hash!; await saveJournal(f.request.journalRoot, journal);
+  const after = { generation: 2, children: [...before.children, { id: 'toast', content: { mod: 'spider-toast' }, size: 20 }] };
+  f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(JSON.stringify(after)) } : file);
+  await setupHerdr(f.request, f.parts);
+  await put(f.paths.layout, JSON.stringify({ ...after, children: [{ ...after.children[0], size: 300 }, after.children[1], { id: 'user', size: 400 }] }));
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(JSON.parse(await fs.readFile(f.paths.layout, 'utf8'))).toEqual({ generation: 1, children: [{ ...before.children[0], size: 300 }, { id: 'user', size: 400 }] });
+});
+
+
+test('N2 a layout-only repeat retains runtime edits captured before the repeat', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  await put(f.paths.layout, '{"content":[],"generation":2,"userSize":321}');
+  const stage = f.parts.stageLook;
+  f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from('{"content":[],"generation":3}') } : file);
+  await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(JSON.parse(await fs.readFile(f.paths.layout, 'utf8'))).toEqual({ content: [], generation: 1, userSize: 321 });
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+});
+
+
+test('N5 failed checkpoint publication discards unreferenced captured blobs', async () => {
+  const f = await fixture();
+  const fail = (operation: typeof real.rename) => async (from: Parameters<typeof real.rename>[0], to: Parameters<typeof real.rename>[1]) => { if (to === join(f.request.journalRoot, 'checkpoint.json')) throw new Error('checkpoint unavailable'); return operation(from, to); };
+  vi.mocked(fs.rename).mockImplementation(fail(real.rename)); vi.mocked(fs.link).mockImplementation(fail(real.link));
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('checkpoint unavailable');
+  vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link);
+  expect((await fs.readdir(join(f.request.journalRoot, 'backups'))).filter(name => name.startsWith('checkpoint-'))).toEqual([]);
 });

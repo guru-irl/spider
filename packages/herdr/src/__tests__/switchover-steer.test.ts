@@ -62,7 +62,7 @@ it.each([false, true])('keeps the held turn open through delayed dispatch, after
   }
   let queued = false;
   const conversation: string[] = [];
-  const released = waitForOwnedSteer(f.target, f.limit, async () => true).then(() => {
+  const released = waitForOwnedSteer(f.target, f.limit).then(() => {
     if (queued) {
       f.out({ type: 'queue_update', steering: [], followUp: [] });
       conversation.push(f.target.message);
@@ -97,7 +97,7 @@ it.each([
   const f = await fixture();
   f.record(event, runId);
   let released = false;
-  const pending = waitForOwnedSteer(f.target, f.limit, async () => true).then(() => { released = true; });
+  const pending = waitForOwnedSteer(f.target, f.limit).then(() => { released = true; });
   const outcome = pending.then(() => undefined, error => error);
   await vi.advanceTimersByTimeAsync(100);
   expect(released).toBe(false);
@@ -106,4 +106,19 @@ it.each([
   f.controller.abort();
   expect(await outcome).toBeUndefined();
   expect(released).toBe(true);
+});
+
+it('does not release for a matching queue that was subsequently cleared', async () => {
+  const f = await fixture();
+  f.record({ type: 'queue_update', steering: [f.target.message], followUp: [] });
+  f.record({ type: 'queue_update', steering: [], followUp: [] });
+  let released = false;
+  const pending = waitForOwnedSteer(f.target, f.limit).then(() => { released = true; });
+  const outcome = pending.then(() => undefined, error => error);
+  await vi.advanceTimersByTimeAsync(100);
+  expect(released).toBe(false);
+  f.controller.abort();
+  await vi.advanceTimersByTimeAsync(100);
+  expect(await outcome).toMatchObject({ code: 'wait-aborted' });
+  expect(released).toBe(false);
 });

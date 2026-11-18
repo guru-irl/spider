@@ -616,7 +616,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     currentSession: ctx => ({ ...processIdentity, sessionFile: (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.() ?? null, sessionName: pi.getSessionName?.() ?? null, kind: 'top-level', hcAddress: owner?.terminal.address ?? null }), owner: () => owner,
     coreStartedAt: () => epoch,
     launchEnvironment: { agentDirectory: resolve(getAgentDir()), extensionArguments: explicitExtensionArguments(process.argv) }, env: process.env,
-    captureLaunch: () => captureLaunch(process.argv[1] ?? process.execPath, process.argv.slice(2), process.cwd(), process.env),
+    captureLaunch: () => captureLaunch(process.argv[1] ?? process.execPath, process.argv.slice(2), process.cwd(), process.env, process.release.name === 'node' ? { execPath: process.execPath, execArgv: process.execArgv } : undefined),
     warn: message => {
       if (context?.hasUI && context.ui?.notify) context.ui.notify(message, 'warning');
       else process.stderr.write(message + '\n');

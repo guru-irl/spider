@@ -280,6 +280,7 @@ test('N1 minimal: setup → settings → bookkeeping → undo', () => model(['se
 test('N2 minimal: setup → remote → undo', () => model(['setup', 'remote', 'undo'], false));
 test('N6 minimal: setup → undo → full rollback', () => model(['setup', 'undo', 'rollback'], false));
 test('N2 minimal: failed join → killed retry → undo retains the original layout', () => model(['setup', 'cutover-crash', 'batch-crash', 'undo'], false));
+test('N4 minimal: setup → shell → interrupted undo → shell → undo', () => model(['setup', 'shell', 'undo-crash', 'shell', 'undo'], false));
 for (const seed of seeds) {
   const next = random(seed);
   for (let sequence = 0; sequence < 32; sequence++) {

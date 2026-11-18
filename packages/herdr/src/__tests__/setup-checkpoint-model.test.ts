@@ -38,6 +38,50 @@ async function blobs(f: Awaited<ReturnType<typeof fixture>>) {
   for (const name of names) expect((await fs.stat(join(directory, name))).mode & 0o777).toBe(0o600);
 }
 
+/** Translate only directory identities in the probe copy, including saved journals. */
+async function probeCopy(original: string, root: string, journalRoot: string) {
+  const identities = new Map<string, { dev: number; ino: number }>();
+  const walk = async (relative = '') => {
+    const before = await fs.stat(join(original, relative)), after = await fs.stat(join(root, relative));
+    identities.set(`${before.dev}:${before.ino}`, { dev: after.dev, ino: after.ino });
+    for (const entry of await fs.readdir(join(original, relative), { withFileTypes: true })) if (entry.isDirectory()) await walk(join(relative, entry.name));
+  };
+  await walk();
+  const translate = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return;
+    if (Array.isArray(value)) { value.forEach(translate); return; }
+    const row = value as Record<string, unknown>;
+    if (typeof row.dev === 'number' && typeof row.ino === 'number') Object.assign(row, identities.get(`${row.dev}:${row.ino}`) ?? {});
+    Object.values(row).forEach(translate);
+  };
+  const path = join(journalRoot, 'checkpoint.json'), checkpoint = await readCheckpoint(journalRoot);
+  if (!checkpoint) return;
+  translate(checkpoint);
+  const active = !['undone', 'superseded'].includes(checkpoint.state);
+  const journals = new Map<string, string>();
+  const rewrite = (bytes: Buffer) => { const value: unknown = JSON.parse(bytes.toString()); translate(value); return Buffer.from(JSON.stringify(value) + '\n'); };
+  for (const run of active ? checkpoint.runs : []) for (const file of [...run.before, ...run.after ?? [], ...run.written, ...run.planned]) {
+    if (file.path !== join(journalRoot, 'journal.json') || !file.hash) continue;
+    const saved = file.hash;
+    if (!journals.has(saved)) {
+      const bytes = rewrite(await fs.readFile(join(journalRoot, 'backups', 'checkpoint-' + saved)));
+      const hash = digest(bytes); await put(join(journalRoot, 'backups', 'checkpoint-' + hash), bytes.toString()); journals.set(saved, hash);
+    }
+    file.hash = journals.get(saved)!;
+  }
+  if (active && checkpoint.undo) for (const file of [...checkpoint.undo.expected, ...checkpoint.undo.targets]) if (file.path === join(journalRoot, 'journal.json') && file.hash) {
+    const saved = file.hash;
+    if (!journals.has(saved)) {
+      const bytes = rewrite(await fs.readFile(join(journalRoot, 'backups', 'checkpoint-' + saved)));
+      const hash = digest(bytes); await put(join(journalRoot, 'backups', 'checkpoint-' + hash), bytes.toString()); journals.set(saved, hash);
+    }
+    file.hash = journals.get(saved)!;
+  }
+  const journal = await snapshot(join(journalRoot, 'journal.json'));
+  if (journal.bytes) await fs.writeFile(join(journalRoot, 'journal.json'), rewrite(journal.bytes));
+  await put(path, JSON.stringify(checkpoint));
+}
+
 /** Each prefix is checked on disk, then restored at the same absolute paths. */
 async function model(steps: readonly Step[], checkPrefixes = true) {
   const f = await fixture(), root = f.request.packageRoot;
@@ -110,17 +154,33 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
     if (checkPrefixes) await blobs(f);
     return true;
   };
+  const warnings: string[] = []; f.parts.warn = message => warnings.push(message);
   const probe = async () => {
-    const copy = root + '-probe';
-    await fs.cp(root, copy, { recursive: true, preserveTimestamps: true });
+    const original = root + '-original', identity = await fs.stat(root);
+    await real.rename(root, original);
     try {
+      await fs.cp(original, root, { recursive: true, preserveTimestamps: true });
+      await probeCopy(original, root, f.request.journalRoot);
       const undone = await attemptUndo();
-      if (undone && !shellEdit && !settingsEdit && !keysEdit && !templateEdit && !move && !appEdit) {
+      if (undone) {
+        const start = warnings.length;
         await rollbackHerdr(f.request, f.parts);
         expect((await snapshot(f.paths.registry)).hash, 'full rollback after undo removes the registry').toBeNull();
+        const retained = (await readJournal(f.request.journalRoot)).entries;
+        const kept: { path: string; bytes: Buffer; mode: number }[] = [];
+        for (const entry of retained) {
+          expect(warnings.slice(start).some(message => message.includes(entry.path)), 'retained paths have a named repair').toBe(true);
+          const current = await snapshot(entry.path);
+          expect(current.bytes).not.toBeNull();
+          const path = entry.path + '.kept'; await real.rename(entry.path, path);
+          kept.push({ path, bytes: current.bytes!, mode: current.mode });
+        }
+        if (retained.length) await rollbackHerdr(f.request, f.parts);
         expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+        for (const file of kept) { expect(await fs.readFile(file.path)).toEqual(file.bytes); expect((await fs.stat(file.path)).mode & 0o777).toBe(file.mode); }
       }
-    } finally { await fs.rm(root, { recursive: true, force: true }); await real.rename(copy, root); }
+    } finally { await fs.rm(root, { recursive: true, force: true }); await real.rename(original, root); }
+    expect((await fs.stat(root)).ino, 'probing never changes the original directory identity').toBe(identity.ino);
   };
   const interrupted = async (work: () => Promise<unknown>, matches: (target: string) => boolean, after: boolean) => {
     let fired = false;

@@ -378,3 +378,17 @@ it("does not claim safe auth or core ownership for foreign or symlinked files", 
   expect(value.core).toMatchObject({ unitExists: true, unitOwned: false, socketExists: true, socketOwned: false });
   expect(JSON.stringify(value)).not.toContain("/outside/private");
 }, 5000);
+
+
+it("inspects only the configured destination sign-in metadata", () => {
+  const system = fakeSystem(), agentDir = "/home/fixture/install/agent", file = `${agentDir}/auth.json`;
+  for (const dir of ["/home/fixture/install", agentDir]) system.entries.set(dir, { kind: "directory" });
+  system.entries.set(file, { kind: "file", mode: 0o600, content: ["destination", "credential"].join("-") });
+  system.setInput({ pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, coreUnit: null, checks: [], agentDir });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT)).toMatchObject({ value: { auth: { pi: { present: true, readable: true, modeSafe: true } } } });
+  system.entries.set(file, { kind: "file", mode: 0o644 });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT).value.auth.pi.modeSafe).toBe(false);
+  system.entries.delete(file);
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT).value.auth.pi.present).toBe(false);
+  expect(system.reads).not.toContain(file); expect(system.opens.map(row => row.name)).not.toContain(file);
+}, 5000);

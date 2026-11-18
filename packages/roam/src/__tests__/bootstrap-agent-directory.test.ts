@@ -117,3 +117,27 @@ it("fails closed if the user-manager environment cannot be read", () => {
   const f = fixture();
   expect(f.run(undefined, "", true).reply.value).toBe("unknown");
 }, 5000);
+
+
+it("verifies destination sign-in by metadata without reading credential contents", () => {
+  const f = fixture(), agentDir = join(f.home, "agent"), globalRoot = join(f.home, "state"), prefix = join(f.home, "prefix");
+  for (const dir of [agentDir, join(globalRoot, "roam"), join(prefix, "bin")]) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const machineId = "00000000-0000-4000-8000-000000000002", auth = join(agentDir, "auth.json"), audit = join(f.root, "auth-read");
+  writeFileSync(join(globalRoot, "roam", "machine.json"), JSON.stringify({ machineId }), { mode: 0o600 });
+  writeFileSync(auth, "contents must not be inspected", { mode: 0o600 });
+  const hook = join(f.root, "guard.mjs");
+  writeFileSync(hook, `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+const original=fs.openSync; fs.openSync=function(file,...args){if(file===${JSON.stringify(auth)}){fs.writeFileSync(${JSON.stringify(audit)},'read');throw new Error('auth-read-forbidden');}return original(file,...args);};syncBuiltinESMExports();`);
+  const run = () => {
+    const request = { action: "verify", operationId: "metadata-only", machineId, home: f.home, agentDir, globalRoot, npmPrefix: prefix,
+      unitDir: join(f.home, ".config/systemd/user"), cli: join(prefix, "lib/package/dist/roam/cli.mjs"), pi: join(prefix, "bin/pi"),
+      providers: [], files: [], maximum: 1024 * 1024, chunkBytes: 1024 };
+    const child = spawnSync(process.execPath, ["--import", hook, "--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
+      input: JSON.stringify(request), cwd: f.home, env: { ...process.env, HOME: f.home }, encoding: "utf8", timeout: 3000,
+    });
+    expect(child.status).toBe(0); return JSON.parse(child.stdout);
+  };
+  expect(run()).toMatchObject({ value: { piSignedIn: true } }); expect(existsSync(audit)).toBe(false);
+  chmodSync(auth, 0o644);
+  expect(run()).toMatchObject({ value: { piSignedIn: false } }); expect(existsSync(audit)).toBe(false);
+}, 5000);

@@ -664,3 +664,22 @@ it("requires every readiness check before declaring hosting ready", async () => 
   const blocked = await provision!(f.request("legacy"), f.ports);
   expect(blocked).toMatchObject({ code: 0, value: { hostingReady: false } });
 }, 5000);
+
+
+it.each(["missing", "unsafe", "ready"] as const)("checks destination sign-in metadata before effects: %s", async status => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.value.auth.pi = { present: status !== "missing", readable: status !== "missing", modeSafe: status === "ready" };
+  const request = { ...f.request("destination-auth"), requireDestinationAuth: true };
+  const result = await provision!(request, f.ports);
+  expect(result).toMatchObject(status === "ready" ? { code: 0 } : { code: 1, reason: status === "missing" ? "destination-auth-missing" : "destination-auth-unsafe" });
+  expect(f.events.includes("identity")).toBe(status === "ready");
+  expect(f.events).not.toContain("auth-stage"); expect(f.events).not.toContain("auth-install");
+}, 5000);
+
+it("accepts an explicitly configured private agent directory", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  const agentDir = "/home/fixture/install/agent";
+  f.ports.destination.agentDir = agentDir;
+  expect(await provision!({ ...f.request("explicit-agent"), peer: { ...bootstrapPeer, agentDir } }, f.ports)).toMatchObject({ code: 0 });
+  expect(f.events).toContain("files");
+}, 5000);

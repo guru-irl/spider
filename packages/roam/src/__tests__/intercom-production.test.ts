@@ -75,7 +75,7 @@ it("the operator CLI refuses noninteractive approval and displays the exact grap
   expect(err).toContain("peer-consent-required");
 }, 5000);
 
-it("names an exhausted local snapshot failure after successful retry fence observations", async () => {
+it("names unpublished local WAL frames after successful retry fence observations", async () => {
   const f = fixture(true), graph = cliGraph(f), original = f.transport.transport.exec;
   let retrying = false;
   f.transport.transport.exec = async (machine, argv, options) => {
@@ -104,7 +104,7 @@ it("names an exhausted local snapshot failure after successful retry fence obser
   const beforeRetry = f.calls.length; retrying = true; err = "";
   expect(await runIntercomEnrollCli(input, io, options)).toBe(3);
   expect(f.calls.slice(beforeRetry).map(call => call.command)).toEqual(["observe-fence", "observe-fence"]);
-  expect(err).toContain("pair-1: intercom-enrollment-pending [diagnostic-snapshot-changing]");
+  expect(err).toContain("pair-1: intercom-enrollment-pending [diagnostic-snapshot-wal-unpublished]");
   expect(err).not.toContain("WAL frames");
   expect(err).not.toContain(f.root);
 }, 5000);
@@ -113,6 +113,9 @@ it.each([
   ["EACCES", "EACCES"],
   ["diagnostic-snapshot-changing", "diagnostic-snapshot-changing"],
   ["/private/fixture.key", "unknown"],
+  ["ghp_syntheticIdentifierShapedCredential1234", "unknown"],
+  ["ERR_STREAM_DESTROYED", "ERR_STREAM_DESTROYED"],
+  ["SQLITE_BUSY", "SQLITE_BUSY"],
 ])("reports only a safe helper error code on retry: %s", async (code, expected) => {
   const f = fixture(true), graph = cliGraph(f), original = f.transport.transport.exec;
   let retrying = false;
@@ -155,6 +158,21 @@ it("explains an unverified listener key to the operator", async () => {
   expect(err).toContain("intercom-ssh-host-unverified");
   expect(err).toContain("The key presented on the pair's port is not one of this machine's system host keys");
   expect(err).toContain("Check the SSH listener and its system host keys");
+}, 5000);
+
+it.each(["host-key-changed", "revocation-pending", "fresh-peer-consent-required"])("does not append a cause code to the precise operator reason %s", async reason => {
+  const f = fixture(true), graph = cliGraph(f), original = f.transport.transport.exec;
+  f.transport.transport.exec = async (machine, argv, options) => {
+    const input = JSON.parse(options.stdin.toString());
+    if (input.action === "ensure-key") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: false,
+      machineId: machine.machineId, reason, cause: { code: "EACCES", message: "private details" } }));
+    return original(machine, argv, options);
+  };
+  const { runIntercomEnrollCli } = await import("../intercom-cli"); let err = "";
+  expect(await runIntercomEnrollCli({ root: f.root, graphFile: graph, operationId: "production-1" }, { out() {}, err: text => { err += text; } },
+    { transport: f.transport as never, journal: f.journal, tty: true, ask: async () => "approve" })).toBe(3);
+  expect(err).toContain(`pair-1: ${reason}\n`);
+  expect(err).not.toContain("[");
 }, 5000);
 
 it("reports connector-not-pair-scoped before creating any credentials or routes", async () => {

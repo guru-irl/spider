@@ -44,6 +44,10 @@ else if (args[1] === 'tab.close') {
     for (const space of doc.spaces) space.tabs = space.tabs.filter(tab => tab.id !== id);
     writeFileSync(path, JSON.stringify(doc)); console.log('{}');
   }
+} else if (args[1] === 'pane.close') {
+  const pane = args[args.indexOf('--pane') + 1];
+  for (const space of doc.spaces) for (const tab of space.tabs) tab.terminals = tab.terminals.filter(row => row.pane !== pane);
+  writeFileSync(path, JSON.stringify(doc)); console.log('{}');
 } else throw new Error('Unexpected app write ' + args[1]);
 `);
   await writeFile(binary, `#!/bin/sh\nexec '${process.execPath}' '${script}' "$@"\n`, { mode: 0o700 });
@@ -96,4 +100,24 @@ test('a foreign pane is left alone by adoption and blocks rollback without closi
   const parts = await f.ports.setupParts(f.request);
   await expect(parts.rollback({ terminals: ['terminal-0', 'terminal-1', 'terminal-2'] as never, identities: {} })).rejects.toMatchObject({ code: 'cutover-owner-conflict', message: expect.stringMatching(/Group[\s\S]*foreign-terminal[\s\S]*move or close/i) });
   expect(JSON.parse(await readFile(f.closes, 'utf8'))).toEqual([]);
+});
+
+
+test('upgrade undo removes only a new pane and keeps the pre-upgrade shared tab', async () => {
+  const f = await mergedFixture(), spaces = f.ports.spacePorts(f.request);
+  const parts = await f.ports.setupParts(f.request), beforeClose = vi.fn(async () => {});
+  await parts.rollback({ terminals: ['terminal-0', 'terminal-1', 'terminal-2'] as never, identities: {} }, {
+    preserve: { terminals: ['terminal-0', 'terminal-1'] as never, identities: {} }, beforeClose,
+  });
+  expect(JSON.parse(await readFile(f.closes, 'utf8'))).toEqual([]);
+  expect(JSON.parse(await readFile(f.layoutPath, 'utf8')).spaces[0].tabs[0].terminals.map((row: { terminal: string }) => row.terminal)).toEqual(['terminal-0', 'terminal-1']);
+  expect((await readCutoverRecovery(spaces.journalRoot)).entries.map(entry => entry.placement.terminal)).toEqual(['terminal-0', 'terminal-1']);
+  expect(beforeClose).toHaveBeenCalledTimes(1);
+});
+
+test('an owner-close checkpoint failure happens before any app teardown', async () => {
+  const f = await mergedFixture(), parts = await f.ports.setupParts(f.request);
+  await expect(parts.rollback({ terminals: ['terminal-0', 'terminal-1', 'terminal-2'] as never, identities: {} }, { beforeClose: async () => { throw new Error('checkpoint unavailable'); } })).rejects.toThrow('checkpoint unavailable');
+  expect(JSON.parse(await readFile(f.closes, 'utf8'))).toEqual([]);
+  expect(JSON.parse(await readFile(f.layoutPath, 'utf8')).spaces[0].tabs[0].terminals).toHaveLength(3);
 });

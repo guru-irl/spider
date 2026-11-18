@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Gurupungav Narayanan
+import * as fs from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { afterEach, expect, test, vi } from 'vitest';
+import { HerdrError } from '../client/parse.js';
+import { digest, readJournal, saveJournal, snapshot } from '../setup/backup.js';
+import { readCheckpoint } from '../setup/checkpoint.js';
+import { doctorHerdr } from '../setup/doctor.js';
+import { rollbackHerdr, setupHerdr, undoHerdrUpgrade } from '../setup/installer.js';
+import { fixture, metadataRepeat, put, roots, values } from './setup-checkpoint-fixture.js';
+
+vi.mock('node:fs/promises', async original => {
+  const actual = await original<typeof fs>();
+  return { ...actual, rename: vi.fn(actual.rename), link: vi.fn(actual.link) };
+});
+const real = await vi.importActual<typeof fs>('node:fs/promises');
+afterEach(async () => {
+  vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link);
+  for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true });
+});
+
+type Step = 'setup' | 'replace' | 'fail-retry' | 'bookkeeping' | 'remote' | 'layout-only' | 'shell' | 'keys' | 'settings' | 'pi' | 'app' | 'template' | 'move' | 'journal-crash' | 'batch-crash' | 'cutover-crash' | 'undo-crash' | 'pi-during-undo' | 'doctor' | 'undo' | 'undo-replace' | 'rollback';
+const commands: readonly Step[] = ['setup', 'replace', 'fail-retry', 'bookkeeping', 'remote', 'layout-only', 'shell', 'keys', 'settings', 'pi', 'app', 'template', 'move', 'journal-crash', 'batch-crash', 'cutover-crash', 'undo-crash', 'pi-during-undo', 'doctor', 'undo', 'undo-replace', 'rollback'];
+const seeds = [1, 17, 182, 116, 4093, 65537, 0x12345678, 0xdeadbeef];
+function random(seed: number) { let state = seed >>> 0; return () => { state ^= state << 13; state ^= state >>> 17; state ^= state << 5; return state >>> 0; }; }
+
+async function blobs(f: Awaited<ReturnType<typeof fixture>>) {
+  const cp = await readCheckpoint(f.request.journalRoot), active = cp && !['undone', 'superseded'].includes(cp.state);
+  const references = new Set<string>();
+  if (active) for (const run of cp.runs) for (const file of [...run.before, ...run.after ?? [], ...run.planned, ...run.written]) if (file.hash) references.add(file.hash);
+  if (active && cp.undo) for (const file of [...cp.undo.expected, ...cp.undo.targets]) if (file.hash) references.add(file.hash);
+  const directory = join(f.request.journalRoot, 'backups');
+  const names = (await fs.readdir(directory)).filter(name => name.startsWith('checkpoint-'));
+  expect(names.every(name => references.has(name.slice('checkpoint-'.length))), 'only restorable blobs are retained').toBe(true);
+  expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
+  for (const name of names) expect((await fs.stat(join(directory, name))).mode & 0o777).toBe(0o600);
+}
+
+/** Each prefix is checked on disk, then restored at the same absolute paths. */
+async function model(steps: readonly Step[], checkPrefixes = true) {
+  const f = await fixture(), root = f.request.packageRoot;
+  let baseline = await values([f.paths.main]);
+  let shellEdit = false, settingsEdit = false, keysEdit = false, move = false, templateEdit = false;
+  const shell = f.request.config.shellRc;
+  await put(shell, 'alias original=true\n');
+  f.parts.installResume = async () => {
+    const current = await snapshot(shell), text = current.bytes?.toString() ?? '';
+    return [{ path: shell, expected: current.hash, bytes: Buffer.from(text.includes('# spider:resume:start') ? text : text + '# spider:resume:start\nsetup hook\n# spider:resume:end\n'), managed: { kind: 'resume' } }];
+  };
+  const attemptUndo = async (replaceChanged = false) => {
+    try { await undoHerdrUpgrade({ ...f.request, replaceChanged }, f.parts); }
+    catch (error) {
+      expect(error).toBeInstanceOf(HerdrError);
+      const e = error as HerdrError;
+      if (e.code === 'upgrade-checkpoint-missing') return false;
+      if (e.code === 'upgrade-checkpoint-bookkeeping-only') { expect(await values([f.paths.main]), 'an installed upgrade still needs its baseline').toEqual(baseline); return false; }
+      expect(['upgrade-checkpoint-changed', 'upgrade-undo-interrupted']).toContain(e.code);
+      if (e.code === 'upgrade-checkpoint-changed') expect(e.message).toMatch(/\/(?:[^\s]+) /);
+      await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
+    }
+    expect(await values([f.paths.main])).toEqual(baseline);
+    if (shellEdit) expect(await fs.readFile(shell, 'utf8')).toContain('alias user=true');
+    if (settingsEdit) expect(JSON.parse(await fs.readFile(f.paths.settings, 'utf8')).user).toBe('keep');
+    if (keysEdit) expect(JSON.parse(await fs.readFile(f.paths.keys, 'utf8')).global['ctrl-z']).toBe('user.action');
+    if (move) expect(await fs.readFile(f.paths.spaces, 'utf8')).toContain('moved');
+    if (templateEdit) expect(await fs.readFile(f.paths.added, 'utf8')).toBe('runtime instructions');
+    const layout = (await snapshot(f.paths.layout)).bytes?.toString() ?? '';
+    const names = [...layout.matchAll(/spider-[a-z-]+/g)].map(match => match[0]);
+    for (const name of names) expect((await snapshot(join(f.request.config.app.home, 'mods', name, 'mod.json'))).hash, `layout reference ${name}`).not.toBeNull();
+    if (checkPrefixes) await blobs(f);
+    return true;
+  };
+  const probe = async () => {
+    const copy = root + '-probe';
+    await fs.cp(root, copy, { recursive: true, preserveTimestamps: true });
+    try {
+      const undone = await attemptUndo();
+      if (undone && !shellEdit && !settingsEdit && !keysEdit && !templateEdit && !move) {
+        await rollbackHerdr(f.request, f.parts);
+        expect((await snapshot(f.paths.registry)).hash, 'full rollback after undo removes the registry').toBeNull();
+        expect((await readJournal(f.request.journalRoot)).entries).toEqual([]);
+      }
+    } finally { await fs.rm(root, { recursive: true, force: true }); await real.rename(copy, root); }
+  };
+  const interrupted = async (work: () => Promise<unknown>, matches: (target: string) => boolean, after: boolean) => {
+    let fired = false;
+    const hook = (operation: typeof real.rename) => async (from: Parameters<typeof real.rename>[0], to: Parameters<typeof real.rename>[1]) => {
+      const hit = matches(String(to));
+      if (hit && !after) { fired = true; throw new Error('model crash'); }
+      await operation(from, to);
+      if (hit) { fired = true; throw new Error('model crash'); }
+    };
+    vi.mocked(fs.rename).mockImplementation(hook(real.rename)); vi.mocked(fs.link).mockImplementation(hook(real.link));
+    try { await work(); } catch (error) { expect(String(error)).toContain('model crash'); }
+    finally { vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.link).mockImplementation(real.link); }
+    return fired;
+  };
+  for (let index = 0; index < steps.length; index++) {
+    const step = steps[index]!;
+    try {
+      const cp = await readCheckpoint(f.request.journalRoot);
+      const setup = async (replaceChanged = false) => {
+        if (!cp || ['undone', 'superseded'].includes(cp.state)) baseline = await values([f.paths.main]);
+        await setupHerdr({ ...f.request, replaceChanged }, f.parts);
+      };
+      switch (step) {
+        case 'setup': case 'replace': await setup(step === 'replace'); break;
+        case 'bookkeeping': await metadataRepeat(f); break;
+        case 'remote': {
+          const bytes = Buffer.from('runtime-v2'), machine = 'box-1.invalid' as import('../contracts.js').MachineName;
+          let remote: Buffer | null = null;
+          f.parts.ensureRuntime = async () => [{ machine, path: '/home/fixture/runtime.mjs', bytes, sha256: digest(bytes) }];
+          f.parts.hc = { fileRead: async () => { if (!remote) throw new HerdrError('file-not-found', 'absent'); return remote; }, fileWrite: async (_, __, bytes) => { remote = bytes; } };
+          await setup(); break;
+        }
+        case 'layout-only': {
+          const stage = f.parts.stageLook;
+          f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(JSON.stringify({ content: [], generation: 3 })) } : file);
+          await setup(); break;
+        }
+        case 'shell': shellEdit = true; await fs.appendFile(shell, 'alias user=true\n'); break;
+        case 'settings': case 'pi': settingsEdit = true; await put(f.paths.settings, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.settings, 'utf8')), user: 'keep' })); break;
+        case 'keys': { keysEdit = true; const keys = JSON.parse(await fs.readFile(f.paths.keys, 'utf8')); keys.global['ctrl-z'] = 'user.action'; await put(f.paths.keys, JSON.stringify(keys)); break; }
+        case 'app': await put(f.paths.layout, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.layout, 'utf8')), userSize: 321 })); break;
+        case 'template': templateEdit = true; await put(f.paths.added, 'runtime instructions'); break;
+        case 'move': move = true; await put(f.paths.spaces, '{"placements":["moved"]}'); break;
+        case 'fail-retry': {
+          const verify = f.parts.verify; f.parts.verify = async () => { throw new Error('model failure'); };
+          await expect(setup()).rejects.toThrow('model failure'); f.parts.verify = verify; await setup(true); break;
+        }
+        case 'journal-crash': {
+          await interrupted(() => metadataRepeat(f), target => target === join(f.request.journalRoot, 'checkpoint.json'), false); break;
+        }
+        case 'batch-crash': case 'cutover-crash': {
+          f.fail(step === 'cutover-crash');
+          if (step === 'batch-crash') await interrupted(() => setup(true), target => target === f.paths.main, true);
+          else { const journal = await readJournal(f.request.journalRoot); journal.verified = false; await saveJournal(f.request.journalRoot, journal); await expect(setup(true)).rejects.toThrow('injected cutover interruption'); }
+          f.fail(false); break;
+        }
+        case 'undo-crash': case 'pi-during-undo': {
+          if (cp && !['undone', 'superseded'].includes(cp.state)) {
+            await interrupted(() => undoHerdrUpgrade(f.request, f.parts), target => target === f.paths.main, false);
+            if (step === 'pi-during-undo') { await put(f.paths.added, 'runtime instructions'); templateEdit = true; }
+            await attemptUndo(true);
+          } break;
+        }
+        case 'doctor': expect((await doctorHerdr(f.request, { targets: async () => [], inspect: async () => ({ failures: [] }), launchHistory: async () => [], probeMachineNode: async () => 'v22.19.0' })).failures).toEqual([]); break;
+        case 'undo': case 'undo-replace': await attemptUndo(step === 'undo-replace'); break;
+        case 'rollback': if (cp?.state === 'undoing') await attemptUndo(true); await rollbackHerdr(f.request, f.parts); expect((await snapshot(f.paths.registry)).hash).toBeNull(); break;
+      }
+      if (checkPrefixes) { await blobs(f); await probe(); }
+    } catch (error) { throw new Error(`Sequence: ${steps.slice(0, index + 1).join(' → ')}\n${String(error)}`, { cause: error }); }
+  }
+}
+
+test('N1 minimal: setup → settings → bookkeeping → undo', () => model(['setup', 'settings', 'bookkeeping', 'undo'], false));
+test('N2 minimal: setup → remote → undo', () => model(['setup', 'remote', 'undo'], false));
+test('N6 minimal: setup → undo → full rollback', () => model(['setup', 'undo', 'rollback'], false));
+for (const seed of seeds) {
+  const next = random(seed);
+  for (let sequence = 0; sequence < 32; sequence++) {
+    const steps: Step[] = ['setup', ...Array.from({ length: 3 + next() % 3 }, () => commands[next() % commands.length]!)];
+    test(`model seed=${seed} sequence=${sequence}: ${steps.join(',')}`, () => model(steps));
+  }
+}

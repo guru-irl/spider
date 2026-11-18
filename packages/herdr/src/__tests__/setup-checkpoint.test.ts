@@ -17,79 +17,8 @@ vi.mock('node:fs/promises', async importOriginal => {
   return { ...actual, rename: vi.fn(actual.rename), unlink: vi.fn(actual.unlink) };
 });
 const real = await vi.importActual<typeof fs>('node:fs/promises');
-const roots: string[] = [];
+import { roots, oldKeys, installedLayout, nativeLayout, put, values, fixture, metadataRepeat } from './setup-checkpoint-fixture.js';
 afterEach(async () => { vi.mocked(fs.rename).mockImplementation(real.rename); vi.mocked(fs.unlink).mockImplementation(real.unlink); for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true }); });
-const oldKeys = { 'cmd-shift-a': 'old.a', 'cmd-shift-k': 'old.k', 'cmd-shift-m': 'old.m', 'cmd-shift-o': 'old.o', 'cmd-shift-u': 'old.u' };
-const installedLayout = '{"content":[],"generation":2}\n';
-const nativeLayout = '{"content":[{"size":320}],"generation":2}\n';
-async function put(path: string, bytes: string, mode = 0o600) {
-  await fs.mkdir(dirname(path), { recursive: true }); await fs.writeFile(path, bytes); await fs.chmod(path, mode);
-}
-async function values(paths: readonly string[]) {
-  return Promise.all(paths.map(async path => { const s = await snapshot(path); return { path, bytes: s.bytes?.toString('base64') ?? null, mode: s.bytes === null ? null : s.mode }; }));
-}
-async function fixture() {
-  const parent = resolve('.spider/scratch/checkpoint-fixtures'); await fs.mkdir(parent, { recursive: true });
-  const root = await fs.mkdtemp(join(parent, 'case-')); roots.push(root);
-  const app = join(root, 'app'), global = join(root, 'global'), agent = join(root, 'agent'), journalRoot = join(global, 'herdr/setup');
-  await fs.mkdir(global, { recursive: true });
-  const paths = { font: join(app, 'fonts/body.ttf'), theme: join(agent, 'themes/dracula-plus-glass.json'), svg: join(app, 'mods/spider-example/icon.svg'),
-    main: join(app, 'mods/spider-example/main.js'), manifest: join(app, 'mods/spider-example/mod.json'), layout: join(app, 'layouts/spider-glass.json'),
-    keys: join(app, 'keys.json'), settings: join(agent, 'settings.json'), appSettings: join(app, 'settings.json'), notes: join(root, 'core/config.toml'),
-    spaces: join(global, 'herdr/spaces/spaces.json'), registry: join(global, 'herdr/installation.json'), journal: join(journalRoot, 'journal.json'),
-    added: join(global, 'herdr/instructions/worker.md') };
-  const request: SetupRequest = { config: parseHerdrConfig({ app: { binary: '/usr/bin/true', home: app }, core: { binary: '/usr/bin/true', config: paths.notes },
-    agentDirectory: agent, globalRoot: global, shellRc: join(root, 'shellrc'), spaces: [], machines: [] }), configPath: join(global, 'herdr/config.json'), packageRoot: root, journalRoot };
-  await put(paths.keys, '{\n "terminal": {"ctrl-v":"terminal.paste_image"}, "global": {}\n}\n', 0o644);
-  await put(paths.settings, '{ "theme": "dracula", "keep": true }\n', 0o640);
-  await put(paths.notes, 'notes = true\n', 0o640);
-  const legacy = await readJournal(journalRoot);
-  const originalSettings = await snapshot(paths.settings), originalKeys = await snapshot(paths.keys), originalNotes = await snapshot(paths.notes);
-  const old: InstallFile[] = [
-    { path: paths.font, bytes: Buffer.from('old-font'), expected: null, mode: 0o640 },
-    { path: paths.theme, bytes: Buffer.from('old-theme'), expected: null },
-    { path: paths.svg, bytes: Buffer.from('<svg/>'), expected: null },
-    { path: paths.main, bytes: Buffer.from('old-main'), expected: null },
-    { path: paths.manifest, bytes: Buffer.from('{"place":"none"}'), expected: null },
-    { path: paths.layout, bytes: Buffer.from('{"content":[],"generation":1}\n'), expected: null, mode: 0o644 },
-    { path: paths.settings, bytes: Buffer.from('{ "theme": "dracula-plus-glass", "keep": true }\n'), expected: originalSettings.hash, managed: { kind: 'json', fields: ['theme'] } },
-    { path: paths.keys, bytes: mergeTerminalKeys(originalKeys.bytes, oldKeys, {}, true), expected: originalKeys.hash, terminalKeys: oldKeys, managed: { kind: 'json', section: 'terminal', fields: Object.keys(oldKeys) } },
-    { path: paths.notes, bytes: Buffer.from('notes = false\n'), expected: originalNotes.hash, managed: { kind: 'notes' } },
-  ];
-  await prepareBackups(journalRoot, old, legacy); await applyFiles(journalRoot, old, legacy);
-  await put(paths.appSettings, '{"layout":"spider-glass","theme":"spider-glass"}\n', 0o644);
-  await put(paths.spaces, '{"version":1,"spaces":["existing"],"placements":["old"]}\n', 0o640);
-  await put(paths.registry, '{ "version": 1, "packageRoot": "/home/fixture" }\n', 0o600);
-  legacy.verified = true; legacy.fingerprint = 'legacy'; legacy.cutover = { terminals: [], identities: { old: 'owner-1' } };
-  await saveJournal(journalRoot, legacy);
-  // Include non-default writable bits: undo must not lose mode bits to umask.
-  await fs.chmod(paths.main, 0o664);
-  const all = Object.values(paths), before = await values(all);
-  let fail = false, ownerLive = false, verificationFails = false;
-  const installed = async (path: string, bytes: string, context: { installed: Readonly<Record<string, string>> }): Promise<InstallFile> => ({ path, bytes: Buffer.from(bytes), expected: context.installed[path] ?? null });
-  const parts: SetupParts = {
-    preflight: async () => ({ fingerprint: 'assets-2', coreIdentity: { coreId: 'core-1' as import('../contracts.js').CoreId, socket: join(root, 'core.sock'), sessionNamespace: 'fixture' }, mods: [{ directory: dirname(paths.main) }], targets: [], retiredTerminals: [], layoutExport: true,
-      recoveredCutover: { terminals: [], identities: { old: 'owner-1' } }, cutoverActions: ['Update fixture'] }),
-    stageLook: async (_, context) => [await installed(paths.font, 'old-font', context), await installed(paths.theme, 'old-theme', context), await installed(paths.layout, installedLayout, context)],
-    installFiles: async (_, context) => [await installed(paths.svg, '<svg/>', context), await installed(paths.main, 'new-main', context), await installed(paths.manifest, '{"place":"none"}', context),
-      { path: paths.keys, bytes: Buffer.alloc(0), expected: (await snapshot(paths.keys)).hash, keys: { terminal: oldKeys, global: { 'cmd-x': 'new.action' } }, collision: 'key' }],
-    generateTemplates: async (_, context) => [await installed(paths.added, 'new instructions', context)], installResume: async () => [],
-    probeMachineNode: async () => 'v22.19.0', ensureRuntime: async () => [], bootstrapRuntime: async () => {},
-    hc: { fileRead: async () => Buffer.alloc(0), fileWrite: async () => {} },
-    paneEndpointPlan: async () => ({ paths: [paths.registry], changed: (await snapshot(paths.registry)).bytes?.toString('utf8') !== '{"version":1,"packageRoot":"/home/fixture","endpoint":{"protocol":1}}\n' }),
-    stagePaneEndpoint: async () => { const next = '{"version":1,"packageRoot":"/home/fixture","endpoint":{"protocol":1}}\n'; if ((await snapshot(paths.registry)).bytes?.toString('utf8') === next) return []; await put(paths.registry, next); return [paths.registry]; },
-    cutover: async () => {
-      await put(paths.spaces, '{"version":2,"spaces":["new"],"placements":["new"]}\n');
-      if (fail) { await put(paths.layout, nativeLayout, 0o644); throw new Error('injected cutover interruption'); }
-      return { terminals: [], identities: { new: 'owner-2' } };
-    },
-    verify: async () => ({ failures: verificationFails ? [{ item: 'layout', code: 'fixture-failure', message: 'not ready', repair: 'retry' }] : [], warnings: [], probes: [] }),
-    rollback: async () => { if (ownerLive) throw new HerdrError('cutover-owner-live', 'owner live'); await put(paths.spaces, '{"version":2,"spaces":[]}\n'); },
-    warn: () => {},
-  };
-  const undoExpected = before.map(file => file.path === paths.spaces ? { ...file, bytes: Buffer.from('{"version":2,"spaces":[]}\n').toString('base64'), mode: 0o600 } : file);
-  return { request, parts, paths, all, before, undoExpected, fail: (value: boolean) => { fail = value; }, live: (value: boolean) => { ownerLive = value; }, badDoctor: () => { verificationFails = true; } };
-}
 
 test('undo restores the first failed-attempt checkpoint after a successful retry, including legacy files and registry', async () => {
   const f = await fixture(); f.fail(true);
@@ -231,14 +160,6 @@ test('the CLI exposes undo-upgrade and retains liveness refusals even with repla
 });
 
 
-async function metadataRepeat(f: Awaited<ReturnType<typeof fixture>>) {
-  const preflight = f.parts.preflight;
-  f.parts.preflight = async request => ({ ...await preflight(request), recoveredCutover: (await readJournal(request.journalRoot)).cutover!, cutoverActions: [] });
-  const journal = await readJournal(f.request.journalRoot);
-  delete journal.cutoverFingerprint;
-  await saveJournal(f.request.journalRoot, journal);
-  await setupHerdr(f.request, f.parts);
-}
 
 test('a metadata-only repeat retains the completed upgrade baseline', async () => {
   const f = await fixture(); await setupHerdr(f.request, f.parts);
@@ -484,4 +405,91 @@ test('full rollback removes a valid endpoint registry from an installation witho
   expect((await snapshot(f.paths.registry)).hash).not.toBeNull();
   await rollbackHerdr(f.request, f.parts);
   expect((await snapshot(f.paths.registry)).hash).toBeNull();
+});
+
+
+test('N3 layout undo removes new mod references while retaining unrelated layout edits', async () => {
+  const f = await fixture(), stage = f.parts.stageLook;
+  f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from('{"content":[],"generation":2,"toast":"spider-toast"}') } : file);
+  await setupHerdr(f.request, f.parts);
+  await put(f.paths.layout, '{"content":[],"generation":2,"toast":"spider-toast","userSize":321}');
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(JSON.parse(await fs.readFile(f.paths.layout, 'utf8'))).toEqual({ content: [], generation: 1, userSize: 321 });
+});
+
+test('N3 runtime store copies do not block undo or lose runtime edits', async () => {
+ for (const changed of [false, true]) {
+  const f = await fixture();
+  const { modStoreFileName } = await import('../setup/mod-storage.js');
+  const oldLayout = JSON.stringify({ content: [{ mod: 'spider-example', props: { version: 1 } }], generation: 1 });
+  const newLayout = JSON.stringify({ content: [{ mod: 'spider-example', props: { version: 2 } }], generation: 2 });
+  await put(f.paths.layout, oldLayout);
+  const journal = await readJournal(f.request.journalRoot); journal.entries.find(entry => entry.path === f.paths.layout)!.after = digest(Buffer.from(oldLayout)); await saveJournal(f.request.journalRoot, journal);
+  const source = join(f.request.config.app.home, 'data/spider-example', modStoreFileName({ version: 1 }));
+  const copied = join(f.request.config.app.home, 'data/spider-example', modStoreFileName({ version: 2 }));
+  await put(source, '{"selection":"old"}');
+  const stage = f.parts.stageLook;
+  f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(newLayout) } : file);
+  const warnings: string[] = []; f.parts.warn = message => warnings.push(message);
+  await setupHerdr(f.request, f.parts);
+  if (changed) await put(copied, '{"selection":"runtime"}');
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect((await snapshot(copied)).bytes?.toString() ?? null).toBe(changed ? '{"selection":"runtime"}' : null);
+  expect(await fs.readFile(source, 'utf8')).toBe('{"selection":"old"}');
+  if (changed) expect(warnings.join(' ')).toContain(copied);
+ }
+});
+
+test('N4 a journal save before its checkpoint observation cannot wedge undo', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => { if (to === f.paths.main) throw new Error('stop restore'); return real.rename(from, to); });
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toThrow('stop restore');
+  vi.mocked(fs.rename).mockImplementation(real.rename);
+  await fs.appendFile(f.paths.journal, '\n');
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.main, 'utf8')).toBe('old-main');
+});
+
+test('N4 runtime instructions rewritten during interrupted undo survive its retry', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  vi.mocked(fs.rename).mockImplementation(async (from, to) => { if (to === f.paths.main) throw new Error('stop restore'); return real.rename(from, to); });
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toThrow('stop restore');
+  vi.mocked(fs.rename).mockImplementation(real.rename);
+  await put(f.paths.added, 'runtime instructions');
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await fs.readFile(f.paths.added, 'utf8')).toBe('runtime instructions');
+});
+
+test('N5 superseded and completed undo checkpoints discard their blobs', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const backup = join(f.request.journalRoot, 'backups');
+  const names = async () => (await fs.readdir(backup)).filter(name => name.startsWith('checkpoint-'));
+  const previous = await names(); expect(previous.length).toBeGreaterThan(0);
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(await names()).toEqual([]);
+  await setupHerdr(f.request, f.parts); await rollbackHerdr(f.request, f.parts);
+  expect(await names()).toEqual([]);
+});
+
+test('N5 checkpoint blobs stay private under permissive existing backup permissions', async () => {
+  const f = await fixture(), backup = join(f.request.journalRoot, 'backups');
+  await fs.chmod(backup, 0o755);
+  await setupHerdr(f.request, f.parts);
+  expect((await fs.stat(backup)).mode & 0o777).toBe(0o700);
+  for (const name of (await fs.readdir(backup)).filter(name => name.startsWith('checkpoint-'))) expect((await fs.stat(join(backup, name))).mode & 0o777).toBe(0o600);
+});
+
+test('I4 endpoint and cutover side effects have durable intents before writing', async () => {
+  const f = await fixture(), endpoint = f.parts.stagePaneEndpoint!, cutover = f.parts.cutover;
+  f.parts.stagePaneEndpoint = async request => {
+    const run = (await fs.readFile(join(request.journalRoot, 'checkpoint.json'), 'utf8'));
+    expect(JSON.parse(run).runs.at(-1).effects).toContain(f.paths.registry);
+    return endpoint(request);
+  };
+  f.parts.cutover = async (request, context) => {
+    const run = JSON.parse(await fs.readFile(join(request.journalRoot, 'checkpoint.json'), 'utf8')).runs.at(-1);
+    for (const path of [f.paths.layout, f.paths.appSettings, f.paths.spaces]) expect(run.effects).toContain(path);
+    return cutover(request, context);
+  };
+  await setupHerdr(f.request, f.parts);
 });

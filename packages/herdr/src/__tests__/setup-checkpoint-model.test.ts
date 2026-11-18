@@ -36,6 +36,7 @@ async function blobs(f: Awaited<ReturnType<typeof fixture>>) {
   expect(names.every(name => references.has(name.slice('checkpoint-'.length))), 'only restorable blobs are retained').toBe(true);
   expect((await fs.stat(directory)).mode & 0o777).toBe(0o700);
   for (const name of names) expect((await fs.stat(join(directory, name))).mode & 0o777).toBe(0o600);
+  for (const hash of references) expect((await snapshot(join(directory, 'checkpoint-' + hash))).hash).toBe(hash);
 }
 
 /** Translate only directory identities in the probe copy, including saved journals. */
@@ -91,12 +92,14 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
   let keysBaseline = JSON.parse(await fs.readFile(f.paths.keys, 'utf8'));
   let layoutBaseline: string | null = (await snapshot(f.paths.layout)).bytes?.toString() ?? null;
   let instructionBaseline: string | null = null;
+  let resumeBaseline: string | null = null;
   const rememberBaseline = async () => {
     baseline = await values(owned);
     settingsBaseline = JSON.parse(await fs.readFile(f.paths.settings, 'utf8'));
     keysBaseline = JSON.parse(await fs.readFile(f.paths.keys, 'utf8'));
     layoutBaseline = (await snapshot(f.paths.layout)).bytes?.toString() ?? null;
     instructionBaseline = (await snapshot(f.paths.added)).bytes?.toString() ?? null;
+    resumeBaseline = (await fs.readFile(f.request.config.shellRc, 'utf8')).match(/^# spider:resume:start\n[\s\S]*?^# spider:resume:end(?:\n|$)/m)?.[0] ?? null;
   };
   const preflight = f.parts.preflight;
   f.parts.preflight = async (...args) => ({ ...await preflight(...args), cutoverProvedAbsent: true });
@@ -109,7 +112,7 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
   await put(join(dirname(storeCopy), modStoreFileName({ version: 1 })), 'old store');
   const stage = f.parts.stageLook;
   f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(JSON.stringify(nextLayout)) } : file);
-  let shellEdit = false, settingsEdit = false, keysEdit = false, move = false, templateEdit = false, appEdit = false, failedAttempt = false;
+  let shellEdits = 0, settingsEdit = false, keysEdit = false, move = false, templateEdit = false, appEdit = false, failedAttempt = false;
   const cutover = f.parts.cutover;
   f.parts.cutover = async (...args) => {
     const previous = await fs.readFile(f.paths.spaces).catch(() => null);
@@ -140,7 +143,9 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
       await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
     }
     expect(await values(owned)).toEqual(baseline);
-    if (shellEdit) expect(await fs.readFile(shell, 'utf8')).toContain('alias user=true');
+    const shellBytes = await fs.readFile(shell, 'utf8'), block = /^# spider:resume:start\n[\s\S]*?^# spider:resume:end(?:\n|$)/m;
+    expect(shellBytes.replace(block, '')).toBe('alias original=true\n' + 'alias user=true\n'.repeat(shellEdits));
+    expect(shellBytes.match(block)?.[0] ?? null).toBe(resumeBaseline);
     expect(JSON.parse(await fs.readFile(f.paths.settings, 'utf8'))).toEqual({ ...settingsBaseline, ...(settingsEdit ? { user: 'keep' } : {}) });
     expect(JSON.parse(await fs.readFile(f.paths.keys, 'utf8'))).toEqual({ ...keysBaseline, global: { ...keysBaseline.global, ...(keysEdit ? { 'ctrl-z': 'user.action' } : {}) } });
     if (move) expect(await fs.readFile(f.paths.spaces, 'utf8')).toContain('moved');
@@ -232,7 +237,7 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
           f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(JSON.stringify({ ...nextLayout, generation: 3 })) } : file);
           await setup(); break;
         }
-        case 'shell': shellEdit = true; await fs.appendFile(shell, 'alias user=true\n'); break;
+        case 'shell': shellEdits++; await fs.appendFile(shell, 'alias user=true\n'); break;
         case 'settings': case 'pi': settingsEdit = true; await put(f.paths.settings, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.settings, 'utf8')), user: 'keep' })); break;
         case 'keys': { keysEdit = true; const keys = JSON.parse(await fs.readFile(f.paths.keys, 'utf8')); keys.global['ctrl-z'] = 'user.action'; await put(f.paths.keys, JSON.stringify(keys)); break; }
         case 'app': { const current = await snapshot(f.paths.layout); if (!current.bytes) break; appEdit = true; await put(f.paths.layout, JSON.stringify({ ...JSON.parse(current.bytes.toString()), userSize: 321 })); await put(storeCopy, 'runtime store'); break; }

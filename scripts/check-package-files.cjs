@@ -9,6 +9,7 @@ process.stdin.on('data', chunk => { input += chunk; }).on('end', () => {
     .filter(file => file === 'SKILL.md' || file.endsWith('/SKILL.md')).map(file => `${dir}/${file}`));
   const required = ['dist/extension.js', 'dist/extension.js.ready', 'dist/intercom/broker.mjs', 'dist/dashboard/index.html', 'dist/roam/cli.mjs', 'dist/roam/cli-main.mjs',
     'dist/roam/intercom-helper.mjs', 'dist/roam/supervisor.mjs', 'packages/herdr/assets/shared/presentations.js',
+    'packages/herdr/assets/look/native-navigation-0.1.16.json', 'packages/herdr/assets/look/native-panel-0.1.16.json', 'packages/herdr/assets/look/native-picker-0.1.16.json',
     'scripts/link.mjs', 'scripts/dev-link.mjs', 'scripts/link-roam.mjs', 'scripts/extension-shim.mjs', 'scripts/pi-agent-dir.mjs',
     'README.md', 'LICENSE', 'NOTICE.md', 'packages/context/LICENSE', 'packages/pstack/LICENSE', 'packages/intercom/LICENSE', 'packages/intercom/ORIGIN.md', 'scripts/intercom-switchover.mjs', ...skills];
   if (!files.some(file => /^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.js$/.test(file)) || !files.some(file => /^dist\/dashboard\/assets\/[\w-]+-[\w-]{8,}\.css$/.test(file))) throw new Error('dashboard JS/CSS missing');

@@ -4,6 +4,7 @@ import { createReadStream } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, stat, utimes } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Blocker } from "@spider/db-core/roam/types";
+import { isPrivateLaunchPath, PRIVATE_LAUNCH_GLOB } from "@spider/herdr/sessions/launch-path";
 import type { GitPorts, WorkspaceSnapshot } from "./contracts";
 
 interface SnapshotInput {
@@ -198,7 +199,9 @@ function entries(bytes: Buffer, tree: boolean): Entry[] {
   });
 }
 function localState(path: string): boolean {
-  return path.split("/").some(part => [".spider", ".pi-subagents"].includes(part.normalize("NFD").toLowerCase()));
+  const normalized = path.normalize("NFD").toLowerCase();
+  return normalized.split("/").some(part => [".spider", ".pi-subagents"].includes(part)) ||
+    isPrivateLaunchPath(normalized);
 }
 async function validateEntries(ports: GitPorts, root: string, list: readonly Entry[]): Promise<void> {
   const names = new Map<string, string>();
@@ -631,7 +634,8 @@ export async function snapshotWorkspace(input: SnapshotInput, ports: GitPorts): 
     // A fresh copy's mtime hides Git's racy-index entries. Make it older than
     // the source index so Git checks their bytes instead of trusting their stat cache.
     await utimes(working, sourceIndexTime.atime, new Date(sourceIndexTime.mtimeMs - 1000));
-    const exclusions = [":(exclude,glob)**/.spider", ":(exclude,glob)**/.spider/**", ":(exclude,glob)**/.pi-subagents", ":(exclude,glob)**/.pi-subagents/**"];
+    const exclusions = [":(exclude,glob)**/.spider", ":(exclude,glob)**/.spider/**", ":(exclude,glob)**/.pi-subagents", ":(exclude,glob)**/.pi-subagents/**",
+      `:(exclude,glob,icase)${PRIVATE_LAUNCH_GLOB}`, `:(exclude,glob,icase)${PRIVATE_LAUNCH_GLOB}/**`];
     const realPrivateDir = await realpath(privateDir);
     if (inside(root, realPrivateDir)) exclusions.push(`:(top,exclude,literal)${relative(root, realPrivateDir).split(sep).join("/")}`);
     await git(ports, root, ["add", "--sparse", "-A", "--", ".", ...exclusions], { env });

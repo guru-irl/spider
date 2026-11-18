@@ -36,6 +36,7 @@ import { createViewerLauncher, registerHerdrViewers } from '@spider/herdr/viewer
 import { hasLiveMappedAncestor, registerHerdrSessions } from '@spider/herdr/sessions/register';
 import { runtimeInstallPath, standardHerdrConfigPath as installedHerdrConfigPath } from '@spider/herdr/setup/installer';
 import { createTerminalRegistry } from '@spider/herdr/sessions/registry';
+import { captureLaunch } from '@spider/herdr/sessions/launch-environment';
 import { moveOwnedSession } from '@spider/herdr/spaces/move';
 import { openOwnedSession } from '@spider/herdr/spaces/open';
 import { createPanePlacementStore } from '../../../herdr/src/panes/store.js';
@@ -615,6 +616,7 @@ export function mountHerdr(pi: ExtensionAPI, options: HostHerdrOptions): HerdrMo
     currentSession: ctx => ({ ...processIdentity, sessionFile: (ctx as Partial<ExtensionContext> | undefined)?.sessionManager?.getSessionFile?.() ?? null, sessionName: pi.getSessionName?.() ?? null, kind: 'top-level', hcAddress: owner?.terminal.address ?? null }), owner: () => owner,
     coreStartedAt: () => epoch,
     launchEnvironment: { agentDirectory: resolve(getAgentDir()), extensionArguments: explicitExtensionArguments(process.argv) }, env: process.env,
+    captureLaunch: () => captureLaunch(process.argv[1] ?? process.execPath, process.argv.slice(2), process.cwd(), process.env),
     warn: message => {
       if (context?.hasUI && context.ui?.notify) context.ui.notify(message, 'warning');
       else process.stderr.write(message + '\n');

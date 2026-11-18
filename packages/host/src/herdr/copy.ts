@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 import { constants as fileFlags } from 'node:fs';
-import { open, unlink } from 'node:fs/promises';
+import { open, realpath, unlink } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { posix } from 'node:path';
 import type { HcClient, HerdrConfig, RemoteCopyRequest, RemoteCopyResult, RemoteExecutionPort } from '@spider/herdr';
 import { HerdrError } from '@spider/herdr/client/parse';
+import { isPrivateLaunchPath } from '@spider/herdr/sessions/launch-path';
 import { resolveMachine } from './machine.js';
 import { deferCopyCleanup, retryCopyCleanups } from './copy-cleanup.js';
 
@@ -41,6 +42,8 @@ async function localSource(path: string): Promise<{ bytes: Buffer; mode: number 
 export function withRemoteCopy(remote: RemoteExecutionPort, hc: HcClient, configured: () => HerdrConfig['machines'], cleanupRoot: () => string): RemoteExecutionPort {
   return { ...remote, async copy(request: RemoteCopyRequest): Promise<RemoteCopyResult> {
     cancelled(request.signal);
+    const sourcePath = request.direction === 'to' ? await realpath(request.local) : posix.normalize(request.remote);
+    if (isPrivateLaunchPath(sourcePath)) throw new HerdrError('private-launch-copy', 'Private launch records never leave their machine');
     const selected = await resolveMachine(hc, configured(), request.on);
     const remoteRoot = selected.machine.runtime.directory;
     try { await retryCopyCleanups(hc, selected.on, remoteRoot, cleanupRoot()); } catch { /* Retry later; do not fail a new copy. */ }
@@ -77,7 +80,7 @@ export function withRemoteCopy(remote: RemoteExecutionPort, hc: HcClient, config
         const copied = metadata(JSON.parse(await run(script, request.signal)));
         return copiedResult = { direction: 'to', machine: selected.on, source: request.local, destination: request.remote, bytes: copied.bytes, mode: copied.mode, sha256: copied.sha256 };
       }
-      const script = `const fs=require('node:fs'),crypto=require('node:crypto'),path=require('node:path');const stage=${literal(stage)},source=${literal(request.remote)};const stat=fs.statSync(source);if(!stat.isFile()||stat.size>${MAX_BYTES})throw Error('Source must be a regular file no larger than 64 MiB');const data=fs.readFileSync(source);if(data.length>${MAX_BYTES})throw Error('Source is too large');const parts=Math.ceil(data.length/${CHUNK_BYTES});for(let i=0;i<parts;i++)fs.writeFileSync(path.join(stage,'chunk-'+i),data.subarray(i*${CHUNK_BYTES},(i+1)*${CHUNK_BYTES}).toString('base64'),{mode:0o600});console.log(JSON.stringify({bytes:data.length,mode:stat.mode&0o7777,sha256:crypto.createHash('sha256').update(data).digest('hex'),parts}));`;
+      const script = `const fs=require('node:fs'),crypto=require('node:crypto'),path=require('node:path');const stage=${literal(stage)},source=${literal(request.remote)};const privateLaunchPath=${isPrivateLaunchPath.toString()};if(privateLaunchPath(fs.realpathSync(source)))throw Error('Private launch records never leave their machine');const stat=fs.statSync(source);if(!stat.isFile()||stat.size>${MAX_BYTES})throw Error('Source must be a regular file no larger than 64 MiB');const data=fs.readFileSync(source);if(data.length>${MAX_BYTES})throw Error('Source is too large');const parts=Math.ceil(data.length/${CHUNK_BYTES});for(let i=0;i<parts;i++)fs.writeFileSync(path.join(stage,'chunk-'+i),data.subarray(i*${CHUNK_BYTES},(i+1)*${CHUNK_BYTES}).toString('base64'),{mode:0o600});console.log(JSON.stringify({bytes:data.length,mode:stat.mode&0o7777,sha256:crypto.createHash('sha256').update(data).digest('hex'),parts}));`;
       const info = metadata(JSON.parse(await run(script, request.signal)));
       const file = await open(request.local, 'wx', 0o600); let complete = false;
       try {

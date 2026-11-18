@@ -5,13 +5,14 @@ import { open, readdir, unlink } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import type { TerminalIdentity, SessionId } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
-import { terminalIdentityKey, terminalSafeText, privateDirectory, refuseExplicitExtensions, withProcessLock, type TerminalRegistry, type LaunchEnvironment } from './registry.js';
+import { terminalIdentityKey, terminalSafeText, privateDirectory, readRecordedLaunch, refuseExplicitExtensions, withProcessLock, type TerminalRegistry, type LaunchEnvironment } from './registry.js';
+import { replayLaunchArgv, shellQuote } from './launch-environment.js';
+export { shellQuote } from './launch-environment.js';
 import { recordedSessionLiveness, type ProcessInventoryPorts } from './lease.js';
 import { readSessionHeader } from './launcher.js';
 export interface ResumeHookOptions { nodePath: string; cliPath: string; configPath: string; hookPath: string; existingRc?: string }
 export interface ResumePorts { registry: TerminalRegistry; processInventory: ProcessInventoryPorts; coreStartedAt(identity: TerminalIdentity): Promise<number>; autoResumeRoot?: string }
 export interface ResumeOffer { terminal: TerminalIdentity; sessionFile: string; sessionId: SessionId; cwd: string; name: string | null; argv: readonly string[]; environment: LaunchEnvironment }
-export function shellQuote(value: string): string { return "'" + value.replace(/'/g, "'\\''") + "'"; }
 const START = '# spider:resume:start'; const END = '# spider:resume:end';
 export function buildResumeBlock(options: ResumeHookOptions): string {
   if (![options.nodePath, options.cliPath, options.configPath, options.hookPath].every(isAbsolute)) throw new HerdrError('resume-hook-invalid', 'Resume hook requires absolute installed paths');
@@ -150,13 +151,15 @@ export async function offerResume(identity: TerminalIdentity, ports: ResumePorts
   if (!Number.isFinite(restartedAt) || restartedAt <= 0 || restartedAt <= mapping.recordedAt || restartedAt <= mapping.coreStartedAt) return null;
   const live = () => mapping.activityId ? ports.registry.live(identity, mapping.activityId) : Promise.resolve(false);
   if (ports.autoResumeRoot && !await live()) return null;
-  refuseExplicitExtensions(mapping.owner.name ?? mapping.owner.sessionId, mapping.environment.extensionArguments, true);
+  const recorded = await readRecordedLaunch(mapping);
+  if (!recorded) refuseExplicitExtensions(mapping.owner.name ?? mapping.owner.sessionId, mapping.environment.extensionArguments, true);
   const eligible = async (): Promise<ResumeOffer | null> => {
     if (await ended() || ports.autoResumeRoot && !await live()) return null;
     if ((await recordedSessionLiveness(file, ports.processInventory, mapping.owner.sessionId)).kind !== 'free') return null;
     let header; try { header = await readSessionHeader(file); } catch { return null; }
     if (header.id !== mapping.owner.sessionId) return null;
-    return { terminal: identity, sessionFile: file, sessionId: header.id, cwd: mapping.owner.cwd, name: mapping.owner.name, argv: ['pi', '--session', file], environment: mapping.environment };
+    const argv = recorded ? await replayLaunchArgv(recorded, file) : ['pi', '--session', file];
+    return { terminal: identity, sessionFile: file, sessionId: header.id, cwd: mapping.owner.cwd, name: mapping.owner.name, argv, environment: mapping.environment };
   };
   return ports.autoResumeRoot ? claimAutomaticResume(ports.autoResumeRoot, identity, restartedAt, async () => JSON.stringify(await ports.registry.get(identity)) === JSON.stringify(mapping), eligible) : eligible();
 }

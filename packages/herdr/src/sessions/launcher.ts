@@ -4,9 +4,10 @@ import { open, constants, lstat } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { HERDR_LABELS, type SessionId } from '../contracts.js';
+import { HERDR_LABELS, type SessionId, type TerminalIdentity } from '../contracts.js';
 import { HerdrError } from '../client/parse.js';
-import { canonicalSessionFile, launchEnvironment, refuseExplicitExtensions, type LaunchEnvironment } from './registry.js';
+import { canonicalSessionFile, launchEnvironment, readRecordedLaunch, refuseExplicitExtensions, type LaunchEnvironment, type TerminalRegistry } from './registry.js';
+import { replayLaunchArgv, replayLaunchVariables } from './launch-environment.js';
 import { assessSessionLiveness, recordedSessionLiveness, type SessionLeasePolicy, type ProcessIdentity, type ProcessInventoryPorts, type SessionLeases } from './lease.js';
 import { bootIdChanged, claimIdLock, inspectIdLock } from './id-lock.js';
 import { exactLaunchArgv } from './launch-limits.js';
@@ -21,6 +22,7 @@ export interface SessionLaunchResult extends ProcessIdentity { sessionFile: stri
 export interface SessionLaunchPorts {
   leases: SessionLeases; processInventory: ProcessInventoryPorts; processIdentity: ProcessIdentity;
   leasePolicy?: SessionLeasePolicy;
+  resume?: { registry: TerminalRegistry; terminal: TerminalIdentity };
   env: Readonly<NodeJS.ProcessEnv>; spawnPi(request: PiSpawnRequest): Promise<ProcessIdentity | void>;
   publishMapping?(result: SessionLaunchResult, request: SessionLaunchRequest): Promise<void>;
 }
@@ -34,8 +36,15 @@ export async function readSessionHeader(file: string): Promise<{ id: SessionId; 
   finally { await handle?.close(); }
 }
 export async function launchSession(request: SessionLaunchRequest, ports: SessionLaunchPorts): Promise<SessionLaunchResult> {
-  const environment = launchEnvironment(request.environment); refuseExplicitExtensions(request.sessionId, environment.extensionArguments); if (!isAbsolute(request.cwd)) throw new HerdrError('launch-environment-invalid', 'Session cwd must be absolute');
+  let environment = launchEnvironment(request.environment);
+  if (!isAbsolute(request.cwd)) throw new HerdrError('launch-environment-invalid', 'Session cwd must be absolute');
   const file = await canonicalSessionFile(request.sessionFile);
+  const mapping = ports.resume ? await ports.resume.registry.get(ports.resume.terminal) : null;
+  const selected = mapping?.launchRecorded && mapping.owner.sessionFile === file && mapping.owner.sessionId === request.sessionId ? mapping : null;
+  if (selected && selected.owner.cwd !== request.cwd) throw new HerdrError('launch-environment-invalid', 'Recorded resume directory changed');
+  const recorded = selected ? await readRecordedLaunch(selected) : undefined;
+  if (selected) environment = selected.environment;
+  if (!recorded) refuseExplicitExtensions(request.sessionId, environment.extensionArguments);
   const policy = ports.leasePolicy ?? { mode: 'cutover' };
   const live = policy.mode === 'bookkeeping' ? { kind: 'free' as const } : policy.mode === 'switch' ? await recordedSessionLiveness(file, ports.processInventory, request.sessionId) : await assessSessionLiveness(file, ports.processInventory);
   if (live.kind !== 'free') throw new HerdrError('session-may-be-live', `Session is held by PID ${live.pids.join(', ')}. Close that session before resuming it.`);
@@ -43,9 +52,12 @@ export async function launchSession(request: SessionLaunchRequest, ports: Sessio
   let starting = false;
   try {
     const header = await readSessionHeader(file); if (header.id !== request.sessionId) throw new HerdrError('session-id-mismatch', 'Session file identity changed');
-    const argv = [SESSION_PROGRAM, '--session', file];
-    const env = { ...safeLaunchEnvironment(ports.env), PI_CODING_AGENT_DIR: environment.agentDirectory, SPIDER_HERDR_LEASE_TOKEN: lease.token, SPIDER_HERDR_LEASE_FILE: file };
-    starting = true; const process = await ports.spawnPi({ ...request, sessionFile: file, environment, argv, env });
+    const argv = recorded ? await replayLaunchArgv(recorded, file) : [SESSION_PROGRAM, '--session', file];
+    const env = { ...safeLaunchEnvironment(recorded ? replayLaunchVariables(ports.env, recorded) : ports.env), PI_CODING_AGENT_DIR: environment.agentDirectory, SPIDER_HERDR_LEASE_TOKEN: lease.token, SPIDER_HERDR_LEASE_FILE: file };
+    starting = true;
+    let process: ProcessIdentity | void;
+    try { process = await ports.spawnPi({ ...request, sessionFile: file, environment, argv, env }); }
+    catch (error) { if (recorded) throw new HerdrError('resume-spawn-failed', 'Could not start the recorded pi program'); throw error; }
     if (!process) throw new HerdrError('process-identity-unavailable', 'Cannot prove launched pi identity');
     await ports.leases.transfer(file, lease.token, process);
     const result = { ...process, token: lease.token, sessionFile: file, sessionId: header.id, cwd: request.cwd };

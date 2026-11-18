@@ -409,13 +409,13 @@ it.each(['unknown default', 'ambiguous model', 'explicit provider'].flatMap(labe
   expect(launches).toHaveLength(0);
 });
 
-it.each(['tui', 'rpc', 'print', 'json', 'child'] as const)('only interactive top-level registration captures new private launch data: %s', async mode => {
+it.each(['tui', 'rpc', 'print', 'json', 'child', 'no-session'] as const)('only interactive top-level registration captures new private launch data: %s', async mode => {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
   const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;
   let captures = 0;
   const identity = { pid: 2147483647, startIdentity: 'old' };
-  const registration = registerHerdrSessions(pi, { ...inventory, registry: createTerminalRegistry(root), processIdentity: identity, launchEnvironment: mapping().environment, coreStartedAt: () => 1, owner: () => owner, currentSession: () => ({ ...identity, sessionFile: file, sessionName: owner.name, kind: mode === 'child' ? 'child' : 'top-level', hcAddress: terminal.address }), ...{ captureLaunch: () => { captures++; return { ...launch(), variables: { API_TOKEN: captures === 1 ? credential() : 'rotated-token' } }; } } });
-  const ctx = { mode: mode === 'child' ? 'tui' : mode, sessionManager: { getSessionFile: () => file, getSessionId: () => owner.sessionId } } as unknown as ExtensionContext;
+  const registration = registerHerdrSessions(pi, { ...inventory, registry: createTerminalRegistry(root), processIdentity: identity, launchEnvironment: mapping().environment, coreStartedAt: () => 1, owner: () => owner, currentSession: () => ({ ...identity, sessionFile: mode === 'no-session' ? null : file, sessionName: owner.name, kind: mode === 'child' ? 'child' : 'top-level', hcAddress: terminal.address }), ...{ captureLaunch: () => { captures++; return { ...launch(), variables: { API_TOKEN: captures === 1 ? credential() : 'rotated-token' } }; } } });
+  const ctx = { mode: mode === 'child' || mode === 'no-session' ? 'tui' : mode, sessionManager: { getSessionFile: () => file, getSessionId: () => owner.sessionId } } as unknown as ExtensionContext;
   try {
     await handlers.get('session_start')!({ reason: 'startup' }, ctx);
     await handlers.get('session_start')!({ reason: 'reload' }, ctx);
@@ -426,7 +426,8 @@ it.each(['tui', 'rpc', 'print', 'json', 'child'] as const)('only interactive top
       expect(bytes.includes('rotated-token')).toBe(true);
     } else {
       await expect(stat(secretPath())).rejects.toMatchObject({ code: 'ENOENT' });
-      expect(await createTerminalRegistry(root).get(terminal)).toBeNull();
+      if (mode === 'no-session') expect(await createTerminalRegistry(root).get(terminal)).toMatchObject({ owner: { sessionFile: null }, launchRecorded: undefined });
+      else expect(await createTerminalRegistry(root).get(terminal)).toBeNull();
     }
   } finally { await registration.dispose(); }
 });
@@ -569,4 +570,11 @@ it('syncs the new record directory before publishing a mapping that refers to it
   await record();
   const mappingRename = disk.events.indexOf('rename:' + join(root, 'terminals', terminalIdentityKey(terminal) + '.json'));
   expect(disk.events.slice(0, mappingRename)).toContain('sync:' + secretDirectory());
+});
+
+it('replays the Node executable and execArgv before a readable script', async () => {
+  const script = join(root, 'cli.mjs'); await writeFile(script, '// fixture', { mode: 0o600 });
+  await record({ ...launch(['--tools', 'read']), program: script, node: { execPath: process.execPath, execArgv: ['--max-old-space-size=8192'] } } as RecordedLaunch);
+  await launchSession(request(), resumePorts());
+  expect(launches[0].argv).toEqual([process.execPath, '--max-old-space-size=8192', script, '--tools', 'read', '--session', file]);
 });

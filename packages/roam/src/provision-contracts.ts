@@ -31,7 +31,7 @@ export interface Inventory {
 }
 
 export type ProvisionRequest = {
-  operation: Operation; peer: Peer; selected: readonly string[]; includeAuth: boolean; confirmedProviders: readonly string[];
+  operation: Operation; peer: Peer; selected: readonly string[]; includeAuth: boolean; requireDestinationAuth?: boolean; confirmedProviders: readonly string[];
   expectedAuthBytes?: number; expectedFiles?: readonly SelectedFileMetadata[]; expectedSelectionDigest?: string;
 };
 export interface ProvisionVerification extends IntercomReadiness {

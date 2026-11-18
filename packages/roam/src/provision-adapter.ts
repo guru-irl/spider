@@ -39,7 +39,7 @@ function failure(error: unknown, action: string): HerdrError {
 }
 function samePeer(expected: Peer, actual: Peer): boolean {
   return expected.machineId === actual.machineId && expected.alias === actual.alias && expected.node === actual.node &&
-    expected.pi === actual.pi && expected.cli === actual.cli && expected.core === actual.core && expected.globalRoot === actual.globalRoot;
+    expected.pi === actual.pi && expected.cli === actual.cli && expected.core === actual.core && expected.globalRoot === actual.globalRoot && expected.agentDir === actual.agentDir;
 }
 
 /** A provisioning adapter is bound to one consented peer, operation and destination. */

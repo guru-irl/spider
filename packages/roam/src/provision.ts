@@ -45,8 +45,8 @@ function validate(input: ProvisionRequest, ports: ProvisionPorts): void {
   if (typeof home !== "string" || !posix.isAbsolute(home) || posix.normalize(home) !== home || home === "/" || home.split("/")[1] === "Users") {
     throw new Error("invalid-provision-destination");
   }
-  if (destination.agentDir !== posix.join(home, ".pi/agent")) throw new Error("custom-agent-directory-unsupported");
-  if (![destination.npmPrefix, destination.supervisor, peer.globalRoot, peer.pi, peer.cli, ports.systemd.unitDir].every(path => inside(home, path)) ||
+  if (destination.agentDir !== (peer.agentDir ?? posix.join(home, ".pi/agent"))) throw new Error("custom-agent-directory-unsupported");
+  if (![destination.agentDir, destination.npmPrefix, destination.supervisor, peer.globalRoot, peer.pi, peer.cli, ports.systemd.unitDir].every(path => inside(home, path)) ||
       !inside(destination.npmPrefix, peer.pi) || !inside(destination.npmPrefix, peer.cli) || !inside(destination.npmPrefix, destination.supervisor) ||
       ports.systemd.unitDir !== posix.join(home, ".config/systemd/user")) {
     throw new Error("invalid-provision-destination");
@@ -68,7 +68,7 @@ function safeReason(error: unknown): string {
     return `release-in-progress (${details.blockingOperationId})`;
   }
   const allowed = new Set(["missing-prerequisite", "machine-mismatch", "unsafe-identity", "core-changed", "core-unavailable", "machine-not-found",
-    "machine-ambiguous", "cli-timeout", "consent-required", "invalid-auth", "unsafe-auth", "provider-unavailable", "unsupported-credential-command",
+    "machine-ambiguous", "cli-timeout", "destination-auth-missing", "destination-auth-unsafe", "consent-required", "invalid-auth", "unsafe-auth", "provider-unavailable", "unsupported-credential-command",
     "auth-cleanup-pending", "auth-install-failed", "auth-preview-changed", "invalid-destination-settings", "settings-preview-changed", "settings-preview-failed", "invalid-settings-preview", "unsafe-destination",
     "release-digest-mismatch", "invalid-release-path", "core-unit-required", "provider-consent-required", "credential-file-requires-consent",
     "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",
@@ -134,6 +134,9 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     const observed = await inventory(peer, ports.transport, { timeoutMs: ports.limits.controlMs, maxBytes: ports.limits.replyBytes,
       expectedCore: agentDirectory.core, ...(ports.configuredClis ? { configuredClis: ports.configuredClis } : {}),
       ...(ports.coreUnit ? { coreUnit: ports.coreUnit } : {}) });
+    if (input.requireDestinationAuth && (!observed.auth.pi.present || !observed.auth.pi.readable || !observed.auth.pi.modeSafe)) {
+      throw Object.assign(new Error("Destination sign-in required"), { code: observed.auth.pi.present ? "destination-auth-unsafe" : "destination-auth-missing" });
+    }
     if (observed.roaming.identityExists && observed.roaming.machineId !== peer.machineId) {
       throw Object.assign(new Error("Identity mismatch"), { code: "machine-mismatch" });
     }
@@ -141,7 +144,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     if (!coreUnit || observed.core.unit !== coreUnit || !observed.core.unitOwned || !observed.core.unitExists) throw new Error("core-unit-required");
     const files = selectedFileDigests(selected);
     const digest = createHash("sha256").update(JSON.stringify({ peer, core: agentDirectory.core, selected: [...input.selected].sort(), files,
-      includeAuth: input.includeAuth, selectedAuthSize, expectedAuthBytes: input.expectedAuthBytes, expectedFiles: input.expectedFiles, expectedSelectionDigest: input.expectedSelectionDigest, providers: [...input.confirmedProviders].sort(), piProviders: [...ports.source.piProviders].sort(), source: ports.source,
+      includeAuth: input.includeAuth, requireDestinationAuth: input.requireDestinationAuth, selectedAuthSize, expectedAuthBytes: input.expectedAuthBytes, expectedFiles: input.expectedFiles, expectedSelectionDigest: input.expectedSelectionDigest, providers: [...input.confirmedProviders].sort(), piProviders: [...ports.source.piProviders].sort(), source: ports.source,
       destination: ports.destination, release: ports.release, limits: ports.limits, coreUnit })).digest("hex");
     const operation = { ...input.operation, args: { requestDigest: digest } };
     const prior = ports.journal.begin(operation);

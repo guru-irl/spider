@@ -18,7 +18,7 @@ export interface ProductionProvisionOptions {
 }
 function samePeer(a: Peer, b: Peer): boolean {
   return a.machineId === b.machineId && a.alias === b.alias && a.node === b.node && a.pi === b.pi &&
-    a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot;
+    a.cli === b.cli && a.core === b.core && a.globalRoot === b.globalRoot && a.agentDir === b.agentDir;
 }
 
 /** Never use stale readiness to re-enable a box after a completed provisioning retry. */

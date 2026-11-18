@@ -475,7 +475,13 @@ async function run(): Promise<unknown> {
           const parent = parentPath(agentDir, file.path, false), found = readFile(join(parent, file.path.split("/").at(-1)!), maximum);
           if (found.mode !== file.mode) throw new Error("Unsafe file");
         }
-        const auth = readPrivateBytes(agentDir, "auth.json", maximum); auth?.fill(0);
+        if (request.providers.length === 0) {
+          const auth = lstatSync(join(agentDir, "auth.json"));
+          verification.piSignedIn = auth.isFile() && !auth.isSymbolicLink() && own(auth) && auth.nlink === 1 && (auth.mode & 0o7777) === 0o600;
+          if (!verification.piSignedIn) throw new Error("Unsafe destination sign-in");
+        } else {
+          const auth = readPrivateBytes(agentDir, "auth.json", maximum); auth?.fill(0);
+        }
         verification.privateModes = true;
       } catch { /* Missing evidence is not readiness. */ }
       try {
@@ -506,7 +512,7 @@ async function run(): Promise<unknown> {
           }
         }
       } catch { /* Missing evidence is not readiness. */ }
-      try {
+      if (request.providers.length) try {
         const source = readPrivateBytes(agentDir, "auth.json", maximum);
         if (source) try {
           const entries = parseAuth(source);

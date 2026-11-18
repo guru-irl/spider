@@ -418,6 +418,13 @@ it.each([
   expect(system.run(bootstrap.BOOTSTRAP_SCRIPT)).toEqual({ version: 1, kind: "inventory", error: "bootstrap-probe-failed" });
 });
 
+it("reports an expired explicit unit as absent when systemd returns unloaded properties", () => {
+  const system = fakeSystem(), unit = "expired.service";
+  system.setInput({ pi: bootstrapPeer.pi, cli: bootstrapPeer.cli, checks: [], coreUnit: unit });
+  system.commands.set(transientShow(unit), { status: 0, stdout: "Transient=no\nFragmentPath=\nMainPID=0\n" });
+  expect(system.run(bootstrap.BOOTSTRAP_SCRIPT)).toMatchObject({ value: { core: { unit: null, unitExists: false, unitOwned: false, transient: null, socketOwned: true } } });
+});
+
 it("discovers only the hc service whose main PID is the configured core", () => {
   const system = fakeSystem(), dir = "/home/fixture/.config/systemd/user";
   system.entries.delete(`${dir}/herdr-core.service`);

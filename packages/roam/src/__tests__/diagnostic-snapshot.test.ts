@@ -148,6 +148,42 @@ it("retries when a writer publishes its WAL commit during the snapshot", () => {
   } finally { writer.close(); }
 }, 5000);
 
+it.each([false, true])("classifies a changing committed tail as transient (publication advances: %s)", advances => {
+  const { root, file, temp } = fixture(), writer = openDb(file);
+  try {
+    writer.exec("CREATE TABLE a(value INTEGER); CREATE TABLE b(value INTEGER); INSERT INTO a VALUES (0); INSERT INTO b VALUES (0)");
+    writer.raw.pragma("wal_checkpoint(TRUNCATE)");
+    writer.raw.pragma("wal_autocheckpoint=8");
+    const commit = (value: number) => writer.exec(`BEGIN; UPDATE a SET value=${value}; UPDATE b SET value=${value}; COMMIT`);
+    commit(1);
+    const target = join(root, "busy.db");
+    copyFileSync(file, target); copyFileSync(`${file}-wal`, `${target}-wal`); copyFileSync(`${file}-shm`, `${target}-shm`);
+    let attempts = 0, failure: unknown;
+    hooks.afterRead = fd => {
+      if (!isFile(fd, target)) return;
+      attempts++;
+      // Mirror the writer between its WAL write and index publication. Its
+      // previous commit can be published, but each copy sees a newer tail.
+      if (advances) copyFileSync(`${file}-shm`, `${target}-shm`);
+      commit(attempts + 1);
+      copyFileSync(`${file}-wal`, `${target}-wal`);
+    };
+    expect(() => { try { openDiagnosticSnapshot(target); } catch (error) { failure = error; throw error; } }).toThrow();
+    hooks.afterRead = null;
+    expect(failure).toMatchObject({ code: "diagnostic-snapshot-changing" });
+    expect(attempts).toBe(3);
+    // The eighth frame triggers a real automatic checkpoint in the writer.
+    const index = readFileSync(`${file}-shm`), word = (offset: number) => endianness() === "LE" ? index.readUInt32LE(offset) : index.readUInt32BE(offset);
+    expect(word(96)).toBe(8);
+    copyFileSync(`${file}-shm`, `${target}-shm`);
+    const before = hashes(target), snapshot = openDiagnosticSnapshot(target)!;
+    try { expect(snapshot.prepare("SELECT a.value AS a,b.value AS b FROM a,b").get()).toEqual({ a: 4, b: 4 }); }
+    finally { snapshot.close(); }
+    expect(hashes(target)).toEqual(before);
+    expect(readdirSync(temp)).toEqual([]);
+  } finally { hooks.afterRead = null; writer.close(); }
+}, 5000);
+
 it("needs all three attempts while commits keep advancing", () => {
   const { file, temp } = fixture(), writer = openDb(file);
   try {

@@ -87,7 +87,7 @@ async function probeCopy(original: string, root: string, journalRoot: string) {
 }
 
 /** Each prefix is checked on disk, then restored at the same absolute paths. */
-export async function model(steps: readonly Step[], checkPrefixes = true) {
+export async function model(steps: readonly Step[], checkPrefixes = true): Promise<void> {
   const f = await fixture(), root = f.request.packageRoot;
   const addedMod = join(f.request.config.app.home, 'mods/spider-added');
   const addedMain = join(addedMod, 'main.js'), addedManifest = join(addedMod, 'mod.json');
@@ -343,7 +343,7 @@ export async function model(steps: readonly Step[], checkPrefixes = true) {
   }
 }
 
-export function registerCheckpointModelSeed(seed: number) {
+export function registerCheckpointModelSeed(seed: number): void {
   const next = random(seed);
   for (let sequence = 0; sequence < 32; sequence++) {
     const steps: Step[] = ['setup', ...Array.from({ length: 3 + next() % 3 }, () => commands[next() % commands.length]!)];

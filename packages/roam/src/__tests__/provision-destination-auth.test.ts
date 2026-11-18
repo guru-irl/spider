@@ -116,7 +116,7 @@ it.each(["hc-serve-0a1b2c3d.service", undefined])("provisions with the peer unit
   for (const probe of probes) expect((probe as { coreUnit?: string }).coreUnit).toBe(coreUnit);
   expect(enrollments).toEqual([unit]);
   expect(units).toHaveLength(1);
-  expect(units[0]).toContain(`Requires=${unit}`);
+  expect(units[0]).not.toMatch(/^(After|Requires|PartOf)=/m);
 }, 5000);
 
 it("requires an explicit agent directory for a nonstandard prefix", async () => {

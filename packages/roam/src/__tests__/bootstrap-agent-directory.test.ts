@@ -34,7 +34,7 @@ it.each(["settings preview", "provisioning"] as const)("%s starts without instal
   mkdirSync(agentDir, { recursive: true, mode: 0o700 });
   writeFileSync(hook, `import { registerHooks } from "node:module";
 registerHooks({ resolve(specifier, context, next) {
-  if (!specifier.startsWith("node:")) throw new Error("external module unavailable: " + specifier);
+  if (!specifier.startsWith("node:") && !specifier.startsWith("data:text/javascript;base64,")) throw new Error("external module unavailable: " + specifier);
   return next(specifier, context);
 } });\n`);
   const settings = kind === "settings preview";

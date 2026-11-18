@@ -47,7 +47,7 @@ it("preserves bound records, recorded resources, and unrelated keys", async () =
   const digest = createHash("sha256").update(JSON.stringify(f.request.pairs)).digest("hex");
   f.journal.begin({ ...f.request.operation, args: { graphDigest: digest } });
   await registry.register(pair, f.request.operation.id, digest);
-  await registry.bindResources(pair.pairId, f.request.operation.id, pairResources(pair, "core-b"));
+  await registry.bindResources(pair.pairId, f.request.operation.id, pairResources({ ...pair, sshUser: "fixture", hostKey: { type: "ssh-ed25519", base64: f.publicKey.split(" ")[1] }, hostKeyAlias: `spider-${"a".repeat(32)}` }, "core-b"));
   const file = join(f.root, "roam", "intercom", "enrollments", "pair-1.json"), before = readFileSync(file);
   const ssh = join(f.locals.get(f.target.machineId)!.home, ".ssh"); mkdirSync(ssh, { mode: 0o700 });
   const keep = join(ssh, "authorized_keys"), original = `restrict ${f.publicKey} unmanaged\n`; writeFileSync(keep, original, { mode: 0o600 });

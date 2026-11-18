@@ -110,6 +110,16 @@ test('undo refuses a later user edit before touching any path unless replacement
   expect(await values(f.all)).toEqual(f.before);
 });
 
+test('a retry does not claim user edits to a file it leaves unchanged', async () => {
+  const f = await fixture(); f.fail(true);
+  await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('injected cutover interruption');
+  await put(f.paths.settings, '{ "theme": "dracula-plus-glass", "keep": "user edit between attempts" }\n', 0o640);
+  f.fail(false); await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
+  const edited = await values(f.all);
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-changed' });
+  expect(await values(f.all)).toEqual(edited);
+});
+
 test('full rollback still removes historically installed files but restores the endpoint registry', async () => {
   const f = await fixture(); await setupHerdr(f.request, f.parts); await rollbackHerdr(f.request, f.parts);
   expect((await snapshot(f.paths.font)).bytes).toBeNull();

@@ -107,6 +107,9 @@ spider roam intercom cancel pair-1
 spider roam intercom enroll --graph "$GRAPH_FILE" --operation enrollment-2
 ```
 
+For a partially completed graph, cancel its pending pairs and include only
+those pairs in the fresh graph. Keep active pairs in place.
+
 Approve the fresh graph at the prompt. Cancellation records that the old
 operation cannot restart, then removes only its pending, unbound pair record.
 It does not contact either destination or require the old core to be running.

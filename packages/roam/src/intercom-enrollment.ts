@@ -248,7 +248,11 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
       if (pending.length) {
         const result = outcome(operationId, 3, pending.length === 1 && completed.length === 0 ? pending[0].reason : "intercom-enrollment-pending", { pairs: completed, pending });
         const changed = pending.find(item => item.reason === "core-changed");
-        if (changed) result.repairCommand = `spider roam intercom cancel ${changed.pairId}`;
+        if (changed) {
+          // The SSH receipt precedes binding, whose reply can be lost after commit.
+          const bindingStarted = ports.journal.read(operationId).some(row => row.action === "intercom-ssh-host" && row.result.pairId === changed.pairId);
+          result.repairCommand = `spider roam intercom ${bindingStarted ? "revoke" : "cancel"} ${changed.pairId}`;
+        }
         return result;
       }
       const result = outcome(operationId, 0, "intercom-enrolled", { pairs: completed });

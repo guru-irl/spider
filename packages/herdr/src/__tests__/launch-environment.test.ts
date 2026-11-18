@@ -350,7 +350,7 @@ it.each(['unknown default', 'ambiguous model', 'explicit provider'].flatMap(labe
   finally { await registration.dispose(); }
   await writeFile(file, (await readFile(file, 'utf8')).replace('"provider":"provider"', '"provider":"other"'));
   let failure: unknown;
-  try { await (mode === 'offer' ? offerResume(terminal, offerPorts(false)) : launchSession(request(), resumePorts())); } catch (error) { failure = error; }
+  try { await (mode === 'offer' ? offerResume(terminal, { ...offerPorts(false), coreStartedAt: async () => Date.now() + 1000 }) : launchSession(request(), resumePorts())); } catch (error) { failure = error; }
   expect(failure).toMatchObject({ code: label === 'explicit provider' ? 'session-key-provider-changed' : 'session-key-provider-unknown' });
   const notice = String(failure);
   expect(notice.includes(credential())).toBe(false);

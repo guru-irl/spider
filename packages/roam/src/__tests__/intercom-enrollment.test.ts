@@ -279,8 +279,15 @@ it("an unavailable authoritative fence does not block an independent pair", asyn
   expect(f.state.registered.has("pair-1")).toBe(false); expect(f.state.routes.has("pair-2")).toBe(true);
 }, 5000);
 
+it("approves fresh pair commands after authorization and before adding the route", async () => {
+  const f = fixture(); f.state.allow = true;
+  expect(await run(f.request, f.ports)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+  const order = f.state.effects.filter(name => ["authorize", "approve-pair", "machine", "verify-transport"].includes(name));
+  expect(order).toEqual(["authorize", "approve-pair", "machine", "verify-transport"]);
+}, 5000);
+
 it("rerun converges after each interrupted step", async () => {
-  for (const stage of ["register", `check:${FIRST}`, "inspect-ssh", "bind-pair", "host", "connect", "key", "known-host", "authorize", "machine", "approve-pair", "publish", "verify"]) {
+  for (const stage of ["register", `check:${FIRST}`, "inspect-ssh", "bind-pair", "host", "connect", "key", "known-host", "authorize", "approve-pair", "machine", "publish", "verify"]) {
     const f = fixture(); f.state.allow = true; f.state.failAfter = stage;
     expect(await run(f.request, f.ports), stage).toMatchObject({ code: 3 });
     f.state.allow = false;

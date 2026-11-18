@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { afterEach, expect, test, vi } from 'vitest';
-import { readdir, stat } from 'node:fs/promises';
+import { mkdir, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setupHerdr, rollbackHerdr } from '../../../herdr/src/setup/installer.js';
 import { readJournal } from '../../../herdr/src/setup/backup.js';
@@ -52,4 +52,21 @@ test('setup recovers a private staging directory without exposing an empty mod',
   await rollbackHerdr(f.request, f.parts);
   await expect(stat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
   expect((await readdir(f.h.directories.app)).filter(name => name.startsWith('.spider-mod-'))).toEqual([]);
+});
+
+
+test('setup reuses an unrecorded empty mod directory left by an older interrupted install', async () => {
+  const f = await releaseFixture('0.1.13');
+  const directory = join(f.h.directories.app, 'mods/spider-new-menu');
+  await mkdir(directory, { recursive: true });
+  const before = await stat(directory);
+  expect(await readdir(directory)).toEqual([]);
+  expect((await readJournal(f.request.journalRoot)).modDirectories?.some(entry => entry.path === directory) ?? false).toBe(false);
+  await setupHerdr(f.request, f.parts);
+  expect((await stat(directory)).ino).toBe(before.ino);
+  const doctor = await f.ports.doctorParts(f.request);
+  expect((await doctor.inspect('clones', f.request)).failures).toEqual([]);
+  await rollbackHerdr(f.request, f.parts);
+  expect((await stat(directory)).ino).toBe(before.ino);
+  expect(await readdir(directory)).toEqual([]);
 });

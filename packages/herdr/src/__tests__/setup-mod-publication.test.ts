@@ -91,6 +91,37 @@ test('rollback removes owned staging files after an interrupted publish', async 
   } finally { await f.client.close(); }
 });
 
+test('a staging allocation interrupted before identity persistence is recovered without an orphan', async () => {
+  const f = await fixture();
+  try {
+    const journal = await readJournal(f.root);
+    await prepareBackups(f.root, f.files, journal);
+    vi.mocked(fs.rename).mockImplementation(async (from, to) => {
+      if (to === join(f.root, 'journal.json') && (await real.readdir(f.home)).some(name => name.startsWith('.spider-mod-'))) throw new Error('allocation interrupted');
+      return real.rename(from, to);
+    });
+    await expect(prepareModDirectories(f.root, f.home, f.files, journal)).rejects.toThrow('allocation interrupted');
+    vi.mocked(fs.rename).mockImplementation(real.rename);
+    const recovered = await readJournal(f.root);
+    await prepareModDirectories(f.root, f.home, f.files, recovered); await applyFiles(f.files, recovered);
+    expect((await real.readdir(f.home)).filter(name => name.startsWith('.spider-mod-'))).toEqual([]);
+    expect(await real.readFile(join(f.directory, 'mod.json'), 'utf8')).toBe('{"place":"none"}');
+  } finally { await f.client.close(); }
+});
+
+test('an unowned staging file is never published as part of a mod', async () => {
+  const f = await fixture();
+  try {
+    const journal = await readJournal(f.root);
+    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal);
+    const staging = (await real.readdir(f.home)).find(name => name.startsWith('.spider-mod-'))!;
+    await real.writeFile(join(f.home, staging, 'unowned.js'), 'user file');
+    await expect(applyFiles(f.files, journal)).rejects.toMatchObject({ code: 'mod-publication-conflict' });
+    expect(await real.readdir(f.mods)).toEqual([]);
+    expect(await real.readFile(join(f.home, staging, 'unowned.js'), 'utf8')).toBe('user file');
+  } finally { await f.client.close(); }
+});
+
 test('an existing mod receives its placement manifest before executable updates', async () => {
   const f = await fixture();
   try {

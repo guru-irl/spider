@@ -13,6 +13,7 @@ export type LaunchModel = NonNullable<SessionContext['model']>;
 export interface RecordedLaunch {
   model?: LaunchModel;
   program: string;
+  node?: { execPath: string; execArgv: readonly string[] };
   argv: readonly string[];
   cwd: string;
   variables: Readonly<Record<string, string>>;
@@ -22,12 +23,12 @@ export function recordedLaunch(value: unknown): RecordedLaunch {
   const r = value as RecordedLaunch | null;
   const text = (s: unknown): s is string => typeof s === 'string' && !s.includes('\0');
   if (!r || !text(r.program) || !isAbsolute(r.program) || !text(r.cwd) || !isAbsolute(r.cwd) ||
-      !Array.isArray(r.argv) || !r.argv.every(text) || !r.variables || typeof r.variables !== 'object' || Array.isArray(r.variables) ||
+      !Array.isArray(r.argv) || !r.argv.every(text) || r.node !== undefined && (!r.node || !text(r.node.execPath) || !isAbsolute(r.node.execPath) || !Array.isArray(r.node.execArgv) || !r.node.execArgv.every(text)) || !r.variables || typeof r.variables !== 'object' || Array.isArray(r.variables) ||
       Object.entries(r.variables).some(([name, v]) => !name || name.includes('=') || !text(name) || !text(v)) ||
       r.model !== undefined && (!r.model || !text(r.model.provider) || !r.model.provider || !text(r.model.modelId) || !r.model.modelId)) {
     throw new HerdrError('launch-record-invalid', 'Private launch data is invalid');
   }
-  return { program: r.program, argv: [...r.argv], cwd: r.cwd, variables: { ...r.variables }, ...(r.model ? { model: { provider: r.model.provider, modelId: r.model.modelId } } : {}) };
+  return { program: r.program, ...(r.node ? { node: { execPath: r.node.execPath, execArgv: [...r.node.execArgv] } } : {}), argv: [...r.argv], cwd: r.cwd, variables: { ...r.variables }, ...(r.model ? { model: { provider: r.model.provider, modelId: r.model.modelId } } : {}) };
 }
 
 export function captureLaunch(program: string, argv: readonly string[], cwd: string, env: Readonly<NodeJS.ProcessEnv>): RecordedLaunch {
@@ -157,7 +158,13 @@ export async function replayLaunchArgv(launch: RecordedLaunch, sessionFile: stri
   }
   if (missing.length) throw new HerdrError('session-extensions-missing', `Missing explicit extensions: ${missing.join(', ')}`);
   let program = launch.program;
-  try { await access(program, constants.X_OK); } catch { program = 'pi'; }
+  try { await access(program, launch.node ? constants.R_OK : constants.X_OK); } catch { program = 'pi'; }
+  let prefix = [program];
+  if (launch.node && program === launch.program) {
+    let node = launch.node.execPath;
+    try { await access(node, constants.X_OK); } catch { node = 'node'; }
+    prefix = [node, ...launch.node.execArgv, program];
+  }
   if (hasApiKey) {
     const originalProvider = launch.model?.provider ?? launchedProvider;
     let model: LaunchModel | undefined;
@@ -174,5 +181,5 @@ export async function replayLaunchArgv(launch: RecordedLaunch, sessionFile: stri
     }
     args.push('--model', `${model.provider}/${model.modelId}`);
   }
-  return [program, ...args, '--session', sessionFile];
+  return [...prefix, ...args, '--session', sessionFile];
 }

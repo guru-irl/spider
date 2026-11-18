@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import * as childNavigation from '../../assets/agents/children.js';
+import { FEED_DISCONNECT_MS } from '../../assets/shared/feed.js';
+import { projectPanePresentations } from '../../assets/shared/presentations.js';
+import { applyModPatches } from '../look/patches.js';
 import { pickerRows } from '../../assets/picker/model.js';
 import { presentExistingPane } from '../spaces/move.js';
 import type { PaneOpenPorts } from '../panes/open.js';
@@ -29,6 +35,16 @@ test('box layout agent appears once and never focuses a remote pane', () => {
   expect(targets.filter(target => target.ownerId === null)).toHaveLength(1);
   expect(targets[0]).toMatchObject({ id: 'session:writer', name: 'Writer', machine: 'box-1.invalid', action: { kind: 'focus', pane: 'p1' } });
   expect(targets.some(target => target.action?.kind === 'focus' && target.action.pane.includes('/'))).toBe(false);
+});
+test.each(['0.1.13', '0.1.16'])('%s configured remote presentations focus through the service', version => {
+  let source = readFileSync(resolve('packages/herdr/assets/shared/navigation.js'), 'utf8');
+  for (const patch of [version === '0.1.16' ? 'packages/herdr/assets/look/native-navigation-0.1.16.json' : '', 'packages/herdr/assets/look/pane-navigation-b.json']) {
+    if (patch && existsSync(resolve(patch))) source = applyModPatches({ 'navigation.js': source }, JSON.parse(readFileSync(resolve(patch), 'utf8')), 'navigation')['navigation.js'];
+  }
+  source = source.replace(/^import .*;\s*$/gm, '').replaceAll('export function ', 'function ');
+  const project = new Function('filterTopLevelAgents', 'projectAgentChildren', 'FEED_DISCONNECT_MS', 'projectPanePresentations', `${source}; return projectNavigation;`)(childNavigation.filterTopLevelAgents, childNavigation.projectAgentChildren, FEED_DISCONNECT_MS, projectPanePresentations);
+  const target = project({ ...snapshot(), paneServiceConfigured: true }).find((item: any) => item.id === 'session:writer');
+  expect(target.action).toMatchObject({ kind: 'pane', request: { op: 'open-existing', sessionId: 'writer', generation: 'gen-1' } });
 });
 test('owner-only pane navigation never walks child or console history', () => {
   const input = snapshot(), service = input.paneSnapshot!;

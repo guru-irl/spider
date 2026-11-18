@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { openDbAt } from '@spider/db-core';
+import { ProcessTerminal } from '@earendil-works/pi-tui';
 import { createHerdrHarness } from '../../../herdr/src/__tests__/testutil.js';
 import { createTerminalRegistry } from '../../../herdr/src/sessions/registry.js';
 import { mountHerdr } from '../herdr/mount.js';
@@ -26,8 +27,12 @@ it('records pi’s effective agent directory for a Herdr owner', async () => {
     ]) {
       vi.stubEnv('PI_CODING_AGENT_DIR', configured);
       const hooks = new Map<string, Set<Function>>(), errors: unknown[] = [];
-      const pi = { on(name: string, handler: Function) { if (!hooks.has(name)) hooks.set(name, new Set()); hooks.get(name)!.add(handler); return () => hooks.get(name)!.delete(handler); }, registerTool() {}, getSessionName: () => undefined };
-      const ctx = { cwd: h.directories.local, mode: 'rpc', hasUI: false, ui: { notify() {} }, sessionManager: { getSessionId: () => h.owner!.sessionId, getSessionFile: () => undefined, getEntries: () => [], getBranch: () => [] } };
+      const pi = { on(name: string, handler: Function) { if (!hooks.has(name)) hooks.set(name, new Set()); hooks.get(name)!.add(handler); return () => hooks.get(name)!.delete(handler); }, registerTool() {}, registerShortcut() {}, getSessionName: () => undefined };
+      const terminal = Object.create(ProcessTerminal.prototype) as ProcessTerminal;
+      Reflect.set(terminal, 'programStatusSupported', false); terminal.setProgramStatus({ state: 'done' });
+      const ctx = { cwd: h.directories.local, mode: 'tui', hasUI: true,
+        ui: { notify() {}, setWidget(_name: string, factory: unknown) { if (typeof factory === 'function') factory({ terminal }); } },
+        sessionManager: { getSessionId: () => h.owner!.sessionId, getSessionFile: () => undefined, getEntries: () => [], getBranch: () => [] } };
       const dbPath = join(h.root, 'runs.db'), globalPath = join(h.root, 'global.db');
       const mount = mountHerdr(pi as never, { packageRoot: h.root, readConfig: async () => config as never, actionContext: () => ({}), reportError: error => errors.push(error),
         views: { agents: { open: async () => {} }, todos: { handler: async () => {} }, usage: { handler: async () => {} }, memory: async () => {}, loop: { handler: async () => {} } },

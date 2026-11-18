@@ -60,6 +60,7 @@ async function fixture() {
     [join(pair.target.globalRoot, "roam", "intercom", "pairs", pair.pairId, scriptEpoch, "command.mjs")],
     { env: { ...process.env, SSH_ORIGINAL_COMMAND: encodePairCommand(pair, text) }, encoding: "utf8", timeout: 2000 });
   const fencedFederation: string[] = [], probeStatuses: Array<number | null> = [], unapprovedStatuses: Array<number | null> = [];
+  const addMachineStatuses: Array<number | null> = [];
   let transportFailure = false, loseApprovalReply = false, legacyCommand = false;
   const transport = {
     async pinIntercomPeer(machine: Peer) { return { handle: machine, machineId: machine.machineId, coreId: `core-${machine.machineId}` }; },
@@ -71,7 +72,12 @@ async function fixture() {
       if (["check-connector", "host-connector", "connect-connector"].includes(input.action)) value = { status: "ready" };
       else if (input.action === "inspect-ssh") value = { targetMachineId: B, sshUser: "fixture", hostKeys: [hostKey] };
       else if (input.action === "ensure-key") value = { publicKey, privateMode: 0o600, privateOwned: true };
-      else if (["write-route", "add-machine", "publish-config"].includes(input.action)) value = {};
+      else if (input.action === "add-machine") {
+        // hc machine add --via connects through the pair key, so the forced command must admit it.
+        const result = command(input.pair); addMachineStatuses.push(result.status);
+        if (result.status !== 0 || result.stdout !== "transport-ok") throw new Error("intercom-route-unavailable");
+        value = {};
+      } else if (["write-route", "publish-config"].includes(input.action)) value = {};
       else if (input.action === "verify-transport") {
         const result = command(input.pair); probeStatuses.push(result.status);
         if (result.status !== 0 || result.stdout !== "transport-ok") throw new Error("intercom-verification-pending");
@@ -139,7 +145,7 @@ async function fixture() {
       for (const state of [registry, endpoints.get(A)!.registry, endpoints.get(B)!.registry]) await state.finishRevocation(pair.pairId, reason);
     },
   };
-  return { request, registry, endpoints, enroll, command, exchange, fencedFederation, probeStatuses, unapprovedStatuses, revoke: () => revokeIntercomPair("pair-1", revokePorts),
+  return { request, registry, endpoints, enroll, command, exchange, fencedFederation, probeStatuses, unapprovedStatuses, addMachineStatuses, revoke: () => revokeIntercomPair("pair-1", revokePorts),
     failTransport(value: boolean) { transportFailure = value; }, loseApprovalReply() { loseApprovalReply = true; },
     useLegacyCommand() { legacyCommand = true; } };
 }
@@ -153,7 +159,8 @@ it("restores a revoked pair with a fresh epoch without admitting fenced federati
   await expect(f.exchange(predecessor.target, "edge-1")).rejects.toThrow("peer-revoked");
   f.request.operation.id = "approval-2"; f.request.pairs[0].edgeEpoch = "edge-2";
   const outcome = await f.enroll();
-  expect({ outcome, probeStatus: f.probeStatuses.at(-1) }).toMatchObject({ outcome: { code: 0, reason: "intercom-enrolled" }, probeStatus: 0 });
+  expect({ outcome, probeStatus: f.probeStatuses.at(-1), addMachineStatus: f.addMachineStatuses.at(-1) })
+    .toMatchObject({ outcome: { code: 0, reason: "intercom-enrolled" }, probeStatus: 0, addMachineStatus: 0 });
   const restored = (await f.registry.get("pair-1"))!.pair as IntercomEnrollmentPair;
   expect(f.fencedFederation).toEqual(["peer-revoked"]);
   expect(f.unapprovedStatuses).toEqual([126]);

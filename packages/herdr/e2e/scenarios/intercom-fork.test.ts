@@ -12,6 +12,7 @@ import { readObserved, type RpcDriver } from '../harness/pi.js';
 import { deadline, waitFor } from '../harness/wait.js';
 import { identityOf } from '../harness/resources.js';
 import { scripts, tool, runChild, parentTurns, held, text, mark, childEvent, childTranscript } from '../fixtures/child-scripts.js';
+import { waitForOwnedSteer } from '../fixtures/steer-barrier.js';
 
 function extensionArgs(args: string[]): string[] {
   return args.flatMap((arg, i) => arg === '--no-extensions' ? [arg] : arg === '--extension' ? [arg, args[i + 1]] : []);
@@ -83,7 +84,8 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
       const initialProbes = (await readFile(probeLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
       expect(initialProbes.find(row => row.pid === oldPid)?.runId).toBe(oldRun.id);
       const before = owner.prompt(mark('before'));
-      await waitFor('owned steer reaches the child queue', () => owner.events(), events => events.some(e => e.type === 'tool_execution_start' && e.toolCallId === 'steer-before'), deadline(30_000));
+      await waitForOwnedSteer({ cwd, runId: oldRun.id, message: 'R14 before switch' }, deadline(30_000),
+        async () => (await owner.events()).some(e => e.type === 'tool_execution_start' && e.toolCallId === 'steer-before'));
       gates.release('old-initial');
       await gates.ready('old-after-first', deadline(60_000));
       await before;
@@ -98,7 +100,8 @@ process.execve(${JSON.stringify(suite.pi.launcher)},[${JSON.stringify(suite.pi.l
       expect(switchover.status).toBe('migration-pending');
       await owner.prompt('/reload');
       const after = owner.prompt(mark('after'));
-      await waitFor('post-reload owned steer starts', () => owner.events(), events => events.some(e => e.type === 'tool_execution_start' && e.toolCallId === 'steer-after'), deadline(30_000));
+      await waitForOwnedSteer({ cwd, runId: oldRun.id, message: 'R14 after switch' }, deadline(30_000),
+        async () => (await owner.events()).some(e => e.type === 'tool_execution_start' && e.toolCallId === 'steer-after'));
       gates.release('old-after-first');
       await gates.ready('old-final', deadline(60_000));
       await after;

@@ -20,6 +20,7 @@ const credential = () => 'ghp' + '_' + 'synthetic'.padEnd(39, '0');
 function launch(argv = ['--tools', 'read,spider', '--name', 'original', '--model', 'provider/old', '--thinking', 'medium']) {
   return { program: process.execPath, argv, cwd: root, variables: { SERVICE_ROUTER: '1', PI_INTERCOM_STABLE_ID: 'stable-router', API_TOKEN: credential(), HC_TERMINAL_ID: 'stale-terminal', TERM: 'stale-term', TMPDIR: '/stale-tmp', SPIDER_HERDR_LEASE_TOKEN: 'stale-lease' } };
 }
+function keyLaunch(argv: string[]) { return { ...launch(argv), model: { provider: 'provider', modelId: 'old' } }; }
 function mapping() { return { owner, recordedAt: 10, coreStartedAt: 1, environment: { agentDirectory: agent, extensionArguments: [] as string[] }, activityId }; }
 function request() { return { sessionFile: file, sessionId: owner.sessionId, cwd: root, environment: { agentDirectory: join(root, 'fallback-agent'), extensionArguments: [] } }; }
 function secretDirectory() { return join(agent, 'spider', 'herdr', 'launch-environments'); }
@@ -114,14 +115,14 @@ it.each([['-p'], ['--print'], ['--mode', 'rpc'], ['--mode', 'json'], ['--export'
 });
 
 it('pairs an API key only with the session current provider-qualified model', async () => {
-  await record(launch(['--model', 'provider/old', '--api-key', credential(), '--tools', 'read']));
+  await record(keyLaunch(['--model', 'provider/old', '--api-key', credential(), '--tools', 'read']));
   await launchSession(request(), resumePorts());
   const argv = launches[0].argv.map(value => value === credential() ? '<redacted>' : value);
   expect(argv).toEqual([process.execPath, '--api-key', '<redacted>', '--tools', 'read', '--model', 'provider/current', '--session', file]);
 });
 
 it('refuses a changed API-key provider with an exact manual command and no credential value', async () => {
-  await record(launch(['--model', 'provider/old', '--api-key', credential(), '--tools', 'read']));
+  await record(keyLaunch(['--model', 'provider/old', '--api-key', credential(), '--tools', 'read']));
   await writeFile(file, (await readFile(file, 'utf8')).replace('"provider":"provider"', '"provider":"other"'));
   for (const action of [() => offerResume(terminal, offerPorts(true)), () => launchSession(request(), resumePorts())]) {
     let failure: unknown;
@@ -139,7 +140,7 @@ it('refuses a changed API-key provider with an exact manual command and no crede
 
 it('does not echo unrelated private launch flags in an API-key provider refusal', async () => {
   const privateValue = 'synthetic-private-option';
-  await record({ ...launch(['--model', 'provider/old', '--api-key', credential(), '--service-token', privateValue]), variables: { SERVICE_TOKEN: privateValue } });
+  await record({ ...keyLaunch(['--model', 'provider/old', '--api-key', credential(), '--service-token', privateValue]), variables: { SERVICE_TOKEN: privateValue } });
   await writeFile(file, (await readFile(file, 'utf8')).replace('"provider":"provider"', '"provider":"other"'));
   let notice = '';
   try { await launchSession(request(), resumePorts()); } catch (error) { notice = String(error); }
@@ -150,7 +151,7 @@ it('does not echo unrelated private launch flags in an API-key provider refusal'
 
 it('uses the original launch model with an API key when the session has no model', async () => {
   await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: 'saved', cwd: root }) + '\n');
-  await record(launch(['--model', 'provider/old:high', '--api-key', credential()]));
+  await record(keyLaunch(['--model', 'provider/old:high', '--api-key', credential()]));
   await launchSession(request(), resumePorts());
   const argv = launches[0].argv.map(value => value === credential() ? '<redacted>' : value);
   expect(argv).toEqual([process.execPath, '--api-key', '<redacted>', '--model', 'provider/old', '--session', file]);
@@ -163,7 +164,7 @@ it('uses the recorded default model provider to check an API key without an orig
 });
 
 it('uses the active session branch rather than an abandoned model change for key pairing', async () => {
-  await record(launch(['--model', 'provider/old', '--api-key', credential()]));
+  await record(keyLaunch(['--model', 'provider/old', '--api-key', credential()]));
   const entries = [
     { type: 'model_change', id: 'abandoned', parentId: 'info', provider: 'other', modelId: 'abandoned' },
     { type: 'custom', id: 'leaf', parentId: 'info', customType: 'fixture', data: null },
@@ -175,7 +176,7 @@ it('uses the active session branch rather than an abandoned model change for key
 });
 
 it.each(['offer', 'launch'])('%s checks live ownership before opening a session to read its API-key model', async mode => {
-  await record(launch(['--model', 'provider/old', '--api-key', credential()]));
+  await record(keyLaunch(['--model', 'provider/old', '--api-key', credential()]));
   await inventory.presence.record({ pid: 900, startIdentity: 'live-owner', sessionId: owner.sessionId, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address });
   inventory.probe = async pid => pid === 900 ? { kind: 'live', startIdentity: 'live-owner' } : { kind: 'absent' };
   await rm(file); await symlink(join(root, 'missing-target'), file);
@@ -319,23 +320,42 @@ it('never exposes recorded variable values through shell offers, diagnostics, or
 
 it('keeps the original default-model provider across reload while replacing environment tokens', async () => {
   const identity = { pid: 2147483646, startIdentity: 'original-model-fixture' };
-  async function activate(provider: string, value: string) {
+  async function activate(provider: string, value: string, reason: 'startup' | 'reload') {
     const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
     const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;
     const registration = registerHerdrSessions(pi, { ...inventory, registry: createTerminalRegistry(root), processIdentity: identity, launchEnvironment: mapping().environment, coreStartedAt: () => 1, owner: () => owner, currentSession: () => ({ ...identity, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address }), ...{ captureLaunch: () => ({ ...launch(['--api-key', credential()]), variables: { API_TOKEN: value } }) } });
     const ctx = { mode: 'tui', model: { provider, id: 'default' }, sessionManager: { getSessionFile: () => file, getSessionId: () => owner.sessionId } } as unknown as ExtensionContext;
     try {
-      await handlers.get('session_start')!({ reason: 'reload' }, ctx);
+      await handlers.get('session_start')!({ reason }, ctx);
       await handlers.get('session_shutdown')!({ reason: 'reload' }, ctx);
     } finally { await registration.dispose(); }
   }
-  await activate('provider', credential());
-  await activate('other', 'rotated-token');
+  await activate('provider', credential(), 'startup');
+  await activate('other', 'rotated-token', 'reload');
   const bytes = await readFile(secretPath(), 'utf8');
   const snapshot = JSON.parse(bytes);
   expect(snapshot.launch.model).toEqual({ provider: 'provider', modelId: 'default' });
   expect(bytes.includes(credential())).toBe(true); // The original argv key is still present.
   expect(snapshot.launch.variables.API_TOKEN === 'rotated-token').toBe(true);
+});
+
+it.each(['unknown default', 'ambiguous model', 'explicit provider'].flatMap(label => ['offer', 'launch'].map(mode => ({ label, mode }))))('first capture at reload handles $label key provenance in $mode', async ({ label, mode }) => {
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<unknown>>();
+  const pi = { on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<unknown>) => { handlers.set(name, handler); return () => handlers.delete(name); } } as unknown as ExtensionAPI;
+  const identity = { pid: 2147483645, startIdentity: root };
+  const argv = [...(label === 'explicit provider' ? ['--provider', 'provider'] : []), ...(label !== 'unknown default' ? ['--model', 'namespace/model'] : []), '--api-key', credential()];
+  const registration = registerHerdrSessions(pi, { ...inventory, registry: createTerminalRegistry(root), processIdentity: identity, launchEnvironment: mapping().environment, coreStartedAt: () => 1, owner: () => owner, currentSession: () => ({ ...identity, sessionFile: file, sessionName: owner.name, kind: 'top-level', hcAddress: terminal.address }), captureLaunch: () => launch(argv) });
+  const ctx = { mode: 'tui', model: { provider: 'other', id: 'current' }, sessionManager: { getSessionFile: () => file, getSessionId: () => owner.sessionId } } as unknown as ExtensionContext;
+  try { await handlers.get('session_start')!({ reason: 'reload' }, ctx); }
+  finally { await registration.dispose(); }
+  await writeFile(file, (await readFile(file, 'utf8')).replace('"provider":"provider"', '"provider":"other"'));
+  let failure: unknown;
+  try { await (mode === 'offer' ? offerResume(terminal, offerPorts(false)) : launchSession(request(), resumePorts())); } catch (error) { failure = error; }
+  expect(failure).toMatchObject({ code: label === 'explicit provider' ? 'session-key-provider-changed' : 'session-key-provider-unknown' });
+  const notice = String(failure);
+  expect(notice.includes(credential())).toBe(false);
+  expect(notice).toContain(`cd -- '${root}' && '${process.execPath}' '--session' '${file}' '--model' 'other/current' '--api-key' '<API_KEY>'`);
+  expect(launches).toHaveLength(0);
 });
 
 it.each(['tui', 'rpc', 'print', 'json', 'child'] as const)('only interactive top-level registration captures new private launch data: %s', async mode => {

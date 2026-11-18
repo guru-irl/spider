@@ -139,7 +139,12 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
   for (let index = 0; index < steps.length; index++) {
     const step = steps[index]!;
     try {
-      const cp = await readCheckpoint(f.request.journalRoot);
+      let cp = await readCheckpoint(f.request.journalRoot);
+      if (cp?.state === 'undoing' && ['setup', 'replace', 'fail-retry', 'bookkeeping', 'remote', 'layout-only', 'journal-crash', 'batch-crash', 'cutover-crash'].includes(step)) {
+        await expect(setupHerdr(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-undo-in-progress' });
+        if (await attemptUndo(true)) failedAttempt = false;
+        cp = await readCheckpoint(f.request.journalRoot);
+      }
       const setup = async (replaceChanged = false) => {
         const current = await readCheckpoint(f.request.journalRoot);
         if (!current || ['undone', 'superseded'].includes(current.state)) await rememberBaseline();
@@ -195,7 +200,6 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
           if (cp && !['undone', 'superseded'].includes(cp.state)) {
             await interrupted(() => undoHerdrUpgrade(f.request, f.parts), target => target === f.paths.main, false);
             if (step === 'pi-during-undo') { await put(f.paths.added, 'runtime instructions'); templateEdit = true; f.parts.generateTemplates = async () => [{ path: f.paths.added, expected: (await snapshot(f.paths.added)).hash, bytes: Buffer.from('runtime instructions') }]; }
-            if (await attemptUndo(true)) failedAttempt = false;
           } break;
         }
         case 'doctor': { const report = await doctorHerdr(f.request, { targets: async () => [], inspect: async () => ({ failures: [] }), launchHistory: async () => [], probeMachineNode: async () => 'v22.19.0' }); expect(report.failures.map(failure => failure.code)).toEqual((await fs.readFile(f.paths.notes, 'utf8')).includes('notes = true') ? ['native-notes-enabled'] : []); break; }

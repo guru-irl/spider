@@ -16,14 +16,21 @@ import * as children from '../../../herdr/assets/agents/children.js';
 import { FEED_DISCONNECT_MS } from '../../../herdr/assets/shared/feed.js';
 import { projectPanePresentations } from '../../../herdr/assets/shared/presentations.js';
 
+const probe = vi.hoisted(() => ({ fail: false }));
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>();
-  return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) =>
-    args[0] === '/fixture/version' ? 'herdr-app 0.1.16\n' : actual.execFileSync(...args) };
+  return { ...actual, execFileSync: (...args: Parameters<typeof actual.execFileSync>) => {
+    if (args[0] === '/fixture/version') {
+      if (probe.fail) throw new Error('version probe failed');
+      return 'herdr-app 0.1.16\n';
+    }
+    return actual.execFileSync(...args);
+  } };
 });
 const roots: string[] = [];
 const disposals: (() => Promise<void>)[] = [];
 afterEach(async () => {
+  probe.fail = false;
   for (const dispose of disposals.splice(0)) await dispose();
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
@@ -112,6 +119,29 @@ test('0.1.16 generated navigation keeps native remote actions until a snapshot i
   const service = { version: 1, kind: 'snapshot', complete: true, omittedRows: 0, rows: [{ sessionId: id, generation, owner: { terminal: { address } }, target, name: 'Parked', status: 'idle', machineKey: 'box-1.invalid', children: [], consoles: [], unavailableReason: null }], presentations: [] };
   const projected = project({ ...snapshot, paneSnapshot: service }).find((row: any) => row.sessionId === id);
   expect(projected.action).toMatchObject({ kind: 'pane', request: { op: 'open-existing', sessionId: id, generation } });
+});
+
+test('a failed second version probe installs the staged panel expected by doctor', async () => {
+  const f = await fixture();
+  const stock = join(f.packageRoot, 'packages/herdr/src/__tests__/fixtures/herdr-0.1.16');
+  await cp(join(stock, 'mods'), join(f.appHome, 'mods'), { recursive: true });
+  await mkdir(join(f.appHome, 'layouts')); await cp(join(stock, 'layouts/main.json'), join(f.appHome, 'layouts/main.json'));
+  const names = ['agents', 'spaces', 'pane', 'tabs', 'panel', 'chrome', 'picker', ...PANE_ENTRY_MODS.map(name => name.slice('spider-'.length)), 'menu', 'new-menu', 'toast'];
+  const modProps = [...new Set(names)].map(name => ({ directory: join(f.appHome, 'mods', `spider-${name}`), props: { modId: `spider-${name}`, feedRoot: join(f.globalRoot, 'herdr'), cliPath: join(f.root, 'cli'), nodePath: process.execPath, appBinary: '/fixture/version', configPath: f.request.configPath, labelContract: HerdrLabelContract } }));
+  const setup = await f.ports.setupParts(f.request);
+  const context = { labelContract: HerdrLabelContract, installed: {}, retiredTerminals: [], priorCutover: null, recordCutover: async () => {}, modProps };
+  await setup.stageLook(f.request, context, 'export');
+  const normal = await setup.installFiles(f.request, context);
+  probe.fail = true;
+  const installed = await setup.installFiles(f.request, context);
+  probe.fail = false;
+  const path = join(f.appHome, 'mods/spider-panel/main.js');
+  const panel = installed.find(file => file.path === path)!;
+  expect(panel.bytes.equals(normal.find(file => file.path === path)!.bytes)).toBe(true);
+  await mkdir(join(f.appHome, 'mods/spider-panel'), { recursive: true });
+  await writeFile(path, panel.bytes);
+  const report = await f.report(['mods']);
+  expect(report.failures.filter(failure => failure.item === 'mods' && failure.message.includes('spider-panel/main.js'))).toEqual([]);
 });
 
 test('insecure picker configuration does not hide clone or patch version failures', async () => {

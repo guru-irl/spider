@@ -36,13 +36,13 @@ test('migrates the old settings projection and restores each recorded baseline',
   const original = { theme: 'stock', layout: 'main', zoom: 1.25 }, oldInstalled = { ...original, theme: 'spider-glass', layout: 'spider-glass' };
   await writeFile(path, json(original));
   const old: InstallFile = { path, expected: digest(json(original)), bytes: json(oldInstalled), managed: { kind: 'json', fields: ['theme', 'layout'] } };
-  await validateFiles([old], journal); await prepareBackups(root, [old], journal); await applyFiles([old], journal);
+  await validateFiles([old], journal); await prepareBackups(root, [old], journal); await applyFiles(root, [old], journal);
   journal.verified = true;
   const edited = { ...oldInstalled, sounds: { enabled: true, done: 'custom-done.mp3', blocked: 'custom-blocked.mp3' } };
   await writeFile(path, json(edited));
   const installed = { ...edited, sounds: { ...edited.sounds, enabled: false } };
   const next: InstallFile = { path, expected: digest(json(edited)), bytes: json(installed), managed: appPaths };
-  await validateFiles([next], journal); await prepareBackups(root, [next], journal); await applyFiles([next], journal);
+  await validateFiles([next], journal); await prepareBackups(root, [next], journal); await applyFiles(root, [next], journal);
   const saved = await readJournal(root);
   expect(saved.entries).toHaveLength(1);
   expect(saved.entries[0].managed).toEqual(appPaths);
@@ -57,7 +57,7 @@ test('releases a user-edited theme and restores owned paths without reformatting
   const installed = original.replace('"stock"', '"spider-glass"').replace('"main"', '"spider-glass"').replace('"enabled" : true', '"enabled" : false');
   await writeFile(path, original);
   const file: InstallFile = { path, expected: digest(Buffer.from(original)), bytes: Buffer.from(installed), managed: appPaths };
-  await validateFiles([file], journal); await prepareBackups(root, [file], journal); await applyFiles([file], journal);
+  await validateFiles([file], journal); await prepareBackups(root, [file], journal); await applyFiles(root, [file], journal);
   journal.verified = true; await saveJournal(root, journal);
   const edited = installed.replace('"theme" : "spider-glass"', '"theme" : "user-theme"'); await writeFile(path, edited);
   const expected = edited.replace('"layout"  : "spider-glass"', '"layout"  : "main"').replace('"enabled" : false', '"enabled" : true');
@@ -75,7 +75,7 @@ test('rolls back still-owned settings paths without overwriting a later sound ed
   const installed = { theme: 'spider-glass', layout: 'spider-glass', sounds: { done: 'custom.mp3', enabled: false } };
   await writeFile(path, json(original));
   const file: InstallFile = { path, expected: digest(json(original)), bytes: json(installed), managed: appPaths };
-  await validateFiles([file], journal); await prepareBackups(root, [file], journal); await applyFiles([file], journal);
+  await validateFiles([file], journal); await prepareBackups(root, [file], journal); await applyFiles(root, [file], journal);
   journal.verified = true; await saveJournal(root, journal);
   await writeFile(path, json({ ...installed, sounds: { ...installed.sounds, enabled: true, blocked: 'later.mp3' } }));
   const warnings: string[] = []; await rollbackFiles(root, journal, { warn: message => warnings.push(message) });
@@ -94,7 +94,7 @@ test('recovers a partial theme transition only after the sound compare-write', a
   const transition = { path, planned: { theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false as const } } };
   await writeFile(path, json(original));
   const file: InstallFile = { path, expected: digest(json(original)), bytes: json(prewrite), managed: appPaths, updateAfterCutover: true };
-  await validateFiles([file], journal, false, transition); await prepareBackups(root, [file], journal); await applyFiles([file], journal);
+  await validateFiles([file], journal, false, transition); await prepareBackups(root, [file], journal); await applyFiles(root, [file], journal);
   journal.cutoverPending = true; await saveJournal(root, journal);
   const partial = { ...prewrite, theme: 'spider-glass' }; await writeFile(path, json(partial));
   const retry: InstallFile = { ...file, expected: digest(json(partial)), bytes: json(partial) };
@@ -110,7 +110,7 @@ test('releases a sound edit while restoring an interrupted theme transition', as
   const transition = { path, planned: { theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false as const } } };
   await writeFile(path, original);
   const file: InstallFile = { path, expected: digest(Buffer.from(original)), bytes: Buffer.from(prewrite), managed: appPaths, updateAfterCutover: true };
-  await validateFiles([file], journal, false, transition); await prepareBackups(root, [file], journal); await applyFiles([file], journal);
+  await validateFiles([file], journal, false, transition); await prepareBackups(root, [file], journal); await applyFiles(root, [file], journal);
   journal.cutoverPending = true; await saveJournal(root, journal);
   const edited = prewrite.replace('"stock"', '"spider-glass"').replace('"enabled" : false', '"enabled" : true');
   await writeFile(path, edited);
@@ -145,7 +145,7 @@ test('refuses an unowned sound edit during a partial app transition', async () =
   const transition = { path, planned: { theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false as const } } };
   await writeFile(path, json(original));
   const file: InstallFile = { path, expected: digest(json(original)), bytes: json(prewrite), managed: appPaths, updateAfterCutover: true };
-  await validateFiles([file], journal, false, transition); await prepareBackups(root, [file], journal); await applyFiles([file], journal);
+  await validateFiles([file], journal, false, transition); await prepareBackups(root, [file], journal); await applyFiles(root, [file], journal);
   journal.cutoverPending = true; await saveJournal(root, journal);
   const changed = { ...prewrite, theme: 'spider-glass', sounds: { ...prewrite.sounds, enabled: true } }; await writeFile(path, json(changed));
   const retry: InstallFile = { ...file, expected: digest(json(changed)), bytes: json({ ...changed, sounds: { ...changed.sounds, enabled: false } }) };
@@ -163,7 +163,7 @@ test('refuses an unowned sound edit while migrating an unfinished legacy selecti
   const original = { theme: 'stock', layout: 'main' }, oldInstalled = { theme: 'spider-glass', layout: 'spider-glass' };
   await writeFile(path, json(original));
   const old: InstallFile = { path, expected: digest(json(original)), bytes: json(oldInstalled), managed: { kind: 'json', fields: ['theme', 'layout'] } };
-  await validateFiles([old], journal); await prepareBackups(root, [old], journal); await applyFiles([old], journal);
+  await validateFiles([old], journal); await prepareBackups(root, [old], journal); await applyFiles(root, [old], journal);
   const changed = { ...oldInstalled, sounds: { enabled: true } }; await writeFile(path, json(changed));
   const next: InstallFile = { path, expected: digest(json(changed)), bytes: json({ ...changed, sounds: { enabled: false } }), managed: appPaths, updateAfterCutover: true };
   const transition = { path, planned: { theme: 'spider-glass', layout: 'spider-glass', sounds: { enabled: false as const } } };
@@ -174,7 +174,7 @@ test('refuses an unowned sound edit while migrating an unfinished legacy selecti
 
 test('rollback leaves saved migrated state and completes without owning either store', async () => {
   const { root, journal } = await fixture(), { source, destination, files } = await migration(root);
-  await validateFiles(files, journal); await prepareBackups(root, files, journal); await applyFiles(files, journal);
+  await validateFiles(files, journal); await prepareBackups(root, files, journal); await applyFiles(root, files, journal);
   await writeFile(destination, '{"timer":"99"}');
   const warnings: string[] = []; await rollbackFiles(root, journal, { warn: text => warnings.push(text) });
   expect(warnings).toEqual([]);
@@ -187,7 +187,7 @@ test.each([false, true])('a store created before validation stays untouched with
   const { root, journal } = await fixture(), { destination, files } = await migration(root);
   await writeFile(destination, '{"timer":"99"}');
   await validateFiles(files, journal, false, undefined, { replaceChanged });
-  await prepareBackups(root, files, journal); await applyFiles(files, journal);
+  await prepareBackups(root, files, journal); await applyFiles(root, files, journal);
   expect(await readFile(destination, 'utf8')).toBe('{"timer":"99"}');
   expect((await readJournal(root)).entries).toEqual([]);
 });
@@ -198,7 +198,7 @@ test('a store created at publication wins the exclusive-create race', async () =
   const race = async (to: PathLike) => { if (to === destination) await writeFile(destination, '{"timer":"99"}'); };
   vi.mocked(fs.rename).mockImplementation(async (from, to) => { await race(to); return realFs.rename(from, to); });
   vi.mocked(fs.link).mockImplementation(async (from, to) => { await race(to); return realFs.link(from, to); });
-  await applyFiles(files, journal);
+  await applyFiles(root, files, journal);
   expect(await readFile(destination, 'utf8')).toBe('{"timer":"99"}');
   expect(journal.entries).toEqual([]);
 });
@@ -216,12 +216,12 @@ test('a second replacement retains the pre-install backup and restores the lates
   const { root, journal } = await fixture(), path = join(root, 'mod.js');
   let files: InstallFile[] = [{ path, bytes: Buffer.from('installed-1'), expected: null, collision: 'clone' }];
   await writeFile(path, 'original');
-  await validateFiles(files, journal, false, undefined, { replaceChanged: true }); await prepareBackups(root, files, journal); await applyFiles(files, journal);
+  await validateFiles(files, journal, false, undefined, { replaceChanged: true }); await prepareBackups(root, files, journal); await applyFiles(root, files, journal);
   journal.verified = true;
   const originalBackup = journal.entries[0].backup!;
   await writeFile(path, 'later user bytes');
   files = [{ path, bytes: Buffer.from('installed-2'), expected: digest(Buffer.from('installed-1')), collision: 'clone' }];
-  await validateFiles(files, journal, false, undefined, { replaceChanged: true }); await prepareBackups(root, files, journal); await applyFiles(files, journal);
+  await validateFiles(files, journal, false, undefined, { replaceChanged: true }); await prepareBackups(root, files, journal); await applyFiles(root, files, journal);
   const saved = await readJournal(root);
   expect(saved.entries[0]).toMatchObject({ previous: [expect.objectContaining({ backup: originalBackup, before: digest(Buffer.from('original')) })] });
   expect(await readFile(originalBackup, 'utf8')).toBe('original');
@@ -233,7 +233,7 @@ test('restoring backed-up user bytes after verification requires explicit replac
   const { root, journal } = await fixture(), path = join(root, 'mod.js');
   await writeFile(path, 'user bytes');
   const files: InstallFile[] = [{ path, bytes: Buffer.from('installed'), expected: null, collision: 'clone' }];
-  await validateFiles(files, journal, false, undefined, { replaceChanged: true }); await prepareBackups(root, files, journal); await applyFiles(files, journal);
+  await validateFiles(files, journal, false, undefined, { replaceChanged: true }); await prepareBackups(root, files, journal); await applyFiles(root, files, journal);
   journal.verified = true; await writeFile(path, 'user bytes');
   const repeated: InstallFile[] = [{ path, bytes: Buffer.from('installed'), expected: digest(Buffer.from('installed')), collision: 'clone' }];
   await expect(validateFiles(repeated, journal)).rejects.toMatchObject({ code: 'unowned-clone-collision' });

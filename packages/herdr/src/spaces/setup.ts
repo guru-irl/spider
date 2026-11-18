@@ -336,20 +336,22 @@ function reconcileIntents(journal: SpaceJournal, snapshot: LayoutSnapshot): bool
   return changed;
 }
 /** Called only after the owning rollback has closed the tabs and re-read the layout. */
-export async function forgetCutoverTabs(journalRoot: string, placements: readonly SessionTab[], snapshot: LayoutSnapshot): Promise<void> {
+export async function forgetCutoverTabs(journalRoot: string, placements: readonly SessionTab[], snapshot: LayoutSnapshot, terminalsOnly = false): Promise<void> {
   await withProcessLock(journalRoot, 'setup', async () => {
     const path = join(journalRoot, 'spaces.json'), journal = await readJournal(path);
     reconcileIntents(journal, snapshot);
     for (const placement of placements) {
       const entry = journal.tabs.find(t => t.placement.terminal === placement.terminal);
-      const present = entry?.manuallyMoved
+      const present = terminalsOnly || entry?.manuallyMoved
         ? snapshot.spaces.some(space => space.tabs.some(tab => tabTerminals(tab).some(row => row.terminal === layoutTerminal(entry))))
         : snapshot.spaces.some(space => space.tabs.some(tab => tab.id === placement.tab));
       if (present) throw new HerdrError('cutover-tab-still-exists', 'A rollback terminal or tab is still present');
     }
+    const removedSessions = journal.tabs.filter(entry => placements.some(p => p.space === entry.placement.space && p.terminal === entry.placement.terminal)).map(entry => entry.target.sessionId);
     journal.tabs = journal.tabs.filter(entry => !placements.some(p => p.space === entry.placement.space && p.terminal === entry.placement.terminal));
     journal.retired = [...(journal.retired ?? []), ...placements];
-    journal.intents = []; journal.focused = false;
+    if (terminalsOnly) journal.intents = journal.intents?.filter(intent => !removedSessions.includes(intent.target.sessionId));
+    else { journal.intents = []; journal.focused = false; }
     // Keep an existing empty space under its recorded ownership; forget only spaces that have disappeared.
     journal.spaces = journal.spaces.filter(space => snapshot.spaces.some(s => s.id === space.id));
     await saveJournal(path, journal);

@@ -4,7 +4,7 @@ import { View, div, svg } from 'gpui-kit';
 import { v_flex, h_flex, InputState, Input } from 'gpui-base';
 import * as herdr from 'herdr';
 import { pickerRows, selectPickerRow } from './model.js';
-import { projectNavigation } from '../shared/navigation.js';
+import { indexPaneNavigation, projectNavigation } from '../shared/navigation.js';
 import { describeOpenFailure } from '../shared/open-failure.js';
 import { assignSpaceIdentities } from '../shared/look.js';
 import { FEED_REFRESH_MS, createFeedReader, panelIpcArgv, parseSessionIpcReply, requestPaneService } from '../shared/feed.js';
@@ -114,9 +114,11 @@ export class Picker extends View {
     let success = false;
     try {
       const [snapshot, paneSnapshot] = await Promise.all([this.reader.read(), requestPaneService(this.config, herdr.exec, { op: 'snapshot' }).catch(() => null), this.refreshIdentity()]);
-      this.paneSnapshot = paneSnapshot;
+      let paneProblem = null;
+      try { if (paneSnapshot) indexPaneNavigation(paneSnapshot); this.paneSnapshot = paneSnapshot; }
+      catch { this.paneSnapshot = null; paneProblem = 'Pane service unavailable; run doctor'; }
       if (this.closed) return false;
-      this.feeds = snapshot.feeds; this.targetSource = 'feed'; this.problem = null; success = true;
+      this.feeds = snapshot.feeds; this.targetSource = 'feed'; this.problem = paneProblem; success = true;
     } catch { if (!this.closed) { if (this.targetSource === 'pending') this.targetSource = 'native'; this.problem = 'Session information is unavailable'; } }
     if (!this.closed) this.cx.notify();
     return success;

@@ -82,7 +82,7 @@ export const terminalSafeText = (value: string): string => value.replace(/[\x00-
 export function refuseExplicitExtensions(session: string, arguments_: readonly string[], concise = false): void {
   if (arguments_.length) {
     const name = JSON.stringify(terminalSafeText(session));
-    throw new HerdrError('session-explicit-extensions', concise ? `Session ${name} used explicit extensions. Resume it by hand.` : `Session ${name} used explicit extension arguments ${JSON.stringify(arguments_.map(terminalSafeText))}. Relaunch it by hand; legacy resume and cutover do not replay extension arguments.`);
+    throw new HerdrError('session-explicit-extensions', concise ? `Session ${name} used explicit extensions. Resume it by hand.` : `Session ${name} used explicit extensions. Relaunch it by hand; legacy resume and cutover do not replay extension arguments.`);
   }
 }
 export function launchEnvironment(value: LaunchEnvironment): LaunchEnvironment {

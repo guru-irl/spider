@@ -5,6 +5,7 @@ import { access, open } from 'node:fs/promises';
 import type { SessionContext } from '@earendil-works/pi-coding-agent';
 import { isAbsolute, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { HerdrError } from '../client/parse.js';
 
 /** Sensitive local-only data. Never include this object in notices, feeds or transcripts. */
@@ -63,7 +64,16 @@ const SWITCH = new Set([
   '--no-prompt-templates', '-np', '--no-themes', '--no-context-files', '-nc', '--verbose', '--approve', '-a', '--no-approve', '-na', '--offline',
 ]);
 const NONINTERACTIVE = new Set(['--print', '-p', '--export', '--list-models', '--help', '-h', '--version', '-v']);
-const BUILTIN_EXTENSIONS = new Set(['builtin:mcp', 'builtin:llama.cpp', 'builtin:codemode', 'builtin:tool-search']);
+// Pi's utils/paths isLocalPath: these are package sources, not relative files.
+export function isLocalLaunchSource(value: string): boolean {
+  return !/^(?:npm:|git:|github:|http:|https:|ssh:|builtin:)/.test(value.trim());
+}
+export function resolveLaunchSource(value: string, cwd: string, home: string = homedir()): string {
+  if (!isLocalLaunchSource(value) || value.startsWith('file:') || isAbsolute(value)) return value;
+  if (value === '~') return home;
+  return value.startsWith('~/') ? resolve(home, value.slice(2)) : resolve(cwd, value);
+}
+const PATH_FLAGS = new Set(['--extension', '-e', '--skill', '--prompt-template', '--theme', '--session-dir']);
 const safePathText = (value: string) => value.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, ' ');
 
 export function shellQuote(value: string): string { return "'" + value.replace(/'/g, "'\\''") + "'"; }
@@ -96,6 +106,7 @@ export async function replayLaunchArgv(launch: RecordedLaunch, sessionFile: stri
   const args: string[] = [], missing: string[] = [];
   let launchedProvider: string | undefined, hasApiKey = false;
   for (let i = 0; i < launch.argv.length; i++) {
+    const position = i + 1;
     const argument = launch.argv[i];
     if (argument === '--') break;
     if (!argument.startsWith('-')) continue; // Positional prompts and @file attachments are never sent again.
@@ -114,11 +125,10 @@ export async function replayLaunchArgv(launch: RecordedLaunch, sessionFile: stri
         if (value !== 'text') throw new HerdrError('session-not-interactive', 'Only interactive pi sessions can resume in a terminal');
         continue;
       }
-      if (flag === '--extension' || flag === '-e') {
-        if (!BUILTIN_EXTENSIONS.has(value)) {
-          value = resolve(launch.cwd, value.startsWith('~/') ? resolve(launch.variables.HOME ?? homedir(), value.slice(2)) : value);
-          try { await access(value); } catch { missing.push(value); }
-        }
+      if (PATH_FLAGS.has(flag)) value = resolveLaunchSource(value, launch.cwd, launch.variables.HOME ?? homedir());
+      if ((flag === '--extension' || flag === '-e') && isLocalLaunchSource(value)) {
+        try { await access(value.startsWith('file:') ? fileURLToPath(value) : value); }
+        catch { missing.push(`${flag} at argument ${position}`); }
       }
       if (flag === '--api-key') hasApiKey = true;
       args.push(flag, value);
@@ -131,7 +141,7 @@ export async function replayLaunchArgv(launch: RecordedLaunch, sessionFile: stri
       throw new HerdrError('launch-record-invalid', 'An unsupported short launch flag was recorded');
     }
   }
-  if (missing.length) throw new HerdrError('session-extensions-missing', `Missing explicit extension paths: ${JSON.stringify(missing.map(safePathText))}`);
+  if (missing.length) throw new HerdrError('session-extensions-missing', `Missing explicit extensions: ${missing.join(', ')}`);
   let program = launch.program;
   try { await access(program, constants.X_OK); } catch { program = 'pi'; }
   if (hasApiKey) {

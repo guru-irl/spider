@@ -68,7 +68,7 @@ type _PlacementPort = Assert<Equal<PlacementPort, { reconcile(rows: readonly Rea
 type _HubPorts = Assert<Equal<HubPorts, { config: RoamConfig; sync: SyncService; journal: Journal; clock: Clock; placement: PlacementPort }>>;
 type _HostingWarning = Assert<Equal<HostingWarning, { code: "supervisor-hosting-error";
   check: "running-intent" | "intent-view" | "inspection" | "restart" | "launch"; since: number; count: number }>>;
-type _Diagnostic = Assert<Equal<Diagnostic, { code?: HostingWarning["code"]; reason: string; severity: "warning" | "block"; repairCommand: string | null; writerEpoch?: number }>>;
+type _Diagnostic = Assert<Equal<Diagnostic, { code?: HostingWarning["code"]; reason: string; severity: "info" | "warning" | "block"; repairCommand: string | null; writerEpoch?: number }>>;
 type _HostIntent = Assert<Equal<HostIntent, {
   sessionId: string; epoch: number; desired: "running" | "stopped"; suspended: string | null; file: string; cwd: string; moveId: string | null;
 }>>;

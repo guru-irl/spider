@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { assertTestConfigPath } from "@spider/db-core";
 import { withProcessLock } from "@spider/herdr/sessions/registry";
@@ -147,6 +147,11 @@ export function authorizedPairLine(pair: IntercomEnrollmentPair, pub: string): s
 function writePairCommand(pair: IntercomEnrollmentPair): void {
   const file = pairCommandPath(pair), registry = join(pair.target.globalRoot, "roam", "intercom", "enrollments", `${pair.pairId}.json`);
   assertTestConfigPath(file); privateDirectory(dirname(file));
+  for (const name of readdirSync(dirname(file))) {
+    if (!/^\.command\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.new(?:\.part)?$/.test(name)) continue;
+    const abandoned = join(dirname(file), name);
+    privateFile(abandoned, 0o600, 32 * 1024); unlinkSync(abandoned);
+  }
   const script = (commandFence: string) => `import { constants, openSync, fstatSync, readFileSync, closeSync, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 const fail = () => { process.exitCode = 126; };

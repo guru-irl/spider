@@ -36,6 +36,7 @@ function validate(input: ProvisionRequest, ports: ProvisionPorts): void {
       typeof op.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(op.id) || op.expectedEpoch !== null ||
       typeof peer.alias !== "string" || !peer.alias || peer.alias.trim() !== peer.alias || /[\u0000-\u001f\u007f]/.test(peer.alias) ||
       typeof peer.node !== "string" || !posix.isAbsolute(peer.node) || /[\u0000-\u001f\u007f]/.test(peer.node) ||
+      input.replaceCorePin !== undefined && typeof input.replaceCorePin !== "boolean" ||
       typeof input.includeAuth !== "boolean" || !validProviders(input.confirmedProviders) || !validProviders(ports.source?.piProviders) ||
       !input.includeAuth && input.confirmedProviders.length !== 0 || !Array.isArray(input.selected) ||
       input.expectedFiles !== undefined && !Array.isArray(input.expectedFiles) ||
@@ -67,7 +68,7 @@ function safeReason(error: unknown): string {
       typeof details.blockingOperationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(details.blockingOperationId)) {
     return `release-in-progress (${details.blockingOperationId})`;
   }
-  const allowed = new Set(["missing-prerequisite", "machine-mismatch", "unsafe-identity", "core-changed", "core-unavailable", "machine-not-found",
+  const allowed = new Set(["missing-prerequisite","core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy",  "machine-mismatch", "unsafe-identity", "core-changed", "core-unavailable", "machine-not-found",
     "machine-ambiguous", "cli-timeout", "destination-auth-missing", "destination-auth-unsafe", "consent-required", "invalid-auth", "unsafe-auth", "provider-unavailable", "unsupported-credential-command",
     "auth-cleanup-pending", "auth-install-failed", "auth-preview-changed", "invalid-destination-settings", "settings-preview-changed", "settings-preview-failed", "invalid-settings-preview", "unsafe-destination",
     "release-digest-mismatch", "invalid-release-path", "core-unit-required", "peer-core-unit-required", "peer-core-unit-ambiguous", "provider-consent-required", "credential-file-requires-consent",
@@ -144,7 +145,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     if (!coreUnit) throw new Error("core-unit-required");
     const files = selectedFileDigests(selected);
     const digest = createHash("sha256").update(JSON.stringify({ peer, core: agentDirectory.core, selected: [...input.selected].sort(), files,
-      includeAuth: input.includeAuth, requireDestinationAuth: input.requireDestinationAuth, selectedAuthSize, expectedAuthBytes: input.expectedAuthBytes, expectedFiles: input.expectedFiles, expectedSelectionDigest: input.expectedSelectionDigest, providers: [...input.confirmedProviders].sort(), piProviders: [...ports.source.piProviders].sort(), source: ports.source,
+      includeAuth: input.includeAuth, ...(input.replaceCorePin ? { replaceCorePin: true } : {}), requireDestinationAuth: input.requireDestinationAuth, selectedAuthSize, expectedAuthBytes: input.expectedAuthBytes, expectedFiles: input.expectedFiles, expectedSelectionDigest: input.expectedSelectionDigest, providers: [...input.confirmedProviders].sort(), piProviders: [...ports.source.piProviders].sort(), source: ports.source,
       destination: ports.destination, release: ports.release, limits: ports.limits, coreUnit })).digest("hex");
     const operation = { ...input.operation, args: { requestDigest: digest } };
     const prior = ports.journal.begin(operation);
@@ -175,7 +176,8 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     await ports.present({ target: peer.alias, machineId: peer.machineId, inventory: observed,
       destinations: { ...ports.destination, globalRoot: peer.globalRoot, pi: peer.pi },
       selectedFiles: previewFiles, settingsKeys: approvedSettings?.changedKeys ?? [], settingsFingerprint: approvedSettings?.fingerprint ?? null,
-      providers: [...input.confirmedProviders], warnings: ["Hand-edited selected files may need re-editing after provisioning."] });
+      providers: [...input.confirmedProviders], warnings: ["Hand-edited selected files may need re-editing after provisioning.",
+        ...(input.replaceCorePin ? ["The stopped box's enrolled core pin will be replaced; both identities are journaled."] : [])] });
     if (!consent) {
       if (!await ports.confirm(peer.alias, [...input.confirmedProviders])) return result(operationId, 1, "consent-refused", null);
       ports.journal.record(operationId, "provision-consent", { approved: true, enablesRoaming: true, target: peer.alias, machineId: peer.machineId,
@@ -191,7 +193,12 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     if (identity.machineId !== peer.machineId) throw Object.assign(new Error("Identity mismatch"), { code: "machine-mismatch" });
     if (identity.coreId !== agentDirectory.core.remote) throw Object.assign(new Error("Core changed"), { code: "core-changed" });
     mutated = true;
-    await ports.transfer.enroll(peer, ports.hubMachineId, coreUnit);
+    if (input.replaceCorePin) await ports.assertCorePinReplaceIdle(peer);
+    const replacement = await ports.transfer.enroll(peer, ports.hubMachineId, coreUnit, input.replaceCorePin);
+    if (input.replaceCorePin) {
+      if (!replacement) throw new Error("invalid-journal-result");
+      ports.journal.record(operationId, "core-pin-replaced", { ...replacement });
+    }
     await ports.transfer.cleanupSecrets(peer);
     const installed = await ports.transfer.installRelease(peer, { bytes: release, sha256: ports.release.spiderSha256,
       npmPrefix: ports.destination.npmPrefix, globalRoot: peer.globalRoot, pi: ports.release.pi, intercom: ports.release.intercom });
@@ -221,7 +228,12 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     return outcome;
   } catch (error) {
     const reason = safeReason(error);
-    return result(operationId, reason === "core-changed" || mutated && reason !== "machine-mismatch" ? 3 : 1, reason, null);
+    const outcome = result(operationId, reason === "core-changed" || mutated && reason !== "machine-mismatch" ? 3 : 1, reason, null);
+    if (["core-pin-changed", "core-pin-conflict"].includes(reason)) {
+      const target = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,255}$/.test(input.peer.alias) ? input.peer.alias : input.peer.machineId;
+      outcome.repairCommand = `spider roam provision ${target} --replace-core-pin`;
+    }
+    return outcome;
   } finally {
     for (const file of credentialFiles) file.bytes.fill(0);
   }

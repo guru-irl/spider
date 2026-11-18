@@ -44,9 +44,9 @@ export function parsePublicControl(input: readonly string[]): PublicControl | nu
     const seen = new Set<string>();
     for (let i = 3; i < args.length; i++) {
       const flag = args[i];
-      if (!["--release", "--yes", "--use-destination-auth", "--no-settings", "--consent", "--operation-id", "--skill", "--consent-provider"].includes(flag) || seen.has(flag) && !["--skill", "--consent-provider"].includes(flag)) return null;
+      if (!["--release", "--yes", "--replace-core-pin", "--use-destination-auth", "--no-settings", "--consent", "--operation-id", "--skill", "--consent-provider"].includes(flag) || seen.has(flag) && !["--skill", "--consent-provider"].includes(flag)) return null;
       seen.add(flag);
-      if (["--yes", "--use-destination-auth", "--no-settings"].includes(flag)) continue;
+      if (["--yes", "--replace-core-pin", "--use-destination-auth", "--no-settings"].includes(flag)) continue;
       if (!plain(args[++i]) || flag === "--release" && !isAbsolute(args[i])) return null;
     }
     return { kind: "provision", machine: a, options: args.slice(3) };

@@ -200,9 +200,33 @@ Enrollment saves the peer's absolute `core` executable, core identity, socket,
 session namespace, and state and config directories in private `roam/core.json`.
 At startup, the supervisor uses that pin to run `hc server start --json`.
 This attaches to a running core or starts a stopped one, including at login.
-The supervisor never selects an `hc` from `PATH`. It refuses `core-changed` if
-the core identity differs from enrollment. A missing pin refuses
+The supervisor never selects an `hc` from `PATH`. It refuses `core-pin-changed`
+if the core identity differs from enrollment. A missing pin refuses
 `core-pin-required`. Reprovision an existing box to add its missing pin.
+Enrollment verifies the executable, socket, namespace, and XDG directories with
+`server status --json` before saving the pin. The core identity and PID must
+match the enrolled core. Terminal-specific hc variables are removed for this check.
+
+To replace a stale identity or change the pinned executable or socket:
+
+1. Move every session assigned to the box back to the hub with
+   `spider move <session> mac`.
+2. Run `spider roam disable` on the hub.
+3. Run `systemctl --user stop spider-roam-supervisor.service` on the box.
+4. Run `spider roam provision <machine> --replace-core-pin` on the hub with the
+   same authentication options you normally use for provisioning.
+5. After doctor reports no blocks, start the supervisor on the box with
+   `systemctl --user start spider-roam-supervisor.service` and run
+   `spider roam enable` on the hub.
+
+Replacement refuses with `core-pin-in-use` while the box hosts sessions, while
+roaming remains enabled, or while the supervisor is active. The hub checks its
+authoritative session homes. The box also checks its local homes and service
+state. Replacement journals the previous and replacement pins before the atomic
+write. The hub journal retains both core identities, but CLI output shows only
+their SHA-256 hashes. Repeat the same operation ID and options after a lost reply.
+Ordinary provisioning never replaces a conflicting pin. A changed identity is
+`core-pin-changed`; changed pin settings are `core-pin-conflict`.
 
 While running, the supervisor checks core availability and process identity
 every ten seconds. Core loss stops hosting and exits with a diagnostic so

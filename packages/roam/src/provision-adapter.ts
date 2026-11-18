@@ -19,7 +19,7 @@ export interface AdapterOptions {
 export type HcProvisionAdapter = ProvisionPorts["transfer"] & { systemd: ProvisionPorts["systemd"]; verifyPeer(): Promise<ProvisionVerification> };
 const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 function failure(error: unknown, action: string): HerdrError {
-  const safe = new Set(["core-changed", "core-unavailable", "machine-not-found", "machine-ambiguous", "machine-mismatch", "machine-not-enrolled",
+  const safe = new Set(["core-changed","core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy",  "core-unavailable", "machine-not-found", "machine-ambiguous", "machine-mismatch", "machine-not-enrolled",
     "peer-invalidated", "unresolved-peer", "cli-timeout", "cli-aborted", "cli-exit", "stdin-error", "missing-hc", "spawn-error", "reply-too-large",
     "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",
     "consent-required", "invalid-provision-request", "invalid-provision-reply", "invalid-request", "unsafe-path", "unsafe-staging", "unsafe-context",
@@ -176,7 +176,10 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
   };
   return {
     async setEnabled(target, hubMachineId, enabled) { await action(target, "roaming-enabled", { hubMachineId, enabled }); },
-    async enroll(target, hubMachineId, coreUnit) { await action(target, "enrollment", { hubMachineId, coreUnit }); },
+    async enroll(target, hubMachineId, coreUnit, replaceCorePin) {
+      const value = await action(target, "enrollment", { hubMachineId, coreUnit, ...(replaceCorePin ? { replaceCorePin: true } : {}) });
+      if (replaceCorePin) return (value as { replacement: import("./enrollment").CorePinReplacement }).replacement;
+    },
     async cleanupSecrets(target: Peer) { await action(target, "clear-secrets"); },
     async installRelease(target: Peer, input: { bytes: Buffer; sha256: string; npmPrefix: string; globalRoot: string; pi: "1.2.0"; intercom: "spider-owned" }) {
       if (input.npmPrefix !== destination.npmPrefix || input.globalRoot !== peer.globalRoot || input.pi !== "1.2.0" ||

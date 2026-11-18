@@ -31,7 +31,8 @@ const configForRemote = configSource
   .replace('import type { IntercomConfig, IntercomConnectorRecipe, IntercomLimits, IntercomRoute, Limits, Peer, RoamConfig } from "./contracts";', "")
   .replace(/^export /gm, "");
 const machineIdForRemote = machineIdSource.replace(/^export /gm, "");
-const enrollmentForRemote = enrollmentSource.replace('import { parseConfig as parseRoamConfig } from "./config";', "");
+const enrollmentForRemote = enrollmentSource.replace('import { parseConfig as parseRoamConfig } from "./config";', "")
+  .replace('import { beginShortWrite, endShortWrite, type ReleaseOwner } from "./release-receipt";', "");
 const socketStart = coreParserSource.indexOf("export function selectedSocket(");
 const socketEnd = coreParserSource.indexOf("export function parseCore(", socketStart);
 if (socketStart < 0 || socketEnd <= socketStart) throw new Error("Cannot assemble core socket selection");
@@ -242,6 +243,33 @@ async function run(): Promise<unknown> {
       configHome: process.env.XDG_CONFIG_HOME || join(home, ".config") });
     const env = supervisorCoreEnvironment(corePin, process.env);
     if (releaseCore(corePin.binary, corePin.coreId, env) !== pid) bad("core-changed");
+    if (request.replaceCorePin !== undefined && typeof request.replaceCorePin !== "boolean") bad("invalid-request");
+    if (request.replaceCorePin) {
+      const configBytes = readPrivateBytes(roam, "config.json", maximum);
+      if (!configBytes) bad("core-pin-required");
+      const config = parseRoamConfig(JSON.parse(configBytes.toString("utf8")));
+      if (config.role !== "box" || config.machineId !== machineId || config.hubMachineId !== text("hubMachineId")) bad("enrollment-conflict");
+      const { DatabaseSync } = await import("node:sqlite");
+      const replacement = replaceSupervisorCorePin(globalRoot, corePin, operationId, () => {
+        if (config.enabled) bad("core-pin-in-use");
+        const unit = spawnSync("systemctl", ["--user", "show", "spider-roam-supervisor.service", "--property=ActiveState", "--value"],
+          { encoding: "utf8", timeout: 5000, maxBuffer: 4096, stdio: ["ignore", "pipe", "ignore"] });
+        if (unit.status !== 0 || !["inactive", "failed"].includes(unit.stdout.trim())) bad("core-pin-in-use");
+        const file = join(globalRoot, "spider.db");
+        if (exists(file)) {
+          const info = lstatSync(file);
+          if (!info.isFile() || info.isSymbolicLink() || !own(info) || info.nlink !== 1) bad("core-pin-in-use");
+          const db = new DatabaseSync(file, { readOnly: true });
+          try {
+            if ((db.prepare("SELECT machine_id FROM roam_meta WHERE id=1").get() as { machine_id?: unknown } | undefined)?.machine_id !== machineId ||
+                db.prepare("SELECT 1 FROM session_homes WHERE machine_id = ? LIMIT 1").get(machineId)) bad("core-pin-in-use");
+          } finally { db.close(); }
+        }
+        if (releaseCore(corePin.binary, corePin.coreId, env) !== pid) bad("core-changed");
+      });
+      const enrollment = installBoxEnrollment(globalRoot, machineId, text("hubMachineId"), text("coreUnit"));
+      return { enrollment, replacement };
+    }
     const result = installBoxEnrollment(globalRoot, machineId, text("hubMachineId"), text("coreUnit"), { corePin });
     releaseCore(corePin.binary, corePin.coreId, env);
     return result;

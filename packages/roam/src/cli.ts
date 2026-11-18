@@ -46,6 +46,7 @@ const HELP = `Usage: spider <command>
   spider roam doctor [machine]
   spider roam provision <machine> --use-destination-auth [--release <tarball>] [--yes] [--operation-id <id>]
   spider roam provision <machine> [--release <tarball>] [--no-settings] [--skill <name>]... [--yes --consent copilot-auth] [--consent-provider <name>]... [--operation-id <id>]
+  spider roam provision <machine> --replace-core-pin [other provision options]
   spider roam intercom enroll --graph <file> [--operation <id>]
   spider roam intercom cancel <pair-id>
   spider roam intercom revoke <pair-id>
@@ -381,14 +382,15 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   }
   if (argv[0] === "roam" && argv[1] === "provision") {
     if (!positional(argv[2], false)) { io.err("Invalid provisioning target.\n"); return 2; }
-    let release: string | undefined, operationId: string | undefined, yes = false, noSettings = false, useDestinationAuth = false, consent: string | null = null;
+    let release: string | undefined, operationId: string | undefined, yes = false, noSettings = false, useDestinationAuth = false, replaceCorePin = false, consent: string | null = null;
     const seen = new Set<string>(), skills: string[] = [], consentedProviders: string[] = [];
     for (let index = 3; index < argv.length; index++) {
       const flag = argv[index];
       if (flag !== "--skill" && flag !== "--consent-provider" && seen.has(flag) ||
-          !["--release", "--yes", "--use-destination-auth", "--no-settings", "--consent", "--operation-id", "--skill", "--consent-provider"].includes(flag)) { io.err("Invalid provisioning arguments.\n"); return 2; }
+          !["--release", "--yes", "--replace-core-pin", "--use-destination-auth", "--no-settings", "--consent", "--operation-id", "--skill", "--consent-provider"].includes(flag)) { io.err("Invalid provisioning arguments.\n"); return 2; }
       seen.add(flag);
       if (flag === "--yes") { yes = true; continue; }
+      if (flag === "--replace-core-pin") { replaceCorePin = true; continue; }
       if (flag === "--use-destination-auth") { useDestinationAuth = true; continue; }
       if (flag === "--no-settings") { noSettings = true; continue; }
       const value = argv[++index];
@@ -400,7 +402,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       else operationId = value;
     }
     const provisionIO = jsonOutput ? { out: io.err, err: io.err } : io;
-    const result = await runProvisionCli({ root, target: argv[2], release, yes, consent, operationId, skills, consentedProviders, noSettings, useDestinationAuth }, provisionIO, { bundleUrl: options?.bundleUrl });
+    const result = await runProvisionCli({ root, target: argv[2], release, yes, consent, operationId, skills, consentedProviders, noSettings, useDestinationAuth, replaceCorePin }, provisionIO, { bundleUrl: options?.bundleUrl });
     return jsonOutput ? emitOutcome(io, result, true) : result.code;
   }
   const parsed = normalize(argv);

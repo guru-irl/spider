@@ -152,18 +152,29 @@ export function createTerminalRegistry(root: string): TerminalRegistry {
         await withProcessLock(root, `terminal:${key}`, async () => {
           const previousRaw = await readPrivateJson(path(owner.terminal));
           const previous = previousRaw === null ? null : association(previousRaw);
-          if (r.launch) {
-            const privatePath = launchRecordPath(mapping);
-            try { await privateDirectory(dirname(privatePath)); await checkLaunchDirectory(privatePath); }
-            catch { throw invalidLaunchRecord(mapping); }
-            // Same-terminal writers hold this lock. Do not sweep another terminal's in-flight files.
-            for (const name of await readdir(dirname(privatePath))) if (name.startsWith(key) && name.endsWith('.new')) await unlink(join(dirname(privatePath), name));
-            await writeRecordedLaunch(mapping, r.launch);
-          }
           const markers = join(root, 'resume-starts', key);
           const live = started ? `live-${mapping.activityId}-${started.pid}` : '';
           if (started) await writePrivateJson(join(markers, live), { version: 1, ...started });
-          await writePrivateJson(path(owner.terminal), mapping);
+          try {
+            if (r.launch) {
+              const privatePath = launchRecordPath(mapping);
+              try { await privateDirectory(dirname(privatePath)); await checkLaunchDirectory(privatePath); }
+              catch { throw invalidLaunchRecord(mapping); }
+              // Same-terminal writers hold this lock. Do not sweep another terminal's in-flight files.
+              for (const name of await readdir(dirname(privatePath))) if (name.startsWith(key) && name.endsWith('.new')) await unlink(join(dirname(privatePath), name));
+              await writeRecordedLaunch(mapping, r.launch);
+            }
+            await writePrivateJson(path(owner.terminal), mapping);
+          } catch (error) {
+            if (r.launch) {
+              try {
+                // A failed directory sync can follow a successful rename. Keep any published record.
+                const published = await readPrivateJson(path(owner.terminal)) as TerminalAssociation | null;
+                if (published?.launchRecordId !== mapping.launchRecordId) await removeRecordedLaunch(mapping);
+              } catch { /* An uncertain publication retains its private record until the next write. */ }
+            }
+            throw error;
+          }
           if (previous?.launchRecorded && (!mapping.launchRecorded || launchRecordPath(previous) !== launchRecordPath(mapping))) await removeRecordedLaunch(previous);
           if (mapping.launchRecorded) {
             const currentPath = launchRecordPath(mapping), directory = dirname(currentPath);

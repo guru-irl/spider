@@ -56,7 +56,8 @@ it.each([false, true])('%s resume restores launch variables and tools without re
   const resumed = launches[0];
   expect(resumed.argv).toEqual([process.execPath, '--tools', 'read,spider', '--session', file]);
   expect(resumed.env.API_TOKEN === credential()).toBe(true);
-  expect(resumed.env).toMatchObject({ SERVICE_ROUTER: '1', PI_INTERCOM_STABLE_ID: 'stable-router', HC_TERMINAL_ID: 'current-terminal', TERM: 'current-term', TMPDIR: '/current-tmp', CURRENT_ONLY: 'keep', PI_CODING_AGENT_DIR: agent });
+  const expectedVariables = { SERVICE_ROUTER: '1', PI_INTERCOM_STABLE_ID: 'stable-router', HC_TERMINAL_ID: 'current-terminal', TERM: 'current-term', TMPDIR: '/current-tmp', CURRENT_ONLY: 'keep', PI_CODING_AGENT_DIR: agent };
+  expect(Object.entries(expectedVariables).filter(([name, value]) => resumed.env[name] !== value).map(([name]) => name)).toEqual([]);
   expect(resumed.env.SPIDER_HERDR_LEASE_TOKEN === 'stale-lease').toBe(false);
   expect((await readFile(file, 'utf8')).includes('"modelId":"current"')).toBe(true);
 });

@@ -57,6 +57,7 @@ function provisionFixture() {
   const ports: ProvisionPorts = {
     transport, journal, hubMachineId: HUB, limits: DEFAULT_LIMITS, coreUnit: "herdr-core.service",
     async withPeerLock(_machine, work) { return work(); },
+    async assertCorePinReplaceIdle() { throw new Error("unexpected pin replacement"); },
     async setParticipation(target, ready) {
       if (ready !== null) { await ports.transfer.setEnabled(target, HUB, ready); state.peerEnabled = ready; }
     },

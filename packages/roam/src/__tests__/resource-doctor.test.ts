@@ -196,14 +196,14 @@ it("blocks an unsafe roaming root and an unreadable existing identity", async ()
   expect(second.adminRepairCalls).toEqual([]);
 }, 5000);
 
-it("warns about a missing diagnostic core unit when the owned core socket exists", async () => {
+it("reports a missing diagnostic core unit as information when the owned core socket exists", async () => {
   const doctor = (doctorModule as { doctorPeer?: DoctorFn }).doctorPeer;
   expect(typeof doctor).toBe("function");
   const value = healthyInventory();
   value.core = { unit: null, unitExists: false, unitOwned: false, transient: null, socketExists: true, socketOwned: true };
   const test = fixture(value); test.ports.coreUnit = "session-host.service";
   const report = await doctor!(bootstrapPeer, test.ports);
-  expect(report.some(item => item.severity === "warning" && /core unit.*missing/i.test(item.reason))).toBe(true);
+  expect(report.some(item => item.severity === "info" && /core unit.*missing/i.test(item.reason))).toBe(true);
   expect(test.adminRepairCalls).toEqual([]);
 }, 5000);
 
@@ -218,13 +218,28 @@ it("inventory does not require the recorded diagnostic unit to survive a core re
 it.each([true, false])("doctor reports the current core unit and transient=%s", async transient => {
   const value = healthyInventory(); value.core.transient = transient;
   const report = await doctorModule.doctorPeer(bootstrapPeer, fixture(value).ports);
-  expect(report).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringMatching(transient ? /herdr-core\.service.*transient/ : /herdr-core\.service.*persistent/) })]));
+  expect(report).toEqual(expect.arrayContaining([expect.objectContaining({ severity: "info", reason: expect.stringMatching(transient ? /herdr-core\.service.*transient/ : /herdr-core\.service.*persistent/) })]));
+  expect(report.some(item => item.severity === "warning" && /core unit/.test(item.reason))).toBe(false);
 });
 
 it("does not suggest editing a transient unit to repair startup limits", async () => {
   const value = healthyInventory(); value.core.transient = true; value.hardNofile = 2048; value.softNofile = 1024;
   const report = await doctorModule.doctorPeer(bootstrapPeer, fixture(value).ports);
   expect(report.find(item => /hard.*open.file/i.test(item.reason))?.repairCommand).toBeNull();
+});
+
+it.each([
+  ["core-pin-required", "block"], ["core-pin-invalid", "block"], ["core-pin-changed", "block"], ["core-pin-unreachable", "warning"],
+] as const)("reports %s and derives hosting readiness from its severity", async (corePin, severity) => {
+  const test = fixture();
+  test.ports.verifyPeer = async () => ({ corePin, piSignedIn: true, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
+    bundledIntercom: true, intercomUnique: true, legacyDrained: true, federation: true,
+    intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: [] } });
+  const report = await doctorModule.doctorPeer(bootstrapPeer, test.ports);
+  expect(report).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining(corePin), severity })]));
+  expect(report.every(item => item.severity !== "block")).toBe(corePin === "core-pin-unreachable");
+  if (corePin === "core-pin-required") expect(report.find(item => item.reason.includes(corePin))?.repairCommand).toContain("spider roam provision");
+  if (corePin === "core-pin-changed") expect(report.find(item => item.reason.includes(corePin))?.repairCommand).toContain("--replace-core-pin");
 });
 
 it("doctor never installs or logs in and reports named intercom problems", async () => {
@@ -248,7 +263,7 @@ it("doctor never installs or logs in and reports named intercom problems", async
 
 it("accepts intercom hosting readiness only when all three checks are proved", async () => {
   const test = fixture();
-  test.ports.verifyPeer = async () => ({ piSignedIn: true, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
+  test.ports.verifyPeer = async () => ({ corePin: "ready", piSignedIn: true, nativeSqlite: true, extensionLoaded: true, exactSession: true, privateModes: true,
     bundledIntercom: true, intercomUnique: true, legacyDrained: true, federation: true,
     intercomEvidence: { settings: "settings-unique", legacy: "legacy-drained-private-agent", federation: "federation-v1", otherExtensions: ["ordinary-extension"] } });
   const report = await doctorModule.doctorPeer(bootstrapPeer, test.ports);

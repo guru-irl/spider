@@ -1361,7 +1361,7 @@ export function createProductionHerdrCliPorts(packageRoot: string, env: Readonly
       const identity = await client(request).caller(env), root = join(request.config.globalRoot, 'herdr');
       const mode = request.config.resume ?? 'offer', watch = resumeWatchShell(root, identity);
       try {
-        const offer = await offerResume(identity, { registry: createTerminalRegistry(root), processInventory: createProcessInventory(root), coreStartedAt: () => coreStartedAt(request.config.core.binary, env), ...(mode === 'auto' ? { autoResumeRoot: root } : {}) });
+        const offer = await offerResume(identity, { registry: createTerminalRegistry(root), refusalRoot: root, processInventory: createProcessInventory(root), coreStartedAt: () => coreStartedAt(request.config.core.binary, env), ...(mode === 'auto' ? { autoResumeRoot: root } : {}) });
         return watch + (offer ? resumeOfferShell(offer, { nodePath: process.execPath, cliPath: join(packageRoot, 'dist/herdr/cli.mjs'), configPath: request.configPath, hookPath: join(root, 'resume.sh') }, mode) : '');
       } catch (error) {
         const code = error instanceof HerdrError ? error.code : 'setup-failed';

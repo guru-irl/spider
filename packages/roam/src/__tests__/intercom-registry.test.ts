@@ -143,3 +143,11 @@ it("refuses a symlinked registry record without changing its target", async () =
   await expect(state.register(f.plan, "approval-1", "a".repeat(64))).rejects.toThrow();
   expect(readFileSync(target, "utf8")).toBe("untouched");
 }, 5000);
+
+
+it("retains explicit agent directories as part of the approved peer identity", async () => {
+  const f = fixture(), state = await registry(f.root), plan = { ...f.plan, source: { ...f.plan.source, agentDir: "/fixture/agent" } };
+  await state.register(plan, "approval-1", "a".repeat(64));
+  expect((await state.get(plan.pairId))?.pair.source.agentDir).toBe(plan.source.agentDir);
+  await expect(state.register({ ...plan, source: { ...plan.source, agentDir: "/fixture/other-agent" } }, "approval-1", "a".repeat(64))).rejects.toThrow("intercom-pair-conflict");
+}, 5000);

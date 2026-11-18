@@ -50,7 +50,7 @@ test('a watcher never sees a newly published mod without its manifest', async ()
     const states = watch(f.mods), journal = await readJournal(f.root);
     await prepareBackups(f.root, f.files, journal);
     await prepareModDirectories(f.root, f.home, f.files, journal);
-    await applyFiles(f.files, journal);
+    await applyFiles(f.root, f.files, journal);
     expect(states.length).toBeGreaterThan(0);
     expect(states.filter(state => state['spider-example'] && !state['spider-example'].includes('mod.json'))).toEqual([]);
     expect(await fs.readdir(f.directory)).toEqual(['helper.js', 'main.js', 'mod.json']);
@@ -61,7 +61,7 @@ test('a validated mod name without the spider prefix is also published complete'
   const f = await fixture('custom-widget');
   try {
     const states = watch(f.mods), journal = await readJournal(f.root);
-    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal); await applyFiles(f.files, journal);
+    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal); await applyFiles(f.root, f.files, journal);
     expect(states.filter(state => state['custom-widget'] && !state['custom-widget'].includes('mod.json'))).toEqual([]);
     expect(await fs.readdir(f.directory)).toEqual(['helper.js', 'main.js', 'mod.json']);
     await rollbackFiles(f.root, journal); await rollbackModDirectories(f.home, journal);
@@ -76,12 +76,12 @@ test('an interrupted publish stays invisible and the next run completes it', asy
     await prepareBackups(f.root, f.files, journal);
     await prepareModDirectories(f.root, f.home, f.files, journal);
     vi.mocked(fs.rename).mockImplementation(async (from, to) => { if (to === f.directory) throw new Error('interrupted publish'); return real.rename(from, to); });
-    await expect(applyFiles(f.files, journal)).rejects.toThrow('interrupted publish');
+    await expect(applyFiles(f.root, f.files, journal)).rejects.toThrow('interrupted publish');
     expect(await real.readdir(f.mods)).toEqual([]);
     vi.mocked(fs.rename).mockImplementation(real.rename);
     const recovered = await readJournal(f.root);
     await prepareModDirectories(f.root, f.home, f.files, recovered);
-    await applyFiles(f.files, recovered);
+    await applyFiles(f.root, f.files, recovered);
     expect(await fs.readFile(join(f.directory, 'mod.json'), 'utf8')).toBe('{"place":"none"}');
     await rollbackFiles(f.root, recovered); await rollbackModDirectories(f.home, recovered);
     expect(await real.readdir(f.mods)).toEqual([]);
@@ -94,7 +94,7 @@ test('rollback removes owned staging files after an interrupted publish', async 
     const journal = await readJournal(f.root);
     await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal);
     vi.mocked(fs.rename).mockImplementation(async (from, to) => { if (to === f.directory) throw new Error('interrupted publish'); return real.rename(from, to); });
-    await expect(applyFiles(f.files, journal)).rejects.toThrow('interrupted publish');
+    await expect(applyFiles(f.root, f.files, journal)).rejects.toThrow('interrupted publish');
     vi.mocked(fs.rename).mockImplementation(real.rename);
     const recovered = await readJournal(f.root);
     await rollbackFiles(f.root, recovered); await rollbackModDirectories(f.home, recovered);
@@ -115,7 +115,7 @@ test('a staging allocation interrupted before identity persistence is recovered 
     await expect(prepareModDirectories(f.root, f.home, f.files, journal)).rejects.toThrow('allocation interrupted');
     vi.mocked(fs.rename).mockImplementation(real.rename);
     const recovered = await readJournal(f.root);
-    await prepareModDirectories(f.root, f.home, f.files, recovered); await applyFiles(f.files, recovered);
+    await prepareModDirectories(f.root, f.home, f.files, recovered); await applyFiles(f.root, f.files, recovered);
     expect((await real.readdir(f.home)).filter(name => name.startsWith('.spider-mod-'))).toEqual([]);
     expect(await real.readFile(join(f.directory, 'mod.json'), 'utf8')).toBe('{"place":"none"}');
   } finally { await f.client.close(); }
@@ -128,7 +128,7 @@ test('an unowned staging file is never published as part of a mod', async () => 
     await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal);
     const staging = (await real.readdir(f.home)).find(name => name.startsWith('.spider-mod-'))!;
     await real.writeFile(join(f.home, staging, 'unowned.js'), 'user file');
-    await expect(applyFiles(f.files, journal)).rejects.toMatchObject({ code: 'mod-publication-conflict' });
+    await expect(applyFiles(f.root, f.files, journal)).rejects.toMatchObject({ code: 'mod-publication-conflict' });
     expect(await real.readdir(f.mods)).toEqual([]);
     expect(await real.readFile(join(f.home, staging, 'unowned.js'), 'utf8')).toBe('user file');
   } finally { await f.client.close(); }
@@ -146,7 +146,7 @@ test('an existing mod receives its placement manifest before executable updates'
       await real[name](from, to);
       if (await real.readFile(join(f.directory, 'main.js'), 'utf8') !== 'old') seen.push(await real.readFile(join(f.directory, 'mod.json'), 'utf8'));
     });
-    await prepareBackups(f.root, files, journal); await prepareModDirectories(f.root, f.home, files, journal); await applyFiles(files, journal);
+    await prepareBackups(f.root, files, journal); await prepareModDirectories(f.root, f.home, files, journal); await applyFiles(f.root, files, journal);
     expect(seen.length).toBeGreaterThan(0);
     expect(seen.every(manifest => manifest === '{"place":"none"}')).toBe(true);
   } finally { await f.client.close(); }
@@ -157,7 +157,7 @@ test('successful publication clears its staging record immediately', async () =>
   const f = await fixture();
   try {
     const journal = await readJournal(f.root);
-    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal); await applyFiles(f.files, journal);
+    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal); await applyFiles(f.root, f.files, journal);
     expect(journal.modStages ?? []).toEqual([]);
     expect((await readJournal(f.root)).modStages ?? []).toEqual([]);
   } finally { await f.client.close(); }
@@ -167,7 +167,7 @@ test('full rollback unpublishes before removing a manifest or executable', async
   const f = await fixture();
   try {
     const journal = await readJournal(f.root);
-    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal); await applyFiles(f.files, journal);
+    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal); await applyFiles(f.root, f.files, journal);
     const states = watch(f.mods);
     await rollbackFiles(f.root, journal); await rollbackModDirectories(f.home, journal);
     expect(states.filter(state => state['spider-example']?.includes('main.js') && !state['spider-example'].includes('mod.json'))).toEqual([]);
@@ -182,4 +182,24 @@ test('new setup writes respect a private umask', async () => {
     await atomicWrite(join(f.home, 'private.json'), Buffer.from('{}'), 0o644, null);
     expect((await fs.stat(join(f.home, 'private.json'))).mode & 0o777).toBe(0o600);
   } finally { process.umask(previous); await f.client.close(); }
+});
+
+
+test('unpublication verifies the renamed inode before deleting the directory', async () => {
+  const f = await fixture();
+  try {
+    const journal = await readJournal(f.root);
+    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal); await applyFiles(f.root, f.files, journal);
+    let impostor: string | undefined;
+    vi.mocked(fs.rename).mockImplementation(async (from, to) => {
+      await real.rename(from, to);
+      if (from === f.directory) {
+        impostor = String(to);
+        await real.rename(to, String(to) + '-kept'); await real.mkdir(to); await real.writeFile(join(String(to), 'user.txt'), 'do not delete');
+      }
+    });
+    await expect(rollbackFiles(f.root, journal)).rejects.toMatchObject({ code: 'mod-unpublication-conflict' });
+    expect(await real.readFile(join(impostor!, 'user.txt'), 'utf8')).toBe('do not delete');
+    expect(await real.readFile(join(impostor! + '-kept', 'main.js'), 'utf8')).toBe('import "./helper.js";');
+  } finally { await f.client.close(); }
 });

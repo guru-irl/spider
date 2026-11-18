@@ -53,7 +53,7 @@ export async function launchSession(request: SessionLaunchRequest, ports: Sessio
   try {
     const header = await readSessionHeader(file); if (header.id !== request.sessionId) throw new HerdrError('session-id-mismatch', 'Session file identity changed');
     const argv = recorded ? await replayLaunchArgv(recorded, file) : [SESSION_PROGRAM, '--session', file];
-    const env = { ...safeLaunchEnvironment(recorded ? replayLaunchVariables(ports.env, recorded) : ports.env), PI_CODING_AGENT_DIR: environment.agentDirectory, SPIDER_HERDR_LEASE_TOKEN: lease.token, SPIDER_HERDR_LEASE_FILE: file };
+    const env = { ...safeLaunchEnvironment(recorded ? replayLaunchVariables(ports.env, recorded) : ports.env), PI_CODING_AGENT_DIR: recorded?.variables.PI_CODING_AGENT_DIR ?? environment.agentDirectory, SPIDER_HERDR_LEASE_TOKEN: lease.token, SPIDER_HERDR_LEASE_FILE: file };
     starting = true;
     let process: ProcessIdentity | void;
     try { process = await ports.spawnPi({ ...request, sessionFile: file, environment, argv, env }); }

@@ -152,11 +152,14 @@ function pruneReleaseChunks(stage: string): void {
   }
   if (removed) syncDirectory(stage);
 }
-function releaseCore(core: string, coreId: string): void {
-  const status = spawnSync(core, ["server", "status", "--json"], { encoding: "utf8", timeout: 5000, maxBuffer: 16_384, stdio: ["ignore", "pipe", "ignore"] });
+function releaseCore(core: string, coreId: string, env: Readonly<NodeJS.ProcessEnv> = process.env): unknown {
+  const status = spawnSync(core, ["server", "status", "--json"], { env, encoding: "utf8", timeout: 5000, maxBuffer: 16_384, stdio: ["ignore", "pipe", "ignore"] });
   if (status.status !== 0) bad("core-unavailable");
-  try { if (JSON.parse(status.stdout).core.id !== coreId) bad("core-changed"); }
-  catch (error) { if (error && typeof error === "object" && "code" in error && error.code === "core-changed") throw error; bad("core-unavailable"); }
+  try {
+    const reply = JSON.parse(status.stdout);
+    if (reply.core.id !== coreId) bad("core-changed");
+    return reply.pid;
+  } catch (error) { if (error && typeof error === "object" && "code" in error && error.code === "core-changed") throw error; bad("core-unavailable"); }
 }
 function releaseTerminals(core: string, coreId: string, operationId: string, machineId: string): "none" | "live" | "finished" {
   releaseCore(core, coreId);
@@ -229,12 +232,18 @@ async function run(): Promise<unknown> {
   }
   try {
   if (action === "enrollment") {
-    releaseCore(text("core"), text("coreId"));
-    const corePin = { binary: text("core"), coreId: text("coreId"), socket: enrollmentSocket(process.env),
+    const pid = releaseCore(text("core"), text("coreId"));
+    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) bad("core-unavailable");
+    // hc injects the owning socket into terminal context. Never save a conflicting override.
+    const socket = process.env.HC_TERMINAL_SOCKET || enrollmentSocket(process.env);
+    if (process.env.HC_SOCKET && process.env.HC_SOCKET !== socket) bad("core-pin-invalid");
+    const corePin = parseSupervisorCorePin({ binary: text("core"), coreId: text("coreId"), socket,
       sessionNamespace: process.env.HC_SESSION || "default", stateHome: process.env.XDG_STATE_HOME || join(home, ".local/state"),
-      configHome: process.env.XDG_CONFIG_HOME || join(home, ".config") };
+      configHome: process.env.XDG_CONFIG_HOME || join(home, ".config") });
+    const env = supervisorCoreEnvironment(corePin, process.env);
+    if (releaseCore(corePin.binary, corePin.coreId, env) !== pid) bad("core-changed");
     const result = installBoxEnrollment(globalRoot, machineId, text("hubMachineId"), text("coreUnit"), { corePin });
-    releaseCore(text("core"), text("coreId"));
+    releaseCore(corePin.binary, corePin.coreId, env);
     return result;
   }
   if (action === "clear-secrets") {

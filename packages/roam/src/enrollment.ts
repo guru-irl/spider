@@ -59,6 +59,11 @@ export function installBoxEnrollment(root: string, machineId: string, hubMachine
 export interface SupervisorCorePin {
   binary: string; coreId: string; socket: string; sessionNamespace: string; stateHome: string; configHome: string;
 }
+/** Terminal context must never redirect a pinned core operation. */
+export function supervisorCoreEnvironment(pin: SupervisorCorePin, base: Readonly<NodeJS.ProcessEnv>): Readonly<NodeJS.ProcessEnv> {
+  const clean = Object.fromEntries(Object.entries(base).filter(([key]) => !key.startsWith("HC_")));
+  return Object.freeze({ ...clean, HC_SOCKET: pin.socket, HC_SESSION: pin.sessionNamespace, XDG_STATE_HOME: pin.stateHome, XDG_CONFIG_HOME: pin.configHome });
+}
 function supervisorPinError(code: string): never { throw Object.assign(new Error(code), { code }); }
 function parseSupervisorCorePin(value: unknown): SupervisorCorePin {
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).sort().join() !== "binary,configHome,coreId,sessionNamespace,socket,stateHome") return supervisorPinError("core-pin-invalid");

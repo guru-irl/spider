@@ -707,3 +707,15 @@ test('N3 an unrelated layout label is not a mod reference', async () => {
   expect(JSON.parse(await fs.readFile(f.paths.layout, 'utf8'))).toEqual({ content: [], generation: 1, label: 'spider-example' });
   expect((await snapshot(f.paths.main)).hash).toBeNull();
 });
+
+
+test('N3 an array added by setup retains custom nodes outside its entries', async () => {
+  const f = await fixture(), stage = f.parts.stageLook;
+  await put(f.paths.layout, '{"generation":1}');
+  const journal = await readJournal(f.request.journalRoot); journal.entries.find(entry => entry.path === f.paths.layout)!.after = (await snapshot(f.paths.layout)).hash!; await saveJournal(f.request.journalRoot, journal);
+  f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from('{"generation":2,"content":[{"id":"owned","mod":"spider-toast"}]}') } : file);
+  await setupHerdr(f.request, f.parts);
+  await put(f.paths.layout, '{"generation":2,"content":[{"id":"owned","mod":"spider-toast"},{"id":"custom","size":321}]}');
+  await undoHerdrUpgrade(f.request, f.parts);
+  expect(JSON.parse(await fs.readFile(f.paths.layout, 'utf8'))).toEqual({ generation: 1, content: [{ id: 'custom', size: 321 }] });
+});

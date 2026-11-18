@@ -9,12 +9,13 @@ import { createIntercomBridge, type IntercomBridge } from "../intercom-bridge";
 import { provisionIntercomEnrollment, revokeIntercomPair } from "../intercom-enrollment";
 import { runLocalPairOperation, type LocalPairOperation } from "../intercom-local-ops";
 import { encodePairCommand, pairKeyAbsent, removePairKey } from "../intercom-pair-files";
-import { createProductionIntercomEnrollmentPorts } from "../intercom-production";
+import { createProductionIntercomEnrollmentPorts, createProductionIntercomRevocationPorts } from "../intercom-production";
 import { createIntercomRegistry } from "../intercom-registry";
 import { openIntercomStore } from "../intercom-store";
 import { openJournal } from "../journal";
 import { withHopExchange } from "./intercom-hop-fixture";
 import { legacyPairCommand } from "./intercom-command-fixture";
+import { cleanupPairScenarios, scenario } from "./intercom-pair-fixture";
 
 const HUB = "00000000-0000-4000-8000-000000000001";
 const A = "00000000-0000-4000-8000-000000000002", B = "00000000-0000-4000-8000-000000000003";
@@ -23,6 +24,7 @@ afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.stop();
   for (const store of stores.splice(0)) store.close();
   for (const root of roots.splice(0)) rmSync(root, { force: true, recursive: true });
+  cleanupPairScenarios();
 });
 const clock = { now: () => Date.now(), later(ms: number, fn: () => void) { const timer = setTimeout(fn, ms); return () => clearTimeout(timer); } };
 const unavailable = async (): Promise<never> => { throw new Error("unexpected transport call"); };
@@ -163,6 +165,41 @@ it("restores a revoked pair with a fresh epoch without admitting fenced federati
   expect(await f.revoke()).toMatchObject({ code: 0, reason: "intercom-revoked", value: { cleanupReason: null } });
   expect(f.command(restored).status).toBe(126);
   await expect(f.exchange(restored.target, "edge-2")).rejects.toThrow("peer-revoked");
+}, 10_000);
+
+it.each(["hub", "endpoint", "explicit"] as const)("closes a command-approved pending restore with production %s revocation", async mode => {
+  const f = await scenario();
+  expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0 });
+  const hubPorts = (fenceEpoch?: string) => createProductionIntercomRevocationPorts({ root: f.root, localMachineId: HUB, hub: true, fenceEpoch,
+    transport: f.transport, localCore: async () => "core-hub", fenceLocal: unavailable, cleanupLocal: unavailable, notify: async () => {} });
+  expect(await revokeIntercomPair("pair-1", hubPorts())).toMatchObject({ code: 0, value: { cleanupReason: null } });
+  const request = { ...f.request, operation: { ...f.request.operation, id: "approval-2" }, pairs: [{ ...f.request.pairs[0], edgeEpoch: "edge-2" }] };
+  const local = f.locals.get(A)!, originalRun = local.run;
+  local.run = async (argv, options) => {
+    if (argv[1] === "exec") throw new Error("interrupted transport probe");
+    return originalRun(argv, options);
+  };
+  const enrollment = createProductionIntercomEnrollmentPorts({ root: f.root, journal: f.journal, transport: f.transport, request,
+    actor: "fixture", now: () => 1000, async present() {}, async approve() { return true; }, async notify() {}, async warn() {} });
+  expect(await provisionIntercomEnrollment(request, enrollment)).toMatchObject({ code: 3 });
+  const record = (await createIntercomRegistry(f.target.globalRoot).get("pair-1"))!, pair = record.pair as IntercomEnrollmentPair;
+  const command = () => spawnSync(process.execPath, [join(pair.target.globalRoot, "roam", "intercom", "pairs", "pair-1", "edge-2", "command.mjs")],
+    { env: { ...process.env, SSH_ORIGINAL_COMMAND: encodePairCommand(pair, "printf admitted") }, encoding: "utf8", timeout: 2000 });
+  expect(record).toMatchObject({ state: "pending", commandApprovalFenceId: record.fenceId });
+  expect(command()).toMatchObject({ status: 0, stdout: "admitted" });
+  const bridge = createIntercomBridge({ machineId: B, machineAlias: pair.target.alias,
+    edges: [{ peer: pair.source, edgeEpoch: "edge-2", initiator: false }], store: f.queues.get(B)!, clock, transport: noTransport,
+    localPresence: () => [], authoritativeHome: () => null });
+  bridges.push(bridge); await bridge.start();
+  const exchange = () => bridge.exchange({ version: 1, holdMs: 0, deadlineMs: 5000,
+    exchange: withHopExchange({ protocol: 5, senderMachine: A, recipientMachine: B,
+      generation: { edgeEpoch: "edge-2", channel: "push", generation: 1 }, frames: [], acknowledgements: [], receipts: [], controls: [], presence: [] }) });
+  await expect(exchange()).rejects.toThrow("peer-revoked");
+  const ports = mode === "endpoint" ? f.revokePorts : hubPorts(mode === "explicit" ? "edge-1" : undefined);
+  expect(await revokeIntercomPair("pair-1", ports)).toMatchObject({ code: 0, value: { cleanupReason: null } });
+  expect(command().status).toBe(126);
+  expect(pairKeyAbsent(f.locals.get(B)!.home, pair, record.resources!.publicKey!)).toBe(true);
+  await expect(exchange()).rejects.toThrow("peer-revoked");
 }, 10_000);
 
 it("retains the federation fence across a lost fresh command-approval reply and a failed transport probe", async () => {

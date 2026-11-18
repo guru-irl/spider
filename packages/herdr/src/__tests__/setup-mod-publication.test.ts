@@ -15,9 +15,9 @@ afterEach(() => {
   vi.restoreAllMocks();
   for (const name of ['mkdir', 'rename', 'link', 'unlink'] as const) vi.mocked(fs[name]).mockImplementation(real[name] as never);
 });
-async function fixture() {
+async function fixture(modId = 'spider-example') {
   const client = await createClientFixture();
-  const home = join(client.root, 'app-home'), root = join(client.root, 'setup'), mods = join(home, 'mods'), directory = join(mods, 'spider-example');
+  const home = join(client.root, 'app-home'), root = join(client.root, 'setup'), mods = join(home, 'mods'), directory = join(mods, modId);
   await fs.mkdir(mods, { recursive: true });
   const files = [
     { path: join(directory, 'helper.js'), expected: null, bytes: Buffer.from('export const value = 2;') },
@@ -54,6 +54,18 @@ test('a watcher never sees a newly published mod without its manifest', async ()
     expect(states.length).toBeGreaterThan(0);
     expect(states.filter(state => state['spider-example'] && !state['spider-example'].includes('mod.json'))).toEqual([]);
     expect(await fs.readdir(f.directory)).toEqual(['helper.js', 'main.js', 'mod.json']);
+  } finally { await f.client.close(); }
+});
+
+test('a validated mod name without the spider prefix is also published complete', async () => {
+  const f = await fixture('custom-widget');
+  try {
+    const states = watch(f.mods), journal = await readJournal(f.root);
+    await prepareBackups(f.root, f.files, journal); await prepareModDirectories(f.root, f.home, f.files, journal); await applyFiles(f.files, journal);
+    expect(states.filter(state => state['custom-widget'] && !state['custom-widget'].includes('mod.json'))).toEqual([]);
+    expect(await fs.readdir(f.directory)).toEqual(['helper.js', 'main.js', 'mod.json']);
+    await rollbackFiles(f.root, journal); await rollbackModDirectories(f.home, journal);
+    expect(await real.readdir(f.mods)).toEqual([]);
   } finally { await f.client.close(); }
 });
 

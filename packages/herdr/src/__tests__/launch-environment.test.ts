@@ -270,6 +270,15 @@ it('refuses missing or mismatched private records instead of silently resuming w
   await expect(offerResume(terminal, offerPorts(false))).rejects.toMatchObject({ code: 'launch-record-invalid' });
 });
 
+it('refuses private data from a different mapping publication for the same session', async () => {
+  await record();
+  const data = JSON.parse(await readFile(secretPath(), 'utf8'));
+  data.recordedAt = 9;
+  await writeFile(secretPath(), JSON.stringify(data), { mode: 0o600 });
+  await expect(launchSession(request(), resumePorts())).rejects.toMatchObject({ code: 'launch-record-invalid' });
+  expect(launches).toHaveLength(0);
+});
+
 it('never exposes recorded variable values through shell offers, diagnostics, or parse errors', async () => {
   const output: string[] = [];
   for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) vi.spyOn(console, method).mockImplementation((...args) => { output.push(args.map(String).join(' ')); });

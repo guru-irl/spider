@@ -167,11 +167,11 @@ it("does not hide an unverifiable replica from status or doctor", async () => {
     const before = snapshot(root), out: string[] = [], err: string[] = [];
     expect(await main(["roam", "status", "--json"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
     expect(JSON.parse(out.join(""))).toMatchObject({ cached: true, complete: false,
-      diagnostics: [expect.objectContaining({ reason: expect.stringMatching(/cannot inspect.*store.*WAL commit boundary/i) })] });
+      diagnostics: [expect.objectContaining({ severity: "block", reason: expect.stringMatching(/cannot inspect.*store.*WAL index is missing.*opening or closing/i) })] });
     expect(snapshot(root)).toEqual(before);
     out.length = 0;
     expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
-    expect(out.join("")).toMatch(/cannot inspect.*store.*WAL commit boundary/i);
+    expect(out.join("")).toMatch(/cannot inspect.*store.*WAL index is missing.*opening or closing/i);
     expect(err).toEqual([]); expect(snapshot(root)).toEqual(before);
   } finally { repo.close(); global.close(); }
 }, 5000);

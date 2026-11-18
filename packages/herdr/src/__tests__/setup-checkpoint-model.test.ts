@@ -65,7 +65,7 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
   await put(join(dirname(storeCopy), modStoreFileName({ version: 1 })), 'old store');
   const stage = f.parts.stageLook;
   f.parts.stageLook = async (...args) => (await stage(...args)).map(file => file.path === f.paths.layout ? { ...file, bytes: Buffer.from(JSON.stringify(nextLayout)) } : file);
-  let shellEdit = false, settingsEdit = false, keysEdit = false, move = false, templateEdit = false, appEdit = false;
+  let shellEdit = false, settingsEdit = false, keysEdit = false, move = false, templateEdit = false, appEdit = false, failedAttempt = false;
   const cutover = f.parts.cutover;
   f.parts.cutover = async (...args) => {
     const previous = await fs.readFile(f.paths.spaces).catch(() => null);
@@ -149,11 +149,12 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
           expect(error.message).toContain('--replace-changed');
           await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
         }
+        failedAttempt = false;
       };
       if ((!cp || ['undone', 'superseded'].includes(cp.state)) && ['bookkeeping', 'journal-crash'].includes(step)) await rememberBaseline();
       switch (step) {
         case 'setup': case 'replace': await setup(step === 'replace'); break;
-        case 'bookkeeping': try { await metadataRepeat(f); } catch (error) { if (!(error instanceof HerdrError) || !['unowned-clone-collision', 'managed-artifact-changed'].includes(error.code)) throw error; expect(error.message).toContain('--replace-changed'); await metadataRepeat(f, true); } break;
+        case 'bookkeeping': try { await metadataRepeat(f); } catch (error) { if (!(error instanceof HerdrError) || !['unowned-clone-collision', 'managed-artifact-changed'].includes(error.code)) throw error; expect(error.message).toContain('--replace-changed'); await metadataRepeat(f, true); } failedAttempt = false; break;
         case 'remote': {
           const bytes = Buffer.from('runtime-v2'), machine = 'box-1.invalid' as import('../contracts.js').MachineName;
           let remote: Buffer | null = null;
@@ -169,7 +170,7 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
         case 'shell': shellEdit = true; await fs.appendFile(shell, 'alias user=true\n'); break;
         case 'settings': case 'pi': settingsEdit = true; await put(f.paths.settings, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.settings, 'utf8')), user: 'keep' })); break;
         case 'keys': { keysEdit = true; const keys = JSON.parse(await fs.readFile(f.paths.keys, 'utf8')); keys.global['ctrl-z'] = 'user.action'; await put(f.paths.keys, JSON.stringify(keys)); break; }
-        case 'app': appEdit = true; await put(f.paths.layout, JSON.stringify({ ...JSON.parse(await fs.readFile(f.paths.layout, 'utf8')), userSize: 321 })); await put(storeCopy, 'runtime store'); break;
+        case 'app': { const current = await snapshot(f.paths.layout); if (!current.bytes) break; appEdit = true; await put(f.paths.layout, JSON.stringify({ ...JSON.parse(current.bytes.toString()), userSize: 321 })); await put(storeCopy, 'runtime store'); break; }
         case 'template': templateEdit = true; await put(f.paths.added, 'runtime instructions'); f.parts.generateTemplates = async () => [{ path: f.paths.added, expected: (await snapshot(f.paths.added)).hash, bytes: Buffer.from('runtime instructions') }]; { const journal = await readJournal(f.request.journalRoot), entry = journal.entries.find(entry => entry.path === f.paths.added); if (entry) { entry.after = digest(Buffer.from('runtime instructions')); await saveJournal(f.request.journalRoot, journal); } } break;
         case 'move': move = true; await put(f.paths.spaces, '{"placements":["moved"]}'); break;
         case 'fail-retry': {
@@ -182,24 +183,24 @@ async function model(steps: readonly Step[], checkPrefixes = true) {
         case 'batch-crash': case 'cutover-crash': {
           f.fail(step === 'cutover-crash');
           if (step === 'batch-crash') {
-            if (cp?.state === 'complete') await rememberBaseline();
+            if (cp?.state === 'complete' && !failedAttempt) await rememberBaseline();
             const install = f.parts.installFiles;
             f.parts.installFiles = async (...args) => (await install(...args)).map(file => file.path === f.paths.main ? { ...file, bytes: Buffer.from(`model-main-${index}`) } : file);
             expect(await interrupted(() => setup(true), target => target === f.paths.main, true)).toBe(true);
           }
           else { const journal = await readJournal(f.request.journalRoot); journal.verified = false; await saveJournal(f.request.journalRoot, journal); await expect(setup(true)).rejects.toThrow('injected cutover interruption'); }
-          f.fail(false); break;
+          f.fail(false); failedAttempt = true; break;
         }
         case 'undo-crash': case 'pi-during-undo': {
           if (cp && !['undone', 'superseded'].includes(cp.state)) {
             await interrupted(() => undoHerdrUpgrade(f.request, f.parts), target => target === f.paths.main, false);
             if (step === 'pi-during-undo') { await put(f.paths.added, 'runtime instructions'); templateEdit = true; f.parts.generateTemplates = async () => [{ path: f.paths.added, expected: (await snapshot(f.paths.added)).hash, bytes: Buffer.from('runtime instructions') }]; }
-            await attemptUndo(true);
+            if (await attemptUndo(true)) failedAttempt = false;
           } break;
         }
         case 'doctor': { const report = await doctorHerdr(f.request, { targets: async () => [], inspect: async () => ({ failures: [] }), launchHistory: async () => [], probeMachineNode: async () => 'v22.19.0' }); expect(report.failures.map(failure => failure.code)).toEqual((await fs.readFile(f.paths.notes, 'utf8')).includes('notes = true') ? ['native-notes-enabled'] : []); break; }
-        case 'undo': case 'undo-replace': await attemptUndo(step === 'undo-replace'); break;
-        case 'rollback': if (cp?.state === 'undoing') await attemptUndo(true); await rollbackHerdr(f.request, f.parts); expect((await snapshot(f.paths.registry)).hash).toBeNull(); break;
+        case 'undo': case 'undo-replace': if (await attemptUndo(step === 'undo-replace')) failedAttempt = false; break;
+        case 'rollback': if (cp?.state === 'undoing') await attemptUndo(true); await rollbackHerdr(f.request, f.parts); expect((await snapshot(f.paths.registry)).hash).toBeNull(); failedAttempt = false; templateEdit = templateEdit && (await snapshot(f.paths.added)).hash !== null; break;
       }
       if (checkPrefixes) { await blobs(f); await probe(); }
     } catch (error) { throw new Error(`Sequence: ${steps.slice(0, index + 1).join(' → ')}\n${String(error)}`, { cause: error }); }

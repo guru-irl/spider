@@ -7,7 +7,7 @@ import { HerdrError } from '../client/parse.js';
 import { parseHerdrConfig } from '../config.js';
 import { applyFiles, digest, mergeTerminalKeys, prepareBackups, readJournal, saveJournal, snapshot } from '../setup/backup.js';
 import * as installer from '../setup/installer.js';
-import { rollbackHerdr, setupHerdr, type InstallFile, type SetupParts, type SetupRequest } from '../setup/installer.js';
+import { undoHerdrUpgrade, rollbackHerdr, setupHerdr, type InstallFile, type SetupParts, type SetupRequest } from '../setup/installer.js';
 import { runHerdrCli } from '../setup/cli.js';
 
 vi.mock('node:fs/promises', async importOriginal => {
@@ -66,7 +66,7 @@ async function fixture() {
   let fail = false, ownerLive = false, verificationFails = false;
   const installed = async (path: string, bytes: string, context: { installed: Readonly<Record<string, string>> }): Promise<InstallFile> => ({ path, bytes: Buffer.from(bytes), expected: context.installed[path] ?? null });
   const parts: SetupParts = {
-    preflight: async () => ({ fingerprint: 'assets-2', coreIdentity: { coreId: 'core-1', socket: join(root, 'core.sock') }, mods: [{ directory: dirname(paths.main) }], targets: [], retiredTerminals: [], layoutExport: true,
+    preflight: async () => ({ fingerprint: 'assets-2', coreIdentity: { coreId: 'core-1' as import('../contracts.js').CoreId, socket: join(root, 'core.sock'), sessionNamespace: 'fixture' }, mods: [{ directory: dirname(paths.main) }], targets: [], retiredTerminals: [], layoutExport: true,
       recoveredCutover: { terminals: [], identities: { old: 'owner-1' } }, cutoverActions: ['Update fixture'] }),
     stageLook: async (_, context) => [await installed(paths.font, 'old-font', context), await installed(paths.theme, 'old-theme', context), await installed(paths.layout, installedLayout, context)],
     installFiles: async (_, context) => [await installed(paths.svg, '<svg/>', context), await installed(paths.main, 'new-main', context), await installed(paths.manifest, '{"place":"none"}', context),
@@ -86,28 +86,27 @@ async function fixture() {
   };
   return { request, parts, paths, all, before, fail: (value: boolean) => { fail = value; }, live: (value: boolean) => { ownerLive = value; }, badDoctor: () => { verificationFails = true; } };
 }
-function undo(request: SetupRequest): SetupRequest { return { ...request, undoUpgrade: true } as SetupRequest; }
 
 test('undo restores the first failed-attempt checkpoint after a successful retry, including legacy files and registry', async () => {
   const f = await fixture(); f.fail(true);
   await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('injected cutover interruption');
   expect(await fs.readFile(f.paths.layout, 'utf8')).toBe(nativeLayout);
   f.fail(false); await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
-  await rollbackHerdr(undo(f.request), f.parts);
+  await undoHerdrUpgrade(f.request, f.parts);
   expect(await values(f.all)).toEqual(f.before);
 });
 
 test('undo restores a single successful upgrade byte for byte and mode for mode', async () => {
-  const f = await fixture(); await setupHerdr(f.request, f.parts); await rollbackHerdr(undo(f.request), f.parts);
+  const f = await fixture(); await setupHerdr(f.request, f.parts); await undoHerdrUpgrade(f.request, f.parts);
   expect(await values(f.all)).toEqual(f.before);
 });
 
 test('undo refuses a later user edit before touching any path unless replacement is explicit', async () => {
   const f = await fixture(); await setupHerdr(f.request, f.parts); await put(f.paths.main, 'user edit', 0o664);
   const edited = await values(f.all);
-  await expect(rollbackHerdr(undo(f.request), f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-changed' });
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-changed' });
   expect(await values(f.all)).toEqual(edited);
-  await rollbackHerdr({ ...undo(f.request), replaceChanged: true }, f.parts);
+  await undoHerdrUpgrade({ ...f.request, replaceChanged: true }, f.parts);
   expect(await values(f.all)).toEqual(f.before);
 });
 
@@ -119,18 +118,31 @@ test('full rollback still removes historically installed files but restores the 
   expect((await values([f.paths.registry]))[0]).toEqual(f.before.find(file => file.path === f.paths.registry));
 });
 
+test('full rollback retains a changed registry and reports incomplete restoration until repaired', async () => {
+  const f = await fixture(); await setupHerdr(f.request, f.parts);
+  const installed = await fs.readFile(f.paths.registry), output: string[] = [];
+  await put(f.paths.registry, '{"user":"changed registry"}\n');
+  const ports = { request: async () => f.request, setupParts: async () => f.parts, doctorParts: async () => { throw new Error('unused'); }, stdout: (text: string) => output.push(text), stderr: (text: string) => output.push(text) };
+  expect(await runHerdrCli(['rollback'], ports)).toBe(3);
+  expect(await fs.readFile(f.paths.registry, 'utf8')).toBe('{"user":"changed registry"}\n');
+  expect((await readJournal(f.request.journalRoot)).entries.map(entry => entry.path)).toEqual([f.paths.registry]);
+  await fs.writeFile(f.paths.registry, installed);
+  expect(await runHerdrCli(['rollback'], ports)).toBe(0);
+  expect((await values([f.paths.registry]))[0]).toEqual(f.before.find(file => file.path === f.paths.registry));
+});
+
 test('a failed attempt is undoable before any successful retry', async () => {
   const f = await fixture(); f.fail(true); await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('injected cutover interruption');
-  await rollbackHerdr(undo(f.request), f.parts);
+  await undoHerdrUpgrade(f.request, f.parts);
   expect(await values(f.all)).toEqual(f.before);
 });
 
 test('an interrupted undo resumes without replacing a later user edit silently', async () => {
   const f = await fixture(); await setupHerdr(f.request, f.parts);
   vi.mocked(fs.rename).mockImplementation(async (from, to) => { if (to === f.paths.layout) throw new Error('interrupted undo'); return real.rename(from, to); });
-  await expect(rollbackHerdr(undo(f.request), f.parts)).rejects.toThrow('interrupted undo');
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toThrow('interrupted undo');
   vi.mocked(fs.rename).mockImplementation(real.rename);
-  await rollbackHerdr(undo(f.request), f.parts);
+  await undoHerdrUpgrade(f.request, f.parts);
   expect(await values(f.all)).toEqual(f.before);
 });
 
@@ -152,7 +164,7 @@ test('undo refuses a setup-journal edit racing the file restoration phase', asyn
     await real.rename(from, to);
     if (to === f.paths.main) await real.writeFile(f.paths.journal, '{"user":"changed during undo"}\n');
   });
-  await expect(rollbackHerdr(undo(f.request), f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-changed' });
+  await expect(undoHerdrUpgrade(f.request, f.parts)).rejects.toMatchObject({ code: 'upgrade-checkpoint-changed' });
   expect(await real.readFile(f.paths.journal, 'utf8')).toBe('{"user":"changed during undo"}\n');
 });
 
@@ -162,24 +174,24 @@ test('an endpoint-only upgrade is checkpointed before its first registry write',
   f.parts.paneEndpointPlan = async () => ({ paths: [f.paths.registry], changed: (await fs.readFile(f.paths.registry, 'utf8')) !== next });
   f.parts.stagePaneEndpoint = async () => { await put(f.paths.registry, next); return [f.paths.registry]; };
   await setupHerdr(f.request, f.parts);
-  await rollbackHerdr(undo(f.request), f.parts);
+  await undoHerdrUpgrade(f.request, f.parts);
   expect(await values(f.all)).toEqual(before);
 });
 
 test('undo returns and prints remote files from every recorded run without contacting the machine', async () => {
   const f = await fixture(), machine = 'box-1.invalid' as import('../contracts.js').MachineName, path = '/home/fixture/runtime-v2.mjs';
-  let remote: Buffer | null = null;
+  const remote = { bytes: null as Buffer | null };
   f.parts.ensureRuntime = async () => [{ machine, path, bytes: Buffer.from('runtime-v2'), sha256: digest(Buffer.from('runtime-v2')) }];
   f.parts.hc = {
-    fileRead: async () => { if (remote === null) throw new HerdrError('file-not-found', 'absent'); return remote; },
-    fileWrite: async (_machine, _path, bytes) => { remote = bytes; },
+    fileRead: async () => { if (remote.bytes === null) throw new HerdrError('file-not-found', 'absent'); return remote.bytes; },
+    fileWrite: async (_machine, _path, bytes) => { remote.bytes = bytes; },
   };
   f.fail(true); await expect(setupHerdr(f.request, f.parts)).rejects.toThrow('injected cutover interruption');
   f.fail(false); await setupHerdr({ ...f.request, replaceChanged: true }, f.parts);
   f.parts.hc = { fileRead: async () => { throw new Error('undo contacted machine'); }, fileWrite: async () => { throw new Error('undo contacted machine'); } };
   const result = await installer.undoHerdrUpgrade?.(f.request, f.parts);
   expect(result?.remoteNotRestored).toEqual([{ machine: 'box-1.invalid', path: '/home/fixture/runtime-v2.mjs' }]);
-  expect(remote?.toString()).toBe('runtime-v2');
+  expect(remote.bytes?.toString()).toBe('runtime-v2');
   expect(await values(f.all)).toEqual(f.before);
 
   const g = await fixture(), output: string[] = [];

@@ -240,7 +240,7 @@ it('0.1.16: falls back to native remote rows only until a pane snapshot is avail
   expect(test.commands).not.toContainEqual(['pane.focus', { pane: 'p1' }]);
   test.setExec(async () => ok({ version: 1, kind: 'outcome', outcome: { status: 'complete', reason: 'presented', presentation: null } }));
   root = test.view.render(test.cx);
-  expect(byId(root, 'ag-box-1.invalid/unpinned')).toBeUndefined();
+  expect(byId(root, 'ag-box-1.invalid/unpinned') === undefined).toBe(true);
   const projected = byId(root, 'ag-core-1/source');
   expect(projected?.events.on_click).toBeDefined();
   projected!.events.on_click(); await Promise.resolve();

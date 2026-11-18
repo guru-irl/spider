@@ -1,11 +1,12 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import * as enrollment from "../enrollment";
 import { runLocalDoctor } from "../local-diagnostics";
+import { main } from "../cli";
 
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function fixture(state: string) {
   const base = resolve(".spider/scratch/core-pin-doctor"); mkdirSync(base, { recursive: true, mode: 0o700 });
   const root = mkdtempSync(join(base, "f-")); roots.push(root); mkdirSync(join(root, "roam"), { mode: 0o700 });
@@ -23,8 +24,20 @@ console.log(JSON.stringify({version:'0.1.16',core:{id:${JSON.stringify(state ===
   if (state === "unreadable") writeFileSync(file, "not-json", { mode: 0o600 });
   writeFileSync(join(root, "roam/config.json"), JSON.stringify({ enabled: false, role: "box", machineId: "00000000-0000-4000-8000-000000000001",
     hubMachineId: "00000000-0000-4000-8000-000000000002", peers: [], coreUnit: "fixture.service" }), { mode: 0o600 });
+  writeFileSync(join(root, "roam/machine.json"), JSON.stringify({ machineId: "00000000-0000-4000-8000-000000000001" }), { mode: 0o600 });
   return { root, pin };
 }
+
+it("the public doctor retains pin blocks and unit information on a disabled box", async () => {
+  const f = fixture("missing"); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  let output = "";
+  expect(await main(["roam", "doctor", "--json"], { out(text) { output += text; }, err() {} })).toBe(1);
+  const result = JSON.parse(output);
+  expect(result.value.diagnostics).toEqual(expect.arrayContaining([
+    expect.objectContaining({ severity: "block", reason: expect.stringContaining("core-pin-required") }),
+    expect.objectContaining({ severity: "info", reason: expect.stringContaining("core unit") }),
+  ]));
+});
 
 it.each([
   ["ready", "ready"], ["missing", "core-pin-required"], ["unsafe", "core-pin-invalid"], ["unreadable", "core-pin-invalid"],

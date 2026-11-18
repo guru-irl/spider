@@ -138,7 +138,7 @@ it("verifies destination sign-in by metadata without reading credential contents
   writeFileSync(auth, "contents must not be inspected", { mode: 0o600 });
   const hook = join(f.root, "guard.mjs");
   writeFileSync(hook, `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
-const original=fs.openSync; fs.openSync=function(file,...args){if(file===${JSON.stringify(auth)}){fs.writeFileSync(${JSON.stringify(audit)},'read');throw new Error('auth-read-forbidden');}return original(file,...args);};syncBuiltinESMExports();`);
+for(const key of ['openSync','readFileSync']){const original=fs[key];fs[key]=function(file,...args){if(file===${JSON.stringify(auth)}){fs.writeFileSync(${JSON.stringify(audit)},'read');throw new Error('auth-read-forbidden');}return original(file,...args);};}syncBuiltinESMExports();`);
   const run = () => {
     const request = { action: "verify", operationId: "metadata-only", machineId, home: f.home, agentDir, globalRoot, npmPrefix: prefix,
       unitDir: join(f.home, ".config/systemd/user"), cli: join(prefix, "lib/package/dist/roam/cli.mjs"), pi: join(prefix, "bin/pi"),
@@ -149,6 +149,8 @@ const original=fs.openSync; fs.openSync=function(file,...args){if(file===${JSON.
     expect(child.status).toBe(0); return JSON.parse(child.stdout);
   };
   expect(run()).toMatchObject({ value: { piSignedIn: true } }); expect(existsSync(audit)).toBe(false);
-  chmodSync(auth, 0o644);
-  expect(run()).toMatchObject({ value: { piSignedIn: false } }); expect(existsSync(audit)).toBe(false);
+  for (const mode of [0o400, 0o000, 0o644, 0o1600]) {
+    chmodSync(auth, mode);
+    expect(run()).toMatchObject({ value: { piSignedIn: false, privateModes: false } }); expect(existsSync(audit)).toBe(false);
+  }
 }, 5000);

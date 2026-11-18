@@ -677,6 +677,7 @@ it("requires every readiness check before declaring hosting ready", async () => 
 
 it.each(["missing", "unsafe", "ready"] as const)("checks destination sign-in metadata before effects: %s", async status => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.source.piProviders = [];
   f.value.auth.pi = { present: status !== "missing", readable: status !== "missing", modeSafe: status === "ready" };
   const request = { ...f.request("destination-auth"), requireDestinationAuth: true };
   const result = await provision!(request, f.ports);

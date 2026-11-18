@@ -34,7 +34,7 @@ test('the composer rejects duplicate agent fragment ids across files', () => {
     writeFileSync(versionPath, JSON.stringify(version));
     const result = spawnSync(process.execPath, ['scripts/compose-spaces-b.mjs', '--check'], { cwd: root, encoding: 'utf8' });
     expect(result.status).not.toBe(0);
-    expect(result.stderr.match(/^Error:.*$/m)?.[0]).toMatch(/duplicate.*id/i);
+    expect(result.stderr.match(/^(?:Error|AssertionError)[^\n]*/m)?.[0]).toMatch(/duplicate.*id/i);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

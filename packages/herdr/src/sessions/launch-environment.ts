@@ -31,8 +31,8 @@ export function recordedLaunch(value: unknown): RecordedLaunch {
   return { program: r.program, ...(r.node ? { node: { execPath: r.node.execPath, execArgv: [...r.node.execArgv] } } : {}), argv: [...r.argv], cwd: r.cwd, variables: { ...r.variables }, ...(r.model ? { model: { provider: r.model.provider, modelId: r.model.modelId } } : {}) };
 }
 
-export function captureLaunch(program: string, argv: readonly string[], cwd: string, env: Readonly<NodeJS.ProcessEnv>): RecordedLaunch {
-  return recordedLaunch({ program: resolve(program), argv, cwd, variables: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)) });
+export function captureLaunch(program: string, argv: readonly string[], cwd: string, env: Readonly<NodeJS.ProcessEnv>, node?: RecordedLaunch['node']): RecordedLaunch {
+  return recordedLaunch({ program: resolve(program), argv, cwd, ...(node ? { node } : {}), variables: Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)) });
 }
 
 export const CURRENT_LAUNCH_VARIABLES: { readonly names: readonly string[]; readonly prefixes: readonly string[] } = { names: [

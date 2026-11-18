@@ -43,6 +43,17 @@ it("cancels the unbound operation after a core change, then enrolls with fresh a
   expect(f.errors()).toContain("intercom-enrollment-bound");
   expect((await registry.get("pair-1"))?.state).toBe("active");
 }, 10000);
+it("names revocation after a core change once the pair is bound", async () => {
+  const f = await fixture(), registry = createIntercomRegistry(f.root);
+  f.enrollment.hostConnector = async () => "unhosted";
+  expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ reason: "intercom-tunnel-unhosted" });
+  const record = (await registry.get("pair-1"))!;
+  await expect(registry.cancelPending("pair-1", record.operationId, record.graphDigest)).rejects.toThrow("intercom-enrollment-bound");
+  const pin = f.transport.pinIntercomPeer.bind(f.transport);
+  vi.spyOn(f.transport, "pinIntercomPeer").mockImplementation(async peer => ({ ...await pin(peer), coreId: `restarted-${peer.machineId}` }));
+  expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ reason: "core-changed", repairCommand: "spider roam intercom revoke pair-1" });
+}, 10000);
+
 it("keeps a predecessor fence recoverable after revoke, re-enrollment, core change, and cancel", async () => {
   const f = await fixture(), root = f.source.globalRoot, machineId = f.source.machineId;
   vi.stubEnv("SPIDER_GLOBAL_ROOT", root);

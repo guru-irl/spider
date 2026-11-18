@@ -158,7 +158,9 @@ async function closedAppPlacement(suite: Suite): Promise<void> {
       globalRoot, shellRc: join(suite.root, 'shellrc'), spaces: [], machines: [] }), { mode: 0o600 });
   }
   await mkdir(join(workspace, '.spider'), { recursive: true, mode: 0o700 });
-  await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: sessionId, cwd: workspace }) + '\n', { mode: 0o600 });
+  await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: sessionId, cwd: workspace, timestamp: '2026-01-01T00:00:00.000Z' }) + '\n' +
+    JSON.stringify({ type: 'message', id: 'entry-r02', parentId: null, timestamp: '2026-01-01T00:00:00.000Z',
+      message: { role: 'user', content: 'fixture conversation', timestamp: 1 } }) + '\n', { mode: 0o600 });
   const boxDb = openDb(join(box, 'spider.db')), worktree = openDb(join(workspace, '.spider/project.db'));
   migrate(worktree, 'worktree', { machineId: BOX, globalRoot: box });
   const repoKey = '00000000-0000-4000-8000-000000000003', workspaceId = '00000000-0000-4000-8000-000000000004';

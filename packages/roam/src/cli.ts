@@ -126,19 +126,8 @@ async function readArtifactInput(limit: number, supplied?: Buffer): Promise<Buff
 }
 
 /** Parse before loading configuration, a database, or a transport. */
-function setupPendingCause(error: unknown): { code: string; message: string } {
-  const code = enrollmentCauseCode(error);
-  const message = (error instanceof Error ? error.message : "Unknown setup failure")
-    .replace(/-----BEGIN [^-]+-----[\s\S]*?-----END [^-]+-----/g, "[redacted]")
-    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
-    .replace(/\b(?:token|secret|password|credential|api[_-]?key|authorization)\s*[:=]\s*[^\s,;]+/gi, "[redacted]")
-    .replace(/https?:\/\/[^\s]+/gi, "[redacted]")
-    .replace(/(["'])(?:\/|[A-Za-z]:[\\/])[\s\S]*?\1/g, "[redacted]")
-    .replace(/(?:[A-Za-z]:[\\/]|\/)[^\s"'<>;,)]*/g, "[redacted]")
-    .replace(/\bssh-(?:ed25519|rsa)\s+[^\s]+/g, "[redacted]")
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").replace(/[\u0000-\u001f\u007f]/g, " ")
-    .slice(0, 240);
-  return { code, message: message || "Unknown setup failure" };
+function setupPendingCause(error: unknown): { code: string } {
+  return { code: enrollmentCauseCode(error) };
 }
 
 export async function main(argv: readonly string[], io: CommandIO, options?: { bundleUrl?: URL; stdin?: Buffer; pairPorts?: LocalPairPorts; fencePort?: typeof requestHelperFence; intercomOptions?: IntercomCliOptions; intercomDoctor?: Parameters<typeof runLocalDoctor>[0]["intercomDoctor"]; runDisabledForget?: RunDisabledForget; moveFactory?: import("./move-runtime-contracts").MoveRuntimeFactory; placementFactory?: import("./contracts").PlacementFactory }): Promise<number> {

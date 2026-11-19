@@ -315,7 +315,7 @@ it("names the private npm diagnostic receipt after an installation failure", asy
   expect(errors).toMatch(/new operation/i);
 }, 5000);
 
-it("reports switchover permissions and the repair command through the CLI", async () => {
+it("reports preview permissions before mutation through the CLI", async () => {
   const previous = process.umask(0o002);
   try {
     const f = fixture(), sourceAgent = join(f.root, "source-agent"), home = join(f.root, "remote-home");
@@ -351,6 +351,7 @@ it("reports switchover permissions and the repair command through the CLI", asyn
     vi.spyOn(coreClient, "invokeCli").mockImplementation(async (_binary, argv) => argv[0] === "server"
       ? { core: { id: "local-core" }, version: "0.1.16" }
       : { machines: [{ name: f.request.target, id: "remote-core" }] });
+    const mutations: string[] = [];
     vi.spyOn(bytesClient, "invokeBytes").mockImplementation(async (_binary, argv, _env, options) => {
       if (argv.includes("cat")) return Buffer.from(JSON.stringify({ machineId: f.request.machineId }));
       if (argv.includes(BOOTSTRAP_AGENT_DIRECTORY_SCRIPT)) return Buffer.from(JSON.stringify({ version: 1, kind: "agent-directory", value: "default" }));
@@ -359,7 +360,10 @@ it("reports switchover permissions and the repair command through the CLI", asyn
         const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", BOOTSTRAP_SETTINGS_SCRIPT], {
           input: JSON.stringify({ ...request, home, agentDir: agent }), encoding: "utf8", env: { ...process.env, HOME: home, NODE_NO_WARNINGS: "1" }, timeout: 4000,
         });
-        expect(child.status).toBe(0); expect(child.stderr).toBe(""); return Buffer.from(child.stdout);
+        expect(child.status).toBe(0); expect(child.stderr).toBe("");
+        const reply = JSON.parse(child.stdout) as { path?: string };
+        if (reply.path) reply.path = reply.path.replace(home, "/home/fixture");
+        return Buffer.from(JSON.stringify(reply));
       }
       if (argv.includes(BOOTSTRAP_SCRIPT)) return Buffer.from(JSON.stringify(inventoryEnvelope({ ...healthyInventory(),
         roaming: { rootExists: true, rootSafe: true, identityExists: true, machineId: f.request.machineId },
@@ -367,6 +371,7 @@ it("reports switchover permissions and the repair command through the CLI", asyn
       if (argv.includes(BOOTSTRAP_IDENTITY_SCRIPT)) return Buffer.from(JSON.stringify({ version: 1, kind: "identity", coreId: "remote-core", machineId: f.request.machineId }));
       expect(argv).toContain(PROVISION_REMOTE_SCRIPT);
       const request = JSON.parse(options.stdin!.toString("utf8")) as Record<string, string>;
+      mutations.push(request.action);
       if (request.action === "enrollment") return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: "enrolled" }));
       if (request.action === "clear-secrets") return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: true }));
       if (request.action === "release-observe") {
@@ -392,15 +397,16 @@ it("reports switchover permissions and the repair command through the CLI", asyn
     const repair = "chmod go-w '/home/fixture/.pi/agent/extensions'";
     let output = "", errors = "";
     const io = { out(text: string) { output += text; }, err(text: string) { errors += text; } };
-    expect(await main([...base, "--operation-id", "permissions-text"], io)).toBe(3);
+    expect(await main([...base, "--operation-id", "permissions-text"], io)).toBe(1);
     expect(errors).toContain("destination-permissions-unsafe"); expect(errors).toContain(repair);
     expect(lstatSync(extensions).mode & 0o777).toBe(0o775);
     expect(existsSync(join(extensions, "spider.ts"))).toBe(false);
-    expect(JSON.parse(readFileSync(join(globalRoot, "roam", "provision", "permissions-text-install", "release-receipt.json"), "utf8"))).toMatchObject({ state: "finished" });
+    expect(existsSync(join(globalRoot, "roam", "provision", "permissions-text-install", "release-receipt.json"))).toBe(false);
+    expect(mutations).toEqual([]);
     output = ""; errors = "";
-    expect(await main([...base, "--operation-id", "permissions-json", "--json"], io)).toBe(3);
-    expect(JSON.parse(output)).toMatchObject({ code: 3, reason: "destination-permissions-unsafe", repairCommand: repair });
-    expect(errors).toContain(repair);
+    expect(await main([...base, "--operation-id", "permissions-json", "--json"], io)).toBe(1);
+    expect(JSON.parse(output)).toMatchObject({ code: 1, reason: "destination-permissions-unsafe", repairCommand: repair });
+    expect(errors).toContain(repair); expect(mutations).toEqual([]);
   } finally { process.umask(previous); }
 }, 10_000);
 

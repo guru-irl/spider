@@ -36,5 +36,6 @@ export function safeCauseCode(value: unknown): string | undefined {
 }
 export function causeCode(error: unknown, step: CauseStep): string {
   const code = error && typeof error === "object" && "code" in error ? safeCauseCode(error.code) : undefined;
-  return code ?? `unexpected-${step}`;
+  const peerCause = error && typeof error === "object" && "causeCode" in error ? safeCauseCode(error.causeCode) : undefined;
+  return code ?? peerCause ?? `unexpected-${step}`;
 }

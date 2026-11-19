@@ -29,7 +29,7 @@ import { listStoreKeys, parseUngathered } from "./store-inventory";
 import { createStorePort } from "./stores";
 import { createTransport, createProvisionTransport } from "./transport";
 
-export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string }[];
+export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string; causeCode?: string }[];
   information?: readonly { machine: string; reason: string }[] }
 const clean = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 1000);
 function preflightCheck(reason: string): string {
@@ -100,16 +100,19 @@ async function locked<T>(root: string, config: RoamConfig, work: () => Promise<T
   return withProcessLock(join(root, "roam"), key, work,
     { identity: { pid: process.pid, startIdentity: self.startIdentity }, probe, timeoutMs });
 }
-async function agent(transport: Transport, peer: Peer, config: RoamConfig, kind: string, args: JsonObject): Promise<JsonObject> {
+async function agent(transport: Transport, peer: Peer, config: RoamConfig, kind: Extract<CauseStep, "stores" | "recheck-store" | "enable-capture">, args: JsonObject): Promise<JsonObject> {
   const operation: Operation = { id: randomUUID(), machineId: peer.machineId, expectedEpoch: null, kind, args };
   const handle = await transport.resolve(peer);
   const bytes = await transport.exec(handle, ["roam", "agent", JSON.stringify(operation)],
     { timeoutMs: config.limits.controlMs, maxBytes: config.limits.replyBytes });
   const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid peer response");
-  const result = value as { code?: unknown; reason?: unknown; operationId?: unknown; value?: unknown };
+  const result = value as { code?: unknown; reason?: unknown; operationId?: unknown; value?: unknown; causeCode?: unknown };
   if (result.operationId !== operation.id || ![0, 1, 2, 3].includes(result.code as number)) throw new AgentResponseError("peer-response-invalid");
-  if (result.code !== 0) throw new AgentResponseError(agentFailureCode(result.reason) ?? "agent-operation-failed");
+  if (result.code !== 0) {
+    const check = agentFailureCode(result.reason) ?? "agent-operation-failed";
+    throw new AgentResponseError(check, check === "agent-operation-failed" ? safeCauseCode(result.causeCode) ?? causeCode(null, kind) : undefined);
+  }
   if (!result.value || typeof result.value !== "object" || Array.isArray(result.value)) throw new AgentResponseError("peer-response-invalid");
   return result.value as JsonObject;
 }
@@ -141,7 +144,7 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
       const config = readLocalIdentity(root), herdr = loadHerdrConfig(root);
       if (config.machineId !== initial.machineId || config.role !== "hub") throw new Error("Roaming configuration changed during the operation");
       const transport = createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers });
-      const inventories: Array<{ peer: Peer; keys: StoreKey[] }> = [], failures: Array<{ reason: string; repairCommand: string; detail?: string }> = [];
+      const inventories: Array<{ peer: Peer; keys: StoreKey[] }> = [], failures: Array<{ reason: string; repairCommand: string; detail?: string; causeCode?: string }> = [];
       const information: Array<{ machine: string; reason: string }> = [];
       for (const peer of config.peers) {
         const name = clean(peer.alias), argument = /^[A-Za-z0-9_]/.test(peer.alias) ? name : peer.machineId;

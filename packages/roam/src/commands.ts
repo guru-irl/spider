@@ -171,7 +171,9 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
     if (Array.isArray(raw.issues)) value.issues = raw.issues.flatMap(item => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return [];
       const issue = item as Record<string, unknown>, reason = token(issue.reason), repairCommand = safeRepair(issue.repairCommand);
-      return reason && repairCommand ? [{ reason, repairCommand, ...(issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
+      const cause = reason?.endsWith(":agent-operation-failed") ? safeCauseCode(issue.causeCode) : undefined;
+      return reason && repairCommand ? [{ reason, repairCommand, ...(cause ? { causeCode: cause } : {}),
+        ...(issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
     });
   }
   let refusal: MoveRefusal | undefined;

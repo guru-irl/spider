@@ -1,3 +1,5 @@
+import { safeCauseCode } from "./cause-codes";
+
 const agentReasons = ["store-inventory-incomplete", "agent-operation-failed", "capture-unsafe"] as const;
 type AgentFailureCode = typeof agentReasons[number];
 export function agentFailureCode(reason: unknown): AgentFailureCode | null {
@@ -7,7 +9,10 @@ export function agentFailureCode(reason: unknown): AgentFailureCode | null {
 }
 export class AgentResponseError extends Error {
   readonly check: AgentFailureCode | "peer-response-invalid";
-  constructor(check: AgentFailureCode | "peer-response-invalid") { super("Peer agent refused the operation"); this.check = check; }
+  readonly causeCode?: string;
+  constructor(check: AgentFailureCode | "peer-response-invalid", cause?: unknown) {
+    super("Peer agent refused the operation"); this.check = check; this.causeCode = safeCauseCode(cause);
+  }
 }
 
 const unreachableCodes = ["machine-not-found", "connection-refused", "connection-closed"];
@@ -20,14 +25,16 @@ export function peerErrorCode(error: unknown): string | null {
 }
 
 /** Never infer connectivity from a participant's answered application error. */
-export function peerPreflightIssue(error: unknown, name: string, argument: string): { reason: string; repairCommand: string; detail?: string } {
+export function peerPreflightIssue(error: unknown, name: string, argument: string): { reason: string; repairCommand: string; detail?: string; causeCode?: string } {
   const code = error instanceof Error && error.name === "HerdrError" && "code" in error ? error.code : null;
   if (typeof code === "string" && localCodes.includes(code)) return { reason: `preflight-failed:${name}:local-herdr-unavailable`, repairCommand: "spider roam doctor", detail: localRepair };
   const detail = peerFailureReason(error);
   if (typeof code === "string" && unreachableCodes.includes(code))
     return { reason: `box-unreachable:${name}`, repairCommand: `spider roam forget ${argument}`, ...(detail ? { detail } : {}) };
   const check = error instanceof AgentResponseError ? error.check : code === "cli-exit" ? "peer-command-failed" : code === "cli-timeout" ? "peer-command-timeout" : "peer-response-invalid";
-  return { reason: `preflight-failed:${name}:${check}`, repairCommand: `spider roam doctor ${argument}`, ...(detail ? { detail } : {}) };
+  const cause = error instanceof AgentResponseError && check === "agent-operation-failed" ? error.causeCode : undefined;
+  return { reason: `preflight-failed:${name}:${check}`, repairCommand: `spider roam doctor ${argument}`,
+    ...(cause ? { causeCode: cause, detail: `Agent operation failed (${cause})` } : detail ? { detail } : {}) };
 }
 
 /** Produce a bounded diagnostic without copying a peer's stderr into status. */

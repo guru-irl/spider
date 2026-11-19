@@ -531,8 +531,8 @@ it("ignores a terminal with different server-side labels", async () => {
 }, 15_000);
 
 it.each([
-  ["wrong operation", { "spider.operation": "another-op", "spider.machine": "11111111-1111-4111-8111-111111111111" }],
-  ["wrong machine", { "spider.operation": "op-1", "spider.machine": "22222222-2222-4222-8222-222222222222" }],
+  ["wrong operation", { "spider.operation": "another-op", "spider.machine": "other-box.invalid" }],
+  ["wrong machine", { "spider.operation": "op-1", "spider.machine": "wrong-box.invalid" }],
   ["missing machine", { "spider.operation": "op-1" }],
   ["null labels", null],
   ["array labels", []],

@@ -98,6 +98,7 @@ export function controlWarningText(value: string): string {
 /** Do not serialize arbitrary participant values or error messages at a public boundary. */
 export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknown }): SafeControlOutcome {
   const home = safeHome(result.home);
+  // provision.ts is the sole producer of permission repairs and binds them to the destination home.
   const safeRepair = (value: unknown): string | null => typeof value === "string" && (/^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
     /^spider roam provision [A-Za-z0-9._-]+ --operation-id [A-Za-z0-9._-]+$/.test(value) ||
     result.reason === "destination-permissions-unsafe" && isPermissionRepairCommand(value)) ? value : null;

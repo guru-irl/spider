@@ -12,16 +12,16 @@ try {
   if (raw.length > 2 * 1024 * 1024) throw new Error("request");
   const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
   if (!input || typeof input !== "object" || Array.isArray(input) ||
-      Object.keys(input).sort().join(",") !== "agentDir,home,maximum,paths" ||
+      !["agentDir,home,maximum,paths", "agentDir,home,maximum,paths,selectedPaths"].includes(Object.keys(input).sort().join(",")) ||
       typeof input.home !== "string" || input.home !== bootstrapSettingsHome() ||
       typeof input.agentDir !== "string") throw new Error("request");
-  const value = inspectDestinationSettingsDigests({ home: input.home, destinationRoot: input.agentDir, paths: input.paths, maximum: input.maximum });
+  const value = inspectDestinationSettingsDigests({ home: input.home, destinationRoot: input.agentDir, paths: input.paths, maximum: input.maximum, selectedPaths: input.selectedPaths });
   process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", value }));
 } catch (error) {
   const allowed = new Set(["invalid-destination-settings", "unsafe-destination", "invalid-settings-preview", "destination-permissions-unsafe"]);
   let code = error instanceof SelectedFilesError && allowed.has(error.code) ? error.code : "settings-preview-failed";
   const path = code === "destination-permissions-unsafe" && error instanceof SelectedFilesError && error.files.length === 1 &&
-    isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f]/.test(error.files[0]) ? error.files[0] : undefined;
+    isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(error.files[0]) ? error.files[0] : undefined;
   if (code === "destination-permissions-unsafe" && !path) code = "unsafe-destination";
   process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", error: code, ...(path ? { path } : {}) }));
 }

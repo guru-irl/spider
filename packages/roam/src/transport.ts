@@ -12,8 +12,8 @@ import { isMachineId } from './machine-id';
 import { normalizeConfiguredClis, normalizeCoreUnit, parseBootstrapInventory, sanitizeBootstrapError } from './bootstrap-reply';
 import type { BootstrapPeer, CallOptions, Journal, Peer, Transport } from './contracts';
 import type { AgentDirectoryProbe, CoreFence } from './provision-contracts';
-import { validSettingsDigests } from './selected-files';
-import { destinationPermissionPath } from './provision-permissions';
+import { validSettingsDigests, validSelectedPaths } from './selected-files';
+import { destinationPermissionPath, permissionTreeRoot } from './provision-permissions';
 import type { SettingsDestinationPreview, SettingsKeyDigest } from './selected-files';
 
 type CoreObservation = CoreFence;
@@ -81,7 +81,7 @@ export interface ProvisionTransport {
   pinIntercomPeer(peer: Peer): Promise<{ handle: Peer; machineId: string; coreId: string }>;
   probeHome(peer: Peer): Promise<string>;
   probeAgentDirectory(peer: Peer, home: string): Promise<AgentDirectoryProbe>;
-  previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence): Promise<SettingsDestinationPreview>;
+  previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence, selectedPaths?: readonly string[]): Promise<SettingsDestinationPreview>;
   claimIdentity(peer: Peer, operationId: string, core: CoreFence): Promise<{ machineId: string; coreId: string }>;
   executeProvision(peer: Peer, request: Record<string, unknown>): Promise<unknown>;
   launchRelease(peer: Peer, operationId: string, requestFile: string): Promise<{ terminal: string }>;
@@ -360,7 +360,10 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         typeof reply.operationId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(reply.operationId);
       const permissionRoots = ['release-observe', 'release-prepare'].includes(request.action) ? [request.npmPrefix]
         : ['install-files', 'auth-install', 'switchover'].includes(request.action) ? [request.agentDir] : [];
-      const permission = reply.error === 'destination-permissions-unsafe' && Object.keys(reply).length === 4 &&
+      const recursive = reply.recursive === true && ['release-observe', 'release-prepare'].includes(request.action) &&
+        typeof request.npmPrefix === 'string' && permissionTreeRoot(reply.path, request.npmPrefix);
+      const permission = reply.error === 'destination-permissions-unsafe' &&
+        (Object.keys(reply).length === 4 && !Object.hasOwn(reply, 'recursive') || Object.keys(reply).length === 5 && recursive) &&
         destinationPermissionPath(reply.path, request.home, permissionRoots);
       if (reply.kind !== 'provision' || reply.version !== 1 ||
           !(Object.keys(reply).length === 3 && reply.error !== 'release-in-progress' && reply.error !== 'destination-permissions-unsafe' || blocked || permission)) {
@@ -380,7 +383,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         if (typeof reply.error !== 'string' || !allowed.has(reply.error)) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         if (reply.error === 'core-changed') { invalidate(state.peer.alias, state, 'core-changed'); throw coreChanged(); }
         throw new HerdrError(reply.error, blocked ? `Provisioning is blocked by operation ${reply.operationId}` : 'Provisioning operation failed',
-          blocked ? { blockingOperationId: reply.operationId } : permission ? { path: reply.path } : undefined);
+          blocked ? { blockingOperationId: reply.operationId } : permission ? { path: reply.path, ...(recursive ? { recursive: true } : {}) } : undefined);
       }
       if (!Object.hasOwn(reply, 'value')) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
       if (request.action === 'enrollment') {
@@ -481,17 +484,17 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         throw safe;
       }
     },
-    async previewSettings(peer, home, entries, maximum, requestedCore) {
+    async previewSettings(peer, home, entries, maximum, requestedCore, selectedPaths = []) {
       const target = bootstrapTarget(peer);
       if (typeof home !== 'string' || home === '/' || home.length > 4096 || !posix.isAbsolute(home) || posix.normalize(home) !== home ||
-          /[\u0000-\u001f\u007f]/.test(home) || !validCore(requestedCore) || !validSettingsDigests(entries) ||
+          /[\u0000-\u001f\u007f]/.test(home) || !validCore(requestedCore) || !validSettingsDigests(entries) || !validSelectedPaths(selectedPaths) ||
           !Number.isSafeInteger(maximum) || maximum <= 0 || maximum > 256 * 1024 * 1024) {
         throw new HerdrError('invalid-bootstrap-request', 'Invalid settings preview request');
       }
       const expectedCore = { ...requestedCore }, prior = provisionCores.get(target.alias);
       if (prior && !sameCore(prior, expectedCore)) throw coreChanged();
       const snapshot = entries.map(entry => ({ path: [...entry.path], sha256: entry.sha256 }));
-      const stdin = Buffer.from(JSON.stringify({ home, agentDir: target.agentDir ?? posix.join(home, '.pi', 'agent'), paths: snapshot.map(entry => entry.path), maximum }));
+      const stdin = Buffer.from(JSON.stringify({ home, agentDir: target.agentDir ?? posix.join(home, '.pi', 'agent'), paths: snapshot.map(entry => entry.path), maximum, ...(selectedPaths.length ? { selectedPaths } : {}) }));
       if (stdin.length > 2 * 1024 * 1024) { stdin.fill(0); throw new HerdrError('invalid-bootstrap-request', 'Invalid settings preview request'); }
       try {
         const result = await bracket({ kind: 'bootstrap', peer: target }, undefined, DEFAULT_LIMITS.controlMs, async (signal, remainingMs, core) => {

@@ -141,6 +141,20 @@ function parentPath(root: string, relative: string, create: boolean): string {
   }
   return current;
 }
+export function validSelectedPaths(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.length <= maxFileCount && value.every(allowed);
+}
+function inspectDestinationParents(home: string, root: string, selectedPaths: readonly string[]): void {
+  for (const relative of ["extensions/spider.ts", ...selectedPaths]) {
+    let current = home;
+    for (const part of join(root, relative).slice(home.length + 1).split(sep).slice(0, -1)) {
+      current = join(current, part);
+      if (!exists(current)) break;
+      try { destinationDirectory(current); }
+      catch (error) { if (error instanceof SelectedFilesError) throw error; fail("unsafe-destination"); }
+    }
+  }
+}
 function nativeMac(bytes: Buffer): boolean {
   if (bytes.length < 4) return false;
   return new Set([0xfeedface, 0xcefaedfe, 0xfeedfacf, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca]).has(bytes.readUInt32BE(0));
@@ -313,8 +327,9 @@ export function selectedSettingsDigests(file: SelectedFile): SettingsKeyDigest[]
 }
 
 /** Read box settings without creating or changing paths, returning only value digests and a fingerprint. */
-export function inspectDestinationSettingsDigests(input: { home: string; destinationRoot: string; paths: readonly (readonly string[])[]; maximum: number }): SettingsDestinationDigests {
+export function inspectDestinationSettingsDigests(input: { home: string; destinationRoot: string; paths: readonly (readonly string[])[]; maximum: number; selectedPaths?: readonly string[] }): SettingsDestinationDigests {
   if (!input || !validSettingPaths(input.paths) || !Number.isSafeInteger(input.maximum) || input.maximum <= 0 || input.maximum > 256 * 1024 * 1024) fail("invalid-settings-preview");
+  if (!validSelectedPaths(input.selectedPaths ?? [])) fail("invalid-settings-preview");
   let home: string;
   try { home = rootPath(input.home); } catch { return fail("unsafe-destination"); }
   const root = input.destinationRoot;
@@ -326,6 +341,7 @@ export function inspectDestinationSettingsDigests(input: { home: string; destina
     try { destinationDirectory(current); }
     catch (error) { if (error instanceof SelectedFilesError) throw error; return fail("unsafe-destination"); }
   }
+  inspectDestinationParents(home, root, input.selectedPaths ?? []);
   const target = join(root, "settings.json");
   if (!exists(target)) return { fingerprint: settingsFingerprint(null), digests: input.paths.map(() => null) };
   let file: ReturnType<typeof readFile>;
@@ -347,10 +363,10 @@ export function inspectDestinationSettingsDigests(input: { home: string; destina
 }
 
 /** Compare source digests locally with the read-only box probe. */
-export function inspectDestinationSettings(input: { home: string; destinationRoot: string; entries: readonly SettingsKeyDigest[]; maximum: number }): SettingsDestinationPreview {
+export function inspectDestinationSettings(input: { home: string; destinationRoot: string; entries: readonly SettingsKeyDigest[]; maximum: number; selectedPaths?: readonly string[] }): SettingsDestinationPreview {
   if (!input || !validSettingsDigests(input.entries)) fail("invalid-settings-preview");
   const result = inspectDestinationSettingsDigests({ home: input.home, destinationRoot: input.destinationRoot,
-    paths: input.entries.map(entry => entry.path), maximum: input.maximum });
+    paths: input.entries.map(entry => entry.path), maximum: input.maximum, selectedPaths: input.selectedPaths });
   return { fingerprint: result.fingerprint, changedKeys: input.entries.filter((entry, index) => entry.sha256 !== result.digests[index])
     .map(entry => entry.path.join(".")).sort() };
 }

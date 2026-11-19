@@ -217,6 +217,38 @@ it.each([["filesystem", "ENOENT"], ["transport", "cli-timeout"], ["unknown", "un
   expect(f.err.join("")).not.toContain("private-secret");
 }, 5000);
 
+it("enable pending retains the real peer agent cause after broker startup", async () => {
+  const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false; config.peers[0].alias = "box-1.invalid";
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const local = openDb(join(f.root, "spider.db")); migrate(local, "global", { machineId: HUB, globalRoot: f.root }); local.close();
+  const remote = join(f.root, "remote"); mkdirSync(remote, { mode: 0o700 });
+  const db = openDb(join(remote, "spider.db")); migrate(db, "global", { machineId: BOX, globalRoot: remote });
+  let operationKind = "";
+  const ports = { config: { ...localRuntime.readLocalIdentity(f.root), machineId: BOX, role: "box" as const, peers: [] },
+    root: join(remote, "stage"), journal: openJournal(join(remote, "journal.db")), openStore() {
+      if (operationKind === "enable-capture") readFileSync(join(remote, "private-missing-file"));
+      return { db };
+    } };
+  const launchctl = join(f.root, "launchctl"); writeFileSync(launchctl, "fixture", { mode: 0o700 });
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl); vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
+  vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ diagnostics: [] } as never);
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
+    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ kind: "intercom-broker-start", version: 1, ok: true, machineId: BOX }));
+    const operation = JSON.parse(argv[2]); operationKind = operation.kind;
+    return Buffer.from(JSON.stringify(await agent.handleAgentOperation(operation, ports as never)));
+  } } as never);
+  try {
+    expect(await f.invoke(["roam", "enable", "--json"])).toBe(3);
+    const json = JSON.parse(f.out.join(""));
+    expect(json).toMatchObject({ reason: "enable-pending", causeCode: "ENOENT" });
+    expect(JSON.stringify(json)).not.toContain("private-missing-file");
+    expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
+  } finally { db.close(); }
+}, 5000);
+
 it("help explains recovery, JSON, non-interactive consent and the forget warning", async () => {
   const f = await fixture(HUB, undefined, false);
   expect(await f.invoke(["--help"])).toBe(0);

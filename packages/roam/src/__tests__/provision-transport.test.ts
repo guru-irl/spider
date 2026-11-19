@@ -84,6 +84,15 @@ it("checks the target agent directory read-only before enrollment and rejects un
   await expect(port.probeAgentDirectory(bootstrapPeer, "/home/fixture")).rejects.toMatchObject({ code: "core-changed" });
 }, 5000);
 
+it("validates configured agent-directory permission errors", async () => {
+  const peer = { ...bootstrapPeer, agentDir: "/home/fixture/custom-agent" }, f = fixture(peer), port = create!(f.options, f.journal);
+  f.state.agentDirectoryReply = { version: 1, kind: "agent-directory", error: "destination-permissions-unsafe", path: "/home/fixture/custom-agent" };
+  await expect(port.probeAgentDirectory(peer, "/home/fixture")).rejects.toMatchObject({
+    code: "destination-permissions-unsafe", details: { path: "/home/fixture/custom-agent" } });
+  f.state.agentDirectoryReply = { version: 1, kind: "agent-directory", error: "destination-permissions-unsafe", path: "/etc/fixture" };
+  await expect(port.probeAgentDirectory(peer, "/home/fixture")).rejects.toMatchObject({ code: "invalid-bootstrap-reply" });
+}, 5000);
+
 it("does not send source settings value digests to the box before consent", async () => {
   const f = fixture(), port = create!(f.options, f.journal), entries = [{ path: ["theme"], sha256: "c".repeat(64) }];
   f.state.settingsReply = { version: 1, kind: "settings-preview", value: { fingerprint: "a".repeat(64), digests: ["b".repeat(64)] } };

@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -131,6 +131,23 @@ it("requires the configured directory to exist and match the launching process",
   expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\nPI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("unknown");
   expect(f.run(join(f.home, "wrong"), `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("custom");
   expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, true, f.home, f.home, agent).reply.value).toBe("unknown");
+}, 5000);
+
+it("reports an unsafe configured agent directory without changing it", () => {
+  const f = fixture(), agent = join(f.home, "custom-agent"); mkdirSync(agent, { mode: 0o700 }); chmodSync(agent, 0o775);
+  expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply)
+    .toEqual({ version: 1, kind: "agent-directory", error: "destination-permissions-unsafe", path: agent });
+  expect(lstatSync(agent).mode & 0o777).toBe(0o775);
+  expect(f.run(join(f.home, "wrong"), "", false, f.home, f.home, agent).reply.value).toBe("custom");
+  chmodSync(agent, 0o755);
+  expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("default");
+}, 5000);
+
+it("does not offer a permission repair for a symlinked configured agent directory", () => {
+  const f = fixture(), target = join(f.home, "other"), agent = join(f.home, "custom-agent");
+  mkdirSync(target, { mode: 0o700 }); chmodSync(target, 0o775); symlinkSync(target, agent);
+  expect(f.run(agent, "", false, f.home, f.home, agent).reply.value).toBe("custom");
+  expect(lstatSync(target).mode & 0o777).toBe(0o775);
 }, 5000);
 
 it("verifies destination sign-in by metadata without reading credential contents", () => {

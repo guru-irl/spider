@@ -186,6 +186,37 @@ it.each(["missing", "corrupt", "transport", "process", "timeout", "invalid-docto
   db.close();
 }, 5000);
 
+it.each([["filesystem", "ENOENT"], ["transport", "cli-timeout"], ["unknown", "unexpected-stores"], ["spoof", "unexpected-stores"]] as const)
+("enable preflight keeps the %s agent cause in text and JSON", async (mode, expected) => {
+  const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.peers[0].alias = "box-1.invalid";
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const box = { ...localRuntime.readLocalIdentity(f.root), machineId: BOX, role: "box" as const, peers: [] };
+  const ports = { config: box, root: join(f.root, "remote-stage"), journal: openJournal(join(f.root, "remote-journal.db")), openStore(): never {
+    if (mode === "filesystem") readFileSync(join(f.root, "private-missing-file"));
+    if (mode === "transport") throw new HerdrError("cli-timeout", "private exception details");
+    throw new Error("private exception details");
+  } };
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(_peer: unknown, argv: string[]) {
+    const operation = JSON.parse(argv[2]);
+    if (mode === "spoof") return Buffer.from(JSON.stringify({ operationId: operation.id, code: 1, reason: "Agent operation failed", causeCode: "private-secret" }));
+    return Buffer.from(JSON.stringify(await agent.handleAgentOperation(operation, ports as never)));
+  } } as never);
+  expect(await f.invoke(["roam", "enable", "--json"])).toBe(1);
+  const json = JSON.parse(f.out.join(""));
+  expect(json).toMatchObject({ value: { issues: [{ reason: "preflight-failed:box-1.invalid:agent-operation-failed", causeCode: expected }] } });
+  expect(JSON.stringify(json)).not.toContain("private exception details");
+  expect(JSON.stringify(json)).not.toContain("private-missing-file");
+  expect(JSON.stringify(json)).not.toContain("private-secret");
+  f.err.length = 0;
+  expect(await f.invoke(["roam", "enable"])).toBe(1);
+  expect(f.err.join("")).toContain(expected);
+  expect(f.err.join("")).not.toContain("private exception details");
+  expect(f.err.join("")).not.toContain("private-missing-file");
+  expect(f.err.join("")).not.toContain("private-secret");
+}, 5000);
+
 it("help explains recovery, JSON, non-interactive consent and the forget warning", async () => {
   const f = await fixture(HUB, undefined, false);
   expect(await f.invoke(["--help"])).toBe(0);

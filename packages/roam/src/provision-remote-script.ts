@@ -10,6 +10,7 @@ import configSource from "./config.ts?raw";
 import machineIdSource from "./machine-id.ts?raw";
 import intercomReadinessSource from "./intercom-readiness.ts?raw";
 import { DEFAULT_INTERCOM_LIMITS, DEFAULT_LIMITS } from "./contracts";
+import { MAX_PERMISSION_TIGHTENINGS } from "./provision-permissions";
 
 // The destination executes the same file and auth checks as the local installer. Node's
 // native TypeScript stripping needs no package install before the release exists.
@@ -101,6 +102,18 @@ function installerOwned(roam: string, root: string): boolean {
   } finally { bytes.fill(0); }
 }
 let tightened = 0;
+function permissionTighteningCount(stage: string): number {
+  const prior = readPrivateBytes(stage, "permission-tightening.json", 1024);
+  if (!prior) return 0;
+  try {
+    let value: unknown;
+    try { value = JSON.parse(prior.toString("utf8")); } catch { bad("unsafe-staging"); }
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 2 ||
+        !("version" in value) || value.version !== 1 || !("changed" in value) ||
+        typeof value.changed !== "number" || !Number.isSafeInteger(value.changed) || value.changed < 0 || value.changed > ${MAX_PERMISSION_TIGHTENINGS}) bad("unsafe-staging");
+    return value.changed;
+  } finally { prior.fill(0); }
+}
 function installWalk(root: string, tighten: boolean): void {
   const pending = [root];
   while (pending.length) {
@@ -119,7 +132,7 @@ function installWalk(root: string, tighten: boolean): void {
       if ((stat.mode & 0o022) !== 0) {
         if (!tighten) throw Object.assign(new SelectedFilesError("destination-permissions-unsafe", [root]), { recursive: true });
         fchmodSync(fd, stat.mode & 0o7777 & ~0o022);
-        tightened = Math.min(1_000_000, tightened + 1);
+        tightened = Math.min(${MAX_PERMISSION_TIGHTENINGS}, tightened + 1);
       }
       if (stat.isDirectory()) for (const entry of readdirSync(path).sort().reverse()) pending.push(join(path, entry));
     } finally { closeSync(fd); }
@@ -608,6 +621,9 @@ async function run(): Promise<unknown> {
     installPiAuth({ destinationRoot: agentDir, stagingRoot: stage, stagedFile: join(stage, file), providers: request.providers });
     return true;
   }
+  if (action === "permission-summary") {
+    return { changed: Math.min(${MAX_PERMISSION_TIGHTENINGS}, permissionTighteningCount(stage) + tightened) };
+  }
   if (action === "release-prepare" || action === "release-observe" || action === "release") {
     const sha = text("sha256"), node = text("node"), cli = text("cli"), supervisor = text("supervisor"), core = text("core"), coreId = text("coreId");
     if (!/^[0-9a-f]{64}$/.test(sha) || !isAbsolute(node) || !isAbsolute(core) || request.piVersion !== "1.2.0") bad("invalid-release");
@@ -847,16 +863,8 @@ async function run(): Promise<unknown> {
   } finally {
     try {
       if (tightened) {
-        const prior = readPrivateBytes(stage, "permission-tightening.json", 1024);
-        let changed = 0;
-        try {
-          if (prior) {
-            const value = JSON.parse(prior.toString("utf8"));
-            if (value.version !== 1 || !Number.isSafeInteger(value.changed) || value.changed < 0 || value.changed > 1_000_000) bad("unsafe-staging");
-            changed = value.changed;
-          }
-        } finally { prior?.fill(0); }
-        atomicWrite(join(stage, "permission-tightening.json"), Buffer.from(JSON.stringify({ version: 1, changed: Math.min(1_000_000, changed + tightened) })), 0o600, false);
+        const changed = permissionTighteningCount(stage);
+        atomicWrite(join(stage, "permission-tightening.json"), Buffer.from(JSON.stringify({ version: 1, changed: Math.min(${MAX_PERMISSION_TIGHTENINGS}, changed + tightened) })), 0o600, false);
       }
     } finally { unlock(); }
   }

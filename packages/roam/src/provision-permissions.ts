@@ -1,5 +1,10 @@
 import { posix } from "node:path";
 
+export const MAX_PERMISSION_TIGHTENINGS = 1_000_000;
+export function isPermissionTighteningCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_PERMISSION_TIGHTENINGS;
+}
+
 function absolutePath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 4096 && posix.isAbsolute(value) &&
     posix.normalize(value) === value && !/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(value);

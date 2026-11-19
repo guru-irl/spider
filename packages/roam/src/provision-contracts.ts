@@ -30,6 +30,8 @@ export interface Inventory {
   auth: { pi: FileStatus; gh: FileStatus; ghSignedIn: boolean | null };
 }
 
+/** Null means an older completed operation did not record the count. */
+export interface ProvisionResult { hostingReady: boolean; permissionTightenings: number | null }
 export type ProvisionRequest = {
   operation: Operation; peer: Peer; selected: readonly string[]; includeAuth: boolean; requireDestinationAuth?: boolean; confirmedProviders: readonly string[];
   expectedAuthBytes?: number; expectedFiles?: readonly SelectedFileMetadata[]; expectedSelectionDigest?: string; replaceCorePin?: boolean;
@@ -156,6 +158,8 @@ export interface ProvisionPorts extends DoctorPorts {
   report(diagnostics: readonly Diagnostic[]): Promise<void>;
   verifyPeer(): Promise<ProvisionVerification>;
   persistPeer(peer: Peer): Promise<void>;
+  /** A bounded count from this operation's private installer receipt; no paths. */
+  permissionTightening(peer: Peer): Promise<number>;
   /** Under the hub configuration lock, set the box flag only when both hub and readiness permit it.
    * A null readiness is a completed retry: clear a disabled hub's flag, but never enable from stale evidence. */
   setParticipation(peer: Peer, ready: boolean | null): Promise<void>;

@@ -244,6 +244,9 @@ it("summarizes real installer permission tightening without exposing paths", asy
   await expect(adapter.permissionTightening(f.peer)).resolves.toBe(1);
   await expect(adapter.permissionTightening(f.peer)).resolves.toBe(1);
   const receipt = join(f.globalRoot, "roam/provision/op-1/permission-tightening.json");
+  const late = join(dirname(receipt), "late-entry"); writeFileSync(late, "late", { mode: 0o600 }); chmodSync(late, 0o666);
+  await expect(adapter.permissionTightening(f.peer)).resolves.toBe(2);
+  expect(JSON.parse(readFileSync(receipt, "utf8"))).toEqual({ version: 1, changed: 2 });
   writeFileSync(receipt, JSON.stringify({ version: 1, changed: 1_000_000 }), { mode: 0o600 });
   await expect(adapter.permissionTightening(f.peer)).resolves.toBe(1_000_000);
   writeFileSync(receipt, JSON.stringify({ version: 1, changed: 1_000_001, path: privateFile }), { mode: 0o600 });

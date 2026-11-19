@@ -69,6 +69,22 @@ it("retains only shell-safe destination permission repair commands", () => {
   expect(safeControlOutcome({ ...base, reason: "other-error", repairCommand: repair }).repairCommand).toBeNull();
 });
 
+it("serializes only bounded provisioning counts and strips unrelated private data", () => {
+  const base = { code: 0 as const, reason: "installed", operationId: "provision-a", home: null, epoch: null, repairCommand: null };
+  for (const count of [0, 1_000_000, null]) {
+    const result = safeControlOutcome({ ...base, value: { hostingReady: true, permissionTightenings: count, path: "/fixture/private" } });
+    expect(result.value).toEqual({ hostingReady: true, permissionTightenings: count });
+    expect(JSON.stringify(result)).not.toContain("/fixture/private");
+  }
+  for (const count of [-1, 1.5, 1_000_001, "/fixture/private", { path: "/fixture/private" }]) {
+    const result = safeControlOutcome({ ...base, value: { hostingReady: true, permissionTightenings: count } });
+    expect(result.value).toEqual({ hostingReady: true });
+    expect(JSON.stringify(result)).not.toContain("/fixture/private");
+  }
+  expect(safeControlOutcome({ ...base, reason: "other-result", value: { hostingReady: true, permissionTightenings: 3 } }).value)
+    .toEqual({ hostingReady: true });
+});
+
 it("ambiguous name refuses with candidates", () => {
   const candidates = [{ id: "session-a", name: "same" }, { id: "session-b", name: "same" }];
   expect(resolveControlSession("same", candidates)).toEqual({ reason: "ambiguous-session", candidates: ["session-a", "session-b"] });

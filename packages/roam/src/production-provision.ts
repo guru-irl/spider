@@ -45,7 +45,7 @@ export function createProductionProvisionPorts(input: ProductionProvisionOptions
     ...(input.configuredClis ? { configuredClis: input.configuredClis } : {}),
     source: input.source, destination: input.destination, release: input.release,
     confirm: input.confirm, present: input.present, report: input.report, resources: input.resources, bootId: input.bootId,
-    systemd: adapter.systemd, transfer: adapter, verifyPeer: adapter.verifyPeer,
+    systemd: adapter.systemd, transfer: adapter, verifyPeer: adapter.verifyPeer, permissionTightening: adapter.permissionTightening,
     withPeerLock: lock,
     async assertCorePinReplaceIdle(peer) {
       const core = openLocalCore(input.root);

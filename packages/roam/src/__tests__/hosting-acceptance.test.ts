@@ -101,6 +101,7 @@ function provisionFixture() {
       async switchover() { actions.push("switchover"); return { status: "applied" }; },
     },
     async persistPeer() { actions.push("peer"); },
+    async permissionTightening() { return 0; },
   };
   const request = (id: string, includeAuth = false) => ({ operation: { id, kind: "provision", machineId: BOX, expectedEpoch: null, args: {} }, peer,
     selected: [], includeAuth, confirmedProviders: includeAuth ? ["fixture"] : [] });

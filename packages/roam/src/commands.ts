@@ -7,7 +7,7 @@ import { validateBlockerId, parseSourceCleanup } from "./move";
 import { isPeerFailureReason } from "./peer-errors";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { storeScope } from "@spider/db-core/roam/codec";
-import { isPermissionRepairCommand } from "./provision-permissions";
+import { isPermissionRepairCommand, isPermissionTighteningCount } from "./provision-permissions";
 
 export type PublicControl =
   | { kind: "status" | "sync" | "doctor" | "enable" | "disable"; machine?: string }
@@ -147,6 +147,8 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
       if (homes.every(item => item !== null)) value.homes = homes;
     }
     if (typeof raw.hostingReady === "boolean") value.hostingReady = raw.hostingReady;
+    if (result.code === 0 && ["installed", "installed-hosting-disabled"].includes(result.reason) && typeof raw.hostingReady === "boolean" &&
+        (raw.permissionTightenings === null || isPermissionTighteningCount(raw.permissionTightenings))) value.permissionTightenings = raw.permissionTightenings;
     if (Array.isArray(raw.outcomes)) value.outcomes = raw.outcomes.flatMap(item => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return [];
       const row = item as Record<string, unknown>;

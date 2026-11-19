@@ -399,6 +399,25 @@ it.each([0, 17, 1_000_000])("reports and replays the permission-tightening count
   expect(f.events.filter(event => event === "permission-summary")).toHaveLength(1);
 }, 5000);
 
+it("uses null for historical completed counts and rejects corrupt saved values", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.verified = true;
+  const request = f.request("legacy-permission-count");
+  expect((await provision!(request, f.ports)).code).toBe(0);
+  const begin = f.journal.begin.bind(f.journal); let savedCount: unknown = undefined;
+  f.journal.begin = operation => {
+    const prior = begin(operation);
+    if (prior.kind !== "done" || !prior.result) return prior;
+    const value = { ...(prior.result.value as Record<string, unknown>), permissionTightenings: savedCount };
+    return { ...prior, result: { ...prior.result, value } as never };
+  };
+  const historical = await provision!(request, f.ports);
+  expect(historical).toMatchObject({ code: 0, value: { permissionTightenings: null } });
+  savedCount = "/fixture/private";
+  const corrupt = await provision!(request, f.ports);
+  expect(corrupt).toMatchObject({ code: 3, reason: "invalid-journal-result", value: null });
+  expect(JSON.stringify(corrupt)).not.toContain("/fixture/private");
+}, 5000);
+
 it("provision while the hub is disabled clears a previously enabled box without starting hosting", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
   f.state.hubEnabled = false; f.state.boxEnabled = true; f.state.verified = true;

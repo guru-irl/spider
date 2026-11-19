@@ -214,7 +214,11 @@ and owner. A pre-existing tree without that proof remains user-owned.
 The walk never follows symlinks. It permits internal npm links but refuses
 outside links, foreign owners, and unsafe file types without chmodding them.
 The private `permission-tightening.json` receipt records only a changed-entry
-count, capped at 1,000,000, rather than changed paths.
+count, capped at 1,000,000, rather than changed paths. Successful provisioning
+also reports the count in text and as `value.permissionTightenings` in JSON.
+Zero means no entries were tightened. A count of 1,000,000 means at least that
+many. A completed operation saved before this count was reported returns `null`
+on replay. The public count never includes paths.
 
 `destination-permissions-unsafe` identifies a user-owned path with group or
 other write access. For an unmarked pi package or release tree, the reported

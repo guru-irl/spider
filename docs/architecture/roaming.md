@@ -355,11 +355,13 @@ unchanged. It enables the service under `default.target` only when the box passe
 hosting readiness checks; otherwise it disables autostart, including an existing
 enablement. Provisioning never starts or stops the service. Readiness controls
 autostart even when the hub is disabled; the hub switch separately controls box
-participation. After peer preflight passes, `spider roam enable` restores
-supervisor autostart on each box without starting the supervisor. If the command
-fails, enable remains pending and can be retried. Doctor warns when an enabled
-box has disabled or runtime-only autostart and suggests `spider roam enable` on
-the hub. The unit has `Restart=on-failure`, `RestartSec=10s`,
+participation. After peer preflight passes, `spider roam enable` attempts to
+restore supervisor autostart on each box with an installed unit, without starting
+the supervisor. A missing unit or a failed systemd command does not prevent
+participation. Doctor warns when an enabled box has disabled or runtime-only
+autostart and suggests `spider roam enable` on the hub. If the unit is missing
+or its autostart state cannot be verified, doctor warns to check the unit and
+systemd user service. The unit has `Restart=on-failure`, `RestartSec=10s`,
 `StartLimitIntervalSec=0`, and a private umask. Persistent startup failures
 therefore retry without a start-rate lockout.
 The unit has no `After=`, `Requires=`, or

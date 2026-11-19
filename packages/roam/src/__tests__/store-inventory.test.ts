@@ -135,6 +135,15 @@ it("marks a registered store incomplete if it disappears before the read-only op
   expect(incomplete).toEqual([worktree.db.raw.name]);
 }, 5000);
 
+it("warns rather than blocking when a registered file vanishes before read-only open", () => {
+  const { global, worktree } = fixture(), incomplete: string[] = [], problems: unknown[] = [];
+  worktree.db.close();
+  expect(listStoreKeys(global.db, { open(file) { unlinkSync(file); return undefined; },
+    onProblem: (_entry, error) => problems.push(error), onIncomplete: entry => incomplete.push(entry) })).toEqual(["global"]);
+  expect(incomplete).toEqual([]);
+  expect(problems).toEqual([expect.objectContaining({ code: "store-missing", check: "enoent", path: worktree.db.raw.name })]);
+});
+
 it("inventory refuses an unreadable owned replica instead of claiming completeness", async () => {
   const { global, ports } = fixture();
   const directory = join(global.root, "roam", "stores"); mkdirSync(directory, { recursive: true, mode: 0o700 });

@@ -51,7 +51,8 @@ const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAU
 const provisionSource: string = selectedRemoteSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + "\n" + enrollmentSocketForRemote + intercomForRemote + String.raw`
 import { readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
 
 type Request = Record<string, any>;
@@ -120,6 +121,77 @@ function assemble(stage: string, chunks: unknown, maximum: number): Buffer {
 function command(file: string, argv: string[], env: NodeJS.ProcessEnv, timeout: number): void {
   const child = spawnSync(file, argv, { env, stdio: "ignore", timeout });
   if (child.status !== 0 || child.error || child.signal) bad("command-failed");
+}
+class NpmInstallFailure extends Error {
+  readonly code = "npm-install-failed";
+  readonly diagnostic: NpmDiagnostic;
+  constructor(diagnostic: NpmDiagnostic) { super("npm install failed"); this.diagnostic = diagnostic; }
+}
+function npmStructuredFields() {
+  const decoder = new StringDecoder("utf8");
+  let partial = "", overflow = false, npmCode: NpmCode | null = null, packageName: string | null = null;
+  const line = (text: string) => {
+    const code = /^npm (?:ERR!|error) code\s+(\S+)\s*$/.exec(text);
+    if (code) npmCode = releaseNpmCode(code[1]) ? code[1] : null;
+    const match = /^npm (?:ERR!|error) path\s+(.+?)\s*$/.exec(text);
+    if (!match) return;
+    packageName = null;
+    const path = match[1];
+    if (!(path.startsWith("/") && !path.startsWith("//")) && !/^[A-Za-z]:[\\/]/.test(path)) return;
+    const parts = path.split(/[\\/]/), index = parts.lastIndexOf("node_modules"), suffix = parts.slice(index + 1);
+    if (index < 0 || !suffix[0] || suffix.some(part => part === "." || part === "..")) return;
+    const candidate = suffix[0].startsWith("@") ? (suffix[1] ? suffix[0] + "/" + suffix[1] : "") : suffix[0];
+    if (releaseNpmPackageName(candidate)) packageName = candidate;
+  };
+  const consume = (text: string) => {
+    const parts = text.split("\n");
+    for (let index = 0; index < parts.length; index++) {
+      if (!overflow) {
+        if (partial.length + parts[index].length > 8192) { partial = ""; overflow = true; }
+        else partial += parts[index];
+      }
+      if (index < parts.length - 1) {
+        if (!overflow) line(partial);
+        partial = ""; overflow = false;
+      }
+    }
+  };
+  return {
+    write(chunk: Buffer) { consume(decoder.write(chunk)); },
+    finish() { consume(decoder.end()); if (!overflow && partial) line(partial); return { npmCode, packageName }; },
+  };
+}
+async function npmCommand(step: NpmDiagnostic["step"], file: string, argv: string[], env: NodeJS.ProcessEnv, timeout: number): Promise<void> {
+  const capture = npmStructuredFields();
+  let child: ReturnType<typeof spawn>;
+  try { child = spawn(file, argv, { env, stdio: ["ignore", "ignore", "pipe"], detached: process.platform !== "win32" }); }
+  catch { throw new NpmInstallFailure({ step, exitCode: null, signal: null, npmCode: null, packageName: null }); }
+  let streamError = false, timedOut = false;
+  child.stderr?.on("data", (chunk: Buffer) => capture.write(chunk));
+  child.stderr?.on("error", () => { streamError = true; });
+  const stop = (signal: NodeJS.Signals) => {
+    try { if (child.pid && process.platform !== "win32") process.kill(-child.pid, signal); else child.kill(signal); }
+    catch { try { child.kill(signal); } catch { /* The process has already exited. */ } }
+  };
+  const result = await new Promise<{ status: number | null; signal: NodeJS.Signals | null; error?: NodeJS.ErrnoException }>(resolve => {
+    let hardKill: NodeJS.Timeout | undefined, error: NodeJS.ErrnoException | undefined;
+    const timer = setTimeout(() => { timedOut = true; stop("SIGTERM"); hardKill = setTimeout(() => stop("SIGKILL"), 1000); }, timeout);
+    child.once("error", (failure: NodeJS.ErrnoException) => { error = failure; });
+    child.once("close", (status, signal) => { clearTimeout(timer); if (hardKill) clearTimeout(hardKill); resolve({ status, signal, error }); });
+  });
+  const fields = capture.finish();
+  if (result.error && ["ENOENT", "ENOTDIR"].includes(result.error.code ?? "")) {
+    try { realpathSync(file); } catch (error) {
+      if (["ENOENT", "ENOTDIR"].includes((error as NodeJS.ErrnoException).code ?? "")) bad("npm-not-found");
+    }
+  }
+  if (result.status !== 0 || result.signal || result.error || streamError || timedOut) {
+    const exitCode = result.status !== null && Number.isSafeInteger(result.status) && result.status >= 0 && result.status <= 255 ? result.status : null;
+    const exit = exitCode === null
+      ? { exitCode: null, signal: result.signal && Object.hasOwn(releaseOsConstants.signals, result.signal) ? result.signal : null }
+      : { exitCode, signal: null };
+    throw new NpmInstallFailure({ step, ...exit, ...fields });
+  }
 }
 function releaseRuntimeOwner(): ReleaseOwner {
   if (process.platform !== "linux") return { pid: process.pid, bootId: "nonlinux", start: String(Date.now()) };
@@ -471,8 +543,8 @@ async function run(): Promise<unknown> {
       const env = { ...process.env, PATH: dirname(node) + ":" + (process.env.PATH ?? ""), SPIDER_GLOBAL_ROOT: globalRoot,
         npm_config_update_notifier: "false", npm_config_onnxruntime_node_install_cuda: "skip" };
       const timeout = Number.isSafeInteger(request.timeout) && request.timeout > 0 ? request.timeout : 600_000;
-      command(npm, ["install", "--global", "--prefix", npmPrefix, "--no-audit", "--no-fund", "@earendil-works/pi-coding-agent@1.2.0"], env, timeout);
-      command(npm, ["install", "--prefix", installPrefix, "--no-audit", "--no-fund", archive], env, timeout);
+      await npmCommand("pi", npm, ["install", "--global", "--prefix", npmPrefix, "--no-audit", "--no-fund", "@earendil-works/pi-coding-agent@1.2.0"], env, timeout);
+      await npmCommand("release", npm, ["install", "--prefix", installPrefix, "--no-audit", "--no-fund", archive], env, timeout);
       for (const file of RELEASE_ENTRIES.map(entry => join(release, entry))) {
         const info = lstatSync(file); if (!info.isFile() || info.isSymbolicLink() || !own(info)) bad("incomplete-release");
       }
@@ -482,8 +554,12 @@ async function run(): Promise<unknown> {
       finishRelease(input, claim.token, { state: "finished", value });
       return value;
     } catch (error) {
+      if (error instanceof NpmInstallFailure) {
+        finishRelease(input, claim.token, { state: "failed", reason: "npm-install-failed", diagnostic: error.diagnostic });
+        return { state: "failed", reason: "npm-install-failed" };
+      }
       const code = error && typeof error === "object" && "code" in error ? error.code : null;
-      const reason: ReleaseReason = releaseReason(code) ? code : "release-install-failed";
+      const reason = releaseReason(code) && code !== "npm-install-failed" ? code : "release-install-failed";
       finishRelease(input, claim.token, { state: "failed", reason });
       return { state: "failed", reason };
     } finally {

@@ -398,7 +398,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         } else if (value.state === 'started') {
           if (Object.keys(value).length !== 1) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         } else if (value.state === 'failed') {
-          if (Object.keys(value).length !== 2 || !['installer-interrupted', 'release-install-failed', 'command-failed', 'release-hash-mismatch',
+          if (Object.keys(value).length !== 2 || !['installer-interrupted', 'release-install-failed', 'command-failed', 'npm-not-found', 'npm-install-failed', 'release-hash-mismatch',
             'incomplete-release', 'pi-version-mismatch', 'release-abandoned'].includes(String(value.reason))) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         } else if (value.state === 'finished') {
           const installed = object(value.value);

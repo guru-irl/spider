@@ -121,6 +121,21 @@ refusal. A missing recorded unit does not block provisioning when the core's
 socket is owned by the user.
 
 The npm prefix comes from `<prefix>/bin/pi` and need not be named `.local`.
+Provisioning runs npm lifecycle scripts but skips optional CUDA downloads.
+
+`npm-not-found` means npm is missing next to the configured Node executable.
+The error names the expected path. Install npm there or update the peer's Node
+path to an installation with an adjacent npm executable.
+
+`npm-install-failed` means an npm command could not start, failed, or timed out.
+The CLI names the destination's private release receipt. Its `diagnostic` records
+only the install step (`pi` or `release`), exit code or signal, an allowlisted
+npm code such as `E404` or `1`, and a validated package name from a reported
+`node_modules` path. Unavailable fields are `null`. The receipt is mode `0600`;
+it does not store npm output or URLs.
+After fixing either error, retry without `--operation-id` or use a new operation
+ID. The same operation ID does not retry a failed release installation.
+
 The configured agent directory must already exist under the destination's home.
 Set the box's core environment to export `PI_CODING_AGENT_DIR` with that
 directory. The box's `agentDirectory` setting must agree too. Spider's units

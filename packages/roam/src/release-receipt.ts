@@ -6,16 +6,24 @@ import {
   unlinkSync as releaseUnlink, writeFileSync as releaseWrite,
 } from "node:fs";
 import { isAbsolute as releaseAbsolute, join as releaseJoin, resolve as releaseResolve } from "node:path";
+import { constants as releaseOsConstants } from "node:os";
 
 export interface ReleaseOwner { pid: number; bootId: string; start: string }
 export interface ReleaseKey { directory: string; operationId: string; digest: string }
 export interface ReleaseInput extends ReleaseKey { owner: ReleaseOwner }
 export interface InstalledRelease { pi: string; cli: string; supervisor: string }
-export type ReleaseReason = "installer-interrupted" | "release-abandoned" | "release-install-failed" | "command-failed" | "release-hash-mismatch" | "incomplete-release" | "pi-version-mismatch";
+const RELEASE_NPM_CODES = ["1", "E404", "ELIFECYCLE", "ENOTFOUND", "ETIMEDOUT", "EACCES", "ENOENT", "EPERM",
+  "ECONNRESET", "ECONNREFUSED", "EAI_AGAIN", "E401", "E403", "E500", "E502", "E503", "EINTEGRITY", "EBADENGINE", "EBADPLATFORM"] as const;
+export type NpmCode = typeof RELEASE_NPM_CODES[number];
+export type NpmDiagnostic = { step: "pi" | "release"; npmCode: NpmCode | null; packageName: string | null } &
+  ({ exitCode: number; signal: null } | { exitCode: null; signal: NodeJS.Signals | null });
+export type ReleaseReason = "installer-interrupted" | "release-abandoned" | "release-install-failed" | "command-failed" | "npm-not-found" | "npm-install-failed" | "release-hash-mismatch" | "incomplete-release" | "pi-version-mismatch";
 export type ReleaseObservation = { state: "absent" } | { state: "started" } |
   { state: "finished"; value: InstalledRelease } | { state: "failed"; reason: ReleaseReason };
 export type ReleaseBegin = { kind: "acquired"; token: string } | { kind: "duplicate"; state: "started" | "finished" | "failed" };
-type ReleaseOutcome = { state: "finished"; value: InstalledRelease } | { state: "failed"; reason: ReleaseReason };
+type ReleaseOutcome = { state: "finished"; value: InstalledRelease } |
+  { state: "failed"; reason: Exclude<ReleaseReason, "npm-install-failed"> } |
+  { state: "failed"; reason: "npm-install-failed"; diagnostic: NpmDiagnostic };
 type ReleaseLock = { version: 1; operationId: string; digest: string; owner: ReleaseOwner; token: string };
 type ReleaseRecord = ReleaseLock & ({ state: "started" } | ReleaseOutcome);
 
@@ -46,7 +54,29 @@ function releaseValue(value: unknown): value is InstalledRelease {
   return Object.keys(row).length === 3 && releasePath(row.pi) && releasePath(row.cli) && releasePath(row.supervisor);
 }
 function releaseReason(value: unknown): value is ReleaseReason {
-  return typeof value === "string" && ["installer-interrupted", "release-abandoned", "release-install-failed", "command-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch"].includes(value);
+  return typeof value === "string" && ["installer-interrupted", "release-abandoned", "release-install-failed", "command-failed", "npm-not-found", "npm-install-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch"].includes(value);
+}
+function releaseNpmCode(value: unknown): value is NpmCode {
+  return typeof value === "string" && (RELEASE_NPM_CODES as readonly string[]).includes(value);
+}
+function releaseNpmPackageName(value: unknown): value is string {
+  if (typeof value !== "string" || !value || value.length > 214 || value.toLowerCase() !== value || value.trim() !== value ||
+      value === "node_modules" || value === "favicon.ico") return false;
+  try {
+    const scoped = /^@([^/]+)\/([^/]+)$/.exec(value);
+    if (scoped) return !scoped[2].startsWith(".") && !/[~'!()*]/.test(scoped[2]) &&
+      encodeURIComponent(scoped[1]) === scoped[1] && encodeURIComponent(scoped[2]) === scoped[2];
+    return !/^[._-]/.test(value) && !/[~'!()*]/.test(value) && encodeURIComponent(value) === value;
+  } catch { return false; }
+}
+function releaseNpmDiagnostic(value: unknown): value is NpmDiagnostic {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as NpmDiagnostic;
+  return Object.keys(row).length === 5 && (row.step === "pi" || row.step === "release") &&
+    (row.exitCode === null || Number.isSafeInteger(row.exitCode) && row.exitCode >= 0 && row.exitCode <= 255) &&
+    (row.signal === null || typeof row.signal === "string" && Object.hasOwn(releaseOsConstants.signals, row.signal)) &&
+    !(row.exitCode !== null && row.signal !== null) && (row.npmCode === null || releaseNpmCode(row.npmCode)) &&
+    (row.packageName === null || releaseNpmPackageName(row.packageName));
 }
 function releaseReadJson(directory: string, name: string): unknown | null {
   let fd: number;
@@ -155,7 +185,8 @@ function releaseRecord(input: ReleaseKey): ReleaseRecord | null {
       !releaseOwner(value.owner) || typeof value.token !== "string" || !/^[a-f0-9-]{36}$/.test(value.token)) throw releaseError("invalid-release-receipt");
   if (value.operationId !== input.operationId || value.digest !== input.digest) throw releaseError("release-arguments-changed");
   if (!(value.state === "started" && Object.keys(value).length === 6 || value.state === "finished" && Object.keys(value).length === 7 && releaseValue(value.value) ||
-      value.state === "failed" && Object.keys(value).length === 7 && releaseReason(value.reason))) throw releaseError("invalid-release-receipt");
+      value.state === "failed" && releaseReason(value.reason) && (value.reason === "npm-install-failed"
+        ? Object.keys(value).length === 8 && releaseNpmDiagnostic(value.diagnostic) : Object.keys(value).length === 7))) throw releaseError("invalid-release-receipt");
   return value;
 }
 function releaseRemoveLock(input: ReleaseKey, token: string): void {
@@ -200,7 +231,8 @@ export function finishRelease(input: ReleaseInput, token: string, outcome: Relea
   releaseKey(input);
   const lock = releaseLock(input), prior = releaseRecord(input);
   if (!lock || !prior || lock.token !== token || prior.token !== token || prior.state !== "started" ||
-      !(outcome.state === "finished" && releaseValue(outcome.value) || outcome.state === "failed" && releaseReason(outcome.reason))) {
+      !(outcome.state === "finished" && releaseValue(outcome.value) || outcome.state === "failed" && releaseReason(outcome.reason) &&
+        (outcome.reason === "npm-install-failed" ? Object.keys(outcome).length === 3 && releaseNpmDiagnostic(outcome.diagnostic) : Object.keys(outcome).length === 2))) {
     throw releaseError("invalid-release-receipt");
   }
   releaseWriteJson(input.directory, "release-receipt.json", { ...lock, ...outcome }, false);

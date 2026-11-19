@@ -9,7 +9,7 @@ import { assertCredentialSelectedFile, assertPublicSelectedFile } from "./select
 import type { ProvisionTransport } from "./transport";
 import type { InstalledRelease, ReleaseReason } from "./release-receipt";
 import { PROVISION_REMOTE_SCRIPT } from "./provision-remote-script";
-import { destinationPermissionPath, permissionTreeRoot } from "./provision-permissions";
+import { destinationPermissionPath, isPermissionTighteningCount, permissionTreeRoot } from "./provision-permissions";
 
 export { PROVISION_REMOTE_SCRIPT };
 interface Chunk { name: string; size: number; sha256: string }
@@ -17,7 +17,8 @@ export interface AdapterOptions {
   peer: Peer; operationId: string; destination: ProvisionDestination; unitDir: string;
   limits: Limits; transport: ProvisionTransport; piProviders: readonly string[];
 }
-export type HcProvisionAdapter = ProvisionPorts["transfer"] & { systemd: ProvisionPorts["systemd"]; verifyPeer(): Promise<ProvisionVerification> };
+export type HcProvisionAdapter = ProvisionPorts["transfer"] & { systemd: ProvisionPorts["systemd"]; verifyPeer(): Promise<ProvisionVerification>;
+  permissionTightening: ProvisionPorts["permissionTightening"] };
 const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
 function failure(error: unknown, action: string, destination: ProvisionDestination): HerdrError {
   const safe = new Set(["core-changed","invalid-config", "core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy",  "core-unavailable", "machine-not-found", "machine-ambiguous", "machine-mismatch", "machine-not-enrolled",
@@ -183,6 +184,12 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
     },
   };
   return {
+    async permissionTightening(target) {
+      const value = await action(target, "permission-summary");
+      if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== 1 ||
+          !("changed" in value) || !isPermissionTighteningCount(value.changed)) throw new HerdrError("invalid-provision-reply", "Invalid permission summary");
+      return value.changed;
+    },
     async setEnabled(target, hubMachineId, enabled) { await action(target, "roaming-enabled", { hubMachineId, enabled }); },
     async enroll(target, hubMachineId, coreUnit, replaceCorePin) {
       const value = await action(target, "enrollment", { hubMachineId, coreUnit, ...(replaceCorePin ? { replaceCorePin: true } : {}) });

@@ -13,7 +13,7 @@ import { normalizeConfiguredClis, normalizeCoreUnit, parseBootstrapInventory, sa
 import type { BootstrapPeer, CallOptions, Journal, Peer, Transport } from './contracts';
 import type { AgentDirectoryProbe, CoreFence } from './provision-contracts';
 import { validSettingsDigests, validSelectedPaths } from './selected-files';
-import { destinationPermissionPath, permissionTreeRoot } from './provision-permissions';
+import { destinationPermissionPath, isPermissionTighteningCount, permissionTreeRoot } from './provision-permissions';
 import type { SettingsDestinationPreview, SettingsKeyDigest } from './selected-files';
 
 type CoreObservation = CoreFence;
@@ -312,7 +312,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
     },
     async executeProvision(peer, request) {
       const state = resolved(peer);
-      const actions = new Set(['roaming-enabled', 'enrollment', 'prepare', 'secret-chunk', 'cleanup', 'install-files', 'auth-install', 'release-prepare', 'release-observe', 'unit-write', 'systemctl', 'switchover', 'verify', 'clear-secrets']);
+      const actions = new Set(['roaming-enabled', 'enrollment', 'prepare', 'secret-chunk', 'cleanup', 'install-files', 'auth-install', 'release-prepare', 'release-observe', 'unit-write', 'systemctl', 'switchover', 'verify', 'clear-secrets', 'permission-summary']);
       if (!request || typeof request !== 'object' || typeof request.action !== 'string' || !actions.has(request.action) ||
           typeof request.operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(request.operationId) ||
           request.machineId !== state.peer.machineId || request.globalRoot !== state.peer.globalRoot || request.node !== state.peer.node ||
@@ -414,6 +414,10 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           if (Object.keys(value).length !== 2 || Object.keys(installed).length !== 3 || installed.pi !== state.peer.pi ||
             installed.cli !== state.peer.cli || installed.supervisor !== request.supervisor) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         } else throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
+      } else if (request.action === 'permission-summary') {
+        const value = reply.value;
+        if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1 ||
+            !('changed' in value) || !isPermissionTighteningCount(value.changed)) throw new HerdrError('invalid-provision-reply', 'Invalid permission summary');
       } else if (request.action === 'switchover') {
         const value = object(reply.value);
         if (Object.keys(value).length !== 1 || !['applied', 'already', 'migration-pending'].includes(String(value.status))) {

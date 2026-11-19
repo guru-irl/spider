@@ -145,7 +145,7 @@ it("previews and records the fixed selection and exact selected Copilot auth byt
       destinations: { ...ports.destination, globalRoot: request.peer.globalRoot, pi: request.peer.pi },
       selectedFiles: [], settingsKeys: ["theme"], settingsFingerprint: "a".repeat(64), providers: request.confirmedProviders, warnings: [] });
     await ports.confirm(request.peer.alias, request.confirmedProviders);
-    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
+    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true, permissionTightenings: 0 } };
   });
   let output = "", errors = "";
   expect(await main(["roam", "provision", f.request.target, "--release", f.release,
@@ -195,7 +195,7 @@ it("omits settings from the preview and transfer when requested", async () => {
   let requested: readonly string[] = [];
   vi.spyOn(provisionModule, "provision").mockImplementation(async (request, ports) => {
     requested = request.selected; await ports.confirm(request.peer.alias, request.confirmedProviders);
-    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
+    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true, permissionTightenings: 0 } };
   });
   let output = "", errors = "";
   expect(await main(["roam", "provision", f.request.target, "--release", f.release, "--no-settings",
@@ -221,7 +221,7 @@ it("prunes the completed source snapshot and safely replays without repacking", 
   const install = vi.spyOn(provisionModule, "provision").mockImplementation(async (request, ports) => {
     await ports.confirm(request.peer.alias, request.confirmedProviders);
     await ports.persistPeer(request.peer);
-    const outcome = { code: 0 as const, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
+    const outcome = { code: 0 as const, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true, permissionTightenings: 0 } };
     ports.journal.begin({ ...request.operation, args: { fixture: true } });
     ports.journal.record(request.operation.id, "done", outcome as never);
     return outcome;
@@ -426,7 +426,7 @@ it("selects only explicitly named skills and includes their supporting files", a
   let requested: readonly string[] = [], metadata: unknown;
   vi.spyOn(provisionModule, "provision").mockImplementation(async (request, ports) => {
     requested = request.selected; metadata = request.expectedFiles; await ports.confirm(request.peer.alias, request.confirmedProviders);
-    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
+    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true, permissionTightenings: 0 } };
   });
   let output = "", errors = "";
   expect(await main(["roam", "provision", f.request.target, "--release", f.release, "--skill", "selected",
@@ -455,7 +455,7 @@ it("requires a separate noninteractive provider consent for credential-bearing m
   vi.spyOn(provisionModule, "provision").mockImplementation(async (request, ports) => {
     requested = request.confirmedProviders;
     if (!await ports.confirm(request.peer.alias, request.confirmedProviders)) return { code: 1, reason: "consent-refused", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: null };
-    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
+    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true, permissionTightenings: 0 } };
   });
   let output = "", errors = "";
   const args = ["roam", "provision", f.request.target, "--release", f.release, "--yes", "--consent", "copilot-auth", "--operation-id", "provider-consent"];

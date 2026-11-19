@@ -40,27 +40,49 @@ it("uses destination sign-in without opening hub auth and retains explicit paths
     expect(ports.source.piProviders).toEqual([]);
     expect(ports.destination).toMatchObject({ home: "/home/fixture", agentDir: "/home/fixture/install/agent", npmPrefix: "/home/fixture/install/prefix" });
     expect(await ports.confirm(request.peer.alias, request.confirmedProviders)).toBe(true);
-    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
+    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true, permissionTightenings: 0 } };
   });
   expect(await main(["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--release", f.release], f.io), f.errors()).toBe(0);
   expect(install).toHaveBeenCalledOnce();
   expect(f.reads.mock.calls.filter(([, name]) => name === "auth.json")).toEqual([]);
   expect(f.output()).not.toContain("Selected auth.json"); expect(f.errors()).toBe("");
 }, 5000);
-it.each([0, 17])("shows a path-free permission count %i in provision text and JSON", async count => {
+it.each([0, 17, 1_000_000])("shows a path-free permission count %i in provision text and JSON", async count => {
   const f = fixture();
   vi.spyOn(provisionModule, "provision").mockImplementation(async request => ({ code: 0, reason: "installed", operationId: request.operation.id,
     home: null, epoch: null, repairCommand: null, value: { hostingReady: true, permissionTightenings: count } }));
   let out = "", err = ""; const io = { out(text: string) { out += text; }, err(text: string) { err += text; } };
   const args = ["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--release", f.release];
   expect(await main([...args, "--operation-id", `count-text-${count}`], io)).toBe(0);
-  expect(out).toContain(`Installer permission tightenings: ${count} entries.`);
+  const message = `Installer permission tightenings: ${count === 1_000_000 ? "at least " : ""}${count} entries.`;
+  expect(out).toContain(message);
   expect(out).not.toContain("permission-tightening.json");
   out = ""; err = "";
   expect(await main([...args, "--operation-id", `count-json-${count}`, "--json"], io)).toBe(0);
   expect(JSON.parse(out)).toMatchObject({ value: { hostingReady: true, permissionTightenings: count } });
   expect(out).not.toContain("permission-tightening.json");
-  expect(err).toContain(`Installer permission tightenings: ${count} entries.`);
+  expect(err).toContain(message);
+}, 5000);
+
+it("replays a historical completed operation with an unavailable permission count", async () => {
+  const f = fixture(), configFile = join(f.root, "roam", "config.json"), config = JSON.parse(fs.readFileSync(configFile, "utf8"));
+  config.enabled = true; writeFileSync(configFile, JSON.stringify(config), { mode: 0o600 });
+  vi.spyOn(provisionModule, "provision").mockImplementation(async (request, ports) => {
+    await ports.confirm(request.peer.alias, request.confirmedProviders);
+    await ports.persistPeer(request.peer);
+    const result = { code: 0 as const, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null };
+    ports.journal.begin({ ...request.operation, args: { fixture: true } });
+    ports.journal.record(request.operation.id, "done", { ...result, value: { hostingReady: true } });
+    return { ...result, value: { hostingReady: true, permissionTightenings: null } };
+  });
+  let out = "", err = ""; const io = { out(text: string) { out += text; }, err(text: string) { err += text; } };
+  const args = ["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--operation-id", "historical-count"];
+  expect(await main([...args, "--release", f.release], io)).toBe(0);
+  out = ""; err = "";
+  expect(await main([...args, "--json"], io)).toBe(0);
+  expect(JSON.parse(out)).toMatchObject({ value: { hostingReady: true, permissionTightenings: null } });
+  expect(err).toContain("Installer permission tightenings: unavailable for this saved operation.");
+  expect(out).not.toContain("permission-tightening.json");
 }, 5000);
 
 it("carries destination-managed auth from the CLI through the real remote metadata verifier", async () => {
@@ -82,6 +104,7 @@ for(const key of ['openSync','readFileSync']){const original=fs[key];fs[key]=fun
       async executeProvision(_peer: unknown, request: Record<string, unknown>) {
         if (request.action === "release-observe") return { state: "finished", value: { pi: request.pi, cli: request.cli, supervisor: request.supervisor } };
         if (request.action === "roaming-enabled") return { enabled: request.enabled };
+        if (request.action === "permission-summary") return { changed: 0 };
         if (request.action === "switchover") return { status: "applied" };
         if (["enrollment", "clear-secrets", "unit-write", "systemctl"].includes(String(request.action))) return true;
         if (request.action !== "verify") throw new Error(`unexpected-effect:${request.action}`);
@@ -121,6 +144,7 @@ it.each(["hc-serve-0a1b2c3d.service", undefined])("provisions with the peer unit
         if (request.action === "unit-write") units.push(request.contents);
         if (request.action === "release-observe") return { state: "finished", value: { pi: request.pi, cli: request.cli, supervisor: request.supervisor } };
         if (request.action === "roaming-enabled") return { enabled: request.enabled };
+        if (request.action === "permission-summary") return { changed: 0 };
         if (request.action === "switchover") return { status: "applied" };
         if (request.action === "verify") return { providers: [], piSignedIn: true, selectedFiles: true, nativeModuleReady: true, extensionReady: true, cliReady: true, privateModes: true, releasePaths: true, sessionModes: true, launcherNofile: 65_536 };
         return true;
@@ -164,7 +188,7 @@ it("leaves every hub credential-bearing selection to the destination without rea
   const install = vi.spyOn(provisionModule, "provision").mockImplementation(async (request) => {
     expect(request.selected).toEqual([]);
     expect(request.expectedFiles).toEqual([]);
-    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true } };
+    return { code: 0, reason: "installed", operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: { hostingReady: true, permissionTightenings: 0 } };
   });
   const code = await main(["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--skill", "fixture", "--release", f.release], f.io);
   expect(accesses).toEqual([]);

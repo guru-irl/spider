@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { basename, dirname, posix } from "node:path";
 import type { JsonObject } from "@spider/db-core/roam/types";
 import type { Outcome, Peer } from "./contracts";
-import type { AgentDirectoryProbe, ProvisionPorts, ProvisionRequest } from "./provision-contracts";
+import type { AgentDirectoryProbe, ProvisionPorts, ProvisionRequest, ProvisionResult } from "./provision-contracts";
 import { AuthError, copyPiAuth, hasProvisionConsent, previewPiAuthBytes } from "./auth";
 import { inventory } from "./inventory";
 import { isMachineId } from "./machine-id";
@@ -10,7 +10,7 @@ import { doctorPeer } from "./resource-doctor";
 import { describeSelectedFiles, prepareSelectedFiles, readPrivateBytes, selectedSettingsDigests, SelectedFilesError } from "./selected-files";
 import type { PreparedFiles, SelectedFileMetadata } from "./selected-files";
 import { renderSupervisorUnit } from "./systemd";
-import { destinationPermissionPath, permissionRepairCommand, permissionTreeRoot } from "./provision-permissions";
+import { destinationPermissionPath, isPermissionTighteningCount, permissionRepairCommand, permissionTreeRoot } from "./provision-permissions";
 
 const unitName = "spider-roam-supervisor.service";
 function selectedFileDigests(selected: PreparedFiles) {
@@ -20,7 +20,7 @@ function selectedFileDigests(selected: PreparedFiles) {
 export function provisionSelectionDigest(selected: PreparedFiles): string {
   return createHash("sha256").update(JSON.stringify(selectedFileDigests(selected))).digest("hex");
 }
-function result(operationId: string, code: 0 | 1 | 2 | 3, reason: string, value: { hostingReady: boolean } | null): Outcome<{ hostingReady: boolean }> {
+function result(operationId: string, code: 0 | 1 | 2 | 3, reason: string, value: ProvisionResult | null): Outcome<ProvisionResult> {
   return { code, reason, operationId, home: null, epoch: null, repairCommand: null, value };
 }
 function inside(home: string, path: string): boolean {
@@ -91,7 +91,7 @@ function safeReason(error: unknown): string {
 }
 
 /** Install selected files only after a target-bound consent record exists. */
-export async function provision(input: ProvisionRequest, ports: ProvisionPorts): Promise<Outcome<{ hostingReady: boolean }>> {
+export async function provision(input: ProvisionRequest, ports: ProvisionPorts): Promise<Outcome<ProvisionResult>> {
   const operationId = typeof input?.operation?.id === "string" ? input.operation.id : "";
   if (!input?.peer || !isMachineId(input.peer.machineId)) return result(operationId, 1, "invalid-provision-request", null);
   try { validate(input, ports); } catch (error) { return result(operationId, 1, safeReason(error), null); }
@@ -102,7 +102,7 @@ export async function provision(input: ProvisionRequest, ports: ProvisionPorts):
   }
 }
 
-async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): Promise<Outcome<{ hostingReady: boolean }>> {
+async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): Promise<Outcome<ProvisionResult>> {
   const operationId = typeof input?.operation?.id === "string" ? input.operation.id : "";
   let mutated = false;
   let credentialFiles: PreparedFiles["credentialFiles"] = [];
@@ -163,10 +163,15 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     if (prior.kind === "done") {
       const saved = prior.result;
       if (!saved || saved.code !== 0 || !saved.value || typeof saved.value !== "object" || Array.isArray(saved.value) ||
-          typeof saved.value.hostingReady !== "boolean") return result(operationId, 3, "invalid-journal-result", null);
+          typeof saved.value.hostingReady !== "boolean" ||
+          saved.value.permissionTightenings != null && !isPermissionTighteningCount(saved.value.permissionTightenings)) {
+        return result(operationId, 3, "invalid-journal-result", null);
+      }
       mutated = true;
       await ports.setParticipation(peer, null);
-      return result(operationId, 0, typeof saved.reason === "string" ? saved.reason : "installed", { hostingReady: saved.value.hostingReady });
+      return result(operationId, 0, typeof saved.reason === "string" ? saved.reason : "installed", {
+        hostingReady: saved.value.hostingReady, permissionTightenings: saved.value.permissionTightenings ?? null,
+      });
     }
     const consent = ports.journal.read(operationId).find(({ action, result: receipt }) => action === "provision-consent" &&
       receipt.approved === true && receipt.target === peer.alias && receipt.machineId === peer.machineId && receipt.requestDigest === digest &&
@@ -234,7 +239,8 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     const hostingReady = diagnostics.every(item => item.severity !== "block");
     await ports.systemd.systemctl(["--user", hostingReady ? "enable" : "disable", unitName]);
     await ports.setParticipation(peer, hostingReady);
-    const outcome = result(operationId, 0, hostingReady ? "installed" : "installed-hosting-disabled", { hostingReady });
+    const permissionTightenings = await ports.permissionTightening(peer);
+    const outcome = result(operationId, 0, hostingReady ? "installed" : "installed-hosting-disabled", { hostingReady, permissionTightenings });
     ports.journal.record(operationId, "done", outcome as unknown as JsonObject);
     return outcome;
   } catch (error) {

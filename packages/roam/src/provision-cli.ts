@@ -19,7 +19,8 @@ import { RELEASE_ENTRIES } from "./release-request";
 import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { describeSelectedFiles, prepareSelectedFiles, readPrivateBytes, SelectedFilesError } from "./selected-files";
 import { AuthError, previewPiAuthBytes } from "./auth";
-import type { ProvisionPreview } from "./provision-contracts";
+import type { ProvisionPreview, ProvisionResult } from "./provision-contracts";
+import { isPermissionTighteningCount, MAX_PERMISSION_TIGHTENINGS } from "./provision-permissions";
 
 interface ConsentRequest { operationId: string; target: string; machineId: string; hubMachineId: string;
   files: readonly { path: string; size: number; mode: number }[]; releaseHash: string; providers?: readonly string[]; selectionDigest?: string;
@@ -131,6 +132,10 @@ async function removeProvisionSource(root: string, operationId: string): Promise
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 }
 const safe = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, "?");
+function reportPermissionTightening(count: number | null, out: (text: string) => void): void {
+  out(count === null ? "Installer permission tightenings: unavailable for this saved operation.\n"
+    : `Installer permission tightenings: ${count === MAX_PERMISSION_TIGHTENINGS ? "at least " : ""}${count} entries.\n`);
+}
 function presentInventory(preview: ProvisionPreview, out: (text: string) => void): void {
   const value = preview.inventory;
   out(`Inventory for ${safe(preview.target)}: ${safe(value.platform)}, Node ${safe(value.nodeVersion)}, pi ${safe(value.piVersion ?? "missing")}.\n`);
@@ -143,9 +148,9 @@ export interface ProvisionCliRequest { root: string; target: string; release?: s
   skills?: readonly string[]; consentedProviders?: readonly string[]; noSettings?: boolean; useDestinationAuth?: boolean; replaceCorePin?: boolean }
 export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text: string): void; err(text: string): void }, options: {
   bundleUrl?: URL; tty?: boolean; ask?(text: string): Promise<string>;
-} = {}): Promise<Outcome<{ hostingReady: boolean }>> {
+} = {}): Promise<Outcome<ProvisionResult>> {
   let operationId = input.operationId ?? "";
-  const refused = (code: 1 | 3, reason: string): Outcome<{ hostingReady: boolean }> => ({ code, reason, operationId, home: null, epoch: null, repairCommand: null, value: null });
+  const refused = (code: 1 | 3, reason: string): Outcome<ProvisionResult> => ({ code, reason, operationId, home: null, epoch: null, repairCommand: null, value: null });
   try {
     const config = readLocalIdentity(input.root); if (config.role !== "hub") throw new Error("provision-requires-hub");
     io.out(`The broker starts at enable (spider roam enable), if it is not already running.${config.enabled ? "" : " Roaming is disabled; provisioning will not enable the box or start hosting."}\n`);
@@ -193,7 +198,8 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
         typeof completed.contextDigest !== "string" || !/^[a-f0-9]{64}$/.test(completed.contextDigest) ||
         completed.installOperationId !== `${operationId}-install` || consent?.releaseHash !== completed.releaseHash ||
         done?.code !== 0 || done.operationId !== `${operationId}-install` || !["installed", "installed-hosting-disabled"].includes(String(done.reason)) ||
-        !done.value || typeof done.value !== "object" || Array.isArray(done.value) || typeof done.value.hostingReady !== "boolean")) throw new Error("invalid-journal-result");
+        !done.value || typeof done.value !== "object" || Array.isArray(done.value) || typeof done.value.hostingReady !== "boolean" ||
+        done.value.permissionTightenings != null && !isPermissionTighteningCount(done.value.permissionTightenings))) throw new Error("invalid-journal-result");
     const pinned = completed ? { file: join(input.root, "roam", "provision-source", operationId, "release.tgz"), sha256: completed.releaseHash as string }
       : await stageProvisionRelease({ root: input.root, operationId, release: input.release, maximum: config.limits.agentBytes, bundleUrl: options.bundleUrl });
     if (completed && input.release) {
@@ -224,9 +230,12 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       try { await setProvisionParticipation({ root: input.root, hubMachineId: config.machineId, peer, ready: null, journal, transport }); }
       catch { io.err("provision-participation-unconfirmed. Retry provisioning or run spider roam disable.\n"); return refused(3, "provision-participation-unconfirmed"); }
       await removeProvisionSource(input.root, operationId);
+      const saved = done!.value as { hostingReady: boolean; permissionTightenings?: number | null };
+      const permissionTightenings = saved.permissionTightenings ?? null;
+      reportPermissionTightening(permissionTightenings, io.out);
       io.out(`${safe(done!.reason as string)}\n`);
       return { code: 0, reason: done!.reason as string, operationId: done!.operationId as string, home: null, epoch: null, repairCommand: null,
-        value: { hostingReady: (done!.value as { hostingReady: boolean }).hostingReady } };
+        value: { hostingReady: saved.hostingReady, permissionTightenings } };
     }
     let shownSettings: { fingerprint: string | null; keys: readonly string[] } = { fingerprint: null, keys: [] };
     const ports = createProductionProvisionPorts({ root: input.root, hubMachineId: config.machineId, peer, operationId: `${operationId}-install`, transport, journal, limits: config.limits,
@@ -266,6 +275,7 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
     if (result.reason === "npm-not-found") io.err(`Cannot find npm at ${safe(posix.join(posix.dirname(peer.node), "npm"))} on ${safe(peer.alias)}. Install npm next to the configured Node executable, or update the peer's node path. Retry with a new operation ID.\n`);
     if (result.reason === "npm-install-failed") io.err(`The destination's ${safe(posix.join(peer.globalRoot, "roam", "provision", `${operationId}-install`, "release-receipt.json"))} contains structured npm failure details. Fix the installation error, then retry with a new operation ID.\n`);
     if (["peer-core-unit-required", "peer-core-unit-ambiguous"].includes(result.reason)) io.err("Set coreUnit on this destination's peer entry in the hub roaming config, then retry.\n");
+    if (result.code === 0 && result.value) reportPermissionTightening(result.value.permissionTightenings, io.out);
     (result.code === 0 ? io.out : io.err)(`${safe(result.reason)}\n`); return result;
   } catch (error) {
     if (error instanceof SelectedFilesError) {

@@ -318,6 +318,7 @@ it("reports switchover permissions and the repair command through the CLI", asyn
   const previous = process.umask(0o002);
   try {
     const f = fixture(), sourceAgent = join(f.root, "source-agent"), home = join(f.root, "remote-home");
+    const socket = join(process.env.SPIDER_GLOBAL_ROOT!, "provision-cli.sock");
     const agent = join(home, ".pi", "agent"), globalRoot = join(agent, "spider"), extensions = join(agent, "extensions");
     mkdirSync(sourceAgent, { mode: 0o700 }); mkdirSync(join(globalRoot, "roam"), { recursive: true, mode: 0o700 });
     mkdirSync(extensions, { mode: 0o700 }); chmodSync(extensions, 0o775);
@@ -336,7 +337,7 @@ it("reports switchover permissions and the repair command through the CLI", asyn
         cli: "/home/fixture/.local/lib/spider/dist/roam/cli.mjs", core: "/home/fixture/bin/hc", globalRoot: "/home/fixture/.pi/agent/spider" }],
       coreUnit: "fixture.service", limits: DEFAULT_LIMITS }), { mode: 0o600 });
     vi.stubEnv("PI_CODING_AGENT_DIR", sourceAgent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
-    vi.stubEnv("HC_SOCKET", join(process.cwd(), ".spider", "scratch", `provision-cli-${process.pid}.sock`)); vi.stubEnv("HC_SESSION", "fixture");
+    vi.stubEnv("HC_SOCKET", socket); vi.stubEnv("HC_SESSION", "fixture");
     vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/bin/hc" } } as never);
     vi.spyOn(liveness, "requireCoreAvailable").mockResolvedValue(undefined);
     vi.spyOn(coreClient, "invokeCli").mockImplementation(async (_binary, argv) => argv[0] === "server"

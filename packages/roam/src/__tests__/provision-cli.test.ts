@@ -337,7 +337,7 @@ it("reports switchover permissions and the repair command through the CLI", asyn
       coreUnit: "fixture.service", limits: DEFAULT_LIMITS }), { mode: 0o600 });
     vi.stubEnv("PI_CODING_AGENT_DIR", sourceAgent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
     vi.stubEnv("HC_SOCKET", join(process.cwd(), ".spider", "scratch", `provision-cli-${process.pid}.sock`)); vi.stubEnv("HC_SESSION", "fixture");
-    vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+    vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/bin/hc" } } as never);
     vi.spyOn(liveness, "requireCoreAvailable").mockResolvedValue(undefined);
     vi.spyOn(coreClient, "invokeCli").mockImplementation(async (_binary, argv) => argv[0] === "server"
       ? { core: { id: "local-core" }, version: "0.1.16" }

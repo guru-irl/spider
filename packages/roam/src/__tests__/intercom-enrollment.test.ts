@@ -393,12 +393,12 @@ it("live shared jobs leave named cleanup pending without undoing local revocatio
   const f = fixture(); f.state.allow = true;
   expect((await run(f.request, f.ports)).code).toBe(0);
   f.state.sharedJobs = true; f.state.activeAccess = true;
-  expect(await revoke("pair-1", f.ports)).toMatchObject({ code: 0, reason: "intercom-revoked", value: { pairId: "pair-1", cleanupReason: "intercom-revocation-cleanup-pending" } });
+  expect(await revoke("pair-1", f.ports)).toMatchObject({ code: 0, reason: "intercom-revoked", value: { pairId: "pair-1", cleanupReason: "intercom-revocation-shared-jobs" } });
   expect(f.state.routes.has("pair-1")).toBe(false);
   expect(f.state.authorized.has("pair-1")).toBe(false);
   expect(f.state.machines.has("pair-1")).toBe(true);
   expect(f.state.revoked.has("pair-1")).toBe(true);
-  expect(f.state.pendingCleanup.get("pair-1")).toBe("intercom-revocation-cleanup-pending");
+  expect(f.state.pendingCleanup.get("pair-1")).toBe("intercom-revocation-shared-jobs");
   f.state.sharedJobs = false; f.state.activeAccess = false;
   expect(await revoke("pair-1", f.ports)).toMatchObject({ code: 0, reason: "intercom-revoked", value: { cleanupReason: null } });
   expect(f.state.machines.has("pair-1")).toBe(false);

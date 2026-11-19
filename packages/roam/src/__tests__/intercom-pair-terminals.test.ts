@@ -9,12 +9,14 @@ const reply = (value: unknown): Run => async argv => {
 
 it("reads a terminal list that has no machines field, as older cores print it", async () => {
   expect(await inspectPairTerminals("core-b", reply({ terminals: [], hidden_finished: 0 }))).toBe("empty");
-  expect(await inspectPairTerminals("core-b", reply({ terminals: [{ address: "t3" }], hidden_finished: 0 }))).toBe("occupied");
-  expect(await inspectPairTerminals("core-b", reply({ terminals: [{ address: "box-1.invalid/t1" }], hidden_finished: 0 }))).toBe("empty");
+  expect(await inspectPairTerminals("core-b", reply({ terminals: [{ address: "t3", state: "live" }], hidden_finished: 0 }))).toBe("occupied");
+  expect(await inspectPairTerminals("core-b", reply({ terminals: [{ address: "box-1.invalid/t1", state: "live" }], hidden_finished: 0 }))).toBe("empty");
 });
 
 it.each([
   ["live", { address: "t1", agent: "", cwd: "/home/fixture", state: "live", turn: 0 }, "occupied"],
+  ["base-36 live", { address: "ta", agent: "", cwd: "/home/fixture", state: "live", turn: 0 }, "occupied"],
+  ["base-36 finished", { address: "ta", agent: "", cwd: "/home/fixture", state: "finished", turn: 0, exit_code: 0, reason: "exit" }, "empty"],
   ["finished", { address: "t1", agent: "", cwd: "/home/fixture", state: "finished", turn: 0, exit_code: 0, reason: "exit" }, "empty"],
   ["signalled", { address: "t1", agent: "", cwd: "/home/fixture", state: "finished", turn: 0, exit_code: null, reason: "signal" }, "empty"],
   ["unknown", { address: "t1", agent: "", cwd: "/home/fixture", state: "starting", turn: 0 }, "unknown"],

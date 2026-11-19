@@ -557,7 +557,23 @@ required closure evidence is missing, cleanup remains unconfirmed. The pair
 host can remove its key even when the connecting box is unreachable, but other
 cleanup can remain pending. Missing key-removal evidence returns exit code 3
 and `intercom-revocation-unconfirmed`; recovery retries the same cleanup.
-Shared jobs can also leave cleanup pending.
+Live terminals leave route cleanup pending with
+`intercom-revocation-shared-jobs`. Finished rows retained in `ls --all --json`
+do not block cleanup. The terminal check accepts label-free rows and validates
+`state`, plus `exit_code` and `reason` for finished rows. Unknown states,
+malformed rows, and incomplete listings still leave cleanup pending.
+Revocation does not delete terminal history or stop unrelated live terminals.
+
+With both boxes reachable and no live terminals, a plain revoke from the hub
+stops and disables both pair units, removes the target key and source route,
+and closes all three pair records. Repeated revokes have no further effects.
+Pending results and doctor diagnostics provide
+`spider roam intercom revoke pair-1` as the retry command. Run it from the hub
+once live terminals finish or the unavailable box returns. The hub uses its
+management routes, since stopping a pair host closes the pair's own route.
+Unconfirmed cleanup means closure evidence is missing, not that the target
+is necessarily offline. A completed revoke permits fresh enrollment with a
+new epoch and fresh consent.
 
 Enrollment grants command access as the peer user, including access through
 that peer's enrolled pairs. SSH ignores user configuration with `-F /dev/null`.

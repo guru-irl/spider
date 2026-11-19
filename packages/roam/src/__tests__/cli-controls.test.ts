@@ -578,6 +578,43 @@ it("disable completes interrupted service removal and retries each box flag", as
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
 }, 5000);
 
+it.each([
+  ["bootout succeeds", "exit 0", "exit 0", true],
+  ["service missing on stderr", "echo 'Could not find service' >&2; exit 113", "exit 0", true],
+  ["service missing on stdout", "echo 'Could not find service'; exit 113", "exit 0", true],
+  ["bootout fails but print proves absence", "echo 'Boot-out failed: 5: Input/output error' >&2; exit 5", "echo 'Could not find service' >&2; exit 113", true],
+  ["bootout fails and service is still loaded", "echo 'request failed' >&2; exit 5", "exit 0", false],
+  ["unrelated missing file is not proof", "echo 'Could not find file' >&2; exit 113", "echo 'request failed' >&2; exit 5", false],
+] as const)("disable converges only when %s", async (_name, bootout, print, removed) => {
+  const f = await fixture(), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const plistDir = join(f.root, "Library/LaunchAgents"), plist = join(plistDir, "com.spider.roam.hub.plist");
+  await launchd.installHubService({ node: process.execPath, cli: process.execPath, globalRoot: f.root, pi: process.execPath }, { plistDir, async launchctl() {} });
+  const binary = join(f.root, "launchctl");
+  writeFileSync(binary, `#!/bin/sh\nif [ "$1" = print ]; then ${print}; else ${bootout}; fi\n`, { mode: 0o700 });
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", binary);
+  expect(await f.invoke(["roam", "disable", "--json"])).toBe(removed ? 0 : 3);
+  const result = JSON.parse(f.out.join(""));
+  if (!removed) expect(result).toMatchObject({ reason: "disable-pending", causeCode: "service-failed" });
+  expect(existsSync(plist)).toBe(!removed);
+  expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(!removed);
+  expect(JSON.stringify(result)).not.toContain("request failed");
+}, 5000);
+
+it("disable does not boot out or delete a service owned by another root", async () => {
+  const f = await fixture(), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const plistDir = join(f.root, "Library/LaunchAgents"), plist = join(plistDir, "com.spider.roam.hub.plist"), marker = join(f.root, "called");
+  await launchd.installHubService({ node: process.execPath, cli: process.execPath, globalRoot: f.root, pi: process.execPath }, { plistDir, async launchctl() {} });
+  writeFileSync(plist, readFileSync(plist, "utf8").replace(f.root, "/home/fixture/other"));
+  const binary = join(f.root, "launchctl"); writeFileSync(binary, `#!/bin/sh\necho called > '${marker}'\nexit 0\n`, { mode: 0o700 });
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", binary);
+  expect(await f.invoke(["roam", "disable", "--json"])).toBe(3);
+  expect(existsSync(plist)).toBe(true);
+  expect(existsSync(marker)).toBe(false);
+  expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(true);
+}, 5000);
+
 it("disable reports a real filesystem cause and keeps its enabled flag", async () => {
   const f = await fixture(), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });

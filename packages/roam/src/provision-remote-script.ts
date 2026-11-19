@@ -465,7 +465,8 @@ async function run(): Promise<unknown> {
       const expectedCli = join(release, "dist", "roam", "cli.mjs"), expectedSupervisor = join(release, "dist", "roam", "supervisor.mjs");
       if (cli !== expectedCli || supervisor !== expectedSupervisor || text("pi") !== join(npmPrefix, "bin", "pi")) bad("invalid-release");
       const npm = join(dirname(node), "npm");
-      const env = { ...process.env, PATH: dirname(node) + ":" + (process.env.PATH ?? ""), SPIDER_GLOBAL_ROOT: globalRoot, npm_config_update_notifier: "false" };
+      const env = { ...process.env, PATH: dirname(node) + ":" + (process.env.PATH ?? ""), SPIDER_GLOBAL_ROOT: globalRoot,
+        npm_config_update_notifier: "false", npm_config_onnxruntime_node_install_cuda: "skip" };
       const timeout = Number.isSafeInteger(request.timeout) && request.timeout > 0 ? request.timeout : 600_000;
       command(npm, ["install", "--global", "--prefix", npmPrefix, "--no-audit", "--no-fund", "@earendil-works/pi-coding-agent@1.2.0"], env, timeout);
       command(npm, ["install", "--prefix", installPrefix, "--no-audit", "--no-fund", archive], env, timeout);

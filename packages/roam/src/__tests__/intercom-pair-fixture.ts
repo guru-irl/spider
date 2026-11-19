@@ -65,7 +65,8 @@ export async function scenario(): Promise<PairScenario> {
       if (argv[1] === "machine" && argv[2] === "ls") return { code: 0, stdout: JSON.stringify({ machines: routes.get(peer.machineId)!.map(row => mismatch && row.name === "spider-pair-pair-1" ? { ...row, session: "changed" } : row) }) };
       if (argv[1] === "machine" && argv[2] === "add") { routes.get(peer.machineId)!.push({ name: argv[argv.indexOf("--name") + 1], id: "core-b", via: true, target: argv[argv.indexOf("--via") + 1], session: "default", temporary: false, state: "connected", host: "box-b.invalid", version: "0.1.16" }); return { code: 0, stdout: "{}" }; }
       if (argv[1] === "machine" && argv[2] === "rm") { routes.set(peer.machineId, routes.get(peer.machineId)!.filter(row => row.name !== argv[3])); return { code: 0, stdout: "{}" }; }
-      if (argv[1] === "ls") { if (listError) throw new Error("listing unavailable"); return { code: 0, stdout: JSON.stringify({ terminals: peer.machineId === B ? terminals.map(row => ({ ...row, address: row.address.replace(/^spider-pair-pair-1\//, "") })) : terminals, machines: routes.get(peer.machineId), hidden_finished: 0 }) }; }
+      if (argv[1] === "ls") { if (listError) throw new Error("listing unavailable"); return { code: 0, stdout: JSON.stringify({ terminals: terminals.map(row => ({ address: peer.machineId === B ? row.address.replace(/^spider-pair-pair-1\//, "") : row.address,
+        agent: "", cwd: "/home/fixture", state: row.state, turn: 0, ...(row.state === "finished" ? { exit_code: 0, reason: "exit" } : {}) })), machines: routes.get(peer.machineId), hidden_finished: 0 }) }; }
       if (argv[1] === "exec") return { code: 0, stdout: JSON.stringify({ version: 1, kind: "doctor", machineId: B, value: {} }) };
       throw new Error("unexpected fixture command");
     };

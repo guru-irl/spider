@@ -20,6 +20,13 @@ it("an empty B-local list allows only its exact reserved route to be removed", a
   expect(await removePairMachineRoute(pair, resources, { run, hostClosed: true, keyRemoved: true, terminalInventory: { machineId: B, targetCoreId: "core-b", status: "empty" } })).toBe("removed");
   expect(f.machines()).toEqual([]);
 }, 5000);
+it.each(["live", "finished", "starting"])("the fallback route inventory handles %s rows without labels", async state => {
+  const { f, pair, resources, run } = await enrolled();
+  f.terminals([{ address: "spider-pair-pair-1/t1", state }]);
+  expect(await removePairMachineRoute(pair, resources, { run, hostClosed: true, keyRemoved: true })).toBe(
+    state === "finished" ? "removed" : state === "live" ? "shared-jobs" : "unknown");
+  expect(f.machines()).toHaveLength(state === "finished" ? 0 : 1);
+}, 5000);
 it.each([
   { machineId: A, targetCoreId: "core-b", status: "empty" as const },
   { machineId: B, targetCoreId: "wrong-core", status: "empty" as const },

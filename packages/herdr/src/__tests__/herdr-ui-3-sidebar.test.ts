@@ -381,6 +381,16 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     view.spiderMachineInventory = inventory;
     return { view, store };
   }
+  function confirmViewer(view: any, viewer: { address: string; labels: object }) {
+    const sessionId = 'session', runId = (viewer.labels as Record<string, string>)['spider.run'];
+    Object.assign(viewer.labels, { 'spider.session': sessionId, 'spider.owner-core': 'fixture-core', 'spider.owner-terminal': 't1',
+      'spider.parent-name': 'Agent', 'spider.steer': 'headless', 'spider.display-name': 'Worker', 'spider.viewer-lifetime': 'live' });
+    view.spiderFeeds = [{ ...emptyRunName, sessionId, generation: 'gen', lifecycle: 'live', updatedAt: Date.now(),
+      owner: { ...emptyRunName.owner, sessionId, generation: 'gen' },
+      ipc: { address: '/fixture/socket', capabilityFile: '/fixture/cap' },
+      runs: { rows: [{ id: runId, ownerSessionId: sessionId, name: 'Worker', status: 'running', childMode: 'rpc', canSteer: true,
+        viewer: viewer.address, startedAt: Date.now(), finishedAt: null, result: null }], total: 1, truncated: false } }];
+  }
   const section = (root: unknown) => all(root).find(node => node.id === 'spider-machines');
   async function spacesView(spaces: any[], remote: any[], layouts: any[], stored = new Map<string, string>(), run: (...args: any[]) => void = () => {}) {
     const clones = await applyLookPatches(await currentClones(), shippedPatches as LookPatchSet);
@@ -899,6 +909,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
   it('folded group counts match folded agent counts and pills open the group', async () => {
     const { spaces, mains, terminals } = groupedFixtures();
     const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    confirmViewer(view, terminals[0]);
     view.folded.add('t1'); view.folded.add('sp-s1');
     const nodes = () => all(view.render({}));
     const pill = (kind: string) => nodes().find(node => node.id === `group-count-${kind}-sp-s1`);
@@ -922,7 +933,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(view.folded.has('sp-s1')).toBe(false);
     expect(nodes().find(node => node.id === 'fold-t1')?.children).toContain('2');
     expect(nodes().find(node => node.id === 'console-count-t1')?.children).toContain('1');
-    terminals.splice(0, terminals.length); view.folded.add('sp-s1');
+    terminals.splice(0, terminals.length); view.spiderFeeds[0].runs = { rows: [], total: 0, truncated: false }; view.folded.add('sp-s1');
     expect(pill('subagents')).toBeUndefined();
     expect(pill('consoles')).toBeUndefined();
     expect(pill('agents')?.children).toContain('2');
@@ -932,6 +943,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const { spaces, mains, terminals } = groupedFixtures();
     terminals.push({ address: 't5', parent: 't4', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-two' } });
     const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    confirmViewer(view, terminals[terminals.length - 1]);
     view.folded.add('sp-s1');
     const heading = all(view.render({})).find(node => node.id === 'sp-s1')!;
     const nodes = heading.children.flatMap(all);
@@ -943,6 +955,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const { spaces, mains, terminals } = groupedFixtures();
     const pinned = [{ ...mains[0], pinned: true }];
     const { view } = await agentsView({ agents: () => pinned, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
+    confirmViewer(view, terminals[0]);
     const heading = () => all(view.render({})).find(node => node.id === 'pinned')!;
     let nodes = heading().children.flatMap(all);
     expect(nodes.some(node => node.svg === 'mods/workspace-chrome/chevron-down.svg')).toBe(true);
@@ -1051,6 +1064,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
       { address: 'alpha.invalid/v1', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-one' } },
     ];
     const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces, machines: () => [{ name: 'alpha.invalid', layout: state }] }, new Map([['agents.sort', 'grouped']]));
+    confirmViewer(view, terminals[1]);
     view.folded.add('t1');
     const nodes = () => all(view.render({}));
     expect(nodes().find(node => node.id === 'console-count-t1')).toBeUndefined();
@@ -1141,6 +1155,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
       ...['job-one', 'job-two'].map(id => ({ address: `alpha.invalid/${id}`, parent: 't1', state: 'live', status: id === 'job-one' ? 'blocked' : 'working', labels: { 'spider.kind': 'exec', 'spider.job': id, 'spider.machine': 'alpha.invalid' } })),
     ];
     const { view } = await agentsView({ agents: () => [{ address: 't1', pane: 'p1', title: 'alpha', status: 'working', seq: 1 }], terminals: () => terminals });
+    confirmViewer(view, terminals[0]);
     view.folded.add('t1');
     const pill = (id: string) => all(view.render({})).find(node => node.id === id);
     expect(pill('fold-t1')?.children).toContain('2');
@@ -1150,7 +1165,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     terminals.push({ address: 'beta.invalid/job-three', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'exec', 'spider.job': 'job-three', 'spider.machine': 'beta.invalid' } });
     expect(pill('fold-t1')?.children).toContain('3');
     expect(pill('console-count-t1')?.children).toContain('1');
-    terminals.splice(0, terminals.length, terminals[2]);
+    terminals.splice(0, terminals.length, terminals[2]); view.spiderFeeds[0].runs = { rows: [], total: 0, truncated: false };
     expect(pill('fold-t1')).toBeUndefined();
     expect(pill('console-count-t1')?.children).toContain('1');
   });

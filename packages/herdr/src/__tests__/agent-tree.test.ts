@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect, test } from 'vitest';
-import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from '../../assets/agents/children.js';
+import { agentModelChildStats, projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from '../../assets/agents/children.js';
+import { machineGroupCounts } from '../../assets/agents/grouping.js';
 import { projectNavigation, type NavigationSnapshot } from '../../assets/shared/navigation.js';
 import { HerdrLabelContract } from '../contracts.js';
 import type { RunId, SessionFeed } from '../contracts.js';
@@ -86,6 +87,41 @@ test('compact finished-group projection keeps unknown and disconnected runs non-
   expect(result.find(row => row.key === 'done')).toBeUndefined();
   const current = projectAgentChildren([disconnected], [feed()], 'agent', contract, { now: 2000, finishedSummary: {} });
   expect(current.find(row => row.key === 'run')).toMatchObject({ status: 'working' });
+});
+
+test('unconfirmed run rows age out without inventing a finished outcome', () => {
+  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null;
+  const unknown = { ...terminal('unknown-viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', created_ms: 2000 };
+  const cutoff = 2000 + 60 * 60 * 1000;
+  for (const compact of [false, true]) {
+    const project = (now: number) => projectAgentChildren([unknown], [closed], 'agent', contract, {
+      now, completedHours: 1, ...(compact ? { finishedSummary: {} } : {}),
+    });
+    expect(project(cutoff).map(row => [row.key, row.status, row.finishedAt, row.outcome])).toEqual([
+      ['missing', 'unknown', null, null], ['run', 'disconnected', null, null],
+    ]);
+    expect(project(cutoff + 1)).toEqual([]);
+    const live = feed(); live.updatedAt = cutoff + 1;
+    expect(projectAgentChildren([unknown], [live], 'agent', contract, { now: cutoff + 1, completedHours: 1 })
+      .find(row => row.key === 'run')).toMatchObject({ status: 'working', retained: false });
+  }
+});
+
+test('blocked unconfirmed viewers do not count or raise folded attention', () => {
+  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null;
+  const unknown = { ...terminal('unknown-viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', status: 'blocked', created_ms: 2000 };
+  const disconnected = { ...terminal('run-viewer', 'subagent-viewer', { 'spider.run': 'run' }), parent: 'agent', status: 'blocked' };
+  const rows = projectAgentChildren([unknown, disconnected], [closed], 'agent', contract, { now: 2000, finishedSummary: {} });
+  const listed = new Map([['unknown-viewer', 'blocked'], ['run-viewer', 'blocked']]);
+  const ranks = { blocked: 5, working: 2, idle: 1 };
+  expect(agentModelChildStats(rows, listed, ranks)).toMatchObject({ bots: [], states: [], rank: 0 });
+  expect(machineGroupCounts(rows)).toEqual({ subagents: 0, consoles: 0 });
+  const current = projectAgentChildren([disconnected], [feed()], 'agent', contract, { now: 2000 });
+  expect(machineGroupCounts(current)).toEqual({ subagents: 1, consoles: 0 });
+  expect(agentModelChildStats(current, listed, ranks).rank).toBe(2);
+  const native = { ...terminal('native', 'shell'), parent: 'agent', status: 'blocked', labels: {} };
+  const nativeRows = projectAgentChildren([native], [feed()], 'agent', contract, { now: 2000 });
+  expect(agentModelChildStats(nativeRows, listed, ranks).rank).toBe(5);
 });
 
 test('a job nests under its matching named run even without a native viewer', () => {

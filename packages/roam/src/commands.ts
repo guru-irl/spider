@@ -6,6 +6,7 @@ import { validateBlockerId, parseSourceCleanup } from "./move";
 import { isPeerFailureReason } from "./peer-errors";
 import { INTERCOM_UNIQUENESS_DESCRIPTION } from "./intercom-readiness";
 import { storeScope } from "@spider/db-core/roam/codec";
+import { isPermissionRepairCommand } from "./provision-permissions";
 
 export type PublicControl =
   | { kind: "status" | "sync" | "doctor" | "enable" | "disable"; machine?: string }
@@ -98,7 +99,8 @@ export function controlWarningText(value: string): string {
 export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknown }): SafeControlOutcome {
   const home = safeHome(result.home);
   const safeRepair = (value: unknown): string | null => typeof value === "string" && (/^spider roam (?:recover|doctor|cancel|claim|provision|forget|disable)(?: [A-Za-z0-9._-]+)?$/.test(value) ||
-    /^spider roam provision [A-Za-z0-9._-]+ --operation-id [A-Za-z0-9._-]+$/.test(value)) ? value : null;
+    /^spider roam provision [A-Za-z0-9._-]+ --operation-id [A-Za-z0-9._-]+$/.test(value) ||
+    result.reason === "destination-permissions-unsafe" && isPermissionRepairCommand(value)) ? value : null;
   const repair = safeRepair(result.repairCommand);
   const raw = result.value && typeof result.value === "object" && !Array.isArray(result.value) ? result.value as Record<string, unknown> : null;
   const value: Record<string, unknown> = {};

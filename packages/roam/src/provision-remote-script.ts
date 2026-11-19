@@ -74,7 +74,7 @@ function name(value: unknown): string {
   if (typeof value !== "string" || !/^(?:public|secret|release)-[A-Za-z0-9.-]{1,80}$/.test(value)) bad("invalid-staging-name");
   return value;
 }
-function ensurePrivate(base: string, target: string, privateMode = true): void {
+function ensurePrivate(base: string, target: string, privateMode = true, reportPermissions = false): void {
   if (!inside(base, target)) bad("unsafe-path");
   let current = base;
   for (const part of target.slice(base.length + 1).split(sep)) {
@@ -83,9 +83,47 @@ function ensurePrivate(base: string, target: string, privateMode = true): void {
       try { mkdirSync(current, { mode: 0o700 }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     }
-    directory(current, privateMode && current === target);
+    if (reportPermissions) destinationDirectory(current, privateMode && current === target);
+    else directory(current, privateMode && current === target);
   }
   if (realpathSync(target) !== target) bad("unsafe-path");
+}
+function existingInstallDirectory(home: string, target: string): boolean {
+  if (!inside(home, target)) bad("unsafe-path");
+  let current = home;
+  for (const part of target.slice(home.length + 1).split(sep)) {
+    current = join(current, part);
+    if (!exists(current)) return false;
+    destinationDirectory(current);
+  }
+  return true;
+}
+function checkInstallPermissions(home: string, prefix: string, sha: string): void {
+  const pi = join(prefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
+  const release = join(prefix, "spider-releases", sha);
+  existingInstallDirectory(home, prefix);
+  const bin = join(prefix, "bin");
+  if (existingInstallDirectory(home, bin)) {
+    const executable = join(bin, "pi");
+    if (exists(executable)) {
+      const stat = lstatSync(executable);
+      if (!stat.isSymbolicLink()) {
+        if (!stat.isFile() || !own(stat)) bad("unsafe-path");
+        if ((stat.mode & 0o022) !== 0) fail("destination-permissions-unsafe", [executable]);
+      }
+    }
+  }
+  for (const root of [pi, release]) {
+    if (!existingInstallDirectory(home, root)) continue;
+    const pending = [root];
+    while (pending.length) {
+      const path = pending.pop()!, stat = lstatSync(path);
+      if (stat.isSymbolicLink()) continue;
+      if (!own(stat) || !stat.isDirectory() && !stat.isFile()) bad("unsafe-path");
+      if ((stat.mode & 0o022) !== 0) fail("destination-permissions-unsafe", [path]);
+      if (stat.isDirectory()) for (const entry of readdirSync(path).sort().reverse()) pending.push(join(path, entry));
+    }
+  }
 }
 function setPrivate(file: string): void {
   const fd = openSync(file, constants.O_RDWR | constants.O_NOFOLLOW);
@@ -482,7 +520,7 @@ async function run(): Promise<unknown> {
     return true;
   }
   if (action === "install-files") {
-    ensurePrivate(home, agentDir, false);
+    ensurePrivate(home, agentDir, false, true);
     if (!request.file || typeof request.file !== "object" || typeof request.file.path !== "string" ||
         (request.file.mode !== 0o600 && request.file.mode !== 0o700)) bad("invalid-file");
     const chunks = request.file.chunks;
@@ -511,7 +549,7 @@ async function run(): Promise<unknown> {
     return true;
   }
   if (action === "auth-install") {
-    ensurePrivate(home, agentDir, false);
+    ensurePrivate(home, agentDir, false, true);
     const file = name(request.name);
     if (!file.startsWith("secret-") || !Array.isArray(request.providers)) bad("invalid-request");
     installPiAuth({ destinationRoot: agentDir, stagingRoot: stage, stagedFile: join(stage, file), providers: request.providers });
@@ -529,6 +567,7 @@ async function run(): Promise<unknown> {
       if (previous.coreId !== coreId) bad("core-changed");
     }
     if (action === "release-prepare") {
+      checkInstallPermissions(home, npmPrefix, sha);
       if (saved) return true;
       if (!Array.isArray(request.chunks) || !request.chunks.length || request.chunks.length > 10_000 ||
           request.chunks.some((chunk: any) => !chunk || typeof chunk !== "object" || !/^release-[a-f0-9]{32}-[0-9]{1,5}$/.test(name(chunk.name)) ||
@@ -540,6 +579,7 @@ async function run(): Promise<unknown> {
     }
     if (action === "release-observe") {
       const observation = inspectRelease(key, releaseRuntimeProbe);
+      if (observation.state === "absent" || observation.state === "finished") checkInstallPermissions(home, npmPrefix, sha);
       if (observation.state === "finished" || observation.state === "failed") { pruneReleaseChunks(stage); return observation; }
       const terminal = releaseTerminals(core, coreId, operationId, machineId);
       if (observation.state === "started") {
@@ -559,6 +599,7 @@ async function run(): Promise<unknown> {
       }
       return { state: "absent", prepared: saved !== null };
     }
+    checkInstallPermissions(home, npmPrefix, sha);
     releaseCore(core, coreId);
     const input = { ...key, owner: releaseRuntimeOwner() }, claim = beginRelease(input);
     if (claim.kind === "duplicate") return true;
@@ -569,7 +610,7 @@ async function run(): Promise<unknown> {
       if (digest(bytes) !== sha) bad("release-hash-mismatch");
       atomicWrite(archive, bytes, 0o600, false);
       const installPrefix = join(npmPrefix, "spider-releases", sha);
-      ensurePrivate(home, installPrefix);
+      ensurePrivate(home, installPrefix, false);
       const release = join(installPrefix, "node_modules", "@guru-irl", "spider");
       const expectedCli = join(release, "dist", "roam", "cli.mjs"), expectedSupervisor = join(release, "dist", "roam", "supervisor.mjs");
       if (cli !== expectedCli || supervisor !== expectedSupervisor || text("pi") !== join(npmPrefix, "bin", "pi")) bad("invalid-release");
@@ -701,13 +742,13 @@ async function run(): Promise<unknown> {
     } finally { rmSync(probe, { recursive: true, force: true }); }
   }
   if (action === "switchover") {
-    ensurePrivate(home, agentDir, false);
+    ensurePrivate(home, agentDir, false, true);
     const cli = text("cli"), release = resolve(dirname(cli), "..", "..");
     if (!inside(npmPrefix, release)) bad("unsafe-release");
     const switchover = await import(pathToFileURL(join(release, "scripts", "intercom-switchover.mjs")).href);
     const shimModule = await import(pathToFileURL(join(release, "scripts", "extension-shim.mjs")).href);
     const activeFile = join(roam, "active-release.json"), extensionDir = join(agentDir, "extensions"), shim = join(extensionDir, "spider.ts");
-    ensurePrivate(home, extensionDir, false);
+    ensurePrivate(home, extensionDir, false, true);
     const base = switchover.filesystemSwitchoverPorts(activeFile);
     const ports = { ...base,
       async backup(file: string, value: string) {
@@ -758,7 +799,9 @@ catch (error) {
   const code = error && typeof error === "object" && "code" in error && typeof error.code === "string" && /^[a-z0-9-]{1,64}$/.test(error.code) ? error.code : "provision-failed";
   const operationId = code === "release-in-progress" && error && typeof error === "object" && "operationId" in error &&
     typeof error.operationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(error.operationId) ? error.operationId : undefined;
-  process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code, ...(operationId ? { operationId } : {}) }));
+  const path = code === "destination-permissions-unsafe" && error instanceof SelectedFilesError && error.files.length === 1 &&
+    isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f]/.test(error.files[0]) ? error.files[0] : undefined;
+  process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code, ...(operationId ? { operationId } : {}), ...(path ? { path } : {}) }));
 }
 `;
 

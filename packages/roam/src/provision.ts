@@ -10,6 +10,7 @@ import { doctorPeer } from "./resource-doctor";
 import { describeSelectedFiles, prepareSelectedFiles, readPrivateBytes, selectedSettingsDigests, SelectedFilesError } from "./selected-files";
 import type { PreparedFiles, SelectedFileMetadata } from "./selected-files";
 import { renderSupervisorUnit } from "./systemd";
+import { destinationPermissionPath, permissionRepairCommand } from "./provision-permissions";
 
 const unitName = "spider-roam-supervisor.service";
 function selectedFileDigests(selected: PreparedFiles) {
@@ -58,7 +59,7 @@ function validate(input: ProvisionRequest, ports: ProvisionPorts): void {
 function safeReason(error: unknown): string {
   if (error instanceof AuthError && error.code === "unsupported-credential-command") return `${error.code} (auth.json)`;
   if (error instanceof SelectedFilesError) {
-    if (error.code === "invalid-destination-settings" || error.code === "settings-preview-changed") return error.code;
+    if (error.code === "invalid-destination-settings" || error.code === "settings-preview-changed" || error.code === "destination-permissions-unsafe") return error.code;
     const files = error.files.filter(file => typeof file === "string" && file.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(file));
     return files.length ? `${error.code} (${files.join(", ")})` : error.code;
   }
@@ -80,7 +81,8 @@ function safeReason(error: unknown): string {
     "missing-switchover-backup", "peer-invalidated", "process-identity-unavailable", "release-launch-uncertain", "reply-too-large", "selection-not-allowed",
     "spawn-error", "stdin-error", "too-large", "unresolved-peer", "unsafe-context", "unsafe-path", "unsafe-release", "unsafe-staging", "invalid-operation",
     "invalid-provision-options", "invalid-provision-request", "staging-cleanup-pending", "invalid-bootstrap-reply", "invalid-bootstrap-request", "invalid-bootstrap-kind",
-    "invalid-byte-limit", "invalid-cli-deadline", "invalid-reply", "bootstrap-probe-failed", "agent-directory-probe-failed", "provision-transport-failed", "invalid-release-request"]);
+    "invalid-byte-limit", "invalid-cli-deadline", "invalid-reply", "bootstrap-probe-failed", "agent-directory-probe-failed", "provision-transport-failed", "invalid-release-request",
+    "destination-permissions-unsafe", "invalid-limits", "invalid-staging-name", "unknown-provision-action"]);
   if (typeof code === "string" && allowed.has(code)) return code;
   const message = error instanceof Error ? error.message : "";
   if (message === "Operation ID already has different arguments") return "operation-arguments-changed";
@@ -111,6 +113,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     try { agentDirectory = await ports.bootstrap.probeAgentDirectory(peer, ports.destination.home); }
     catch (error) {
       const reason = safeReason(error);
+      if (reason === "destination-permissions-unsafe") throw error;
       return result(operationId, 3, reason === "provision-failed" ? "agent-directory-unverified" : reason, null);
     }
     if (agentDirectory.status === "custom") return result(operationId, 1, peer.agentDir ? "agent-directory-mismatch" : "custom-agent-directory-unsupported", null);
@@ -240,6 +243,13 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     if (["core-pin-changed", "core-pin-conflict"].includes(reason)) {
       const target = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,255}$/.test(input.peer.alias) ? input.peer.alias : input.peer.machineId;
       outcome.repairCommand = `spider roam provision ${target} --replace-core-pin`;
+    } else if (reason === "destination-permissions-unsafe") {
+      const details = error && typeof error === "object" && "details" in error ? error.details : undefined;
+      const path = error instanceof SelectedFilesError && error.files.length === 1 ? error.files[0]
+        : details && typeof details === "object" && "path" in details ? details.path : undefined;
+      if (destinationPermissionPath(path, ports.destination.home, [ports.destination.agentDir, ports.destination.npmPrefix])) {
+        outcome.repairCommand = permissionRepairCommand(path);
+      }
     }
     return outcome;
   } finally {

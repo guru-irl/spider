@@ -9,6 +9,7 @@ import { assertCredentialSelectedFile, assertPublicSelectedFile } from "./select
 import type { ProvisionTransport } from "./transport";
 import type { InstalledRelease, ReleaseReason } from "./release-receipt";
 import { PROVISION_REMOTE_SCRIPT } from "./provision-remote-script";
+import { destinationPermissionPath } from "./provision-permissions";
 
 export { PROVISION_REMOTE_SCRIPT };
 interface Chunk { name: string; size: number; sha256: string }
@@ -18,7 +19,7 @@ export interface AdapterOptions {
 }
 export type HcProvisionAdapter = ProvisionPorts["transfer"] & { systemd: ProvisionPorts["systemd"]; verifyPeer(): Promise<ProvisionVerification> };
 const digest = (bytes: Buffer): string => createHash("sha256").update(bytes).digest("hex");
-function failure(error: unknown, action: string): HerdrError {
+function failure(error: unknown, action: string, destination: ProvisionDestination): HerdrError {
   const safe = new Set(["core-changed","invalid-config", "core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin-changed", "core-pin-in-use", "core-pin-busy",  "core-unavailable", "machine-not-found", "machine-ambiguous", "machine-mismatch", "machine-not-enrolled",
     "peer-invalidated", "unresolved-peer", "cli-timeout", "cli-aborted", "cli-exit", "stdin-error", "missing-hc", "spawn-error", "reply-too-large",
     "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",
@@ -28,14 +29,18 @@ function failure(error: unknown, action: string): HerdrError {
     "missing-switchover-backup", "selection-not-allowed", "unsafe-destination", "invalid-destination-settings", "settings-preview-changed", "invalid-settings-preview",
     "credential-file-requires-consent", "provider-consent-required", "invalid-providers", "invalid-auth", "unsafe-auth",
     "provider-unavailable", "unsupported-credential-command", "release-arguments-changed", "invalid-release-receipt", "release-evidence-unavailable", "release-evidence-unfiltered",
-    "release-in-progress", "process-identity-unavailable", "release-launch-uncertain", "operation-arguments-changed", "short-write-pending"]);
+    "release-in-progress", "process-identity-unavailable", "release-launch-uncertain", "operation-arguments-changed", "short-write-pending", "destination-permissions-unsafe",
+    "invalid-limits", "invalid-staging-name", "invalid-release-request", "unknown-provision-action", "provision-transport-failed"]);
   const candidate = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "";
-  const code = safe.has(candidate) ? candidate : "provision-failed";
   const details = error && typeof error === "object" && "details" in error ? error.details : undefined;
+  const roots = ["release-observe", "release-prepare"].includes(action) ? [destination.npmPrefix] : [destination.agentDir];
+  const permission = candidate === "destination-permissions-unsafe" && details && typeof details === "object" && "path" in details &&
+    destinationPermissionPath(details.path, destination.home, roots) ? { path: details.path } : undefined;
+  const code = candidate === "destination-permissions-unsafe" && !permission ? "invalid-provision-reply" : safe.has(candidate) ? candidate : "provision-failed";
   const blocking = code === "release-in-progress" && details && typeof details === "object" && "blockingOperationId" in details &&
     typeof details.blockingOperationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(details.blockingOperationId)
     ? { blockingOperationId: details.blockingOperationId } : undefined;
-  return new HerdrError(code, `Provisioning ${action} failed (${code})`, blocking);
+  return new HerdrError(code, `Provisioning ${action} failed (${code})`, blocking ?? permission);
 }
 function samePeer(expected: Peer, actual: Peer): boolean {
   return expected.machineId === actual.machineId && expected.alias === actual.alias && expected.node === actual.node &&
@@ -71,7 +76,7 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
         resolved = null;
         return await transport.executeProvision(await handle(target), request);
       }
-    } catch (error) { throw failure(error, action); }
+    } catch (error) { throw failure(error, action, destination); }
   }
   async function cleanup(target: Peer, names: readonly string[]): Promise<void> {
     try { await action(target, "cleanup", { names }); }
@@ -212,7 +217,7 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
           catch (error) {
             const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
             if (typeof code !== "string" || !["release-launch-uncertain", "cli-timeout", "cli-aborted", "cli-exit", "reply-too-large"].includes(code)) {
-              throw failure(error, "release");
+              throw failure(error, "release", destination);
             }
           }
           observation = await observe();

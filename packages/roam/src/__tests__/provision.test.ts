@@ -186,6 +186,25 @@ it("does not expose an unknown coded error", async () => {
   expect(await provision!(f.request("unknown-code"), f.ports)).toMatchObject({ code: 3, reason: "provision-failed" });
 }, 5000);
 
+it("gives a repair command for an unsafe configured agent directory before mutation", async () => {
+  const f = fixture();
+  f.ports.bootstrap.probeAgentDirectory = async () => { throw Object.assign(new Error("untrusted detail"), {
+    code: "destination-permissions-unsafe", details: { path: "/home/fixture/.pi/agent" },
+  }); };
+  expect(await provision!(f.request("agent-permissions"), f.ports)).toMatchObject({ code: 1, reason: "destination-permissions-unsafe",
+    repairCommand: "chmod go-w '/home/fixture/.pi/agent'" });
+  expect(f.events).not.toContain("identity");
+}, 5000);
+
+it("gives a repair command for an unsafe retained release path", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.installRelease = async () => { throw Object.assign(new Error("untrusted detail"), {
+    code: "destination-permissions-unsafe", details: { path: "/home/fixture/.local/spider-releases/partial" },
+  }); };
+  expect(await provision!(f.request("release-permissions"), f.ports)).toMatchObject({ code: 3, reason: "destination-permissions-unsafe",
+    repairCommand: "chmod go-w '/home/fixture/.local/spider-releases/partial'" });
+}, 5000);
+
 it("preserves a known agent-directory probe error", async () => {
   const f = fixture();
   f.ports.bootstrap.probeAgentDirectory = async () => { throw Object.assign(new Error("untrusted detail"), { code: "invalid-bootstrap-reply" }); };

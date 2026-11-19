@@ -48,6 +48,7 @@ it("the operator CLI reports unconfirmed revocation without claiming the path cl
   const { runIntercomRevokeCli } = await import("../intercom-cli"); let out = "", err = "";
   const code = await runIntercomRevokeCli({ root: f.root, pairId: "pair-1" }, { out: text => { out += text; }, err: text => { err += text; } }, { revokePorts: f.ports });
   expect(code).toBe(3); expect(err).toContain("intercom-revocation-unconfirmed"); expect(out).not.toContain("intercom-revoked");
+  expect(err).toContain("On the hub, run spider roam intercom revoke pair-1");
   const { main } = await import("../cli"); out = ""; err = "";
   expect(await main(["--global-root", f.root, "roam", "intercom", "revoke", "pair-1"], { out: text => { out += text; }, err: text => { err += text; } },
     { intercomOptions: { revokePorts: f.ports } })).toBe(3);

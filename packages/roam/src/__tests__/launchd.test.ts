@@ -103,6 +103,17 @@ it("migrates only a legacy plist owned by the selected non-default root", async 
   expect(readFileSync(legacy, "utf8")).toBe(definition("/home/fixture/other"));
 }, 5000);
 
+it("keeps an owned legacy service if its replacement pi is unavailable", async () => {
+  const f = fixture(); mkdirSync(f.plistDir);
+  const legacy = join(f.plistDir, "com.spider.roam.hub.plist");
+  const definition = `<plist><dict><key>Label</key><string>com.spider.roam.hub</string><key>ProgramArguments</key><array><string>/home/fixture/node</string><string>/home/fixture/cli</string><string>roam</string><string>hub</string></array><key>SPIDER_GLOBAL_ROOT</key><string>${f.globalRoot}</string></dict></plist>`;
+  writeFileSync(legacy, definition, { mode: 0o600 }); vi.stubEnv("SPIDER_ROAM_PI", "");
+  await expect(installHubService({ ...f, pi: undefined }, f.ports)).rejects.toThrow("participant-pi-unavailable");
+  expect(existsSync(legacy)).toBe(true);
+  expect(readFileSync(legacy, "utf8")).toBe(definition);
+  expect(f.calls).toEqual([]);
+}, 5000);
+
 it("enable writes resolved absolute executable paths", async () => {
   const f = fixture();
   const link = join(f.root, "node-link"); symlinkSync(f.node, link);

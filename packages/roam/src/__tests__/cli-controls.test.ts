@@ -660,8 +660,11 @@ it.each([
   ["service missing on stderr", "echo 'Could not find service' >&2; exit 113", "exit 0", true],
   ["service missing on stdout", "echo 'Could not find service'; exit 113", "exit 0", true],
   ["bootout fails but print proves absence", "echo 'Boot-out failed: 5: Input/output error' >&2; exit 5", "echo 'Could not find service' >&2; exit 113", true],
+  ["service print exits 113 without output", "exit 5", "exit 113", true],
   ["bootout fails and service is still loaded", "echo 'request failed' >&2; exit 5", "exit 0", false],
+  ["silent bootout 113 with loaded service", "exit 113", "exit 0", false],
   ["unrelated missing file is not proof", "echo 'Could not find file' >&2; exit 113", "echo 'request failed' >&2; exit 5", false],
+  ["print reports an unrelated missing file", "exit 5", "echo 'Could not find file' >&2; exit 113", false],
 ] as const)("disable converges only when %s", async (_name, bootout, print, removed) => {
   const f = await fixture(), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });

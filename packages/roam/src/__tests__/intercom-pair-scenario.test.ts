@@ -47,6 +47,23 @@ it("converges a connector readiness race through the private setup helper in one
   expect(await createIntercomRegistry(f.source.globalRoot).get("pair-1")).toMatchObject({ state: "active" });
 }, 5000);
 
+it("rechecks an existing route after a lost add-machine result", async () => {
+  const f = await scenario(), source = f.locals.get(f.source.machineId)!, run = source.run;
+  let attempts = 0;
+  source.run = async (argv, options) => {
+    if (argv[1] === "machine" && argv[2] === "add") {
+      attempts++;
+      await run(argv, options);
+      return { code: 1, stdout: "", errorKind: "unreachable" };
+    }
+    return run(argv, options);
+  };
+  expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+  expect(attempts).toBe(1);
+  expect(f.machines()).toHaveLength(1);
+  expect(f.machines()[0]).toMatchObject({ name: "spider-pair-pair-1", id: "core-b" });
+}, 5000);
+
 it("enrolls without a separate SSH listener port in either recipe", async () => {
   const f = await scenario();
   expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0, reason: "intercom-enrolled" });

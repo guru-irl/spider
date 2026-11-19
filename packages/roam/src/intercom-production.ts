@@ -26,6 +26,7 @@ interface EnrollmentOptions {
   root: string; journal: Journal; transport: ProvisionTransport; request: IntercomEnrollmentRequest; actor: string; now(): number;
   present: IntercomEnrollmentPorts["present"]; approve: IntercomEnrollmentPorts["approve"];
   notify: IntercomEnrollmentPorts["notify"]; warn: IntercomEnrollmentPorts["warn"];
+  retry?: { now(): number; sleep(ms: number): Promise<void> };
 }
 type Handle = { handle: Peer; machineId: string; coreId: string };
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -33,6 +34,7 @@ const object = (value: unknown): value is Record<string, unknown> => !!value && 
 /** The CLI calls this only from its TTY-owned approval path. Machine operations require its journaled graph proof. */
 export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions): IntercomEnrollmentPorts {
   const request = structuredClone(input.request), registry = createIntercomRegistry(input.root), handles = new Map<string, Handle>();
+  const retry = input.retry ?? { now: () => performance.now(), sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)) };
   const digest = createHash("sha256").update(JSON.stringify(request.pairs)).digest("hex");
   const approvals = new Map<string, { operationId: string; graphDigest: string; expectedFenceId: string | null }>();
   const pin = async (machine: Peer): Promise<IntercomMachinePin> => {
@@ -40,11 +42,11 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
     if (value.machineId !== machine.machineId) throw new Error("machine-mismatch");
     handles.set(machine.machineId, value); return { machineId: value.machineId, coreId: value.coreId };
   };
-  const send = async (machine: Peer, expected: IntercomMachinePin, command: "observe-fence" | "setup-local", body: unknown): Promise<unknown> => {
+  const send = async (machine: Peer, expected: IntercomMachinePin, command: "observe-fence" | "setup-local", body: unknown, timeoutMs = 40_000): Promise<unknown> => {
     const handle = handles.get(machine.machineId);
     if (!handle || handle.machineId !== expected.machineId || handle.coreId !== expected.coreId) throw new Error("core-changed");
     const bytes = await input.transport.transport.exec(handle.handle, ["roam", "intercom", command],
-      { timeoutMs: 40_000, maxBytes: 1024 * 1024, stdin: Buffer.from(JSON.stringify(body)) });
+      { timeoutMs, maxBytes: 1024 * 1024, stdin: Buffer.from(JSON.stringify(body)) });
     let reply: unknown; try { reply = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { throw new Error("intercom-verification-pending"); }
     const kind = command === "observe-fence" ? "intercom-fence" : "intercom-setup";
     if (!object(reply) || reply.version !== 1 || reply.kind !== kind || reply.ok !== true || !Object.hasOwn(reply, "value") ||
@@ -62,7 +64,7 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
     return { approved: true, actor: row.result.actor, at: row.result.at as number, operationId: request.operation.id, graphDigest: digest, pairs: request.pairs };
   };
   const call = async <T>(machine: Peer, expected: IntercomMachinePin, action: string, pair: IntercomEnrollmentPlan | IntercomEnrollmentPair,
-    extra: Record<string, unknown> = {}): Promise<T> => await send(machine, expected, "setup-local", { action, pair, approval: consent(), ...extra }) as T;
+    extra: Record<string, unknown> = {}, timeoutMs = 40_000): Promise<T> => await send(machine, expected, "setup-local", { action, pair, approval: consent(), ...extra }, timeoutMs) as T;
   const machinePlan = (machine: Peer) => {
     const pair = request.pairs.find(item => item.source.machineId === machine.machineId || item.target.machineId === machine.machineId);
     if (!pair) throw new Error("machine-mismatch"); return pair;
@@ -134,7 +136,22 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
       const via = posix.join(pair.source.globalRoot, "roam", "intercom", "pairs", pair.pairId, pair.edgeEpoch, "via");
       const expected = ["machine", "add", "--via", via, "--name", `spider-pair-${pair.pairId}`, "--session", pair.connector.session, "--json"];
       if (JSON.stringify(argv) !== JSON.stringify(expected)) throw new Error("invalid-intercom-operation");
-      await call(pair.source, pins.source, "add-machine", pair, { targetCoreId: pins.target.coreId });
+      const deadline = retry.now() + 40_000;
+      let lastError: unknown = Object.assign(new Error("Route deadline expired"), { code: "cli-timeout" });
+      for (let attempt = 0; ; attempt++) {
+        const remaining = Math.floor(deadline - retry.now());
+        if (remaining < 1000) throw lastError;
+        try {
+          await call(pair.source, pins.source, "add-machine", pair, { targetCoreId: pins.target.coreId }, remaining);
+          return;
+        } catch (error) {
+          lastError = error;
+          if (enrollmentCauseCode(error) !== "unreachable" || attempt >= 7) throw error;
+          const backoff = Math.min(100 * 2 ** attempt, 2000);
+          if (deadline - retry.now() <= backoff + 1000) throw error;
+          await retry.sleep(backoff);
+        }
+      }
     },
     verifyTransport: (pair, pins) => call(pair.source, pins.source, "verify-transport", pair, { targetCoreId: pins.target.coreId }),
     async approvePair(pair, approval, pins) {

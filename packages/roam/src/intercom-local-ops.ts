@@ -12,6 +12,7 @@ import { checkConnector, runConnectorStep } from "./intercom-connector";
 import { createIntercomRegistry, withIntercomPeerLock } from "./intercom-registry";
 import { persistIntercomPairRoute } from "./provision-config";
 import { requestHelperEnroll, requestHelperFence, requestHelperInspect } from "./intercom-helper";
+import { safeNativeHcCode } from "./cause-codes";
 
 export interface PairConsentProof { approved: true; actor: string; at: number; operationId: string; graphDigest: string; pairs: readonly IntercomEnrollmentPlan[] }
 type Common = { pair: IntercomEnrollmentPair; approval: PairConsentProof; targetCoreId?: string };
@@ -22,17 +23,18 @@ export type LocalPairOperation = Common & ({ action: "ensure-key" } | { action: 
 export interface LocalPairPorts extends PairResourcePorts {
   machineId: string; root: string; home: string; node: string; ssh: string; keygen: string; keyscan?: string; sshUser?: string; recipe?: IntercomConnectorRecipe;
   systemSshFiles?: SystemSshFileSystem;
-  run(argv: readonly string[], options: { timeoutMs: number; maxBytes: number }): Promise<{ code: number; stdout: string }>;
+  run(argv: readonly string[], options: { timeoutMs: number; maxBytes: number }): Promise<{ code: number; stdout: string; errorKind?: string }>;
   enrollBridge?(input: unknown): Promise<unknown>;
   inspectBridge?(input: unknown): Promise<{ machineId: string; peer: string; edgeEpoch: string; status: string; reason: string | null }>;
   inspectFence?(input: unknown): Promise<{ machineId: string; peer: string; fence: { edgeEpoch: string; fenceId: string } | null }>;
 }
-export async function runForeground(argv: readonly string[], options: { timeoutMs: number; maxBytes: number }): Promise<{ code: number; stdout: string }> {
+export async function runForeground(argv: readonly string[], options: { timeoutMs: number; maxBytes: number }): Promise<{ code: number; stdout: string; errorKind?: string }> {
   if (!Array.isArray(argv) || !argv.length || !Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1 ||
       !Number.isSafeInteger(options.maxBytes) || options.maxBytes < 1) throw new Error("invalid-intercom-operation");
   return new Promise((resolve, reject) => {
-    const child = spawn(argv[0], [...argv.slice(1)], { shell: false, detached: false, stdio: ["ignore", "pipe", "ignore"] });
-    const chunks: Buffer[] = []; let size = 0, failure: Error | null = null, killTimer: NodeJS.Timeout | undefined;
+    const child = spawn(argv[0], [...argv.slice(1)], { shell: false, detached: false, stdio: ["ignore", "pipe", "pipe"] });
+    const chunks: Buffer[] = [], errors: Buffer[] = [];
+    let size = 0, errorSize = 0, failure: Error | null = null, killTimer: NodeJS.Timeout | undefined;
     const terminate = (error: Error) => {
       if (failure) return; failure = error; child.kill("SIGTERM");
       killTimer = setTimeout(() => child.kill("SIGKILL"), 500); killTimer.unref();
@@ -42,10 +44,21 @@ export async function runForeground(argv: readonly string[], options: { timeoutM
       const bytes = Buffer.from(chunk); size += bytes.length;
       if (size > options.maxBytes) terminate(new Error("intercom-command-output-too-large")); else chunks.push(bytes);
     });
+    child.stderr.on("data", chunk => {
+      const bytes = Buffer.from(chunk); errorSize += bytes.length;
+      if (errorSize <= options.maxBytes) errors.push(bytes); else errors.length = 0;
+    });
     child.once("error", error => { failure ??= error; });
     child.once("close", code => {
       clearTimeout(timer); if (killTimer) clearTimeout(killTimer);
-      if (failure) reject(failure); else resolve({ code: code ?? 1, stdout: Buffer.concat(chunks).toString("utf8") });
+      if (failure) { reject(failure); return; }
+      let errorKind: string | undefined;
+      if (code !== null && code !== 0 && errorSize <= options.maxBytes) try {
+        const reply: unknown = JSON.parse(Buffer.concat(errors).toString("utf8"));
+        if (reply && typeof reply === "object" && "error" in reply && reply.error && typeof reply.error === "object" && "kind" in reply.error)
+          errorKind = safeNativeHcCode(reply.error.kind);
+      } catch { /* Malformed or unstructured stderr cannot supply a native code. */ }
+      resolve({ code: code ?? 1, stdout: Buffer.concat(chunks).toString("utf8"), ...(errorKind ? { errorKind } : {}) });
     });
   });
 }
@@ -243,7 +256,11 @@ async function localPairOperation(input: LocalPairOperation, ports: LocalPairPor
     if (existing) return { added: false };
     const result = await ports.run([input.pair.source.core, "machine", "add", "--via", files.via, "--name", routeName,
       "--session", input.pair.connector.session, "--json"], { timeoutMs: 30_000, maxBytes: 64 * 1024 });
-    if (result.code !== 0 || !await inspect()) throw new Error("intercom-route-unavailable");
+    if (result.code !== 0) {
+      const kind = safeNativeHcCode(result.errorKind);
+      throw Object.assign(new Error("intercom-route-unavailable"), kind ? { code: kind } : {});
+    }
+    if (!await inspect()) throw new Error("intercom-route-unavailable");
     return { added: true };
   }
   throw new Error("invalid-intercom-operation");

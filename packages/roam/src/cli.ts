@@ -287,7 +287,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
       const reason = /^(?:intercom-[a-z-]+|revocation-pending|fresh-peer-consent-required|connector-not-pair-scoped|peer-consent-required|machine-mismatch|core-unavailable|unsafe-pair-key|host-key-changed)$/.test(message) ? message : "intercom-setup-pending";
-      const cause = reason === "intercom-setup-pending" ? setupPendingCause(error) : undefined;
+      const safeCause = setupPendingCause(error);
+      const cause = reason === "intercom-setup-pending" || safeCause.code !== "unknown" ? safeCause : undefined;
       if (cause) io.err(`${JSON.stringify({ reason, cause })}\n`);
       io.out(`${JSON.stringify({ version: 1, kind: "intercom-setup", ok: false, reason, ...(cause ? { cause } : {}) })}\n`);
     }

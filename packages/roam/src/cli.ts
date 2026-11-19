@@ -30,7 +30,7 @@ import { createStorePort } from "./stores";
 import { loadHerdrConfig, startProductionHub } from "./production-hub";
 export { startProductionHub } from "./production-hub";
 import { createTransport } from "./transport";
-import { isPeerFailureReason, peerFailureReason, peerPreflightIssue } from "./peer-errors";
+import { isPeerFailureReason, peerFailureReason, peerPreflightIssue, recoveryRefusalCode } from "./peer-errors";
 import { remoteDoctor } from "./remote-observations";
 import { disableRoaming, enableRoaming } from "./production-controls";
 import { runForeground, runLocalPairCleanup, runLocalPairOperation, hasPairConsent, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
@@ -491,11 +491,13 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     try {
       const reply = await requestHubControl(join(root, "roam", "hub.sock"), peer ? { op: "sync", machine: peer.machineId } : { op: "sync" });
       const result = { ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null };
-      const safe = safeControlOutcome(result), value = safe.value as { outcomes?: Array<{ code: number; reason: string; causeCode?: string }> } | null;
+      const safe = safeControlOutcome(result), value = safe.value as { outcomes?: Array<{ code: number; reason: string; operationId: string; operationKind?: string; causeCode?: string }> } | null;
       const outcomes = value?.outcomes ?? [];
       const failure = outcomes.map(row => row.code === 1 && isPeerFailureReason(row.reason) ? row.reason : null).find(Boolean);
       const causes = [...new Set(outcomes.flatMap(row => row.causeCode ? [row.causeCode] : []))].slice(0, 16);
-      const text = `${safe.reason}${failure ? `. ${failure}` : ""}${causes.length ? `. Causes: ${causes.join(", ")}` : ""}`;
+      const operations = [...new Set(outcomes.flatMap(row => row.code !== 0 && row.operationKind && (row.reason === "agent-operation-failed" || recoveryRefusalCode(row.reason))
+        ? [`${row.operationKind}: ${row.reason}${row.causeCode ? ` [${row.causeCode}]` : ""}${row.operationId ? ` (${row.operationId})` : ""}`] : []))].slice(0, 16);
+      const text = `${safe.reason}${failure ? `. ${failure}` : ""}${causes.length ? `. Causes: ${causes.join(", ")}` : ""}${operations.length ? `. Operations: ${operations.join(", ")}` : ""}`;
       return emitOutcome(io, result, jsonOutput, `${clean(text)}\n`);
     } catch { return emitOutcome(io, outcome(1, "hub-unavailable"), jsonOutput, "The roaming hub is unavailable.\n"); }
   }

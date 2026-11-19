@@ -1,4 +1,17 @@
-import { safeCauseCode } from "./cause-codes";
+import { safeCauseCode, type AgentOperationKind } from "./cause-codes";
+
+const recoveryRefusals = ["roaming-disabled", "recovery-request-invalid", "recovery-authority-unavailable", "revocation-evidence-unavailable",
+  "mirror-home-changed", "participant-location-unavailable", "participant-file-mismatch", "agent-operation-failed", "recovery-peer-refused", "recovery-peer-invalid"] as const;
+export type RecoveryRefusal = typeof recoveryRefusals[number];
+export function recoveryRefusalCode(value: unknown): RecoveryRefusal | undefined {
+  return typeof value === "string" && (recoveryRefusals as readonly string[]).includes(value) ? value as RecoveryRefusal : undefined;
+}
+export class RecoveryResponseError extends Error {
+  constructor(readonly reason: RecoveryRefusal, readonly code: 1 | 2 | 3, readonly operationId: string,
+    readonly operationKind: AgentOperationKind, readonly causeCode?: string) {
+    super(reason);
+  }
+}
 
 const agentReasons = ["store-inventory-incomplete", "agent-operation-failed", "capture-unsafe"] as const;
 type AgentFailureCode = typeof agentReasons[number];

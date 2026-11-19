@@ -13,6 +13,8 @@ import { pullArtifact } from "./artifacts";
 import { verifyFrozenSession } from "./session-file";
 import { sessionHome } from "./homes";
 import { syncHandshake, type SyncHandshake } from "./revocation";
+import { agentFailureCode, RecoveryResponseError, recoveryRefusalCode } from "./peer-errors";
+import { causeCode, safeCauseCode } from "./cause-codes";
 export interface ProductionRecoveryPorts {
   mirrors: NonNullable<import("./sync").SyncPorts["mirrors"]>;
   retireOnly: NonNullable<import("./sync").SyncPorts["retireOnly"]>;
@@ -20,11 +22,19 @@ export interface ProductionRecoveryPorts {
 }
 export function createProductionRecoveryPorts(input: { root: string; config: RoamConfig; globalDb: Db; journal: Journal; transport: Transport }): ProductionRecoveryPorts {
   const { root, config, globalDb, journal, transport } = input;
-  const request = async <T>(peer: Peer, kind: string, args: import("@spider/db-core/roam/types").JsonObject, epoch: number | null): Promise<T> => {
+  const request = async <T>(peer: Peer, kind: "mirror-export" | "supervisor-retire", args: import("@spider/db-core/roam/types").JsonObject, epoch: number | null): Promise<T> => {
     const operation: Operation = { id: randomUUID(), machineId: peer.machineId, expectedEpoch: epoch, kind, args };
     const bytes = await transport.exec(await transport.resolve(peer), ["roam", "agent", JSON.stringify(operation)], { timeoutMs: config.limits.controlMs, maxBytes: config.limits.replyBytes });
-    const reply = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Outcome<T>;
-    if (reply.operationId !== operation.id || reply.code !== 0 || !reply.value) throw new Error(reply.reason || "recovery-peer-unavailable");
+    const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new RecoveryResponseError("recovery-peer-invalid", 1, operation.id, kind);
+    const reply = value as Partial<Outcome<T>>;
+    if (reply.operationId !== operation.id || ![0, 1, 2, 3].includes(reply.code as number)) throw new RecoveryResponseError("recovery-peer-invalid", 1, operation.id, kind);
+    if (reply.code !== 0) {
+      const reason = agentFailureCode(reply.reason) === "agent-operation-failed" ? "agent-operation-failed" : recoveryRefusalCode(reply.reason) ?? "recovery-peer-refused";
+      const cause = safeCauseCode(reply.causeCode) ?? (reason === "agent-operation-failed" ? causeCode(null, kind) : undefined);
+      throw new RecoveryResponseError(reason, reply.code as 1 | 2 | 3, operation.id, kind, cause);
+    }
+    if (!reply.value) throw new RecoveryResponseError("recovery-peer-invalid", 1, operation.id, kind);
     return reply.value;
   };
   return {

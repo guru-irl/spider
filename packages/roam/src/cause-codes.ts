@@ -21,8 +21,16 @@ const causeCodes = new Set<string>([
   "invalid-byte-limit", "invalid-cli-deadline", "unresolved-peer", "service-not-loaded", "service-failed", "service-timeout", "service-spawn-error",
 ]);
 
+const agentOperationKinds = ["stores", "inventory", "enable-capture", "recheck-store", "export", "import", "release-export", "split", "assemble", "cursor", "receipt",
+  "mirror-export", "sync-handshake", "supervisor-retire"] as const;
+export type AgentOperationKind = typeof agentOperationKinds[number];
+const agentKindSet = new Set<string>(agentOperationKinds);
+export function safeAgentOperationKind(value: unknown): AgentOperationKind | undefined {
+  return typeof value === "string" && agentKindSet.has(value) ? value as AgentOperationKind : undefined;
+}
+
 const steps = [
-  "stores", "inventory", "enable-capture", "recheck-store", "export", "import", "release-export", "split", "assemble", "cursor", "receipt",
+  ...agentOperationKinds,
   "enable", "enable-peer-capture", "enable-local-capture", "enable-peer-flag", "enable-config", "enable-service",
   "disable", "disable-service", "disable-config", "disable-peer-flag",
   "enrollment", "read-fences", "notify-peers", "record-enrollment", "register-pair", "check-connector", "inspect-ssh", "bind-pair", "host-connector", "connect-connector",

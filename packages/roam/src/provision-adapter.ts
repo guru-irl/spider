@@ -176,8 +176,9 @@ export function createHcProvisionAdapter(options: AdapterOptions): HcProvisionAd
     },
     async systemctl(argv) {
       const allowed = JSON.stringify(argv) === JSON.stringify(["--user", "daemon-reload"]) ||
-        JSON.stringify(argv) === JSON.stringify(["--user", "enable", "spider-roam-supervisor.service"]);
-      if (!allowed) throw new HerdrError("invalid-systemctl", "Only the roaming supervisor unit may be enabled");
+        JSON.stringify(argv) === JSON.stringify(["--user", "enable", "spider-roam-supervisor.service"]) ||
+        JSON.stringify(argv) === JSON.stringify(["--user", "disable", "spider-roam-supervisor.service"]);
+      if (!allowed) throw new HerdrError("invalid-systemctl", "Only the roaming supervisor unit may be enabled or disabled");
       await action(peer, "systemctl", { argv });
     },
   };

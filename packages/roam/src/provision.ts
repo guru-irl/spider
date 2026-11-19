@@ -229,10 +229,10 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
       agentDir: ports.destination.agentDir, pi: peer.pi });
     await ports.systemd.writeUnit(unitName, unit);
     await ports.systemd.systemctl(["--user", "daemon-reload"]);
-    await ports.systemd.systemctl(["--user", "enable", unitName]);
     const diagnostics = await doctorPeer(peer, ports);
     await ports.report(diagnostics);
     const hostingReady = diagnostics.every(item => item.severity !== "block");
+    await ports.systemd.systemctl(["--user", hostingReady ? "enable" : "disable", unitName]);
     await ports.setParticipation(peer, hostingReady);
     const outcome = result(operationId, 0, hostingReady ? "installed" : "installed-hosting-disabled", { hostingReady });
     ports.journal.record(operationId, "done", outcome as unknown as JsonObject);

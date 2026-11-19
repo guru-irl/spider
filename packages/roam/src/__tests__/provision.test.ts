@@ -747,7 +747,7 @@ it("reprovision backs up once and creates one unit", async () => {
 }, 5000);
 
 it("provisions when a recorded diagnostic core unit has vanished", async () => {
-  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.verified = true;
   f.value.core = { unit: null, unitExists: false, unitOwned: false, transient: null, socketExists: true, socketOwned: true };
   const before = readFileSync(f.coreFile), terminals = readFileSync(f.terminals);
   expect(await provision!(f.request("missing-diagnostic-unit"), f.ports)).toMatchObject({ code: 0 });
@@ -758,7 +758,7 @@ it("provisions when a recorded diagnostic core unit has vanished", async () => {
 
 it("core unit bytes and terminals remain unchanged", async () => {
   expect(provision).toBeTypeOf("function");
-  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.verified = true;
   const core = readFileSync(f.coreFile), terminals = readFileSync(f.terminals);
   expect((await provision!(f.request("core-safe"), f.ports)).code).toBe(0);
   expect(readFileSync(f.coreFile)).toEqual(core);

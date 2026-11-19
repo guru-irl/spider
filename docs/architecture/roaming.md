@@ -323,9 +323,13 @@ an unavailable observation never authorizes clearing a fence.
 
 Production hosting stays disabled until phase 4 acceptance succeeds. Provisioning
 installs only the supervisor service and leaves the running core and its terminals
-unchanged. The supervisor is enabled under `default.target`, with
-`Restart=on-failure`, `RestartSec=10s`, `StartLimitIntervalSec=0`, and a private
-umask. Persistent startup failures therefore retry without a start-rate lockout.
+unchanged. It enables the service under `default.target` only when the box passes
+hosting readiness checks; otherwise it disables autostart, including an existing
+enablement. Provisioning never starts or stops the service. Readiness controls
+autostart even when the hub is disabled; the hub switch separately controls box
+participation. The unit has `Restart=on-failure`, `RestartSec=10s`,
+`StartLimitIntervalSec=0`, and a private umask. Persistent startup failures
+therefore retry without a start-rate lockout.
 The unit has no `After=`, `Requires=`, or
 `PartOf=` dependency on the core unit.
 

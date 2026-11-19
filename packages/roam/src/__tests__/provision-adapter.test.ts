@@ -1363,12 +1363,19 @@ it("sends auth only through private stdin staging and removes it", async () => {
 
 it("disables only the supervisor autostart through the remote systemd adapter", async () => {
   const f = fixture(), adapter = create!(f.options);
-  await adapter.systemd.systemctl(["--user", "disable", "spider-roam-supervisor.service"]);
+  await expect(adapter.systemd.systemctl(["--user", "disable", "spider-roam-supervisor.service"])).resolves.toBeUndefined();
   expect(readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line))).toEqual([
     ["--user", "disable", "spider-roam-supervisor.service"],
   ]);
   await expect(adapter.systemd.systemctl(["--user", "disable", "herdr-core.service"])).rejects.toThrow();
   await expect(adapter.systemd.systemctl(["--user", "disable", "--now", "spider-roam-supervisor.service"])).rejects.toThrow();
+  const request = { action: "systemctl", operationId: "op-1", machineId: f.peer.machineId, home: f.home, globalRoot: f.globalRoot,
+    agentDir: f.agentDir, npmPrefix: f.npmPrefix, unitDir: f.unitDir, pi: f.peer.pi, cli: f.peer.cli, node: f.peer.node,
+    supervisor: f.destination.supervisor, maximum: DEFAULT_LIMITS.agentBytes, chunkBytes: 32, timeout: DEFAULT_LIMITS.importMs };
+  for (const argv of [["--user", "disable", "herdr-core.service"], ["--user", "disable", "--now", "spider-roam-supervisor.service"]]) {
+    await expect(f.remote.executeProvision(f.peer, { ...request, argv })).rejects.toMatchObject({ code: "invalid-systemctl" });
+  }
+  expect(readFileSync(f.calls, "utf8").trim().split("\n")).toHaveLength(1);
 }, 5000);
 
 it("installs only a supervisor unit through a fake systemd port", async () => {

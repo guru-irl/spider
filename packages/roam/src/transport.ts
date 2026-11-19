@@ -370,7 +370,7 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           'selection-not-allowed', 'unsafe-destination', 'invalid-destination-settings', 'settings-preview-changed', 'invalid-settings-preview',
           'credential-file-requires-consent', 'provider-consent-required', 'invalid-providers', 'invalid-auth', 'unsafe-auth', 'provider-unavailable',
           'unsupported-credential-command', 'invalid-release-request', 'invalid-release-receipt', 'release-arguments-changed',
-          'release-evidence-unavailable', 'release-in-progress', 'process-identity-unavailable', 'operation-arguments-changed', 'short-write-pending', 'core-unavailable', 'core-changed']);
+          'release-evidence-unavailable', 'release-evidence-unfiltered', 'release-in-progress', 'process-identity-unavailable', 'operation-arguments-changed', 'short-write-pending', 'core-unavailable', 'core-changed']);
         if (typeof reply.error !== 'string' || !allowed.has(reply.error)) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         if (reply.error === 'core-changed') { invalidate(state.peer.alias, state, 'core-changed'); throw coreChanged(); }
         throw new HerdrError(reply.error, blocked ? `Provisioning is blocked by operation ${reply.operationId}` : 'Provisioning operation failed',

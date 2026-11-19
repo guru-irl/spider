@@ -122,6 +122,11 @@ socket is owned by the user.
 
 The npm prefix comes from `<prefix>/bin/pi` and need not be named `.local`.
 Provisioning runs npm lifecycle scripts but skips optional CUDA downloads.
+Release evidence relies on the core's server-side label filters. Herdr 0.1.16
+omits labels from terminal rows, so when a row has no labels, provisioning also
+checks that the same machine filter with a random operation label returns no
+rows. A nonempty result stops provisioning with `release-evidence-unfiltered`
+before the installer launches.
 
 `npm-not-found` means npm is missing next to the configured Node executable.
 The error names the expected path. Install npm there or update the peer's Node
@@ -131,7 +136,8 @@ path to an installation with an adjacent npm executable.
 The CLI names the destination's private release receipt. Its `diagnostic` records
 only the install step (`pi` or `release`), exit code or signal, an allowlisted
 npm code such as `E404` or `1`, and a validated package name from a reported
-`node_modules` path. Unavailable fields are `null`. The receipt is mode `0600`;
+`node_modules` path. A timeout also records `timedOut: true`, which is absent
+for other failures. Unavailable fields are `null`. The receipt is mode `0600`;
 it does not store npm output or URLs.
 After fixing either error, retry without `--operation-id` or use a new operation
 ID. The same operation ID does not retry a failed release installation.

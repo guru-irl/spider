@@ -27,7 +27,7 @@ function failure(error: unknown, action: string): HerdrError {
     "incomplete-release", "pi-version-mismatch", "invalid-unit", "invalid-systemctl", "unsafe-release", "invalid-switchover-journal",
     "missing-switchover-backup", "selection-not-allowed", "unsafe-destination", "invalid-destination-settings", "settings-preview-changed", "invalid-settings-preview",
     "credential-file-requires-consent", "provider-consent-required", "invalid-providers", "invalid-auth", "unsafe-auth",
-    "provider-unavailable", "unsupported-credential-command", "release-arguments-changed", "invalid-release-receipt", "release-evidence-unavailable",
+    "provider-unavailable", "unsupported-credential-command", "release-arguments-changed", "invalid-release-receipt", "release-evidence-unavailable", "release-evidence-unfiltered",
     "release-in-progress", "process-identity-unavailable", "release-launch-uncertain", "operation-arguments-changed", "short-write-pending"]);
   const candidate = error && typeof error === "object" && "code" in error && typeof error.code === "string" ? error.code : "";
   const code = safe.has(candidate) ? candidate : "provision-failed";

@@ -45,7 +45,7 @@ function fixture(short = false) {
   const destination = { home, agentDir, npmPrefix, supervisor: join(releaseRoot, "dist", "roam", "supervisor.mjs") };
   const calls = join(root, "systemctl-calls"), writes: { path: string; bytes: Buffer }[] = [], requests: { action: string; argv: string[] }[] = [], launches: string[] = [];
   const launchIO: { stdout: string; stderr: string }[] = [];
-  const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false }, terminalFile = join(root, "release-terminals.json");
+  const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false }, terminalFile = join(root, "release-terminals.json"), coreLists = join(root, "core-lists");
   const fakeCore = `#!${process.execPath}\nimport fs from 'node:fs';
 const args = process.argv.slice(2);
 if (args[0] === 'server') console.log(JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}));
@@ -53,6 +53,12 @@ else {
   const file = ${JSON.stringify(terminalFile)};
   const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {terminals:[]};
   const filters = args.flatMap((arg, index) => arg === '--label' ? [args[index + 1]] : []);
+  fs.appendFileSync(${JSON.stringify(coreLists)}, JSON.stringify(args) + '\\n');
+  if (data.probeFailure && !filters.includes('spider.operation=op-1')) {
+    if (data.probeFailure === 'exit') process.exit(1);
+    console.log(data.probeFailure === 'json' ? 'invalid' : JSON.stringify({terminals:null}));
+    process.exit(0);
+  }
   const matches = (item, filter) => {
     const split = filter.indexOf('=');
     return split > 0 && item.labels?.[filter.slice(0, split)] === filter.slice(split + 1);
@@ -109,13 +115,13 @@ else {
   const options = { peer, operationId: "op-1", destination, unitDir, limits: { ...DEFAULT_LIMITS, chunkBytes: 32 }, transport: remote,
     piProviders: ["github-copilot"] };
   const input = { bytes: Buffer.from("fixture archive"), sha256: releaseSha, npmPrefix, globalRoot, pi: "1.2.0" as const, intercom: "spider-owned" as const };
-  return { root, home, globalRoot, agentDir, npmPrefix, unitDir, bin, releaseRoot, peer, destination, calls, writes, requests, launches, launchIO, launchState, terminalFile, remote, options, input };
+  return { root, home, globalRoot, agentDir, npmPrefix, unitDir, bin, releaseRoot, peer, destination, calls, writes, requests, launches, launchIO, launchState, terminalFile, coreLists, remote, options, input };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 function releaseNpm(f: ReturnType<typeof fixture>, requireCpu = false, output?: { stage: "global" | "release"; file: string; fail: boolean }) {
   const log = join(f.root, "npm-calls");
-  const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';\nconst a=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args:a,root:process.env.SPIDER_GLOBAL_ROOT,cuda:process.env.npm_config_onnxruntime_node_install_cuda})+'\\n');\nif(${requireCpu} && process.env.npm_config_onnxruntime_node_install_cuda!=='skip') process.exit(1);\nconst output=${JSON.stringify(output ?? null)};\nif(output && a.includes('--global')===(output.stage==='global')){process.stdout.write('npm-stdout-fixture\\n');process.stderr.write(fs.readFileSync(output.file));if(output.fail) process.exitCode=1;}\nconst prefix=a[a.indexOf('--prefix')+1];\nif(a.includes('--global')){const dir=path.join(prefix,'bin');fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(path.join(dir,'pi'),${JSON.stringify(`#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(join(f.root, "pi-release-calls"))},JSON.stringify(process.argv.slice(2))+'\\n'); console.log('1.2.0');\n`)},{mode:0o700});}\nelse {const p=path.join(prefix,'node_modules','@guru-irl','spider');for(const file of ['dist/extension.js','dist/intercom/broker.mjs','dist/roam/cli.mjs','dist/roam/supervisor.mjs','scripts/intercom-switchover.mjs','scripts/extension-shim.mjs']){const out=path.join(p,file);fs.mkdirSync(path.dirname(out),{recursive:true,mode:0o700});fs.writeFileSync(out,'fixture',{mode:0o600});}}\n`;
+  const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';\nconst a=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args:a,root:process.env.SPIDER_GLOBAL_ROOT,cuda:process.env.npm_config_onnxruntime_node_install_cuda,color:process.env.npm_config_color,loglevel:process.env.npm_config_loglevel})+'\\n');\nif(${requireCpu} && process.env.npm_config_onnxruntime_node_install_cuda!=='skip') process.exit(1);\nconst output=${JSON.stringify(output ?? null)};\nif(output && a.includes('--global')===(output.stage==='global')){process.stdout.write('npm-stdout-fixture\\n');process.stderr.write(fs.readFileSync(output.file));if(output.fail) process.exitCode=1;}\nconst prefix=a[a.indexOf('--prefix')+1];\nif(a.includes('--global')){const dir=path.join(prefix,'bin');fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(path.join(dir,'pi'),${JSON.stringify(`#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(join(f.root, "pi-release-calls"))},JSON.stringify(process.argv.slice(2))+'\\n'); console.log('1.2.0');\n`)},{mode:0o700});}\nelse {const p=path.join(prefix,'node_modules','@guru-irl','spider');for(const file of ['dist/extension.js','dist/intercom/broker.mjs','dist/roam/cli.mjs','dist/roam/supervisor.mjs','scripts/intercom-switchover.mjs','scripts/extension-shim.mjs']){const out=path.join(p,file);fs.mkdirSync(path.dirname(out),{recursive:true,mode:0o700});fs.writeFileSync(out,'fixture',{mode:0o600});}}\n`;
   writeFileSync(join(f.bin, "npm"), npm, { mode: 0o700 });
   return log;
 }
@@ -129,6 +135,18 @@ it("installs with CUDA downloads disabled for both npm commands", async () => {
     });
     const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as { cuda?: string });
     expect(calls.map(call => call.cuda)).toEqual(["skip", "skip"]);
+  } finally { vi.unstubAllEnvs(); }
+}, 10_000);
+
+it("overrides diagnostic settings for both npm commands", async () => {
+  vi.stubEnv("npm_config_color", "always"); vi.stubEnv("npm_config_loglevel", "silent");
+  try {
+    const f = fixture(), log = releaseNpm(f);
+    await expect(create!(f.options).installRelease(f.peer, f.input)).resolves.toEqual({
+      pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor,
+    });
+    const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line));
+    expect(calls.map(call => [call.color, call.loglevel])).toEqual([["false", "notice"], ["false", "notice"]]);
   } finally { vi.unstubAllEnvs(); }
 }, 10_000);
 
@@ -284,6 +302,14 @@ it("reports an npm launch failure when npm exists but its interpreter is missing
   expect(receipt).not.toHaveProperty("stderrTail");
 }, 10_000);
 
+it("records an outside npm kill without timeout evidence", async () => {
+  const f = fixture();
+  writeFileSync(join(f.bin, "npm"), `#!${process.execPath}\nprocess.kill(process.pid, 'SIGTERM');\n`, { mode: 0o700 });
+  await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
+  const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
+  expect(receipt.diagnostic).toEqual({ step: "pi", exitCode: null, signal: "SIGTERM", npmCode: null, packageName: null });
+}, 10_000);
+
 it("stops a timed-out npm process group and records its signal", async () => {
   const f = fixture(), marker = join(f.root, "late-write");
   const delayed = `import fs from 'node:fs'; setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, 'late'), 2000);`;
@@ -309,12 +335,28 @@ it.each(["SIGTERM", "SIGHUP", "SIGINT"] as const)("stops npm and its grandchild 
     const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => child.once("exit", (code, signal) => resolve({ code, signal })));
     try {
       const deadline = Date.now() + 5000;
-      while (!existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      while (!existsSync(ready) && Date.now() < deadline) {
+        if (existsSync(pids)) npmPid = Number(readFileSync(pids, "utf8").split("\n")[0]);
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
       expect(existsSync(ready)).toBe(true);
       ids = readFileSync(pids, "utf8").trim().split("\n").map(Number); npmPid = ids[0];
       child.kill(signal);
+      if (signal === "SIGTERM") {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        child.kill(signal);
+      }
       result = await exited;
-      const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      const alive = (pid: number) => {
+        try {
+          process.kill(pid, 0);
+          if (process.platform === "linux") {
+            const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+            if (stat.slice(stat.lastIndexOf(")") + 2).startsWith("Z ")) return false;
+          }
+          return true;
+        } catch { return false; }
+      };
       const stoppedBy = Date.now() + 2000;
       while (ids.some(alive) && Date.now() < stoppedBy) await new Promise(resolve => setTimeout(resolve, 20));
       survivors = ids.filter(alive);
@@ -441,6 +483,41 @@ it.each(["ignore", "or"])("refuses label-free terminal evidence when the core us
   expect(existsSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"))).toBe(false);
 }, 10_000);
 
+it.each(["exit", "json", "shape"])("refuses label-free evidence if the filter probe has %s failure", async probeFailure => {
+  const f = fixture();
+  writeFileSync(f.terminalFile, JSON.stringify({ probeFailure, terminals: [{ state: "finished", labels: {
+    "spider.operation": "op-1", "spider.machine": f.peer.machineId,
+  } }] }));
+  await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "release-evidence-unavailable" });
+  expect(f.launches).toEqual([]);
+  expect(existsSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"))).toBe(false);
+}, 10_000);
+
+it("uses a fresh operation label with the same machine for every label-free observation", async () => {
+  const f = fixture();
+  writeFileSync(f.terminalFile, JSON.stringify({ terminals: [{ state: "live", labels: {
+    "spider.operation": "op-1", "spider.machine": f.peer.machineId,
+  } }] }));
+  const request = { action: "release-observe", operationId: "op-1", machineId: f.peer.machineId, home: f.home,
+    globalRoot: f.globalRoot, agentDir: f.agentDir, npmPrefix: f.npmPrefix, unitDir: f.unitDir,
+    node: f.peer.node, pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor,
+    maximum: f.options.limits.agentBytes, chunkBytes: f.options.limits.chunkBytes, sha256: f.input.sha256, piVersion: "1.2.0" };
+  expect(await f.remote.executeProvision(f.peer, request)).toEqual({ state: "started" });
+  expect(await f.remote.executeProvision(f.peer, request)).toEqual({ state: "started" });
+  const lists = readFileSync(f.coreLists, "utf8").trim().split("\n").map(line => JSON.parse(line) as string[]);
+  expect(lists).toHaveLength(4);
+  for (const args of lists) {
+    expect(args.slice(0, 3)).toEqual(["ls", "--all", "--json"]);
+    expect(args).toContain(`spider.machine=${f.peer.machineId}`);
+  }
+  expect(lists[0]).toContain("spider.operation=op-1");
+  expect(lists[2]).toContain("spider.operation=op-1");
+  const labels = [lists[1], lists[3]].map(args => args.find(arg => arg.startsWith("spider.operation=")));
+  for (const label of labels) expect(label).toMatch(/^spider\.operation=[a-f0-9-]{36}$/);
+  expect(labels[0]).not.toBe(labels[1]);
+  expect(f.launches).toEqual([]);
+}, 10_000);
+
 it("ignores a terminal with different server-side labels", async () => {
   const f = fixture(), adapter = create!({ ...f.options, limits: { ...f.options.limits, importMs: 5000, retryDelaysMs: [50] } }), log = releaseNpm(f);
   writeFileSync(f.terminalFile, JSON.stringify({ terminals: [{ state: "live", labels: {
@@ -474,6 +551,7 @@ it("accepts terminal evidence when returned labels match", async () => {
   writeFileSync(f.terminalFile, JSON.stringify({ terminals: [{ state: "finished", labels, returnedLabels: labels }] }));
   await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "installer-interrupted" });
   expect(f.launches).toEqual([]);
+  expect(readFileSync(f.coreLists, "utf8").trim().split("\n")).toHaveLength(1);
 }, 10_000);
 
 it("rejects terminal evidence with an unknown state even when labels are absent", async () => {

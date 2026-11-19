@@ -19,9 +19,10 @@ Transcript text is not replicated. A session replica can match metadata, but
 transcript text stays on its origin unless independently imported locally.
 
 The Herdr sidebar uses the owner feed to report run activity for local and
-remote viewers. A live viewer absent from the feed is `Unknown`. A `running`
-entry in a closed feed is `Disconnected`, because that snapshot cannot confirm
-whether the run is still active. Finished entries retain their recorded outcome.
+remote viewers. A reachable live viewer absent from the feed is `Unknown`. A
+`running` entry in a closed feed is `Disconnected`, because that snapshot cannot
+confirm whether the run is still active. An unavailable viewer machine is
+`Unreachable`. Finished entries retain their recorded outcome.
 
 A first foreign import creates retired membership. Ordinary writes to a frozen
 or retired participant fail, including writes through function-free SQLite

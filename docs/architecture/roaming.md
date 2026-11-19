@@ -48,11 +48,11 @@ The hub also provides `spider move`, `roam recover`, `roam cancel`, `roam claim`
 and `roam forget`. Add `--json` at the end for machine-readable output. For a
 machine alias starting with a dash, use `spider roam sync -- <alias>` or
 `spider roam sync --machine <alias>`. Doctor supports the same forms. On a box,
-only local status, doctor, and repository mapping run locally. Repository mapping
+only local status, doctor, store pruning, and repository mapping run locally. Repository mapping
 also requires the box participation flag. Other controls direct the user to the hub.
 
 While roaming is disabled, status, doctor, enable, disable, provision, and
-`stop <session>` and confirmed `forget <box>` remain available. Stop addresses a
+`stores prune`, `stop <session>`, and confirmed `forget <box>` remain available. Stop addresses a
 session, not a box. Disabled forget takes the hub single-instance lock and runs
 recovery without enabling roaming or starting the hub. It refuses if the hub is
 running or roaming becomes enabled. Ownership recovery can finish while pane
@@ -62,6 +62,44 @@ Spider's broker when needed before it checks broker health. The enable preflight
 refuses if the broker cannot start or its health check fails. Reload open Pi
 sessions with `/reload` to update `/move`. A command left over from an enabled
 session still refuses after roaming is disabled.
+
+Store inventory treats an absent registered or mapped database as empty when
+its path returns `ENOENT`. Doctor reports `store-missing:<scope>:enoent` with the
+path as a warning. Inventory omits that store, so discovery does not pass its key
+to capture, sync, or move preflight. Permission failures, corrupt databases, and
+unexpected file types remain blocks. Their diagnostics include the path and a
+bounded filesystem or SQLite code.
+
+A mapped worktree can exist before capture creates its project database.
+`mapWorkspace` accepts this state when no replica needs merging. Inventory does
+not create a database to inspect it. The mapping remains available for capture.
+
+Run `spider roam stores prune` on the affected machine to remove missing local
+registrations. The command works while roaming is disabled. It deletes project
+registrations whose database paths are absent and clears missing repository
+references on projects whose own database still exists. It removes repository
+and worktree mappings only when their directories are absent, clearing their
+mapping redirects too. Existing empty mapped directories remain registered.
+Permission errors abort the transaction. Pruning never deletes store files,
+replica data, or session locations. The registry edits and a `store-prune` audit
+entry commit in one global-store transaction. Repeating the command after a
+successful prune changes nothing and adds no audit entry.
+
+Enable and remote doctor distinguish a failed connection or process startup
+from an answered agent refusal. Only a known connection or startup failure
+returns `box-unreachable:<box>` with the existing forget advice. A timeout or
+generic process exit does not prove that the box is unreachable. These return
+`preflight-failed:<box>:peer-command-timeout` or `peer-command-failed`, with
+doctor as the repair. An incomplete inventory returns
+`preflight-failed:<box>:store-inventory-incomplete`. Malformed responses return
+`preflight-failed:<box>:peer-response-invalid`. These also direct you to doctor,
+not forget. Agent exception text is not copied into these reason codes.
+
+Sync retains allowlisted agent codes in its per-peer outcomes. Unknown agent
+refusals use `peer-<operation>-refused` rather than free text that the public
+boundary would replace with `control-failed`. A move that fails before its
+check completes retains a typed cause in its refusal blockers. Unknown
+exceptions use `preflight-check-unavailable`; they never expose exception text.
 
 For an already-signed-in destination, use the no-copy path:
 

@@ -148,7 +148,9 @@ it.each([
   "invalid-provision-reply", "invalid-release-receipt", "invalid-request", "invalid-switchover-journal", "invalid-systemctl",
   "invalid-unit", "machine-not-enrolled", "missing-hc", "missing-switchover-backup", "peer-invalidated", "process-identity-unavailable",
   "release-launch-uncertain", "reply-too-large", "selection-not-allowed", "spawn-error", "stdin-error", "too-large", "unresolved-peer",
-  "unsafe-context", "unsafe-path", "unsafe-release", "unsafe-staging",
+  "unsafe-context", "unsafe-path", "unsafe-release", "unsafe-staging", "invalid-operation", "invalid-provision-options",
+  "staging-cleanup-pending", "invalid-bootstrap-reply", "invalid-bootstrap-request", "invalid-bootstrap-kind", "invalid-byte-limit",
+  "invalid-cli-deadline", "invalid-reply", "bootstrap-probe-failed", "agent-directory-probe-failed", "provision-transport-failed", "invalid-release-request",
 ] as const)("preserves the known provisioning error %s", async code => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
   f.ports.transfer.switchover = async () => { throw Object.assign(new Error("untrusted detail"), { code }); };

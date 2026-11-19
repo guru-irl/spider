@@ -657,8 +657,8 @@ it("disable finds an owned service at its root-scoped path", async () => {
 
 it.each([
   ["bootout succeeds", "exit 0", "exit 0", true],
-  ["service missing on stderr", "echo 'Could not find service' >&2; exit 113", "exit 0", true],
-  ["service missing on stdout", "echo 'Could not find service'; exit 113", "exit 0", true],
+  ["bootout says missing on stderr but service is loaded", "echo 'Could not find service' >&2; exit 113", "exit 0", false],
+  ["bootout says missing on stdout but service is loaded", "echo 'Could not find service'; exit 113", "exit 0", false],
   ["bootout fails but print proves absence", "echo 'Boot-out failed: 5: Input/output error' >&2; exit 5", "echo 'Could not find service' >&2; exit 113", true],
   ["service print exits 113 without output", "exit 5", "exit 113", true],
   ["bootout fails and service is still loaded", "echo 'request failed' >&2; exit 5", "exit 0", false],
@@ -679,6 +679,33 @@ it.each([
   expect(existsSync(plist)).toBe(!removed);
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(!removed);
   expect(JSON.stringify(result)).not.toContain("request failed");
+}, 5000);
+
+it.each(["enable", "disable"] as const)("%s probes the exact service after the observed bootout exit 5", async command => {
+  const f = await fixture(HUB, { code: 0, reason: "ready", value: { enabled: true } }), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = command === "disable"; config.peers = [];
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const plistDir = join(f.root, "Library/LaunchAgents"), plist = launchd.hubServiceFile(f.root, plistDir);
+  if (command === "disable") await launchd.installHubService({ node: process.execPath, cli: process.execPath, globalRoot: f.root, pi: process.execPath }, { plistDir, async launchctl() {} });
+  else {
+    const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: HUB, globalRoot: f.root }); db.close();
+    vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+    vi.spyOn(transportModule, "createTransport").mockReturnValue({} as never);
+    vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
+    vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
+  }
+  const binary = join(f.root, "launchctl"), calls = join(f.root, "launchctl-calls");
+  writeFileSync(binary, `#!/bin/sh\nprintf '%s\\t%s\\t%s\\n' "$1" "$2" "$3" >> '${calls}'\ncase "$1" in\n  bootout) echo 'Boot-out failed: 5: Input/output error' >&2; exit 5 ;;\n  print) exit 113 ;;\n  bootstrap) exit 0 ;;\nesac\n`, { mode: 0o700 });
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", binary);
+  expect(await f.invoke(["roam", command, "--json"])).toBe(0);
+  const domain = `gui/${process.getuid!()}`, label = launchd.hubServiceLabel(f.root);
+  expect(readFileSync(calls, "utf8").split("\n").filter(Boolean)).toEqual([
+    `bootout\t${domain}\t${plist}`,
+    `print\t${domain}/${label}\t`,
+    ...(command === "enable" ? [`bootstrap\t${domain}\t${plist}`] : []),
+  ]);
+  expect(existsSync(plist)).toBe(command === "enable");
+  expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(command === "enable");
 }, 5000);
 
 it("disable does not boot out or delete a service owned by another root", async () => {

@@ -107,6 +107,13 @@ test('unconfirmed run rows age out without inventing a finished outcome', () => 
   }
 });
 
+test('future remote timestamps do not hide unconfirmed rows', () => {
+  const closed = feed(); closed.lifecycle = 'closed'; closed.updatedAt = 3000;
+  const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', created_ms: 3000 };
+  const result = projectAgentChildren([viewer], [closed], 'agent', contract, { now: 2000, completedHours: 1 });
+  expect(result.map(row => [row.key, row.status])).toEqual([['missing', 'unknown'], ['run', 'disconnected']]);
+});
+
 test('unconfirmed viewers without creation times remain bounded by the row limit', () => {
   const first = { ...terminal('first', 'subagent-viewer', { 'spider.run': 'first' }), parent: 'agent' };
   const second = { ...terminal('second', 'subagent-viewer', { 'spider.run': 'second' }), parent: 'agent' };

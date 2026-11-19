@@ -27,6 +27,7 @@ type Factory = (input: unknown) => {
   switchover(peer: Peer, operationId: string): Promise<{ status: string }>;
   verifyPeer(): Promise<import("../provision-contracts").ProvisionVerification>;
   cleanupSecrets(peer: Peer): Promise<void>;
+  permissionTightening(peer: Peer): Promise<number>;
   systemd: { writeUnit(name: string, contents: string): Promise<void>; systemctl(argv: readonly string[]): Promise<void> };
 };
 const create = (adapterModule as { createHcProvisionAdapter?: Factory }).createHcProvisionAdapter;
@@ -229,6 +230,24 @@ it("tightens hundreds of retained installer entries in one reuse without touchin
   await adapter.installRelease(f.peer, f.input);
   expect(JSON.parse(readFileSync(join(roots[1], "permission-tightening.json"), "utf8"))).toEqual({ version: 1, changed: 1_000_000 });
   expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, spider: { installed: true } });
+}, 10_000);
+
+it("summarizes real installer permission tightening without exposing paths", async () => {
+  const f = fixture(); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f);
+  writeFileSync(join(f.bin, "systemctl"), `#!${process.execPath}\nconsole.log('Transient=no\\nFragmentPath=\\nMainPID=0');\n`, { mode: 0o700 });
+  const adapter = create!(f.options);
+  await expect(Promise.resolve().then(() => adapter.permissionTightening(f.peer))).resolves.toBe(0);
+  await adapter.installRelease(f.peer, f.input);
+  const privateFile = join(f.npmPrefix, "private-fixture"); writeFileSync(privateFile, "private data", { mode: 0o600 }); chmodSync(privateFile, 0o666);
+  await adapter.installRelease(f.peer, f.input);
+  expect(lstatSync(privateFile).mode & 0o777).toBe(0o644);
+  await expect(adapter.permissionTightening(f.peer)).resolves.toBe(1);
+  await expect(adapter.permissionTightening(f.peer)).resolves.toBe(1);
+  const receipt = join(f.globalRoot, "roam/provision/op-1/permission-tightening.json");
+  writeFileSync(receipt, JSON.stringify({ version: 1, changed: 1_000_000 }), { mode: 0o600 });
+  await expect(adapter.permissionTightening(f.peer)).resolves.toBe(1_000_000);
+  writeFileSync(receipt, JSON.stringify({ version: 1, changed: 1_000_001, path: privateFile }), { mode: 0o600 });
+  await expect(adapter.permissionTightening(f.peer)).rejects.toMatchObject({ code: "unsafe-staging" });
 }, 10_000);
 
 it("repairs old-umask npm output in both installer trees in one provisioning round", async () => {

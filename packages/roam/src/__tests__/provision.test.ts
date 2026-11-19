@@ -36,7 +36,7 @@ function fixture() {
   write(releaseRoot, "dist/extension.js", "extension"); write(releaseRoot, "dist/intercom/broker.mjs", "broker");
   const activeFile = write(root, "active.json", "null"), journal = openJournal(join(root, "journal.db"));
   const state = { allow: true, existingId: null as string | null, verified: false, hubEnabled: true, boxEnabled: false, agentDirectory: "default" as "default" | "custom" | "unknown",
-    coreId: "fixture-core", replaceCoreOnConfirm: false, supervisorEnabled: false };
+    coreId: "fixture-core", replaceCoreOnConfirm: false, supervisorEnabled: false, permissionTightenings: 0 };
   const events: string[] = [], confirmations: { target: string; providers: readonly string[] }[] = [], persisted: Peer[] = [];
   const preview: unknown[] = [], diagnostics: unknown[] = [], systemctl: string[][] = [], secretCollectionCalls: string[] = [];
   const value = healthyInventory();
@@ -125,6 +125,7 @@ function fixture() {
       },
     },
     async persistPeer(peer: Peer) { events.push("persist"); persisted.push(peer); },
+    async permissionTightening(_peer: Peer) { events.push("permission-summary"); return state.permissionTightenings; },
     async setParticipation(_peer: Peer, ready: boolean | null) {
       if (state.hubEnabled && ready === null) return;
       state.boxEnabled = state.hubEnabled && ready === true; events.push(`enabled:${state.boxEnabled}`);
@@ -382,6 +383,20 @@ it.each([false, true])("enables a ready supervisor without starting it (hub enab
   expect(f.state.supervisorEnabled).toBe(true);
   expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"]]);
   expect(f.state.boxEnabled).toBe(hubEnabled);
+}, 5000);
+
+it.each([0, 17, 1_000_000])("reports and replays the permission-tightening count %i without paths", async count => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.verified = true; f.state.permissionTightenings = count;
+  const request = f.request(`permission-count-${count}`);
+  const first = await provision!(request, f.ports);
+  expect(first).toMatchObject({ code: 0, value: { hostingReady: true, permissionTightenings: count } });
+  expect(JSON.stringify(first)).not.toContain(f.root);
+  expect(f.journal.read(request.operation.id).find(row => row.action === "done")?.result.value)
+    .toMatchObject({ permissionTightenings: count });
+  f.state.permissionTightenings = 0;
+  const retry = await provision!(request, f.ports);
+  expect(retry).toEqual(first);
+  expect(f.events.filter(event => event === "permission-summary")).toHaveLength(1);
 }, 5000);
 
 it("provision while the hub is disabled clears a previously enabled box without starting hosting", async () => {

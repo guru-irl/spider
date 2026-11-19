@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { build } from "vite";
@@ -46,7 +46,7 @@ function fixture(short = false) {
   const destination = { home, agentDir, npmPrefix, supervisor: join(releaseRoot, "dist", "roam", "supervisor.mjs") };
   const calls = join(root, "systemctl-calls"), writes: { path: string; bytes: Buffer }[] = [], requests: { action: string; argv: string[] }[] = [], launches: string[] = [];
   const launchIO: { stdout: string; stderr: string }[] = [];
-  const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false }, terminalFile = join(root, "release-terminals.json"), coreLists = join(root, "core-lists");
+  const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false, prelude: "" }, terminalFile = join(root, "release-terminals.json"), coreLists = join(root, "core-lists");
   const fakeCore = `#!${process.execPath}\nimport fs from 'node:fs';
 const args = process.argv.slice(2);
 if (args[0] === 'server') console.log(JSON.stringify({core:{id:'fixture-core'},pid:4321,version:'0.1.16'}));
@@ -86,16 +86,16 @@ else {
     transport,
     async claimIdentity() { throw new Error("unexpected identity bootstrap"); },
     async executeProvision(_peer: Peer, request: Record<string, unknown>) {
-      const argv = ["--input-type=module-typescript", "-e", remoteProgram!];
+      const argv = ["--input-type=module-typescript", "-e", launchState.prelude + remoteProgram!];
       requests.push({ action: String(request.action), argv });
       const child = spawnSync(process.execPath, argv, { input: JSON.stringify({ ...request, core: peer.core, coreId: "fixture-core" }), encoding: "utf8",
         timeout: request.action === "verify" ? 4900 : 4000,
         env: { ...process.env, HOME: home, PATH: bin, SPIDER_GLOBAL_ROOT: globalRoot } });
       if (child.status !== 0) throw new Error("fixture remote program failed");
-      const reply = JSON.parse(child.stdout) as { error?: string; operationId?: string; path?: string; value?: unknown };
+      const reply = JSON.parse(child.stdout) as { error?: string; operationId?: string; path?: string; recursive?: true; value?: unknown };
       if (reply.error) throw Object.assign(new Error("remote request failed"), { code: reply.error,
         ...(reply.operationId ? { details: { blockingOperationId: reply.operationId } } : {}),
-        ...(reply.path ? { details: { path: reply.path } } : {}) });
+        ...(reply.path ? { details: { path: reply.path, ...(reply.recursive ? { recursive: true } : {}) } } : {}) });
       return reply.value;
     },
     async launchRelease(_peer: Peer, _operationId: string, requestFile: string) {
@@ -128,13 +128,15 @@ function releaseNpm(f: ReturnType<typeof fixture>, requireCpu = false, output?: 
   return log;
 }
 
-function releaseNpmWithDefaultModes(f: ReturnType<typeof fixture>) {
+function releaseNpmWithDefaultModes(f: ReturnType<typeof fixture>, oldUmask = false) {
   const log = join(f.root, "npm-calls"), mask = join(f.root, "pi-umask");
   const executable = `#!${process.execPath}\nimport fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(mask)},process.umask().toString(8)); console.log('1.2.0');\n`;
   const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';
 const args=process.argv.slice(2), prefix=args[args.indexOf('--prefix')+1];
+if (${oldUmask}) process.umask(0o002);
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args)+'\\n');
 const write=(file, content, mode=0o666)=>{fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o777});fs.writeFileSync(file,content,{mode});};
+if (${oldUmask}) for(let i=0;i<250;i++) write(path.join(prefix,'old-'+i,'file'),'retained');
 if(args.includes('--global')) {
   write(path.join(prefix,'lib/node_modules/@earendil-works/pi-coding-agent/cli.js'),${JSON.stringify(executable)},0o777);
   fs.mkdirSync(path.join(prefix,'bin'),{recursive:true,mode:0o777});
@@ -175,7 +177,7 @@ it("installs a non-writable tree under umask 002 that inventory can read", async
     }
     walk(f.npmPrefix);
     expect(unsafe).toEqual([]);
-    expect(readFileSync(join(f.root, "pi-umask"), "utf8")).toBe("2");
+    expect(readFileSync(join(f.root, "pi-umask"), "utf8")).toBe("22");
     expect(lstatSync(f.npmPrefix).mode & 0o777).toBe(0o700);
     expect(lstatSync(join(f.npmPrefix, "spider-releases", f.input.sha256)).mode & 0o777).toBe(0o700);
     expect(lstatSync(join(f.globalRoot, "roam", "provision", "op-1")).mode & 0o777).toBe(0o700);
@@ -191,6 +193,142 @@ it("installs a non-writable tree under umask 002 that inventory can read", async
   } finally { process.umask(previous); }
 }, 10_000);
 
+it("tightens hundreds of retained installer entries in one reuse without touching user data", async () => {
+  const f = fixture(); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f);
+  mkdirSync(join(f.globalRoot, "roam/provision"), { mode: 0o700 });
+  writeFileSync(join(f.bin, "systemctl"), `#!${process.execPath}\nconsole.log('Transient=no\\nFragmentPath=\\nMainPID=0');\n`, { mode: 0o700 });
+  const adapter = create!(f.options);
+  await adapter.installRelease(f.peer, f.input);
+  const outside = join(f.home, "user-pi"); mkdirSync(outside, { mode: 0o700 });
+  const roots = [f.npmPrefix, join(f.globalRoot, "roam", "provision", "op-1")];
+  for (const root of roots) {
+    for (let i = 0; i < 250; i++) {
+      const dir = join(root, `old-${i}`); mkdirSync(dir, { mode: 0o700 });
+      writeFileSync(join(dir, "file"), "retained", { mode: 0o600 });
+      chmodSync(dir, 0o777); chmodSync(join(dir, "file"), 0o666);
+    }
+    chmodSync(root, root === f.npmPrefix ? 0o777 : 0o720);
+  }
+  for (let i = 0; i < 250; i++) {
+    const dir = join(dirname(dirname(dirname(f.releaseRoot))), `old-${i}`);
+    mkdirSync(dir, { mode: 0o700 }); writeFileSync(join(dir, "file"), "retained", { mode: 0o600 });
+    chmodSync(dir, 0o777); chmodSync(join(dir, "file"), 0o666);
+  }
+  chmodSync(outside, 0o777);
+  await expect(adapter.installRelease(f.peer, f.input)).resolves.toMatchObject({ cli: f.peer.cli });
+  for (const root of roots) for (let i = 0; i < 250; i++) {
+    expect(lstatSync(join(root, `old-${i}`)).mode & 0o777).toBe(0o755);
+    expect(lstatSync(join(root, `old-${i}`, "file")).mode & 0o777).toBe(0o644);
+  }
+  expect(lstatSync(outside).mode & 0o777).toBe(0o777);
+  const receipt = JSON.parse(readFileSync(join(roots[1], "permission-tightening.json"), "utf8"));
+  expect(receipt).toEqual({ version: 1, changed: 1502 });
+  writeFileSync(join(roots[1], "permission-tightening.json"), JSON.stringify({ version: 1, changed: 999_999 }), { mode: 0o600 });
+  chmodSync(join(f.npmPrefix, "old-0/file"), 0o666);
+  chmodSync(join(f.npmPrefix, "old-1/file"), 0o666);
+  await adapter.installRelease(f.peer, f.input);
+  expect(JSON.parse(readFileSync(join(roots[1], "permission-tightening.json"), "utf8"))).toEqual({ version: 1, changed: 1_000_000 });
+  expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, spider: { installed: true } });
+}, 10_000);
+
+it("repairs old-umask npm output in both installer trees in one provisioning round", async () => {
+  const f = fixture(); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f, true);
+  writeFileSync(join(f.bin, "systemctl"), `#!${process.execPath}\nconsole.log('Transient=no\\nFragmentPath=\\nMainPID=0');\n`, { mode: 0o700 });
+  const userPi = join(f.home, "user-prefix/lib/node_modules/@earendil-works/pi-coding-agent");
+  mkdirSync(userPi, { recursive: true, mode: 0o700 }); chmodSync(userPi, 0o775);
+  for (let i = 0; i < 250; i++) { const file = join(userPi, `file-${i}`); writeFileSync(file, "user", { mode: 0o600 }); chmodSync(file, 0o664); }
+  await expect(create!(f.options).installRelease(f.peer, f.input)).resolves.toMatchObject({ cli: f.peer.cli });
+  for (const root of [f.npmPrefix, join(f.npmPrefix, "spider-releases", f.input.sha256)]) for (let i = 0; i < 250; i++) {
+    expect(lstatSync(join(root, `old-${i}`)).mode & 0o777).toBe(0o755);
+    expect(lstatSync(join(root, `old-${i}`, "file")).mode & 0o777).toBe(0o644);
+  }
+  expect(lstatSync(userPi).mode & 0o777).toBe(0o775);
+  expect(lstatSync(join(userPi, "file-249")).mode & 0o777).toBe(0o664);
+  const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam/provision/op-1/permission-tightening.json"), "utf8"));
+  expect(Object.keys(receipt).sort()).toEqual(["changed", "version"]);
+  expect(receipt.changed).toBeGreaterThan(1000); expect(receipt.changed).toBeLessThanOrEqual(1_000_000);
+  expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, spider: { installed: true } });
+}, 10_000);
+
+it("tightens an installer release inside a pre-existing user prefix", async () => {
+  const f = fixture(); releaseNpmWithDefaultModes(f);
+  const adapter = create!(f.options); await adapter.installRelease(f.peer, f.input);
+  const release = join(f.npmPrefix, "spider-releases", f.input.sha256), file = join(f.releaseRoot, "package.json");
+  chmodSync(release, 0o775); chmodSync(file, 0o666);
+  await expect(adapter.installRelease(f.peer, f.input)).resolves.toMatchObject({ cli: f.peer.cli });
+  expect(lstatSync(release).mode & 0o777).toBe(0o755); expect(lstatSync(file).mode & 0o777).toBe(0o644);
+  expect(lstatSync(f.npmPrefix).mode & 0o777).toBe(0o700);
+}, 10_000);
+
+it("does not claim a replaced prefix from a stale creation receipt", async () => {
+  const f = fixture(); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f);
+  const adapter = create!(f.options); await adapter.installRelease(f.peer, f.input);
+  renameSync(f.npmPrefix, join(f.home, "prior-prefix"));
+  const piRoot = join(f.npmPrefix, "lib/node_modules/@earendil-works/pi-coding-agent");
+  mkdirSync(piRoot, { recursive: true, mode: 0o700 });
+  const file = join(piRoot, "user.js"); writeFileSync(file, "user", { mode: 0o600 }); chmodSync(file, 0o666);
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({
+    code: "destination-permissions-unsafe", details: { path: piRoot, recursive: true } });
+  expect(lstatSync(file).mode & 0o777).toBe(0o666);
+}, 10_000);
+
+it("keeps staging private before accepting secret bytes", async () => {
+  const f = fixture(), stage = join(f.globalRoot, "roam/provision/op-1");
+  mkdirSync(stage, { recursive: true, mode: 0o700 }); chmodSync(stage, 0o755);
+  await expect(create!(f.options).auth(f.peer, "op-1").stage(Buffer.from("{}"))).rejects.toMatchObject({ code: "unsafe-staging" });
+  expect(readdirSync(stage)).toEqual([]);
+});
+
+it("does not chmod an entry reported as owned by another uid", async () => {
+  const f = fixture(); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f);
+  const adapter = create!(f.options); await adapter.installRelease(f.peer, f.input);
+  const foreign = join(f.npmPrefix, "foreign"); writeFileSync(foreign, "foreign", { mode: 0o600 }); chmodSync(foreign, 0o666);
+  // Model an unavailable foreign uid at the filesystem boundary, without requiring root.
+  f.launchState.prelude = `import fs from 'node:fs'; import {syncBuiltinESMExports} from 'node:module';
+    const original = fs.lstatSync; fs.lstatSync = (...args) => {const stat = original(...args); if(String(args[0]) === ${JSON.stringify(foreign)}) stat.uid += 1; return stat;}; syncBuiltinESMExports();\n`;
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "unsafe-path" });
+  expect(lstatSync(foreign).mode & 0o777).toBe(0o666);
+}, 10_000);
+
+it("reports an unmarked user package root for one recursive repair", async () => {
+  const f = fixture(), piRoot = join(f.npmPrefix, "lib/node_modules/@earendil-works/pi-coding-agent");
+  mkdirSync(piRoot, { recursive: true, mode: 0o700 });
+  for (let i = 0; i < 250; i++) { const file = join(piRoot, `file-${i}`); writeFileSync(file, "user", { mode: 0o600 }); chmodSync(file, 0o666); }
+  releaseNpmWithDefaultModes(f);
+  await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({
+    code: "destination-permissions-unsafe", details: { path: piRoot, recursive: true } });
+  expect(lstatSync(join(piRoot, "file-0")).mode & 0o777).toBe(0o666);
+  expect(spawnSync("/bin/chmod", ["-R", "go-w", piRoot]).status).toBe(0);
+  await expect(create!(f.options).installRelease(f.peer, f.input)).resolves.toMatchObject({ cli: f.peer.cli });
+}, 10_000);
+
+it("rejects an outside symlink in a proven installer tree without chmodding its target", async () => {
+  const f = fixture(); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f);
+  const adapter = create!(f.options); await adapter.installRelease(f.peer, f.input);
+  const outside = join(f.home, "outside"); writeFileSync(outside, "user", { mode: 0o600 }); chmodSync(outside, 0o666);
+  symlinkSync(outside, join(f.npmPrefix, "outside-link"));
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "unsafe-path" });
+  expect(lstatSync(outside).mode & 0o777).toBe(0o666);
+}, 10_000);
+
+it.each(["\u009b", "\u202e"])("does not report a display-spoofing path from the remote installer %j", async control => {
+  const f = fixture(), agentDir = join(f.home, `${control}agent`); mkdirSync(agentDir, { mode: 0o700 }); chmodSync(agentDir, 0o775);
+  const options = { ...f.options, destination: { ...f.destination, agentDir } };
+  const error = await f.remote.executeProvision(f.peer, { action: "install-files", operationId: "op-1", machineId: f.peer.machineId,
+    home: f.home, globalRoot: f.globalRoot, agentDir, npmPrefix: f.npmPrefix, unitDir: f.unitDir, maximum: 1024, chunkBytes: 32 })
+    .then(() => null, error => error);
+  expect(error.code).toBe("destination-permissions-unsafe"); expect(error.details).toBeUndefined();
+  await expect(create!(options).installFiles(f.peer, [{ path: "AGENTS.md", bytes: Buffer.from("sample"), mode: 0o600 }]))
+    .rejects.toMatchObject({ code: "invalid-provision-reply", details: undefined });
+  expect(lstatSync(agentDir).mode & 0o777).toBe(0o775); expect(existsSync(join(agentDir, "AGENTS.md"))).toBe(false);
+});
+
+it("reports a symlinked prefix component with a coded unsafe-path error", async () => {
+  const f = fixture(), outside = join(f.home, "outside"); mkdirSync(outside, { mode: 0o700 });
+  symlinkSync(outside, join(f.npmPrefix, "lib")); releaseNpmWithDefaultModes(f);
+  await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "unsafe-path" });
+});
+
 it.each(["prefix", "release", "release-child", "pi-file"] as const)("refuses an unsafe retained %s path", async kind => {
   const previous = process.umask(0o002);
   try {
@@ -200,7 +338,10 @@ it.each(["prefix", "release", "release-child", "pi-file"] as const)("refuses an 
     if (kind === "pi-file") { mkdirSync(dirname(unsafe), { recursive: true, mode: 0o700 }); writeFileSync(unsafe, "old", { mode: 0o600 }); chmodSync(unsafe, 0o664); }
     else { mkdirSync(unsafe, { recursive: true, mode: 0o700 }); chmodSync(unsafe, 0o775); }
     const log = releaseNpmWithDefaultModes(f), adapter = create!(f.options);
-    await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "destination-permissions-unsafe", details: { path: unsafe } });
+    await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "destination-permissions-unsafe", details: {
+      path: kind === "release-child" ? releasePrefix : kind === "pi-file" ? dirname(unsafe) : unsafe,
+      ...(kind === "prefix" ? {} : { recursive: true }),
+    } });
     expect(lstatSync(unsafe).mode & 0o777).toBe(kind === "pi-file" ? 0o664 : 0o775);
     expect(existsSync(log)).toBe(false);
     chmodSync(unsafe, kind === "pi-file" ? 0o644 : 0o755);

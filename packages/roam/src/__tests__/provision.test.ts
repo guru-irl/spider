@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, posix } from "node:path";
 import { claimMachineIdentity } from "@spider/db-core/roam/machine";
 import { applyIntercomSwitchover, filesystemSwitchoverPorts } from "../../../../scripts/intercom-switchover.mjs";
@@ -79,9 +79,9 @@ function fixture() {
     bootstrap: { async probeAgentDirectory() {
       events.push("agent-directory-probe"); return { status: state.agentDirectory, core: { local: "fixture-local-core", remote: state.coreId } };
     },
-    async previewSettings(_peer: Peer, _home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: { local: string; remote: string }) {
+    async previewSettings(_peer: Peer, _home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: { local: string; remote: string }, selectedPaths?: readonly string[]) {
       if (core.local !== "fixture-local-core" || core.remote !== state.coreId) throw Object.assign(new Error("changed"), { code: "core-changed" });
-      events.push("settings-preview"); return inspectDestinationSettings({ home: root, destinationRoot: destination, entries, maximum });
+      events.push("settings-preview"); return inspectDestinationSettings({ home: root, destinationRoot: destination, entries, maximum, selectedPaths });
     },
     async claimIdentity(peer: Peer, operationId: string, core: { local: string; remote: string }) {
       if (!core || core.local !== "fixture-local-core" || core.remote !== state.coreId) throw Object.assign(new Error("changed"), { code: "core-changed" });
@@ -195,6 +195,28 @@ it("gives a repair command for an unsafe configured agent directory before mutat
     repairCommand: "chmod go-w '/home/fixture/.pi/agent'" });
   expect(f.events).not.toContain("identity");
 }, 5000);
+
+it("checks selected file parents before consent and enrollment", async () => {
+  const f = fixture(); f.write(f.source, "skills/sample/SKILL.md", "sample");
+  f.write(f.destination, "skills/sample/keep", "unchanged"); chmodSync(join(f.destination, "skills/sample"), 0o775);
+  f.ports.bootstrap.previewSettings = async (_peer, _home, entries, maximum, _core, selectedPaths) =>
+    inspectDestinationSettings({ home: f.root, destinationRoot: f.destination, entries, maximum, selectedPaths });
+  const outcome = await provision!(f.request("parent-before-consent", false, [], ["skills/sample"]), f.ports);
+  expect(outcome).toMatchObject({ code: 1, reason: "destination-permissions-unsafe" });
+  expect(f.confirmations).toEqual([]); expect(f.events).not.toContain("identity"); expect(f.events).not.toContain("release");
+  expect(readFileSync(join(f.destination, "skills/sample/keep"), "utf8")).toBe("unchanged");
+});
+
+it("offers one recursive repair for an exact retained package tree", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  const root = `/home/fixture/.local/spider-releases/${"a".repeat(64)}`;
+  f.ports.transfer.installRelease = async () => { throw Object.assign(new Error("untrusted"), {
+    code: "destination-permissions-unsafe", details: { path: root, recursive: true },
+  }); };
+  expect(await provision!(f.request("recursive-repair"), f.ports)).toMatchObject({
+    code: 3, reason: "destination-permissions-unsafe", repairCommand: `chmod -R go-w '${root}'`,
+  });
+});
 
 it("gives a repair command for an unsafe retained release path", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");

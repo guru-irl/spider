@@ -16,7 +16,7 @@ import { bootstrapPeer, inventoryEnvelope } from "./bootstrap-fixture";
 type CoreFence = { local: string; remote: string };
 const coreFence: CoreFence = { local: "local-core", remote: "remote-core" };
 type ProvisionTransport = { transport: Transport; probeAgentDirectory(peer: Peer, home: string): Promise<{ status: "default" | "custom" | "unknown"; core: CoreFence }>;
-  previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence): Promise<SettingsDestinationPreview>;
+  previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence, selectedPaths?: readonly string[]): Promise<SettingsDestinationPreview>;
   claimIdentity(peer: Peer, operationId: string, core: CoreFence): Promise<{ machineId: string; coreId: string }>;
   executeProvision(peer: Peer, request: Record<string, unknown>): Promise<unknown>;
   launchRelease(peer: Peer, operationId: string, requestFile: string): Promise<{ terminal: string }> };
@@ -140,6 +140,59 @@ it("reports an unsafe agent directory from the real settings preview without cha
       .resolves.toMatchObject({ changedKeys: [] });
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 5000);
+
+it.each(["extensions", "themes", "skills/sample"])("discovers writable %s in the real read-only preview", async relative => {
+  const root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "preview-parent-")), home = join(root, "home"), agent = join(home, ".pi", "agent");
+  const unsafe = join(agent, relative); mkdirSync(unsafe, { recursive: true, mode: 0o700 }); chmodSync(unsafe, 0o775);
+  try {
+    const f = fixture(), port = create!(f.options, f.journal);
+    vi.spyOn(bytesClient, "invokeBytes").mockImplementation(async (_binary, argv, _env, options) => {
+      expect(argv).toContain(BOOTSTRAP_SETTINGS_SCRIPT);
+      const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", BOOTSTRAP_SETTINGS_SCRIPT],
+        { input: options.stdin, env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 3000 });
+      expect(child.status).toBe(0); expect(child.stderr).toBe(""); return Buffer.from(child.stdout);
+    });
+    const selected = relative === "extensions" ? [] : [`${relative}/sample.json`];
+    await expect(port.previewSettings(bootstrapPeer, home, [], 1024, coreFence, selected)).rejects.toMatchObject({
+      code: "destination-permissions-unsafe", details: { path: unsafe } });
+    expect(lstatSync(unsafe).mode & 0o777).toBe(0o775);
+    expect(f.actions).toEqual([]);
+    expect(() => lstatSync(join(agent, "settings.json"))).toThrow();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it.each(["\u009b", "\u202e"])("does not report a display-spoofing path from the real preview %j", control => {
+  const root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "preview-display-")), home = join(root, "home"), agent = join(home, ".pi/agent");
+  const unsafe = join(agent, `skills/${control}name`); mkdirSync(unsafe, { recursive: true, mode: 0o700 }); chmodSync(unsafe, 0o775);
+  try {
+    const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", BOOTSTRAP_SETTINGS_SCRIPT], {
+      input: JSON.stringify({ home, agentDir: agent, paths: [], maximum: 1024, selectedPaths: [`skills/${control}name/SKILL.md`] }),
+      env: { ...process.env, HOME: home }, encoding: "utf8", timeout: 3000,
+    });
+    expect(child.status).toBe(0); expect(JSON.parse(child.stdout)).toEqual({ version: 1, kind: "settings-preview", error: "unsafe-destination" });
+    expect(lstatSync(unsafe).mode & 0o777).toBe(0o775);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("binds permission replies and recursive flags to the action and exact package root", async () => {
+  const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "release-observe", operationId: "op-1", machineId: bootstrapPeer.machineId,
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi,
+    home: "/home/fixture", agentDir: "/home/fixture/.pi/agent", npmPrefix: "/home/fixture/prefix" };
+  const pi = "/home/fixture/prefix/lib/node_modules/@earendil-works/pi-coding-agent";
+  for (const path of [pi, `/home/fixture/prefix/spider-releases/${"a".repeat(64)}`]) {
+    f.state.provisionReply = { version: 1, kind: "provision", error: "destination-permissions-unsafe", path, recursive: true };
+    await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "destination-permissions-unsafe", details: { path, recursive: true } });
+  }
+  for (const [action, path, recursive] of [
+    ["release-observe", "/home/fixture/.pi/agent", undefined], ["switchover", "/home/fixture/prefix", undefined],
+    ["release-observe", "/home/fixture/prefix", true], ["release-observe", `${pi}/child`, true],
+    ["switchover", "/home/fixture/.pi/agent/extensions", true], ["release-observe", pi, false],
+  ]) {
+    f.state.provisionReply = { version: 1, kind: "provision", error: "destination-permissions-unsafe", path, ...(recursive === undefined ? {} : { recursive }) };
+    await expect(port.executeProvision(handle, { ...request, action })).rejects.toMatchObject({ code: "invalid-provision-reply" });
+  }
+});
 
 it("validates destination permission paths from provisioning replies", async () => {
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);

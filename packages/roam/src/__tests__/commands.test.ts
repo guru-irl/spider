@@ -63,7 +63,7 @@ it("retains only shell-safe destination permission repair commands", () => {
   const base = { code: 3 as const, reason: "destination-permissions-unsafe", operationId: "provision-a", home: null, epoch: null, value: null };
   const repair = "chmod go-w '/home/fixture/.pi/agent/user'\\''s themes'";
   expect(safeControlOutcome({ ...base, repairCommand: repair }).repairCommand).toBe(repair);
-  for (const bad of ["chmod go-w /home/fixture/.pi/agent; touch /home/fixture/unwanted", "chmod go-w '/home/fixture/../other'", "chmod go-w '/home/fixture/agent' && id"]) {
+  for (const bad of ["chmod go-w /home/fixture/.pi/agent; touch /home/fixture/unwanted", "chmod go-w '/home/fixture/../other'", "chmod go-w '/home/fixture/agent' && id", "chmod go-w '/'"]) {
     expect(safeControlOutcome({ ...base, repairCommand: bad }).repairCommand).toBeNull();
   }
   expect(safeControlOutcome({ ...base, reason: "other-error", repairCommand: repair }).repairCommand).toBeNull();

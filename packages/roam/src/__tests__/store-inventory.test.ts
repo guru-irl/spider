@@ -95,6 +95,26 @@ it.each(["EACCES", "SQLITE_CORRUPT"])("keeps registered inspect failure %s block
   expect(problems).toEqual([expect.objectContaining({ code: "store-uninspectable", check: code.toLowerCase().replaceAll("_", "-"), path: worktree.db.raw.name })]);
 });
 
+it("blocks an unexpected file type with the affected database path", () => {
+  const { global } = fixture();
+  const file = join(global.root, "wrong-type.db"); mkdirSync(file);
+  global.db.prepare("UPDATE projects SET db_path=?").run(file);
+  const problems: unknown[] = [], incomplete: string[] = [];
+  listStoreKeys(global.db, { onProblem: (_entry, error) => problems.push(error), onIncomplete: entry => incomplete.push(entry) });
+  expect(incomplete).toEqual([file]);
+  expect(problems).toEqual([expect.objectContaining({ code: "store-uninspectable", check: "store-path-type", path: file })]);
+});
+
+it("blocks an unexpected mapped database file type with its path", () => {
+  const { global } = fixture(), path = join(global.root, "mapped");
+  const file = join(path, ".spider", "project.db"); mkdirSync(file, { recursive: true });
+  global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','planned',?)").run(path);
+  const problems: unknown[] = [], incomplete: string[] = [];
+  listStoreKeys(global.db, { onProblem: (_entry, error) => problems.push(error), onIncomplete: entry => incomplete.push(entry) });
+  expect(incomplete).toEqual([file]);
+  expect(problems).toEqual([expect.objectContaining({ code: "store-uninspectable", check: "store-path-type", path: file })]);
+});
+
 it("rejects malformed or duplicate detached mapping redirects", () => {
   const { global } = fixture();
   const key = "repo:fixture-repo" as const;

@@ -62,7 +62,7 @@ it("doctor warns with missing store paths and prune removes only missing registr
   const gone = join(f.root, "gone", ".spider", "project.db"), common = join(f.root, "gone", ".git");
   db.prepare("INSERT INTO projects(project_key,real_path,db_path,git_common_dir,created_at,last_seen_at) VALUES ('gone',?,?,?,1,1)")
     .run(join(f.root, "gone"), gone, common);
-  db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('live',?,?,1,1)").run(f.root, db.raw.name);
+  db.prepare("INSERT INTO projects(project_key,real_path,db_path,git_common_dir,created_at,last_seen_at) VALUES ('live',?,?,?,1,1)").run(f.root, db.raw.name, join(f.root, "missing-common"));
   const planned = join(f.root, "planned"); mkdirSync(planned);
   db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','planned',?)").run(planned);
   const report = await localDiagnostics.runLocalDoctor({ root: f.root });
@@ -75,6 +75,7 @@ it("doctor warns with missing store paths and prune removes only missing registr
   expect(report.diagnostics.filter(row => row.severity === "block" && /Cannot inspect.*store/.test(row.reason))).toEqual([]);
   expect(await f.invoke(["roam", "stores", "prune", "--json"])).toBe(0);
   expect(db.prepare("SELECT project_key FROM projects ORDER BY project_key").all()).toEqual([{ project_key: "live" }]);
+  expect(db.prepare("SELECT git_common_dir FROM projects WHERE project_key='live'").get()).toEqual({ git_common_dir: null });
   expect(db.prepare("SELECT path FROM roam_workspace_maps").all()).toEqual([{ path: planned }]);
   const audit = localEntries(db, "store-prune");
   expect(audit).toHaveLength(1);
@@ -83,7 +84,7 @@ it("doctor warns with missing store paths and prune removes only missing registr
   db.close();
 }, 5000);
 
-it.each(["missing", "corrupt", "transport", "invalid-doctor"] as const)("enable and doctor distinguish a %s store peer from an unreachable box", async mode => {
+it.each(["missing", "corrupt", "transport", "process", "timeout", "invalid-doctor"] as const)("enable and doctor distinguish a %s store peer from an unreachable box", async mode => {
   const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers[0].alias = "box-1.invalid";
   writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
@@ -101,6 +102,8 @@ it.each(["missing", "corrupt", "transport", "invalid-doctor"] as const)("enable 
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) {
     if (mode === "transport") throw new HerdrError("machine-not-found", "unreachable"); return peer;
   }, async exec(_peer: unknown, argv: string[]) {
+    if (mode === "process") throw new HerdrError("cli-exit", "private stderr", { exitCode: 1 });
+    if (mode === "timeout") throw new HerdrError("cli-timeout", "private stderr");
     if (argv[1] === "agent") return Buffer.from(JSON.stringify(await agent.handleAgentOperation(JSON.parse(argv[2]), ports as never)));
     if (mode === "invalid-doctor") return Buffer.from("{}");
     return Buffer.from(JSON.stringify({ version: 1, machineId: BOX, kind: "doctor", value: await localDiagnostics.runLocalDoctor({ root: remote }) }));
@@ -111,6 +114,8 @@ it.each(["missing", "corrupt", "transport", "invalid-doctor"] as const)("enable 
   else {
     expect(enabled).not.toContain("box-unreachable"); expect(enabled).not.toContain("spider roam forget");
     if (mode === "corrupt") expect(enabled).toContain("preflight-failed:box-1.invalid:store-inventory-incomplete");
+    if (mode === "process") expect(enabled).toContain("preflight-failed:box-1.invalid:peer-command-failed");
+    if (mode === "timeout") expect(enabled).toContain("preflight-failed:box-1.invalid:peer-command-timeout");
     if (mode === "invalid-doctor") expect(enabled).toContain("preflight-failed:box-1.invalid:peer-response-invalid");
   }
   f.out.length = 0;
@@ -119,8 +124,16 @@ it.each(["missing", "corrupt", "transport", "invalid-doctor"] as const)("enable 
   if (mode === "transport") expect(doctor).toContain("box-unreachable:box-1.invalid");
   else {
     expect(doctor).not.toContain("box-unreachable"); expect(doctor).not.toContain("spider roam forget");
+    if (mode === "process") expect(doctor).toContain("preflight-failed:box-1.invalid:peer-command-failed");
+    if (mode === "timeout") expect(doctor).toContain("preflight-failed:box-1.invalid:peer-command-timeout");
+    expect(doctor).not.toContain("private stderr");
     if (mode === "missing") expect(doctor).toContain("store-missing:repo:enoent:");
-    if (mode === "corrupt") expect(doctor).toContain("store-uninspectable:repo:sqlite-notadb:");
+    if (mode === "corrupt") {
+      expect(doctor).toContain("store-uninspectable:repo:sqlite-notadb:");
+      const rows = JSON.parse(doctor).value.diagnostics.filter((row: { reason: string }) => row.reason.includes("cannot inspect the registered store"));
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((row: { reason: string }) => row.reason.includes(join(common, "spider", "repo.db")))).toBe(true);
+    }
     if (mode === "invalid-doctor") expect(doctor).toContain("preflight-failed:box-1.invalid:peer-response-invalid");
   }
   db.close();
@@ -542,12 +555,12 @@ it("enable reports every box precondition before changing capture or flags", asy
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) { return peer; }, async exec(peer: { machineId: string }, argv: string[]) {
     if (argv[1] === "intercom") { starts.push(peer.machineId); return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: peer.machineId })); }
     const op = JSON.parse(argv[2]); operations.push(op.kind);
-    if (peer.machineId === other.machineId) throw new Error("offline");
+    if (peer.machineId === other.machineId) throw new HerdrError("machine-not-found", "offline");
     return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores" ? { protocol: 1, schema: 14, machineId: BOX, stores: ["global"] } : { complete: true } }));
   } } as never);
   vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision(_peer: unknown, request: unknown) { flags.push(request); return { enabled: true }; } } as never);
   const doctor = vi.spyOn(remoteObservations, "remoteDoctor").mockImplementation(async (_transport, peer) => {
-    if (peer.machineId === other.machineId) throw new Error("offline");
+    if (peer.machineId === other.machineId) throw new HerdrError("machine-not-found", "offline");
     return { enabled: false, diagnostics: [
       { severity: "warning", reason: "intercom-other-extension: ordinary-extension (not classified for intercom).", repairCommand: null },
       { severity: "block", reason: "pi-auth-missing", repairCommand: null },

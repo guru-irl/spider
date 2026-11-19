@@ -1066,6 +1066,26 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(nodes().find(node => node.id === 'fold-t1')?.children).toContain('1');
   });
 
+  it('does not show activity spinners for unknown viewers or a closed feed', async () => {
+    const now = Date.now();
+    const viewer = (id: string) => ({ address: `viewer-${id}`, parent: 't1', state: 'live', status: 'working',
+      labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 'session', 'spider.run': id } });
+    const terminals = [viewer('unknown-run'), viewer('known-run')];
+    const current = { sessionId: 'session', generation: 'gen', lifecycle: 'closed', updatedAt: now,
+      owner: { terminal: { address: 't1' } }, ipc: null,
+      runs: { rows: [{ id: 'known-run', ownerSessionId: 'session', name: 'Worker', status: 'running', viewer: null, finishedAt: null }] } };
+    const { view } = await agentsView({ agents: () => [{ address: 't1', status: 'idle', seq: 1, title: 'parent' }], terminals: () => terminals });
+    view.spiderFeeds = [current];
+    const nodes = () => all(view.render({}));
+    const child = (id: string) => nodes().find(node => node.id === `sub-${id}`)!;
+    const content = (id: string) => child(id).children.flatMap(all);
+    expect(content('unknown-run').some(node => node.children.includes('Unknown'))).toBe(true);
+    expect(content('known-run').some(node => node.children.includes('Disconnected'))).toBe(true);
+    for (const id of ['unknown-run', 'known-run']) expect(content(id).some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(false);
+    view.spiderFeeds = [{ ...current, lifecycle: 'live' }];
+    expect(content('known-run').some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(true);
+  });
+
   it('opens the saved view and its right-click menu when the old viewer machine is unavailable', async () => {
     const opened: any[] = [], requests: any[] = [];
     const now = Date.now(), viewer = { address: 'alpha.invalid/v1', parent: 't1', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.session': 'session', 'spider.run': 'run-one' } };

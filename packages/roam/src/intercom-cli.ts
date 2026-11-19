@@ -119,7 +119,7 @@ export async function runIntercomRevokeCli(input: { root: string; pairId: string
     const result = await revokeIntercomPair(input.pairId, ports);
     (result.code === 0 ? io.out : io.err)(`${result.reason}\n`);
     if (result.value?.cleanupReason) io.out(`${result.value.cleanupReason}\n`);
-    if (result.repairCommand) (result.code === 0 ? io.out : io.err)(`${result.repairCommand}\n`);
+    if (result.repairCommand) (result.code === 0 ? io.out : io.err)(`${config.role === "hub" ? "" : "On the hub, run "}${result.repairCommand}\n`);
     return result.code;
   } catch (error) {
     const message = error instanceof Error ? error.message : "";

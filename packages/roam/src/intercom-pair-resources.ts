@@ -195,7 +195,8 @@ export type PairRouteRemoval = "removed" | "shared-jobs" | "route-mismatch" | "u
 export interface PairTerminalInventory { machineId: string; targetCoreId: string; status: "empty" | "occupied" | "unknown" }
 function terminalState(row: Record<string, unknown>): "live" | "finished" | null {
   if (row.state === "live") return "live";
-  if (row.state === "finished" && (row.exit_code === null || Number.isSafeInteger(row.exit_code)) && typeof row.reason === "string" && row.reason.length > 0) return "finished";
+  if (row.state === "finished" && (row.exit_code === undefined || row.exit_code === null || Number.isSafeInteger(row.exit_code)) &&
+      (row.signal === undefined || row.signal === null || Number.isSafeInteger(row.signal)) && typeof row.reason === "string" && row.reason.length > 0) return "finished";
   return null;
 }
 export async function inspectPairTerminals(core: string, run: PairResourcePorts["run"]): Promise<"empty" | "occupied" | "unknown"> {
@@ -208,9 +209,11 @@ export async function inspectPairTerminals(core: string, run: PairResourcePorts[
     for (const terminal of list.terminals) {
       if (!terminal || typeof terminal !== "object" || Array.isArray(terminal) || typeof (terminal as { address?: unknown }).address !== "string") return "unknown";
       const address = (terminal as { address: string }).address;
-      if (!/^(?:[A-Za-z0-9._-]+\/)?t[0-9a-z]+$/i.test(address) || addresses.has(address)) return "unknown";
+      if (!/^(?:[A-Za-z0-9._-]+\/)?t[0-9a-z]+$/.test(address) || addresses.has(address.toLowerCase())) return "unknown";
+      addresses.add(address.toLowerCase());
+      if (address.includes("/")) continue;
       const state = terminalState(terminal as Record<string, unknown>); if (state === null) return "unknown";
-      addresses.add(address); if (!address.includes("/") && state === "live") occupied = true;
+      if (state === "live") occupied = true;
     }
     return occupied ? "occupied" : "empty";
   } catch { return "unknown"; }
@@ -247,10 +250,11 @@ export async function removePairMachineRoute(pair: IntercomEnrollmentPair, resou
     for (const terminal of list.terminals) {
       if (!terminal || typeof terminal !== "object" || Array.isArray(terminal) || typeof (terminal as { address?: unknown }).address !== "string") return "unknown";
       const address = (terminal as { address: string }).address;
-      if (!/^(?:[A-Za-z0-9._-]+\/)?t[0-9a-z]+$/i.test(address) || addresses.has(address.toLowerCase())) return "unknown";
-      const state = terminalState(terminal as Record<string, unknown>); if (state === null) return "unknown";
+      if (!/^(?:[A-Za-z0-9._-]+\/)?t[0-9a-z]+$/.test(address) || addresses.has(address.toLowerCase())) return "unknown";
       addresses.add(address.toLowerCase());
-      if (state === "live" && address.toLowerCase().startsWith(`${route.name}/`)) return "shared-jobs";
+      if (!address.toLowerCase().startsWith(`${route.name}/`)) continue;
+      const state = terminalState(terminal as Record<string, unknown>); if (state === null) return "unknown";
+      if (state === "live") return "shared-jobs";
     }
     }
     const checked = await machines(); if (checked.length !== 1 || !matches(checked[0])) return "route-mismatch";

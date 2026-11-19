@@ -487,13 +487,13 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
       if (!reason || !gap && !["revoking", "revoked"].includes(record.state)) continue;
       const unconfirmed = reason === "intercom-revocation-unconfirmed";
       inventory.push({ severity: unconfirmed ? "block" : "warning", reason: unconfirmed
-        ? `${reason}: Box A may still reach box B for ${pair.pairId} until its pair host is proved stopped. Keep both boxes reachable and retry from the hub to confirm closure.`
+        ? `${reason}: Box A may still reach box B for ${pair.pairId} until its pair host is proved stopped. Keep both boxes reachable and run the repair command on the hub to confirm closure.`
         : reason === "intercom-revocation-shared-jobs"
-          ? `${reason}: Live terminals still block route cleanup for ${pair.pairId}. Let them finish, then retry from the hub. Finished terminal history does not block cleanup.`
-          : `${reason}: Resource cleanup is pending for ${pair.pairId}. Keep both boxes reachable and retry from the hub; inspect live terminals and the pair-owned resources if it remains pending.`,
+          ? `${reason}: Any live terminal on ${pair.target.alias} blocks route cleanup for ${pair.pairId}, because terminal rows do not identify their owner. Let all live terminals on that core finish, then run the repair command on the hub. Finished terminal history does not block cleanup.`
+          : `${reason}: Resource cleanup is pending for ${pair.pairId}. Keep both boxes reachable and run the repair command on the hub; inspect live terminals and the pair-owned resources if it remains pending.`,
         repairCommand: `spider roam intercom revoke ${pair.pairId}` });
     }
-    for (const peer of fences.keys()) if (!localPairs.some(record => [record.pair.source.machineId, record.pair.target.machineId].includes(peer))) inventory.push({ severity: "block", reason: `revocation-pending: An unmatched durable fence remains for ${peer}. Bring B back so revocation can finish; restore the pair record before cleanup.`, repairCommand: null });
+    for (const peer of fences.keys()) if (!localPairs.some(record => [record.pair.source.machineId, record.pair.target.machineId].includes(peer))) inventory.push({ severity: "block", reason: `revocation-pending: An unmatched durable fence remains for ${peer}. Keep both boxes reachable. No repair command is available without the pair record; restore it before cleanup.`, repairCommand: null });
   } catch { inventory.push({ severity: "warning", reason: "intercom-registry-unavailable: Pair enrollment state could not be inspected.", repairCommand: null }); }
   if (input.inspectIntercomDoctor && config.role === "box") {
     try {

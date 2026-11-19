@@ -271,9 +271,9 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
 }
 
 export interface RevocationResult { pairId: string; cleanupReason: IntercomRevocationCleanupReason | null }
-function revocationOutcome(pairId: string, code: 0 | 1 | 3, reason: string, cleanupReason: IntercomRevocationCleanupReason | null = null): Outcome<RevocationResult> {
+function revocationOutcome(pairId: string, code: 0 | 1 | 3, reason: string, cleanupReason: IntercomRevocationCleanupReason | null = null, fenceEpoch?: string): Outcome<RevocationResult> {
   return { code, reason, operationId: pairId, home: null, epoch: null,
-    repairCommand: code === 3 || cleanupReason !== null ? `spider roam intercom revoke ${pairId}` : null,
+    repairCommand: code === 3 || cleanupReason !== null ? `spider roam intercom revoke ${pairId}${fenceEpoch === undefined ? "" : ` --fence-epoch ${fenceEpoch}`}` : null,
     value: code === 0 ? { pairId, cleanupReason } : null };
 }
 
@@ -296,7 +296,7 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
       if (ports.fenceEpoch === undefined && record.fenceId && closure?.fenceId === record.fenceId && identifier(closure.edgeEpoch)) fenceEpoch = closure.edgeEpoch;
       if (!closure || closure.sourceMachineId !== pair.source.machineId || closure.targetMachineId !== pair.target.machineId ||
           ![pair.source.machineId, pair.target.machineId].includes(closure.localMachineId) || closure.edgeEpoch !== fenceEpoch ||
-          !identifier(closure.fenceId) || closure.fenceDurable !== true || closure.exchanges !== "closed" || closure.inFlight !== 0) return revocationOutcome(pairId, 3, "revocation-incomplete");
+          !identifier(closure.fenceId) || closure.fenceDurable !== true || closure.exchanges !== "closed" || closure.inFlight !== 0) return revocationOutcome(pairId, 3, "revocation-incomplete", null, ports.fenceEpoch);
       await ports.beginRevocation(pair, closure.fenceId);
       await ports.notify([pair.source, pair.target]);
       const pin = async (machine: Peer) => { try { return await ports.pinMachine(machine); } catch { return null; } };
@@ -342,7 +342,7 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
         } catch { cleanupReason = "intercom-revocation-cleanup-pending"; }
       }
       await ports.finishRevocation(pair, cleanupReason);
-      return cleanupReason === "intercom-revocation-unconfirmed" ? revocationOutcome(pairId, 3, cleanupReason) : revocationOutcome(pairId, 0, "intercom-revoked", cleanupReason);
+      return cleanupReason === "intercom-revocation-unconfirmed" ? revocationOutcome(pairId, 3, cleanupReason, null, ports.fenceEpoch) : revocationOutcome(pairId, 0, "intercom-revoked", cleanupReason, ports.fenceEpoch);
     });
-  } catch { return revocationOutcome(pairId, 3, "revocation-incomplete"); }
+  } catch { return revocationOutcome(pairId, 3, "revocation-incomplete", null, ports.fenceEpoch); }
 }

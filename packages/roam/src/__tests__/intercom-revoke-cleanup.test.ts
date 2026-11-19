@@ -92,7 +92,9 @@ it("reachable live terminals are distinguished from an unavailable host and retr
   expect(issue?.reason).toMatch(/on that core finish/i);
   expect(issue?.reason).toMatch(/run .* on the hub/i);
   const boxReport = await runLocalDoctor({ root: f.source.globalRoot });
-  expect(boxReport.diagnostics.find(issue => issue.reason.startsWith("intercom-revocation-shared-jobs:"))?.reason).toMatch(/run .* on the hub/i);
+  expect(boxReport.diagnostics.find(issue => issue.reason.startsWith("intercom-revocation-unconfirmed:"))).toMatchObject({
+    severity: "block", repairCommand: "spider roam intercom revoke pair-1", reason: expect.stringMatching(/run .* on the hub/i),
+  });
   f.terminals([{ address: "spider-pair-pair-1/t1", state: "finished" }]);
   expect(await f.revoke()).toMatchObject({ code: 0, value: { cleanupReason: null } });
   for (const record of await f.records()) expect(record).toMatchObject({ state: "revoked", cleanupReason: null });
@@ -111,7 +113,10 @@ it.each([
 
 it("a historical revoke retry retains its fence epoch before the hub records revocation", async () => {
   const f = await livePair();
-  expect(await revokeIntercomPair("pair-1", { ...f.ports(), fenceEpoch: "edge-0" })).toMatchObject({
+  expect(await revokeIntercomPair("pair-1", { ...f.ports(), fenceEpoch: "edge-0",
+    fenceAndClose: async () => ({ sourceMachineId: A, targetMachineId: B, localMachineId: A,
+      edgeEpoch: "edge-1", fenceId: "fence-1", fenceDurable: true, exchanges: "closed", inFlight: 0 }),
+  })).toMatchObject({
     code: 3, reason: "revocation-incomplete", repairCommand: "spider roam intercom revoke pair-1 --fence-epoch edge-0",
   });
   expect((await createIntercomRegistry(f.root).get("pair-1"))?.revocationEpoch).toBeUndefined();

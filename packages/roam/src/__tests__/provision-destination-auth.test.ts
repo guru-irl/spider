@@ -47,6 +47,22 @@ it("uses destination sign-in without opening hub auth and retains explicit paths
   expect(f.reads.mock.calls.filter(([, name]) => name === "auth.json")).toEqual([]);
   expect(f.output()).not.toContain("Selected auth.json"); expect(f.errors()).toBe("");
 }, 5000);
+it.each([0, 17])("shows a path-free permission count %i in provision text and JSON", async count => {
+  const f = fixture();
+  vi.spyOn(provisionModule, "provision").mockImplementation(async request => ({ code: 0, reason: "installed", operationId: request.operation.id,
+    home: null, epoch: null, repairCommand: null, value: { hostingReady: true, permissionTightenings: count } }));
+  let out = "", err = ""; const io = { out(text: string) { out += text; }, err(text: string) { err += text; } };
+  const args = ["roam", "provision", "box-1.invalid", "--use-destination-auth", "--yes", "--release", f.release];
+  expect(await main([...args, "--operation-id", `count-text-${count}`], io)).toBe(0);
+  expect(out).toContain(`Installer permission tightenings: ${count} entries.`);
+  expect(out).not.toContain("permission-tightening.json");
+  out = ""; err = "";
+  expect(await main([...args, "--operation-id", `count-json-${count}`, "--json"], io)).toBe(0);
+  expect(JSON.parse(out)).toMatchObject({ value: { hostingReady: true, permissionTightenings: count } });
+  expect(out).not.toContain("permission-tightening.json");
+  expect(err).toContain(`Installer permission tightenings: ${count} entries.`);
+}, 5000);
+
 it("carries destination-managed auth from the CLI through the real remote metadata verifier", async () => {
   const f = fixture(), home = join(f.root, "box-home"), agent = join(home, "install", "agent"), globalRoot = join(home, "state");
   mkdirSync(agent, { recursive: true, mode: 0o700 }); mkdirSync(join(globalRoot, "roam"), { recursive: true, mode: 0o700 });

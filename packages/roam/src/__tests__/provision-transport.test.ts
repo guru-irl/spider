@@ -194,6 +194,20 @@ it("binds permission replies and recursive flags to the action and exact package
   }
 });
 
+it("accepts only a bounded, path-free permission-tightening count from the box", async () => {
+  const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "permission-summary", operationId: "op-1", machineId: bootstrapPeer.machineId,
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi };
+  for (const changed of [0, 3, 1_000_000]) {
+    f.state.provisionReply = { version: 1, kind: "provision", value: { changed } };
+    await expect(port.executeProvision(handle, request)).resolves.toEqual({ changed });
+  }
+  for (const value of [{ changed: -1 }, { changed: 1.5 }, { changed: 1_000_001 }, { changed: "3" }, { changed: 0, path: "/fixture/private" }, null]) {
+    f.state.provisionReply = { version: 1, kind: "provision", value };
+    await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+  }
+}, 5000);
+
 it("validates destination permission paths from provisioning replies", async () => {
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   const request = { action: "switchover", operationId: "op-1", machineId: bootstrapPeer.machineId,

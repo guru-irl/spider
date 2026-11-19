@@ -264,17 +264,18 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     if (!key || rows.has(key) || (!remote && !subagent && !console && t.state !== 'live')) return true;
     const finish = t.state === 'finished';
     const finishedAt = t.finishedAt ?? t.finished_ms ?? null, exitCode = t.exitCode ?? t.exit_code ?? null;
+    const run = feed ? runsFor(feed).get(t.labels[labels.run]) : null;
     let outcome = null, status = state(t);
     if (finish) {
       outcome = t.signal != null ? `signal ${t.signal}` : exitCode !== null ? `exit ${exitCode}` : t.reason ?? 'unknown';
       status = exitCode !== null || t.signal != null ? 'error' : 'unknown';
       if (exitCode === 0 && t.signal == null && t.reason === 'exited') status = 'done';
-    } else if (feed?.lifecycle === 'live' && now - feed.updatedAt > FEED_DISCONNECT_MS && (remote || subagent || console)) status = 'disconnected';
+    } else if (subagent && !run) status = 'unknown';
+    else if (feed?.lifecycle === 'live' && now - feed.updatedAt > FEED_DISCONNECT_MS && (remote || subagent || console)) status = 'disconnected';
     else if (remote && ['done', 'idle'].includes(status)) status = 'working';
     const unreachable = (remote || subagent || console) && isUnreachable(t);
     if (unreachable) status = 'unreachable';
     const rowKind = remote ? 'remote' : subagent ? 'subagent' : console ? 'console' : 'native';
-    const run = feed ? runsFor(feed).get(t.labels[labels.run]) : null;
     const machine = t.labels[labels.machine] ?? null;
     // hc only takes slug names; the readable name rides on a display-only label.
     const display = t.labels[labels.displayName ?? 'spider.display-name'];
@@ -307,7 +308,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
     const done = ['done', 'failed', 'cancelled'].includes(run.status);
     const action = sessionAction('subagent', run.id, feed.sessionId, native);
     const unreachable = isUnreachable(native ?? (run.viewer ? { address: run.viewer } : null)) && !(done && action?.kind === 'ipc');
-    const status = unreachable ? 'unreachable' : run.status === 'running' ? (now - feed.updatedAt > FEED_DISCONNECT_MS && feed.lifecycle === 'live' ? 'disconnected' : 'working') : run.status === 'failed' ? 'error' : run.status;
+    const status = unreachable ? 'unreachable' : run.status === 'running' ? (feed.lifecycle !== 'live' || now - feed.updatedAt > FEED_DISCONNECT_MS ? 'disconnected' : 'working') : run.status === 'failed' ? 'error' : run.status;
     const previous = rows.get(run.id);
     rows.set(run.id, {
       key: run.id, kind: 'subagent', address: run.viewer, originalAddress: native?.address ?? run.viewer,

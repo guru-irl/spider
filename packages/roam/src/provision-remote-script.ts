@@ -50,7 +50,7 @@ if (authForRemote === authSource || authForRemote.includes('from "./') || config
 const enrollmentConfigForRemote = `const parseRoamConfig = (() => {\nconst DEFAULT_LIMITS = ${JSON.stringify(DEFAULT_LIMITS)};\nconst DEFAULT_INTERCOM_LIMITS = ${JSON.stringify(DEFAULT_INTERCOM_LIMITS)};\n${machineIdForRemote}\n${configForRemote}\nreturn parseConfig;\n})();\n`;
 
 const provisionSource: string = selectedRemoteSource + "\n" + authForRemote + "\n" + receiptSource + "\n" + releaseRequestSource + "\n" + enrollmentConfigForRemote + enrollmentForRemote + "\n" + enrollmentSocketForRemote + intercomForRemote + String.raw`
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawn, spawnSync } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
@@ -402,7 +402,13 @@ async function run(): Promise<unknown> {
         (request.restoreAutostart !== true || !request.enabled)) bad("invalid-request");
     releaseCore(text("core"), text("coreId"));
     setBoxRoamingEnabled(text("globalRoot"), text("machineId"), text("hubMachineId"), request.enabled);
-    if (request.restoreAutostart) supervisorSystemctl(["--user", "enable", "spider-roam-supervisor.service"]);
+    if (request.restoreAutostart && existsSync(join(homedir(), ".config/systemd/user/spider-roam-supervisor.service"))) {
+      try { supervisorSystemctl(["--user", "enable", "spider-roam-supervisor.service"]); }
+      catch (error) {
+        // Participation is independent of autostart; doctor reports its actual state.
+        if (!error || typeof error !== "object" || !("code" in error) || error.code !== "command-failed") throw error;
+      }
+    }
     return { enabled: request.enabled };
   }
   const home = text("home"), globalRoot = text("globalRoot"), agentDir = text("agentDir"), npmPrefix = text("npmPrefix"), unitDir = text("unitDir");

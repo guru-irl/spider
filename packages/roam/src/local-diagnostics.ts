@@ -36,6 +36,7 @@ import { readPrivateBytes } from "./selected-files";
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 type SupervisorAutostart = "enabled" | "disabled" | "unknown";
 export async function inspectSupervisorAutostart(): Promise<SupervisorAutostart> {
+  if (!existsSync(join(homedir(), ".config/systemd/user/spider-roam-supervisor.service"))) return "unknown";
   return new Promise(resolve => {
     execFile("systemctl", ["--user", "is-enabled", "spider-roam-supervisor.service"], { timeout: 5000, maxBuffer: 4096 }, (error, stdout) => {
       const state = stdout.trim();
@@ -365,6 +366,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
       let autostart: SupervisorAutostart = "unknown";
       try { autostart = await (input.supervisorAutostart ?? inspectSupervisorAutostart)(); } catch { /* An unavailable observation is not proof. */ }
       if (autostart === "disabled") inventory.push({ severity: "warning", reason: "supervisor-autostart-disabled: Supervisor autostart is disabled. Run spider roam enable on the hub.", repairCommand: "spider roam enable" });
+      else if (autostart === "unknown") inventory.push({ severity: "warning", reason: "supervisor-autostart-unavailable: Supervisor autostart cannot be verified. Check the supervisor unit and systemd user service.", repairCommand: null });
     }
     inventory.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));
     inventory.push({ severity: "info", reason: `Recorded core unit ${config.coreUnit ?? "unavailable"} (diagnostic only).`, repairCommand: null });

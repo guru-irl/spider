@@ -397,6 +397,25 @@ it("sync prints the bounded agent cause without exposing an unrecognized code", 
   expect(rows[1]).not.toHaveProperty("causeCode");
 }, 5000);
 
+it("sync shows the failed operation kind and answered refusal without untrusted identifiers", async () => {
+  const f = await fixture(HUB, { code: 1, reason: "Synchronization needs attention", value: { outcomes: [
+    { code: 1, reason: "agent-operation-failed", operationId: "op-a", operationKind: "stores", causeCode: "ENOENT" },
+    { code: 1, reason: "roaming-disabled", operationId: "op-b", operationKind: "mirror-export" },
+    { code: 1, reason: "agent-operation-failed", operationId: "op-c", operationKind: "private-secret", causeCode: "private-secret" },
+  ] } });
+  expect(await f.invoke(["roam", "sync"])).toBe(1);
+  expect(f.err.join("")).toContain("stores: agent-operation-failed [ENOENT]");
+  expect(f.err.join("")).toContain("mirror-export: roaming-disabled");
+  expect(f.err.join("")).not.toContain("private-secret");
+  f.out.length = 0;
+  expect(await f.invoke(["roam", "sync", "--json"])).toBe(1);
+  const rows = JSON.parse(f.out.join("")).value.outcomes;
+  expect(rows[0]).toMatchObject({ operationId: "op-a", operationKind: "stores", causeCode: "ENOENT" });
+  expect(rows[1]).toMatchObject({ operationId: "op-b", operationKind: "mirror-export", reason: "roaming-disabled" });
+  expect(rows[2]).not.toHaveProperty("operationKind");
+  expect(JSON.stringify(rows)).not.toContain("private-secret");
+}, 5000);
+
 it("sync prints a named peer process failure from the hub outcome", async () => {
   const f = await fixture(HUB, { code: 1, reason: "Synchronization needs attention", value: {
     outcomes: [{ code: 1, reason: "Peer command failed (spawn_failed)" }],

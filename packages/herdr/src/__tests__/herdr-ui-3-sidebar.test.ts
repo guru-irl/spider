@@ -389,7 +389,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
       owner: { ...emptyRunName.owner, sessionId, generation: 'gen' },
       ipc: { address: '/fixture/socket', capabilityFile: '/fixture/cap' },
       runs: { rows: [{ id: runId, ownerSessionId: sessionId, name: 'Worker', status: 'running', childMode: 'rpc', canSteer: true,
-        viewer: viewer.address, startedAt: Date.now(), finishedAt: null, result: null }], total: 1, truncated: false } }];
+        viewer: null, startedAt: Date.now(), finishedAt: null, result: null }], total: 1, truncated: false } }];
   }
   const section = (root: unknown) => all(root).find(node => node.id === 'spider-machines');
   async function spacesView(spaces: any[], remote: any[], layouts: any[], stored = new Map<string, string>(), run: (...args: any[]) => void = () => {}) {

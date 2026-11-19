@@ -363,7 +363,7 @@ function seedConsoles(test: ReturnType<typeof fixture>) {
   );
   test.view.spiderFeeds = [{ ...emptyRunName, sessionId: session, generation: 'gen', lifecycle: 'live', updatedAt: Date.now(),
     owner: { ...emptyRunName.owner, sessionId: session, generation: 'gen', name: 'Writer', terminal: { ...emptyRunName.owner.terminal, address: 'local', terminalId: 'local', coreId: 'local-core' } },
-    ipc: { address: '/fixture/socket', capabilityFile: '/fixture/cap' }, runs: { rows: [{ id: run, ownerSessionId: session, name: 'Helper', status: 'running', childMode: 'rpc', canSteer: true, viewer: 'subviewer', startedAt: Date.now(), finishedAt: null, result: null }], total: 1, truncated: false } }];
+    ipc: { address: '/fixture/socket', capabilityFile: '/fixture/cap' }, runs: { rows: [{ id: run, ownerSessionId: session, name: 'Helper', status: 'running', childMode: 'rpc', canSteer: true, viewer: null, startedAt: Date.now(), finishedAt: null, result: null }], total: 1, truncated: false } }];
 }
 const consoleKey = (owner: string, parent: string | null = null) => `console-group:${JSON.stringify([owner, parent])}`;
 const consoleId = (owner: string, parent: string | null = null) => `console-group:${encodeURIComponent(consoleKey(owner, parent))}`;
@@ -836,7 +836,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: restores all folded space pills and blocked native child attention`, async () => {
     const test = fixture(version);
     seedConsoles(test);
-    test.view.spiderFeeds[0].runs.rows = [];
+    test.view.spiderFeeds[0].runs = { rows: [], total: 0, truncated: false };
     const blockedChild = test.nativeTerminals.find(row => row.address === 'subviewer');
     blockedChild.labels = {}; blockedChild.status = 'blocked';
     await test.ready();
@@ -862,7 +862,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: a folded machine signals blocked members and native children`, async () => {
     const test = fixture(version);
     seedConsoles(test);
-    test.view.spiderFeeds[0].runs.rows = [];
+    test.view.spiderFeeds[0].runs = { rows: [], total: 0, truncated: false };
     test.nativeAgents[1].status = 'blocked';
     const blockedChild = test.nativeTerminals.find(row => row.address === 'subviewer');
     blockedChild.labels = {}; blockedChild.status = 'blocked';
@@ -879,7 +879,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     test.view.spiderModelEnabled = enabled;
     if (!enabled) test.view.spiderModel = null;
     seedConsoles(test);
-    test.view.spiderFeeds[0].runs.rows = [];
+    test.view.spiderFeeds[0].runs = { rows: [], total: 0, truncated: false };
     const viewer = test.nativeTerminals.find(row => row.address === 'subviewer');
     viewer.status = 'blocked';
     test.nativeTerminals.push({ ...terminal('native-working'), parent: 'local', status: 'working' });
@@ -1314,7 +1314,7 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     );
     test.view.spiderFeeds = [{ ...emptyRunName, sessionId: 'session-one', generation: 'gen', lifecycle: 'live', updatedAt: Date.now(),
       owner: { ...emptyRunName.owner, sessionId: 'session-one', generation: 'gen', name: 'Writer', terminal: { ...emptyRunName.owner.terminal, address: 'local', terminalId: 'local', coreId: 'local-core' } },
-      ipc: { address: '/fixture/socket', capabilityFile: '/fixture/cap' }, runs: { rows: [{ id: 'run-live', ownerSessionId: 'session-one', name: 'Helper', status: 'running', childMode: 'rpc', canSteer: true, viewer: 'run-live', startedAt: Date.now(), finishedAt: null, result: null }], total: 1, truncated: false } }];
+      ipc: { address: '/fixture/socket', capabilityFile: '/fixture/cap' }, runs: { rows: [{ id: 'run-live', ownerSessionId: 'session-one', name: 'Helper', status: 'running', childMode: 'rpc', canSteer: true, viewer: null, startedAt: Date.now(), finishedAt: null, result: null }], total: 1, truncated: false } }];
     await test.ready();
     let root = test.view.render(test.cx);
     byId(root, 'machine:')!.events.on_click({}, test.cx);

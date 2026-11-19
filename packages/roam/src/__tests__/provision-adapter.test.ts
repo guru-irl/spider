@@ -251,6 +251,18 @@ it("reports an other-writable extensions directory without changing it", async (
   expect(lstatSync(extensions).mode & 0o777).toBe(0o757);
 }, 5000);
 
+it("reports an unsafe selected-file parent without changing it", async () => {
+  const f = fixture(), themes = join(f.agentDir, "themes"), file = join(themes, "sample.json");
+  mkdirSync(themes, { mode: 0o700 }); chmodSync(themes, 0o775); writeFileSync(file, "original", { mode: 0o600 });
+  const adapter = create!(f.options), selected = { path: "themes/sample.json", bytes: Buffer.from('{"name":"sample"}'), mode: 0o600 as const };
+  await expect(adapter.installFiles(f.peer, [selected])).rejects.toMatchObject({
+    code: "destination-permissions-unsafe", details: { path: themes } });
+  expect(lstatSync(themes).mode & 0o777).toBe(0o775); expect(readFileSync(file, "utf8")).toBe("original");
+  chmodSync(themes, 0o755);
+  await expect(adapter.installFiles(f.peer, [selected])).resolves.toBeUndefined();
+  expect(readFileSync(file)).toEqual(selected.bytes);
+}, 5000);
+
 it("does not suggest chmod for a symlinked extensions directory", async () => {
   const f = fixture(), target = join(f.root, "outside"), extensions = join(f.agentDir, "extensions");
   prepareSwitchoverRelease(f); mkdirSync(target, { mode: 0o700 }); chmodSync(target, 0o775); symlinkSync(target, extensions);

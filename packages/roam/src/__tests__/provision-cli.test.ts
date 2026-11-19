@@ -360,7 +360,7 @@ it("reports switchover permissions and the repair command through the CLI", asyn
         if (typeof request[key] === "string") request[key] = request[key].replace(/^\/home\/fixture(?=\/|$)/, home);
       }
       const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
-        input: JSON.stringify(request), encoding: "utf8", env: { ...process.env, HOME: home }, timeout: 4000,
+        input: JSON.stringify(request), encoding: "utf8", env: { ...process.env, HOME: home, NODE_NO_WARNINGS: "1" }, timeout: 4000,
       });
       expect(child.status).toBe(0); expect(child.stderr).toBe("");
       const reply = JSON.parse(child.stdout) as { path?: string };

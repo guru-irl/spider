@@ -67,21 +67,19 @@ function servicePorts(): LaunchdPorts {
   const invoke = (argv: readonly string[]) => new Promise<void>((done, reject) => execFile(binary, [...argv], { timeout: 15_000, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
     if (!error) { done(); return; }
     const output = `${stdout}\n${stderr}`;
-    const notLoaded = /could not find (?:the |specified )?service\b|\bnot loaded\b|\bno such process\b/i.test(output) ||
-      argv[0] === "print" && !error.killed && !error.signal && error.code === 113 && !output.trim();
+    const notLoaded = argv[0] === "print" && argv.length === 2 && !error.killed && !error.signal && error.code === 113 &&
+      (!output.trim() || /could not find (?:the |specified )?service\b|\bnot loaded\b|\bno such process\b/i.test(output));
     const code = error.killed ? "service-timeout" : safeCauseCode(error.code) ?? "service-failed";
     reject(Object.assign(new Error("Service manager request failed"), { code, notLoaded } satisfies Pick<ServiceFailure, "code" | "notLoaded">));
   }));
   return { plistDir: join(homedir(), "Library", "LaunchAgents"), async launchctl(argv) {
     try { await invoke(argv); }
     catch (error) {
-      if (argv[0] === "bootout") {
-        let notLoaded = (error as ServiceFailure).notLoaded;
-        if (!notLoaded && argv.length === 3 && argv[2].endsWith(".plist")) {
-          try { await invoke(["print", `${argv[1]}/${basename(argv[2], ".plist")}`]); }
-          catch (probe) { notLoaded = (probe as ServiceFailure).notLoaded; }
+      if (argv[0] === "bootout" && argv.length === 3 && argv[2].endsWith(".plist")) {
+        try { await invoke(["print", `${argv[1]}/${basename(argv[2], ".plist")}`]); }
+        catch (probe) {
+          if ((probe as ServiceFailure).notLoaded) throw Object.assign(new Error("Service is not loaded"), { code: "service-not-loaded" });
         }
-        if (notLoaded) throw Object.assign(new Error("Service is not loaded"), { code: "service-not-loaded" });
       }
       throw error;
     }

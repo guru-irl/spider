@@ -246,7 +246,12 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       const hash = (id: string) => createHash("sha256").update(id).digest("hex");
       io.out(`Core pin replaced. Previous identity SHA-256: ${hash(replaced.oldCoreId)}. New identity SHA-256: ${hash(replaced.newCoreId)}.\n`);
     }
-    if (result.repairCommand) io.err(`Stop hosting and move sessions off the box, then run ${result.repairCommand} with the same authentication options.\n`);
+    if (result.repairCommand && ["core-pin-changed", "core-pin-conflict"].includes(result.reason)) {
+      io.err(`Stop hosting and move sessions off the box, then run ${result.repairCommand} with the same authentication options.\n`);
+    }
+    if (result.reason === "destination-permissions-unsafe" && result.repairCommand) {
+      io.err(`Unsafe permissions on ${safe(peer.alias)}. On the box, run ${result.repairCommand}.\n`);
+    }
     if (result.reason === "core-pin-in-use") io.err("Move sessions off this box, run spider roam disable on the hub, and stop spider-roam-supervisor.service on the box before retrying.\n");
     if (result.code === 0 && journal.read(`${operationId}-install`).some(row => row.action === "done" && row.result.code === 0)) {
       journal.record(operationId, "provision-completed", { installOperationId: `${operationId}-install`, releaseHash: pinned.sha256, contextDigest });

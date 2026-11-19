@@ -60,6 +60,13 @@ function directory(path: string, privateMode: boolean): void {
   if (!stat.isDirectory() || stat.isSymbolicLink() || !own(stat) ||
       (privateMode ? (stat.mode & 0o7777) !== 0o700 : (stat.mode & 0o022) !== 0)) throw new Error("Unsafe directory");
 }
+function destinationDirectory(path: string, privateMode = false): void {
+  const stat = lstatSync(path);
+  if (stat.isDirectory() && !stat.isSymbolicLink() && own(stat) && (stat.mode & 0o022) !== 0) {
+    fail("destination-permissions-unsafe", [path]);
+  }
+  directory(path, privateMode);
+}
 function rootPath(value: string): string {
   if (typeof value !== "string" || !isAbsolute(value) || resolve(value) !== value || realpathSync(value) !== value) throw new Error("Unsafe root");
   directory(value, false);
@@ -129,7 +136,8 @@ function parentPath(root: string, relative: string, create: boolean): string {
       try { mkdirSync(current, { mode: 0o700 }); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
     }
-    directory(current, false);
+    if (create) destinationDirectory(current);
+    else directory(current, false);
   }
   return current;
 }
@@ -315,7 +323,8 @@ export function inspectDestinationSettingsDigests(input: { home: string; destina
   for (const part of root.slice(home.length + 1).split(sep)) {
     current = join(current, part);
     if (!exists(current)) return { fingerprint: settingsFingerprint(null), digests: input.paths.map(() => null) };
-    try { directory(current, false); } catch { return fail("unsafe-destination"); }
+    try { destinationDirectory(current); }
+    catch (error) { if (error instanceof SelectedFilesError) throw error; return fail("unsafe-destination"); }
   }
   const target = join(root, "settings.json");
   if (!exists(target)) return { fingerprint: settingsFingerprint(null), digests: input.paths.map(() => null) };

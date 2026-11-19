@@ -13,6 +13,7 @@ import { normalizeConfiguredClis, normalizeCoreUnit, parseBootstrapInventory, sa
 import type { BootstrapPeer, CallOptions, Journal, Peer, Transport } from './contracts';
 import type { AgentDirectoryProbe, CoreFence } from './provision-contracts';
 import { validSettingsDigests } from './selected-files';
+import { destinationPermissionPath } from './provision-permissions';
 import type { SettingsDestinationPreview, SettingsKeyDigest } from './selected-files';
 
 type CoreObservation = CoreFence;
@@ -357,8 +358,12 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       catch { throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply'); }
       const blocked = reply.error === 'release-in-progress' && Object.keys(reply).length === 4 &&
         typeof reply.operationId === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(reply.operationId);
+      const permissionRoots = ['release-observe', 'release-prepare'].includes(request.action) ? [request.npmPrefix]
+        : ['install-files', 'auth-install', 'switchover'].includes(request.action) ? [request.agentDir] : [];
+      const permission = reply.error === 'destination-permissions-unsafe' && Object.keys(reply).length === 4 &&
+        destinationPermissionPath(reply.path, request.home, permissionRoots);
       if (reply.kind !== 'provision' || reply.version !== 1 ||
-          !(Object.keys(reply).length === 3 && reply.error !== 'release-in-progress' || blocked)) {
+          !(Object.keys(reply).length === 3 && reply.error !== 'release-in-progress' && reply.error !== 'destination-permissions-unsafe' || blocked || permission)) {
         throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
       }
       if (Object.hasOwn(reply, 'error')) {
@@ -370,11 +375,12 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           'selection-not-allowed', 'unsafe-destination', 'invalid-destination-settings', 'settings-preview-changed', 'invalid-settings-preview',
           'credential-file-requires-consent', 'provider-consent-required', 'invalid-providers', 'invalid-auth', 'unsafe-auth', 'provider-unavailable',
           'unsupported-credential-command', 'invalid-release-request', 'invalid-release-receipt', 'release-arguments-changed',
-          'release-evidence-unavailable', 'release-evidence-unfiltered', 'release-in-progress', 'process-identity-unavailable', 'operation-arguments-changed', 'short-write-pending', 'core-unavailable', 'core-changed']);
+          'release-evidence-unavailable', 'release-evidence-unfiltered', 'release-in-progress', 'process-identity-unavailable', 'operation-arguments-changed', 'short-write-pending', 'core-unavailable', 'core-changed',
+          'destination-permissions-unsafe']);
         if (typeof reply.error !== 'string' || !allowed.has(reply.error)) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
         if (reply.error === 'core-changed') { invalidate(state.peer.alias, state, 'core-changed'); throw coreChanged(); }
         throw new HerdrError(reply.error, blocked ? `Provisioning is blocked by operation ${reply.operationId}` : 'Provisioning operation failed',
-          blocked ? { blockingOperationId: reply.operationId } : undefined);
+          blocked ? { blockingOperationId: reply.operationId } : permission ? { path: reply.path } : undefined);
       }
       if (!Object.hasOwn(reply, 'value')) throw new HerdrError('invalid-provision-reply', 'Invalid provisioning reply');
       if (request.action === 'enrollment') {
@@ -448,9 +454,13 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           let reply: Record<string, unknown>;
           try { reply = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))); }
           catch { throw new HerdrError('invalid-bootstrap-reply', 'Invalid agent directory reply'); }
-          if (reply.version !== 1 || reply.kind !== 'agent-directory' || Object.keys(reply).length !== 3) {
+          const permission = reply.error === 'destination-permissions-unsafe' && Object.keys(reply).length === 4 &&
+            target.agentDir !== undefined && destinationPermissionPath(reply.path, home, [target.agentDir]);
+          if (reply.version !== 1 || reply.kind !== 'agent-directory' ||
+              !(Object.keys(reply).length === 3 && reply.error !== 'destination-permissions-unsafe' || permission)) {
             throw new HerdrError('invalid-bootstrap-reply', 'Invalid agent directory reply');
           }
+          if (permission) throw new HerdrError('destination-permissions-unsafe', 'Agent directory permissions are unsafe', { path: reply.path });
           if (reply.error === 'agent-directory-probe-failed') throw new HerdrError('agent-directory-probe-failed', 'Agent directory probe failed');
           if (reply.value !== 'default' && reply.value !== 'custom' && reply.value !== 'unknown') {
             throw new HerdrError('invalid-bootstrap-reply', 'Invalid agent directory reply');
@@ -461,9 +471,12 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         return { status: result.value, core: { ...result.core } };
       } catch (error) {
         const allowed = new Set(['core-changed', 'core-unavailable', 'machine-not-found', 'machine-ambiguous', 'cli-timeout',
-          'cli-aborted', 'cli-exit', 'spawn-error', 'missing-hc', 'reply-too-large', 'invalid-bootstrap-reply', 'agent-directory-probe-failed']);
+          'cli-aborted', 'cli-exit', 'spawn-error', 'missing-hc', 'reply-too-large', 'invalid-bootstrap-reply', 'agent-directory-probe-failed', 'destination-permissions-unsafe']);
         const code = error instanceof HerdrError && allowed.has(error.code) ? error.code : 'agent-directory-probe-failed';
-        const safe = new HerdrError(code, 'Agent directory probe failed');
+        const details = error instanceof HerdrError && error.details && typeof error.details === 'object' && 'path' in error.details &&
+          code === 'destination-permissions-unsafe' && target.agentDir !== undefined && destinationPermissionPath(error.details.path, home, [target.agentDir])
+          ? { path: error.details.path } : undefined;
+        const safe = new HerdrError(code, 'Agent directory probe failed', details);
         if (error && typeof error === 'object' && 'retryable' in error && error.retryable === true) Object.assign(safe, { retryable: true });
         throw safe;
       }
@@ -488,12 +501,17 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
           let reply: Record<string, unknown>;
           try { reply = object(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))); }
           catch { throw new HerdrError('invalid-bootstrap-reply', 'Invalid settings preview reply'); }
-          if (reply.version !== 1 || reply.kind !== 'settings-preview' || Object.keys(reply).length !== 3) throw new HerdrError('invalid-bootstrap-reply', 'Invalid settings preview reply');
+          const permission = reply.error === 'destination-permissions-unsafe' && Object.keys(reply).length === 4 &&
+            destinationPermissionPath(reply.path, home, [target.agentDir ?? posix.join(home, '.pi', 'agent')]);
+          if (reply.version !== 1 || reply.kind !== 'settings-preview' ||
+              !(Object.keys(reply).length === 3 && reply.error !== 'destination-permissions-unsafe' || permission)) {
+            throw new HerdrError('invalid-bootstrap-reply', 'Invalid settings preview reply');
+          }
           if (Object.hasOwn(reply, 'error')) {
-            if (typeof reply.error !== 'string' || !['invalid-destination-settings', 'unsafe-destination', 'invalid-settings-preview', 'settings-preview-failed'].includes(reply.error)) {
+            if (typeof reply.error !== 'string' || !['invalid-destination-settings', 'unsafe-destination', 'invalid-settings-preview', 'settings-preview-failed', 'destination-permissions-unsafe'].includes(reply.error)) {
               throw new HerdrError('invalid-bootstrap-reply', 'Invalid settings preview reply');
             }
-            throw new HerdrError(reply.error, 'Settings preview failed');
+            throw new HerdrError(reply.error, 'Settings preview failed', permission ? { path: reply.path } : undefined);
           }
           const value = object(reply.value);
           if (Object.keys(value).sort().join(',') !== 'digests,fingerprint' || typeof value.fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(value.fingerprint) ||
@@ -509,9 +527,12 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
       } catch (error) {
         const allowed = new Set(['core-changed', 'core-unavailable', 'machine-not-found', 'machine-ambiguous', 'cli-timeout', 'cli-aborted',
           'cli-exit', 'spawn-error', 'missing-hc', 'reply-too-large', 'invalid-bootstrap-reply', 'invalid-destination-settings', 'unsafe-destination',
-          'invalid-settings-preview', 'settings-preview-failed']);
+          'invalid-settings-preview', 'settings-preview-failed', 'destination-permissions-unsafe']);
         const code = error instanceof HerdrError && allowed.has(error.code) ? error.code : 'settings-preview-failed';
-        const safe = new HerdrError(code, 'Settings preview failed');
+        const details = error instanceof HerdrError && error.details && typeof error.details === 'object' && 'path' in error.details &&
+          code === 'destination-permissions-unsafe' && destinationPermissionPath(error.details.path, home, [target.agentDir ?? posix.join(home, '.pi', 'agent')])
+          ? { path: error.details.path } : undefined;
+        const safe = new HerdrError(code, 'Settings preview failed', details);
         if (error && typeof error === 'object' && 'retryable' in error && error.retryable === true) Object.assign(safe, { retryable: true });
         throw safe;
       } finally { stdin.fill(0); }

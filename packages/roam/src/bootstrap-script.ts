@@ -18,9 +18,12 @@ try {
   const value = inspectDestinationSettingsDigests({ home: input.home, destinationRoot: input.agentDir, paths: input.paths, maximum: input.maximum });
   process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", value }));
 } catch (error) {
-  const allowed = new Set(["invalid-destination-settings", "unsafe-destination", "invalid-settings-preview"]);
-  const code = error instanceof SelectedFilesError && allowed.has(error.code) ? error.code : "settings-preview-failed";
-  process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", error: code }));
+  const allowed = new Set(["invalid-destination-settings", "unsafe-destination", "invalid-settings-preview", "destination-permissions-unsafe"]);
+  let code = error instanceof SelectedFilesError && allowed.has(error.code) ? error.code : "settings-preview-failed";
+  const path = code === "destination-permissions-unsafe" && error instanceof SelectedFilesError && error.files.length === 1 &&
+    isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f]/.test(error.files[0]) ? error.files[0] : undefined;
+  if (code === "destination-permissions-unsafe" && !path) code = "unsafe-destination";
+  process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", error: code, ...(path ? { path } : {}) }));
 }
 `;
 
@@ -326,7 +329,7 @@ try {
       path.resolve(input.home) !== input.home || /[\x00-\x1f\x7f]/.test(input.home)) throw new Error('request');
   const home = fs.realpathSync(os.homedir()), expected = input.agentDir ?? path.join(home, '.pi/agent');
   if (input.agentDir !== undefined) {
-    if (input.home !== home || typeof expected !== 'string' || !path.isAbsolute(expected) || path.normalize(expected) !== expected || !expected.startsWith(home + '/') || /[\x00-\x1f\x7f]/.test(expected)) throw new Error('request');
+    if (input.home !== home || typeof expected !== 'string' || expected.length > 4096 || !path.isAbsolute(expected) || path.normalize(expected) !== expected || !expected.startsWith(home + '/') || /[\x00-\x1f\x7f]/.test(expected)) throw new Error('request');
   }
   function isDefault(value, cwd) {
     if (!value) return expected === path.join(home, '.pi/agent');
@@ -339,30 +342,36 @@ try {
       return path.resolve(cwd, expanded) === expected;
     } catch { return false; }
   }
-  function configuredDirectorySafe() {
-    if (input.agentDir === undefined) return true;
+  function configuredDirectoryStatus() {
+    if (input.agentDir === undefined) return { safe: true };
     try {
       let cursor = home;
       for (const part of path.relative(home, expected).split(path.sep)) {
         cursor = path.join(cursor, part);
         const stat = fs.lstatSync(cursor);
-        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid() || (stat.mode & 0o022) !== 0) return false;
+        if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid()) return { safe: false };
+        if ((stat.mode & 0o022) !== 0) return { safe: false, path: cursor };
       }
-      return fs.realpathSync(expected) === expected;
-    } catch { return false; }
+      return { safe: fs.realpathSync(expected) === expected };
+    } catch { return { safe: false }; }
   }
-  if (input.home !== home || !configuredDirectorySafe() || !isDefault(process.env.PI_CODING_AGENT_DIR, process.cwd())) reply('custom');
+  if (input.home !== home || !isDefault(process.env.PI_CODING_AGENT_DIR, process.cwd())) reply('custom');
   else {
-    const manager = spawnSync('systemctl', ['--user', 'show-environment'],
-      { encoding: 'utf8', timeout: 1500, maxBuffer: 65536, stdio: ['ignore', 'pipe', 'ignore'] });
-    if (manager.status !== 0 || typeof manager.stdout !== 'string') reply('unknown');
+    const status = configuredDirectoryStatus();
+    if (status.path) process.stdout.write(JSON.stringify({ version: 1, kind: 'agent-directory', error: 'destination-permissions-unsafe', path: status.path }) + '\n');
+    else if (!status.safe) reply('custom');
     else {
-      const entries = manager.stdout.split('\n').filter(line => line.startsWith('PI_CODING_AGENT_DIR='));
-      if (entries.length > 1) reply('unknown');
+      const manager = spawnSync('systemctl', ['--user', 'show-environment'],
+        { encoding: 'utf8', timeout: 1500, maxBuffer: 65536, stdio: ['ignore', 'pipe', 'ignore'] });
+      if (manager.status !== 0 || typeof manager.stdout !== 'string') reply('unknown');
       else {
-        const value = entries.length ? entries[0].slice('PI_CODING_AGENT_DIR='.length) : '';
-        // Configured launches set their own directory without a manager override.
-        reply((input.agentDir !== undefined && !value) || isDefault(value, home) ? 'default' : 'custom');
+        const entries = manager.stdout.split('\n').filter(line => line.startsWith('PI_CODING_AGENT_DIR='));
+        if (entries.length > 1) reply('unknown');
+        else {
+          const value = entries.length ? entries[0].slice('PI_CODING_AGENT_DIR='.length) : '';
+          // Configured launches set their own directory without a manager override.
+          reply((input.agentDir !== undefined && !value) || isDefault(value, home) ? 'default' : 'custom');
+        }
       }
     }
   }

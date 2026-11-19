@@ -122,6 +122,17 @@ socket is owned by the user.
 
 The npm prefix comes from `<prefix>/bin/pi` and need not be named `.local`.
 Provisioning runs npm lifecycle scripts but skips optional CUDA downloads.
+Both npm installs use umask `022`. It creates its staging, prefix, release, and
+agent directories with mode `0700`. Before installing or reusing a release, it
+checks the prefix, the
+pi installation, and the selected release tree for group or other write access.
+
+`destination-permissions-unsafe` identifies an existing owned path that has
+group or other write access. On the box, run the reported `chmod go-w` command
+and retry with the same options. The command quotes the path for the shell.
+Provisioning does not change pre-existing directory permissions. If more than
+one path needs repair, it reports the next path on a later attempt.
+
 Release evidence relies on the core's server-side label filters. Herdr 0.1.16
 omits labels from terminal rows, so when a row has no labels, provisioning also
 checks that the same machine filter with a random operation label returns no

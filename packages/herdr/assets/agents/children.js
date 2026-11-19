@@ -335,7 +335,7 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
   const age = (options.completedHours ?? 24) * 3600000;
   const candidates = all.filter(uncertain).filter(row => {
     const at = uncertainAt(row);
-    return !Number.isFinite(at) || at <= now && now - at <= age;
+    return !Number.isFinite(at) || now - at <= age;
   }).sort((a, b) => (uncertainAt(b) ?? -Infinity) - (uncertainAt(a) ?? -Infinity) || a.key.localeCompare(b.key));
   const selectedUncertain = new Set(candidates.slice(0, limit));
   const bounded = all.filter(row => !uncertain(row) || selectedUncertain.has(row));

@@ -22,7 +22,7 @@ function fixture(approved: boolean) {
   const calls: Array<{ machine: string; command: string; input: any }> = [], previews: unknown[] = [];
   const transport = {
     async pinIntercomPeer(machine: Peer) { return { handle: machine, machineId: machine.machineId, coreId: `core-${machine.machineId}` }; },
-    transport: { async exec(machine: Peer, argv: readonly string[], options: { stdin: Buffer }) {
+    transport: { async exec(machine: Peer, argv: readonly string[], options: { stdin: Buffer; timeoutMs?: number }) {
       const input = JSON.parse(options.stdin.toString()), command = argv[2]; calls.push({ machine: machine.machineId, command, input });
       if (command === "observe-fence") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-fence", ok: true, value: { machineId: machine.machineId, peer: input.peer, fence: null, revocationPending: false } }));
       if (!journal.read(request.operation.id).some(row => row.action === "intercom-peer-consent" && row.result.approved === true)) throw new Error("setup before consent");
@@ -74,6 +74,46 @@ it("the operator CLI refuses noninteractive approval and displays the exact grap
   expect(await main(["--global-root", f.root, "roam", "intercom", "enroll", "--graph", graph, "--operation", "production-1"], io,
     { intercomOptions: { ...options, tty: false } } as any)).toBe(1);
   expect(err).toContain("peer-consent-required");
+}, 5000);
+
+it("retries a transient unreachable route within one approved enrollment", async () => {
+  const f = fixture(true), original = f.transport.transport.exec, timeouts: number[] = [];
+  let approvals = 0;
+  f.transport.transport.exec = async (machine, argv, options) => {
+    if (JSON.parse(options.stdin.toString()).action === "add-machine") {
+      timeouts.push(options.timeoutMs!);
+      if (timeouts.length <= 2) return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: false,
+        machineId: machine.machineId, reason: "intercom-setup-pending", cause: { code: "unreachable", message: "private route details" } }));
+    }
+    return original(machine, argv, options);
+  };
+  const input = await ports(f), approve = input.approve;
+  input.approve = async () => { approvals++; return approve(); };
+  const result = await provisionIntercomEnrollment(f.request, input);
+  expect(result).toMatchObject({ code: 0, reason: "intercom-enrolled", value: { pairs: ["pair-1"] } });
+  expect(timeouts).toHaveLength(3);
+  expect(timeouts[0]).toBeLessThanOrEqual(40_000);
+  expect(timeouts[1]).toBeLessThan(timeouts[0]); expect(timeouts[2]).toBeLessThan(timeouts[1]);
+  expect(approvals).toBe(1);
+  expect(f.calls.filter(call => call.input.action === "verify-transport")).toHaveLength(1);
+  expect(JSON.stringify(result)).not.toContain("private route details");
+}, 5000);
+
+it.each([["invalid_params", 1], ["unreachable", 6]] as const)("reports %s after at most %i route attempts", async (kind, expectedAttempts) => {
+  const f = fixture(true), original = f.transport.transport.exec; let attempts = 0;
+  f.transport.transport.exec = async (machine, argv, options) => {
+    if (JSON.parse(options.stdin.toString()).action === "add-machine") {
+      attempts++;
+      return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: false, machineId: machine.machineId,
+        reason: "intercom-setup-pending", cause: { code: kind, message: "private route details" } }));
+    }
+    return original(machine, argv, options);
+  };
+  const result = await provisionIntercomEnrollment(f.request, await ports(f));
+  expect(result).toMatchObject({ code: 3, reason: "intercom-enrollment-pending", value: { pending: [{ pairId: "pair-1", causeCode: kind }] } });
+  expect(attempts).toBe(expectedAttempts);
+  expect(f.calls.some(call => call.input.action === "verify-transport")).toBe(false);
+  expect(JSON.stringify(result)).not.toContain("private route details");
 }, 5000);
 
 it("prints a bounded cause when the final enrollment receipt fails", async () => {

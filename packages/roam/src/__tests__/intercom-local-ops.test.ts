@@ -239,6 +239,21 @@ it("adds only the pair-owned hc alias with argv and refuses an alias bound to an
   expect(f.calls.filter(argv => argv[2] === "add")).toHaveLength(1);
 }, 5000);
 
+it("preserves a native unreachable code when pair route addition fails", async () => {
+  const f = fixture(), mod = await api(); await registerFixture(f);
+  await mod.runLocalPairOperation({ action: "ensure-key", pair: f.pair, approval: f.proof }, f.ports);
+  await mod.runLocalPairOperation({ action: "write-route", pair: f.pair, approval: f.proof }, f.ports);
+  let attempts = 0;
+  const source = { ...f.ports, async run(argv: readonly string[]) {
+    if (argv[1] === "machine" && argv[2] === "ls") return { code: 0, stdout: JSON.stringify({ machines: [] }) };
+    if (argv[1] === "machine" && argv[2] === "add") { attempts++; return { code: 1, stdout: "", errorKind: "unreachable" }; }
+    throw new Error("unexpected command");
+  } };
+  await expect(mod.runLocalPairOperation({ action: "add-machine", pair: f.pair, approval: f.proof, targetCoreId: "core-target" }, source))
+    .rejects.toMatchObject({ message: "intercom-route-unavailable", code: "unreachable" });
+  expect(attempts).toBe(1);
+}, 5000);
+
 it("scans the port in the approved pair rather than the machine recipe", async () => {
   const f = fixture(), mod = await api();
   const target = { ...f.ports, machineId: B, root: f.targetRoot, sshUser: "fixture", keyscan: "/fixture/ssh-keyscan",

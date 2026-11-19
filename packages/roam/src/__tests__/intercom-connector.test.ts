@@ -56,6 +56,17 @@ it("the production runner passes literal argv to a foreground fixture command", 
   } finally { rmSync(root, { force: true, recursive: true }); }
 }, 5000);
 
+it.each([
+  ["unreachable", "unreachable"], ["invalid_params", "invalid_params"], ["private-shaped-code", undefined],
+])("the foreground runner retains only an allowlisted native error kind: %s", async (kind, expected) => {
+  const { runForeground } = await import("../intercom-local-ops");
+  const script = `process.stderr.write(JSON.stringify({error:{kind:process.argv[1],message:'private route details'}}));process.exitCode=1`;
+  const result = await runForeground([process.execPath, "-e", script, kind], { timeoutMs: 2000, maxBytes: 1024 });
+  expect(result).toEqual({ code: 1, stdout: "", ...(expected ? { errorKind: expected } : {}) });
+  expect(JSON.stringify(result)).not.toContain("private route details");
+  expect(JSON.stringify(result)).not.toContain("private-shaped-code");
+}, 5000);
+
 it("leaves unscoped host and connect recipes pending without launching either command", async () => {
   const mod = await api(); expect(mod.runConnectorStep).toBeTypeOf("function"); const f = fixture();
   expect(await mod.runConnectorStep(recipe, "host", { run: f.run, consent: false })).toEqual({ status: "intercom-peer-consent-required" });

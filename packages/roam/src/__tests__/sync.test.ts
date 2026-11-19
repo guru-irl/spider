@@ -195,7 +195,8 @@ it("an unsafe unrelated box registration is skipped and reported without blockin
   f.replyHook((_peer, operation, bytes) => { if (operation.kind === "stores") problems = JSON.parse(bytes.toString()).value.problems; return bytes; });
   remote.global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('unsafe',?,?,1,1)").run(remote.global.root, link);
   expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
-  expect(f.global.db.prepare("SELECT session_id FROM session_homes").all()).toEqual([{ session_id: "session-a" }]);
+  expect(f.global.db.prepare("SELECT session_id FROM session_homes").all()).toEqual([]);
+  expect(f.stores.openStore(remote.worktree.storeKey).db.prepare("SELECT id FROM sessions").all()).toEqual([{ id: "session-a" }]);
   expect(f.calls.some(call => call.operation.kind === "export")).toBe(true);
   expect(problems).toContainEqual({ entry: link, reason: "Unsafe or unreadable store skipped" });
 }, 5000);
@@ -486,4 +487,53 @@ it("production retire-only delivery reaches the surviving supervisor before any 
     expect(events).toEqual(["stop-sessions"]);
     expect(f.calls.map(row => row.operation.kind)).toEqual(["supervisor-retire"]);
   } finally { await lifecycle.stop(); }
+}, 5000);
+
+it.each(["missing", "corrupt"])("%s mapped scopes defer first homes and writes without stopping other stores", async mode => {
+  const f = fixture([BOX, BOX2]); f.seed(BOX, "hidden-session"); f.seed(BOX2, "healthy-session");
+  const key = f.remotes.get(BOX)!.worktree.storeKey, sync = service(f);
+  f.unavailable.add(BOX2);
+  expect((await sync.sync()).some(row => row.code !== 0)).toBe(true);
+  expect(f.global.db.prepare("SELECT * FROM session_homes").all()).toEqual([]);
+  const existing = f.stores.openStore(key).db;
+  expect(existing.prepare("SELECT name FROM sessions WHERE id='hidden-session'").get()).toEqual({ name: "portable" });
+  f.unavailable.delete(BOX2); f.calls.length = 0;
+  const path = join(f.global.root, "unavailable-checkout");
+  if (mode === "corrupt") { mkdirSync(join(path, ".spider"), { recursive: true }); writeFileSync(join(path, ".spider", "project.db"), "not sqlite"); }
+  f.remotes.get(BOX2)!.global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','workspace-0',?)").run(path);
+  const result = await sync.sync();
+  expect(result.every(row => row.code === 0)).toBe(true);
+  expect(f.global.db.prepare("SELECT session_id,machine_id FROM session_homes ORDER BY session_id").all()).toEqual([{ session_id: "healthy-session", machine_id: BOX2 }]);
+  expect(f.calls.filter(call => call.machine === BOX2 && call.operation.kind === "inventory").map(call => call.operation.args.storeKey)).toContain("global");
+  expect(peerState.loadPeerState(f.global.db, BOX2, 4096).gathered?.[key]).toBe(false);
+  expect(f.calls.filter(call => call.operation.args.storeKey === key)).toEqual([]);
+  expect(existing.prepare("SELECT name FROM sessions WHERE id='hidden-session'").get()).toEqual({ name: "portable" });
+}, 5000);
+it("one corrupt registered store leaves global and healthy project sync usable", async () => {
+  const f = fixture(); f.seed(); const remote = f.remotes.get(BOX)!;
+  const file = join(remote.global.root, "corrupt.db"); writeFileSync(file, "not sqlite");
+  remote.global.db.prepare("INSERT INTO global_memory(uuid,category,content,created_at) VALUES ('global-readable','insight','global portable',1)").run();
+  remote.global.db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('broken',?,?,1,1)").run(remote.global.root, file);
+  expect((await service(f).sync()).every(row => row.code === 0)).toBe(true);
+  expect(f.stores.openStore(remote.worktree.storeKey).db.prepare("SELECT name FROM sessions WHERE id='session-a'").get()).toEqual({ name: "portable" });
+  expect(f.calls.filter(call => call.operation.kind === "inventory").map(call => call.operation.args.storeKey)).toContain("global");
+  expect(f.global.db.prepare("SELECT content FROM global_memory WHERE uuid='global-readable'").get()).toEqual({ content: "global portable" });
+}, 5000);
+
+it("a later peer sync reuses discovery while another peer is transferring", async () => {
+  const f = fixture([BOX, BOX2]), sync = service(f);
+  let enter!: () => void, release!: () => void, secondEnter!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const paused = new Promise<void>(resolve => { release = resolve; });
+  const secondEntered = new Promise<void>(resolve => { secondEnter = resolve; });
+  let holding = false, held = false, overlapped = false;
+  f.hook(async (peer, op) => {
+    if (peer.machineId === BOX && op.kind === "stores" && holding) overlapped = true;
+    if (peer.machineId === BOX && op.kind === "inventory" && !held) { held = true; holding = true; enter(); await paused; holding = false; }
+    if (peer.machineId === BOX2 && op.kind === "inventory") secondEnter();
+  });
+  const first = sync.sync(BOX); await entered;
+  const second = sync.sync(BOX2); await secondEntered;
+  release(); await Promise.all([first, second]);
+  expect(overlapped).toBe(false);
 }, 5000);

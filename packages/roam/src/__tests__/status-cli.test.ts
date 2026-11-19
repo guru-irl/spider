@@ -167,7 +167,7 @@ it("does not hide an unverifiable replica from status or doctor", async () => {
     const before = snapshot(root), out: string[] = [], err: string[] = [];
     expect(await main(["roam", "status", "--json"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
     expect(JSON.parse(out.join(""))).toMatchObject({ cached: true, complete: false,
-      diagnostics: [expect.objectContaining({ severity: "block", reason: expect.stringMatching(/cannot inspect.*store.*WAL index is missing.*opening or closing/i) })] });
+      diagnostics: [expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/cannot inspect.*store.*WAL index is missing.*opening or closing/i) })] });
     expect(snapshot(root)).toEqual(before);
     out.length = 0;
     expect(await main(["roam", "doctor"], { out: text => out.push(text), err: text => err.push(text) })).toBe(1);
@@ -196,15 +196,15 @@ it("does not report a complete inventory when a mapped store is unavailable", as
   } finally { global.close(); }
 }, 5000);
 
-it("status reports a missing mapped store as a warning without an incomplete inventory", async () => {
+it("status reports a missing mapped store as an ungathered warning", async () => {
   const root = fixture(), global = openDb(join(root, "spider.db")); configure(root);
   try {
     migrate(global, "global", { machineId: HUB, globalRoot: root });
     global.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','fixture-workspace',?)").run(join(root, "missing-checkout"));
     const before = snapshot(root), out: string[] = [], err: string[] = [];
     expect(await main(["roam", "status", "--json"], { out: text => out.push(text), err: text => err.push(text) })).toBe(0);
-    expect(JSON.parse(out.join(""))).toMatchObject({ cached: true, available: true, complete: true, diagnostics: [
-      expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/^store-missing:worktree:enoent:/), repairCommand: "spider roam stores prune" }),
+    expect(JSON.parse(out.join(""))).toMatchObject({ cached: true, available: true, complete: false, diagnostics: [
+      expect.objectContaining({ severity: "warning", reason: expect.stringMatching(/^store-missing:worktree:enoent:/), repairCommand: expect.stringContaining("Restore or mount") }),
     ] });
     expect(snapshot(root)).toEqual(before); expect(err).toEqual([]);
   } finally { global.close(); }

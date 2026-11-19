@@ -1,5 +1,8 @@
+import { network } from "./sync-fixture";
+import { createSync } from "../sync";
+import * as staging from "../staging";
 import { migrate, openDb } from "@spider/db-core";
-import { localEntries } from "@spider/db-core/roam/local-state";
+import { localEntries, writeLocal } from "@spider/db-core/roam/local-state";
 import { HerdrError } from "@spider/herdr/client/parse";
 import { disabledIntercom } from "../contracts";
 import * as remoteObservations from "../remote-observations";
@@ -8,7 +11,7 @@ import * as launchd from "../launchd";
 import { peerEnabledDiagnostics } from "../peer-enabled";
 import { openJournal } from "../journal";
 import { afterEach, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { main } from "../cli";
 import { startHubControl, type HubControlReply, type HubControlRequest } from "../control-socket";
@@ -60,6 +63,8 @@ it("doctor warns with missing store paths and prune removes only missing registr
   const f = await fixture(HUB, undefined, false), db = openDb(join(f.root, "spider.db"));
   migrate(db, "global", { machineId: HUB, globalRoot: f.root });
   const gone = join(f.root, "gone", ".spider", "project.db"), common = join(f.root, "gone", ".git");
+  mkdirSync(join(f.root, "gone", ".spider"), { recursive: true }); mkdirSync(join(common, "spider"), { recursive: true });
+  mkdirSync(join(f.root, "missing-common", "spider"), { recursive: true });
   db.prepare("INSERT INTO projects(project_key,real_path,db_path,git_common_dir,created_at,last_seen_at) VALUES ('gone',?,?,?,1,1)")
     .run(join(f.root, "gone"), gone, common);
   db.prepare("INSERT INTO projects(project_key,real_path,db_path,git_common_dir,created_at,last_seen_at) VALUES ('live',?,?,?,1,1)").run(f.root, db.raw.name, join(f.root, "missing-common"));
@@ -68,12 +73,16 @@ it("doctor warns with missing store paths and prune removes only missing registr
   const report = await localDiagnostics.runLocalDoctor({ root: f.root });
   const missing = report.diagnostics.filter(row => row.reason.startsWith("store-missing:"));
   expect(missing).toEqual(expect.arrayContaining([
-    expect.objectContaining({ severity: "warning", reason: expect.stringContaining(gone), repairCommand: "spider roam stores prune" }),
+    expect.objectContaining({ severity: "warning", reason: expect.stringContaining(gone), repairCommand: expect.stringContaining("Restore or mount") }),
     expect.objectContaining({ severity: "warning", reason: expect.stringContaining(join(common, "spider", "repo.db")) }),
     expect.objectContaining({ severity: "warning", reason: expect.stringContaining(join(planned, ".spider", "project.db")) }),
   ]));
-  expect(report.diagnostics.filter(row => row.severity === "block" && /Cannot inspect.*store/.test(row.reason))).toEqual([]);
+  expect(report.diagnostics.filter(row => row.severity === "block" && /cannot inspect/i.test(row.reason))).toEqual([]);
   expect(await f.invoke(["roam", "stores", "prune", "--json"])).toBe(0);
+  expect(db.prepare("SELECT project_key FROM projects ORDER BY project_key").all()).toEqual([{ project_key: "gone" }, { project_key: "live" }]);
+  expect(JSON.parse(f.out.join("")).value).toMatchObject({ candidates: [expect.objectContaining({ path: gone }), expect.objectContaining({ key: "repository:live", path: join(f.root, "missing-common", "spider", "repo.db") })], removed: [] });
+  f.out.length = 0;
+  expect(await f.invoke(["roam", "stores", "prune", "--confirm", "--json"])).toBe(0);
   expect(db.prepare("SELECT project_key FROM projects ORDER BY project_key").all()).toEqual([{ project_key: "live" }]);
   expect(db.prepare("SELECT git_common_dir FROM projects WHERE project_key='live'").get()).toEqual({ git_common_dir: null });
   expect(db.prepare("SELECT path FROM roam_workspace_maps").all()).toEqual([{ path: planned }]);
@@ -84,7 +93,7 @@ it("doctor warns with missing store paths and prune removes only missing registr
   db.close();
 }, 5000);
 
-it.each(["missing", "corrupt", "transport", "process", "timeout", "invalid-doctor"] as const)("enable and doctor distinguish a %s store peer from an unreachable box", async mode => {
+it.each(["missing", "corrupt", "transport", "process", "timeout", "invalid-doctor", "missing-hc", "spawn-error", "spawn_failed", "core-unavailable"] as const)("enable and doctor distinguish a %s store peer from an unreachable box", async mode => {
   const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers[0].alias = "box-1.invalid";
   writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
@@ -100,7 +109,8 @@ it.each(["missing", "corrupt", "transport", "process", "timeout", "invalid-docto
     root: join(remote, "roam", "staging"), journal: openJournal(join(remote, "roam", "journal.db")), openStore() { return { db }; } };
   vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
   vi.spyOn(transportModule, "createTransport").mockReturnValue({ async resolve(peer: unknown) {
-    if (mode === "transport") throw new HerdrError("machine-not-found", "unreachable"); return peer;
+    if (mode === "transport") throw new HerdrError("machine-not-found", "unreachable");
+    if (["missing-hc", "spawn-error", "spawn_failed", "core-unavailable"].includes(mode)) throw new HerdrError(mode, "private stderr"); return peer;
   }, async exec(_peer: unknown, argv: string[]) {
     if (mode === "process") throw new HerdrError("cli-exit", "private stderr", { exitCode: 1 });
     if (mode === "timeout") throw new HerdrError("cli-timeout", "private stderr");
@@ -113,7 +123,11 @@ it.each(["missing", "corrupt", "transport", "process", "timeout", "invalid-docto
   if (mode === "transport") expect(enabled).toContain("box-unreachable:box-1.invalid");
   else {
     expect(enabled).not.toContain("box-unreachable"); expect(enabled).not.toContain("spider roam forget");
-    if (mode === "corrupt") expect(enabled).toContain("preflight-failed:box-1.invalid:store-inventory-incomplete");
+    if (mode === "corrupt") {
+      expect(enabled).not.toContain("store-inventory-incomplete");
+      expect(JSON.parse(enabled).value.information).toContainEqual({ machine: "box-1.invalid", reason: `corrupt:repo: ${join(common, "spider", "repo.db")}` });
+    }
+    if (["missing-hc", "spawn-error", "spawn_failed", "core-unavailable"].includes(mode)) expect(enabled).toContain("preflight-failed:box-1.invalid:local-herdr-unavailable");
     if (mode === "process") expect(enabled).toContain("preflight-failed:box-1.invalid:peer-command-failed");
     if (mode === "timeout") expect(enabled).toContain("preflight-failed:box-1.invalid:peer-command-timeout");
     if (mode === "invalid-doctor") expect(enabled).toContain("preflight-failed:box-1.invalid:peer-response-invalid");
@@ -124,6 +138,7 @@ it.each(["missing", "corrupt", "transport", "process", "timeout", "invalid-docto
   if (mode === "transport") expect(doctor).toContain("box-unreachable:box-1.invalid");
   else {
     expect(doctor).not.toContain("box-unreachable"); expect(doctor).not.toContain("spider roam forget");
+    if (["missing-hc", "spawn-error", "spawn_failed", "core-unavailable"].includes(mode)) expect(doctor).toContain("preflight-failed:box-1.invalid:local-herdr-unavailable");
     if (mode === "process") expect(doctor).toContain("preflight-failed:box-1.invalid:peer-command-failed");
     if (mode === "timeout") expect(doctor).toContain("preflight-failed:box-1.invalid:peer-command-timeout");
     expect(doctor).not.toContain("private stderr");
@@ -657,3 +672,70 @@ it("remote doctor retains non-stopping hosting warnings when scheduling is disab
   expect(f.out.join("")).not.toContain("disabled hosting prerequisite");
   expect(f.out.join("")).not.toContain("disabled informational diagnostic");
 });
+
+it("enable warns for an absent store and sync enables capture when it returns", async () => {
+  const f = await fixture(HUB, { code: 0, reason: "ready", value: { enabled: true } });
+  const configFile = join(f.root, "roam/config.json"), raw = JSON.parse(readFileSync(configFile, "utf8"));
+  raw.enabled = false; raw.peers[0].alias = "box-1.invalid"; writeFileSync(configFile, JSON.stringify(raw), { mode: 0o600 });
+  const local = openDb(join(f.root, "spider.db")); migrate(local, "global", { machineId: HUB, globalRoot: f.root }); local.close();
+  const net = network(), remote = net.remotes.get(BOX)!;
+  const path = join(remote.global.root, "returning"), file = join(path, ".spider", "repo.db");
+  remote.global.db.prepare("INSERT INTO roam_repo_maps(repo_key,path) VALUES ('returning',?)").run(path);
+  writeLocal(remote.global.db, "mapping-redirect", "repo:returning", file);
+  vi.spyOn(staging, "defaultStagingRoot").mockReturnValue(net.root);
+  const launchctl = join(f.root, "launchctl"); writeFileSync(launchctl, "fixture", { mode: 0o700 }); vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
+  vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
+  vi.spyOn(launchd, "installHubService").mockResolvedValue(undefined);
+  vi.spyOn(remoteObservations, "remoteDoctor").mockResolvedValue({ enabled: false, diagnostics: [], consumers: [] });
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({ ...net.transport, async resolve() { return net.transport.resolve(net.peers[0]); }, async exec(peer, argv, options) {
+    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: BOX }));
+    return net.transport.exec(peer, argv, options);
+  } });
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: unknown) { return peer; } }, async executeProvision() { return { enabled: true }; } } as never);
+  try {
+    expect(localRuntime.readLocalIdentity(f.root).peers).toHaveLength(1);
+    const discovery = await agent.handleAgentOperation({ id: "before-enable", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, remote.ports);
+    expect(discovery).toMatchObject({ code: 0, value: { ungathered: [expect.objectContaining({ key: "repo:returning", code: "missing" })] } });
+    expect(await f.invoke(["roam", "enable", "--json"])).toBe(0);
+    expect(f.out.join("")).toContain("repo:returning"); expect(f.out.join("")).toContain(file);
+    expect(f.out.join("")).toContain("missing");
+    mkdirSync(join(path, ".spider"), { recursive: true });
+    const returned = openDb(file); migrate(returned, "repo", { machineId: BOX, globalRoot: remote.global.root });
+    returned.prepare("INSERT INTO memory(uuid,category,content,created_at) VALUES ('returning-memory','insight','portable',1)").run();
+    expect(returned.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 0 });
+    returned.close();
+    const sync = createSync({ config: net.config, globalDb: net.global.db, transport: net.transport, journal: net.journal, clock: net.clock, stores: net.stores });
+    expect((await sync.sync()).every(row => row.code === 0)).toBe(true);
+    const captured = openDb(file);
+    try { expect(captured.prepare("SELECT capture_enabled FROM roam_meta").get()).toEqual({ capture_enabled: 1 }); } finally { captured.close(); }
+    expect(net.stores.openStore("repo:returning").db.prepare("SELECT content FROM memory WHERE uuid='returning-memory'").get()).toEqual({ content: "portable" });
+  } finally { net.close(); }
+}, 5000);
+
+it("disabled doctor reports an ungathered corrupt store as a warning with its path", async () => {
+  const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json"), config = JSON.parse(readFileSync(file, "utf8"));
+  config.enabled = false; config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: HUB, globalRoot: f.root });
+  const path = join(f.root, "broken"), store = join(path, ".spider", "project.db");
+  mkdirSync(join(path, ".spider"), { recursive: true }); writeFileSync(store, "not sqlite");
+  db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES ('fixture-repo','broken',?)").run(path); db.close();
+  expect(await f.invoke(["roam", "doctor", "--json"])).toBe(0);
+  expect(JSON.parse(f.out.join("")).value.diagnostics).toContainEqual(expect.objectContaining({ severity: "warning", reason: expect.stringContaining(store) }));
+  expect(JSON.parse(f.out.join("")).value.diagnostics.filter((row: { severity: string }) => row.severity === "block")).toEqual([]);
+}, 5000);
+it("prune reports a bounded failed path and check instead of discarding it", async () => {
+  const f = await fixture(HUB, undefined, false), db = openDb(join(f.root, "spider.db"));
+  migrate(db, "global", { machineId: HUB, globalRoot: f.root });
+  const path = join(f.root, "denied"), file = join(path, "project.db"); mkdirSync(path);
+  db.prepare("INSERT INTO projects(project_key,real_path,db_path,created_at,last_seen_at) VALUES ('denied',?,?,1,1)").run(path, file); db.close();
+  chmodSync(path, 0);
+  try {
+    expect(await f.invoke(["roam", "stores", "prune", "--confirm"])).toBe(1);
+    expect(f.out.join("") + f.err.join("")).toContain(file);
+    expect(f.out.join("") + f.err.join("")).toContain("eacces");
+    f.out.length = 0; f.err.length = 0;
+    expect(await f.invoke(["roam", "stores", "prune", "--confirm", "--json"])).toBe(1);
+    expect(JSON.parse(f.out.join("")).value).toEqual({ failure: { check: "eacces", path: file } });
+  } finally { chmodSync(path, 0o700); }
+}, 5000);

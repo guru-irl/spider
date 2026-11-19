@@ -63,38 +63,69 @@ refuses if the broker cannot start or its health check fails. Reload open Pi
 sessions with `/reload` to update `/move`. A command left over from an enabled
 session still refuses after roaming is disabled.
 
-Store inventory treats an absent registered or mapped database as empty when
-its path returns `ENOENT`. Doctor reports `store-missing:<scope>:enoent` with the
-path as a warning. Missing-store warnings alone do not make cached status
-incomplete. Inventory omits that store, so discovery does not pass its key
-to capture, sync, or move preflight. Permission failures, corrupt databases, and
-unexpected file types remain blocks. Their diagnostics include the path and a
-bounded filesystem or SQLite code.
+Store inventory never treats an unreadable store as deleted. The agent's
+`stores` reply includes readable keys and an `ungathered` list. Each ungathered
+entry names its path, scope, known store key, and a code such as `missing`,
+`unreadable`, `corrupt`, or `unsafe`. A registered store whose identity cannot be
+read has a null key. A mapped key takes precedence when both entries name the
+same path. Discovery remains successful for the other stores, including global.
+
+Sync gathers every enrolled box's inventory before transferring store batches.
+An ungathered mapped key cannot receive imports, exports, or an initial session
+home on any box. Other keys keep syncing. When a registered project store has no
+readable identity, initial worktree homes wait conservatively until its identity
+can be established. Existing homes do not become unassigned. Placement retains
+unconfirmed session slots while any registered or mapped store is ungathered.
+
+Enable succeeds with warnings that name each ungathered scope and path. Doctor
+reports `store-missing:<scope>:enoent` or
+`store-uninspectable:<scope>:<check>` as a warning with the path. Cached status
+remains incomplete until every store is gathered. Restore or mount a missing
+path, or repair its permissions or database. WAL diagnostics retain their
+writer-open and recovery guidance. One broken project store does not block the
+box's other stores. An unreadable global catalog still prevents discovery.
 
 A mapped worktree can exist before capture creates its project database.
 `mapWorkspace` accepts this state when no replica needs merging. Inventory does
-not create a database to inspect it. The mapping remains available for capture.
+not create a database to inspect it. Planned stores remain ungathered until
+created. Pruning keeps an existing empty mapped directory, so its warning does
+not mean that prune can remove it. Sync checks capture on readable memory stores
+and enables it when a previously unavailable store returns. Worktree capture
+remains session-scoped and uses the existing admission and seeding rules.
 
-Run `spider roam stores prune` on the affected machine to remove missing local
-registrations. The command works while roaming is disabled. It deletes project
-registrations whose database paths are absent and clears missing repository
-references on projects whose own database still exists. It removes repository
-and worktree mappings only when their directories are absent, clearing their
-mapping redirects too. Existing empty mapped directories remain registered.
-Permission errors abort the transaction. Pruning never deletes store files,
+Run `spider roam stores prune` on the affected machine to inspect candidates.
+The default is a dry run. Add `--confirm` only after confirming deletion. The
+command works while roaming is disabled. A candidate must have a missing leaf
+and an existing, readable, canonical parent directory. Missing parents and
+symlinked paths are `unavailable`, with mount-or-restore advice, not candidates.
+Permission errors abort the transaction and report a bounded path and check.
+
+Confirmed pruning deletes missing project registrations, clears missing
+repository references on retained projects, and removes missing mapping
+directories with their redirects. A workspace needed by a live session home or
+an unfinished home action stays registered. Pruning never deletes store files,
 replica data, or session locations. The registry edits and a `store-prune` audit
-entry commit in one global-store transaction. Repeating the command after a
-successful prune changes nothing and adds no audit entry.
+entry commit in one transaction. Repeating a completed prune changes nothing.
 
-Enable and remote doctor distinguish a failed connection or process startup
-from an answered agent refusal. Only a known connection or startup failure
-returns `box-unreachable:<box>` with the existing forget advice. A timeout or
-generic process exit does not prove that the box is unreachable. These return
-`preflight-failed:<box>:peer-command-timeout` or `peer-command-failed`, with
-doctor as the repair. An incomplete inventory returns
-`preflight-failed:<box>:store-inventory-incomplete`. Malformed responses return
-`preflight-failed:<box>:peer-response-invalid`. These also direct you to doctor,
-not forget. Agent exception text is not copied into these reason codes.
+The audit is local, not replicated. In the affected machine's global database,
+`roam_cursors` rows with `peer_machine = ''` and a `peer_stream` beginning with
+`spider-local:store-prune:` retain the full original rows and redirect targets.
+These include project paths, repository fingerprints and commands, and workspace
+snapshots. The audit supports manual restoration after a mistaken prune.
+
+Enable and remote doctor distinguish a proven remote transport failure from a
+local transport failure or an answered agent refusal. Known remote connection
+failures return `box-unreachable:<box>` with the existing forget advice. Local
+`missing-hc`, `spawn-error`, `spawn_failed`, and `core-unavailable` failures return
+`preflight-failed:<box>:local-herdr-unavailable`. Start Herdr or check `hc` on this
+machine, then run `spider roam doctor`. Never forget a box to repair local Herdr.
+
+A timeout or generic process exit does not prove that the box is unreachable.
+These return `preflight-failed:<box>:peer-command-timeout` or
+`peer-command-failed`, with doctor as the repair. A legacy incomplete-inventory
+refusal retains `store-inventory-incomplete`. Malformed replies return
+`peer-response-invalid`. Legacy agent refusal text maps to `agent-operation-failed`
+or `capture-unsafe`. Arbitrary exception text is not copied into these codes.
 
 Sync retains allowlisted agent codes in its per-peer outcomes. Unknown agent
 refusals use `peer-<operation>-refused` rather than free text that the public

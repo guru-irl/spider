@@ -1,8 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import { scratchDbPath } from "@spider/db-core/testutil";
 import { installHubService, removeHubService } from "../launchd";
+import * as launchd from "../launchd";
 
 const failures = vi.hoisted(() => ({ sync: false }));
 vi.mock("node:fs", async importOriginal => {
@@ -44,6 +46,46 @@ function plist(file: string) {
     xml,
   };
 }
+
+it("different roots install independent labels and remove only their own plist", async () => {
+  const f = fixture(), secondRoot = join(f.root, "other-global");
+  mkdirSync(f.globalRoot); mkdirSync(secondRoot);
+  await installHubService(f, f.ports);
+  await expect(installHubService({ ...f, globalRoot: secondRoot }, f.ports)).resolves.toBeUndefined();
+  const name = (root: string) => `com.spider.roam.hub.${createHash("sha256").update(realpathSync(root)).digest("hex").slice(0, 16)}`;
+  const first = name(f.globalRoot), second = name(secondRoot);
+  expect(first).not.toBe(second);
+  expect(readdirSync(f.plistDir).sort()).toEqual([`${first}.plist`, `${second}.plist`].sort());
+  expect(plist(join(f.plistDir, `${first}.plist`)).xml).toContain(`<key>Label</key><string>${first}</string>`);
+  expect(plist(join(f.plistDir, `${second}.plist`)).xml).toContain(`<key>Label</key><string>${second}</string>`);
+  await removeHubService({ globalRoot: f.globalRoot }, f.ports);
+  expect(existsSync(join(f.plistDir, `${first}.plist`))).toBe(false);
+  expect(existsSync(join(f.plistDir, `${second}.plist`))).toBe(true);
+  await removeHubService({ globalRoot: secondRoot }, f.ports);
+  expect(readdirSync(f.plistDir)).toEqual([]);
+}, 5000);
+
+it("the default root keeps the production label beside a non-default root", async () => {
+  const f = fixture(); vi.stubEnv("HOME", f.root);
+  const defaultRoot = join(f.root, ".pi", "agent", "spider");
+  await installHubService({ ...f, globalRoot: defaultRoot }, f.ports);
+  await expect(installHubService(f, f.ports)).resolves.toBeUndefined();
+  const file = join(f.plistDir, "com.spider.roam.hub.plist");
+  expect(plist(file).xml).toContain("<key>Label</key><string>com.spider.roam.hub</string>");
+  expect(readdirSync(f.plistDir)).toHaveLength(2);
+  await removeHubService({ globalRoot: f.globalRoot }, f.ports);
+  expect(existsSync(file)).toBe(true);
+  await removeHubService({ globalRoot: defaultRoot }, f.ports);
+  expect(existsSync(file)).toBe(false);
+}, 5000);
+
+it("canonical root aliases select the same service label", () => {
+  const f = fixture(); mkdirSync(f.globalRoot);
+  const alias = join(f.root, "alias"); symlinkSync(f.globalRoot, alias);
+  const label = (launchd as { hubServiceLabel?: (root: string) => string }).hubServiceLabel;
+  expect(typeof label).toBe("function");
+  expect(label!(alias)).toBe(label!(f.globalRoot));
+}, 5000);
 
 it("enable writes resolved absolute executable paths", async () => {
   const f = fixture();

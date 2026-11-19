@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { authorizedPairLine } from "./intercom-pair-files";
 import { posix } from "node:path";
-import { constants as osConstants } from "node:os";
+import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
 import type { Outcome, Peer } from "./contracts";
 import { isMachineId } from "./machine-id";
 import type { IntercomEnrollmentPair, IntercomEnrollmentPlan, IntercomEnrollmentPorts, IntercomEnrollmentPreview, IntercomEnrollmentRequest, IntercomMachinePin, IntercomRevocationCleanupReason, IntercomRevocationPorts, IntercomSshHostKey } from "./provision-contracts";
@@ -10,29 +10,8 @@ export const INTERCOM_CONSENT = "Enrolling this pair lets the initiating box exe
 
 export interface EnrollmentResult { pairs: readonly string[]; pending?: readonly { pairId: string; reason: string; causeCode?: string }[] }
 
-export const ENROLLMENT_NODE_CAUSE_CODES = [
-  "ERR_INVALID_ARG_TYPE", "ERR_INVALID_ARG_VALUE", "ERR_OUT_OF_RANGE", "ERR_INVALID_STATE",
-  "ERR_STREAM_DESTROYED", "ERR_STREAM_PREMATURE_CLOSE", "ERR_SOCKET_CLOSED", "ERR_IPC_CHANNEL_CLOSED",
-  "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "ERR_BUFFER_TOO_LARGE", "ERR_FS_FILE_TOO_LARGE",
-] as const;
-export const ENROLLMENT_SQLITE_CAUSE_CODES = [
-  "SQLITE_ERROR", "SQLITE_INTERNAL", "SQLITE_PERM", "SQLITE_ABORT", "SQLITE_BUSY", "SQLITE_LOCKED",
-  "SQLITE_NOMEM", "SQLITE_READONLY", "SQLITE_INTERRUPT", "SQLITE_IOERR", "SQLITE_CORRUPT", "SQLITE_FULL",
-  "SQLITE_CANTOPEN", "SQLITE_PROTOCOL", "SQLITE_SCHEMA", "SQLITE_TOOBIG", "SQLITE_CONSTRAINT", "SQLITE_MISMATCH",
-  "SQLITE_MISUSE", "SQLITE_AUTH", "SQLITE_RANGE", "SQLITE_NOTADB", "SQLITE_BUSY_RECOVERY", "SQLITE_BUSY_SNAPSHOT",
-  "SQLITE_READONLY_RECOVERY", "SQLITE_READONLY_CANTLOCK", "SQLITE_READONLY_DBMOVED",
-  "SQLITE_CONSTRAINT_CHECK", "SQLITE_CONSTRAINT_FOREIGNKEY", "SQLITE_CONSTRAINT_NOTNULL",
-  "SQLITE_CONSTRAINT_PRIMARYKEY", "SQLITE_CONSTRAINT_UNIQUE", "SQLITE_CONSTRAINT_TRIGGER",
-] as const;
-export const SPIDER_ENROLLMENT_CAUSE_CODES = [
-  "diagnostic-snapshot-changing", "diagnostic-snapshot-wal-invalid", "diagnostic-snapshot-wal-unpublished",
-  "diagnostic-snapshot-wal-index-missing", "diagnostic-snapshot-unsafe",
-] as const;
-const enrollmentCauseCodes = new Set<string>([
-  ...Object.keys(osConstants.errno), ...ENROLLMENT_NODE_CAUSE_CODES, ...ENROLLMENT_SQLITE_CAUSE_CODES, ...SPIDER_ENROLLMENT_CAUSE_CODES,
-]);
 export function enrollmentCauseCode(error: unknown): string {
-  return error && typeof error === "object" && "code" in error && typeof error.code === "string" && enrollmentCauseCodes.has(error.code) ? error.code : "unknown";
+  return error && typeof error === "object" && "code" in error ? safeCauseCode(error.code) ?? "unknown" : "unknown";
 }
 
 function outcome(operationId: string, code: 0 | 1 | 2 | 3, reason: string, value: EnrollmentResult | null = null): Outcome<EnrollmentResult> {
@@ -161,12 +140,15 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
       const keys = new Set<string>(), completed: string[] = [], pending: Array<NonNullable<EnrollmentResult["pending"]>[number]> = [];
       const enroll = async (plan: IntercomEnrollmentPlan): Promise<string | { reason: string; causeCode: string } | null> => {
         if (cancelled.has(plan.pairId)) return "intercom-enrollment-cancelled";
+        let step: CauseStep = "enrollment";
         try {
           const expectedFenceId = (fences as Record<string, string | null>)[plan.pairId];
           if (expectedFenceId === "unavailable") return "intercom-fence-unavailable";
+          step = "read-fences";
           const currentFences = await ports.readPairFences([plan]), currentFence = currentFences[plan.pairId];
           const approvedBefore = ports.journal.read(operationId).some(row => row.action === "intercom-setup" && row.result.pairId === plan.pairId && row.result.stage === "fence-approved");
           if (currentFence !== expectedFenceId && !(currentFence === null && approvedBefore)) return "fresh-peer-consent-required";
+          step = "register-pair";
           await ports.registerPair(plan); record(plan.pairId, "registered");
           const pins = new Map<string, IntercomMachinePin>();
           for (const machine of [plan.source, plan.target]) {
@@ -180,6 +162,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
             if (!prior) ports.journal.record(operationId, "intercom-core", { machineId: machine.machineId, coreId: observed.coreId });
             pins.set(machine.machineId, { ...observed });
           }
+          step = "check-connector";
           for (const machine of [plan.source, plan.target]) {
             const status = await ports.checkConnector(machine, pins.get(machine.machineId)!);
             if (status === "offline") return outage(machine.machineId);
@@ -188,6 +171,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
             if (status !== "ready") return "intercom-connector-check-invalid";
           }
           const pairPins = { source: pins.get(plan.source.machineId)!, target: pins.get(plan.target.machineId)! };
+          step = "inspect-ssh";
           const ssh = await ports.inspectSshHost(plan, pairPins);
           if (!ssh || ssh.targetMachineId !== plan.target.machineId) return "machine-mismatch";
           if (typeof ssh.sshUser !== "string" || !/^[A-Za-z_][A-Za-z0-9._-]{0,62}\$?$/.test(ssh.sshUser) || !Array.isArray(ssh.hostKeys) ||
@@ -205,12 +189,14 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           if (!priorSsh) ports.journal.record(operationId, "intercom-ssh-host", { pairId: plan.pairId, sshUser: ssh.sshUser,
             hostKey: { type: hostKey.type, base64: hostKey.base64 }, hostKeyAlias });
           const pair: IntercomEnrollmentPair = { ...plan, sshUser: ssh.sshUser, hostKey: { ...hostKey }, hostKeyAlias };
-          await ports.bindPair(pair, pairPins);
+          step = "bind-pair"; await ports.bindPair(pair, pairPins);
+          step = "host-connector";
           const host = await ports.hostConnector(pair, pairPins);
           if (host === "offline") return outage(pair.target.machineId);
           if (host === "not-pair-scoped") return "connector-not-pair-scoped";
           if (host === "unhosted") return "intercom-tunnel-unhosted";
           if (host !== "ready") return "intercom-connector-check-invalid";
+          step = "connect-connector";
           const connection = await ports.connect(pair, pairPins);
           if (connection === "offline") return outage(pair.target.machineId);
           if (connection === "peer-port-unreachable") return "intercom-peer-port-unreachable";
@@ -218,21 +204,24 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           const priorOutage = ports.journal.read(operationId).filter(row => row.action === "intercom-outage" && row.result.machineId === pair.target.machineId).at(-1);
           if (priorOutage?.result.down === true) ports.journal.record(operationId, "intercom-outage", { machineId: pair.target.machineId, down: false });
           record(pair.pairId, "connector");
+          step = "ensure-key";
           const key = await ports.ensureKey(pair, pairPins);
           if (!validPublicKey(key.publicKey) || key.privateMode !== 0o600 || key.privateOwned !== true || keys.has(key.publicKey)) return "unsafe-pair-key";
           keys.add(key.publicKey); record(pair.pairId, "key");
-          await ports.writeKnownHost(pair, pairPins); record(pair.pairId, "known-host");
-          await ports.authorize(pair, authorizedPairLine(pair, key.publicKey), pairPins);
+          step = "write-known-host"; await ports.writeKnownHost(pair, pairPins); record(pair.pairId, "known-host");
+          step = "authorize"; await ports.authorize(pair, authorizedPairLine(pair, key.publicKey), pairPins);
           record(pair.pairId, "authorized");
           // Adding the route connects through the pair key, so the forced command
           // must admit the fresh epoch before the route is added.
-          await ports.approvePair(pair, { operationId, graphDigest: digest, expectedFenceId }, pairPins);
+          step = "approve-pair"; await ports.approvePair(pair, { operationId, graphDigest: digest, expectedFenceId }, pairPins);
           record(pair.pairId, "fence-approved");
-          await ports.addMachine(pair, machineArgs(pair), pairPins); record(pair.pairId, "machine");
+          step = "add-machine"; await ports.addMachine(pair, machineArgs(pair), pairPins); record(pair.pairId, "machine");
+          step = "verify-transport";
           const transport = await ports.verifyTransport(pair, pairPins);
           if (!transport || transport.sourceMachineId !== pair.source.machineId || transport.targetMachineId !== pair.target.machineId ||
               transport.connector !== true || transport.key !== true || transport.route !== true) return "intercom-verification-pending";
-          await ports.publishPair(pair, pairPins); record(pair.pairId, "published");
+          step = "publish-pair"; await ports.publishPair(pair, pairPins); record(pair.pairId, "published");
+          step = "verify-pair";
           const checked = await ports.verifyPair(pair, pairPins);
           if (!checked || checked.sourceMachineId !== pair.source.machineId || checked.targetMachineId !== pair.target.machineId ||
               checked.connector !== true || checked.key !== true || checked.route !== true || checked.federation !== true) return "intercom-verification-pending";
@@ -240,7 +229,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
           return null;
         } catch (error) {
           if (error instanceof Error && ["fresh-peer-consent-required", "host-key-changed", "revocation-pending", "intercom-ssh-host-unverified"].includes(error.message)) return error.message;
-          return { reason: "intercom-enrollment-pending", causeCode: enrollmentCauseCode(error) };
+          return { reason: "intercom-enrollment-pending", causeCode: causeCode(error, step) };
         }
       };
       for (const pair of snapshot.pairs) {

@@ -122,8 +122,7 @@ it("runs the actual settings probe through transport without sending source-valu
 }, 5000);
 
 it("reports an unsafe agent directory from the real settings preview without changing it", async () => {
-  const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
-  const root = mkdtempSync(join(scratch, "settings-mode-")), home = join(root, "home"), agent = join(home, ".pi", "agent");
+  const root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "settings-mode-")), home = join(root, "home"), agent = join(home, ".pi", "agent");
   mkdirSync(agent, { recursive: true, mode: 0o700 }); chmodSync(agent, 0o775);
   try {
     const f = fixture(), port = create!(f.options, f.journal);

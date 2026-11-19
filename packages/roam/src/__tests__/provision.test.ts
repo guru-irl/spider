@@ -151,6 +151,7 @@ it.each([
   "unsafe-context", "unsafe-path", "unsafe-release", "unsafe-staging", "invalid-operation", "invalid-provision-options",
   "staging-cleanup-pending", "invalid-bootstrap-reply", "invalid-bootstrap-request", "invalid-bootstrap-kind", "invalid-byte-limit",
   "invalid-cli-deadline", "invalid-reply", "bootstrap-probe-failed", "agent-directory-probe-failed", "provision-transport-failed", "invalid-release-request",
+  "invalid-limits", "invalid-staging-name", "unknown-provision-action",
 ] as const)("preserves the known provisioning error %s", async code => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
   f.ports.transfer.switchover = async () => { throw Object.assign(new Error("untrusted detail"), { code }); };

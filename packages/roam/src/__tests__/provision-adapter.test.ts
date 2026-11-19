@@ -1056,6 +1056,13 @@ it("refuses a destination symlink without altering its target and cleans transfe
   expect(readdirSync(join(f.globalRoot, "roam", "provision", "op-1"))).toEqual([]);
 }, 5000);
 
+it.each(["invalid-limits", "invalid-staging-name", "invalid-release-request", "unknown-provision-action", "provision-transport-failed"] as const)
+("preserves the known adapter error %s", async code => {
+  const f = fixture();
+  f.remote.executeProvision = async () => { throw Object.assign(new Error("untrusted detail"), { code }); };
+  await expect(create!(f.options).switchover(f.peer, "op-1")).rejects.toMatchObject({ code });
+}, 5000);
+
 it("does not expose credential-like remote error codes or messages", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
   const f = fixture(), original = f.remote.executeProvision;

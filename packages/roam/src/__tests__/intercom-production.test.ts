@@ -2,6 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openDb, paths } from "@spider/db-core";
+import { HerdrError } from "@spider/herdr/client/parse";
 import { openJournal } from "../journal";
 import { provisionIntercomEnrollment } from "../intercom-enrollment";
 import type { Peer } from "../contracts";
@@ -73,6 +74,20 @@ it("the operator CLI refuses noninteractive approval and displays the exact grap
   expect(await main(["--global-root", f.root, "roam", "intercom", "enroll", "--graph", graph, "--operation", "production-1"], io,
     { intercomOptions: { ...options, tty: false } } as any)).toBe(1);
   expect(err).toContain("peer-consent-required");
+}, 5000);
+
+it("prints a bounded cause when the final enrollment receipt fails", async () => {
+  const f = fixture(true), graph = cliGraph(f), record = f.journal.record.bind(f.journal);
+  const journal = { ...f.journal, record(id: string, action: string, result: Parameters<typeof record>[2]) {
+    if (action === "done") throw new HerdrError("EACCES", "private receipt details");
+    record(id, action, result);
+  } };
+  const { runIntercomEnrollCli } = await import("../intercom-cli"); let err = "";
+  const code = await runIntercomEnrollCli({ root: f.root, graphFile: graph, operationId: "production-1" }, { out() {}, err(text) { err += text; } },
+    { transport: f.transport as never, journal, tty: true, ask: async () => "approve" });
+  expect(code).toBe(3);
+  expect(err).toContain("intercom-enrollment-pending [EACCES]");
+  expect(err).not.toContain("private receipt details");
 }, 5000);
 
 it("names unpublished local WAL frames after successful retry fence observations", async () => {

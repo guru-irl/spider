@@ -78,7 +78,7 @@ export async function runIntercomEnrollCli(input: { root: string; graphFile: str
         transitionId, operationId, graphDigest: consent.result.graphDigest, from: "hub-only", to: "peers" });
       io.out(`intercom-transition-${transition.state} ${transition.transitionId}\n`);
     }
-    (result.code === 0 ? io.out : io.err)(`${result.reason}\n`);
+    (result.code === 0 ? io.out : io.err)(`${result.reason}${result.causeCode ? ` [${result.causeCode}]` : ""}\n`);
     if (result.value?.pending) for (const pending of result.value.pending) io.err(`${pending.pairId}: ${pending.reason}${pending.causeCode ? ` [${pending.causeCode}]` : ""}\n`);
     if (result.repairCommand) io.err(`Core identity changed. Run ${result.repairCommand} for an unbound pending pair, then enroll with a new operation and approval. For a bound pair, use spider roam intercom revoke <pair>.\n`);
     if (result.value?.pending?.some(pending => pending.reason === "intercom-ssh-host-unverified")) {

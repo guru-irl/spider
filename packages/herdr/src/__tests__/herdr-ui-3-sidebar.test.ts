@@ -1082,8 +1082,12 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     expect(content('unknown-run').some(node => node.children.includes('Unknown'))).toBe(true);
     expect(content('known-run').some(node => node.children.includes('Disconnected'))).toBe(true);
     for (const id of ['unknown-run', 'known-run']) expect(content(id).some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(false);
-    view.spiderFeeds = [{ ...current, lifecycle: 'live' }];
+    view.spiderFeeds = [{ ...current, generation: 'next', lifecycle: 'live' }];
     expect(content('known-run').some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(true);
+    view.spiderFeeds = [{ ...current, generation: 'next', lifecycle: 'live',
+      runs: { rows: [{ ...current.runs.rows[0], status: 'done', finishedAt: now - 1 }] } }];
+    view.spiderShowFinished = new Set(['t1']);
+    expect(content('known-run').some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(false);
   });
 
   it('opens the saved view and its right-click menu when the old viewer machine is unavailable', async () => {

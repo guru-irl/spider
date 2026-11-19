@@ -74,7 +74,13 @@ function safeReason(error: unknown): string {
     "release-digest-mismatch", "invalid-release-path", "core-unit-required", "peer-core-unit-required", "peer-core-unit-ambiguous", "provider-consent-required", "credential-file-requires-consent",
     "enrollment-conflict", "unsafe-enrollment", "enrollment-identity-mismatch", "enrollment-publication-pending", "invalid-enrollment",
     "release-pending", "release-launch-failed", "release-arguments-changed", "operation-arguments-changed", "short-write-pending", "release-evidence-unavailable", "release-evidence-unfiltered", "release-in-progress",
-    "installer-interrupted", "release-abandoned", "release-install-failed", "command-failed", "npm-not-found", "npm-install-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch"]);
+    "installer-interrupted", "release-abandoned", "release-install-failed", "command-failed", "npm-not-found", "npm-install-failed", "release-hash-mismatch", "incomplete-release", "pi-version-mismatch",
+    "chunk-mismatch", "cli-aborted", "cli-exit", "invalid-chunk", "invalid-chunks", "invalid-file", "invalid-providers", "invalid-provision-reply",
+    "invalid-release-receipt", "invalid-request", "invalid-switchover-journal", "invalid-systemctl", "invalid-unit", "machine-not-enrolled", "missing-hc",
+    "missing-switchover-backup", "peer-invalidated", "process-identity-unavailable", "release-launch-uncertain", "reply-too-large", "selection-not-allowed",
+    "spawn-error", "stdin-error", "too-large", "unresolved-peer", "unsafe-context", "unsafe-path", "unsafe-release", "unsafe-staging", "invalid-operation",
+    "invalid-provision-options", "invalid-provision-request", "staging-cleanup-pending", "invalid-bootstrap-reply", "invalid-bootstrap-request", "invalid-bootstrap-kind",
+    "invalid-byte-limit", "invalid-cli-deadline", "invalid-reply", "bootstrap-probe-failed", "agent-directory-probe-failed", "provision-transport-failed", "invalid-release-request"]);
   if (typeof code === "string" && allowed.has(code)) return code;
   const message = error instanceof Error ? error.message : "";
   if (message === "Operation ID already has different arguments") return "operation-arguments-changed";
@@ -88,7 +94,10 @@ export async function provision(input: ProvisionRequest, ports: ProvisionPorts):
   if (!input?.peer || !isMachineId(input.peer.machineId)) return result(operationId, 1, "invalid-provision-request", null);
   try { validate(input, ports); } catch (error) { return result(operationId, 1, safeReason(error), null); }
   try { return await ports.withPeerLock(input.peer.machineId, () => provisionLocked(input, ports)); }
-  catch { return result(operationId, 1, "provision-lock-unavailable", null); }
+  catch (error) {
+    const reason = safeReason(error);
+    return result(operationId, 1, reason === "provision-failed" ? "provision-lock-unavailable" : reason, null);
+  }
 }
 
 async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): Promise<Outcome<{ hostingReady: boolean }>> {
@@ -102,8 +111,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     try { agentDirectory = await ports.bootstrap.probeAgentDirectory(peer, ports.destination.home); }
     catch (error) {
       const reason = safeReason(error);
-      return result(operationId, 3, ["core-changed", "core-unavailable", "machine-not-found", "machine-ambiguous", "cli-timeout"].includes(reason)
-        ? reason : "agent-directory-unverified", null);
+      return result(operationId, 3, reason === "provision-failed" ? "agent-directory-unverified" : reason, null);
     }
     if (agentDirectory.status === "custom") return result(operationId, 1, peer.agentDir ? "agent-directory-mismatch" : "custom-agent-directory-unsupported", null);
     if (agentDirectory.status !== "default") return result(operationId, 3, "agent-directory-unverified", null);

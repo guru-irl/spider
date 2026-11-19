@@ -205,6 +205,14 @@ it.each(["core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin
   expect(await port.executeProvision(handle, request)).toBe("already-enrolled");
 });
 
+it("reports unfiltered release evidence from the destination", async () => {
+  const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "release-observe", operationId: "op-1", machineId: bootstrapPeer.machineId,
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi };
+  f.state.provisionReply = { version: 1, kind: "provision", error: "release-evidence-unfiltered" };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "release-evidence-unfiltered" });
+}, 5000);
+
 it("accepts a missing adjacent npm release receipt", async () => {
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   const request = { action: "release-observe", operationId: "op-1", machineId: bootstrapPeer.machineId,

@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { build } from "vite";
 import type { Journal, Peer, Transport } from "../contracts";
 import { DEFAULT_LIMITS } from "../contracts";
@@ -53,10 +53,12 @@ else {
   const file = ${JSON.stringify(terminalFile)};
   const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {terminals:[]};
   const filters = args.flatMap((arg, index) => arg === '--label' ? [args[index + 1]] : []);
-  const terminals = data.terminals.filter(item => filters.every(filter => {
+  const matches = (item, filter) => {
     const split = filter.indexOf('=');
     return split > 0 && item.labels?.[filter.slice(0, split)] === filter.slice(split + 1);
-  })).map(item => ({
+  };
+  const terminals = data.terminals.filter(item => data.filterMode === 'ignore' ||
+    (data.filterMode === 'or' ? filters.some(filter => matches(item, filter)) : filters.every(filter => matches(item, filter)))).map(item => ({
     address:'box-1.invalid/t1', agent:'', cwd:'', state:item.state, turn:0,
     ...(item.state === 'finished' ? {exit_code:0, reason:'exit'} : {}),
     ...(Object.hasOwn(item, 'returnedLabels') ? {labels:item.returnedLabels} : {}),
@@ -127,6 +129,17 @@ it("installs with CUDA downloads disabled for both npm commands", async () => {
     });
     const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as { cuda?: string });
     expect(calls.map(call => call.cuda)).toEqual(["skip", "skip"]);
+  } finally { vi.unstubAllEnvs(); }
+}, 10_000);
+
+it("overrides npm settings that suppress structured diagnostics", async () => {
+  vi.stubEnv("npm_config_color", "always"); vi.stubEnv("npm_config_loglevel", "silent");
+  try {
+    const f = fixture();
+    writeFileSync(join(f.bin, "npm"), `#!${process.execPath}\nif (process.env.npm_config_loglevel !== 'silent') process.stderr.write((process.env.npm_config_color === 'always' ? '\\x1b[31m' : '') + 'npm error code E404\\n');\nprocess.exit(1);\n`, { mode: 0o700 });
+    await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
+    const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
+    expect(receipt.diagnostic.npmCode).toBe("E404");
   } finally { vi.unstubAllEnvs(); }
 }, 10_000);
 
@@ -278,10 +291,43 @@ it("stops a timed-out npm process group and records its signal", async () => {
   const adapter = create!({ ...f.options, limits: { ...f.options.limits, importMs: 600, retryDelaysMs: [50] } });
   await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
   const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
-  expect(receipt.diagnostic).toEqual({ step: "pi", exitCode: null, signal: "SIGKILL", npmCode: null, packageName: null });
+  expect(receipt.diagnostic).toEqual({ step: "pi", exitCode: null, signal: "SIGKILL", npmCode: null, packageName: null, timedOut: true });
   expect(JSON.stringify(receipt)).not.toContain("npm error waiting for fixture");
   await new Promise(resolve => setTimeout(resolve, 2200));
   expect(existsSync(marker)).toBe(false);
+}, 15_000);
+
+it.each(["SIGTERM", "SIGHUP", "SIGINT"] as const)("stops npm and its grandchild when the installer receives %s", async signal => {
+  const f = fixture(), ready = join(f.root, "ready"), pids = join(f.root, "pids");
+  const grandchild = `import fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(pids)}, process.pid + '\\n'); fs.writeFileSync(${JSON.stringify(ready)}, 'ready'); process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);`;
+  writeFileSync(join(f.bin, "npm"), `#!${process.execPath}\nimport fs from 'node:fs'; import { spawn } from 'node:child_process';\nfs.writeFileSync(${JSON.stringify(pids)}, process.pid + '\\n');\nspawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], {stdio:'ignore'});\nprocess.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
+  let npmPid = 0, ids: number[] = [], result: { code: number | null; signal: NodeJS.Signals | null } | undefined, survivors: number[] = [];
+  f.remote.launchRelease = async (_peer, _operationId, requestFile) => {
+    const child = spawn(process.execPath, ["--input-type=module-typescript", "-e", remoteProgram!, requestFile], {
+      stdio: "ignore", env: { ...process.env, HOME: f.home, PATH: f.bin, SPIDER_GLOBAL_ROOT: f.globalRoot },
+    });
+    const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => child.once("exit", (code, signal) => resolve({ code, signal })));
+    try {
+      const deadline = Date.now() + 5000;
+      while (!existsSync(ready) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+      expect(existsSync(ready)).toBe(true);
+      ids = readFileSync(pids, "utf8").trim().split("\n").map(Number); npmPid = ids[0];
+      child.kill(signal);
+      result = await exited;
+      const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+      const stoppedBy = Date.now() + 2000;
+      while (ids.some(alive) && Date.now() < stoppedBy) await new Promise(resolve => setTimeout(resolve, 20));
+      survivors = ids.filter(alive);
+      throw Object.assign(new Error("launch ended"), { code: "consent-required" });
+    } finally {
+      if (npmPid) { try { process.kill(-npmPid, "SIGKILL"); } catch { /* Already stopped. */ } }
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }
+  };
+  await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "consent-required" });
+  expect(ids).toHaveLength(2);
+  expect(result).toEqual({ code: null, signal });
+  expect(survivors).toEqual([]);
 }, 15_000);
 
 it("does not fail a successful npm command that emits a large stderr stream", async () => {
@@ -384,6 +430,16 @@ it("does not relaunch when filtered terminal evidence has no returned labels", a
   const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
   expect(receipt).toMatchObject({ state: "failed", reason: "installer-interrupted" });
 }, 5000);
+
+it.each(["ignore", "or"])("refuses label-free terminal evidence when the core uses %s filtering", async filterMode => {
+  const f = fixture(), adapter = create!(f.options);
+  writeFileSync(f.terminalFile, JSON.stringify({ filterMode, terminals: [{ state: "finished", labels: {
+    "spider.operation": "another-op", "spider.machine": f.peer.machineId,
+  } }] }));
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "release-evidence-unfiltered" });
+  expect(f.launches).toEqual([]);
+  expect(existsSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"))).toBe(false);
+}, 10_000);
 
 it("ignores a terminal with different server-side labels", async () => {
   const f = fixture(), adapter = create!({ ...f.options, limits: { ...f.options.limits, importMs: 5000, retryDelaysMs: [50] } }), log = releaseNpm(f);

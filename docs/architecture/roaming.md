@@ -90,7 +90,8 @@ A mapped worktree can exist before capture creates its project database.
 not create a database to inspect it. Planned stores remain ungathered until
 created. Pruning keeps an existing empty mapped directory, so its warning does
 not mean that prune can remove it. Sync checks capture on readable memory stores
-and enables it when a previously unavailable store returns. Worktree capture
+and enables it when a previously unavailable store returns. An unassigned mapped
+store must first pass read-only layout inspection. Worktree capture
 remains session-scoped and uses the existing admission and seeding rules.
 
 Run `spider roam stores prune` on the affected machine to inspect candidates.

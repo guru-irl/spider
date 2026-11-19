@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { HerdrError } from "@spider/herdr/client/parse";
 import { join } from "node:path";
 import type { Outcome, Peer } from "../contracts";
 import type { IntercomEnrollmentPair } from "../provision-contracts";
@@ -284,6 +285,29 @@ it("approves fresh pair commands after authorization and before adding the route
   expect(await run(f.request, f.ports)).toMatchObject({ code: 0, reason: "intercom-enrolled" });
   const order = f.state.effects.filter(name => ["authorize", "approve-pair", "machine", "verify-transport"].includes(name));
   expect(order).toEqual(["authorize", "approve-pair", "machine", "verify-transport"]);
+}, 5000);
+
+it.each([
+  ["transport", "cli-timeout"],
+  ["filesystem", "ENOENT"],
+  ["unknown", "unexpected-add-machine"],
+  ["unsafe-code", "unexpected-add-machine"],
+] as const)("reports the bounded %s failure at enrollment's add-machine step", async (kind, causeCode) => {
+  const f = fixture(); f.state.allow = true;
+  f.ports.addMachine = async () => {
+    if (kind === "transport") throw new HerdrError("cli-timeout", "private exception details");
+    if (kind === "filesystem") readFileSync(join(f.root, "missing-private-file"));
+    if (kind === "unsafe-code") throw new HerdrError("private-secret", "private exception details");
+    throw new Error("private exception details");
+  };
+  const result = await run(f.request, f.ports);
+  expect(result).toMatchObject({ code: 3, reason: "intercom-enrollment-pending", value: { pending: [
+    { pairId: "pair-1", reason: "intercom-enrollment-pending", causeCode },
+  ] } });
+  expect(f.state.effects).toContain("approve-pair");
+  expect(JSON.stringify(result)).not.toContain("private exception details");
+  expect(JSON.stringify(result)).not.toContain("missing-private-file");
+  expect(JSON.stringify(result)).not.toContain("private-secret");
 }, 5000);
 
 it("rerun converges after each interrupted step", async () => {

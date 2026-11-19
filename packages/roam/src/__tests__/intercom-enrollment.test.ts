@@ -149,6 +149,22 @@ it.each(["unknown", undefined] as const)("refuses an unproven systemd kill mode 
   expect(f.state.authorized.has("pair-1")).toBe(true); expect(f.state.effects).not.toContain("remove-key");
 }, 5000);
 
+it.each([["filesystem", "ENOENT"], ["transport", "cli-timeout"], ["unknown", "unexpected-notify-peers"]] as const)
+("reports a bounded %s cause if peer notification fails after consent", async (kind, expected) => {
+  const f = fixture(); f.state.allow = true;
+  f.ports.notify = async () => {
+    if (kind === "filesystem") readFileSync(join(f.root, "private-missing-file"));
+    if (kind === "transport") throw new HerdrError("cli-timeout", "private notification details");
+    throw new Error("private notification details");
+  };
+  const result = await run(f.request, f.ports);
+  expect(result).toMatchObject({ code: 3, reason: "intercom-enrollment-pending", causeCode: expected });
+  expect(JSON.stringify(result)).not.toContain("private-missing-file");
+  expect(JSON.stringify(result)).not.toContain("private notification details");
+  expect(f.journal.read("approval-1").some(row => row.action === "intercom-peer-consent")).toBe(true);
+  expect(f.state.effects).not.toContain("register");
+}, 5000);
+
 it("auth consent does not approve peer execution", async () => {
   const f = fixture();
   f.journal.begin({ id: "auth-1", machineId: FIRST, kind: "provision", expectedEpoch: null, args: {} });

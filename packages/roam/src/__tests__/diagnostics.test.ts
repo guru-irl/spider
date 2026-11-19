@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { createReplica, scratchDbPath } from "@spider/db-core/testutil";
@@ -403,7 +403,8 @@ it("local doctor detects a removed service Node without running launchctl", asyn
   writeEnabledConfig(root);
   const directory = join(root, "Library", "LaunchAgents");
   mkdirSync(directory, { recursive: true });
-  const service = join(directory, "com.spider.roam.hub.plist");
+  const suffix = createHash("sha256").update(realpathSync(root)).digest("hex").slice(0, 16);
+  const service = join(directory, `com.spider.roam.hub.${suffix}.plist`);
   const cli = join(root, "spider");
   writeFileSync(cli, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   const definition = `<plist><dict><key>ProgramArguments</key><array><string>${root}/missing-node</string><string>${cli}</string><string>roam</string><string>hub</string></array></dict></plist>`;

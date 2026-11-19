@@ -3,7 +3,8 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, lstatSync, readFileSync
 import { dirname, join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { RELEASE_ENTRIES } from "../release-request";
+import { RELEASE_ENTRIES, releaseRequestDigest, type ReleaseArguments } from "../release-request";
+import { beginRelease, finishRelease, inspectRelease } from "../release-receipt";
 import { createReplica } from "@spider/db-core/testutil";
 import { main } from "../cli";
 import * as transportModule from "../transport";
@@ -322,11 +323,18 @@ it("reports switchover permissions and the repair command through the CLI", asyn
     const agent = join(home, ".pi", "agent"), globalRoot = join(agent, "spider"), extensions = join(agent, "extensions");
     mkdirSync(sourceAgent, { mode: 0o700 }); mkdirSync(join(globalRoot, "roam"), { recursive: true, mode: 0o700 });
     mkdirSync(extensions, { mode: 0o700 }); chmodSync(extensions, 0o775);
+    writeFileSync(join(agent, "auth.json"), "{}", { mode: 0o600 });
     writeFileSync(join(globalRoot, "roam", "machine.json"), JSON.stringify({ machineId: f.request.machineId }), { mode: 0o600 });
     const sha = createHash("sha256").update(readFileSync(f.release)).digest("hex");
     const release = join(home, ".local", "spider-releases", sha, "node_modules", "@guru-irl", "spider");
     mkdirSync(join(release, "scripts"), { recursive: true, mode: 0o700 });
     mkdirSync(join(release, "dist", "intercom"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(release, "dist", "roam"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(home, ".local", "bin"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(home, ".local", "bin", "pi"), `#!${process.execPath}\nconsole.log('1.2.0');\n`, { mode: 0o700 });
+    writeFileSync(join(release, "package.json"), JSON.stringify({ name: "@guru-irl/spider", version: "0.1.0" }), { mode: 0o600 });
+    writeFileSync(join(release, "dist", "roam", "cli.mjs"), "fixture", { mode: 0o600 });
+    writeFileSync(join(release, "dist", "roam", "supervisor.mjs"), "fixture", { mode: 0o600 });
     copyFileSync(join(process.cwd(), "scripts", "intercom-switchover.mjs"), join(release, "scripts", "intercom-switchover.mjs"));
     copyFileSync(join(process.cwd(), "scripts", "extension-shim.mjs"), join(release, "scripts", "extension-shim.mjs"));
     writeFileSync(join(release, "dist", "extension.js"), "export default () => {};", { mode: 0o600 });
@@ -346,16 +354,28 @@ it("reports switchover permissions and the repair command through the CLI", asyn
     vi.spyOn(bytesClient, "invokeBytes").mockImplementation(async (_binary, argv, _env, options) => {
       if (argv.includes("cat")) return Buffer.from(JSON.stringify({ machineId: f.request.machineId }));
       if (argv.includes(BOOTSTRAP_AGENT_DIRECTORY_SCRIPT)) return Buffer.from(JSON.stringify({ version: 1, kind: "agent-directory", value: "default" }));
-      if (argv.includes(BOOTSTRAP_SETTINGS_SCRIPT)) return Buffer.from(JSON.stringify({ version: 1, kind: "settings-preview", value: { fingerprint: "a".repeat(64), digests: [] } }));
+      if (argv.includes(BOOTSTRAP_SETTINGS_SCRIPT)) {
+        const request = JSON.parse(options.stdin!.toString("utf8"));
+        const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", BOOTSTRAP_SETTINGS_SCRIPT], {
+          input: JSON.stringify({ ...request, home, agentDir: agent }), encoding: "utf8", env: { ...process.env, HOME: home, NODE_NO_WARNINGS: "1" }, timeout: 4000,
+        });
+        expect(child.status).toBe(0); expect(child.stderr).toBe(""); return Buffer.from(child.stdout);
+      }
       if (argv.includes(BOOTSTRAP_SCRIPT)) return Buffer.from(JSON.stringify(inventoryEnvelope({ ...healthyInventory(),
-        core: { ...healthyInventory().core, unit: "fixture.service" } })));
+        roaming: { rootExists: true, rootSafe: true, identityExists: true, machineId: f.request.machineId },
+        spider: { installed: true, version: "0.1.0", nativeModuleReady: false }, core: { ...healthyInventory().core, unit: "fixture.service" } })));
       if (argv.includes(BOOTSTRAP_IDENTITY_SCRIPT)) return Buffer.from(JSON.stringify({ version: 1, kind: "identity", coreId: "remote-core", machineId: f.request.machineId }));
       expect(argv).toContain(PROVISION_REMOTE_SCRIPT);
       const request = JSON.parse(options.stdin!.toString("utf8")) as Record<string, string>;
       if (request.action === "enrollment") return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: "enrolled" }));
       if (request.action === "clear-secrets") return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: true }));
-      if (request.action === "release-observe") return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: { state: "finished",
-        value: { pi: request.pi, cli: request.cli, supervisor: request.supervisor } } }));
+      if (request.action === "release-observe") {
+        const directory = join(globalRoot, "roam", "provision", request.operationId); mkdirSync(directory, { recursive: true, mode: 0o700 });
+        const key = { directory, operationId: request.operationId, digest: releaseRequestDigest(request as unknown as ReleaseArguments) };
+        const input = { ...key, owner: { pid: process.pid, bootId: "fixture", start: "1" } }, claim = beginRelease(input);
+        if (claim.kind === "acquired") finishRelease(input, claim.token, { state: "finished", value: { pi: request.pi, cli: request.cli, supervisor: request.supervisor } });
+        return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: inspectRelease(key, () => "absent") }));
+      }
       expect(request.action).toBe("switchover");
       for (const key of ["home", "globalRoot", "agentDir", "npmPrefix", "unitDir", "node", "pi", "cli", "core", "supervisor"]) {
         if (typeof request[key] === "string") request[key] = request[key].replace(/^\/home\/fixture(?=\/|$)/, home);
@@ -376,6 +396,7 @@ it("reports switchover permissions and the repair command through the CLI", asyn
     expect(errors).toContain("destination-permissions-unsafe"); expect(errors).toContain(repair);
     expect(lstatSync(extensions).mode & 0o777).toBe(0o775);
     expect(existsSync(join(extensions, "spider.ts"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(globalRoot, "roam", "provision", "permissions-text-install", "release-receipt.json"), "utf8"))).toMatchObject({ state: "finished" });
     output = ""; errors = "";
     expect(await main([...base, "--operation-id", "permissions-json", "--json"], io)).toBe(3);
     expect(JSON.parse(output)).toMatchObject({ code: 3, reason: "destination-permissions-unsafe", repairCommand: repair });

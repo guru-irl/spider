@@ -156,7 +156,7 @@ export function projectNavigation(snapshot) {
       targets.push({ id: childId, kind: child.kind === 'native' ? 'agent' : child.kind, ownerId: parentId, sessionId: feed.sessionId,
         terminal: address, pane: childPane, space, tab,
         name: child.kind === 'console' ? `${parent.name} console` : nativeAgent ? sessionDisplayName(nativeAgent, child.terminal, []) : child.name,
-        path: feed.owner.cwd, status: child.status === 'unreachable' ? statusOf(child.terminal) : child.status,
+        path: feed.owner.cwd, status: child.status,
         machine: childMachine, retained: child.retained, action: childAction,
         ...(!childAction ? { disabledReason: !ownerAvailable ? `Owner on ${machine ?? 'This computer'} is unreachable` : !childAvailable ? `Machine ${childMachine ?? 'This computer'} is unreachable` : 'Owning session unavailable' } : {}) });
     }

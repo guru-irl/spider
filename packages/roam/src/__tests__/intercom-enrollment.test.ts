@@ -165,6 +165,19 @@ it.each([["filesystem", "ENOENT"], ["transport", "cli-timeout"], ["unknown", "un
   expect(f.state.effects).not.toContain("register");
 }, 5000);
 
+it("reports a bounded cause if the final enrollment receipt cannot be written", async () => {
+  const f = fixture(); f.state.allow = true; const record = f.journal.record.bind(f.journal);
+  f.journal.record = (id, action, result) => {
+    if (action === "done") throw new HerdrError("EACCES", "private receipt details");
+    record(id, action, result);
+  };
+  const result = await run(f.request, f.ports);
+  expect(result).toMatchObject({ code: 3, reason: "intercom-enrollment-pending", causeCode: "EACCES" });
+  expect(JSON.stringify(result)).not.toContain("private receipt details");
+  expect(f.state.effects).toContain("verify");
+  expect(f.journal.read("approval-1").some(row => row.action === "done")).toBe(false);
+}, 5000);
+
 it("auth consent does not approve peer execution", async () => {
   const f = fixture();
   f.journal.begin({ id: "auth-1", machineId: FIRST, kind: "provision", expectedEpoch: null, args: {} });

@@ -81,7 +81,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
   const operationId = typeof request?.operation?.id === "string" ? request.operation.id : "";
   if (!valid(request)) return outcome(operationId, 1, "invalid-intercom-enrollment");
   const snapshot = structuredClone(request);
-  let approved = false;
+  let approved = false, outerStep: CauseStep = "enrollment";
   try {
     return await ports.withLock(async () => {
       const cancelled = new Set(ports.journal.read(operationId).filter(row => row.action === "intercom-enrollment-cancelled").map(row => row.result.pairId));
@@ -103,12 +103,14 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
       const refreshConsent = consent && consent.result.fences && typeof consent.result.fences === "object" &&
         Object.values(consent.result.fences).includes("unavailable");
       const savedFences = consent?.result.fences as Record<string, string | null> | undefined;
+      outerStep = "read-fences";
       const fences = refreshConsent ? { ...savedFences, ...await ports.readPairFences(remaining.filter(pair => savedFences?.[pair.pairId] === "unavailable")) }
         : consent ? consent.result.fences : await ports.readPairFences(snapshot.pairs);
       if (!fences || typeof fences !== "object" || Array.isArray(fences) || Object.keys(fences).length !== snapshot.pairs.length ||
           snapshot.pairs.some(pair => !Object.hasOwn(fences, pair.pairId) || !((fences as Record<string, unknown>)[pair.pairId] === null || identifier((fences as Record<string, unknown>)[pair.pairId])))) {
         return outcome(operationId, 3, "intercom-fence-unavailable");
       }
+      outerStep = "enrollment";
       await ports.present(graph);
       if (!consent || refreshConsent) {
         if (!await ports.approve()) return outcome(operationId, 1, "peer-consent-required");
@@ -128,7 +130,9 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
       };
       const machines = new Map<string, Peer>();
       for (const pair of remaining) { machines.set(pair.source.machineId, pair.source); machines.set(pair.target.machineId, pair.target); }
+      outerStep = "notify-peers";
       await ports.notify([...machines.values()]);
+      outerStep = "enrollment";
       const outage = async (machineId: string): Promise<string> => {
         const prior = ports.journal.read(operationId).filter(row => row.action === "intercom-outage" && row.result.machineId === machineId).at(-1);
         if (prior?.result.down !== true) {
@@ -247,6 +251,7 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
         return result;
       }
       const result = outcome(operationId, 0, "intercom-enrolled", { pairs: completed });
+      outerStep = "record-enrollment";
       ports.journal.record(operationId, "done", result as unknown as import("@spider/db-core/roam/types").JsonObject);
       return result;
     });
@@ -255,7 +260,9 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
     const reason = error instanceof Error && error.message === "Operation ID already has different arguments"
       ? "operation-arguments-changed" : error instanceof Error && error.message === "fresh-peer-consent-required" ? error.message
       : approved ? "intercom-enrollment-pending" : "intercom-enrollment-unavailable";
-    return outcome(operationId, approved ? 3 : 1, reason);
+    const result = outcome(operationId, approved ? 3 : 1, reason);
+    if (reason === "intercom-enrollment-pending" || reason === "intercom-enrollment-unavailable") result.causeCode = causeCode(error, outerStep);
+    return result;
   }
 }
 

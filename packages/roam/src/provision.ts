@@ -239,7 +239,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     const hostingReady = diagnostics.every(item => item.severity !== "block");
     await ports.systemd.systemctl(["--user", hostingReady ? "enable" : "disable", unitName]);
     await ports.setParticipation(peer, hostingReady);
-    const permissionTightenings = await ports.permissionTightening(peer);
+    const permissionTightenings = await ports.permissionTightening(peer).catch(() => null);
     const outcome = result(operationId, 0, hostingReady ? "installed" : "installed-hosting-disabled", { hostingReady, permissionTightenings });
     ports.journal.record(operationId, "done", outcome as unknown as JsonObject);
     return outcome;

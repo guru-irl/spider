@@ -224,6 +224,12 @@ function command(file: string, argv: string[], env: NodeJS.ProcessEnv, timeout: 
   const child = spawnSync(file, argv, { env, stdio: "ignore", timeout });
   if (child.status !== 0 || child.error || child.signal) bad("command-failed");
 }
+function supervisorSystemctl(argv: unknown): void {
+  if (!Array.isArray(argv) || (JSON.stringify(argv) !== JSON.stringify(["--user", "daemon-reload"]) &&
+    JSON.stringify(argv) !== JSON.stringify(["--user", "enable", "spider-roam-supervisor.service"]) &&
+    JSON.stringify(argv) !== JSON.stringify(["--user", "disable", "spider-roam-supervisor.service"]))) bad("invalid-systemctl");
+  command("systemctl", argv, process.env, 30_000);
+}
 class NpmInstallFailure extends Error {
   readonly code = "npm-install-failed";
   readonly diagnostic: NpmDiagnostic;
@@ -392,9 +398,11 @@ async function run(): Promise<unknown> {
   // One request per short-lived process. Every child inherits this mask; no restore is needed.
   process.umask(0o022);
   if (request.action === "roaming-enabled") {
-    if (typeof request.enabled !== "boolean") bad("invalid-request");
+    if (typeof request.enabled !== "boolean" || request.restoreAutostart !== undefined &&
+        (request.restoreAutostart !== true || !request.enabled)) bad("invalid-request");
     releaseCore(text("core"), text("coreId"));
     setBoxRoamingEnabled(text("globalRoot"), text("machineId"), text("hubMachineId"), request.enabled);
+    if (request.restoreAutostart) supervisorSystemctl(["--user", "enable", "spider-roam-supervisor.service"]);
     return { enabled: request.enabled };
   }
   const home = text("home"), globalRoot = text("globalRoot"), agentDir = text("agentDir"), npmPrefix = text("npmPrefix"), unitDir = text("unitDir");
@@ -722,11 +730,7 @@ async function run(): Promise<unknown> {
     return true;
   }
   if (action === "systemctl") {
-    const argv = request.argv;
-    if (!Array.isArray(argv) || (JSON.stringify(argv) !== JSON.stringify(["--user", "daemon-reload"]) &&
-      JSON.stringify(argv) !== JSON.stringify(["--user", "enable", "spider-roam-supervisor.service"]) &&
-      JSON.stringify(argv) !== JSON.stringify(["--user", "disable", "spider-roam-supervisor.service"]))) bad("invalid-systemctl");
-    command("systemctl", argv, process.env, 30_000);
+    supervisorSystemctl(request.argv);
     return true;
   }
   if (action === "verify") {

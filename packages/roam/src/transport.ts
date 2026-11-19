@@ -321,7 +321,9 @@ function transportPorts(options: TransportOptions, journal?: Journal): Provision
         result.approved === true && result.target === state.peer.alias && result.machineId === state.peer.machineId);
       if (!consent) throw new HerdrError('consent-required', 'Provisioning consent must be recorded before installation');
       if (request.action === 'roaming-enabled' && !(typeof request.enabled === 'boolean' &&
-          (consent.result.scope === 'roaming-enabled' && consent.result.enabled === request.enabled || request.enabled === true && consent.result.enablesRoaming === true)))
+          (consent.result.scope === 'roaming-enabled' && consent.result.enabled === request.enabled || request.enabled === true && consent.result.enablesRoaming === true) &&
+          (request.restoreAutostart === undefined || request.restoreAutostart === true && request.enabled === true &&
+            consent.result.scope === 'roaming-enabled' && consent.result.restoreAutostart === true)))
         throw new HerdrError('consent-required', 'Explicit roaming control consent is required');
       const file = request.file && typeof request.file === 'object' && !Array.isArray(request.file) ? request.file as Record<string, unknown> : null;
       const secretFile = request.action === 'install-files' && Array.isArray(file?.chunks) && file.chunks.some(chunk =>

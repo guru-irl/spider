@@ -137,10 +137,11 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
       const expected = ["machine", "add", "--via", via, "--name", `spider-pair-${pair.pairId}`, "--session", pair.connector.session, "--json"];
       if (JSON.stringify(argv) !== JSON.stringify(expected)) throw new Error("invalid-intercom-operation");
       const deadline = retry.now() + 40_000;
-      let lastError: unknown = Object.assign(new Error("Route deadline expired"), { code: "cli-timeout" });
+      const minimumAttemptMs = 5_000;
+      let lastError: unknown = Object.assign(new Error("Route deadline expired"), { code: "unreachable" });
       for (let attempt = 0; ; attempt++) {
         const remaining = Math.floor(deadline - retry.now());
-        if (remaining < 1000) throw lastError;
+        if (remaining < minimumAttemptMs) throw lastError;
         try {
           await call(pair.source, pins.source, "add-machine", pair, { targetCoreId: pins.target.coreId }, remaining);
           return;
@@ -148,7 +149,7 @@ export function createProductionIntercomEnrollmentPorts(input: EnrollmentOptions
           lastError = error;
           if (enrollmentCauseCode(error) !== "unreachable" || attempt >= 7) throw error;
           const backoff = Math.min(100 * 2 ** attempt, 2000);
-          if (deadline - retry.now() <= backoff + 1000) throw error;
+          if (deadline - retry.now() < backoff + minimumAttemptMs) throw error;
           await retry.sleep(backoff);
         }
       }

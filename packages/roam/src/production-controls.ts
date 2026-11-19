@@ -227,7 +227,7 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
         const journal = openJournal(join(root, "roam", "journal.db"));
         const provisioning = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }, journal);
         step = "enable-peer-flag";
-        for (const peer of config.peers) { changed = true; await setEnrolledPeerEnabled({ config, peer, enabled: true, journal, transport: provisioning }); }
+        for (const peer of config.peers) { changed = true; await setEnrolledPeerEnabled({ config, peer, enabled: true, restoreAutostart: true, journal, transport: provisioning }); }
       }
       step = "enable-config";
       if (!config.enabled) { changed = true; await writeEnabled(root, config, true); }

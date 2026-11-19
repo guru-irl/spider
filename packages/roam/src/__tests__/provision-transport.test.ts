@@ -547,6 +547,19 @@ it("does not enable roaming from installation consent without enablesRoaming", a
   expect(await port.executeProvision(handle, request)).toEqual({ enabled: true });
 }, 5000);
 
+it("requires consent bound to autostart repair before sending the request", async () => {
+  const f = fixture(), port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "roaming-enabled", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,
+    node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi, hubMachineId: "00000000-0000-4000-8000-000000000001", enabled: true, restoreAutostart: true };
+  f.journal.record("op-1", "provision-consent", { approved: true, scope: "roaming-enabled", enabled: true, target: bootstrapPeer.alias, machineId: bootstrapPeer.machineId });
+  f.state.provisionReply = { version: 1, kind: "provision", value: { enabled: true } };
+  const before = f.calls.length;
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "consent-required" });
+  expect(f.calls).toHaveLength(before);
+  f.actions[0].result.restoreAutostart = true;
+  await expect(port.executeProvision(handle, request)).resolves.toEqual({ enabled: true });
+}, 5000);
+
 it("explicit flag consent accepts only the exact authenticated enabled reply", async () => {
   const f = fixture(), port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   const request = { action: "roaming-enabled", operationId: "op-1", machineId: bootstrapPeer.machineId, globalRoot: bootstrapPeer.globalRoot,

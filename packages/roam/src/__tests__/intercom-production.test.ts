@@ -139,6 +139,43 @@ it("does not start another route attempt after its deadline is nearly exhausted"
   expect(attempts).toBe(1); expect(clock.waits).toEqual([]);
 }, 5000);
 
+it.each([[34_901, 1, "unreachable"], [34_900, 2, null]] as const)(
+  "requires a five-second route budget after backoff (elapsed %i)", async (elapsed, expectedAttempts, expectedCause) => {
+    const f = fixture(true), original = f.transport.transport.exec, clock = retryClock(), timeouts: number[] = []; let attempts = 0;
+    f.transport.transport.exec = async (machine, argv, options) => {
+      if (JSON.parse(options.stdin.toString()).action === "add-machine") {
+        attempts++; timeouts.push(options.timeoutMs!);
+        if (attempts === 1) {
+          clock.advance(elapsed);
+          return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: false, machineId: machine.machineId,
+            reason: "intercom-setup-pending", cause: { code: "unreachable" } }));
+        }
+      }
+      return original(machine, argv, options);
+    };
+    const result = await provisionIntercomEnrollment(f.request, await ports(f, clock));
+    if (expectedCause) expect(result).toMatchObject({ code: 3, value: { pending: [{ pairId: "pair-1", causeCode: expectedCause }] } });
+    else expect(result).toMatchObject({ code: 0, reason: "intercom-enrolled" });
+    expect(attempts).toBe(expectedAttempts);
+    if (expectedAttempts === 2) expect(timeouts[1]).toBe(5_000);
+  }, 5000);
+
+it("does not start a short route attempt when backoff oversleeps", async () => {
+  const f = fixture(true), original = f.transport.transport.exec, clock = retryClock(); let attempts = 0;
+  clock.sleep = async ms => { clock.waits.push(ms); clock.advance(ms + 6_000); };
+  f.transport.transport.exec = async (machine, argv, options) => {
+    if (JSON.parse(options.stdin.toString()).action === "add-machine") {
+      attempts++; clock.advance(30_000);
+      return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: false, machineId: machine.machineId,
+        reason: "intercom-setup-pending", cause: { code: "unreachable" } }));
+    }
+    return original(machine, argv, options);
+  };
+  const result = await provisionIntercomEnrollment(f.request, await ports(f, clock));
+  expect(result).toMatchObject({ code: 3, value: { pending: [{ pairId: "pair-1", causeCode: "unreachable" }] } });
+  expect(attempts).toBe(1); expect(clock.waits).toEqual([100]);
+});
+
 it("prints a bounded cause when the final enrollment receipt fails", async () => {
   const f = fixture(true), graph = cliGraph(f), record = f.journal.record.bind(f.journal);
   const journal = { ...f.journal, record(id: string, action: string, result: Parameters<typeof record>[2]) {

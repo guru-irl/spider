@@ -143,6 +143,58 @@ it.each(["core-pin-invalid", "core-pin-conflict", "core-pin-changed"])("keeps %s
   if (reason !== "core-pin-invalid") expect(outcome.repairCommand).toBe(`spider roam provision ${bootstrapPeer.alias} --replace-core-pin`);
 });
 
+it.each([
+  "chunk-mismatch", "cli-aborted", "cli-exit", "invalid-chunk", "invalid-chunks", "invalid-file", "invalid-providers",
+  "invalid-provision-reply", "invalid-release-receipt", "invalid-request", "invalid-switchover-journal", "invalid-systemctl",
+  "invalid-unit", "machine-not-enrolled", "missing-hc", "missing-switchover-backup", "peer-invalidated", "process-identity-unavailable",
+  "release-launch-uncertain", "reply-too-large", "selection-not-allowed", "spawn-error", "stdin-error", "too-large", "unresolved-peer",
+  "unsafe-context", "unsafe-path", "unsafe-release", "unsafe-staging",
+] as const)("preserves the known provisioning error %s", async code => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.switchover = async () => { throw Object.assign(new Error("untrusted detail"), { code }); };
+  const outcome = await provision!(f.request(`known-${code}`), f.ports);
+  expect(outcome).toMatchObject({ code: 3, reason: code });
+  expect(JSON.stringify(outcome)).not.toContain("untrusted detail");
+}, 5000);
+
+it("quotes an unsafe destination path in the repair command", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.switchover = async () => { throw Object.assign(new Error("untrusted detail"), {
+    code: "destination-permissions-unsafe", details: { path: "/home/fixture/.pi/agent/user's themes" },
+  }); };
+  expect(await provision!(f.request("quoted-permissions"), f.ports)).toMatchObject({ code: 3, reason: "destination-permissions-unsafe",
+    repairCommand: "chmod go-w '/home/fixture/.pi/agent/user'\\''s themes'" });
+}, 5000);
+
+it.each(["/home/fixture-other/private", "/home/fixture/.pi/agent/../private", "/home/fixture/.pi/agent/unsafe\nname"])
+("does not offer a permission repair outside the destination for %s", async path => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.switchover = async () => { throw Object.assign(new Error("untrusted detail"), {
+    code: "destination-permissions-unsafe", details: { path },
+  }); };
+  const outcome = await provision!(f.request("bad-permission-path"), f.ports);
+  expect(outcome.repairCommand).toBeNull();
+  expect(JSON.stringify(outcome)).not.toContain(path);
+}, 5000);
+
+it("does not expose an unknown coded error", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.switchover = async () => { throw Object.assign(new Error("untrusted detail"), { code: "fixture-private" }); };
+  expect(await provision!(f.request("unknown-code"), f.ports)).toMatchObject({ code: 3, reason: "provision-failed" });
+}, 5000);
+
+it("preserves a known agent-directory probe error", async () => {
+  const f = fixture();
+  f.ports.bootstrap.probeAgentDirectory = async () => { throw Object.assign(new Error("untrusted detail"), { code: "invalid-bootstrap-reply" }); };
+  expect(await provision!(f.request("probe-code"), f.ports)).toMatchObject({ code: 3, reason: "invalid-bootstrap-reply" });
+}, 5000);
+
+it("preserves a known peer-lock error", async () => {
+  const f = fixture();
+  f.ports.withPeerLock = async () => { throw Object.assign(new Error("untrusted detail"), { code: "core-changed" }); };
+  expect(await provision!(f.request("lock-code"), f.ports)).toMatchObject({ code: 1, reason: "core-changed" });
+}, 5000);
+
 it("preserves the missing adjacent npm failure in the provisioning outcome", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
   f.ports.transfer.installRelease = async () => { throw Object.assign(new Error("missing npm"), { code: "npm-not-found" }); };

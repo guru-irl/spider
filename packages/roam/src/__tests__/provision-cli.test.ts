@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { chmodSync, existsSync, mkdirSync, lstatSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, lstatSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { RELEASE_ENTRIES } from "../release-request";
 import { createReplica } from "@spider/db-core/testutil";
@@ -12,7 +12,12 @@ import * as provisionModule from "../provision";
 import { DEFAULT_LIMITS } from "../contracts";
 import { openJournal } from "../journal";
 import { confirmProvision, pinProvisionRelease, stageProvisionRelease } from "../provision-cli";
-import { healthyInventory } from "./bootstrap-fixture";
+import { healthyInventory, inventoryEnvelope } from "./bootstrap-fixture";
+import { BOOTSTRAP_AGENT_DIRECTORY_SCRIPT, BOOTSTRAP_IDENTITY_SCRIPT, BOOTSTRAP_SCRIPT, BOOTSTRAP_SETTINGS_SCRIPT } from "../bootstrap-script";
+import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
+import * as bytesClient from "../../../herdr/src/client/bytes";
+import * as coreClient from "../../../herdr/src/client/hc";
+import * as liveness from "../../../herdr/src/client/liveness";
 const HUB = "00000000-0000-4000-8000-000000000001";
 const fixtures: ReturnType<typeof createReplica>[] = [];
 afterEach(() => { for (const f of fixtures.splice(0)) f.close(); vi.restoreAllMocks(); vi.unstubAllEnvs(); });
@@ -308,6 +313,74 @@ it("names the private npm diagnostic receipt after an installation failure", asy
   expect(errors).toMatch(/structured/i);
   expect(errors).toMatch(/new operation/i);
 }, 5000);
+
+it("reports switchover permissions and the repair command through the CLI", async () => {
+  const previous = process.umask(0o002);
+  try {
+    const f = fixture(), sourceAgent = join(f.root, "source-agent"), home = join(f.root, "remote-home");
+    const agent = join(home, ".pi", "agent"), globalRoot = join(agent, "spider"), extensions = join(agent, "extensions");
+    mkdirSync(sourceAgent, { mode: 0o700 }); mkdirSync(join(globalRoot, "roam"), { recursive: true, mode: 0o700 });
+    mkdirSync(extensions, { mode: 0o700 }); chmodSync(extensions, 0o775);
+    writeFileSync(join(globalRoot, "roam", "machine.json"), JSON.stringify({ machineId: f.request.machineId }), { mode: 0o600 });
+    const sha = createHash("sha256").update(readFileSync(f.release)).digest("hex");
+    const release = join(home, ".local", "spider-releases", sha, "node_modules", "@guru-irl", "spider");
+    mkdirSync(join(release, "scripts"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(release, "dist", "intercom"), { recursive: true, mode: 0o700 });
+    copyFileSync(join(process.cwd(), "scripts", "intercom-switchover.mjs"), join(release, "scripts", "intercom-switchover.mjs"));
+    copyFileSync(join(process.cwd(), "scripts", "extension-shim.mjs"), join(release, "scripts", "extension-shim.mjs"));
+    writeFileSync(join(release, "dist", "extension.js"), "export default () => {};", { mode: 0o600 });
+    writeFileSync(join(release, "dist", "intercom", "broker.mjs"), "broker", { mode: 0o600 });
+    writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+    writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB,
+      peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/fixture/bin/node", pi: "/home/fixture/.local/bin/pi",
+        cli: "/home/fixture/.local/lib/spider/dist/roam/cli.mjs", core: "/home/fixture/bin/hc", globalRoot: "/home/fixture/.pi/agent/spider" }],
+      coreUnit: "fixture.service", limits: DEFAULT_LIMITS }), { mode: 0o600 });
+    vi.stubEnv("PI_CODING_AGENT_DIR", sourceAgent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+    vi.stubEnv("HC_SOCKET", join(process.cwd(), ".spider", "scratch", `provision-cli-${process.pid}.sock`)); vi.stubEnv("HC_SESSION", "fixture");
+    vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+    vi.spyOn(liveness, "requireCoreAvailable").mockResolvedValue(undefined);
+    vi.spyOn(coreClient, "invokeCli").mockImplementation(async (_binary, argv) => argv[0] === "server"
+      ? { core: { id: "local-core" }, version: "0.1.16" }
+      : { machines: [{ name: f.request.target, id: "remote-core" }] });
+    vi.spyOn(bytesClient, "invokeBytes").mockImplementation(async (_binary, argv, _env, options) => {
+      if (argv.includes("cat")) return Buffer.from(JSON.stringify({ machineId: f.request.machineId }));
+      if (argv.includes(BOOTSTRAP_AGENT_DIRECTORY_SCRIPT)) return Buffer.from(JSON.stringify({ version: 1, kind: "agent-directory", value: "default" }));
+      if (argv.includes(BOOTSTRAP_SETTINGS_SCRIPT)) return Buffer.from(JSON.stringify({ version: 1, kind: "settings-preview", value: { fingerprint: "a".repeat(64), digests: [] } }));
+      if (argv.includes(BOOTSTRAP_SCRIPT)) return Buffer.from(JSON.stringify(inventoryEnvelope({ ...healthyInventory(),
+        core: { ...healthyInventory().core, unit: "fixture.service" } })));
+      if (argv.includes(BOOTSTRAP_IDENTITY_SCRIPT)) return Buffer.from(JSON.stringify({ version: 1, kind: "identity", coreId: "remote-core", machineId: f.request.machineId }));
+      expect(argv).toContain(PROVISION_REMOTE_SCRIPT);
+      const request = JSON.parse(options.stdin!.toString("utf8")) as Record<string, string>;
+      if (request.action === "enrollment") return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: "enrolled" }));
+      if (request.action === "clear-secrets") return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: true }));
+      if (request.action === "release-observe") return Buffer.from(JSON.stringify({ version: 1, kind: "provision", value: { state: "finished",
+        value: { pi: request.pi, cli: request.cli, supervisor: request.supervisor } } }));
+      expect(request.action).toBe("switchover");
+      for (const key of ["home", "globalRoot", "agentDir", "npmPrefix", "unitDir", "node", "pi", "cli", "core", "supervisor"]) {
+        if (typeof request[key] === "string") request[key] = request[key].replace(/^\/home\/fixture(?=\/|$)/, home);
+      }
+      const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", PROVISION_REMOTE_SCRIPT], {
+        input: JSON.stringify(request), encoding: "utf8", env: { ...process.env, HOME: home }, timeout: 4000,
+      });
+      expect(child.status).toBe(0); expect(child.stderr).toBe("");
+      const reply = JSON.parse(child.stdout) as { path?: string };
+      if (reply.path) reply.path = reply.path.replace(home, "/home/fixture");
+      return Buffer.from(JSON.stringify(reply));
+    });
+    const base = ["roam", "provision", f.request.target, "--release", f.release, "--yes", "--use-destination-auth"];
+    const repair = "chmod go-w '/home/fixture/.pi/agent/extensions'";
+    let output = "", errors = "";
+    const io = { out(text: string) { output += text; }, err(text: string) { errors += text; } };
+    expect(await main([...base, "--operation-id", "permissions-text"], io)).toBe(3);
+    expect(errors).toContain("destination-permissions-unsafe"); expect(errors).toContain(repair);
+    expect(lstatSync(extensions).mode & 0o777).toBe(0o775);
+    expect(existsSync(join(extensions, "spider.ts"))).toBe(false);
+    output = ""; errors = "";
+    expect(await main([...base, "--operation-id", "permissions-json", "--json"], io)).toBe(3);
+    expect(JSON.parse(output)).toMatchObject({ code: 3, reason: "destination-permissions-unsafe", repairCommand: repair });
+    expect(errors).toContain(repair);
+  } finally { process.umask(previous); }
+}, 10_000);
 
 it("selects only explicitly named skills and includes their supporting files", async () => {
   const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });

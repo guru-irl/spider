@@ -52,7 +52,10 @@ function keyAt(file: string, machine: string, open: (file: string) => Db | undef
     // An untrusted symlink is not a replica. A registered path is a known store.
     assertOwned(dirname(file), true); assertOwned(file, false);
     db = open(file);
-    if (!db) { problem(); return null; }
+    if (!db) {
+      try { lstatSync(file); problem(); } catch (error) { problem(error); }
+      return null;
+    }
     if (Number(db.pragma("user_version")) !== 14) { if (replica) problem(); return null; }
     const row = db.prepare("SELECT machine_id, store_key FROM roam_meta WHERE id = 1").get() as { machine_id: string; store_key: StoreKey | null };
     if (row.machine_id !== machine || row.store_key === null) {

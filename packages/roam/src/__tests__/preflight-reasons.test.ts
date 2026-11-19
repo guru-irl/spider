@@ -2,6 +2,8 @@ import { afterEach, expect, it } from "vitest";
 import { createSync } from "../sync";
 import { safeControlOutcome } from "../commands";
 import { HerdrError } from "@spider/herdr/client/parse";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { moveSession } from "../move";
 import type { MovePorts } from "../contracts";
 import { network, BOX, HUB } from "./sync-fixture";
@@ -20,6 +22,28 @@ it.each(["store-inventory-incomplete", "unknown"])("sync retains a safe %s refus
   expect(output.value).toMatchObject({ outcomes: [{ code: 1, reason: reason === "unknown" ? "peer-stores-refused" : reason }] });
   expect(JSON.stringify(output)).not.toContain("private free text");
   expect(JSON.stringify(output)).not.toContain("control-failed");
+});
+
+it.each([
+  ["filesystem", "ENOENT"],
+  ["transport", "cli-timeout"],
+  ["unknown", "unexpected-stores"],
+  ["unsafe-code", "unexpected-stores"],
+] as const)("sync exposes the bounded %s agent cause without exception text", async (kind, causeCode) => {
+  const f = fixture();
+  f.remotes.get(BOX)!.ports.openStore = () => {
+    if (kind === "filesystem") readFileSync(join(f.root, "missing-private-file"));
+    if (kind === "transport") throw new HerdrError("cli-timeout", "private exception details");
+    if (kind === "unsafe-code") throw new HerdrError("private-secret", "private exception details");
+    throw new Error("private exception details");
+  };
+  const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores });
+  const results = await sync.sync(BOX); sync.stop();
+  const output = safeControlOutcome({ code: 1, reason: "Synchronization needs attention", operationId: "sync-a", home: null, epoch: null, repairCommand: null, value: { outcomes: results } });
+  expect(output.value).toMatchObject({ outcomes: [{ code: 1, reason: "agent-operation-failed", causeCode }] });
+  expect(JSON.stringify(output)).not.toContain("private exception details");
+  expect(JSON.stringify(output)).not.toContain("missing-private-file");
+  expect(JSON.stringify(output)).not.toContain("private-secret");
 });
 
 it.each(["transport", "unknown"] as const)("move retains a coded preflight blocker without copying error text (%s)", async kind => {

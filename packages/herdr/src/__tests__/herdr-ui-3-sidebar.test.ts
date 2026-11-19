@@ -941,6 +941,7 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
 
   it('folded headings spin for a working descendant even when the owner is idle', async () => {
     const { spaces, mains, terminals } = groupedFixtures();
+    terminals.splice(3, 2);
     terminals.push({ address: 't5', parent: 't4', state: 'live', status: 'working', labels: { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-two' } });
     const { view } = await agentsView({ agents: () => mains, terminals: () => terminals, spaces: () => spaces }, new Map([['agents.sort', 'grouped']]));
     confirmViewer(view, terminals[terminals.length - 1]);
@@ -949,6 +950,9 @@ describe.skipIf(!process.env.SPIDER_HERDR_MOD_FIXTURE)('sidebar without machine 
     const nodes = heading.children.flatMap(all);
     expect(nodes.some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(true);
     expect(nodes.findIndex(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBeGreaterThan(nodes.findIndex(node => node.id === 'group-count-consoles-sp-s1'));
+    view.spiderFeeds[0].runs = { rows: [], total: 0, truncated: false };
+    const unknown = all(view.render({})).find(node => node.id === 'sp-s1')!;
+    expect(unknown.children.flatMap(all).some(node => node.svg === 'mods/workspace-chrome/spinner.svg')).toBe(false);
   });
 
   it('pinned headings use the grouped caret and counts without a space shape', async () => {

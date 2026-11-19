@@ -63,6 +63,18 @@ it("correlates an agent exception to its safe operation kind and original ID thr
   expect(JSON.stringify(output)).not.toContain("missing-private-file");
 });
 
+it("keeps retryable agent failures pending with a bounded cause and operation kind", async () => {
+  const f = fixture(), remote = f.remotes.get(BOX)!;
+  remote.ports.openStore = () => { throw Object.assign(new HerdrError("cli-timeout", "private exception /private/fixture"), { retryable: true }); };
+  const direct = await handleAgentOperation({ id: "retryable-failure", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, remote.ports);
+  expect(direct).toMatchObject({ code: 3, reason: "Agent operation failed", operationId: "retryable-failure", operationKind: "stores", causeCode: "cli-timeout" });
+  const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores });
+  const results = await sync.sync(BOX); sync.stop();
+  expect(results).toContainEqual(expect.objectContaining({ code: 3, reason: "agent-operation-failed", operationKind: "stores", causeCode: "cli-timeout" }));
+  expect(JSON.stringify({ direct, results })).not.toContain("private exception");
+  expect(JSON.stringify({ direct, results })).not.toContain("/private/fixture");
+});
+
 it("retains a real mirror-export agent exception and its operation ID through sync", async () => {
   const f = fixture(), remote = f.remotes.get(BOX)!;
   remote.global.db.prepare("INSERT INTO session_homes VALUES (?,?,1,NULL,1)").run("mirror-session", BOX);

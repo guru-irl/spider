@@ -66,7 +66,9 @@ function servicePorts(): LaunchdPorts {
   type ServiceFailure = Error & { code: string; notLoaded: boolean };
   const invoke = (argv: readonly string[]) => new Promise<void>((done, reject) => execFile(binary, [...argv], { timeout: 15_000, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
     if (!error) { done(); return; }
-    const notLoaded = /could not find (?:the |specified )?service\b|\bnot loaded\b|\bno such process\b/i.test(`${stdout}\n${stderr}`);
+    const output = `${stdout}\n${stderr}`;
+    const notLoaded = /could not find (?:the |specified )?service\b|\bnot loaded\b|\bno such process\b/i.test(output) ||
+      argv[0] === "print" && !error.killed && !error.signal && error.code === 113 && !output.trim();
     const code = error.killed ? "service-timeout" : safeCauseCode(error.code) ?? "service-failed";
     reject(Object.assign(new Error("Service manager request failed"), { code, notLoaded } satisfies Pick<ServiceFailure, "code" | "notLoaded">));
   }));

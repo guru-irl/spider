@@ -574,7 +574,7 @@ export function runLocalStatus(input: { root: string; now?: number }): RoamStatu
     try { journal = openOwned(join(local.root, "roam", "journal.db")); }
     catch { journalAvailable = false; local.inventory.push({ severity, reason: "Cannot inspect the local operation journal.", repairCommand: null }); }
     const status = readStatus(local.config, { globalDb, stores: usable, journalDb: journal ?? null, now, observations,
-      inventoryComplete: local.inventory.length === 0, journalAvailable });
+      inventoryComplete: local.inventory.every(row => row.reason.startsWith("store-missing:")), journalAvailable });
     status.diagnostics.push(...local.inventory);
     return status;
   } finally { journal?.close(); local.close(); }

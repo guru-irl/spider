@@ -5,6 +5,7 @@ import { openDbReadOnly, type Db } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { catalogPath, openRoamStoreReadOnly, roamStorePath, type ReadStoreOptions, type RoamCatalogSource } from "@spider/db-core/roam/reads";
 import type { StoreKey } from "@spider/db-core/roam/types";
+import type { Diagnostic } from "./contracts";
 
 function assertOwned(file: string, directory: boolean): void {
   const stat = lstatSync(file);
@@ -22,19 +23,22 @@ interface InventoryOptions extends ReadStoreOptions {
 export class StoreInventoryError extends Error {
   readonly code: "store-missing" | "store-uninspectable";
   readonly check: string;
-  constructor(readonly path: string, readonly scope: "repo" | "worktree" | "replica", error?: unknown) {
+  readonly path: string;
+  readonly scope: "repo" | "worktree" | "replica";
+  constructor(path: string, scope: "repo" | "worktree" | "replica", error?: unknown) {
     const code = error && typeof error === "object" && "code" in error ? String(error.code) : "inspect-failed";
     super("Store inventory problem", { cause: error });
+    this.path = path; this.scope = scope;
     this.code = code === "ENOENT" ? "store-missing" : "store-uninspectable";
     this.check = /^[A-Z_]{1,64}$/.test(code) ? code.toLowerCase().replaceAll("_", "-")
       : /^diagnostic-snapshot-(?:changing|wal-unpublished|wal-index-missing|wal-invalid)$/.test(code) ? code : "inspect-failed";
   }
 }
-export function storeInventoryDiagnostic(entry: string, error?: unknown) {
+export function storeInventoryDiagnostic(entry: string, error?: unknown): Diagnostic {
   const problem = error instanceof StoreInventoryError ? error : new StoreInventoryError(entry, "replica", error);
   const path = problem.path.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512);
   return { severity: problem.code === "store-missing" ? "warning" as const : "block" as const,
-    reason: `${problem.code}:${problem.scope}:${problem.check}: ${path}`,
+    reason: `${problem.code}:${problem.scope}:${problem.check}: ${problem.code === "store-uninspectable" ? "Cannot inspect store " : ""}${path}`,
     repairCommand: problem.code === "store-missing" ? "spider roam stores prune" : "spider roam doctor" };
 }
 function keyAt(file: string, machine: string, open: (file: string) => Db | undefined, options: InventoryOptions, replica = false, scope: "repo" | "worktree" | "replica" = "replica"): StoreKey | null {
@@ -57,7 +61,7 @@ function keyAt(file: string, machine: string, open: (file: string) => Db | undef
     }
     storeScope(row.store_key);
     return row.store_key;
-  } catch (error) { problem(error, !(replica && (error as NodeJS.ErrnoException).code === "STORE_PATH_SYMLINK")); return null; }
+  } catch (error) { problem(error, (error as NodeJS.ErrnoException).code !== "STORE_PATH_SYMLINK"); return null; }
   finally { db?.close(); }
 }
 

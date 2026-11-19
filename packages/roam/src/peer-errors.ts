@@ -4,7 +4,8 @@ export function agentFailureCode(reason: unknown): AgentFailureCode | null {
   return typeof reason === "string" && (agentReasons as readonly string[]).includes(reason) ? reason as AgentFailureCode : null;
 }
 export class AgentResponseError extends Error {
-  constructor(readonly check: AgentFailureCode | "peer-response-invalid") { super("Peer agent refused the operation"); }
+  readonly check: AgentFailureCode | "peer-response-invalid";
+  constructor(check: AgentFailureCode | "peer-response-invalid") { super("Peer agent refused the operation"); this.check = check; }
 }
 
 const unreachableCodes = ["machine-not-found", "core-unavailable", "connection-refused", "connection-closed", "missing-hc", "spawn-error", "spawn_failed"];

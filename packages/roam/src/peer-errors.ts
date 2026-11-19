@@ -7,9 +7,13 @@ export function recoveryRefusalCode(value: unknown): RecoveryRefusal | undefined
   return typeof value === "string" && (recoveryRefusals as readonly string[]).includes(value) ? value as RecoveryRefusal : undefined;
 }
 export class RecoveryResponseError extends Error {
-  constructor(readonly reason: RecoveryRefusal, readonly code: 1 | 2 | 3, readonly operationId: string,
-    readonly operationKind: AgentOperationKind, readonly causeCode?: string) {
-    super(reason);
+  readonly reason: RecoveryRefusal;
+  readonly code: 1 | 2 | 3;
+  readonly operationId: string;
+  readonly operationKind: AgentOperationKind;
+  readonly causeCode?: string;
+  constructor(reason: RecoveryRefusal, code: 1 | 2 | 3, operationId: string, operationKind: AgentOperationKind, causeCode?: string) {
+    super(reason); this.reason = reason; this.code = code; this.operationId = operationId; this.operationKind = operationKind; this.causeCode = causeCode;
   }
 }
 

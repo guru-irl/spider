@@ -204,6 +204,19 @@ it.each(["prefix", "release", "release-child", "pi-file"] as const)("refuses an 
   } finally { process.umask(previous); }
 }, 10_000);
 
+it("refuses an unsafe retained pi executable before running npm", async () => {
+  const previous = process.umask(0o002);
+  try {
+    const f = fixture(), bin = join(f.npmPrefix, "bin"); mkdirSync(bin, { mode: 0o700 });
+    writeFileSync(f.peer.pi, "retained", { mode: 0o700 }); chmodSync(f.peer.pi, 0o775);
+    const log = releaseNpmWithDefaultModes(f);
+    await expect(create!(f.options).installRelease(f.peer, f.input)).rejects.toMatchObject({
+      code: "destination-permissions-unsafe", details: { path: f.peer.pi } });
+    expect(lstatSync(f.peer.pi).mode & 0o777).toBe(0o775);
+    expect(readFileSync(f.peer.pi, "utf8")).toBe("retained"); expect(existsSync(log)).toBe(false);
+  } finally { process.umask(previous); }
+}, 10_000);
+
 function prepareSwitchoverRelease(f: ReturnType<typeof fixture>) {
   const scripts = join(f.releaseRoot, "scripts");
   mkdirSync(join(f.releaseRoot, "dist", "intercom"), { recursive: true, mode: 0o700 });
@@ -229,6 +242,14 @@ it.each(["agent", "extensions"] as const)("reports an unsafe existing %s directo
     await expect(adapter.switchover(f.peer, "op-1")).resolves.toMatchObject({ status: "migration-pending" });
   } finally { process.umask(previous); }
 }, 10_000);
+
+it("reports an other-writable extensions directory without changing it", async () => {
+  const f = fixture(), extensions = join(f.agentDir, "extensions"); prepareSwitchoverRelease(f);
+  mkdirSync(extensions, { mode: 0o700 }); chmodSync(extensions, 0o757);
+  await expect(create!(f.options).switchover(f.peer, "op-1")).rejects.toMatchObject({
+    code: "destination-permissions-unsafe", details: { path: extensions } });
+  expect(lstatSync(extensions).mode & 0o777).toBe(0o757);
+}, 5000);
 
 it("does not suggest chmod for a symlinked extensions directory", async () => {
   const f = fixture(), target = join(f.root, "outside"), extensions = join(f.agentDir, "extensions");

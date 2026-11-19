@@ -73,6 +73,21 @@ test('a closed feed cannot report an old running run as working', () => {
     .find(row => row.key === 'run')).toMatchObject({ status: 'working', retained: false });
 });
 
+test('compact finished-group projection keeps unknown and disconnected runs non-working', () => {
+  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null;
+  closed.runs.rows.push({ ...closed.runs.rows[0], id: 'done' as RunId, status: 'done', finishedAt: 1500 });
+  const unknown = { ...terminal('unknown-viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', status: 'blocked' };
+  const disconnected = { ...terminal('run-viewer', 'subagent-viewer', { 'spider.run': 'run' }), parent: 'agent' };
+  const summary: { hiddenFinished?: number } = {};
+  const result = projectAgentChildren([unknown, disconnected], [closed], 'agent', contract, { now: 2000, finishedSummary: summary });
+  expect(result.find(row => row.key === 'missing')).toMatchObject({ status: 'unknown' });
+  expect(result.find(row => row.key === 'run')).toMatchObject({ status: 'disconnected' });
+  expect(summary.hiddenFinished).toBe(1);
+  expect(result.find(row => row.key === 'done')).toBeUndefined();
+  const current = projectAgentChildren([disconnected], [feed()], 'agent', contract, { now: 2000, finishedSummary: {} });
+  expect(current.find(row => row.key === 'run')).toMatchObject({ status: 'working' });
+});
+
 test('a job nests under its matching named run even without a native viewer', () => {
   expect(rows([job('child-job', { 'spider.run': 'run' })]).map(r => [r.key, r.name, r.depth, r.parentKey])).toEqual([
     ['run', 'Builder', 0, null], ['child-job', 'remote.invalid/child-job', 1, 'run'],

@@ -26,6 +26,30 @@ test.each(['exec', 'exec-file', 'batch'])('a %s action with spider.job is listed
   expect(filterTopLevelAgents([{ address: 'agent' }, { address: t.address }], [t], contract)).toEqual([{ address: 'agent' }]);
 });
 
+test('a live viewer without a known run does not claim that its run is working', () => {
+  const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent' };
+  const foreign = feed(); foreign.runs.rows[0].id = 'missing' as RunId; foreign.runs.rows[0].ownerSessionId = 'other-session' as never;
+  for (const feeds of [[], [feed()], [foreign]]) {
+    const result = projectAgentChildren([viewer], feeds, 'agent', contract, { now: 2000 });
+    expect(result.find(row => row.key === 'missing')).toMatchObject({ status: 'unknown', retained: false });
+  }
+  const known = { ...viewer, labels: { ...viewer.labels, 'spider.run': 'run' } };
+  expect(projectAgentChildren([known], [feed()], 'agent', contract, { now: 2000 })
+    .find(row => row.key === 'run')).toMatchObject({ status: 'working', retained: false });
+});
+
+test('a closed feed cannot report an old running run as working', () => {
+  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null;
+  const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'run' }), parent: 'agent' };
+  for (const terminals of [[], [viewer]]) {
+    const result = projectAgentChildren(terminals, [closed], 'agent', contract, { now: 2000 });
+    expect(result.find(row => row.key === 'run')).toMatchObject({ status: 'disconnected', retained: false });
+  }
+  const current = feed();
+  expect(projectAgentChildren([viewer], [current], 'agent', contract, { now: 2000 })
+    .find(row => row.key === 'run')).toMatchObject({ status: 'working', retained: false });
+});
+
 test('a job nests under its matching named run even without a native viewer', () => {
   expect(rows([job('child-job', { 'spider.run': 'run' })]).map(r => [r.key, r.name, r.depth, r.parentKey])).toEqual([
     ['run', 'Builder', 0, null], ['child-job', 'remote.invalid/child-job', 1, 'run'],

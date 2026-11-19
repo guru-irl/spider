@@ -9,6 +9,7 @@ import { parseLocationStores } from "@spider/db-core/roam/catalog";
 import { readSessionHeader } from "@spider/herdr/sessions/launcher";
 import { localBootId, inspectIdLock } from "@spider/herdr/sessions/id-lock";
 import { createSessionLeases, type ProcessProbe } from "@spider/herdr/sessions/lease";
+import { observeCoreIdentity } from "@spider/herdr/client/hc";
 import { createIntentStore } from "./intent";
 import { sessionHome } from "./homes";
 import type { AgentPorts, Operation, Outcome } from "./contracts";
@@ -16,6 +17,7 @@ import { assertBoxEnrollment, participantCaptureInitialized, createRunningIntent
 import { readLocalIdentity } from "./runtime";
 import { createLocalDiagnosticPorts, runLocalDoctor } from "./local-diagnostics";
 import { adoptedOwnerExited } from "./launcher";
+import { readSupervisorCorePin, supervisorCoreEnvironment } from "./enrollment";
 
 export function wakeSupervisor(systemctl: (argv: readonly string[]) => Promise<void> = argv => new Promise((done, reject) => {
   execFile("systemctl", [...argv], { timeout: 5000, maxBuffer: 4096 }, error => error ? reject(new Error("supervisor-wake-failed")) : done());
@@ -47,7 +49,11 @@ export async function handleSessionOperation(operation: Operation, ports: AgentP
     if (existing && !authority.authorized(id, pinned.hubMachineId, pinned.machineId)) return result(1, "participant-intent-untrusted");
     if (existing && (existing.epoch !== home.epoch || existing.moveId !== home.moveId)) return result(1, "participant-intent-home-mismatch");
     let checked: Promise<Awaited<ReturnType<typeof runLocalDoctor>>> | undefined;
-    const doctor = async () => (await (checked ??= runLocalDoctor({ root, launchRecovery: options.launchRecovery }))).diagnostics;
+    const doctor = async () => (await (checked ??= runLocalDoctor({ root, launchRecovery: options.launchRecovery, async currentCore() {
+      const pin = readSupervisorCorePin(root);
+      const identity = await observeCoreIdentity(pin.binary, supervisorCoreEnvironment(pin, process.env), { timeoutMs: 5000 });
+      return identity.coreId === pin.coreId && isDeepStrictEqual(pin, readSupervisorCorePin(root)) ? identity.coreId : null;
+    } }))).diagnostics;
     if (operation.kind === "session-resume") {
       try {
         const blocking = (await doctor()).filter(row => row.severity === "block");

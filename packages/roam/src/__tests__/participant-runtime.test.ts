@@ -384,6 +384,7 @@ it.each([
   ["different handoff", "old-core", "fixture-core", /destination core changed/i],
   ["unavailable", "fixture-core", null, /core identity is unavailable/i],
   ["replaced pin", "fixture-core", "foreign-core", /core identity is unavailable/i],
+  ["pin changed while observing", "fixture-core", "fixture-core", /core identity is unavailable/i],
 ] as const)("resume doctor checks the pinned core when the pending handoff is %s", async (_name, handoffCore, observedCore, detail) => {
   const f = fixture(false), authority = createRunningIntentAuthority(f.global.db);
   const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
@@ -394,6 +395,10 @@ it.each([
     { bootId: async () => "fixture-boot" });
   await lock.prepareHandoff("launch-1", location.file, handoffCore);
   vi.spyOn(enrollmentModule, "inspectSupervisorCorePin").mockReturnValue("ready");
+  if (_name === "pin changed while observing") {
+    const pin = enrollmentModule.readSupervisorCorePin(f.global.root);
+    vi.spyOn(enrollmentModule, "readSupervisorCorePin").mockReturnValueOnce(pin).mockReturnValue({ ...pin, coreId: "foreign-core" });
+  }
   const observer = vi.spyOn(hcModule, "observeCoreIdentity").mockImplementation(async () => {
     if (!observedCore) throw new Error("core unavailable");
     return { coreId: observedCore, socket: "unused", sessionNamespace: "fixture" } as never;

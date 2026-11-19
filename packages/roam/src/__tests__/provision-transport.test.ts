@@ -161,7 +161,7 @@ it.each(["extensions", "themes", "skills/sample"])("discovers writable %s in the
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-it.each(["\u009b", "\u202e"])("does not report a display-spoofing path from the real preview %j", control => {
+it.each(["\u009b", "\u061c", "\u202e"])("does not report a display-spoofing path from the real preview %j", control => {
   const root = mkdtempSync(join(process.env.SPIDER_GLOBAL_ROOT!, "preview-display-")), home = join(root, "home"), agent = join(home, ".pi/agent");
   const unsafe = join(agent, `skills/${control}name`); mkdirSync(unsafe, { recursive: true, mode: 0o700 }); chmodSync(unsafe, 0o775);
   try {

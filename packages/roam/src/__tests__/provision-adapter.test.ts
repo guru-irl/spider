@@ -311,7 +311,7 @@ it("rejects an outside symlink in a proven installer tree without chmodding its 
   expect(lstatSync(outside).mode & 0o777).toBe(0o666);
 }, 10_000);
 
-it.each(["\u009b", "\u202e"])("does not report a display-spoofing path from the remote installer %j", async control => {
+it.each(["\u009b", "\u061c", "\u202e"])("does not report a display-spoofing path from the remote installer %j", async control => {
   const f = fixture(), agentDir = join(f.home, `${control}agent`); mkdirSync(agentDir, { mode: 0o700 }); chmodSync(agentDir, 0o775);
   const options = { ...f.options, destination: { ...f.destination, agentDir } };
   const error = await f.remote.executeProvision(f.peer, { action: "install-files", operationId: "op-1", machineId: f.peer.machineId,

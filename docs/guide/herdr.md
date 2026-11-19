@@ -397,7 +397,9 @@ The left sidebar is Herdr's agents list, extended by setup. It lists each live p
 
 Finished rows are hidden by default. Click **N finished** under a session to show them, and **Hide finished** to hide them again. A finished parent stays visible when it has a running child. Each session has its own toggle.
 
-When a machine is unavailable, its console, command, and running viewer rows show **Unreachable** and cannot be opened. They do not count toward the live pills. The rows update when the machine reconnects. While the owning session is reachable, a finished run can still open its saved local view.
+The sidebar uses the owner feed to report run activity for local and remote viewers. A live viewer absent from the feed shows **Unknown**. A running entry in a closed or stale feed shows **Disconnected** because the feed cannot confirm that it is still active. Neither status counts toward the live pills. These rows remain visible for up to `limits.completedHours`, measured from the viewer's creation for an unknown run or the feed's last update for a disconnected run, and are limited to `limits.completedRows`. If a viewer has no creation time, the row limit still applies.
+
+When a machine is unavailable, its console, command, and viewer rows show **Unreachable** and cannot be opened. They do not count toward the live pills. The rows update when the machine reconnects. A finished run keeps its recorded outcome when a reachable owner can open its saved local view. Otherwise an unavailable viewer shows **Unreachable**.
 
 Use the chevron to the left of an agent icon to fold its children. The pill on a folded row counts active children and opens the list again. To pin or unpin an agent, hover over its icon and click the pin. The elapsed time stays visible.
 

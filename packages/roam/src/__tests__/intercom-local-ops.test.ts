@@ -46,7 +46,7 @@ it("the private CLI refuses credential setup until pair-scoped connector support
   expect(f.calls).toHaveLength(0);
 }, 5000);
 
-it("retains a redacted underlying cause in setup JSON and diagnostics", async () => {
+it("reports only the bounded cause code in setup JSON and diagnostics", async () => {
   const f = fixture(), directory = join(f.sourceRoot, "roam"); mkdirSync(directory, { mode: 0o700 });
   writeFileSync(join(directory, "config.json"), JSON.stringify({ role: "hub", machineId: A, hubMachineId: A, coreUnit: "fixture.service" }), { mode: 0o600 });
   writeFileSync(join(directory, "machine.json"), JSON.stringify({ machineId: A }), { mode: 0o600 });
@@ -57,9 +57,10 @@ it("retains a redacted underlying cause in setup JSON and diagnostics", async ()
     get pairPorts(): typeof f.ports { throw failure; },
   })).toBe(0);
   const reply = JSON.parse(out);
-  expect(reply).toMatchObject({ ok: false, reason: "intercom-setup-pending", cause: { code: "EEXIST", message: expect.stringContaining("file already exists") } });
+  expect(reply).toMatchObject({ ok: false, reason: "intercom-setup-pending" });
+  expect(reply.cause).toEqual({ code: "EEXIST" });
   expect(JSON.parse(diagnostics)).toEqual({ reason: reply.reason, cause: reply.cause });
-  for (const secret of [f.sourceRoot, "private key", "secret-value", "secret-bearer", "private.invalid"]) {
+  for (const secret of [f.sourceRoot, "file already exists", "private key", "secret-value", "secret-bearer", "private.invalid"]) {
     expect(out).not.toContain(secret); expect(diagnostics).not.toContain(secret);
   }
   expect(f.calls).toEqual([]);

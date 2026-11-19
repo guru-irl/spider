@@ -65,6 +65,19 @@ refuses if the broker cannot start or its health check fails. Reload open Pi
 sessions with `/reload` to update `/move`. A command left over from an enabled
 session still refuses after roaming is disabled.
 
+On macOS, the default global root keeps the `com.spider.roam.hub` LaunchAgent
+label. Other roots use that label with a suffix derived from the canonical root,
+so separate roots do not share a plist or service. Disable removes a plist only
+after its definition proves it belongs to the selected root. A missing service
+is safe to remove; after a failed bootout, a service-specific `launchctl print`
+can confirm absence. An unrelated error does not prove absence.
+
+When enable or disable needs reconciliation, text and JSON include a bounded
+`causeCode`. Sync agent refusals and intercom enrollment pending results also
+report bounded causes, using `unexpected-<step>` when the error has no known
+code. The result never copies exception text or paths. Resolve the cause and
+retry the same operation rather than relying on a doctor result with no finding.
+
 Store inventory never treats an unreadable store as deleted. The agent's
 `stores` reply includes readable keys and an `ungathered` list. Each ungathered
 entry names its path, scope, known store key, and a code such as `missing`,

@@ -129,7 +129,8 @@ function releaseNpm(f: ReturnType<typeof fixture>, requireCpu = false, output?: 
 }
 
 function releaseNpmWithDefaultModes(f: ReturnType<typeof fixture>) {
-  const log = join(f.root, "npm-calls"), executable = `#!${process.execPath}\nconsole.log('1.2.0');\n`;
+  const log = join(f.root, "npm-calls"), mask = join(f.root, "pi-umask");
+  const executable = `#!${process.execPath}\nimport fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(mask)},process.umask().toString(8)); console.log('1.2.0');\n`;
   const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';
 const args=process.argv.slice(2), prefix=args[args.indexOf('--prefix')+1];
 fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args)+'\\n');
@@ -174,6 +175,7 @@ it("installs a non-writable tree under umask 002 that inventory can read", async
     }
     walk(f.npmPrefix);
     expect(unsafe).toEqual([]);
+    expect(readFileSync(join(f.root, "pi-umask"), "utf8")).toBe("2");
     expect(lstatSync(join(f.globalRoot, "roam", "provision", "op-1")).mode & 0o777).toBe(0o700);
     expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: true } });
     const bin = join(f.npmPrefix, "bin"), before = lstatSync(bin).mode & 0o777;

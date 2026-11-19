@@ -424,7 +424,8 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   }
   if (argv[0] === "roam" && (argv[1] === "enable" || argv[1] === "disable")) {
     const result = argv[1] === "enable" ? await enableRoaming(root, fileURLToPath(import.meta.url), options?.bundleUrl) : await disableRoaming(root);
-    return emitOutcome(io, outcome(result.code, result.reason, result.issues || result.information ? { issues: result.issues, information: result.information } : null), jsonOutput, `${result.message.split("\n").map(clean).join("\n")}\n`);
+    return emitOutcome(io, { ...outcome(result.code, result.reason, result.issues || result.information ? { issues: result.issues, information: result.information } : null),
+      ...(result.causeCode ? { causeCode: result.causeCode } : {}) }, jsonOutput, `${result.message.split("\n").map(clean).join("\n")}\n`);
   }
   if (argv[0] === "roam" && argv[1] === "stores" && argv[2] === "prune") {
     try {
@@ -499,11 +500,13 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     if (argv[2] !== undefined && !peer) return emitOutcome(io, outcome(2, "machine-not-enrolled"), jsonOutput, "Machine is not enrolled.\n");
     try {
       const reply = await requestHubControl(join(root, "roam", "hub.sock"), peer ? { op: "sync", machine: peer.machineId } : { op: "sync" });
-      const outcomes = Array.isArray(reply.value?.outcomes) ? reply.value.outcomes : [];
-      const failure = outcomes.map(value => value && typeof value === "object" && !Array.isArray(value) && value.code === 1 &&
-        isPeerFailureReason(value.reason) ? value.reason : null).find(Boolean);
-      return emitOutcome(io, { ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null },
-        jsonOutput, `${clean(failure ? `${reply.reason}. ${failure}` : reply.reason)}\n`);
+      const result = { ...reply, operationId: reply.operationId ?? "", home: reply.home ?? null, epoch: reply.epoch ?? null, repairCommand: reply.repairCommand ?? null };
+      const safe = safeControlOutcome(result), value = safe.value as { outcomes?: Array<{ code: number; reason: string; causeCode?: string }> } | null;
+      const outcomes = value?.outcomes ?? [];
+      const failure = outcomes.map(row => row.code === 1 && isPeerFailureReason(row.reason) ? row.reason : null).find(Boolean);
+      const causes = [...new Set(outcomes.flatMap(row => row.causeCode ? [row.causeCode] : []))].slice(0, 16);
+      const text = `${safe.reason}${failure ? `. ${failure}` : ""}${causes.length ? `. Causes: ${causes.join(", ")}` : ""}`;
+      return emitOutcome(io, result, jsonOutput, `${clean(text)}\n`);
     } catch { return emitOutcome(io, outcome(1, "hub-unavailable"), jsonOutput, "The roaming hub is unavailable.\n"); }
   }
   if (argv[0] === "roam" && argv[1] === "status") {

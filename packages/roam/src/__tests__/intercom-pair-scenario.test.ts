@@ -30,6 +30,23 @@ it("enrolls pair-owned units and revokes a live connection before removing only 
   expect(await createIntercomRegistry(f.target.globalRoot).get("pair-1")).toMatchObject({ state: "revoked", cleanupReason: null });
 }, 5000);
 
+it("converges a connector readiness race through the private setup helper in one enrollment", async () => {
+  const f = await scenario(), source = f.locals.get(f.source.machineId)!, run = source.run;
+  let attempts = 0;
+  source.run = async (argv, options) => {
+    if (argv[1] === "machine" && argv[2] === "add" && ++attempts <= 2)
+      return { code: 1, stdout: "", errorKind: "unreachable" };
+    return run(argv, options);
+  };
+  const result = await provisionIntercomEnrollment(f.request, f.enrollment);
+  expect(result, JSON.stringify(result)).toMatchObject({ code: 0, reason: "intercom-enrolled", value: { pairs: ["pair-1"] } });
+  expect(attempts).toBe(3);
+  expect(f.machines()).toHaveLength(1);
+  expect(f.machines()[0]).toMatchObject({ name: "spider-pair-pair-1", id: "core-b", via: true, session: "default" });
+  expect(f.journal.read(f.request.operation.id).filter(row => row.action === "intercom-peer-consent")).toHaveLength(1);
+  expect(await createIntercomRegistry(f.source.globalRoot).get("pair-1")).toMatchObject({ state: "active" });
+}, 5000);
+
 it("enrolls without a separate SSH listener port in either recipe", async () => {
   const f = await scenario();
   expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0, reason: "intercom-enrolled" });

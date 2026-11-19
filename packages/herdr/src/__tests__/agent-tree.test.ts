@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect, test } from 'vitest';
 import { projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from '../../assets/agents/children.js';
+import { projectNavigation, type NavigationSnapshot } from '../../assets/shared/navigation.js';
 import { HerdrLabelContract } from '../contracts.js';
 import type { RunId, SessionFeed } from '../contracts.js';
 import type { AgentTerminal } from '../../assets/agents/children.js';
@@ -24,6 +25,22 @@ test.each(['exec', 'exec-file', 'batch'])('a %s action with spider.job is listed
   const t = terminal('remote.invalid/job', kind, { 'spider.job': 'job' });
   expect(rows([t]).find(r => r.key === 'job')).toMatchObject({ kind: 'remote', depth: 0, action: { kind: 'ipc', request: { op: 'openJob', jobId: 'job' } } });
   expect(filterTopLevelAgents([{ address: 'agent' }, { address: t.address }], [t], contract)).toEqual([{ address: 'agent' }]);
+});
+
+test('navigation keeps unavailable viewers unreachable rather than using their working status', () => {
+  const known = { ...terminal('remote.invalid/known', 'subagent-viewer', { 'spider.run': 'run' }), parent: 'agent' };
+  const missing = { ...terminal('remote.invalid/missing', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent' };
+  const snapshot = {
+    coreId: 'core', destination: null, agents: [{ address: 'agent', pane: 'pane', space: 'space', space_name: 'Work', tab: 'tab', title: 'Main', program: { name: 'pi' }, status: 'working', pinned: false, focused: false }],
+    terminals: [{ ...terminal('agent', 'session'), labels: {} }, known, missing], panes: [], spaces: [], feeds: [feed()],
+    contract, machines: [{ name: 'remote.invalid', layout: 'unavailable' }], now: 2000, completedHours: 24, completedRows: 50,
+  } satisfies NavigationSnapshot;
+  const targets = projectNavigation(snapshot);
+  expect(targets.find(row => row.id === 'run:session:run')).toMatchObject({ status: 'unreachable', action: null });
+  expect(targets.find(row => row.id === 'run:session:missing')).toMatchObject({ status: 'unreachable', action: null });
+  const online = projectNavigation({ ...snapshot, machines: [{ name: 'remote.invalid', layout: 'ready' }] });
+  expect(online.find(row => row.id === 'run:session:run')).toMatchObject({ status: 'working' });
+  expect(online.find(row => row.id === 'run:session:missing')).toMatchObject({ status: 'unknown' });
 });
 
 test('a live viewer without a known run does not claim that its run is working', () => {

@@ -866,7 +866,7 @@ catch (error) {
   const operationId = code === "release-in-progress" && error && typeof error === "object" && "operationId" in error &&
     typeof error.operationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(error.operationId) ? error.operationId : undefined;
   const path = code === "destination-permissions-unsafe" && error instanceof SelectedFilesError && error.files.length === 1 &&
-    isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(error.files[0]) ? error.files[0] : undefined;
+    isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(error.files[0]) ? error.files[0] : undefined;
   process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code, ...(operationId ? { operationId } : {}), ...(path ? { path, ...("recursive" in error && error.recursive === true ? { recursive: true } : {}) } : {}) }));
 }
 `;

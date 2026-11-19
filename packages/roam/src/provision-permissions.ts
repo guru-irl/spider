@@ -2,7 +2,7 @@ import { posix } from "node:path";
 
 function absolutePath(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 4096 && posix.isAbsolute(value) &&
-    posix.normalize(value) === value && !/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(value);
+    posix.normalize(value) === value && !/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(value);
 }
 
 /** A reported path must be in the destination home and related to an approved root. */

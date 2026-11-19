@@ -21,7 +21,7 @@ try {
   const allowed = new Set(["invalid-destination-settings", "unsafe-destination", "invalid-settings-preview", "destination-permissions-unsafe"]);
   let code = error instanceof SelectedFilesError && allowed.has(error.code) ? error.code : "settings-preview-failed";
   const path = code === "destination-permissions-unsafe" && error instanceof SelectedFilesError && error.files.length === 1 &&
-    isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(error.files[0]) ? error.files[0] : undefined;
+    isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(error.files[0]) ? error.files[0] : undefined;
   if (code === "destination-permissions-unsafe" && !path) code = "unsafe-destination";
   process.stdout.write(JSON.stringify({ version: 1, kind: "settings-preview", error: code, ...(path ? { path } : {}) }));
 }
@@ -76,7 +76,7 @@ try {
   const request = fs.readFileSync(0, 'utf8');
   if (typeof request !== 'string' || request.length > 300000) throw new Error('request');
   const input = JSON.parse(request);
-  const validPath = value => typeof value === 'string' && value.length <= 4096 && path.isAbsolute(value) && !/[\x00-\x1f\x7f]/.test(value);
+  const validPath = value => typeof value === 'string' && value.length <= 4096 && path.isAbsolute(value) && !/[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(value);
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
       !['checks,cli,core,coreId,coreUnit,globalRoot,pi', 'agentDir,checks,cli,core,coreId,coreUnit,globalRoot,pi'].includes(Object.keys(input).sort().join(',')) || !validPath(input.core) || typeof input.coreId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/.test(input.coreId) || !validPath(input.pi) || !validPath(input.cli) || !validPath(input.globalRoot) || input.agentDir !== undefined && !validPath(input.agentDir) ||
       !(input.coreUnit === null || typeof input.coreUnit === 'string' && input.coreUnit.length <= 255 && /^[a-zA-Z0-9][a-zA-Z0-9_.@:-]*\.service$/.test(input.coreUnit)) ||
@@ -326,14 +326,14 @@ try {
   const input = JSON.parse(request);
   if (!input || typeof input !== 'object' || Array.isArray(input) || !['home', 'home,agentDir'].includes(Object.keys(input).join(',')) ||
       typeof input.home !== 'string' || input.home.length > 4096 || !path.isAbsolute(input.home) ||
-      path.resolve(input.home) !== input.home || /[\x00-\x1f\x7f]/.test(input.home)) throw new Error('request');
+      path.resolve(input.home) !== input.home || /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(input.home)) throw new Error('request');
   const home = fs.realpathSync(os.homedir()), expected = input.agentDir ?? path.join(home, '.pi/agent');
   if (input.agentDir !== undefined) {
-    if (input.home !== home || typeof expected !== 'string' || expected.length > 4096 || !path.isAbsolute(expected) || path.normalize(expected) !== expected || !expected.startsWith(home + '/') || /[\x00-\x1f\x7f]/.test(expected)) throw new Error('request');
+    if (input.home !== home || typeof expected !== 'string' || expected.length > 4096 || !path.isAbsolute(expected) || path.normalize(expected) !== expected || !expected.startsWith(home + '/') || /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(expected)) throw new Error('request');
   }
   function isDefault(value, cwd) {
     if (!value) return expected === path.join(home, '.pi/agent');
-    if (typeof value !== 'string' || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value)) return false;
+    if (typeof value !== 'string' || value.length > 4096 || /[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(value)) return false;
     try {
       let expanded = value;
       if (value === '~') expanded = home;
@@ -392,7 +392,7 @@ try {
   while (count < request.length) { const size = readSync(0, request, count, request.length - count, null); if (!size) break; count += size; }
   if (count > 16384) throw new Error('invalid-request');
   const input = JSON.parse(request.subarray(0, count).toString('utf8'));
-  const valid = value => typeof value === 'string' && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value);
+  const valid = value => typeof value === 'string' && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(value);
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
       Object.keys(input).sort().join(',') !== 'core,coreId,globalRoot,machineId,operationId' ||
       typeof input.operationId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(input.operationId) ||

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Peer } from "../contracts";
 import { parseConfig } from "../config";
@@ -23,7 +23,7 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of r
 function fixture() {
   const scratch = join(process.cwd(), ".spider", "scratch"); mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, "autostart-")); roots.push(root);
-  const box = join(root, "box"), roam = join(box, "roam"), bin = join(root, "bin"), state = join(root, "autostart");
+  const box = join(root, "box"), roam = join(box, "roam"), bin = join(root, "bin"), state = join(root, "autostart"), calls = join(root, "systemctl-calls");
   for (const dir of [box, roam, bin]) mkdirSync(dir, { mode: 0o700 });
   writeFileSync(join(roam, "machine.json"), JSON.stringify({ machineId: BOX }), { mode: 0o600 });
   writeFileSync(join(roam, "config.json"), JSON.stringify({ enabled: false, role: "box", machineId: BOX, hubMachineId: HUB,
@@ -34,7 +34,7 @@ function fixture() {
   writeFileSync(unit, "fixture unit");
   const core = join(bin, "core"), systemctl = join(bin, "systemctl");
   writeFileSync(core, `#!${process.execPath}\nconsole.log(JSON.stringify({core:{id:'fixture-core'},pid:123}));\n`, { mode: 0o700 });
-  writeFileSync(systemctl, `#!${process.execPath}\nimport fs from 'node:fs';\nconst args=process.argv.slice(2);\nif(args[0]!=='--user'||args[2]!=='spider-roam-supervisor.service') process.exit(1);\nif(args[1]==='is-enabled'){ const value=fs.readFileSync(${JSON.stringify(state)},'utf8'); console.log(value); process.exit(['disabled','not-found','masked'].includes(value)?1:0); }\nif(!['enable','disable'].includes(args[1])||!fs.existsSync(${JSON.stringify(unit)})) process.exit(1);\nfs.writeFileSync(${JSON.stringify(state)},args[1]==='enable'?'enabled':'disabled');\n`, { mode: 0o700 });
+  writeFileSync(systemctl, `#!${process.execPath}\nimport fs from 'node:fs';\nconst args=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify(args)+'\\n');\nif(args[0]!=='--user'||args[2]!=='spider-roam-supervisor.service') process.exit(1);\nconst exists=fs.existsSync(${JSON.stringify(unit)}), value=fs.readFileSync(${JSON.stringify(state)},'utf8');\nif(args[1]==='is-enabled'){ const observed=exists?(value==='blocked'?'disabled':value):'not-found'; console.log(observed); process.exit(['disabled','not-found','masked'].includes(observed)?1:0); }\nif(!['enable','disable'].includes(args[1])||!exists||['blocked','masked'].includes(value)) process.exit(1);\nfs.writeFileSync(${JSON.stringify(state)},args[1]==='enable'?'enabled':'disabled');\n`, { mode: 0o700 });
   const peer: Peer = { machineId: BOX, alias: "box-1.invalid", node: process.execPath, pi: join(bin, "pi"), cli: join(bin, "cli"), core, globalRoot: box };
   const config = parseConfig({ enabled: false, role: "hub", machineId: HUB, hubMachineId: HUB, peers: [peer], discoveryRoots: [], coreUnit: "fixture.service" });
   const journal = openJournal(join(root, "journal.db"));
@@ -48,7 +48,7 @@ function fixture() {
     if (reply.error) throw Object.assign(new Error(reply.error), { code: reply.error });
     return reply.value;
   } };
-  return { root, box, roam, bin, state, unit, peer, config, journal, transport };
+  return { root, box, roam, bin, state, unit, calls, peer, config, journal, transport };
 }
 
 it("restores supervisor autostart when explicit enable follows a blocked provision", async () => {
@@ -62,14 +62,49 @@ it("restores supervisor autostart when explicit enable follows a blocked provisi
   expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
 });
 
-it("reports a failed autostart repair and converges after the unit returns", async () => {
+it("enables participation without a unit and restores autostart after provision", async () => {
   const f = fixture(); rmSync(f.unit);
   const enable = () => setEnrolledPeerEnabled({ ...f, enabled: true, restoreAutostart: true, transport: f.transport as never });
-  await expect(enable()).rejects.toMatchObject({ code: "command-failed" });
+  await expect(enable()).resolves.toBeUndefined();
+  expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
   expect(readFileSync(f.state, "utf8")).toBe("disabled");
+  vi.stubEnv("PATH", f.bin); vi.stubEnv("HOME", f.root);
+  const { inspectSupervisorAutostart } = await import("../local-diagnostics");
+  const report = await runLocalDoctor({ root: f.box, supervisorAutostart: inspectSupervisorAutostart });
+  expect(report.diagnostics).toContainEqual({ reason: "supervisor-autostart-unavailable: Supervisor autostart cannot be verified. Check the supervisor unit and systemd user service.",
+    severity: "warning", repairCommand: null });
+  expect(existsSync(f.calls)).toBe(false);
   writeFileSync(f.unit, "fixture unit");
   await expect(enable()).resolves.toBeUndefined();
   expect(readFileSync(f.state, "utf8")).toBe("enabled");
+});
+
+it.each(["blocked", "masked", "missing-systemctl"])("keeps participation enabled when autostart repair is %s", async failure => {
+  const f = fixture();
+  if (failure === "missing-systemctl") rmSync(join(f.bin, "systemctl"));
+  else writeFileSync(f.state, failure);
+  const enable = () => setEnrolledPeerEnabled({ ...f, enabled: true, restoreAutostart: true, transport: f.transport as never });
+  await expect(enable()).resolves.toBeUndefined();
+  expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(true);
+  vi.stubEnv("PATH", f.bin); vi.stubEnv("HOME", f.root);
+  const { inspectSupervisorAutostart } = await import("../local-diagnostics");
+  const report = await runLocalDoctor({ root: f.box, supervisorAutostart: inspectSupervisorAutostart });
+  const finding = failure === "blocked" ? "supervisor-autostart-disabled:" : "supervisor-autostart-unavailable:";
+  expect(report.diagnostics.some(row => row.severity === "warning" && row.reason.startsWith(finding))).toBe(true);
+  if (failure === "missing-systemctl") return;
+  writeFileSync(f.state, "disabled");
+  await expect(enable()).resolves.toBeUndefined();
+  expect(readFileSync(f.state, "utf8")).toBe("enabled");
+  await expect(enable()).resolves.toBeUndefined();
+  expect(readFileSync(f.state, "utf8")).toBe("enabled");
+});
+
+it("does not hide an enrollment conflict when autostart is unavailable", async () => {
+  const f = fixture(); rmSync(f.unit);
+  writeFileSync(join(f.roam, "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  await expect(setEnrolledPeerEnabled({ ...f, enabled: true, restoreAutostart: true, transport: f.transport as never }))
+    .rejects.toMatchObject({ code: "enrollment-conflict" });
+  expect(JSON.parse(readFileSync(join(f.roam, "config.json"), "utf8")).enabled).toBe(false);
 });
 
 it("restores autostart only after enable preflight succeeds", async () => {
@@ -102,7 +137,7 @@ it("restores autostart only after enable preflight succeeds", async () => {
 });
 
 it("observes persistent autostart through the systemctl result", async () => {
-  const f = fixture(); vi.stubEnv("PATH", f.bin);
+  const f = fixture(); vi.stubEnv("PATH", f.bin); vi.stubEnv("HOME", f.root);
   const { inspectSupervisorAutostart } = await import("../local-diagnostics");
   for (const [actual, expected] of [["disabled", "disabled"], ["enabled", "enabled"], ["enabled-runtime", "disabled"], ["not-found", "unknown"], ["masked", "unknown"]] as const) {
     writeFileSync(f.state, actual);
@@ -124,6 +159,9 @@ it("warns when an enabled box has disabled supervisor autostart", async () => {
     const report = await run(state);
     expect(report.diagnostics.some(row => row.reason.startsWith("supervisor-autostart-disabled:"))).toBe(false);
   }
+  expect((await run("unknown")).diagnostics).toContainEqual({ reason: "supervisor-autostart-unavailable: Supervisor autostart cannot be verified. Check the supervisor unit and systemd user service.",
+    severity: "warning", repairCommand: null });
+  expect((await run("enabled")).diagnostics.some(row => row.reason.startsWith("supervisor-autostart-unavailable:"))).toBe(false);
   writeFileSync(join(f.roam, "config.json"), JSON.stringify({ enabled: false, role: "box", machineId: BOX, hubMachineId: HUB,
     peers: [], discoveryRoots: [], coreUnit: "fixture.service" }), { mode: 0o600 });
   expect((await run("disabled")).diagnostics.some(row => row.reason.startsWith("supervisor-autostart-disabled:"))).toBe(false);

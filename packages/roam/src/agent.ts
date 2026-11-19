@@ -1,4 +1,5 @@
 import { openDbReadOnly } from "@spider/db-core";
+import { causeCode } from "./cause-codes";
 import { syncHandshake } from "./revocation";
 import { inspectSession, verifyFrozenSession } from "./session-file";
 import { exportMirrorRange, type MirrorPrefix } from "./mirrors";
@@ -655,6 +656,6 @@ async function dispatchParsedOperation(operation: Operation, request: Request, p
     if (error && typeof error === "object" && "retryable" in error && error.retryable === true) {
       return outcome(3, error instanceof Error ? error.message : "Agent operation is retryable", id);
     }
-    return outcome(1, "Agent operation failed", id);
+    return { ...outcome(1, "Agent operation failed", id), causeCode: causeCode(error, request.kind) };
   }
 }

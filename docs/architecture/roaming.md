@@ -557,12 +557,23 @@ required closure evidence is missing, cleanup remains unconfirmed. The pair
 host can remove its key even when the connecting box is unreachable, but other
 cleanup can remain pending. Missing key-removal evidence returns exit code 3
 and `intercom-revocation-unconfirmed`; recovery retries the same cleanup.
-Live terminals leave route cleanup pending with
-`intercom-revocation-shared-jobs`. Finished rows retained in `ls --all --json`
-do not block cleanup. The terminal check accepts label-free rows and validates
-`state`, plus `exit_code` and `reason` for finished rows. Unknown states,
-malformed rows, and incomplete listings still leave cleanup pending.
-Revocation does not delete terminal history or stop unrelated live terminals.
+Any live terminal on the target's core leaves route cleanup pending with
+`intercom-revocation-shared-jobs`, because terminal rows do not identify their
+owner. Revocation does not stop or delete those terminals. They must all finish
+before route cleanup can complete, even if they are unrelated to the pair.
+Doctor names the target box and explains this requirement.
+
+Finished rows retained in `ls --all --json` do not block cleanup. The terminal
+check accepts label-free rows with a non-empty `reason` string. Each of
+`exit_code` and `signal` can be absent, null, or an integer. This includes killed
+terminals with a signal but no exit code, and terminals whose holder was lost.
+Only the target core's own terminals decide whether it is idle. Rows routed
+from other cores still need valid, unique addresses, but their state does not
+block cleanup. The fallback listing through the source checks state only for
+rows prefixed with the pair's route. Terminal IDs use lowercase base-36 in both
+paths. Unknown states or malformed metadata on relevant rows, invalid or
+duplicate addresses, and incomplete listings still leave cleanup pending.
+Revocation does not delete terminal history.
 
 With both boxes reachable and no live terminals, a plain revoke from the hub
 stops and disables both pair units, removes the target key and source route,
@@ -571,6 +582,9 @@ Pending results and doctor diagnostics provide
 `spider roam intercom revoke pair-1` as the retry command. Run it from the hub
 once live terminals finish or the unavailable box returns. The hub uses its
 management routes, since stopping a pair host closes the pair's own route.
+The CLI and doctor on a box tell you to run the repair command on the hub.
+An unmatched fence has no repair command until its pair record is restored.
+Keep both boxes reachable during recovery.
 Unconfirmed cleanup means closure evidence is missing, not that the target
 is necessarily offline. A completed revoke permits fresh enrollment with a
 new epoch and fresh consent.
@@ -594,7 +608,9 @@ To close a pending restore after approval, run
 epoch when its identity matches the recorded fence. For explicit historical
 recovery on the hub, use
 `spider roam intercom revoke pair-1 --fence-epoch edge-1` with the epoch reported
-by doctor. Both paths close fresh-epoch command access and leave messaging fenced.
+by doctor. A retry command preserves an explicit `--fence-epoch`, even if the
+first attempt fails before recording revocation. Both paths close fresh-epoch
+command access and leave messaging fenced.
 
 The implementation is in `packages/roam/src/intercom-store.ts`,
 `packages/roam/src/intercom-bridge.ts`, and

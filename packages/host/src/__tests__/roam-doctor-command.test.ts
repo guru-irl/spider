@@ -168,6 +168,7 @@ it("an admitted pi session reports unavailable remote doctor and invalid options
   expect(f.gate.inspect().kind).toBe("ordinary");
   await f.commands.get("spider")!("roam doctor box-1.invalid", f.ctx);
   expect(f.notices.join("\n")).toMatch(/remote doctor.*unavailable/i);
+  expect(f.notices.join("\n")).toContain("roaming-config-unavailable");
   f.notices.length = 0;
   await f.commands.get("spider")!("roam doctor --write", f.ctx);
   expect(f.notices.join("\n")).toMatch(/invalid arguments/i);

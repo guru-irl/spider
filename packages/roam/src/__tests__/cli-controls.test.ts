@@ -59,6 +59,28 @@ async function fixture(identity = HUB, reply?: HubControlReply, withSocket = tru
   return { root, calls, out, err, invoke: (args: string[]) => main(args, { out: text => out.push(text), err: text => err.push(text) }) };
 }
 
+it.each(["missing", "invalid"] as const)("remote doctor reports %s local configuration without inventing a peer failure", async mode => {
+  const f = await fixture(HUB, undefined, false), file = join(f.root, "roam/config.json");
+  if (mode === "missing") unlinkSync(file);
+  else writeFileSync(file, "not JSON", { mode: 0o600 });
+  expect(await f.invoke(["roam", "doctor", "box-1.invalid"])).toBe(1);
+  expect(f.err.join("")).toMatch(/remote doctor.*unavailable/i);
+  expect(f.err.join("")).toContain("roaming-config-unavailable");
+  expect(f.err.join("")).not.toContain("peer-");
+  expect(await f.invoke(["roam", "doctor", "box-1.invalid", "--json"])).toBe(1);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "roaming-config-unavailable", repairCommand: "spider roam doctor" });
+}, 5000);
+
+it("remote doctor reports an unenrolled machine without inventing a peer failure", async () => {
+  const f = await fixture(HUB, undefined, false);
+  expect(await f.invoke(["roam", "doctor", "other.invalid"])).toBe(2);
+  expect(f.err.join("")).toMatch(/remote doctor.*unavailable/i);
+  expect(f.err.join("")).toContain("machine-not-enrolled");
+  expect(f.err.join("")).not.toContain("peer-");
+  expect(await f.invoke(["roam", "doctor", "other.invalid", "--json"])).toBe(2);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "machine-not-enrolled" });
+}, 5000);
+
 it("doctor warns with missing store paths and prune removes only missing registrations once", async () => {
   const f = await fixture(HUB, undefined, false), db = openDb(join(f.root, "spider.db"));
   migrate(db, "global", { machineId: HUB, globalRoot: f.root });
@@ -133,6 +155,15 @@ it.each(["missing", "corrupt", "transport", "process", "timeout", "invalid-docto
     if (mode === "invalid-doctor") expect(enabled).toContain("preflight-failed:box-1.invalid:peer-response-invalid");
   }
   f.out.length = 0;
+  if (["transport", "process", "invalid-doctor"].includes(mode)) {
+    expect(await f.invoke(["roam", "doctor", "box-1.invalid"])).toBe(1);
+    const text = f.err.join("");
+    const reason = mode === "transport" ? "box-unreachable:box-1.invalid" :
+      `preflight-failed:box-1.invalid:${mode === "process" ? "peer-command-failed" : "peer-response-invalid"}`;
+    expect(text).toMatch(/remote doctor.*unavailable/i);
+    expect(text).toContain(reason);
+    expect(text).not.toContain("private stderr");
+  }
   await f.invoke(["roam", "doctor", "box-1.invalid", "--json"]);
   const doctor = f.out.join("");
   if (mode === "transport") expect(doctor).toContain("box-unreachable:box-1.invalid");

@@ -46,7 +46,9 @@ test('navigation keeps unavailable viewers unreachable rather than using their w
 
 test('a live viewer without a known run does not claim that its run is working', () => {
   const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent' };
-  const foreign = feed(); foreign.runs.rows[0].id = 'missing' as RunId; foreign.runs.rows[0].ownerSessionId = 'other-session' as never;
+  const owner = feed().owner;
+  const foreign = feed({ ...owner, sessionId: 'other-session' as SessionFeed['owner']['sessionId'], terminal: { ...owner.terminal, address: 'other-agent', terminalId: 'other-agent' } } as SessionFeed['owner']);
+  foreign.runs.rows[0].id = 'missing' as RunId;
   for (const feeds of [[], [feed()], [foreign]]) {
     const result = projectAgentChildren([viewer], feeds, 'agent', contract, { now: 2000 });
     expect(result.find(row => row.key === 'missing')).toMatchObject({ status: 'unknown', retained: false });
@@ -75,8 +77,9 @@ test('a closed feed cannot report an old running run as working', () => {
 });
 
 test('compact finished-group projection keeps unknown and disconnected runs non-working', () => {
-  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null;
-  closed.runs.rows.push({ ...closed.runs.rows[0], id: 'done' as RunId, status: 'done', finishedAt: 1500 });
+  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null; closed.revision = 2;
+  closed.runs.rows.push({ ...closed.runs.rows[0], id: 'done' as RunId, status: 'done', canSteer: false, finishedAt: 1500 });
+  closed.runs.total = 2;
   const unknown = { ...terminal('unknown-viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', status: 'blocked' };
   const disconnected = { ...terminal('run-viewer', 'subagent-viewer', { 'spider.run': 'run' }), parent: 'agent' };
   const summary: { hiddenFinished?: number } = {};
@@ -90,7 +93,7 @@ test('compact finished-group projection keeps unknown and disconnected runs non-
 });
 
 test('unconfirmed run rows age out without inventing a finished outcome', () => {
-  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null;
+  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null; closed.revision = 2;
   const unknown = { ...terminal('unknown-viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', created_ms: 2000 };
   const cutoff = 2000 + 60 * 60 * 1000;
   for (const compact of [false, true]) {
@@ -108,7 +111,7 @@ test('unconfirmed run rows age out without inventing a finished outcome', () => 
 });
 
 test('future remote timestamps do not hide unconfirmed rows', () => {
-  const closed = feed(); closed.lifecycle = 'closed'; closed.updatedAt = 3000;
+  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null; closed.revision = 2; closed.updatedAt = 3000;
   const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', created_ms: 3000 };
   const result = projectAgentChildren([viewer], [closed], 'agent', contract, { now: 2000, completedHours: 1 });
   expect(result.map(row => [row.key, row.status])).toEqual([['missing', 'unknown'], ['run', 'disconnected']]);
@@ -117,13 +120,13 @@ test('future remote timestamps do not hide unconfirmed rows', () => {
 test('unconfirmed viewers without creation times remain bounded by the row limit', () => {
   const first = { ...terminal('first', 'subagent-viewer', { 'spider.run': 'first' }), parent: 'agent' };
   const second = { ...terminal('second', 'subagent-viewer', { 'spider.run': 'second' }), parent: 'agent' };
-  const empty = feed(); empty.runs.rows = [];
+  const empty = feed(); empty.runs = { rows: [], total: 0, truncated: false };
   expect(projectAgentChildren([first, second], [empty], 'agent', contract, { now: 2000, completedRows: 1 })
     .filter(row => row.status === 'unknown')).toHaveLength(1);
 });
 
 test('cached sidebar input changes when unconfirmed rows age out', () => {
-  const closed = feed(); closed.lifecycle = 'closed';
+  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null; closed.revision = 2;
   const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', created_ms: 2000 };
   const input = { agents: [], terminals: [viewer], panes: [], spaces: [], machines: [], feeds: [closed],
     focus: null, connections: null, error: null, completedRows: 50 };
@@ -135,8 +138,8 @@ test('cached sidebar input changes when unconfirmed rows age out', () => {
 });
 
 test('a newer closed feed invalidates cached uncertain row ordering', () => {
-  const older = feed(); older.lifecycle = 'closed'; older.updatedAt = 1500;
-  const newer = { ...older, updatedAt: 1900 };
+  const older = feed(); older.lifecycle = 'closed'; older.ipc = null; older.revision = 2; older.updatedAt = 1500;
+  const newer = { ...older, revision: 3, updatedAt: 1900 };
   const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', created_ms: 1800 };
   const project = (source: SessionFeed) => projectAgentChildren([viewer], [source], 'agent', contract, { now: 2000, completedRows: 1 });
   expect(project(older).map(row => row.key)).toEqual(['missing']);
@@ -147,7 +150,7 @@ test('a newer closed feed invalidates cached uncertain row ordering', () => {
 });
 
 test('blocked unconfirmed viewers do not count or raise folded attention', () => {
-  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null;
+  const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null; closed.revision = 2;
   const unknown = { ...terminal('unknown-viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', status: 'blocked', created_ms: 2000 };
   const disconnected = { ...terminal('run-viewer', 'subagent-viewer', { 'spider.run': 'run' }), parent: 'agent', status: 'blocked' };
   const rows = projectAgentChildren([unknown, disconnected], [closed], 'agent', contract, { now: 2000, finishedSummary: {} });

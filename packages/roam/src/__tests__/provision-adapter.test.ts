@@ -92,12 +92,24 @@ function fixture(short = false) {
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-function releaseNpm(f: ReturnType<typeof fixture>) {
+function releaseNpm(f: ReturnType<typeof fixture>, requireCpu = false) {
   const log = join(f.root, "npm-calls");
-  const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';\nconst a=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args:a,root:process.env.SPIDER_GLOBAL_ROOT})+'\\n');\nconst prefix=a[a.indexOf('--prefix')+1];\nif(a.includes('--global')){const dir=path.join(prefix,'bin');fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(path.join(dir,'pi'),${JSON.stringify(`#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(join(f.root, "pi-release-calls"))},JSON.stringify(process.argv.slice(2))+'\\n'); console.log('1.2.0');\n`)},{mode:0o700});}\nelse {const p=path.join(prefix,'node_modules','@guru-irl','spider');for(const file of ['dist/extension.js','dist/intercom/broker.mjs','dist/roam/cli.mjs','dist/roam/supervisor.mjs','scripts/intercom-switchover.mjs','scripts/extension-shim.mjs']){const out=path.join(p,file);fs.mkdirSync(path.dirname(out),{recursive:true,mode:0o700});fs.writeFileSync(out,'fixture',{mode:0o600});}}\n`;
+  const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';\nconst a=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args:a,root:process.env.SPIDER_GLOBAL_ROOT,cuda:process.env.npm_config_onnxruntime_node_install_cuda})+'\\n');\nif(${requireCpu} && process.env.npm_config_onnxruntime_node_install_cuda!=='skip') process.exit(1);\nconst prefix=a[a.indexOf('--prefix')+1];\nif(a.includes('--global')){const dir=path.join(prefix,'bin');fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(path.join(dir,'pi'),${JSON.stringify(`#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(join(f.root, "pi-release-calls"))},JSON.stringify(process.argv.slice(2))+'\\n'); console.log('1.2.0');\n`)},{mode:0o700});}\nelse {const p=path.join(prefix,'node_modules','@guru-irl','spider');for(const file of ['dist/extension.js','dist/intercom/broker.mjs','dist/roam/cli.mjs','dist/roam/supervisor.mjs','scripts/intercom-switchover.mjs','scripts/extension-shim.mjs']){const out=path.join(p,file);fs.mkdirSync(path.dirname(out),{recursive:true,mode:0o700});fs.writeFileSync(out,'fixture',{mode:0o600});}}\n`;
   writeFileSync(join(f.bin, "npm"), npm, { mode: 0o700 });
   return log;
 }
+
+it("installs with CUDA downloads disabled for both npm commands", async () => {
+  vi.stubEnv("npm_config_onnxruntime_node_install_cuda", "force");
+  try {
+    const f = fixture(), adapter = create!(f.options), log = releaseNpm(f, true);
+    await expect(adapter.installRelease(f.peer, f.input)).resolves.toEqual({
+      pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor,
+    });
+    const calls = readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line) as { cuda?: string });
+    expect(calls.map(call => call.cuda)).toEqual(["skip", "skip"]);
+  } finally { vi.unstubAllEnvs(); }
+}, 10_000);
 
 it("enrollment short writes converge after a lost reply and reject a changed hub", async () => {
   const f = fixture(), adapter = create!(f.options), hub = "00000000-0000-4000-8000-000000000001";

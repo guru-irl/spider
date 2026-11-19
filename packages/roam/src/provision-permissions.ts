@@ -17,7 +17,7 @@ export function permissionTreeRoot(path: unknown, prefix?: string): path is stri
   if (!absolutePath(path)) return false;
   if (prefix !== undefined) {
     const releases = `${prefix}/spider-releases/`;
-    return path === posix.join(prefix, "lib/node_modules/@earendil-works/pi-coding-agent") ||
+    return path === posix.join(prefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent") ||
       path.startsWith(releases) && /^[a-f0-9]{64}$/.test(path.slice(releases.length));
   }
   return /\/lib\/node_modules\/@earendil-works\/pi-coding-agent$/.test(path) || /\/spider-releases\/[a-f0-9]{64}$/.test(path);

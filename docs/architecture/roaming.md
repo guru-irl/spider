@@ -75,8 +75,16 @@ can confirm absence. An unrelated error does not prove absence.
 When enable or disable needs reconciliation, text and JSON include a bounded
 `causeCode`. Sync agent refusals and intercom enrollment pending results also
 report bounded causes, using `unexpected-<step>` when the error has no known
-code. The result never copies exception text or paths. Resolve the cause and
-retry the same operation rather than relying on a doctor result with no finding.
+code. Sync failures identify the operation kind and ID; answered recovery
+refusals such as `roaming-disabled` stay distinct from transport failures.
+Cause and operation-kind fields never copy exception text or paths. Resolve the
+cause and retry the same operation rather than relying on a doctor result with
+no finding.
+
+Pair enrollment retries a native `unreachable` route-add failure with bounded
+backoff, at most eight attempts within a 40-second add deadline. Each attempt
+rechecks the existing route and pinned peer identity. Other native failures are
+not retried, and the reported cause contains no command stderr.
 
 Store inventory never treats an unreadable store as deleted. The agent's
 `stores` reply includes readable keys and an `ungathered` list. Each ungathered

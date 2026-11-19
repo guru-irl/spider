@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { openDbReadOnly, type Db } from "@spider/db-core";
+import { openDbReadOnly, validateRoamLayout, type Db } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
 import { catalogPath, openRoamPathReadOnly, roamStorePath, type ReadStoreOptions, type RoamCatalogSource } from "@spider/db-core/roam/reads";
 import type { StoreKey } from "@spider/db-core/roam/types";
@@ -62,7 +62,7 @@ export function storeInventoryDiagnostic(entry: string, error?: unknown, severit
       : "Restore the store or repair its permissions or database, then rerun spider roam doctor." };
 }
 function ungathered(issue: StoreInventoryError, key: StoreKey | null, options: InventoryOptions): void {
-  const code = issue.code === "store-missing" ? "missing" : issue.check.startsWith("store-path-") ? "unsafe"
+  const code = issue.code === "store-missing" ? "missing" : (issue.check.startsWith("store-path-") || issue.check === "store-layout-unsafe") ? "unsafe"
     : /^(?:sqlite-(?:corrupt|notadb))/.test(issue.check) ? "corrupt" : /^(?:eacces|eperm)$/.test(issue.check) ? "unreadable" : "uninspectable";
   options.onUngathered?.({ key, scope: issue.scope, path: issue.path, code, check: issue.check });
 }
@@ -135,6 +135,12 @@ export function listStoreKeys(source: RoamCatalogSource, options: InventoryOptio
         continue;
       }
       const row = db?.prepare("SELECT store_key,machine_id FROM roam_meta WHERE id=1").get() as { store_key: string | null; machine_id: string } | undefined;
+      if (row?.store_key === null) {
+        let safe = false;
+        try { safe = validateRoamLayout(db, storeScope(key), "inspect").captureSafe; }
+        catch (error) { if (error && typeof error === "object" && "code" in error) throw error; }
+        if (!safe) { problem({ code: "STORE_LAYOUT_UNSAFE" }); continue; }
+      }
       if (row && (row.store_key === key || row.store_key === null) && row.machine_id === machine) keys.add(key);
       else problem();
     } catch (error) { problem(error); }

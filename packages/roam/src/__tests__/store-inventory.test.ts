@@ -1,5 +1,5 @@
 import { createStorePort } from "../stores";
-import { readLocal } from "@spider/db-core/roam/local-state";
+import { readLocal, writeLocal } from "@spider/db-core/roam/local-state";
 import { afterEach, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
@@ -191,4 +191,15 @@ it("persists the coded inventory cause in local store problems", () => {
   const stores = createStorePort(ports.config, global.db);
   try { expect(stores.list(HUB)).toEqual(["global"]); } finally { stores.close(); }
   expect(readLocal(global.db, "store-problem", file)).toEqual({ reason: "store-uninspectable:worktree:sqlite-notadb" });
+});
+
+it("does not assign a mapped identity to an incompatible unassigned store", async () => {
+  const { global, ports } = fixture(), wrong = createReplica("global", BOX); fixtures.push(wrong);
+  wrong.db.prepare("UPDATE roam_meta SET store_key=NULL").run();
+  global.db.prepare("INSERT INTO roam_repo_maps(repo_key,path) VALUES ('wrong-scope',?)").run(wrong.root);
+  writeLocal(global.db, "mapping-redirect", "repo:wrong-scope", wrong.db.raw.name);
+  const result = await handleAgentOperation({ id: "wrong-scope", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, ports);
+  expect((result.value as { stores: string[] }).stores).not.toContain("repo:wrong-scope");
+  expect((result.value as { ungathered: unknown[] }).ungathered).toContainEqual(expect.objectContaining({ key: "repo:wrong-scope", code: "unsafe", path: wrong.db.raw.name }));
+  expect(wrong.db.prepare("SELECT store_key,capture_enabled FROM roam_meta").get()).toEqual({ store_key: null, capture_enabled: 0 });
 });

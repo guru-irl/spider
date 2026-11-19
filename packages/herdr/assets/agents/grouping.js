@@ -37,7 +37,7 @@ export function machineGroupCounts(children) {
   const consoleKeys = new Set(children.filter(row => row.kind === 'console').map(row => row.key));
   let subagents = 0, consoles = 0;
   for (const row of children) {
-    if (row.retained || row.status === 'unreachable') continue;
+    if (row.retained || row.status === 'unreachable' || row.kind !== 'console' && ['unknown', 'disconnected'].includes(row.status)) continue;
     if (row.kind === 'console') {
       if (row.terminal?.state === 'live') consoles++;
     } else if (row.kind !== 'remote' || !consoleKeys.has(row.parentKey)) subagents++;

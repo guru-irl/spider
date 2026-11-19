@@ -133,7 +133,7 @@
       {
         "id": "live-child-priority",
         "anchor": "this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0)",
-        "replacement": "this.projectChildren(all, a.address).filter((child) => !child.retained && child.status !== \"unreachable\").map((child) => RANK[kidStatus(child, this.listed)] ?? 0)"
+        "replacement": "this.projectChildren(all, a.address).filter((child) => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map((child) => RANK[kidStatus(child, this.listed)] ?? 0)"
       },
       {
         "id": "live-child-fold-color",
@@ -343,7 +343,7 @@
       {
         "id": "fold-count-argument",
         "anchor": "    const fold = (a, subs) => {",
-        "replacement": "    const childCounts = addr => {\n      const rows = this.projectChildren(all, addr);\n      const consoles = rows.filter(child => child.kind === \"console\" && child.status !== \"unreachable\" && child.terminal?.state === \"live\");\n      const bots = rows.filter(child => !child.retained && child.status !== \"unreachable\" && child.kind !== \"console\" && !(child.kind === \"remote\" && rows.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));\n      const states = rows.filter(child => !child.retained && child.status !== \"unreachable\").map(child => kidStatus(child, this.listed));\n      return { consoles, bots, states };\n    };\n    const fold = (a, subs, live) => {"
+        "replacement": "    const childCounts = addr => {\n      const rows = this.projectChildren(all, addr);\n      const consoles = rows.filter(child => child.kind === \"console\" && child.status !== \"unreachable\" && child.terminal?.state === \"live\");\n      const bots = rows.filter(child => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status) && child.kind !== \"console\" && !(child.kind === \"remote\" && rows.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));\n      const states = rows.filter(child => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map(child => kidStatus(child, this.listed));\n      return { consoles, bots, states };\n    };\n    const fold = (a, subs, live) => {"
       },
       {
         "id": "grouped-tree",
@@ -887,7 +887,7 @@
           {
             "id": "live-child-priority",
             "anchor": "this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0)",
-            "replacement": "this.projectChildren(all, a.address).filter((child) => !child.retained && child.status !== \"unreachable\").map((child) => RANK[kidStatus(child, this.listed)] ?? 0)",
+            "replacement": "this.projectChildren(all, a.address).filter((child) => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map((child) => RANK[kidStatus(child, this.listed)] ?? 0)",
             "file": "main.js"
           },
           {
@@ -1127,7 +1127,7 @@
           {
             "id": "fold-count-argument",
             "anchor": "    const fold = (a, subs) => {",
-            "replacement": "    const childCounts = addr => {\n      const rows = this.projectChildren(all, addr);\n      const consoles = rows.filter(child => child.kind === \"console\" && child.status !== \"unreachable\" && child.terminal?.state === \"live\");\n      const bots = rows.filter(child => !child.retained && child.status !== \"unreachable\" && child.kind !== \"console\" && !(child.kind === \"remote\" && rows.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));\n      const states = rows.filter(child => !child.retained && child.status !== \"unreachable\").map(child => kidStatus(child, this.listed));\n      return { consoles, bots, states };\n    };\n    const fold = (a, subs, live) => {",
+            "replacement": "    const childCounts = addr => {\n      const rows = this.projectChildren(all, addr);\n      const consoles = rows.filter(child => child.kind === \"console\" && child.status !== \"unreachable\" && child.terminal?.state === \"live\");\n      const bots = rows.filter(child => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status) && child.kind !== \"console\" && !(child.kind === \"remote\" && rows.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));\n      const states = rows.filter(child => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map(child => kidStatus(child, this.listed));\n      return { consoles, bots, states };\n    };\n    const fold = (a, subs, live) => {",
             "file": "main.js"
           },
           {
@@ -1331,8 +1331,8 @@
           {
             "id": "a-agents-model-priority",
             "file": "main.js",
-            "anchor": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && child.status !== \"unreachable\").map((child) => RANK[kidStatus(child, this.listed)] ?? 0))]));",
-            "replacement": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), this.spiderModel?.stats.get(a.address)?.rank ?? Math.max(0, .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && child.status !== \"unreachable\").map((child) => RANK[kidStatus(child, this.listed)] ?? 0)))]));"
+            "anchor": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map((child) => RANK[kidStatus(child, this.listed)] ?? 0))]));",
+            "replacement": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), this.spiderModel?.stats.get(a.address)?.rank ?? Math.max(0, .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map((child) => RANK[kidStatus(child, this.listed)] ?? 0)))]));"
           },
           {
             "id": "a-agents-model-counts",
@@ -1790,7 +1790,7 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "bd8f555886bbdbdbb5d4c1bb91036d909e1de21cf990adc0139971a21b9890ef",
+        "agents/main.js": "660cc7a970f44f981b707ce5288a5c43c81f98f73d4d51ecea8ebda6e6b23816",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "f9c0799068984fe289df2b8aa50231435977c7269ee15cea4544d52f31d3bd25",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",
@@ -2345,7 +2345,7 @@
           {
             "id": "live-child-priority",
             "anchor": "this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0)",
-            "replacement": "this.projectChildren(all, a.address).filter((child) => !child.retained && child.status !== \"unreachable\").map((child) => RANK[kidStatus(child, this.listed)] ?? 0)",
+            "replacement": "this.projectChildren(all, a.address).filter((child) => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map((child) => RANK[kidStatus(child, this.listed)] ?? 0)",
             "file": "main.js"
           },
           {
@@ -2585,7 +2585,7 @@
           {
             "id": "fold-count-argument",
             "anchor": "    const fold = (a, subs) => {",
-            "replacement": "    const childCounts = addr => {\n      const rows = this.projectChildren(all, addr);\n      const consoles = rows.filter(child => child.kind === \"console\" && child.status !== \"unreachable\" && child.terminal?.state === \"live\");\n      const bots = rows.filter(child => !child.retained && child.status !== \"unreachable\" && child.kind !== \"console\" && !(child.kind === \"remote\" && rows.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));\n      const states = rows.filter(child => !child.retained && child.status !== \"unreachable\").map(child => kidStatus(child, this.listed));\n      return { consoles, bots, states };\n    };\n    const fold = (a, subs, live) => {",
+            "replacement": "    const childCounts = addr => {\n      const rows = this.projectChildren(all, addr);\n      const consoles = rows.filter(child => child.kind === \"console\" && child.status !== \"unreachable\" && child.terminal?.state === \"live\");\n      const bots = rows.filter(child => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status) && child.kind !== \"console\" && !(child.kind === \"remote\" && rows.some(parent => parent.kind === \"console\" && parent.key === child.parentKey)));\n      const states = rows.filter(child => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map(child => kidStatus(child, this.listed));\n      return { consoles, bots, states };\n    };\n    const fold = (a, subs, live) => {",
             "file": "main.js"
           },
           {
@@ -2795,8 +2795,8 @@
           {
             "id": "a-agents-model-priority",
             "file": "main.js",
-            "anchor": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && child.status !== \"unreachable\").map((child) => RANK[kidStatus(child, this.listed)] ?? 0))]));",
-            "replacement": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), this.spiderModel?.stats.get(a.address)?.rank ?? Math.max(0, .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && child.status !== \"unreachable\").map((child) => RANK[kidStatus(child, this.listed)] ?? 0)))]));"
+            "anchor": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map((child) => RANK[kidStatus(child, this.listed)] ?? 0))]));",
+            "replacement": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), this.spiderModel?.stats.get(a.address)?.rank ?? Math.max(0, .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map((child) => RANK[kidStatus(child, this.listed)] ?? 0)))]));"
           },
           {
             "id": "a-agents-model-counts",
@@ -3278,7 +3278,7 @@
         }
       ],
       "outputHashes": {
-        "agents/main.js": "d6409a8ba9ac857e82267a70c1886631f7003e7416a3e28b8257feb36fa4c46d",
+        "agents/main.js": "b47e7aa570dea810b5a3a59772167c652f5505ad8d9c08f409685139c78fd545",
         "agents/mod.json": "17d89d8b00e8e17343cda98c14838e338dba230957be7022d260362224db0b07",
         "menu/main.js": "1c27a92ca6378feb166a34adef317aaa2a4f4ee0e969d2fd3737cc3850ac84eb",
         "menu/mod.json": "e8e0a91d23a0addf19f9f4dab48f597f252a1d44e5063e4d6ae884a88cbf735d",

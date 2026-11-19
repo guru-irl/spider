@@ -182,8 +182,8 @@
   {
     "id": "a-agents-model-priority",
     "file": "main.js",
-    "anchor": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && child.status !== \"unreachable\").map((child) => RANK[kidStatus(child, this.listed)] ?? 0))]));",
-    "replacement": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), this.spiderModel?.stats.get(a.address)?.rank ?? Math.max(0, .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && child.status !== \"unreachable\").map((child) => RANK[kidStatus(child, this.listed)] ?? 0)))]));"
+    "anchor": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map((child) => RANK[kidStatus(child, this.listed)] ?? 0))]));",
+    "replacement": "const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), this.spiderModel?.stats.get(a.address)?.rank ?? Math.max(0, .../* spider-look:live-child-priority */this.projectChildren(all, a.address).filter((child) => !child.retained && ![\"unreachable\", \"unknown\", \"disconnected\"].includes(child.status)).map((child) => RANK[kidStatus(child, this.listed)] ?? 0)))]));"
   },
   {
     "id": "a-agents-model-counts",

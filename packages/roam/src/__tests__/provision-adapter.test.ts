@@ -187,17 +187,68 @@ it("installs a non-writable tree under umask 002 that inventory can read", async
   } finally { process.umask(previous); }
 }, 10_000);
 
-it.each(["prefix", "release"] as const)("refuses an unsafe retained %s directory with its path", async kind => {
+it.each(["prefix", "release", "release-child", "pi-file"] as const)("refuses an unsafe retained %s path", async kind => {
   const previous = process.umask(0o002);
   try {
-    const f = fixture(), unsafe = kind === "prefix" ? f.npmPrefix : join(f.npmPrefix, "spider-releases", f.input.sha256);
-    mkdirSync(unsafe, { recursive: true, mode: 0o700 }); chmodSync(unsafe, 0o775);
+    const f = fixture(), releasePrefix = join(f.npmPrefix, "spider-releases", f.input.sha256);
+    const unsafe = kind === "prefix" ? f.npmPrefix : kind === "release" ? releasePrefix : kind === "release-child"
+      ? join(releasePrefix, "node_modules", "@guru-irl") : join(f.npmPrefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent", "partial.js");
+    if (kind === "pi-file") { mkdirSync(dirname(unsafe), { recursive: true, mode: 0o700 }); writeFileSync(unsafe, "old", { mode: 0o600 }); chmodSync(unsafe, 0o664); }
+    else { mkdirSync(unsafe, { recursive: true, mode: 0o700 }); chmodSync(unsafe, 0o775); }
     const log = releaseNpmWithDefaultModes(f), adapter = create!(f.options);
     await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "destination-permissions-unsafe", details: { path: unsafe } });
-    expect(lstatSync(unsafe).mode & 0o777).toBe(0o775);
+    expect(lstatSync(unsafe).mode & 0o777).toBe(kind === "pi-file" ? 0o664 : 0o775);
     expect(existsSync(log)).toBe(false);
-    chmodSync(unsafe, 0o755);
+    chmodSync(unsafe, kind === "pi-file" ? 0o644 : 0o755);
     await expect(adapter.installRelease(f.peer, f.input)).resolves.toMatchObject({ pi: f.peer.pi, cli: f.peer.cli });
+  } finally { process.umask(previous); }
+}, 10_000);
+
+function prepareSwitchoverRelease(f: ReturnType<typeof fixture>) {
+  const scripts = join(f.releaseRoot, "scripts");
+  mkdirSync(join(f.releaseRoot, "dist", "intercom"), { recursive: true, mode: 0o700 });
+  mkdirSync(scripts, { mode: 0o700 });
+  writeFileSync(join(f.releaseRoot, "dist", "extension.js"), "export default () => {};", { mode: 0o600 });
+  writeFileSync(join(f.releaseRoot, "dist", "intercom", "broker.mjs"), "broker", { mode: 0o600 });
+  copyFileSync(join(process.cwd(), "scripts", "intercom-switchover.mjs"), join(scripts, "intercom-switchover.mjs"));
+  copyFileSync(join(process.cwd(), "scripts", "extension-shim.mjs"), join(scripts, "extension-shim.mjs"));
+}
+
+it.each(["agent", "extensions"] as const)("reports an unsafe existing %s directory without changing it", async kind => {
+  const previous = process.umask(0o002);
+  try {
+    const f = fixture(), extensions = join(f.agentDir, "extensions"), unsafe = kind === "agent" ? f.agentDir : extensions;
+    prepareSwitchoverRelease(f); mkdirSync(extensions, { mode: 0o700 });
+    writeFileSync(join(extensions, "keep.ts"), "keep", { mode: 0o600 }); chmodSync(unsafe, 0o775);
+    const adapter = create!(f.options);
+    await expect(adapter.switchover(f.peer, "op-1")).rejects.toMatchObject({ code: "destination-permissions-unsafe", details: { path: unsafe } });
+    expect(lstatSync(unsafe).mode & 0o777).toBe(0o775);
+    expect(readFileSync(join(extensions, "keep.ts"), "utf8")).toBe("keep");
+    expect(existsSync(join(extensions, "spider.ts"))).toBe(false);
+    chmodSync(unsafe, 0o755);
+    await expect(adapter.switchover(f.peer, "op-1")).resolves.toMatchObject({ status: "migration-pending" });
+  } finally { process.umask(previous); }
+}, 10_000);
+
+it("does not suggest chmod for a symlinked extensions directory", async () => {
+  const f = fixture(), target = join(f.root, "outside"), extensions = join(f.agentDir, "extensions");
+  prepareSwitchoverRelease(f); mkdirSync(target, { mode: 0o700 }); chmodSync(target, 0o775); symlinkSync(target, extensions);
+  let caught: unknown;
+  try { await create!(f.options).switchover(f.peer, "op-1"); } catch (error) { caught = error; }
+  expect(caught).toBeTruthy();
+  expect(caught).not.toMatchObject({ code: "destination-permissions-unsafe" });
+  expect(lstatSync(extensions).isSymbolicLink()).toBe(true);
+  expect(lstatSync(target).mode & 0o777).toBe(0o775);
+  expect(readdirSync(target)).toEqual([]);
+}, 5000);
+
+it("creates the agent extensions directory safely under umask 002", async () => {
+  const previous = process.umask(0o002);
+  try {
+    const f = fixture(); prepareSwitchoverRelease(f);
+    await expect(create!(f.options).switchover(f.peer, "op-1")).resolves.toMatchObject({ status: "migration-pending" });
+    expect(lstatSync(join(f.agentDir, "extensions")).mode & 0o022).toBe(0);
+    expect(lstatSync(join(f.agentDir, "extensions", "spider.ts")).mode & 0o022).toBe(0);
   } finally { process.umask(previous); }
 }, 10_000);
 

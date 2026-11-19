@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Gurupungav Narayanan
 import { expect, test } from 'vitest';
-import { agentModelChildStats, projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from '../../assets/agents/children.js';
+import { agentModelChildStats, agentModelInputKey, projectAgentChildren, filterTopLevelAgents, selectAgentChildren } from '../../assets/agents/children.js';
 import { machineGroupCounts } from '../../assets/agents/grouping.js';
 import { projectNavigation, type NavigationSnapshot } from '../../assets/shared/navigation.js';
 import { HerdrLabelContract } from '../contracts.js';
@@ -105,6 +105,24 @@ test('unconfirmed run rows age out without inventing a finished outcome', () => 
     expect(projectAgentChildren([unknown], [live], 'agent', contract, { now: cutoff + 1, completedHours: 1 })
       .find(row => row.key === 'run')).toMatchObject({ status: 'working', retained: false });
   }
+});
+
+test('unconfirmed viewers without creation times remain bounded by the row limit', () => {
+  const first = { ...terminal('first', 'subagent-viewer', { 'spider.run': 'first' }), parent: 'agent' };
+  const second = { ...terminal('second', 'subagent-viewer', { 'spider.run': 'second' }), parent: 'agent' };
+  const empty = feed(); empty.runs.rows = [];
+  expect(projectAgentChildren([first, second], [empty], 'agent', contract, { now: 2000, completedRows: 1 })
+    .filter(row => row.status === 'unknown')).toHaveLength(1);
+});
+
+test('cached sidebar input changes when unconfirmed rows age out', () => {
+  const closed = feed(); closed.lifecycle = 'closed';
+  const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', created_ms: 2000 };
+  const input = { agents: [], terminals: [viewer], panes: [], spaces: [], machines: [], feeds: [closed],
+    focus: null, connections: null, error: null, completedRows: 50 };
+  const cutoff = 2000 + 60 * 60 * 1000;
+  expect(agentModelInputKey(input, cutoff, 1)).not.toBe(agentModelInputKey(input, cutoff + 1, 1));
+  expect(agentModelInputKey(input, cutoff + 1, 1)).toBe(agentModelInputKey(input, cutoff + 2, 1));
 });
 
 test('blocked unconfirmed viewers do not count or raise folded attention', () => {

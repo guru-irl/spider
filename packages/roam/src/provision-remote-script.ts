@@ -577,8 +577,11 @@ async function run(): Promise<unknown> {
       const env = { ...process.env, PATH: dirname(node) + ":" + (process.env.PATH ?? ""), SPIDER_GLOBAL_ROOT: globalRoot,
         npm_config_update_notifier: "false", npm_config_onnxruntime_node_install_cuda: "skip", npm_config_color: "false", npm_config_loglevel: "notice" };
       const timeout = Number.isSafeInteger(request.timeout) && request.timeout > 0 ? request.timeout : 600_000;
-      await npmCommand("pi", npm, ["install", "--global", "--prefix", npmPrefix, "--no-audit", "--no-fund", "@earendil-works/pi-coding-agent@1.2.0"], env, timeout);
-      await npmCommand("release", npm, ["install", "--prefix", installPrefix, "--no-audit", "--no-fund", archive], env, timeout);
+      const previousUmask = process.umask(0o022);
+      try {
+        await npmCommand("pi", npm, ["install", "--global", "--prefix", npmPrefix, "--no-audit", "--no-fund", "@earendil-works/pi-coding-agent@1.2.0"], env, timeout);
+        await npmCommand("release", npm, ["install", "--prefix", installPrefix, "--no-audit", "--no-fund", archive], env, timeout);
+      } finally { process.umask(previousUmask); }
       for (const file of RELEASE_ENTRIES.map(entry => join(release, entry))) {
         const info = lstatSync(file); if (!info.isFile() || info.isSymbolicLink() || !own(info)) bad("incomplete-release");
       }

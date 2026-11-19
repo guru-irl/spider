@@ -36,7 +36,7 @@ function renderRecords(values, kind, decode, rejected) {
   return result;
 }
 const terminalRecord = value => object(value) && identity(value.address) && program(value.program)
-  && texts(value, ['name', 'template', 'parent', 'reason']) && numbers(value, ['signal', 'exitCode', 'exit_code', 'finishedAt', 'finished_ms'])
+  && texts(value, ['name', 'template', 'parent', 'reason']) && numbers(value, ['signal', 'exitCode', 'exit_code', 'finishedAt', 'finished_ms', 'created_ms'])
   && (value.labels === undefined || object(value.labels) && Object.values(value.labels).every(text))
   && (value.status == null || typeof value.status === 'string' && status(value.status) || object(value.status) && typeof value.status.state === 'string' && status(value.status.state))
   ? { ...value, labels: value.labels ?? {} } : null;
@@ -328,8 +328,19 @@ export function projectAgentChildren(terminals, feeds, ownerAddress, labelContra
   }
   const all = [];
   for (const row of rows.values()) if (row) all.push(row);
-  const kept = deferred ? summarizeFinished(all, deferred, feed, viewersBySession, labels, now, options, addRun, rows)
-    : [...all.filter(r => !r.retained), ...all.filter(r => r.retained && r.finishedAt !== null && now - r.finishedAt <= (options.completedHours ?? 24) * 3600000 && r.finishedAt <= now).sort((a, b) => b.finishedAt - a.finishedAt || a.key.localeCompare(b.key)).slice(0, limit)];
+  // An unconfirmed run is not known to be finished. Keep its status visible,
+  // but bound it like history without inventing a finish time or outcome.
+  const uncertain = row => row.kind === 'subagent' && !row.retained && ['unknown', 'disconnected'].includes(row.status);
+  const uncertainAt = row => row.status === 'disconnected' ? feed?.updatedAt : row.terminal?.created_ms;
+  const age = (options.completedHours ?? 24) * 3600000;
+  const candidates = all.filter(uncertain).filter(row => {
+    const at = uncertainAt(row);
+    return !Number.isFinite(at) || at <= now && now - at <= age;
+  }).sort((a, b) => (uncertainAt(b) ?? -Infinity) - (uncertainAt(a) ?? -Infinity) || a.key.localeCompare(b.key));
+  const selectedUncertain = new Set(candidates.slice(0, limit));
+  const bounded = all.filter(row => !uncertain(row) || selectedUncertain.has(row));
+  const kept = deferred ? summarizeFinished(bounded, deferred, feed, viewersBySession, labels, now, options, addRun, rows)
+    : [...bounded.filter(r => !r.retained), ...bounded.filter(r => r.retained && r.finishedAt !== null && now - r.finishedAt <= age && r.finishedAt <= now).sort((a, b) => b.finishedAt - a.finishedAt || a.key.localeCompare(b.key)).slice(0, limit)];
   if (options.finishedSummary && !deferred) options.finishedSummary.hiddenFinished = 0;
   const byKey = new Map(kept.map(row => [row.key, row]));
   const keyByAddress = new Map(kept.filter(row => row.originalAddress).map(row => [row.originalAddress, row.key]));
@@ -407,10 +418,12 @@ export function agentModelInputKey(input, now, completedHours, feedCache = new M
         cached.asOf = now; cached.deadline = deadline;
       }
       return [feed.sessionId, feed.generation, feed.owner, feed.lifecycle, feed.ipc, feed.status, feed.placement,
-        Number.isFinite(feed.updatedAt) ? now - feed.updatedAt > FEED_DISCONNECT_MS : feed.updatedAt, cached.rows, cached.age];
+        Number.isFinite(feed.updatedAt) ? now - feed.updatedAt > FEED_DISCONNECT_MS : feed.updatedAt, withinRetention(feed.updatedAt), cached.rows, cached.age];
     }) : input.feeds;
     for (const session of feedCache.keys()) if (!used.has(session)) feedCache.delete(session);
-    const terminalAge = Array.isArray(input.terminals) ? input.terminals.map(t => object(t) && t.state === 'finished' ? withinRetention(t.finishedAt ?? t.finished_ms) : null) : null;
+    const kindLabel = input.contract?.labels?.kind ?? 'spider.kind', viewerKind = input.contract?.kinds?.subagentViewer ?? 'subagent-viewer';
+    const terminalAge = Array.isArray(input.terminals) ? input.terminals.map(t => object(t) && t.state === 'finished' ? withinRetention(t.finishedAt ?? t.finished_ms)
+      : object(t) && t.state === 'live' && t.labels?.[kindLabel] === viewerKind ? withinRetention(t.created_ms) : null) : null;
     return JSON.stringify([input.agents, input.terminals, input.panes, input.spaces, input.machines, feeds, terminalAge,
       input.focus, input.connections, input.error, input.diagnostics, input.contract, input.configuredMachines, completedHours, input.completedRows]);
   } catch { return null; }
@@ -447,7 +460,7 @@ export function agentModelChildStats(rows, listed, ranks) {
   let rank = 0;
   for (const row of rows) {
     if (row.kind === 'console' && row.status !== 'unreachable' && row.terminal?.state === 'live') consoles.push(row);
-    if (row.retained || row.status === 'unreachable') continue;
+    if (row.retained || ['unreachable', 'unknown', 'disconnected'].includes(row.status)) continue;
     if (row.kind !== 'console' && !(row.kind === 'remote' && consoleKeys.has(row.parentKey))) bots.push(row);
     const status = listed.get(row.address) ?? row.status;
     const normalized = status === 'error' ? 'blocked' : status === 'done' ? 'idle' : status;

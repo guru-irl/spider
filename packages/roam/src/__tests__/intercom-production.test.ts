@@ -37,9 +37,14 @@ function fixture(approved: boolean) {
   };
   return { root, journal, request, calls, previews, transport, approved };
 }
-async function ports(f: ReturnType<typeof fixture>) {
+function retryClock() {
+  let time = 0;
+  const waits: number[] = [];
+  return { now: () => time, async sleep(ms: number) { waits.push(ms); time += ms; }, advance(ms: number) { time += ms; }, waits };
+}
+async function ports(f: ReturnType<typeof fixture>, retry?: ReturnType<typeof retryClock>) {
   const mod = await import("../intercom-production");
-  return mod.createProductionIntercomEnrollmentPorts({ root: f.root, journal: f.journal, transport: f.transport as never, request: f.request,
+  return mod.createProductionIntercomEnrollmentPorts({ root: f.root, journal: f.journal, transport: f.transport as never, request: f.request, retry,
     actor: "fixture", now: () => 1000, async present(value) { f.previews.push(value); }, async approve() { return f.approved; },
     async notify() {}, async warn() {} });
 }
@@ -77,7 +82,7 @@ it("the operator CLI refuses noninteractive approval and displays the exact grap
 }, 5000);
 
 it("retries a transient unreachable route within one approved enrollment", async () => {
-  const f = fixture(true), original = f.transport.transport.exec, timeouts: number[] = [];
+  const f = fixture(true), original = f.transport.transport.exec, timeouts: number[] = [], clock = retryClock();
   let approvals = 0;
   f.transport.transport.exec = async (machine, argv, options) => {
     if (JSON.parse(options.stdin.toString()).action === "add-machine") {
@@ -87,20 +92,21 @@ it("retries a transient unreachable route within one approved enrollment", async
     }
     return original(machine, argv, options);
   };
-  const input = await ports(f), approve = input.approve;
+  const input = await ports(f, clock), approve = input.approve;
   input.approve = async () => { approvals++; return approve(); };
   const result = await provisionIntercomEnrollment(f.request, input);
   expect(result).toMatchObject({ code: 0, reason: "intercom-enrolled", value: { pairs: ["pair-1"] } });
   expect(timeouts).toHaveLength(3);
   expect(timeouts[0]).toBeLessThanOrEqual(40_000);
   expect(timeouts[1]).toBeLessThan(timeouts[0]); expect(timeouts[2]).toBeLessThan(timeouts[1]);
+  expect(clock.waits).toEqual([100, 200]);
   expect(approvals).toBe(1);
   expect(f.calls.filter(call => call.input.action === "verify-transport")).toHaveLength(1);
   expect(JSON.stringify(result)).not.toContain("private route details");
 }, 5000);
 
-it.each([["invalid_params", 1], ["unreachable", 6]] as const)("reports %s after at most %i route attempts", async (kind, expectedAttempts) => {
-  const f = fixture(true), original = f.transport.transport.exec; let attempts = 0;
+it.each([["invalid_params", 1], ["unreachable", 8]] as const)("reports %s after at most %i route attempts", async (kind, expectedAttempts) => {
+  const f = fixture(true), original = f.transport.transport.exec, clock = retryClock(); let attempts = 0;
   f.transport.transport.exec = async (machine, argv, options) => {
     if (JSON.parse(options.stdin.toString()).action === "add-machine") {
       attempts++;
@@ -109,11 +115,28 @@ it.each([["invalid_params", 1], ["unreachable", 6]] as const)("reports %s after 
     }
     return original(machine, argv, options);
   };
-  const result = await provisionIntercomEnrollment(f.request, await ports(f));
+  const result = await provisionIntercomEnrollment(f.request, await ports(f, clock));
   expect(result).toMatchObject({ code: 3, reason: "intercom-enrollment-pending", value: { pending: [{ pairId: "pair-1", causeCode: kind }] } });
   expect(attempts).toBe(expectedAttempts);
+  expect(clock.waits).toHaveLength(expectedAttempts - 1);
+  expect(clock.waits.every(wait => wait > 0 && wait <= 2000)).toBe(true);
   expect(f.calls.some(call => call.input.action === "verify-transport")).toBe(false);
   expect(JSON.stringify(result)).not.toContain("private route details");
+}, 5000);
+
+it("does not start another route attempt after its deadline is nearly exhausted", async () => {
+  const f = fixture(true), original = f.transport.transport.exec, clock = retryClock(); let attempts = 0;
+  f.transport.transport.exec = async (machine, argv, options) => {
+    if (JSON.parse(options.stdin.toString()).action === "add-machine") {
+      attempts++; clock.advance(39_500);
+      return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-setup", ok: false, machineId: machine.machineId,
+        reason: "intercom-setup-pending", cause: { code: "unreachable" } }));
+    }
+    return original(machine, argv, options);
+  };
+  const result = await provisionIntercomEnrollment(f.request, await ports(f, clock));
+  expect(result).toMatchObject({ code: 3, value: { pending: [{ pairId: "pair-1", causeCode: "unreachable" }] } });
+  expect(attempts).toBe(1); expect(clock.waits).toEqual([]);
 }, 5000);
 
 it("prints a bounded cause when the final enrollment receipt fails", async () => {

@@ -353,16 +353,17 @@ function seedConsoles(test: ReturnType<typeof fixture>) {
   const labels = (extra: Record<string, string>) => ({ 'spider.session': session, ...extra });
   test.layouts.push({ name: 'box-5.invalid', layout: 'unavailable' });
   test.nativeTerminals.push(
-    { ...terminal('subviewer', labels({ 'spider.kind': 'subagent-viewer', 'spider.run': run })), parent: 'local', status: 'working', name: 'Helper' },
+    { ...terminal('subviewer', labels({ 'spider.kind': 'subagent-viewer', 'spider.run': run, 'spider.owner-core': 'local-core', 'spider.owner-terminal': 'local',
+      'spider.parent-name': 'Writer', 'spider.steer': 'headless', 'spider.display-name': 'Helper', 'spider.viewer-lifetime': 'live' })), parent: 'local', status: 'working', name: 'Helper' },
     { ...terminal('box-4.invalid/console-a', labels({ 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid' })), parent: 'local' },
     { ...terminal('box-4.invalid/job-a', labels({ 'spider.kind': 'exec', 'spider.machine': 'box-4.invalid', 'spider.job': 'job-a' })), parent: 'box-4.invalid/console-a', status: 'working' },
     { ...terminal('box-5.invalid/console-away', labels({ 'spider.kind': 'remote-console', 'spider.machine': 'box-5.invalid' })), parent: 'local' },
     { ...terminal('box-4.invalid/nested', labels({ 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid', 'spider.run': run })), parent: 'subviewer' },
     { ...terminal('box-2.invalid/console-b', { 'spider.kind': 'remote-console', 'spider.machine': 'box-2.invalid' }), parent: 'box-1.invalid/pinned' },
   );
-  test.view.spiderFeeds = [{ sessionId: session, generation: 'gen', lifecycle: 'live', updatedAt: Date.now(),
-    owner: { sessionId: session, generation: 'gen', name: 'Writer', terminal: { address: 'local' } },
-    ipc: { address: 'endpoint', capabilityFile: 'cap' }, runs: { rows: [{ id: run, ownerSessionId: session, name: 'Helper', status: 'running', childMode: 'rpc', canSteer: true, viewer: 'subviewer', startedAt: Date.now(), finishedAt: null, result: null }] } }];
+  test.view.spiderFeeds = [{ ...emptyRunName, sessionId: session, generation: 'gen', lifecycle: 'live', updatedAt: Date.now(),
+    owner: { ...emptyRunName.owner, sessionId: session, generation: 'gen', name: 'Writer', terminal: { ...emptyRunName.owner.terminal, address: 'local', terminalId: 'local', coreId: 'local-core' } },
+    ipc: { address: '/fixture/socket', capabilityFile: '/fixture/cap' }, runs: { rows: [{ id: run, ownerSessionId: session, name: 'Helper', status: 'running', childMode: 'rpc', canSteer: true, viewer: 'subviewer', startedAt: Date.now(), finishedAt: null, result: null }], total: 1, truncated: false } }];
 }
 const consoleKey = (owner: string, parent: string | null = null) => `console-group:${JSON.stringify([owner, parent])}`;
 const consoleId = (owner: string, parent: string | null = null) => `console-group:${encodeURIComponent(consoleKey(owner, parent))}`;
@@ -1305,14 +1306,15 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const test = fixture(version);
     test.layouts.push({ name: 'box-5.invalid', layout: 'unavailable' });
     test.nativeTerminals.push(
-      { ...terminal('run-live', { 'spider.kind': 'subagent-viewer', 'spider.session': 'session-one', 'spider.run': 'run-live' }), parent: 'local', status: 'working' },
+      { ...terminal('run-live', { 'spider.kind': 'subagent-viewer', 'spider.session': 'session-one', 'spider.run': 'run-live', 'spider.owner-core': 'local-core', 'spider.owner-terminal': 'local',
+        'spider.parent-name': 'Writer', 'spider.steer': 'headless', 'spider.display-name': 'Helper', 'spider.viewer-lifetime': 'live' }), parent: 'local', status: 'working' },
       { ...terminal('box-4.invalid/console', { 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid' }), parent: 'local' },
       { ...terminal('box-5.invalid/away', { 'spider.kind': 'remote-console', 'spider.machine': 'box-5.invalid' }), parent: 'local' },
       { ...terminal('run-old', { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-old' }), parent: 'local', state: 'finished', finishedAt: Date.now(), exitCode: 0, reason: 'exited' } as any,
     );
-    test.view.spiderFeeds = [{ sessionId: 'session-one', generation: 'gen', lifecycle: 'live', updatedAt: Date.now(),
-      owner: { sessionId: 'session-one', generation: 'gen', name: 'Writer', terminal: { address: 'local' } },
-      ipc: { address: 'endpoint', capabilityFile: 'cap' }, runs: { rows: [{ id: 'run-live', ownerSessionId: 'session-one', name: 'Helper', status: 'running', childMode: 'rpc', canSteer: true, viewer: 'run-live', startedAt: Date.now(), finishedAt: null, result: null }] } }];
+    test.view.spiderFeeds = [{ ...emptyRunName, sessionId: 'session-one', generation: 'gen', lifecycle: 'live', updatedAt: Date.now(),
+      owner: { ...emptyRunName.owner, sessionId: 'session-one', generation: 'gen', name: 'Writer', terminal: { ...emptyRunName.owner.terminal, address: 'local', terminalId: 'local', coreId: 'local-core' } },
+      ipc: { address: '/fixture/socket', capabilityFile: '/fixture/cap' }, runs: { rows: [{ id: 'run-live', ownerSessionId: 'session-one', name: 'Helper', status: 'running', childMode: 'rpc', canSteer: true, viewer: 'run-live', startedAt: Date.now(), finishedAt: null, result: null }], total: 1, truncated: false } }];
     await test.ready();
     let root = test.view.render(test.cx);
     byId(root, 'machine:')!.events.on_click({}, test.cx);

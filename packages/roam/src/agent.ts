@@ -601,12 +601,10 @@ async function dispatchParsedOperation(operation: Operation, request: Request, p
       return outcome(0, "complete", id, { released: request.exportId, sha256: request.sha256 });
     }
     if (request.kind === "stores") {
-      let incomplete = false;
-      const problems: JsonObject[] = [];
-      const stores = listStoreKeys(openStore(ports, "global", true).db, { onIncomplete: () => { incomplete = true; },
+      const problems: JsonObject[] = [], ungathered: JsonObject[] = [];
+      const stores = listStoreKeys(openStore(ports, "global", true).db, { onUngathered: store => { ungathered.push({ ...store }); },
         onProblem: entry => { problems.push({ entry, reason: "Unsafe or unreadable store skipped" }); } });
-      if (incomplete) return outcome(1, "store-inventory-incomplete", id);
-      value = { protocol: 1, schema: 14, machineId: ports.config.machineId, stores, problems };
+      value = { protocol: 1, schema: 14, machineId: ports.config.machineId, stores, problems, ungathered };
     } else if (request.kind === "inventory") value = inventory(ports, request.key);
     else if (request.kind === "enable-capture") {
       enableMemoryCapture(openStore(ports, request.key, true).db, request.key);

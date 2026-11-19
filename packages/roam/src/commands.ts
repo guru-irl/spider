@@ -14,7 +14,7 @@ export type PublicControl =
   | { kind: "recover" | "cancel"; operationId: string }
   | { kind: "stop" | "resume"; session: string }
   | { kind: "forget"; machine: string; confirmation: string }
-  | { kind: "stores-prune" }
+  | { kind: "stores-prune"; confirm: boolean }
   | { kind: "repo-map"; repoKey: string; path: string }
   | { kind: "memory-tag"; storeKey: string; uuid: string; machine: string }
   | { kind: "provision"; machine: string; options: readonly string[] };
@@ -34,7 +34,7 @@ export function parsePublicControl(input: readonly string[]): PublicControl | nu
   if ((command === "stop" || command === "resume") && args.length === 3 && plain(a)) return { kind: command, session: a };
   if (command === "claim" && args.length === 4 && plain(a) && plain(b)) return { kind: command, session: a, machine: b };
   if (command === "forget" && args.length === 5 && plain(a) && b === "--confirm" && /^destroyed [A-Za-z0-9._-]+$/.test(c)) return { kind: command, machine: a, confirmation: c };
-  if (command === "stores" && a === "prune" && args.length === 3) return { kind: "stores-prune" };
+  if (command === "stores" && a === "prune" && (args.length === 3 || args.length === 4 && b === "--confirm")) return { kind: "stores-prune", confirm: b === "--confirm" };
   if (command === "repo" && a === "map" && args.length === 5 && plain(b) && plain(c) && isAbsolute(c)) return { kind: "repo-map", repoKey: b, path: c };
   if (command === "memory" && a === "tag" && plain(b) && plain(c)) {
     const machine = args.length === 6 && plain(d) ? d
@@ -108,6 +108,11 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   const raw = result.value && typeof result.value === "object" && !Array.isArray(result.value) ? result.value as Record<string, unknown> : null;
   const value: Record<string, unknown> = {};
   if (raw) {
+    if (result.reason === "store-prune-failed" && raw.failure && typeof raw.failure === "object" && !Array.isArray(raw.failure)) {
+      const failure = raw.failure as Record<string, unknown>;
+      if (typeof failure.check === "string" && /^[a-z][a-z-]{0,63}$/.test(failure.check) && typeof failure.path === "string" && isAbsolute(failure.path))
+        value.failure = { check: failure.check, path: failure.path.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512) };
+    }
     if (result.code === 1 && result.reason === "participant-doctor-refused" && Array.isArray(raw.diagnostics)) {
       value.diagnostics = raw.diagnostics.slice(0, 32).flatMap(item => {
         if (!item || typeof item !== "object" || Array.isArray(item)) return [];
@@ -121,7 +126,20 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
     }
     for (const key of ["terminal", "intercomAddress"] as const) if (token(raw[key])) value[key] = raw[key];
     if (Array.isArray(raw.warnings)) value.warnings = raw.warnings.filter(safeWarning);
-    if (Array.isArray(raw.candidates)) value.candidates = raw.candidates.filter(candidate => token(candidate));
+    const pruneEntry = (item: unknown) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+      const row = item as Record<string, unknown>;
+      return token(row.key) && typeof row.path === "string" && isAbsolute(row.path) && row.path.length <= 4096 && !/[\u0000-\u001f\u007f]/.test(row.path)
+        ? { key: row.key as string, path: row.path } : null;
+    };
+    if (Array.isArray(raw.candidates)) value.candidates = raw.candidates.flatMap(item => token(item) ? [item] : pruneEntry(item) ? [pruneEntry(item)] : []);
+    if (Array.isArray(raw.removed)) value.removed = raw.removed.flatMap(item => pruneEntry(item) ? [pruneEntry(item)] : []);
+    if (Array.isArray(raw.unavailable)) value.unavailable = raw.unavailable.flatMap(item => {
+      const entry = pruneEntry(item);
+      if (!entry || !item || typeof item !== "object" || !("check" in item)) return [];
+      return [{ ...entry, check: item.check === "session-in-use" ? "session-in-use" : "path-unavailable",
+        repair: item.check === "session-in-use" ? "Recover or finish the session action before pruning its workspace." : "Mount or restore the path, then inspect again. Nothing was pruned." }];
+    });
     if (raw.presentation === "pending" || raw.presentation === "complete") value.presentation = raw.presentation;
     if (Array.isArray(raw.homes)) {
       const homes = raw.homes.map(safeHome);
@@ -143,12 +161,12 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
     if (Array.isArray(raw.information)) value.information = raw.information.flatMap(item => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return [];
       const info = item as Record<string, unknown>, machine = token(info.machine), reason = info.reason;
-      return machine && typeof reason === "string" && (reason === INTERCOM_UNIQUENESS_DESCRIPTION || /^intercom-other-extension: [A-Za-z0-9@._/-]{1,128} \(not classified for intercom\)\.$/.test(reason)) ? [{ machine, reason }] : [];
+      return machine && typeof reason === "string" && (/^(?:missing|unreadable|corrupt|unsafe|uninspectable):(?:repo|worktree|replica)(?::[A-Za-z0-9._:-]{1,256})?: \/[^\u0000-\u001f\u007f]{1,512}$/.test(reason) || reason === INTERCOM_UNIQUENESS_DESCRIPTION || /^intercom-other-extension: [A-Za-z0-9@._/-]{1,128} \(not classified for intercom\)\.$/.test(reason)) ? [{ machine, reason }] : [];
     });
     if (Array.isArray(raw.issues)) value.issues = raw.issues.flatMap(item => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return [];
       const issue = item as Record<string, unknown>, reason = token(issue.reason), repairCommand = safeRepair(issue.repairCommand);
-      return reason && repairCommand ? [{ reason, repairCommand }] : [];
+      return reason && repairCommand ? [{ reason, repairCommand, ...(issue.detail === "Start Herdr or check hc on this machine." ? { detail: issue.detail } : {}) }] : [];
     });
   }
   let refusal: MoveRefusal | undefined;

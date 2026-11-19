@@ -28,7 +28,7 @@ function replicaPath(globalPath: string, key: StoreKey): string {
 }
 export function roamReplicaPath(globalDb: Db, key: StoreKey): string { return replicaPath(globalDb.raw.name, key); }
 
-function openRoamPathReadOnly(file: string, open: (file: string) => Db | undefined): Db | undefined {
+export function openRoamPathReadOnly(file: string, open: (file: string) => Db | undefined = openDbReadOnly): Db | undefined {
   assertTestDbPath(file);
   try {
     const directory = dirname(file), parent = lstatSync(directory), target = lstatSync(file);

@@ -15,7 +15,7 @@ import { observeLocalHosting } from "./production-supervisor";
 import { homedir, userInfo } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { inspectLocalConsumers, localHostingWarningDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
+import { inspectLocalConsumers, localStoreInventoryDiagnostics, localHostingWarningDiagnostics, runLocalDoctor, runLocalStatus } from "./local-diagnostics";
 import { requestHubControl } from "./control-socket";
 import { parseRoamJson, storeScope } from "@spider/db-core/roam/codec";
 import { mapRepository } from "@spider/db-core/roam/repo-map";
@@ -25,7 +25,7 @@ import { MOVE_REFUSAL_MESSAGES, type Operation, type Outcome } from "./contracts
 import { dispatchArtifactCommand, handleAgentOperation } from "./agent";
 import { openLocalCore, openLocalRuntime, readLocalIdentity } from "./runtime";
 import { listStoreKeys } from "./store-inventory";
-import { pruneMissingStores } from "./store-prune";
+import { pruneMissingStores, StorePruneError } from "./store-prune";
 import { createStorePort } from "./stores";
 import { loadHerdrConfig, startProductionHub } from "./production-hub";
 export { startProductionHub } from "./production-hub";
@@ -57,7 +57,7 @@ const HELP = `Usage: spider <command>
   spider roam recover|cancel <operation-id>
   spider roam claim <session> <machine>
   spider roam forget <machine> --confirm "destroyed <machine UUID or alias>"
-  spider roam stores prune
+  spider roam stores prune [--confirm]
   spider roam repo map <repo-key> <path>
   spider roam memory tag <store-key> <uuid> <machine|all>
   spider move <session> <machine>
@@ -103,7 +103,7 @@ function valid(args: readonly string[], literalFrom: number): boolean {
     case "sync": case "doctor": return args.length === 2 || args.length === 3 && item(2);
     case "provision": case "recover": case "cancel": case "forget": case "claim": case "stop": case "resume":
       return args.length === (args[1] === "claim" ? 4 : 3) && args.slice(2).every((_value, index) => item(index + 2));
-    case "stores": return args.length === 3 && args[2] === "prune";
+    case "stores": return args[2] === "prune" && (args.length === 3 || args.length === 4 && args[3] === "--confirm");
     case "repo": return args[2] === "map" && args.length === 5 && item(3) && item(4);
     case "memory": return args[2] === "tag" && args.length === 6 && item(3) && item(4) && item(5);
     default: return false;
@@ -429,10 +429,17 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   if (argv[0] === "roam" && argv[1] === "stores" && argv[2] === "prune") {
     try {
       const core = openLocalCore(root);
-      let count: number;
-      try { count = pruneMissingStores(core.db); } finally { core.close(); }
-      return emitOutcome(io, outcome(0, "stores-pruned"), jsonOutput, `Removed ${count} missing store registrations. No store files were deleted.\n`);
-    } catch { return emitOutcome(io, outcome(1, "store-prune-failed"), jsonOutput, "Cannot prune store registrations. Run spider roam doctor.\n"); }
+      const confirm = argv[3] === "--confirm";
+      let result: ReturnType<typeof pruneMissingStores>;
+      try { result = pruneMissingStores(core.db, confirm); } finally { core.close(); }
+      const entries = result.candidates.map(row => `${confirm ? "Removed" : "Candidate"} ${clean(row.key)}: ${clean(row.path)}`);
+      entries.push(...result.unavailable.map(row => `Unavailable ${clean(row.key)}: ${clean(row.path)} (${row.check}). ${row.repair}`));
+      entries.push(confirm ? `Removed ${result.removed.length} registrations. No store files were deleted.` : "Dry run. Nothing changed. Use --confirm only for confirmed deletions.");
+      return emitOutcome(io, outcome(0, confirm ? "stores-pruned" : "stores-prune-preview", result), jsonOutput, entries.join("\n") + "\n");
+    } catch (error) {
+      const detail = error instanceof StorePruneError ? ` ${error.check}: ${clean(error.path)}` : "";
+      return emitOutcome(io, outcome(1, "store-prune-failed", error instanceof StorePruneError ? { failure: { check: error.check, path: error.path } } : null), jsonOutput, `Cannot prune store registrations.${detail} Run spider roam doctor.\n`);
+    }
   }
   if (argv[0] === "roam" && argv[1] === "repo" && argv[2] === "map") {
     try {
@@ -541,6 +548,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
               rows = await peerEnabledDiagnostics(config, transport);
             } catch { rows = config.peers.map(peer => ({ reason: `peer-enabled-unavailable:${peer.machineId}`, severity: "warning" as const, repairCommand: "spider roam doctor" })); }
           }
+          if (config) rows.push(...localStoreInventoryDiagnostics(root));
           rows.push(...localHostingWarningDiagnostics(root));
           if (config?.role === "box") {
             rows.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));
@@ -562,7 +570,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         const herdr = loadHerdrConfig(root);
         report = await remoteDoctor(createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }), peer, config);
         report = { ...report, consumers: report.enabled ? report.consumers : [], diagnostics: [
-          ...(report.enabled ? report.diagnostics : report.diagnostics.filter(row => row.reason.startsWith("core-pin-") || row.severity === "info" || row.severity === "warning" && row.code === HOSTING_WARNING_CODE)),
+          ...(report.enabled ? report.diagnostics : report.diagnostics.filter(row => row.reason.startsWith("core-pin-") || row.reason.startsWith("store-") || row.severity === "info" || row.severity === "warning" && row.code === HOSTING_WARNING_CODE)),
           ...(report.enabled !== config.enabled ? [{ reason: `peer-enabled-mismatch:${peer.machineId}`, severity: "warning" as const,
             repairCommand: config.enabled ? "spider roam enable" : "spider roam disable" }] : []),
         ] };
@@ -599,7 +607,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         let argument = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(name) ? name : "";
         if (!argument) try { argument = readLocalIdentity(root).peers.find(peer => peer.alias === argv[2] || peer.machineId === argv[2])?.machineId ?? ""; } catch { /* Configuration may be unavailable too. */ }
         const issue = peerPreflightIssue(error, name, argument);
-        return emitOutcome(io, { ...outcome(1, issue.reason), repairCommand: issue.repairCommand }, jsonOutput, `${issue.reason}${issue.detail ? `: ${issue.detail}` : ""} (${issue.repairCommand}). No data was changed.\n`);
+        return emitOutcome(io, { ...outcome(1, issue.reason, { issues: [issue] }), repairCommand: issue.repairCommand }, jsonOutput, `${issue.reason}${issue.detail ? `: ${issue.detail}` : ""} (${issue.repairCommand}). No data was changed.\n`);
       }
       return emitOutcome(io, outcome(1, "doctor-unavailable"), jsonOutput, "Cannot inspect local roaming state. No data was changed.\n");
     }

@@ -24,7 +24,7 @@ import { homeChangeInProgress, loadHerdrConfig } from "./production-hub";
 import { compatibleConsumerPorts } from "./remote-observations";
 import { recheckWorktree } from "./recheck";
 import { openLocalCore, readLocalIdentity } from "./runtime";
-import { listStoreKeys } from "./store-inventory";
+import { listStoreKeys, parseUngathered } from "./store-inventory";
 import { createStorePort } from "./stores";
 import { createTransport, createProvisionTransport } from "./transport";
 
@@ -139,6 +139,7 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
           if (discovery.protocol !== 1 || discovery.schema !== 14 || discovery.machineId !== peer.machineId || !Array.isArray(discovery.stores)) throw new Error();
           const keys = [...new Set(discovery.stores.map(key => { storeScope(key); return key as StoreKey; }))];
           if (!keys.includes("global")) throw new Error();
+          for (const store of parseUngathered(discovery.ungathered)) information.push({ machine: name, reason: `${store.code}:${store.key ?? store.scope}: ${clean(store.path).slice(0, 512)}` });
           inventories.push({ peer, keys });
         } catch { failures.push({ reason: `preflight-failed:${name}:store-inventory`, repairCommand: `spider roam provision ${argument}` }); }
         const brokerFailure = () => {
@@ -148,7 +149,7 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
         try {
           const report = await remoteDoctor(transport, peer, config);
           for (const row of report.diagnostics.filter(item => item.severity === "warning")) {
-            if (row.reason === INTERCOM_UNIQUENESS_DESCRIPTION || /^intercom-other-extension: [A-Za-z0-9@._/-]{1,128} \(not classified for intercom\)\.$/.test(row.reason))
+            if (row.reason.startsWith("store-") || row.reason === INTERCOM_UNIQUENESS_DESCRIPTION || /^intercom-other-extension: [A-Za-z0-9@._/-]{1,128} \(not classified for intercom\)\.$/.test(row.reason))
               information.push({ machine: name, reason: row.reason });
           }
           for (const row of report.diagnostics.filter(item => item.severity === "block")) {
@@ -160,14 +161,12 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
           }
         } catch (error) { failures.push(peerPreflightIssue(error, name, argument)); }
       }
-      const infoText = information.map(item => `${item.machine}: ${item.reason}`).join("\n");
+      const infoText = () => information.map(item => `${item.machine}: ${item.reason}`).join("\n");
       if (failures.length) return { code: 1 as const, reason: failures[0].reason, issues: failures, information,
-        message: [failures.map(item => `${item.reason}${item.detail ? `: ${item.detail}` : ""} (${item.repairCommand})`).join("; "), infoText].filter(Boolean).join("\n") };
+        message: [failures.map(item => `${item.reason}${item.detail ? `: ${item.detail}` : ""} (${item.repairCommand})`).join("; "), infoText()].filter(Boolean).join("\n") };
       const inventory = openLocalCore(root);
       try {
-        let incomplete = false;
-        listStoreKeys(inventory.db, { onIncomplete: () => { incomplete = true; } });
-        if (incomplete) return { code: 1 as const, reason: "local-store-inventory-incomplete", message: "Local store inventory is incomplete. Run spider roam doctor." };
+        listStoreKeys(inventory.db, { onUngathered: store => information.push({ machine: "local", reason: `${store.code}:${store.key ?? store.scope}: ${clean(store.path).slice(0, 512)}` }) });
       } finally { inventory.close(); }
       await assertCompatibleConsumers(config, compatibleConsumerPorts(root, config, transport, bundleUrl));
       const pi = resolveParticipantPi();
@@ -196,9 +195,7 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
       }
       const local = openLocalCore(root);
       try {
-        let incomplete = false;
-        const keys = listStoreKeys(local.db, { onIncomplete: () => { incomplete = true; } });
-        if (incomplete) throw new Error("Local store inventory is incomplete");
+        const keys = listStoreKeys(local.db);
         const stores = createStorePort(config, local.db, { allowUnassignedGlobal: true });
         try {
           for (const key of keys.filter(key => storeScope(key) === "worktree")) {
@@ -216,8 +213,8 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
       }
       if (!config.enabled) { changed = true; await writeEnabled(root, config, true); }
       await installHubService({ node: process.execPath, cli, globalRoot: root, pi }, ports);
-      if (!await waitReady(join(root, "roam", "hub.sock"))) return { code: 3, reason: "hub-startup-pending", information, message: ["Hub service startup is pending. Run spider roam doctor.", infoText].filter(Boolean).join("\n") };
-      return { code: 0, reason: "roaming-enabled", information, message: ["Roaming hub enabled. Reload open pi sessions (/reload) to pick up /move.", infoText].filter(Boolean).join("\n") };
+      if (!await waitReady(join(root, "roam", "hub.sock"))) return { code: 3, reason: "hub-startup-pending", information, message: ["Hub service startup is pending. Run spider roam doctor.", infoText()].filter(Boolean).join("\n") };
+      return { code: 0, reason: "roaming-enabled", information, message: ["Roaming hub enabled. Reload open pi sessions (/reload) to pick up /move.", infoText()].filter(Boolean).join("\n") };
     });
   } catch (error) {
     return { code: changed ? 3 : 1, reason: changed ? "enable-pending" : "enable-unavailable",

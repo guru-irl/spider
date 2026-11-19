@@ -1,3 +1,4 @@
+import { listStoreKeys, parseUngathered, type UngatheredStore } from "./store-inventory";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Db } from "@spider/db-core";
@@ -176,7 +177,11 @@ export function createSync(ports: SyncPorts): SyncAdapter {
     discardPending(peer, pending); complete(state, peer, "pull", key);
   }
   async function pull(peer: Peer, key: StoreKey, state: PeerState, results: Outcome<ApplyReceipt>[]) {
-    const info = await remote(peer, "inventory", { storeKey: key }); handshake(info, peer);
+    let info = await remote(peer, "inventory", { storeKey: key }); handshake(info, peer);
+    if (info.captureEnabled === false && storeScope(key) !== "worktree") {
+      await remote(peer, "enable-capture", { storeKey: key });
+      info = await remote(peer, "inventory", { storeKey: key }); handshake(info, peer);
+    }
     if (info.storeKey !== key || !isRoamUuid(info.stream)) throw new SyncFailure(1, "Peer store is quarantined or invalid");
     if (info.roamable === false && key.startsWith("worktree:") && Array.isArray(info.sessions) && info.sessions.every(id => typeof id === "string" && id.length > 0))
       throw new QuarantinedStore(info.sessions as string[]);
@@ -269,13 +274,19 @@ export function createSync(ports: SyncPorts): SyncAdapter {
   }
   function assignHomes() {
     const states = config.peers.map(peer => loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes));
-    const gathered = states.every(state => state.pulled);
+    const gathered = states.every(state => state.pulled || state.readablePulled);
+    const unavailable = [...localUngathered, ...states.flatMap(state => state.ungathered ?? [])];
     const unknown = new Set(states.flatMap(state => Object.values(state.unknownSessions ?? {}).flat()));
     const adapter = stores as Partial<StoreAdapter>;
     if (!adapter.origins) return;
     for (const [id, origins] of adapter.origins()) {
       if (origins.size > 1) markInitialConflict(globalDb, id, config.hubMachineId);
-      else if (gathered && origins.size === 1 && !unknown.has(id)) assignInitialHome(globalDb, id, [...origins][0], config.hubMachineId);
+      else if (gathered && origins.size === 1 && !unknown.has(id) && !unavailable.some(store => {
+        if (store.scope !== "worktree" && store.scope !== "replica") return false;
+        if (store.key === null) return true;
+        const row = globalDb.prepare("SELECT stores_json FROM roam_locations WHERE session_id=?").get(id) as { stores_json: string } | undefined;
+        return !row || (JSON.parse(row.stores_json) as string[]).includes(store.key);
+      })) assignInitialHome(globalDb, id, [...origins][0], config.hubMachineId);
     }
   }
   async function mirrorHomes(peer: Peer): Promise<void> {
@@ -299,7 +310,7 @@ export function createSync(ports: SyncPorts): SyncAdapter {
       writeLocal(globalDb, "sync-mirror", key, undefined);
     }
   }
-  async function peerSync(peer: Peer): Promise<readonly Outcome<ApplyReceipt>[]> {
+  async function peerSync(peer: Peer, inventories: Promise<Map<string, JsonObject | Error>>): Promise<readonly Outcome<ApplyReceipt>[]> {
     if (ports.revocationDb) {
       const reply = syncHandshake(ports.revocationDb, peer.machineId);
       if (reply.kind === "retire-only") {
@@ -317,13 +328,20 @@ export function createSync(ports: SyncPorts): SyncAdapter {
       if (index >= 0) cursors[index] = { storeKey, stream, through }; else cursors.push({ storeKey, stream, through });
     };
     try {
-      const discovery = await remote(peer, "stores", {}); handshake(discovery, peer); connected = true;
+      const discovery = (await inventories).get(peer.machineId)!;
+      if (discovery instanceof Error) throw discovery;
+      handshake(discovery, peer); connected = true;
       if (!Array.isArray(discovery.stores)) throw new SyncFailure(1, "Invalid peer store list");
       const keys = [...new Set(discovery.stores.map(key => { storeScope(key); return key as StoreKey; }))].sort();
       if (!keys.includes("global")) throw new SyncFailure(1, "Peer global store is missing");
+      state.ungathered = parseUngathered(discovery.ungathered);
+      const unavailable = [...localUngathered, ...config.peers.flatMap(other => loadPeerState(globalDb, other.machineId, config.limits.targetBatchBytes).ungathered ?? [])];
+      const blocked = (key: StoreKey) => unavailable.some(store => store.key === key);
       let globalReady = false, pulled = true;
-      state.gathered ??= {}; state.unknownSessions ??= {};
+      state.gathered = {}; state.unknownSessions ??= {};
+      for (const store of state.ungathered) if (store.key) state.gathered[store.key] = false;
       for (const key of keys) {
+        if (blocked(key)) { state.gathered[key] = false; continue; }
         if (key !== "global" && !globalReady) { pulled = false; continue; }
         try {
           await pull(peer, key, state, results); state.gathered[key] = true; delete state.unknownSessions[key];
@@ -334,16 +352,18 @@ export function createSync(ports: SyncPorts): SyncAdapter {
           results.push(failure(error, peer.machineId));
         }
       }
-      state.pulled = keys.every(key => state.gathered![key] === true);
+      state.readablePulled = keys.every(key => blocked(key) || state.gathered![key] === true);
+      state.pulled = state.ungathered.length === 0 && keys.every(key => state.gathered![key] === true);
       savePeerState(globalDb, peer.machineId, state);
       assignHomes();
       for (const key of keys) {
         if (!globalReady) break;
+        if (blocked(key)) continue;
         try { await push(peer, key, state, results, observe); }
         catch (error) { results.push(failure(error, peer.machineId)); if (key === "global") break; }
       }
       await mirrorHomes(peer);
-      completed = pulled && globalReady && results.every(result => result.code === 0);
+      completed = pulled && globalReady && state.ungathered.length === 0 && !keys.some(blocked) && results.every(result => result.code === 0);
     } catch (error) { results.push(failure(error, peer.machineId)); }
     const uncertain = results.some(result => result.code === 3);
     state.failures = uncertain ? state.failures + 1 : 0;
@@ -361,13 +381,38 @@ export function createSync(ports: SyncPorts): SyncAdapter {
     timers.get(peer.machineId)?.();
     timers.set(peer.machineId, clock.later(ms, () => { timers.delete(peer.machineId); void run(peer).catch(() => {}); }));
   }
+  let inventoryRound: Promise<Map<string, JsonObject | Error>> | undefined;
+  let localUngathered: UngatheredStore[] = [];
+  function gatherInventories(): Promise<Map<string, JsonObject | Error>> {
+    if (inventoryRound) return inventoryRound;
+    localUngathered = [];
+    listStoreKeys(globalDb, { onUngathered: store => localUngathered.push(store) });
+    const round = Promise.all(config.peers.map(peer => slot(async () => {
+      if (ports.revocationDb && syncHandshake(ports.revocationDb, peer.machineId).kind === "retire-only") return [peer.machineId, new Error("peer-revoked")] as const;
+      try {
+        const discovery = await remote(peer, "stores", {}); handshake(discovery, peer);
+        const state = loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes);
+        state.ungathered = parseUngathered(discovery.ungathered); state.pulled = false; state.readablePulled = false;
+        savePeerState(globalDb, peer.machineId, state);
+        return [peer.machineId, discovery] as const;
+      } catch (error) {
+        const state = loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes);
+        state.pulled = false; state.readablePulled = false; savePeerState(globalDb, peer.machineId, state);
+        return [peer.machineId, error instanceof Error ? error : new Error("Peer inventory refused")] as const;
+      }
+    }))).then(rows => new Map<string, JsonObject | Error>(rows));
+    inventoryRound = round;
+    return round;
+  }
   function run(peer: Peer): Promise<readonly Outcome<ApplyReceipt>[]> {
     const existing = inFlight.get(peer.machineId); if (existing) return existing;
-    const task = slot(() => peerSync(peer)).then(async results => {
+    const inventories = gatherInventories();
+    const task = slot(() => peerSync(peer, inventories)).then(async results => {
       await ports.onPeerSync?.(peer, results);
       return results;
     }).finally(() => {
       inFlight.delete(peer.machineId);
+      if (!inFlight.size) inventoryRound = undefined;
       if (running) { const state = loadPeerState(globalDb, peer.machineId, config.limits.targetBatchBytes);
         schedule(peer, state.failures ? [30_000, 60_000, 120_000][Math.min(2, state.failures - 1)] : config.syncMs); }
     });

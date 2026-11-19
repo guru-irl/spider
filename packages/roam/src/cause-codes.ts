@@ -29,15 +29,14 @@ export function safeAgentOperationKind(value: unknown): AgentOperationKind | und
   return typeof value === "string" && agentKindSet.has(value) ? value as AgentOperationKind : undefined;
 }
 
-const steps = [
-  ...agentOperationKinds,
+const additionalSteps = [
   "enable", "enable-peer-capture", "enable-local-capture", "enable-peer-flag", "enable-config", "enable-service",
   "disable", "disable-service", "disable-config", "disable-peer-flag",
   "enrollment", "read-fences", "notify-peers", "record-enrollment", "register-pair", "check-connector", "inspect-ssh", "bind-pair", "host-connector", "connect-connector",
   "ensure-key", "write-known-host", "authorize", "approve-pair", "add-machine", "verify-transport", "publish-pair", "verify-pair",
 ] as const;
-export type CauseStep = typeof steps[number];
-const fallbackCodes = new Set<string>(steps.map(step => `unexpected-${step}`));
+export type CauseStep = AgentOperationKind | typeof additionalSteps[number];
+const fallbackCodes = new Set<string>([...agentOperationKinds, ...additionalSteps].map(step => `unexpected-${step}`));
 
 /** A native stderr kind is data, never exception text or an arbitrary identifier. */
 export function safeNativeHcCode(value: unknown): string | undefined {

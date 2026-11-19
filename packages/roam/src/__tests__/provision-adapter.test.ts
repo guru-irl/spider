@@ -176,6 +176,8 @@ it("installs a non-writable tree under umask 002 that inventory can read", async
     walk(f.npmPrefix);
     expect(unsafe).toEqual([]);
     expect(readFileSync(join(f.root, "pi-umask"), "utf8")).toBe("2");
+    expect(lstatSync(f.npmPrefix).mode & 0o777).toBe(0o700);
+    expect(lstatSync(join(f.npmPrefix, "spider-releases", f.input.sha256)).mode & 0o777).toBe(0o700);
     expect(lstatSync(join(f.globalRoot, "roam", "provision", "op-1")).mode & 0o777).toBe(0o700);
     expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: true } });
     const bin = join(f.npmPrefix, "bin"), before = lstatSync(bin).mode & 0o777;

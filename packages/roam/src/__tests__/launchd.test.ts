@@ -32,7 +32,7 @@ function fixture() {
     async launchctl(argv: readonly string[]) { calls.push([...argv]); },
   } };
 }
-function plistAt(directory: string) { return join(directory, "com.spider.roam.hub.plist"); }
+function plistAt(directory: string, root: string) { return join(directory, `${launchd.hubServiceLabel(root)}.plist`); }
 function decode(value: string) {
   return value.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
 }
@@ -118,7 +118,7 @@ it("enable writes resolved absolute executable paths", async () => {
   const f = fixture();
   const link = join(f.root, "node-link"); symlinkSync(f.node, link);
   await installHubService({ node: link, cli: f.cli, globalRoot: f.globalRoot }, f.ports);
-  const result = plist(plistAt(f.plistDir));
+  const result = plist(plistAt(f.plistDir, f.globalRoot));
   expect(result).toMatchObject({ RunAtLoad: true, KeepAlive: true });
   expect(result.ProgramArguments).toEqual([realpathSync(f.node), realpathSync(f.cli), "roam", "hub"]);
   expect(result.xml).toContain("node &amp; runtime");
@@ -127,7 +127,7 @@ it("enable writes resolved absolute executable paths", async () => {
   const writtenPlistDir = dirname(f.calls.at(-1)!.at(-1)!);
   expect(writtenPlistDir).toBe(f.plistDir);
   expect(f.calls.map(call => call[0])).toEqual(["bootout", "bootstrap"]);
-  expect(lstatSync(plistAt(f.plistDir)).mode & 0o777).toBe(0o600);
+  expect(lstatSync(plistAt(f.plistDir, f.globalRoot)).mode & 0o777).toBe(0o600);
   expect(lstatSync(join(f.globalRoot, "roam", "logs", "hub.out.log")).mode & 0o777).toBe(0o600);
   expect(lstatSync(join(f.globalRoot, "roam", "logs", "hub.err.log")).mode & 0o777).toBe(0o600);
 }, 5000);
@@ -138,7 +138,7 @@ it("enable repairs changed supported Node path", async () => {
   const replacement = join(f.root, "replacement-node");
   writeFileSync(replacement, "new fixture node", { mode: 0o700 });
   await installHubService({ ...f, node: replacement }, f.ports);
-  expect(plist(plistAt(f.plistDir)).ProgramArguments[0]).toBe(realpathSync(replacement));
+  expect(plist(plistAt(f.plistDir, f.globalRoot)).ProgramArguments[0]).toBe(realpathSync(replacement));
   expect(f.calls.map(call => call[0])).toEqual(["bootout", "bootstrap", "bootout", "bootstrap"]);
 }, 5000);
 
@@ -163,7 +163,7 @@ it("refuses unsafe destinations or executables before calling launchctl", async 
   chmodSync(f.node, 0o700);
   mkdirSync(f.plistDir);
   const target = join(f.root, "existing"); writeFileSync(target, "untouched");
-  symlinkSync(target, plistAt(f.plistDir));
+  symlinkSync(target, plistAt(f.plistDir, f.globalRoot));
   await expect(installHubService(f, f.ports)).rejects.toThrow(/unsafe|symlink/i);
   expect(readFileSync(target, "utf8")).toBe("untouched");
   expect(f.calls).toEqual([]);
@@ -171,22 +171,22 @@ it("refuses unsafe destinations or executables before calling launchctl", async 
 
 it("enable refuses to replace an unrelated service definition", async () => {
   const f = fixture(); mkdirSync(f.plistDir);
-  writeFileSync(plistAt(f.plistDir), "unrelated service", { mode: 0o600 });
+  writeFileSync(plistAt(f.plistDir, f.globalRoot), "unrelated service", { mode: 0o600 });
   await expect(installHubService(f, f.ports)).rejects.toThrow(/unrelated|unsafe/i);
-  expect(readFileSync(plistAt(f.plistDir), "utf8")).toBe("unrelated service");
+  expect(readFileSync(plistAt(f.plistDir, f.globalRoot), "utf8")).toBe("unrelated service");
   expect(f.calls).toEqual([]);
 }, 5000);
 
 it("disable boots out its own service and never removes an unrelated definition", async () => {
   const f = fixture(); await installHubService(f, f.ports);
   await removeHubService({ globalRoot: f.globalRoot }, f.ports);
-  expect(existsSync(plistAt(f.plistDir))).toBe(false);
+  expect(existsSync(plistAt(f.plistDir, f.globalRoot))).toBe(false);
   expect(f.calls.map(call => call[0])).toEqual(["bootout", "bootstrap", "bootout"]);
   await removeHubService({ globalRoot: f.globalRoot }, f.ports);
   expect(f.calls).toHaveLength(3);
-  writeFileSync(plistAt(f.plistDir), "unrelated service", { mode: 0o600 });
+  writeFileSync(plistAt(f.plistDir, f.globalRoot), "unrelated service", { mode: 0o600 });
   await expect(removeHubService({ globalRoot: f.globalRoot }, f.ports)).rejects.toThrow(/unrelated|unsafe/i);
-  expect(readFileSync(plistAt(f.plistDir), "utf8")).toBe("unrelated service");
+  expect(readFileSync(plistAt(f.plistDir, f.globalRoot), "utf8")).toBe("unrelated service");
   expect(f.calls).toHaveLength(3);
 }, 5000);
 
@@ -203,11 +203,11 @@ it("rejects control characters in resolved executable paths", async () => {
 
 it("a failed plist write keeps the previous definition and removes its temporary file", async () => {
   const f = fixture(); await installHubService(f, f.ports);
-  const previous = readFileSync(plistAt(f.plistDir), "utf8");
+  const previous = readFileSync(plistAt(f.plistDir, f.globalRoot), "utf8");
   failures.sync = true;
   await expect(installHubService(f, f.ports)).rejects.toThrow(/disk full/);
-  expect(readFileSync(plistAt(f.plistDir), "utf8")).toBe(previous);
-  expect(readdirSync(f.plistDir)).toEqual(["com.spider.roam.hub.plist"]);
+  expect(readFileSync(plistAt(f.plistDir, f.globalRoot), "utf8")).toBe(previous);
+  expect(readdirSync(f.plistDir)).toEqual([`${launchd.hubServiceLabel(f.globalRoot)}.plist`]);
   expect(f.calls.map(call => call[0])).toEqual(["bootout", "bootstrap"]);
 }, 5000);
 
@@ -225,5 +225,5 @@ it("the installed hub pins the same pi PATH resolution as ordinary session launc
   const f = fixture(); vi.stubEnv("SPIDER_ROAM_PI", undefined); vi.stubEnv("PATH", f.root);
   expect(resolveParticipantPi()).toBe(f.pi);
   await installHubService(f, f.ports);
-  expect(plist(plistAt(f.plistDir)).xml).toContain(`<key>SPIDER_ROAM_PI</key><string>${f.pi}</string>`);
+  expect(plist(plistAt(f.plistDir, f.globalRoot)).xml).toContain(`<key>SPIDER_ROAM_PI</key><string>${f.pi}</string>`);
 }, 5000);

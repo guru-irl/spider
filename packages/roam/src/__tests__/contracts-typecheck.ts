@@ -27,7 +27,7 @@ type _RoamConfig = Assert<Equal<RoamConfig, {
 type _Operation = Assert<Equal<Operation, { id: string; machineId: MachineId; expectedEpoch: number | null; kind: string; args: JsonObject }>>;
 type _Outcome = Assert<Equal<Outcome<{ ok: boolean }>, {
   code: 0 | 1 | 2 | 3; reason: string; operationId: string; home: Home | null; epoch: number | null;
-  repairCommand: string | null; value: { ok: boolean } | null;
+  repairCommand: string | null; value: { ok: boolean } | null; causeCode?: string;
 }>>;
 type _CallOptions = Assert<Equal<CallOptions, { timeoutMs: number; maxBytes: number; stdin?: Buffer; remoteTimeoutMs?: number;
   postReserveMs?: number; signal?: AbortSignal; stdinForTimeout?: (remoteTimeoutMs: number) => Buffer; onConnected?: (connected: boolean) => void }>>;

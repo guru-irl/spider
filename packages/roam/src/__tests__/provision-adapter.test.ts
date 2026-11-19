@@ -218,7 +218,7 @@ it("does not relaunch when filtered terminal evidence has no returned labels", a
 }, 5000);
 
 it("ignores a terminal with different server-side labels", async () => {
-  const f = fixture(), adapter = create!(f.options), log = releaseNpm(f);
+  const f = fixture(), adapter = create!({ ...f.options, limits: { ...f.options.limits, importMs: 5000, retryDelaysMs: [50] } }), log = releaseNpm(f);
   writeFileSync(f.terminalFile, JSON.stringify({ terminals: [{ state: "live", labels: {
     "spider.operation": "another-op", "spider.machine": f.peer.machineId,
   } }] }));
@@ -227,7 +227,7 @@ it("ignores a terminal with different server-side labels", async () => {
   });
   expect(f.launches).toHaveLength(1);
   expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(2);
-}, 10_000);
+}, 15_000);
 
 it.each([
   ["wrong operation", { "spider.operation": "another-op", "spider.machine": "11111111-1111-4111-8111-111111111111" }],

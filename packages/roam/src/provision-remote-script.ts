@@ -170,8 +170,11 @@ function releaseTerminals(core: string, coreId: string, operationId: string, mac
   if (list.status !== 0) bad("release-evidence-unavailable");
   let rows: unknown;
   try { rows = JSON.parse(list.stdout).terminals; } catch { bad("release-evidence-unavailable"); }
-  if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object" || !row.labels ||
-      row.labels["spider.operation"] !== operationId || row.labels["spider.machine"] !== machineId || !["live", "finished"].includes(row.state))) {
+  // The core applies both label filters even when its terminal rows omit labels.
+  if (!Array.isArray(rows) || rows.some(row => !row || typeof row !== "object" || Array.isArray(row) ||
+      ("labels" in row && (!row.labels || typeof row.labels !== "object" || Array.isArray(row.labels) ||
+        row.labels["spider.operation"] !== operationId || row.labels["spider.machine"] !== machineId)) ||
+      !["live", "finished"].includes(row.state))) {
     bad("release-evidence-unavailable");
   }
   releaseCore(core, coreId);

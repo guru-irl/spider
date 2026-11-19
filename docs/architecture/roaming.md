@@ -65,7 +65,8 @@ session still refuses after roaming is disabled.
 
 Store inventory treats an absent registered or mapped database as empty when
 its path returns `ENOENT`. Doctor reports `store-missing:<scope>:enoent` with the
-path as a warning. Inventory omits that store, so discovery does not pass its key
+path as a warning. Missing-store warnings alone do not make cached status
+incomplete. Inventory omits that store, so discovery does not pass its key
 to capture, sync, or move preflight. Permission failures, corrupt databases, and
 unexpected file types remain blocks. Their diagnostics include the path and a
 bounded filesystem or SQLite code.

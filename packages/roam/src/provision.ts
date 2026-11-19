@@ -10,7 +10,7 @@ import { doctorPeer } from "./resource-doctor";
 import { describeSelectedFiles, prepareSelectedFiles, readPrivateBytes, selectedSettingsDigests, SelectedFilesError } from "./selected-files";
 import type { PreparedFiles, SelectedFileMetadata } from "./selected-files";
 import { renderSupervisorUnit } from "./systemd";
-import { destinationPermissionPath, permissionRepairCommand } from "./provision-permissions";
+import { destinationPermissionPath, permissionRepairCommand, permissionTreeRoot } from "./provision-permissions";
 
 const unitName = "spider-roam-supervisor.service";
 function selectedFileDigests(selected: PreparedFiles) {
@@ -128,7 +128,7 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
     }
     const settings = [...selected.files, ...selected.credentialFiles].find(file => file.path === "settings.json");
     const settingsEntries = settings ? selectedSettingsDigests(settings) : [];
-    const inspectSettings = () => ports.bootstrap.previewSettings(peer, ports.destination.home, settingsEntries, ports.limits.agentBytes, agentDirectory.core);
+    const inspectSettings = () => ports.bootstrap.previewSettings(peer, ports.destination.home, settingsEntries, ports.limits.agentBytes, agentDirectory.core, describeSelectedFiles(selected).map(file => file.path));
     const checkedSettings = await inspectSettings();
     const settingsPreview = settings ? checkedSettings : null;
     const authSize = (): number => {
@@ -248,7 +248,8 @@ async function provisionLocked(input: ProvisionRequest, ports: ProvisionPorts): 
       const path = error instanceof SelectedFilesError && error.files.length === 1 ? error.files[0]
         : details && typeof details === "object" && "path" in details ? details.path : undefined;
       if (destinationPermissionPath(path, ports.destination.home, [ports.destination.agentDir, ports.destination.npmPrefix])) {
-        outcome.repairCommand = permissionRepairCommand(path);
+        const recursive = details && typeof details === "object" && "recursive" in details && details.recursive === true;
+        if (!recursive || permissionTreeRoot(path, ports.destination.npmPrefix)) outcome.repairCommand = permissionRepairCommand(path, !!recursive);
       }
     }
     return outcome;

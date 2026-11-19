@@ -122,16 +122,37 @@ socket is owned by the user.
 
 The npm prefix comes from `<prefix>/bin/pi` and need not be named `.local`.
 Provisioning runs npm lifecycle scripts but skips optional CUDA downloads.
-Both npm installs use umask `022`. It creates its staging, prefix, release, and
-agent directories with mode `0700`. Before installing or reusing a release, it
-checks the prefix, the
-pi installation, and the selected release tree for group or other write access.
+The box-side process sets umask `022` before creating files or starting any
+child, including version and verification probes. It handles one request and
+exits, so it does not restore the login mask. Provisioning creates missing
+staging, prefix, release, and agent directories, including missing ancestors,
+with mode `0700`.
 
-`destination-permissions-unsafe` identifies an existing owned path that has
-group or other write access. On the box, run the reported `chmod go-w` command
-and retry with the same options. The command quotes the path for the shell.
-Provisioning does not change pre-existing directory permissions. If more than
-one path needs repair, it reports the next path on a later attempt.
+Before installing or reusing a tree, provisioning removes group and other write
+bits from entries it owns in installer-created prefixes, release roots, and
+staging. Private creation receipts bind each root to its path, device, inode,
+and owner. A pre-existing tree without that proof remains user-owned.
+The walk never follows symlinks. It permits internal npm links but refuses
+outside links, foreign owners, and unsafe file types without chmodding them.
+The private `permission-tightening.json` receipt records only a changed-entry
+count, capped at 1,000,000, rather than changed paths.
+
+`destination-permissions-unsafe` identifies a user-owned path with group or
+other write access. For an unmarked pi package or release tree, the reported
+`chmod -R go-w '<root>'` repairs the entire tree in one command. Recursive repair
+is accepted only for those exact package roots, never their shared parents or
+children. Other paths keep a single-path `chmod go-w` repair. These include the
+agent directory chain, `extensions`, selected-file parents, and prefix parents
+such as `~/.local/bin`. The read-only preview checks the agent chain,
+`extensions`, and selected-file parents before consent, including a configured
+`PI_CODING_AGENT_DIR` chain. The installer checks them again before writing.
+
+Run the reported shell-quoted command on the box and retry with the same
+options. Several writable user-owned parent directories can require separate
+repairs. Paths with control or bidi characters never produce a repair command.
+A later `pi update` under umask `0002` can reintroduce writable entries.
+Installer-created trees are tightened on reuse. Unmarked user-owned package
+trees need the recursive repair again.
 
 Release evidence relies on the core's server-side label filters. Herdr 0.1.16
 omits labels from terminal rows, so when a row has no labels, provisioning also

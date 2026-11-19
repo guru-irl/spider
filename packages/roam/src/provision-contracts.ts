@@ -161,7 +161,7 @@ export interface ProvisionPorts extends DoctorPorts {
   setParticipation(peer: Peer, ready: boolean | null): Promise<void>;
   bootstrap: {
     probeAgentDirectory(peer: Peer, home: string): Promise<AgentDirectoryProbe>;
-    previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence): Promise<SettingsDestinationPreview>;
+    previewSettings(peer: Peer, home: string, entries: readonly SettingsKeyDigest[], maximum: number, core: CoreFence, selectedPaths?: readonly string[]): Promise<SettingsDestinationPreview>;
     claimIdentity(peer: Peer, operationId: string, core: CoreFence): Promise<{ machineId: string; coreId: string }>;
   };
   systemd: DoctorPorts["systemd"] & { writeUnit(name: string, contents: string): Promise<void> };

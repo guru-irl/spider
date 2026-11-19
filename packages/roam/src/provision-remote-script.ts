@@ -88,19 +88,74 @@ function ensurePrivate(base: string, target: string, privateMode = true, reportP
   }
   if (realpathSync(target) !== target) bad("unsafe-path");
 }
+// A private creation receipt binds installer ownership to this exact inode.
+function installerReceipt(roam: string, root: string): string {
+  return "installer-tree-" + createHash("sha256").update(root).digest("hex") + ".json";
+}
+function installerOwned(roam: string, root: string): boolean {
+  const bytes = readPrivateBytes(roam, installerReceipt(roam, root), 8192);
+  if (!bytes) return false;
+  try {
+    const value = JSON.parse(bytes.toString("utf8")), stat = lstatSync(root);
+    return value.version === 1 && value.root === root && value.dev === stat.dev && value.ino === stat.ino && value.uid === stat.uid && own(stat);
+  } finally { bytes.fill(0); }
+}
+let tightened = 0;
+function installWalk(root: string, tighten: boolean): void {
+  const pending = [root];
+  while (pending.length) {
+    const path = pending.pop()!, link = lstatSync(path);
+    if (!own(link)) bad("unsafe-path");
+    if (link.isSymbolicLink()) {
+      let target: string; try { target = realpathSync(path); } catch { bad("unsafe-path"); }
+      if (!inside(root, target!)) bad("unsafe-path");
+      continue; // Internal npm bin links are allowed, but never followed or chmodded.
+    }
+    if (!link.isDirectory() && !link.isFile() || link.isFile() && link.nlink !== 1) bad("unsafe-path");
+    const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | (link.isDirectory() ? constants.O_DIRECTORY : 0));
+    try {
+      const stat = fstatSync(fd);
+      if (stat.dev !== link.dev || stat.ino !== link.ino || !own(stat)) bad("unsafe-path");
+      if ((stat.mode & 0o022) !== 0) {
+        if (!tighten) throw Object.assign(new SelectedFilesError("destination-permissions-unsafe", [root]), { recursive: true });
+        fchmodSync(fd, stat.mode & 0o7777 & ~0o022);
+        tightened = Math.min(1_000_000, tightened + 1);
+      }
+      if (stat.isDirectory()) for (const entry of readdirSync(path).sort().reverse()) pending.push(join(path, entry));
+    } finally { closeSync(fd); }
+  }
+}
+function installerDirectory(home: string, roam: string, root: string, privateMode = false): void {
+  if (dirname(root) !== home) existingInstallDirectory(home, dirname(root));
+  if (exists(root)) {
+    if (installerOwned(roam, root)) installWalk(root, true);
+    try { ensurePrivate(home, root, privateMode, true); }
+    catch (error) { if (error instanceof SelectedFilesError) throw error; bad(privateMode ? "unsafe-staging" : "unsafe-path"); }
+    return;
+  }
+  if (dirname(root) !== home) ensurePrivate(home, dirname(root), false, true);
+  try { mkdirSync(root, { mode: 0o700 }); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; destinationDirectory(root, privateMode); return; }
+  const stat = lstatSync(root);
+  atomicWrite(join(roam, installerReceipt(roam, root)), Buffer.from(JSON.stringify({ version: 1, root, dev: stat.dev, ino: stat.ino, uid: stat.uid })), 0o600, false);
+}
 function existingInstallDirectory(home: string, target: string): boolean {
   if (!inside(home, target)) bad("unsafe-path");
   let current = home;
   for (const part of target.slice(home.length + 1).split(sep)) {
     current = join(current, part);
     if (!exists(current)) return false;
-    destinationDirectory(current);
+    try { destinationDirectory(current); }
+    catch (error) { if (error instanceof SelectedFilesError) throw error; bad("unsafe-path"); }
   }
   return true;
 }
-function checkInstallPermissions(home: string, prefix: string, sha: string): void {
+function checkInstallPermissions(home: string, prefix: string, sha: string, roam: string): void {
   const pi = join(prefix, "lib", "node_modules", "@earendil-works", "pi-coding-agent");
   const release = join(prefix, "spider-releases", sha);
+  if (dirname(prefix) !== home) existingInstallDirectory(home, dirname(prefix));
+  if (exists(prefix) && installerOwned(roam, prefix)) installWalk(prefix, true);
+  if (exists(release) && installerOwned(roam, release)) installWalk(release, true);
   existingInstallDirectory(home, prefix);
   const bin = join(prefix, "bin");
   if (existingInstallDirectory(home, bin)) {
@@ -114,15 +169,11 @@ function checkInstallPermissions(home: string, prefix: string, sha: string): voi
     }
   }
   for (const root of [pi, release]) {
-    if (!existingInstallDirectory(home, root)) continue;
-    const pending = [root];
-    while (pending.length) {
-      const path = pending.pop()!, stat = lstatSync(path);
-      if (stat.isSymbolicLink()) continue;
-      if (!own(stat) || !stat.isDirectory() && !stat.isFile()) bad("unsafe-path");
-      if ((stat.mode & 0o022) !== 0) fail("destination-permissions-unsafe", [path]);
-      if (stat.isDirectory()) for (const entry of readdirSync(path).sort().reverse()) pending.push(join(path, entry));
-    }
+    // Check shared ancestors individually, then report a package tree as one unit.
+    if (!existingInstallDirectory(home, dirname(root)) || !exists(root)) continue;
+    const stat = lstatSync(root);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || !own(stat)) bad("unsafe-path");
+    installWalk(root, false);
   }
 }
 function setPrivate(file: string): void {
@@ -325,6 +376,8 @@ function releaseTerminals(core: string, coreId: string, operationId: string, mac
   return rows.some(row => row.state === "live") ? "live" : rows.length ? "finished" : "none";
 }
 async function run(): Promise<unknown> {
+  // One request per short-lived process. Every child inherits this mask; no restore is needed.
+  process.umask(0o022);
   if (request.action === "roaming-enabled") {
     if (typeof request.enabled !== "boolean") bad("invalid-request");
     releaseCore(text("core"), text("coreId"));
@@ -341,7 +394,7 @@ async function run(): Promise<unknown> {
   const identity = readPrivateBytes(roam, "machine.json", 4096);
   if (!identity || (JSON.parse(identity.toString("utf8")) as { machineId?: unknown }).machineId !== machineId) bad("machine-mismatch");
   const provision = join(roam, "provision"), stage = join(provision, operationId);
-  ensurePrivate(home, provision); ensurePrivate(home, stage);
+  installerDirectory(home, roam, provision, true); installerDirectory(home, roam, stage, true);
   if (requestFile === null ? action === "release" : action !== "release" || requestFile !== join(stage, "release-request")) bad("invalid-request");
   const maximum = request.maximum, chunkBytes = request.chunkBytes;
   if (!Number.isSafeInteger(maximum) || maximum <= 0 || maximum > 256 * 1024 * 1024 ||
@@ -567,7 +620,7 @@ async function run(): Promise<unknown> {
       if (previous.coreId !== coreId) bad("core-changed");
     }
     if (action === "release-prepare") {
-      checkInstallPermissions(home, npmPrefix, sha);
+      checkInstallPermissions(home, npmPrefix, sha, roam);
       if (saved) return true;
       if (!Array.isArray(request.chunks) || !request.chunks.length || request.chunks.length > 10_000 ||
           request.chunks.some((chunk: any) => !chunk || typeof chunk !== "object" || !/^release-[a-f0-9]{32}-[0-9]{1,5}$/.test(name(chunk.name)) ||
@@ -579,7 +632,7 @@ async function run(): Promise<unknown> {
     }
     if (action === "release-observe") {
       const observation = inspectRelease(key, releaseRuntimeProbe);
-      if (observation.state === "absent" || observation.state === "finished") checkInstallPermissions(home, npmPrefix, sha);
+      if (observation.state === "absent" || observation.state === "finished") checkInstallPermissions(home, npmPrefix, sha, roam);
       if (observation.state === "finished" || observation.state === "failed") { pruneReleaseChunks(stage); return observation; }
       const terminal = releaseTerminals(core, coreId, operationId, machineId);
       if (observation.state === "started") {
@@ -599,18 +652,18 @@ async function run(): Promise<unknown> {
       }
       return { state: "absent", prepared: saved !== null };
     }
-    checkInstallPermissions(home, npmPrefix, sha);
+    checkInstallPermissions(home, npmPrefix, sha, roam);
     releaseCore(core, coreId);
     const input = { ...key, owner: releaseRuntimeOwner() }, claim = beginRelease(input);
     if (claim.kind === "duplicate") return true;
     let bytes: Buffer | null = null; const archive = join(stage, "release-release.tgz");
     try {
-      ensurePrivate(home, npmPrefix, false);
+      installerDirectory(home, roam, npmPrefix);
       bytes = assemble(stage, request.chunks, maximum);
       if (digest(bytes) !== sha) bad("release-hash-mismatch");
       atomicWrite(archive, bytes, 0o600, false);
       const installPrefix = join(npmPrefix, "spider-releases", sha);
-      ensurePrivate(home, installPrefix, false);
+      installerDirectory(home, roam, installPrefix);
       const release = join(installPrefix, "node_modules", "@guru-irl", "spider");
       const expectedCli = join(release, "dist", "roam", "cli.mjs"), expectedSupervisor = join(release, "dist", "roam", "supervisor.mjs");
       if (cli !== expectedCli || supervisor !== expectedSupervisor || text("pi") !== join(npmPrefix, "bin", "pi")) bad("invalid-release");
@@ -618,11 +671,9 @@ async function run(): Promise<unknown> {
       const env = { ...process.env, PATH: dirname(node) + ":" + (process.env.PATH ?? ""), SPIDER_GLOBAL_ROOT: globalRoot,
         npm_config_update_notifier: "false", npm_config_onnxruntime_node_install_cuda: "skip", npm_config_color: "false", npm_config_loglevel: "notice" };
       const timeout = Number.isSafeInteger(request.timeout) && request.timeout > 0 ? request.timeout : 600_000;
-      const previousUmask = process.umask(0o022);
-      try {
-        await npmCommand("pi", npm, ["install", "--global", "--prefix", npmPrefix, "--no-audit", "--no-fund", "@earendil-works/pi-coding-agent@1.2.0"], env, timeout);
-        await npmCommand("release", npm, ["install", "--prefix", installPrefix, "--no-audit", "--no-fund", archive], env, timeout);
-      } finally { process.umask(previousUmask); }
+      await npmCommand("pi", npm, ["install", "--global", "--prefix", npmPrefix, "--no-audit", "--no-fund", "@earendil-works/pi-coding-agent@1.2.0"], env, timeout);
+      await npmCommand("release", npm, ["install", "--prefix", installPrefix, "--no-audit", "--no-fund", archive], env, timeout);
+      checkInstallPermissions(home, npmPrefix, sha, roam);
       for (const file of RELEASE_ENTRIES.map(entry => join(release, entry))) {
         const info = lstatSync(file); if (!info.isFile() || info.isSymbolicLink() || !own(info)) bad("incomplete-release");
       }
@@ -792,7 +843,22 @@ async function run(): Promise<unknown> {
     return { status: result.status };
   }
   bad("unknown-provision-action");
-  } finally { unlock(); }
+  } finally {
+    try {
+      if (tightened) {
+        const prior = readPrivateBytes(stage, "permission-tightening.json", 1024);
+        let changed = 0;
+        try {
+          if (prior) {
+            const value = JSON.parse(prior.toString("utf8"));
+            if (value.version !== 1 || !Number.isSafeInteger(value.changed) || value.changed < 0 || value.changed > 1_000_000) bad("unsafe-staging");
+            changed = value.changed;
+          }
+        } finally { prior?.fill(0); }
+        atomicWrite(join(stage, "permission-tightening.json"), Buffer.from(JSON.stringify({ version: 1, changed: Math.min(1_000_000, changed + tightened) })), 0o600, false);
+      }
+    } finally { unlock(); }
+  }
 }
 try { const value = await run(); process.stdout.write(JSON.stringify({ kind: "provision", version: 1, value })); }
 catch (error) {
@@ -800,8 +866,8 @@ catch (error) {
   const operationId = code === "release-in-progress" && error && typeof error === "object" && "operationId" in error &&
     typeof error.operationId === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(error.operationId) ? error.operationId : undefined;
   const path = code === "destination-permissions-unsafe" && error instanceof SelectedFilesError && error.files.length === 1 &&
-    isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f]/.test(error.files[0]) ? error.files[0] : undefined;
-  process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code, ...(operationId ? { operationId } : {}), ...(path ? { path } : {}) }));
+    isAbsolute(error.files[0]) && error.files[0].length <= 4096 && !/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(error.files[0]) ? error.files[0] : undefined;
+  process.stdout.write(JSON.stringify({ kind: "provision", version: 1, error: code, ...(operationId ? { operationId } : {}), ...(path ? { path, ...("recursive" in error && error.recursive === true ? { recursive: true } : {}) } : {}) }));
 }
 `;
 

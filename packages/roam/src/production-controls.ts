@@ -1,5 +1,5 @@
 import { resolveParticipantPi } from "./launcher";
-import { causeCode, type CauseStep } from "./cause-codes";
+import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
 import { agentFailureCode, AgentResponseError, peerPreflightIssue } from "./peer-errors";
 import { setEnrolledPeerEnabled } from "./peer-enabled";
 import { openJournal } from "./journal";
@@ -9,7 +9,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { assertTestConfigPath } from "@spider/db-core";
 import { storeScope } from "@spider/db-core/roam/codec";
@@ -63,14 +63,26 @@ function launchctlBinary(): string {
 }
 function servicePorts(): LaunchdPorts {
   const binary = launchctlBinary();
-  return { plistDir: join(homedir(), "Library", "LaunchAgents"), launchctl(argv) {
-    return new Promise<void>((done, reject) => execFile(binary, [...argv], { timeout: 15_000, maxBuffer: 64 * 1024 }, (error, _stdout, stderr) => {
-      if (!error) { done(); return; }
-      if (argv[0] === "bootout" && /could not find|not loaded|no such process/i.test(stderr)) {
-        reject(Object.assign(new Error("Service is not loaded"), { code: "service-not-loaded" })); return;
+  type ServiceFailure = Error & { code: string; notLoaded: boolean };
+  const invoke = (argv: readonly string[]) => new Promise<void>((done, reject) => execFile(binary, [...argv], { timeout: 15_000, maxBuffer: 64 * 1024 }, (error, stdout, stderr) => {
+    if (!error) { done(); return; }
+    const notLoaded = /could not find (?:the |specified )?service\b|\bnot loaded\b|\bno such process\b/i.test(`${stdout}\n${stderr}`);
+    const code = error.killed ? "service-timeout" : safeCauseCode(error.code) ?? "service-failed";
+    reject(Object.assign(new Error("Service manager request failed"), { code, notLoaded } satisfies Pick<ServiceFailure, "code" | "notLoaded">));
+  }));
+  return { plistDir: join(homedir(), "Library", "LaunchAgents"), async launchctl(argv) {
+    try { await invoke(argv); }
+    catch (error) {
+      if (argv[0] === "bootout") {
+        let notLoaded = (error as ServiceFailure).notLoaded;
+        if (!notLoaded && argv.length === 3 && argv[2].endsWith(".plist")) {
+          try { await invoke(["print", `${argv[1]}/${basename(argv[2], ".plist")}`]); }
+          catch (probe) { notLoaded = (probe as ServiceFailure).notLoaded; }
+        }
+        if (notLoaded) throw Object.assign(new Error("Service is not loaded"), { code: "service-not-loaded" });
       }
-      reject(new Error("Service manager request failed"));
-    }));
+      throw error;
+    }
   } };
 }
 async function writeEnabled(root: string, previous: RoamConfig, enabled: boolean): Promise<void> {

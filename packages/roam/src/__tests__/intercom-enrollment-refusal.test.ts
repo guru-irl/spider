@@ -21,7 +21,9 @@ it.each([A, B])("refuses enrollment on either endpoint with a named reason and a
     present: async () => {}, approve: async () => { consent++; return true; }, notify: async () => {}, warn: async () => {} });
   expect(await provisionIntercomEnrollment(request, ports)).toMatchObject({ code: 3, reason: "revocation-pending" });
   expect(consent).toBe(0); expect(readFileSync(file)).toEqual(before); expect(f.units).toEqual(units); expect(f.queues.get(machine)!.pairFence(peer)?.fenceId).toBe(fence.fenceId);
-  const doctor = await runLocalDoctor({ root }); expect(doctor.diagnostics.some(row => row.reason.includes("Bring B back so revocation can finish"))).toBe(true);
+  const doctor = await runLocalDoctor({ root });
+  expect(doctor.diagnostics).toContainEqual(expect.objectContaining({ repairCommand: "spider roam intercom revoke pair-1", reason: expect.stringContaining("Keep both boxes reachable") }));
+  expect(doctor.diagnostics.some(row => row.reason.includes("Bring B back"))).toBe(false);
 }, 5000);
 it.each([A, B])("refuses a delayed setup write after a crash committed only the queue fence %s", async machine => {
   const f = await scenario(); expect(await provisionIntercomEnrollment(f.request, f.enrollment)).toMatchObject({ code: 0, reason: "intercom-enrolled" });

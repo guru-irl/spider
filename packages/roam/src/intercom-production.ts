@@ -181,7 +181,7 @@ export async function reconcileIntercomRevocations(input: { root: string; machin
       await registry.beginRevocation(pair.pairId, fence.fenceId);
       await registry.finishRevocation(pair.pairId, "intercom-revocation-unconfirmed");
       results.push(await revokeIntercomPair(pair.pairId, input.ports(pair)));
-    } catch { results.push({ code: 3, reason: "revocation-incomplete", operationId: pair.pairId, home: null, epoch: null, repairCommand: null, value: null }); }
+    } catch { results.push({ code: 3, reason: "revocation-incomplete", operationId: pair.pairId, home: null, epoch: null, repairCommand: `spider roam intercom revoke ${pair.pairId}`, value: null }); }
   }
   return results;
 }

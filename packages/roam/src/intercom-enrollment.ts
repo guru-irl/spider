@@ -272,7 +272,9 @@ export async function provisionIntercomEnrollment(request: IntercomEnrollmentReq
 
 export interface RevocationResult { pairId: string; cleanupReason: IntercomRevocationCleanupReason | null }
 function revocationOutcome(pairId: string, code: 0 | 1 | 3, reason: string, cleanupReason: IntercomRevocationCleanupReason | null = null): Outcome<RevocationResult> {
-  return { code, reason, operationId: pairId, home: null, epoch: null, repairCommand: null, value: code === 0 ? { pairId, cleanupReason } : null };
+  return { code, reason, operationId: pairId, home: null, epoch: null,
+    repairCommand: code === 3 || cleanupReason !== null ? `spider roam intercom revoke ${pairId}` : null,
+    value: code === 0 ? { pairId, cleanupReason } : null };
 }
 
 /** A removed key alone cannot prove that a previously authenticated connection has closed. */
@@ -326,7 +328,7 @@ export async function revokeIntercomPair(pairId: string, ports: IntercomRevocati
         if (!cleanupReason) try {
           if (ports.stopPairConnect && !await ports.stopPairConnect(pair, pins, closure.fenceId)) throw new Error("intercom-revocation-cleanup-pending");
           const route = await ports.removeMachineIfIdle(pair, pins);
-          if (route === "shared-jobs") cleanupReason = "intercom-revocation-cleanup-pending";
+          if (route === "shared-jobs") cleanupReason = "intercom-revocation-shared-jobs";
           else if (route !== "removed") cleanupReason = "intercom-revocation-cleanup-pending";
           else {
             const evidence = await ports.verifyRevocation(pair, pins);

@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createIntercomBridge, type IntercomBridge } from "../intercom-bridge";
 import { provisionIntercomEnrollment, revokeIntercomPair } from "../intercom-enrollment";
-import { createProductionIntercomEnrollmentPorts, createProductionIntercomRevocationPorts } from "../intercom-production";
+import { createProductionIntercomEnrollmentPorts, createProductionIntercomRevocationPorts, reconcileIntercomRevocations } from "../intercom-production";
 import { createIntercomRegistry } from "../intercom-registry";
 import { runIntercomRevokeCli } from "../intercom-cli";
 import { runLocalDoctor } from "../local-diagnostics";
@@ -84,6 +84,17 @@ it("reachable live terminals are distinguished from an unavailable host and retr
   f.terminals([{ address: "spider-pair-pair-1/t1", state: "finished" }]);
   expect(await f.revoke()).toMatchObject({ code: 0, value: { cleanupReason: null } });
   for (const record of await f.records()) expect(record).toMatchObject({ state: "revoked", cleanupReason: null });
+}, 10_000);
+
+it("recovery failures preserve the fence and provide a working plain retry", async () => {
+  const f = await livePair(), store = f.queues.get(A)!;
+  const fence = store.fencePair(B, "edge-1").fence;
+  expect(await reconcileIntercomRevocations({ root: f.root, machineId: HUB, store, remoteFence: async () => fence,
+    ports: () => { throw new Error("management setup failed"); } })).toMatchObject([
+    { code: 3, reason: "revocation-incomplete", repairCommand: "spider roam intercom revoke pair-1" },
+  ]);
+  expect(store.pairFence(B)?.fenceId).toBe(fence.fenceId);
+  expect(await f.revoke()).toMatchObject({ code: 0, value: { cleanupReason: null } });
 }, 10_000);
 
 it("an unreachable target retains the fence and provides a plain retry that completes when it returns", async () => {

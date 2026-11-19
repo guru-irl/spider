@@ -58,10 +58,10 @@ it("a host straggler preserves the key and route until a later retry proves clos
   expect(await revokeIntercomPair("pair-1", f.revokePorts)).toMatchObject({ code: 0, value: { cleanupReason: null } }); expect(f.machines()).toEqual([]);
 }, 5000);
 
-it.each(["live", "finished"])("any %s terminal blocks removal of the closed reserved route", async state => {
+it.each(["live", "finished"])("only live terminals block route removal when the retained row is %s", async state => {
   const f = await scenario(); expect((await provisionIntercomEnrollment(f.request, f.enrollment)).code).toBe(0); f.terminals([{ address: "spider-pair-pair-1/t1", state }]);
-  expect(await revokeIntercomPair("pair-1", f.revokePorts)).toMatchObject({ code: 0, value: { cleanupReason: "intercom-revocation-cleanup-pending" } });
-  expect(f.calls.some(call => call.includes("machine rm"))).toBe(false); expect(f.machines()).toHaveLength(1);
+  expect(await revokeIntercomPair("pair-1", f.revokePorts)).toMatchObject({ code: 0, value: { cleanupReason: state === "live" ? "intercom-revocation-shared-jobs" : null } });
+  expect(f.calls.some(call => call.includes("machine rm"))).toBe(state === "finished"); expect(f.machines()).toHaveLength(state === "live" ? 1 : 0);
   f.terminals([]); expect(await revokeIntercomPair("pair-1", f.revokePorts)).toMatchObject({ code: 0, value: { cleanupReason: null } });
 }, 5000);
 

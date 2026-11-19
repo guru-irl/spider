@@ -6,6 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { build } from "vite";
 import type { Journal, Peer, Transport } from "../contracts";
 import { DEFAULT_LIMITS } from "../contracts";
+import { BOOTSTRAP_SCRIPT } from "../bootstrap-script";
 import { copyPiAuth } from "../auth";
 import { beginRelease, beginShortWrite, endShortWrite } from "../release-receipt";
 import { releaseRequestDigest } from "../release-request";
@@ -91,9 +92,10 @@ else {
         timeout: request.action === "verify" ? 4900 : 4000,
         env: { ...process.env, HOME: home, PATH: bin, SPIDER_GLOBAL_ROOT: globalRoot } });
       if (child.status !== 0) throw new Error("fixture remote program failed");
-      const reply = JSON.parse(child.stdout) as { error?: string; operationId?: string; value?: unknown };
+      const reply = JSON.parse(child.stdout) as { error?: string; operationId?: string; path?: string; value?: unknown };
       if (reply.error) throw Object.assign(new Error("remote request failed"), { code: reply.error,
-        ...(reply.operationId ? { details: { blockingOperationId: reply.operationId } } : {}) });
+        ...(reply.operationId ? { details: { blockingOperationId: reply.operationId } } : {}),
+        ...(reply.path ? { details: { path: reply.path } } : {}) });
       return reply.value;
     },
     async launchRelease(_peer: Peer, _operationId: string, requestFile: string) {
@@ -125,6 +127,79 @@ function releaseNpm(f: ReturnType<typeof fixture>, requireCpu = false, output?: 
   writeFileSync(join(f.bin, "npm"), npm, { mode: 0o700 });
   return log;
 }
+
+function releaseNpmWithDefaultModes(f: ReturnType<typeof fixture>) {
+  const log = join(f.root, "npm-calls"), executable = `#!${process.execPath}\nconsole.log('1.2.0');\n`;
+  const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';
+const args=process.argv.slice(2), prefix=args[args.indexOf('--prefix')+1];
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(args)+'\\n');
+const write=(file, content, mode=0o666)=>{fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o777});fs.writeFileSync(file,content,{mode});};
+if(args.includes('--global')) {
+  write(path.join(prefix,'lib/node_modules/@earendil-works/pi-coding-agent/cli.js'),${JSON.stringify(executable)},0o777);
+  fs.mkdirSync(path.join(prefix,'bin'),{recursive:true,mode:0o777});
+  fs.symlinkSync('../lib/node_modules/@earendil-works/pi-coding-agent/cli.js',path.join(prefix,'bin/pi'));
+} else {
+  const root=path.join(prefix,'node_modules/@guru-irl/spider');
+  write(path.join(root,'package.json'),JSON.stringify({name:'@guru-irl/spider',version:'0.1.0'}));
+  for(const name of ['dist/extension.js','dist/intercom/broker.mjs','dist/roam/cli.mjs','dist/roam/supervisor.mjs','scripts/intercom-switchover.mjs','scripts/extension-shim.mjs']) write(path.join(root,name),'fixture');
+}\n`;
+  writeFileSync(join(f.bin, "npm"), npm, { mode: 0o700 });
+  return log;
+}
+
+function installedInventory(f: ReturnType<typeof fixture>) {
+  const request = { core: f.peer.core, coreId: "fixture-core", pi: f.peer.pi, cli: f.peer.cli,
+    globalRoot: f.globalRoot, agentDir: f.agentDir, checks: [], coreUnit: "fixture.service" };
+  const child = spawnSync(process.execPath, ["-e", BOOTSTRAP_SCRIPT], { input: JSON.stringify(request), encoding: "utf8",
+    env: { ...process.env, HOME: f.home, PATH: f.bin }, cwd: f.home, timeout: 4000 });
+  expect(child.status).toBe(0); expect(child.stderr).toBe("");
+  const reply = JSON.parse(child.stdout);
+  expect(reply).toHaveProperty("value");
+  return reply.value as { pi: string | null; piVersion: string | null; spider: { installed: boolean } };
+}
+
+it("installs a non-writable tree under umask 002 that inventory can read", async () => {
+  const previous = process.umask(0o002);
+  try {
+    const f = fixture(); rmSync(f.npmPrefix, { recursive: true }); releaseNpmWithDefaultModes(f);
+    writeFileSync(join(f.bin, "systemctl"), `#!${process.execPath}\nconsole.log('Transient=no\\nFragmentPath=\\nMainPID=0');\n`, { mode: 0o700 });
+    const adapter = create!(f.options);
+    await expect(adapter.installRelease(f.peer, f.input)).resolves.toMatchObject({ pi: f.peer.pi, cli: f.peer.cli });
+    const unsafe: string[] = [];
+    function walk(path: string) {
+      const info = lstatSync(path);
+      if (info.isSymbolicLink()) return;
+      if ((info.mode & 0o022) !== 0) unsafe.push(path);
+      if (info.isDirectory()) for (const name of readdirSync(path)) walk(join(path, name));
+    }
+    walk(f.npmPrefix);
+    expect(unsafe).toEqual([]);
+    expect(lstatSync(join(f.globalRoot, "roam", "provision", "op-1")).mode & 0o777).toBe(0o700);
+    expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: true } });
+    const bin = join(f.npmPrefix, "bin"), before = lstatSync(bin).mode & 0o777;
+    chmodSync(bin, before | 0o020);
+    expect(installedInventory(f)).toMatchObject({ pi: null, piVersion: null, spider: { installed: true } });
+    chmodSync(bin, before);
+    const modules = join(f.npmPrefix, "spider-releases", f.input.sha256, "node_modules"), mode = lstatSync(modules).mode & 0o777;
+    chmodSync(modules, mode | 0o020);
+    expect(installedInventory(f)).toMatchObject({ pi: f.peer.pi, piVersion: "1.2.0", spider: { installed: false } });
+    chmodSync(modules, mode);
+  } finally { process.umask(previous); }
+}, 10_000);
+
+it.each(["prefix", "release"] as const)("refuses an unsafe retained %s directory with its path", async kind => {
+  const previous = process.umask(0o002);
+  try {
+    const f = fixture(), unsafe = kind === "prefix" ? f.npmPrefix : join(f.npmPrefix, "spider-releases", f.input.sha256);
+    mkdirSync(unsafe, { recursive: true, mode: 0o700 }); chmodSync(unsafe, 0o775);
+    const log = releaseNpmWithDefaultModes(f), adapter = create!(f.options);
+    await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "destination-permissions-unsafe", details: { path: unsafe } });
+    expect(lstatSync(unsafe).mode & 0o777).toBe(0o775);
+    expect(existsSync(log)).toBe(false);
+    chmodSync(unsafe, 0o755);
+    await expect(adapter.installRelease(f.peer, f.input)).resolves.toMatchObject({ pi: f.peer.pi, cli: f.peer.cli });
+  } finally { process.umask(previous); }
+}, 10_000);
 
 it("installs with CUDA downloads disabled for both npm commands", async () => {
   vi.stubEnv("npm_config_onnxruntime_node_install_cuda", "force");

@@ -59,6 +59,16 @@ it("retains typed authority and drops arbitrary participant data", () => {
     repairCommand: "spider roam recover move-a", value: { warnings: ["tool-auth-unverified"] } });
   expect(controlText(safe)).toContain("The source is paused to avoid running two copies.");
 });
+it("retains only shell-safe destination permission repair commands", () => {
+  const base = { code: 3 as const, reason: "destination-permissions-unsafe", operationId: "provision-a", home: null, epoch: null, value: null };
+  const repair = "chmod go-w '/home/fixture/.pi/agent/user'\\''s themes'";
+  expect(safeControlOutcome({ ...base, repairCommand: repair }).repairCommand).toBe(repair);
+  for (const bad of ["chmod go-w /home/fixture/.pi/agent; touch /home/fixture/unwanted", "chmod go-w '/home/fixture/../other'", "chmod go-w '/home/fixture/agent' && id"]) {
+    expect(safeControlOutcome({ ...base, repairCommand: bad }).repairCommand).toBeNull();
+  }
+  expect(safeControlOutcome({ ...base, reason: "other-error", repairCommand: repair }).repairCommand).toBeNull();
+});
+
 it("ambiguous name refuses with candidates", () => {
   const candidates = [{ id: "session-a", name: "same" }, { id: "session-b", name: "same" }];
   expect(resolveControlSession("same", candidates)).toEqual({ reason: "ambiguous-session", candidates: ["session-a", "session-b"] });

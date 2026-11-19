@@ -563,10 +563,15 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       let report: Awaited<ReturnType<typeof runLocalDoctor>>;
       if (argv.length === 2) report = await runLocalDoctor({ root, bundleUrl: options?.bundleUrl, inspectIntercomDoctor: true, intercomDoctor: options?.intercomDoctor });
       else {
-        const config = readLocalIdentity(root);
+        let config: ReturnType<typeof readLocalIdentity>;
+        try { config = readLocalIdentity(root); }
+        catch {
+          return emitOutcome(io, { ...outcome(1, "roaming-config-unavailable"), repairCommand: "spider roam doctor" }, jsonOutput,
+            "Remote doctor is unavailable (roaming-config-unavailable). Run spider roam doctor. No data was changed.\n");
+        }
         if (config.role !== "hub") return emitOutcome(io, outcome(1, "mac-hub-required"), jsonOutput, "Run remote doctor on the Mac hub.\n");
         const peer = config.peers.find(candidate => candidate.alias === argv[2] || candidate.machineId === argv[2]);
-        if (!peer) return emitOutcome(io, outcome(2, "machine-not-enrolled"), jsonOutput, "Machine is not enrolled.\n");
+        if (!peer) return emitOutcome(io, outcome(2, "machine-not-enrolled"), jsonOutput, "Remote doctor is unavailable (machine-not-enrolled). No data was changed.\n");
         const herdr = loadHerdrConfig(root);
         report = await remoteDoctor(createTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }), peer, config);
         report = { ...report, consumers: report.enabled ? report.consumers : [], diagnostics: [
@@ -607,7 +612,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
         let argument = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(name) ? name : "";
         if (!argument) try { argument = readLocalIdentity(root).peers.find(peer => peer.alias === argv[2] || peer.machineId === argv[2])?.machineId ?? ""; } catch { /* Configuration may be unavailable too. */ }
         const issue = peerPreflightIssue(error, name, argument);
-        return emitOutcome(io, { ...outcome(1, issue.reason, { issues: [issue] }), repairCommand: issue.repairCommand }, jsonOutput, `${issue.reason}${issue.detail ? `: ${issue.detail}` : ""} (${issue.repairCommand}). No data was changed.\n`);
+        return emitOutcome(io, { ...outcome(1, issue.reason, { issues: [issue] }), repairCommand: issue.repairCommand }, jsonOutput, `Remote doctor is unavailable (${issue.reason}).${issue.detail ? ` ${issue.detail}` : ""} (${issue.repairCommand}). No data was changed.\n`);
       }
       return emitOutcome(io, outcome(1, "doctor-unavailable"), jsonOutput, "Cannot inspect local roaming state. No data was changed.\n");
     }

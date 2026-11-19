@@ -114,6 +114,12 @@ The audit is local, not replicated. In the affected machine's global database,
 These include project paths, repository fingerprints and commands, and workspace
 snapshots. The audit supports manual restoration after a mistaken prune.
 
+Remote doctor reports `roaming-config-unavailable` if it cannot read the local
+roaming configuration, and `machine-not-enrolled` if the requested machine is
+not in that configuration. These checks run before any peer connection. The
+text output names the reason code and says remote doctor is unavailable. JSON
+returns the same code in `reason`.
+
 Enable and remote doctor distinguish a proven remote transport failure from a
 local transport failure or an answered agent refusal. Known remote connection
 failures return `box-unreachable:<box>` with the existing forget advice. Local

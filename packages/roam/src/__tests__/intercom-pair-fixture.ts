@@ -16,11 +16,12 @@ import type { IntercomStore } from "../intercom-contracts";
 import type { ProvisionTransport } from "../transport";
 import { systemSshFixture } from "./intercom-ssh-system-fixture";
 export interface FakePairUnit { name: string; file: string; pid: number; state: string; members: number[] }
+export interface PairTerminalRow { address: string; state: string; exit_code?: unknown; signal?: unknown; reason?: unknown }
 export interface PairScenario {
   root: string; source: Peer; target: Peer; otherSource: Peer; journal: Journal; calls: string[]; locals: Map<string, LocalPairPorts>; queues: Map<string, IntercomStore>;
   units: Map<string, FakePairUnit>; enrollment: IntercomEnrollmentPorts; request: IntercomEnrollmentRequest; revokePorts: IntercomRevocationPorts; publicKey: string; transport: ProvisionTransport;
   connected(): boolean; connect(): void; straggler(value: boolean): void; offline(value: boolean): void; listingError(value: boolean): void; mismatch(): void;
-  terminals(value: Array<{ address: string; state: string }>): void; machines(): Array<Record<string, unknown>>; otherMachines(): Array<Record<string, unknown>>;
+  terminals(value: PairTerminalRow[]): void; machines(): Array<Record<string, unknown>>; otherMachines(): Array<Record<string, unknown>>;
 }
 
 const HUB = "00000000-0000-4000-8000-000000000001", A = "00000000-0000-4000-8000-000000000002", B = "00000000-0000-4000-8000-000000000003";
@@ -33,7 +34,7 @@ export async function scenario(): Promise<PairScenario> {
   const recipe = { check: ["/fixture/connector", "check"], host: ["/fixture/connector", "host", "{pairId}"], connect: ["/fixture/connector", "connect", "{pairId}"], localPort: 23222 };
   const calls: string[] = [], units = new Map<string, { name: string; file: string; pid: number; state: string; members: number[] }>();
   let nextPid = 100, nextKey = 8, connection = false, straggler = false, offline = false, listError = false, mismatch = false;
-  let terminals: Array<{ address: string; state: string }> = [];
+  let terminals: PairTerminalRow[] = [];
   const routes = new Map<string, Array<Record<string, unknown>>>();
   const blob = Buffer.concat([Buffer.from([0, 0, 0, 11]), Buffer.from("ssh-ed25519"), Buffer.from([0, 0, 0, 32]), Buffer.alloc(32, 7)]), hostPublicKey = `ssh-ed25519 ${blob.toString("base64")}`, publicKey = `ssh-ed25519 ${Buffer.concat([blob.subarray(0, 19), Buffer.alloc(32, 8)]).toString("base64")}`;
   const locals = new Map<string, LocalPairPorts>(), queues = new Map<string, ReturnType<typeof openIntercomStore>>();
@@ -65,8 +66,9 @@ export async function scenario(): Promise<PairScenario> {
       if (argv[1] === "machine" && argv[2] === "ls") return { code: 0, stdout: JSON.stringify({ machines: routes.get(peer.machineId)!.map(row => mismatch && row.name === "spider-pair-pair-1" ? { ...row, session: "changed" } : row) }) };
       if (argv[1] === "machine" && argv[2] === "add") { routes.get(peer.machineId)!.push({ name: argv[argv.indexOf("--name") + 1], id: "core-b", via: true, target: argv[argv.indexOf("--via") + 1], session: "default", temporary: false, state: "connected", host: "box-b.invalid", version: "0.1.16" }); return { code: 0, stdout: "{}" }; }
       if (argv[1] === "machine" && argv[2] === "rm") { routes.set(peer.machineId, routes.get(peer.machineId)!.filter(row => row.name !== argv[3])); return { code: 0, stdout: "{}" }; }
-      if (argv[1] === "ls") { if (listError) throw new Error("listing unavailable"); return { code: 0, stdout: JSON.stringify({ terminals: terminals.map(row => ({ address: peer.machineId === B ? row.address.replace(/^spider-pair-pair-1\//, "") : row.address,
-        agent: "", cwd: "/home/fixture", state: row.state, turn: 0, ...(row.state === "finished" ? { exit_code: 0, reason: "exit" } : {}) })), machines: routes.get(peer.machineId), hidden_finished: 0 }) }; }
+      if (argv[1] === "ls") { if (listError) throw new Error("listing unavailable"); return { code: 0, stdout: JSON.stringify({ terminals: terminals.map(row => ({ agent: "", cwd: "/home/fixture", turn: 0,
+        ...(row.state === "finished" ? { exit_code: 0, reason: "exited" } : {}), ...row,
+        address: peer.machineId === B ? row.address.replace(/^spider-pair-pair-1\//, "") : row.address })), machines: routes.get(peer.machineId), hidden_finished: 0 }) }; }
       if (argv[1] === "exec") return { code: 0, stdout: JSON.stringify({ version: 1, kind: "doctor", machineId: B, value: {} }) };
       throw new Error("unexpected fixture command");
     };
@@ -112,5 +114,5 @@ export async function scenario(): Promise<PairScenario> {
   const revokePorts = createProductionIntercomRevocationPorts({ root: source.globalRoot, localMachineId: A, transport: transport as never, localCore: async () => "core-a", fenceLocal: async input => {
     calls.push("fence-local"); return fencePeer(source, B, input.edgeEpoch, input.fenceId);
   }, cleanupLocal: input => runLocalPairCleanup(input, locals.get(A)!), notify: async () => {} });
-  return { root, source, target, otherSource, journal, calls, locals, queues, units, enrollment, request, revokePorts, publicKey, transport: transport as unknown as ProvisionTransport, connected: () => connection, connect: () => { connection = true; }, straggler: (value: boolean) => { straggler = value; }, offline: (value: boolean) => { offline = value; }, listingError: (value: boolean) => { listError = value; }, mismatch: () => { mismatch = true; }, terminals: (value: Array<{ address: string; state: string }>) => { terminals = value; }, machines: () => routes.get(A)!, otherMachines: () => routes.get(otherSource.machineId)! };
+  return { root, source, target, otherSource, journal, calls, locals, queues, units, enrollment, request, revokePorts, publicKey, transport: transport as unknown as ProvisionTransport, connected: () => connection, connect: () => { connection = true; }, straggler: (value: boolean) => { straggler = value; }, offline: (value: boolean) => { offline = value; }, listingError: (value: boolean) => { listError = value; }, mismatch: () => { mismatch = true; }, terminals: (value: PairTerminalRow[]) => { terminals = value; }, machines: () => routes.get(A)!, otherMachines: () => routes.get(otherSource.machineId)! };
 }

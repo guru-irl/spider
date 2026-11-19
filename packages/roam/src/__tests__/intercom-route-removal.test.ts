@@ -28,6 +28,24 @@ it.each(["live", "finished", "starting"])("the fallback route inventory handles 
   expect(f.machines()).toHaveLength(state === "finished" ? 0 : 1);
 }, 5000);
 it.each([
+  ["local row", { address: "t1" }, "removed"],
+  ["unrelated routed row", { address: "box-1.invalid/t1", state: "finished", reason: "killed", signal: 9 }, "removed"],
+  ["malformed unrelated state", { address: "box-1.invalid/t1", state: "finished", exit_code: "bad" }, "removed"],
+  ["killed pair row", { address: "spider-pair-pair-1/t1", state: "finished", reason: "killed", signal: 9 }, "removed"],
+  ["holder lost pair row", { address: "spider-pair-pair-1/t1", state: "finished", reason: "holder_lost" }, "removed"],
+  ["live pair row", { address: "spider-pair-pair-1/t1", state: "live" }, "shared-jobs"],
+  ["malformed pair row", { address: "spider-pair-pair-1/t1", state: "finished", reason: "killed", signal: "9" }, "unknown"],
+  ["uppercase terminal", { address: "spider-pair-pair-1/tA", state: "live" }, "unknown"],
+] as const)("fallback inventory handles %s without changing unrelated work", async (_name, terminal, expected) => {
+  const { f, pair, resources, run } = await enrolled();
+  const guarded: typeof run = async (argv, options) => argv[1] === "ls" ? { code: 0, stdout: JSON.stringify({
+    terminals: [terminal], machines: f.machines(), hidden_finished: 0,
+  }) } : run(argv, options);
+  expect(await removePairMachineRoute(pair, resources, { run: guarded, hostClosed: true, keyRemoved: true })).toBe(expected);
+  expect(f.machines()).toHaveLength(expected === "removed" ? 0 : 1);
+}, 5000);
+
+it.each([
   { machineId: A, targetCoreId: "core-b", status: "empty" as const },
   { machineId: B, targetCoreId: "wrong-core", status: "empty" as const },
   { machineId: B, targetCoreId: "core-b", status: "unknown" as const },

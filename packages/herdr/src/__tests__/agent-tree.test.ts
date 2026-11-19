@@ -38,6 +38,12 @@ test('a live viewer without a known run does not claim that its run is working',
     .find(row => row.key === 'run')).toMatchObject({ status: 'working', retained: false });
 });
 
+test.each(['idle', 'blocked', 'error'])('an unknown run does not inherit a viewer %s status', status => {
+  const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', status };
+  expect(projectAgentChildren([viewer], [feed()], 'agent', contract, { now: 2000 })
+    .find(row => row.key === 'missing')).toMatchObject({ status: 'unknown', action: { kind: 'peek', terminal: 'viewer' } });
+});
+
 test('a closed feed cannot report an old running run as working', () => {
   const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null;
   const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'run' }), parent: 'agent' };

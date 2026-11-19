@@ -149,6 +149,12 @@ it("preserves the missing adjacent npm failure in the provisioning outcome", asy
   expect(await provision!(f.request("missing-npm"), f.ports)).toMatchObject({ code: 3, reason: "npm-not-found" });
 }, 5000);
 
+it("preserves the unfiltered release evidence refusal in the provisioning outcome", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.installRelease = async () => { throw Object.assign(new Error("unfiltered"), { code: "release-evidence-unfiltered" }); };
+  expect(await provision!(f.request("unfiltered"), f.ports)).toMatchObject({ code: 3, reason: "release-evidence-unfiltered" });
+}, 5000);
+
 it("preserves the npm installation failure in the provisioning outcome", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
   f.ports.transfer.installRelease = async () => { throw Object.assign(new Error("npm failed"), { code: "npm-install-failed" }); };

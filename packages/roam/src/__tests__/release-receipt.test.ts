@@ -39,6 +39,19 @@ it("retains structured npm diagnostics in the private receipt but omits them fro
   expect(release.inspectRelease(f, () => "absent")).toEqual({ state: "failed", reason: "npm-install-failed" });
 }, 5000);
 
+it("stores timeout evidence and rejects other extra diagnostic fields", () => {
+  const f = fixture(), first = release.beginRelease(f);
+  if (first.kind !== "acquired") throw new Error("release not acquired");
+  const diagnostic = { step: "pi", exitCode: null, signal: "SIGKILL", npmCode: null, packageName: null, timedOut: true } as const;
+  for (const invalid of [{ ...diagnostic, timedOut: false }, { ...diagnostic, timedOut: "yes" }, { ...diagnostic, extra: true }]) {
+    expect(() => release.finishRelease(f, first.token, { state: "failed", reason: "npm-install-failed", diagnostic: invalid } as never))
+      .toThrow(expect.objectContaining({ code: "invalid-release-receipt" }));
+  }
+  release.finishRelease(f, first.token, { state: "failed", reason: "npm-install-failed", diagnostic });
+  expect(JSON.parse(readFileSync(join(f.directory, "release-receipt.json"), "utf8")).diagnostic).toEqual(diagnostic);
+  expect(release.inspectRelease(f, () => "absent")).toEqual({ state: "failed", reason: "npm-install-failed" });
+}, 5000);
+
 it("refuses oversized or unrelated npm diagnostics in a receipt", () => {
   const f = fixture(), first = release.beginRelease(f);
   if (first.kind !== "acquired") throw new Error("release not acquired");

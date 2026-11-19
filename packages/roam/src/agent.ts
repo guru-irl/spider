@@ -8,7 +8,7 @@ import { ReadinessParseError } from "@spider/db-core/roam/readiness";
 import { randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { applyBatch } from "@spider/db-core/roam/apply";
+import { applyBatch, MappingFenceError } from "@spider/db-core/roam/apply";
 import { assertBatchHeader, assertRecordChange, HARD_BATCH_BYTES, parseRoamJson, storeScope, validateBatch } from "@spider/db-core/roam/codec";
 import { validUnicode } from "@spider/db-core/roam/hlc";
 import { exportBatch } from "@spider/db-core/roam/export";
@@ -656,6 +656,10 @@ async function dispatchParsedOperation(operation: Operation, request: Request, p
     )) {
       const failure = outcome(1, error.message, id);
       if (Buffer.byteLength(JSON.stringify(failure)) <= ports.config.limits.replyBytes) return failure;
+    }
+    if (error instanceof MappingFenceError && error.storeKey.length <= 256 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(error.storeKey)) {
+      return { ...outcome(3, `Mapping fenced replica ${error.storeKey}. Re-resolve placement and retry.`, id),
+        operationKind: request.kind, causeCode: "ROAM_MAPPING_FENCED" };
     }
     if (error && typeof error === "object" && "retryable" in error && error.retryable === true) {
       return { ...outcome(3, "Agent operation failed", id), operationKind: request.kind, causeCode: causeCode(error, request.kind) };

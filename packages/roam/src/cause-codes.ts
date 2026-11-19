@@ -13,7 +13,7 @@ const causeCodes = new Set<string>([
   "SQLITE_READONLY_RECOVERY", "SQLITE_READONLY_CANTLOCK", "SQLITE_READONLY_DBMOVED",
   "SQLITE_CONSTRAINT_CHECK", "SQLITE_CONSTRAINT_FOREIGNKEY", "SQLITE_CONSTRAINT_NOTNULL",
   "SQLITE_CONSTRAINT_PRIMARYKEY", "SQLITE_CONSTRAINT_UNIQUE", "SQLITE_CONSTRAINT_TRIGGER",
-  "diagnostic-snapshot-changing", "diagnostic-snapshot-wal-invalid", "diagnostic-snapshot-wal-unpublished",
+  "ROAM_MAPPING_FENCED", "diagnostic-snapshot-changing", "diagnostic-snapshot-wal-invalid", "diagnostic-snapshot-wal-unpublished",
   "diagnostic-snapshot-wal-index-missing", "diagnostic-snapshot-unsafe",
   "missing-hc", "spawn-error", "spawn_failed", "stdin-error", "cli-error", "cli-aborted", "cli-exit", "cli-timeout",
   "connection-refused", "connection-closed", "machine-not-found", "machine-ambiguous", "machine-not-enrolled", "machine-mismatch",

@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { migrate, openDb } from "@spider/db-core";
 import { replicaPath } from "@spider/db-core/roam/catalog";
@@ -11,6 +11,7 @@ import { handleAgentOperation } from "../agent";
 import { DEFAULT_LIMITS, disabledIntercom } from "../contracts";
 import { openJournal } from "../journal";
 import { listStoreKeys } from "../store-inventory";
+import { mapWorkspace } from "@spider/db-core/roam/repo-map";
 
 const BOX = "00000000-0000-4000-8000-000000000002";
 const HUB = "00000000-0000-4000-8000-000000000001";
@@ -66,6 +67,33 @@ it("reads registered, mapped and replica stores from a detached catalog", () => 
     finally { db?.close(); }
   }
 }, 5000);
+
+it("omits deleted registered databases and a mapped worktree awaiting capture", async () => {
+  const { global, worktree, ports } = fixture();
+  const common = join(global.root, "deleted", ".git");
+  global.db.prepare("UPDATE projects SET git_common_dir=?").run(common);
+  const path = join(global.root, "planned"); mkdirSync(path);
+  await mapWorkspace(global.db, { repoKey: "fixture-repo", workspaceId: "00000000-0000-4000-8000-000000000003", path });
+  worktree.db.close(); unlinkSync(worktree.db.raw.name);
+  const problems: Array<{ entry: string; error: unknown }> = [], incomplete: string[] = [];
+  expect(listStoreKeys(global.db, { onProblem: (entry, error) => problems.push({ entry, error }), onIncomplete: entry => incomplete.push(entry) })).toEqual(["global"]);
+  expect(incomplete).toEqual([]);
+  expect(problems).toEqual(expect.arrayContaining([
+    { entry: worktree.db.raw.name, error: expect.objectContaining({ code: "store-missing", scope: "worktree" }) },
+    { entry: join(common, "spider", "repo.db"), error: expect.objectContaining({ code: "store-missing", scope: "repo" }) },
+    { entry: join(path, ".spider", "project.db"), error: expect.objectContaining({ code: "store-missing", scope: "worktree" }) },
+  ]));
+  const result = await handleAgentOperation({ id: "missing", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, ports);
+  expect(result).toMatchObject({ code: 0, value: { stores: ["global"] } });
+}, 5000);
+
+it.each(["EACCES", "SQLITE_CORRUPT"])("keeps registered inspect failure %s blocking with its path", code => {
+  const { global, worktree } = fixture(), incomplete: string[] = [], problems: unknown[] = [];
+  expect(listStoreKeys(global.db, { open() { throw Object.assign(new Error("private detail"), { code }); },
+    onProblem: (_entry, error) => problems.push(error), onIncomplete: entry => incomplete.push(entry) })).toEqual(["global"]);
+  expect(incomplete).toEqual([worktree.db.raw.name]);
+  expect(problems).toEqual([expect.objectContaining({ code: "store-uninspectable", check: code.toLowerCase().replaceAll("_", "-"), path: worktree.db.raw.name })]);
+});
 
 it("rejects malformed or duplicate detached mapping redirects", () => {
   const { global } = fixture();

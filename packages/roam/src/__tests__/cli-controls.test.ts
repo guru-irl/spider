@@ -318,6 +318,21 @@ it("enabled forget JSON includes the recovered homes and presentation status", a
   expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "destroyed-machine-recovered", operationId: "forget-a", value: { presentation: "pending", homes: [home] } });
 }, 5000);
 
+it("sync prints the bounded agent cause without exposing an unrecognized code", async () => {
+  const f = await fixture(HUB, { code: 1, reason: "Synchronization needs attention", value: {
+    outcomes: [{ code: 1, reason: "agent-operation-failed", operationId: "op-a", home: null, epoch: null, repairCommand: null, value: null, causeCode: "ENOENT" },
+      { code: 1, reason: "agent-operation-failed", operationId: "op-b", home: null, epoch: null, repairCommand: null, value: null, causeCode: "private-secret" }],
+  } });
+  expect(await f.invoke(["roam", "sync"])).toBe(1);
+  expect(f.err.join("")).toContain("ENOENT");
+  expect(f.err.join("")).not.toContain("private-secret");
+  f.out.length = 0;
+  expect(await f.invoke(["roam", "sync", "--json"])).toBe(1);
+  const rows = JSON.parse(f.out.join("")).value.outcomes;
+  expect(rows[0].causeCode).toBe("ENOENT");
+  expect(rows[1]).not.toHaveProperty("causeCode");
+}, 5000);
+
 it("sync prints a named peer process failure from the hub outcome", async () => {
   const f = await fixture(HUB, { code: 1, reason: "Synchronization needs attention", value: {
     outcomes: [{ code: 1, reason: "Peer command failed (spawn_failed)" }],
@@ -563,6 +578,24 @@ it("disable completes interrupted service removal and retries each box flag", as
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
 }, 5000);
 
+it("disable reports a real filesystem cause and keeps its enabled flag", async () => {
+  const f = await fixture(), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const plist = join(f.root, "Library/LaunchAgents/com.spider.roam.hub.plist");
+  mkdirSync(join(f.root, "Library/LaunchAgents"), { recursive: true }); writeFileSync(plist, "fixture");
+  const launchctl = join(f.root, "launchctl"); writeFileSync(launchctl, "fixture", { mode: 0o700 }); vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl);
+  vi.spyOn(launchd, "removeHubService").mockImplementation(async () => { readFileSync(join(f.root, "missing-private-file")); });
+  expect(await f.invoke(["roam", "disable", "--json"])).toBe(3);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "disable-pending", causeCode: "ENOENT", repairCommand: null });
+  expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(true);
+  expect(existsSync(plist)).toBe(true);
+  f.out.length = 0;
+  expect(await f.invoke(["roam", "disable"])).toBe(3);
+  expect(f.err.join("")).toContain("ENOENT");
+  expect(f.err.join("")).not.toContain("missing-private-file");
+  expect(f.err.join("")).not.toContain("Run spider roam doctor");
+}, 5000);
+
 it("disable leaves the enabled flag on when hub-service removal fails", async () => {
   const f = await fixture(), file = join(f.root, "roam/config.json");
   const config = JSON.parse(readFileSync(file, "utf8")); config.peers = []; writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
@@ -653,6 +686,28 @@ it("reports pending enable before flags or capture if a broker cannot start afte
   expect(result.value.issues).toContainEqual({ reason: result.reason, repairCommand: "spider roam doctor box-1.invalid" });
   expect(operations).toEqual(["stores"]); expect(flags).toEqual([]); expect(service).not.toHaveBeenCalled();
   expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(false);
+}, 5000);
+
+it("enable reports a real transport cause after mutation in JSON and text", async () => {
+  const f = await fixture(HUB, { code: 0, reason: "ready", value: { enabled: true } }), file = join(f.root, "roam/config.json");
+  const config = JSON.parse(readFileSync(file, "utf8")); config.enabled = false; config.peers = [];
+  writeFileSync(file, JSON.stringify(config), { mode: 0o600 });
+  const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: HUB, globalRoot: f.root }); db.close();
+  const launchctl = join(f.root, "launchctl"); writeFileSync(launchctl, "fixture", { mode: 0o700 });
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launchctl); vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createTransport").mockReturnValue({} as never);
+  vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
+  vi.spyOn(launchd, "installHubService").mockRejectedValue(new HerdrError("cli-timeout", "private exception details"));
+  const code = await f.invoke(["roam", "enable", "--json"]);
+  expect(code, f.out.join("") + f.err.join("")).toBe(3);
+  expect(JSON.parse(f.out.join(""))).toMatchObject({ reason: "enable-pending", causeCode: "cli-timeout", repairCommand: null });
+  expect(JSON.parse(readFileSync(file, "utf8")).enabled).toBe(true);
+  f.out.length = 0;
+  expect(await f.invoke(["roam", "enable"])).toBe(3);
+  expect(f.err.join("")).toContain("cli-timeout");
+  expect(f.err.join("")).not.toContain("private exception details");
+  expect(f.err.join("")).not.toContain("Run spider roam doctor");
 }, 5000);
 
 it("explicit Mac enable requires box preflight before authorizing its flag", async () => {

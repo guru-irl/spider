@@ -125,8 +125,7 @@ Provisioning runs npm lifecycle scripts but skips optional CUDA downloads.
 Release evidence relies on the core's server-side label filters. Herdr 0.1.16
 omits labels from terminal rows, so when a row has no labels, provisioning also
 checks that the same machine filter with a random operation label returns no
-rows. A nonempty result stops provisioning with `release-evidence-unfiltered`
-before the installer launches.
+rows. A nonempty result refuses the evidence with `release-evidence-unfiltered`.
 
 `npm-not-found` means npm is missing next to the configured Node executable.
 The error names the expected path. Install npm there or update the peer's Node

@@ -835,7 +835,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
   it(`${version}: restores all folded space pills and blocked-child attention`, async () => {
     const test = fixture(version);
     seedConsoles(test);
-    test.nativeTerminals.find(row => row.address === 'subviewer').status = 'blocked';
+    const blockedChild = test.nativeTerminals.find(row => row.address === 'subviewer');
+    blockedChild.labels = {}; blockedChild.status = 'blocked';
     await test.ready();
     test.state.set('agents.sort', 'grouped');
     test.view.folded.add('sp-s1');
@@ -860,7 +861,8 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const test = fixture(version);
     seedConsoles(test);
     test.nativeAgents[1].status = 'blocked';
-    test.nativeTerminals.find(row => row.address === 'subviewer').status = 'blocked';
+    const blockedChild = test.nativeTerminals.find(row => row.address === 'subviewer');
+    blockedChild.labels = {}; blockedChild.status = 'blocked';
     await test.ready();
     test.view.foldedMachines.add('machine:');
     const root = test.view.render(test.cx);

@@ -417,8 +417,9 @@ export function agentModelInputKey(input, now, completedHours, feedCache = new M
         } else cached.age = JSON.stringify(cached.times.map(at => { boundary(at); return withinRetention(at); }));
         cached.asOf = now; cached.deadline = deadline;
       }
+      const stale = Number.isFinite(feed.updatedAt) ? now - feed.updatedAt > FEED_DISCONNECT_MS : feed.updatedAt;
       return [feed.sessionId, feed.generation, feed.owner, feed.lifecycle, feed.ipc, feed.status, feed.placement,
-        Number.isFinite(feed.updatedAt) ? now - feed.updatedAt > FEED_DISCONNECT_MS : feed.updatedAt, withinRetention(feed.updatedAt), cached.rows, cached.age];
+        stale, feed.lifecycle !== 'live' || stale === true ? feed.updatedAt : null, withinRetention(feed.updatedAt), cached.rows, cached.age];
     }) : input.feeds;
     for (const session of feedCache.keys()) if (!used.has(session)) feedCache.delete(session);
     const kindLabel = input.contract?.labels?.kind ?? 'spider.kind', viewerKind = input.contract?.kinds?.subagentViewer ?? 'subagent-viewer';

@@ -34,6 +34,17 @@ import { inspectIntercomReadiness, intercomReadinessDiagnostics, validIntercomRe
 import { readPrivateBytes } from "./selected-files";
 
 function missing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+type SupervisorAutostart = "enabled" | "disabled" | "unknown";
+export async function inspectSupervisorAutostart(): Promise<SupervisorAutostart> {
+  return new Promise(resolve => {
+    execFile("systemctl", ["--user", "is-enabled", "spider-roam-supervisor.service"], { timeout: 5000, maxBuffer: 4096 }, (error, stdout) => {
+      const state = stdout.trim();
+      if (!error && state === "enabled") resolve("enabled");
+      else if (!error && state === "enabled-runtime" || error && error.code === 1 && state === "disabled") resolve("disabled");
+      else resolve("unknown");
+    });
+  });
+}
 function resumeCommand(id: string): string {
   const argument = /^[A-Za-z0-9_][A-Za-z0-9._:-]*$/.test(id) ? id : `'${id.replaceAll("'", "'\\''")}'`;
   return `spider roam resume ${id.startsWith("-") ? "-- " : ""}${argument}`;
@@ -340,6 +351,7 @@ export function localStoreInventoryDiagnostics(root: string): Diagnostic[] {
 export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; currentCore?: () => Promise<string | null>; inspectIntercomDoctor?: boolean;
   launchRecovery?: { bootId(): Promise<string>; probe(pid: number): Promise<ProcessProbe> };
   intercomReadiness?: () => Promise<IntercomReadiness>;
+  supervisorAutostart?: () => Promise<SupervisorAutostart>;
   intercomDoctor?: (input: { root: string; config: RoamConfig; agentDir: string }) => Promise<Diagnostic[]> }): Promise<{ enabled: boolean; diagnostics: readonly Diagnostic[]; consumers: LoadedConsumer[] }> {
   if (!isAbsolute(input.root)) throw new Error("The roaming root must be absolute");
   let root = resolve(input.root);
@@ -349,6 +361,11 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
   const required = localCaptureRequired(config), severity = required ? "block" : "warning";
   const inventory: Diagnostic[] = [], storeDiagnostics: Diagnostic[] = [], peerFailures: Diagnostic[] = [], consumers: LoadedConsumer[] = [];
   if (config.role === "box") {
+    if (config.enabled && (input.supervisorAutostart || process.platform === "linux")) {
+      let autostart: SupervisorAutostart = "unknown";
+      try { autostart = await (input.supervisorAutostart ?? inspectSupervisorAutostart)(); } catch { /* An unavailable observation is not proof. */ }
+      if (autostart === "disabled") inventory.push({ severity: "warning", reason: "supervisor-autostart-disabled: Supervisor autostart is disabled. Run spider roam enable on the hub.", repairCommand: "spider roam enable" });
+    }
     inventory.push(...corePinDiagnostics(inspectSupervisorCorePin(root, process.env), config.machineId));
     inventory.push({ severity: "info", reason: `Recorded core unit ${config.coreUnit ?? "unavailable"} (diagnostic only).`, repairCommand: null });
     try {

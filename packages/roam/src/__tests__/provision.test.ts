@@ -1,4 +1,4 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { PROVISION_REMOTE_SCRIPT } from "../provision-remote-script";
@@ -138,7 +138,17 @@ function fixture() {
   return { root, source, destination, staging, units, global, journal, write, releaseFile, coreFile, terminals, stageFile, state, events, confirmations, persisted, preview,
     diagnostics, systemctl, secretCollectionCalls, value, ports, request };
 }
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+
+it("completes ready provisioning when the permission count is unavailable", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.verified = true;
+  f.ports.permissionTightening = async () => { throw Object.assign(new Error("unavailable"), { code: "unsafe-staging" }); };
+  const result = await provision!(f.request("count-unavailable"), f.ports);
+  expect(result).toMatchObject({ code: 0, reason: "installed", value: { hostingReady: true, permissionTightenings: null } });
+  expect(f.state.supervisorEnabled).toBe(true);
+  expect(f.state.boxEnabled).toBe(true);
+  expect(await provision!(f.request("count-unavailable"), f.ports)).toEqual(result);
+});
 
 it.each(["core-pin-invalid", "core-pin-conflict", "core-pin-changed"])("keeps %s actionable across provisioning", async reason => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
@@ -374,6 +384,63 @@ it.each([false, true])("installs but does not enable a blocked supervisor (hub e
   expect(f.state.supervisorEnabled).toBe(false);
   expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "disable", "spider-roam-supervisor.service"]]);
   expect(f.state.boxEnabled).toBe(false);
+}, 5000);
+
+it("disables autostart when readiness verification is transiently unavailable", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.state.hubEnabled = true; f.state.boxEnabled = true; f.state.supervisorEnabled = true;
+  f.ports.verifyPeer = async () => { throw new Error("verification unavailable"); };
+  const outcome = await provision!(f.request("verification-unavailable"), f.ports);
+  expect(outcome).toMatchObject({ code: 0, reason: "installed-hosting-disabled", value: { hostingReady: false } });
+  expect(f.state.supervisorEnabled).toBe(false);
+  expect(f.state.boxEnabled).toBe(false);
+  expect(f.systemctl).toContainEqual(["--user", "disable", "spider-roam-supervisor.service"]);
+});
+
+it("recovers autostart when enable follows transiently blocked reprovision", async () => {
+  const f = fixture(), hub = "00000000-0000-4000-8000-000000000002";
+  f.write(f.source, "settings.json", "{}"); f.state.supervisorEnabled = true; f.state.boxEnabled = true;
+  f.ports.hubMachineId = hub;
+  f.ports.transfer.enroll = async () => {};
+  const verifyPeer = f.ports.verifyPeer;
+  f.ports.verifyPeer = async () => { throw new Error("verification unavailable"); };
+  const blocked = await provision!(f.request("transient-reprovision"), f.ports);
+  expect(blocked).toMatchObject({ code: 0, reason: "installed-hosting-disabled", value: { hostingReady: false } });
+  expect(f.state.supervisorEnabled).toBe(false); expect(f.state.boxEnabled).toBe(false);
+  f.ports.verifyPeer = verifyPeer; f.state.verified = true;
+
+  const { openDb, migrate } = await import("@spider/db-core");
+  const controls = await import("../production-controls"), productionHub = await import("../production-hub");
+  const transport = await import("../transport"), diagnostics = await import("../diagnostics");
+  const observations = await import("../remote-observations"), launchd = await import("../launchd"), { doctorPeer } = await import("../resource-doctor");
+  mkdirSync(join(f.root, "roam"), { mode: 0o700 });
+  f.write(f.root, "roam/machine.json", JSON.stringify({ machineId: hub }));
+  f.write(f.root, "roam/config.json", JSON.stringify({ enabled: true, role: "hub", machineId: hub, hubMachineId: hub,
+    peers: [bootstrapPeer], discoveryRoots: [], coreUnit: "fixture.service" }));
+  const db = openDb(join(f.root, "spider.db")); migrate(db, "global", { machineId: hub, globalRoot: f.root }); db.close();
+  const launcher = f.write(f.root, "launchctl", "fixture");
+  vi.stubEnv("HOME", f.root); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root); vi.stubEnv("SPIDER_ROAM_PI", process.execPath);
+  vi.stubEnv("SPIDER_TEST_ROAM_LAUNCHCTL", launcher);
+  vi.spyOn(productionHub, "loadHerdrConfig").mockReturnValue({ core: { binary: "/home/fixture/core" } } as never);
+  vi.spyOn(diagnostics, "assertCompatibleConsumers").mockResolvedValue(undefined);
+  vi.spyOn(launchd, "installHubService").mockRejectedValue(new Error("fixture prevents service launch"));
+  vi.spyOn(observations, "remoteDoctor").mockImplementation(async () => ({ enabled: f.state.boxEnabled,
+    diagnostics: await doctorPeer(bootstrapPeer, f.ports as never), consumers: [] }));
+  vi.spyOn(transport, "createTransport").mockReturnValue({ async resolve(peer: Peer) { return peer; }, async exec(_peer: Peer, argv: string[]) {
+    if (argv[1] === "intercom") return Buffer.from(JSON.stringify({ version: 1, kind: "intercom-broker-start", ok: true, machineId: bootstrapPeer.machineId }));
+    const op = JSON.parse(argv[2]);
+    return Buffer.from(JSON.stringify({ operationId: op.id, code: 0, value: op.kind === "stores"
+      ? { protocol: 1, schema: 14, machineId: bootstrapPeer.machineId, stores: ["global"] } : { complete: true } }));
+  } } as never);
+  vi.spyOn(transport, "createProvisionTransport").mockReturnValue({ transport: { async resolve(peer: Peer) { return peer; } },
+    async executeProvision(_peer: Peer, request: { enabled: boolean; restoreAutostart?: boolean }) {
+      f.state.boxEnabled = request.enabled;
+      if (request.enabled && request.restoreAutostart) f.state.supervisorEnabled = true;
+      return { enabled: request.enabled };
+    } } as never);
+  const enabled = await controls.enableRoaming(f.root, process.execPath);
+  expect(enabled).toMatchObject({ code: 3, reason: "enable-pending" });
+  expect(f.state.boxEnabled).toBe(true); expect(f.state.supervisorEnabled).toBe(true);
 }, 5000);
 
 it.each([false, true])("enables a ready supervisor without starting it (hub enabled: %s)", async hubEnabled => {

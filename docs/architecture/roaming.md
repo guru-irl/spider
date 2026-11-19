@@ -82,9 +82,11 @@ cause and retry the same operation rather than relying on a doctor result with
 no finding.
 
 Pair enrollment retries a native `unreachable` route-add failure with bounded
-backoff, at most eight attempts within a 40-second add deadline. Each attempt
-rechecks the existing route and pinned peer identity. Other native failures are
-not retried, and the reported cause contains no command stderr.
+backoff, at most eight attempts within a 40-second add deadline. A new attempt
+starts only when at least five seconds remain. If the budget is too short, the
+result retains the `unreachable` cause. Each attempt rechecks the existing route
+and pinned peer identity. Other native failures are not retried, and the reported
+cause contains no command stderr.
 
 Store inventory never treats an unreadable store as deleted. The agent's
 `stores` reply includes readable keys and an `ungathered` list. Each ungathered
@@ -238,7 +240,8 @@ The private `permission-tightening.json` receipt records only a changed-entry
 count, capped at 1,000,000, rather than changed paths. Successful provisioning
 also reports the count in text and as `value.permissionTightenings` in JSON.
 Zero means no entries were tightened. A count of 1,000,000 means at least that
-many. A completed operation saved before this count was reported returns `null`
+many. If the count cannot be read, provisioning succeeds with a `null` count.
+A completed operation saved before this count was reported also returns `null`
 on replay. The public count never includes paths.
 
 `destination-permissions-unsafe` identifies a user-owned path with group or
@@ -352,7 +355,11 @@ unchanged. It enables the service under `default.target` only when the box passe
 hosting readiness checks; otherwise it disables autostart, including an existing
 enablement. Provisioning never starts or stops the service. Readiness controls
 autostart even when the hub is disabled; the hub switch separately controls box
-participation. The unit has `Restart=on-failure`, `RestartSec=10s`,
+participation. After peer preflight passes, `spider roam enable` restores
+supervisor autostart on each box without starting the supervisor. If the command
+fails, enable remains pending and can be retried. Doctor warns when an enabled
+box has disabled or runtime-only autostart and suggests `spider roam enable` on
+the hub. The unit has `Restart=on-failure`, `RestartSec=10s`,
 `StartLimitIntervalSec=0`, and a private umask. Persistent startup failures
 therefore retry without a start-rate lockout.
 The unit has no `After=`, `Requires=`, or

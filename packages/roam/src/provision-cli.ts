@@ -258,6 +258,8 @@ export async function runProvisionCli(input: ProvisionCliRequest, io: { out(text
       io.err(`Installation is still finishing on ${safe(peer.alias)}. Rerun ${repairCommand} with the same options to confirm.\n`);
       return { ...result, repairCommand };
     }
+    if (result.reason === "npm-not-found") io.err(`Cannot find npm at ${safe(posix.join(posix.dirname(peer.node), "npm"))} on ${safe(peer.alias)}. Install npm next to the configured Node executable, or update the peer's node path. Retry with a new operation ID.\n`);
+    if (result.reason === "npm-install-failed") io.err(`The destination's ${safe(posix.join(peer.globalRoot, "roam", "provision", `${operationId}-install`, "release-receipt.json"))} contains structured npm failure details. Fix the installation error, then retry with a new operation ID.\n`);
     if (["peer-core-unit-required", "peer-core-unit-ambiguous"].includes(result.reason)) io.err("Set coreUnit on this destination's peer entry in the hub roaming config, then retry.\n");
     (result.code === 0 ? io.out : io.err)(`${safe(result.reason)}\n`); return result;
   } catch (error) {

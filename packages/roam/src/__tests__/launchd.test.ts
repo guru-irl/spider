@@ -85,6 +85,22 @@ it("canonical root aliases select the same service label", () => {
   const label = (launchd as { hubServiceLabel?: (root: string) => string }).hubServiceLabel;
   expect(typeof label).toBe("function");
   expect(label!(alias)).toBe(label!(f.globalRoot));
+  expect(label!(join(alias, "future"))).toBe(label!(join(f.globalRoot, "future")));
+}, 5000);
+
+it("migrates only a legacy plist owned by the selected non-default root", async () => {
+  const f = fixture(); mkdirSync(f.plistDir);
+  const legacy = join(f.plistDir, "com.spider.roam.hub.plist");
+  const definition = (root: string) => `<plist><dict><key>Label</key><string>com.spider.roam.hub</string><key>ProgramArguments</key><array><string>/home/fixture/node</string><string>/home/fixture/cli</string><string>roam</string><string>hub</string></array><key>SPIDER_GLOBAL_ROOT</key><string>${root}</string></dict></plist>`;
+  writeFileSync(legacy, definition(f.globalRoot), { mode: 0o600 });
+  await installHubService(f, f.ports);
+  expect(existsSync(legacy)).toBe(false);
+  expect(readdirSync(f.plistDir)).toHaveLength(1);
+  await removeHubService({ globalRoot: f.globalRoot }, f.ports);
+  writeFileSync(legacy, definition("/home/fixture/other"), { mode: 0o600 });
+  await installHubService(f, f.ports);
+  await removeHubService({ globalRoot: f.globalRoot }, f.ports);
+  expect(readFileSync(legacy, "utf8")).toBe(definition("/home/fixture/other"));
 }, 5000);
 
 it("enable writes resolved absolute executable paths", async () => {

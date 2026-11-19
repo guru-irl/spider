@@ -134,6 +134,18 @@ test('cached sidebar input changes when unconfirmed rows age out', () => {
   }
 });
 
+test('a newer closed feed invalidates cached uncertain row ordering', () => {
+  const older = feed(); older.lifecycle = 'closed'; older.updatedAt = 1500;
+  const newer = { ...older, updatedAt: 1900 };
+  const viewer = { ...terminal('viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', created_ms: 1800 };
+  const project = (source: SessionFeed) => projectAgentChildren([viewer], [source], 'agent', contract, { now: 2000, completedRows: 1 });
+  expect(project(older).map(row => row.key)).toEqual(['missing']);
+  expect(project(newer).map(row => row.key)).toEqual(['run']);
+  const input = { agents: [], terminals: [viewer], panes: [], spaces: [], machines: [], feeds: [older],
+    focus: null, connections: null, error: null, completedRows: 1 };
+  expect(agentModelInputKey(input, 2000, 24)).not.toBe(agentModelInputKey({ ...input, feeds: [newer] }, 2000, 24));
+});
+
 test('blocked unconfirmed viewers do not count or raise folded attention', () => {
   const closed = feed(); closed.lifecycle = 'closed'; closed.ipc = null;
   const unknown = { ...terminal('unknown-viewer', 'subagent-viewer', { 'spider.run': 'missing' }), parent: 'agent', status: 'blocked', created_ms: 2000 };

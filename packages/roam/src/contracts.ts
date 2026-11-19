@@ -17,6 +17,7 @@ import type {
   HubOperationReadiness, Readiness, ReplicaEffects, StoreBarrier, StoreKey,
 } from "@spider/db-core/roam/types";
 import type { BootstrapOptions, Inventory } from "./provision-contracts";
+import type { AgentOperationKind } from "./cause-codes";
 import { INTERCOM_QUEUE_BYTES, INTERCOM_QUEUE_MESSAGES } from "./intercom-contracts";
 
 export interface Peer {
@@ -82,7 +83,7 @@ export interface RoamConfig {
 export interface Operation { id: string; machineId: MachineId; expectedEpoch: number | null; kind: string; args: JsonObject }
 export interface Outcome<T> {
   code: 0 | 1 | 2 | 3; reason: string; operationId: string; home: Home | null;
-  epoch: number | null; repairCommand: string | null; value: T | null; causeCode?: string;
+  epoch: number | null; repairCommand: string | null; value: T | null; causeCode?: string; operationKind?: AgentOperationKind;
 }
 export interface CallOptions {
   timeoutMs: number; maxBytes: number; stdin?: Buffer;

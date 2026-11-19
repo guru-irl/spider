@@ -488,7 +488,7 @@ export async function handleAgentOperation(operation: Operation, ports: AgentPor
 
 async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): Promise<Outcome<JsonObject>> {
   let id = "";
-  let request: Request;
+  let request: Request, recoveryKind: "mirror-export" | "sync-handshake" | "supervisor-retire" | undefined;
   try {
     if (!plainObject(operation) || !plainObject(operation.args) ||
         ("header" in operation.args && !plainObject(operation.args.header))) throw new Error("Invalid operation object");
@@ -497,6 +497,7 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
     if (["mirror-export", "sync-handshake", "supervisor-retire"].includes(operation.kind)) {
       const config = ports.config;
       if (operation.machineId !== config.machineId || !isMachineId(operation.args.sourceMachine)) return outcome(2, "recovery-request-invalid", id);
+      recoveryKind = operation.kind as typeof recoveryKind;
       if (operation.kind === "sync-handshake") {
         if (config.role !== "hub" || !config.peers.some(peer => peer.machineId === operation.args.sourceMachine) || operation.expectedEpoch !== null || Object.keys(operation.args).join() !== "sourceMachine") return outcome(1, "recovery-authority-unavailable", id);
         const db = openDbReadOnly(join(dirname(ports.openStore("global").db.raw.name), "roam", "journal.db"));
@@ -542,7 +543,10 @@ async function dispatchAgentOperation(operation: Operation, ports: AgentPorts): 
       return await handleSessionOperation(operation, ports);
     }
     request = parseRequest(operation, ports);
-  } catch (error) { return outcome(2, error instanceof ReadinessParseError ? error.reason : "Invalid agent operation", id); }
+  } catch (error) {
+    if (recoveryKind) return { ...outcome(1, "Agent operation failed", id), operationKind: recoveryKind, causeCode: causeCode(error, recoveryKind) };
+    return outcome(2, error instanceof ReadinessParseError ? error.reason : "Invalid agent operation", id);
+  }
   if (!["export", "release-export", "split"].includes(request.kind)) return dispatchParsedOperation(operation, request, ports, id);
   let release: (() => void) | null;
   try { release = acquireTransferLease(ports.root, ports.config.hubMachineId, ports.config.limits.peerConcurrency); }
@@ -656,6 +660,6 @@ async function dispatchParsedOperation(operation: Operation, request: Request, p
     if (error && typeof error === "object" && "retryable" in error && error.retryable === true) {
       return outcome(3, error instanceof Error ? error.message : "Agent operation is retryable", id);
     }
-    return { ...outcome(1, "Agent operation failed", id), causeCode: causeCode(error, request.kind) };
+    return { ...outcome(1, "Agent operation failed", id), operationKind: request.kind, causeCode: causeCode(error, request.kind) };
   }
 }

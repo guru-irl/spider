@@ -14,6 +14,7 @@ import * as intercomProduction from "../intercom-production";
 import * as participantSupervisor from "../participant-supervisor";
 import * as launcherModule from "../launcher";
 import * as hcModule from "@spider/herdr/client/hc";
+import * as enrollmentModule from "../enrollment";
 import { claimIdLock } from "@spider/herdr/sessions/id-lock";
 import { createParticipantSupervisor } from "../participant-supervisor";
 import { recordReadiness } from "../session-control";
@@ -376,6 +377,42 @@ it.each(["absent", "live", "unknown"] as const)("resume clears an adopted reserv
     expect((await store.get("s-1"))?.value.supervision.kind).toBe("launching");
     expect(wakes).toBe(0);
   }
+}, 5000);
+
+it.each([
+  ["same", "fixture-core", "fixture-core", /awaiting reconciliation/i],
+  ["different handoff", "old-core", "fixture-core", /destination core changed/i],
+  ["unavailable", "fixture-core", null, /core identity is unavailable/i],
+  ["replaced pin", "fixture-core", "foreign-core", /core identity is unavailable/i],
+] as const)("resume doctor checks the pinned core when the pending handoff is %s", async (_name, handoffCore, observedCore, detail) => {
+  const f = fixture(false), authority = createRunningIntentAuthority(f.global.db);
+  const location = f.global.db.prepare("SELECT file,cwd FROM roam_locations WHERE session_id='s-1'").get() as { file: string; cwd: string };
+  await authority.set({ sessionId: "s-1", epoch: 2, desired: "stopped", suspended: null, ...location, moveId: "move-1" }, "stop-1",
+    { kind: "box-participant", machineId: BOX, hubMachineId: HUB });
+  const owner = { pid: 9876, startIdentity: "fixture-owner" };
+  const lock = await claimIdLock(join(f.global.root, "herdr"), "s-1", owner, async () => ({ kind: "live", startIdentity: owner.startIdentity }),
+    { bootId: async () => "fixture-boot" });
+  await lock.prepareHandoff("launch-1", location.file, handoffCore);
+  vi.spyOn(enrollmentModule, "inspectSupervisorCorePin").mockReturnValue("ready");
+  const observer = vi.spyOn(hcModule, "observeCoreIdentity").mockImplementation(async () => {
+    if (!observedCore) throw new Error("core unavailable");
+    return { coreId: observedCore, socket: "unused", sessionNamespace: "fixture" } as never;
+  });
+  vi.stubEnv("HC_SOCKET", "/fixture/untrusted.sock"); vi.stubEnv("HC_SESSION", "untrusted"); vi.stubEnv("HC_TERMINAL_ID", "untrusted-terminal");
+  let wakes = 0;
+  try {
+    const result = await handleSessionOperation({ ...f.operation, id: `resume-${_name.replace(/ /g, "-")}`, kind: "session-resume" }, f.ports,
+      { wake: async () => { wakes++; } });
+    expect(result).toMatchObject({ code: 1, reason: "participant-doctor-refused" });
+    expect(JSON.stringify(result.value)).toMatch(detail);
+    expect(observer).toHaveBeenCalledOnce();
+    const [binary, env] = observer.mock.calls[0];
+    expect(binary).toBe(join(f.global.root, "hc"));
+    expect(env).toMatchObject({ HC_SOCKET: join(f.global.root, "core.sock"), HC_SESSION: "fixture" });
+    expect(env.HC_TERMINAL_ID).toBeUndefined();
+    expect(await authority.get("s-1")).toMatchObject({ desired: "stopped" });
+    expect(wakes).toBe(0);
+  } finally { vi.unstubAllEnvs(); }
 }, 5000);
 
 it("resume reports a blocking doctor and leaves the stopped intent unchanged", async () => {

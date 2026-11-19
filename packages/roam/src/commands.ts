@@ -82,7 +82,8 @@ const syncReasons = new Set(["Synchronization complete", "Synchronization needs 
   "Conflicting export header", "Invalid empty export", "Invalid committed local receipt", "Local store identity does not match", "Conflicting peer apply receipt",
   "Invalid peer apply receipt", "Invalid peer store list", "Peer global store is missing"]);
 function safeReason(value: unknown): string {
-  return token(value) ?? (typeof value === "string" && (syncReasons.has(value) || isPeerFailureReason(value)) ? value : "control-failed");
+  return token(value) ?? (typeof value === "string" && (syncReasons.has(value) || isPeerFailureReason(value) ||
+    /^Mapping fenced replica (?:global|(?:repo|worktree):[A-Za-z0-9._:-]{1,250})\. Re-resolve placement and retry\.$/.test(value)) ? value : "control-failed");
 }
 function safeHome(value: unknown): Outcome<unknown>["home"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;

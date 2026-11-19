@@ -495,7 +495,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       const outcomes = value?.outcomes ?? [];
       const failure = outcomes.map(row => row.code === 1 && isPeerFailureReason(row.reason) ? row.reason : null).find(Boolean);
       const causes = [...new Set(outcomes.flatMap(row => row.causeCode ? [row.causeCode] : []))].slice(0, 16);
-      const operations = [...new Set(outcomes.flatMap(row => row.code !== 0 && row.operationKind && (row.reason === "agent-operation-failed" || recoveryRefusalCode(row.reason))
+      const operations = [...new Set(outcomes.flatMap(row => row.code !== 0 && row.operationKind && (row.reason === "agent-operation-failed" || recoveryRefusalCode(row.reason) || row.reason.startsWith("Mapping fenced replica "))
         ? [`${row.operationKind}: ${row.reason}${row.causeCode ? ` [${row.causeCode}]` : ""}${row.operationId ? ` (${row.operationId})` : ""}`] : []))].slice(0, 16);
       const text = `${safe.reason}${failure ? `. ${failure}` : ""}${causes.length ? `. Causes: ${causes.join(", ")}` : ""}${operations.length ? `. Operations: ${operations.join(", ")}` : ""}`;
       return emitOutcome(io, result, jsonOutput, `${clean(text)}\n`);

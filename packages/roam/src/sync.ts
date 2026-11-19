@@ -35,8 +35,11 @@ export interface SyncAdapter extends SyncService { drain(): Promise<void> }
 class SyncFailure extends Error {
   readonly code: 1 | 2 | 3;
   readonly operationId: string | null;
-  constructor(code: 1 | 2 | 3, message: string, operationId: string | null = null, readonly causeCode?: string,
-    readonly operationKind?: AgentOperationKind) { super(message); this.code = code; this.operationId = operationId; }
+  readonly causeCode?: string;
+  readonly operationKind?: AgentOperationKind;
+  constructor(code: 1 | 2 | 3, message: string, operationId: string | null = null, causeCode?: string, operationKind?: AgentOperationKind) {
+    super(message); this.code = code; this.operationId = operationId; this.causeCode = causeCode; this.operationKind = operationKind;
+  }
 }
 class QuarantinedStore extends SyncFailure {
   constructor(readonly sessions: string[]) { super(1, "Peer store is quarantined"); }

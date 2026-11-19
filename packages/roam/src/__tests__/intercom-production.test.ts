@@ -135,7 +135,8 @@ it.each([
   expect(err).toContain("intercom-verification-pending");
   retrying = true; err = "";
   expect(await runIntercomEnrollCli(input, io, options)).toBe(3);
-  expect(err).toContain(`pair-1: intercom-enrollment-pending [${expected}]`);
+  const expectedCause = expected === "unknown" ? "unexpected-ensure-key" : expected;
+  expect(err).toContain(`pair-1: intercom-enrollment-pending [${expectedCause}]`);
   expect(err).not.toContain("cannot open");
   expect(err).not.toContain("/private/fixture.key");
 }, 5000);

@@ -205,6 +205,27 @@ it.each(["core-pin-required", "core-pin-invalid", "core-pin-conflict", "core-pin
   expect(await port.executeProvision(handle, request)).toBe("already-enrolled");
 });
 
+it("accepts a missing adjacent npm release receipt", async () => {
+  const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "release-observe", operationId: "op-1", machineId: bootstrapPeer.machineId,
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi };
+  f.state.provisionReply = { version: 1, kind: "provision", value: { state: "failed", reason: "npm-not-found" } };
+  expect(await port.executeProvision(handle, request)).toEqual({ state: "failed", reason: "npm-not-found" });
+}, 5000);
+
+it("accepts npm installation failure without admitting stderr into the reply", async () => {
+  const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
+  const request = { action: "release-observe", operationId: "op-1", machineId: bootstrapPeer.machineId,
+    globalRoot: bootstrapPeer.globalRoot, node: bootstrapPeer.node, cli: bootstrapPeer.cli, pi: bootstrapPeer.pi };
+  f.state.provisionReply = { version: 1, kind: "provision", value: { state: "failed", reason: "npm-install-failed" } };
+  expect(await port.executeProvision(handle, request)).toEqual({ state: "failed", reason: "npm-install-failed" });
+  f.state.provisionReply = { version: 1, kind: "provision", value: { state: "failed", reason: "npm-install-failed", stderrTail: "fixture-private" } };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+  f.state.provisionReply = { version: 1, kind: "provision", value: { state: "failed", reason: "npm-install-failed",
+    diagnostic: { step: "pi", exitCode: 1, signal: null, npmCode: "E404", packageName: "sample" } } };
+  await expect(port.executeProvision(handle, request)).rejects.toMatchObject({ code: "invalid-provision-reply" });
+}, 5000);
+
 it("reports only a valid blocking operation from a release-in-progress reply", async () => {
   const f = fixture(); f.consent(); const port = create!(f.options, f.journal), handle = await port.transport.resolve(bootstrapPeer);
   const request = { action: "clear-secrets", operationId: "op-1", machineId: bootstrapPeer.machineId,

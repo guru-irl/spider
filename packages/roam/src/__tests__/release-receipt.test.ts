@@ -29,6 +29,49 @@ it("runs effects once across a concurrent and a completed duplicate launch", () 
   expect(effects).toBe(1);
 }, 5000);
 
+it("retains structured npm diagnostics in the private receipt but omits them from observations", () => {
+  const f = fixture(), first = release.beginRelease(f);
+  if (first.kind !== "acquired") throw new Error("release not acquired");
+  const diagnostic = { step: "release", exitCode: 1, signal: null, npmCode: "E404", packageName: "onnxruntime-node" } as const;
+  release.finishRelease(f, first.token, { state: "failed", reason: "npm-install-failed", diagnostic });
+  const receiptFile = join(f.directory, "release-receipt.json");
+  expect(JSON.parse(readFileSync(receiptFile, "utf8"))).toMatchObject({ state: "failed", reason: "npm-install-failed", diagnostic });
+  expect(release.inspectRelease(f, () => "absent")).toEqual({ state: "failed", reason: "npm-install-failed" });
+}, 5000);
+
+it("refuses oversized or unrelated npm diagnostics in a receipt", () => {
+  const f = fixture(), first = release.beginRelease(f);
+  if (first.kind !== "acquired") throw new Error("release not acquired");
+  expect(() => release.finishRelease(f, first.token, { state: "failed", reason: "npm-install-failed", stderrTail: "x".repeat(2049) } as never))
+    .toThrow(expect.objectContaining({ code: "invalid-release-receipt" }));
+  expect(() => release.finishRelease(f, first.token, { state: "failed", reason: "command-failed", stderrTail: "unexpected" } as never))
+    .toThrow(expect.objectContaining({ code: "invalid-release-receipt" }));
+  const diagnostic = { step: "pi", exitCode: 1, signal: null, npmCode: "E404", packageName: "example" };
+  for (const invalid of [
+    { ...diagnostic, npmCode: "EUNTRUSTED" },
+    { ...diagnostic, packageName: "https://box-1.invalid/private" },
+    { ...diagnostic, packageName: "bad%2fpackage" },
+    { ...diagnostic, packageName: "a".repeat(215) },
+    { ...diagnostic, step: "other" },
+    { ...diagnostic, signal: "SIGTERM" },
+    { ...diagnostic, output: "fixture-private" },
+  ]) {
+    expect(() => release.finishRelease(f, first.token, { state: "failed", reason: "npm-install-failed", diagnostic: invalid } as never))
+      .toThrow(expect.objectContaining({ code: "invalid-release-receipt" }));
+  }
+  expect(release.inspectRelease(f, () => "live")).toEqual({ state: "started" });
+}, 5000);
+
+it("bounds even a maximum-length structured npm diagnostic", () => {
+  const f = fixture(), first = release.beginRelease(f);
+  if (first.kind !== "acquired") throw new Error("release not acquired");
+  const diagnostic = { step: "release", exitCode: 255, signal: null, npmCode: "ECONNREFUSED", packageName: "a".repeat(214) } as const;
+  release.finishRelease(f, first.token, { state: "failed", reason: "npm-install-failed", diagnostic });
+  const stored = JSON.parse(readFileSync(join(f.directory, "release-receipt.json"), "utf8"));
+  expect(stored.diagnostic).toEqual(diagnostic);
+  expect(Buffer.byteLength(JSON.stringify(stored.diagnostic), "utf8")).toBeLessThanOrEqual(400);
+}, 5000);
+
 it("trusts a terminal receipt while a same-ID duplicate briefly holds another lock", () => {
   expect(api.beginRelease).toBeTypeOf("function"); expect(api.finishRelease).toBeTypeOf("function"); expect(api.inspectRelease).toBeTypeOf("function");
   const f = fixture(), first = api.beginRelease!(f);

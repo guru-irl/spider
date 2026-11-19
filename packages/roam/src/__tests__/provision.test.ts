@@ -143,6 +143,18 @@ it.each(["core-pin-invalid", "core-pin-conflict", "core-pin-changed"])("keeps %s
   if (reason !== "core-pin-invalid") expect(outcome.repairCommand).toBe(`spider roam provision ${bootstrapPeer.alias} --replace-core-pin`);
 });
 
+it("preserves the missing adjacent npm failure in the provisioning outcome", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.installRelease = async () => { throw Object.assign(new Error("missing npm"), { code: "npm-not-found" }); };
+  expect(await provision!(f.request("missing-npm"), f.ports)).toMatchObject({ code: 3, reason: "npm-not-found" });
+}, 5000);
+
+it("preserves the npm installation failure in the provisioning outcome", async () => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.ports.transfer.installRelease = async () => { throw Object.assign(new Error("npm failed"), { code: "npm-install-failed" }); };
+  expect(await provision!(f.request("npm-failed"), f.ports)).toMatchObject({ code: 3, reason: "npm-install-failed" });
+}, 5000);
+
 it("checks replacement idleness and journals both identities before continuing installation", async () => {
   const f = fixture(); f.write(f.source, "settings.json", "{}");
   const receipt = { oldCoreId: "previous-core", newCoreId: "fixture-core", oldPinSha256: "a".repeat(64), newPinSha256: "b".repeat(64) };

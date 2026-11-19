@@ -44,6 +44,7 @@ function fixture(short = false) {
     cli: join(releaseRoot, "dist", "roam", "cli.mjs"), core: join(bin, "hc"), globalRoot };
   const destination = { home, agentDir, npmPrefix, supervisor: join(releaseRoot, "dist", "roam", "supervisor.mjs") };
   const calls = join(root, "systemctl-calls"), writes: { path: string; bytes: Buffer }[] = [], requests: { action: string; argv: string[] }[] = [], launches: string[] = [];
+  const launchIO: { stdout: string; stderr: string }[] = [];
   const launchState = { loseReply: false, dropBefore: 0, terminalOnly: false }, terminalFile = join(root, "release-terminals.json");
   const fakeCore = `#!${process.execPath}\nimport fs from 'node:fs';
 const args = process.argv.slice(2);
@@ -97,6 +98,7 @@ else {
       const child = spawnSync(process.execPath, ["--input-type=module-typescript", "-e", remoteProgram!, requestFile], {
         encoding: "utf8", timeout: 4000, env: { ...process.env, HOME: home, PATH: bin, SPIDER_GLOBAL_ROOT: globalRoot },
       });
+      launchIO.push({ stdout: child.stdout, stderr: child.stderr });
       if (child.status !== 0) throw new Error("fixture background launch failed");
       if (launchState.loseReply) { launchState.loseReply = false; throw Object.assign(new Error("reply lost"), { code: "cli-timeout" }); }
       return { terminal: "box-1.invalid/t1" };
@@ -105,13 +107,13 @@ else {
   const options = { peer, operationId: "op-1", destination, unitDir, limits: { ...DEFAULT_LIMITS, chunkBytes: 32 }, transport: remote,
     piProviders: ["github-copilot"] };
   const input = { bytes: Buffer.from("fixture archive"), sha256: releaseSha, npmPrefix, globalRoot, pi: "1.2.0" as const, intercom: "spider-owned" as const };
-  return { root, home, globalRoot, agentDir, npmPrefix, unitDir, bin, releaseRoot, peer, destination, calls, writes, requests, launches, launchState, terminalFile, remote, options, input };
+  return { root, home, globalRoot, agentDir, npmPrefix, unitDir, bin, releaseRoot, peer, destination, calls, writes, requests, launches, launchIO, launchState, terminalFile, remote, options, input };
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
-function releaseNpm(f: ReturnType<typeof fixture>, requireCpu = false) {
+function releaseNpm(f: ReturnType<typeof fixture>, requireCpu = false, output?: { stage: "global" | "release"; file: string; fail: boolean }) {
   const log = join(f.root, "npm-calls");
-  const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';\nconst a=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args:a,root:process.env.SPIDER_GLOBAL_ROOT,cuda:process.env.npm_config_onnxruntime_node_install_cuda})+'\\n');\nif(${requireCpu} && process.env.npm_config_onnxruntime_node_install_cuda!=='skip') process.exit(1);\nconst prefix=a[a.indexOf('--prefix')+1];\nif(a.includes('--global')){const dir=path.join(prefix,'bin');fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(path.join(dir,'pi'),${JSON.stringify(`#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(join(f.root, "pi-release-calls"))},JSON.stringify(process.argv.slice(2))+'\\n'); console.log('1.2.0');\n`)},{mode:0o700});}\nelse {const p=path.join(prefix,'node_modules','@guru-irl','spider');for(const file of ['dist/extension.js','dist/intercom/broker.mjs','dist/roam/cli.mjs','dist/roam/supervisor.mjs','scripts/intercom-switchover.mjs','scripts/extension-shim.mjs']){const out=path.join(p,file);fs.mkdirSync(path.dirname(out),{recursive:true,mode:0o700});fs.writeFileSync(out,'fixture',{mode:0o600});}}\n`;
+  const npm = `#!${process.execPath}\nimport fs from 'node:fs'; import path from 'node:path';\nconst a=process.argv.slice(2); fs.appendFileSync(${JSON.stringify(log)},JSON.stringify({args:a,root:process.env.SPIDER_GLOBAL_ROOT,cuda:process.env.npm_config_onnxruntime_node_install_cuda})+'\\n');\nif(${requireCpu} && process.env.npm_config_onnxruntime_node_install_cuda!=='skip') process.exit(1);\nconst output=${JSON.stringify(output ?? null)};\nif(output && a.includes('--global')===(output.stage==='global')){process.stdout.write('npm-stdout-fixture\\n');process.stderr.write(fs.readFileSync(output.file));if(output.fail) process.exitCode=1;}\nconst prefix=a[a.indexOf('--prefix')+1];\nif(a.includes('--global')){const dir=path.join(prefix,'bin');fs.mkdirSync(dir,{recursive:true,mode:0o700});fs.writeFileSync(path.join(dir,'pi'),${JSON.stringify(`#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(join(f.root, "pi-release-calls"))},JSON.stringify(process.argv.slice(2))+'\\n'); console.log('1.2.0');\n`)},{mode:0o700});}\nelse {const p=path.join(prefix,'node_modules','@guru-irl','spider');for(const file of ['dist/extension.js','dist/intercom/broker.mjs','dist/roam/cli.mjs','dist/roam/supervisor.mjs','scripts/intercom-switchover.mjs','scripts/extension-shim.mjs']){const out=path.join(p,file);fs.mkdirSync(path.dirname(out),{recursive:true,mode:0o700});fs.writeFileSync(out,'fixture',{mode:0o600});}}\n`;
   writeFileSync(join(f.bin, "npm"), npm, { mode: 0o700 });
   return log;
 }
@@ -127,6 +129,172 @@ it("installs with CUDA downloads disabled for both npm commands", async () => {
     expect(calls.map(call => call.cuda)).toEqual(["skip", "skip"]);
   } finally { vi.unstubAllEnvs(); }
 }, 10_000);
+
+it("reports a missing adjacent npm with a durable specific code", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-not-found" });
+  const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
+  expect(receipt).toMatchObject({ state: "failed", reason: "npm-not-found" });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-not-found" });
+  expect(f.launches).toHaveLength(1);
+}, 10_000);
+
+it.each(["global", "release"] as const)("records structured fields when the %s npm command fails", async stage => {
+  const f = fixture(), adapter = create!(f.options), stderr = join(f.root, "npm-stderr");
+  const messages = [
+    `npm error code ${stage === "global" ? "E404" : "1"}`,
+    `npm error path /home/example/work/node_modules/${stage === "global" ? "@example/tool" : "onnxruntime-node"}`,
+    "npm error GET https://box-1.invalid/download?token=fixture-url-value",
+    "npm error //box-1.invalid/:_authToken=fixture-auth-value",
+    "npm error password=fixture-password-value",
+    "npm error Authorization: Bearer fixture-bearer-value",
+    "npm error API_KEY=fixture-key-value",
+    "npm error cookie: fixture-cookie-value",
+    "npm error access_token:",
+    "fixtureAccessValue42",
+    "npm error token=" + "Z".repeat(16_000),
+    "npm error Failed to download the binaries: 404 Not Found",
+  ];
+  writeFileSync(stderr, "npm warn harmless detail\n".repeat(50_000) + messages.join("\n") + "\n");
+  releaseNpm(f, false, { stage, file: stderr, fail: true });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
+  const receiptFile = join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json");
+  const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+  expect(receipt).toMatchObject({ state: "failed", reason: "npm-install-failed" });
+  expect(lstatSync(receiptFile).mode & 0o777).toBe(0o600);
+  expect(receipt.diagnostic).toEqual({ step: stage === "global" ? "pi" : "release", exitCode: 1, signal: null,
+    npmCode: stage === "global" ? "E404" : "1", packageName: stage === "global" ? "@example/tool" : "onnxruntime-node" });
+  expect(receipt).not.toHaveProperty("stderrTail");
+  expect(JSON.stringify(receipt)).not.toContain("Failed to download the binaries: 404 Not Found");
+  expect(JSON.stringify(receipt)).not.toContain("/home/example/work");
+  expect(JSON.stringify(receipt)).not.toContain("npm error");
+  for (const hidden of ["https://", "fixture-url-value", "fixture-auth-value", "fixture-password-value", "fixture-bearer-value",
+    "fixture-key-value", "fixture-cookie-value", "fixtureAccessValue42", "Z".repeat(100)]) {
+    expect(JSON.stringify(receipt)).not.toContain(hidden);
+  }
+  expect(f.launchIO).toHaveLength(1);
+  expect(() => JSON.parse(f.launchIO[0].stdout)).not.toThrow();
+  expect(f.launchIO[0].stdout).not.toContain("npm-stdout-fixture");
+  expect(f.launchIO[0].stdout).not.toContain("fixture-bearer-value");
+  expect(f.launchIO[0].stderr).not.toContain("fixture-bearer-value");
+}, 15_000);
+
+it("does not persist credentials or URLs from npm stderr", async () => {
+  const f = fixture(), adapter = create!(f.options), stderr = join(f.root, "npm-stderr");
+  const messages = [
+    'npm error "key": "fixtureKeyFieldValue"',
+    "npm error service_access_key_id=fixtureAccessIdValue",
+    "npm error username=fixtureUserName",
+    "npm error GET https%3A%2F%2Fbox-1.invalid%2Ffile",
+    "npm error guest:creds@box-1.invalid",
+    "npm error secret_token:",
+    "",
+    "fixtureMultiLineValue",
+    'npm error "credential": {',
+    '  "value": "fixtureNestedValue"',
+    "}",
+    "npm error code E401",
+  ];
+  writeFileSync(stderr, messages.join("\n") + "\n");
+  releaseNpm(f, false, { stage: "global", file: stderr, fail: true });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
+  const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
+  expect(receipt.diagnostic).toEqual({ step: "pi", exitCode: 1, signal: null, npmCode: "E401", packageName: null });
+  expect(receipt).not.toHaveProperty("stderrTail");
+  for (const hidden of ["fixtureKeyFieldValue", "fixtureAccessIdValue", "fixtureUserName", "https%3A%2F%2F", "guest:creds@",
+    "fixtureMultiLineValue", "fixtureNestedValue"]) expect(JSON.stringify(receipt)).not.toContain(hidden);
+}, 10_000);
+
+it("does not persist scheme-free URLs or token-shaped npm output", async () => {
+  const f = fixture(), adapter = create!(f.options), stderr = join(f.root, "npm-stderr");
+  const hidden = ["box-1.invalid/path", "192.0.2.1/path", "tok_A1b2C3d4E5f6"];
+  writeFileSync(stderr, hidden.map(value => `npm error ${value}`).join("\n") + "\nnpm error code E404\n");
+  releaseNpm(f, false, { stage: "global", file: stderr, fail: true });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
+  const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
+  expect(receipt.diagnostic).toEqual({ step: "pi", exitCode: 1, signal: null, npmCode: "E404", packageName: null });
+  expect(receipt).not.toHaveProperty("stderrTail");
+  expect(hidden.filter(value => JSON.stringify(receipt).includes(value))).toEqual([]);
+}, 10_000);
+
+it.each([
+  { input: "ELIFECYCLE", expected: "ELIFECYCLE" },
+  { input: "ENOTFOUND", expected: "ENOTFOUND" },
+  { input: "ETIMEDOUT", expected: "ETIMEDOUT" },
+  { input: "EACCES", expected: "EACCES" },
+  { input: "1", expected: "1" },
+  { input: "EUNTRUSTED", expected: null },
+])("accepts only allowlisted npm code $input", async ({ input, expected }) => {
+  const f = fixture(), adapter = create!(f.options), stderr = join(f.root, "npm-stderr");
+  writeFileSync(stderr, `npm ERR! code ${input}\nnpm ERR! path /home/example/node_modules/outer/node_modules/@scope/tool/lib\n`);
+  releaseNpm(f, false, { stage: "release", file: stderr, fail: true });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
+  const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
+  expect(receipt.diagnostic).toEqual({ step: "release", exitCode: 1, signal: null, npmCode: expected, packageName: "@scope/tool" });
+  expect(JSON.stringify(receipt)).not.toContain("/home/example");
+}, 10_000);
+
+it.each([
+  "/home/example/node_modules/bad%20name",
+  "/home/example/node_modules/@scope",
+  "/home/example/node_modules/good/../../private",
+  "https://box-1.invalid/node_modules/good",
+  "/home/example/other/package",
+])("does not persist an invalid npm path: %s", async path => {
+  const f = fixture(), adapter = create!(f.options), stderr = join(f.root, "npm-stderr");
+  writeFileSync(stderr, `npm error code E404\nnpm error path ${path}\n`);
+  releaseNpm(f, false, { stage: "global", file: stderr, fail: true });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
+  const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
+  expect(receipt.diagnostic).toEqual({ step: "pi", exitCode: 1, signal: null, npmCode: "E404", packageName: null });
+  expect(JSON.stringify(receipt)).not.toContain(path);
+}, 10_000);
+
+it("extracts structured fields after an oversized stderr line", async () => {
+  const f = fixture(), adapter = create!(f.options), stderr = join(f.root, "npm-stderr");
+  writeFileSync(stderr, "Z".repeat(30_000) + "\nnpm error code E404\nnpm error path /home/example/node_modules/sample\n");
+  releaseNpm(f, false, { stage: "global", file: stderr, fail: true });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
+  const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
+  expect(receipt.diagnostic).toEqual({ step: "pi", exitCode: 1, signal: null, npmCode: "E404", packageName: "sample" });
+  expect(JSON.stringify(receipt)).not.toContain("Z".repeat(30));
+}, 10_000);
+
+it("reports an npm launch failure when npm exists but its interpreter is missing", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  writeFileSync(join(f.bin, "npm"), "#!/example/no-interpreter\n", { mode: 0o700 });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
+  const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
+  expect(receipt).toMatchObject({ state: "failed", reason: "npm-install-failed", diagnostic: {
+    step: "pi", exitCode: null, signal: null, npmCode: null, packageName: null,
+  } });
+  expect(receipt).not.toHaveProperty("stderrTail");
+}, 10_000);
+
+it("stops a timed-out npm process group and records its signal", async () => {
+  const f = fixture(), marker = join(f.root, "late-write");
+  const delayed = `import fs from 'node:fs'; setTimeout(() => fs.writeFileSync(${JSON.stringify(marker)}, 'late'), 2000);`;
+  writeFileSync(join(f.bin, "npm"), `#!${process.execPath}\nimport { spawn } from 'node:child_process';\nspawn(process.execPath, ['-e', ${JSON.stringify(delayed)}], {stdio:['ignore','ignore','inherit']});\nprocess.stderr.write('npm error waiting for fixture\\n');\nprocess.on('SIGTERM', () => {}); setInterval(() => {}, 1000);\n`, { mode: 0o700 });
+  const adapter = create!({ ...f.options, limits: { ...f.options.limits, importMs: 600, retryDelaysMs: [50] } });
+  await expect(adapter.installRelease(f.peer, f.input)).rejects.toMatchObject({ code: "npm-install-failed" });
+  const receipt = JSON.parse(readFileSync(join(f.globalRoot, "roam", "provision", "op-1", "release-receipt.json"), "utf8"));
+  expect(receipt.diagnostic).toEqual({ step: "pi", exitCode: null, signal: "SIGKILL", npmCode: null, packageName: null });
+  expect(JSON.stringify(receipt)).not.toContain("npm error waiting for fixture");
+  await new Promise(resolve => setTimeout(resolve, 2200));
+  expect(existsSync(marker)).toBe(false);
+}, 15_000);
+
+it("does not fail a successful npm command that emits a large stderr stream", async () => {
+  const f = fixture(), adapter = create!(f.options), stderr = join(f.root, "npm-stderr");
+  writeFileSync(stderr, "npm warn harmless detail\n".repeat(50_000));
+  releaseNpm(f, false, { stage: "global", file: stderr, fail: false });
+  await expect(adapter.installRelease(f.peer, f.input)).resolves.toEqual({
+    pi: f.peer.pi, cli: f.peer.cli, supervisor: f.destination.supervisor,
+  });
+  expect(() => JSON.parse(f.launchIO[0].stdout)).not.toThrow();
+  expect(f.launchIO[0].stdout).not.toContain("npm-stdout-fixture");
+  expect(f.launchIO[0].stderr).not.toContain("npm warn harmless detail");
+}, 15_000);
 
 it("enrollment short writes converge after a lost reply and reject a changed hub", async () => {
   const f = fixture(), adapter = create!(f.options), hub = "00000000-0000-4000-8000-000000000001";

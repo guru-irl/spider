@@ -271,6 +271,44 @@ it("retains the source snapshot while provisioning is pending", async () => {
   expect(error).toContain("still finishing on box-1.invalid");
 }, 5000);
 
+it("names the missing adjacent npm path and how to retry", async () => {
+  const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB,
+    peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/example/bin/node", pi: "/home/example/.local/bin/pi", cli: "/home/example/cli", core: "/home/example/hc", globalRoot: "/home/example/.pi/agent/spider" }], coreUnit: "fixture.service" }), { mode: 0o600 });
+  vi.stubEnv("PI_CODING_AGENT_DIR", agent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: {} } as never);
+  vi.spyOn(provisionModule, "provision").mockImplementation(async request => ({ code: 3, reason: "npm-not-found",
+    operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: null }));
+  let output = "", errors = "";
+  expect(await main(["roam", "provision", f.request.target, "--release", f.release, "--yes", "--use-destination-auth", "--operation-id", "missing-npm", "--json"],
+    { out(text) { output += text; }, err(text) { errors += text; } })).toBe(3);
+  expect(JSON.parse(output)).toMatchObject({ code: 3, reason: "npm-not-found" });
+  expect(errors).toContain("/home/example/bin/npm");
+  expect(errors).toMatch(/install.*npm/i);
+  expect(errors).toMatch(/new operation/i);
+}, 5000);
+
+it("names the private npm diagnostic receipt after an installation failure", async () => {
+  const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
+  writeFileSync(join(f.root, "roam", "machine.json"), JSON.stringify({ machineId: HUB }), { mode: 0o600 });
+  writeFileSync(join(f.root, "roam", "config.json"), JSON.stringify({ enabled: true, role: "hub", machineId: HUB, hubMachineId: HUB,
+    peers: [{ machineId: f.request.machineId, alias: f.request.target, node: "/home/example/bin/node", pi: "/home/example/.local/bin/pi", cli: "/home/example/cli", core: "/home/example/hc", globalRoot: "/home/example/.pi/agent/spider" }], coreUnit: "fixture.service" }), { mode: 0o600 });
+  vi.stubEnv("PI_CODING_AGENT_DIR", agent); vi.stubEnv("SPIDER_GLOBAL_ROOT", f.root);
+  vi.spyOn(hubModule, "loadHerdrConfig").mockReturnValue({ core: { binary: "/fixture/hc" } } as never);
+  vi.spyOn(transportModule, "createProvisionTransport").mockReturnValue({ transport: {} } as never);
+  vi.spyOn(provisionModule, "provision").mockImplementation(async request => ({ code: 3, reason: "npm-install-failed",
+    operationId: request.operation.id, home: null, epoch: null, repairCommand: null, value: null }));
+  let output = "", errors = "";
+  expect(await main(["roam", "provision", f.request.target, "--release", f.release, "--yes", "--use-destination-auth", "--operation-id", "npm-failed", "--json"],
+    { out(text) { output += text; }, err(text) { errors += text; } })).toBe(3);
+  expect(JSON.parse(output)).toMatchObject({ code: 3, reason: "npm-install-failed" });
+  expect(errors).toContain("/home/example/.pi/agent/spider/roam/provision/npm-failed-install/release-receipt.json");
+  expect(errors).toMatch(/structured/i);
+  expect(errors).toMatch(/new operation/i);
+}, 5000);
+
 it("selects only explicitly named skills and includes their supporting files", async () => {
   const f = fixture(), agent = join(f.root, "agent"); mkdirSync(agent, { mode: 0o700 });
   writeFileSync(join(agent, "auth.json"), JSON.stringify({ "github-copilot": { type: "oauth", access: "fixture" } }), { mode: 0o600 });

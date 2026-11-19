@@ -234,7 +234,7 @@ describe.skipIf(!fixturePresent)('current built-ins (requires SPIDER_HERDR_MOD_F
       agents: () => [{ address: 't1', status: 'working', seq: 1, focused: false }, { address: 't3', status: 'working', seq: 2 }, { address: 't4', status: 'working', seq: 3 }], terminals: () => all, panes: () => [], focused: () => null, spaces: () => [], theme: () => ({}), shared: () => null, setShared: () => {}, setAgentOrder: (ids: string[]) => { order = ids; }, openOverlay: () => {}, closeOverlay: () => {}, props: () => ({ labelContract: contract, labelFont: 'Fixture Label Face' }), window: () => ({}), layout: () => ({ id: 'sidebar', size: { px: 268 } }), run: () => {}, localStorage: { removeItem: () => {}, getItem: () => null, setItem: () => {} } };
     const Agents = loadView(patched.agents.files['main.js'], ports); const view = new Agents();
     view.folded = new Set(); view.changed = {}; view.pendingPins = []; view.migratingPins = new Set();
-    view.spiderFeeds = [{ ...feed([{ ...run(), startedAt: Date.now() - 1000 }]), updatedAt: Date.now() }]; view.listed = new Map();
+    view.spiderFeeds = [{ ...feed([{ ...run(), viewer: null, startedAt: Date.now() - 1000 }]), updatedAt: Date.now() }]; view.listed = new Map();
     expect(view.tree(all, 't1').map((r: { t: { key: string } }) => r.t.key)).toEqual(['job-one', 'run-one']);
     const rendered = elements(view.render({})); expect(order).toEqual(['t1']);
     expect(rendered.filter(el => el.family && el.family !== 'JetBrains Mono')).toEqual([]);

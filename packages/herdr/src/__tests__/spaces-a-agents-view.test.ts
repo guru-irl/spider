@@ -362,7 +362,7 @@ function seedConsoles(test: ReturnType<typeof fixture>) {
   );
   test.view.spiderFeeds = [{ sessionId: session, generation: 'gen', lifecycle: 'live', updatedAt: Date.now(),
     owner: { sessionId: session, generation: 'gen', name: 'Writer', terminal: { address: 'local' } },
-    ipc: { address: 'endpoint', capabilityFile: 'cap' }, runs: { rows: [] } }];
+    ipc: { address: 'endpoint', capabilityFile: 'cap' }, runs: { rows: [{ id: run, ownerSessionId: session, name: 'Helper', status: 'running', childMode: 'rpc', canSteer: true, viewer: 'subviewer', startedAt: Date.now(), finishedAt: null, result: null }] } }];
 }
 const consoleKey = (owner: string, parent: string | null = null) => `console-group:${JSON.stringify([owner, parent])}`;
 const consoleId = (owner: string, parent: string | null = null) => `console-group:${encodeURIComponent(consoleKey(owner, parent))}`;
@@ -832,9 +832,10 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(glyph && call(glyph, 'size')).toEqual([14]);
   });
 
-  it(`${version}: restores all folded space pills and blocked-child attention`, async () => {
+  it(`${version}: restores all folded space pills and blocked native child attention`, async () => {
     const test = fixture(version);
     seedConsoles(test);
+    test.view.spiderFeeds[0].runs.rows = [];
     const blockedChild = test.nativeTerminals.find(row => row.address === 'subviewer');
     blockedChild.labels = {}; blockedChild.status = 'blocked';
     await test.ready();
@@ -857,9 +858,10 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(byId(root, 'ag-local')).toBeUndefined();
   });
 
-  it(`${version}: a folded machine signals blocked members and children`, async () => {
+  it(`${version}: a folded machine signals blocked members and native children`, async () => {
     const test = fixture(version);
     seedConsoles(test);
+    test.view.spiderFeeds[0].runs.rows = [];
     test.nativeAgents[1].status = 'blocked';
     const blockedChild = test.nativeTerminals.find(row => row.address === 'subviewer');
     blockedChild.labels = {}; blockedChild.status = 'blocked';
@@ -869,6 +871,31 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     expect(call(byId(root, 'machine-subagents-local')!, 'text_color')).toEqual([palette.blocked]);
     expect(call(byId(root, 'machine-agents-local')!, 'text_color')).toEqual([palette.blocked]);
     expect(byId(root, 'machine:')!.children.flatMap(all).some(node => call(node, 'bg')?.[0] === palette.blocked + '26')).toBe(true);
+  });
+
+  it.each([true, false])(`${version}: a blocked unknown viewer does not count or raise folded attention (model: %s)`, async enabled => {
+    const test = fixture(version);
+    test.view.spiderModelEnabled = enabled;
+    if (!enabled) test.view.spiderModel = null;
+    seedConsoles(test);
+    test.view.spiderFeeds[0].runs.rows = [];
+    const viewer = test.nativeTerminals.find(row => row.address === 'subviewer');
+    viewer.status = 'blocked';
+    test.nativeTerminals.push({ ...terminal('native-working'), parent: 'local', status: 'working' });
+    await test.ready();
+    test.state.set('agents.sort', 'grouped');
+    test.view.folded.add('sp-s1');
+    let root = test.view.render(test.cx);
+    expect(byId(root, 'group-count-subagents-sp-s1')!.children).toContain('1');
+    expect(call(byId(root, 'group-count-subagents-sp-s1')!, 'text_color')).not.toEqual([palette.blocked]);
+    test.state.set('agents.sort', 'machine');
+    test.view.foldedMachines.add('machine:');
+    root = test.view.render(test.cx);
+    expect(byId(root, 'machine-subagents-local')!.children).toContain('1');
+    expect(call(byId(root, 'machine-subagents-local')!, 'text_color')).not.toEqual([palette.blocked]);
+    viewer.labels = {};
+    root = test.view.render(test.cx);
+    expect(call(byId(root, 'machine-subagents-local')!, 'text_color')).toEqual([palette.blocked]);
   });
 
   it(`${version}: folded machine attention includes blocked and failed agents without children`, async () => {
@@ -1278,11 +1305,14 @@ for (const version of ['0.1.13', '0.1.16'] as const) {
     const test = fixture(version);
     test.layouts.push({ name: 'box-5.invalid', layout: 'unavailable' });
     test.nativeTerminals.push(
-      { ...terminal('run-live', { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-live' }), parent: 'local', status: 'working' },
+      { ...terminal('run-live', { 'spider.kind': 'subagent-viewer', 'spider.session': 'session-one', 'spider.run': 'run-live' }), parent: 'local', status: 'working' },
       { ...terminal('box-4.invalid/console', { 'spider.kind': 'remote-console', 'spider.machine': 'box-4.invalid' }), parent: 'local' },
       { ...terminal('box-5.invalid/away', { 'spider.kind': 'remote-console', 'spider.machine': 'box-5.invalid' }), parent: 'local' },
       { ...terminal('run-old', { 'spider.kind': 'subagent-viewer', 'spider.run': 'run-old' }), parent: 'local', state: 'finished', finishedAt: Date.now(), exitCode: 0, reason: 'exited' } as any,
     );
+    test.view.spiderFeeds = [{ sessionId: 'session-one', generation: 'gen', lifecycle: 'live', updatedAt: Date.now(),
+      owner: { sessionId: 'session-one', generation: 'gen', name: 'Writer', terminal: { address: 'local' } },
+      ipc: { address: 'endpoint', capabilityFile: 'cap' }, runs: { rows: [{ id: 'run-live', ownerSessionId: 'session-one', name: 'Helper', status: 'running', childMode: 'rpc', canSteer: true, viewer: 'run-live', startedAt: Date.now(), finishedAt: null, result: null }] } }];
     await test.ready();
     let root = test.view.render(test.cx);
     byId(root, 'machine:')!.events.on_click({}, test.cx);

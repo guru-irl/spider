@@ -121,8 +121,10 @@ test('cached sidebar input changes when unconfirmed rows age out', () => {
   const input = { agents: [], terminals: [viewer], panes: [], spaces: [], machines: [], feeds: [closed],
     focus: null, connections: null, error: null, completedRows: 50 };
   const cutoff = 2000 + 60 * 60 * 1000;
-  expect(agentModelInputKey(input, cutoff, 1)).not.toBe(agentModelInputKey(input, cutoff + 1, 1));
-  expect(agentModelInputKey(input, cutoff + 1, 1)).toBe(agentModelInputKey(input, cutoff + 2, 1));
+  for (const snapshot of [{ ...input, feeds: [] }, { ...input, terminals: [] }]) {
+    expect(agentModelInputKey(snapshot, cutoff, 1)).not.toBe(agentModelInputKey(snapshot, cutoff + 1, 1));
+    expect(agentModelInputKey(snapshot, cutoff + 1, 1)).toBe(agentModelInputKey(snapshot, cutoff + 2, 1));
+  }
 });
 
 test('blocked unconfirmed viewers do not count or raise folded attention', () => {

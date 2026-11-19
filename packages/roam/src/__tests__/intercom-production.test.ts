@@ -189,6 +189,7 @@ it("names unpublished local WAL frames after successful retry fence observations
 
 it.each([
   ["EACCES", "EACCES"],
+  ["unreachable", "unreachable"],
   ["diagnostic-snapshot-changing", "diagnostic-snapshot-changing"],
   ["/private/fixture.key", "unknown"],
   ["ghp" + "_" + "synthetic".padEnd(39, "0"), "unknown"],

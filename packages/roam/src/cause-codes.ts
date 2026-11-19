@@ -1,7 +1,8 @@
 import { constants as osConstants } from "node:os";
 
+const nativeHcCodes = new Set<string>(["unreachable", "not_found", "machine_not_found", "invalid_params", "server_stopped"]);
 const causeCodes = new Set<string>([
-  ...Object.keys(osConstants.errno),
+  ...Object.keys(osConstants.errno), ...nativeHcCodes,
   "ERR_INVALID_ARG_TYPE", "ERR_INVALID_ARG_VALUE", "ERR_OUT_OF_RANGE", "ERR_INVALID_STATE",
   "ERR_STREAM_DESTROYED", "ERR_STREAM_PREMATURE_CLOSE", "ERR_SOCKET_CLOSED", "ERR_IPC_CHANNEL_CLOSED",
   "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "ERR_BUFFER_TOO_LARGE", "ERR_FS_FILE_TOO_LARGE",
@@ -29,6 +30,11 @@ const steps = [
 ] as const;
 export type CauseStep = typeof steps[number];
 const fallbackCodes = new Set<string>(steps.map(step => `unexpected-${step}`));
+
+/** A native stderr kind is data, never exception text or an arbitrary identifier. */
+export function safeNativeHcCode(value: unknown): string | undefined {
+  return typeof value === "string" && nativeHcCodes.has(value) ? value : undefined;
+}
 
 /** Only named codes and fixed operation steps can cross a machine or CLI boundary. */
 export function safeCauseCode(value: unknown): string | undefined {

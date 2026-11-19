@@ -12,7 +12,7 @@ import { appendMirror, type MirrorSource } from "./mirrors";
 import { isRevoked, syncHandshake, type SyncHandshake } from "./revocation";
 import { assignInitialHome, markInitialConflict } from "./homes";
 import { readOnlyOperation, releaseJournalArtifact, type ArtifactJournal } from "./journal";
-import { isPeerFailureReason, peerFailureReason } from "./peer-errors";
+import { agentFailureCode, isPeerFailureReason, peerFailureReason } from "./peer-errors";
 import { loadPeerState, receiptMatches, savePeerState, sizedBytes, type PeerState, type PendingBatch } from "./peer-state";
 import { acquireTransferLease, defaultStagingRoot, openOutgoingStaging, openStaging } from "./staging";
 import { removeOutgoing, type StoreAdapter } from "./stores";
@@ -105,8 +105,8 @@ export function createSync(ports: SyncPorts): SyncAdapter {
     if (!object(decoded) || ![0, 1, 2, 3].includes(decoded.code as number) || decoded.operationId !== id) throw new SyncFailure(1, "Invalid peer outcome");
     if (decoded.code !== 0) {
       if (kind === "receipt" && decoded.code === 3 && decoded.reason === "Receipt is pending") return { pending: true };
-      const reason = typeof decoded.reason === "string" && /^(?:Roaming todo collision between |Roaming row |Mapping fenced replica |Staging full \(quota\) at )/.test(decoded.reason)
-        ? decoded.reason : `Peer ${kind} refused`;
+      const reason = agentFailureCode(decoded.reason) ?? (typeof decoded.reason === "string" && /^(?:Roaming todo collision between |Roaming row |Mapping fenced replica |Staging full \(quota\) at )/.test(decoded.reason)
+        ? decoded.reason : `peer-${kind}-refused`);
       throw new SyncFailure(decoded.code as 1 | 2 | 3, reason, id);
     }
     if (!object(decoded.value)) throw new SyncFailure(1, "Invalid peer value");

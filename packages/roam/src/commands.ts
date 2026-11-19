@@ -14,6 +14,7 @@ export type PublicControl =
   | { kind: "recover" | "cancel"; operationId: string }
   | { kind: "stop" | "resume"; session: string }
   | { kind: "forget"; machine: string; confirmation: string }
+  | { kind: "stores-prune" }
   | { kind: "repo-map"; repoKey: string; path: string }
   | { kind: "memory-tag"; storeKey: string; uuid: string; machine: string }
   | { kind: "provision"; machine: string; options: readonly string[] };
@@ -33,6 +34,7 @@ export function parsePublicControl(input: readonly string[]): PublicControl | nu
   if ((command === "stop" || command === "resume") && args.length === 3 && plain(a)) return { kind: command, session: a };
   if (command === "claim" && args.length === 4 && plain(a) && plain(b)) return { kind: command, session: a, machine: b };
   if (command === "forget" && args.length === 5 && plain(a) && b === "--confirm" && /^destroyed [A-Za-z0-9._-]+$/.test(c)) return { kind: command, machine: a, confirmation: c };
+  if (command === "stores" && a === "prune" && args.length === 3) return { kind: "stores-prune" };
   if (command === "repo" && a === "map" && args.length === 5 && plain(b) && plain(c) && isAbsolute(c)) return { kind: "repo-map", repoKey: b, path: c };
   if (command === "memory" && a === "tag" && plain(b) && plain(c)) {
     const machine = args.length === 6 && plain(d) ? d
@@ -55,8 +57,8 @@ export function parsePublicControl(input: readonly string[]): PublicControl | nu
   return null;
 }
 export function controlRefusal(control: PublicControl, config: RoamConfig): string | null {
-  if (!config.enabled && !["status", "doctor", "enable", "disable", "provision", "forget", "stop"].includes(control.kind)) return "roaming-disabled";
-  if (config.role === "box" && !(control.kind === "status" || control.kind === "repo-map" || control.kind === "doctor" && control.machine === undefined)) return "mac-hub-required";
+  if (!config.enabled && !["status", "doctor", "enable", "disable", "provision", "forget", "stop", "stores-prune"].includes(control.kind)) return "roaming-disabled";
+  if (config.role === "box" && !(control.kind === "status" || control.kind === "repo-map" || control.kind === "stores-prune" || control.kind === "doctor" && control.machine === undefined)) return "mac-hub-required";
   return null;
 }
 export function resolveControlSession(target: string, catalog: readonly { id: string; name: string | null }[]): { sessionId: string } | { reason: string; candidates: string[] } {

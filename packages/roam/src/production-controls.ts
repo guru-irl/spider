@@ -1,4 +1,5 @@
 import { resolveParticipantPi } from "./launcher";
+import { agentFailureCode, AgentResponseError, peerPreflightIssue } from "./peer-errors";
 import { setEnrolledPeerEnabled } from "./peer-enabled";
 import { openJournal } from "./journal";
 import { remoteDoctor } from "./remote-observations";
@@ -93,9 +94,10 @@ async function agent(transport: Transport, peer: Peer, config: RoamConfig, kind:
     { timeoutMs: config.limits.controlMs, maxBytes: config.limits.replyBytes });
   const value: unknown = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid peer response");
-  const result = value as { code?: unknown; operationId?: unknown; value?: unknown };
-  if (result.operationId !== operation.id || result.code !== 0 || !result.value || typeof result.value !== "object" || Array.isArray(result.value))
-    throw new Error("Peer refused or did not confirm the capture request");
+  const result = value as { code?: unknown; reason?: unknown; operationId?: unknown; value?: unknown };
+  if (result.operationId !== operation.id || ![0, 1, 2, 3].includes(result.code as number)) throw new AgentResponseError("peer-response-invalid");
+  if (result.code !== 0) throw new AgentResponseError(agentFailureCode(result.reason) ?? "agent-operation-failed");
+  if (!result.value || typeof result.value !== "object" || Array.isArray(result.value)) throw new AgentResponseError("peer-response-invalid");
   return result.value as JsonObject;
 }
 async function startPeerBroker(transport: Transport, peer: Peer, config: RoamConfig): Promise<void> {
@@ -132,7 +134,7 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
         const name = clean(peer.alias), argument = /^[A-Za-z0-9_]/.test(peer.alias) ? name : peer.machineId;
         let discovery: JsonObject;
         try { discovery = await agent(transport, peer, config, "stores", {}); }
-        catch { failures.push({ reason: `box-unreachable:${name}`, repairCommand: `spider roam forget ${argument}` }); continue; }
+        catch (error) { failures.push(peerPreflightIssue(error, name, argument)); continue; }
         try {
           if (discovery.protocol !== 1 || discovery.schema !== 14 || discovery.machineId !== peer.machineId || !Array.isArray(discovery.stores)) throw new Error();
           const keys = [...new Set(discovery.stores.map(key => { storeScope(key); return key as StoreKey; }))];
@@ -154,9 +156,9 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
             if (/^(?:intercom-legacy-drained|intercom-federation): (?:intercom-broker-unavailable|intercom-broker-not-spider|intercom-agent-unsafe|intercom-directory-unsafe|intercom-socket-unsafe|federation-feature-missing)/.test(row.reason) ||
                 row.reason.startsWith("intercom-readiness-unavailable:")) brokerFailure();
             const check = preflightCheck(row.reason), detail = preflightDetail(row.reason);
-            failures.push({ reason: `preflight-failed:${name}:${check}`, repairCommand: `spider roam provision ${argument}`, ...(detail ? { detail } : {}) });
+            failures.push({ reason: `preflight-failed:${name}:${check}`, repairCommand: row.reason.startsWith("store-") ? `spider roam doctor ${argument}` : `spider roam provision ${argument}`, ...(detail ? { detail } : {}) });
           }
-        } catch { failures.push({ reason: `box-unreachable:${name}`, repairCommand: `spider roam forget ${argument}` }); }
+        } catch (error) { failures.push(peerPreflightIssue(error, name, argument)); }
       }
       const infoText = information.map(item => `${item.machine}: ${item.reason}`).join("\n");
       if (failures.length) return { code: 1 as const, reason: failures[0].reason, issues: failures, information,

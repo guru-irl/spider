@@ -25,11 +25,12 @@ import { MOVE_REFUSAL_MESSAGES, type Operation, type Outcome } from "./contracts
 import { dispatchArtifactCommand, handleAgentOperation } from "./agent";
 import { openLocalCore, openLocalRuntime, readLocalIdentity } from "./runtime";
 import { listStoreKeys } from "./store-inventory";
+import { pruneMissingStores } from "./store-prune";
 import { createStorePort } from "./stores";
 import { loadHerdrConfig, startProductionHub } from "./production-hub";
 export { startProductionHub } from "./production-hub";
 import { createTransport } from "./transport";
-import { isPeerFailureReason, peerFailureReason } from "./peer-errors";
+import { isPeerFailureReason, peerFailureReason, peerPreflightIssue } from "./peer-errors";
 import { remoteDoctor } from "./remote-observations";
 import { disableRoaming, enableRoaming } from "./production-controls";
 import { runForeground, runLocalPairCleanup, runLocalPairOperation, hasPairConsent, type LocalPairCleanup, type LocalPairOperation, type LocalPairPorts } from "./intercom-local-ops";
@@ -56,6 +57,7 @@ const HELP = `Usage: spider <command>
   spider roam recover|cancel <operation-id>
   spider roam claim <session> <machine>
   spider roam forget <machine> --confirm "destroyed <machine UUID or alias>"
+  spider roam stores prune
   spider roam repo map <repo-key> <path>
   spider roam memory tag <store-key> <uuid> <machine|all>
   spider move <session> <machine>
@@ -101,6 +103,7 @@ function valid(args: readonly string[], literalFrom: number): boolean {
     case "sync": case "doctor": return args.length === 2 || args.length === 3 && item(2);
     case "provision": case "recover": case "cancel": case "forget": case "claim": case "stop": case "resume":
       return args.length === (args[1] === "claim" ? 4 : 3) && args.slice(2).every((_value, index) => item(index + 2));
+    case "stores": return args.length === 3 && args[2] === "prune";
     case "repo": return args[2] === "map" && args.length === 5 && item(3) && item(4);
     case "memory": return args[2] === "tag" && args.length === 6 && item(3) && item(4) && item(5);
     default: return false;
@@ -413,7 +416,7 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
     io.err("Invalid arguments. Run spider --help for usage.\n");
     return 2;
   }
-  const localBoxControl = argv[0] === "roam" && (argv[1] === "status" || argv[1] === "repo" || argv[1] === "doctor" && argv.length === 2);
+  const localBoxControl = argv[0] === "roam" && (argv[1] === "status" || argv[1] === "repo" || argv[1] === "stores" || argv[1] === "doctor" && argv.length === 2);
   if (!localBoxControl) {
     try {
       if (readLocalIdentity(root).role === "box") { io.err("Run this command on the Mac hub.\n"); return 1; }
@@ -422,6 +425,14 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
   if (argv[0] === "roam" && (argv[1] === "enable" || argv[1] === "disable")) {
     const result = argv[1] === "enable" ? await enableRoaming(root, fileURLToPath(import.meta.url), options?.bundleUrl) : await disableRoaming(root);
     return emitOutcome(io, outcome(result.code, result.reason, result.issues || result.information ? { issues: result.issues, information: result.information } : null), jsonOutput, `${result.message.split("\n").map(clean).join("\n")}\n`);
+  }
+  if (argv[0] === "roam" && argv[1] === "stores" && argv[2] === "prune") {
+    try {
+      const core = openLocalCore(root);
+      let count: number;
+      try { count = pruneMissingStores(core.db); } finally { core.close(); }
+      return emitOutcome(io, outcome(0, "stores-pruned"), jsonOutput, `Removed ${count} missing store registrations. No store files were deleted.\n`);
+    } catch { return emitOutcome(io, outcome(1, "store-prune-failed"), jsonOutput, "Cannot prune store registrations. Run spider roam doctor.\n"); }
   }
   if (argv[0] === "roam" && argv[1] === "repo" && argv[2] === "map") {
     try {
@@ -583,9 +594,14 @@ export async function main(argv: readonly string[], io: CommandIO, options?: { b
       for (const diagnostic of report.diagnostics) io.out(`${clean(diagnostic.reason)}\n`);
       return code;
     } catch (error) {
-      const failure = argv.length > 2 ? peerFailureReason(error) : null;
-      return emitOutcome(io, outcome(1, failure ?? "doctor-unavailable"), jsonOutput,
-        failure ? `${failure}. No data was changed.\n` : argv.length > 2 ? "Remote doctor is unavailable. No data was changed.\n" : "Cannot inspect local roaming state. No data was changed.\n");
+      if (argv.length > 2) {
+        const name = clean(argv[2]);
+        let argument = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(name) ? name : "";
+        if (!argument) try { argument = readLocalIdentity(root).peers.find(peer => peer.alias === argv[2] || peer.machineId === argv[2])?.machineId ?? ""; } catch { /* Configuration may be unavailable too. */ }
+        const issue = peerPreflightIssue(error, name, argument);
+        return emitOutcome(io, { ...outcome(1, issue.reason), repairCommand: issue.repairCommand }, jsonOutput, `${issue.reason}${issue.detail ? `: ${issue.detail}` : ""} (${issue.repairCommand}). No data was changed.\n`);
+      }
+      return emitOutcome(io, outcome(1, "doctor-unavailable"), jsonOutput, "Cannot inspect local roaming state. No data was changed.\n");
     }
   }
   io.err("This roaming command is unavailable in this build.\n");

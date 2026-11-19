@@ -8,6 +8,7 @@ import { storeScope } from "@spider/db-core/roam/codec";
 import type { Home, HubOperationReadiness, JsonObject, Probe, StoreBarrier } from "@spider/db-core/roam/types";
 import type { IntercomIntakeFence, SessionEndpoint } from "@spider/intercom/protocol";
 import { validHostingWarning } from "./hosting-warning";
+import { peerErrorCode } from "./peer-errors";
 import { MOVE_REFUSAL_MESSAGES } from "./contracts";
 import type { DestinationObservation, FreezeAck, Journal, MoveCheck, MovePorts, MoveRequest, MoveResult, SourceCleanup, MoveRefusal, MoveRefusalCode, MoveSessionOutcome, ValidatedBlockerId, Operation, Outcome, PreparedMove } from "./contracts";
 import { casHome, sessionHome } from "./homes";
@@ -386,7 +387,9 @@ async function forward(request: MoveRequest, ports: MovePorts, recovering = fals
     const reason = error instanceof MoveError && error.refusal.code !== 'move-preflight-refused' ? error.refusal.code
       : committed?.committed_home_json ? 'move-destination-pending' : freezeStarted || checked ? 'move-pending' : 'move-preflight-refused';
     const code = checked || ["move-journal-invalid", "move-journal-unavailable"].includes(reason) ? 3 : reason === "move-operation-conflict" ? 2 : 1;
-    const result = outcome(request, ports, code, reason, null, error instanceof MoveError ? error.refusal.blockers : []);
+    const blockers = error instanceof MoveError ? error.refusal.blockers : reason === "move-preflight-refused"
+      ? [validateBlockerId(peerErrorCode(error) ?? "preflight-check-unavailable")] : [];
+    const result = outcome(request, ports, code, reason, null, blockers);
     if (!checked && (begunNew || recovering) && code !== 3) {
       ports.journal.record(id, "done", json(result));
       if (slot) ports.journal.record(slot, "released", { moveId: id });

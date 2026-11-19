@@ -20,7 +20,7 @@ import { parseBuildId } from "../../../scripts/build-id.mjs";
 import { loadConfig } from "./config";
 import { DEFAULT_LIMITS, disabledIntercom, type Diagnostic, type RoamConfig } from "./contracts";
 import { doctorLocal, inspectStore, localCaptureRequired, readStatus, type DiagnosticMachine, type DiagnosticPorts, type DiagnosticStore, type LoadedConsumer, type PeerObservation, type RoamStatus, type UsageWorker } from "./diagnostics";
-import { listStoreKeys } from "./store-inventory";
+import { listStoreKeys, StoreInventoryError, storeInventoryDiagnostic } from "./store-inventory";
 import { openDiagnosticSnapshot } from "./diagnostic-snapshot";
 import { isPeerFailureReason } from "./peer-errors";
 import { RUNNING_INTENT_SOURCE_UNAVAILABLE } from "./supervisor";
@@ -38,6 +38,7 @@ function resumeCommand(id: string): string {
   return `spider roam resume ${id.startsWith("-") ? "-- " : ""}${argument}`;
 }
 function snapshotProblem(error: unknown): string {
+  if (error instanceof StoreInventoryError) return snapshotProblem(error.cause);
   if ((error as NodeJS.ErrnoException)?.code === "diagnostic-snapshot-wal-index-missing") return " The WAL index is missing; the store may be opening or closing. Retry inspection.";
   const message = error instanceof Error ? error.message : "";
   if (/WAL.*commit/i.test(message)) return " The WAL commit boundary is unverified; retry after normal SQLite recovery.";
@@ -235,8 +236,8 @@ function openLocalInventory(input: { root: string }) {
   const readOptions = { globalPath: join(root, "spider.db"), open, onProblem(entry: string, error?: unknown) {
     if (problems.has(entry)) return;
     problems.add(entry);
-    const label = /^(?:repo:|worktree:)/.test(entry) ? entry.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512) : "a registered or replica";
-    inventory.push({ severity, reason: `Cannot inspect ${label} store.${snapshotProblem(error)}`, repairCommand: null });
+    const diagnostic = storeInventoryDiagnostic(entry, error);
+    inventory.push({ ...diagnostic, reason: diagnostic.reason + snapshotProblem(error) });
   } };
   const add = (file: string, scope: Scope, label: string): void => {
     let db: Db | undefined;
@@ -252,7 +253,7 @@ function openLocalInventory(input: { root: string }) {
       }
       opened.set(source, db);
       stores.push({ key, scope, db });
-    } catch (error) { db?.close(); inventory.push({ severity, reason: `${label}: cannot inspect the registered store.${snapshotProblem(error)}`, repairCommand: null }); }
+    } catch (error) { db?.close(); inventory.push({ severity, reason: `${label}: cannot inspect the registered store ${file.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512)}.${snapshotProblem(error)}`, repairCommand: null }); }
   };
   try {
     add(join(root, "spider.db"), "global", "global");
@@ -362,7 +363,7 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
       }
       seen.add(source);
       inspect({ key, scope, db });
-    } catch (error) { inventory.push({ severity, reason: `${label}: cannot inspect the registered store.${snapshotProblem(error)}`, repairCommand: null }); }
+    } catch (error) { inventory.push({ severity, reason: `${label}: cannot inspect the registered store ${file.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512)}.${snapshotProblem(error)}`, repairCommand: null }); }
     finally { db?.close(); }
   };
 
@@ -403,8 +404,8 @@ export async function runLocalDoctor(input: { root: string; bundleUrl?: URL; cur
     const readOptions = { globalPath, open, onProblem(entry: string, error?: unknown) {
       if (problems.has(entry)) return;
       problems.add(entry);
-      const label = /^(?:repo:|worktree:)/.test(entry) ? entry.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 512) : "a registered or replica";
-      inventory.push({ severity, reason: `Cannot inspect ${label} store.${snapshotProblem(error)}`, repairCommand: null });
+      const diagnostic = storeInventoryDiagnostic(entry, error);
+      inventory.push({ ...diagnostic, reason: diagnostic.reason + snapshotProblem(error) });
     } };
     for (const key of listStoreKeys(catalogData, readOptions)) {
       if (key === "global") continue;

@@ -32,8 +32,11 @@ function openRoamPathReadOnly(file: string, open: (file: string) => Db | undefin
   assertTestDbPath(file);
   try {
     const directory = dirname(file), parent = lstatSync(directory), target = lstatSync(file);
-    if (!parent.isDirectory() || parent.isSymbolicLink() || realpathSync(directory) !== directory || !target.isFile() || target.isSymbolicLink() ||
-      typeof process.getuid === "function" && (parent.uid !== process.getuid() || target.uid !== process.getuid())) throw new Error("Unsafe roaming database path");
+    const code = parent.isSymbolicLink() || target.isSymbolicLink() ? "STORE_PATH_SYMLINK"
+      : !parent.isDirectory() || !target.isFile() ? "STORE_PATH_TYPE"
+      : realpathSync(directory) !== directory ? "STORE_PATH_NONCANONICAL"
+      : typeof process.getuid === "function" && (parent.uid !== process.getuid() || target.uid !== process.getuid()) ? "STORE_PATH_OWNER" : null;
+    if (code) throw Object.assign(new Error("Unsafe roaming database path"), { code });
     return open(file);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
@@ -48,9 +51,9 @@ export function mappingRedirect(source: RoamCatalogSource, key: StoreKey): strin
   return value ?? null;
 }
 
-export function openRoamStoreReadOnly(source: RoamCatalogSource, key: StoreKey, options: ReadStoreOptions = {}): Db | undefined {
-  const globalPath = options.globalPath ?? catalogPath(source), open = options.open ?? openDbReadOnly;
-  if (key === "global") return openRoamPathReadOnly(globalPath, open);
+export function roamStorePath(source: RoamCatalogSource, key: StoreKey, options: ReadStoreOptions = {}): string {
+  const globalPath = options.globalPath ?? catalogPath(source);
+  if (key === "global") return globalPath;
   let mapped: { path: string } | undefined;
   if (key.startsWith("worktree:")) {
     const separator = key.lastIndexOf(":");
@@ -63,8 +66,11 @@ export function openRoamStoreReadOnly(source: RoamCatalogSource, key: StoreKey, 
       ? source.prepare("SELECT path FROM roam_repo_maps WHERE repo_key = ?").get(key.slice(5)) as { path: string } | undefined
       : source.repos.find(row => row.repo_key === key.slice(5));
   } else throw new Error("Invalid roaming store key");
-  if (!mapped) return openRoamPathReadOnly(replicaPath(globalPath, key), open);
+  if (!mapped) return replicaPath(globalPath, key);
   const redirect = mappingRedirect(source, key);
-  const file = redirect ?? (key.startsWith("worktree:") ? join(mapped.path, ".spider", "project.db") : join(repoRoot(mapped.path) ?? join(mapped.path, ".spider"), "repo.db"));
-  return openRoamPathReadOnly(file, open);
+  return redirect ?? (key.startsWith("worktree:") ? join(mapped.path, ".spider", "project.db") : join(repoRoot(mapped.path) ?? join(mapped.path, ".spider"), "repo.db"));
+}
+
+export function openRoamStoreReadOnly(source: RoamCatalogSource, key: StoreKey, options: ReadStoreOptions = {}): Db | undefined {
+  return openRoamPathReadOnly(roamStorePath(source, key, options), options.open ?? openDbReadOnly);
 }

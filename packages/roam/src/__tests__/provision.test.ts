@@ -36,7 +36,7 @@ function fixture() {
   write(releaseRoot, "dist/extension.js", "extension"); write(releaseRoot, "dist/intercom/broker.mjs", "broker");
   const activeFile = write(root, "active.json", "null"), journal = openJournal(join(root, "journal.db"));
   const state = { allow: true, existingId: null as string | null, verified: false, hubEnabled: true, boxEnabled: false, agentDirectory: "default" as "default" | "custom" | "unknown",
-    coreId: "fixture-core", replaceCoreOnConfirm: false };
+    coreId: "fixture-core", replaceCoreOnConfirm: false, supervisorEnabled: false };
   const events: string[] = [], confirmations: { target: string; providers: readonly string[] }[] = [], persisted: Peer[] = [];
   const preview: unknown[] = [], diagnostics: unknown[] = [], systemctl: string[][] = [], secretCollectionCalls: string[] = [];
   const value = healthyInventory();
@@ -63,7 +63,11 @@ function fixture() {
     systemd: {
       unitDir: "/home/fixture/.config/systemd/user",
       async writeUnit(name: string, bytes: string) { events.push("unit"); write(units, name, bytes); },
-      async systemctl(argv: readonly string[]) { events.push("systemctl"); systemctl.push([...argv]); },
+      async systemctl(argv: readonly string[]) {
+        events.push("systemctl"); systemctl.push([...argv]);
+        if (argv[1] === "enable") state.supervisorEnabled = true;
+        if (argv[1] === "disable") state.supervisorEnabled = false;
+      },
     },
     async resources() { throw new Error("local resource probe is forbidden"); },
     async bootId() { throw new Error("local boot probe is forbidden"); },
@@ -358,6 +362,26 @@ it("holds a per-peer lock and clears interrupted credential staging before insta
   expect(f.events.at(-1)).toBe("unlock");
   expect(f.events.indexOf("cleanup-secrets")).toBeGreaterThan(f.events.indexOf("identity"));
   expect(f.events.indexOf("cleanup-secrets")).toBeLessThan(f.events.indexOf("release"));
+}, 5000);
+
+it.each([false, true])("installs but does not enable a blocked supervisor (hub enabled: %s)", async hubEnabled => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}");
+  f.state.hubEnabled = hubEnabled; f.state.supervisorEnabled = true; f.state.verified = false;
+  const outcome = await provision!(f.request(`blocked-supervisor-${hubEnabled}`), f.ports);
+  expect(outcome).toMatchObject({ code: 0, reason: "installed-hosting-disabled", value: { hostingReady: false } });
+  expect(existsSync(join(f.units, "spider-roam-supervisor.service"))).toBe(true);
+  expect(f.state.supervisorEnabled).toBe(false);
+  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "disable", "spider-roam-supervisor.service"]]);
+  expect(f.state.boxEnabled).toBe(false);
+}, 5000);
+
+it.each([false, true])("enables a ready supervisor without starting it (hub enabled: %s)", async hubEnabled => {
+  const f = fixture(); f.write(f.source, "settings.json", "{}"); f.state.hubEnabled = hubEnabled; f.state.verified = true;
+  const outcome = await provision!(f.request(`ready-supervisor-${hubEnabled}`), f.ports);
+  expect(outcome).toMatchObject({ code: 0, reason: "installed", value: { hostingReady: true } });
+  expect(f.state.supervisorEnabled).toBe(true);
+  expect(f.systemctl).toEqual([["--user", "daemon-reload"], ["--user", "enable", "spider-roam-supervisor.service"]]);
+  expect(f.state.boxEnabled).toBe(hubEnabled);
 }, 5000);
 
 it("provision while the hub is disabled clears a previously enabled box without starting hosting", async () => {

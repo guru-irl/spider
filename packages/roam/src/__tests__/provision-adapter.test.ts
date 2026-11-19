@@ -1361,6 +1361,16 @@ it("sends auth only through private stdin staging and removes it", async () => {
   expect(lstatSync(join(f.agentDir, "auth.json")).mode & 0o777).toBe(0o600);
 }, 5000);
 
+it("disables only the supervisor autostart through the remote systemd adapter", async () => {
+  const f = fixture(), adapter = create!(f.options);
+  await adapter.systemd.systemctl(["--user", "disable", "spider-roam-supervisor.service"]);
+  expect(readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line))).toEqual([
+    ["--user", "disable", "spider-roam-supervisor.service"],
+  ]);
+  await expect(adapter.systemd.systemctl(["--user", "disable", "herdr-core.service"])).rejects.toThrow();
+  await expect(adapter.systemd.systemctl(["--user", "disable", "--now", "spider-roam-supervisor.service"])).rejects.toThrow();
+}, 5000);
+
 it("installs only a supervisor unit through a fake systemd port", async () => {
   expect(create).toBeTypeOf("function"); expect(remoteProgram).toBeTypeOf("string");
   const f = fixture(), adapter = create!(f.options), core = join(f.unitDir, "herdr-core.service");

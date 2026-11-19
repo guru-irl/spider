@@ -9,6 +9,7 @@ import { handleAgentOperation } from "../agent";
 import { createProductionRecoveryPorts } from "../recovery-transport";
 import { assignInitialHome } from "../homes";
 import { recordLocation } from "@spider/db-core/roam/catalog";
+import { MappingFenceError } from "@spider/db-core/roam/apply";
 import type { MovePorts } from "../contracts";
 import { network, BOX, HUB } from "./sync-fixture";
 
@@ -73,6 +74,23 @@ it("keeps retryable agent failures pending with a bounded cause and operation ki
   expect(results).toContainEqual(expect.objectContaining({ code: 3, reason: "agent-operation-failed", operationKind: "stores", causeCode: "cli-timeout" }));
   expect(JSON.stringify({ direct, results })).not.toContain("private exception");
   expect(JSON.stringify({ direct, results })).not.toContain("/private/fixture");
+});
+
+it("keeps a safe mapping-fence store identity through sync", async () => {
+  const f = fixture(), remote = f.remotes.get(BOX)!, key = "worktree:fixture-repo:workspace" as const;
+  remote.ports.openStore = () => { throw new MappingFenceError(key); };
+  const sync = createSync({ config: f.config, globalDb: f.global.db, transport: f.transport, journal: f.journal, clock: f.clock, stores: f.stores });
+  const results = await sync.sync(BOX); sync.stop();
+  const output = safeControlOutcome({ code: 3, reason: "Synchronization needs attention", operationId: "sync-a", home: null, epoch: null, repairCommand: null, value: { outcomes: results } });
+  expect(output.value).toMatchObject({ outcomes: [{ code: 3, reason: `Mapping fenced replica ${key}. Re-resolve placement and retry.`, operationKind: "stores", causeCode: "ROAM_MAPPING_FENCED" }] });
+});
+
+it("does not expose a path-shaped mapping-fence store key", async () => {
+  const f = fixture(), remote = f.remotes.get(BOX)!;
+  remote.ports.openStore = () => { throw new MappingFenceError("worktree:/private/fixture:workspace"); };
+  const result = await handleAgentOperation({ id: "unsafe-fence", machineId: BOX, expectedEpoch: null, kind: "stores", args: {} }, remote.ports);
+  expect(result).toMatchObject({ code: 3, reason: "Agent operation failed", operationKind: "stores", causeCode: "ROAM_MAPPING_FENCED" });
+  expect(JSON.stringify(result)).not.toContain("/private/fixture");
 });
 
 it("retains a real mirror-export agent exception and its operation ID through sync", async () => {

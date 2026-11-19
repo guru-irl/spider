@@ -143,6 +143,13 @@ it("reports an unsafe configured agent directory without changing it", () => {
   expect(f.run(agent, `PI_CODING_AGENT_DIR=${agent}\n`, false, f.home, f.home, agent).reply.value).toBe("default");
 }, 5000);
 
+it.each(["\u009b", "\u061c", "\u202e"])("does not report a display-spoofing configured agent path %j", control => {
+  const f = fixture(), agent = join(f.home, `${control}agent`); mkdirSync(agent, { mode: 0o700 }); chmodSync(agent, 0o775);
+  expect(f.run(agent, "", false, f.home, f.home, agent).reply)
+    .toEqual({ version: 1, kind: "agent-directory", error: "agent-directory-probe-failed" });
+  expect(lstatSync(agent).mode & 0o777).toBe(0o775);
+});
+
 it("does not offer a permission repair for a symlinked configured agent directory", () => {
   const f = fixture(), target = join(f.home, "other"), agent = join(f.home, "custom-agent");
   mkdirSync(target, { mode: 0o700 }); chmodSync(target, 0o775); symlinkSync(target, agent);

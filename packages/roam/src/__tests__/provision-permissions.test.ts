@@ -15,7 +15,7 @@ it("accepts recursive repairs only for exact package tree roots", () => {
   expect(isPermissionRepairCommand("chmod go-w '/home/fixture/.pi/agent'" )).toBe(true);
 });
 
-it.each(["\u0001", "\u007f", "\u0080", "\u009b", "\u009f", "\u200e", "\u200f", "\u202a", "\u202e", "\u2066", "\u2069"])("rejects display controls in a reported path %j", control => {
+it.each(["\u0001", "\u007f", "\u0080", "\u009b", "\u009f", "\u061c", "\u200e", "\u200f", "\u202a", "\u202e", "\u2066", "\u2069"])("rejects display controls in a reported path %j", control => {
   const path = `/home/fixture/agent/${control}name`;
   expect(destinationPermissionPath(path, "/home/fixture", ["/home/fixture/agent"])).toBe(false);
   expect(isPermissionRepairCommand(`chmod go-w '${path}'`)).toBe(false);

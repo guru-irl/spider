@@ -1,4 +1,5 @@
 import { listStoreKeys, parseUngathered, type UngatheredStore } from "./store-inventory";
+import { causeCode, safeCauseCode, type CauseStep } from "./cause-codes";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, unlinkSync } from "node:fs";
 import type { Db } from "@spider/db-core";
@@ -34,7 +35,7 @@ export interface SyncAdapter extends SyncService { drain(): Promise<void> }
 class SyncFailure extends Error {
   readonly code: 1 | 2 | 3;
   readonly operationId: string | null;
-  constructor(code: 1 | 2 | 3, message: string, operationId: string | null = null) { super(message); this.code = code; this.operationId = operationId; }
+  constructor(code: 1 | 2 | 3, message: string, operationId: string | null = null, readonly causeCode?: string) { super(message); this.code = code; this.operationId = operationId; }
 }
 class QuarantinedStore extends SyncFailure {
   constructor(readonly sessions: string[]) { super(1, "Peer store is quarantined"); }
@@ -63,7 +64,7 @@ export function createSync(ports: SyncPorts): SyncAdapter {
   function assertNotRevoked(peer: Peer): void {
     if (ports.revocationDb && isRevoked(ports.revocationDb, peer.machineId)) throw new SyncFailure(1, "machine-revoked");
   }
-  async function remote(peer: Peer, kind: string, args: JsonObject, id: string = randomUUID()): Promise<JsonObject> {
+  async function remote(peer: Peer, kind: CauseStep, args: JsonObject, id: string = randomUUID()): Promise<JsonObject> {
     assertNotRevoked(peer);
     const operation: Operation = { id, machineId: peer.machineId, expectedEpoch: null, kind, args };
     const saved = readOnlyOperation(kind) ? { kind: "new", result: null } as const : journal.begin(operation);
@@ -108,7 +109,8 @@ export function createSync(ports: SyncPorts): SyncAdapter {
       if (kind === "receipt" && decoded.code === 3 && decoded.reason === "Receipt is pending") return { pending: true };
       const reason = agentFailureCode(decoded.reason) ?? (typeof decoded.reason === "string" && /^(?:Roaming todo collision between |Roaming row |Mapping fenced replica |Staging full \(quota\) at )/.test(decoded.reason)
         ? decoded.reason : `peer-${kind}-refused`);
-      throw new SyncFailure(decoded.code as 1 | 2 | 3, reason, id);
+      const cause = safeCauseCode(decoded.causeCode) ?? (reason === "agent-operation-failed" ? causeCode(null, kind) : undefined);
+      throw new SyncFailure(decoded.code as 1 | 2 | 3, reason, id, cause);
     }
     if (!object(decoded.value)) throw new SyncFailure(1, "Invalid peer value");
     if (!readOnlyOperation(kind)) record(id, "done", { value: decoded.value, ...(kind === "split" ? { wire } : {}) });
@@ -374,8 +376,9 @@ export function createSync(ports: SyncPorts): SyncAdapter {
     return results;
   }
   function failure(error: unknown, id: string): Outcome<ApplyReceipt> {
-    return outcome(error instanceof SyncFailure ? error.code : error && typeof error === "object" && "retryable" in error && error.retryable ? 3 : 1,
-      error instanceof SyncFailure ? error.message : "Store synchronization refused", error instanceof SyncFailure ? error.operationId ?? id : id);
+    return { ...outcome(error instanceof SyncFailure ? error.code : error && typeof error === "object" && "retryable" in error && error.retryable ? 3 : 1,
+      error instanceof SyncFailure ? error.message : "Store synchronization refused", error instanceof SyncFailure ? error.operationId ?? id : id),
+      ...(error instanceof SyncFailure && error.causeCode ? { causeCode: error.causeCode } : {}) };
   }
   function schedule(peer: Peer, ms: number) {
     timers.get(peer.machineId)?.();

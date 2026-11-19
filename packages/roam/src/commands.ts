@@ -1,4 +1,5 @@
 import { hostingWarningText, validHostingWarning, type HostingWarning } from "./hosting-warning";
+import { safeCauseCode } from "./cause-codes";
 import type { RoamStatus } from "./diagnostics";
 import { isAbsolute } from "node:path";
 import { MOVE_REFUSAL_MESSAGES, type MoveRefusal, type MoveRefusalCode, type SourceCleanup, type Outcome, type RoamConfig } from "./contracts";
@@ -155,8 +156,10 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
         typeof receipt.sha256 === "string" && /^[a-f0-9]{64}$/.test(receipt.sha256) &&
         (receipt.applyMs === null || Number.isSafeInteger(receipt.applyMs) && Number(receipt.applyMs) >= 0)
         ? { batchId: receipt.batchId, stream: receipt.stream, through: receipt.through, sha256: receipt.sha256, applyMs: receipt.applyMs } : null;
+      const causeCode = safeCauseCode(row.causeCode);
       return [{ code: row.code, reason: safeReason(row.reason), operationId: token(row.operationId) ?? "", home: safeHome(row.home),
-        epoch: Number.isSafeInteger(row.epoch) ? row.epoch : null, repairCommand: safeRepair(row.repairCommand), value: validReceipt }];
+        epoch: Number.isSafeInteger(row.epoch) ? row.epoch : null, repairCommand: safeRepair(row.repairCommand), value: validReceipt,
+        ...(causeCode ? { causeCode } : {}) }];
     });
     if (Array.isArray(raw.information)) value.information = raw.information.flatMap(item => {
       if (!item || typeof item !== "object" || Array.isArray(item)) return [];
@@ -184,7 +187,7 @@ export function safeControlOutcome(result: Outcome<unknown> & { refusal?: unknow
   }
   return { code: [0, 1, 2, 3].includes(result.code) ? result.code : 1, reason: safeReason(result.reason), operationId: token(result.operationId) ?? "",
     home, epoch: Number.isSafeInteger(result.epoch) ? result.epoch : null, repairCommand: repair, value: Object.keys(value).length ? value : null,
-    ...(refusal ? { refusal } : {}) };
+    ...(safeCauseCode(result.causeCode) ? { causeCode: safeCauseCode(result.causeCode) } : {}), ...(refusal ? { refusal } : {}) };
 }
 export function controlText(result: SafeControlOutcome, destinationAlias?: string): string {
   const value = result.value as { presentation?: string; terminal?: string; intercomAddress?: string; warnings?: string[]; candidates?: string[]; sourceCleanup?: SourceCleanup; diagnostics?: { reason: string; repairCommand: string | null }[] } | null;

@@ -1,4 +1,5 @@
 import { resolveParticipantPi } from "./launcher";
+import { causeCode, type CauseStep } from "./cause-codes";
 import { agentFailureCode, AgentResponseError, peerPreflightIssue } from "./peer-errors";
 import { setEnrolledPeerEnabled } from "./peer-enabled";
 import { openJournal } from "./journal";
@@ -28,7 +29,7 @@ import { listStoreKeys, parseUngathered } from "./store-inventory";
 import { createStorePort } from "./stores";
 import { createTransport, createProvisionTransport } from "./transport";
 
-export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; issues?: readonly { reason: string; repairCommand: string; detail?: string }[];
+export interface ControlResult { code: 0 | 1 | 2 | 3; reason: string; message: string; causeCode?: string; issues?: readonly { reason: string; repairCommand: string; detail?: string }[];
   information?: readonly { machine: string; reason: string }[] }
 const clean = (text: string) => text.replace(/[\u0000-\u001f\u007f]/g, "?").slice(0, 1000);
 function preflightCheck(reason: string): string {
@@ -120,7 +121,7 @@ async function waitReady(file: string): Promise<boolean> {
 }
 
 export async function enableRoaming(root: string, cli: string, bundleUrl?: URL): Promise<ControlResult> {
-  let changed = false;
+  let changed = false, step: CauseStep = "enable";
   try {
     const initial = readLocalIdentity(root);
     if (initial.role !== "hub") return { code: 1, reason: "mac-hub-required", message: "Run this command on the Mac hub." };
@@ -187,12 +188,13 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
       }
       for (const { peer, keys } of inventories) {
         for (const key of keys.filter(key => storeScope(key) === "worktree")) {
-          changed = true; await agent(transport, peer, config, "recheck-store", { storeKey: key });
+          step = "enable-peer-capture"; changed = true; await agent(transport, peer, config, "recheck-store", { storeKey: key });
         }
         for (const key of keys.filter(key => storeScope(key) !== "worktree")) {
-          changed = true; await agent(transport, peer, config, "enable-capture", { storeKey: key });
+          step = "enable-peer-capture"; changed = true; await agent(transport, peer, config, "enable-capture", { storeKey: key });
         }
       }
+      step = "enable-local-capture";
       const local = openLocalCore(root);
       try {
         const keys = listStoreKeys(local.db);
@@ -209,21 +211,26 @@ export async function enableRoaming(root: string, cli: string, bundleUrl?: URL):
       if (config.peers.length) {
         const journal = openJournal(join(root, "roam", "journal.db"));
         const provisioning = createProvisionTransport({ binary: herdr.core.binary, env: process.env, enrolled: config.peers }, journal);
+        step = "enable-peer-flag";
         for (const peer of config.peers) { changed = true; await setEnrolledPeerEnabled({ config, peer, enabled: true, journal, transport: provisioning }); }
       }
+      step = "enable-config";
       if (!config.enabled) { changed = true; await writeEnabled(root, config, true); }
+      step = "enable-service";
       await installHubService({ node: process.execPath, cli, globalRoot: root, pi }, ports);
       if (!await waitReady(join(root, "roam", "hub.sock"))) return { code: 3, reason: "hub-startup-pending", information, message: ["Hub service startup is pending. Run spider roam doctor.", infoText()].filter(Boolean).join("\n") };
       return { code: 0, reason: "roaming-enabled", information, message: ["Roaming hub enabled. Reload open pi sessions (/reload) to pick up /move.", infoText()].filter(Boolean).join("\n") };
     });
   } catch (error) {
+    const cause = causeCode(error, step);
     return { code: changed ? 3 : 1, reason: changed ? "enable-pending" : "enable-unavailable",
-      message: changed ? "Roaming enable needs reconciliation. Run spider roam doctor." : clean(error instanceof Error ? error.message : "Cannot enable roaming.") };
+      ...(changed ? { causeCode: cause } : {}),
+      message: changed ? `Roaming enable needs reconciliation (${cause}). Resolve the cause, then retry spider roam enable.` : clean(error instanceof Error ? error.message : "Cannot enable roaming.") };
   }
 }
 
 export async function disableRoaming(root: string): Promise<ControlResult> {
-  let changed = false;
+  let changed = false, step: CauseStep = "disable";
   try {
     const initial = readLocalIdentity(root);
     if (initial.role !== "hub") return { code: 1, reason: "mac-hub-required", message: "Run this command on the Mac hub." };
@@ -233,8 +240,8 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
       assertTestConfigPath(plist);
       const finish = async (): Promise<ControlResult> => {
         // Unload KeepAlive before publishing the disabled flag, so a failed unload can be retried.
-        if (existsSync(plist)) { changed = true; await removeHubService({ globalRoot: root }, servicePorts()); }
-        if (config.enabled) { changed = true; await writeEnabled(root, config, false); }
+        if (existsSync(plist)) { step = "disable-service"; changed = true; await removeHubService({ globalRoot: root }, servicePorts()); }
+        if (config.enabled) { step = "disable-config"; changed = true; await writeEnabled(root, config, false); }
         const unconfirmed: string[] = [];
         if (config.peers.length) {
           try {
@@ -264,6 +271,9 @@ export async function disableRoaming(root: string): Promise<ControlResult> {
       if (reply.code !== 0) return { code: reply.code, reason: /^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$/.test(reply.reason) ? reply.reason : "disable-refused", message: clean(reply.reason) };
       return finish();
     });
-  } catch { return { code: 3, reason: changed ? "disable-pending" : "disable-safety-unverified",
-    message: changed ? "Hub disable needs reconciliation. Run spider roam doctor." : "Cannot verify the hub is safe to disable. Run spider roam doctor." }; }
+  } catch (error) {
+    const cause = causeCode(error, step);
+    return { code: 3, reason: changed ? "disable-pending" : "disable-safety-unverified", ...(changed ? { causeCode: cause } : {}),
+      message: changed ? `Hub disable needs reconciliation (${cause}). Resolve the cause, then retry spider roam disable.` : "Cannot verify the hub is safe to disable. Run spider roam doctor." };
+  }
 }

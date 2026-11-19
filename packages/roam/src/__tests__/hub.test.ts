@@ -437,8 +437,10 @@ it("retains a deleted-session slot while a mapped store is unavailable", async (
   catalogReplica(h.f.global.db, key, worktree);
   worktree.prepare("DELETE FROM sessions WHERE id='possibly-removed'").run();
   catalogReplica(h.f.global.db, key, worktree);
+  const unavailable = join(h.runtimeRoot, "corrupt-checkout"); mkdirSync(join(unavailable, ".spider"), { recursive: true });
+  writeFileSync(join(unavailable, ".spider", "project.db"), "not sqlite");
   h.f.global.db.prepare("INSERT INTO roam_workspace_maps(repo_key,workspace_id,path) VALUES (?,?,?)")
-    .run("unavailable-repo", "workspace", join(h.runtimeRoot, "missing-checkout"));
+    .run("unavailable-repo", "workspace", unavailable);
   const stateRoot = join(h.f.global.root, "roam", "placement");
   await rememberRoamSlot(stateRoot, "possibly-removed", { space: "s1", tab: "tb1" } as Parameters<typeof rememberRoamSlot>[2]);
   const hc = { async identity() { return { coreId: "local-core" }; } } as unknown as HcClient;

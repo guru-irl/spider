@@ -446,7 +446,7 @@ it("maps arbitrary adapter failures to a fixed typed message", async () => {
   const result = await moveSession(f.request, f.ports);
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("unexpected move success");
-  expect(result.refusal).toEqual({ code: "move-preflight-refused", blockers: [], message: "Move preflight could not be verified." });
+  expect(result.refusal).toEqual({ code: "move-preflight-refused", blockers: ["preflight-check-unavailable"], message: "Move preflight could not be verified." });
   expect(JSON.stringify(result)).not.toContain("private-transcript-sentinel");
   expect(f.events).toEqual([]);
 }, 5000);
